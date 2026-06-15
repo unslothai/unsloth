@@ -10,6 +10,7 @@ GPU, network, subprocess, or GGUF I/O."""
 
 from __future__ import annotations
 
+import inspect
 import sys
 import types as _types
 from pathlib import Path
@@ -429,3 +430,12 @@ def test_qwen36_class_regression_picks_lower_ctx_with_mtp():
         mtp_overhead_fn = lambda c: b._estimate_mtp_overhead_bytes(c) or 0,
     )
     assert 0 < with_mtp < no_mtp
+
+
+def test_mtp_draft_budget_prefers_user_extras_drafter():
+    # A user --model-draft in extras is appended last and wins at launch, so the
+    # VRAM budget must size it, not Studio's auto drafter (load_model is too
+    # entangled to drive end-to-end; assert the precedence at the source level).
+    src = inspect.getsource(LlamaCppBackend.load_model)
+    assert "_extra_args_mtp_draft_path(extra_args) or mtp_draft_path" in src
+    assert "mtp_draft_path or _extra_args_mtp_draft_path(extra_args)" not in src

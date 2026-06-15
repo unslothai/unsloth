@@ -4066,8 +4066,9 @@ class LlamaCppBackend:
                     if _mtp_eff_n_max is None:
                         _mtp_eff_n_max = 2 if gpus else 3
                     # Separate-drafter weights live on GPU too (an embedded head is
-                    # already in model_size).
-                    _mtp_draft_for_budget = mtp_draft_path or _extra_args_mtp_draft_path(extra_args)
+                    # already in model_size). A user --model-draft in extras wins at
+                    # launch (last-wins), so size it, not Studio's auto drafter.
+                    _mtp_draft_for_budget = _extra_args_mtp_draft_path(extra_args) or mtp_draft_path
                     _mtp_draft_weights = 0
                     if _mtp_draft_for_budget:
                         try:
