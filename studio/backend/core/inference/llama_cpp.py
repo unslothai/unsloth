@@ -23,7 +23,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Callable, Generator, Iterable, List, Optional
+from typing import Callable, Collection, Generator, Iterable, List, Optional, Union
 
 import httpx
 
@@ -567,14 +567,27 @@ def _auto_mode_drops_mtp(
 def _extra_args_set_spec_type(extra_args: Optional[Iterable[str]]) -> bool:
     """User passed --spec-type / --spec-default? llama-server takes one
     --spec-type (comma-separated to chain), so suppress auto-emit."""
+    return _extra_args_set_any_flag(extra_args, {"--spec-type", "--spec-default"})
+
+
+_GPU_OFFLOAD_OVERRIDE_FLAGS = frozenset({"-ngl", "--gpu-layers", "--n-gpu-layers", "-fit", "--fit"})
+_THREAD_OVERRIDE_FLAGS = frozenset({"-t", "--threads"})
+
+
+def _extra_arg_flag_name(token: str) -> Optional[str]:
+    if not token.startswith("-") or token in {"-", "--"}:
+        return None
+    if len(token) >= 2 and (token[1].isdigit() or token[1] == "."):
+        return None
+    return token.split("=", 1)[0]
+
+
+def _extra_args_set_any_flag(extra_args: Optional[Iterable[str]], flags: Collection[str]) -> bool:
     if not extra_args:
         return False
     for raw in extra_args:
-        tok = str(raw)
-        if not tok.startswith("--"):
-            continue
-        flag = tok.split("=", 1)[0]
-        if flag in ("--spec-type", "--spec-default"):
+        flag = _extra_arg_flag_name(str(raw))
+        if flag in flags:
             return True
     return False
 
@@ -803,7 +816,11 @@ class LlamaCppBackend:
         # to decide whether to wait for the VRAM reclaim to finish.
         self._last_kill_monotonic: float = 0.0
 
-        self._kill_orphaned_servers()
+        _reaped = self._kill_orphaned_servers()
+        if _reaped:
+            # Reaped VRAM frees lazily; arm the settle wait so the first load
+            # waits before ranking GPUs by free memory.
+            self._last_kill_monotonic = time.monotonic()
         atexit.register(self._cleanup)
 
     # ── Properties ────────────────────────────────────────────────
@@ -1217,7 +1234,7 @@ class LlamaCppBackend:
     def probe_server_capabilities(cls, binary: Optional[str] = None) -> dict[str, object]:
         """Parse `llama-server --help` for feature flags. Returns
         {found, mtp_token, supports_mtp, ngram_mod_flavor,
-        supports_ngram_mod, spec_draft_n_max_flag}.
+        supports_ngram_mod, spec_draft_n_max_flag, cache flag support}.
 
         ``ngram_mod_flavor``: ``"new"`` when the post-rename
         ``--spec-ngram-mod-n-match / -n-min / -n-max`` are real args;
@@ -1242,6 +1259,9 @@ class LlamaCppBackend:
                 "spec_draft_n_max_flag": None,
                 "supports_kv_unified": False,
                 "supports_fit_ctx": False,
+                "supports_cache_ram": False,
+                "supports_ctx_checkpoints": False,
+                "supports_no_cache_prompt": False,
             }
         try:
             mtime = int(Path(bin_path).stat().st_mtime)
@@ -1257,13 +1277,18 @@ class LlamaCppBackend:
         spec_draft_n_max_flag: Optional[str] = None
         supports_kv_unified = False
         supports_fit_ctx = False
+        supports_cache_ram = False
+        supports_ctx_checkpoints = False
+        supports_no_cache_prompt = False
         try:
+            probe_env = cls._llama_server_env_for_binary(bin_path)
             result = subprocess.run(
                 [bin_path, "--help"],
                 capture_output = True,
                 text = True,
                 timeout = 10,
                 check = False,
+                env = probe_env,
             )
             help_text = (result.stdout or "") + "\n" + (result.stderr or "")
             # Split into per-flag blocks (each --flag line + its indented
@@ -1347,6 +1372,9 @@ class LlamaCppBackend:
 
             supports_kv_unified = _is_real("--kv-unified")
             supports_fit_ctx = _is_real("--fit-ctx")
+            supports_cache_ram = _is_real("--cache-ram")
+            supports_ctx_checkpoints = _is_real("--ctx-checkpoints")
+            supports_no_cache_prompt = _is_real("--no-cache-prompt")
         except (OSError, subprocess.SubprocessError) as exc:
             logger.debug(f"llama-server --help probe failed: {exc}")
 
@@ -1359,6 +1387,9 @@ class LlamaCppBackend:
             "spec_draft_n_max_flag": spec_draft_n_max_flag,
             "supports_kv_unified": supports_kv_unified,
             "supports_fit_ctx": supports_fit_ctx,
+            "supports_cache_ram": supports_cache_ram,
+            "supports_ctx_checkpoints": supports_ctx_checkpoints,
+            "supports_no_cache_prompt": supports_no_cache_prompt,
         }
         cls._capability_cache[cache_key] = info
         return info
@@ -1765,6 +1796,100 @@ class LlamaCppBackend:
             if os.path.isdir(cuda_bin_x64):
                 path_dirs.append(cuda_bin_x64)
         return path_dirs
+
+    @staticmethod
+    def _llama_server_env_for_binary(binary: str) -> dict[str, str]:
+        """Build a subprocess env that lets llama-server resolve native libs."""
+        env = child_env_without_native_path_secret()
+        binary_dir = str(Path(binary).parent)
+
+        if sys.platform == "win32":
+            # Ordering: see _build_windows_path_dirs. #5106.
+            path_dirs = LlamaCppBackend._build_windows_path_dirs(
+                binary_dir,
+                sys.prefix,
+                os.environ.get("CUDA_PATH", ""),
+            )
+            existing_path = env.get("PATH", "")
+            env["PATH"] = ";".join(path_dirs) + ";" + existing_path
+
+            # ROCm: the prebuilt bundles rocblas.dll but NOT the Tensile
+            # kernel files (rocblas/library/*.dat + *.hsaco); the DLL searches
+            # <binary_dir>/rocblas/library/ which doesn't exist.
+            _hip_path = os.environ.get("HIP_PATH", os.environ.get("ROCM_PATH", ""))
+            if _hip_path:
+                _rocblas_lib = os.path.join(_hip_path, "bin", "rocblas", "library")
+                if os.path.isdir(_rocblas_lib):
+                    env.setdefault("ROCBLAS_TENSILE_LIBPATH", _rocblas_lib)
+        else:
+            # Linux: LD_LIBRARY_PATH for shared libs next to the binary plus
+            # CUDA runtime libs (libcudart, libcublas, etc.)
+            import platform
+
+            lib_dirs = []
+            # WSL: system HIP before the bundle's (which segfaults on /dev/dxg).
+            for _wsl_rocm in _wsl_system_rocm_lib_dirs():
+                lib_dirs.append(_wsl_rocm)
+            if lib_dirs:
+                env.setdefault("HSA_ENABLE_DXG_DETECTION", "1")
+            lib_dirs.append(binary_dir)
+            _arch = platform.machine()  # x86_64, aarch64, etc.
+
+            # Pip-installed nvidia CUDA runtime libs. The prebuilt binary links
+            # libcudart.so.13 / libcublas.so.13 which live here, not in
+            # /usr/local/cuda.
+            import glob as _glob
+
+            for _nv_pattern in [
+                os.path.join(
+                    sys.prefix,
+                    "lib",
+                    "python*",
+                    "site-packages",
+                    "nvidia",
+                    "cu*",
+                    "lib",
+                ),
+                os.path.join(
+                    sys.prefix,
+                    "lib",
+                    "python*",
+                    "site-packages",
+                    "nvidia",
+                    "cudnn",
+                    "lib",
+                ),
+                os.path.join(
+                    sys.prefix,
+                    "lib",
+                    "python*",
+                    "site-packages",
+                    "nvidia",
+                    "nvjitlink",
+                    "lib",
+                ),
+            ]:
+                for _nv_dir in _glob.glob(_nv_pattern):
+                    if os.path.isdir(_nv_dir):
+                        lib_dirs.append(_nv_dir)
+
+            for cuda_lib in [
+                "/usr/local/cuda/lib64",
+                f"/usr/local/cuda/targets/{_arch}-linux/lib",
+                # Fallback CUDA compat paths (e.g. binary built with CUDA 12
+                # where default /usr/local/cuda is CUDA 13+).
+                "/usr/local/cuda-12/lib64",
+                "/usr/local/cuda-12.8/lib64",
+                f"/usr/local/cuda-12/targets/{_arch}-linux/lib",
+                f"/usr/local/cuda-12.8/targets/{_arch}-linux/lib",
+            ]:
+                if os.path.isdir(cuda_lib):
+                    lib_dirs.append(cuda_lib)
+            existing_ld = env.get("LD_LIBRARY_PATH", "")
+            new_ld = ":".join(lib_dirs)
+            env["LD_LIBRARY_PATH"] = f"{new_ld}:{existing_ld}" if existing_ld else new_ld
+
+        return env
 
     @staticmethod
     def _select_gpus(
@@ -3924,27 +4049,43 @@ class LlamaCppBackend:
                     "--no-context-shift",
                 ]
 
+                fully_gpu_offloaded = False
                 if use_fit:
                     cmd.extend(["--fit", "on"])
                 elif gpu_indices is not None:
                     # Fits on selected GPU(s) -- offload all layers
                     cmd.extend(["-ngl", "-1"])
+                    fully_gpu_offloaded = True
 
+                server_caps = self.probe_server_capabilities(binary)
                 cmd.extend(
                     self._ctx_integrity_flags(
                         n_parallel,
                         use_fit,
                         requested_ctx,
                         effective_ctx,
-                        self.probe_server_capabilities(binary),
+                        server_caps,
                     )
                 )
+                offload_overridden = _extra_args_set_any_flag(
+                    extra_args, _GPU_OFFLOAD_OVERRIDE_FLAGS
+                )
+                threads_overridden = _extra_args_set_any_flag(extra_args, _THREAD_OVERRIDE_FLAGS)
+                full_offload_tuning_active = fully_gpu_offloaded and not offload_overridden
 
-                # -1 = llama.cpp auto-detect (physical cores). Pass explicitly
-                # so we don't inherit llama-server's internal default, which
-                # has varied (hardware concurrency incl. hyperthreads on some
-                # builds).
-                cmd.extend(["--threads", str(n_threads if n_threads is not None else -1)])
+                # Pass --threads explicitly so we do not inherit llama-server
+                # defaults. Windows + full offload caps at 2 to stop OpenMP
+                # spin-wait burning CPU during GPU decode. User pass-through
+                # offload/thread flags keep last-wins semantics. #5692.
+                if (
+                    sys.platform == "win32"
+                    and full_offload_tuning_active
+                    and not threads_overridden
+                ):
+                    threads_arg = 2
+                else:
+                    threads_arg = n_threads if n_threads is not None else -1
+                cmd.extend(["--threads", str(threads_arg)])
 
                 # Enable Jinja chat template rendering
                 cmd.extend(["--jinja"])
@@ -4086,6 +4227,28 @@ class LlamaCppBackend:
                 else:
                     self._api_key = None
 
+                # Windows + full offload: disable KV checkpoints (WDDM/PCI-E
+                # overhead). CPU/partial offload keeps prompt caching. #5692.
+                if sys.platform == "win32" and full_offload_tuning_active:
+                    unsupported_cache_flags: list[str] = []
+                    if server_caps.get("supports_cache_ram"):
+                        cmd.extend(["--cache-ram", "0"])
+                    else:
+                        unsupported_cache_flags.append("--cache-ram")
+                    if server_caps.get("supports_ctx_checkpoints"):
+                        cmd.extend(["--ctx-checkpoints", "0"])
+                    else:
+                        unsupported_cache_flags.append("--ctx-checkpoints")
+                    if server_caps.get("supports_no_cache_prompt"):
+                        cmd.append("--no-cache-prompt")
+                    else:
+                        unsupported_cache_flags.append("--no-cache-prompt")
+                    if unsupported_cache_flags:
+                        logger.info(
+                            "Skipping unsupported Windows cache flags for llama-server: %s",
+                            ", ".join(unsupported_cache_flags),
+                        )
+
                 # User pass-through args go last so llama.cpp's last-wins parsing
                 # lets the user override Studio's auto-set flags. Already
                 # validated by the route via validate_extra_args().
@@ -4101,11 +4264,15 @@ class LlamaCppBackend:
                 logger.info(f"Starting llama-server: {' '.join(_log_cmd)}")
 
                 # Library paths so llama-server finds its shared libs and CUDA DLLs.
-                import os
-                import sys
+                env = self._llama_server_env_for_binary(binary)
 
-                env = child_env_without_native_path_secret()
-                binary_dir = str(Path(binary).parent)
+                # Windows + full offload: PASSIVE OMP + 2 threads stop
+                # spin-wait burning CPU. CPU/partial offload keeps default
+                # OMP parallelism. #5692.
+                if sys.platform == "win32" and full_offload_tuning_active:
+                    env.setdefault("OMP_WAIT_POLICY", "PASSIVE")
+                    if not threads_overridden:
+                        env.setdefault("OMP_NUM_THREADS", "2")
 
                 # AMD unified-memory APUs (gfx1150/gfx1151): let llama.cpp use
                 # shared system RAM. setdefault so a user value wins.
@@ -4120,96 +4287,6 @@ class LlamaCppBackend:
                     logger.info(
                         f"Data-center GPU detected: applied DC llama.cpp env tuning (multi_gpu={multi_gpu})"
                     )
-
-                if sys.platform == "win32":
-                    # Ordering: see _build_windows_path_dirs. #5106.
-                    path_dirs = self._build_windows_path_dirs(
-                        binary_dir,
-                        sys.prefix,
-                        os.environ.get("CUDA_PATH", ""),
-                    )
-                    existing_path = env.get("PATH", "")
-                    env["PATH"] = ";".join(path_dirs) + ";" + existing_path
-
-                    # ROCm: the prebuilt bundles rocblas.dll but NOT the Tensile
-                    # kernel files (rocblas/library/*.dat + *.hsaco); the DLL
-                    # searches <binary_dir>/rocblas/library/ which doesn't exist
-                    # -> silent crash on the first GEMM. ROCBLAS_TENSILE_LIBPATH
-                    # repoints that search at the ROCm install.
-                    _hip_path = os.environ.get("HIP_PATH", os.environ.get("ROCM_PATH", ""))
-                    if _hip_path:
-                        _rocblas_lib = os.path.join(_hip_path, "bin", "rocblas", "library")
-                        if os.path.isdir(_rocblas_lib):
-                            env.setdefault("ROCBLAS_TENSILE_LIBPATH", _rocblas_lib)
-                else:
-                    # Linux: LD_LIBRARY_PATH for shared libs next to the binary
-                    # plus CUDA runtime libs (libcudart, libcublas, etc.)
-                    import platform
-
-                    lib_dirs = []
-                    # WSL: system HIP before the bundle's (which segfaults on
-                    # /dev/dxg). Mirror install_llama_prebuilt.binary_env, which
-                    # validates the prebuilt with this same ordering.
-                    for _wsl_rocm in _wsl_system_rocm_lib_dirs():
-                        lib_dirs.append(_wsl_rocm)
-                    if lib_dirs:
-                        env.setdefault("HSA_ENABLE_DXG_DETECTION", "1")
-                    lib_dirs.append(binary_dir)
-                    _arch = platform.machine()  # x86_64, aarch64, etc.
-
-                    # Pip-installed nvidia CUDA runtime libs. The prebuilt
-                    # binary links libcudart.so.13 / libcublas.so.13 which live
-                    # here, not in /usr/local/cuda.
-                    import glob as _glob
-
-                    for _nv_pattern in [
-                        os.path.join(
-                            sys.prefix,
-                            "lib",
-                            "python*",
-                            "site-packages",
-                            "nvidia",
-                            "cu*",
-                            "lib",
-                        ),
-                        os.path.join(
-                            sys.prefix,
-                            "lib",
-                            "python*",
-                            "site-packages",
-                            "nvidia",
-                            "cudnn",
-                            "lib",
-                        ),
-                        os.path.join(
-                            sys.prefix,
-                            "lib",
-                            "python*",
-                            "site-packages",
-                            "nvidia",
-                            "nvjitlink",
-                            "lib",
-                        ),
-                    ]:
-                        for _nv_dir in _glob.glob(_nv_pattern):
-                            if os.path.isdir(_nv_dir):
-                                lib_dirs.append(_nv_dir)
-
-                    for cuda_lib in [
-                        "/usr/local/cuda/lib64",
-                        f"/usr/local/cuda/targets/{_arch}-linux/lib",
-                        # Fallback CUDA compat paths (e.g. binary built with
-                        # CUDA 12 where default /usr/local/cuda is CUDA 13+).
-                        "/usr/local/cuda-12/lib64",
-                        "/usr/local/cuda-12.8/lib64",
-                        f"/usr/local/cuda-12/targets/{_arch}-linux/lib",
-                        f"/usr/local/cuda-12.8/targets/{_arch}-linux/lib",
-                    ]:
-                        if os.path.isdir(cuda_lib):
-                            lib_dirs.append(cuda_lib)
-                    existing_ld = env.get("LD_LIBRARY_PATH", "")
-                    new_ld = ":".join(lib_dirs)
-                    env["LD_LIBRARY_PATH"] = f"{new_ld}:{existing_ld}" if existing_ld else new_ld
 
                 # Pin to selected GPU(s). On ROCm, narrowing only
                 # CUDA_VISIBLE_DEVICES leaves an AMD child seeing the full
@@ -5013,7 +5090,7 @@ class LlamaCppBackend:
                 self._llama_log_fh = None
 
     @staticmethod
-    def _kill_orphaned_servers():
+    def _kill_orphaned_servers() -> int:
         """Kill orphaned llama-server processes started by studio.
 
         Only kills processes whose resolved binary lives under a known
@@ -5025,7 +5102,11 @@ class LlamaCppBackend:
         Uses psutil for cross-platform support (Linux, macOS, Windows);
         falls back to pgrep + /proc/<pid>/exe on Linux when psutil is
         absent.
+
+        Returns the count of processes killed; callers arm the VRAM-settle
+        wait on a positive count.
         """
+        killed = 0
         try:
             # -- Build the ownership allowlist --------------------------------
             # exact_binaries -- env var overrides (exact path match).
@@ -5117,6 +5198,7 @@ class LlamaCppBackend:
                             continue
 
                         proc.kill()
+                        killed += 1
                         logger.info(
                             f"Killed orphaned llama-server process (pid={proc.info['pid']})"
                         )
@@ -5129,7 +5211,7 @@ class LlamaCppBackend:
             else:
                 # -- Fallback: pgrep + /proc/<pid>/exe (Linux only) -----------
                 if sys.platform != "linux":
-                    return
+                    return killed
                 result = subprocess.run(
                     ["pgrep", "-a", "-f", "llama-server"],
                     capture_output = True,
@@ -5138,7 +5220,7 @@ class LlamaCppBackend:
                     env = child_env_without_native_path_secret(),
                 )
                 if result.returncode != 0:
-                    return
+                    return killed
 
                 for line in result.stdout.strip().splitlines():
                     parts = line.strip().split(None, 1)
@@ -5169,6 +5251,7 @@ class LlamaCppBackend:
 
                     try:
                         os.kill(pid, signal.SIGKILL)
+                        killed += 1
                         logger.info(f"Killed orphaned llama-server process (pid={pid})")
                     except ProcessLookupError:
                         pass
@@ -5176,6 +5259,7 @@ class LlamaCppBackend:
                         pass
         except Exception:
             logger.warning("Error during orphan server cleanup", exc_info = True)
+        return killed
 
     def _cleanup(self):
         """atexit handler to ensure llama-server is terminated."""
@@ -5512,7 +5596,7 @@ class LlamaCppBackend:
         reasoning_effort: Optional[str] = None,
         preserve_thinking: Optional[bool] = None,
         seed: Optional[int] = None,
-    ) -> Generator[str | dict, None, None]:
+    ) -> Generator[Union[str, dict], None, None]:
         """
         Send a chat completion to llama-server and stream tokens back.
 
@@ -5710,6 +5794,7 @@ class LlamaCppBackend:
         seed: Optional[int] = None,
         disable_parallel_tool_use: bool = False,
         confirm_tool_calls: bool = False,
+        bypass_permissions: bool = False,
     ) -> Generator[dict, None, None]:
         """
         Agentic loop: let the model call tools, execute them, and continue.
@@ -6410,7 +6495,9 @@ class LlamaCppBackend:
                             decision.as_assistant_tool_call()
                         )
 
-                    needs_confirm = bool(confirm_tool_calls)
+                    # Bypass wins over the confirm gate at the loop level too,
+                    # so a direct internal caller with both flags never prompts.
+                    needs_confirm = bool(confirm_tool_calls) and not bypass_permissions
                     approval_id = new_approval_id() if needs_confirm else ""
                     decision_slot = (
                         begin_tool_decision(session_id, approval_id) if needs_confirm else None
@@ -6471,6 +6558,7 @@ class LlamaCppBackend:
                             timeout = _effective_timeout,
                             session_id = session_id,
                             rag_scope = rag_scope,
+                            disable_sandbox = bypass_permissions,
                         )
                         if decision.tool_name == "search_knowledge_base":
                             _kb_search_count += 1
