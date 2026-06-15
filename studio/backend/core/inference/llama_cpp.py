@@ -552,15 +552,11 @@ def _gguf_files_for_variant(files: Iterable[str], variant: str) -> list[str]:
         _extract_quant_label = None
 
     if _extract_quant_label is not None:
-        exact = sorted(
-            f for f in main_files if _extract_quant_label(f).lower() == variant_key
-        )
+        exact = sorted(f for f in main_files if _extract_quant_label(f).lower() == variant_key)
         if exact:
             return exact
 
-    boundary = re.compile(
-        r"(?<![a-zA-Z0-9])" + re.escape(variant_key) + r"(?![a-zA-Z0-9])"
-    )
+    boundary = re.compile(r"(?<![a-zA-Z0-9])" + re.escape(variant_key) + r"(?![a-zA-Z0-9])")
     return sorted(f for f in main_files if boundary.search(f.lower()))
 
 
@@ -2872,11 +2868,9 @@ class LlamaCppBackend:
             if not gguf_filename:
                 try:
                     from utils.models.model_config import _iter_hf_cache_snapshots
-
                     for snap in _iter_hf_cache_snapshots(hf_repo):
                         cached_files = (
-                            p.relative_to(snap).as_posix()
-                            for p in snap.rglob("*.gguf")
+                            p.relative_to(snap).as_posix() for p in snap.rglob("*.gguf")
                         )
                         matches = _gguf_files_for_variant(cached_files, hf_variant)
                         if not matches:

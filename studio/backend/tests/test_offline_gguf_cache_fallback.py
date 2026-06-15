@@ -139,22 +139,25 @@ class TestGgufVariantFileResolution:
             "tinyllamas/stories260K.gguf",
         ]
 
-        assert _gguf_files_for_variant(files, "stories260K") == [
-            "tinyllamas/stories260K.gguf"
-        ]
+        assert _gguf_files_for_variant(files, "stories260K") == ["tinyllamas/stories260K.gguf"]
 
     def test_download_uses_exact_variant_label(self, monkeypatch, tmp_path):
         backend = LlamaCppBackend()
         downloaded: list[str] = []
 
-        def fake_get_paths_info(_repo_id, paths, token = None):
-            return [
-                _types.SimpleNamespace(path = path, size = 1)
-                for path in paths
-                if path is not None
-            ]
+        def fake_get_paths_info(
+            _repo_id,
+            paths,
+            token = None,
+        ):
+            return [_types.SimpleNamespace(path = path, size = 1) for path in paths if path is not None]
 
-        def fake_download(*, repo_id, filename, token = None):
+        def fake_download(
+            *,
+            repo_id,
+            filename,
+            token = None,
+        ):
             downloaded.append(filename)
             return f"/fake/{repo_id}/{filename}"
 
