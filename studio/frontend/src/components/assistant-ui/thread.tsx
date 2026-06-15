@@ -19,6 +19,7 @@ import {
   thinkEffortAriaLabel,
   thinkToggleAriaLabel,
 } from "@/components/assistant-ui/think-aria-label";
+import { withToolConfirmation } from "@/components/assistant-ui/tool-confirmation-controls";
 import { ToolFallback } from "@/components/assistant-ui/tool-fallback";
 import { ToolGroup } from "@/components/assistant-ui/tool-group";
 import { CodeExecutionToolUI } from "@/components/assistant-ui/tool-ui-code-execution";
@@ -68,6 +69,14 @@ import { getExternalReasoningCapabilities } from "@/features/chat/provider-capab
 import { useRagToolDisabled } from "@/features/chat/hooks/use-rag-tool-disabled";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { useExternalProvidersStore } from "@/features/chat/stores/external-providers-store";
+import {
+  PLUS_MENU_ORDER,
+  composerDraftKey,
+  readComposerDraft,
+  type PlusMenuItemId,
+  usePlusMenuPrefsStore,
+  writeComposerDraft,
+} from "@/features/chat";
 import { deleteThreadMessage } from "@/features/chat/utils/delete-thread-message";
 import { ThreadDocumentsBar } from "@/features/rag/components/thread-documents-bar";
 import { KnowledgeBaseComposerButton } from "@/features/rag/components/knowledge-base-composer-button";
@@ -77,6 +86,7 @@ import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
 import { isTauri } from "@/lib/api-base";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { toast } from "@/lib/toast";
+import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
 import {
   ActionBarMorePrimitive,
@@ -106,7 +116,6 @@ import {
   Image03Icon,
   McpServerIcon,
   PencilRulerIcon,
-  Tick02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
@@ -133,6 +142,7 @@ import {
   type KeyboardEvent,
   type DragEvent as ReactDragEvent,
   type ReactNode,
+  Fragment,
   createContext,
   useCallback,
   useContext,
@@ -772,14 +782,16 @@ const ThreadWelcome: FC<{
   hideComposer?: boolean;
   threadId?: string | null;
 }> = ({ hideComposer, threadId }) => {
+  const incognito = useChatRuntimeStore((s) => s.incognito);
   const displayName = useUserProfileStore((s) => s.displayName);
+  const nickname = useUserProfileStore((s) => s.nickname);
   const [welcome, setWelcome] = useState<Welcome>(DEFAULT_WELCOME);
 
   useEffect(() => {
-    // First name only, for a natural greeting; blank falls back to no name.
-    const name = displayName.trim().split(/\s+/)[0] ?? "";
+    // Prefer the nickname; otherwise first name only. Blank falls back to none.
+    const name = nickname.trim() || (displayName.trim().split(/\s+/)[0] ?? "");
     setWelcome(buildWelcome(new Date().getHours(), name));
-  }, [displayName]);
+  }, [displayName, nickname]);
 
   const currentEmojiSrc = `Sloth emojis/${welcome.sloth}`;
 
@@ -794,9 +806,15 @@ const ThreadWelcome: FC<{
               className="size-[44px] -translate-y-[2px]"
             />
             <h1 className="aui-thread-welcome-message-inner unsloth-welcome-title fade-in slide-in-from-bottom-1 animate-in text-3xl tracking-[-0.02em] duration-200">
-              {welcome.text}
+              {incognito ? "Temporary chat" : welcome.text}
             </h1>
           </div>
+          {incognito && (
+            <p className="aui-thread-welcome-message-inner fade-in -mt-2 animate-in text-center font-heading font-normal text-muted-foreground text-sm duration-200">
+              This chat won't appear in your history and isn't saved. It
+              disappears when you leave.
+            </p>
+          )}
           {!hideComposer && <ComposerAnimated threadId={threadId} />}
         </div>
       </div>
@@ -936,6 +954,31 @@ const Composer: FC<{
   const referenceThreadId = threadId ?? activeThreadId ?? null;
   const hasSendableContent =
     composerText.trim().length > 0 || hasAttachments || hasPendingAudio;
+
+  // Per-thread draft autosave: restore on mount, then mirror composer text
+  // into localStorage (debounced) so a half-typed message survives a
+  // navigation or reload. Cleared once empty (i.e. after a send). Setting the
+  // text even when no draft exists keeps a thread from inheriting the
+  // previous thread's composer contents.
+  const draftKey = composerDraftKey(activeThreadId);
+  const lastDraftKeyRef = useRef(draftKey);
+  useEffect(() => {
+    const draft = readComposerDraft(draftKey) ?? "";
+    const composer = aui.composer();
+    if (composer.getState().isEditing) {
+      composer.setText(draft);
+    }
+  }, [draftKey, aui]);
+  useEffect(() => {
+    // After a thread switch composerText can still hold the previous
+    // thread's text; skip that cycle so it isn't saved under the new key.
+    if (lastDraftKeyRef.current !== draftKey) {
+      lastDraftKeyRef.current = draftKey;
+      return;
+    }
+    const t = setTimeout(() => writeComposerDraft(draftKey, composerText), 300);
+    return () => clearTimeout(t);
+  }, [composerText, draftKey]);
   // Two-row layout shows once the input wraps or a tool is on. Tools can
   // pre-select before a model loads, so an active toggle expands it either way.
   const composerExpanded =
@@ -2053,6 +2096,7 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [promptStorageOpen, setPromptStorageOpen] = useState(false);
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
+  const incognito = useChatRuntimeStore((s) => s.incognito);
   const aui = useAui();
   const composerCanAddAttachments = useAuiState(
     ({ composer }) => composer.isEditing,
@@ -2088,20 +2132,183 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
     };
     input.click();
   }, [aui, audioAttachmentsEnabled]);
-  // Disable Export chat until the thread has content.
+  // Exports are storage-backed; temporary chats intentionally never write there.
   const messageCount = useAuiState(({ thread }) => thread.messages.length);
+  const exportDisabled = incognito || !activeThreadId || messageCount === 0;
   const { startQueue } = useContext(PromptQueueContext);
+
+  const plusPins = usePlusMenuPrefsStore((s) => s.pins);
 
   const [recentPrompts, setRecentPrompts] = useState<PromptEntry[]>([]);
   const refreshRecentPrompts = useCallback(async () => {
     try {
       const rows = await listPromptEntries();
-      setRecentPrompts(
-        [...rows].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 3),
-      );
+      const byRecent = [...rows].sort((a, b) => b.updatedAt - a.updatedAt);
+      // Pinned prompts take over the submenu; fall back to the 3 most recent
+      // when nothing is pinned.
+      const pinnedIds = usePlusMenuPrefsStore.getState().pinnedPromptIds;
+      const pinned = byRecent.filter((p) => pinnedIds.includes(p.id));
+      setRecentPrompts(pinned.length > 0 ? pinned : byRecent.slice(0, 3));
     } catch {
     }
   }, []);
+
+  // Adjustable "+" menu items, keyed by id. Pinned ones render at the top
+  // level; the rest fall into the "More" overflow submenu. The core items
+  // (photos, web search, code) and "More" itself are always shown and live
+  // outside this map.
+  const plusMenuNodes: Record<PlusMenuItemId, ReactNode> = {
+    chatWithFiles: (
+      <DropdownMenuItem
+        disabled={ragDisabled}
+        className={
+          ragEnabled && !ragDisabled ? "text-primary font-medium" : undefined
+        }
+        onSelect={() => setRagEnabled(!ragEnabled)}
+      >
+        <HugeiconsIcon icon={FileDatabaseIcon} strokeWidth={2} />
+        Chat with Files
+        {ragEnabled && !ragDisabled ? (
+          <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="ml-auto" />
+        ) : null}
+      </DropdownMenuItem>
+    ),
+    mcp: (
+      <DropdownMenuItem
+        disabled={mcpDisabled}
+        className={
+          mcpEnabledForChat && !mcpDisabled
+            ? "text-primary font-medium"
+            : undefined
+        }
+        onSelect={() => setMcpEnabledForChat(!mcpEnabledForChat)}
+      >
+        <HugeiconsIcon icon={McpServerIcon} strokeWidth={2} />
+        MCP
+        {mcpEnabledForChat && !mcpDisabled ? (
+          <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="ml-auto" />
+        ) : null}
+      </DropdownMenuItem>
+    ),
+    savedPrompts: (
+      <DropdownMenuSub>
+        <DropdownMenuSubTrigger>
+          <HugeiconsIcon icon={Bookmark02Icon} strokeWidth={2} />
+          Saved prompts
+        </DropdownMenuSubTrigger>
+        <DropdownMenuSubContent
+          collisionPadding={16}
+          className="unsloth-plus-menu w-[208px]"
+        >
+          {recentPrompts.map((p) => (
+            <DropdownMenuItem
+              key={p.id}
+              onSelect={() => aui.composer().setText(p.text)}
+            >
+              <span className="truncate">{p.name}</span>
+            </DropdownMenuItem>
+          ))}
+          {recentPrompts.length > 0 ? <DropdownMenuSeparator /> : null}
+          <DropdownMenuItem onSelect={() => setPromptStorageOpen(true)}>
+            All saved prompts…
+          </DropdownMenuItem>
+        </DropdownMenuSubContent>
+      </DropdownMenuSub>
+    ),
+    compareChat: (
+      <DropdownMenuItem onSelect={() => startCompare()}>
+        <Columns2Icon />
+        Compare chat
+      </DropdownMenuItem>
+    ),
+    exportChat: (
+      <DropdownMenuSub>
+        <DropdownMenuSubTrigger disabled={exportDisabled}>
+          <HugeiconsIcon icon={Download01Icon} strokeWidth={2} />
+          Export chat
+        </DropdownMenuSubTrigger>
+        <DropdownMenuSubContent
+          collisionPadding={16}
+          className="unsloth-plus-menu w-[208px]"
+        >
+          <DropdownMenuItem
+            onSelect={() => {
+              if (!activeThreadId) return;
+              exportConversationRawJsonl(activeThreadId).catch(() =>
+                toast.error("Export failed."),
+              );
+            }}
+          >
+            Raw JSONL
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            onSelect={() => {
+              if (!activeThreadId) return;
+              exportConversationCsv(activeThreadId).catch(() =>
+                toast.error("Export failed."),
+              );
+            }}
+          >
+            CSV
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            onSelect={() => {
+              if (!activeThreadId) return;
+              exportConversationShareGPT(activeThreadId).catch(() =>
+                toast.error("Export failed."),
+              );
+            }}
+          >
+            ShareGPT JSONL
+          </DropdownMenuItem>
+        </DropdownMenuSubContent>
+      </DropdownMenuSub>
+    ),
+    canvas: (
+      <DropdownMenuItem
+        className={artifactsEnabled ? "text-primary font-medium" : undefined}
+        onSelect={() => setArtifactsEnabled(!artifactsEnabled)}
+      >
+        <HugeiconsIcon icon={PencilRulerIcon} strokeWidth={2} />
+        Canvas
+        {artifactsEnabled ? (
+          <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="ml-auto" />
+        ) : null}
+      </DropdownMenuItem>
+    ),
+    projects: (
+      <DropdownMenuSub>
+        <DropdownMenuSubTrigger>
+          <HugeiconsIcon icon={Folder01Icon} strokeWidth={2} />
+          Projects
+        </DropdownMenuSubTrigger>
+        <DropdownMenuSubContent className="unsloth-plus-menu w-[232px]">
+          <DropdownMenuItem onSelect={() => setNewProjectOpen(true)}>
+            <HugeiconsIcon icon={FolderAddIcon} strokeWidth={2} />
+            New project
+          </DropdownMenuItem>
+          <DropdownMenuLabel>Recents</DropdownMenuLabel>
+          {recentProjects.length > 0 ? (
+            recentProjects.map((project) => (
+              <DropdownMenuItem
+                key={project.id}
+                onSelect={() => openProject(project.id)}
+              >
+                <HugeiconsIcon icon={Folder01Icon} strokeWidth={2} />
+                <span className="truncate">{project.name}</span>
+              </DropdownMenuItem>
+            ))
+          ) : (
+            <DropdownMenuItem disabled={true}>
+              No recent projects
+            </DropdownMenuItem>
+          )}
+        </DropdownMenuSubContent>
+      </DropdownMenuSub>
+    ),
+  };
+  const pinnedPlusItems = PLUS_MENU_ORDER.filter((id) => plusPins[id]);
+  const overflowPlusItems = PLUS_MENU_ORDER.filter((id) => !plusPins[id]);
 
   return (
     <>
@@ -2135,7 +2342,7 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
         align="start"
         sideOffset={0}
         avoidCollisions={true}
-        className="unsloth-plus-menu w-[212px]"
+        className="unsloth-plus-menu w-[244px]"
         // Don't refocus the + on close; restored focus showed a stray ring.
         onCloseAutoFocus={(event) => event.preventDefault()}
       >
@@ -2219,165 +2426,22 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
           </DropdownMenuItem>
         )}
         <DropdownMenuSeparator />
-        <DropdownMenuItem
-          disabled={ragDisabled}
-          className={
-            ragEnabled && !ragDisabled ? "text-primary font-medium" : undefined
-          }
-          onSelect={() => setRagEnabled(!ragEnabled)}
-        >
-          <HugeiconsIcon icon={FileDatabaseIcon} strokeWidth={2} />
-          Chat with Files
-          {ragEnabled && !ragDisabled ? (
-            <HugeiconsIcon
-              icon={Tick02Icon}
-              strokeWidth={2}
-              className="ml-auto"
-            />
-          ) : null}
-        </DropdownMenuItem>
-        <DropdownMenuItem
-          disabled={mcpDisabled}
-          className={
-            mcpEnabledForChat && !mcpDisabled
-              ? "text-primary font-medium"
-              : undefined
-          }
-          onSelect={() => setMcpEnabledForChat(!mcpEnabledForChat)}
-        >
-          <HugeiconsIcon icon={McpServerIcon} strokeWidth={2} />
-          MCP
-          {mcpEnabledForChat && !mcpDisabled ? (
-            <HugeiconsIcon
-              icon={Tick02Icon}
-              strokeWidth={2}
-              className="ml-auto"
-            />
-          ) : null}
-        </DropdownMenuItem>
-        <DropdownMenuSub>
-          <DropdownMenuSubTrigger>
-            <MoreHorizontalIcon className="size-4" />
-            More
-          </DropdownMenuSubTrigger>
-          <DropdownMenuSubContent className="unsloth-plus-menu w-[200px]">
-            <DropdownMenuSub>
-              <DropdownMenuSubTrigger>
-                <HugeiconsIcon icon={Bookmark02Icon} strokeWidth={2} />
-                Saved prompts
-              </DropdownMenuSubTrigger>
-              <DropdownMenuSubContent
-                collisionPadding={16}
-                className="unsloth-plus-menu w-[176px]"
-              >
-                {recentPrompts.map((p) => (
-                  <DropdownMenuItem
-                    key={p.id}
-                    onSelect={() => aui.composer().setText(p.text)}
-                  >
-                    <span className="truncate">{p.name}</span>
-                  </DropdownMenuItem>
-                ))}
-                {recentPrompts.length > 0 ? <DropdownMenuSeparator /> : null}
-                <DropdownMenuItem onSelect={() => setPromptStorageOpen(true)}>
-                  All saved prompts…
-                </DropdownMenuItem>
-              </DropdownMenuSubContent>
-            </DropdownMenuSub>
-            <DropdownMenuItem onSelect={() => startCompare()}>
-              <Columns2Icon />
-              Compare chat
-            </DropdownMenuItem>
-            <DropdownMenuSub>
-              <DropdownMenuSubTrigger
-                disabled={!activeThreadId || messageCount === 0}
-              >
-                <HugeiconsIcon icon={Download01Icon} strokeWidth={2} />
-                Export chat
-              </DropdownMenuSubTrigger>
-              <DropdownMenuSubContent
-                collisionPadding={16}
-                className="unsloth-plus-menu w-[176px]"
-              >
-                <DropdownMenuItem
-                  onSelect={() => {
-                    if (!activeThreadId) return;
-                    exportConversationRawJsonl(activeThreadId).catch(() =>
-                      toast.error("Export failed."),
-                    );
-                  }}
-                >
-                  Raw JSONL
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  onSelect={() => {
-                    if (!activeThreadId) return;
-                    exportConversationCsv(activeThreadId).catch(() =>
-                      toast.error("Export failed."),
-                    );
-                  }}
-                >
-                  CSV
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  onSelect={() => {
-                    if (!activeThreadId) return;
-                    exportConversationShareGPT(activeThreadId).catch(() =>
-                      toast.error("Export failed."),
-                    );
-                  }}
-                >
-                  ShareGPT JSONL
-                </DropdownMenuItem>
-              </DropdownMenuSubContent>
-            </DropdownMenuSub>
-            <DropdownMenuItem
-              className={
-                artifactsEnabled ? "text-primary font-medium" : undefined
-              }
-              onSelect={() => setArtifactsEnabled(!artifactsEnabled)}
-            >
-              <HugeiconsIcon icon={PencilRulerIcon} strokeWidth={2} />
-              Canvas
-              {artifactsEnabled ? (
-                <HugeiconsIcon
-                  icon={Tick02Icon}
-                  strokeWidth={2}
-                  className="ml-auto"
-                />
-              ) : null}
-            </DropdownMenuItem>
-          </DropdownMenuSubContent>
-        </DropdownMenuSub>
-        <DropdownMenuSeparator />
-        <DropdownMenuSub>
-          <DropdownMenuSubTrigger>
-            <HugeiconsIcon icon={Folder01Icon} strokeWidth={2} />
-            Projects
-          </DropdownMenuSubTrigger>
-          <DropdownMenuSubContent className="unsloth-plus-menu w-[200px]">
-            <DropdownMenuItem onSelect={() => setNewProjectOpen(true)}>
-              <HugeiconsIcon icon={FolderAddIcon} strokeWidth={2} />
-              New project
-            </DropdownMenuItem>
-            <DropdownMenuLabel>Recents</DropdownMenuLabel>
-            {recentProjects.length > 0 ? (
-              recentProjects.map((project) => (
-                <DropdownMenuItem
-                  key={project.id}
-                  onSelect={() => openProject(project.id)}
-                >
-                  <HugeiconsIcon icon={Folder01Icon} strokeWidth={2} />
-                  <span className="truncate">{project.name}</span>
-                </DropdownMenuItem>
-              ))
-            ) : (
-              <DropdownMenuItem disabled={true}>
-                No recent projects
-              </DropdownMenuItem>
-            )}
-          </DropdownMenuSubContent>
-        </DropdownMenuSub>
+        {pinnedPlusItems.map((id) => (
+          <Fragment key={id}>{plusMenuNodes[id]}</Fragment>
+        ))}
+        {overflowPlusItems.length > 0 ? (
+          <DropdownMenuSub>
+            <DropdownMenuSubTrigger>
+              <MoreHorizontalIcon className="size-4" />
+              More
+            </DropdownMenuSubTrigger>
+            <DropdownMenuSubContent className="unsloth-plus-menu w-[232px]">
+              {overflowPlusItems.map((id) => (
+                <Fragment key={id}>{plusMenuNodes[id]}</Fragment>
+              ))}
+            </DropdownMenuSubContent>
+          </DropdownMenuSub>
+        ) : null}
       </DropdownMenuContent>
     </DropdownMenu>
       <NewProjectDialog
@@ -2520,6 +2584,51 @@ const CancelledIndicator: FC = () => {
   );
 };
 
+const WebSearchToolUIConfirmable = withToolConfirmation(WebSearchToolUI);
+const KnowledgeBaseToolUIConfirmable =
+  withToolConfirmation(KnowledgeBaseToolUI);
+const PythonToolUIConfirmable = withToolConfirmation(PythonToolUI);
+const TerminalToolUIConfirmable = withToolConfirmation(TerminalToolUI);
+const CodeExecutionToolUIConfirmable =
+  withToolConfirmation(CodeExecutionToolUI);
+const ImageGenerationToolUIConfirmable = withToolConfirmation(
+  ImageGenerationToolUI,
+);
+const RenderHtmlToolUIConfirmable = withToolConfirmation(RenderHtmlToolUI);
+const ToolFallbackConfirmable = withToolConfirmation(ToolFallback);
+
+// Live in-place denoising canvas for DiffusionGemma: while generating, render the
+// latest per-step canvas snapshot in the bubble so the user watches the answer resolve
+// out of noise. Transient (store-only, cleared on run end), so the finished message
+// keeps only the committed markdown.
+const DiffusionCanvas: FC = () => {
+  const isRunning = useAuiState(
+    ({ message }) => message.status?.type === "running",
+  );
+  // A non-null canvas is set only by diffusion_frame events (diffusion models only),
+  // so it is a sufficient gate; loadedIsDiffusion can lag the first frame on a fresh load.
+  const canvas = useChatRuntimeStore((s) => s.activeDiffusionCanvas);
+  if (!isRunning || !canvas) {
+    return null;
+  }
+  const stepLabel =
+    canvas.total > 0 ? `step ${canvas.step + 1}/${canvas.total}` : "denoising";
+  return (
+    <div className="aui-diffusion-canvas my-1.5 overflow-hidden rounded-lg border border-primary/20 bg-primary/[0.03]">
+      <div className="flex items-center gap-2 border-b border-primary/10 px-3 py-1.5 text-[11px] font-medium text-primary/80">
+        <span className="inline-block size-1.5 animate-pulse rounded-full bg-primary" />
+        <span>Denoising</span>
+        <span className="opacity-60">
+          block {canvas.block + 1} - {stepLabel}
+        </span>
+      </div>
+      <pre className="max-h-[60vh] overflow-auto whitespace-pre-wrap px-3 py-2 font-mono text-[12.5px] leading-relaxed text-foreground/90">
+        {canvas.text}
+      </pre>
+    </div>
+  );
+};
+
 const AssistantMessage: FC = () => {
   return (
     <MessagePrimitive.Root
@@ -2529,6 +2638,7 @@ const AssistantMessage: FC = () => {
       <div className="aui-assistant-message-content wrap-break-word min-w-0 text-[#0d0d0d] dark:text-foreground leading-relaxed">
         <GeneratingIndicator />
         <CancelledIndicator />
+        <DiffusionCanvas />
         <MessagePrimitive.Parts
           components={{
             Text: MarkdownText,
@@ -2538,15 +2648,15 @@ const AssistantMessage: FC = () => {
             ToolGroup: ToolGroup,
             tools: {
               by_name: {
-                web_search: WebSearchToolUI,
-                search_knowledge_base: KnowledgeBaseToolUI,
-                python: PythonToolUI,
-                terminal: TerminalToolUI,
-                code_execution: CodeExecutionToolUI,
-                image_generation: ImageGenerationToolUI,
-                render_html: RenderHtmlToolUI,
+                web_search: WebSearchToolUIConfirmable,
+                search_knowledge_base: KnowledgeBaseToolUIConfirmable,
+                python: PythonToolUIConfirmable,
+                terminal: TerminalToolUIConfirmable,
+                code_execution: CodeExecutionToolUIConfirmable,
+                image_generation: ImageGenerationToolUIConfirmable,
+                render_html: RenderHtmlToolUIConfirmable,
               },
-              Fallback: ToolFallback,
+              Fallback: ToolFallbackConfirmable,
             },
           }}
         />
@@ -2660,10 +2770,10 @@ const AssistantActionBar: FC = () => {
           side="bottom"
           align="start"
           onCloseAutoFocus={(e) => e.preventDefault()}
-          className="aui-action-bar-more-content z-50 min-w-32 overflow-hidden rounded-md [--radius:1.1rem] bg-popover p-1 text-popover-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:shadow-none"
+          className="aui-action-bar-more-content z-50 min-w-32 overflow-hidden rounded-full bg-popover p-1 text-popover-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:shadow-none"
         >
           <ActionBarPrimitive.ExportMarkdown asChild={true}>
-            <ActionBarMorePrimitive.Item className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground">
+            <ActionBarMorePrimitive.Item className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-full px-3 py-1.5 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground">
               <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-icon" />
               Export as Markdown
             </ActionBarMorePrimitive.Item>

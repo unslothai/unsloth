@@ -1336,6 +1336,32 @@ def _run_mlx_training(event_queue, stop_queue, config):
                 kwargs["message"] = sm
         event_queue.put({"type": event_type, "ts": time.time(), **kwargs})
 
+    _stop_save = [True]
+    _stop_requested = [False]
+    _trainer_ref = [None]
+
+    def _is_stop_requested():
+        return _stop_requested[0]
+
+    def _poll_stop():
+        while True:
+            try:
+                msg = stop_queue.get(timeout = 1.0)
+                if msg and msg.get("type") == "stop":
+                    _stop_save[0] = msg.get("save", True)
+                    _stop_requested[0] = True
+                    trainer = _trainer_ref[0]
+                    if trainer is not None:
+                        trainer.stop_requested = True
+                    return
+            except _queue.Empty:
+                continue
+            except (EOFError, OSError):
+                return
+
+    stop_thread = threading.Thread(target = _poll_stop, daemon = True)
+    stop_thread.start()
+
     _send("status", status_message = "Loading MLX libraries...")
 
     import mlx.core as mx
@@ -1398,6 +1424,14 @@ def _run_mlx_training(event_queue, stop_queue, config):
     is_dataset_image = bool(config.get("is_dataset_image", False))
     training_type = config.get("training_type", "LoRA/QLoRA")
     use_lora = training_type == "LoRA/QLoRA"
+    # Normalize seed; explicit None must not reach the seed chain.
+    _raw_seed = config.get("random_seed", 3407)
+    random_seed = 3407 if _raw_seed is None else int(_raw_seed)
+    # `config.get(k, d)` only fills d when key is missing; handle explicit None too.
+    _model_seed = config.get("model_random_state")
+    model_random_state = random_seed if _model_seed is None else int(_model_seed)
+    _lora_seed = config.get("lora_random_state")
+    lora_random_state = random_seed if _lora_seed is None else int(_lora_seed)
     model, tokenizer = FastMLXModel.from_pretrained(
         model_name,
         load_in_4bit = config.get("load_in_4bit", True),
@@ -1405,7 +1439,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
         text_only = None if is_dataset_image else True,
         token = hf_token,
         trust_remote_code = bool(config.get("trust_remote_code", False)),
-        random_state = config.get("random_seed", 3407),
+        random_state = model_random_state,
     )
 
     is_vlm = bool(is_dataset_image and getattr(model, "_is_vlm_model", False))
@@ -1447,7 +1481,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
             lora_dropout = config.get("lora_dropout", 0.0),
             use_rslora = config.get("use_rslora", False),
             init_lora_weights = config.get("init_lora_weights", True),
-            random_state = config.get("random_seed", 3407),
+            random_state = lora_random_state,
             target_modules = config.get("target_modules")
             or [
                 "q_proj",
@@ -1514,6 +1548,26 @@ def _run_mlx_training(event_queue, stop_queue, config):
         dataset = _slice(dataset)
     elif config.get("local_datasets"):
         dataset = _load_local(config["local_datasets"])
+        dataset = _slice(dataset)
+    elif config.get("s3_config"):
+        from core.training.s3_dataset import (
+            S3DownloadCancelled,
+            prepare_s3_dataset_download,
+        )
+
+        _send("status", status_message = "Downloading dataset from S3...")
+        try:
+            s3_download = prepare_s3_dataset_download(
+                config["s3_config"],
+                cancel_callback = _is_stop_requested,
+            )
+            try:
+                dataset = _load_local(s3_download.files)
+            finally:
+                s3_download.cleanup()
+        except S3DownloadCancelled:
+            _send("complete", output_dir = None, status_message = "Training cancelled")
+            return
         dataset = _slice(dataset)
     else:
         raise ValueError("No dataset specified")
@@ -1641,12 +1695,12 @@ def _run_mlx_training(event_queue, stop_queue, config):
         warmup_steps = 5
 
     # ── 5. Build output dir ──
+    # Resolve to ~/.unsloth/studio/outputs/ so the export page finds it
+    from utils.paths import resolve_output_dir, ensure_dir, default_run_dir_name
+
     output_dir = config.get("output_dir", "")
     if not output_dir:
-        output_dir = f"{model_name.replace('/', '_')}_{int(time.time())}"
-    # Resolve to ~/.unsloth/studio/outputs/ so the export page finds it
-    from utils.paths import resolve_output_dir, ensure_dir
-
+        output_dir = f"{default_run_dir_name(model_name)}_{int(time.time())}"
     output_dir = str(resolve_output_dir(output_dir))
     ensure_dir(Path(output_dir))
 
@@ -1658,41 +1712,80 @@ def _run_mlx_training(event_queue, stop_queue, config):
     else:
         eval_steps_val = int(eval_steps_val)
 
-    # MLX: per-element clip to [-1, 1]; norm clip disabled (its global reduction
-    # breaks MLX's eager pipeline). 1.0 not 5.0: |g_i| > 5 rarely fires, so the
-    # historical 5.0 was effectively a no-op.
+    # Per-element clipping only; trainer owns the None default. Re-validate
+    # for direct worker callers (training.py normalizes the main path).
     max_grad_norm = 0.0
-    max_grad_value = 1.0  # TODO: expose MLX grad-clip in Studio UI for power users
+    max_grad_value = config.get("max_grad_value")
+    if max_grad_value is not None:
+        max_grad_value = float(max_grad_value)
+        if max_grad_value < 0:
+            raise ValueError(
+                f"Unsloth MLX: max_grad_value={max_grad_value} must be >= 0 "
+                "(0 or None disables elementwise clipping)."
+            )
+    max_grad_leaf_norm = config.get("max_grad_leaf_norm")
+    if max_grad_leaf_norm is not None:
+        max_grad_leaf_norm = float(max_grad_leaf_norm)
+        if max_grad_leaf_norm < 0:
+            raise ValueError(
+                f"Unsloth MLX: max_grad_leaf_norm={max_grad_leaf_norm} must be >= 0 "
+                "(0 or None disables proportional leaf-norm clipping)."
+            )
+    weight_decay = config.get("weight_decay", 0.001)
+    weight_decay = 0.001 if weight_decay is None else float(weight_decay)
+
+    mlx_config_kwargs = dict(
+        per_device_train_batch_size = batch_size,
+        gradient_accumulation_steps = grad_accum,
+        max_steps = max_steps,
+        learning_rate = lr_value,
+        warmup_steps = warmup_steps,
+        lr_scheduler_type = lr_scheduler_type,
+        optim = optim_name,
+        weight_decay = weight_decay,
+        max_grad_norm = max_grad_norm,
+        max_grad_value = max_grad_value,
+        logging_steps = 1,
+        max_seq_length = max_seq_length,
+        seed = random_seed,
+        use_cce = True,
+        compile = True,
+        gradient_checkpointing = use_grad_checkpoint,
+        streaming = is_vlm,
+        packing = bool(config.get("packing", False)),
+        output_dir = output_dir,
+        save_steps = int(config.get("save_steps", 0) or 0),
+        eval_steps = eval_steps_val,
+    )
+
+    # Feature-detect optional fields so this PR works without the paired zoo bump.
+    _supported_fields = getattr(MLXTrainingConfig, "__dataclass_fields__", {})
+    if "cast_norm_output_to_input_dtype" in _supported_fields:
+        # Explicit None falls back to True (default).
+        _raw_cast = config.get("cast_norm_output_to_input_dtype", True)
+        mlx_config_kwargs["cast_norm_output_to_input_dtype"] = (
+            True if _raw_cast is None else bool(_raw_cast)
+        )
+    if "dataset_order" in _supported_fields:
+        mlx_config_kwargs["dataset_order"] = "torch_randperm"
+    if "max_grad_leaf_norm" in _supported_fields:
+        mlx_config_kwargs["max_grad_leaf_norm"] = max_grad_leaf_norm
+    if "append_eos" in _supported_fields:
+        raw_text_mode = training_type == "Continued Pretraining" or format_type == "raw"
+        # Studio SFT formatting owns rendered examples; raw/CPT text still
+        # needs MLX to append EOS like the CUDA raw-text path.
+        mlx_config_kwargs["append_eos"] = bool(raw_text_mode)
 
     trainer = MLXTrainer(
         model = model,
         tokenizer = tokenizer,
         train_dataset = dataset,
         eval_dataset = eval_dataset,
-        args = MLXTrainingConfig(
-            per_device_train_batch_size = batch_size,
-            gradient_accumulation_steps = grad_accum,
-            max_steps = max_steps,
-            learning_rate = lr_value,
-            warmup_steps = warmup_steps,
-            lr_scheduler_type = lr_scheduler_type,
-            optim = optim_name,
-            weight_decay = float(config.get("weight_decay", 0.001) or 0.001),
-            max_grad_norm = max_grad_norm,
-            max_grad_value = max_grad_value,
-            logging_steps = 1,
-            max_seq_length = max_seq_length,
-            seed = config.get("random_seed", 3407),
-            use_cce = True,
-            compile = True,
-            gradient_checkpointing = use_grad_checkpoint,
-            streaming = is_vlm,
-            packing = bool(config.get("packing", False)),
-            output_dir = output_dir,
-            save_steps = int(config.get("save_steps", 0) or 0),
-            eval_steps = eval_steps_val,
-        ),
+        args = MLXTrainingConfig(**mlx_config_kwargs),
     )
+    _trainer_ref[0] = trainer
+    if _stop_requested[0]:
+        trainer.stop_requested = True
 
     # Tell the parent eval is configured so the frontend shows the eval chart
     if eval_dataset is not None and eval_steps_val > 0:
@@ -1733,7 +1826,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
             wandb_token = config.get("wandb_token")
             if wandb_token:
                 os.environ["WANDB_API_KEY"] = wandb_token
-            _wandb_sensitive = {"hf_token", "wandb_token"}
+            _wandb_sensitive = {"hf_token", "wandb_token", "s3_config"}
             wandb_run = _wandb.init(
                 project = config.get("wandb_project") or "unsloth-mlx",
                 config = {k: v for k, v in config.items() if k not in _wandb_sensitive},
@@ -1834,26 +1927,6 @@ def _run_mlx_training(event_queue, stop_queue, config):
                 pass
 
     trainer.add_eval_callback(_on_eval)
-
-    # ── 10. Stop signal polling ──
-    _stop_save = [True]  # mutable so thread can update; [save_flag]
-
-    def _poll_stop():
-        while True:
-            try:
-                msg = stop_queue.get(timeout = 1.0)
-                if msg and msg.get("type") == "stop":
-                    _stop_save[0] = msg.get("save", True)
-                    trainer.stop_requested = True
-                    return
-            except _queue.Empty:
-                continue
-            except (EOFError, OSError):
-                # Safe: pipe permanently broken, no more messages can arrive.
-                return
-
-    stop_thread = threading.Thread(target = _poll_stop, daemon = True)
-    stop_thread.start()
 
     # ── 11. Run training ──
     gc.collect()
@@ -2421,6 +2494,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             resolve_output_dir,
             resolve_tensorboard_dir,
             datasets_root,
+            default_run_dir_name,
         )
 
         import transformers
@@ -2462,7 +2536,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     def _on_progress(progress: TrainingProgress):
         has_train_loss = progress.step > 0 and progress.loss is not None
         has_eval_loss = progress.eval_loss is not None
-        if has_train_loss or has_eval_loss:
+        if (progress.step == 0 and progress.total_steps > 0) or has_train_loss or has_eval_loss:
             event_queue.put(
                 {
                     "type": "progress",
@@ -2546,6 +2620,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             dataset_slice_start = config.get("dataset_slice_start"),
             dataset_slice_end = config.get("dataset_slice_end"),
             is_cpt = _is_cpt_for_dataset,
+            s3_config = config.get("s3_config"),
         )
 
         if isinstance(dataset_result, tuple):
@@ -2743,7 +2818,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             resume_from_checkpoint
         )
         if not output_dir:
-            output_dir = f"{model_name.replace('/', '_')}_{int(time.time())}"
+            output_dir = f"{default_run_dir_name(model_name)}_{int(time.time())}"
         output_dir = str(resolve_output_dir(output_dir))
         ensure_dir(Path(output_dir))
 
@@ -2894,7 +2969,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
         from datasets import Dataset
         from utils.datasets.cache_safe import load_dataset_cache_safe as load_dataset
         from transformers import TrainerCallback
-        from utils.paths import datasets_root, resolve_output_dir
+        from utils.paths import datasets_root, resolve_output_dir, default_run_dir_name
     except ImportError as e:
         event_queue.put(
             {
@@ -3010,20 +3085,9 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
         subset = config.get("subset") or None
         train_split = config.get("train_split", "train") or "train"
 
-        if hf_dataset and hf_dataset.strip():
-            hf_token = config.get("hf_token", "")
-            hf_token = hf_token if hf_token and hf_token.strip() else None
-            dataset = load_dataset(
-                hf_dataset.strip(),
-                subset,
-                split = train_split,
-                token = hf_token,
-            )
-        elif local_datasets:
-            # Load local file(s) — mirrors the non-embedding pipeline's directory
-            # handling so recipe outputs (parquet-files/) work.
+        def _load_local_embedding_dataset(dataset_paths: list[str]):
             all_files: list[str] = []
-            for dataset_file in local_datasets:
+            for dataset_file in dataset_paths:
                 file_path = (
                     dataset_file
                     if os.path.isabs(dataset_file)
@@ -3053,17 +3117,58 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
                 else:
                     all_files.append(file_path)
 
-            if all_files:
-                first_ext = Path(all_files[0]).suffix.lower()
-                if first_ext in (".json", ".jsonl"):
-                    loader = "json"
-                elif first_ext == ".csv":
-                    loader = "csv"
-                elif first_ext == ".parquet":
-                    loader = "parquet"
-                else:
-                    raise ValueError(f"Unsupported local dataset format: {all_files[0]}")
-                dataset = load_dataset(loader, data_files = all_files, split = "train")
+            if not all_files:
+                raise ValueError("No local dataset files found")
+
+            first_ext = Path(all_files[0]).suffix.lower()
+            if first_ext in (".json", ".jsonl"):
+                loader = "json"
+            elif first_ext == ".csv":
+                loader = "csv"
+            elif first_ext == ".parquet":
+                loader = "parquet"
+            else:
+                raise ValueError(f"Unsupported local dataset format: {all_files[0]}")
+            return load_dataset(loader, data_files = all_files, split = "train")
+
+        if hf_dataset and hf_dataset.strip():
+            hf_token = config.get("hf_token", "")
+            hf_token = hf_token if hf_token and hf_token.strip() else None
+            dataset = load_dataset(
+                hf_dataset.strip(),
+                subset,
+                split = train_split,
+                token = hf_token,
+            )
+        elif local_datasets:
+            dataset = _load_local_embedding_dataset(local_datasets)
+        elif config.get("s3_config"):
+            from core.training.s3_dataset import (
+                S3DownloadCancelled,
+                prepare_s3_dataset_download,
+            )
+
+            _send_status(event_queue, "Downloading dataset from S3...")
+            s3_download = None
+            try:
+                s3_download = prepare_s3_dataset_download(
+                    config["s3_config"],
+                    cancel_callback = lambda: _should_stop,
+                )
+                dataset = _load_local_embedding_dataset(s3_download.files)
+            except S3DownloadCancelled:
+                event_queue.put(
+                    {
+                        "type": "complete",
+                        "output_dir": None,
+                        "status_message": "Training cancelled",
+                        "ts": time.time(),
+                    }
+                )
+                return
+            finally:
+                if s3_download is not None:
+                    s3_download.cleanup()
         else:
             event_queue.put(
                 {
@@ -3122,7 +3227,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
         resume_from_checkpoint
     )
     if not output_dir:
-        output_dir = str(resolve_output_dir(f"{model_name.replace('/', '_')}_{int(time.time())}"))
+        output_dir = f"{default_run_dir_name(model_name)}_{int(time.time())}"
     output_dir = str(resolve_output_dir(output_dir))
 
     num_epochs = config.get("num_epochs", 2)

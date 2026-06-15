@@ -35,6 +35,22 @@ def _sha256_file(path: str) -> str:
     return h.hexdigest()
 
 
+def _remove_upload(stored_path: str | None, *, keep_path: str | None = None) -> None:
+    if not stored_path:
+        return
+    try:
+        target = os.path.realpath(stored_path)
+        if keep_path is not None and target == os.path.realpath(keep_path):
+            return
+        from utils.paths import rag_uploads_root
+
+        uploads = os.path.realpath(str(rag_uploads_root()))
+        if os.path.isfile(target) and os.path.commonpath([uploads, target]) == uploads:
+            os.remove(target)
+    except Exception:  # noqa: BLE001 - upload cleanup must not block ingestion.
+        logger.warning("failed to remove RAG upload %s", stored_path, exc_info = True)
+
+
 def _emit(job_id: str, event: dict) -> None:
     with _jobs_lock:
         q = _jobs.get(job_id)
@@ -152,6 +168,7 @@ def start_ingestion(
     filename: str,
     stored_path: str,
     *,
+    project_id: str | None = None,
     model_name: str | None = None,
 ) -> tuple[str, str]:
     """Create the document + job rows and spawn the worker, returning
@@ -167,11 +184,15 @@ def start_ingestion(
         existing = store.document_by_hash(conn, scope, sha)
         if existing is not None:
             job_id = _new_job(conn, existing, scope, status = "completed", progress = 1.0)
+            _remove_upload(stored_path)
             with _jobs_lock:
                 _jobs[job_id] = queue.Queue()
             _emit(job_id, {"type": "complete", "num_chunks": 0, "deduped": True})
             _emit(job_id, None)
             return existing, job_id
+        for failed in store.failed_documents_by_hash(conn, scope, sha):
+            store.delete_document(conn, failed["id"])
+            _remove_upload(failed.get("stored_path"), keep_path = stored_path)
 
         document_id = store.create_document(
             conn,
@@ -180,6 +201,7 @@ def start_ingestion(
             sha256 = sha,
             kb_id = kb_id,
             thread_id = thread_id,
+            project_id = project_id,
             status = "pending",
             stored_path = stored_path,
         )

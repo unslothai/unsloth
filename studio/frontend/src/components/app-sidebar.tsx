@@ -45,6 +45,7 @@ import { Switch } from "@/components/ui/switch";
 import { useAnimatedThemeToggle } from "@/components/ui/animated-theme-toggler";
 import { cn } from "@/lib/utils";
 import {
+  Archive03Icon,
   ChefHatIcon,
   CursorInfo02Icon,
   DashboardCircleIcon,
@@ -60,11 +61,14 @@ import {
   Logout05Icon,
   MoreVerticalIcon,
   Search01Icon,
+  PinIcon,
+  PinOffIcon,
   PlusSignIcon,
   PowerIcon,
   PencilEdit02Icon,
   LayoutAlignLeftIcon,
-  Settings02Icon,
+  Setting07Icon,
+  Sun03Icon,
   TestTube01Icon,
   ZapIcon,
 } from "@hugeicons/core-free-icons";
@@ -80,10 +84,12 @@ import {
 } from "@/components/ui/tooltip";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { ChevronDown, ChevronsUpDown, MoreHorizontalIcon, Moon, Sun } from "lucide-react";
+import { ChevronDown, MoreHorizontalIcon, Moon } from "lucide-react";
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import {
+  archiveChatItem,
   ChatSearchDialog,
+  clearNewChatDraft,
   createChatProject,
   deleteChatProject,
   deleteChatItem,
@@ -94,6 +100,8 @@ import {
   useChatProjects,
   useChatSearchStore,
   useChatSidebarItems,
+  usePinnedChatsStore,
+  useChatPreferencesStore,
   type ProjectRecord,
   type SidebarItem,
 } from "@/features/chat";
@@ -295,11 +303,28 @@ export function AppSidebar() {
     enabled: !isStudioRoute,
     requireMessages: false,
   });
-  const recentChatItems = useMemo(
-    () => allChatItems.filter((item) => !item.projectId),
-    [allChatItems],
+  const pinnedIds = usePinnedChatsStore((s) => s.pinnedIds);
+  const togglePinnedChat = usePinnedChatsStore((s) => s.togglePin);
+  const unpinChat = usePinnedChatsStore((s) => s.unpin);
+  const confirmDeleteChats = useChatPreferencesStore(
+    (s) => s.confirmDeleteChats,
   );
-  const chatItems = allChatItems;
+  const pinnedIdSet = useMemo(() => new Set(pinnedIds), [pinnedIds]);
+  const recentChatItems = useMemo(
+    () =>
+      allChatItems.filter(
+        (item) => !item.projectId && !pinnedIdSet.has(item.id),
+      ),
+    [allChatItems, pinnedIdSet],
+  );
+  // Pinned chats, in pin order (most recent first).
+  const pinnedChatItems = useMemo(() => {
+    const byId = new Map(allChatItems.map((item) => [item.id, item]));
+    return pinnedIds
+      .map((id) => byId.get(id))
+      .filter((item): item is SidebarItem => Boolean(item));
+  }, [allChatItems, pinnedIds]);
+  const [pinnedOpen, setPinnedOpen] = useState(true);
   const storeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const setActiveThreadId = useChatRuntimeStore((s) => s.setActiveThreadId);
   const activeThreadId = isChatRoute
@@ -349,8 +374,12 @@ export function AppSidebar() {
 
   function openNewChat(projectId = activeProjectId) {
     if (chatDisabled) return;
+    clearNewChatDraft();
     setActiveThreadId(null);
     useChatRuntimeStore.getState().setActiveProjectId(projectId);
+    // The normal new-chat affordance is always a regular, saved chat --
+    // only the toolbar toggle starts a temporary one.
+    useChatRuntimeStore.getState().setIncognito(false);
     navigate({ to: "/chat", search: chatSearchForProject(projectId) });
     closeMobileIfOpen();
   }
@@ -374,6 +403,49 @@ export function AppSidebar() {
     });
   }
 
+  // Shared chat delete: same error toast and pin cleanup whether or not the
+  // confirm dialog is used.
+  async function deleteChatWithCleanup(item: SidebarItem) {
+    try {
+      await handleDeleteThread(item);
+      unpinChat(item.id);
+    } catch (err) {
+      toast.error(translate("shell.toast.failedToDeleteChat"), {
+        description: err instanceof Error ? err.message : undefined,
+      });
+    }
+  }
+
+  async function handleArchiveThread(item: SidebarItem) {
+    try {
+      await archiveChatItem(item, activeThreadId, (view) => {
+        navigate({
+          to: "/chat",
+          search: item.projectId
+            ? { project: item.projectId }
+            : { new: view.newThreadNonce },
+        });
+      });
+      const toastId = toast(
+        <button
+          type="button"
+          onClick={() => {
+            toast.dismiss(toastId);
+            useSettingsDialogStore.getState().openArchivedChats();
+          }}
+          className="w-full cursor-pointer text-left"
+        >
+          You can view archived chats in Settings
+        </button>,
+        { closeButton: true },
+      );
+    } catch (err) {
+      toast.error("Failed to archive chat", {
+        description: err instanceof Error ? err.message : undefined,
+      });
+    }
+  }
+
   type RenameTarget =
     | { kind: "chat"; item: SidebarItem; current: string }
     | { kind: "project"; project: ProjectRecord; current: string }
@@ -382,6 +454,19 @@ export function AppSidebar() {
     null,
   );
   const [renameDraft, setRenameDraft] = useState("");
+  // Skips the inline rename input's blur-commit when Enter/Escape already handled it.
+  const skipRenameBlurRef = useRef(false);
+  // Optimistic title shown while the debounced sidebar refresh catches up after
+  // a rename, so the old name does not flash back in.
+  const [pendingRename, setPendingRename] = useState<{
+    id: string;
+    title: string;
+  } | null>(null);
+  useEffect(() => {
+    if (!pendingRename) return;
+    const match = allChatItems.find((i) => i.id === pendingRename.id);
+    if (match && match.title === pendingRename.title) setPendingRename(null);
+  }, [allChatItems, pendingRename]);
   const [creatingProject, setCreatingProject] = useState(false);
   const [projectNameDraft, setProjectNameDraft] = useState("");
   const [projectCreateMoveTarget, setProjectCreateMoveTarget] =
@@ -412,9 +497,11 @@ export function AppSidebar() {
     if (!target || !renameDirty) return;
     setRenamingTarget(null);
     if (target.kind === "chat") {
+      setPendingRename({ id: target.item.id, title: renameTrimmed });
       try {
         await renameChatItem(target.item, renameTrimmed);
       } catch (err) {
+        setPendingRename(null);
         toast.error(translate("shell.toast.failedToRenameChat"), {
           description: err instanceof Error ? err.message : undefined,
         });
@@ -441,6 +528,33 @@ export function AppSidebar() {
     }
   }
 
+  // Inline chat rename commits on Enter or blur, cancels on Escape.
+  function handleInlineRenameKeyDown(
+    event: React.KeyboardEvent<HTMLInputElement>,
+  ) {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      skipRenameBlurRef.current = true;
+      // Commit when changed; otherwise just close, so a no-op Enter does not
+      // leave the row stuck as an input with its blur suppressed.
+      if (renameDirty) void commitRename();
+      else setRenamingTarget(null);
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      skipRenameBlurRef.current = true;
+      setRenamingTarget(null);
+    }
+  }
+
+  function handleInlineRenameBlur() {
+    if (skipRenameBlurRef.current) {
+      skipRenameBlurRef.current = false;
+      return;
+    }
+    if (renameDirty) void commitRename();
+    else setRenamingTarget(null);
+  }
+
   type DeleteTarget =
     | { kind: "chat"; item: SidebarItem }
     | { kind: "project"; project: ProjectRecord }
@@ -462,13 +576,7 @@ export function AppSidebar() {
       target.kind === "project" && deleteProjectFiles;
     setConfirmingDelete(null);
     if (target.kind === "chat") {
-      try {
-        await handleDeleteThread(target.item);
-      } catch (err) {
-        toast.error(translate("shell.toast.failedToDeleteChat"), {
-          description: err instanceof Error ? err.message : undefined,
-        });
-      }
+      await deleteChatWithCleanup(target.item);
       return;
     }
     if (target.kind === "project") {
@@ -549,6 +657,7 @@ export function AppSidebar() {
     item: SidebarItem,
     variant: "project" | "recent",
   ) {
+    const isPinned = pinnedIdSet.has(item.id);
     const itemClass =
       variant === "project"
         ? "group/project-chat-item relative"
@@ -559,12 +668,42 @@ export function AppSidebar() {
         : "sidebar-row-action group-hover/recent-item:opacity-100 group-hover/recent-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto";
     const buttonClass = cn(
       "sidebar-nav-btn h-[33px] cursor-pointer rounded-full pr-4 text-[14.5px] leading-[19px] tracking-nav font-medium",
-      // pl-3.5 starts the title at the same x as the Recents label text.
-      variant === "project" ? "pl-[39px]" : "pl-3.5",
+      // pl-3 (12px) plus the content's pl-1 (4px) lines the title up with the
+      // Recents label text at 16px.
+      variant === "project" ? "pl-[39px]" : "pl-3",
       variant === "project"
         ? "group-hover/project-chat-item:pr-8 group-has-[.sidebar-row-action[data-state=open]]/project-chat-item:pr-8"
-        : "group-hover/recent-item:pr-8 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-8",
+        : isPinned
+          ? // Pinned rows show an extra unpin button on hover, so reserve more room.
+            "group-hover/recent-item:pr-16 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-8"
+          : "group-hover/recent-item:pr-8 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-8",
     );
+
+    const isRenamingThis =
+      renamingTarget?.kind === "chat" && renamingTarget.item.id === item.id;
+
+    // Inline rename edits the title in place as a rounded pill, no dialog.
+    if (isRenamingThis) {
+      return (
+        <SidebarMenuItem key={item.id} className={itemClass}>
+          <input
+            autoFocus
+            value={renameDraft}
+            onChange={(event) => setRenameDraft(event.target.value)}
+            onKeyDown={handleInlineRenameKeyDown}
+            onBlur={handleInlineRenameBlur}
+            onFocus={(event) => event.currentTarget.select()}
+            maxLength={120}
+            aria-label={translate("shell.dialog.renameChat.placeholder")}
+            className={cn(
+              // No pill or box; edit in place as plain highlighted text.
+              "text-foreground h-[33px] w-full border-0 bg-transparent pr-4 text-[14.5px] leading-[19px] font-medium tracking-nav outline-none",
+              variant === "project" ? "pl-[39px]" : "pl-3",
+            )}
+          />
+        </SidebarMenuItem>
+      );
+    }
 
     return (
       <SidebarMenuItem key={item.id} className={itemClass}>
@@ -591,7 +730,9 @@ export function AppSidebar() {
             closeMobileIfOpen();
           }}
         >
-          <span className="truncate">{item.title}</span>
+          <span className="truncate">
+            {pendingRename?.id === item.id ? pendingRename.title : item.title}
+          </span>
         </SidebarMenuButton>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
@@ -610,11 +751,15 @@ export function AppSidebar() {
             side="bottom"
             align="start"
             sideOffset={0}
-            className="unsloth-plus-menu menu-flat-destructive w-52"
+            className="unsloth-plus-menu menu-flat-destructive w-56"
           >
             <DropdownMenuItem onSelect={() => openRenameChat(item)}>
               <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className="size-icon" />
               <span>Rename</span>
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => togglePinnedChat(item.id)}>
+              <HugeiconsIcon icon={isPinned ? PinOffIcon : PinIcon} strokeWidth={1.75} className="size-icon" />
+              <span>{isPinned ? "Unpin chat" : "Pin chat"}</span>
             </DropdownMenuItem>
             <DropdownMenuSub>
               <DropdownMenuSubTrigger>
@@ -692,15 +837,46 @@ export function AppSidebar() {
                 </DropdownMenuItem>
               </DropdownMenuSubContent>
             </DropdownMenuSub>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onSelect={() => void handleArchiveThread(item)}>
+              <HugeiconsIcon icon={Archive03Icon} strokeWidth={1.75} className="size-icon" />
+              <span>Archive</span>
+            </DropdownMenuItem>
             <DropdownMenuItem
               variant="destructive"
-              onSelect={() => setConfirmingDelete({ kind: "chat", item })}
+              onSelect={() =>
+                confirmDeleteChats
+                  ? setConfirmingDelete({ kind: "chat", item })
+                  : void deleteChatWithCleanup(item)
+              }
             >
               <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
               <span>Delete</span>
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
+        {isPinned ? (
+          <Tooltip>
+            <TooltipPrimitive.Trigger asChild>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  unpinChat(item.id);
+                }}
+                aria-label="Unpin chat"
+                className={cn(actionClass, "is-unpin-action")}
+              >
+                <span className="sidebar-row-action-glyph">
+                  <HugeiconsIcon icon={PinOffIcon} strokeWidth={1.75} className="size-4" />
+                </span>
+              </button>
+            </TooltipPrimitive.Trigger>
+            <TooltipContent side="bottom" sideOffset={6} className="tooltip-compact">
+              Unpin
+            </TooltipContent>
+          </Tooltip>
+        ) : null}
       </SidebarMenuItem>
     );
   }
@@ -937,19 +1113,40 @@ export function AppSidebar() {
           </SidebarGroup>
         </Collapsible>
 
+        {/* Pinned chats: own section above Recents */}
+        {!isStudioRoute && pinnedChatItems.length > 0 && (
+          <Collapsible open={pinnedOpen} onOpenChange={setPinnedOpen} asChild>
+            <SidebarGroup className="group-data-[collapsible=icon]:hidden px-0 py-0">
+              <SidebarGroupLabel className={cn("sidebar-sticky-label sidebar-sticky-label-following", scrolled && "is-scrolled")} asChild>
+                <CollapsibleTrigger className="cursor-pointer flex w-full items-center gap-1 group/sb-collap">
+                  Pinned
+                  <ChevronDown className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
+                </CollapsibleTrigger>
+              </SidebarGroupLabel>
+              <CollapsibleContent>
+                <SidebarGroupContent className="pl-1 pr-1.5">
+                  <SidebarMenu>
+                    {pinnedChatItems.map((item) =>
+                      renderChatSidebarItem(item, "recent"),
+                    )}
+                  </SidebarMenu>
+                </SidebarGroupContent>
+              </CollapsibleContent>
+            </SidebarGroup>
+          </Collapsible>
+        )}
+
         {!isStudioRoute && (
           <Collapsible open={chatOpen} onOpenChange={setChatOpen} asChild>
             <SidebarGroup className="group-data-[collapsible=icon]:hidden px-0 py-0">
               <SidebarGroupLabel className={cn("sidebar-sticky-label sidebar-sticky-label-following", scrolled && "is-scrolled")} asChild>
-                <div className="flex w-full items-center group/sb-collap">
-                  <CollapsibleTrigger className="cursor-pointer flex flex-1 items-center gap-1 min-w-0">
-                    {t("shell.navigation.recents")}
-                    <ChevronDown className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
-                  </CollapsibleTrigger>
-                </div>
+                <CollapsibleTrigger className="cursor-pointer flex w-full items-center gap-1 group/sb-collap">
+                  {t("shell.navigation.recents")}
+                  <ChevronDown className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
+                </CollapsibleTrigger>
               </SidebarGroupLabel>
               <CollapsibleContent>
-                <SidebarGroupContent className="px-1.5">
+                <SidebarGroupContent className="pl-1 pr-1.5">
                   <SidebarMenu>
                     {recentChatItems.map((item) =>
                       renderChatSidebarItem(item, "recent"),
@@ -971,7 +1168,7 @@ export function AppSidebar() {
               </CollapsibleTrigger>
             </SidebarGroupLabel>
             <CollapsibleContent>
-              <SidebarGroupContent className="px-2">
+              <SidebarGroupContent className="pl-1.5 pr-2">
                 <SidebarMenu>
                   {runItems.map((run) => {
                     // Explicit selection wins. Otherwise highlight the active
@@ -1092,20 +1289,25 @@ export function AppSidebar() {
                     <span className="truncate font-heading text-[13.5px] tracking-[0.025em] dark:tracking-[0.04em] font-semibold text-nav-fg">{displayTitle}</span>
                     <span className="truncate text-[11.5px] tracking-nav text-muted-foreground">Unsloth</span>
                   </div>
-                  <ChevronsUpDown strokeWidth={1.25} className="ml-auto size-4 text-muted-foreground group-data-[collapsible=icon]:hidden" />
+                  {/* settings cog (replaces the up/down chevron) */}
+                  <HugeiconsIcon
+                    icon={Setting07Icon}
+                    strokeWidth={1.5}
+                    className="ml-auto !size-[18px] text-muted-foreground group-data-[collapsible=icon]:hidden"
+                  />
                 </SidebarMenuButton>
               </DropdownMenuTrigger>
               <DropdownMenuContent
                 side="top"
                 align="center"
                 sideOffset={8}
-                className="app-user-menu menu-soft-surface-up ring-0 w-[16rem] px-1.5 py-2.5 font-heading rounded-[20px] border-0"
+                className="app-user-menu menu-soft-surface-up ring-0 w-[16rem] px-2.5 py-2.5 font-heading rounded-[20px] border-0"
               >
                 <DropdownMenuGroup>
                   <DropdownMenuItem
                     onSelect={() => useSettingsDialogStore.getState().openDialog()}
                   >
-                    <HugeiconsIcon icon={Settings02Icon} strokeWidth={1.75} className="size-icon" />
+                    <HugeiconsIcon icon={Setting07Icon} strokeWidth={1.75} className="size-icon" />
                     <span>{t("shell.navigation.settings")}</span>
                     <DropdownMenuShortcut>⌘,</DropdownMenuShortcut>
                   </DropdownMenuItem>
@@ -1114,7 +1316,7 @@ export function AppSidebar() {
                   >
                     <HugeiconsIcon icon={Globe02Icon} strokeWidth={1.75} className="size-[18px]" />
                     <span>{t("shell.navigation.api")}</span>
-                    <span className="ml-auto rounded-[6px] border border-emerald-500/25 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] leading-none font-semibold text-emerald-700 dark:text-emerald-300">
+                    <span className="ml-auto rounded-full bg-emerald-500/10 px-2 py-1 text-[10px] leading-none font-semibold text-emerald-700 dark:text-emerald-300">
                       {t("common.new")}
                     </span>
                   </DropdownMenuItem>
@@ -1122,30 +1324,31 @@ export function AppSidebar() {
                     ref={anchorRef as React.Ref<HTMLDivElement>}
                     onSelect={(e) => { e.preventDefault(); toggleTheme(); }}
                   >
-                    {isDark ? <Sun strokeWidth={1.75} className="size-icon" /> : <Moon strokeWidth={1.75} className="size-icon" />}
+                    {isDark ? <HugeiconsIcon icon={Sun03Icon} strokeWidth={1.75} className="size-icon" /> : <Moon strokeWidth={1.75} className="size-icon" />}
                     <span>
                       {isDark
                         ? t("shell.navigation.lightMode")
                         : t("shell.navigation.darkMode")}
                     </span>
                   </DropdownMenuItem>
-                  <DropdownMenuItem
-                    disabled={!getTourId(pathname)}
-                    onSelect={() => {
-                      const tourId = getTourId(pathname);
-                      if (!tourId) return;
-                      window.dispatchEvent(
-                        new CustomEvent(TOUR_OPEN_EVENT, {
-                          detail: { id: tourId },
-                        }),
-                      );
-                    }}
-                  >
-                    <HugeiconsIcon icon={CursorInfo02Icon} strokeWidth={1.75} className="size-icon" />
-                    <span>{t("shell.navigation.guidedTour")}</span>
-                  </DropdownMenuItem>
+                  {getTourId(pathname) && (
+                    <DropdownMenuItem
+                      onSelect={() => {
+                        const tourId = getTourId(pathname);
+                        if (!tourId) return;
+                        window.dispatchEvent(
+                          new CustomEvent(TOUR_OPEN_EVENT, {
+                            detail: { id: tourId },
+                          }),
+                        );
+                      }}
+                    >
+                      <HugeiconsIcon icon={CursorInfo02Icon} strokeWidth={1.75} className="size-icon" />
+                      <span>{t("shell.navigation.guidedTour")}</span>
+                    </DropdownMenuItem>
+                  )}
                 </DropdownMenuGroup>
-                <DropdownMenuSeparator className="mx-2.5! my-2.5! h-0! border-t border-border/70 bg-transparent!" />
+                <DropdownMenuSeparator className="mx-1! my-2.5! h-0! border-t border-border/70 bg-transparent!" />
                 <DropdownMenuItem
                   onSelect={() => useSettingsDialogStore.getState().openDialog("about")}
                 >
@@ -1267,7 +1470,7 @@ export function AppSidebar() {
       </DialogContent>
     </Dialog>
     <Dialog
-      open={renamingTarget !== null}
+      open={renamingTarget !== null && renamingTarget.kind !== "chat"}
       onOpenChange={(open) => {
         if (!open) setRenamingTarget(null);
       }}

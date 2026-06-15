@@ -861,6 +861,7 @@ class InferenceOrchestrator:
         tool_call_timeout: int = 300,
         session_id: Optional[str] = None,
         rag_scope: Optional[dict] = None,
+        confirm_tool_calls: bool = False,
         use_adapter: Optional[Union[bool, str]] = None,
         stats_holder: Optional[dict] = None,
         **_unused,
@@ -922,6 +923,7 @@ class InferenceOrchestrator:
             tool_call_timeout = tool_call_timeout,
             session_id = session_id,
             rag_scope = rag_scope,
+            confirm_tool_calls = confirm_tool_calls,
         )
 
     def generate_with_adapter_control(
