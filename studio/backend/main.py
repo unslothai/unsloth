@@ -83,9 +83,9 @@ if sys.platform == "win32":
     # ── Windows AMD ROCm: set BNB_ROCM_VERSION before any bitsandbytes import ─
     # bitsandbytes derives the rocm<ver>.dll name from torch.version.hip, but the
     # wheel ships rocm72.dll, so the server crashes ("Configured ROCm binary not
-    # found") without this. Detect the shipped DLL and fall back to "72" (mirrors
-    # worker.py). Gate on the rocm bnb DLL / HIP_PATH rather than torch.version.hip
-    # to avoid importing torch on every Windows host.
+    # found") without this. Detect the shipped DLL (mirrors worker.py); gate on
+    # the rocm bnb DLL rather than torch.version.hip to avoid importing torch on
+    # every Windows host.
     # Values seeded by the installer's sitecustomize.py are redetectable
     # defaults; explicit caller values remain authoritative.
     if (
@@ -95,7 +95,6 @@ if sys.platform == "win32":
         import glob as _glob
         import logging as _logging
 
-        _hip_env = bool(os.environ.get("HIP_PATH") or os.environ.get("ROCM_PATH"))
         _bnb_rocm_ver = None
         _found_rocm_bnb = False
         try:
@@ -118,11 +117,13 @@ if sys.platform == "win32":
                     _bnb_rocm_ver = max(_all_vers_main, key = lambda v: int(v))
         except Exception as _e:
             _logging.getLogger(__name__).warning(
-                "Windows ROCm: BNB DLL detection failed (%s); falling back to version '72'",
+                "Windows ROCm: BNB DLL detection failed (%s); leaving BNB_ROCM_VERSION as is",
                 _e,
             )
-        # rocm bnb DLL present, or HIP_PATH/ROCM_PATH set (DLL unparsable -> "72")
-        if _found_rocm_bnb or _hip_env:
+        # Only when a ROCm bnb DLL actually exists: HIP_PATH/ROCM_PATH alone
+        # (HIP SDK on a CUDA/CPU box) must not force a ROCm backend onto a
+        # non-ROCm bitsandbytes, which raises at import. DLL unparsable -> "72".
+        if _found_rocm_bnb:
             _bnb_rocm_ver_final = _bnb_rocm_ver or os.environ.get("BNB_ROCM_VERSION") or "72"
             os.environ["BNB_ROCM_VERSION"] = _bnb_rocm_ver_final
             os.environ["UNSLOTH_BNB_ROCM_VERSION_SOURCE"] = "detected"
@@ -192,6 +193,11 @@ if _STUDIO_ROOT_RESOLVED != _LEGACY_STUDIO_ROOT:
     if not os.environ.get("UNSLOTH_LLAMA_CPP_PATH"):
         os.environ["UNSLOTH_LLAMA_CPP_PATH"] = str(_STUDIO_ROOT_RESOLVED / "llama.cpp")
 
+# The studio bundles unsloth_zoo; declare unsloth present (as `import unsloth`
+# does) so its lazy submodule imports (export, hardware, mlx) and the
+# DiffusionGemma runner never trip the install guard on a clean install.
+os.environ.setdefault("UNSLOTH_IS_PRESENT", "1")
+
 import hashlib
 import mimetypes
 import re as _re
@@ -244,7 +250,7 @@ if os.getenv("ENVIRONMENT_TYPE", "production") == "production":
     # warnings.filterwarnings("ignore", category=DeprecationWarning)
     # warnings.filterwarnings("ignore", module="triton.*")
 
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse, Response
@@ -867,6 +873,10 @@ async def health_check(request: Request):
         "version": UNSLOTH_VERSION,
         "studio_version": STUDIO_VERSION,
         "device_type": device_type,
+        # API-screen fields (authed-only; they fingerprint how the host is exposed).
+        "cloudflare_url": getattr(request.app.state, "cloudflare_url", None),
+        "server_url": getattr(request.app.state, "server_url", None),
+        "secure": bool(getattr(request.app.state, "secure", False)),
     }
 
 
@@ -957,17 +967,40 @@ async def get_gpu_visibility(current_subject: str = Depends(get_current_subject)
 
 
 @app.get("/api/system/hardware")
-async def get_hardware_info(current_subject: str = Depends(get_current_subject)):
+def get_hardware_info(
+    include_details: bool = Query(False), current_subject: str = Depends(get_current_subject)
+):
     """Return GPU name, total VRAM, and key ML package versions.
 
     Gated behind auth alongside /api/system -- same fingerprinting concern.
     /api/system/gpu-visibility is also auth-gated.
+
+    ``include_details`` is for About/diagnostics. The default response stays
+    cheap for callers that only need the primary GPU summary, like training
+    method auto-selection. Sync def (not async): hardware/detail probes can
+    shell out, and FastAPI runs sync endpoints in a threadpool.
     """
     from utils.hardware import get_gpu_summary, get_package_versions
-    return {
+
+    body = {
         "gpu": get_gpu_summary(),
         "versions": get_package_versions(),
     }
+    if include_details:
+        from utils.llama_cpp_update import get_installed_llama_version
+
+        # All backend-visible GPUs (respects CUDA_VISIBLE_DEVICES), so multi-GPU
+        # hosts list every device -- get_gpu_summary alone reports only the primary.
+        # Sort by visible_ordinal: the nvidia-smi path returns rows in physical order,
+        # so under a reordering CUDA_VISIBLE_DEVICES (e.g. "5,3") labeling by array
+        # index would otherwise disagree with the GPU 0/1 the backend actually sees.
+        devices = get_backend_visible_gpu_info().get("devices", [])
+        body["gpus"] = [
+            {"name": d.get("name"), "vram_total_gb": d.get("memory_total_gb")}
+            for d in sorted(devices, key = lambda d: d.get("visible_ordinal", 0))
+        ]
+        body["llama_cpp"] = get_installed_llama_version()
+    return body
 
 
 # ============ Serve Frontend (Optional) ============

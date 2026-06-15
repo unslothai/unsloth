@@ -125,6 +125,17 @@ async def start_training(
 
         backend = get_training_backend()
 
+        # S3 dataset loading needs the optional boto3 dependency. Reject early
+        # with a clear message so credentials are never accepted and then
+        # silently dropped on a host without boto3 installed.
+        if request.s3_config is not None:
+            from core.training.s3_dataset import boto3_available
+            if not boto3_available():
+                raise HTTPException(
+                    status_code = 501,
+                    detail = "S3 dataset loading requires boto3. Install it with: pip install boto3",
+                )
+
         # Check before mutating state.
         if backend.is_training_active():
             existing_job_id: Optional[str] = getattr(backend, "current_job_id", "")
@@ -204,6 +215,9 @@ async def start_training(
             "save_steps": request.save_steps,
             "weight_decay": request.weight_decay,
             "max_grad_norm": request.max_grad_norm,
+            "max_grad_value": request.max_grad_value,
+            "max_grad_leaf_norm": request.max_grad_leaf_norm,
+            "cast_norm_output_to_input_dtype": request.cast_norm_output_to_input_dtype,
             "random_seed": request.random_seed,
             "packing": request.packing,
             "optim": request.optim,
@@ -235,6 +249,7 @@ async def start_training(
             "resume_from_checkpoint": request.resume_from_checkpoint,
             "trust_remote_code": request.trust_remote_code,
             "gpu_ids": request.gpu_ids,
+            "s3_config": request.s3_config.model_dump() if request.s3_config else None,
         }
 
         # Training page has no trust_remote_code toggle; as a safety net consult
@@ -293,6 +308,10 @@ async def start_training(
             error = None,
         )
 
+    except HTTPException:
+        # Deliberate rejections (S3 not implemented, resume validation) must
+        # reach the client with their original status, not a generic 500.
+        raise
     except ValueError as e:
         logger.warning("Rejected training GPU selection: %s", e)
         # Deliberate user-facing GPU-selection validation message.
@@ -665,10 +684,17 @@ async def stream_training_progress(
 
             # If not active, send final state and exit
             if not is_active:
-                if backend.step_history:
-                    final_step = backend.step_history[-1]
+                _live = (getattr(tp, "step", 0) or 0) if tp else 0
+                if backend.step_history or _live > 0:
+                    final_step = backend.step_history[-1] if backend.step_history else 0
                     final_loss = backend.loss_history[-1] if backend.loss_history else None
                     final_lr = backend.lr_history[-1] if backend.lr_history else None
+                    # Histories skip non-finite steps; report the live step with
+                    # loss=None instead of the last finite pair.
+                    if _live > final_step:
+                        final_step = _live
+                        final_loss = getattr(tp, "loss", None)
+                        final_lr = getattr(tp, "learning_rate", final_lr)
                     final_total_steps = getattr(tp, "total_steps", final_step) if tp else final_step
                     final_epoch = getattr(tp, "epoch", None) if tp else None
                     payload = build_progress(
@@ -697,11 +723,18 @@ async def stream_training_progress(
 
         while backend.is_training_active():
             try:
-                if backend.step_history:
-                    current_step = backend.step_history[-1]
+                tp_inner = getattr(getattr(backend, "trainer", None), "training_progress", None)
+                live_step = (getattr(tp_inner, "step", 0) or 0) if tp_inner else 0
+                if backend.step_history or live_step > 0:
+                    current_step = backend.step_history[-1] if backend.step_history else 0
                     current_loss = backend.loss_history[-1] if backend.loss_history else None
                     current_lr = backend.lr_history[-1] if backend.lr_history else None
-                    tp_inner = getattr(getattr(backend, "trainer", None), "training_progress", None)
+                    # Histories skip non-finite steps; follow the live progress
+                    # step and report its loss (None until it recovers).
+                    if live_step > current_step:
+                        current_step = live_step
+                        current_loss = getattr(tp_inner, "loss", None)
+                        current_lr = getattr(tp_inner, "learning_rate", current_lr)
                     current_total_steps = (
                         getattr(tp_inner, "total_steps", current_step) if tp_inner else current_step
                     )
@@ -798,6 +831,13 @@ async def stream_training_progress(
         final_loss = backend.loss_history[-1] if backend.loss_history else None
         final_lr = backend.lr_history[-1] if backend.lr_history else None
         final_tp = getattr(getattr(backend, "trainer", None), "training_progress", None)
+        # If the run ended on a non-finite stretch, report the live step with
+        # loss=None instead of rolling back to the last finite pair.
+        _final_live_step = (getattr(final_tp, "step", 0) or 0) if final_tp else 0
+        if _final_live_step > (final_step if final_step is not None else -1):
+            final_step = _final_live_step
+            final_loss = getattr(final_tp, "loss", None)
+            final_lr = getattr(final_tp, "learning_rate", final_lr)
         final_total_steps = getattr(final_tp, "total_steps", final_step) if final_tp else final_step
         final_epoch = getattr(final_tp, "epoch", None) if final_tp else None
         final_payload = build_progress(

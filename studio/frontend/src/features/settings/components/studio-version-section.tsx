@@ -63,33 +63,38 @@ async function fetchStudioVersions(): Promise<StudioVersions> {
   return requestStudioVersions(getAuthToken());
 }
 
-export function StudioVersionSection() {
+// Shared "Unsloth" version block, shown in both General and About. The About
+// tab passes llamaCppVersion to surface the installed llama.cpp build alongside
+// the version rows; General omits it, so the row only shows on About.
+export function StudioVersionSection({
+  llamaCppVersion,
+}: {
+  llamaCppVersion?: string | null;
+} = {}) {
   const t = useT();
   const [packageVersion, setPackageVersion] = useState("dev");
   const [studioVersion, setStudioVersion] = useState("dev");
 
   useEffect(() => {
     let canceled = false;
-
-    fetchStudioVersions().then((nextVersions) => {
+    fetchStudioVersions().then((next) => {
       if (canceled) {
         return;
       }
-      if (nextVersions.packageVersion) {
-        setPackageVersion(nextVersions.packageVersion);
+      if (next.packageVersion) {
+        setPackageVersion(next.packageVersion);
       }
-      if (nextVersions.studioVersion) {
-        setStudioVersion(nextVersions.studioVersion);
+      if (next.studioVersion) {
+        setStudioVersion(next.studioVersion);
       }
     });
-
     return () => {
       canceled = true;
     };
   }, []);
 
   return (
-    <SettingsSection title="Studio">
+    <SettingsSection title="Unsloth">
       <SettingsRow label={t("settings.about.studioVersion")}>
         <code className="font-mono text-xs text-muted-foreground">
           {studioVersion}
@@ -100,6 +105,13 @@ export function StudioVersionSection() {
           {packageVersion}
         </code>
       </SettingsRow>
+      {llamaCppVersion ? (
+        <SettingsRow label={t("settings.about.llamaCppVersion")}>
+          <code className="font-mono text-xs text-muted-foreground">
+            {llamaCppVersion}
+          </code>
+        </SettingsRow>
+      ) : null}
     </SettingsSection>
   );
 }

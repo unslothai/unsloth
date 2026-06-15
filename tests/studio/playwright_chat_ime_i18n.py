@@ -3,12 +3,14 @@
 
 """Studio chat composer IME + multilingual regression smoke.
 
-Covers three surfaces:
+Covers four surfaces:
   A. Stuck IME composition (#5318 / PR #5327): duplicate compositionstart with
      no compositionend left isComposing=true, dropping keystrokes.
   B. Multilingual paste round-trip across 31 scripts (Unicode plumbing).
   C. Stuck compositionend (#5546): WSL Chrome never fires compositionend,
      wedging Send disabled; the useImeComposerInputHandlers watchdog releases it.
+  D. Mac input-method switch: compositionstart without compositionend leaves
+     composingRef stuck; keydown and blur recover immediately.
 
 Model-free; the bug surface is the composer, not inference.
 Env contract matches playwright_chat_ui.py: BASE_URL, STUDIO_NEW_PW, PW_ART_DIR,
@@ -123,6 +125,7 @@ with sync_playwright() as p:
 
     page_errors: list[str] = []
     console_errors: list[str] = []
+    expected_probe_cancel_500s = [0]
 
     def _on_console(m):
         if m.type != "error":
@@ -294,6 +297,29 @@ with sync_playwright() as p:
     def clear() -> None:
         set_value_via_setter("")
 
+    def restore_idle_composer_after_probe(label: str) -> None:
+        """Cancel a real run started by a submit probe before the next case."""
+        stop_btn = page.locator('button[aria-label="Stop generating"]')
+        send_btn = page.locator('button[aria-label="Send message"]')
+        allowed_cancel_500 = False
+        try:
+            stop_btn.wait_for(state = "visible", timeout = 5_000)
+            expected_probe_cancel_500s[0] += 1
+            allowed_cancel_500 = True
+            stop_btn.click(timeout = 5_000)
+            info(f"{label}: stopped generation started by submit probe")
+        except Exception:
+            if allowed_cancel_500:
+                expected_probe_cancel_500s[0] = max(0, expected_probe_cancel_500s[0] - 1)
+        try:
+            expect(send_btn).to_be_visible(timeout = 15_000)
+        except Exception:
+            shoot(f"{label}-idle-restore-FAIL")
+            fail(
+                "Composer did not return to idle after the submit probe; "
+                "Send button is unavailable for the next IME regression case."
+            )
+
     # 3. Baseline: ASCII keyboard typing works. Bail fast if not.
     step("baseline ASCII keyboard typing")
     clear()
@@ -437,7 +463,7 @@ with sync_playwright() as p:
                 bubbles:true, inputType:'insertCompositionText',
                 data:'你好', isComposing:true,
             }));
-            // Deliberately omit compositionend — that is the WSL/Chrome
+            // Deliberately omit compositionend; that is the WSL/Chrome
             // bug surface. The watchdog in useImeComposerInputHandlers
             // should reset isComposing after IME_STUCK_TIMEOUT_MS.
         }"""
@@ -453,7 +479,7 @@ with sync_playwright() as p:
         except Exception:
             shoot("06b-compositionend-watchdog-FAIL")
             fail(
-                "Send button stayed disabled with no compositionend — "
+                "Send button stayed disabled with no compositionend; "
                 "watchdog did not release the composing flag (issue #5546)."
             )
     after_value = read_value()
@@ -521,7 +547,7 @@ with sync_playwright() as p:
     # 6d. Keydown re-pin must also re-arm the watchdog. On the WSL+Chrome
     #     stuck-compositionend path no follow-up event arrives, so after keydown
     #     re-pins composingRef the watchdog must clear it again or Send re-locks
-    #     permanently. (Codex P1, commit 597af0d0.)
+    #     permanently.
     step("BUG REPRO: keydown re-pin re-arms watchdog (#5546 follow-up regression)")
     clear()
     composer.click()
@@ -582,7 +608,7 @@ with sync_playwright() as p:
         fail(
             "After the keydown re-pin the watchdog never re-armed; Send "
             "stayed permanently locked on the WSL+Chrome stuck-end path "
-            "(#5546 follow-up Codex P1)."
+            "(#5546 follow-up regression)."
         )
     info(
         "watchdog re-armed after keydown re-pin: textarea flushed from "
@@ -590,13 +616,196 @@ with sync_playwright() as p:
     )
     shoot("06d-keydown-rearm")
     info("keydown re-pin re-arm PASS")
+    restore_idle_composer_after_probe("06d-keydown-rearm")
+    clear()
+
+    # 6e. Mac input-method switch - onKeyDown immediate recovery.
+    #     On macOS, pressing Ctrl+Space or clicking the menu-bar language icon
+    #     fires compositionstart but never fires compositionend (the OS commits
+    #     nothing because no candidate was selected). When the user types their
+    #     first English key after switching back, onKeyDown receives a native
+    #     event with isComposing=false and a regular keyCode. The else-if branch
+    #     added for this bug clears composingRef immediately, before the 2500ms
+    #     watchdog would fire, so Send is unblocked on that very keystroke.
+    #
+    #     To isolate the onKeyDown else-if path (and not the onChange path which
+    #     also clears composing on normal input), we dispatch a synthetic KeyboardEvent
+    #     with isComposing=false but do NOT dispatch a follow-up input event.
+    #     onChange never fires, so the only recovery path is onKeyDown.
+    step("BUG REPRO: Mac IME switch - onKeyDown immediate recovery")
+    clear()
+    composer.click()
+    # Seed sendable content so the Send button's state reflects composition
+    # state only, not empty-content gating. set_value_via_setter uses
+    # insertFromPaste which is not composing, so composingRef stays false here.
+    set_value_via_setter("hello")
+    # Simulate switching TO Chinese input method: compositionstart fires but
+    # compositionend never arrives (user switched away without committing text).
+    composer.evaluate(
+        """(el) => {
+            el.focus();
+            el.dispatchEvent(new CompositionEvent('compositionstart', {bubbles:true, data:''}));
+        }"""
+    )
+    # Give React a tick to process the compositionstart and update isComposing.
+    page.wait_for_timeout(200)
+    send_btn_mac_kd = page.locator('button[aria-label="Send message"]')
+    # Dispatch ONLY a keydown (isComposing=false, keyCode=65) with no follow-up
+    # input event. This fires onKeyDown but NOT onChange, so the else-if branch
+    # is the only path that can clear composingRef. page.keyboard.type() would
+    # also fire an input event and trigger onChange, which already clears
+    # composing on ASCII input, which would make the test a false positive.
+    composer.evaluate(
+        """(el) => {
+            el.focus();
+            el.dispatchEvent(new KeyboardEvent('keydown', {
+                bubbles: true, key: 'a', code: 'KeyA', keyCode: 65,
+                isComposing: false,
+            }));
+        }"""
+    )
+    if send_btn_mac_kd.count() == 0:
+        soft_fail("Send button not found for Mac IME switch (onKeyDown) repro")
+    else:
+        try:
+            # 1500ms is well below the 2500ms watchdog: only the onKeyDown
+            # else-if path can clear composingRef this quickly.
+            expect(send_btn_mac_kd).not_to_be_disabled(timeout = 1_500)
+            info(
+                "Send button enabled within 1500ms after Mac IME switch + "
+                "English keydown (onKeyDown else-if branch fired, not watchdog)"
+            )
+        except Exception:
+            shoot("06e-mac-ime-keydown-FAIL")
+            fail(
+                "Send button stayed disabled after Mac input-method switch + "
+                "English keydown; the onKeyDown else-if branch did not clear "
+                "composingRef immediately (expected recovery in < 1500ms)."
+            )
+    shoot("06e-mac-ime-keydown")
+    info("Mac IME switch onKeyDown recovery PASS")
+    clear()
+
+    # 6f. Candidate-confirming Enter must not unblock submit.
+    #     Some IMEs/browsers report the candidate-confirming Enter as
+    #     isComposing=false with keyCode=13 while composingRef is still pinned.
+    #     That Enter must be swallowed and keep Send disabled; otherwise it can
+    #     become a form submit before the candidate is committed.
+    step("BUG REPRO: Mac IME switch - Enter must not unblock submit")
+    clear()
+    composer.click()
+    set_value_via_setter("hello")
+    composer.evaluate(
+        """(el) => {
+            el.focus();
+            el.dispatchEvent(new CompositionEvent('compositionstart', {bubbles:true, data:''}));
+        }"""
+    )
+    page.wait_for_timeout(200)
+    send_btn_mac_enter = page.locator('button[aria-label="Send message"]')
+    composer.evaluate(
+        """(el) => {
+            el.focus();
+            el.dispatchEvent(new KeyboardEvent('keydown', {
+                bubbles: true, cancelable: true, key: 'Enter', code: 'Enter',
+                keyCode: 13, isComposing: false,
+            }));
+        }"""
+    )
+    try:
+        expect(send_btn_mac_enter).to_be_disabled(timeout = 500)
+        info("Enter while composingRef is stuck kept Send disabled")
+    except Exception:
+        shoot("06f-mac-ime-enter-guard-FAIL")
+        fail(
+            "Enter cleared a stuck composingRef immediately; candidate-confirming "
+            "Enter can fall through to submit."
+        )
+    composer.evaluate(
+        """(el) => {
+            el.focus();
+            el.dispatchEvent(new KeyboardEvent('keydown', {
+                bubbles: true, key: 'a', code: 'KeyA', keyCode: 65,
+                isComposing: false,
+            }));
+        }"""
+    )
+    try:
+        expect(send_btn_mac_enter).not_to_be_disabled(timeout = 1_500)
+        info("non-Enter key after Enter guard still recovers immediately")
+    except Exception:
+        shoot("06f-mac-ime-enter-guard-recovery-FAIL")
+        fail("After guarding Enter, a later non-IME key did not clear composingRef immediately.")
+    shoot("06f-mac-ime-enter-guard")
+    info("Mac IME switch Enter guard PASS")
+    clear()
+
+    # 6g. Mac input-method switch - onBlur immediate recovery.
+    #     Some Mac IME switches steal focus from the textarea (e.g. clicking
+    #     the menu-bar language icon). The onBlur handler added for this bug
+    #     resets composingRef unconditionally when the textarea loses focus.
+    #     This is always safe: the OS commits or cancels any active composition
+    #     before surrendering focus, so blur is a reliable reset point.
+    step("BUG REPRO: Mac IME switch - onBlur immediate recovery")
+    clear()
+    composer.click()
+    # Seed sendable content so the Send button's enabled/disabled state reflects
+    # composition state only, not empty-content gating.
+    set_value_via_setter("hello")
+    # Simulate switching TO Chinese: compositionstart fires, compositionend never comes.
+    composer.evaluate(
+        """(el) => {
+            el.focus();
+            el.dispatchEvent(new CompositionEvent('compositionstart', {bubbles:true, data:''}));
+        }"""
+    )
+    page.wait_for_timeout(200)
+    send_btn_mac_blur = page.locator('button[aria-label="Send message"]')
+    # Blur the textarea to simulate the OS stealing focus during an IME switch
+    # (e.g. the user clicks the menu-bar language icon).
+    composer.evaluate("(el) => el.blur()")
+    # onBlur calls setCompositionState(false) immediately; re-focus so React
+    # can render the updated Send-button state and we can locate it.
+    composer.click()
+    if send_btn_mac_blur.count() == 0:
+        soft_fail("Send button not found for Mac IME switch (onBlur) repro")
+    else:
+        try:
+            # 1500ms is well below the 2500ms watchdog: only onBlur can clear
+            # composingRef this quickly when no keydown is fired.
+            expect(send_btn_mac_blur).not_to_be_disabled(timeout = 1_500)
+            info(
+                "Send button enabled within 1500ms after Mac IME switch + "
+                "textarea blur (onBlur handler fired, not watchdog)"
+            )
+        except Exception:
+            shoot("06f-mac-ime-blur-FAIL")
+            fail(
+                "Send button stayed disabled after Mac input-method switch + "
+                "textarea blur; the onBlur handler did not reset composingRef "
+                "(expected recovery in < 1500ms)."
+            )
+    shoot("06g-mac-ime-blur")
+    info("Mac IME switch onBlur recovery PASS")
     clear()
 
     # 7. Final state. Filter benign 401 noise from the change-password redirect
     #    via is_benign_*; fail only on real errors.
     shoot("07-final")
     real_page_errors = [e for e in page_errors if not is_benign_page_error(e)]
-    real_console_errors = [e for e in console_errors if not is_benign_console_error(e)]
+    probe_cancel_500_allowance = expected_probe_cancel_500s[0]
+    real_console_errors = []
+    for error in console_errors:
+        if is_benign_console_error(error):
+            continue
+        if (
+            probe_cancel_500_allowance > 0
+            and "Failed to load resource: the server responded with a status of 500" in error
+            and "Internal Server Error" in error
+        ):
+            probe_cancel_500_allowance -= 1
+            continue
+        real_console_errors.append(error)
     info(
         f"page_errors={len(page_errors)} ({len(real_page_errors)} non-benign); "
         f"console_errors={len(console_errors)} "
@@ -621,7 +830,9 @@ with sync_playwright() as p:
         f"DONE: ascii=OK paste={len(I18N_SAMPLES)}/{len(I18N_SAMPLES)} "
         f"normal_composition=OK stuck_recovery=OK "
         f"compositionend_watchdog=OK keydown_repin=OK "
-        f"keydown_repin_rearm=OK"
+        f"keydown_repin_rearm=OK "
+        f"mac_ime_switch_keydown=OK mac_ime_switch_enter_guard=OK "
+        f"mac_ime_switch_blur=OK"
     )
     _watchdog.cancel()
     browser.close()

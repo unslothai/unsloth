@@ -8,7 +8,7 @@ import {
   CommandGroup,
   CommandList,
 } from "@/components/ui/command";
-import { Cancel01Icon, Message01Icon, SearchIcon } from "@hugeicons/core-free-icons";
+import { Cancel01Icon, Message01Icon, Search01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import { Command as CommandPrimitive } from "cmdk";
@@ -64,13 +64,13 @@ export function ChatSearchDialog() {
     <CommandDialog
       open={isOpen}
       onOpenChange={setOpen}
-      className="chat-search-surface corner-squircle top-[25%] w-[635px] max-w-[calc(100%-2rem)] gap-0 p-0 ring-0 sm:max-w-[635px]"
+      className="chat-search-surface rounded-3xl! top-1/2 -translate-y-1/2 w-[635px] max-w-[calc(100%-2rem)] gap-0 p-0 ring-0 sm:max-w-[635px]"
       overlayClassName="bg-transparent"
     >
-      <Command className="rounded-4xl p-0" filter={chatSearchFilter}>
+      <Command className="rounded-3xl p-0" filter={chatSearchFilter}>
         <div className="flex items-center gap-3 border-b border-border/40 px-4 py-3">
           <HugeiconsIcon
-            icon={SearchIcon}
+            icon={Search01Icon}
             strokeWidth={2}
             className="size-4 shrink-0 text-muted-foreground"
           />

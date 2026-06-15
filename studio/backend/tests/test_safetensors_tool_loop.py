@@ -28,6 +28,8 @@ from core.inference.tool_call_parser import (
     parse_tool_calls_from_text,
     strip_tool_markup,
 )
+from state import tool_approvals
+from state.tool_approvals import resolve_tool_decision
 from utils.datasets import is_gpt_oss_model_name
 
 
@@ -84,8 +86,7 @@ class TestParser:
         # A code parameter with a literal </parameter> must not truncate: the
         # parser uses end-of-body as the only boundary for single-param calls.
         text = (
-            "<function=python><parameter=code>html = '<a></a>'\n"
-            "print('hi')</parameter></function>"
+            "<function=python><parameter=code>html = '<a></a>'\nprint('hi')</parameter></function>"
         )
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
@@ -207,6 +208,7 @@ class FakeExecuteTool:
         timeout = None,
         session_id = None,
         rag_scope = None,
+        disable_sandbox = False,
     ):
         self.calls.append((name, arguments))
         result = self.results.pop(0) if self.results else "OK"
@@ -262,7 +264,7 @@ def _make_loop(
 
 def test_active_tools_are_passed_to_single_turn_after_render_html_success():
     captured_tool_names: list[list[str]] = []
-    exec_fn = FakeExecuteTool(["Rendered HTML artifact."])
+    exec_fn = FakeExecuteTool(["Rendered HTML canvas."])
 
     def fake_single_turn(_messages, *, active_tools = None):
         captured_tool_names.append(
@@ -355,7 +357,7 @@ class TestLoopBasic:
         assert "Result: 1" in contents[-1]["text"]
 
     def test_render_html_emits_provisional_tool_start(self):
-        exec_fn = FakeExecuteTool(["Rendered HTML artifact."])
+        exec_fn = FakeExecuteTool(["Rendered HTML canvas."])
         turn_iter = iter(
             [
                 [
@@ -410,8 +412,8 @@ class TestLoopBasic:
         assert tool_starts[0]["tool_name"] == "python"
         assert exec_fn.calls == [("python", {"code": "print('<function=render_html>')"})]
 
-    def test_render_html_success_blocks_second_artifact_call(self):
-        exec_fn = FakeExecuteTool(["Rendered HTML artifact."])
+    def test_render_html_success_blocks_second_canvas_call(self):
+        exec_fn = FakeExecuteTool(["Rendered HTML canvas."])
         turn_iter = iter(
             [
                 [
@@ -1032,6 +1034,50 @@ class TestGuardrails:
         )
         _collect_events(loop)
         assert exec_fn.calls == [("web_search", {"query": "x"})]
+
+    def test_confirm_tool_calls_close_after_prompt_cleans_slot(self, monkeypatch):
+        approval_id = "approval-close-sf"
+        monkeypatch.setattr(safetensors_agentic, "new_approval_id", lambda: approval_id)
+
+        loop, exec_fn = _make_loop(
+            turns = [['<tool_call>{"name":"python","arguments":{"code":"print(1)"}}</tool_call>']],
+            exec_results = ["OK"],
+            confirm_tool_calls = True,
+            session_id = "sess",
+            max_tool_iterations = 1,
+        )
+
+        with tool_approvals._lock:
+            tool_approvals._pending.clear()
+
+        try:
+            assert next(loop)["type"] == "status"
+            start = next(loop)
+            assert start["type"] == "tool_start"
+            assert start["approval_id"] == approval_id
+            with tool_approvals._lock:
+                assert approval_id in tool_approvals._pending
+        finally:
+            loop.close()
+
+        with tool_approvals._lock:
+            assert approval_id not in tool_approvals._pending
+        assert resolve_tool_decision(approval_id, "allow", session_id = "sess") is False
+        assert exec_fn.calls == []
+
+    def test_confirm_tool_calls_skips_rag_autoinject(self, monkeypatch):
+        def fail_autoinject(*_args, **_kwargs):
+            raise AssertionError("RAG autoinject must not run before approval")
+
+        monkeypatch.setattr("core.inference.tools.build_rag_autoinject", fail_autoinject)
+        loop, exec_fn = _make_loop(
+            turns = [["plain answer"]],
+            confirm_tool_calls = True,
+            rag_scope = {"thread_id": "t1"},
+        )
+        events = _collect_events(loop)
+        assert any(e.get("type") == "content" and e.get("text") == "plain answer" for e in events)
+        assert exec_fn.calls == []
 
     def test_auto_heal_disabled_preserves_xml_on_final_no_tools_pass(self):
         turns = iter(

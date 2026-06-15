@@ -101,6 +101,7 @@ from ._utils import (
     resolve_model_class,
     _is_family_text_decoder,
     _apply_text_only_key_mapping,
+    set_task_config_attr,
 )
 
 # Single source of truth is unsloth_zoo.model_lists. Re-exported so callers
@@ -131,6 +132,57 @@ def _strip_unsloth_bnb_4bit_suffix(model_name: str) -> str:
         if len(s) >= len(suffix) and s.lower().endswith(suffix.lower()):
             s = s[: -len(suffix)]
     return s
+
+
+def _config_get(
+    config,
+    field_name,
+    default = None,
+):
+    if isinstance(config, dict):
+        return config.get(field_name, default)
+    return getattr(config, field_name, default)
+
+
+def _config_diff(config):
+    if isinstance(config, dict):
+        return config
+    to_diff_dict = getattr(config, "to_diff_dict", None)
+    if callable(to_diff_dict):
+        try:
+            diff = to_diff_dict()
+            if isinstance(diff, dict):
+                return diff
+        except Exception:
+            pass
+    return {}
+
+
+def _has_sequence_classification_architecture(config):
+    architectures = _config_get(config, "architectures", None) or []
+    return any(str(arch).endswith("ForSequenceClassification") for arch in architectures)
+
+
+def _get_user_task_config_attrs(user_config):
+    if user_config is None:
+        return {}
+    diff = _config_diff(user_config)
+    attrs = {}
+    for key in ("id2label", "label2id", "problem_type"):
+        if key in diff:
+            attrs[key] = _config_get(user_config, key, diff.get(key))
+    if isinstance(user_config, dict) and "num_labels" in user_config:
+        attrs["num_labels"] = user_config["num_labels"]
+    elif _has_sequence_classification_architecture(user_config):
+        num_labels = _config_get(user_config, "num_labels", None)
+        if num_labels is not None:
+            attrs["num_labels"] = num_labels
+    elif "id2label" in attrs:
+        try:
+            attrs["num_labels"] = len(attrs["id2label"])
+        except TypeError:
+            pass
+    return attrs
 
 
 DISABLE_COMPILE_MODEL_NAMES = [
@@ -829,6 +881,7 @@ from ..kernels import (
     post_patch_loss_function,
 )
 from .vision import FastBaseModel
+from .diffusion import FastDiffusionModel, is_diffusion_model_type
 from transformers import (
     AutoModelForCausalLM,
 )
@@ -845,6 +898,25 @@ class FastModel(FastBaseModel):
     def _prepare_for_qat(model, qat_scheme):
         model = _prepare_model_for_qat(model, qat_scheme)
         return model
+
+    @staticmethod
+    def get_peft_model(model, *args, **kwargs):
+        # Route text-diffusion models (slow path) to the transformers-only PEFT helper.
+        if getattr(model, "_unsloth_slow_diffusion", False):
+            return FastDiffusionModel.get_peft_model(model, *args, **kwargs)
+        return FastBaseModel.get_peft_model(model, *args, **kwargs)
+
+    @staticmethod
+    def for_inference(model):
+        if getattr(model, "_unsloth_slow_diffusion", False):
+            return FastDiffusionModel.for_inference(model)
+        return FastBaseModel.for_inference(model)
+
+    @staticmethod
+    def for_training(model, use_gradient_checkpointing = True):
+        if getattr(model, "_unsloth_slow_diffusion", False):
+            return FastDiffusionModel.for_training(model, use_gradient_checkpointing)
+        return FastBaseModel.for_training(model, use_gradient_checkpointing)
 
     @staticmethod
     def from_pretrained(
@@ -887,6 +959,7 @@ class FastModel(FastBaseModel):
         *args,
         **kwargs,
     ):
+        user_config = kwargs.pop("config", None)
         # Respect user-provided quantization_config (e.g. BitsAndBytesConfig)
         quantization_config = kwargs.get("quantization_config", None)
         if quantization_config is not None:
@@ -1065,19 +1138,45 @@ class FastModel(FastBaseModel):
                 local_files_only = True
                 kwargs["local_files_only"] = True
 
-        try:
-            model_config = AutoConfig.from_pretrained(
-                model_name,
+        # Text-diffusion slow-path dispatch, factored so both the normal route (below) and the
+        # legacy-config fallback (in the AutoConfig except handler) share one call site.
+        def _dispatch_diffusion():
+            return FastDiffusionModel.from_pretrained(
+                model_name = model_name,
+                max_seq_length = max_seq_length,
+                dtype = dtype,
+                load_in_4bit = load_in_4bit,
+                load_in_8bit = load_in_8bit,
+                load_in_16bit = load_in_16bit,
+                full_finetuning = full_finetuning,
                 token = token,
-                revision = revision,
+                device_map = device_map,
                 trust_remote_code = trust_remote_code,
-                local_files_only = local_files_only,
+                revision = revision,
+                **kwargs,
             )
+
+        try:
+            model_config = user_config
+            if model_config is None:
+                model_config = AutoConfig.from_pretrained(
+                    model_name,
+                    token = token,
+                    revision = revision,
+                    trust_remote_code = trust_remote_code,
+                    local_files_only = local_files_only,
+                )
             is_model = True
         except ImportError:
             raise
         except Exception as error:
             autoconfig_error = str(error)
+            # Legacy text-diffusion configs use model_type "diffusion_gemma", which current
+            # transformers does not register by name (it ships "diffusion_gemma4"). AutoConfig
+            # raises before we can dispatch; route straight to the diffusion slow path, whose
+            # loader aliases the legacy type to the gemma4 classes.
+            if "diffusion_gemma" in autoconfig_error and is_diffusion_model_type("diffusion_gemma"):
+                return _dispatch_diffusion()
             if "architecture" in autoconfig_error:
                 if "qwen3_5" in autoconfig_error:
                     raise ImportError(
@@ -1125,6 +1224,13 @@ class FastModel(FastBaseModel):
             trust_remote_code = trust_remote_code,
         )
         model_types_all = ",".join(model_types) + ","
+
+        # ---- Text-diffusion models (e.g. DiffusionGemma) take a transformers-only slow path. ----
+        # These use a custom block-diffusion `generate` and a novel backbone, so we skip Unsloth's
+        # autoregressive kernel/compile patching and load the unmodified HF model (bit-identical to
+        # naive transformers), keeping only 4bit/8bit + PEFT LoRA conveniences.
+        if is_diffusion_model_type(model_types):
+            return _dispatch_diffusion()
 
         # Save model types and loading method
         lowered_model_name = model_name.lower()
@@ -1333,12 +1439,15 @@ class FastModel(FastBaseModel):
                 load_in_fp8 = False
                 load_in_16bit = True
 
-            model_config = AutoConfig.from_pretrained(
-                model_name,
-                token = token,
-                trust_remote_code = trust_remote_code,
-                local_files_only = local_files_only,
-            )
+            if user_config is not None:
+                model_config = user_config
+            else:
+                model_config = AutoConfig.from_pretrained(
+                    model_name,
+                    token = token,
+                    trust_remote_code = trust_remote_code,
+                    local_files_only = local_files_only,
+                )
 
         if not was_disabled:
             enable_progress_bars()
@@ -1418,6 +1527,17 @@ class FastModel(FastBaseModel):
         else:
             tokenizer_name = kwargs.pop("tokenizer_name", None)
 
+        # Capture task intent before text_only can replace a parent VLM config
+        # with its nested text config.
+        task_config_attrs = _get_user_task_config_attrs(user_config)
+        for _cfg_key in ("num_labels", "id2label", "label2id", "problem_type"):
+            _cfg_val = kwargs.get(_cfg_key, None)
+            if _cfg_val is not None:
+                task_config_attrs[_cfg_key] = _cfg_val
+        _num_labels = task_config_attrs.get("num_labels", None)
+        for _cfg_key, _cfg_val in task_config_attrs.items():
+            set_task_config_attr(model_config, _cfg_key, _cfg_val)
+
         # Check if VLM
         architectures = getattr(model_config, "architectures", None)
         if architectures is None:
@@ -1448,7 +1568,8 @@ class FastModel(FastBaseModel):
             else:
                 is_vlm = False
         # If num_labels is set, use AutoModelForSequenceClassification
-        _num_labels = kwargs.get("num_labels", None)
+        for _cfg_key, _cfg_val in task_config_attrs.items():
+            set_task_config_attr(model_config, _cfg_key, _cfg_val)
         if auto_model is None:
             if _num_labels is not None:
                 from transformers import AutoModelForSequenceClassification

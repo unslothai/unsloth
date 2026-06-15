@@ -30,6 +30,7 @@ from .import_fixes import (
     disable_broken_causal_conv1d,
     disable_broken_vllm,
     configure_amdgpu_asic_id_table_path,
+    fix_bitsandbytes_rocm_arch_detection,
     torchvision_compatibility_check,
     fix_diffusers_warnings,
     fix_huggingface_hub,
@@ -67,6 +68,8 @@ except Exception:
 
 # Configure libdrm ids table path early so ROCm can resolve AMD GPU names.
 configure_amdgpu_asic_id_table_path()
+# Must precede `import unsloth_zoo` below, which imports bnb on ROCm.
+fix_bitsandbytes_rocm_arch_detection()
 disable_broken_causal_conv1d()
 disable_broken_vllm()
 fix_message_factory_issue()
@@ -75,6 +78,7 @@ torchvision_compatibility_check()
 fix_diffusers_warnings()
 fix_huggingface_hub()
 del configure_amdgpu_asic_id_table_path
+del fix_bitsandbytes_rocm_arch_detection
 del disable_broken_causal_conv1d
 del disable_broken_vllm
 del fix_message_factory_issue
@@ -185,6 +189,7 @@ from .import_fixes import (
     fix_trl_vllm_ascend,
     fix_peft_transformers_weight_conversion_import,
     patch_peft_weight_converter_compatibility,
+    patch_accelerate_recursively_apply,
 )
 
 fix_xformers_performance_issue()
@@ -213,6 +218,7 @@ disable_broken_wandb()
 # build_peft_weight_mapping instead of being swallowed by its ImportError.
 fix_peft_transformers_weight_conversion_import()
 patch_peft_weight_converter_compatibility()
+patch_accelerate_recursively_apply()
 
 del fix_xformers_performance_issue
 del fix_vllm_aimv2_issue
@@ -236,6 +242,7 @@ del disable_torchcodec_if_broken
 del disable_broken_wandb
 del fix_peft_transformers_weight_conversion_import
 del patch_peft_weight_converter_compatibility
+del patch_accelerate_recursively_apply
 
 # Torch 2.4 has including_emulation
 if DEVICE_TYPE == "cuda":

@@ -41,6 +41,7 @@ import {
   Delete02Icon,
   Download01Icon,
   Edit03Icon,
+  Folder02Icon,
   FolderAddIcon,
   Search01Icon,
   Upload01Icon,
@@ -231,7 +232,7 @@ export function ProjectsPage() {
   }
 
   return (
-    <main className="mx-auto w-full max-w-7xl px-4 py-8 font-heading sm:px-6">
+    <main className="mx-auto w-full max-w-6xl px-6 py-10 font-heading sm:px-10">
       {/* Global import file input */}
       <input
         ref={globalImportRef}
@@ -248,10 +249,22 @@ export function ProjectsPage() {
         }}
       />
       <div className="flex flex-wrap items-center justify-between gap-4">
-        <h1 className="text-2xl font-semibold tracking-tight text-foreground">
+        <h1 className="text-[30px] font-semibold leading-[1.04] tracking-[-0.028em] text-foreground sm:text-[34px]">
           Projects
         </h1>
         <div className="flex items-center gap-3">
+          <div className="relative">
+            <span className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-muted-foreground">
+              <HugeiconsIcon icon={Search01Icon} strokeWidth={1.75} className="size-4" />
+            </span>
+            <Input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search projects"
+              className="h-9 w-52 rounded-full border-none bg-muted pl-10 pr-4 shadow-none dark:bg-card sm:w-64"
+              aria-label="Search projects"
+            />
+          </div>
           <div className="flex items-center gap-2">
             <span className="text-sm text-muted-foreground">Sort by</span>
             <Select
@@ -329,30 +342,17 @@ export function ProjectsPage() {
         </div>
       </div>
 
-      <div className="relative mx-auto mt-10 w-full max-w-[720px]">
-        <span className="pointer-events-none absolute left-5 top-1/2 -translate-y-1/2 text-muted-foreground">
-          <HugeiconsIcon icon={Search01Icon} strokeWidth={1.75} className="size-icon" />
-        </span>
-        <Input
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search projects..."
-          className="h-14 rounded-full border-none bg-background pl-13 pr-5 shadow-[0_0_20px_0_rgba(0,0,0,0.07)] dark:bg-card dark:shadow-none"
-          aria-label="Search projects"
-        />
-      </div>
-
       {!hasLoaded ? (
-        <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="mt-12 grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
           {Array.from({ length: 6 }).map((_, index) => (
             <div
               key={index}
-              className="min-h-[160px] rounded-[14px] bg-card p-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:shadow-none"
+              className="min-h-[172px] rounded-[26px] bg-card p-6 shadow-[0_2px_12px_-4px_rgba(0,0,0,0.10)] dark:shadow-none"
             >
-              <Skeleton className="h-5 w-2/3 rounded-[6px]" />
-              <Skeleton className="mt-3 h-4 w-full rounded-[6px]" />
-              <Skeleton className="mt-2 h-4 w-4/5 rounded-[6px]" />
-              <Skeleton className="mt-12 h-3 w-24 rounded-[6px]" />
+              <Skeleton className="size-10 rounded-[14px]" />
+              <Skeleton className="mt-4 h-5 w-2/3 rounded-[8px]" />
+              <Skeleton className="mt-2 h-4 w-4/5 rounded-[8px]" />
+              <Skeleton className="mt-8 h-3 w-24 rounded-[8px]" />
             </div>
           ))}
         </div>
@@ -378,7 +378,7 @@ export function ProjectsPage() {
           )}
         </div>
       ) : (
-        <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="mt-12 grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
           {visibleProjects.map((project) => (
             <div key={`wrap-${project.id}`} className="contents">
             <input
@@ -407,19 +407,23 @@ export function ProjectsPage() {
                   openProject(project.id);
                 }
               }}
-              className="group/project-card relative flex min-h-[160px] cursor-pointer flex-col rounded-[14px] bg-card p-5 text-left shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] transition-colors hover:bg-accent/40 dark:shadow-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="group/project-card relative flex min-h-[172px] cursor-pointer flex-col rounded-[26px] bg-card p-6 text-left shadow-[0_2px_12px_-4px_rgba(0,0,0,0.10)] transition-colors duration-150 hover:bg-[#f2f2f2] dark:shadow-none dark:hover:bg-accent/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               <div className="flex items-start justify-between gap-2">
-                <h2 className="truncate pr-2 text-[16px] font-semibold text-foreground">
-                  {project.name}
-                </h2>
+                <span className="flex size-10 shrink-0 items-center justify-center rounded-[14px] bg-muted text-foreground/70 transition-colors group-hover/project-card:bg-primary/10 group-hover/project-card:text-primary">
+                  <HugeiconsIcon
+                    icon={Folder02Icon}
+                    strokeWidth={1.75}
+                    className="size-5"
+                  />
+                </span>
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
                     <button
                       type="button"
                       onClick={(e) => e.stopPropagation()}
                       aria-label="Project options"
-                      className="-mr-1 -mt-1 inline-flex size-7 shrink-0 items-center justify-center rounded-[8px] text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground focus-visible:opacity-100 group-hover/project-card:opacity-100"
+                      className="-mr-1 -mt-1 inline-flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground opacity-0 transition-opacity hover:bg-black/5 hover:text-foreground dark:hover:bg-white/10 focus-visible:opacity-100 group-hover/project-card:opacity-100 data-[state=open]:bg-black/5 data-[state=open]:opacity-100 dark:data-[state=open]:bg-white/10"
                     >
                       <MoreHorizontalIcon strokeWidth={1.75} className="size-icon" />
                     </button>
@@ -480,12 +484,15 @@ export function ProjectsPage() {
                   </DropdownMenuContent>
                 </DropdownMenu>
               </div>
+              <h2 className="mt-4 truncate text-[16px] font-semibold text-foreground">
+                {project.name}
+              </h2>
               {project.instructions ? (
-                <p className="mt-2 line-clamp-3 text-sm text-muted-foreground">
+                <p className="mt-1.5 line-clamp-2 text-sm leading-relaxed text-muted-foreground">
                   {project.instructions}
                 </p>
               ) : null}
-              <span className="mt-auto pt-4 text-xs text-muted-foreground">
+              <span className="mt-auto pt-4 text-xs text-muted-foreground/80">
                 Updated {formatUpdatedAgo(project.updatedAt)}
               </span>
             </div>

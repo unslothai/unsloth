@@ -37,6 +37,7 @@ from ._utils import (
     _get_text_only_config,
     _is_family_text_decoder,
     _apply_text_only_key_mapping,
+    set_task_config_attr,
 )
 from ._utils import *
 from .loader_utils import _get_fp8_mode_and_check_settings
@@ -283,6 +284,9 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
         input_ids = kwargs["input"]
     elif "input_features" in kwargs:
         input_ids = kwargs["input_features"]
+    elif "inputs_embeds" in kwargs:
+        # canonical HF name for embedding inputs (e.g. multimodal generate)
+        input_ids = kwargs["inputs_embeds"]
     elif "input_embeds" in kwargs:
         input_ids = kwargs["input_embeds"]
     elif "inputs" in kwargs:
@@ -589,6 +593,10 @@ class FastBaseModel:
         text_only = False,
         **kwargs,
     ):
+        user_config = kwargs.pop("config", None)
+        if auto_config is None and user_config is not None:
+            auto_config = user_config
+
         if unsloth_vllm_standby and os.environ.get("UNSLOTH_VLLM_STANDBY", "0") != "1":
             raise RuntimeError(
                 "Unsloth: UNSLOTH_VLLM_STANDBY is True, but UNSLOTH_VLLM_STANDBY is not set to 1!"
@@ -947,11 +955,14 @@ class FastBaseModel:
             # Move config-level attributes onto the config object directly.
             _num_labels = kwargs.pop("num_labels", None)
             if _num_labels is not None:
-                model_config.num_labels = _num_labels
-            for _cfg_key in ("id2label", "label2id", "max_position_embeddings"):
+                set_task_config_attr(model_config, "num_labels", _num_labels)
+            for _cfg_key in ("id2label", "label2id", "problem_type"):
                 _cfg_val = kwargs.pop(_cfg_key, None)
                 if _cfg_val is not None:
-                    setattr(model_config, _cfg_key, _cfg_val)
+                    set_task_config_attr(model_config, _cfg_key, _cfg_val)
+            _cfg_val = kwargs.pop("max_position_embeddings", None)
+            if _cfg_val is not None:
+                setattr(model_config, "max_position_embeddings", _cfg_val)
             model = auto_model.from_pretrained(
                 model_name,
                 config = model_config,
@@ -1280,6 +1291,15 @@ class FastBaseModel:
         tokenizer.padding_side = "left"  # Force inference
         if hasattr(tokenizer, "tokenizer"):
             tokenizer.tokenizer.padding_side = "left"  # Force inference
+        # Audio feature extractors must stay right padded: left (a text setting,
+        # forwarded by from_pretrained) shifts Whisper mels and desyncs Gemma 4
+        # audio token counts (crash on transformers < 5.10).
+        feature_extractor = getattr(tokenizer, "feature_extractor", None)
+        if (
+            feature_extractor is not None
+            and getattr(feature_extractor, "padding_side", None) == "left"
+        ):
+            feature_extractor.padding_side = "right"
         m = model
         while hasattr(m, "model"):
             m.max_seq_length = max_seq_length
@@ -1379,6 +1399,25 @@ class FastBaseModel:
             )
         else:
             assert type(target_modules) in (list, tuple, str)
+            if type(target_modules) in (list, tuple) and (
+                not finetune_vision_layers
+                or not finetune_language_layers
+                or not finetune_attention_modules
+                or not finetune_mlp_modules
+            ):
+                print(
+                    "Unsloth: Explicit target_modules are constrained by the "
+                    "finetune_(vision|language|attention|mlp) filters; adapters "
+                    "attach only where both select."
+                )
+                target_modules = get_peft_regex(
+                    model,
+                    finetune_vision_layers = finetune_vision_layers,
+                    finetune_language_layers = finetune_language_layers,
+                    finetune_attention_modules = finetune_attention_modules,
+                    finetune_mlp_modules = finetune_mlp_modules,
+                    target_modules = list(target_modules),
+                )
 
         if hasattr(model, "vllm_engine"):
             if (

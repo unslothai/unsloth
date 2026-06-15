@@ -16,6 +16,10 @@ import { usePlatformStore } from "@/config/env";
 import { resetOnboardingDone } from "@/features/auth";
 import { useChatRuntimeStore } from "@/features/chat";
 import {
+  setShowLlamaUpdateBanner,
+  useShowLlamaUpdateBanner,
+} from "@/hooks/use-llama-update-pref";
+import {
   loadHelperPrecacheSettings,
   updateHelperPrecacheSettings,
   type HelperPrecacheSettings,
@@ -56,6 +60,7 @@ const PREFS_KEYS: string[] = [
   "unsloth_tool_call_timeout",
   "unsloth_chat_inference_params",
   "unsloth_chat_collapsible_state",
+  "unsloth_chat_preferences",
   // Chat presets
   "unsloth_chat_custom_presets",
   "unsloth_chat_active_preset",
@@ -69,6 +74,8 @@ const PREFS_KEYS: string[] = [
   "unsloth_user_profile",
   // Guided tour flags
   "tour:studio:v1",
+  // Update notifications
+  "unsloth_show_llama_update_banner",
 ];
 
 // Set by resetAllPrefs so the unmount-commit effect skips writing back the
@@ -107,6 +114,7 @@ export function GeneralTab() {
   const autoTitle = useChatRuntimeStore((s) => s.autoTitle);
   const setAutoTitle = useChatRuntimeStore((s) => s.setAutoTitle);
   const chatOnly = usePlatformStore((s) => s.chatOnly);
+  const showLlamaUpdates = useShowLlamaUpdateBanner();
   const redirectTo = `${pathname}${search}`;
 
   const [draftToken, setDraftToken] = useState(hfToken ?? "");
@@ -238,13 +246,15 @@ export function GeneralTab() {
   return (
     <div className="flex flex-col gap-6">
       <header className="flex flex-col gap-1">
-        <h1 className="text-lg font-semibold font-heading">
+        <h1 className="text-xl font-semibold font-heading">
           {t("settings.general.title")}
         </h1>
         <p className="text-xs text-muted-foreground">
           {t("settings.general.description")}
         </p>
       </header>
+
+      <StudioVersionSection />
 
       <SettingsSection title={t("settings.general.account")}>
         <SettingsRow
@@ -315,6 +325,20 @@ export function GeneralTab() {
               </span>
             ) : null}
           </div>
+        </SettingsRow>
+      </SettingsSection>
+
+      <SettingsSection title={t("settings.general.notifications.sectionTitle")}>
+        <SettingsRow
+          label={t("settings.general.notifications.showLlamaUpdates")}
+          description={t(
+            "settings.general.notifications.showLlamaUpdatesDescription",
+          )}
+        >
+          <Switch
+            checked={showLlamaUpdates}
+            onCheckedChange={setShowLlamaUpdateBanner}
+          />
         </SettingsRow>
       </SettingsSection>
 
