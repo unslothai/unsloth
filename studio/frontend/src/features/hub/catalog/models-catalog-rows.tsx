@@ -232,7 +232,7 @@ function CatalogRow({
       data-active={active || undefined}
       onPointerEnter={arm}
       onFocusCapture={arm}
-      className="catalog-row group/row relative block w-full select-none overflow-hidden rounded-[14px] pl-3 pr-2.5 py-2.5 text-left"
+      className="catalog-row group/row relative block w-full select-none overflow-hidden rounded-[14px] pl-3 pr-4 py-2.5 text-left"
     >
       <button
         type="button"

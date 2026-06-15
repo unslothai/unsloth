@@ -13,13 +13,13 @@ import { usePlatformStore } from "@/config/env";
 import { isCustomProviderType } from "@/features/chat/external-providers";
 import { cn } from "@/lib/utils";
 import {
-  ArrowDown01Icon,
   CloudIcon,
   DashboardSquare01Icon,
   FolderSearchIcon,
   RemoveCircleIcon,
   Search01Icon,
 } from "@hugeicons/core-free-icons";
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type KeyboardEvent, useMemo, useState } from "react";
 import { Input } from "../ui/input";
@@ -151,9 +151,11 @@ function ModelSelectorTrigger({
           "rounded-full border border-border/60 hover:bg-[#ececec] dark:hover:bg-[#2d2e32]",
           variant === "ghost" && "rounded-full hover:bg-[#ececec] dark:hover:bg-[#2d2e32]",
           variant === "muted" && "rounded-full bg-muted hover:bg-muted/80",
-          size === "sm" && "h-8 px-2.5 text-xs",
-          size === "default" && "h-9 px-3 text-sm",
-          size === "lg" && "h-10 px-3.5 text-sm",
+          // More left padding than right; the chevron is pulled close to the
+          // label (below) so the trigger reads balanced around the text.
+          size === "sm" && "h-8 pl-3 pr-1.5 text-xs",
+          size === "default" && "h-9 pl-4 pr-2 text-sm",
+          size === "lg" && "h-10 pl-4.5 pr-2.5 text-sm",
           className,
         )}
       >
@@ -185,9 +187,9 @@ function ModelSelectorTrigger({
             </span>
           )}
         </span>
-        <span className="flex size-4 shrink-0 items-center justify-center">
+        <span className="-ml-1 flex size-4 shrink-0 items-center justify-center">
           <HugeiconsIcon
-            icon={ArrowDown01Icon}
+            icon={ChevronDownStandardIcon}
             strokeWidth={1.75}
             className="size-3.5 text-muted-foreground"
           />
