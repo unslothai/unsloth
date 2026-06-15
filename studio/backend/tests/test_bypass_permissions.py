@@ -461,12 +461,8 @@ def test_connection_string_noncredential_values_are_not_flagged(value):
 
 def test_connection_string_value_stripped_even_with_benign_name(monkeypatch, tmp_path):
     # NAME dodges the classifier, but the VALUE is a credentialed conn string.
-    monkeypatch.setenv(
-        "APP_DB", "Server=tcp:db;Database=app;User ID=u;Password=p@ss;"
-    )
-    monkeypatch.setenv(
-        "SQLCONNSTR_DB", "DefaultEndpointsProtocol=https;AccountKey=abc=="
-    )
+    monkeypatch.setenv("APP_DB", "Server=tcp:db;Database=app;User ID=u;Password=p@ss;")
+    monkeypatch.setenv("SQLCONNSTR_DB", "DefaultEndpointsProtocol=https;AccountKey=abc==")
     env = _build_bypass_env(str(tmp_path))
     assert "APP_DB" not in env  # value-based catch
     assert "SQLCONNSTR_DB" not in env  # name-based catch

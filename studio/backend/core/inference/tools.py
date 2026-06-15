@@ -474,10 +474,7 @@ def _is_secret_env_value(value: str) -> bool:
     """
     if not value:
         return False
-    return (
-        _URL_USERINFO_RE.search(value) is not None
-        or _SECRET_VALUE_RE.search(value) is not None
-    )
+    return _URL_USERINFO_RE.search(value) is not None or _SECRET_VALUE_RE.search(value) is not None
 
 
 def _build_bypass_env(workdir: str) -> dict[str, str]:

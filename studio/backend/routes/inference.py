@@ -3507,12 +3507,16 @@ async def openai_chat_completions(
     if payload.provider_id or payload.provider_type:
         # Bypass Permissions suppresses the confirm gate, so do not reject a
         # request that sets both flags (effective confirm is then False).
-        if payload.confirm_tool_calls and not payload.bypass_permissions and (
-            payload.enable_tools is True
-            or bool(payload.enabled_tools)
-            or bool(payload.tools)
-            or bool(payload.openai_code_exec_container_id)
-            or bool(payload.anthropic_code_exec_container_id)
+        if (
+            payload.confirm_tool_calls
+            and not payload.bypass_permissions
+            and (
+                payload.enable_tools is True
+                or bool(payload.enabled_tools)
+                or bool(payload.tools)
+                or bool(payload.openai_code_exec_container_id)
+                or bool(payload.anthropic_code_exec_container_id)
+            )
         ):
             raise HTTPException(
                 status_code = 400,
@@ -3896,11 +3900,7 @@ async def openai_chat_completions(
         if use_tools:
             # Bypass Permissions suppresses confirm, so the stream requirement
             # (the gate needs streaming to prompt) no longer applies.
-            if (
-                payload.confirm_tool_calls
-                and not payload.bypass_permissions
-                and not payload.stream
-            ):
+            if payload.confirm_tool_calls and not payload.bypass_permissions and not payload.stream:
                 raise HTTPException(
                     status_code = 400,
                     detail = openai_error_body(
@@ -4451,11 +4451,7 @@ async def openai_chat_completions(
     if _sf_use_tools:
         # Bypass Permissions suppresses confirm, so the stream requirement
         # (the gate needs streaming to prompt) no longer applies.
-        if (
-            payload.confirm_tool_calls
-            and not payload.bypass_permissions
-            and not payload.stream
-        ):
+        if payload.confirm_tool_calls and not payload.bypass_permissions and not payload.stream:
             raise HTTPException(
                 status_code = 400,
                 detail = openai_error_body(
