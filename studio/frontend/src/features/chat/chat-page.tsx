@@ -1494,7 +1494,7 @@ export function ChatPage(): ReactElement {
     if (view.mode !== "single") return;
     if (view.threadId || view.newThreadNonce || !selectedArtifact) return;
     // view excludes __LOCALID_ threads (they fall through to mode:"single"
-    // with no threadId/nonce). Don't close an artifact whose thread is the
+    // with no threadId/nonce). Don't close a canvas whose thread is the
     // active local thread.
     if (
       selectedArtifact.threadId &&
