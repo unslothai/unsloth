@@ -375,7 +375,30 @@ class TestExtraArgsMtpDetection:
         ],
     )
     def test_mtp_draft_path(self, args, expected):
-        assert _extra_args_mtp_draft_path(args) == expected
+        # env={} isolates pure-CLI behavior from a polluted test environment.
+        assert _extra_args_mtp_draft_path(args, env={}) == expected
+
+    @pytest.mark.parametrize(
+        "args,expected",
+        [
+            # HF draft repo flags are real llama-server flags; the budget must see them.
+            (["--spec-draft-hf", "big/repo:Q8_0"], "big/repo:Q8_0"),
+            (["-hfd", "big/repo"], "big/repo"),
+            (["-hfrd", "big/repo"], "big/repo"),
+            (["--hf-repo-draft=big/repo"], "big/repo"),
+        ],
+    )
+    def test_mtp_draft_path_hf_flags(self, args, expected):
+        assert _extra_args_mtp_draft_path(args, env={}) == expected
+
+    def test_mtp_draft_path_env_fallback(self):
+        # The child honors LLAMA_ARG_SPEC_DRAFT_MODEL / _HF_REPO; CLI wins over env.
+        assert _extra_args_mtp_draft_path([], env={"LLAMA_ARG_SPEC_DRAFT_MODEL": "/m/e.gguf"}) == "/m/e.gguf"
+        assert _extra_args_mtp_draft_path([], env={"LLAMA_ARG_SPEC_DRAFT_HF_REPO": "x/y"}) == "x/y"
+        assert (
+            _extra_args_mtp_draft_path(["-md", "/m/cli.gguf"], env={"LLAMA_ARG_SPEC_DRAFT_HF_REPO": "x/y"})
+            == "/m/cli.gguf"
+        )
 
     @pytest.mark.parametrize(
         "args,expected",
@@ -392,7 +415,17 @@ class TestExtraArgsMtpDetection:
         ],
     )
     def test_draft_cache_types(self, args, expected):
-        assert _extra_args_draft_cache_types(args) == expected
+        assert _extra_args_draft_cache_types(args, env={}) == expected
+
+    def test_draft_cache_types_env_fallback(self):
+        # The child honors LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_K/_V per axis; CLI wins.
+        assert _extra_args_draft_cache_types([], env={"LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_K": "q8_0"}) == ("q8_0", None)
+        assert _extra_args_draft_cache_types(
+            [], env={"LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_K": "q8_0", "LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_V": "q4_0"}
+        ) == ("q8_0", "q4_0")
+        assert _extra_args_draft_cache_types(
+            ["-ctkd", "q4_0"], env={"LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_K": "q8_0"}
+        ) == ("q4_0", None)
 
     @pytest.mark.parametrize(
         "args,expected",
@@ -406,7 +439,13 @@ class TestExtraArgsMtpDetection:
         ],
     )
     def test_n_ubatch(self, args, expected):
-        assert _extra_args_n_ubatch(args) == expected
+        assert _extra_args_n_ubatch(args, env={}) == expected
+
+    def test_n_ubatch_env_fallback(self):
+        # The child honors LLAMA_ARG_UBATCH; it must reach the compute-buffer reserve.
+        assert _extra_args_n_ubatch([], env={"LLAMA_ARG_UBATCH": "4096"}) == 4096
+        assert _extra_args_n_ubatch(["-ub", "1024"], env={"LLAMA_ARG_UBATCH": "4096"}) == 1024  # CLI wins
+        assert _extra_args_n_ubatch([], env={"LLAMA_ARG_UBATCH": "notint"}) is None
 
 
 # ---------------------------------------------------------------------------

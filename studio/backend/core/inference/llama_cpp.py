@@ -23,7 +23,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Callable, Collection, Generator, Iterable, List, Optional, Union
+from typing import Callable, Collection, Generator, Iterable, List, Mapping, Optional, Union
 
 import httpx
 
@@ -639,31 +639,41 @@ def _extra_args_spec_draft_n_max(extra_args: Optional[Iterable[str]]) -> Optiona
     return found
 
 
-def _extra_args_mtp_draft_path(extra_args: Optional[Iterable[str]]) -> Optional[str]:
-    """Separate drafter path from extras (``--model-draft``/``--spec-draft-model``/``-md``), else None."""
-    if not extra_args:
-        return None
-    args = [str(a) for a in extra_args]
+def _extra_args_mtp_draft_path(
+    extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
+) -> Optional[str]:
+    """Separate drafter from extras (local ``--model-draft``/``--spec-draft-model``/``-md``
+    or HF ``--spec-draft-hf``/``-hfd``/``-hfrd``/``--hf-repo-draft``), else the
+    ``LLAMA_ARG_SPEC_DRAFT_MODEL``/``LLAMA_ARG_SPEC_DRAFT_HF_REPO`` env the child honors,
+    else None. CLI wins. An HF repo spec is not a local file, so the budget can't size it
+    and falls back to the flat reserve -- but recognizing it avoids sizing the wrong drafter."""
+    flags = {
+        "--model-draft", "--spec-draft-model", "-md",
+        "--spec-draft-hf", "-hfd", "-hfrd", "--hf-repo-draft",
+    }
+    args = [str(a) for a in extra_args] if extra_args else []
     found: Optional[str] = None
     for i, raw in enumerate(args):
         flag, eq, inline = raw.partition("=")
-        if flag not in ("--model-draft", "--spec-draft-model", "-md"):
+        if flag not in flags:
             continue
         value = inline if eq else (args[i + 1] if i + 1 < len(args) else "")
         if value and not value.startswith("-"):
             found = value
-    return found
+    if found is not None:
+        return found
+    e = os.environ if env is None else env
+    return e.get("LLAMA_ARG_SPEC_DRAFT_MODEL") or e.get("LLAMA_ARG_SPEC_DRAFT_HF_REPO") or None
 
 
 def _extra_args_draft_cache_types(
-    extra_args: Optional[Iterable[str]],
+    extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
 ) -> tuple[Optional[str], Optional[str]]:
-    """Draft KV cache types from extras as ``(k_type, v_type)``, each None when
-    unset (llama.cpp uses f16). K and V are independent axes -- a one-sided
-    override must not be applied to both, or the budget under-reserves the f16 axis."""
-    if not extra_args:
-        return None, None
-    args = [str(a) for a in extra_args]
+    """Draft KV cache types as ``(k_type, v_type)``, each from extras, else the
+    ``LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_K``/``_V`` env the child honors, else None
+    (llama.cpp uses f16). K and V are independent axes -- a one-sided override must
+    not be applied to both, or the budget under-reserves the f16 axis. CLI wins."""
+    args = [str(a) for a in extra_args] if extra_args else []
     k_flags = {"--cache-type-k-draft", "--spec-draft-type-k", "-ctkd"}
     v_flags = {"--cache-type-v-draft", "--spec-draft-type-v", "-ctvd"}
     k_type: Optional[str] = None
@@ -679,16 +689,21 @@ def _extra_args_draft_cache_types(
             k_type = value
         else:
             v_type = value
+    e = os.environ if env is None else env
+    if k_type is None:
+        k_type = e.get("LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_K") or None
+    if v_type is None:
+        v_type = e.get("LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_V") or None
     return k_type, v_type
 
 
-def _extra_args_n_ubatch(extra_args: Optional[Iterable[str]]) -> Optional[int]:
-    """Physical micro-batch from extras (``--ubatch``/``--ubatch-size``/``-ub``),
-    else None. It drives the compute-graph buffer size, so an override must reach
-    the VRAM reserve or it under-budgets."""
-    if not extra_args:
-        return None
-    args = [str(a) for a in extra_args]
+def _extra_args_n_ubatch(
+    extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
+) -> Optional[int]:
+    """Physical micro-batch from extras (``--ubatch``/``--ubatch-size``/``-ub``), else
+    the ``LLAMA_ARG_UBATCH`` env the child honors, else None. It drives the compute-graph
+    buffer size, so an override must reach the VRAM reserve or it under-budgets. CLI wins."""
+    args = [str(a) for a in extra_args] if extra_args else []
     found: Optional[int] = None
     for i, raw in enumerate(args):
         flag, eq, inline = raw.partition("=")
@@ -699,7 +714,15 @@ def _extra_args_n_ubatch(extra_args: Optional[Iterable[str]]) -> Optional[int]:
             found = int(value)
         except (TypeError, ValueError):
             continue
-    return found
+    if found is not None:
+        return found
+    raw = (os.environ if env is None else env).get("LLAMA_ARG_UBATCH")
+    if raw:
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            pass
+    return None
 
 
 def _build_ngram_mod_flags(
