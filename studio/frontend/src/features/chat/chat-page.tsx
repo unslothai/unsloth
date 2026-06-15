@@ -2029,7 +2029,7 @@ export function ChatPage({
     () => setSettingsOpen(false),
     [setSettingsOpen],
   );
-  const { isMobile } = useSidebar();
+  const { isMobile, pinned } = useSidebar();
 
   const enterCompare = useCallback(() => {
     viewBeforeCompareRef.current = { ...search };
@@ -2357,16 +2357,20 @@ export function ChatPage({
             beneath it, instead of a hard cut. */}
         {view.mode !== "compare" && (
           <div
-            aria-hidden={true}
-            className="pointer-events-none absolute left-0 right-[10px] top-[48px] z-20 h-6 bg-gradient-to-b from-background to-[rgb(from_var(--background)_r_g_b/0)]"
+            aria-hidden
+            className="pointer-events-none absolute left-0 right-[10px] top-[var(--studio-chat-header-height,48px)] z-20 h-6 bg-gradient-to-b from-background to-[rgb(from_var(--background)_r_g_b/0)]"
           />
         )}
         <div
           className={cn(
-            "absolute top-0 left-0 right-[10px] z-30 flex h-[48px] shrink-0 items-start pt-[11px] pr-2 bg-background",
-            isMobile ? "pl-12 pr-1.5" : "pl-2",
+            "absolute top-0 left-0 right-[10px] z-30 flex h-[var(--studio-chat-header-height,48px)] shrink-0 items-start bg-background pt-[var(--studio-chat-header-padding-top,11px)] pr-[calc(0.5rem+var(--studio-window-control-inset,0px))]",
+            isMobile
+              ? "pl-12 pr-1.5"
+              : pinned
+                ? "pl-2"
+                : "pl-[calc(0.5rem+var(--studio-mac-traffic-light-inset,0px))]",
             view.mode === "compare" &&
-              "right-[10px] left-auto w-auto bg-transparent pl-0 pr-2",
+              "right-[10px] left-auto w-auto bg-transparent pl-0 pr-[calc(0.5rem+var(--studio-window-control-inset,0px))]",
           )}
         >
           <div className="flex items-center gap-1">

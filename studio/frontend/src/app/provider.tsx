@@ -6,6 +6,7 @@ import { UpdateBanner } from "@/components/tauri/update-banner";
 import { UpdateScreen } from "@/components/tauri/update-screen";
 import {
   WindowTitlebar,
+  shouldUseNativeMacWindowTitlebar,
   shouldUseCustomWindowTitlebar,
 } from "@/components/tauri/window-titlebar";
 import { Toaster } from "@/components/ui/sonner";
@@ -20,7 +21,13 @@ import { useTauriUpdate } from "@/hooks/use-tauri-update";
 import { isTauri } from "@/lib/api-base";
 import { useRouterState } from "@tanstack/react-router";
 import { ThemeProvider } from "next-themes";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+} from "react";
 
 interface AppProviderProps {
   children: ReactNode;
@@ -175,6 +182,18 @@ const WEB_UPDATE_HIDDEN_ROUTES = new Set([
   "/signup",
 ]);
 
+const MAC_NATIVE_CHROME_STYLE = {
+  "--studio-mac-traffic-light-inset": "78px",
+} as CSSProperties;
+
+const CUSTOM_CHROME_STYLE = {
+  "--studio-titlebar-height": "0px",
+  "--studio-custom-titlebar-height": "34px",
+  "--studio-chat-header-height": "34px",
+  "--studio-chat-header-padding-top": "0px",
+  "--studio-window-control-inset": "112px",
+} as CSSProperties;
+
 function TauriWrapper({ children }: { children: ReactNode }) {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const {
@@ -305,9 +324,26 @@ function TauriWrapper({ children }: { children: ReactNode }) {
     />
   );
 
-  if (!shouldUseCustomWindowTitlebar()) {
+  const usesCustomTitlebar = shouldUseCustomWindowTitlebar();
+  const usesNativeMacTitlebar = shouldUseNativeMacWindowTitlebar();
+
+  if (!usesCustomTitlebar) {
     // macOS desktop uses the native titlebar and returns here before the
     // custom-titlebar branch, so mount the updater banner on this path too.
+    if (usesNativeMacTitlebar) {
+      return (
+        <div
+          className="relative h-dvh min-h-0 overflow-hidden bg-background"
+          style={MAC_NATIVE_CHROME_STYLE}
+        >
+          {content}
+          <LlamaUpdateBanner
+            enabled={showApp && !HIDDEN_TITLEBAR_SIDEBAR_ROUTES.has(pathname)}
+          />
+        </div>
+      );
+    }
+
     return (
       <>
         {content}
@@ -326,9 +362,12 @@ function TauriWrapper({ children }: { children: ReactNode }) {
     showApp && !HIDDEN_TITLEBAR_SIDEBAR_ROUTES.has(pathname);
 
   return (
-    <div className="flex h-dvh min-h-0 flex-col overflow-hidden bg-background [--studio-titlebar-height:34px]">
+    <div
+      className="relative h-dvh min-h-0 overflow-hidden bg-background"
+      style={CUSTOM_CHROME_STYLE}
+    >
       <WindowTitlebar showSidebarSurface={showSidebarSurface} />
-      <div className="min-h-0 flex-1 overflow-hidden">
+      <div className="h-full min-h-0 overflow-hidden">
         {content}
       </div>
       <div className="pointer-events-none fixed bottom-4 right-4 z-[9998] flex w-[calc(100vw-2rem)] max-w-[400px] flex-col items-stretch gap-2">

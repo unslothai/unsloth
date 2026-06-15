@@ -56,6 +56,13 @@ export function shouldUseCustomWindowTitlebar(): boolean {
   return CUSTOM_TITLEBAR_PLATFORMS.some((token) => platform.includes(token));
 }
 
+export function shouldUseNativeMacWindowTitlebar(): boolean {
+  if (!isTauri) {
+    return false;
+  }
+  return getClientPlatform().includes("mac");
+}
+
 async function getAppWindow(): Promise<TauriWindow> {
   const { getCurrentWindow } = await import("@tauri-apps/api/window");
   return getCurrentWindow();
@@ -79,7 +86,7 @@ function WindowControlButton({
       title={label}
       onClick={onClick}
       className={cn(
-        "relative z-[80] inline-flex size-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted/80 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+        "relative z-[80] inline-flex size-8 items-center justify-center rounded-[10px] text-muted-foreground/90 transition-colors hover:bg-nav-surface-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
         className,
       )}
     >
@@ -107,7 +114,7 @@ function RestoreGlyph(): ReactElement {
   return (
     <span aria-hidden="true" className="relative size-3.5">
       <span className="absolute left-0.5 top-0 size-2.5 rounded-[2px] border border-current" />
-      <span className="absolute bottom-0 right-0 size-2.5 rounded-[2px] border border-current bg-muted" />
+      <span className="absolute bottom-0 right-0 size-2.5 rounded-[2px] border border-current bg-background" />
     </span>
   );
 }
@@ -129,6 +136,7 @@ export function WindowTitlebar({
   const [enabled] = useState(shouldUseCustomWindowTitlebar);
   const [maximized, setMaximized] = useState(false);
   const { pinned } = useSidebarPin();
+  const dragLeft = showSidebarSurface ? (pinned ? "17.5rem" : "3rem") : "0px";
 
   const refreshMaximized = useCallback(async () => {
     if (!enabled) {
@@ -239,13 +247,13 @@ export function WindowTitlebar({
   return (
     <>
       <header
-        className="relative z-[60] flex h-[var(--studio-titlebar-height)] shrink-0 select-none items-center text-foreground"
+        className="pointer-events-none absolute inset-x-0 top-0 z-[60] h-[var(--studio-custom-titlebar-height)] select-none text-foreground"
         aria-label="Window titlebar"
       >
         {showSidebarSurface && (
           <div
             className={cn(
-              "h-full shrink-0 border-r border-sidebar-border dark:border-r-0",
+              "pointer-events-auto absolute left-0 top-0 h-full border-r border-sidebar-border dark:border-r-0",
               pinned ? "bg-sidebar" : "bg-white dark:bg-background",
             )}
             style={{ width: pinned ? SIDEBAR_WIDTH : SIDEBAR_WIDTH_ICON }}
@@ -255,13 +263,17 @@ export function WindowTitlebar({
           />
         )}
         <div
-          className="h-full min-w-0 flex-1 border-b border-border/35 bg-muted/35"
+          className="pointer-events-auto absolute top-0 h-2.5"
+          style={{
+            left: dragLeft,
+            right: "calc(var(--studio-window-control-inset,112px) + 0.5rem)",
+          }}
           onMouseDown={handleDragMouseDown}
           onDoubleClick={handleDragDoubleClick}
           aria-hidden="true"
         />
         <div
-          className="flex h-full shrink-0 items-center gap-0.5 border-b border-border/35 bg-muted/35 px-1"
+          className="pointer-events-auto absolute right-1 top-0 flex h-full items-center gap-0.5 px-1"
           role="toolbar"
           aria-label="Window controls"
         >
@@ -282,7 +294,7 @@ export function WindowTitlebar({
           <WindowControlButton
             label="Close window"
             onClick={() => runWindowAction((appWindow) => appWindow.close())}
-            className="hover:bg-destructive hover:text-destructive-foreground focus-visible:ring-destructive/70"
+            className="hover:bg-destructive/10 hover:text-destructive focus-visible:ring-destructive/70 dark:hover:bg-destructive/20"
           >
             <CloseGlyph />
           </WindowControlButton>

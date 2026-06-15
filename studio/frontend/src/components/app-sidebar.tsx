@@ -45,6 +45,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { useAnimatedThemeToggle } from "@/components/ui/animated-theme-toggler";
 import { cn } from "@/lib/utils";
+import { isTauri } from "@/lib/api-base";
 import {
   Archive03Icon,
   ChefHatIcon,
@@ -1446,25 +1447,29 @@ export function AppSidebar() {
                   <HugeiconsIcon icon={HelpCircleIcon} strokeWidth={1.75} className="size-icon" />
                   <span>{t("common.help")}</span>
                 </DropdownMenuItem>
-                <DropdownMenuItem
-                  onSelect={async () => {
-                    // Best-effort server revocation; ignore network errors so
-                    // the local clear still runs and the user lands on /login.
-                    try {
-                      await logout();
-                    } catch {
-                      clearAuthTokens();
-                    }
-                    void navigate({ to: "/login" });
-                  }}
-                >
-                  <HugeiconsIcon icon={Logout05Icon} strokeWidth={1.75} className="size-icon" />
-                  <span>{t("shell.navigation.logOut")}</span>
-                </DropdownMenuItem>
-                <DropdownMenuItem onSelect={() => setShutdownOpen(true)}>
-                  <HugeiconsIcon icon={PowerIcon} strokeWidth={1.75} className="size-icon" />
-                  <span>{t("common.shutdown")}</span>
-                </DropdownMenuItem>
+                {!isTauri && (
+                  <DropdownMenuItem
+                    onSelect={async () => {
+                      // Best-effort server revocation; ignore network errors so
+                      // the local clear still runs and the user lands on /login.
+                      try {
+                        await logout();
+                      } catch {
+                        clearAuthTokens();
+                      }
+                      void navigate({ to: "/login" });
+                    }}
+                  >
+                    <HugeiconsIcon icon={Logout05Icon} strokeWidth={1.75} className="size-icon" />
+                    <span>{t("shell.navigation.logOut")}</span>
+                  </DropdownMenuItem>
+                )}
+                {!isTauri && (
+                  <DropdownMenuItem onSelect={() => setShutdownOpen(true)}>
+                    <HugeiconsIcon icon={PowerIcon} strokeWidth={1.75} className="size-icon" />
+                    <span>{t("common.shutdown")}</span>
+                  </DropdownMenuItem>
+                )}
               </DropdownMenuContent>
             </DropdownMenu>
           </SidebarMenuItem>
@@ -1472,11 +1477,13 @@ export function AppSidebar() {
       </SidebarFooter>
     </Sidebar>
     <ChatSearchDialog />
-    <ShutdownDialog
-      open={shutdownOpen}
-      onOpenChange={setShutdownOpen}
-      onAfterShutdown={removeTrainingUnloadGuard}
-    />
+    {!isTauri && (
+      <ShutdownDialog
+        open={shutdownOpen}
+        onOpenChange={setShutdownOpen}
+        onAfterShutdown={removeTrainingUnloadGuard}
+      />
+    )}
     <Dialog
       open={confirmingDelete !== null}
       onOpenChange={(open) => {

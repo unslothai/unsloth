@@ -26,7 +26,9 @@
         "height": 480,
         "center": true,
         "visible": false,
-        "resizable": false
+        "resizable": false,
+        "titleBarStyle": "Transparent",
+        "hiddenTitle": true
       }
     ]
   },
