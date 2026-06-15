@@ -1551,6 +1551,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         artifactsEnabled,
         mcpEnabledForChat,
         confirmToolCalls,
+        bypassPermissions,
         webFetchToolsEnabled,
         ragEnabled,
         ragSource,
@@ -2483,7 +2484,10 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                       : []),
                   ],
                   mcp_enabled: mcpEnabledForChat,
-                  confirm_tool_calls: confirmToolCalls,
+                  // Bypass Permissions wins: never request the confirm gate
+                  // while bypassing, and tell the backend to drop the sandbox.
+                  confirm_tool_calls: confirmToolCalls && !bypassPermissions,
+                  bypass_permissions: bypassPermissions,
                   // Scope: thread_id = this thread's docs, kb_id = a KB,
                   // project_id = the thread's project sources (auto-on whenever
                   // the project has indexed sources, no Docs pill needed).
