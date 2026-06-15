@@ -28,12 +28,12 @@ export function buildArtifactSrcDoc(code: string): string {
   return `${code}\n${resizeScript}`;
 }
 
-// Preview iframes intentionally omit allow-downloads: generated artifacts can
+// Preview iframes intentionally omit allow-downloads: generated canvases can
 // offer their own UI, but downloads must go through Studio's explicit
 // copy/download controls outside the no-same-origin sandbox.
 export function ArtifactHtmlFrame({
   code,
-  title = "HTML artifact preview",
+  title = "HTML canvas preview",
   className,
   fill = false,
 }: {
