@@ -159,11 +159,12 @@ def run(args):
                         tokenizer,
                         quantization_method = quantization_method,
                     )
-                    if args.push_model:
+                    if args.push_model or args.push_gguf:
                         model.push_to_hub_gguf(
-                            hub_path = args.hub_path,
-                            hub_token = args.hub_token,
+                            args.hub_path,
+                            tokenizer,
                             quantization_method = quantization_method,
+                            token = args.hub_token,
                         )
             else:
                 print(f"Saving model with quantization method: {args.quantization}")
@@ -172,16 +173,17 @@ def run(args):
                     tokenizer,
                     quantization_method = args.quantization,
                 )
-                if args.push_model:
+                if args.push_model or args.push_gguf:
                     model.push_to_hub_gguf(
-                        hub_path = args.hub_path,
-                        hub_token = args.hub_token,
+                        args.hub_path,
+                        tokenizer,
                         quantization_method = args.quantization,
+                        token = args.hub_token,
                     )
         else:
             model.save_pretrained_merged(args.save_path, tokenizer, args.save_method)
             if args.push_model:
-                model.push_to_hub_merged(args.save_path, tokenizer, args.hub_token)
+                model.push_to_hub_merged(args.hub_path, tokenizer, args.save_method, token = args.hub_token)
     else:
         print("Warning: The model is not saved!")
 
