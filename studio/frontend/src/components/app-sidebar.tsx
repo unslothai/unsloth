@@ -44,7 +44,10 @@ import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { useAnimatedThemeToggle } from "@/components/ui/animated-theme-toggler";
-import { shouldUseCustomWindowTitlebar } from "@/components/tauri/window-titlebar";
+import {
+  shouldUseCustomWindowTitlebar,
+  shouldUseNativeMacWindowTitlebar,
+} from "@/components/tauri/window-titlebar";
 import { cn } from "@/lib/utils";
 import { isTauri } from "@/lib/api-base";
 import {
@@ -259,6 +262,7 @@ export function AppSidebar() {
   const t = useT();
   const { isDark, toggleTheme, anchorRef } = useAnimatedThemeToggle();
   const [usesCustomTitlebar] = useState(shouldUseCustomWindowTitlebar);
+  const [usesNativeMacTitlebar] = useState(shouldUseNativeMacWindowTitlebar);
   const { pathname, search } = useRouterState({
     select: (s) => ({
       pathname: s.location.pathname,
@@ -967,6 +971,9 @@ export function AppSidebar() {
           showSidebarBrand
             ? "pl-[17px] pr-3 pt-[14px] pb-[8px] group-data-[collapsible=icon]:px-0"
             : "h-[var(--studio-custom-titlebar-height,34px)] shrink-0 p-0",
+          showSidebarBrand &&
+            usesNativeMacTitlebar &&
+            "pt-[calc(var(--studio-mac-titlebar-height,34px)+14px)] group-data-[collapsible=icon]:pt-[calc(var(--studio-mac-titlebar-height,34px)+8px)]",
         )}
       >
         {showSidebarBrand && (

@@ -183,6 +183,7 @@ const WEB_UPDATE_HIDDEN_ROUTES = new Set([
 ]);
 
 const MAC_NATIVE_CHROME_STYLE = {
+  "--studio-mac-titlebar-height": "34px",
   "--studio-mac-traffic-light-inset": "78px",
 } as CSSProperties;
 
