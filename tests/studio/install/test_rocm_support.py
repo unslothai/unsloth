@@ -2690,6 +2690,15 @@ class TestHipSdkEnvPathResolution:
     """Verify that both install scripts resolve hipinfo/hipconfig via HIP_PATH
     and ROCM_PATH when the tools are not on $PATH, and emit explicit warnings."""
 
+    @staticmethod
+    def _assert_accepts_partial_hipinfo_output(source: str):
+        hipout_idx = source.find("$hipOut = & $hipinfoExe.Source")
+        assert hipout_idx != -1
+        hipinfo_block = source[hipout_idx : hipout_idx + 1600]
+        assert 'if ($hipOut -match "(?i)gcnArchName")' in hipinfo_block
+        assert "$LASTEXITCODE -eq 0 -and $hipOut -match" not in hipinfo_block
+        assert "but reported gcnArchName" in hipinfo_block
+
     # ── hipinfo resolution ────────────────────────────────────────────────────
 
     def test_setup_checks_hip_path_for_hipinfo(self):
@@ -2763,6 +2772,16 @@ class TestHipSdkEnvPathResolution:
         """install.ps1 must warn when hipinfo runs but returns a non-zero exit code."""
         source = _INSTALL_PS1_PATH.read_text(encoding = "utf-8")
         assert "HIP runtime error" in source or "runtime error" in source.lower()
+
+    def test_setup_accepts_hipinfo_gcnarchname_on_nonzero_exit(self):
+        """setup.ps1 must accept partial hipinfo output from the #6043 crash path."""
+        source = _SETUP_PS1_PATH.read_text(encoding = "utf-8")
+        self._assert_accepts_partial_hipinfo_output(source)
+
+    def test_install_accepts_hipinfo_gcnarchname_on_nonzero_exit(self):
+        """install.ps1 must accept partial hipinfo output from the #6043 crash path."""
+        source = _INSTALL_PS1_PATH.read_text(encoding = "utf-8")
+        self._assert_accepts_partial_hipinfo_output(source)
 
     # ── hipconfig resolution ──────────────────────────────────────────────────
 

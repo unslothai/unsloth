@@ -824,12 +824,8 @@ if (-not $HasNvidiaSmi) {
         try {
             $hipOut = & $hipinfoExe.Source 2>&1 | Out-String
             if ($hipOut -match "(?i)gcnArchName") {
-                # Accept partial output even when hipinfo crashes (e.g. exit code
-                # 0xC0000005 / STATUS_ACCESS_VIOLATION on some RDNA 4 hosts): if
-                # the output already contains gcnArchName the device was enumerated
-                # successfully before the crash, so treating it as a ROCm-capable
-                # device is correct.  Discarding this output causes a silent CPU
-                # PyTorch fallback (issue #6043).
+                # hipinfo can crash after printing gcnArchName (#6043).
+                # Once the arch is printed, keep the ROCm wheel path.
                 $HasROCm = $true
                 $_hipAllArches = @([regex]::Matches($hipOut, "(?im)^\s*gcnArchName\s*:\s*(\S+)") | ForEach-Object { ($_.Groups[1].Value -split ':')[0].Trim().ToLower() })
                 $_hipVisIdx = if ($env:HIP_VISIBLE_DEVICES -match '^\d') { [int]($env:HIP_VISIBLE_DEVICES -split ',')[0] } elseif ($env:ROCR_VISIBLE_DEVICES -match '^\d') { [int]($env:ROCR_VISIBLE_DEVICES -split ',')[0] } else { 0 }
