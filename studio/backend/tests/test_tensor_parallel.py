@@ -636,3 +636,7 @@ def test_load_model_tensor_admission_and_capacity_gate_use_usable_budget():
     assert "g[1] >= reserve_mib" not in src  # not raw free
     assert "_tp_weight_budget_mib" in src  # pooled-weight capacity gate
     assert "falling back to layer split" in src  # downgrade on overcommit
+    # The gate's required footprint must include the non-shrinkable MTP reserve,
+    # not weights alone, or a separate-drafter MTP load can still overcommit.
+    assert "_tp_mtp_floor" in src
+    assert "model_size + _tp_mtp_floor" in src

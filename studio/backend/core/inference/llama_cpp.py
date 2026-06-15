@@ -1695,14 +1695,18 @@ class LlamaCppBackend:
                         pass
                 gpus: list[tuple[int, int, int]] = []
                 for line in result.stdout.strip().splitlines():
-                    parts = line.split(",")
-                    if len(parts) == 3:
-                        idx = int(parts[0].strip())
-                        free_mib = int(parts[1].strip())
-                        total_mib = int(parts[2].strip())
-                        if allowed is not None and idx not in allowed:
-                            continue
-                        gpus.append((idx, free_mib, total_mib))
+                    parts = [p.strip() for p in line.split(",")]
+                    if len(parts) < 2:
+                        continue
+                    # Total is optional: a driver/mock that returns the legacy
+                    # two-column "index,free" yields total 0 (the fit then uses
+                    # the free*frac fallback for that GPU).
+                    idx = int(parts[0])
+                    free_mib = int(parts[1])
+                    total_mib = int(parts[2]) if len(parts) >= 3 and parts[2] else 0
+                    if allowed is not None and idx not in allowed:
+                        continue
+                    gpus.append((idx, free_mib, total_mib))
                 # Match the docstring's sort-by-id guarantee (driver order isn't).
                 gpus.sort(key = lambda g: g[0])
                 if gpus:
@@ -1934,10 +1938,12 @@ class LlamaCppBackend:
             usable_fraction = LlamaCppBackend._GPU_PIN_VRAM_FRACTION
 
         # Per-GPU usable budget: free - (1-frac)*total when total is known (cap
-        # occupancy at frac of the card), else the legacy free*frac.
+        # occupancy at frac of the card), else the legacy free*frac (also covers a
+        # two-column probe that reports total 0).
         def _usable(idx: int, free_mib: int) -> float:
-            if total_by_idx and idx in total_by_idx:
-                return max(0.0, free_mib - (1.0 - usable_fraction) * total_by_idx[idx])
+            t = total_by_idx.get(idx, 0) if total_by_idx else 0
+            if t > 0:
+                return max(0.0, free_mib - (1.0 - usable_fraction) * t)
             return free_mib * usable_fraction
 
         # Rank by usable budget (free - reserve), not raw free: a more-used large
@@ -4202,17 +4208,25 @@ class LlamaCppBackend:
 
                     if tensor_parallel and tp_gpus:
                         # The pooled usable budget, after each device's compute
-                        # buffer, must still hold the weights; the planner can only
-                        # floor the context, not stop an overcommitted launch. Fall
-                        # back to layer split when it can't.
+                        # buffer, must hold the non-shrinkable footprint: weights
+                        # plus the MTP reserve (drafter weights + floor draft KV).
+                        # The planner can shrink context/KV, not these, so it would
+                        # only floor the context and still launch overcommitted.
                         _tp_weight_budget_mib = (
                             sum(_gpu_usable(g) for g in tp_gpus) - len(tp_gpus) * reserve_mib
                         )
-                        if _tp_weight_budget_mib <= model_size / (1024 * 1024):
+                        if not _mtp_will_engage:
+                            _tp_mtp_floor = 0
+                        elif mtp_overhead_fn is not None:
+                            _tp_mtp_floor = _mtp_bytes(min(2048, effective_ctx) if effective_ctx > 0 else 2048)
+                        else:
+                            _tp_mtp_floor = 2 * 1024**3  # flat reserve when dims unavailable
+                        _tp_required_mib = (model_size + _tp_mtp_floor) / (1024 * 1024)
+                        if _tp_weight_budget_mib <= _tp_required_mib:
                             logger.info(
                                 "Tensor parallelism requested but the pooled VRAM "
-                                "budget cannot hold the weights plus per-device "
-                                "compute buffers; falling back to layer split."
+                                "budget cannot hold the weights, MTP reserve, and "
+                                "per-device compute buffers; falling back to layer split."
                             )
                             tensor_parallel = False
                             extra_args = strip_split_mode_only(extra_args)

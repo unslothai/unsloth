@@ -211,6 +211,16 @@ class TestWindowsGpuDetectionAfter5106Fix:
             gpus = LlamaCppBackend._get_gpu_free_memory()
         assert gpus == [(1, 24576)], gpus
 
+    def test_get_gpu_memory_parses_three_and_two_column(self, monkeypatch):
+        """Total is parsed when present; a legacy two-column line yields total 0
+        (back-compat) rather than being dropped, which would fall through to the
+        real GPUs."""
+        monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
+        with _mock_nvidia_smi_run("0, 22805, 24576\n"):
+            assert LlamaCppBackend._get_gpu_memory() == [(0, 22805, 24576)]
+        with _mock_nvidia_smi_run("0, 22805\n"):
+            assert LlamaCppBackend._get_gpu_memory() == [(0, 22805, 0)]
+
     def test_windows_install_dir_has_all_three_cudart_dlls(self, tmp_path):
         """All three bundle DLLs must land in install_dir/build/bin/
         Release; any missing one breaks ggml-cuda.dll's PE import chain."""
