@@ -42,6 +42,7 @@ _detect = LlamaCppBackend._is_projector_incompatibility
 _strip = LlamaCppBackend._strip_mmproj_args
 _signal_crash = LlamaCppBackend._is_signal_crash
 _flash_off = LlamaCppBackend._with_flash_attn_off
+_nonproj = LlamaCppBackend._output_has_nonprojector_diagnostic
 
 # Real abort captured loading gemma-4 on a 3-day-old prebuilt (build b9496).
 _GEMMA4_OLD_LLAMACPP_OUT = (
@@ -212,6 +213,56 @@ class TestFlashAttnOff:
         assert out == ["llama-server", "--flash-attn", "off"]
         assert cmd[-1] == "on"  # input not mutated
 
+    def test_flips_equals_form(self):
+        out = _flash_off(["llama-server", "--flash-attn=on", "-c", "4096"])
+        assert out == ["llama-server", "--flash-attn=off", "-c", "4096"]
+
+    def test_flips_fa_alias_and_auto(self):
+        assert _flash_off(["llama-server", "-fa", "auto"]) == ["llama-server", "-fa", "off"]
+        assert _flash_off(["llama-server", "-fa=on"]) == ["llama-server", "-fa=off"]
+
+    def test_flips_every_occurrence_last_wins(self):
+        # extra_args can re-enable FA after Studio's flag; llama.cpp is last-wins,
+        # so one leftover 'on' would re-crash the retry. Every enable must flip.
+        cmd = ["llama-server", "--flash-attn", "on", "--mmproj", "/p", "--flash-attn", "on"]
+        out = _flash_off(cmd)
+        assert out is not None
+        assert "on" not in out
+        assert out.count("off") == 2
+
+    def test_none_when_equals_off(self):
+        assert _flash_off(["llama-server", "--flash-attn=off"]) is None
+
+
+class TestNonProjectorDiagnostic:
+    """_output_has_nonprojector_diagnostic gates the signal-only text-only retry:
+    a hard crash that already names OOM / a bad arch / a TP limit must surface
+    that error, not be silently downgraded to a non-vision session."""
+
+    @pytest.mark.parametrize(
+        "out",
+        [
+            _OOM_OUT,
+            _BAD_ARCH_OUT,
+            "ggml_backend_cuda_buffer_type_alloc: failed to allocate buffer",
+            "split_mode_tensor not implemented for this architecture",
+        ],
+    )
+    def test_known_nonprojector_causes_match(self, out):
+        assert _nonproj(out) is True
+
+    @pytest.mark.parametrize(
+        "out",
+        [
+            "",  # bare crash: no marker -> still eligible for the text-only retry
+            _GEMMA4_OLD_LLAMACPP_OUT,  # a real projector abort must NOT be suppressed
+            _HEALTHY_VISION_OUT,
+            _PORT_OUT,
+        ],
+    )
+    def test_bare_or_projector_output_does_not_match(self, out):
+        assert _nonproj(out) is False
+
 
 class TestRetryContract:
     """The two helpers compose into the load_model retry decision."""
@@ -230,13 +281,27 @@ class TestRetryContract:
         assert _detect(_OOM_OUT) is False
 
     def test_bare_segfault_with_mmproj_yields_text_only_retry(self):
-        # Field report: a -11 SIGSEGV on --mmproj has no projector line; use _is_signal_crash.
+        # Field report: a -11 SIGSEGV on --mmproj has no projector line; the
+        # signal path fires only when no other diagnostic explains the crash.
         out = ""  # a SIGSEGV produced no projector-format line
         assert _detect(out) is False
-        should_retry = _detect(out) or _signal_crash(-11)
+        should_retry = _detect(out) or (_signal_crash(-11) and not _nonproj(out))
         assert should_retry is True
         retry_cmd = _strip(_VISION_CMD)
         assert "--mmproj" not in retry_cmd and "-m" in retry_cmd
+
+    def test_signal_crash_with_oom_output_keeps_the_real_error(self):
+        # A hard fault that already printed an OOM must surface it, not silently
+        # drop --mmproj and tell the user to update llama.cpp.
+        assert _signal_crash(-6) is True
+        should_retry = _detect(_OOM_OUT) or (_signal_crash(-6) and not _nonproj(_OOM_OUT))
+        assert should_retry is False
+
+    def test_signal_crash_with_bad_arch_does_not_drop_vision(self):
+        should_retry = _detect(_BAD_ARCH_OUT) or (
+            _signal_crash(-6) and not _nonproj(_BAD_ARCH_OUT)
+        )
+        assert should_retry is False
 
     def test_clean_nonzero_exit_with_mmproj_does_not_retry(self):
         # Clean non-zero exit (bad path, port bind) is not a hard crash; stay message-based.

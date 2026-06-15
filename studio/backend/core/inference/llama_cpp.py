@@ -3330,6 +3330,25 @@ class LlamaCppBackend:
         )
 
     @staticmethod
+    def _output_has_nonprojector_diagnostic(output: str) -> bool:
+        """True when the output already names a concrete non-projector cause (out
+        of memory, an unsupported architecture, a tensor-parallel limit). A hard
+        crash carrying such a marker must surface that error, not be silently
+        retried text-only as if the vision projector were at fault; a bare crash
+        with no marker still gets the text-only retry.
+        """
+        text = (output or "").lower()
+        return any(
+            m in text
+            for m in (
+                "out of memory",
+                "failed to allocate",
+                "unknown model architecture",
+                "split_mode_tensor not implemented",
+            )
+        )
+
+    @staticmethod
     def _is_signal_crash(returncode: Optional[int]) -> bool:
         """True only on a hard fault (SIGSEGV/SIGABRT/SIGILL/SIGFPE/SIGBUS or a
         Windows 0xC0000000+ status), not SIGKILL/SIGTERM/SIGINT (OOM killer /
@@ -3343,20 +3362,28 @@ class LlamaCppBackend:
 
     @staticmethod
     def _with_flash_attn_off(cmd: list[str]) -> Optional[list[str]]:
-        """Return cmd with '--flash-attn on' flipped to 'off', or None when flash
-        attention is already off / absent (nothing to retry). Flash-attention
-        kernels hard-crash at startup on some ROCm/GPU builds (often in the
-        vision tower); disabling it keeps vision and MTP, so it is the least
-        destructive recovery rung -- tried before dropping either.
+        """Return cmd with every flash-attention enable flipped to 'off', or None
+        when flash attention is already off / absent (nothing to retry).
+        Flash-attention kernels hard-crash at startup on some ROCm/GPU builds
+        (often in the vision tower); disabling it keeps vision and MTP, so it is
+        the least destructive recovery rung -- tried before dropping either.
+        llama.cpp is last-wins, so EVERY occurrence is flipped (--flash-attn /
+        -fa, space or '=' form): one leftover enable (e.g. from extra_args)
+        would re-crash the retry.
         """
         out = list(cmd)
-        for i in range(len(out) - 1):
-            if out[i] == "--flash-attn":
-                if out[i + 1] == "off":
-                    return None
+        changed = False
+        for i, tok in enumerate(out):
+            if tok in ("--flash-attn", "-fa") and i + 1 < len(out) and out[i + 1] in ("on", "auto"):
                 out[i + 1] = "off"
-                return out
-        return None
+                changed = True
+            elif tok in ("--flash-attn=on", "--flash-attn=auto"):
+                out[i] = "--flash-attn=off"
+                changed = True
+            elif tok in ("-fa=on", "-fa=auto"):
+                out[i] = "-fa=off"
+                changed = True
+        return out if changed else None
 
     @staticmethod
     def _strip_mmproj_args(cmd: list[str]) -> list[str]:
@@ -4546,7 +4573,10 @@ class LlamaCppBackend:
                         and not self._cancel_event.is_set()
                         and (
                             self._is_projector_incompatibility(out)
-                            or self._is_signal_crash(_crash_rc)
+                            or (
+                                self._is_signal_crash(_crash_rc)
+                                and not self._output_has_nonprojector_diagnostic(out)
+                            )
                         )
                     ):
                         logger.warning(
