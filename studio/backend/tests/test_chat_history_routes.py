@@ -194,9 +194,7 @@ def test_fork_thread_404_when_source_missing(monkeypatch):
 
 
 def test_fork_thread_404_when_branch_message_missing(monkeypatch):
-    monkeypatch.setattr(
-        chat_history, "get_chat_thread", lambda _id: {"id": _id, "title": "T"}
-    )
+    monkeypatch.setattr(chat_history, "get_chat_thread", lambda _id: {"id": _id, "title": "T"})
     monkeypatch.setattr(chat_history, "get_chat_message", lambda _t, _m: None)
     with pytest.raises(HTTPException) as exc:
         asyncio.run(

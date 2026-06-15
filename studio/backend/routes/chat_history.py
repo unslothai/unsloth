@@ -580,12 +580,8 @@ async def fork_thread(
     # and surface the same warning regardless of provider so the UI can
     # show a consistent "sandbox starts fresh" toast.
     warning: Optional[str] = None
-    if source.get("openaiCodeExecContainerId") or source.get(
-        "anthropicCodeExecContainerId"
-    ):
-        warning = (
-            "Sandbox starts fresh in fork; files from parent are not carried over."
-        )
+    if source.get("openaiCodeExecContainerId") or source.get("anthropicCodeExecContainerId"):
+        warning = "Sandbox starts fresh in fork; files from parent are not carried over."
     return ChatForkResponse(
         thread = ChatThread(**forked),
         messages = [ChatMessage(**m) for m in messages],
