@@ -873,6 +873,10 @@ async def health_check(request: Request):
         "version": UNSLOTH_VERSION,
         "studio_version": STUDIO_VERSION,
         "device_type": device_type,
+        # API-screen fields (authed-only; they fingerprint how the host is exposed).
+        "cloudflare_url": getattr(request.app.state, "cloudflare_url", None),
+        "server_url": getattr(request.app.state, "server_url", None),
+        "secure": bool(getattr(request.app.state, "secure", False)),
     }
 
 
