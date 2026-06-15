@@ -5778,6 +5778,7 @@ class LlamaCppBackend:
         seed: Optional[int] = None,
         disable_parallel_tool_use: bool = False,
         confirm_tool_calls: bool = False,
+        bypass_permissions: bool = False,
     ) -> Generator[dict, None, None]:
         """
         Agentic loop: let the model call tools, execute them, and continue.
@@ -6478,7 +6479,9 @@ class LlamaCppBackend:
                             decision.as_assistant_tool_call()
                         )
 
-                    needs_confirm = bool(confirm_tool_calls)
+                    # Bypass wins over the confirm gate at the loop level too,
+                    # so a direct internal caller with both flags never prompts.
+                    needs_confirm = bool(confirm_tool_calls) and not bypass_permissions
                     approval_id = new_approval_id() if needs_confirm else ""
                     decision_slot = (
                         begin_tool_decision(session_id, approval_id) if needs_confirm else None
@@ -6539,6 +6542,7 @@ class LlamaCppBackend:
                             timeout = _effective_timeout,
                             session_id = session_id,
                             rag_scope = rag_scope,
+                            disable_sandbox = bypass_permissions,
                         )
                         if decision.tool_name == "search_knowledge_base":
                             _kb_search_count += 1

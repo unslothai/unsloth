@@ -3522,12 +3522,18 @@ async def openai_chat_completions(
     # ── External provider routing ────────────────────────────────
     # encrypted_api_key is optional -- local providers (llama.cpp / vLLM / Ollama) may run without auth.
     if payload.provider_id or payload.provider_type:
-        if payload.confirm_tool_calls and (
-            payload.enable_tools is True
-            or bool(payload.enabled_tools)
-            or bool(payload.tools)
-            or bool(payload.openai_code_exec_container_id)
-            or bool(payload.anthropic_code_exec_container_id)
+        # Bypass Permissions suppresses the confirm gate, so do not reject a
+        # request that sets both flags (effective confirm is then False).
+        if (
+            payload.confirm_tool_calls
+            and not payload.bypass_permissions
+            and (
+                payload.enable_tools is True
+                or bool(payload.enabled_tools)
+                or bool(payload.tools)
+                or bool(payload.openai_code_exec_container_id)
+                or bool(payload.anthropic_code_exec_container_id)
+            )
         ):
             raise HTTPException(
                 status_code = 400,
@@ -3909,7 +3915,9 @@ async def openai_chat_completions(
                 use_tools = False
 
         if use_tools:
-            if payload.confirm_tool_calls and not payload.stream:
+            # Bypass Permissions suppresses confirm, so the stream requirement
+            # (the gate needs streaming to prompt) no longer applies.
+            if payload.confirm_tool_calls and not payload.bypass_permissions and not payload.stream:
                 raise HTTPException(
                     status_code = 400,
                     detail = openai_error_body(
@@ -3989,7 +3997,11 @@ async def openai_chat_completions(
                     session_id = payload.session_id,
                     rag_scope = payload.rag_scope,
                     disable_parallel_tool_use = payload.parallel_tool_calls is False,
-                    confirm_tool_calls = bool(payload.confirm_tool_calls),
+                    # Bypass Permissions takes precedence over the confirm gate:
+                    # never prompt while bypassing.
+                    confirm_tool_calls = bool(payload.confirm_tool_calls)
+                    and not bool(payload.bypass_permissions),
+                    bypass_permissions = bool(payload.bypass_permissions),
                 )
 
             _tool_sentinel = object()
@@ -4454,7 +4466,9 @@ async def openai_chat_completions(
             _sf_use_tools = False
 
     if _sf_use_tools:
-        if payload.confirm_tool_calls and not payload.stream:
+        # Bypass Permissions suppresses confirm, so the stream requirement
+        # (the gate needs streaming to prompt) no longer applies.
+        if payload.confirm_tool_calls and not payload.bypass_permissions and not payload.stream:
             raise HTTPException(
                 status_code = 400,
                 detail = openai_error_body(
@@ -4540,7 +4554,11 @@ async def openai_chat_completions(
                 else 300,
                 session_id = payload.session_id,
                 rag_scope = payload.rag_scope,
-                confirm_tool_calls = bool(payload.confirm_tool_calls),
+                # Bypass Permissions takes precedence over the confirm gate:
+                # never prompt while bypassing.
+                confirm_tool_calls = bool(payload.confirm_tool_calls)
+                and not bool(payload.bypass_permissions),
+                bypass_permissions = bool(payload.bypass_permissions),
                 use_adapter = payload.use_adapter,
                 stats_holder = _sf_stats_holder,
             )
@@ -6927,7 +6945,10 @@ async def anthropic_messages(
         )
 
     if server_tools:
-        if bool(getattr(payload, "confirm_tool_calls", False)):
+        # Bypass Permissions suppresses confirm, so both flags together is fine.
+        if bool(getattr(payload, "confirm_tool_calls", False)) and not bool(
+            getattr(payload, "bypass_permissions", False)
+        ):
             raise HTTPException(
                 status_code = 400,
                 detail = anthropic_error_body(
@@ -6984,6 +7005,7 @@ async def anthropic_messages(
                 # Anthropic passthrough has no rag_scope field (RAG is local-only).
                 rag_scope = getattr(payload, "rag_scope", None),
                 disable_parallel_tool_use = _disable_parallel,
+                bypass_permissions = bool(payload.bypass_permissions),
             )
 
         if payload.stream:
