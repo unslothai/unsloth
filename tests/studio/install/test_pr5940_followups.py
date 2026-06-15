@@ -416,5 +416,23 @@ def test_install_python_stack_gates_every_amd_smi_spawn():
     )
 
 
+def test_install_ps1_installs_rocm_torch_for_known_arch():
+    # A known AMD arch (even name-inferred, $HasROCm false) must select the ROCm
+    # torch index directly instead of laying down a CPU base that setup.ps1 then
+    # force-reinstalls as ROCm (wasted download). The bundled-runtime
+    # repo.amd.com wheels need no HIP SDK, so the gate is $ROCmGfxArch-based.
+    text = _INSTALL_PS1.read_text(encoding = "utf-8")
+    gates = [
+        ln for ln in text.splitlines()
+        if '$TorchIndexUrl -like "*/cpu"' in ln and ln.lstrip().startswith("if ")
+    ]
+    assert gates, "ROCm-index selection gate not found in install.ps1"
+    assert any("$ROCmGfxArch" in ln for ln in gates), (
+        "install.ps1 gates ROCm torch only on probe-verified ROCm ($HasROCm); a "
+        "known/name-inferred arch should install ROCm directly to avoid a wasted "
+        "CPU PyTorch base that setup.ps1 immediately force-reinstalls."
+    )
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

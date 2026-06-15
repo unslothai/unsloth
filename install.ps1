@@ -1649,10 +1649,10 @@ shell.Run cmd, 0, False
         }
         # ── Arch resolution: env-var override → name inference ──────────────
         # Runs even when the hipinfo/amd-smi probe could NOT confirm a runtime
-        # ($HasROCm false): the gfx arch inferred from the WMI GPU name lets the
-        # studio setup forward --rocm-gfx and pull a GPU-accelerated ROCm
-        # llama.cpp, which bundles its own ROCm runtime. PyTorch's ROCm wheels
-        # still require a confirmed HIP SDK -- they stay gated on $HasROCm below.
+        # ($HasROCm false): the gfx arch inferred from the WMI GPU name drives
+        # both the GPU-accelerated ROCm llama.cpp and the PyTorch ROCm wheels.
+        # repo.amd.com wheels bundle their own runtime (no HIP SDK needed), so a
+        # mapped arch installs ROCm torch directly below -- no wasted CPU base.
         if (-not $ROCmGfxArch) {
             # 1. Manual override: set UNSLOTH_ROCM_GFX_ARCH=gfx1151 before running.
             if ($env:UNSLOTH_ROCM_GFX_ARCH) {
@@ -1838,7 +1838,7 @@ shell.Run cmd, 0, False
     # Override with UNSLOTH_ROCM_WINDOWS_MIRROR for air-gapped / mirror installs.
     $ROCmIndexUrl = $null
     $ROCmTorchFloor = $null
-    if ($HasROCm -and $TorchIndexUrl -like "*/cpu" -and -not $SkipTorch) {
+    if (($HasROCm -or $ROCmGfxArch) -and $TorchIndexUrl -like "*/cpu" -and -not $SkipTorch) {
         $amdIndexBase = if ($env:UNSLOTH_ROCM_WINDOWS_MIRROR) { $env:UNSLOTH_ROCM_WINDOWS_MIRROR.TrimEnd('/') } else { "https://repo.amd.com/rocm/whl" }
         $archFamilyMap = @{
             "gfx1201" = "gfx120X-all"; "gfx1200" = "gfx120X-all"  # RDNA 4
@@ -1992,8 +1992,14 @@ shell.Run cmd, 0, False
             $torchSpec = if ($ROCmTorchFloor) { $ROCmTorchFloor } else { "torch" }
             $torchInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --force-reinstall --index-url $ROCmIndexUrl $torchSpec torchvision torchaudio }
             if ($torchInstallExit -ne 0) {
-                Write-Host "[ERROR] Failed to install AMD ROCm PyTorch (exit code $torchInstallExit)" -ForegroundColor Red
-                return (Exit-InstallFailure "Failed to install AMD ROCm PyTorch (exit code $torchInstallExit)" $torchInstallExit)
+                # Transient AMD-index failure: fall back to a CPU base so the install
+                # still completes; Studio setup retries ROCm afterwards.
+                substep "ROCm PyTorch install failed (exit $torchInstallExit); using a CPU base, Studio setup retries ROCm." "Yellow"
+                $torchInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython "torch>=2.4,<2.11.0" torchvision torchaudio --index-url $TorchIndexUrl }
+                if ($torchInstallExit -ne 0) {
+                    Write-Host "[ERROR] Failed to install PyTorch (ROCm and CPU base both failed, exit code $torchInstallExit)" -ForegroundColor Red
+                    return (Exit-InstallFailure "Failed to install PyTorch (exit code $torchInstallExit)" $torchInstallExit)
+                }
             }
         } else {
             Write-TauriLog "STEP" "Installing PyTorch"
