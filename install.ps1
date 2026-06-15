@@ -1967,6 +1967,20 @@ shell.Run cmd, 0, False
             & wsl.exe -d $distro --cd /root -u root -- /root/.unsloth/studio/unsloth_studio/bin/python -c "import torch,sys; sys.exit(0 if torch.cuda.is_available() else 3)" *> $null
             $torchOk = ($LASTEXITCODE -eq 0)
         } catch {} finally { $ErrorActionPreference = $prevEapChk }
+        # torch.cuda alone isn't success: install.sh can exit after PyTorch but before the `unsloth`
+        # package/console script (e.g. a transient `uv pip install unsloth`), and $wslRc can't tell
+        # (it also goes non-zero on the optional llama prebuilt step). Verify the exact binary the shim
+        # execs exists -- else we'd write a dangling shim and report a broken install as success.
+        if ($torchOk) {
+            $prevEapCli = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+            $global:LASTEXITCODE = -1
+            try { & wsl.exe -d $distro --cd /root -u root -- test -x /root/.unsloth/studio/unsloth_studio/bin/unsloth *> $null } catch {}
+            $ErrorActionPreference = $prevEapCli
+            if ($LASTEXITCODE -ne 0) {
+                substep "WSL install incomplete: 'unsloth' CLI missing (install.sh cut short after PyTorch) -- not creating a dangling shim." "Yellow"
+                $torchOk = $false
+            }
+        }
         # Self-heal web-server deps: a cut-short install.sh "studio deps" step leaves torch + unsloth but
         # no fastapi/uvicorn/structlog/starlette (`unsloth studio` dies). Reinstall them unpinned (no
         # huggingface-hub/transformers/datasets) so the verified GPU torch stack stays intact.
