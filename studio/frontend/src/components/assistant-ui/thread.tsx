@@ -1119,6 +1119,30 @@ const ImagesToggle: FC = () => {
   );
 };
 
+// Red pill shown while Bypass Permissions is on; click to turn it off.
+// Mirror of shared-composer's badge so both composers surface the state.
+const BypassPermissionsToggle: FC = () => {
+  const bypassPermissions = useChatRuntimeStore((s) => s.bypassPermissions);
+  const setBypassPermissions = useChatRuntimeStore(
+    (s) => s.setBypassPermissions,
+  );
+  if (!bypassPermissions) return null;
+  return (
+    <button
+      type="button"
+      onClick={() => setBypassPermissions(false)}
+      className="composer-pill-btn"
+      data-active="true"
+      data-variant="danger"
+      aria-label="Disable Bypass Permissions"
+      title="Bypass Permissions is on (no confirmation, no sandbox). Click to turn off."
+    >
+      <XIcon className="size-3" />
+      <span>Bypass Permissions</span>
+    </button>
+  );
+};
+
 const ToolStatusDisplay: FC = () => {
   const toolStatus = useChatRuntimeStore((s) => s.toolStatus);
   const isThreadRunning = useAuiState(({ thread }) => thread.isRunning);
@@ -1191,6 +1215,7 @@ const ComposerAction: FC<{
         <WebSearchToggle />
         <CodeToolsToggle />
         <ImagesToggle />
+        <BypassPermissionsToggle />
       </div>
       <div className="flex items-center gap-1">
         <ComposerPrimitive.If dictation={false}>
