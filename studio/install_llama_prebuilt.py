@@ -139,6 +139,11 @@ DEFAULT_PUBLISHED_SHA256_ASSET = os.environ.get(
 UPSTREAM_REPO = "ggml-org/llama.cpp"
 UPSTREAM_RELEASES_API = f"https://api.github.com/repos/{UPSTREAM_REPO}/releases/latest"
 
+# CDNA data-center arches lemonade ships ROCm bundles for that the fork's per-gfx
+# bundles do not (MI100 / MI200). Consumer/APU arches are served by the fork.
+LEMONADE_ROCM_REPO = "lemonade-sdk/llamacpp-rocm"
+_LEMONADE_DATACENTER_ARCHES = ("gfx908", "gfx90a")
+
 
 TEST_MODEL_URL = "https://huggingface.co/ggml-org/models/resolve/main/tinyllamas/stories260K.gguf"
 TEST_MODEL_SHA256 = "270cba1bd5109f42d03350f60406024560464db173c0e387d91f0426d3bd256d"
@@ -1588,6 +1593,89 @@ def pinned_macos_release_tag(host: HostInfo, repo: str) -> str | None:
     return _PINNED_MACOS_FALLBACK_TAG
 
 
+def _lemonade_datacenter_gfx(gfx_target: str | None) -> str | None:
+    """The host gfx if it is a data-center arch only lemonade covers, else None."""
+    gfx = (gfx_target or "").lower().strip()
+    return gfx if gfx in _LEMONADE_DATACENTER_ARCHES else None
+
+
+def _lemonade_release_api_for(llama_tag: str) -> str:
+    """Lemonade release API URL. Lemonade uses its own tag series, so a pinned
+    fork/ggml-org tag will 404 here; only 'latest' or a lemonade tag resolve."""
+    tag = (llama_tag or "").strip()
+    if not tag or tag.lower() == "latest":
+        return f"https://api.github.com/repos/{LEMONADE_ROCM_REPO}/releases/latest"
+    return (
+        f"https://api.github.com/repos/{LEMONADE_ROCM_REPO}/releases/tags/"
+        f"{urllib.parse.quote(tag, safe = '')}"
+    )
+
+
+def resolve_lemonade_rocm_choice(
+    host: HostInfo, os_prefix: str, install_kind: str, llama_tag: str = "latest"
+) -> AssetChoice | None:
+    """Lemonade ROCm bundle for a data-center AMD GPU (gfx908/gfx90a) the fork
+    does not ship. None for any other arch or on a fetch/asset/host miss.
+    Lemonade assets are not in the approved-hash manifest, so integrity is
+    functional validation only; UNSLOTH_DISABLE_LEMONADE_ROCM opts out."""
+    gfx = _lemonade_datacenter_gfx(host.rocm_gfx_target)
+    if gfx is None:
+        return None
+    if os.environ.get("UNSLOTH_DISABLE_LEMONADE_ROCM", "").strip().lower() in ("1", "true", "yes"):
+        log("UNSLOTH_DISABLE_LEMONADE_ROCM is set; skipping lemonade-sdk prebuilt")
+        return None
+    try:
+        release = fetch_json(_lemonade_release_api_for(llama_tag))
+    except Exception as exc:
+        log(f"Could not fetch {LEMONADE_ROCM_REPO} release ({exc}); skipping lemonade prebuilt")
+        return None
+    release_tag = release.get("tag_name") if isinstance(release, dict) else None
+    if not isinstance(release_tag, str) or not release_tag:
+        return None
+    asset_name = f"llama-{release_tag}-{os_prefix}-rocm-{gfx}-x64.zip"
+    asset_url = release_asset_map(release).get(asset_name)
+    # browser_download_url for a release asset is always github.com/<repo>/download.
+    trusted = (asset_url or "").startswith(
+        f"https://github.com/{LEMONADE_ROCM_REPO}/releases/download/"
+    )
+    if not asset_url or not trusted:
+        log(f"{LEMONADE_ROCM_REPO}@{release_tag} missing or untrusted {asset_name!r}; skipping")
+        return None
+    return AssetChoice(
+        repo = LEMONADE_ROCM_REPO,
+        tag = release_tag,
+        name = asset_name,
+        url = asset_url,
+        source_label = "lemonade",
+        install_kind = install_kind,
+        selection_log = [f"rocm_selection: data-center GPU {host.rocm_gfx_target} -> {asset_name}"],
+    )
+
+
+def _lemonade_release_plans(
+    llama_tag: str, host: HostInfo
+) -> tuple[str, list[InstallReleasePlan]]:
+    """Single-attempt plan for a data-center AMD GPU, sourced from lemonade. The
+    marker records the lemonade repo/tag so updates re-check and re-install it."""
+    requested_tag = normalized_requested_llama_tag(llama_tag)
+    os_prefix, install_kind = (
+        ("windows", "windows-hip") if host.is_windows else ("ubuntu", "linux-rocm")
+    )
+    choice = resolve_lemonade_rocm_choice(host, os_prefix, install_kind, llama_tag = requested_tag)
+    if choice is None:
+        raise PrebuiltFallback("no lemonade ROCm prebuilt for this data-center GPU")
+    plan = InstallReleasePlan(
+        requested_tag = requested_tag,
+        llama_tag = choice.tag,
+        release_tag = choice.tag,
+        attempts = [choice],
+        approved_checksums = synthetic_checksums_for_release(
+            LEMONADE_ROCM_REPO, choice.tag, choice.tag
+        ),
+    )
+    return requested_tag, [plan]
+
+
 def resolve_simple_install_release_plans(
     llama_tag: str,
     host: HostInfo,
@@ -1597,6 +1685,15 @@ def resolve_simple_install_release_plans(
     max_release_fallbacks: int = DEFAULT_MAX_PREBUILT_RELEASE_FALLBACKS,
 ) -> tuple[str, list[InstallReleasePlan]]:
     repo = published_repo or DEFAULT_PUBLISHED_REPO
+    # Data-center AMD GPUs (gfx908/gfx90a) are not in the fork's per-gfx bundles;
+    # serve them from lemonade. Catches the fork-routed fresh install and the
+    # lemonade-repo update re-install alike.
+    if (
+        host.is_x86_64
+        and not host.has_usable_nvidia
+        and (repo == LEMONADE_ROCM_REPO or _lemonade_datacenter_gfx(host.rocm_gfx_target))
+    ):
+        return _lemonade_release_plans(llama_tag, host)
     # The fork (unslothai) ships a manifest describing every bundle's GPU/arch
     # coverage, so all fork hosts select from it. Upstream (ggml-org) ships no
     # manifest and is selected by asset filename in the loop below.
@@ -6857,7 +6954,9 @@ def main() -> int:
             else:
                 payload = {
                     "prebuilt_available": True,
-                    "repo": repo,
+                    # The plan's repo, not the host default: a data-center GPU
+                    # routed to the fork is actually served from lemonade.
+                    "repo": plans[0].approved_checksums.repo or repo,
                     "release_tag": plans[0].release_tag,
                     "llama_tag": plans[0].llama_tag,
                     "asset": choice.name,

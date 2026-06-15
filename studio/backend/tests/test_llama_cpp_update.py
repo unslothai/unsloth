@@ -83,6 +83,7 @@ def _write_install(
     repo: str = "unslothai/llama.cpp",
     asset: str | None = None,
     release_tag: str | None = None,
+    source: str | None = None,
 ) -> str:
     """Create a fake prebuilt install tree and return the llama-server path.
 
@@ -104,6 +105,8 @@ def _write_install(
     }
     if asset is not None:
         marker["asset"] = asset
+    if source is not None:
+        marker["source"] = source
     (dir_ / MARKER).write_text(json.dumps(marker))
     return str(binary)
 
@@ -312,6 +315,98 @@ def test_status_up_to_date(monkeypatch, tmp_path):
     assert st["installed_tag"] == "b9518"
     assert st["latest_tag"] == "b9518"
     assert st["update_available"] is False
+
+
+def test_status_lemonade_marker_compares_against_fork(monkeypatch, tmp_path):
+    # A pre-#6225 lemonade install whose marker recorded ggml-org (Adrenalin-only
+    # Windows) must compare against the fork's latest, not ggml-org's, so it
+    # migrates onto the fork's per-gfx bundle.
+    binary = _write_install(
+        tmp_path,
+        "b9518",
+        repo = "ggml-org/llama.cpp",
+        asset = "llama-b1292-windows-rocm-gfx1151-x64.zip",
+        source = "lemonade",
+    )
+    monkeypatch.setattr(upd, "_find_binary", lambda: binary)
+    monkeypatch.setattr(freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9632-mix-2d6bd50")
+    st = upd.get_update_status(force_refresh = True)
+    assert st["update_available"] is True
+    assert st["published_repo"] == "unslothai/llama.cpp"  # not the recorded ggml-org
+    assert st["latest_tag"] == "b9632-mix-2d6bd50"
+
+
+def test_start_update_lemonade_marker_targets_fork(monkeypatch, tmp_path):
+    # start_update on the same marker re-installs from the fork with the gfx
+    # recovered from the lemonade asset name.
+    install_dir = tmp_path / "llama.cpp"
+    binary = _write_install(
+        install_dir,
+        "b9518",
+        repo = "ggml-org/llama.cpp",
+        asset = "llama-b1292-windows-rocm-gfx1151-x64.zip",
+        source = "lemonade",
+    )
+    monkeypatch.setattr(upd, "_find_binary", lambda: binary)
+    monkeypatch.setattr(upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py")
+    monkeypatch.setattr(freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9632-mix-2d6bd50")
+    captured = {}
+    _patch_installer_popen(monkeypatch, on_start = lambda cmd: captured.update(cmd = cmd))
+    res = upd.start_update()
+    assert res["started"] is True, res
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        if upd.get_update_status()["job"]["state"] in ("success", "error"):
+            break
+        time.sleep(0.05)
+    cmd = captured["cmd"]
+    assert "--published-repo" in cmd and "unslothai/llama.cpp" in cmd
+    assert "ggml-org/llama.cpp" not in cmd
+    assert cmd[cmd.index("--rocm-gfx") + 1] == "gfx1151"
+
+
+def test_status_datacenter_lemonade_marker_stays_on_lemonade(monkeypatch, tmp_path):
+    # A data-center install (gfx908/gfx90a) recorded the lemonade repo; the fork
+    # has no such bundle, so its update must keep checking lemonade.
+    binary = _write_install(
+        tmp_path,
+        "b1292",
+        repo = "lemonade-sdk/llamacpp-rocm",
+        asset = "llama-b1292-ubuntu-rocm-gfx908-x64.zip",
+        source = "lemonade",
+    )
+    monkeypatch.setattr(upd, "_find_binary", lambda: binary)
+    monkeypatch.setattr(freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b1300")
+    st = upd.get_update_status(force_refresh = True)
+    assert st["published_repo"] == "lemonade-sdk/llamacpp-rocm"
+    assert st["latest_tag"] == "b1300"
+    assert st["update_available"] is True
+
+
+def test_start_update_datacenter_marker_targets_lemonade(monkeypatch, tmp_path):
+    install_dir = tmp_path / "llama.cpp"
+    binary = _write_install(
+        install_dir,
+        "b1292",
+        repo = "lemonade-sdk/llamacpp-rocm",
+        asset = "llama-b1292-ubuntu-rocm-gfx908-x64.zip",
+        source = "lemonade",
+    )
+    monkeypatch.setattr(upd, "_find_binary", lambda: binary)
+    monkeypatch.setattr(upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py")
+    monkeypatch.setattr(freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b1300")
+    captured = {}
+    _patch_installer_popen(monkeypatch, on_start = lambda cmd: captured.update(cmd = cmd))
+    res = upd.start_update()
+    assert res["started"] is True, res
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        if upd.get_update_status()["job"]["state"] in ("success", "error"):
+            break
+        time.sleep(0.05)
+    cmd = captured["cmd"]
+    assert "--published-repo" in cmd and "lemonade-sdk/llamacpp-rocm" in cmd
+    assert cmd[cmd.index("--rocm-gfx") + 1] == "gfx908"
 
 
 def test_start_update_no_marker_no_prebuilt_refuses(monkeypatch, tmp_path):

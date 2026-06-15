@@ -31,6 +31,11 @@ _RELEASE_CACHE_TTL_SECONDS = 24 * 60 * 60
 
 _INSTALL_MARKER_NAME = "UNSLOTH_PREBUILT_INFO.json"
 
+# The fork now ships the per-gfx ROCm bundles lemonade used to (same gfx
+# coverage), so lemonade installs update from the fork. See effective_published_repo.
+DEFAULT_PUBLISHED_REPO = "unslothai/llama.cpp"
+LEMONADE_ROCM_REPO = "lemonade-sdk/llamacpp-rocm"
+
 _marker_cache: dict[str, Optional[dict]] = {}
 _release_memo: dict[str, tuple[float, Optional[str]]] = {}
 
@@ -70,6 +75,21 @@ def read_install_marker(binary_path: Optional[str]) -> Optional[dict]:
             break
     _marker_cache[binary_path] = marker
     return marker
+
+
+def effective_published_repo(marker: Optional[dict]) -> Optional[str]:
+    """Repo whose releases supersede this install. A pre-#6225 consumer lemonade
+    install recorded a non-fork published_repo (the fork for tooling hosts, but
+    ggml-org for Adrenalin-only Windows), yet the fork now ships those per-gfx
+    ROCm bundles; route its updates to the fork. Data-center installs (gfx908/
+    gfx90a) recorded the lemonade repo and keep updating from it (the fork has no
+    such bundle). Non-lemonade markers keep their published_repo."""
+    if not marker:
+        return None
+    repo = marker.get("published_repo")
+    if (marker.get("source") or "").lower() == "lemonade" and repo != LEMONADE_ROCM_REPO:
+        return DEFAULT_PUBLISHED_REPO
+    return repo
 
 
 def _cache_path_for(repo: str) -> Path:
@@ -260,7 +280,8 @@ def check_prebuilt_freshness(
     # full "release_tag" -- deliberately opposite fallbacks.
     out["installed_tag"] = marker.get("tag") or marker.get("release_tag")
     out["installed_at_utc"] = marker.get("installed_at_utc")
-    out["published_repo"] = marker.get("published_repo")
+    # Lemonade installs compare against (and later re-install from) the fork.
+    out["published_repo"] = effective_published_repo(marker)
 
     # The marker records both a normalized base tag ("tag", e.g. b9596) and the
     # full release tag ("release_tag", e.g. b9596-mix-<sha>). Compare against the

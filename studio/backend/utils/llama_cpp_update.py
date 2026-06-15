@@ -36,6 +36,7 @@ import structlog
 from utils.llama_cpp_freshness import (
     _INSTALL_MARKER_NAME,
     check_prebuilt_freshness,
+    effective_published_repo,
     latest_published_release,
     parse_base_build,
     read_install_marker,
@@ -294,7 +295,7 @@ def get_update_status(*, force_refresh: bool = False) -> dict:
         if src is not None:
             return src
 
-    repo = (marker or {}).get("published_repo") or DEFAULT_PUBLISHED_REPO
+    repo = effective_published_repo(marker) or DEFAULT_PUBLISHED_REPO
 
     if force_refresh and repo:
         # Prime the cache so the freshness read below sees the newest tag.
@@ -505,7 +506,7 @@ def start_update() -> dict:
                 "job": status["job"],
             }
         install_dir = _install_dir_for(binary)
-        repo = marker.get("published_repo") or DEFAULT_PUBLISHED_REPO
+        repo = effective_published_repo(marker) or DEFAULT_PUBLISHED_REPO
         from_tag = marker.get("tag") or marker.get("release_tag")
         asset = marker.get("asset")
     else:

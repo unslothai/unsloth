@@ -330,6 +330,77 @@ class TestResolveUpstreamAssetChoice:
             resolve_upstream_asset_choice(host, LLAMA_TAG)
 
 
+# TEST: install_llama_prebuilt.py -- data-center ROCm (lemonade) routing
+
+
+def _lemonade_release(tag = "b1300"):
+    base = f"https://github.com/lemonade-sdk/llamacpp-rocm/releases/download/{tag}"
+    names = [
+        f"llama-{tag}-ubuntu-rocm-gfx908-x64.zip",
+        f"llama-{tag}-ubuntu-rocm-gfx90a-x64.zip",
+        f"llama-{tag}-windows-rocm-gfx908-x64.zip",
+    ]
+    return {
+        "tag_name": tag,
+        "assets": [{"name": n, "browser_download_url": f"{base}/{n}"} for n in names],
+    }
+
+
+class TestDataCenterLemonadeRouting:
+    """gfx908/gfx90a (MI100/MI200) are not in the fork's per-gfx bundles, so they
+    are served from lemonade at install and update time. Consumer arches and
+    NVIDIA hosts must not be routed here."""
+
+    @patch.object(prebuilt_mod, "fetch_json", return_value = _lemonade_release())
+    def test_datacenter_linux_routes_to_lemonade(self, _mock):
+        host = rocm_host(rocm_gfx_target = "gfx908")
+        _tag, plans = prebuilt_mod.resolve_simple_install_release_plans(
+            "latest", host, prebuilt_mod.DEFAULT_PUBLISHED_REPO, ""
+        )
+        choice = plans[0].attempts[0]
+        assert choice.source_label == "lemonade"
+        assert choice.repo == prebuilt_mod.LEMONADE_ROCM_REPO
+        assert choice.install_kind == "linux-rocm" and "gfx908" in choice.name
+        # Marker repo (published_repo) is lemonade, so updates re-check lemonade.
+        assert plans[0].approved_checksums.repo == prebuilt_mod.LEMONADE_ROCM_REPO
+
+    @patch.object(prebuilt_mod, "fetch_json", return_value = _lemonade_release())
+    def test_update_via_lemonade_repo_routes_to_lemonade(self, _mock):
+        # The update path re-invokes with --published-repo lemonade + --rocm-gfx.
+        host = rocm_host(rocm_gfx_target = "gfx90a")
+        _tag, plans = prebuilt_mod.resolve_simple_install_release_plans(
+            "latest", host, prebuilt_mod.LEMONADE_ROCM_REPO, ""
+        )
+        assert plans[0].attempts[0].name.endswith("ubuntu-rocm-gfx90a-x64.zip")
+
+    def test_consumer_arch_not_routed_to_lemonade(self, monkeypatch):
+        # gfx1151 is a fork family: lemonade returns None and the dispatch must
+        # fall through to the fork manifest path, not lemonade.
+        host = rocm_host(rocm_gfx_target = "gfx1151")
+        assert prebuilt_mod.resolve_lemonade_rocm_choice(host, "ubuntu", "linux-rocm") is None
+        sentinel = ("forkpath", [])
+        monkeypatch.setattr(prebuilt_mod, "_fork_manifest_release_plans", lambda *a, **k: sentinel)
+        assert prebuilt_mod.resolve_simple_install_release_plans(
+            "latest", host, prebuilt_mod.DEFAULT_PUBLISHED_REPO, ""
+        ) == sentinel
+
+    def test_nvidia_with_stray_gfx_not_routed_to_lemonade(self, monkeypatch):
+        host = nvidia_host(has_rocm = True, rocm_gfx_target = "gfx908")
+        sentinel = ("forkpath", [])
+        monkeypatch.setattr(prebuilt_mod, "_fork_manifest_release_plans", lambda *a, **k: sentinel)
+        assert prebuilt_mod.resolve_simple_install_release_plans(
+            "latest", host, prebuilt_mod.DEFAULT_PUBLISHED_REPO, ""
+        ) == sentinel
+
+    @patch.object(prebuilt_mod, "fetch_json")
+    def test_untrusted_asset_url_skipped(self, mock_fetch):
+        rel = _lemonade_release()
+        rel["assets"][0]["browser_download_url"] = "https://evil.example.com/x.zip"
+        mock_fetch.return_value = rel
+        host = rocm_host(rocm_gfx_target = "gfx908")
+        assert prebuilt_mod.resolve_lemonade_rocm_choice(host, "ubuntu", "linux-rocm") is None
+
+
 # TEST: install_llama_prebuilt.py -- runtime_patterns_for_choice
 
 
