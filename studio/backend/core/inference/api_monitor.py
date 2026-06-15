@@ -160,14 +160,16 @@ class ApiMonitor:
             ):
                 # Derive only when no authoritative total has been set;
                 # a later partial chunk must not clobber a provider total.
-                entry.total_tokens = (entry.prompt_tokens or 0) + (
-                    entry.completion_tokens or 0
-                )
+                entry.total_tokens = (entry.prompt_tokens or 0) + (entry.completion_tokens or 0)
             if context_length is not None:
                 entry.context_length = context_length
             entry.updated_at = time.time()
 
-    def finish(self, entry_id: Optional[str], status: str = "completed") -> None:
+    def finish(
+        self,
+        entry_id: Optional[str],
+        status: str = "completed",
+    ) -> None:
         if not entry_id:
             return
         with self._lock:

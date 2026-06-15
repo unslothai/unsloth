@@ -1335,9 +1335,7 @@ def _monitor_prompt_from_messages(messages) -> str:
         role = msg.get("role") if isinstance(msg, dict) else getattr(msg, "role", "")
         content = msg.get("content") if isinstance(msg, dict) else getattr(msg, "content", "")
         tool_calls = (
-            msg.get("tool_calls")
-            if isinstance(msg, dict)
-            else getattr(msg, "tool_calls", None)
+            msg.get("tool_calls") if isinstance(msg, dict) else getattr(msg, "tool_calls", None)
         )
         text = _monitor_content_text(content)
         if tool_calls and not text:
@@ -1347,7 +1345,11 @@ def _monitor_prompt_from_messages(messages) -> str:
     return "\n\n".join(lines)
 
 
-def _monitor_usage(monitor_id: Optional[str], usage: Optional[dict], context_length = None):
+def _monitor_usage(
+    monitor_id: Optional[str],
+    usage: Optional[dict],
+    context_length = None,
+):
     if not usage:
         return
     api_monitor.set_usage(
@@ -1359,7 +1361,11 @@ def _monitor_usage(monitor_id: Optional[str], usage: Optional[dict], context_len
     )
 
 
-def _monitor_openai_chunk(monitor_id: Optional[str], data: dict, context_length = None):
+def _monitor_openai_chunk(
+    monitor_id: Optional[str],
+    data: dict,
+    context_length = None,
+):
     if not monitor_id:
         return
     _monitor_usage(monitor_id, data.get("usage"), context_length)
@@ -2389,9 +2395,7 @@ async def confirm_tool_call(
 
 
 @studio_router.get("/monitor")
-async def get_api_monitor(
-    current_subject: str = Depends(get_current_subject),
-):
+async def get_api_monitor(current_subject: str = Depends(get_current_subject)):
     """Return recent OpenAI-compatible API activity for Studio."""
     active_model = _monitor_active_model()
     active_requests = api_monitor.active_count()
@@ -3895,9 +3899,7 @@ async def openai_chat_completions(
                             model = model_name,
                             choices = [ChunkChoice(delta = ChoiceDelta(), finish_reason = "stop")],
                         )
-                        api_monitor.finish(
-                            monitor_id, "cancelled" if cancelled else "completed"
-                        )
+                        api_monitor.finish(monitor_id, "cancelled" if cancelled else "completed")
                         yield f"data: {final_chunk.model_dump_json(exclude_none = True)}\n\n"
                         yield "data: [DONE]\n\n"
                     except asyncio.CancelledError:
@@ -4329,7 +4331,9 @@ async def openai_chat_completions(
                     if usage_line is not None:
                         yield usage_line
                     _monitor_usage(monitor_id, _stream_usage, llama_backend.context_length)
-                    api_monitor.finish(monitor_id, "cancelled" if cancel_event.is_set() else "completed")
+                    api_monitor.finish(
+                        monitor_id, "cancelled" if cancel_event.is_set() else "completed"
+                    )
                     yield "data: [DONE]\n\n"
 
                 except asyncio.CancelledError:
@@ -8565,7 +8569,10 @@ async def _openai_passthrough_stream(
 
 
 async def _openai_passthrough_non_streaming(
-    llama_backend, payload, model_name, monitor_id: Optional[str] = None
+    llama_backend,
+    payload,
+    model_name,
+    monitor_id: Optional[str] = None,
 ):
     """Non-streaming client-side pass-through for /v1/chat/completions.
 
