@@ -475,7 +475,9 @@ def test_bash_bypass_does_not_source_bash_env(monkeypatch, tmp_path):
     startup = tmp_path / "startup.sh"
     startup.write_text("export RECOVERED=leaked\n")
     monkeypatch.setenv("BASH_ENV", str(startup))
-    out = _bash_exec("echo R=$RECOVERED", None, 30, "bash-env-test", disable_sandbox = True)
+    out = _bash_exec(
+        "echo R=$RECOVERED", None, 30, "bash-env-test", disable_sandbox = True
+    )
     assert "R=leaked" not in out  # BASH_ENV dropped -> startup not sourced
     assert "R=" in out
 
