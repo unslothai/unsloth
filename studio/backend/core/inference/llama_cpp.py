@@ -648,8 +648,13 @@ def _extra_args_mtp_draft_path(
     else None. CLI wins. An HF repo spec is not a local file, so the budget can't size it
     and falls back to the flat reserve -- but recognizing it avoids sizing the wrong drafter."""
     flags = {
-        "--model-draft", "--spec-draft-model", "-md",
-        "--spec-draft-hf", "-hfd", "-hfrd", "--hf-repo-draft",
+        "--model-draft",
+        "--spec-draft-model",
+        "-md",
+        "--spec-draft-hf",
+        "-hfd",
+        "-hfrd",
+        "--hf-repo-draft",
     }
     args = [str(a) for a in extra_args] if extra_args else []
     found: Optional[str] = None
