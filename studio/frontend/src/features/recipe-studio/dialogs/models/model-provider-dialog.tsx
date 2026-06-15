@@ -7,12 +7,24 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { type ReactElement, useState } from "react";
 import type { ModelProviderConfig } from "../../types";
 import { CollapsibleSectionTriggerButton } from "../shared/collapsible-section-trigger";
 import { FieldLabel } from "../shared/field-label";
 import { NameField } from "../shared/name-field";
+
+const PROVIDER_TYPE_OPTIONS = [
+  { value: "openai", label: "OpenAI-compatible" },
+  { value: "anthropic", label: "Anthropic" },
+] as const;
 
 type ModelProviderDialogProps = {
   config: ModelProviderConfig;
@@ -26,6 +38,7 @@ export function ModelProviderDialog({
   const [optionalOpen, setOptionalOpen] = useState(false);
   const isLocal = config.is_local ?? false;
   const endpointId = `${config.id}-endpoint`;
+  const providerTypeId = `${config.id}-provider-type`;
   const apiKeyEnvId = `${config.id}-api-key-env`;
   const apiKeyId = `${config.id}-api-key`;
   const extraHeadersId = `${config.id}-extra-headers`;
@@ -92,7 +105,6 @@ export function ModelProviderDialog({
           </button>
         </div>
       </div>
-
       {isLocal ? (
         <div className="rounded-2xl border border-border/60 bg-muted/10 px-4 py-3">
           <p className="text-sm font-semibold text-foreground">
@@ -127,6 +139,28 @@ export function ModelProviderDialog({
               value={config.endpoint}
               onChange={(event) => updateField("endpoint", event.target.value)}
             />
+          </div>
+          <div className="grid gap-1.5">
+            <FieldLabel
+              label="Provider type"
+              htmlFor={providerTypeId}
+              hint="SDK used for API calls. Most providers are OpenAI-compatible."
+            />
+            <Select
+              value={config.provider_type || "openai"}
+              onValueChange={(value) => updateField("provider_type", value)}
+            >
+              <SelectTrigger id={providerTypeId} className="nodrag">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {PROVIDER_TYPE_OPTIONS.map((opt) => (
+                  <SelectItem key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
           <div className="grid gap-1.5">
             <FieldLabel
