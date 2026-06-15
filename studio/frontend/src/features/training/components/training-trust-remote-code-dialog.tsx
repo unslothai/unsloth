@@ -19,8 +19,12 @@ export function TrainingTrustRemoteCodeDialog() {
   const resolve = useTrainingTrustRemoteCodeDialogStore(
     (state) => state.resolve,
   );
+  const dialogModelName = useTrainingTrustRemoteCodeDialogStore(
+    (state) => state.modelName,
+  );
   const selectedModel = useTrainingConfigStore((state) => state.selectedModel);
-  const displayName = selectedModel?.split("/").pop() || "This model";
+  const modelName = dialogModelName || selectedModel;
+  const displayName = modelName?.split("/").pop() || "This model";
 
   return (
     <AlertDialog

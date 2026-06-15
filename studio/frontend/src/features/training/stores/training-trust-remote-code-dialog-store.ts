@@ -7,7 +7,8 @@ type ConfirmationResolver = (confirmed: boolean) => void;
 
 type TrainingTrustRemoteCodeDialogStore = {
   open: boolean;
-  requestConfirmation: () => Promise<boolean>;
+  modelName: string | null;
+  requestConfirmation: (modelName?: string | null) => Promise<boolean>;
   resolve: (confirmed: boolean) => void;
 };
 
@@ -16,16 +17,17 @@ let pendingResolver: ConfirmationResolver | null = null;
 export const useTrainingTrustRemoteCodeDialogStore =
   create<TrainingTrustRemoteCodeDialogStore>()((set) => ({
     open: false,
-    requestConfirmation: () =>
+    modelName: null,
+    requestConfirmation: (modelName = null) =>
       new Promise<boolean>((resolve) => {
         pendingResolver?.(false);
         pendingResolver = resolve;
-        set({ open: true });
+        set({ open: true, modelName });
       }),
     resolve: (confirmed) => {
       const resolver = pendingResolver;
       pendingResolver = null;
-      set({ open: false });
+      set({ open: false, modelName: null });
       resolver?.(confirmed);
     },
   }));
