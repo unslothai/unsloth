@@ -1569,8 +1569,7 @@ async def get_model_config(
     response_model = TrustRemoteCodeCheckResponse,
 )
 async def get_model_trust_remote_code_requirement(
-    model_name: str,
-    current_subject: str = Depends(get_current_subject),
+    model_name: str, current_subject: str = Depends(get_current_subject)
 ):
     """Check Studio YAML defaults for a trust_remote_code requirement.
 
