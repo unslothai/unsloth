@@ -705,12 +705,19 @@ def _effective_spec_type(
     ``--spec-type`` (last-wins), else ``LLAMA_ARG_SPEC_TYPE``. A CLI flag -- even a
     later non-MTP one -- overrides the env, matching llama.cpp's arg parsing, so a
     stale MTP env or an earlier MTP flag that a later flag overrides does not make
-    the budget reserve for a drafter the launch will not load. None if neither sets it."""
+    the budget reserve for a drafter the launch will not load. ``--spec-default`` is
+    also a CLI spec flag (resolves to the model default, non-MTP) and likewise
+    overrides the env. None if neither sets it."""
     args = [str(a) for a in extra_args] if extra_args else []
     cli_present = False
     cli_value: Optional[str] = None
     for i, raw in enumerate(args):
         flag, eq, inline = raw.partition("=")
+        if flag == "--spec-default":
+            # A CLI default-spec selection overrides the env and is non-MTP.
+            cli_present = True
+            cli_value = "default"
+            continue
         if flag != "--spec-type":
             continue
         cli_present = True
@@ -4414,9 +4421,27 @@ class LlamaCppBackend:
                     if _mtp_eff_n_max is None:
                         _mtp_eff_n_max = 2 if gpus else 3
                     # Separate-drafter weights live on GPU too (an embedded head is
-                    # already in model_size). A user --model-draft in extras wins at
-                    # launch (last-wins), so size it, not Studio's auto drafter.
-                    _mtp_draft_for_budget = _extra_args_mtp_draft_path(extra_args) or mtp_draft_path
+                    # already in model_size). Size the drafter the launch actually
+                    # loads, by precedence: a user --model-draft in extras is
+                    # appended last and wins; else Studio's emitted --model-draft
+                    # (mtp_draft_path, emitted only when MTP engages and the user
+                    # doesn't own --spec-type) -- it overrides LLAMA_ARG_SPEC_DRAFT_MODEL;
+                    # the env drafter applies only when neither emits one. Sizing the
+                    # wrong (e.g. smaller env) drafter would under-reserve and OOM.
+                    _cli_draft_for_budget = _extra_args_mtp_draft_path(extra_args, env = {})
+                    _studio_draft_for_budget = (
+                        mtp_draft_path
+                        if (
+                            _mtp_will_engage
+                            and mtp_draft_path
+                            and not _extra_args_set_spec_type(extra_args)
+                        )
+                        else None
+                    )
+                    _env_draft_for_budget = _extra_args_mtp_draft_path([], env = os.environ)
+                    _mtp_draft_for_budget = (
+                        _cli_draft_for_budget or _studio_draft_for_budget or _env_draft_for_budget
+                    )
                     # A user who offloads the separate drafter to CPU
                     # (--spec-draft-ngl 0 / --spec-draft-device none) keeps its
                     # weights+KV off the GPU, so drop it from the budget. An embedded

@@ -469,6 +469,35 @@ class TestExtraArgsMtpDetection:
         assert '_mtp_canonical=="off"' in compact  # the env-reaches-child gate
         assert "_extra_args_requests_mtp(extra_args,env=_spec_env)" in compact
 
+    def test_spec_default_overrides_env_mtp(self):
+        # --spec-default is a CLI spec flag (resolves to the model default,
+        # non-MTP) that overrides a stale LLAMA_ARG_SPEC_TYPE env, so the reserve
+        # must not treat it as MTP (reviewer.py R4).
+        env_mtp = {"LLAMA_ARG_SPEC_TYPE": "draft-mtp"}
+        assert _extra_args_requests_mtp(["--spec-default"], env = env_mtp) is False
+        assert (
+            _extra_args_requests_separate_draft(
+                ["--spec-default"], env = {"LLAMA_ARG_SPEC_TYPE": "draft-simple"}
+            )
+            is False
+        )
+        # A later --spec-type still wins over an earlier --spec-default.
+        assert (
+            _extra_args_requests_mtp(["--spec-default", "--spec-type", "draft-mtp"], env = {})
+            is True
+        )
+
+    def test_load_model_drafter_budget_precedence(self):
+        # The budget sizes the drafter the launch actually loads: CLI extras win,
+        # then Studio's emitted mtp_draft_path (overrides LLAMA_ARG_SPEC_DRAFT_MODEL),
+        # then the env drafter -- not the env before Studio's (reviewer.py R3).
+        compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
+        assert "_cli_draft_for_budget=_extra_args_mtp_draft_path(extra_args,env={})" in compact
+        assert "_env_draft_for_budget=_extra_args_mtp_draft_path([],env=os.environ)" in compact
+        assert (
+            "_cli_draft_for_budgetor_studio_draft_for_budgetor_env_draft_for_budget" in compact
+        )
+
     def test_load_model_drops_cpu_offloaded_drafter_from_budget(self):
         # A drafter offloaded to CPU (--spec-draft-ngl 0 / --spec-draft-device
         # none) consumes no GPU, so it must be dropped from the budget and get no
@@ -641,8 +670,14 @@ def test_qwen36_class_regression_picks_lower_ctx_with_mtp():
 
 def test_mtp_draft_budget_prefers_user_extras_drafter():
     # A user --model-draft in extras is appended last and wins at launch, so the
-    # VRAM budget must size it, not Studio's auto drafter (load_model is too
+    # VRAM budget must size it first; then Studio's emitted mtp_draft_path (which
+    # overrides LLAMA_ARG_SPEC_DRAFT_MODEL), then the env drafter (load_model is too
     # entangled to drive end-to-end; assert the precedence at the source level).
-    src = inspect.getsource(LlamaCppBackend.load_model)
-    assert "_extra_args_mtp_draft_path(extra_args) or mtp_draft_path" in src
-    assert "mtp_draft_path or _extra_args_mtp_draft_path(extra_args)" not in src
+    # Whitespace-stripped so the check survives any formatter line-wrapping.
+    compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
+    # CLI extras sized first (env={} so the env doesn't pre-empt Studio's drafter).
+    assert "_cli_draft_for_budget=_extra_args_mtp_draft_path(extra_args,env={})" in compact
+    # Order: CLI extras, then Studio's mtp_draft_path, then the env drafter.
+    assert "_cli_draft_for_budgetor_studio_draft_for_budgetor_env_draft_for_budget" in compact
+    # The env must not be consulted before Studio's resolved drafter.
+    assert "_extra_args_mtp_draft_path(extra_args)ormtp_draft_path" not in compact
