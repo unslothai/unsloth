@@ -31,27 +31,37 @@ sys.modules.setdefault("loggers", _loggers_stub)
 
 sys.modules.setdefault("structlog", _types.ModuleType("structlog"))
 
-_httpx_stub = _types.ModuleType("httpx")
-for _exc_name in (
-    "ConnectError",
-    "TimeoutException",
-    "ReadTimeout",
-    "ReadError",
-    "RemoteProtocolError",
-    "CloseError",
-):
-    setattr(_httpx_stub, _exc_name, type(_exc_name, (Exception,), {}))
-_httpx_stub.Timeout = type("Timeout", (), {"__init__": lambda self, *a, **kw: None})
-_httpx_stub.Client = type(
-    "Client",
-    (),
-    {
-        "__init__": lambda self, **kw: None,
-        "__enter__": lambda self: self,
-        "__exit__": lambda self, *a: None,
-    },
-)
-sys.modules.setdefault("httpx", _httpx_stub)
+# httpx -- only stub when the real library is missing. Unconditional stubbing
+# shadows HTTPError/Response that huggingface_hub.errors imports at load time,
+# silently breaking the transformers introspection tier in tests collected after
+# this one (the stub leaks via sys.modules for the whole session).
+try:
+    import httpx as _httpx_real  # noqa: F401
+except ImportError:
+    _httpx_stub = _types.ModuleType("httpx")
+    for _exc_name in (
+        "ConnectError",
+        "TimeoutException",
+        "ReadTimeout",
+        "ReadError",
+        "RemoteProtocolError",
+        "CloseError",
+        "HTTPError",
+        "RequestError",
+    ):
+        setattr(_httpx_stub, _exc_name, type(_exc_name, (Exception,), {}))
+    _httpx_stub.Timeout = type("Timeout", (), {"__init__": lambda self, *a, **kw: None})
+    _httpx_stub.Response = type("Response", (), {})
+    _httpx_stub.Client = type(
+        "Client",
+        (),
+        {
+            "__init__": lambda self, **kw: None,
+            "__enter__": lambda self: self,
+            "__exit__": lambda self, *a: None,
+        },
+    )
+    sys.modules["httpx"] = _httpx_stub
 
 from core.inference.llama_cpp import (  # noqa: E402
     _CTX_FIT_VRAM_FRACTION,
