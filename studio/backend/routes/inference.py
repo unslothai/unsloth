@@ -5339,6 +5339,11 @@ async def openai_chat_completions(
                 ],
             )
             return JSONResponse(content = response.model_dump())
+        except asyncio.CancelledError:
+            cancel_event.set()
+            backend.reset_generation_state()
+            api_monitor.finish(monitor_id, "cancelled")
+            raise
         except Exception:
             backend.reset_generation_state()
             # CWE-209: generic detail; full trace in log.
@@ -5853,6 +5858,10 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                     return
                 api_monitor.finish(monitor_id, "cancelled")
                 return
+            except asyncio.CancelledError:
+                disconnect_event.set()
+                api_monitor.finish(monitor_id, "cancelled")
+                raise
             except Exception as e:
                 if disconnect_event.is_set():
                     api_monitor.finish(monitor_id, "cancelled")

@@ -1688,6 +1688,61 @@ class TestApiMonitorProviderAndCompletionStreams:
 
         asyncio.run(_run())
 
+    def test_completions_stream_cancel_finalizes_monitor(self, monkeypatch):
+        async def _run():
+            import routes.inference as inf_mod
+
+            class Request:
+                state = SimpleNamespace()
+                url = SimpleNamespace(path = "/v1/completions")
+                method = "POST"
+
+                async def json(self):
+                    return {"prompt": "hi", "stream": True}
+
+                async def is_disconnected(self):
+                    return False
+
+            async def fake_send(*_args, **_kwargs):
+                return httpx.Response(200, content = b"")
+
+            async def fake_items(*_args, **_kwargs):
+                yield b'data: {"choices":[{"text":"hello"}]}\n\n'
+                await asyncio.sleep(3600)
+
+            monitor = ApiMonitor(max_entries = 3)
+            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monkeypatch.setattr(
+                inf_mod,
+                "get_llama_cpp_backend",
+                lambda: SimpleNamespace(
+                    is_loaded = True,
+                    base_url = "http://llama.test",
+                    context_length = 4096,
+                    model_identifier = "gguf",
+                ),
+            )
+            monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
+            monkeypatch.setattr(inf_mod, "_aiter_llama_stream_items", fake_items)
+
+            response = await openai_completions(Request(), current_subject = "test")
+            iterator = response.body_iterator
+            first = await anext(iterator)
+            assert b"hello" in first
+
+            pending = asyncio.create_task(anext(iterator))
+            await asyncio.sleep(0)
+            pending.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await pending
+
+            [entry] = monitor.snapshot()
+            assert entry["status"] == "cancelled"
+            assert entry["reply"] == "hello"
+            assert monitor.active_count() == 0
+
+        asyncio.run(_run())
+
     def test_completions_non_streaming_post_error_finalizes_monitor(self, monkeypatch):
         async def _run():
             import routes.inference as inf_mod
@@ -2199,6 +2254,71 @@ class TestApiMonitorSafetensorsUsage:
             assert entry["status"] == "cancelled"
             assert entry["reply"] == "partial"
             assert monitor.active_count() == 0
+
+        asyncio.run(_run())
+
+    def test_non_streaming_safetensors_tool_task_cancel_finalizes_monitor(self, monkeypatch):
+        async def _run():
+            import routes.inference as inf_mod
+
+            reset_tool_policy()
+            reset_called = False
+
+            class DummyBackend:
+                active_model_name = "safe-model"
+                models = {"safe-model": {"context_length": 2048}}
+
+                def generate_chat_response(self, **_kwargs):
+                    raise AssertionError("plain safetensors path should not be used")
+
+                def generate_chat_completion_with_tools(self, **_kwargs):
+                    yield {"type": "content", "text": "unused"}
+
+                def reset_generation_state(self):
+                    nonlocal reset_called
+                    reset_called = True
+
+            async def fake_to_thread(*_args, **_kwargs):
+                raise asyncio.CancelledError()
+
+            monitor = ApiMonitor(max_entries = 3)
+            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monkeypatch.setattr(inf_mod.asyncio, "to_thread", fake_to_thread)
+            monkeypatch.setattr(
+                inf_mod,
+                "get_llama_cpp_backend",
+                lambda: SimpleNamespace(
+                    is_loaded = False,
+                    supports_tools = False,
+                    is_vision = False,
+                    context_length = None,
+                ),
+            )
+            monkeypatch.setattr(inf_mod, "get_inference_backend", lambda: DummyBackend())
+            monkeypatch.setattr(
+                inf_mod,
+                "_detect_safetensors_features",
+                lambda *_args, **_kwargs: {"supports_tools": True},
+            )
+            payload = ChatCompletionRequest(
+                model = "default",
+                messages = [ChatMessage(role = "user", content = "hi")],
+                enable_tools = True,
+                enabled_tools = ["web_search"],
+                cancel_id = "safe-cancel",
+            )
+
+            with pytest.raises(asyncio.CancelledError):
+                await openai_chat_completions(
+                    payload,
+                    request = self._Request(),
+                    current_subject = "test",
+                )
+
+            [entry] = monitor.snapshot()
+            assert entry["status"] == "cancelled"
+            assert monitor.active_count() == 0
+            assert reset_called is True
 
         asyncio.run(_run())
 
