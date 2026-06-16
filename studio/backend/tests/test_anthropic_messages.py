@@ -33,6 +33,7 @@ from core.inference.anthropic_compat import (
     AnthropicStreamEmitter,
     AnthropicPassthroughEmitter,
 )
+from core.inference.api_monitor import ApiMonitor
 from routes.inference import (
     _build_tool_action_nudge,
     _normalize_anthropic_openai_images,
@@ -1396,6 +1397,8 @@ def _mock_backend(monkeypatch, **overrides):
         is_vision = False,
         supports_tools = True,
         model_identifier = "test-model",
+        context_length = 4096,
+        count_chat_tokens = lambda *args, **kwargs: 2,
         generate_chat_completion = _gen_plain,
         generate_chat_completion_with_tools = _gen_tools,
         calls = calls,
@@ -1426,6 +1429,67 @@ def _reset_policy():
 
 
 class TestAnthropicMessagesToolRouting:
+    class _Request:
+        state = SimpleNamespace()
+        url = SimpleNamespace(path = "/v1/messages")
+        method = "POST"
+
+        async def is_disconnected(self):
+            return False
+
+    @staticmethod
+    def _consume_response(response):
+        async def _consume():
+            chunks = []
+            async for chunk in response.body_iterator:
+                chunks.append(chunk)
+            return chunks
+
+        return _drive(_consume())
+
+    def test_plain_non_streaming_records_api_monitor_entry(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        _mock_backend(monkeypatch, context_length = 2048)
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        payload = _basic_payload()
+
+        response = _drive(
+            anthropic_messages(payload, request = self._Request(), current_subject = "t")
+        )
+
+        assert response.status_code == 200
+        [entry] = monitor.snapshot()
+        assert entry["endpoint"] == "/v1/messages"
+        assert entry["status"] == "completed"
+        assert entry["model"] == "test-model"
+        assert entry["prompt_preview"] == "user: hi"
+        assert entry["reply_preview"] == "ok"
+        assert entry["context_length"] == 2048
+        assert monitor.active_count() == 0
+
+    def test_plain_streaming_records_active_and_completed_monitor_entry(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        _mock_backend(monkeypatch, context_length = 2048)
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        payload = _basic_payload(stream = True)
+
+        response = _drive(
+            anthropic_messages(payload, request = self._Request(), current_subject = "t")
+        )
+
+        assert monitor.active_count() == 1
+        self._consume_response(response)
+        [entry] = monitor.snapshot()
+        assert entry["status"] == "completed"
+        assert entry["reply_preview"] == "ok"
+        assert entry["prompt_tokens"] == 2
+        assert entry["context_length"] == 2048
+        assert monitor.active_count() == 0
+
     def test_mixed_server_and_client_tools_rejected_with_400(self, monkeypatch):
         _mock_backend(monkeypatch)
         payload = _basic_payload(

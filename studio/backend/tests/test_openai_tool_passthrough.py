@@ -1263,6 +1263,8 @@ class TestGgufVisionToolRouting:
             generate_chat_completion = _plain,
             generate_chat_completion_with_tools = _tools,
         )
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
         monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
 
         payload = ChatCompletionRequest(
@@ -1380,6 +1382,58 @@ class TestGgufVisionToolRouting:
         [entry] = monitor.snapshot()
         assert entry["status"] == "error"
         assert "confirm_tool_calls requires stream=true" in entry["error"]
+        assert monitor.active_count() == 0
+
+    def test_non_streaming_gguf_n_records_all_monitor_replies(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        calls = {"count": 0}
+
+        def _generate(**_kwargs):
+            calls["count"] += 1
+            text = f"reply {calls['count']}"
+            yield text
+            yield {
+                "type": "metadata",
+                "usage": {
+                    "prompt_tokens": 3,
+                    "completion_tokens": calls["count"],
+                    "total_tokens": 3 + calls["count"],
+                },
+            }
+
+        backend = SimpleNamespace(
+            is_loaded = True,
+            is_vision = False,
+            supports_tools = False,
+            _is_audio = False,
+            model_identifier = "test-gguf",
+            context_length = 4096,
+            generate_chat_completion = _generate,
+        )
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
+
+        payload = ChatCompletionRequest(
+            model = "default",
+            n = 2,
+            messages = [{"role": "user", "content": "two please"}],
+        )
+
+        response = self._drive(
+            openai_chat_completions(
+                payload,
+                request = self._Request(),
+                current_subject = "test",
+            )
+        )
+        body = json.loads(response.body)
+
+        assert [c["message"]["content"] for c in body["choices"]] == ["reply 1", "reply 2"]
+        [entry] = monitor.snapshot()
+        assert entry["reply"] == "Choice 1:\nreply 1\n\nChoice 2:\nreply 2"
+        assert entry["completion_tokens"] == 3
         assert monitor.active_count() == 0
 
     def test_standard_gguf_merges_system_and_developer_messages(self, monkeypatch):
@@ -1778,7 +1832,7 @@ class TestApiMonitorSafetensorsUsage:
 
             class DummyBackend:
                 active_model_name = "safe-model"
-                models = {"safe-model": {}}
+                models = {"safe-model": {"context_length": 2048}}
 
                 def generate_chat_response(self, *, stats_holder, **_kwargs):
                     stats_holder["stats"] = {
@@ -1830,6 +1884,7 @@ class TestApiMonitorSafetensorsUsage:
             assert entry["prompt_tokens"] == 8
             assert entry["completion_tokens"] == 5
             assert entry["total_tokens"] == 13
+            assert entry["context_length"] == 2048
 
         asyncio.run(_run())
 

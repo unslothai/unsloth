@@ -1438,10 +1438,171 @@ def _monitor_openai_sse_event(
         _monitor_openai_sse_line(monitor_id, line.strip(), context_length)
 
 
+def _monitor_anthropic_usage(
+    monitor_id: Optional[str],
+    usage: Optional[dict],
+    context_length = None,
+) -> None:
+    if not usage:
+        return
+    _monitor_usage(
+        monitor_id,
+        {
+            "prompt_tokens": usage.get("input_tokens") or usage.get("prompt_tokens"),
+            "completion_tokens": usage.get("output_tokens") or usage.get("completion_tokens"),
+            "total_tokens": usage.get("total_tokens"),
+        },
+        context_length,
+    )
+
+
+def _monitor_anthropic_payload(
+    monitor_id: Optional[str],
+    data: dict,
+    context_length = None,
+) -> Optional[str]:
+    if not monitor_id or not isinstance(data, dict):
+        return None
+    event_type = data.get("type")
+    if event_type == "message_start":
+        message = data.get("message") or {}
+        if isinstance(message, dict):
+            _monitor_anthropic_usage(monitor_id, message.get("usage"), context_length)
+        return None
+    if event_type == "content_block_delta":
+        delta = data.get("delta") or {}
+        text = delta.get("text") if isinstance(delta, dict) else None
+        if isinstance(text, str) and text:
+            api_monitor.append_reply(monitor_id, text)
+        return None
+    if event_type == "message_delta":
+        _monitor_anthropic_usage(monitor_id, data.get("usage"), context_length)
+        return None
+    if event_type == "error":
+        error = data.get("error") or {}
+        if isinstance(error, dict):
+            message = error.get("message") or json.dumps(error, default = str)
+        else:
+            message = str(error)
+        api_monitor.fail(monitor_id, message)
+        return "error"
+    return None
+
+
+def _monitor_anthropic_sse_line(
+    monitor_id: Optional[str],
+    raw_line: str,
+    context_length = None,
+) -> Optional[str]:
+    if not monitor_id or not raw_line.startswith("data:"):
+        return None
+    data_str = raw_line[5:].lstrip()
+    try:
+        data = json.loads(data_str)
+    except json.JSONDecodeError:
+        return None
+    return _monitor_anthropic_payload(monitor_id, data, context_length)
+
+
+def _monitor_anthropic_content_blocks(content: Any) -> str:
+    if not isinstance(content, list):
+        return ""
+    parts: list[str] = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") == "text" and isinstance(block.get("text"), str):
+            parts.append(block["text"])
+    return "".join(parts)
+
+
+def _monitor_anthropic_json_response(
+    response,
+    monitor_id: Optional[str],
+    context_length = None,
+) -> None:
+    if not monitor_id:
+        return
+    body = getattr(response, "body", b"")
+    try:
+        data = json.loads(body.decode("utf-8") if isinstance(body, bytes) else body)
+    except Exception:
+        api_monitor.finish(monitor_id)
+        return
+    if not isinstance(data, dict):
+        api_monitor.finish(monitor_id)
+        return
+    text = _monitor_anthropic_content_blocks(data.get("content"))
+    if text:
+        api_monitor.set_reply(monitor_id, text)
+    _monitor_anthropic_usage(monitor_id, data.get("usage"), context_length)
+    api_monitor.finish(monitor_id)
+
+
+def _monitor_anthropic_response(response, monitor_id, context_length = None, cancel_event = None):
+    if not monitor_id:
+        return response
+    body_iterator = getattr(response, "body_iterator", None)
+    if body_iterator is None:
+        _monitor_anthropic_json_response(response, monitor_id, context_length)
+        return response
+
+    async def _monitored_body():
+        terminal = False
+        try:
+            async for chunk in body_iterator:
+                text = (
+                    chunk.decode("utf-8", errors = "ignore")
+                    if isinstance(chunk, (bytes, bytearray))
+                    else str(chunk)
+                )
+                for line in text.splitlines():
+                    if _monitor_anthropic_sse_line(
+                        monitor_id,
+                        line.strip(),
+                        context_length,
+                    ) == "error":
+                        terminal = True
+                yield chunk
+            if not terminal:
+                api_monitor.finish(
+                    monitor_id,
+                    "cancelled"
+                    if cancel_event is not None and cancel_event.is_set()
+                    else "completed",
+                )
+        except asyncio.CancelledError:
+            if cancel_event is not None:
+                cancel_event.set()
+            api_monitor.finish(monitor_id, "cancelled")
+            raise
+        except Exception as exc:
+            api_monitor.fail(monitor_id, _friendly_error(exc))
+            raise
+
+    response.body_iterator = _monitored_body()
+    return response
+
+
 def _monitor_context_length() -> Optional[int]:
     llama_backend = get_llama_cpp_backend()
     if llama_backend.is_loaded:
         return llama_backend.context_length
+    backend = get_inference_backend()
+    if not backend.active_model_name:
+        return None
+    models = getattr(backend, "models", {}) or {}
+    model_info = models.get(backend.active_model_name, {}) if isinstance(models, dict) else {}
+    context_length = _positive_int_or_none(model_info.get("context_length"))
+    if context_length is not None:
+        return context_length
+    for candidate in (
+        getattr(backend, "context_length", None),
+        getattr(backend, "max_seq_length", None),
+    ):
+        context_length = _positive_int_or_none(candidate)
+        if context_length is not None:
+            return context_length
     return None
 
 
@@ -3877,7 +4038,7 @@ async def openai_chat_completions(
                 method = request.method,
                 model = model_name,
                 prompt = _monitor_prompt_from_messages(payload.messages),
-                context_length = llama_backend.context_length if using_gguf else None,
+                context_length = _monitor_context_length(),
             )
 
         # ── Audio INPUT path: decode WAV and route to audio input generation ──
@@ -4016,7 +4177,7 @@ async def openai_chat_completions(
             method = request.method,
             model = model_name,
             prompt = _monitor_prompt_from_messages(payload.messages),
-            context_length = llama_backend.context_length if using_gguf else None,
+            context_length = _monitor_context_length(),
         )
 
     # Finalize the monitor entry on validation rejection before raising.
@@ -4608,6 +4769,7 @@ async def openai_chat_completions(
                 _n = payload.n or 1
 
                 _choices = []
+                _monitor_replies = []
                 _prompt_tokens = 0
                 _sum_completion = 0
                 _prompt_details = None
@@ -4633,6 +4795,7 @@ async def openai_chat_completions(
                             finish_reason = _clamp_finish_reason(completion_finish),
                         )
                     )
+                    _monitor_replies.append(full_text)
                     if completion_usage:
                         # The prompt is shared across all n choices, so count its
                         # tokens ONCE (OpenAI bills only generated tokens for each
@@ -4654,7 +4817,13 @@ async def openai_chat_completions(
                         prompt_tokens_details = _prompt_tokens_details(_prompt_details),
                     ),
                 )
-                api_monitor.set_reply(monitor_id, full_text)
+                monitor_reply = full_text
+                if _n > 1:
+                    monitor_reply = "\n\n".join(
+                        f"Choice {_idx + 1}:\n{text}"
+                        for _idx, text in enumerate(_monitor_replies)
+                    )
+                api_monitor.set_reply(monitor_id, monitor_reply)
                 _monitor_usage(
                     monitor_id,
                     {
@@ -7367,14 +7536,62 @@ async def anthropic_messages(
         and payload.tool_choice.get("disable_parallel_tool_use")
     )
 
+    monitor_id = None
+    monitor_context_length = _monitor_context_length()
+    request_state = getattr(request, "state", None)
+    if not getattr(request_state, "skip_api_monitor", False):
+        request_url = getattr(request, "url", None)
+        monitor_id = api_monitor.start(
+            endpoint = getattr(request_url, "path", "/v1/messages"),
+            method = getattr(request, "method", "POST"),
+            model = model_name,
+            prompt = _monitor_prompt_from_messages(openai_messages),
+            context_length = monitor_context_length,
+        )
+
+    async def _monitored_anthropic(coro):
+        try:
+            response = await coro
+        except Exception as exc:
+            api_monitor.fail(monitor_id, _friendly_error(exc))
+            raise
+        return _monitor_anthropic_response(
+            response,
+            monitor_id,
+            monitor_context_length,
+            cancel_event,
+        )
+
     # ── Client-side pass-through path ─────────────────────────
     if client_tools:
         openai_tools = openai_client_tools
 
         if payload.stream:
-            return await _anthropic_passthrough_stream(
-                request,
-                cancel_event,
+            return await _monitored_anthropic(
+                _anthropic_passthrough_stream(
+                    request,
+                    cancel_event,
+                    llama_backend,
+                    openai_messages,
+                    openai_tools,
+                    temperature,
+                    top_p,
+                    top_k,
+                    payload.max_tokens,
+                    message_id,
+                    model_name,
+                    stop = stop,
+                    min_p = min_p,
+                    repetition_penalty = repetition_penalty,
+                    presence_penalty = presence_penalty,
+                    tool_choice = openai_tool_choice,
+                    session_id = payload.session_id,
+                    cancel_id = payload.cancel_id,
+                    disable_parallel_tool_use = _disable_parallel,
+                )
+            )
+        return await _monitored_anthropic(
+            _anthropic_passthrough_non_streaming(
                 llama_backend,
                 openai_messages,
                 openai_tools,
@@ -7389,26 +7606,8 @@ async def anthropic_messages(
                 repetition_penalty = repetition_penalty,
                 presence_penalty = presence_penalty,
                 tool_choice = openai_tool_choice,
-                session_id = payload.session_id,
-                cancel_id = payload.cancel_id,
                 disable_parallel_tool_use = _disable_parallel,
             )
-        return await _anthropic_passthrough_non_streaming(
-            llama_backend,
-            openai_messages,
-            openai_tools,
-            temperature,
-            top_p,
-            top_k,
-            payload.max_tokens,
-            message_id,
-            model_name,
-            stop = stop,
-            min_p = min_p,
-            repetition_penalty = repetition_penalty,
-            presence_penalty = presence_penalty,
-            tool_choice = openai_tool_choice,
-            disable_parallel_tool_use = _disable_parallel,
         )
 
     if server_tools:
@@ -7416,6 +7615,10 @@ async def anthropic_messages(
         if bool(getattr(payload, "confirm_tool_calls", False)) and not bool(
             getattr(payload, "bypass_permissions", False)
         ):
+            api_monitor.fail(
+                monitor_id,
+                "confirm_tool_calls is not supported for Anthropic Messages server tools.",
+            )
             raise HTTPException(
                 status_code = 400,
                 detail = anthropic_error_body(
@@ -7476,22 +7679,26 @@ async def anthropic_messages(
             )
 
         if payload.stream:
-            return await _anthropic_tool_stream(
-                request,
-                cancel_event,
+            return await _monitored_anthropic(
+                _anthropic_tool_stream(
+                    request,
+                    cancel_event,
+                    _run_tool_gen,
+                    message_id,
+                    model_name,
+                    llama_backend = llama_backend,
+                    openai_messages = openai_messages,
+                    openai_tools = openai_tools,
+                    disable_parallel_tool_use = _disable_parallel,
+                )
+            )
+        return await _monitored_anthropic(
+            _anthropic_tool_non_streaming(
                 _run_tool_gen,
                 message_id,
                 model_name,
-                llama_backend = llama_backend,
-                openai_messages = openai_messages,
-                openai_tools = openai_tools,
                 disable_parallel_tool_use = _disable_parallel,
             )
-        return await _anthropic_tool_non_streaming(
-            _run_tool_gen,
-            message_id,
-            model_name,
-            disable_parallel_tool_use = _disable_parallel,
         )
 
     # ── No-tool path ──────────────────────────────────────────
@@ -7510,19 +7717,23 @@ async def anthropic_messages(
         )
 
     if payload.stream:
-        return await _anthropic_plain_stream(
-            request,
-            cancel_event,
+        return await _monitored_anthropic(
+            _anthropic_plain_stream(
+                request,
+                cancel_event,
+                _run_plain_gen,
+                message_id,
+                model_name,
+                llama_backend = llama_backend,
+                openai_messages = openai_messages,
+            )
+        )
+    return await _monitored_anthropic(
+        _anthropic_plain_non_streaming(
             _run_plain_gen,
             message_id,
             model_name,
-            llama_backend = llama_backend,
-            openai_messages = openai_messages,
         )
-    return await _anthropic_plain_non_streaming(
-        _run_plain_gen,
-        message_id,
-        model_name,
     )
 
 
@@ -8726,7 +8937,10 @@ async def _openai_passthrough_stream(
                         monitor_done = True
                         break
                 if not monitor_done:
-                    api_monitor.finish(monitor_id)
+                    api_monitor.finish(
+                        monitor_id,
+                        "cancelled" if cancel_event.is_set() else "completed",
+                    )
             except asyncio.CancelledError:
                 api_monitor.finish(monitor_id, "cancelled")
                 raise
