@@ -990,6 +990,12 @@ class LlamaCppBackend:
         self._last_load_kwargs: Optional[dict] = None
         self._mtp_runtime_fallback_lock = threading.Lock()
         self._mtp_runtime_fallback_in_progress = False
+        # A background watchdog that detects an MTP + tensor-parallel crash even
+        # when no request handler observes the failure (e.g. the direct
+        # llama-server proxy endpoints, or no request in flight), so recovery
+        # covers every path at one point. See _start_mtp_crash_watchdog.
+        self._mtp_watchdog_thread: Optional[threading.Thread] = None
+        self._mtp_watchdog_stop = threading.Event()
         self._stdout_lines: list[str] = []
         self._stdout_thread: Optional[threading.Thread] = None
         # llama-server tee log (see _drain_stdout / _kill_process).
@@ -4754,6 +4760,8 @@ class LlamaCppBackend:
                 self._requested_n_ctx = int(n_ctx)
                 # Snapshot of a known-good load, for the runtime MTP-crash reload.
                 self._last_load_kwargs = _pending_load_kwargs
+                # Watch this load for a mid-generation crash (MTP + tensor only).
+                self._start_mtp_crash_watchdog()
 
                 # Catch silent CPU fallback when GPU was intended (#5106).
                 self._gpu_offload_active = self._classify_gpu_offload(
@@ -5262,6 +5270,10 @@ class LlamaCppBackend:
 
     def _kill_process(self):
         """Terminate the subprocess if running."""
+        # Stop the MTP-crash watchdog before any deliberate termination so a
+        # planned reload/unload is never mistaken for a crash. A real crash
+        # never routes through here, so the watchdog still catches that.
+        self._stop_mtp_crash_watchdog()
         if self._process is None:
             return
         try:
@@ -5581,6 +5593,55 @@ class LlamaCppBackend:
 
         threading.Thread(target = _recover, daemon = True, name = "mtp-crash-reload").start()
         return True
+
+    def _start_mtp_crash_watchdog(self) -> None:
+        """Poll the live llama-server and recover if it dies under MTP + tensor.
+
+        The per-request handlers only recover when they happen to observe the
+        failure. The direct llama-server proxy endpoints (/v1/completions,
+        /v1/responses, the OpenAI/Anthropic passthrough transports) don't funnel
+        through the backend generate methods, so a crash reached through them --
+        or one that happens with no request in flight -- would otherwise leave a
+        dead server. A single background poll covers every path at one point.
+        Only a Studio-managed MTP + tensor-parallel load is eligible; anything
+        else no-ops. The reload it schedules turns MTP off, so the replacement
+        server starts no watchdog and the fallback can't loop.
+        """
+        if not (self._tensor_parallel and self._speculative_type == "draft-mtp"):
+            return
+        proc = self._process
+        if proc is None:
+            return
+        # Loads are serialised so there is at most one watchdog, but replace any
+        # prior one defensively before starting this load's.
+        self._stop_mtp_crash_watchdog()
+        stop = threading.Event()
+        self._mtp_watchdog_stop = stop
+
+        def _watch():
+            # Poll until the watched process exits or we're told to stop. An
+            # intentional kill sets `stop` *before* terminating (see
+            # _kill_process), so re-check it after a detected exit and ignore a
+            # planned reload/unload that raced in; only a real crash fires
+            # recovery, which itself re-validates every gate and is single-flight.
+            while not stop.wait(1.0):
+                if proc.poll() is not None:
+                    if not stop.is_set():
+                        self._maybe_recover_from_mtp_crash()
+                    return
+
+        t = threading.Thread(target = _watch, daemon = True, name = "mtp-crash-watchdog")
+        self._mtp_watchdog_thread = t
+        t.start()
+
+    def _stop_mtp_crash_watchdog(self) -> None:
+        """Signal the active crash watchdog (if any) to exit. Called before any
+        deliberate process termination so a planned reload/unload can't be
+        mistaken for a crash."""
+        stop = getattr(self, "_mtp_watchdog_stop", None)
+        if stop is not None:
+            stop.set()
+        self._mtp_watchdog_thread = None
 
     def _wait_for_health(
         self,

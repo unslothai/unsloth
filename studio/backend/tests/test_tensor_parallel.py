@@ -438,6 +438,115 @@ def test_probe_mtp_decode_uses_api_key_auth(monkeypatch):
     assert captured["headers"] is None
 
 
+class _ToggleProcess:
+    """A subprocess stand-in whose liveness can be flipped at runtime."""
+
+    def __init__(self):
+        self._alive = True
+
+    def poll(self):
+        return None if self._alive else 0
+
+    def terminate(self):
+        self._alive = False
+
+    def kill(self):
+        self._alive = False
+
+    def wait(self, timeout = None):
+        self._alive = False
+        return 0
+
+    def die(self):
+        self._alive = False
+
+
+def test_crash_watchdog_triggers_recovery_on_death(monkeypatch):
+    # With MTP + tensor active, the watchdog must notice the server process exit
+    # and route it into recovery even when no request handler observed it (the
+    # direct llama-server proxy endpoints never call the helper themselves).
+    b = _recovery_backend()
+    proc = _ToggleProcess()
+    b._process = proc
+    fired = threading.Event()
+    monkeypatch.setattr(b, "_maybe_recover_from_mtp_crash", lambda *a, **k: fired.set())
+    b._start_mtp_crash_watchdog()
+    assert b._mtp_watchdog_thread is not None
+    proc.die()
+    assert fired.wait(timeout = 3)
+
+
+def test_crash_watchdog_ignores_intentional_termination(monkeypatch):
+    # A planned reload/unload stops the watchdog before killing the process, so
+    # the resulting death must not be mistaken for a crash.
+    b = _recovery_backend()
+    proc = _ToggleProcess()
+    b._process = proc
+    fired = threading.Event()
+    monkeypatch.setattr(b, "_maybe_recover_from_mtp_crash", lambda *a, **k: fired.set())
+    b._start_mtp_crash_watchdog()
+    b._stop_mtp_crash_watchdog()  # what _kill_process does first
+    proc.die()
+    assert not fired.wait(timeout = 2)
+    assert b._mtp_watchdog_thread is None
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda b: setattr(b, "_tensor_parallel", False),
+        lambda b: setattr(b, "_speculative_type", "ngram-mod"),
+        lambda b: setattr(b, "_process", None),
+    ],
+)
+def test_crash_watchdog_not_armed_when_inapplicable(mutate):
+    # Only a Studio-managed MTP + tensor load with a live process arms it.
+    b = _recovery_backend()
+    b._process = _ToggleProcess()
+    mutate(b)
+    b._start_mtp_crash_watchdog()
+    assert b._mtp_watchdog_thread is None
+
+
+def test_kill_process_stops_crash_watchdog(monkeypatch):
+    # _kill_process is the single deliberate-termination chokepoint; it must
+    # stop the watchdog so the planned kill isn't seen as a crash.
+    b = _recovery_backend()
+    proc = _ToggleProcess()
+    b._process = proc
+    fired = threading.Event()
+    monkeypatch.setattr(b, "_maybe_recover_from_mtp_crash", lambda *a, **k: fired.set())
+    b._start_mtp_crash_watchdog()
+    b._kill_process()
+    assert b._mtp_watchdog_thread is None
+    assert b._process is None
+    assert not fired.wait(timeout = 2)
+
+
+def test_kill_process_stops_watchdog_before_terminate():
+    # Ordering matters: stop the watchdog before terminating so the watchdog's
+    # post-death stop re-check reliably sees a planned kill.
+    src = inspect.getsource(LlamaCppBackend._kill_process)
+    stop = src.find("_stop_mtp_crash_watchdog()")
+    term = src.find(".terminate(")
+    assert 0 <= stop < term, "must stop the watchdog before terminating"
+
+
+def test_crash_watchdog_rechecks_stop_before_recovery():
+    # After a detected exit the watchdog re-checks the stop flag so a kill that
+    # raced in between the poll-wait and the poll-read can't fire recovery.
+    src = inspect.getsource(LlamaCppBackend._start_mtp_crash_watchdog)
+    check = src.find("stop.is_set()")
+    recover = src.find("_maybe_recover_from_mtp_crash")
+    assert 0 <= check < recover, "must re-check stop before recovering"
+
+
+def test_load_model_arms_crash_watchdog():
+    # The healthy-load commit arms the watchdog for this load.
+    src = inspect.getsource(LlamaCppBackend.load_model)
+    assert "_start_mtp_crash_watchdog" in src
+
+
 # ── tensor-mode allocation: conservative VRAM budget ─────────────────
 
 
