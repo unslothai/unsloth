@@ -663,7 +663,9 @@ def patch_unsafe_trainer_rng_load():
 
     _unsloth_safe_load_rng_state._unsloth_safe_rng_load = True
     Trainer._load_rng_state = _unsloth_safe_load_rng_state
-    logger.info("Unsloth: Guarded Trainer._load_rng_state via check_torch_load_is_safe (CVE-2026-1839).")
+    logger.info(
+        "Unsloth: Guarded Trainer._load_rng_state via check_torch_load_is_safe (CVE-2026-1839)."
+    )
 
 
 def _is_custom_torch_build(raw_version_str):
