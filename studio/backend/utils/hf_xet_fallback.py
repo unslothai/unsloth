@@ -200,13 +200,10 @@ def _download_child_entry(
     # and the HTTP fallback can be exercised end to end against a real repo.
     if not disable_xet and os.environ.get("UNSLOTH_HF_XET_FORCE_STALL") == "1":
         import time as _t
-
         try:
             from huggingface_hub.constants import HF_HUB_CACHE
 
-            blobs = os.path.join(
-                HF_HUB_CACHE, "models--" + repo_id.replace("/", "--"), "blobs"
-            )
+            blobs = os.path.join(HF_HUB_CACHE, "models--" + repo_id.replace("/", "--"), "blobs")
             os.makedirs(blobs, exist_ok = True)
             with open(os.path.join(blobs, "xet-force-stall.incomplete"), "wb") as fh:
                 fh.write(b"\0" * 4096)
