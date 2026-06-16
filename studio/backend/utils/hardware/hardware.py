@@ -1084,11 +1084,10 @@ def _get_hf_safetensors_total_params(
 def _load_config_for_gpu_estimate(model_name: str, hf_token: Optional[str] = None):
     try:
         from transformers import AutoConfig
-        trust_remote_code = model_name.lower().startswith("unsloth/")
         return AutoConfig.from_pretrained(
             model_name,
             token = hf_token,
-            trust_remote_code = trust_remote_code,
+            trust_remote_code = False,
         )
     except Exception as e:
         logger.warning("Could not load config for '%s': %s", model_name, e)

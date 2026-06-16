@@ -5,6 +5,7 @@ import asyncio
 import importlib.util
 import os
 import re
+import sys
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -370,6 +371,24 @@ class TestGpuAutoSelection(_GpuCacheResetMixin, unittest.TestCase):
 
         self.assertEqual(model_size_bytes, 1234)
         self.assertEqual(source, "vllm_utils")
+
+    def test_load_config_for_gpu_estimate_disables_remote_code_for_unsloth(self):
+        calls = []
+
+        class AutoConfig:
+            @staticmethod
+            def from_pretrained(model_name, **kwargs):
+                calls.append((model_name, kwargs))
+                return object()
+
+        with patch.dict(sys.modules, {"transformers": SimpleNamespace(AutoConfig = AutoConfig)}):
+            config = _hw_module._load_config_for_gpu_estimate("unsloth/custom-code")
+
+        self.assertIsNotNone(config)
+        self.assertEqual(
+            calls,
+            [("unsloth/custom-code", {"token": None, "trust_remote_code": False})],
+        )
 
     def test_auto_select_gpu_ids_chooses_smallest_fitting_subset(self):
         fake_devices = {
