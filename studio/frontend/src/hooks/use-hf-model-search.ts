@@ -71,6 +71,34 @@ function withPopularitySort(
   return fetch(url, init);
 }
 
+export type HfModelSort =
+  | "trendingScore"
+  | "downloads"
+  | "likes"
+  | "lastModified"
+  | "createdAt";
+
+/** Like withPopularitySort but forces a specific sort key (descending). */
+function makeSortFetch(sort: HfModelSort) {
+  return (
+    input: Parameters<typeof fetch>[0],
+    init?: Parameters<typeof fetch>[1],
+  ): ReturnType<typeof fetch> => {
+    const rawUrl =
+      typeof input === "string"
+        ? input
+        : input instanceof URL
+          ? input.toString()
+          : input.url;
+    const url = new URL(rawUrl);
+    url.searchParams.set("sort", sort);
+    if (!url.searchParams.has("direction")) {
+      url.searchParams.set("direction", "-1");
+    }
+    return fetch(url, init);
+  };
+}
+
 /** Bytes per parameter for each dtype. */
 const DTYPE_BYTES: Record<string, number> = {
   F64: 8, F32: 4, F16: 2, BF16: 2,
@@ -282,9 +310,16 @@ export function useHfModelSearch(
     accessToken?: string;
     excludeGguf?: boolean;
     priorityIds?: readonly string[];
+    sort?: HfModelSort;
   },
 ) {
-  const { task, accessToken, excludeGguf = false, priorityIds } = options ?? {};
+  const {
+    task,
+    accessToken,
+    excludeGguf = false,
+    priorityIds,
+    sort = "downloads",
+  } = options ?? {};
 
   // Detect the publisher once, shared by the iterator factory and the
   // secondary sort gate (avoids duplicating the regex + logic).
@@ -310,7 +345,8 @@ export function useHfModelSearch(
         return listModels({
           search: { owner: "unsloth", ...(task ? { task } : {}) },
           additionalFields: ["safetensors", "tags"],
-          fetch: withPopularitySort,
+          fetch: makeSortFetch(sort),
+          sort,
           ...(accessToken ? { credentials: { accessToken } } : {}),
         }) as AsyncGenerator<unknown>;
       }
@@ -321,7 +357,7 @@ export function useHfModelSearch(
       // unsloth-owned queries are left as-is for the full prefetch + sort.
       return mergedModelIterator(searchQuery, undefined, accessToken, pinnedId) as AsyncGenerator<unknown>;
     },
-    [trimmed, searchQuery, pinnedId, task, accessToken, priorityIds],
+    [trimmed, searchQuery, pinnedId, task, accessToken, priorityIds, sort],
   );
 
   const deviceType = usePlatformStore((s) => s.deviceType);

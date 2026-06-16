@@ -35,6 +35,7 @@ import {
   useInfiniteScroll,
   useRecommendedModelVram,
 } from "@/hooks";
+import type { HfModelSort } from "@/hooks/use-hf-model-search";
 import { extractParamLabel } from "@/lib/model-size";
 import { cn, formatCompact } from "@/lib/utils";
 import type { VramFitStatus } from "@/lib/vram";
@@ -42,8 +43,10 @@ import { checkVramFit, estimateLoadingVram } from "@/lib/vram";
 import { Add01Icon, Cancel01Icon, Download01Icon, Folder02Icon, Search01Icon, StarIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { DotTag } from "@/features/hub/catalog/dot-tag";
+import { HubOptionMenu, type HubOption } from "@/features/hub/catalog/hub-option-menu";
 import { FolderBrowser } from "./folder-browser";
 import { ModelDeleteAction } from "./model-delete-action";
+import { fitsDevice, isRunnableRecommendedFormat } from "./recommended-fit";
 import { parseMetaTokens, splitRepoLabel } from "./row-meta";
 import { ChevronDownIcon, ChevronRightIcon } from "lucide-react";
 import {
@@ -730,6 +733,23 @@ function canDeleteLoraModel(model: LoraModelOption): boolean {
 
 // ── Hub Model Picker ──────────────────────────────────────────
 
+// Recommended section sort. "recommended" = recent unsloth GGUF/MLX that fit
+// the device; the rest are plain HF sort keys over all unsloth models.
+type RecommendedSortKey =
+  | "recommended"
+  | "trendingScore"
+  | "likes"
+  | "downloads"
+  | "lastModified";
+
+const RECOMMENDED_SORT_OPTIONS: HubOption<RecommendedSortKey>[] = [
+  { value: "recommended", label: "Recommended" },
+  { value: "trendingScore", label: "Trending" },
+  { value: "likes", label: "Most likes" },
+  { value: "downloads", label: "Downloads" },
+  { value: "lastModified", label: "Recently updated" },
+];
+
 export function HubModelPicker({
   models,
   value,
@@ -784,7 +804,6 @@ export function HubModelPicker({
 
   const [downloadedCollapsed, setDownloadedCollapsed] = useState(false);
   const [customFoldersCollapsed, setCustomFoldersCollapsed] = useState(false);
-  const [recommendedCollapsed, setRecommendedCollapsed] = useState(false);
 
   // Cached (downloaded) repos -- module-level cache avoids flashing an
   // empty "Downloaded" section when the popover re-mounts.
@@ -962,34 +981,61 @@ export function HubModelPicker({
     return [...gguf, ...hub];
   }, [models, value, downloadedSet, chatOnly, isKnownGgufRepo]);
 
-  // Infinite scroll paging for the recommended section
-  const [recommendedPage, setRecommendedPage] = useState(1);
-  // Reset page when the underlying list changes
-  useEffect(() => {
-    setRecommendedPage(1);
-  }, [models, chatOnly]);
-
-  const visibleRecommendedIds = useMemo(() => {
-    const hubStartIndex = recommendedIds.findIndex((id) => !isKnownGgufRepo(id));
-    const allGguf =
-      hubStartIndex === -1
-        ? recommendedIds
-        : recommendedIds.slice(0, hubStartIndex);
-    const allHub =
-      hubStartIndex === -1 ? [] : recommendedIds.slice(hubStartIndex);
-    // Interleave in chunks of 4: [4 gguf, 4 hub, 4 gguf, 4 hub, ...]
-    const result: string[] = [];
-    for (let p = 0; p < recommendedPage; p++) {
-      result.push(...allGguf.slice(p * 4, (p + 1) * 4));
-      result.push(...allHub.slice(p * 4, (p + 1) * 4));
-    }
-    return result;
-  }, [recommendedIds, recommendedPage, isKnownGgufRepo]);
-
-  const hasMoreRecommended =
-    visibleRecommendedIds.length < recommendedIds.length;
-
   const showHfSection = debouncedQuery.trim().length > 0;
+
+  // Recommended section: a live unsloth listing sorted by the dropdown.
+  const [recommendedSort, setRecommendedSort] =
+    useState<RecommendedSortKey>("recommended");
+  const recommendedHfSort: HfModelSort =
+    recommendedSort === "recommended" ? "lastModified" : recommendedSort;
+  const recommendedSearch = useHfModelSearch("", { sort: recommendedHfSort });
+
+  // "recommended" keeps only runnable local formats (GGUF/MLX) that fit the
+  // device; the other sorts pass everything through (badged, never hidden).
+  const recommendedRows = useMemo(() => {
+    const rows = recommendedSearch.results.filter(
+      (r) => !downloadedSet.has(r.id.toLowerCase()),
+    );
+    if (recommendedSort !== "recommended") return rows;
+    return rows.filter((r) => {
+      if (!isRunnableRecommendedFormat(r.id, r.isGguf)) return false;
+      if (!gpu.available) return true;
+      return fitsDevice({
+        sizeBytes: r.estimatedSizeBytes,
+        estimatedVramGb: r.totalParams
+          ? estimateLoadingVram(r.totalParams, "qlora")
+          : undefined,
+        gpuGb: gpu.memoryTotalGb,
+        systemRamGb: gpu.systemRamAvailableGb,
+      });
+    });
+  }, [recommendedSearch.results, downloadedSet, recommendedSort, gpu]);
+
+  // Per-row meta + VRAM badge from the recommended listing's own metadata.
+  const recommendedMeta = useMemo(() => {
+    const map = new Map<
+      string,
+      { meta: string | null; status: VramFitStatus | null; est: number }
+    >();
+    for (const r of recommendedSearch.results) {
+      const isG = isKnownGgufRepo(r.id);
+      const meta = isG
+        ? r.estimatedSizeBytes
+          ? `GGUF · ${formatBytes(r.estimatedSizeBytes)}`
+          : "GGUF"
+        : r.totalParams
+          ? formatCompact(r.totalParams)
+          : extractParamLabel(r.id);
+      const est =
+        !isG && r.totalParams ? estimateLoadingVram(r.totalParams, "qlora") : 0;
+      const status =
+        !isG && est > 0 && gpu.available
+          ? checkVramFit(est, gpu.memoryTotalGb)
+          : null;
+      map.set(r.id, { meta, status, est });
+    }
+    return map;
+  }, [recommendedSearch.results, isKnownGgufRepo, gpu]);
 
   // Newest-first (also covers older backends without `last_modified`).
   const sortedCachedGguf = useMemo(
@@ -1029,18 +1075,15 @@ export function HubModelPicker({
   // filtered recommended models also show VRAM badges. Skip GGUF repos:
   // no safetensors metadata, and the render layer shows a "GGUF" badge.
   const idsForVram = useMemo(() => {
-    const ids = showHfSection
-      ? [...new Set([...visibleRecommendedIds, ...filteredRecommendedIds])]
-      : visibleRecommendedIds;
-    return ids.filter((id) => !isKnownGgufRepo(id));
-  }, [visibleRecommendedIds, showHfSection, filteredRecommendedIds, isKnownGgufRepo]);
+    if (!showHfSection) return [];
+    return filteredRecommendedIds.filter((id) => !isKnownGgufRepo(id));
+  }, [showHfSection, filteredRecommendedIds, isKnownGgufRepo]);
   const { paramCountById: recommendedParamCountById } =
     useRecommendedModelVram(idsForVram);
 
   const recommendedSet = useMemo(
-    () =>
-      new Set(showHfSection ? filteredRecommendedIds : visibleRecommendedIds),
-    [showHfSection, filteredRecommendedIds, visibleRecommendedIds],
+    () => new Set(filteredRecommendedIds),
+    [filteredRecommendedIds],
   );
 
   const hfIds = useMemo(() => {
@@ -1102,10 +1145,10 @@ export function HubModelPicker({
       );
     }
 
-    if (section === "recommended" && cachedReady && !recommendedCollapsed) {
+    if (section === "recommended") {
       keys.push(
-        ...visibleRecommendedIds.map((id) =>
-          makeModelOptionKey("recommended", id),
+        ...recommendedRows.map((r) =>
+          makeModelOptionKey("recommended", r.id),
         ),
       );
     }
@@ -1120,12 +1163,11 @@ export function HubModelPicker({
     filteredRecommendedIds,
     hfIds,
     lmStudioModels,
-    recommendedCollapsed,
+    recommendedRows,
     section,
     showHfSection,
     visibleCachedGguf,
     visibleCachedModelRows,
-    visibleRecommendedIds,
   ]);
 
   const selectedHubOptionKey = useMemo(
@@ -1181,8 +1223,7 @@ export function HubModelPicker({
       string,
       { est: number; status: VramFitStatus | null; detail: string | null }
     >();
-    const ids = showHfSection ? filteredRecommendedIds : visibleRecommendedIds;
-    for (const id of ids) {
+    for (const id of filteredRecommendedIds) {
       const totalParams = recommendedParamCountById.get(id);
       if (totalParams) {
         const est = estimateLoadingVram(totalParams, "qlora");
@@ -1194,13 +1235,7 @@ export function HubModelPicker({
       }
     }
     return map;
-  }, [
-    showHfSection,
-    filteredRecommendedIds,
-    visibleRecommendedIds,
-    recommendedParamCountById,
-    gpu,
-  ]);
+  }, [filteredRecommendedIds, recommendedParamCountById, gpu]);
 
   const { scrollRef, sentinelRef } = useInfiniteScroll(
     fetchMore,
@@ -1216,14 +1251,14 @@ export function HubModelPicker({
     setRecommendedSentinel(node);
   }, []);
   useEffect(() => {
-    if (!recommendedSentinel || !hasMoreRecommended) return;
+    if (!recommendedSentinel || !recommendedSearch.hasMore) return;
     const root = scrollRef.current;
     if (!root) return;
     const obs = new IntersectionObserver(
       ([e]) => {
         if (e.isIntersecting) {
           obs.disconnect();
-          setRecommendedPage((p) => p + 1);
+          recommendedSearch.fetchMore();
         }
       },
       { threshold: 0, root },
@@ -1234,7 +1269,7 @@ export function HubModelPicker({
       clearTimeout(timer);
       obs.disconnect();
     };
-  }, [recommendedSentinel, hasMoreRecommended, recommendedPage, scrollRef]);
+  }, [recommendedSentinel, recommendedSearch.hasMore, recommendedSearch.fetchMore, scrollRef]);
 
   /** Handle clicking a model row — GGUF repos expand, others load directly. */
   const handleModelClick = useCallback(
@@ -1705,53 +1740,66 @@ export function HubModelPicker({
             </>
           ) : null}
 
-          {showRecommendedSection && cachedReady ? (
+          {showRecommendedSection ? (
             <>
-              <ListLabel
-                icon={<HugeiconsIcon icon={StarIcon} className="size-3" />}
-                collapsed={recommendedCollapsed}
-                onToggle={() => setRecommendedCollapsed((v) => !v)}
-              >Recommended</ListLabel>
-              {recommendedCollapsed ? null : visibleRecommendedIds.length === 0 ? (
+              <div className="px-1 py-1">
+                <HubOptionMenu
+                  value={recommendedSort}
+                  options={RECOMMENDED_SORT_OPTIONS}
+                  onValueChange={setRecommendedSort}
+                  ariaLabel="Sort recommended models"
+                  align="start"
+                  className="h-6 gap-1 rounded-md px-1.5 text-muted-foreground hover:bg-muted/60"
+                  triggerContent={
+                    <span className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                      <HugeiconsIcon icon={StarIcon} className="size-3" />
+                      {RECOMMENDED_SORT_OPTIONS.find(
+                        (o) => o.value === recommendedSort,
+                      )?.label ?? "Recommended"}
+                    </span>
+                  }
+                />
+              </div>
+              {recommendedSearch.isLoading && recommendedRows.length === 0 ? (
+                <div className="flex items-center gap-2 px-5 py-3">
+                  <Spinner className="size-3 text-muted-foreground" />
+                  <span className="text-xs text-muted-foreground">
+                    Loading models…
+                  </span>
+                </div>
+              ) : recommendedRows.length === 0 ? (
                 <div className="px-2.5 py-2 text-xs text-muted-foreground">
-                  No default models.
+                  No models found.
                 </div>
               ) : (
-                visibleRecommendedIds.map((id) => {
-                  const vram = recommendedVramMap.get(id);
+                recommendedRows.map((r) => {
+                  const id = r.id;
+                  const info = recommendedMeta.get(id);
+                  const isG = isKnownGgufRepo(id);
                   const optionKey = makeModelOptionKey("recommended", id);
                   return (
                     <div key={id}>
                       <ModelRow
                         label={id}
-                        meta={
-                          isKnownGgufRepo(id)
-                            ? "GGUF"
-                            : (vram?.detail ?? extractParamLabel(id))
-                        }
+                        meta={info?.meta ?? (isG ? "GGUF" : extractParamLabel(id))}
                         selected={value === id}
                         optionProps={hubModelList.getOptionProps(
                           optionKey,
                           value === id,
                         )}
                         onClick={() => {
-                          if (isKnownGgufRepo(id)) {
+                          if (isG) {
                             setExpandedGguf((prev) => (prev === id ? null : id));
                           } else {
                             handleModelClick(id);
                           }
                         }}
-                        vramStatus={
-                          isKnownGgufRepo(id) ? null : (vram?.status ?? null)
-                        }
-                        vramEst={isKnownGgufRepo(id) ? undefined : vram?.est}
+                        vramStatus={isG ? null : (info?.status ?? null)}
+                        vramEst={isG ? undefined : info?.est}
                         gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
                         onArrowDownIntoChildren={
                           expandedGguf === id
-                            ? () => {
-                                const focused = focusFirstChildOption(optionKey);
-                                return focused;
-                              }
+                            ? () => focusFirstChildOption(optionKey)
                             : undefined
                         }
                       />
@@ -1776,7 +1824,7 @@ export function HubModelPicker({
                   );
                 })
               )}
-              {!recommendedCollapsed && hasMoreRecommended && (
+              {recommendedSearch.hasMore && (
                 <>
                   <div ref={recommendedSentinelRef} className="h-px" />
                   <div className="flex items-center justify-center py-2">
