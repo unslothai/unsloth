@@ -335,7 +335,8 @@ class TestChatCompletionRequestToolFields:
 
         captured = {}
 
-        async def _fake_proxy(payload, request):
+        async def _fake_proxy(payload, request, current_subject):
+            assert current_subject == "test-user"
             captured["stream"] = payload.stream
             return JSONResponse({"choices": [], "object": "chat.completion"})
 
