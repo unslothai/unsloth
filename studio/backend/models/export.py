@@ -146,7 +146,11 @@ class ExportGGUFRequest(BaseModel):
 
     quantization_method: str = Field(
         "Q4_K_M",
-        description = 'GGUF quantization method (e.g. "Q4_K_M")',
+        description = 'Single GGUF quantization method (e.g. "Q4_K_M")',
+    )
+    quantization_methods: Optional[List[str]] = Field(
+        None,
+        description = "Multiple GGUF quantization methods in one conversion pass",
     )
     push_to_hub: bool = Field(
         False,
@@ -159,6 +163,38 @@ class ExportGGUFRequest(BaseModel):
     hf_token: Optional[str] = Field(
         None,
         description = "Hugging Face token for GGUF upload",
+    )
+    private: bool = Field(
+        False,
+        description = "If True, create a private repository on the Hub",
+    )
+
+
+class HubPrecheckRequest(BaseModel):
+    """Request for validating Hugging Face Hub upload settings before export."""
+
+    repo_id: Optional[str] = Field(
+        None,
+        description = "Hugging Face Hub repository ID; omit to verify credentials only",
+    )
+    hf_token: Optional[str] = Field(
+        None,
+        description = "Hugging Face token (optional if logged in via CLI)",
+    )
+    private: bool = Field(
+        False,
+        description = "Whether the target repository should be private",
+    )
+
+
+class HubPrecheckResponse(BaseModel):
+    """Result of a Hugging Face Hub preflight check."""
+
+    valid: bool = Field(..., description = "True when upload settings look good")
+    message: str = Field(..., description = "Human-readable status or error message")
+    details: Optional[Dict[str, Any]] = Field(
+        default = None,
+        description = "Optional metadata such as resolved username",
     )
 
 

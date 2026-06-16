@@ -40,6 +40,8 @@ from models import (
     ExportBaseModelRequest,
     ExportGGUFRequest,
     ExportLoRAAdapterRequest,
+    HubPrecheckRequest,
+    HubPrecheckResponse,
 )
 
 router = APIRouter()
@@ -191,6 +193,40 @@ def _export_details(output_path: Optional[str]) -> Optional[Dict[str, Any]]:
         return {"output_path": output_path}
 
 
+@router.post("/hub-precheck", response_model = HubPrecheckResponse)
+async def precheck_hub_export(
+    request: HubPrecheckRequest, current_subject: str = Depends(get_current_subject)
+):
+    """Validate Hugging Face token, repo id, and write access before export."""
+    try:
+        from core.export.hf_precheck import precheck_hub_credentials, precheck_hub_upload
+
+        repo_id = (request.repo_id or "").strip()
+        if repo_id:
+            precheck_fn = precheck_hub_upload
+            precheck_kwargs = {
+                "repo_id": repo_id,
+                "hf_token": request.hf_token,
+                "private": request.private,
+            }
+        else:
+            precheck_fn = precheck_hub_credentials
+            precheck_kwargs = {"hf_token": request.hf_token}
+
+        result = await asyncio.to_thread(precheck_fn, **precheck_kwargs)
+        return HubPrecheckResponse(
+            valid = result.ok,
+            message = result.message,
+            details = result.details,
+        )
+    except Exception as e:
+        logger.error(f"Error during Hub precheck: {e}", exc_info = True)
+        raise HTTPException(
+            status_code = 500,
+            detail = "Failed to validate Hugging Face Hub settings",
+        )
+
+
 @router.post("/export/merged", response_model = ExportOperationResponse)
 async def export_merged_model(
     request: ExportMergedModelRequest, current_subject: str = Depends(get_current_subject)
@@ -281,9 +317,11 @@ async def export_gguf(
             backend.export_gguf,
             save_directory = request.save_directory,
             quantization_method = request.quantization_method,
+            quantization_methods = request.quantization_methods,
             push_to_hub = request.push_to_hub,
             repo_id = request.repo_id,
             hf_token = request.hf_token,
+            private = request.private,
         )
 
         if not success:

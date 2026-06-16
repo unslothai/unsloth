@@ -10,6 +10,7 @@ export { useRecommendedModelVram } from "./use-recommended-model-vram";
 export { useHfDatasetSearch } from "./use-hf-dataset-search";
 export { useHfDatasetSplits } from "./use-hf-dataset-splits";
 export { useHfTokenValidation } from "./use-hf-token-validation";
+export { useHubExportPrecheck } from "./use-hub-export-precheck";
 export { useInfiniteScroll } from "./use-infinite-scroll";
 export { useTauriBackend } from "./use-tauri-backend";
 export { useCollapseScrollLock } from "./use-collapse-scroll-lock";

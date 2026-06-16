@@ -182,9 +182,19 @@ def _install_lightweight_backend_stubs(monkeypatch):
         "ExportBaseModelRequest",
         "ExportGGUFRequest",
         "ExportLoRAAdapterRequest",
+        "HubPrecheckRequest",
+        "HubPrecheckResponse",
     ):
         setattr(models_pkg, name, object)
     models_pkg.LocalModelInfo = _LocalModelInfo
+
+    class _HubPrecheckResponse:
+        def __init__(self, valid, message, details = None):
+            self.valid = valid
+            self.message = message
+            self.details = details
+
+    models_pkg.HubPrecheckResponse = _HubPrecheckResponse
     monkeypatch.setitem(sys.modules, "models", models_pkg)
 
     models_models = types.ModuleType("models.models")
@@ -471,3 +481,82 @@ def test_registered_absolute_export_folder_is_discoverable(tmp_path, monkeypatch
     assert len(found) == 1
     assert found[0].path == str(gguf_file)
     assert found[0].source == "models_dir"
+
+
+def test_hub_precheck_route_returns_validation(monkeypatch):
+    import asyncio
+
+    _install_lightweight_backend_stubs(monkeypatch)
+
+    core_pkg = types.ModuleType("core")
+    core_export = types.ModuleType("core.export")
+    hf_precheck = types.ModuleType("core.export.hf_precheck")
+
+    class _Result:
+        def __init__(self):
+            self.ok = True
+            self.message = "Ready to create public repository 'alice/new-model'."
+            self.details = {"username": "alice", "repo_exists": False}
+
+    hf_precheck.precheck_hub_upload = lambda **kwargs: _Result()
+    hf_precheck.precheck_hub_credentials = lambda **kwargs: _Result()
+    core_export.get_export_backend = lambda: None
+    monkeypatch.setitem(sys.modules, "core", core_pkg)
+    monkeypatch.setitem(sys.modules, "core.export", core_export)
+    monkeypatch.setitem(sys.modules, "core.export.hf_precheck", hf_precheck)
+
+    export_route = _load_module(
+        "test_routes_export_hub_precheck",
+        "routes/export.py",
+        monkeypatch,
+    )
+
+    request = types.SimpleNamespace(
+        repo_id = "alice/new-model",
+        hf_token = None,
+        private = False,
+    )
+    response = asyncio.run(export_route.precheck_hub_export(request, current_subject = None))
+
+    assert response.valid is True
+    assert "alice/new-model" in response.message
+    assert response.details["username"] == "alice"
+
+
+def test_hub_precheck_route_supports_credentials_only(monkeypatch):
+    import asyncio
+
+    _install_lightweight_backend_stubs(monkeypatch)
+
+    core_pkg = types.ModuleType("core")
+    core_export = types.ModuleType("core.export")
+    hf_precheck = types.ModuleType("core.export.hf_precheck")
+
+    class _Result:
+        def __init__(self):
+            self.ok = True
+            self.message = "Logged in to Hugging Face as 'alice'."
+            self.details = {"username": "alice"}
+
+    hf_precheck.precheck_hub_credentials = lambda **kwargs: _Result()
+    hf_precheck.precheck_hub_upload = lambda **kwargs: _Result()
+    core_export.get_export_backend = lambda: None
+    monkeypatch.setitem(sys.modules, "core", core_pkg)
+    monkeypatch.setitem(sys.modules, "core.export", core_export)
+    monkeypatch.setitem(sys.modules, "core.export.hf_precheck", hf_precheck)
+
+    export_route = _load_module(
+        "test_routes_export_hub_precheck_credentials",
+        "routes/export.py",
+        monkeypatch,
+    )
+
+    request = types.SimpleNamespace(
+        repo_id = None,
+        hf_token = None,
+        private = False,
+    )
+    response = asyncio.run(export_route.precheck_hub_export(request, current_subject = None))
+
+    assert response.valid is True
+    assert response.details["username"] == "alice"

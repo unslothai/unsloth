@@ -2,7 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 import typer
 
@@ -41,11 +41,14 @@ def export(
         "-f",
         help = f"Export format: {', '.join(EXPORT_FORMATS)}",
     ),
-    quantization: str = typer.Option(
-        "q4_k_m",
+    quantization: Optional[List[str]] = typer.Option(
+        None,
         "--quantization",
         "-q",
-        help = f"GGUF quantization method: {', '.join(GGUF_QUANTS)}",
+        help = (
+            f"GGUF quantization method(s). Repeat -q for multiple in one conversion pass. "
+            f"Options: {', '.join(GGUF_QUANTS)}"
+        ),
     ),
     push_to_hub: bool = typer.Option(
         False, "--push-to-hub", help = "Push exported model to HuggingFace Hub."
@@ -57,6 +60,11 @@ def export(
         None, "--hf-token", envvar = "HF_TOKEN", help = "HuggingFace token."
     ),
     private: bool = typer.Option(False, "--private", help = "Make the HuggingFace repo private."),
+    skip_hub_precheck: bool = typer.Option(
+        False,
+        "--skip-hub-precheck",
+        help = "Skip Hugging Face token/repo validation before export.",
+    ),
     max_seq_length: int = typer.Option(2048, "--max-seq-length"),
     load_in_4bit: bool = typer.Option(True, "--load-in-4bit/--no-load-in-4bit"),
 ):
@@ -71,6 +79,30 @@ def export(
     if push_to_hub and not repo_id:
         typer.echo("Error: --repo-id required when using --push-to-hub", err = True)
         raise typer.Exit(code = 2)
+
+    gguf_quants: List[str] = []
+    if format == "gguf":
+        gguf_quants = [q.lower() for q in (quantization or ["q4_k_m"])]
+        for quant in gguf_quants:
+            if quant not in GGUF_QUANTS:
+                typer.echo(
+                    f"Error: Invalid quantization '{quant}'. Choose from: {', '.join(GGUF_QUANTS)}",
+                    err = True,
+                )
+                raise typer.Exit(code = 2)
+
+    if push_to_hub and not skip_hub_precheck:
+        from studio.backend.core.export.hf_precheck import precheck_hub_upload
+
+        precheck = precheck_hub_upload(
+            repo_id = repo_id,
+            hf_token = hf_token,
+            private = private,
+        )
+        if not precheck.ok:
+            typer.echo(f"Error: {precheck.message}", err = True)
+            raise typer.Exit(code = 1)
+        typer.echo(precheck.message)
 
     from studio.backend.core.export import ExportBackend
 
@@ -110,10 +142,11 @@ def export(
     elif format == "gguf":
         success, message, output_path = backend.export_gguf(
             save_directory = str(output_dir),
-            quantization_method = quantization.upper(),
+            quantization_methods = gguf_quants,
             push_to_hub = push_to_hub,
             repo_id = repo_id,
             hf_token = hf_token,
+            private = private,
         )
     elif format == "lora":
         success, message, output_path = backend.export_lora_adapter(

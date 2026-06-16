@@ -276,9 +276,11 @@ def _handle_export(backend, cmd: dict, resp_queue: Any) -> None:
             success, message, output_path = backend.export_gguf(
                 save_directory = cmd.get("save_directory", ""),
                 quantization_method = cmd.get("quantization_method", "Q4_K_M"),
+                quantization_methods = cmd.get("quantization_methods"),
                 push_to_hub = cmd.get("push_to_hub", False),
                 repo_id = cmd.get("repo_id"),
                 hf_token = cmd.get("hf_token"),
+                private = cmd.get("private", False),
             )
         elif export_type == "lora":
             success, message, output_path = backend.export_lora_adapter(

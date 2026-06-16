@@ -402,9 +402,11 @@ class ExportOrchestrator:
         self,
         save_directory: str,
         quantization_method: str = "Q4_K_M",
+        quantization_methods: Optional[List[str]] = None,
         push_to_hub: bool = False,
         repo_id: Optional[str] = None,
         hf_token: Optional[str] = None,
+        private: bool = False,
     ) -> Tuple[bool, str, Optional[str]]:
         """Export model in GGUF format."""
         return self._run_export(
@@ -412,9 +414,11 @@ class ExportOrchestrator:
             {
                 "save_directory": save_directory,
                 "quantization_method": quantization_method,
+                "quantization_methods": quantization_methods,
                 "push_to_hub": push_to_hub,
                 "repo_id": repo_id,
                 "hf_token": hf_token,
+                "private": private,
             },
         )
 

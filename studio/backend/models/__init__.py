@@ -40,6 +40,8 @@ from .export import (
     ExportBaseModelRequest,
     ExportGGUFRequest,
     ExportLoRAAdapterRequest,
+    HubPrecheckRequest,
+    HubPrecheckResponse,
 )
 from .users import Token
 from .datasets import (
@@ -104,6 +106,8 @@ __all__ = [
     "ExportBaseModelRequest",
     "ExportGGUFRequest",
     "ExportLoRAAdapterRequest",
+    "HubPrecheckRequest",
+    "HubPrecheckResponse",
     "Token",
     # Dataset schemas
     "CheckFormatRequest",

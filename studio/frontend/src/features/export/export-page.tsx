@@ -40,6 +40,7 @@ import {
   useDebouncedValue,
   useHfModelSearch,
   useHfTokenValidation,
+  useHubExportPrecheck,
 } from "@/hooks";
 import {
   AlertCircleIcon,
@@ -401,6 +402,35 @@ export function ExportPage() {
     sourceMode,
   ]);
   const saveDirectory = customSaveDirectory?.trim() || defaultSaveDirectory;
+  const repoId =
+    destination === "hub" && hfUsername && modelName
+      ? `${hfUsername}/${modelName}`
+      : "";
+  const hubPrecheck = useHubExportPrecheck({
+    enabled: destination === "hub" && dialogOpen,
+    repoId,
+    hfToken,
+    privateRepo,
+  });
+
+  const hubRepoReady = !!(
+    hfUsername.trim() &&
+    modelName.trim() &&
+    repoId.includes("/")
+  );
+
+  useEffect(() => {
+    const username = hubPrecheck.details?.username;
+    if (
+      destination === "hub" &&
+      typeof username === "string" &&
+      username &&
+      !hfUsername.trim()
+    ) {
+      setHfUsername(username);
+    }
+  }, [destination, hfUsername, hubPrecheck.details]);
+
   const canExport = !!(
     selectedExportSource &&
     exportMethod &&
@@ -480,9 +510,7 @@ export function ExportPage() {
     setExportOutputPath(null);
 
     const pushToHub = destination === "hub";
-    const repoId = pushToHub && hfUsername && modelName
-      ? `${hfUsername}/${modelName}`
-      : undefined;
+    const resolvedRepoId = pushToHub && repoId ? repoId : undefined;
     const token = pushToHub && hfToken ? hfToken : undefined;
 
     try {
@@ -508,7 +536,7 @@ export function ExportPage() {
           const resp = await exportMerged({
             save_directory: saveDirectory,
             push_to_hub: pushToHub,
-            repo_id: repoId,
+            repo_id: resolvedRepoId,
             hf_token: token,
             private: privateRepo,
           });
@@ -517,7 +545,7 @@ export function ExportPage() {
           const resp = await exportBase({
             save_directory: saveDirectory,
             push_to_hub: pushToHub,
-            repo_id: repoId,
+            repo_id: resolvedRepoId,
             hf_token: token,
             private: privateRepo,
             base_model_id: selectedModelData?.base_model,
@@ -525,21 +553,22 @@ export function ExportPage() {
           lastOutputPath = resp.details?.output_path ?? null;
         }
       } else if (exportMethod === "gguf") {
-        for (const quant of quantLevels) {
-          const resp = await exportGGUF({
-            save_directory: saveDirectory,
-            quantization_method: quant,
-            push_to_hub: pushToHub,
-            repo_id: repoId,
-            hf_token: token,
-          });
-          lastOutputPath = resp.details?.output_path ?? lastOutputPath;
-        }
+        const resp = await exportGGUF({
+          save_directory: saveDirectory,
+          ...(quantLevels.length === 1
+            ? { quantization_method: quantLevels[0] }
+            : { quantization_methods: quantLevels }),
+          push_to_hub: pushToHub,
+          repo_id: resolvedRepoId,
+          hf_token: token,
+          private: privateRepo,
+        });
+        lastOutputPath = resp.details?.output_path ?? null;
       } else if (exportMethod === "lora") {
         const resp = await exportLoRA({
           save_directory: saveDirectory,
           push_to_hub: pushToHub,
-          repo_id: repoId,
+          repo_id: resolvedRepoId,
           hf_token: token,
           private: privateRepo,
         });
@@ -572,8 +601,7 @@ export function ExportPage() {
     quantLevels,
     destination,
     saveDirectory,
-    hfUsername,
-    modelName,
+    repoId,
     hfToken,
     privateRepo,
     modelSource,
@@ -1154,6 +1182,8 @@ export function ExportPage() {
         onHfTokenChange={setHfToken}
         privateRepo={privateRepo}
         onPrivateRepoChange={setPrivateRepo}
+        hubPrecheck={hubPrecheck}
+        hubRepoReady={hubRepoReady}
         onExport={handleExport}
         exporting={exporting}
         exportError={exportError}

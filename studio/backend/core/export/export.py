@@ -11,7 +11,7 @@ from loggers import get_logger
 import os
 import shutil
 from pathlib import Path
-from typing import Optional, Tuple, List
+from typing import Optional, Tuple, List, Union
 from unsloth import FastLanguageModel, FastVisionModel, _IS_MLX
 from huggingface_hub import HfApi, ModelCard
 from utils.hardware import clear_gpu_cache
@@ -35,6 +35,309 @@ if not _IS_MLX:
 logger = get_logger(__name__)
 
 _LLAMA_CPP_SCRIPTS_WARNING_EMITTED = False
+
+
+def _normalize_gguf_quant_methods(
+    quantization_method: Optional[Union[str, List[str]]] = None,
+    quantization_methods: Optional[List[str]] = None,
+) -> List[str]:
+    """Resolve GGUF quant labels to a lowercase list for unsloth."""
+    if quantization_methods:
+        raw = quantization_methods
+    elif isinstance(quantization_method, list):
+        raw = quantization_method
+    elif quantization_method:
+        raw = [quantization_method]
+    else:
+        raw = ["Q4_K_M"]
+
+    normalized: List[str] = []
+    seen = set()
+    for item in raw:
+        label = str(item).strip()
+        if not label:
+            continue
+        key = label.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append(key)
+    return normalized or ["q4_k_m"]
+
+
+def _format_gguf_quant_label(quant_methods: List[str]) -> str:
+    return ", ".join(method.upper() for method in quant_methods)
+
+
+def _precheck_hub_or_fail(
+    push_to_hub: bool,
+    repo_id: Optional[str],
+    hf_token: Optional[str],
+    private: bool,
+) -> Optional[Tuple[bool, str, None]]:
+    """Run Hub preflight when push_to_hub is requested."""
+    if not push_to_hub:
+        return None
+    if not repo_id:
+        return False, "Repository ID is required for Hub upload", None
+    from core.export.hf_precheck import precheck_hub_upload_tuple
+
+    ok, message = precheck_hub_upload_tuple(
+        repo_id = repo_id,
+        hf_token = hf_token,
+        private = private,
+    )
+    if not ok:
+        return False, message, None
+    return None
+
+
+def _resolve_hub_repo_id(
+    repo_id: str,
+    hf_token: Optional[str],
+    private: bool,
+) -> str:
+    """Create or resolve a Hub model repo and return the canonical repo id."""
+    hf_api = HfApi(token = hf_token) if hf_token else HfApi()
+    if _IS_MLX:
+        hf_api.create_repo(repo_id, private = private, exist_ok = True, token = hf_token)
+        return repo_id
+    return PushToHubMixin._create_repo(
+        PushToHubMixin,
+        repo_id = repo_id,
+        private = private,
+        token = hf_token,
+    )
+
+
+def _push_hub_model_card(
+    repo_id: str,
+    hf_token: Optional[str],
+    *,
+    username: str,
+    base_model: str,
+    model_type: str,
+    method: str = "",
+    extra: str = "unsloth",
+) -> None:
+    content = MODEL_CARD.format(
+        username = username,
+        base_model = base_model,
+        model_type = model_type,
+        method = method,
+        extra = extra,
+    )
+    card = ModelCard(content)
+    card.push_to_hub(repo_id, token = hf_token, commit_message = "Unsloth Model Card")
+
+
+def _ensure_full_hub_repo_id(repo_id: str, hf_token: Optional[str]) -> str:
+    """Expand a short repo name to username/model when no namespace is given."""
+    if "/" in repo_id:
+        return repo_id
+    hf_api = HfApi(token = hf_token) if hf_token else HfApi()
+    username = hf_api.whoami(token = hf_token)["name"]
+    return f"{username}/{repo_id}"
+
+
+def _upload_model_folder_to_hub(
+    folder_path: str,
+    repo_id: str,
+    hf_token: Optional[str],
+    private: bool,
+    *,
+    repo_resolved: bool = False,
+) -> None:
+    """Upload an on-disk model folder without re-saving or re-merging."""
+    full_repo_id = (
+        repo_id
+        if repo_resolved
+        else _resolve_hub_repo_id(repo_id, hf_token, private)
+    )
+    hf_api = HfApi(token = hf_token) if hf_token else HfApi()
+    hf_api.upload_folder(
+        folder_path = folder_path,
+        repo_id = full_repo_id,
+        repo_type = "model",
+        token = hf_token,
+    )
+
+
+def _find_export_artifact(save_directory: str, filename: str) -> Optional[str]:
+    """Locate an export artifact in the save dir or a leftover _tmp_model_* subdir."""
+    direct = os.path.join(save_directory, filename)
+    if os.path.isfile(direct):
+        return direct
+    try:
+        for entry in os.scandir(save_directory):
+            if entry.is_dir() and entry.name.startswith("_tmp_model_"):
+                candidate = os.path.join(entry.path, filename)
+                if os.path.isfile(candidate):
+                    return candidate
+    except OSError:
+        pass
+    return None
+
+
+def _gguf_path_in_repo(
+    file_path: str,
+    *,
+    model_name: str,
+    save_directory: str,
+) -> str:
+    """Match unsloth's Hub filename normalization for GGUF uploads."""
+    original_name = os.path.basename(file_path)
+    if "unsloth_gguf_" in original_name:
+        quant_suffix = (
+            original_name.split(".", 1)[1] if "." in original_name else original_name
+        )
+        return f"{model_name}.{quant_suffix}"
+
+    save_base = os.path.basename(save_directory.rstrip("/\\"))
+    if save_base and save_base in original_name:
+        return original_name.replace(save_base, model_name)
+    return original_name
+
+
+def _build_gguf_hub_readme(
+    *,
+    repo_id: str,
+    upload_names: List[str],
+    is_vlm: bool,
+    has_modelfile: bool,
+) -> str:
+    """Build a Hub README aligned with unsloth_push_to_hub_gguf."""
+    model_slug = repo_id.split("/")[-1]
+    readme_content = f"""---
+tags:
+- gguf
+- llama.cpp
+- unsloth
+{"- vision-language-model" if is_vlm else ""}
+---
+
+# {model_slug} : GGUF
+
+This model was finetuned and converted to GGUF format using [Unsloth](https://github.com/unslothai/unsloth).
+
+**Example usage**:
+- For text only LLMs:    `llama-cli -hf {repo_id} --jinja`
+- For multimodal models: `llama-mtmd-cli -hf {repo_id} --jinja`
+
+## Available Model files:
+"""
+    for name in upload_names:
+        readme_content += f"- `{name}`\n"
+
+    if is_vlm and has_modelfile:
+        readme_content += "\n## ⚠️ Ollama Note for Vision Models\n"
+        readme_content += "**Important:** Ollama currently does not support separate mmproj files for vision models.\n\n"
+        readme_content += "To create an Ollama model from this vision model:\n"
+        readme_content += "1. Place the `Modelfile` in the same directory as the finetuned bf16 merged model\n"
+        readme_content += "3. Run: `ollama create model_name -f ./Modelfile`\n"
+        readme_content += "   (Replace `model_name` with your desired name)\n\n"
+        readme_content += "This will create a unified bf16 model that Ollama can use.\n"
+    elif has_modelfile:
+        readme_content += "\n## Ollama\n"
+        readme_content += "An Ollama Modelfile is included for easy deployment.\n"
+
+    readme_content += (
+        "\nThis was trained 2x faster with [Unsloth](https://github.com/unslothai/unsloth)\n"
+        '[<img src="https://raw.githubusercontent.com/unslothai/unsloth/main/images/unsloth%20made%20with%20love.png" width="200"/>](https://github.com/unslothai/unsloth)\n'
+    )
+    return readme_content
+
+
+def _upload_gguf_directory_to_hub(
+    save_directory: str,
+    repo_id: str,
+    hf_token: Optional[str],
+    private: bool = False,
+    is_vlm: bool = False,
+) -> None:
+    """Upload already-converted GGUF artifacts without re-running conversion."""
+    gguf_files = sorted(glob.glob(os.path.join(save_directory, "*.gguf")))
+    if not gguf_files:
+        raise RuntimeError(
+            f"No GGUF files found in {save_directory}. Conversion may have failed."
+        )
+
+    hf_api = HfApi(token = hf_token) if hf_token else HfApi()
+    full_repo_id = _resolve_hub_repo_id(
+        _ensure_full_hub_repo_id(repo_id, hf_token),
+        hf_token,
+        private,
+    )
+    model_name = full_repo_id.split("/")[-1]
+
+    upload_names: List[str] = []
+    for file_path in gguf_files:
+        path_in_repo = _gguf_path_in_repo(
+            file_path,
+            model_name = model_name,
+            save_directory = save_directory,
+        )
+        upload_names.append(path_in_repo)
+        logger.info("Uploading GGUF to Hub: %s", path_in_repo)
+        hf_api.upload_file(
+            path_or_fileobj = file_path,
+            path_in_repo = path_in_repo,
+            repo_id = full_repo_id,
+            repo_type = "model",
+            commit_message = "(Trained with Unsloth)",
+            token = hf_token,
+        )
+
+    config_path = _find_export_artifact(save_directory, "config.json")
+    if config_path:
+        hf_api.upload_file(
+            path_or_fileobj = config_path,
+            path_in_repo = "config.json",
+            repo_id = full_repo_id,
+            repo_type = "model",
+            commit_message = "(Trained with Unsloth) - config",
+            token = hf_token,
+        )
+
+    modelfile_path = _find_export_artifact(save_directory, "Modelfile")
+    has_modelfile = modelfile_path is not None
+    if modelfile_path:
+        hf_api.upload_file(
+            path_or_fileobj = modelfile_path,
+            path_in_repo = "Modelfile",
+            repo_id = full_repo_id,
+            repo_type = "model",
+            commit_message = "(Trained with Unsloth) - Ollama Modelfile",
+            token = hf_token,
+        )
+
+    readme_content = _build_gguf_hub_readme(
+        repo_id = full_repo_id,
+        upload_names = upload_names,
+        is_vlm = is_vlm,
+        has_modelfile = has_modelfile,
+    )
+
+    hf_api.upload_file(
+        path_or_fileobj = readme_content.encode("utf-8"),
+        path_in_repo = "README.md",
+        repo_id = full_repo_id,
+        repo_type = "model",
+        commit_message = "Add README",
+        token = hf_token,
+    )
+
+    tags = ["gguf", "llama-cpp", "unsloth"]
+    if is_vlm:
+        tags.append("vision-language-model")
+    try:
+        hf_api.add_tags(
+            repo_id = full_repo_id,
+            tags = tags,
+            repo_type = "model",
+        )
+    except Exception as exc:
+        logger.warning("Could not add Hub tags to %s: %s", full_repo_id, exc)
 
 
 def _is_wsl():
@@ -330,6 +633,12 @@ class ExportBackend:
 
         output_path: Optional[str] = None
         try:
+            precheck_failure = _precheck_hub_or_fail(
+                push_to_hub, repo_id, hf_token, private
+            )
+            if precheck_failure is not None:
+                return precheck_failure
+
             if _IS_MLX:
                 mlx_save_method = "merged_4bit" if format_type == "4-bit (FP4)" else "merged_16bit"
             else:
@@ -361,10 +670,10 @@ class ExportBackend:
                 output_path = str(Path(save_directory).resolve())
 
             if push_to_hub:
-                if not repo_id or not hf_token:
+                if not repo_id:
                     return (
                         False,
-                        "Repository ID and Hugging Face token required for Hub upload",
+                        "Repository ID is required for Hub upload",
                         None,
                     )
 
@@ -394,14 +703,36 @@ class ExportBackend:
                                 private = private,
                             )
                 else:
-                    hub_save_method = save_method if save_method is not None else "merged_16bit"
-                    self.current_model.push_to_hub_merged(
-                        repo_id,
-                        self.current_tokenizer,
-                        save_method = hub_save_method,
-                        token = hf_token,
-                        private = private,
-                    )
+                    if output_path and os.path.isdir(output_path):
+                        base_model = (
+                            get_base_model_from_lora(self.current_checkpoint)
+                            if self.current_checkpoint
+                            else None
+                        ) or getattr(self.current_model.config, "_name_or_path", None) or "unknown"
+                        full_repo_id = _resolve_hub_repo_id(repo_id, hf_token, private)
+                        _push_hub_model_card(
+                            full_repo_id,
+                            hf_token,
+                            username = full_repo_id.split("/")[0],
+                            base_model = base_model,
+                            model_type = self.current_model.config.model_type,
+                        )
+                        _upload_model_folder_to_hub(
+                            output_path,
+                            full_repo_id,
+                            hf_token,
+                            private,
+                            repo_resolved = True,
+                        )
+                    else:
+                        hub_save_method = save_method if save_method is not None else "merged_16bit"
+                        self.current_model.push_to_hub_merged(
+                            repo_id,
+                            self.current_tokenizer,
+                            save_method = hub_save_method,
+                            token = hf_token,
+                            private = private,
+                        )
                 logger.info(f"Model pushed successfully to {repo_id}")
 
             return True, "Model exported successfully", output_path
@@ -440,6 +771,12 @@ class ExportBackend:
 
         output_path: Optional[str] = None
         try:
+            precheck_failure = _precheck_hub_or_fail(
+                push_to_hub, repo_id, hf_token, private
+            )
+            if precheck_failure is not None:
+                return precheck_failure
+
             if save_directory:
                 save_directory = str(resolve_export_write_dir(save_directory))
                 logger.info(f"Saving base model locally to: {save_directory}")
@@ -463,10 +800,10 @@ class ExportBackend:
                 output_path = str(Path(save_directory).resolve())
 
             if push_to_hub:
-                if not repo_id or not hf_token:
+                if not repo_id:
                     return (
                         False,
-                        "Repository ID and Hugging Face token required for Hub upload",
+                        "Repository ID is required for Hub upload",
                         None,
                     )
 
@@ -496,37 +833,26 @@ class ExportBackend:
                                 private = private,
                             )
                 else:
-                    # Base model name from request or model config
-                    base_model = (
-                        base_model_id or self.current_model.config._name_or_path or "unknown"
-                    )
-
-                    hf_api = HfApi(token = hf_token)
-                    repo_id = PushToHubMixin._create_repo(
-                        PushToHubMixin,
-                        repo_id = repo_id,
-                        private = private,
-                        token = hf_token,
-                    )
-                    username = repo_id.split("/")[0]
-
-                    content = MODEL_CARD.format(
-                        username = username,
-                        base_model = base_model,
-                        model_type = self.current_model.config.model_type,
-                        method = "",
-                        extra = "unsloth",
-                    )
-                    card = ModelCard(content)
-                    card.push_to_hub(repo_id, token = hf_token, commit_message = "Unsloth Model Card")
-
-                    if save_directory:
-                        hf_api.upload_folder(
-                            folder_path = save_directory,
-                            repo_id = repo_id,
-                            repo_type = "model",
+                    if output_path and os.path.isdir(output_path):
+                        base_model = (
+                            base_model_id or self.current_model.config._name_or_path or "unknown"
                         )
-                        logger.info(f"Model pushed successfully to {repo_id}")
+                        full_repo_id = _resolve_hub_repo_id(repo_id, hf_token, private)
+                        _push_hub_model_card(
+                            full_repo_id,
+                            hf_token,
+                            username = full_repo_id.split("/")[0],
+                            base_model = base_model,
+                            model_type = self.current_model.config.model_type,
+                        )
+                        _upload_model_folder_to_hub(
+                            output_path,
+                            full_repo_id,
+                            hf_token,
+                            private,
+                            repo_resolved = True,
+                        )
+                        logger.info(f"Model pushed successfully to {full_repo_id}")
                     else:
                         return (
                             False,
@@ -546,20 +872,24 @@ class ExportBackend:
     def export_gguf(
         self,
         save_directory: str,
-        quantization_method: str = "Q4_K_M",
+        quantization_method: Union[str, List[str], None] = "Q4_K_M",
+        quantization_methods: Optional[List[str]] = None,
         push_to_hub: bool = False,
         repo_id: Optional[str] = None,
         hf_token: Optional[str] = None,
+        private: bool = False,
     ) -> Tuple[bool, str, Optional[str]]:
         """
         Export model in GGUF format.
 
         Args:
             save_directory: Local directory to save model
-            quantization_method: GGUF quantization method (e.g., "Q4_K_M")
+            quantization_method: Single GGUF quant label (legacy)
+            quantization_methods: Multiple GGUF quant labels in one conversion pass
             push_to_hub: Whether to push to Hugging Face Hub
             repo_id: Hub repository ID
             hf_token: Hugging Face token
+            private: Whether to create a private Hub repository
 
         Returns:
             Tuple of (success: bool, message: str, output_path: Optional[str])
@@ -567,11 +897,20 @@ class ExportBackend:
         if not self.current_model or not self.current_tokenizer:
             return False, "No model loaded. Please select a checkpoint first.", None
 
+        quant_methods = _normalize_gguf_quant_methods(
+            quantization_method,
+            quantization_methods,
+        )
+        quant_label = _format_gguf_quant_label(quant_methods)
+
         output_path: Optional[str] = None
         model_tmp_to_cleanup: Optional[str] = None
         try:
-            # unsloth expects lowercase quant method
-            quant_method = quantization_method.lower()
+            precheck_failure = _precheck_hub_or_fail(
+                push_to_hub, repo_id, hf_token, private
+            )
+            if precheck_failure is not None:
+                return precheck_failure
 
             # Pin convert_hf_to_gguf.py to setup.sh's tagged llama.cpp ref so it
             # can't drift past the pinned llama-quantize binary's gguf API.
@@ -597,7 +936,11 @@ class ExportBackend:
                 save_directory = str(resolve_export_write_dir(save_directory))
                 # Keep unsloth relative-path internals anchored to the repo cwd.
                 abs_save_dir = os.path.abspath(save_directory)
-                logger.info(f"Saving GGUF model locally to: {abs_save_dir}")
+                logger.info(
+                    "Saving GGUF model locally to: %s (quantizations: %s)",
+                    abs_save_dir,
+                    quant_label,
+                )
 
                 ensure_dir(Path(abs_save_dir))
 
@@ -619,7 +962,7 @@ class ExportBackend:
                 self.current_model.save_pretrained_gguf(
                     _model_tmp,
                     self.current_tokenizer,
-                    quantization_method = quant_method,
+                    quantization_method = quant_methods,
                 )
 
                 # Relocate the .gguf that convert_to_gguf wrote to cwd (repo root).
@@ -672,26 +1015,36 @@ class ExportBackend:
                 output_path = str(Path(abs_save_dir).resolve())
 
             if push_to_hub:
-                if not repo_id or not hf_token:
+                if not repo_id:
                     return (
                         False,
-                        "Repository ID and Hugging Face token required for Hub upload",
+                        "Repository ID is required for Hub upload",
                         None,
                     )
 
                 logger.info(f"Pushing GGUF model to Hub: {repo_id}")
 
-                self.current_model.push_to_hub_gguf(
-                    repo_id,
-                    self.current_tokenizer,
-                    quantization_method = quant_method,
-                    token = hf_token,
-                )
+                if output_path and os.path.isdir(output_path):
+                    _upload_gguf_directory_to_hub(
+                        output_path,
+                        repo_id,
+                        hf_token,
+                        private = private,
+                        is_vlm = self.is_vision,
+                    )
+                else:
+                    self.current_model.push_to_hub_gguf(
+                        repo_id,
+                        self.current_tokenizer,
+                        quantization_method = quant_methods,
+                        token = hf_token,
+                        private = private,
+                    )
                 logger.info(f"GGUF model pushed successfully to {repo_id}")
 
             return (
                 True,
-                f"GGUF model exported successfully ({quantization_method})",
+                f"GGUF model exported successfully ({quant_label})",
                 output_path,
             )
 
@@ -726,6 +1079,12 @@ class ExportBackend:
 
         output_path: Optional[str] = None
         try:
+            precheck_failure = _precheck_hub_or_fail(
+                push_to_hub, repo_id, hf_token, private
+            )
+            if precheck_failure is not None:
+                return precheck_failure
+
             if save_directory:
                 save_directory = str(resolve_export_write_dir(save_directory))
                 logger.info(f"Saving LoRA adapter locally to: {save_directory}")
@@ -742,25 +1101,63 @@ class ExportBackend:
                 output_path = str(Path(save_directory).resolve())
 
             if push_to_hub:
-                if not repo_id or not hf_token:
+                if not repo_id:
                     return (
                         False,
-                        "Repository ID and Hugging Face token required for Hub upload",
+                        "Repository ID is required for Hub upload",
                         None,
                     )
 
                 logger.info(f"Pushing LoRA adapter to Hub: {repo_id}")
 
-                if _IS_MLX:
+                if output_path and os.path.isdir(output_path):
+                    full_repo_id = _resolve_hub_repo_id(repo_id, hf_token, private)
+                    base_model = (
+                        get_base_model_from_lora(self.current_checkpoint)
+                        if self.current_checkpoint
+                        else None
+                    ) or getattr(self.current_model.config, "_name_or_path", None) or "unknown"
+                    _push_hub_model_card(
+                        full_repo_id,
+                        hf_token,
+                        username = full_repo_id.split("/")[0],
+                        base_model = base_model,
+                        model_type = getattr(self.current_model.config, "model_type", "unknown"),
+                        method = "LoRA adapter",
+                        extra = "lora",
+                    )
+                    _upload_model_folder_to_hub(
+                        output_path,
+                        full_repo_id,
+                        hf_token,
+                        private,
+                        repo_resolved = True,
+                    )
+                elif _IS_MLX:
                     with tempfile.TemporaryDirectory() as tmp_dir:
                         self.current_model.save_lora_adapters(tmp_dir)
                         self.current_tokenizer.save_pretrained(tmp_dir)
-                        hf_api = HfApi(token = hf_token)
-                        hf_api.create_repo(repo_id, private = private, exist_ok = True)
-                        hf_api.upload_folder(
-                            folder_path = tmp_dir,
-                            repo_id = repo_id,
-                            repo_type = "model",
+                        full_repo_id = _resolve_hub_repo_id(repo_id, hf_token, private)
+                        base_model = (
+                            get_base_model_from_lora(self.current_checkpoint)
+                            if self.current_checkpoint
+                            else None
+                        ) or getattr(self.current_model.config, "_name_or_path", None) or "unknown"
+                        _push_hub_model_card(
+                            full_repo_id,
+                            hf_token,
+                            username = full_repo_id.split("/")[0],
+                            base_model = base_model,
+                            model_type = getattr(self.current_model.config, "model_type", "unknown"),
+                            method = "LoRA adapter",
+                            extra = "lora",
+                        )
+                        _upload_model_folder_to_hub(
+                            tmp_dir,
+                            full_repo_id,
+                            hf_token,
+                            private,
+                            repo_resolved = True,
                         )
                 else:
                     self.current_model.push_to_hub(repo_id, token = hf_token, private = private)

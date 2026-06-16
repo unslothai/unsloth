@@ -95,12 +95,33 @@ export async function exportBase(params: {
   return parseJson<ExportOperationResponse>(response);
 }
 
+export interface HubPrecheckResponse {
+  valid: boolean;
+  message: string;
+  details?: Record<string, unknown> | null;
+}
+
+export async function precheckHubExport(params: {
+  repo_id?: string | null;
+  hf_token?: string | null;
+  private?: boolean;
+}): Promise<HubPrecheckResponse> {
+  const response = await authFetch("/api/export/hub-precheck", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(params),
+  });
+  return parseJson<HubPrecheckResponse>(response);
+}
+
 export async function exportGGUF(params: {
   save_directory: string;
-  quantization_method: string;
+  quantization_method?: string;
+  quantization_methods?: string[];
   push_to_hub?: boolean;
   repo_id?: string | null;
   hf_token?: string | null;
+  private?: boolean;
 }): Promise<ExportOperationResponse> {
   const response = await authFetch("/api/export/export/gguf", {
     method: "POST",

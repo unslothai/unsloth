@@ -31,6 +31,7 @@ import { useEffect, useRef, useState } from "react";
 import { streamExportLogs, type ExportLogEntry } from "../api/export-api";
 import { collapseAnim } from "../anim";
 import { EXPORT_METHODS, type ExportMethod } from "../constants";
+import type { HubPrecheckState } from "@/hooks/use-hub-export-precheck";
 
 // Max log lines kept in local state. Matches the backend ring buffer's maxlen
 // so the UI shows the full server-side scrollback.
@@ -235,6 +236,8 @@ interface ExportDialogProps {
   onHfTokenChange: (v: string) => void;
   privateRepo: boolean;
   onPrivateRepoChange: (v: boolean) => void;
+  hubPrecheck: HubPrecheckState;
+  hubRepoReady: boolean;
   onExport: () => void;
   exporting: boolean;
   exportError: string | null;
@@ -269,6 +272,8 @@ export function ExportDialog({
   onHfTokenChange,
   privateRepo,
   onPrivateRepoChange,
+  hubPrecheck,
+  hubRepoReady,
   onExport,
   exporting,
   exportError,
@@ -519,6 +524,22 @@ export function ExportDialog({
                         Private Repository
                       </label>
                     </div>
+
+                    {(hubPrecheck.isChecking || hubPrecheck.message) && (
+                      <p
+                        className={
+                          hubPrecheck.valid === false
+                            ? "text-xs text-destructive"
+                            : hubPrecheck.valid === true
+                              ? "text-xs text-emerald-600 dark:text-emerald-400"
+                              : "text-xs text-muted-foreground"
+                        }
+                      >
+                        {hubPrecheck.isChecking
+                          ? "Checking Hugging Face access…"
+                          : hubPrecheck.message}
+                      </p>
+                    )}
                   </div>
                 </motion.div>
               )}
@@ -663,7 +684,17 @@ export function ExportDialog({
               >
                 {exportSuccess ? "Done" : "Cancel"}
               </Button>
-              <Button onClick={onExport} disabled={exporting || exportSuccess}>
+              <Button
+                onClick={onExport}
+                disabled={
+                  exporting ||
+                  exportSuccess ||
+                  (destination === "hub" &&
+                    (!hubRepoReady ||
+                      hubPrecheck.isChecking ||
+                      hubPrecheck.valid !== true))
+                }
+              >
                 {exporting ? (
                   <span className="flex items-center gap-2">
                     <Spinner className="size-4" />
