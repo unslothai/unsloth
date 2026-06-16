@@ -14,8 +14,10 @@ export interface ChatSearchItem {
   id: string;
   title: string;
   preview: string;
-  // Lowercased title + text of every message; matched by chatSearchFilter.
-  // Prebuilt once so filtering never re-lowercases this blob per keystroke.
+  // Lowercased title + user messages only (short); searched first.
+  userSearchText: string;
+  // Lowercased title + every message; fallback haystack when user text alone
+  // matches nothing. Prebuilt so filtering never re-lowercases per keystroke.
   searchText: string;
   createdAt: number;
   projectId?: string | null;
@@ -54,7 +56,10 @@ async function buildIndex(): Promise<ChatSearchItem[]> {
 
   const itemThreadIds = new Map<
     string,
-    { item: Omit<ChatSearchItem, "preview" | "searchText">; threadIds: string[] }
+    {
+      item: Omit<ChatSearchItem, "preview" | "searchText" | "userSearchText">;
+      threadIds: string[];
+    }
   >();
   const seenPairs = new Set<string>();
 
@@ -129,16 +134,20 @@ async function buildIndex(): Promise<ChatSearchItem[]> {
     merged.sort((a, b) => b.createdAt - a.createdAt);
 
     let preview = "";
-    // Title + every message so search spans the whole conversation.
-    const haystackParts: string[] = [item.title];
+    // Two tiers: user messages (small, searched first) and the full
+    // conversation (fallback when user text alone matches nothing).
+    const userParts: string[] = [item.title];
+    const allParts: string[] = [item.title];
     for (const m of merged) {
       const text = extractText(m);
       if (!text) continue;
       if (!preview) preview = truncate(text, PREVIEW_MAX); // newest msg (sorted desc)
-      haystackParts.push(text);
+      allParts.push(text);
+      if (m.role === "user") userParts.push(text);
     }
-    const searchText = haystackParts.join(" ").toLowerCase();
-    results.push({ ...item, preview, searchText });
+    const userSearchText = userParts.join(" ").toLowerCase();
+    const searchText = allParts.join(" ").toLowerCase();
+    results.push({ ...item, preview, userSearchText, searchText });
   }
 
   results.sort((a, b) => b.createdAt - a.createdAt);
