@@ -70,10 +70,7 @@ def _format_gguf_quant_label(quant_methods: List[str]) -> str:
 
 
 def _precheck_hub_or_fail(
-    push_to_hub: bool,
-    repo_id: Optional[str],
-    hf_token: Optional[str],
-    private: bool,
+    push_to_hub: bool, repo_id: Optional[str], hf_token: Optional[str], private: bool
 ) -> Optional[Tuple[bool, str, None]]:
     """Run Hub preflight when push_to_hub is requested."""
     if not push_to_hub:
@@ -92,11 +89,7 @@ def _precheck_hub_or_fail(
     return None
 
 
-def _resolve_hub_repo_id(
-    repo_id: str,
-    hf_token: Optional[str],
-    private: bool,
-) -> str:
+def _resolve_hub_repo_id(repo_id: str, hf_token: Optional[str], private: bool) -> str:
     """Create or resolve a Hub model repo and return the canonical repo id."""
     hf_api = HfApi(token = hf_token) if hf_token else HfApi()
     if _IS_MLX:
@@ -149,11 +142,7 @@ def _upload_model_folder_to_hub(
     repo_resolved: bool = False,
 ) -> None:
     """Upload an on-disk model folder without re-saving or re-merging."""
-    full_repo_id = (
-        repo_id
-        if repo_resolved
-        else _resolve_hub_repo_id(repo_id, hf_token, private)
-    )
+    full_repo_id = repo_id if repo_resolved else _resolve_hub_repo_id(repo_id, hf_token, private)
     hf_api = HfApi(token = hf_token) if hf_token else HfApi()
     hf_api.upload_folder(
         folder_path = folder_path,
@@ -179,18 +168,11 @@ def _find_export_artifact(save_directory: str, filename: str) -> Optional[str]:
     return None
 
 
-def _gguf_path_in_repo(
-    file_path: str,
-    *,
-    model_name: str,
-    save_directory: str,
-) -> str:
+def _gguf_path_in_repo(file_path: str, *, model_name: str, save_directory: str) -> str:
     """Match unsloth's Hub filename normalization for GGUF uploads."""
     original_name = os.path.basename(file_path)
     if "unsloth_gguf_" in original_name:
-        quant_suffix = (
-            original_name.split(".", 1)[1] if "." in original_name else original_name
-        )
+        quant_suffix = original_name.split(".", 1)[1] if "." in original_name else original_name
         return f"{model_name}.{quant_suffix}"
 
     save_base = os.path.basename(save_directory.rstrip("/\\"))
@@ -200,11 +182,7 @@ def _gguf_path_in_repo(
 
 
 def _build_gguf_hub_readme(
-    *,
-    repo_id: str,
-    upload_names: List[str],
-    is_vlm: bool,
-    has_modelfile: bool,
+    *, repo_id: str, upload_names: List[str], is_vlm: bool, has_modelfile: bool
 ) -> str:
     """Build a Hub README aligned with unsloth_push_to_hub_gguf."""
     model_slug = repo_id.split("/")[-1]
@@ -233,7 +211,9 @@ This model was finetuned and converted to GGUF format using [Unsloth](https://gi
         readme_content += "\n## ⚠️ Ollama Note for Vision Models\n"
         readme_content += "**Important:** Ollama currently does not support separate mmproj files for vision models.\n\n"
         readme_content += "To create an Ollama model from this vision model:\n"
-        readme_content += "1. Place the `Modelfile` in the same directory as the finetuned bf16 merged model\n"
+        readme_content += (
+            "1. Place the `Modelfile` in the same directory as the finetuned bf16 merged model\n"
+        )
         readme_content += "3. Run: `ollama create model_name -f ./Modelfile`\n"
         readme_content += "   (Replace `model_name` with your desired name)\n\n"
         readme_content += "This will create a unified bf16 model that Ollama can use.\n"
@@ -258,9 +238,7 @@ def _upload_gguf_directory_to_hub(
     """Upload already-converted GGUF artifacts without re-running conversion."""
     gguf_files = sorted(glob.glob(os.path.join(save_directory, "*.gguf")))
     if not gguf_files:
-        raise RuntimeError(
-            f"No GGUF files found in {save_directory}. Conversion may have failed."
-        )
+        raise RuntimeError(f"No GGUF files found in {save_directory}. Conversion may have failed.")
 
     hf_api = HfApi(token = hf_token) if hf_token else HfApi()
     full_repo_id = _resolve_hub_repo_id(
@@ -633,9 +611,7 @@ class ExportBackend:
 
         output_path: Optional[str] = None
         try:
-            precheck_failure = _precheck_hub_or_fail(
-                push_to_hub, repo_id, hf_token, private
-            )
+            precheck_failure = _precheck_hub_or_fail(push_to_hub, repo_id, hf_token, private)
             if precheck_failure is not None:
                 return precheck_failure
 
@@ -705,10 +681,14 @@ class ExportBackend:
                 else:
                     if output_path and os.path.isdir(output_path):
                         base_model = (
-                            get_base_model_from_lora(self.current_checkpoint)
-                            if self.current_checkpoint
-                            else None
-                        ) or getattr(self.current_model.config, "_name_or_path", None) or "unknown"
+                            (
+                                get_base_model_from_lora(self.current_checkpoint)
+                                if self.current_checkpoint
+                                else None
+                            )
+                            or getattr(self.current_model.config, "_name_or_path", None)
+                            or "unknown"
+                        )
                         full_repo_id = _resolve_hub_repo_id(repo_id, hf_token, private)
                         _push_hub_model_card(
                             full_repo_id,
@@ -771,9 +751,7 @@ class ExportBackend:
 
         output_path: Optional[str] = None
         try:
-            precheck_failure = _precheck_hub_or_fail(
-                push_to_hub, repo_id, hf_token, private
-            )
+            precheck_failure = _precheck_hub_or_fail(push_to_hub, repo_id, hf_token, private)
             if precheck_failure is not None:
                 return precheck_failure
 
@@ -906,9 +884,7 @@ class ExportBackend:
         output_path: Optional[str] = None
         model_tmp_to_cleanup: Optional[str] = None
         try:
-            precheck_failure = _precheck_hub_or_fail(
-                push_to_hub, repo_id, hf_token, private
-            )
+            precheck_failure = _precheck_hub_or_fail(push_to_hub, repo_id, hf_token, private)
             if precheck_failure is not None:
                 return precheck_failure
 
@@ -1079,9 +1055,7 @@ class ExportBackend:
 
         output_path: Optional[str] = None
         try:
-            precheck_failure = _precheck_hub_or_fail(
-                push_to_hub, repo_id, hf_token, private
-            )
+            precheck_failure = _precheck_hub_or_fail(push_to_hub, repo_id, hf_token, private)
             if precheck_failure is not None:
                 return precheck_failure
 
@@ -1113,10 +1087,14 @@ class ExportBackend:
                 if output_path and os.path.isdir(output_path):
                     full_repo_id = _resolve_hub_repo_id(repo_id, hf_token, private)
                     base_model = (
-                        get_base_model_from_lora(self.current_checkpoint)
-                        if self.current_checkpoint
-                        else None
-                    ) or getattr(self.current_model.config, "_name_or_path", None) or "unknown"
+                        (
+                            get_base_model_from_lora(self.current_checkpoint)
+                            if self.current_checkpoint
+                            else None
+                        )
+                        or getattr(self.current_model.config, "_name_or_path", None)
+                        or "unknown"
+                    )
                     _push_hub_model_card(
                         full_repo_id,
                         hf_token,
@@ -1139,10 +1117,14 @@ class ExportBackend:
                         self.current_tokenizer.save_pretrained(tmp_dir)
                         full_repo_id = _resolve_hub_repo_id(repo_id, hf_token, private)
                         base_model = (
-                            get_base_model_from_lora(self.current_checkpoint)
-                            if self.current_checkpoint
-                            else None
-                        ) or getattr(self.current_model.config, "_name_or_path", None) or "unknown"
+                            (
+                                get_base_model_from_lora(self.current_checkpoint)
+                                if self.current_checkpoint
+                                else None
+                            )
+                            or getattr(self.current_model.config, "_name_or_path", None)
+                            or "unknown"
+                        )
                         _push_hub_model_card(
                             full_repo_id,
                             hf_token,

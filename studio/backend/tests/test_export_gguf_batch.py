@@ -84,8 +84,8 @@ def test_build_gguf_hub_readme_includes_vlm_tag():
 def test_normalize_single_gguf_quant_method():
     ns = _load_quant_helpers()
     normalized = ns["_normalize_gguf_quant_methods"](
-        quantization_method="Q4_K_M",
-        quantization_methods=None,
+        quantization_method = "Q4_K_M",
+        quantization_methods = None,
     )
     assert normalized == ["q4_k_m"]
 

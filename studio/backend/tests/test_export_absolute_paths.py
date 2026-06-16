@@ -189,7 +189,12 @@ def _install_lightweight_backend_stubs(monkeypatch):
     models_pkg.LocalModelInfo = _LocalModelInfo
 
     class _HubPrecheckResponse:
-        def __init__(self, valid, message, details = None):
+        def __init__(
+            self,
+            valid,
+            message,
+            details = None,
+        ):
             self.valid = valid
             self.message = message
             self.details = details

@@ -24,11 +24,11 @@ def _load_hf_precheck(monkeypatch):
     monkeypatch.setitem(sys.modules, "hub.utils.paths", hub_paths)
 
     class _FakeResponse:
-        def __init__(self, status_code=200):
+        def __init__(self, status_code = 200):
             self.status_code = status_code
 
     class _FakeHTTPError(Exception):
-        def __init__(self, status_code=401):
+        def __init__(self, status_code = 401):
             super().__init__(f"HTTP {status_code}")
             self.response = _FakeResponse(status_code)
 
@@ -43,15 +43,20 @@ def _load_hf_precheck(monkeypatch):
     class _FakeHfApi:
         create_repo_calls = 0
 
-        def __init__(self, token=None):
+        def __init__(self, token = None):
             self.token = token
 
-        def whoami(self, token=None):
+        def whoami(self, token = None):
             if self.token == "bad":
                 raise _FakeHTTPError(401)
             return {"name": "alice", "orgs": [{"name": "my-org"}]}
 
-        def repo_info(self, repo_id, repo_type="model", token=None):
+        def repo_info(
+            self,
+            repo_id,
+            repo_type = "model",
+            token = None,
+        ):
             if repo_id == "alice/existing":
                 return {"id": repo_id}
             raise _RepositoryNotFoundError()
@@ -68,8 +73,8 @@ def _load_hf_precheck(monkeypatch):
 
     loggers = types.ModuleType("loggers")
     loggers.get_logger = lambda *args, **kwargs: types.SimpleNamespace(
-        warning=lambda *a, **k: None,
-        warning_once=lambda *a, **k: None,
+        warning = lambda *a, **k: None,
+        warning_once = lambda *a, **k: None,
     )
     monkeypatch.setitem(sys.modules, "loggers", loggers)
 
@@ -80,21 +85,21 @@ def _load_hf_precheck(monkeypatch):
 
 def test_precheck_rejects_invalid_repo_id(monkeypatch):
     mod = _load_hf_precheck(monkeypatch)
-    result = mod.precheck_hub_upload("bad repo id", hf_token="ok")
+    result = mod.precheck_hub_upload("bad repo id", hf_token = "ok")
     assert result.ok is False
     assert "Invalid repository ID" in result.message
 
 
 def test_precheck_rejects_wrong_namespace(monkeypatch):
     mod = _load_hf_precheck(monkeypatch)
-    result = mod.precheck_hub_upload("other-user/model", hf_token="ok")
+    result = mod.precheck_hub_upload("other-user/model", hf_token = "ok")
     assert result.ok is False
     assert "write access" in result.message
 
 
 def test_precheck_accepts_new_repo_in_user_namespace(monkeypatch):
     mod = _load_hf_precheck(monkeypatch)
-    result = mod.precheck_hub_upload("alice/new-model", hf_token="ok", private=True)
+    result = mod.precheck_hub_upload("alice/new-model", hf_token = "ok", private = True)
     assert result.ok is True
     assert "private repository" in result.message
     assert result.details["repo_exists"] is False
@@ -102,7 +107,7 @@ def test_precheck_accepts_new_repo_in_user_namespace(monkeypatch):
 
 def test_precheck_accepts_existing_repo(monkeypatch):
     mod = _load_hf_precheck(monkeypatch)
-    result = mod.precheck_hub_upload("alice/existing", hf_token="ok")
+    result = mod.precheck_hub_upload("alice/existing", hf_token = "ok")
     assert result.ok is True
     assert "existing repository" in result.message
     assert result.details["repo_exists"] is True
@@ -110,7 +115,7 @@ def test_precheck_accepts_existing_repo(monkeypatch):
 
 def test_precheck_rejects_bad_token(monkeypatch):
     mod = _load_hf_precheck(monkeypatch)
-    result = mod.precheck_hub_upload("alice/model", hf_token="bad")
+    result = mod.precheck_hub_upload("alice/model", hf_token = "bad")
     assert result.ok is False
     assert "Invalid or expired" in result.message
 
@@ -119,14 +124,14 @@ def test_precheck_does_not_create_repo(monkeypatch):
     mod = _load_hf_precheck(monkeypatch)
     huggingface_hub = sys.modules["huggingface_hub"]
     huggingface_hub.HfApi.create_repo_calls = 0
-    result = mod.precheck_hub_upload("alice/new-model", hf_token="ok", private=True)
+    result = mod.precheck_hub_upload("alice/new-model", hf_token = "ok", private = True)
     assert result.ok is True
     assert huggingface_hub.HfApi.create_repo_calls == 0
 
 
 def test_precheck_credentials_only_returns_username(monkeypatch):
     mod = _load_hf_precheck(monkeypatch)
-    result = mod.precheck_hub_credentials(hf_token="ok")
+    result = mod.precheck_hub_credentials(hf_token = "ok")
     assert result.ok is True
     assert result.details["username"] == "alice"
     assert "Logged in to Hugging Face" in result.message

@@ -73,9 +73,7 @@ def _verify_hub_credentials(
     return whoami, None
 
 
-def precheck_hub_credentials(
-    hf_token: Optional[str] = None,
-) -> HubPrecheckResult:
+def precheck_hub_credentials(hf_token: Optional[str] = None) -> HubPrecheckResult:
     """Validate Hub credentials and return the authenticated username."""
     whoami, failure = _verify_hub_credentials(hf_token)
     if failure is not None:
