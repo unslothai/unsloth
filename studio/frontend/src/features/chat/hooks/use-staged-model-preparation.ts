@@ -54,11 +54,14 @@ export function useStagedModelPreparation(): DownloadJob {
         nativePathToken,
       });
       // Apply only if the same model is still staged (the user may have switched
-      // picks or loaded/cancelled while the request was in flight).
+      // picks or loaded/cancelled while the request was in flight). Native ids
+      // are display labels, not paths, so two files can share an id -- compare
+      // the path token too, or a stale response could land on the wrong pick.
       const latest = useChatRuntimeStore.getState().pendingSelection;
       if (
         latest?.id === id &&
         (latest.ggufVariant ?? null) === (ggufVariant ?? null) &&
+        (latest.nativePathToken ?? null) === (nativePathToken ?? null) &&
         contextLength != null
       ) {
         setPendingSelection({ ...latest, contextLength });

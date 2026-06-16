@@ -1558,6 +1558,9 @@ export function ChatPage(): ReactElement {
         await selectModel(selection);
         return;
       }
+      // Tear down any existing staged pick first so its in-flight download is
+      // cancelled, not left running after we rebind to the new pick.
+      abandonStaged();
       store.stageModel({
         id: selection.id,
         isLora: selection.isLora,
@@ -1568,7 +1571,7 @@ export function ChatPage(): ReactElement {
         isGguf: selection.isGguf,
       });
     },
-    [selectModel],
+    [abandonStaged, selectModel],
   );
   const loadNativeModelIntent = useCallback(
     async (intent: NativeIntent, loadingDescription: string) => {
@@ -2453,11 +2456,26 @@ export function ChatPage(): ReactElement {
         }}
         onLoadPendingModel={() => {
           const pending = useChatRuntimeStore.getState().pendingSelection;
+          if (!pending) return;
           // forceReload: the staged model isn't loaded yet, so bypass the
           // same-checkpoint dedupe (and selectModel clears pendingSelection).
           // keepSpeculative: honor the speculative mode set on the sidebar.
-          if (pending)
-            selectModel({ ...pending, forceReload: true, keepSpeculative: true });
+          void selectModel({
+            ...pending,
+            forceReload: true,
+            keepSpeculative: true,
+            throwOnError: true,
+          }).catch(() => {
+            // Recoverable failure (expired token, gated repo, OOM…): selectModel
+            // cleared the pick but left the edited knobs intact, so restore the
+            // selection (not re-stage, which would reset the knobs) to keep the
+            // Load button and settings for a retry. Skip if the user staged
+            // something else while the load was in flight.
+            const currentPending =
+              useChatRuntimeStore.getState().pendingSelection;
+            if (!currentPending)
+              useChatRuntimeStore.getState().setPendingSelection(pending);
+          });
         }}
         stagedDownloadFraction={stagedDownload.progress?.fraction ?? null}
         onCancelStagedDownload={() =>
