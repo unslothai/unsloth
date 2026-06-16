@@ -4590,6 +4590,9 @@ class LlamaCppBackend:
                         self._mmproj_has_audio = False
                         self._start_llama_process(cmd, env)
                         if not self._wait_for_health(timeout = 600.0):
+                            # Read the exit code before _kill_process() clears it, so
+                            # an OS-killed text-only retry still gets the OOM message.
+                            _retry_rc = self._process.poll() if self._process is not None else None
                             self._kill_process()
                             raise RuntimeError(
                                 "Vision projector incompatible with this llama.cpp "
@@ -4598,6 +4601,7 @@ class LlamaCppBackend:
                                     "\n".join(self._stdout_lines[-50:]),
                                     gguf_path,
                                     self._model_identifier,
+                                    _retry_rc,
                                 )
                             )
                     else:
