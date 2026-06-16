@@ -198,24 +198,14 @@ def can_load_chat_during_training(
     is_gguf: bool = False,
     required_override_gb: Optional[float] = None,
 ) -> Tuple[bool, Dict[str, Any]]:
-    """Decide if a NEW chat model can be loaded without OOMing an active training run.
-
-    Inverse of can_keep_chat_during_training: training is already resident (its
-    footprint is already in live "used" VRAM), so size the chat model and check
-    it against the free VRAM that remains. To stay authoritative, it sizes and
-    places the model the same way the real loader will:
-      - HF auto: reuse auto_select_gpu_ids, so the check covers exactly the GPU(s)
-        the loader will pick (its metadata already applies per-GPU floors).
-      - HF explicit: device_map="balanced" shards across the chosen GPUs, so
-        require an even-share per-GPU floor, not just the aggregate.
-      - GGUF: llama.cpp does its own placement; size from required_override_gb
-        (the on-disk quantized weights) and check the visible GPU pool.
-
-    `load_in_4bit` must already reflect the effective quantization (LoRA adapters
-    can flip 4-bit -> 16-bit). CUDA-only: non-CUDA has no separate VRAM pool to
-    measure, so it preserves today's no-guard behavior and allows the load.
-    Default-deny on any CUDA case it can't size, so a load never OOMs training.
-    """
+    """Decide if a NEW chat model can load without OOMing active training (inverse
+    of can_keep_chat_during_training: training is already resident, so size the
+    chat model against the free VRAM that remains). Sizes/places it the same way
+    the loader will: HF auto reuses auto_select_gpu_ids; HF explicit requires an
+    even-share per-GPU floor for device_map="balanced"; GGUF sizes from
+    required_override_gb over the visible pool. `load_in_4bit` must be effective
+    (LoRA can flip 4-bit -> 16-bit). Non-CUDA allows the load; default-deny on any
+    CUDA case it can't size, so a load never OOMs training."""
     try:
         from utils.hardware import (
             DeviceType,
@@ -236,8 +226,7 @@ def can_load_chat_during_training(
             max_seq_length = max_seq_length or 2048,
         )
 
-        # HF auto: ask the loader's own selector where this model lands, then keep
-        # iff that selection fits with margin (same shape as can_keep's auto path).
+        # HF auto: reuse the loader's selector; fits iff its pick clears the margin.
         if not requested_gpu_ids and not is_gguf:
             _selected, meta = auto_select_gpu_ids(model_name, **est_kwargs)
             mode = meta.get("selection_mode")
@@ -271,8 +260,7 @@ def can_load_chat_during_training(
 
         free_by_index = _free_vram_by_index(get_visible_gpu_utilization().get("devices", []))
         if requested_gpu_ids:
-            # Explicit GPUs. Invalid ids -> load_model 400s first, so don't block
-            # here; a requested id missing from the list counts as 0.
+            # Invalid ids -> load_model 400s first, so don't block; missing id = 0.
             try:
                 resolved = resolve_requested_gpu_ids(requested_gpu_ids)
             except ValueError:
@@ -292,9 +280,8 @@ def can_load_chat_during_training(
         needed_gb = required_gb * SAFETY_MARGIN + KEEP_FLOOR_GB
         aggregate_fits = usable_gb >= needed_gb
 
-        # Explicit HF multi-GPU shards via device_map="balanced": every chosen GPU
-        # holds a slice, so an even-share floor stops one near-full GPU hiding
-        # behind aggregate capacity. GGUF lets llama.cpp choose, so no floor there.
+        # device_map="balanced" shards across GPUs: an even-share floor stops one
+        # near-full GPU hiding behind aggregate capacity. GGUF self-places, no floor.
         min_free_gb = min(free_vals)
         per_gpu_fits = True
         if mode == "explicit" and len(free_vals) > 1:

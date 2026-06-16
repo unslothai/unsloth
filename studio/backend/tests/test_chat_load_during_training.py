@@ -1,18 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Tests for loading a NEW chat model while training runs:
-  - routes/training_vram.py :: can_load_chat_during_training (the VRAM fit check)
-  - routes/inference.py     :: _guard_chat_load_against_training,
-                               _effective_load_in_4bit (the 409 + sizing wiring)
-
-The guard protects an active training run from being OOMed by a mid-run local
-model load, while leaving non-training loads and external providers untouched.
-It sizes the *same* effective load the backend will perform: HF auto reuses the
-loader's GPU selector, HF explicit applies a per-GPU floor, GGUF is sized from
-its on-disk quantized weights, and LoRA 4-bit->16-bit flips are resolved first.
-"""
+"""Loading a NEW chat model while training runs: can_load_chat_during_training
+(VRAM fit check), _guard_chat_load_against_training and _effective_load_in_4bit
+(409 + sizing wiring). The guard sizes the same effective load the backend will
+perform (HF auto reuses the loader's selector, HF explicit applies a per-GPU
+floor, GGUF sizes from on-disk weights, LoRA 4-bit->16-bit flips resolved first)
+and leaves non-training/external loads untouched."""
 
 import asyncio
 import importlib.util
@@ -199,9 +193,8 @@ class TestCanLoadGGUF(_GpuCacheResetMixin, unittest.TestCase):
         auto_mock.assert_not_called()  # GGUF never uses the HF auto selector
 
     def test_no_per_gpu_floor_for_gguf(self):
-        # free [45, 10], override 20 -> needed 27, aggregate 53.5 >= 27. GGUF lets
-        # llama.cpp choose GPUs, so the per-GPU floor that would block HF here does
-        # not apply -> allow.
+        # free [45, 10], override 20 -> needed 27, aggregate 53.5 >= 27. GGUF self-
+        # places, so the per-GPU floor that would block HF doesn't apply -> allow.
         ok, _, _ = self._run(devices = _devices((0, 80, 35), (1, 80, 70)), required_override = 20.0)
         self.assertTrue(ok)
 
@@ -278,9 +271,8 @@ def _stub_guard_deps(
     decision,
     captured = None,
 ):
-    """Inject the guard's two lazy imports: core.training.get_training_backend and
-    routes.training_vram.can_load_chat_during_training. `captured` (a list) records
-    the can_load kwargs for assertions."""
+    """Inject the guard's two lazy imports (get_training_backend, can_load_chat_
+    during_training); `captured` records the can_load kwargs for assertions."""
     core_training = types.ModuleType("core.training")
     if isinstance(training_active, Exception):
 
@@ -599,8 +591,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             self.assertEqual(self.route._estimate_gguf_kv_gb(str(p), 4096), 0.0)
 
     def test_kv_sizes_at_larger_of_max_seq_len_and_ctx_override(self):
-        # KV must be sized at the context the launcher honors: the larger of
-        # max_seq_length and a user `--ctx-size`, else native, never under-sized.
+        # KV sized at the larger of max_seq_length and --ctx-size, else native.
         seen = {}
 
         class _FakeBackend:
@@ -684,8 +675,7 @@ class TestLoadModelGuardIntegration(unittest.TestCase):
                 )
 
         self.assertEqual(exc.exception.status_code, 409)
-        # The guard runs before either branch's "unload the other backend" step,
-        # so a refused load must not have torn down any resident chat model.
+        # Guard runs before the unload step, so a refused load tears down nothing.
         inf.unload_model.assert_not_called()
         inf._shutdown_subprocess.assert_not_called()
         llama.unload_model.assert_not_called()

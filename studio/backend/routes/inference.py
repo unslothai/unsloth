@@ -1487,11 +1487,8 @@ def get_llama_cpp_backend() -> LlamaCppBackend:
 
 
 def _effective_load_in_4bit(config: ModelConfig, requested: bool) -> bool:
-    """Resolve the quantization the loader will actually use. A LoRA adapter can
-    flip the requested 4-bit to 16-bit from adapter_config.json
-    ('unsloth_training_method') or a non-bnb-4bit base, so the training guard must
-    size that effective value, not the raw request. Mirrors the standard-load
-    adapter-detection below."""
+    """Effective quantization the loader will use: a LoRA adapter can flip 4-bit to
+    16-bit via adapter_config.json, so the guard sizes this, not the raw request."""
     load_in_4bit = requested
     if not getattr(config, "is_lora", False) or not getattr(config, "path", None):
         return load_in_4bit
@@ -1519,9 +1516,8 @@ def _effective_load_in_4bit(config: ModelConfig, requested: bool) -> bool:
 def _remote_gguf_companion_bytes(
     repo: str, *, hf_token: Optional[str], include_mmproj: bool
 ) -> int:
-    """Sum the repo's MTP-drafter and (for vision repos) mmproj companion GGUFs,
-    which llama-server auto-downloads beside the main weights. Best-effort: 0 on
-    any error so it can only add headroom, never refuse a load by itself."""
+    """Bytes of MTP/mmproj companion GGUFs llama-server auto-downloads. 0 on error,
+    so it can only add headroom, never refuse a load by itself."""
     try:
         from huggingface_hub import model_info
 
@@ -1545,14 +1541,9 @@ def _estimate_gguf_kv_gb(
     llama_extra_args: Optional[list[str]] = None,
     n_parallel: int = 1,
 ) -> float:
-    """KV-cache VRAM (GB) llama.cpp allocates for this GGUF at the requested
-    context, via the loader's own estimator. 0 if the metadata is unreadable.
-
-    Sizes at the larger of max_seq_length and any user `--ctx-size`/`-c` in
-    llama_extra_args (the launcher honors that override), at the server's
-    `--parallel` slot count, and keeps the default f16 cache (ignoring a
-    quantized `--cache-type-*`), so the estimate is never smaller than what the
-    server actually allocates."""
+    """KV-cache VRAM (GB) at the larger of max_seq_length and any `--ctx-size`/`-c`
+    override, over n_parallel slots, with the default f16 cache so the estimate is
+    never below what the server allocates. 0 if metadata is unreadable."""
     try:
         from core.inference.llama_server_args import parse_ctx_override
 
@@ -1581,11 +1572,8 @@ def _estimate_gguf_required_gb(
     llama_extra_args: Optional[list[str]] = None,
     n_parallel: int = 1,
 ) -> Optional[float]:
-    """Approximate GGUF VRAM (GB) from its on-disk quantized weights (the dominant
-    term; the guard adds margin + floor). Local: the main GGUF incl. split shards
-    (reusing the loader's own sizer) + mmproj/MTP companions + the KV cache at the
-    requested context. Remote: the selected variant + vision/MTP companions the
-    loader auto-downloads (KV cache can't be read pre-download). None when nothing
+    """Approximate GGUF VRAM (GB): quantized weights + companions, plus the KV
+    cache for local files (unreadable pre-download for remote). None when nothing
     resolves so the caller default-denies."""
     try:
         total_bytes = 0
@@ -1634,13 +1622,9 @@ def _guard_chat_load_against_training(
     n_parallel: int = 1,
 ) -> None:
     """Refuse loading a local chat model that would OOM an active training run.
-
-    No-op when training is inactive (the common case) or when training state
-    can't be determined. External-provider chats never reach the load/validate
-    paths, so this only governs local HF/GGUF models. `load_in_4bit` must already
-    be the effective quantization (see _effective_load_in_4bit). Raises HTTP 409
-    with an actionable message when the model would not fit alongside training.
-    """
+    No-op when training is inactive or unknown. `load_in_4bit` must be the
+    effective quantization (see _effective_load_in_4bit). Raises HTTP 409 when the
+    model would not fit alongside training."""
     from core.training import get_training_backend
     from routes.training_vram import can_load_chat_during_training
 
@@ -1880,16 +1864,14 @@ async def load_model(
         # Normalize gpu_ids: empty list means auto-selection, same as None
         effective_gpu_ids = request.gpu_ids if request.gpu_ids else None
 
-        # Reject the unsupported GGUF + gpu_ids combo first so the training guard
-        # below can't mask it with a VRAM 409.
+        # Reject GGUF + gpu_ids first so the guard can't mask it with a VRAM 409.
         if config.is_gguf and effective_gpu_ids is not None:
             raise HTTPException(
                 status_code = 400,
                 detail = "gpu_ids is not supported for GGUF models yet.",
             )
 
-        # Resolve the quantization the load will actually use (LoRA can flip
-        # 4-bit -> 16-bit) once, so the guard sizes it and the standard load reuses it.
+        # Effective quantization (LoRA can flip 4-bit -> 16-bit); guard + load reuse it.
         effective_load_in_4bit = _effective_load_in_4bit(config, request.load_in_4bit)
         if effective_load_in_4bit != request.load_in_4bit:
             logger.info(
@@ -1897,11 +1879,8 @@ async def load_model(
                 f"from adapter_config.json / base model (requested {request.load_in_4bit})"
             )
 
-        # Refuse a new local-model load that would OOM an active training run,
-        # before any "unload the other backend" step below frees the resident
-        # chat model for a load we're about to reject. Re-loading the already
-        # resident model short-circuits earlier, so it never reaches here.
-        # Off the event loop: the guard does sync nvidia-smi / HF metadata work.
+        # Refuse a load that would OOM active training, before the unload step below
+        # frees the resident model. Off-loop: guard does sync nvidia-smi / HF work.
         await asyncio.to_thread(
             _guard_chat_load_against_training,
             config,
@@ -2154,8 +2133,7 @@ async def load_model(
         except Exception as e:
             logger.warning("Could not shut down export subprocess: %s", e)
 
-        # Quantization (incl. LoRA adapter_config.json auto-detect) was resolved
-        # before the training guard so both size the same load.
+        # Resolved before the guard so both size the same load.
         load_in_4bit = effective_load_in_4bit
 
         # Load in a thread so the event loop stays free for download progress
@@ -2299,20 +2277,17 @@ async def validate_model(
                 detail = f"Invalid model identifier: {model_log_label}",
             )
 
-        # Refuse early (before the frontend unloads the current chat model to load
-        # this one) if it can't fit alongside an active training run, using the
-        # same load settings the frontend will send to /load so validate agrees
-        # with the authoritative load guard.
+        # Refuse early (before the frontend unloads to load this) if it can't fit
+        # alongside training, using the same settings /load uses so they agree.
         effective_gpu_ids = request.gpu_ids if request.gpu_ids else None
-        # Mirror /load: reject the unsupported GGUF + gpu_ids combo before the
-        # training guard so validate and load agree on the same 400.
+        # Mirror /load: reject GGUF + gpu_ids before the guard so both return 400.
         if config.is_gguf and effective_gpu_ids is not None:
             raise HTTPException(
                 status_code = 400,
                 detail = "gpu_ids is not supported for GGUF models yet.",
             )
         effective_load_in_4bit = _effective_load_in_4bit(config, request.load_in_4bit)
-        # Off the event loop: the guard does sync nvidia-smi / HF metadata work.
+        # Off-loop: guard does sync nvidia-smi / HF work.
         await asyncio.to_thread(
             _guard_chat_load_against_training,
             config,
