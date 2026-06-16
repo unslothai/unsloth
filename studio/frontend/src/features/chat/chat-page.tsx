@@ -95,6 +95,7 @@ import {
   CHAT_IMAGE_TOOLS_ENABLED_KEY,
   CHAT_TOOLS_ENABLED_KEY,
   CHAT_WEB_FETCH_TOOLS_ENABLED_KEY,
+  hasGgufSource,
   loadOptionalBool,
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
@@ -1529,7 +1530,7 @@ export function ChatPage(): ReactElement {
       return;
     }
     const store = useChatRuntimeStore.getState();
-    if (store.pendingSelection) store.setPendingSelection(null);
+    if (store.pendingSelection) store.abandonStagedModel();
   }, [activeThreadId, view.mode]);
 
   const hasActiveModel = Boolean(inferenceParams.checkpoint);
@@ -1539,7 +1540,10 @@ export function ChatPage(): ReactElement {
   const stageOrLoad = useCallback(
     async (selection: SelectedModelInput) => {
       const store = useChatRuntimeStore.getState();
-      if (store.loadOnSelection) {
+      // Only GGUF picks have pre-load options worth staging. Non-GGUF models
+      // (and the toggle-on case) load immediately, so e.g. a trust_remote_code
+      // approval surfaces through the normal load path.
+      if (store.loadOnSelection || !hasGgufSource(selection)) {
         await selectModel(selection);
         return;
       }
@@ -2247,7 +2251,7 @@ export function ChatPage(): ReactElement {
               <NativeModelChip
                 intent={pendingNativeModelIntent}
                 nativeReadsDisabled={!nativePathLeasesSupported}
-                onLoad={(selection) => void stageOrLoad(selection)}
+                onLoad={(selection) => stageOrLoad(selection)}
               />
             ) : null}
             {loadingModel && loadToastDismissed ? (
@@ -2399,10 +2403,11 @@ export function ChatPage(): ReactElement {
         open={settingsOpen}
         onOpenChange={(open) => {
           setSettingsOpen(open);
-          // Closing the sheet abandons a staged (not-yet-loaded) pick, so a
-          // stale Load button can't resurface next time the sheet is opened.
+          // Closing the sheet abandons a staged (not-yet-loaded) pick, reverting
+          // the staged knobs so they don't linger as dirty edits on the loaded
+          // model.
           const store = useChatRuntimeStore.getState();
-          if (!open && store.pendingSelection) store.setPendingSelection(null);
+          if (!open && store.pendingSelection) store.abandonStagedModel();
         }}
         params={inferenceParams}
         onParamsChange={setInferenceParams}

@@ -428,11 +428,17 @@ export type PendingModelSelection = {
 
 /** A staged pick is a GGUF (and so shows the GGUF load knobs) when it has a HF
  *  variant or a native path token. Native files carry no variant. */
+/** A pick is a GGUF (HF variant or native file) and so has pre-load options
+ *  worth staging. Works on both a selection and a staged pending selection. */
+export function hasGgufSource(x: {
+  ggufVariant?: string;
+  nativePathToken?: string;
+}): boolean {
+  return x.ggufVariant != null || x.nativePathToken != null;
+}
+
 export function isPendingGguf(pending: PendingModelSelection | null): boolean {
-  return (
-    pending != null &&
-    (pending.ggufVariant != null || pending.nativePathToken != null)
-  );
+  return pending != null && hasGgufSource(pending);
 }
 
 type ChatRuntimeStore = {
@@ -683,6 +689,9 @@ type ChatRuntimeStore = {
   /** Stage a pick for a deferred load: revert knobs to the loaded baseline,
    *  record the selection, and open the settings sheet. */
   stageModel: (selection: PendingModelSelection) => void;
+  /** Abandon a staged pick without loading: revert the knobs to the loaded
+   *  baseline and clear the pending selection. */
+  abandonStagedModel: () => void;
   setCustomContextLength: (v: number | null) => void;
   setChatTemplateOverride: (template: string | null) => void;
   setPendingAudio: (base64: string, name: string) => void;
@@ -1417,6 +1426,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       speculativeType: readPersistedSpeculativeType(),
       specDraftNMax: null,
     })),
+  abandonStagedModel: () =>
+    set((s) => ({ ...loadedBaselineSettings(s), pendingSelection: null })),
   setCustomContextLength: (customContextLength) => set({ customContextLength }),
   setChatTemplateOverride: (chatTemplateOverride) =>
     set({ chatTemplateOverride }),

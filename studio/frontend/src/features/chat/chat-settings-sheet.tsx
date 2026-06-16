@@ -479,20 +479,21 @@ export function ChatSettingsPanel({
     !isExternalModel || Boolean(providerCapabilities?.presencePenalty);
   const isMobile = useIsMobile();
   const pendingSelection = useChatRuntimeStore((s) => s.pendingSelection);
-  const setPendingSelection = useChatRuntimeStore((s) => s.setPendingSelection);
+  const abandonStagedModel = useChatRuntimeStore((s) => s.abandonStagedModel);
   const resetModelSettingsToLoaded = useChatRuntimeStore(
     (s) => s.resetModelSettingsToLoaded,
   );
-  // A staged GGUF pick (deferred load) shows only the tensor-parallel toggle
-  // before any load. Context/KV/speculative need backend metadata that only
-  // exists post-load (or get reset on a model switch), so they stay loaded-only.
+  // A staged GGUF pick (deferred load) shows the GGUF load knobs so they can be
+  // set before the single load.
   const pendingIsGguf = isPendingGguf(pendingSelection);
   const isLoadedGguf =
     useChatRuntimeStore((s) => s.activeGgufVariant) != null;
   const isGguf = isLoadedGguf || pendingIsGguf;
+  // A staged pick is always a local GGUF, so show its Model section (and the
+  // Load button) even when the currently active model is external.
   const hasModelContent =
-    !isExternalModel &&
-    (isGguf || Boolean(params.checkpoint) || pendingSelection != null);
+    pendingSelection != null ||
+    (!isExternalModel && (isGguf || Boolean(params.checkpoint)));
   const speculativeType = useChatRuntimeStore((s) => s.speculativeType);
   const setSpeculativeType = useChatRuntimeStore((s) => s.setSpeculativeType);
   const loadedSpeculativeType = useChatRuntimeStore(
@@ -1148,10 +1149,7 @@ export function ChatSettingsPanel({
                       // Cancel abandons the stage; if a download is mid-flight,
                       // stop it too rather than leaving it running headless.
                       if (stagedDownloading) onCancelStagedDownload?.();
-                      // Revert the knobs we let the user edit while staging so
-                      // the abandoned pick's values don't leak onto the next load.
-                      resetModelSettingsToLoaded();
-                      setPendingSelection(null);
+                      abandonStagedModel();
                     }}
                     className="h-7 px-3 text-[12px] font-medium tracking-nav text-muted-foreground"
                   >

@@ -574,10 +574,13 @@ export function ModelsPage() {
     (opts: ModelLoadOptions, isDownloaded: boolean) => {
       if (!selectedModel) return;
       const runId = selectedModel.resource.runId;
-      // "Load on selection" off: stage the pick instead of loading. The chat
-      // page's staging flow reads the header and shows the load options; the
-      // single load then happens from there.
-      if (!useChatRuntimeStore.getState().loadOnSelection) {
+      // "Load on selection" off: stage GGUF picks instead of loading, so the
+      // chat page's staging flow can read the header and show the load options.
+      // Non-GGUF models have nothing to configure pre-load, so they load now.
+      if (
+        !useChatRuntimeStore.getState().loadOnSelection &&
+        opts.ggufVariant != null
+      ) {
         useChatRuntimeStore.getState().stageModel({
           id: runId,
           ggufVariant: opts.ggufVariant,
