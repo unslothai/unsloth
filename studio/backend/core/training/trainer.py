@@ -2778,6 +2778,84 @@ class UnslothTrainer:
             logger.error(f"Failed to start training thread: {e}")
             return False
 
+    def _chat_template_renders_empty(self) -> bool:
+        """True when the model's chat template renders one sample to empty text --
+        the signature of a base (pretrained) model whose template cannot render
+        conversational data (e.g. base Qwen2-VL, whose media-only template emits
+        nothing for role messages). Best-effort; never raises."""
+        try:
+            ds = getattr(self.trainer, "train_dataset", None)
+            if ds is None or len(ds) == 0:
+                return False
+            row = ds[0]
+            messages = row.get("messages") if isinstance(row, dict) else None
+            if not messages:
+                return False
+            tok = self.tokenizer  # processor for VLM; both expose apply_chat_template
+            if not hasattr(tok, "apply_chat_template"):
+                return False
+            rendered = tok.apply_chat_template(
+                messages, tokenize = False, add_generation_prompt = False
+            )
+            return not (isinstance(rendered, str) and rendered.strip())
+        except Exception:
+            return False
+
+    def _preflight_first_batch(self) -> Optional[str]:
+        """Run one real batch through tokenization + collation before train() so an
+        invalid first batch fails fast with an actionable message instead of a
+        cryptic step-1 crash. The classic case: a base model whose chat template
+        renders empty makes the processor return empty `input_ids`, which torch
+        defaults to float32, and the embedding lookup rejects a float tensor.
+
+        Returns None when the batch is fine, else a user-facing error string.
+        Faithful for every path (text SFT is already tokenized so this only
+        collates; VLM/audio-VLM collate the one batch). Self-guarded so it can
+        never spuriously fail a run whose first batch is valid."""
+        try:
+            loader = self.trainer.get_train_dataloader()
+            batch = next(iter(loader))
+        except StopIteration:
+            return None  # empty dataset is reported by other guards
+        except Exception as e:
+            model = self.model_name or "this model"
+            return (
+                f"Cannot start training: failed to build the first training batch "
+                f"for '{model}': {e}"
+            )
+
+        try:
+            input_ids = batch["input_ids"] if "input_ids" in batch else None
+        except Exception:
+            input_ids = getattr(batch, "input_ids", None)
+        if input_ids is None:
+            return None  # custom collators may omit input_ids; don't false-positive
+
+        seq_len = input_ids.shape[-1] if input_ids.ndim > 0 else 0
+        if not (input_ids.is_floating_point() or input_ids.numel() == 0 or seq_len == 0):
+            return None  # valid integer, non-empty batch
+
+        model = self.model_name or "this model"
+        if self._chat_template_renders_empty():
+            low = model.lower()
+            suffix = (
+                f" such as '{model}-Instruct'"
+                if not any(t in low for t in ("instruct", "chat", "-it", "_it"))
+                else ""
+            )
+            return (
+                f"Cannot start training: the chat template for '{model}' produced "
+                f"no text for your dataset, so the first batch had empty token IDs. "
+                f"'{model}' looks like a base (pretrained) model without a chat "
+                f"template suited to conversational fine-tuning. Use the "
+                f"instruction-tuned variant{suffix} or provide a chat template."
+            )
+        return (
+            f"Cannot start training: the first batch produced invalid token IDs "
+            f"(dtype={input_ids.dtype}, length={seq_len}). Check that your dataset "
+            f"columns are mapped correctly for '{model}'."
+        )
+
     def _train_worker(self, dataset: Dataset, **training_args):
         """Worker function for training (runs in separate thread)"""
         try:
@@ -3471,6 +3549,15 @@ class UnslothTrainer:
                 training_args.get("max_steps", 0),
             )
             # ========== START TRAINING ==========
+            # Preflight: validate the first real batch so an invalid one (e.g. a
+            # base model whose chat template renders empty -> empty float input_ids)
+            # fails fast with a clear message instead of a cryptic step-1 crash.
+            preflight_error = self._preflight_first_batch()
+            if preflight_error:
+                logger.error(preflight_error)
+                self._update_progress(error = preflight_error, is_training = False)
+                return
+
             self._update_progress(total_steps = total_steps, status_message = "Starting training...")
             logger.info("Starting training...\n")
             self.trainer.train(resume_from_checkpoint = training_args.get("resume_from_checkpoint"))
