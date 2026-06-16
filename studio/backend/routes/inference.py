@@ -3818,6 +3818,9 @@ async def openai_chat_completions(
             )
         try:
             response = await generate_audio(payload, request)
+        except asyncio.CancelledError:
+            api_monitor.finish(tts_monitor_id, "cancelled")
+            raise
         except Exception as e:
             api_monitor.fail(tts_monitor_id, _friendly_error(e))
             raise

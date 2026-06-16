@@ -49,6 +49,7 @@ class ApiMonitorEntry:
     prompt_tokens: Optional[int] = None
     completion_tokens: Optional[int] = None
     total_tokens: Optional[int] = None
+    total_tokens_authoritative: bool = False
     error: Optional[str] = None
 
     def snapshot(self, *, include_details: bool = True) -> dict[str, Any]:
@@ -164,7 +165,8 @@ class ApiMonitor:
                 entry.completion_tokens = completion_tokens
             if total_tokens is not None:
                 entry.total_tokens = total_tokens
-            elif entry.total_tokens is None and (
+                entry.total_tokens_authoritative = True
+            elif not entry.total_tokens_authoritative and (
                 prompt_tokens is not None or completion_tokens is not None
             ):
                 # Derive only when no authoritative total has been set;

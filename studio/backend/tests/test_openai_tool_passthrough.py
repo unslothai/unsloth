@@ -1921,6 +1921,60 @@ class TestApiMonitorAudioInput:
 
         asyncio.run(_run())
 
+    def test_non_gguf_tts_cancel_finalizes_monitor(self, monkeypatch):
+        async def _run():
+            import routes.inference as inf_mod
+
+            class DummyTtsBackend:
+                active_model_name = "tts-model"
+                models = {
+                    "tts-model": {
+                        "is_audio": True,
+                        "audio_type": "snac",
+                    }
+                }
+
+            async def fake_generate_audio(
+                _payload,
+                _request,
+                current_subject = None,
+            ):
+                raise asyncio.CancelledError()
+
+            monitor = ApiMonitor(max_entries = 3)
+            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monkeypatch.setattr(
+                inf_mod,
+                "get_llama_cpp_backend",
+                lambda: SimpleNamespace(is_loaded = False),
+            )
+            monkeypatch.setattr(inf_mod, "get_inference_backend", lambda: DummyTtsBackend())
+            monkeypatch.setattr(inf_mod, "generate_audio", fake_generate_audio)
+
+            payload = ChatCompletionRequest(
+                model = "default",
+                messages = [ChatMessage(role = "user", content = "say hello")],
+            )
+            request = SimpleNamespace(
+                state = SimpleNamespace(),
+                url = SimpleNamespace(path = "/v1/chat/completions"),
+                method = "POST",
+            )
+
+            with pytest.raises(asyncio.CancelledError):
+                await inf_mod.openai_chat_completions(
+                    payload,
+                    request = request,
+                    current_subject = "test",
+                )
+
+            [entry] = monitor.snapshot()
+            assert entry["status"] == "cancelled"
+            assert entry["model"] == "tts-model"
+            assert monitor.active_count() == 0
+
+        asyncio.run(_run())
+
     def test_gguf_tts_auto_route_records_monitor(self, monkeypatch):
         async def _run():
             import routes.inference as inf_mod

@@ -153,6 +153,24 @@ def test_api_monitor_preserves_authoritative_total_tokens():
     assert monitor.snapshot()[0]["total_tokens"] == 33
 
 
+def test_api_monitor_recomputes_derived_total_tokens():
+    monitor = ApiMonitor(max_entries = 2)
+    entry_id = monitor.start(
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "m",
+        prompt = "hi",
+    )
+    monitor.set_usage(entry_id, prompt_tokens = 10)
+    assert monitor.snapshot()[0]["total_tokens"] == 10
+
+    monitor.set_usage(entry_id, completion_tokens = 20)
+    entry = monitor.snapshot()[0]
+    assert entry["prompt_tokens"] == 10
+    assert entry["completion_tokens"] == 20
+    assert entry["total_tokens"] == 30
+
+
 def test_api_monitor_duration_non_negative_under_clock_step(monkeypatch):
     import core.inference.api_monitor as m
 

@@ -100,12 +100,14 @@ function MonitorEntry({
   loading: boolean;
   onToggle: () => void;
 }): ReactElement {
+  const hasCurrentDetail =
+    detail &&
+    detail.status === entry.status &&
+    detail.updated_at >= entry.updated_at;
   const prompt = detail?.prompt ?? entry.prompt_preview;
-  const replyText =
-    detail?.error ??
-    detail?.reply ??
-    entry.error ??
-    entry.reply_preview;
+  const replyText = hasCurrentDetail
+    ? detail.error ?? detail.reply ?? entry.error ?? entry.reply_preview
+    : entry.error ?? entry.reply_preview;
   const reply = replyText || (entry.status === "running" ? "Waiting..." : "No reply");
 
   return (
@@ -195,6 +197,7 @@ export function ApiMonitorConsole(): ReactElement {
     () => new Set(),
   );
   const loadingDetailsRef = useRef<Set<string>>(new Set());
+  const detailsRef = useRef<Record<string, ApiMonitorEntry>>({});
 
   const loadMonitor = useCallback(async (): Promise<void> => {
     setRefreshing(true);
@@ -259,12 +262,17 @@ export function ApiMonitorConsole(): ReactElement {
       setLoadingDetails((prev) => new Set(prev).add(id));
       getApiMonitorEntry(id)
         .then((entry) => {
-          setDetails((prev) => ({ ...prev, [id]: entry }));
+          setDetails((prev) => {
+            const next = { ...prev, [id]: entry };
+            detailsRef.current = next;
+            return next;
+          });
         })
         .catch(() => {
           setDetails((prev) => {
             const next = { ...prev };
             delete next[id];
+            detailsRef.current = next;
             return next;
           });
         })
@@ -301,11 +309,12 @@ export function ApiMonitorConsole(): ReactElement {
       if (!expandedIds.has(entry.id)) {
         continue;
       }
-      if (!details[entry.id] || entry.status === "running") {
+      const cached = detailsRef.current[entry.id];
+      if (!cached || cached.status !== entry.status || entry.status === "running") {
         loadDetail(entry.id);
       }
     }
-  }, [details, entries, expandedIds, loadDetail]);
+  }, [entries, expandedIds, loadDetail]);
 
   return (
     <section className="flex min-w-0 flex-col rounded-lg border border-border/70 bg-background">
