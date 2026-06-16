@@ -1374,20 +1374,30 @@ def _monitor_openai_chunk(
     choices = data.get("choices")
     if not isinstance(choices, list) or not choices:
         return
-    choice = choices[0]
-    if not isinstance(choice, dict):
+    reply_parts: list[tuple[int, str]] = []
+    for idx, choice in enumerate(choices):
+        if not isinstance(choice, dict):
+            continue
+        delta = choice.get("delta") or {}
+        message = choice.get("message") or {}
+        content = delta.get("content") if isinstance(delta, dict) else None
+        if content:
+            api_monitor.append_reply(monitor_id, content)
+        elif isinstance(choice.get("text"), str):
+            reply_parts.append((idx, choice["text"]))
+        elif isinstance(message, dict):
+            text = message.get("content")
+            if isinstance(text, str):
+                reply_parts.append((idx, text))
+    if not reply_parts:
         return
-    delta = choice.get("delta") or {}
-    message = choice.get("message") or {}
-    content = delta.get("content") if isinstance(delta, dict) else None
-    if content:
-        api_monitor.append_reply(monitor_id, content)
-    elif isinstance(choice.get("text"), str):
-        api_monitor.append_reply(monitor_id, choice["text"])
-    elif isinstance(message, dict):
-        text = message.get("content")
-        if isinstance(text, str):
-            api_monitor.set_reply(monitor_id, text)
+    if len(choices) == 1:
+        api_monitor.append_reply(monitor_id, reply_parts[0][1])
+        return
+    api_monitor.append_reply(
+        monitor_id,
+        "\n\n".join(f"Choice {idx + 1}:\n{text}" for idx, text in reply_parts),
+    )
 
 
 def _monitor_openai_error_message(data: dict) -> Optional[str]:
@@ -5788,12 +5798,19 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
 
         return StreamingResponse(_stream(), media_type = "text/event-stream")
     else:
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(
-                target_url,
-                json = body,
-                timeout = _llama_non_streaming_generation_timeout(),
-            )
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(
+                    target_url,
+                    json = body,
+                    timeout = _llama_non_streaming_generation_timeout(),
+                )
+        except asyncio.CancelledError:
+            api_monitor.finish(monitor_id, "cancelled")
+            raise
+        except Exception as e:
+            api_monitor.fail(monitor_id, _friendly_error(e))
+            raise
 
         if resp.status_code != 200:
             api_monitor.fail(monitor_id, resp.text[:500])
@@ -7559,6 +7576,10 @@ async def anthropic_messages(
     async def _monitored_anthropic(coro):
         try:
             response = await coro
+        except asyncio.CancelledError:
+            cancel_event.set()
+            api_monitor.finish(monitor_id, "cancelled")
+            raise
         except Exception as exc:
             api_monitor.fail(monitor_id, _friendly_error(exc))
             raise

@@ -1486,6 +1486,25 @@ class TestAnthropicMessagesToolRouting:
         assert entry["context_length"] == 2048
         assert monitor.active_count() == 0
 
+    def test_plain_streaming_pre_response_cancel_finalizes_monitor(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        async def _cancelled_before_response(*_args, **_kwargs):
+            raise asyncio.CancelledError()
+
+        _mock_backend(monkeypatch, context_length = 2048)
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monkeypatch.setattr(inf_mod, "_anthropic_plain_stream", _cancelled_before_response)
+        payload = _basic_payload(stream = True)
+
+        with pytest.raises(asyncio.CancelledError):
+            _drive(anthropic_messages(payload, request = self._Request(), current_subject = "t"))
+
+        [entry] = monitor.snapshot()
+        assert entry["status"] == "cancelled"
+        assert monitor.active_count() == 0
+
     def test_mixed_server_and_client_tools_rejected_with_400(self, monkeypatch):
         _mock_backend(monkeypatch)
         payload = _basic_payload(

@@ -41,6 +41,7 @@ from routes.inference import (
     _extract_content_parts,
     _friendly_error,
     _merge_user_content,
+    _monitor_openai_chunk,
     _monitor_openai_sse_event,
     _openai_messages_for_gguf_chat,
     _openai_passthrough_stream,
@@ -1684,6 +1685,90 @@ class TestApiMonitorProviderAndCompletionStreams:
             assert monitor.active_count() == 0
 
         asyncio.run(_run())
+
+    def test_completions_non_streaming_post_error_finalizes_monitor(self, monkeypatch):
+        async def _run():
+            import routes.inference as inf_mod
+
+            class Request:
+                state = SimpleNamespace()
+                url = SimpleNamespace(path = "/v1/completions")
+                method = "POST"
+
+                async def json(self):
+                    return {"prompt": "hi", "stream": False}
+
+            class FailingAsyncClient:
+                async def __aenter__(self):
+                    return self
+
+                async def __aexit__(self, *_args):
+                    return False
+
+                async def post(self, *_args, **_kwargs):
+                    raise httpx.ConnectError("llama down")
+
+            monitor = ApiMonitor(max_entries = 3)
+            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monkeypatch.setattr(
+                inf_mod.httpx,
+                "AsyncClient",
+                lambda *args, **kwargs: FailingAsyncClient(),
+            )
+            monkeypatch.setattr(
+                inf_mod,
+                "get_llama_cpp_backend",
+                lambda: SimpleNamespace(
+                    is_loaded = True,
+                    base_url = "http://llama.test",
+                    context_length = 4096,
+                    model_identifier = "gguf",
+                ),
+            )
+
+            with pytest.raises(httpx.ConnectError):
+                await openai_completions(Request(), current_subject = "test")
+
+            [entry] = monitor.snapshot()
+            assert entry["status"] == "error"
+            assert "Lost connection to the model server" in entry["error"]
+            assert monitor.active_count() == 0
+
+        asyncio.run(_run())
+
+    def test_monitor_openai_chunk_records_all_choice_replies(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monitor_id = monitor.start(
+            endpoint = "/v1/completions",
+            method = "POST",
+            model = "gguf",
+            prompt = "hi",
+        )
+
+        _monitor_openai_chunk(
+            monitor_id,
+            {
+                "choices": [
+                    {"text": "first"},
+                    {"text": "second"},
+                ],
+                "usage": {
+                    "prompt_tokens": 2,
+                    "completion_tokens": 5,
+                    "total_tokens": 7,
+                },
+            },
+            4096,
+        )
+
+        entry = monitor.get(monitor_id)
+        assert entry["reply"] == "Choice 1:\nfirst\n\nChoice 2:\nsecond"
+        assert entry["prompt_tokens"] == 2
+        assert entry["completion_tokens"] == 5
+        assert entry["context_length"] == 4096
 
     def test_passthrough_stream_task_cancel_finalizes_monitor(self, monkeypatch):
         async def _run():
