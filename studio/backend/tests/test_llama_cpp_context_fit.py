@@ -568,12 +568,33 @@ class TestClassifyGpuOffload:
         )
         assert inst._classify_gpu_offload(True, [(0, 22805)]) is False
 
-    def test_offloaded_zero_then_nonzero_returns_true(self):
-        # A draft model can log 0/k before the main model's 33/33; scan all.
+    def test_offloaded_draft_then_main_returns_true(self):
+        # A small draft model (0/2) does not mask the main model (33/33).
         inst = self._backend(
             [
                 "load_tensors: offloaded 0/2 layers to GPU",
                 "load_tensors: offloaded 33/33 layers to GPU",
+            ]
+        )
+        assert inst._classify_gpu_offload(True, [(0, 22805)]) is True
+
+    def test_main_on_cpu_with_draft_on_gpu_returns_false(self):
+        # MTP: the small drafter fits on GPU (1/1) but the main model is on CPU
+        # (0/33). Decide on the largest model, so the warning still fires.
+        inst = self._backend(
+            [
+                "load_tensors: offloaded 0/33 layers to GPU",
+                "load_tensors: offloaded 1/1 layers to GPU",
+            ]
+        )
+        assert inst._classify_gpu_offload(True, [(0, 22805)]) is False
+
+    def test_main_on_gpu_with_draft_on_cpu_returns_true(self):
+        # Reverse: main model on GPU (33/33), drafter on CPU (0/1) -> no warning.
+        inst = self._backend(
+            [
+                "load_tensors: offloaded 33/33 layers to GPU",
+                "load_tensors: offloaded 0/1 layers to GPU",
             ]
         )
         assert inst._classify_gpu_offload(True, [(0, 22805)]) is True

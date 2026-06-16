@@ -93,7 +93,7 @@ _GPU_OFFLOAD_MARKERS = (
     "CANN",
 )
 _OFFLOADED_LAYERS_RE = re.compile(
-    r"offloaded\s+(\d+)\s*/\s*\d+\s+layers?\s+to\s+gpu", re.IGNORECASE
+    r"offloaded\s+(\d+)\s*/\s*(\d+)\s+layers?\s+to\s+gpu", re.IGNORECASE
 )
 _DEVICE_ROW_RE = re.compile(
     r"-\s*(CUDA|ROCm|ROCM|HIP|Metal|Vulkan|SYCL|OpenCL|MUSA|CANN|CPU)\w*\s*:",
@@ -115,17 +115,21 @@ _GPU_DEVICE_PREFIXES = (
 def classify_gpu_offload_lines(lines: "list[str]") -> Optional[bool]:
     """True if the model landed on a GPU, False if it stayed on CPU despite GPU
     intent, None when the log has no usable signal."""
-    # Counted offload wins: scan all lines (a draft model can log 0/k before the
-    # main model's 33/33) so any N>0 is True and an all-zero set is False.
-    saw_zero = False
+    # Counted offload is authoritative, keyed on the model with the most layers.
+    # A separate MTP/draft model logs its own (much smaller) "offloaded N/M"
+    # line, so decide on the largest-M line: a drafter that fits on GPU must not
+    # mask a main model running on CPU. N>0 on that model is True, 0 is False.
+    max_total = -1
+    offloaded_at_max = 0
     for line in lines:
         match = _OFFLOADED_LAYERS_RE.search(line)
-        if match:
-            if int(match.group(1)) > 0:
-                return True
-            saw_zero = True
-    if saw_zero:
-        return False
+        if not match:
+            continue
+        offloaded, total = int(match.group(1)), int(match.group(2))
+        if total > max_total or (total == max_total and offloaded > offloaded_at_max):
+            max_total, offloaded_at_max = total, offloaded
+    if max_total >= 0:
+        return offloaded_at_max > 0
 
     # GPU marker on a *model* buffer; _Host buffers are CPU-pinned, not offload.
     # Buffer lines are authoritative: present but none on a GPU means CPU-only,
