@@ -23,16 +23,43 @@ export function isRunnableRecommendedFormat(
   return isGgufId(id, hintedIsGguf) || isMlxId(id);
 }
 
+// First "<n>B" token in a repo id, e.g. "Qwen3-4B-GGUF" -> 4, "gpt-oss-20b" ->
+// 20, "Qwen3-30B-A3B" -> 30 (MoE total), "gemma-4-E4B" -> 4 (effective-param
+// "E" series). The digits must be bounded by a separator so we never read "16"
+// from "bf16" or the "2" in "Kimi-K2".
+const PARAM_RE = /(?:^|[-_/. ])[eE]?(\d+(?:\.\d+)?)\s*[bB](?=$|[-_./ ])/;
+
+/** Parameter count (absolute, e.g. 4e9) parsed from a repo id, or undefined
+ * when the id has no size token (so callers can treat the size as unknown). */
+export function paramsFromId(id: string): number | undefined {
+  const match = PARAM_RE.exec(id);
+  if (!match) return undefined;
+  const billions = parseFloat(match[1]);
+  return Number.isFinite(billions) && billions > 0 ? billions * 1e9 : undefined;
+}
+
+// Representative 4-bit weight size (~Q4_K_M / MLX 4bit). GGUF/MLX repos rarely
+// expose safetensors metadata, so this is our fallback on-disk estimate.
+const QUANT_BYTES_PER_PARAM = 0.6;
+
+/** Rough on-disk bytes for a 4-bit quant of `params` weights. */
+export function estimateQuantBytes(params: number): number {
+  return params * QUANT_BYTES_PER_PARAM;
+}
+
 /** A model fits when its on-disk size (or a precomputed VRAM estimate) is within
- * the device budget (0.7*GPU + 0.7*RAM). Unknown device or size means we cannot
- * tell, so treat it as fitting (don't hide). */
+ * the device budget (0.7*GPU + 0.7*RAM). Unknown device means we cannot tell, so
+ * treat it as fitting. Unknown size normally fits too, but Recommended passes
+ * `requireKnown` so a model we cannot size (e.g. a huge GGUF with no metadata or
+ * size token) is hidden rather than wrongly shown. */
 export function fitsDevice(opts: {
   sizeBytes?: number;
   estimatedVramGb?: number;
   gpuGb?: number;
   systemRamGb?: number;
+  requireKnown?: boolean;
 }): boolean {
-  const { sizeBytes, estimatedVramGb, gpuGb, systemRamGb } = opts;
+  const { sizeBytes, estimatedVramGb, gpuGb, systemRamGb, requireKnown } = opts;
   if (!gpuGb || gpuGb <= 0) return true;
   const budgetGb = gpuGb * 0.7 + (systemRamGb ?? 0) * 0.7;
   if (sizeBytes && sizeBytes > 0) {
@@ -41,5 +68,5 @@ export function fitsDevice(opts: {
   if (estimatedVramGb && estimatedVramGb > 0) {
     return estimatedVramGb <= budgetGb;
   }
-  return true;
+  return requireKnown ? false : true;
 }
