@@ -154,6 +154,7 @@ def run_safetensors_tool_loop(
     session_id: Optional[str] = None,
     rag_scope: Optional[dict] = None,
     confirm_tool_calls: bool = False,
+    bypass_permissions: bool = False,
 ) -> Generator[dict, None, None]:
     """Drive an agentic tool loop on top of a cumulative-text generator.
 
@@ -517,7 +518,9 @@ def run_safetensors_tool_loop(
             else:
                 assistant_msg.setdefault("tool_calls", []).append(decision.as_assistant_tool_call())
 
-            needs_confirm = bool(confirm_tool_calls)
+            # Bypass wins over the confirm gate at the loop level too, so a
+            # direct internal caller passing both flags never prompts.
+            needs_confirm = bool(confirm_tool_calls) and not bypass_permissions
             approval_id = new_approval_id() if needs_confirm else ""
             decision_slot = begin_tool_decision(session_id, approval_id) if needs_confirm else None
             start_event = decision.tool_start_event()
@@ -575,6 +578,7 @@ def run_safetensors_tool_loop(
                         timeout = eff_timeout,
                         session_id = session_id,
                         rag_scope = rag_scope,
+                        disable_sandbox = bypass_permissions,
                     )
                 except Exception as exc:
                     logger.exception("Tool %s raised: %s", decision.tool_name, exc)

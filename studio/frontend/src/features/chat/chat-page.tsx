@@ -31,6 +31,7 @@ import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { isTauri } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
 import {
+  BubbleChatTemporaryIcon,
   Folder02Icon,
   LayoutAlignRightIcon,
 } from "@hugeicons/core-free-icons";
@@ -111,6 +112,7 @@ import {
   listStoredChatMessages,
   listStoredChatThreads,
 } from "./utils/chat-history-storage";
+import { isAssistantLocalThreadId } from "./utils/thread-ids";
 
 type LoraCandidate = {
   id: string;
@@ -158,12 +160,6 @@ function pickBestLoraForBase(
     );
   });
   return partial ?? sorted[0] ?? null;
-}
-
-function isAssistantLocalThreadId(
-  threadId: string | null | undefined,
-): boolean {
-  return Boolean(threadId?.startsWith("__LOCALID_"));
 }
 
 function messageHasImage(message: MessageRecord): boolean {
@@ -1028,6 +1024,30 @@ export function ChatPage(): ReactElement {
 
   const settingsOpen = useChatRuntimeStore((s) => s.settingsPanelOpen);
   const setSettingsOpen = useChatRuntimeStore((s) => s.setSettingsPanelOpen);
+  const incognito = useChatRuntimeStore((s) => s.incognito);
+  const setIncognito = useChatRuntimeStore((s) => s.setIncognito);
+  const incognitoLabel = incognito
+    ? "Turn off temporary chat"
+    : "Turn on temporary chat";
+  const toggleIncognito = useCallback(() => {
+    const store = useChatRuntimeStore.getState();
+    store.setIncognito(!store.incognito);
+    // On an empty scratch chat there's nothing to abandon, so flip in
+    // place: navigating would remount the thread and bounce the composer
+    // (it docks to the bottom before the welcome state re-centers it).
+    // Otherwise start a clean chat so the temporary session can't inherit
+    // or leave behind a persisted thread (matches ChatGPT / Gemini).
+    const onEmptyScratchChat =
+      !search.thread &&
+      !search.compare &&
+      !search.project &&
+      store.activeThreadId == null;
+    if (onEmptyScratchChat) return;
+    // setActiveThreadId already clears contextUsage.
+    store.setActiveThreadId(null);
+    store.setActiveProjectId(null);
+    navigate({ to: "/chat", search: { new: crypto.randomUUID() } });
+  }, [navigate, search]);
   const hydratePersistedSettings = useChatRuntimeStore(
     (s) => s.hydratePersistedSettings,
   );
@@ -1444,6 +1464,17 @@ export function ChatPage(): ReactElement {
     currentProjectId,
   ]);
 
+  // Temporary chat only applies to a fresh single-view chat. Exit incognito
+  // when we land on anything else (compare, a project, or an existing thread
+  // via sidebar/deep link/back), so the toggle isn't stranded and the UI
+  // never implies a saved thread is temporary.
+  useEffect(() => {
+    const onFreshSingleChat = view.mode === "single" && !view.threadId;
+    if (incognito && !onFreshSingleChat) {
+      setIncognito(false);
+    }
+  }, [view, incognito, setIncognito]);
+
   const selectedArtifact = useSelectedChatArtifact();
   const artifactSurface = useChatArtifactsStore((state) => state.surface);
   const closeArtifactSurface = useChatArtifactsStore(
@@ -1465,7 +1496,7 @@ export function ChatPage(): ReactElement {
     if (view.mode !== "single") return;
     if (view.threadId || view.newThreadNonce || !selectedArtifact) return;
     // view excludes __LOCALID_ threads (they fall through to mode:"single"
-    // with no threadId/nonce). Don't close an artifact whose thread is the
+    // with no threadId/nonce). Don't close a canvas whose thread is the
     // active local thread.
     if (
       selectedArtifact.threadId &&
@@ -2126,6 +2157,16 @@ export function ChatPage(): ReactElement {
                 className="max-w-[62vw] !pr-3 sm:max-w-none !h-[34px]"
               />
             )}
+            {incognito && view.mode === "single" && (
+              <div className="flex h-[34px] shrink-0 items-center gap-1.5 self-center rounded-full bg-primary/10 px-2.5 font-medium text-[13px] text-primary">
+                <HugeiconsIcon
+                  icon={BubbleChatTemporaryIcon}
+                  strokeWidth={2}
+                  className="size-3.5"
+                />
+                <span>Temporary</span>
+              </div>
+            )}
             {view.mode !== "compare" && currentProjectId && (
               <nav
                 aria-label="Project location"
@@ -2202,6 +2243,37 @@ export function ChatPage(): ReactElement {
                 className="h-[34px]"
               />
             ) : null}
+            {view.mode === "single" && (
+              <Tooltip>
+                <TooltipPrimitive.Trigger asChild={true}>
+                  <button
+                    type="button"
+                    onClick={toggleIncognito}
+                    className={cn(
+                      "flex h-[34px] w-[34px] cursor-pointer items-center justify-center rounded-[12px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                      incognito
+                        ? "bg-primary/10 text-primary hover:bg-primary/15"
+                        : "text-nav-fg hover:bg-nav-surface-hover hover:text-black dark:hover:text-white",
+                    )}
+                    aria-label={incognitoLabel}
+                    aria-pressed={incognito}
+                  >
+                    <HugeiconsIcon
+                      icon={BubbleChatTemporaryIcon}
+                      strokeWidth={1.75}
+                      className="size-icon"
+                    />
+                  </button>
+                </TooltipPrimitive.Trigger>
+                <TooltipContent
+                  side="bottom"
+                  sideOffset={6}
+                  className="tooltip-compact"
+                >
+                  {incognitoLabel}
+                </TooltipContent>
+              </Tooltip>
+            )}
             {!settingsOpen && (
               <Tooltip>
                 <TooltipPrimitive.Trigger asChild={true}>

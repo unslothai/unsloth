@@ -37,12 +37,12 @@ const RenderHtmlToolUIImpl: ToolCallMessagePartComponent = ({
   const code = typeof parsedArgs.code === "string" ? parsedArgs.code : "";
   const hasCode = code.trim().length > 0;
   const title =
-    typeof parsedArgs.title === "string" ? parsedArgs.title : "HTML artifact";
+    typeof parsedArgs.title === "string" ? parsedArgs.title : "HTML canvas";
   const isRunning = status?.type === "running";
   const codeIsStreaming = propStatus.code === "streaming";
 
   // Surface the backend error when the tool call completed with invalid args.
-  // Success results start with "Rendered HTML artifact"; errors with "Error:".
+  // Success results start with "Rendered HTML canvas"; errors with "Error:".
   const errorText =
     status?.type === "complete" &&
     typeof result === "string" &&
@@ -118,16 +118,16 @@ const RenderHtmlToolUIImpl: ToolCallMessagePartComponent = ({
         <span className="grid min-w-0 flex-1 gap-1">
           <span className="truncate text-sm font-medium leading-tight text-foreground">
             {errorText
-              ? "Artifact error"
+              ? "Canvas error"
               : isStaleGeneratingArtifact
-                ? "Artifact interrupted"
-                : "Artifact unavailable"}
+                ? "Canvas interrupted"
+                : "Canvas unavailable"}
           </span>
           <span className="truncate text-[11px] leading-none text-muted-foreground">
             {errorText ??
               (isStaleGeneratingArtifact
                 ? "Refresh stopped this preview"
-                : "HTML artifact")}
+                : "HTML canvas")}
           </span>
         </span>
       </div>
