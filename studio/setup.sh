@@ -439,22 +439,14 @@ _STUDIO_HOME_IS_CUSTOM=false
 if [ "$_studio_home_canon" != "$_LEGACY_STUDIO_HOME" ]; then
     _STUDIO_HOME_IS_CUSTOM=true
 fi
-# Directory-local evidence that Studio itself created "$1". Used to adopt a
-# Studio llama.cpp that predates the .unsloth-studio-owned marker (introduced
-# with custom-home support) or otherwise lost it, without weakening the guard.
-# The evidence must live INSIDE the directory so an unrelated directory the user
-# placed at a Studio-managed path -- even inside an established Studio home -- is
-# never silently adopted and overwritten. Only UNSLOTH_PREBUILT_INFO.json counts:
-# it is written exclusively by the prebuilt llama.cpp installer (the default
-# path, present since #4562 and older than the marker), so its presence uniquely
-# identifies a Studio install. A bare top-level llama-quantize symlink is NOT
-# treated as evidence: a user can have their own llama.cpp build with such a
-# convenience symlink, and this guard runs immediately before a destructive
-# replace / rm -rf. We therefore match the Windows installer and keep markerless
-# source builds strict -- they fail with the "move it aside" message instead of
-# being adopted and deleted. Sidecar venvs likewise carry no such fingerprint and
-# stay subject to the strict guard; their marker has been written since the guard
-# was introduced, so an established custom install already has it.
+# Directory-local evidence that Studio created "$1", used to adopt a custom-home
+# llama.cpp that predates the .unsloth-studio-owned marker without weakening the
+# guard. Only UNSLOTH_PREBUILT_INFO.json counts: it is written exclusively by the
+# prebuilt installer (the default path, older than the marker). A top-level
+# llama-quantize symlink is NOT trusted -- a user may have their own build with
+# one, and this guard runs right before a destructive rm -rf, so we match Windows
+# and keep markerless source builds strict (they get the "move it aside"
+# message). Sidecar venvs have no such fingerprint and stay strict.
 _studio_owned_adoptable() {
     [ -f "$1/UNSLOTH_PREBUILT_INFO.json" ] && return 0
     return 1
