@@ -207,7 +207,7 @@ type HubSection = "downloaded" | "recommended" | "custom";
 const HUB_SECTION_TABS: { value: string; label: string; icon?: ReactNode }[] = [
   {
     value: "recommended",
-    label: "Recommended",
+    label: "Unsloth",
     icon: <HugeiconsIcon icon={StarIcon} className="size-3.5" />,
   },
   {
@@ -415,7 +415,7 @@ function ModelSelectorContent({
       data-tour={dataTour}
       onKeyDown={handlePickerEntryKeyDown}
       className={cn(
-        "unsloth-model-selector-menu menu-soft-surface ring-0 w-[min(520px,calc(100vw-1rem))] max-w-[calc(100vw-1rem)] min-w-0 gap-0 px-3 pt-3 pb-2",
+        "unsloth-model-selector-menu menu-soft-surface ring-0 w-[min(520px,calc(100vw-1rem))] max-w-[calc(100vw-1rem)] min-w-0 gap-0 px-4 pt-3 pb-2",
         className,
       )}
     >
@@ -443,7 +443,6 @@ function ModelSelectorContent({
               tabs={HUB_SECTION_TABS}
               value={hubSection}
               onValueChange={(next) => setHubSection(next as HubSection)}
-              compact={true}
               fit={true}
             />
           }
@@ -697,7 +696,7 @@ function ExternalModelPicker({
           className="h-9 pl-8"
         />
       </div>
-      <div className="-mr-1.5 max-h-64 overflow-y-auto pr-1.5">
+      <div className="-mr-1.5 max-h-72 overflow-y-auto pr-1.5">
         <div className="space-y-2 p-1">
           {grouped.length === 0 ? (
             <div className="px-2.5 py-2 text-xs leading-relaxed text-muted-foreground">

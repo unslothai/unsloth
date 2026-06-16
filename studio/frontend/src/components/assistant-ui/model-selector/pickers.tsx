@@ -40,13 +40,24 @@ import { extractParamLabel } from "@/lib/model-size";
 import { cn, formatCompact } from "@/lib/utils";
 import type { VramFitStatus } from "@/lib/vram";
 import { checkVramFit, estimateLoadingVram } from "@/lib/vram";
-import { Add01Icon, Cancel01Icon, Download01Icon, Folder02Icon, Search01Icon, StarIcon } from "@hugeicons/core-free-icons";
+import { AiBrain01Icon, Add01Icon, AudioWave01Icon, Cancel01Icon, EyeIcon, Folder02Icon, Search01Icon, StarIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { DotTag } from "@/features/hub/catalog/dot-tag";
 import { HubOptionMenu, type HubOption } from "@/features/hub/catalog/hub-option-menu";
 import { FolderBrowser } from "./folder-browser";
 import { ModelDeleteAction } from "./model-delete-action";
-import { fitsDevice, isRunnableRecommendedFormat } from "./recommended-fit";
+import {
+  estimateQuantBytes,
+  fitsDevice,
+  isRunnableRecommendedFormat,
+  paramsFromId,
+} from "./recommended-fit";
+import {
+  type ModelCapabilities,
+  detectCapabilities,
+  familyFromTags,
+  hasAnyCapability,
+} from "./model-capabilities";
 import { parseMetaTokens, splitRepoLabel } from "./row-meta";
 import { ChevronDownIcon, ChevronRightIcon } from "lucide-react";
 import {
@@ -68,19 +79,6 @@ import type {
 
 function dedupe(values: string[]): string[] {
   return [...new Set(values.filter(Boolean))];
-}
-
-/** Newest-first by `last_modified` (epoch s), repo_id tie-break. Copies the
- * input; treats a missing field as oldest for older-backend compatibility. */
-function sortByDownloadRecency<T extends { repo_id: string; last_modified?: number }>(
-  rows: T[],
-): T[] {
-  return [...rows].sort((a, b) => {
-    const at = a.last_modified ?? -1;
-    const bt = b.last_modified ?? -1;
-    if (at !== bt) return bt - at;
-    return a.repo_id.localeCompare(b.repo_id);
-  });
 }
 
 /** Lowercase and strip separators for fuzzy search. */
@@ -254,7 +252,7 @@ function ListLabel({
   onToggle?: () => void;
 }) {
   return (
-    <div className="flex items-center justify-between gap-1 px-2.5 py-1.5">
+    <div className="flex items-center justify-between gap-1 px-2.5 pb-1.5 pt-3">
       <span className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
         {icon}
         {children}
@@ -284,6 +282,30 @@ function formatBytes(bytes: number): string {
   return `${value.toFixed(value < 10 ? 1 : 0)} ${units[i]}`;
 }
 
+// Small icon badges for what a model can do (vision / reasoning / audio).
+const CAPABILITY_BADGES = [
+  { key: "vision" as const, icon: EyeIcon, title: "Vision" },
+  { key: "reasoning" as const, icon: AiBrain01Icon, title: "Reasoning" },
+  { key: "audio" as const, icon: AudioWave01Icon, title: "Audio" },
+];
+
+function CapabilityIcons({ caps }: { caps: ModelCapabilities }) {
+  return (
+    <>
+      {CAPABILITY_BADGES.filter((b) => caps[b.key]).map((b) => (
+        <span
+          key={b.key}
+          title={b.title}
+          aria-label={b.title}
+          className="flex size-[18px] shrink-0 items-center justify-center rounded-md border border-border/60 text-muted-foreground"
+        >
+          <HugeiconsIcon icon={b.icon} className="size-3" strokeWidth={1.8} />
+        </span>
+      ))}
+    </>
+  );
+}
+
 function ModelRow({
   label,
   meta,
@@ -295,6 +317,9 @@ function ModelRow({
   tooltipText,
   optionProps,
   onArrowDownIntoChildren,
+  capabilities,
+  family,
+  hideOwner,
 }: {
   label: string;
   meta?: string | null;
@@ -306,6 +331,12 @@ function ModelRow({
   tooltipText?: ReactNode;
   optionProps?: ModelRowOptionProps;
   onArrowDownIntoChildren?: () => boolean;
+  /** Capability override (HF rows have tags); falls back to name detection. */
+  capabilities?: ModelCapabilities;
+  /** Architecture family tag (e.g. "gemma4") from the HF listing. */
+  family?: string;
+  /** Hide the "owner/" prefix (e.g. Recommended, where all are unsloth). */
+  hideOwner?: boolean;
 }) {
   const exceeds = vramStatus === "exceeds";
   const showVramTooltip =
@@ -323,6 +354,9 @@ function ModelRow({
   const parsed = parseMetaTokens(meta);
   // Param chip from meta, else derived from the name so GGUF rows show it too.
   const paramLabel = parsed.param ?? extractParamLabel(name) ?? null;
+  // Use the passed-in capabilities (tag-aware) or infer from the repo name.
+  const caps = capabilities ?? detectCapabilities({ id: label });
+  const showCaps = hasAnyCapability(caps);
 
   const content = (
     <button
@@ -342,7 +376,7 @@ function ModelRow({
       )}
     >
       <span className="flex min-w-0 flex-1 items-baseline">
-        {owner ? (
+        {owner && !hideOwner ? (
           <span className="inline-flex min-w-0 max-w-[45%] shrink items-baseline text-[13px] text-muted-foreground/90">
             <span className="truncate">{owner}</span>
             <span className="shrink-0 text-muted-foreground/45">/</span>
@@ -358,6 +392,7 @@ function ModelRow({
         </span>
       </span>
       <span className="ml-auto flex shrink-0 items-center gap-1.5">
+        {showCaps && <CapabilityIcons caps={caps} />}
         {selected && <DotTag tone="success" label="Loaded" className="h-[18px] gap-1 px-1" />}
         {vramStatus === "exceeds" && (
           <span className="text-[9px] font-medium !text-red-700 !bg-red-50 dark:!text-red-400 dark:!bg-red-950 px-1.5 py-0.5 rounded">OOM</span>
@@ -368,6 +403,11 @@ function ModelRow({
         {paramLabel ? (
           <span className="rounded-md border border-border/60 px-1 py-px text-[10px] font-medium text-muted-foreground tabular-nums">
             {paramLabel}
+          </span>
+        ) : null}
+        {family ? (
+          <span className="rounded-md border border-border/60 px-1 py-px text-[10px] font-medium text-muted-foreground">
+            {family}
           </span>
         ) : null}
         {parsed.formats.map((f) => (
@@ -750,6 +790,42 @@ const RECOMMENDED_SORT_OPTIONS: HubOption<RecommendedSortKey>[] = [
   { value: "lastModified", label: "Recently updated" },
 ];
 
+// Sort for the Downloaded / Custom (local) lists. "downloaded" sorts by download
+// date; locally that is the same file timestamp as "recent".
+type LocalSortKey = "recent" | "size" | "downloaded";
+
+const LOCAL_SORT_OPTIONS: HubOption<LocalSortKey>[] = [
+  { value: "recent", label: "Recent" },
+  { value: "size", label: "Size" },
+  { value: "downloaded", label: "Downloaded" },
+];
+
+/** Sort cached repos (have size + timestamp): by size desc, else newest first. */
+function sortCachedRepos<
+  T extends { repo_id: string; size_bytes: number; last_modified?: number },
+>(rows: T[], key: LocalSortKey): T[] {
+  return [...rows].sort((a, b) => {
+    if (key === "size") {
+      return b.size_bytes - a.size_bytes || a.repo_id.localeCompare(b.repo_id);
+    }
+    // "recent" and "downloaded" both order by the file timestamp.
+    return (
+      (b.last_modified ?? -1) - (a.last_modified ?? -1) ||
+      a.repo_id.localeCompare(b.repo_id)
+    );
+  });
+}
+
+/** Sort local-provider models. They carry no size, so "size" falls back to the
+ * download timestamp like the other keys. */
+function sortLocalModels(rows: LocalModelInfo[], _key: LocalSortKey): LocalModelInfo[] {
+  return [...rows].sort(
+    (a, b) =>
+      (b.updated_at ?? -1) - (a.updated_at ?? -1) ||
+      (a.model_id ?? a.display_name).localeCompare(b.model_id ?? b.display_name),
+  );
+}
+
 export function HubModelPicker({
   models,
   value,
@@ -989,6 +1065,9 @@ export function HubModelPicker({
   const recommendedHfSort: HfModelSort =
     recommendedSort === "recommended" ? "lastModified" : recommendedSort;
   const recommendedSearch = useHfModelSearch("", { sort: recommendedHfSort });
+  // Independent sort for each local section's inline dropdown.
+  const [downloadedSort, setDownloadedSort] = useState<LocalSortKey>("recent");
+  const [customSort, setCustomSort] = useState<LocalSortKey>("recent");
 
   // "recommended" keeps only runnable local formats (GGUF/MLX) that fit the
   // device; the other sorts pass everything through (badged, never hidden).
@@ -1000,13 +1079,19 @@ export function HubModelPicker({
     return rows.filter((r) => {
       if (!isRunnableRecommendedFormat(r.id, r.isGguf)) return false;
       if (!gpu.available) return true;
+      // GGUF/MLX repos rarely expose safetensors metadata, so fall back to the
+      // param count in the repo name for a size estimate. Anything we still
+      // cannot size is hidden (requireKnown) so over-budget models like a 1T
+      // GGUF don't slip into Recommended.
+      const params = r.totalParams ?? paramsFromId(r.id);
+      const sizeBytes =
+        r.estimatedSizeBytes ??
+        (params ? estimateQuantBytes(params) : undefined);
       return fitsDevice({
-        sizeBytes: r.estimatedSizeBytes,
-        estimatedVramGb: r.totalParams
-          ? estimateLoadingVram(r.totalParams, "qlora")
-          : undefined,
+        sizeBytes,
         gpuGb: gpu.memoryTotalGb,
         systemRamGb: gpu.systemRamAvailableGb,
+        requireKnown: true,
       });
     });
   }, [recommendedSearch.results, downloadedSet, recommendedSort, gpu]);
@@ -1037,14 +1122,44 @@ export function HubModelPicker({
     return map;
   }, [recommendedSearch.results, isKnownGgufRepo, gpu]);
 
-  // Newest-first (also covers older backends without `last_modified`).
+  // Tag-derived row metadata (capabilities + architecture family) keyed by repo
+  // id, pooled from both HF listings. Rows look it up by id; capabilities fall
+  // back to name detection when a row has no listing entry.
+  const hubMetaById = useMemo(() => {
+    const map = new Map<
+      string,
+      { caps: ModelCapabilities; family?: string }
+    >();
+    for (const r of [...results, ...recommendedSearch.results]) {
+      if (map.has(r.id)) continue;
+      map.set(r.id, {
+        caps: detectCapabilities({
+          id: r.id,
+          tags: r.tags,
+          pipelineTag: r.pipelineTag,
+        }),
+        family: familyFromTags(r.tags),
+      });
+    }
+    return map;
+  }, [results, recommendedSearch.results]);
+
+  // Ordered by the Downloaded dropdown (recent/size/download date).
   const sortedCachedGguf = useMemo(
-    () => sortByDownloadRecency(cachedGguf),
-    [cachedGguf],
+    () => sortCachedRepos(cachedGguf, downloadedSort),
+    [cachedGguf, downloadedSort],
   );
   const sortedCachedModels = useMemo(
-    () => sortByDownloadRecency(cachedModels),
-    [cachedModels],
+    () => sortCachedRepos(cachedModels, downloadedSort),
+    [cachedModels, downloadedSort],
+  );
+  const sortedLmStudio = useMemo(
+    () => sortLocalModels(lmStudioModels, downloadedSort),
+    [lmStudioModels, downloadedSort],
+  );
+  const sortedCustomFolderModels = useMemo(
+    () => sortLocalModels(customFolderModels, customSort),
+    [customFolderModels, customSort],
   );
 
   // While searching, filter Downloaded by the query instead of hiding it, so a
@@ -1131,7 +1246,7 @@ export function HubModelPicker({
 
     if (section === "downloaded") {
       keys.push(
-        ...lmStudioModels.map((model) =>
+        ...sortedLmStudio.map((model) =>
           makeModelOptionKey("lm-studio", model.id),
         ),
       );
@@ -1139,7 +1254,7 @@ export function HubModelPicker({
 
     if (section === "custom" && !customFoldersCollapsed) {
       keys.push(
-        ...customFolderModels.map((model) =>
+        ...sortedCustomFolderModels.map((model) =>
           makeModelOptionKey("custom-folder", model.id),
         ),
       );
@@ -1157,12 +1272,12 @@ export function HubModelPicker({
   }, [
     cachedReady,
     chatOnly,
-    customFolderModels,
+    sortedCustomFolderModels,
     customFoldersCollapsed,
     downloadedCollapsed,
     filteredRecommendedIds,
     hfIds,
-    lmStudioModels,
+    sortedLmStudio,
     recommendedRows,
     section,
     showHfSection,
@@ -1294,6 +1409,39 @@ export function HubModelPicker({
     visibleCachedModelRows.length === 0 &&
     lmStudioModels.length === 0;
 
+  // Fixed-width sort dropdown, sized to "Recently updated" with a little extra,
+  // shown inline to the right of the section toggle. Options depend on the tab;
+  // hidden while searching (sorting doesn't apply to search results).
+  const sortTriggerClassName = "w-[160px] shrink-0 justify-between pr-3";
+  const sectionSortDropdown = showHfSection ? null : section === "recommended" ? (
+    <HubOptionMenu
+      value={recommendedSort}
+      options={RECOMMENDED_SORT_OPTIONS}
+      onValueChange={setRecommendedSort}
+      ariaLabel="Sort Unsloth models"
+      align="end"
+      className={sortTriggerClassName}
+    />
+  ) : section === "downloaded" ? (
+    <HubOptionMenu
+      value={downloadedSort}
+      options={LOCAL_SORT_OPTIONS}
+      onValueChange={setDownloadedSort}
+      ariaLabel="Sort downloaded models"
+      align="end"
+      className={sortTriggerClassName}
+    />
+  ) : (
+    <HubOptionMenu
+      value={customSort}
+      options={LOCAL_SORT_OPTIONS}
+      onValueChange={setCustomSort}
+      ariaLabel="Sort custom models"
+      align="end"
+      className={sortTriggerClassName}
+    />
+  );
+
   return (
     <div className="space-y-2">
       <div className="relative pb-1">
@@ -1313,11 +1461,14 @@ export function HubModelPicker({
         )}
       </div>
 
-      {sectionToggle}
+      <div className="flex items-center justify-between gap-2">
+        {sectionToggle}
+        {sectionSortDropdown}
+      </div>
 
       <div
         ref={scrollRef}
-        className="-mr-1.5 max-h-64 overflow-y-auto pr-1.5"
+        className="-mr-1.5 max-h-72 overflow-y-auto pr-1.5"
         {...hubModelList.listboxProps}
       >
         <div className="py-1">
@@ -1349,10 +1500,17 @@ export function HubModelPicker({
           (visibleCachedGguf.length > 0 || visibleCachedModelRows.length > 0) ? (
             <>
               <ListLabel
-                icon={<HugeiconsIcon icon={Download01Icon} className="size-3" />}
                 collapsed={downloadedCollapsed}
                 onToggle={() => setDownloadedCollapsed((v) => !v)}
-              >Downloaded</ListLabel>
+              >
+                {/* When other providers (LM Studio/Ollama) also show here, name
+                    this group "Unsloth" so the two are easy to tell apart. */}
+                {!showHfSection &&
+                section === "downloaded" &&
+                lmStudioModels.length > 0
+                  ? "Unsloth"
+                  : "Downloaded"}
+              </ListLabel>
               {!downloadedCollapsed &&
                 visibleCachedGguf.map((c) => {
                   const optionKey = makeModelOptionKey("downloaded-gguf", c.repo_id);
@@ -1456,7 +1614,7 @@ export function HubModelPicker({
           lmStudioModels.length > 0 ? (
             <>
               <ListLabel>LM Studio</ListLabel>
-              {lmStudioModels.map((m) => {
+              {sortedLmStudio.map((m) => {
                 const isGguf = isGgufRepo(m.id) || isGgufRepo(m.display_name);
                 const optionKey = makeModelOptionKey("lm-studio", m.id);
                 return (
@@ -1519,9 +1677,8 @@ export function HubModelPicker({
 
           {showCustom ? (
             <>
-              <div className="flex items-center gap-1 px-2.5 py-1.5">
+              <div className="flex items-center gap-1 px-2.5 pb-1.5 pt-3">
                 <span className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                  <HugeiconsIcon icon={Folder02Icon} className="size-3" />
                   Custom Folders
                 </span>
                 <div className="flex items-center gap-0.5">
@@ -1668,7 +1825,7 @@ export function HubModelPicker({
 
 
               {/* Models from custom folders */}
-              {!customFoldersCollapsed && customFolderModels.map((m) => {
+              {!customFoldersCollapsed && sortedCustomFolderModels.map((m) => {
                 const isGgufFile = m.path.toLowerCase().endsWith(".gguf");
                 const isGguf =
                   isGgufFile ||
@@ -1742,24 +1899,6 @@ export function HubModelPicker({
 
           {showRecommendedSection ? (
             <>
-              <div className="px-1 py-1">
-                <HubOptionMenu
-                  value={recommendedSort}
-                  options={RECOMMENDED_SORT_OPTIONS}
-                  onValueChange={setRecommendedSort}
-                  ariaLabel="Sort recommended models"
-                  align="start"
-                  className="h-6 gap-1 rounded-md px-1.5 text-muted-foreground hover:bg-muted/60"
-                  triggerContent={
-                    <span className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                      <HugeiconsIcon icon={StarIcon} className="size-3" />
-                      {RECOMMENDED_SORT_OPTIONS.find(
-                        (o) => o.value === recommendedSort,
-                      )?.label ?? "Recommended"}
-                    </span>
-                  }
-                />
-              </div>
               {recommendedSearch.isLoading && recommendedRows.length === 0 ? (
                 <div className="flex items-center gap-2 px-5 py-3">
                   <Spinner className="size-3 text-muted-foreground" />
@@ -1781,6 +1920,9 @@ export function HubModelPicker({
                     <div key={id}>
                       <ModelRow
                         label={id}
+                        hideOwner
+                        capabilities={hubMetaById.get(id)?.caps}
+                        family={hubMetaById.get(id)?.family}
                         meta={info?.meta ?? (isG ? "GGUF" : extractParamLabel(id))}
                         selected={value === id}
                         optionProps={hubModelList.getOptionProps(
@@ -1845,6 +1987,8 @@ export function HubModelPicker({
                   <div key={id}>
                     <ModelRow
                       label={id}
+                      capabilities={hubMetaById.get(id)?.caps}
+                        family={hubMetaById.get(id)?.family}
                       meta={
                         isKnownGgufRepo(id)
                           ? "GGUF"
@@ -1921,6 +2065,8 @@ export function HubModelPicker({
                     <div key={id}>
                       <ModelRow
                         label={id}
+                        capabilities={hubMetaById.get(id)?.caps}
+                        family={hubMetaById.get(id)?.family}
                         meta={
                           isSearchGguf
                             ? "GGUF"
@@ -2090,7 +2236,7 @@ export function LoraModelPicker({
         />
       </div>
 
-      <div className="-mr-1.5 max-h-64 overflow-y-auto pr-1.5" {...loraModelList.listboxProps}>
+      <div className="-mr-1.5 max-h-72 overflow-y-auto pr-1.5" {...loraModelList.listboxProps}>
         <div className="py-1">
           {grouped.length === 0 ? (
             <div className="px-2.5 py-2 text-xs text-muted-foreground">
