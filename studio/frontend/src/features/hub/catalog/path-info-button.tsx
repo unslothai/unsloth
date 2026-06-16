@@ -14,11 +14,8 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
-import {
-  Copy01Icon,
-  FolderSearchIcon,
-  Tick02Icon,
-} from "@hugeicons/core-free-icons";
+import { Copy01Icon, FolderSearchIcon } from "@hugeicons/core-free-icons";
+import { Tick02Icon } from "@/lib/tick-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { MouseEvent } from "react";
 import { useState } from "react";

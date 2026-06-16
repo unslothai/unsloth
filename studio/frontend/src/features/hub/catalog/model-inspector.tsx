@@ -36,8 +36,8 @@ import {
   PackageIcon,
   RamMemoryIcon,
   Share05Icon,
-  Tick02Icon,
 } from "@hugeicons/core-free-icons";
+import { Tick02Icon } from "@/lib/tick-icon";
 import type { IconSvgElement } from "@hugeicons/react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { memo, useDeferredValue, useMemo } from "react";
