@@ -11,6 +11,7 @@ GPU, network, subprocess, or GGUF I/O."""
 from __future__ import annotations
 
 import inspect
+import os
 import sys
 import types as _types
 from pathlib import Path
@@ -480,6 +481,22 @@ class TestExtraArgsMtpDetection:
         # robust to that and to any formatter line-wrapping.
         assert "_extra_args_requests_separate_draft(extra_args" in compact
         assert "or_user_draft_via_extras" in compact  # OR'd into the reserve gate
+        # The drafter check must NOT force extras-only (env={}); the default
+        # env=None lets it see an env LLAMA_ARG_SPEC_DRAFT_MODEL, so an env-only
+        # drafter still engages the reserve (codex review 4507014299).
+        assert "bool(_extra_args_mtp_draft_path(extra_args))" in compact
+
+    def test_env_only_drafter_engages_separate_draft_reserve(self, monkeypatch):
+        # An env-provided drafter (no --model-draft in extras) must still engage
+        # the draft reserve, or auto-fit spends the drafter's VRAM and OOMs. Mirror
+        # load_model's _user_draft_via_extras gate (codex review 4507014299).
+        monkeypatch.setenv("LLAMA_ARG_SPEC_DRAFT_MODEL", "/large.gguf")
+        monkeypatch.delenv("LLAMA_ARG_SPEC_DRAFT_HF_REPO", raising = False)
+        ea = ["--spec-type", "draft-simple"]  # _spec_env is {} (extras set spec-type)
+        assert _extra_args_requests_separate_draft(ea, env = {}) is True
+        assert _extra_args_mtp_draft_path(ea) == "/large.gguf"  # env=None -> os.environ
+        # -> _user_draft_via_extras True; _env_draft_for_budget sizes the drafter.
+        assert _extra_args_mtp_draft_path([], env = dict(os.environ)) == "/large.gguf"
 
     def test_load_model_gates_env_spec_type_on_off_mode(self):
         # LLAMA_ARG_SPEC_TYPE only reaches the child when Studio emits no spec
