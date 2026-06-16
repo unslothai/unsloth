@@ -1415,6 +1415,18 @@ export function ChatSettingsPanel({
           </div>
         </CollapsibleSection>
 
+        <CollapsibleSection label="Custom Prompt" defaultOpen={true}>
+          <div className="panel-text-surface -mt-1 h-20 w-full overflow-hidden corner-squircle">
+            <textarea
+              value={params.systemVariables}
+              onChange={(event) => set("systemVariables")(event.target.value)}
+              placeholder='{"env":"prod","version":"1.2.3"}'
+              aria-label="Custom prompt variables"
+              className="block size-full resize-none bg-transparent px-3.5 py-2.5 text-left text-[13px] font-medium leading-relaxed text-nav-fg outline-none placeholder:text-muted-foreground"
+            />
+          </div>
+        </CollapsibleSection>
+
         <CollapsibleSection label="Sampling" defaultOpen={true}>
           <div className="flex flex-col gap-5 pt-1">
             {showTemperature ? (

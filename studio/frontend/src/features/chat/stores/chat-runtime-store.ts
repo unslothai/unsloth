@@ -689,6 +689,7 @@ const PERSISTED_INFERENCE_PARAM_KEYS = [
   "maxSeqLength",
   "maxTokens",
   "systemPrompt",
+  "systemVariables",
   "trustRemoteCode",
   "fastMode",
 ] as const satisfies readonly PersistedInferenceParamKey[];

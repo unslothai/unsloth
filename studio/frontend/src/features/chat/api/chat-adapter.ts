@@ -181,6 +181,83 @@ function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function parseSystemVariablesMap(raw: string): Record<string, unknown> {
+  if (!raw.trim()) {
+    return {};
+  }
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {
+    // Invalid JSON: keep unresolved placeholders in output prompt.
+  }
+  return {};
+}
+
+function getNestedValue(
+  values: Record<string, unknown>,
+  path: string,
+): unknown | undefined {
+  const parts = path.split(".").map((part) => part.trim()).filter(Boolean);
+  if (parts.length === 0) {
+    return undefined;
+  }
+  let current: unknown = values;
+  for (const part of parts) {
+    if (!current || typeof current !== "object" || Array.isArray(current)) {
+      return undefined;
+    }
+    current = (current as Record<string, unknown>)[part];
+  }
+  return current;
+}
+
+function stringifyTemplateValue(value: unknown): string {
+  if (value == null) {
+    return "";
+  }
+  if (typeof value === "string") {
+    return value;
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function resolveSystemPromptVariables(
+  prompt: string,
+  customVariablesRaw: string,
+): string {
+  if (!prompt) {
+    return prompt;
+  }
+  const now = new Date();
+  const systemVariables: Record<string, string> = {
+    $date: now.toISOString().slice(0, 10),
+    $time: now.toTimeString().slice(0, 8),
+    $now: now.toISOString(),
+  };
+  const customVariables = parseSystemVariablesMap(customVariablesRaw);
+  return prompt.replaceAll(/{{\s*([a-zA-Z_$][a-zA-Z0-9_$.-]*)\s*}}/g, (full, keyRaw) => {
+    const key = String(keyRaw).trim();
+    if (key in systemVariables) {
+      return systemVariables[key] ?? full;
+    }
+    const resolved = getNestedValue(customVariables, key);
+    if (resolved === undefined) {
+      return full;
+    }
+    return stringifyTemplateValue(resolved);
+  });
+}
+
 export const ThreadAutosaveHandle: ThreadAutosaveHandle = {
   registerFirstSave(threadId, promise) {
     const trackedPromise = promise.catch(() => {});

@@ -140,6 +140,9 @@ function sanitizeInferenceParams(
   if (typeof value.systemPrompt === "string") {
     params.systemPrompt = value.systemPrompt;
   }
+  if (typeof value.systemVariables === "string") {
+    params.systemVariables = value.systemVariables;
+  }
   if (typeof value.trustRemoteCode === "boolean") {
     params.trustRemoteCode = value.trustRemoteCode;
   }
