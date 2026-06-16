@@ -685,6 +685,21 @@ def _env_main_cache_type_for_budget(env: Optional[Mapping[str, str]] = None) -> 
     return heaviest
 
 
+def _env_split_mode_is_tensor(env: Optional[Mapping[str, str]] = None) -> bool:
+    """True when ``LLAMA_ARG_SPLIT_MODE`` env selects tensor parallel.
+
+    The child inherits this env var, but Studio emits ``--split-mode tensor``
+    only on its tensor branch; the default layer-split path emits nothing, so a
+    ``tensor`` env would silently run the child tensor-parallel (heavier
+    per-device compute buffer) while the budget reserved only the layer-split
+    per-device overhead -> under-reserve. Used to flip the budget to tensor when
+    extras don't set the split mode. Other modes (layer/row/none) are not a
+    runtime-heavier surprise, so only ``tensor`` is acted on.
+    """
+    raw = (os.environ if env is None else env).get("LLAMA_ARG_SPLIT_MODE")
+    return bool(raw) and raw.strip().lower() == "tensor"
+
+
 def _auto_mode_drops_mtp(
     req_mode: Optional[str],
     size_b: Optional[float],
@@ -4307,6 +4322,18 @@ class LlamaCppBackend:
                 # toggle, so reconcile it back into tensor_parallel state.
                 split_mode_override = parse_split_mode_override(extra_args)
                 tensor_parallel = resolve_tensor_parallel(extra_args, tensor_parallel)
+                if (
+                    not tensor_parallel
+                    and split_mode_override is None
+                    and _env_split_mode_is_tensor()
+                ):
+                    # No extras --split-mode, but the child inherits a tensor
+                    # LLAMA_ARG_SPLIT_MODE. Plan/reserve/emit tensor so the
+                    # heavier per-device compute buffer is budgeted instead of
+                    # the lighter layer-split overhead (env-only flip would
+                    # under-reserve). One-directional: never flips a tensor plan
+                    # back to layer (Studio's emitted --split-mode tensor wins).
+                    tensor_parallel = True
                 # Tensor mode aborts on a quantized KV cache, so drop it for the
                 # tensor attempt (and strip any inherited/explicit --cache-type
                 # that would re-impose it when appended last). Layer split does

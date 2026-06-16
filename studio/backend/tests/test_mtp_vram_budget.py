@@ -74,6 +74,7 @@ from core.inference.llama_cpp import (  # noqa: E402
     _extra_args_requests_separate_draft,
     _extra_args_spec_draft_n_max,
     _env_main_cache_type_for_budget,
+    _env_split_mode_is_tensor,
     _kv_bytes_per_elem,
 )
 
@@ -719,6 +720,28 @@ class TestExtraArgsMtpDetection:
         assert "cache_type_kv=resolve_cache_type_kv(extra_args,cache_type_kv)" in compact
         assert "ifcache_type_kvisNone:" in compact
         assert "cache_type_kv=_env_main_cache_type_for_budget()" in compact
+
+    def test_env_split_mode_is_tensor(self):
+        # The child inherits LLAMA_ARG_SPLIT_MODE, but Studio emits --split-mode
+        # only on its tensor branch -> a tensor env must flip the budget so the
+        # heavier per-device compute buffer is reserved (not layer overhead).
+        assert _env_split_mode_is_tensor(env = {}) is False
+        assert _env_split_mode_is_tensor(env = {"LLAMA_ARG_SPLIT_MODE": "tensor"}) is True
+        assert _env_split_mode_is_tensor(env = {"LLAMA_ARG_SPLIT_MODE": "Tensor"}) is True
+        # Other modes are not a runtime-heavier surprise -> not acted on.
+        assert _env_split_mode_is_tensor(env = {"LLAMA_ARG_SPLIT_MODE": "layer"}) is False
+        assert _env_split_mode_is_tensor(env = {"LLAMA_ARG_SPLIT_MODE": "row"}) is False
+        assert _env_split_mode_is_tensor(env = {"LLAMA_ARG_SPLIT_MODE": "none"}) is False
+
+    def test_load_model_adopts_env_tensor_split_mode(self):
+        # Source-level: load_model flips to tensor when extras don't set a split
+        # mode but the env selects tensor, and only one-directionally (guarded on
+        # `not tensor_parallel` so an existing tensor plan is never downgraded).
+        # Whitespace-stripped so the check survives any formatter line-wrapping.
+        compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
+        assert "nottensor_parallel" in compact
+        assert "split_mode_overrideisNone" in compact
+        assert "_env_split_mode_is_tensor()" in compact
 
 
 # ---------------------------------------------------------------------------
