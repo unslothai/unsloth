@@ -352,7 +352,9 @@ def get_update_status(*, force_refresh: bool = False) -> dict:
     if update_available:
         try:
             update_size_bytes = update_download_size_bytes(
-                marker, latest, freshness.get("published_repo") or repo,
+                marker,
+                latest,
+                freshness.get("published_repo") or repo,
                 force_refresh = force_refresh,
             )
         except Exception as exc:  # pragma: no cover - network defensive
