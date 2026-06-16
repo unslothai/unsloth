@@ -27,6 +27,7 @@ export interface SidebarItem {
   id: string;
   title: string;
   createdAt: number;
+  isFork?: boolean;
   projectId?: string | null;
 }
 
@@ -64,6 +65,7 @@ export function groupThreads(
         id: t.id,
         title: t.title,
         createdAt: t.createdAt,
+        isFork: Boolean(t.forkedFromThreadId),
         projectId: t.projectId ?? null,
       });
     }

@@ -860,7 +860,9 @@ if (-not $HasNvidiaSmi) {
         $HipSdkInstalled = $true   # binary found → SDK is installed regardless of device state
         try {
             $hipOut = & $hipinfoExe.Source 2>&1 | Out-String
-            if ($LASTEXITCODE -eq 0 -and $hipOut -match "(?i)gcnArchName") {
+            if ($hipOut -match "(?i)gcnArchName") {
+                # hipinfo can crash after printing gcnArchName (#6043).
+                # Once the arch is printed, keep the ROCm wheel path.
                 $HasROCm = $true
                 $_hipAllArches = @([regex]::Matches($hipOut, "(?im)^\s*gcnArchName\s*:\s*(\S+)") | ForEach-Object { ($_.Groups[1].Value -split ':')[0].Trim().ToLower() })
                 $_hipVisIdx = if ($env:HIP_VISIBLE_DEVICES -match '^\d') { [int]($env:HIP_VISIBLE_DEVICES -split ',')[0] } elseif ($env:ROCR_VISIBLE_DEVICES -match '^\d') { [int]($env:ROCR_VISIBLE_DEVICES -split ',')[0] } else { 0 }
@@ -870,8 +872,13 @@ if (-not $HasNvidiaSmi) {
                 } else {
                     $ROCmGpuLabel = "AMD ROCm"
                 }
+                if ($LASTEXITCODE -ne 0) {
+                    substep "[INFO] hipinfo exited with code $LASTEXITCODE but reported gcnArchName -- treating as ROCm-capable (see #6043)" "Cyan"
+                }
             } elseif ($LASTEXITCODE -ne 0) {
-                # hipinfo ran but returned a HIP runtime error (e.g. "no ROCm-capable device detected")
+                # hipinfo ran but returned a HIP runtime error without any gcnArchName
+                # output (e.g. "no ROCm-capable device detected"), or crashed before
+                # printing device info.
                 $firstLine = ($hipOut -split '\r?\n' | Where-Object { $_.Trim() } | Select-Object -First 1)
                 substep "[WARN] hipinfo returned a HIP runtime error (exit $LASTEXITCODE)" "Yellow"
                 substep "       $firstLine" "Yellow"
@@ -2065,6 +2072,15 @@ if (Test-Path -LiteralPath $LegacyStudioHome -PathType Container) {
     $LegacyStudioHome = (Resolve-Path -LiteralPath $LegacyStudioHome).Path
 }
 $StudioHomeIsCustom = ($_studioHomeCanon -ne $LegacyStudioHome)
+# Directory-local evidence that Studio created $Path, used to adopt a custom-home
+# llama.cpp predating the .unsloth-studio-owned marker (see setup.sh). Only the
+# prebuilt UNSLOTH_PREBUILT_INFO.json counts; source builds are indistinguishable
+# from a user clone on Windows and stay under the strict guard.
+function Test-StudioOwnedAdoptable {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    if (Test-Path -LiteralPath (Join-Path $Path "UNSLOTH_PREBUILT_INFO.json") -PathType Leaf) { return $true }
+    return $false
+}
 function Assert-StudioOwnedOrAbsent {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
@@ -2072,6 +2088,10 @@ function Assert-StudioOwnedOrAbsent {
     )
     if (-not (Test-Path -LiteralPath $Path -PathType Container)) { return }
     if ($StudioHomeIsCustom -and -not (Test-Path -LiteralPath (Join-Path $Path $StudioOwnedMarker) -PathType Leaf)) {
+        if (Test-StudioOwnedAdoptable $Path) {
+            Mark-StudioOwned $Path
+            return
+        }
         Write-Host "[ERROR] $Path already exists and is not marked as a Studio-owned $Label." -ForegroundColor Red
         Write-Host "        Move it aside or choose an empty UNSLOTH_STUDIO_HOME before re-running." -ForegroundColor Yellow
         exit 1

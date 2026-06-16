@@ -77,13 +77,17 @@ def _validate_url(url: str) -> str:
         return trimmed
     parsed = urlparse(trimmed)
     if parsed.scheme not in ("http", "https"):
-        detail = (
-            "MCP server address must start with http:// or https:// "
-            "(for example https://example.com/mcp)."
-        )
-        # Host-scoped wording: self-hosted hosts can opt in via the env var.
         if _looks_like_command(trimmed):
-            detail += " Running a local command is not enabled on this server."
+            detail = (
+                "Local commands aren't enabled on this server. To allow them, "
+                "set UNSLOTH_STUDIO_ALLOW_STDIO_MCP=1 and restart Studio, or use "
+                "an http:// or https:// URL instead."
+            )
+        else:
+            detail = (
+                "MCP server address must start with http:// or https:// "
+                "(for example https://example.com/mcp)."
+            )
         raise HTTPException(status_code = 400, detail = detail)
     if not parsed.netloc:
         raise HTTPException(status_code = 400, detail = "url is missing a host")

@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch, getAuthToken } from "@/features/auth";
+import { refreshHardwareInfo } from "@/hooks/use-hardware-info";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 // First check shortly after load, then re-surface as an hourly reminder. The
@@ -120,6 +121,7 @@ export function useLlamaUpdateCheck({
         setApplying(false);
         if (s.job.state === "success") {
           setVisible(false);
+          void refreshHardwareInfo();
           onDone?.({ ok: true, tag: s.job.to_tag });
         } else if (s.job.state === "error") {
           // Leave the banner up so the user can retry; clearing applying drops
