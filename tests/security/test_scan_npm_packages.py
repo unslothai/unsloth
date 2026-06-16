@@ -230,3 +230,192 @@ def test_parse_lockfile_structural_findings():
     patterns = {f.pattern for f in struct}
     assert "non-registry-resolved-url" in patterns
     assert "missing-integrity-hash" in patterns
+
+
+# ---------------------------------------------------------------------------
+# Code-only scanning (_strip_js_noncode) -- comment FP reduction. The stripper
+# must blank comments WITHOUT touching strings/regex/code, preserve geometry,
+# and fail open on lexer confusion.
+# ---------------------------------------------------------------------------
+
+
+def _strip(src):
+    out = snp._strip_js_noncode(src)
+    assert len(out) == len(src), "geometry (length) must be preserved"
+    assert out.count("\n") == src.count("\n"), "newline count must be preserved"
+    return out
+
+
+def test_strip_blanks_line_and_block_comments():
+    out = _strip("var x = 1; // eval(atob('p'))\n/* subprocess */ run();")
+    assert "var x = 1;" in out and "run();" in out
+    assert "eval(atob" not in out
+    assert "subprocess" not in out
+
+
+def test_strip_keeps_url_in_string_and_template():
+    src = 'const a = "http://example.com/x";\nconst b = `http://${h}//y`; go();'
+    out = _strip(src)
+    assert out == src  # nothing is a comment; must be byte-identical
+    assert "http://example.com/x" in out and "//y" in out
+
+
+def test_strip_regex_with_escaped_slashes_keeps_trailing_code():
+    # A naive "// = comment" stripper would eat `evil()`; the lexer must not.
+    src = r"const re = /https?:\/\//g; evil();"
+    out = _strip(src)
+    assert out == src
+    assert "evil();" in out
+
+
+def test_strip_preserves_assigned_base64_payload():
+    # npm droppers hide payloads in assigned string literals -- never blank them.
+    src = 'var B = "QWxhZGRpbjpvcGVuc2VzYW1l"; new Function(atob(B))();'
+    out = _strip(src)
+    assert out == src
+    assert "QWxhZGRpbjpvcGVuc2VzYW1l" in out
+
+
+def test_strip_fails_open_on_unterminated_block_comment():
+    src = "code(); /* never closed"
+    assert snp._strip_js_noncode(src) == src  # unchanged -> still fully scanned
+
+
+def test_strip_only_applies_to_js_family():
+    # A `//`-containing JSON/YAML string must be left intact (wrong lexer).
+    PKG = snp.PackageEntry(
+        name = "x",
+        version = "1.0.0",
+        resolved = "https://registry.npmjs.org/x/-/x-1.0.0.tgz",
+        integrity = "sha512-z",
+        lockfile_key = "node_modules/x",
+    )
+    # scan_text_blob strips for .js but not for .json.
+    yaml_like = 'url: "http://h"  # a yaml comment, not JS\n'
+    # No assertion on findings here -- just that the JS lexer is not applied to
+    # non-JS suffixes (covered indirectly: stripper is gated on suffix).
+    assert "".endswith(snp._JS_FAMILY_SUFFIXES) is False
+    assert ".js" in snp._JS_FAMILY_SUFFIXES and ".json" not in snp._JS_FAMILY_SUFFIXES
+
+
+# ---------------------------------------------------------------------------
+# Detection survives stripping; comment-only IOC is suppressed.
+# ---------------------------------------------------------------------------
+
+
+_PKG = snp.PackageEntry(
+    name = "x",
+    version = "1.0.0",
+    resolved = "https://registry.npmjs.org/x/-/x-1.0.0.tgz",
+    integrity = "sha512-z",
+    lockfile_key = "node_modules/x",
+)
+_BLOB = "QWxhZGRpbg" * 240  # ~2.4 KiB base64-ish
+
+
+def test_real_payload_still_flags_after_stripping():
+    # Obfuscated blob behind Function(), wrapped in comments that get blanked.
+    src = f'/* header */ var f = new Function("{_BLOB}"); f(); // tail\n'
+    pats = {f.pattern for f in snp.scan_text_blob(_PKG, "m.js", src)}
+    assert "obfuscated-blob" in pats
+    # eval-with-string + atob shape, comment between the two halves.
+    src2 = "(0,eval)(/* x */ atob('ZG8='));"
+    pats2 = {f.pattern for f in snp.scan_text_blob(_PKG, "m.js", src2)}
+    assert "js-fetch-eval" in pats2
+
+
+def test_payload_entirely_in_comment_is_suppressed():
+    src = f'/* var f = new Function("{_BLOB}"); */ var ok = 1;'
+    js = snp.scan_text_blob(_PKG, "m.js", src)
+    assert js == []  # blanked -> clean
+    # Control: same bytes scanned as non-JS (unstripped) WOULD flag.
+    txt = snp.scan_text_blob(_PKG, "m.txt", src)
+    assert any(f.pattern == "obfuscated-blob" for f in txt)
+
+
+def test_ioc_in_assigned_string_survives_stripping():
+    # A real C2 host lives in a string literal, not a comment -> still caught.
+    src = 'var c = "filev2.getsession.org"; // doc note\n'
+    pats = {f.pattern for f in snp.scan_text_blob(_PKG, "m.js", src)}
+    assert "known-ioc-string" in pats
+
+
+# ---------------------------------------------------------------------------
+# Baseline allowlist -- suppress reviewed findings, fail on new kinds.
+# ---------------------------------------------------------------------------
+
+
+def _finding(
+    pkg,
+    fn,
+    pattern,
+    sev = snp.HIGH,
+):
+    return snp.Finding(severity = sev, package = pkg, filename = fn, pattern = pattern)
+
+
+def test_norm_pkg_name_strips_version_keeps_scope():
+    assert snp._norm_pkg_name("@scope/pkg@1.2.3") == "@scope/pkg"
+    assert snp._norm_pkg_name("pkg@1.2.3") == "pkg"
+    assert snp._norm_pkg_name("@scope/pkg") == "@scope/pkg"
+    assert snp._norm_pkg_name("<root>") == "<root>"
+
+
+def test_baseline_key_is_version_stable():
+    # Same package/file/pattern across a version bump -> identical key.
+    a = _finding("left-pad@1.0.0", "node_modules/left-pad/index.js", "obfuscated-blob")
+    b = _finding("left-pad@9.9.9", "left-pad/index.js", "obfuscated-blob")
+    assert snp._finding_key(a) == snp._finding_key(b)
+
+
+def test_baseline_suppresses_listed_but_not_new_pattern(tmp_path):
+    bl = tmp_path / "bl.json"
+    bl.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "entries": [
+                    {
+                        "package": "aws-sdk",
+                        "file": "metadata.js",
+                        "pattern": "cred-surface-host (outbound)",
+                        "severity": "HIGH",
+                    }
+                ],
+            }
+        ),
+        encoding = "utf-8",
+    )
+    baseline = snp._load_baseline(str(bl))
+
+    listed = _finding("aws-sdk@2.0.0", "aws-sdk/metadata.js", "cred-surface-host (outbound)")
+    # A NEW kind of finding in the SAME file is a different pattern -> not suppressed.
+    new_kind = _finding("aws-sdk@2.0.0", "aws-sdk/metadata.js", "obfuscated-blob")
+    active, suppressed = snp._partition_baseline([listed, new_kind], baseline)
+    assert listed in suppressed
+    assert new_kind in active
+
+
+def test_write_then_load_baseline_roundtrip(tmp_path):
+    bl = tmp_path / "out.json"
+    findings = [
+        _finding("evil@1.0.0", "evil/a.js", "obfuscated-blob", snp.CRITICAL),
+        _finding("evil@1.0.0", "evil/a.js", "obfuscated-blob", snp.CRITICAL),  # dup
+        _finding("noise@1.0.0", "noise/b.js", "js-env-token", snp.MEDIUM),  # below thresh
+    ]
+    n = snp._write_baseline(str(bl), findings, snp._SEVERITY_RANK[snp.HIGH])
+    assert n == 1  # dedup + MEDIUM excluded
+    keys = snp._load_baseline(str(bl))
+    assert (snp._norm_pkg_name("evil@1.0.0"), "a.js", "obfuscated-blob") in keys
+    # MEDIUM was below the HIGH threshold -> not written.
+    assert all(k[2] != "js-env-token" for k in keys)
+
+
+def test_committed_baseline_is_empty_and_valid():
+    # The shipped baseline must parse and (by design) suppress nothing: the
+    # live corpus is clean, so the gate can run enforcing with an empty list.
+    path = REPO_ROOT / "scripts" / "scan_npm_packages_baseline.json"
+    assert path.is_file()
+    doc = json.loads(path.read_text(encoding = "utf-8"))
+    assert doc.get("entries") == []
+    assert snp._load_baseline(str(path)) == set()
