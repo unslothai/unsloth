@@ -655,6 +655,36 @@ def _kv_bytes_per_elem(cache_type: Optional[str]) -> float:
     }.get((cache_type or "f16").strip().lower(), 2.0)
 
 
+def _env_main_cache_type_for_budget(env: Optional[Mapping[str, str]] = None) -> Optional[str]:
+    """Main KV cache type the budget must adopt from the environment, or None.
+
+    The child process inherits ``LLAMA_ARG_CACHE_TYPE_K`` / ``LLAMA_ARG_CACHE_TYPE_V``
+    (see ``child_env_without_native_path_secret``), but Studio only emits
+    ``--cache-type-k/-v`` when the param or extras set the type. When neither
+    does, a heavier env type (``f32``) reaches the child while the budget assumes
+    the ``f16`` default, under-reserving the main KV. Return the heavier of K/V
+    only when it exceeds ``f16`` so the budget covers it; quantized env types are
+    already <= ``f16`` and stay over-reserved by the default (None -> no change).
+
+    A single value is returned because the budget's KV estimate has one
+    ``cache_type_kv`` knob -- using the heavier over-reserves the lighter axis,
+    matching ``parse_cache_override``'s existing key/value collapse. The value is
+    lower-cased so the launch's ``_valid_cache_types`` re-emits it for the child.
+    """
+    e = os.environ if env is None else env
+    f16_bpe = _kv_bytes_per_elem("f16")
+    heaviest: Optional[str] = None
+    heaviest_bpe = f16_bpe
+    for var in ("LLAMA_ARG_CACHE_TYPE_K", "LLAMA_ARG_CACHE_TYPE_V"):
+        raw = (e.get(var) or "").strip().lower()
+        if not raw:
+            continue
+        bpe = _kv_bytes_per_elem(raw)
+        if bpe > heaviest_bpe:
+            heaviest, heaviest_bpe = raw, bpe
+    return heaviest
+
+
 def _auto_mode_drops_mtp(
     req_mode: Optional[str],
     size_b: Optional[float],
@@ -4265,6 +4295,14 @@ class LlamaCppBackend:
                 requested_ctx = resolve_requested_ctx(extra_args, n_ctx)
                 cache_override = parse_cache_override(extra_args)
                 cache_type_kv = resolve_cache_type_kv(extra_args, cache_type_kv)
+                if cache_type_kv is None:
+                    # Neither param nor extras set the main KV type, so Studio
+                    # emits no --cache-type and the child inherits
+                    # LLAMA_ARG_CACHE_TYPE_K/_V. A heavier env type (f32) would
+                    # otherwise be budgeted as the f16 default and under-reserved;
+                    # adopt it so the reserve matches the child (the launch below
+                    # re-emits it, keeping child and budget byte-consistent).
+                    cache_type_kv = _env_main_cache_type_for_budget()
                 # A user --split-mode in extras last-wins-overrides the
                 # toggle, so reconcile it back into tensor_parallel state.
                 split_mode_override = parse_split_mode_override(extra_args)

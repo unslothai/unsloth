@@ -73,6 +73,7 @@ from core.inference.llama_cpp import (  # noqa: E402
     _extra_args_requests_mtp,
     _extra_args_requests_separate_draft,
     _extra_args_spec_draft_n_max,
+    _env_main_cache_type_for_budget,
     _kv_bytes_per_elem,
 )
 
@@ -685,6 +686,39 @@ class TestExtraArgsMtpDetection:
             _extra_args_n_ubatch(["-ub", "1024"], env = {"LLAMA_ARG_UBATCH": "4096"}) == 1024
         )  # CLI wins
         assert _extra_args_n_ubatch([], env = {"LLAMA_ARG_UBATCH": "notint"}) is None
+
+    def test_env_main_cache_type_for_budget(self):
+        # The child inherits LLAMA_ARG_CACHE_TYPE_K/_V, but Studio emits no
+        # --cache-type when neither param nor extras set it -> a heavier env
+        # main KV (f32) must be adopted so the reserve matches the child.
+        assert _env_main_cache_type_for_budget(env = {}) is None
+        # f32 exceeds the f16 default -> adopt it (lower-cased so the launch
+        # re-emits it via _valid_cache_types).
+        assert _env_main_cache_type_for_budget(env = {"LLAMA_ARG_CACHE_TYPE_K": "f32"}) == "f32"
+        assert _env_main_cache_type_for_budget(env = {"LLAMA_ARG_CACHE_TYPE_V": "F32"}) == "f32"
+        # Heavier of K/V (single knob; over-reserves the lighter axis).
+        assert (
+            _env_main_cache_type_for_budget(
+                env = {"LLAMA_ARG_CACHE_TYPE_K": "f32", "LLAMA_ARG_CACHE_TYPE_V": "f16"}
+            )
+            == "f32"
+        )
+        # Quantized env types are <= f16 -> already over-reserved by the default.
+        assert _env_main_cache_type_for_budget(env = {"LLAMA_ARG_CACHE_TYPE_K": "q4_0"}) is None
+        assert _env_main_cache_type_for_budget(env = {"LLAMA_ARG_CACHE_TYPE_V": "q8_0"}) is None
+        assert _env_main_cache_type_for_budget(env = {"LLAMA_ARG_CACHE_TYPE_K": "f16"}) is None
+        # Unknown env type self-neutralizes (treated as f16 by _kv_bytes_per_elem).
+        assert _env_main_cache_type_for_budget(env = {"LLAMA_ARG_CACHE_TYPE_K": "wat"}) is None
+
+    def test_load_model_adopts_env_main_cache_type(self):
+        # Source-level: load_model adopts the env main KV type only when neither
+        # param nor extras set it (cache_type_kv is None after resolve), so the
+        # reserve covers a child that inherits a heavier LLAMA_ARG_CACHE_TYPE_*.
+        # Whitespace-stripped so the check survives any formatter line-wrapping.
+        compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
+        assert "cache_type_kv=resolve_cache_type_kv(extra_args,cache_type_kv)" in compact
+        assert "ifcache_type_kvisNone:" in compact
+        assert "cache_type_kv=_env_main_cache_type_for_budget()" in compact
 
 
 # ---------------------------------------------------------------------------
