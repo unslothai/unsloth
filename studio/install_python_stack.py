@@ -2072,6 +2072,43 @@ def install_python_stack() -> int:
         req = REQ_ROOT / "extras-no-deps.txt",
     )
 
+    # 3c. torchcodec on Linux aarch64 + CUDA (DGX Spark GB10, Jetson): PyPI has
+    #     no aarch64 wheel, so the extras step above filtered it out via
+    #     PLATFORM_LACKS_TORCHCODEC_WHEEL -- but the PyTorch cuXXX index ships
+    #     real aarch64 CUDA wheels. Best effort: audio extras simply stay
+    #     disabled if this fails (PR #4456).
+    if PLATFORM_LACKS_TORCHCODEC_WHEEL and IS_LINUX and not NO_TORCH:
+        _tc_cuda_ver = ""
+        try:
+            _tc_probe = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    "import torch; print(torch.version.cuda or '')",
+                ],
+                stdout = subprocess.PIPE,
+                stderr = subprocess.DEVNULL,
+                text = True,
+                timeout = 90,
+            )
+            if _tc_probe.returncode == 0:
+                _tc_cuda_ver = _tc_probe.stdout.strip()
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        if _tc_cuda_ver:
+            # "13.0.1" -> "cu130"
+            _tc_cu_tag = "cu" + "".join(_tc_cuda_ver.split(".")[:2])
+            _progress("torchcodec (aarch64)")
+            pip_install_try(
+                f"torchcodec (Linux aarch64, PyTorch {_tc_cu_tag} index)",
+                "--upgrade",
+                "--no-deps",
+                "--index-url",
+                f"https://download.pytorch.org/whl/{_tc_cu_tag}",
+                "torchcodec",
+                constrain = False,
+            )
+
     # 4. Overrides (torchao, transformers) -- force-reinstall.
     #    Skip when torch is unavailable (e.g. Intel Mac GGUF-only mode):
     #    overrides.txt contains torchao, which requires torch.
