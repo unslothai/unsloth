@@ -44,12 +44,15 @@ import { AiBrain01Icon, Add01Icon, AudioWave01Icon, Cancel01Icon, EyeIcon, Folde
 import { HugeiconsIcon } from "@hugeicons/react";
 import { DotTag } from "@/features/hub/catalog/dot-tag";
 import { HubOptionMenu, type HubOption } from "@/features/hub/catalog/hub-option-menu";
+import { PillTabs } from "./pill-tabs";
 import { FolderBrowser } from "./folder-browser";
 import { ModelDeleteAction } from "./model-delete-action";
 import {
+  type FormatFilter,
   estimateQuantBytes,
   fitsDevice,
   isRunnableRecommendedFormat,
+  matchesFormatFilter,
   paramsFromId,
 } from "./recommended-fit";
 import {
@@ -791,6 +794,14 @@ const LOCAL_SORT_OPTIONS: HubOption<LocalSortKey>[] = [
   { value: "downloaded", label: "Downloaded" },
 ];
 
+// Format filter toggle for the Unsloth listing.
+const FORMAT_FILTER_TABS: { value: FormatFilter; label: string }[] = [
+  { value: "all", label: "All" },
+  { value: "gguf", label: "GGUF" },
+  { value: "mlx", label: "MLX" },
+  { value: "safetensors", label: "Safetensors" },
+];
+
 /** Sort cached repos (have size + timestamp): by size desc, else newest first. */
 function sortCachedRepos<
   T extends { repo_id: string; size_bytes: number; last_modified?: number },
@@ -1060,16 +1071,26 @@ export function HubModelPicker({
   // Independent sort for each local section's inline dropdown.
   const [downloadedSort, setDownloadedSort] = useState<LocalSortKey>("recent");
   const [customSort, setCustomSort] = useState<LocalSortKey>("recent");
+  // Format filter toggle for the Unsloth listing.
+  const [formatFilter, setFormatFilter] = useState<FormatFilter>("all");
 
   // "recommended" keeps only runnable local formats (GGUF/MLX) that fit the
   // device; the other sorts pass everything through (badged, never hidden).
   const recommendedRows = useMemo(() => {
-    const rows = recommendedSearch.results.filter(
+    let rows = recommendedSearch.results.filter(
       (r) => !downloadedSet.has(r.id.toLowerCase()),
     );
+    // The format toggle applies to every sort.
+    if (formatFilter !== "all") {
+      rows = rows.filter((r) =>
+        matchesFormatFilter(r.id, r.isGguf, formatFilter),
+      );
+    }
     if (recommendedSort !== "recommended") return rows;
     return rows.filter((r) => {
-      if (!isRunnableRecommendedFormat(r.id, r.isGguf)) return false;
+      // Default keeps ready-to-run local formats; an explicit format pick wins.
+      if (formatFilter === "all" && !isRunnableRecommendedFormat(r.id, r.isGguf))
+        return false;
       if (!gpu.available) return true;
       // GGUF/MLX repos rarely expose safetensors metadata, so fall back to the
       // param count in the repo name for a size estimate. Anything we still
@@ -1086,7 +1107,7 @@ export function HubModelPicker({
         requireKnown: true,
       });
     });
-  }, [recommendedSearch.results, downloadedSet, recommendedSort, gpu]);
+  }, [recommendedSearch.results, downloadedSet, recommendedSort, formatFilter, gpu]);
 
   // Per-row meta + VRAM badge from the recommended listing's own metadata.
   const recommendedMeta = useMemo(() => {
@@ -1345,9 +1366,10 @@ export function HubModelPicker({
     results.length,
   );
 
-  // Sentinel + IntersectionObserver for recommended infinite scroll.
-  // Disconnect after each fire so it doesn't loop during re-render; the
-  // effect re-creates it next page. Callback ref detects mount/unmount.
+  // Sentinel + IntersectionObserver for recommended infinite scroll. Re-running
+  // on each loaded page (results length) re-attaches the observer so a heavily
+  // filtered list keeps paging until the viewport fills or the listing ends;
+  // fetchMore is a no-op while a page is in flight. Callback ref tracks mount.
   const [recommendedSentinel, setRecommendedSentinel] =
     useState<HTMLDivElement | null>(null);
   const recommendedSentinelRef = useCallback((node: HTMLDivElement | null) => {
@@ -1359,20 +1381,19 @@ export function HubModelPicker({
     if (!root) return;
     const obs = new IntersectionObserver(
       ([e]) => {
-        if (e.isIntersecting) {
-          obs.disconnect();
-          recommendedSearch.fetchMore();
-        }
+        if (e.isIntersecting) recommendedSearch.fetchMore();
       },
       { threshold: 0, root },
     );
-    // Small delay so layout settles after the previous page render.
-    const timer = setTimeout(() => obs.observe(recommendedSentinel), 100);
-    return () => {
-      clearTimeout(timer);
-      obs.disconnect();
-    };
-  }, [recommendedSentinel, recommendedSearch.hasMore, recommendedSearch.fetchMore, scrollRef]);
+    obs.observe(recommendedSentinel);
+    return () => obs.disconnect();
+  }, [
+    recommendedSentinel,
+    recommendedSearch.hasMore,
+    recommendedSearch.fetchMore,
+    recommendedSearch.results.length,
+    scrollRef,
+  ]);
 
   /** Handle clicking a model row — GGUF repos expand, others load directly. */
   const handleModelClick = useCallback(
@@ -1454,6 +1475,18 @@ export function HubModelPicker({
         {sectionToggle}
         {sectionSortDropdown}
       </div>
+
+      {/* Format filter, only on the Unsloth listing. */}
+      {!showHfSection && section === "recommended" ? (
+        <PillTabs
+          ariaLabel="Model format"
+          tabs={FORMAT_FILTER_TABS}
+          value={formatFilter}
+          onValueChange={(next) => setFormatFilter(next as FormatFilter)}
+          compact={true}
+          fit={true}
+        />
+      ) : null}
 
       <div
         ref={scrollRef}

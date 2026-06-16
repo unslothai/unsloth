@@ -23,6 +23,27 @@ export function isRunnableRecommendedFormat(
   return isGgufId(id, hintedIsGguf) || isMlxId(id);
 }
 
+/** Format filter for the listing toggle. "safetensors" means anything that is
+ * neither GGUF nor MLX. */
+export type FormatFilter = "all" | "gguf" | "mlx" | "safetensors";
+
+export function matchesFormatFilter(
+  id: string,
+  hintedIsGguf: boolean | undefined,
+  filter: FormatFilter,
+): boolean {
+  switch (filter) {
+    case "gguf":
+      return isGgufId(id, hintedIsGguf);
+    case "mlx":
+      return isMlxId(id);
+    case "safetensors":
+      return !isGgufId(id, hintedIsGguf) && !isMlxId(id);
+    default:
+      return true;
+  }
+}
+
 // First "<n>B" token in a repo id, e.g. "Qwen3-4B-GGUF" -> 4, "gpt-oss-20b" ->
 // 20, "Qwen3-30B-A3B" -> 30 (MoE total), "gemma-4-E4B" -> 4 (effective-param
 // "E" series). The digits must be bounded by a separator so we never read "16"
