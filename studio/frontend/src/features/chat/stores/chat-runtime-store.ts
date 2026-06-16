@@ -3,6 +3,7 @@
 
 import { toast } from "@/lib/toast";
 import { create } from "zustand";
+import { cancelStagedModelDownload } from "@/features/hub/download-manager/download-manager-controller";
 import {
   type ChatPresetSource,
   type Preset,
@@ -1438,8 +1439,16 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       speculativeType: readPersistedSpeculativeType(),
       specDraftNMax: null,
     })),
-  abandonStagedModel: () =>
-    set((s) => ({ ...loadedBaselineSettings(s), pendingSelection: null })),
+  abandonStagedModel: () => {
+    const { pendingSelection } = get();
+    if (!pendingSelection) return;
+    // Cancel the staged pick's in-flight download so it doesn't keep running
+    // after the staging UI is gone. Centralized here so every abandon path
+    // (sheet close, thread switch, route exit, new chat) cancels it, including
+    // root-level callers that have no access to the useRepoDownload hook.
+    cancelStagedModelDownload(pendingSelection);
+    set((s) => ({ ...loadedBaselineSettings(s), pendingSelection: null }));
+  },
   setCustomContextLength: (customContextLength) => set({ customContextLength }),
   setChatTemplateOverride: (chatTemplateOverride) =>
     set({ chatTemplateOverride }),

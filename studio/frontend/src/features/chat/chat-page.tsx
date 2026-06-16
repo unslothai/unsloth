@@ -1033,19 +1033,15 @@ export function ChatPage(): ReactElement {
   // Deferred-load staging: downloads a staged GGUF (if needed) and reads its
   // header context so the sheet can show the context slider before the load.
   const stagedDownload = useStagedModelPreparation();
-  // Ref-held so abandonStaged keeps a stable identity (the context-change effect
-  // depends on it and must not re-run every render).
-  const cancelStagedDownloadRef = useLatestRef(stagedDownload.cancelDownload);
-  // Abandon a staged pick: cancel its in-flight download (if any) and revert the
-  // edited knobs, so nothing lingers after the user walks away. Must run before
-  // pendingSelection is cleared, while cancelDownload still targets the stage.
+  // Abandon a staged pick: the store action cancels its in-flight download and
+  // reverts the edited knobs, so nothing lingers after the user walks away.
   const abandonStaged = useCallback(() => {
-    const store = useChatRuntimeStore.getState();
-    const pending = store.pendingSelection;
-    if (!pending) return;
-    cancelStagedDownloadRef.current(pending.ggufVariant ?? null);
-    store.abandonStagedModel();
-  }, [cancelStagedDownloadRef]);
+    useChatRuntimeStore.getState().abandonStagedModel();
+  }, []);
+  // Tracks whether the chat page is still mounted, so a staged-load failure that
+  // resolves after the user left chat doesn't resurrect the abandoned pick.
+  const mountedRef = useRef(true);
+  useEffect(() => () => void (mountedRef.current = false), []);
   const incognito = useChatRuntimeStore((s) => s.incognito);
   const setIncognito = useChatRuntimeStore((s) => s.setIncognito);
   const incognitoLabel = incognito
@@ -1536,6 +1532,7 @@ export function ChatPage(): ReactElement {
   // mount would wipe it. Comparing the previous context (rather than a first-run
   // flag) is also safe under StrictMode's double-invoke and component remounts.
   const chatContextKey = `${view.mode}|${activeThreadId ?? ""}|${search.new ?? ""}|${search.project ?? ""}`;
+  const chatContextKeyRef = useLatestRef(chatContextKey);
   const prevChatContextRef = useRef<string | null>(null);
   useEffect(() => {
     const prev = prevChatContextRef.current;
@@ -1555,6 +1552,10 @@ export function ChatPage(): ReactElement {
       // (and the toggle-on case) load immediately, so e.g. a trust_remote_code
       // approval surfaces through the normal load path.
       if (store.loadOnSelection || !hasGgufSource(selection)) {
+        // Abandon any staged GGUF first so its edited knobs (e.g. a custom
+        // context length) don't leak into this immediate load -- resolveLoad
+        // reads customContextLength before checking the target is GGUF.
+        abandonStaged();
         await selectModel(selection);
         return;
       }
@@ -2457,6 +2458,7 @@ export function ChatPage(): ReactElement {
         onLoadPendingModel={() => {
           const pending = useChatRuntimeStore.getState().pendingSelection;
           if (!pending) return;
+          const keyAtLoad = chatContextKey;
           // forceReload: the staged model isn't loaded yet, so bypass the
           // same-checkpoint dedupe (and selectModel clears pendingSelection).
           // keepSpeculative: honor the speculative mode set on the sidebar.
@@ -2469,12 +2471,20 @@ export function ChatPage(): ReactElement {
             // Recoverable failure (expired token, gated repo, OOM…): selectModel
             // cleared the pick but left the edited knobs intact, so restore the
             // selection (not re-stage, which would reset the knobs) to keep the
-            // Load button and settings for a retry. Skip if the user staged
-            // something else while the load was in flight.
-            const currentPending =
-              useChatRuntimeStore.getState().pendingSelection;
-            if (!currentPending)
-              useChatRuntimeStore.getState().setPendingSelection(pending);
+            // Load button and settings for a retry. Only if the staged-load is
+            // still wanted: same chat context, sheet still open, page still
+            // mounted, and nothing else staged meanwhile -- otherwise the user
+            // abandoned it (closed the sheet / switched chats) and restoring
+            // would resurrect a pick into a context they already left.
+            const store = useChatRuntimeStore.getState();
+            if (
+              mountedRef.current &&
+              store.settingsPanelOpen &&
+              chatContextKeyRef.current === keyAtLoad &&
+              !store.pendingSelection
+            ) {
+              store.setPendingSelection(pending);
+            }
           });
         }}
         stagedDownloadFraction={stagedDownload.progress?.fraction ?? null}
