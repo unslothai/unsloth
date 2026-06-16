@@ -1490,9 +1490,7 @@ class TestAnthropicMessagesToolRouting:
             tools = [{"type": "web_search_20250305", "name": "web_search"}],
         )
 
-        response = _drive(
-            anthropic_messages(payload, request = self._Request(), current_subject = "t")
-        )
+        response = _drive(anthropic_messages(payload, request = self._Request(), current_subject = "t"))
 
         assert response.status_code == 200
         [entry] = monitor.snapshot()
