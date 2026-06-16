@@ -371,11 +371,34 @@ def _mk(sev, pkg, fname, check):
     return sp.Finding(sev, pkg, fname, check, "evidence")
 
 
-def test_baseline_key_is_version_stable_basename():
+def test_baseline_key_version_stable_but_path_specific():
     a = _mk(sp.CRITICAL, "requests", "requests-2.32.5/requests/sessions.py", "X")
     b = _mk(sp.CRITICAL, "Requests", "requests-3.0.0/requests/sessions.py", "X")
-    # Normalized package + basename + check -> same key across version bumps.
+    # Same package-relative path across versions -> same key (stable).
     assert sp._finding_key(a) == sp._finding_key(b)
+    # Same basename in a DIFFERENT path -> different key (no over-suppression).
+    c = _mk(sp.CRITICAL, "requests", "requests-2.32.5/requests/vendor/sessions.py", "X")
+    assert sp._finding_key(a) != sp._finding_key(c)
+
+
+def test_fstring_statement_is_not_blanked():
+    # A bare f-string evaluates at import, so it must stay scannable.
+    src = "f\"{__import__('os').system('id')}\"\n"
+    assert "__import__" in sp._strip_noncode(src)
+    # A plain bare docstring IS blanked.
+    plain = "'a docstring mentioning subprocess.Popen'\n"
+    assert "subprocess" not in sp._strip_noncode(plain)
+
+
+def test_exec_with_payload_hidden_in_docstring_flagged():
+    blob = "A" * 400
+    src = '"""' + blob + '"""\nimport os\nexec(__doc__)\n'
+    findings = sp.check_py_file(src, "pkg/mod.py", "pkg")
+    assert any("hidden in a docstring" in f.check for f in findings)
+    # No exec/eval -> the blanked blob does not produce that finding.
+    src2 = '"""' + blob + '"""\nimport os\n'
+    findings2 = sp.check_py_file(src2, "pkg/mod.py", "pkg")
+    assert not any("hidden in a docstring" in f.check for f in findings2)
 
 
 def test_baseline_suppresses_listed_but_not_new_check(tmp_path):
@@ -493,10 +516,12 @@ def test_requires_dist_skips_extras():
             "pyyaml>=5 ; python_version >= '3.8'",  # non-extra marker -> kept
         ],
     )
-    names = sp._requires_dist_names(meta, None)
-    assert "numpy" in names
-    assert "pyyaml" in names
-    assert "torch" not in names
+    specs = sp._requires_dist_names(meta, None)
+    # Version constraints are preserved so a pinned dep is fetched, not latest.
+    assert "numpy>=1.20" in specs
+    assert "pyyaml>=5" in specs
+    # The extra-gated dep is skipped entirely (no torch under any form).
+    assert not any(sp._extract_pkg_name(s) == "torch" for s in specs)
 
 
 def test_download_sdist_direct_refuses_non_pypi_url(tmp_path):

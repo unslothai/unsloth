@@ -524,6 +524,16 @@ def check_pth_file(content: str, filename: str, package: str) -> list[Finding]:
 _LINE_START_TOKENS = frozenset({tokenize.NEWLINE, tokenize.NL, tokenize.INDENT, tokenize.DEDENT})
 
 
+def _is_fstring(tok_string: str) -> bool:
+    """True if a STRING token is an f-string (3.10/3.11 emit one STRING token).
+
+    A bare f-string statement evaluates its expressions at import, so unlike an
+    inert docstring it must never be blanked.
+    """
+    q = min((tok_string.find(c) for c in "'\"" if c in tok_string), default = -1)
+    return q > 0 and "f" in tok_string[:q].lower()
+
+
 def _strip_noncode(content: str) -> str:
     """Blank comments and bare docstrings so IOC patterns see code only.
 
@@ -544,7 +554,11 @@ def _strip_noncode(content: str) -> str:
         if ttype == tokenize.COMMENT:
             spans.append((*tok.start, *tok.end))
             continue  # do not advance prev_significant; comments are transparent
-        if ttype == tokenize.STRING and prev_significant in _LINE_START_TOKENS:
+        if (
+            ttype == tokenize.STRING
+            and prev_significant in _LINE_START_TOKENS
+            and not _is_fstring(tok.string)  # f-strings execute; never blank them
+        ):
             # Bare string only if it is the whole statement: next significant
             # token must close the logical line.
             j = i + 1
@@ -587,13 +601,47 @@ def _strip_noncode(content: str) -> str:
     return "".join(buf)
 
 
+# Payload carriers that are suspicious when hidden in a blanked region (a
+# docstring/string) of a file that can dynamically execute strings.
+_HIDDEN_PAYLOAD_PATTERNS = (
+    (RE_LARGE_BLOB, "large base64 blob"),
+    (RE_EMBEDDED_KEYS, "embedded key material"),
+    (RE_MAY12_IOC, "Shai-Hulud IOC string"),
+    (RE_OBFUSCATION, "marshal/compile/obfuscation"),
+)
+
+
+def _hidden_payload_findings(
+    original: str, stripped: str, filename: str, package: str
+) -> list[Finding]:
+    """Flag payloads that live only in the blanked (docstring/string) region of
+    a file that contains exec/eval. Such a string is invisible to code-only
+    scanning yet ``exec(__doc__)`` / ``exec(<str>)`` could still run it."""
+    if not RE_EXEC_EVAL.search(stripped):
+        return []
+    out = []
+    for pat, label in _HIDDEN_PAYLOAD_PATTERNS:
+        if pat.search(original) and not pat.search(stripped):
+            out.append(
+                Finding(
+                    HIGH,
+                    package,
+                    filename,
+                    "exec/eval with payload hidden in a docstring/string",
+                    f"{label}: {_extract_evidence(original, pat)}",
+                )
+            )
+    return out
+
+
 def check_py_file(content: str, filename: str, package: str) -> list[Finding]:
     """Run all .py-specific checks."""
     # Code-only scanning: strip comments/docstrings up front so prose, doctests
     # and usage examples cannot manufacture false positives. Aligns with the
     # Hugging Face Hub model (ClamAV/picklescan: low-FP, signature/structural).
+    original = content
     content = _strip_noncode(content)
-    findings = []
+    findings = _hidden_payload_findings(original, content, filename, package)
     basename = os.path.basename(filename)
     is_setup = basename in ("setup.py", "setup.cfg")
     is_init = basename == "__init__.py"
@@ -1563,11 +1611,12 @@ def _is_trusted_pypi_url(url: str) -> bool:
 
 
 def _requires_dist_names(meta: dict, version: str | None) -> list[str]:
-    """Transitive dep names from metadata (no build), to recover a sdist-only
-    package's tree. Skips ``extra``-gated deps (not installed by default)."""
+    """Transitive dep specs (name + version specifier) from metadata, to recover
+    a sdist-only package's tree. The specifier is kept so a pinned malicious
+    version is fetched, not latest. Skips ``extra``-gated deps."""
     info = meta.get("info", {}) or {}
     reqs = info.get("requires_dist") or []
-    names: list[str] = []
+    specs: list[str] = []
     for r in reqs:
         if not isinstance(r, str):
             continue
@@ -1576,10 +1625,11 @@ def _requires_dist_names(meta: dict, version: str | None) -> list[str]:
             head, marker = r.split(";", 1)
             if "extra" in marker:
                 continue  # optional extra; default install would not pull it
-        m = _RE_NAME.match(head.strip())
-        if m:
-            names.append(m.group(1))
-    return names
+        if not _RE_NAME.match(head.strip()):
+            continue
+        # "torch (>=1.10)" / "torch >=1.10" -> "torch>=1.10" (pip-friendly).
+        specs.append(re.sub(r"\s+", "", head).replace("(", "").replace(")", ""))
+    return specs
 
 
 def _download_sdist_direct(
@@ -1728,9 +1778,14 @@ def _resolve_per_spec_with_deps(
         if nd.returncode == 0:
             print(
                 f"  [INFO] {name}: full tree unresolvable; scanned the package "
-                f"alone (--no-deps).",
+                f"alone (--no-deps), recovering deps individually.",
                 file = sys.stderr,
             )
+            # The --with-deps failure may have been a sdist-only TRANSITIVE dep,
+            # which --no-deps skips. Recover the declared deps so that class is
+            # still scanned (each is fetched as a wheel or direct sdist below).
+            if meta is not None:
+                sdist_dep_followups.extend(_requires_dist_names(meta, version))
             continue
         # --no-deps also failed: last-ditch sdist fetch at the pinned version.
         if meta is not None:
@@ -1742,9 +1797,11 @@ def _resolve_per_spec_with_deps(
         )
 
     # Recover the transitive deps of sdist-only packages (deduped, one level).
+    # `dep` carries the declared version specifier so a pinned version is fetched.
     seen: set[str] = set()
     for dep in sdist_dep_followups:
-        key = _norm_pkg(dep)
+        dep_name = _extract_pkg_name(dep)
+        key = _norm_pkg(dep_name)
         if key in seen:
             continue
         seen.add(key)
@@ -1765,9 +1822,10 @@ def _resolve_per_spec_with_deps(
             continue
         if proc.returncode == 0:
             continue
-        meta = _pypi_json(dep)
-        if meta is not None and not _release_has_wheel(meta, None):
-            fpath, serr = _download_sdist_direct(dep, None, dest, meta = meta)
+        dep_ver = _spec_pin_version(dep)
+        meta = _pypi_json(dep_name)
+        if meta is not None and not _release_has_wheel(meta, dep_ver):
+            fpath, serr = _download_sdist_direct(dep_name, dep_ver, dest, meta = meta)
             if fpath is None:
                 print(f"  [WARN] could not fetch sdist dep {dep}: {serr}", file = sys.stderr)
         else:
@@ -2330,13 +2388,28 @@ def _norm_pkg(name: str) -> str:
     return re.sub(r"[-_.]+", "-", (name or "").strip().lower())
 
 
-def _finding_key(f: Finding) -> tuple[str, str, str]:
-    """Stable allowlist key: normalized package, file basename, check name.
+# Leading "<name>-<version>/" archive root of an sdist member, which carries the
+# version. Stripping it (but keeping the rest of the path) gives a key that is
+# stable across version bumps yet still distinguishes same-named files.
+_RE_SDIST_ROOT = re.compile(r"^[^/]+-\d[^/]*/")
 
-    Basename (not full archive path) keeps the key stable across version bumps
-    whose archive root carries the version (``requests-2.32.5/...``).
+
+def _relpath_in_package(filename: str) -> str:
+    """Package-relative path: drop an sdist's version-carrying archive root.
+
+    Wheel members are already package-relative (``numba/cuda/utils.py``); sdist
+    members sit under ``numba-0.60.0/...``, so strip that one leading segment.
     """
-    return (_norm_pkg(f.package), os.path.basename(f.filename), f.check)
+    return _RE_SDIST_ROOT.sub("", filename, count = 1)
+
+
+def _finding_key(f: Finding) -> tuple[str, str, str]:
+    """Stable allowlist key: normalized package, package-relative path, check.
+
+    The package-relative path (not just basename) keeps the key stable across
+    version bumps while still distinguishing same-named files like ``utils.py``.
+    """
+    return (_norm_pkg(f.package), _relpath_in_package(f.filename), f.check)
 
 
 def _load_baseline(path: str) -> set[tuple[str, str, str]]:
@@ -2352,7 +2425,7 @@ def _load_baseline(path: str) -> set[tuple[str, str, str]]:
     keys: set[tuple[str, str, str]] = set()
     for e in data.get("entries", []):
         try:
-            keys.add((_norm_pkg(e["package"]), os.path.basename(e["file"]), e["check"]))
+            keys.add((_norm_pkg(e["package"]), _relpath_in_package(e["file"]), e["check"]))
         except (KeyError, TypeError):
             continue
     return keys
@@ -2372,7 +2445,7 @@ def _write_baseline(path: str, findings: list[Finding]) -> None:
         entries.append(
             {
                 "package": f.package,
-                "file": os.path.basename(f.filename),
+                "file": _relpath_in_package(f.filename),
                 "check": f.check,
                 "severity": f.severity,
                 "evidence": f.evidence[:240],
@@ -2381,8 +2454,8 @@ def _write_baseline(path: str, findings: list[Finding]) -> None:
     doc = {
         "_comment": (
             "scan_packages.py allowlist. Each entry is a CRITICAL/HIGH finding "
-            "manually judged benign. Matched on (package, basename(file), check); "
-            "evidence/severity are for review only. Regenerate with "
+            "manually judged benign. Matched on (package, package-relative file, "
+            "check); evidence/severity are for review only. Regenerate with "
             "--write-baseline AFTER reviewing every line."
         ),
         "version": 1,
