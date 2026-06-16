@@ -14,13 +14,16 @@ import { cn } from "@/lib/utils";
 import {
   CloudIcon,
   DashboardSquare01Icon,
+  Download01Icon,
+  Folder02Icon,
   FolderSearchIcon,
   RemoveCircleIcon,
   Search01Icon,
+  StarIcon,
 } from "@hugeicons/core-free-icons";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { type KeyboardEvent, useMemo, useState } from "react";
+import { type KeyboardEvent, type ReactNode, useMemo, useState } from "react";
 import { Input } from "../ui/input";
 import { HubModelPicker, LoraModelPicker } from "./model-selector/pickers";
 import type {
@@ -200,10 +203,22 @@ function ModelSelectorTrigger({
 
 type HubSection = "downloaded" | "recommended" | "custom";
 
-const HUB_SECTION_TABS: { value: string; label: string }[] = [
-  { value: "downloaded", label: "Downloaded" },
-  { value: "recommended", label: "Recommended" },
-  { value: "custom", label: "Custom" },
+const HUB_SECTION_TABS: { value: string; label: string; icon?: ReactNode }[] = [
+  {
+    value: "downloaded",
+    label: "Downloaded",
+    icon: <HugeiconsIcon icon={Download01Icon} className="size-3.5" />,
+  },
+  {
+    value: "recommended",
+    label: "Recommended",
+    icon: <HugeiconsIcon icon={StarIcon} className="size-3.5" />,
+  },
+  {
+    value: "custom",
+    label: "Custom",
+    icon: <HugeiconsIcon icon={Folder02Icon} className="size-3.5" />,
+  },
 ];
 
 /** Segmented pill toggle reusing the Hub's .hub-tab-toggle styling (extended in
@@ -218,7 +233,7 @@ function PillTabs({
   compact = false,
   fit = false,
 }: {
-  tabs: { value: string; label: string }[];
+  tabs: { value: string; label: string; icon?: ReactNode }[];
   value: string;
   onValueChange: (value: string) => void;
   ariaLabel: string;
@@ -260,7 +275,7 @@ function PillTabs({
           aria-selected={value === tab.value}
           onClick={() => onValueChange(tab.value)}
           className={cn(
-            "relative z-10 inline-flex items-center justify-center rounded-full transition-colors",
+            "relative z-10 inline-flex items-center justify-center gap-1.5 rounded-full transition-colors",
             fit ? "shrink-0" : "min-w-0 flex-1",
             compact ? "h-7 px-2.5 text-[11px]" : "h-9 px-3 text-[12.5px]",
             value === tab.value
@@ -269,6 +284,7 @@ function PillTabs({
             fit && value === tab.value && "hub-tab-toggle-pill",
           )}
         >
+          {tab.icon}
           {tab.label}
         </button>
       ))}
@@ -398,7 +414,8 @@ function ModelSelectorContent({
           tabs={tabs}
           value={effectiveTab}
           onValueChange={setActiveTab}
-          className="mb-2 w-full"
+          fit={true}
+          className="mb-2"
         />
       ) : null}
 
