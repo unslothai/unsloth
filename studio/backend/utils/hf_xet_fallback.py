@@ -195,6 +195,26 @@ def _download_child_entry(
         os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
     os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
 
+    # Test-only fault injection (never set in production): on the Xet attempt,
+    # write a partial blob and hang so the parent's no-progress watchdog fires
+    # and the HTTP fallback can be exercised end to end against a real repo.
+    if not disable_xet and os.environ.get("UNSLOTH_HF_XET_FORCE_STALL") == "1":
+        import time as _t
+
+        try:
+            from huggingface_hub.constants import HF_HUB_CACHE
+
+            blobs = os.path.join(
+                HF_HUB_CACHE, "models--" + repo_id.replace("/", "--"), "blobs"
+            )
+            os.makedirs(blobs, exist_ok = True)
+            with open(os.path.join(blobs, "xet-force-stall.incomplete"), "wb") as fh:
+                fh.write(b"\0" * 4096)
+        except OSError:
+            pass
+        while True:
+            _t.sleep(3600)
+
     try:
         from huggingface_hub import hf_hub_download
         path = hf_hub_download(
