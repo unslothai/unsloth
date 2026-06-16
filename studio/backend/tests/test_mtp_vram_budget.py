@@ -134,10 +134,12 @@ class _StubDrafter:
         self,
         n_ctx,
         cache_type = None,
+        n_parallel = 1,
         **_k,
     ):
         bpe = _kv_bytes_per_elem(cache_type)
-        return 0 if n_ctx <= 0 else int(n_ctx * self._kv_per_token * bpe / 2.0)
+        # n_parallel scales like a sliding-window drafter's per-slot KV.
+        return 0 if n_ctx <= 0 else int(n_ctx * self._kv_per_token * bpe / 2.0 * n_parallel)
 
 
 # ---------------------------------------------------------------------------
@@ -223,6 +225,24 @@ class TestSeparateDrafter:
         a = b._mtp_draft_kv_bytes(16384, drafter_path = "/m/d.gguf")
         c = b._mtp_draft_kv_bytes(65536, drafter_path = "/m/d.gguf")
         assert c == pytest.approx(4 * a)
+
+    def test_drafter_kv_scales_with_parallel_slots(self, monkeypatch):
+        # The drafter is served under the same --parallel slots as the main model,
+        # so a sliding-window drafter's KV grows per slot; the reserve must thread
+        # n_parallel or it under-reserves (Finding G1).
+        b = _make_backend(nextn = None)
+        monkeypatch.setattr(b, "_draft_backend_for", lambda path: _StubDrafter(2000))
+        one = b._mtp_draft_kv_bytes(65536, drafter_path = "/m/d.gguf", n_parallel = 1)
+        four = b._mtp_draft_kv_bytes(65536, drafter_path = "/m/d.gguf", n_parallel = 4)
+        assert four == pytest.approx(4 * one)
+        # And it threads through the overhead estimate too.
+        ov1 = b._estimate_mtp_overhead_bytes(
+            65536, drafter_path = "/m/d.gguf", draft_weights_bytes = GIB, n_parallel = 1
+        )
+        ov4 = b._estimate_mtp_overhead_bytes(
+            65536, drafter_path = "/m/d.gguf", draft_weights_bytes = GIB, n_parallel = 4
+        )
+        assert (ov4 - GIB) == pytest.approx(4 * (ov1 - GIB))  # KV scales, weights flat
 
     def test_none_when_drafter_unreadable(self, monkeypatch):
         b = _make_backend(nextn = None)
@@ -496,13 +516,33 @@ class TestExtraArgsMtpDetection:
         assert "_cli_draft_for_budgetor_studio_draft_for_budgetor_env_draft_for_budget" in compact
 
     def test_load_model_drops_cpu_offloaded_drafter_from_budget(self):
-        # A drafter offloaded to CPU (--spec-draft-ngl 0 / --spec-draft-device
-        # none) consumes no GPU, so it must be dropped from the budget and get no
-        # flat reserve either (Finding F2).
+        # A SEPARATE drafter offloaded to CPU (--spec-draft-ngl 0 /
+        # --spec-draft-device none) consumes no GPU, so it must be dropped from the
+        # budget and get no flat reserve (Finding F2). But an embedded head is on
+        # GPU regardless of those draft-only flags, so the flat reserve is only
+        # suppressed when there is no embedded head (Finding G5).
         compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
         assert "_draft_on_cpu=_extra_args_draft_offloaded_to_cpu(extra_args)" in compact
         assert "if_draft_on_cpu:_mtp_draft_for_budget=None" in compact
-        assert "andnot_draft_on_cpu" in compact  # excluded from the flat reserve
+        # flat reserve suppressed only for a CPU drafter with no embedded head
+        assert "_draft_cpu_no_embedded=_draft_on_cpuandnotself._nextn_predict_layers" in compact
+        assert "not_draft_cpu_no_embedded" in compact
+
+    def test_load_model_keeps_flat_reserve_for_unsized_draft_kv(self):
+        # When only the drafter weights could be sized (KV unsizable), the flat
+        # fraction stays on as the cushion for the still-unsized draft KV, on top
+        # of the byte-accurate weights reserve (Finding G3).
+        compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
+        assert "_mtp_kv_unsized" in compact
+        assert "mtp_overhead_fnisNoneor_mtp_kv_unsized" in compact
+
+    def test_load_model_ranks_subsets_by_active_pin_fraction(self):
+        # Auto/cap subset ranking uses the active budget fraction (lowered by the
+        # flat MTP reserve), not a hard-coded 0.95, so the ranking order matches
+        # the fit budget that is then tested (Finding G4).
+        compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
+        assert "_gpu_usable(g,pin_fraction)" in compact
+        assert "_gpu_usable(g,_CTX_FIT_VRAM_FRACTION-_flat_mtp_reserve)" in compact
 
     @pytest.mark.parametrize(
         "args,expected",
@@ -519,6 +559,11 @@ class TestExtraArgsMtpDetection:
             (["--spec-draft-device", "CUDA0,CPU"], False),  # any GPU -> on GPU
             (["-c", "4096"], False),
             (None, False),
+            # last-wins: only the final value of each flag counts (Finding G2)
+            (["--spec-draft-ngl", "0", "--spec-draft-ngl", "-1"], False),  # last = GPU
+            (["--spec-draft-ngl", "-1", "--spec-draft-ngl", "0"], True),  # last = CPU
+            (["--spec-draft-device", "CUDA0", "--spec-draft-device", "none"], True),
+            (["--spec-draft-device", "none", "--spec-draft-device", "CUDA0"], False),
         ],
     )
     def test_draft_offloaded_to_cpu(self, args, expected):

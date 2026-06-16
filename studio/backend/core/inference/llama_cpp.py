@@ -838,23 +838,31 @@ def _extra_args_draft_offloaded_to_cpu(extra_args: Optional[Iterable[str]]) -> b
     not consume GPU VRAM and the budget must not charge them: ``--spec-draft-ngl 0``
     (no draft layers on GPU) or ``--spec-draft-device`` naming only CPU/none. An
     embedded MTP head (Qwen) is part of the main model and follows the main -ngl,
-    so these draft-only flags do not move it off the GPU."""
+    so these draft-only flags do not move it off the GPU. llama-server is last-wins,
+    so only the final value of each flag counts (e.g. ``--spec-draft-ngl 0
+    --spec-draft-ngl -1`` keeps the drafter on GPU)."""
     ngl_flags = {"--spec-draft-ngl", "-ngld", "--gpu-layers-draft", "--n-gpu-layers-draft"}
     dev_flags = {"--spec-draft-device", "-devd", "--device-draft"}
     args = [str(a) for a in extra_args] if extra_args else []
+    last_ngl: Optional[str] = None
+    last_dev: Optional[str] = None
     for i, raw in enumerate(args):
         flag, eq, inline = raw.partition("=")
         value = inline if eq else (args[i + 1] if i + 1 < len(args) else "")
         if flag in ngl_flags:
-            try:
-                if int(value) == 0:
-                    return True
-            except (TypeError, ValueError):
-                continue
+            last_ngl = value
         elif flag in dev_flags:
-            devs = [d.strip().lower() for d in value.split(",") if d.strip()]
-            if devs and all(d in ("cpu", "none") for d in devs):
+            last_dev = value
+    if last_ngl is not None:
+        try:
+            if int(last_ngl) == 0:  # zero draft layers on GPU -> CPU
                 return True
+        except (TypeError, ValueError):
+            pass
+    if last_dev is not None:
+        devs = [d.strip().lower() for d in last_dev.split(",") if d.strip()]
+        if devs and all(d in ("cpu", "none") for d in devs):
+            return True
     return False
 
 
@@ -2483,6 +2491,7 @@ class LlamaCppBackend:
         drafter_path: Optional[str] = None,
         draft_cache_type_k: Optional[str] = None,
         draft_cache_type_v: Optional[str] = None,
+        n_parallel: int = 1,
     ) -> Optional[int]:
         """Draft KV cache bytes at ``n_ctx``, sized from GGUF dims. K and V cache
         types are independent. Separate drafter (Gemma): the drafter's own KV via
@@ -2499,7 +2508,10 @@ class LlamaCppBackend:
             if db is None or not db._can_estimate_kv():
                 return None
             heavier = draft_cache_type_k if bpe_k >= bpe_v else draft_cache_type_v
-            kv = db._estimate_kv_cache_bytes(n_ctx, heavier)
+            # The drafter is served under the same --parallel slot count as the
+            # main model, so price its KV per slot too: a sliding-window drafter
+            # (Gemma) grows KV with slots and would otherwise be under-reserved.
+            kv = db._estimate_kv_cache_bytes(n_ctx, heavier, n_parallel = n_parallel)
             return kv or None
         nextn = self._nextn_predict_layers or 0
         n_kv = self._n_kv_heads or self._n_heads
@@ -2530,6 +2542,7 @@ class LlamaCppBackend:
         draft_cache_type_v: Optional[str] = None,
         drafter_path: Optional[str] = None,
         draft_weights_bytes: int = 0,
+        n_parallel: int = 1,
     ) -> Optional[int]:
         """MTP draft reserve at ``n_ctx`` = draft KV (grows with ctx) + separate-
         drafter weights. The verify buffer rides in the ctx-fit headroom (no tuned
@@ -2540,6 +2553,7 @@ class LlamaCppBackend:
             drafter_path = drafter_path,
             draft_cache_type_k = draft_cache_type_k,
             draft_cache_type_v = draft_cache_type_v,
+            n_parallel = n_parallel,
         )
         weights = max(0, draft_weights_bytes)
         if draft_kv is None:
@@ -4318,14 +4332,18 @@ class LlamaCppBackend:
                     def _pool_total(subset):
                         return sum(total_by_idx.get(idx, 0) for idx, _ in subset)
 
-                    def _gpu_usable(g):
+                    def _gpu_usable(g, frac = _CTX_FIT_VRAM_FRACTION):
                         # Per-GPU usable budget for ranking: free - (1-frac)*total
                         # (a more-used big card can rank below a less-used small one).
+                        # Callers pass the ACTIVE fraction (_pin_fraction, lowered by
+                        # the flat MTP reserve) so the ranking order matches the
+                        # budget the fit then tests; otherwise mixed-total GPUs can
+                        # be mis-ordered and a worse subset chosen.
                         idx, free = g
                         t = total_by_idx.get(idx, 0)
                         if t > 0:
-                            return free - (1.0 - _CTX_FIT_VRAM_FRACTION) * t
-                        return free * _CTX_FIT_VRAM_FRACTION
+                            return free - (1.0 - frac) * t
+                        return free * frac
 
                     def _pool_budget_mib(pool_free, pool_total, frac):
                         # Cap pooled occupancy at ``frac`` of pooled total when
@@ -4460,9 +4478,21 @@ class LlamaCppBackend:
 
                     # Byte-accurate reserve when dims allow, else None -> flat fallback.
                     mtp_overhead_fn: Optional[Callable[[int], int]] = None
+                    # True when the byte reserve is the drafter weights ONLY because
+                    # its KV couldn't be sized; the flat fraction must then stay on
+                    # as the cushion for that unsized draft KV (it is not covered by
+                    # the weights-only mtp_overhead_fn).
+                    _mtp_kv_unsized = False
                     if _mtp_will_engage:
                         _probe_ctx = self._context_length or (
                             effective_ctx if effective_ctx > 0 else 4096
+                        )
+                        _draft_kv_probe = self._mtp_draft_kv_bytes(
+                            _probe_ctx,
+                            drafter_path = _mtp_draft_for_budget,
+                            draft_cache_type_k = _mtp_draft_ck,
+                            draft_cache_type_v = _mtp_draft_cv,
+                            n_parallel = n_parallel,
                         )
                         if (
                             self._estimate_mtp_overhead_bytes(
@@ -4472,9 +4502,13 @@ class LlamaCppBackend:
                                 draft_cache_type_v = _mtp_draft_cv,
                                 drafter_path = _mtp_draft_for_budget,
                                 draft_weights_bytes = _mtp_draft_weights,
+                                n_parallel = n_parallel,
                             )
                             is not None
                         ):
+                            # Reserve is weights-only when the draft KV is unsizable.
+                            _mtp_kv_unsized = _draft_kv_probe is None
+
                             # Closure binding this load's draft params; ctx varies.
                             def mtp_overhead_fn(
                                 ctx: int,
@@ -4483,6 +4517,7 @@ class LlamaCppBackend:
                                 _cv: Optional[str] = _mtp_draft_cv,
                                 _dp: Optional[str] = _mtp_draft_for_budget,
                                 _w: int = _mtp_draft_weights,
+                                _np: int = n_parallel,
                             ) -> int:
                                 v = self._estimate_mtp_overhead_bytes(
                                     ctx,
@@ -4491,6 +4526,7 @@ class LlamaCppBackend:
                                     draft_cache_type_v = _cv,
                                     drafter_path = _dp,
                                     draft_weights_bytes = _w,
+                                    n_parallel = _np,
                                 )
                                 return v if v is not None else 0
 
@@ -4538,13 +4574,20 @@ class LlamaCppBackend:
                     # a load can't pin into the drafter's headroom. With a
                     # byte-accurate overhead (mtp_overhead_fn) the reserve is
                     # added to the totals per candidate context instead, so the
-                    # flat fraction applies only as the dims-unavailable fallback.
-                    # A drafter offloaded to CPU consumes no GPU, so it gets no
-                    # flat reserve either (an embedded head would have produced a
-                    # byte-accurate mtp_overhead_fn and skipped this branch).
+                    # flat fraction applies only as the dims-unavailable fallback --
+                    # but also when only the drafter weights could be sized
+                    # (_mtp_kv_unsized): the flat fraction is then the cushion for
+                    # the still-unsized draft KV, on top of the byte-accurate weights.
+                    # A separate drafter offloaded to CPU consumes no GPU, so it gets
+                    # no flat reserve; an embedded head is on GPU regardless of the
+                    # draft-only offload flags, so keep its reserve.
+                    _flat_mtp_engages = _mtp_will_engage and (
+                        mtp_overhead_fn is None or _mtp_kv_unsized
+                    )
+                    _draft_cpu_no_embedded = _draft_on_cpu and not self._nextn_predict_layers
                     _flat_mtp_reserve = (
                         _MTP_VRAM_RESERVE_FRAC
-                        if (_mtp_will_engage and mtp_overhead_fn is None and not _draft_on_cpu)
+                        if (_flat_mtp_engages and not _draft_cpu_no_embedded)
                         else 0.0
                     )
                     _pin_fraction = self._GPU_PIN_VRAM_FRACTION - _flat_mtp_reserve
@@ -4668,7 +4711,11 @@ class LlamaCppBackend:
                         # bounds), independent of the currently requested context.
                         native_ctx_for_cap = self._context_length or effective_ctx
                         if native_ctx_for_cap > 0:
-                            ranked_for_cap = sorted(gpus, key = _gpu_usable, reverse = True)
+                            ranked_for_cap = sorted(
+                                gpus,
+                                key = lambda g: _gpu_usable(g, _CTX_FIT_VRAM_FRACTION - _flat_mtp_reserve),
+                                reverse = True,
+                            )
                             best_cap = 0
                             for n_gpus in range(1, len(ranked_for_cap) + 1):
                                 subset = ranked_for_cap[:n_gpus]
@@ -4722,9 +4769,12 @@ class LlamaCppBackend:
                             # No silent shrink: effective_ctx stays == requested_ctx.
                         else:
                             # Auto context: prefer fewer GPUs, cap to fit. Same
-                            # headroom threshold as _select_gpus (#5106).
-                            ranked = sorted(gpus, key = _gpu_usable, reverse = True)
+                            # headroom threshold as _select_gpus (#5106). Rank by the
+                            # active pin fraction so the order matches the fit budget.
                             pin_fraction = _pin_fraction
+                            ranked = sorted(
+                                gpus, key = lambda g: _gpu_usable(g, pin_fraction), reverse = True
+                            )
                             for n_gpus in range(1, len(ranked) + 1):
                                 subset = ranked[:n_gpus]
                                 pool_mib = sum(free for _, free in subset)
