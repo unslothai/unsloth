@@ -15,6 +15,15 @@ from dataclasses import asdict
 # Suppress C-level dependency warnings globally
 os.environ["PYTHONWARNINGS"] = "ignore"
 
+# Pin GPU index ordering to PCI bus id before any torch import creates a CUDA
+# context. Without this, torch/CUDA default to FASTEST_FIRST while nvidia-smi
+# (and Studio's VRAM probes) use PCI-bus order, so a GPU index chosen from
+# nvidia-smi data can resolve to a different physical card via
+# CUDA_VISIBLE_DEVICES. setdefault so an explicit user override wins. See
+# utils/hardware/hardware.py for the full rationale; set here too so the entry
+# process is covered before its heavy ML imports.
+os.environ.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
+
 # ── Windows AMD ROCm DLL injection ──────────────────────────────────────────
 # Python 3.8+ ignores PATH for extension modules; register ROCm bin dirs with
 # os.add_dll_directory() so amdhip64.dll etc. are found before any torch import.

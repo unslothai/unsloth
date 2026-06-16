@@ -303,6 +303,73 @@ class TestLogGpuMemory:
         assert "No GPU available" in captured.out
 
 
+# ========== CUDA_DEVICE_ORDER pinning ==========
+
+
+class TestCudaDeviceOrder:
+    """Importing the hardware module pins CUDA_DEVICE_ORDER=PCI_BUS_ID so that
+    nvidia-smi indices, torch ordinals, and CUDA_VISIBLE_DEVICES agree on a
+    mixed-GPU host (the GPU-selection ordering bug)."""
+
+    def test_module_import_sets_pci_bus_id(self):
+        # The module-level setdefault runs on import; by the time any test runs
+        # the var must be present and pinned to PCI_BUS_ID.
+        import os
+        assert os.environ.get("CUDA_DEVICE_ORDER") == "PCI_BUS_ID"
+
+    def test_setdefault_respects_explicit_user_override(self):
+        # Re-running the module's setdefault must not clobber a user value.
+        import os
+        original = os.environ.get("CUDA_DEVICE_ORDER")
+        try:
+            os.environ["CUDA_DEVICE_ORDER"] = "FASTEST_FIRST"
+            os.environ.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
+            assert os.environ["CUDA_DEVICE_ORDER"] == "FASTEST_FIRST"
+        finally:
+            if original is None:
+                os.environ.pop("CUDA_DEVICE_ORDER", None)
+            else:
+                os.environ["CUDA_DEVICE_ORDER"] = original
+
+
+# ========== _print_cuda_device_list() ==========
+
+
+class TestPrintCudaDeviceList:
+    """The startup console lists every CUDA GPU with its index, not just
+    device 0, so a multi-GPU host shows the full available set."""
+
+    @needs_torch
+    def test_lists_all_devices_when_multi_gpu(self, capsys):
+        props = [
+            MagicMock(name = "p0"),
+            MagicMock(name = "p1"),
+        ]
+        props[0].name = "NVIDIA GeForce RTX 5090"
+        props[1].name = "NVIDIA RTX PRO 6000 Blackwell Workstation Edition"
+        with (
+            patch("torch.cuda.device_count", return_value = 2),
+            patch("torch.cuda.get_device_properties", side_effect = lambda i: props[i]),
+        ):
+            _hw_module._print_cuda_device_list(is_rocm = False)
+        out = capsys.readouterr().out
+        assert "[0] NVIDIA GeForce RTX 5090" in out
+        assert "[1] NVIDIA RTX PRO 6000 Blackwell Workstation Edition" in out
+        assert "CUDA_DEVICE_ORDER=" in out
+
+    @needs_torch
+    def test_silent_on_single_gpu(self, capsys):
+        with patch("torch.cuda.device_count", return_value = 1):
+            _hw_module._print_cuda_device_list(is_rocm = False)
+        assert capsys.readouterr().out == ""
+
+    @needs_torch
+    def test_never_raises_on_probe_failure(self, capsys):
+        with patch("torch.cuda.device_count", side_effect = RuntimeError("no cuda")):
+            _hw_module._print_cuda_device_list(is_rocm = False)
+        assert capsys.readouterr().out == ""
+
+
 # ========== format_error_message() ==========
 
 
