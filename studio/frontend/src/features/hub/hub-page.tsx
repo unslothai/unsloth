@@ -5,14 +5,15 @@ import { useHubInventory } from "@/features/hub/inventory";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { useGpuInfo } from "@/hooks/use-gpu-info";
 import {
+  type HfModelSearchChannel,
   type HfSortDirection,
   type HfSortKey,
 } from "@/features/hub/hooks/use-hub-model-search";
 import { useOnlineStatus } from "@/features/hub/hooks/use-online-status";
-import { useIsHubDesktop } from "@/features/hub/hooks/use-is-hub-desktop";
 import { useHubInfiniteScroll } from "@/features/hub/hooks/use-hub-infinite-scroll";
 import { ggufVariantsMatch, modelIdsMatch } from "@/features/hub/lib/model-identity";
 import { cn } from "@/lib/utils";
+import { usePlatformStore } from "@/config/env";
 import { useHfTokenStore } from "@/features/hub/stores/hf-token-store";
 import {
   getInferenceStatus,
@@ -20,8 +21,6 @@ import {
   useChatModelRuntime,
   useChatRuntimeStore,
 } from "@/features/chat";
-import { ArrowLeft01Icon } from "@hugeicons/core-free-icons";
-import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import {
   useCallback,
@@ -30,7 +29,16 @@ import {
   useMemo,
   useState,
 } from "react";
-import { ModelInspector } from "./catalog/model-inspector";
+import { HubDetailView } from "./catalog/hub-detail-view";
+import { HubTopBar } from "./catalog/hub-top-bar";
+import { HubFeed } from "./catalog/hub-feed";
+import {
+  type AllModelsView,
+  HubListHeader,
+  type InventorySort,
+  InventorySortControl,
+  ResultListHeader,
+} from "./catalog/models-table";
 import {
   ModelsCatalog,
   type ModelsCatalogHandlers,
@@ -42,18 +50,24 @@ import { ModelsToolbar } from "./catalog/models-toolbar";
 import { ExternalLinkConfirmDialog } from "./catalog/external-link-confirm-dialog";
 import { OnDeviceFoldersDialog } from "./catalog/on-device-folders-dialog";
 import { useDiscoverSearch } from "./hooks/use-discover-search";
+import { useFeedWriteBack } from "./hooks/use-feed-write-back";
+import { useHubFeed } from "./hooks/use-hub-feed";
 import { useHubModelVram } from "./hooks/use-hub-model-vram";
 import { useModelsSelection } from "./hooks/use-models-selection";
 import {
+  CHANNEL_TO_SECTION,
   type ChannelId,
   type ChannelPreset,
+  HUB_SECTION_TITLE,
+  type HubSection,
+  SECTION_TO_CHANNEL,
   findChannel,
 } from "./lib/channels";
 import { inventoryRowMatches, tokenizeQuery } from "./lib/inventory-search";
 import {
+  CAPABILITY_FILTER_OPTIONS,
   buildDiscoverRows,
   detectResultFormat,
-  isUnslothFinetunable,
   matchesCapability,
   matchesFormat,
 } from "./lib/view-models";
@@ -69,10 +83,50 @@ import type {
 } from "./types";
 
 const MODELS_TAB_STORAGE_KEY = "unsloth.hub.modelsTab";
+const ALL_MODELS_VIEW_STORAGE_KEY = "unsloth.hub.allModelsView";
+const INVENTORY_SORT_STORAGE_KEY = "unsloth.hub.inventorySort";
 
 const DEFAULT_DISCOVER_CHANNEL: ChannelId = "unsloth-trending";
+const FEED_LIST_CHANNEL_ID: ChannelId = "unsloth-latest";
+
+type DiscoverMode = "feed" | "channel-list" | "search";
 
 type ModelLoadOptions = { ggufVariant?: string; expectedBytes?: number };
+
+function buildFocusedHeading({
+  query,
+  channel,
+  format,
+  capability,
+  isDataset,
+}: {
+  query: string;
+  channel: ChannelPreset | null;
+  format: ModelFormatFilter;
+  capability: CapabilityFilter;
+  isDataset: boolean;
+}): string {
+  const trimmed = query.trim();
+  const noun = isDataset ? "datasets" : "models";
+  if (trimmed) return `Results for "${trimmed}"`;
+  if (channel && channel.id !== DEFAULT_DISCOVER_CHANNEL) return channel.label;
+  const formatLabel =
+    format === "gguf"
+      ? "GGUF"
+      : format === "checkpoint"
+        ? "Checkpoint"
+        : format === "mlx"
+          ? "MLX"
+          : "";
+  const capabilityLabel =
+    capability === "all"
+      ? ""
+      : (CAPABILITY_FILTER_OPTIONS.find((option) => option.value === capability)
+          ?.label ?? "");
+  const parts = [formatLabel, capabilityLabel].filter(Boolean).join(" ");
+  if (parts) return `Showing ${parts} ${noun}`;
+  return isDataset ? "Datasets" : "Showing models";
+}
 
 function discoveryInventorySignature(
   cachedRows: readonly CachedInventoryRow[],
@@ -115,6 +169,56 @@ function writeModelsTabPreference(tab: ModelsTab): void {
   }
 }
 
+// "All models" results default to the list (rows) layout; the user's choice of
+// list vs. card grid is remembered across sessions.
+function readAllModelsViewPreference(): AllModelsView {
+  if (typeof window === "undefined") {
+    return "grid";
+  }
+  try {
+    const value = window.localStorage.getItem(ALL_MODELS_VIEW_STORAGE_KEY);
+    return value === "grid" || value === "card" ? value : "grid";
+  } catch {
+    return "grid";
+  }
+}
+
+function readInventorySortPreference(): InventorySort {
+  if (typeof window === "undefined") {
+    return "recent";
+  }
+  try {
+    const value = window.localStorage.getItem(INVENTORY_SORT_STORAGE_KEY);
+    return value === "name" || value === "size" || value === "recent"
+      ? value
+      : "recent";
+  } catch {
+    return "recent";
+  }
+}
+
+function writeInventorySortPreference(sort: InventorySort): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+  try {
+    window.localStorage.setItem(INVENTORY_SORT_STORAGE_KEY, sort);
+  } catch {
+    return;
+  }
+}
+
+function writeAllModelsViewPreference(view: AllModelsView): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+  try {
+    window.localStorage.setItem(ALL_MODELS_VIEW_STORAGE_KEY, view);
+  } catch {
+    return;
+  }
+}
+
 function useModelsTabState(): {
   tab: ModelsTab;
   setTab: (tab: ModelsTab) => void;
@@ -123,7 +227,7 @@ function useModelsTabState(): {
   const search = useSearch({ from: "/hub" });
   const urlTab: ModelsTab | null = search.tab ?? null;
   const [fallbackTab, setFallbackTab] = useState<ModelsTab>(
-    () => readModelsTabPreference() ?? "downloaded",
+    () => readModelsTabPreference() ?? "discover",
   );
   const tab = urlTab ?? fallbackTab;
 
@@ -142,7 +246,12 @@ function useModelsTabState(): {
       writeModelsTabPreference(next);
       void navigate({
         to: "/hub",
-        search: (prev) => ({ ...prev, tab: next }),
+        search: (prev) => ({
+          ...prev,
+          tab: next,
+          section: undefined,
+          model: undefined,
+        }),
         replace: true,
       });
     },
@@ -185,6 +294,9 @@ export function ModelsPage() {
   const navigate = useNavigate();
   const gpu = useGpuInfo();
   const online = useOnlineStatus();
+  const deviceType = usePlatformStore((s) => s.deviceType);
+  const hubSearch = useSearch({ from: "/hub" });
+  const urlModel = hubSearch.model ?? null;
 
   const { selectModel, loadingModel, loadProgress, ejectModel } =
     useChatModelRuntime();
@@ -224,13 +336,6 @@ export function ModelsPage() {
   const [direction, setDirection] = useState<HfSortDirection>("desc");
   const [resourceType, setResourceType] =
     useState<ResourceTypeFilter>("models");
-  const [activeChannelId, setActiveChannelId] = useState<ChannelId | null>(
-    DEFAULT_DISCOVER_CHANNEL,
-  );
-  const activeChannel: ChannelPreset | null = useMemo(
-    () => findChannel(activeChannelId),
-    [activeChannelId],
-  );
   const [discoverFormat, setDiscoverFormat] = useState<ModelFormatFilter>(
     () => findChannel(DEFAULT_DISCOVER_CHANNEL)?.format ?? "gguf",
   );
@@ -238,6 +343,18 @@ export function ModelsPage() {
     useState<ModelFormatFilter>("all");
   const isDiscoverTab = tab === "discover";
   const isDatasetMode = resourceType === "datasets";
+  const urlSection = hubSearch.section ?? null;
+  const isModelDiscover = isDiscoverTab && !isDatasetMode;
+  const sectionChannelId: ChannelId | null = urlSection
+    ? SECTION_TO_CHANNEL[urlSection]
+    : null;
+  const activeChannelId: ChannelId | null = isModelDiscover
+    ? sectionChannelId
+    : null;
+  const activeChannel: ChannelPreset | null = useMemo(
+    () => findChannel(activeChannelId),
+    [activeChannelId],
+  );
   const formatFilter = isDiscoverTab ? discoverFormat : downloadedFormat;
   const setFormatFilter = useCallback(
     (next: ModelFormatFilter) => {
@@ -251,14 +368,25 @@ export function ModelsPage() {
   );
   const [capabilityFilter, setCapabilityFilter] =
     useState<CapabilityFilter>("all");
-  const [mobileInspectorOpen, setMobileInspectorOpen] = useState(false);
-  const isHubDesktop = useIsHubDesktop();
+  const [allModelsView, setAllModelsViewState] = useState<AllModelsView>(
+    readAllModelsViewPreference,
+  );
+  const setAllModelsView = useCallback((view: AllModelsView) => {
+    setAllModelsViewState(view);
+    writeAllModelsViewPreference(view);
+  }, []);
+  const [inventorySort, setInventorySortState] = useState<InventorySort>(
+    readInventorySortPreference,
+  );
+  const setInventorySort = useCallback((sort: InventorySort) => {
+    setInventorySortState(sort);
+    writeInventorySortPreference(sort);
+  }, []);
   const [foldersDialogOpen, setFoldersDialogOpen] = useState(false);
   const [discoverFetchIntent, setDiscoverFetchIntent] = useState(0);
 
   const handleTabChange = useCallback(
     (next: ModelsTab) => {
-      setMobileInspectorOpen(false);
       setModelsTab(next);
     },
     [setModelsTab],
@@ -272,28 +400,64 @@ export function ModelsPage() {
       setCapabilityFilter("all");
       if (next === "models") {
         const preset = findChannel(DEFAULT_DISCOVER_CHANNEL);
-        setActiveChannelId(DEFAULT_DISCOVER_CHANNEL);
         setDiscoverFormat(preset?.format ?? "gguf");
         setSortBy(preset?.sort ?? "trendingScore");
         setDirection("desc");
-      } else {
-        setActiveChannelId(null);
+      }
+      if (urlSection) {
+        void navigate({
+          to: "/hub",
+          search: (prev) => ({ ...prev, section: undefined }),
+          replace: true,
+        });
       }
     },
-    [resourceType],
+    [resourceType, urlSection, navigate],
   );
 
-  const handleChannelSelect = useCallback((next: ChannelId | null) => {
-    setActiveChannelId(next);
+  const handleOpenList = useCallback(
+    (section: HubSection) => {
+      if (urlSection === section) return;
+      const preset = findChannel(SECTION_TO_CHANNEL[section]);
+      if (preset) {
+        setDiscoverFormat(preset.format);
+        setSortBy(preset.sort);
+        setDirection("desc");
+      }
+      setCapabilityFilter("all");
+      void navigate({
+        to: "/hub",
+        search: (prev) => ({ ...prev, section, model: undefined }),
+      });
+    },
+    [urlSection, navigate],
+  );
+  const handleBackToFeed = useCallback(() => {
+    const preset = findChannel(DEFAULT_DISCOVER_CHANNEL);
+    setDiscoverFormat(preset?.format ?? "gguf");
+    setSortBy(preset?.sort ?? "trendingScore");
+    setDirection("desc");
     setCapabilityFilter("all");
+    void navigate({
+      to: "/hub",
+      search: (prev) => ({ ...prev, section: undefined }),
+    });
+  }, [navigate]);
+  const handleResetToDiscover = useCallback(() => {
+    const preset = findChannel(DEFAULT_DISCOVER_CHANNEL);
+    setModelsTab("discover");
+    setResourceType("models");
     setQuery("");
-    const preset = findChannel(next);
-    if (preset) {
-      setDiscoverFormat(preset.format);
-      setSortBy(preset.sort);
-      setDirection("desc");
-    }
-  }, []);
+    setCapabilityFilter("all");
+    setDownloadedFormat("all");
+    setDiscoverFormat(preset?.format ?? "gguf");
+    setSortBy(preset?.sort ?? "trendingScore");
+    setDirection("desc");
+    void navigate({
+      to: "/hub",
+      search: (prev) => ({ ...prev, section: undefined, model: undefined }),
+    });
+  }, [navigate, setModelsTab]);
 
   const handleSortChange = useCallback((next: HfSortKey) => {
     setSortBy(next);
@@ -304,9 +468,39 @@ export function ModelsPage() {
   const deferredDebouncedQuery = useDeferredValue(debouncedQuery);
   const hfToken = useHfTokenStore((s) => s.token);
   const debouncedHfToken = useDebouncedValue(hfToken, 500);
-  const effectiveSort: HfSortKey = sortBy;
   const deferredFormatFilter = useDeferredValue(formatFilter);
   const deferredCapabilityFilter = useDeferredValue(capabilityFilter);
+
+  const hasQuery = deferredDebouncedQuery.trim() !== "";
+  const mode: DiscoverMode = !isModelDiscover
+    ? "search"
+    : hasQuery
+      ? "search"
+      : urlSection != null
+        ? "channel-list"
+        : "feed";
+  const isFeedMode = mode === "feed";
+  const isChannelListMode = mode === "channel-list";
+
+  const liveListChannel = useMemo<ChannelPreset | null>(() => {
+    if (isChannelListMode) return activeChannel;
+    if (isFeedMode) return findChannel(FEED_LIST_CHANNEL_ID);
+    return null;
+  }, [isChannelListMode, isFeedMode, activeChannel]);
+
+  const effectiveSort: HfSortKey =
+    isFeedMode && liveListChannel ? liveListChannel.sort : sortBy;
+  const effectiveDirection: HfSortDirection = isFeedMode ? "desc" : direction;
+
+  const listChannel = useMemo<HfModelSearchChannel | null>(() => {
+    if (!liveListChannel) return null;
+    return {
+      owner: liveListChannel.owner,
+      tags: liveListChannel.tags,
+      query: liveListChannel.query,
+      idSuffix: liveListChannel.idSuffix,
+    };
+  }, [liveListChannel]);
 
   const {
     results,
@@ -324,9 +518,16 @@ export function ModelsPage() {
     isDiscoverTab,
     isDatasetMode,
     sortBy: effectiveSort,
-    direction,
-    activeChannel,
+    direction: effectiveDirection,
+    channel: listChannel,
     online,
+  });
+
+  useFeedWriteBack({
+    channelId: isChannelListMode ? activeChannelId : null,
+    results,
+    isLoading,
+    accessToken: debouncedHfToken || undefined,
   });
 
   const {
@@ -341,8 +542,7 @@ export function ModelsPage() {
   } = useHubInventory({ kind: isDatasetMode ? "datasets" : "models" });
 
   const modelDiscoveryInventorySignature = useMemo(
-    () =>
-      discoveryInventorySignature(effectiveCachedRows, effectiveLocalRows),
+    () => discoveryInventorySignature(effectiveCachedRows, effectiveLocalRows),
     [effectiveCachedRows, effectiveLocalRows],
   );
   const modelDiscoverRows = useMemo<DiscoverRow[]>(
@@ -372,12 +572,17 @@ export function ModelsPage() {
           id: ds.id,
           downloads: ds.downloads,
           likes: ds.likes,
+          private: ds.private,
+          gated: ds.gated,
+          updatedAt: ds.updatedAt,
+          createdAt: ds.createdAt,
+          downloadsAllTime: ds.downloadsAllTime,
           isGguf: false,
           tags: ds.plainTags,
         },
         isAvailableOnDevice: availableSet.has(lower),
         isPartialOnDevice: partialSet.has(lower),
-        summary: summaryParts.join(" · ") || "Dataset",
+        summary: summaryParts.join(" · ") || ds.prettyName || "Dataset",
         capabilities: [],
       };
     });
@@ -385,32 +590,78 @@ export function ModelsPage() {
 
   const discoverRows = isDatasetMode ? datasetDiscoverRows : modelDiscoverRows;
 
-  const filteredDiscoverRows = useMemo(
+  const filteredDiscoverRows = useMemo(() => {
+    if (isDatasetMode) return discoverRows;
+    return discoverRows.filter(
+      (row) =>
+        matchesFormat(detectResultFormat(row.result), deferredFormatFilter) &&
+        matchesCapability(row.capabilities, deferredCapabilityFilter),
+    );
+  }, [
+    discoverRows,
+    isDatasetMode,
+    deferredFormatFilter,
+    deferredCapabilityFilter,
+  ]);
+
+  const listRows = filteredDiscoverRows;
+
+  const hubFeed = useHubFeed({
+    accessToken: debouncedHfToken || undefined,
+    online,
+    enabled: isFeedMode,
+    deviceType,
+  });
+
+  const feedTrendingRows = useMemo(
     () =>
-      discoverRows.filter((row) => {
-        if (isDatasetMode) return true;
-        return (
-          matchesFormat(detectResultFormat(row.result), deferredFormatFilter) &&
-          matchesCapability(row.capabilities, deferredCapabilityFilter) &&
-          (!activeChannel?.finetunableOnly ||
-            isUnslothFinetunable(row.result))
-        );
-      }),
-    [
-      discoverRows,
-      isDatasetMode,
-      deferredFormatFilter,
-      deferredCapabilityFilter,
-      activeChannel,
-    ],
+      buildDiscoverRows(
+        hubFeed.trending.results,
+        effectiveCachedRows,
+        effectiveLocalRows,
+      ).filter((row) => matchesFormat(row.result.isGguf, "gguf")),
+    [hubFeed.trending.results, modelDiscoveryInventorySignature],
   );
+  const feedFineTuneRows = useMemo(
+    () =>
+      buildDiscoverRows(
+        hubFeed.fineTuneReady.results,
+        effectiveCachedRows,
+        effectiveLocalRows,
+      ).filter((row) => matchesFormat(row.result.isGguf, "checkpoint")),
+    [hubFeed.fineTuneReady.results, modelDiscoveryInventorySignature],
+  );
+  const feedRows = useMemo(() => {
+    if (!isFeedMode) return [];
+    const seen = new Set<string>();
+    const merged: DiscoverRow[] = [];
+    for (const row of [
+      ...feedTrendingRows,
+      ...feedFineTuneRows,
+      ...filteredDiscoverRows,
+    ]) {
+      if (seen.has(row.id)) continue;
+      seen.add(row.id);
+      merged.push(row);
+    }
+    return merged;
+  }, [isFeedMode, feedTrendingRows, feedFineTuneRows, filteredDiscoverRows]);
+  const feedResults = useMemo(() => feedRows.map((row) => row.result), [feedRows]);
+  const selectionDiscoverRows = isFeedMode ? feedRows : discoverRows;
+  const selectionFilteredDiscoverRows = isFeedMode
+    ? feedRows
+    : filteredDiscoverRows;
+  const selectionResults = isFeedMode ? feedResults : results;
 
   const inventoryTokens = useMemo(
     () => (isDiscoverTab ? [] : tokenizeQuery(deferredDebouncedQuery)),
     [isDiscoverTab, deferredDebouncedQuery],
   );
-  // Format filter hard-filters; the text query drives dim-not-filter on the On Device
-  // tab so selection survives typing, with matching rows partitioned to the top.
+  // Format filter is a deliberate scope narrowing — hard-filter it out.
+  // The text query, by contrast, drives dim-not-filter on the On Device tab
+  // (see ModelsCatalog) so selection survives typing. Matching rows are
+  // partitioned to the top so the dim becomes a tail of the list, not noise
+  // the user has to scan past.
   const filteredCachedRows = useMemo(
     () =>
       partitionByMatch(
@@ -445,7 +696,7 @@ export function ModelsPage() {
         deferredFormatFilter,
         deferredCapabilityFilter,
         effectiveSort,
-        direction,
+        effectiveDirection,
         activeChannelId,
       ]),
     [
@@ -454,19 +705,25 @@ export function ModelsPage() {
       deferredFormatFilter,
       deferredCapabilityFilter,
       effectiveSort,
-      direction,
+      effectiveDirection,
       activeChannelId,
     ],
   );
   const handleClearFilters = useCallback(() => {
     if (isDiscoverTab) {
-      setActiveChannelId(null);
       setDiscoverFormat("all");
+      if (urlSection) {
+        void navigate({
+          to: "/hub",
+          search: (prev) => ({ ...prev, section: undefined }),
+          replace: true,
+        });
+      }
     } else {
       setDownloadedFormat("all");
     }
     setCapabilityFilter("all");
-  }, [isDiscoverTab]);
+  }, [isDiscoverTab, urlSection, navigate]);
   const handleDiscoverFetchIntent = useCallback(() => {
     setDiscoverFetchIntent((value) => value + 1);
   }, []);
@@ -478,8 +735,11 @@ export function ModelsPage() {
     fetchMoreManually: fetchMoreDiscoverManually,
   } = useHubInfiniteScroll(
     fetchMore,
-    // Re-evaluate off the raw fetched count, not the filtered one: page-level filters
-    // can reject every incoming row, stalling filteredDiscoverRows while results grow.
+    // Drive re-evaluation off the raw fetched count, not the filtered one —
+    // the page-level format/capability filters can reject every incoming
+    // row, leaving filteredDiscoverRows.length stalled while results keep
+    // growing. Using the raw count guarantees the auto-fire effect re-runs
+    // after each fetch lands so we don't dead-end on aggressive filters.
     scannedCount,
     {
       enabled: online && isDiscoverTab && hasMore,
@@ -501,13 +761,13 @@ export function ModelsPage() {
   } = useModelsSelection({
     isDiscoverTab,
     isDatasetMode,
-    discoverRows,
+    discoverRows: selectionDiscoverRows,
     cachedRows: effectiveCachedRows,
     localRows: effectiveLocalRows,
-    filteredDiscoverRows,
+    filteredDiscoverRows: selectionFilteredDiscoverRows,
     filteredCachedRows,
     filteredLocalRows,
-    results,
+    results: selectionResults,
     accessToken: debouncedHfToken || undefined,
     online,
   });
@@ -515,24 +775,54 @@ export function ModelsPage() {
   const handleSelect = useCallback(
     (id: string) => {
       setSelected(id);
-      // Only flip the mobile drawer in single-pane layout; on lg+ both panes are
-      // visible and setting state here just churns the catalog's virtualizer.
-      if (
-        typeof window !== "undefined" &&
-        window.matchMedia("(max-width: 1023.98px)").matches
-      ) {
-        setMobileInspectorOpen(true);
-      }
+      void navigate({
+        to: "/hub",
+        search: (prev) => ({ ...prev, model: id }),
+      });
     },
-    [setSelected],
+    [setSelected, navigate],
   );
+  const handleCloseDetail = useCallback(() => {
+    void navigate({
+      to: "/hub",
+      search: (prev) => ({ ...prev, model: undefined }),
+    });
+  }, [navigate]);
   const handleQueryChange = useCallback(
     (next: string) => {
-      if (activeChannelId) setActiveChannelId(null);
+      if (urlModel) {
+        void navigate({
+          to: "/hub",
+          search: (prev) => ({ ...prev, model: undefined }),
+          replace: true,
+        });
+      }
+      if (next.trim() === "") {
+        const preset = findChannel(DEFAULT_DISCOVER_CHANNEL);
+        setCapabilityFilter("all");
+        if (preset) {
+          setDiscoverFormat(preset.format);
+          setSortBy(preset.sort);
+          setDirection("desc");
+        }
+      }
+      if (urlSection) {
+        void navigate({
+          to: "/hub",
+          search: (prev) => ({ ...prev, section: undefined }),
+          replace: true,
+        });
+      }
       setQuery(next);
     },
-    [activeChannelId],
+    [urlSection, urlModel, navigate],
   );
+
+  useEffect(() => {
+    if (urlModel !== selectedId) {
+      setSelected(urlModel);
+    }
+  }, [urlModel, selectedId, setSelected]);
   const handleManageLocalFolders = useCallback(
     () => setFoldersDialogOpen(true),
     [],
@@ -553,8 +843,8 @@ export function ModelsPage() {
   );
 
   const isLoadingThisModel = useMemo(() => {
-    if (!loadingModel || !selectedModel) return false;
-    return modelIdsMatch(loadingModel.id, selectedModel.resource.runId);
+    if (!loadingModel) return false;
+    return selectedRepoMatchesRuntime(selectedModel, loadingModel.id, null);
   }, [loadingModel, selectedModel]);
 
   const { vramInfo, minMemory } = useHubModelVram(selectedModel, gpu);
@@ -601,7 +891,33 @@ export function ModelsPage() {
     (opts: ModelLoadOptions = {}) => runSelectedModel(opts, true),
     [runSelectedModel],
   );
-  const handleTrain = useCallback(() => undefined, []);
+  const handleUseInChat = useCallback(() => {
+    void navigate({ to: "/chat" });
+  }, [navigate]);
+  const handleTrain = useCallback(() => {
+    // Hub → train integration ships in a later PR.
+  }, []);
+  const handleSearchHub = useCallback(
+    (next: string) => {
+      const trimmed = next.trim();
+      if (!trimmed) return;
+      setModelsTab("discover");
+      setResourceType("models");
+      setDiscoverFormat("all");
+      setCapabilityFilter("all");
+      setQuery(trimmed);
+      void navigate({
+        to: "/hub",
+        search: (prev) => ({
+          ...prev,
+          tab: "discover",
+          section: undefined,
+          model: undefined,
+        }),
+      });
+    },
+    [navigate, setModelsTab],
+  );
 
   const inspectorRuntime = useMemo(
     () => ({
@@ -632,15 +948,17 @@ export function ModelsPage() {
     () => ({
       onLoad: handleLoad,
       onLoadLocal: handleLoadLocal,
-      onUseInChat: openNewChat,
+      onUseInChat: handleUseInChat,
       onTrain: handleTrain,
       onInventoryChange: refreshInventory,
+      onSearchHub: handleSearchHub,
     }),
     [
       handleLoad,
       handleLoadLocal,
-      openNewChat,
+      handleUseInChat,
       handleTrain,
+      handleSearchHub,
       refreshInventory,
     ],
   );
@@ -648,7 +966,7 @@ export function ModelsPage() {
   const catalogState = useMemo<ModelsCatalogState>(
     () => ({
       tab,
-      discoverRows: filteredDiscoverRows,
+      discoverRows: listRows,
       cachedRows: filteredCachedRows,
       localRows: filteredLocalRows,
       selectedId,
@@ -668,11 +986,13 @@ export function ModelsPage() {
       hasMore,
       manualFetchAvailable: discoverManualFetchAvailable,
       hasActiveFilters:
-        deferredFormatFilter !== "all" || deferredCapabilityFilter !== "all",
+        !isFeedMode &&
+        (deferredFormatFilter !== "all" || deferredCapabilityFilter !== "all"),
     }),
     [
       tab,
-      filteredDiscoverRows,
+      isFeedMode,
+      listRows,
       filteredCachedRows,
       filteredLocalRows,
       selectedId,
@@ -724,9 +1044,129 @@ export function ModelsPage() {
     ],
   );
 
+  const focusedHeadingText = useMemo(
+    () =>
+      buildFocusedHeading({
+        query: deferredDebouncedQuery,
+        channel: activeChannel,
+        format: deferredFormatFilter,
+        capability: deferredCapabilityFilter,
+        isDataset: isDatasetMode,
+      }),
+    [
+      deferredDebouncedQuery,
+      activeChannel,
+      deferredFormatFilter,
+      deferredCapabilityFilter,
+      isDatasetMode,
+    ],
+  );
+
+  const listCount = listRows.length;
+  const channelSection = activeChannelId
+    ? CHANNEL_TO_SECTION[activeChannelId]
+    : null;
+  const catalogHeader = useMemo(() => {
+    if (!isDiscoverTab) return null;
+    if (isFeedMode) {
+      return (
+        <div className="flex flex-col gap-10 pt-6">
+          <HubFeed
+            trending={{
+              rows: feedTrendingRows,
+              isLoading: hubFeed.trending.isLoading,
+            }}
+            fineTune={{
+              rows: feedFineTuneRows,
+              isLoading: hubFeed.fineTuneReady.isLoading,
+            }}
+            deviceType={deviceType}
+            isDataset={isDatasetMode}
+            onSelect={handleSelect}
+            onOpenChannel={handleOpenList}
+          />
+          <div className="flex flex-col gap-3">
+            <HubListHeader
+              title={HUB_SECTION_TITLE.latest}
+              count={listCount}
+              view={allModelsView}
+              onViewChange={setAllModelsView}
+            />
+            {allModelsView === "grid" && listCount > 0 && (
+              <ResultListHeader isDataset={isDatasetMode} />
+            )}
+          </div>
+        </div>
+      );
+    }
+    return (
+      <div className="flex flex-col gap-3 pt-6">
+        {isChannelListMode ? (
+          <HubListHeader
+            title={channelSection ? HUB_SECTION_TITLE[channelSection] : "Models"}
+            count={listCount}
+            view={allModelsView}
+            onViewChange={setAllModelsView}
+            onBack={handleBackToFeed}
+          />
+        ) : (
+          <HubListHeader
+            title={focusedHeadingText}
+            view={allModelsView}
+            onViewChange={setAllModelsView}
+          />
+        )}
+        {allModelsView === "grid" && listCount > 0 && (
+          <ResultListHeader isDataset={isDatasetMode} />
+        )}
+      </div>
+    );
+  }, [
+    isDiscoverTab,
+    isFeedMode,
+    isChannelListMode,
+    channelSection,
+    handleBackToFeed,
+    focusedHeadingText,
+    listCount,
+    allModelsView,
+    setAllModelsView,
+    isDatasetMode,
+    feedTrendingRows,
+    feedFineTuneRows,
+    hubFeed.trending.isLoading,
+    hubFeed.fineTuneReady.isLoading,
+    deviceType,
+    handleSelect,
+    handleOpenList,
+  ]);
+
+  const downloadedHeader = useMemo(
+    () => (
+      <HubListHeader
+        title="On device"
+        count={effectiveCachedRows.length + effectiveLocalRows.length}
+        actions={
+          <InventorySortControl
+            value={inventorySort}
+            onChange={setInventorySort}
+          />
+        }
+      />
+    ),
+    [
+      effectiveCachedRows.length,
+      effectiveLocalRows.length,
+      inventorySort,
+      setInventorySort,
+    ],
+  );
+
+  const detailOpen = urlModel !== null;
+
   return (
-    <div className="hub-page flex h-full min-h-0 flex-col">
-      <div className="mx-auto flex w-full max-w-[1180px] flex-1 min-h-0 flex-col gap-6 px-5 pt-8 pb-6 sm:px-9 sm:pt-10 sm:pb-8">
+    <div className="hub-page flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden bg-background">
+      <HubTopBar>
         <ModelsHeader
           cachedCount={effectiveCachedRows.length}
           localCount={effectiveLocalRows.length}
@@ -735,86 +1175,69 @@ export function ModelsPage() {
           ramLabel={ramLabel}
           activeCheckpoint={activeCheckpoint}
           activeGgufVariant={activeGgufVariant}
+          onTitleClick={handleResetToDiscover}
           onEject={() => void ejectModel()}
         />
+        <ModelsToolbar
+          tab={tab}
+          onTabChange={handleTabChange}
+          query={query}
+          onQueryChange={handleQueryChange}
+          isLoading={isLoading}
+          sortBy={effectiveSort}
+          onSortChange={handleSortChange}
+          resourceType={resourceType}
+          onResourceTypeChange={handleResourceTypeChange}
+          formatFilter={formatFilter}
+          onFormatFilterChange={setFormatFilter}
+          capabilityFilter={capabilityFilter}
+          onCapabilityFilterChange={setCapabilityFilter}
+          onRefresh={handleRetrySearch}
+          onManageLocalFolders={handleManageLocalFolders}
+        />
+      </HubTopBar>
 
-        <section className="elevated-card flex min-h-0 flex-1 flex-col overflow-hidden bg-card">
-          <div className="hub-side-surface shrink-0 px-4 pt-4 pb-6">
-            <ModelsToolbar
-              tab={tab}
-              onTabChange={handleTabChange}
-              query={query}
-              onQueryChange={handleQueryChange}
-              isLoading={isLoading}
-              sortBy={effectiveSort}
-              onSortChange={handleSortChange}
-              resourceType={resourceType}
-              onResourceTypeChange={handleResourceTypeChange}
-              formatFilter={formatFilter}
-              onFormatFilterChange={setFormatFilter}
-              capabilityFilter={capabilityFilter}
-              onCapabilityFilterChange={setCapabilityFilter}
-              activeChannelId={activeChannelId}
-              onChannelSelect={handleChannelSelect}
-              onRefresh={handleRetrySearch}
-              onManageLocalFolders={handleManageLocalFolders}
+      <div className="relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col">
+        <div
+          className={cn(
+            "flex min-h-0 flex-1 flex-col",
+            detailOpen && "pointer-events-none",
+          )}
+          aria-hidden={detailOpen || undefined}
+        >
+          <ModelsCatalog
+            state={catalogState}
+            pagination={catalogPagination}
+            handlers={catalogHandlers}
+            header={catalogHeader}
+            downloadedHeader={downloadedHeader}
+            resetScrollKey={filterResetSignature}
+            discoverView={allModelsView}
+            inventorySort={inventorySort}
+          />
+        </div>
+
+        {detailOpen && (
+          <div className="hub-canvas absolute inset-0 z-20 flex min-h-0 flex-col">
+            <HubDetailView
+              model={selectedModel}
+              isDataset={isDatasetMode}
+              metadataUnavailable={metadataUnavailable}
+              selectionHiddenByFilters={selectionHiddenByFilters}
+              runtime={inspectorRuntime}
+              actions={inspectorActions}
+              onBack={handleCloseDetail}
             />
           </div>
-
-          <div className="flex min-h-0 flex-1 flex-col lg:grid lg:grid-cols-[360px_minmax(0,1fr)] xl:grid-cols-[400px_minmax(0,1fr)] 2xl:grid-cols-[440px_minmax(0,1fr)]">
-            <div
-              className={cn(
-                "hub-side-surface flex min-h-0 min-w-0 flex-1 flex-col border-b border-sidebar-border lg:flex-initial lg:border-b-0 lg:border-r lg:border-sidebar-border",
-                mobileInspectorOpen && "hidden lg:flex",
-              )}
-            >
-              <ModelsCatalog
-                state={catalogState}
-                pagination={catalogPagination}
-                handlers={catalogHandlers}
-              />
-            </div>
-
-            <div
-              className={cn(
-                "hub-side-surface flex min-h-0 min-w-0 flex-1 flex-col lg:flex-initial",
-                !mobileInspectorOpen && "hidden lg:flex",
-              )}
-            >
-              <button
-                type="button"
-                onClick={() => setMobileInspectorOpen(false)}
-                className="relative z-10 flex h-10 shrink-0 cursor-pointer select-none items-center gap-1.5 border-b border-border bg-transparent px-4 text-[12.5px] font-medium text-muted-foreground transition-colors hover:text-foreground lg:hidden"
-              >
-                <HugeiconsIcon
-                  icon={ArrowLeft01Icon}
-                  strokeWidth={1.75}
-                  className="size-3.5"
-                />
-                Back to list
-              </button>
-              <div className="flex min-h-0 flex-1 flex-col">
-                {(isHubDesktop || mobileInspectorOpen) && (
-                  <ModelInspector
-                    model={selectedModel}
-                    isDataset={isDatasetMode}
-                    metadataUnavailable={metadataUnavailable}
-                    selectionHiddenByFilters={selectionHiddenByFilters}
-                    runtime={inspectorRuntime}
-                    actions={inspectorActions}
-                  />
-                )}
-              </div>
-            </div>
-          </div>
-        </section>
-        <OnDeviceFoldersDialog
-          open={foldersDialogOpen}
-          onOpenChange={setFoldersDialogOpen}
-          onInventoryChange={refreshInventory}
-        />
-        <ExternalLinkConfirmDialog />
+        )}
       </div>
+
+      <OnDeviceFoldersDialog
+        open={foldersDialogOpen}
+        onOpenChange={setFoldersDialogOpen}
+        onInventoryChange={refreshInventory}
+      />
+      <ExternalLinkConfirmDialog />
     </div>
   );
 }

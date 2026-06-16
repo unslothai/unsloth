@@ -25,18 +25,24 @@ const MAX_RAW_ITEMS_PER_BATCH = BATCH * 4;
 type BusyKind = "initial" | "more";
 
 /**
- * Min gap between fetchMore() calls. Two observers can fire in one tick and React
+ * Minimum gap between consecutive fetchMore() calls. Two observers (intersection
+ * + mutation/resize) can fire in the same tick during a scroll burst, and React
  * commits the in-flight flag asynchronously, so this caps the worst case at one
- * request per window. Pairs with a trailing-edge schedule: a blocked call queues
- * one fire at the window end so filters that starve the visible list keep paginating.
+ * network request per window.
+ *
+ * Pairs with a trailing-edge schedule: a call blocked by this gate doesn't
+ * vanish — it queues one fire at the end of the window so filters that
+ * starve the visible list (e.g. user picks a GGUF-only filter and every
+ * incoming raw row is non-GGUF) keep paginating instead of dead-locking.
  */
 const MIN_FETCH_INTERVAL_MS = 1000;
 
-// Preserved results older than this are refetched on re-enable so the feed can't
-// lag the Hub. Reset by every successful pull (idle time only). Mirrors hf-cache TTL.
+// Preserved results older than this are refetched on re-enable so the feed
+// can't lag behind the Hub. Reset by every successful pull, so only idle time
+// counts. Mirrors the modelInfo TTL in hf-cache.ts.
 const STALE_AFTER_MS = 5 * 60 * 1000;
 
-async function pullBatch<T>(
+export async function pullBatch<T>(
   iter: AsyncGenerator<unknown>,
   mapItem: (raw: unknown) => T | null,
   size: number,
@@ -82,30 +88,37 @@ export function useHubPaginatedSearch<T>(
 
   const iterRef = useRef<AsyncGenerator<unknown> | null>(null);
   const versionRef = useRef(0);
-  // Aborts the live iterator's in-flight fetches; replaced when a new query
-  // supersedes the feed so the abandoned listing stops fetching/priming.
+  // Aborts the live iterator's in-flight page fetches. Replaced (prior one
+  // aborted) when a new query supersedes the feed, so an abandoned listing
+  // stops fetching and priming the cache instead of running to completion.
   const abortRef = useRef<AbortController | null>(null);
 
-  // Identity of the last-fetched query. A fetch (re)starts only when one of these
-  // changes, never just on `enabled` toggling — keeps tab switches instant.
+  // Identity of the query we last fetched. A fetch (re)starts only when one of
+  // these changes, never just because `enabled` toggled — that's what keeps tab
+  // switches instant instead of refetching the whole feed each time.
   const loadedFactoryRef = useRef<typeof createIter | null>(null);
   const loadedMapItemRef = useRef<typeof mapItem | null>(null);
   const loadedNonceRef = useRef(-1);
   const loadedAtRef = useRef(0);
 
-  // Synchronous in-flight guard, set before any setState so back-to-back
-  // fetchMore() calls can't both pass the gate while React batches the commit.
+  // Synchronous in-flight guard. Set before any setState so back-to-back
+  // fetchMore() calls cannot both pass the gate while React batches the
+  // isLoadingMore commit. Cleared in finally() of the matching pull.
   const busyRef = useRef(false);
   const busyKindRef = useRef<BusyKind | null>(null);
   const busyTokenRef = useRef(0);
-  // Timestamp of the last accepted request; with the trailing-edge timer below,
-  // enforces at most one accepted request per MIN_FETCH_INTERVAL_MS.
+  // Wall-clock timestamp of the last accepted request (initial or fetchMore).
+  // Together with the trailing-edge timer below, enforces at most one accepted
+  // request per MIN_FETCH_INTERVAL_MS regardless of how many times observers
+  // call fetchMore in the meantime.
   const lastFireAtRef = useRef(0);
-  // Pending trailing-edge fire (idempotent) so a time-gated request isn't lost
-  // when no later DOM event would re-trigger us.
+  // Pending trailing-edge fire. A fetchMore() call blocked by the time gate
+  // schedules one of these (idempotent — only one can be queued at a time)
+  // so we don't lose the request when no later DOM event would re-trigger us.
   const trailingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // One follow-up request queued behind an in-flight "load more" pull; scroll
-  // observers fire repeatedly at the bottom but only one should wait.
+  // One request that arrived while a "load more" pull was already in flight.
+  // Scroll observers can fire repeatedly at the bottom, but only one follow-up
+  // page should wait behind the active pull.
   const queuedAfterBusyRef = useRef(false);
   const queuedWhileHiddenRef = useRef(false);
 
@@ -156,7 +169,8 @@ export function useHubPaginatedSearch<T>(
       return;
     }
 
-    // Same query, still fresh: reuse what we have. Stale results refetch.
+    // Same query, still fresh: reuse what we have. Stale results fall through
+    // and refetch so the feed can't lag behind the Hub.
     const sameQuery =
       loadedFactoryRef.current === createIter &&
       loadedMapItemRef.current === mapItem &&
@@ -233,8 +247,9 @@ export function useHubPaginatedSearch<T>(
       queuedWhileHiddenRef.current = false;
       return false;
     }
-    // Synchronous in-flight gate before any setState, so concurrent fires from
-    // sibling observers all see the same truth and only one proceeds.
+    // Synchronous in-flight gate. Runs before any setState so concurrent
+    // fires from sibling observers all see the same truth and only one
+    // proceeds — this closes the race window React's batched commit opens.
     if (busyRef.current) {
       if (busyKindRef.current === "more" && stateRef.current.isLoadingMore) {
         if (queuedAfterBusyRef.current) return false;
@@ -263,7 +278,9 @@ export function useHubPaginatedSearch<T>(
     const elapsed = now - lastFireAtRef.current;
 
     if (elapsed < MIN_FETCH_INTERVAL_MS) {
-      // Trailing-edge schedule: calls during the window collapse to one timer.
+      // Trailing-edge schedule. Multiple calls during the window collapse to
+      // one timer; clearing happens implicitly when fetchMore proceeds (and
+      // explicitly on iterator reset / unmount).
       if (trailingTimerRef.current === null) {
         trailingTimerRef.current = setTimeout(
           () => {
@@ -300,7 +317,7 @@ export function useHubPaginatedSearch<T>(
           scannedCount: prev.scannedCount + scanned,
           isLoadingMore: false,
           hasMore: !done,
-          // Clear any error left by a prior failed page.
+          // Clear any error left by a prior failed page now that one succeeded.
           error: null,
         }));
       })
@@ -310,8 +327,9 @@ export function useHubPaginatedSearch<T>(
         setState((prev) => ({
           ...prev,
           isLoadingMore: false,
-          // Keep results and hasMore=true: the iterator is still valid, so the next
-          // fetchMore() resumes the failed page without discarding the list (retry() restarts from page 1).
+          // Keep the accumulated results and hasMore=true: the same iterator is
+          // still valid, so the next fetchMore() resumes the page that failed
+          // without discarding the list. (retry() instead restarts from page 1.)
           error: err instanceof Error ? err.message : "Failed to load more",
         }));
       })

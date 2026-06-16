@@ -15,15 +15,18 @@ export interface FetchedReadme {
 
 interface ReadmeCacheEntry {
   promise: Promise<FetchedReadme | null>;
-  // Epoch ms after which the result is refetched. 404s and transient failures
-  // are cached briefly (transient shorter) so absence/outage can recover;
-  // positive results and pending requests never expire within the session.
+  // Epoch ms after which the resolved result is refetched. A clean 404 (no
+  // README) and a transient failure are both cached briefly so absence/outage
+  // can recover; transient failures use a shorter window to recover sooner.
+  // Positive results and still-pending requests never expire within the session.
   staleAt: number;
 }
 
 const cache = new LruMap<string, ReadmeCacheEntry>(64);
 
-// Bound each request so a stalled HF connection aborts and surfaces as a transient failure.
+// A stalled HF connection must not leave the model card spinning forever:
+// bound each request so it aborts and surfaces as a transient failure, matching
+// the timeout the dataset-size and owner-avatar helpers already use.
 const README_FETCH_TIMEOUT_MS = 10_000;
 const README_NEGATIVE_TTL_MS = 5 * 60_000;
 const README_TRANSIENT_TTL_MS = 30_000;
@@ -161,9 +164,12 @@ export function stripFrontmatter(markdown: string): {
 }
 
 /**
- * Drop heading lines that duplicate the inspector's chrome (`# Model Card …`,
- * standalone `Details` / `Model Card` / `Dataset Card`, etc.), since the page
- * header already shows the repo name and section context.
+ * Drop heading lines that duplicate the inspector's own chrome:
+ *   - leading `# Model Card …`, `## Dataset Card …`, `# Card for …`
+ *   - standalone `Details` / `Model Card` / `Dataset Card` headings anywhere
+ *
+ * The page header already shows the repo name and section context, so these
+ * titles appear as redundant duplicates inside the rendered README body.
  */
 export function stripChromeHeadings(markdown: string): string {
   const RE_HEADING = /^(#{1,6})\s+(.+?)\s*$/;

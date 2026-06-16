@@ -28,9 +28,9 @@ import { ggufVariantsMatch } from "../lib/model-identity";
 import { cn } from "@/lib/utils";
 import { confirmExternalLink } from "../stores/external-link-confirm";
 import { useHfTokenStore } from "../stores/hf-token-store";
-import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import {
   Alert02Icon,
+  ArrowDown01Icon,
   CubeIcon,
   PencilEdit02Icon,
   PlayIcon,
@@ -349,7 +349,7 @@ export function LocalOnDeviceCard({
                         </span>
                       )}
                       <HugeiconsIcon
-                        icon={ChevronDownStandardIcon}
+                        icon={ArrowDown01Icon}
                         strokeWidth={1.5}
                         className="size-3 shrink-0"
                       />
@@ -358,7 +358,7 @@ export function LocalOnDeviceCard({
                   <PopoverContent
                     align="start"
                     side="bottom"
-                    sideOffset={0}
+                    sideOffset={8}
                     avoidCollisions={false}
                     className="hub-menu-instant menu-soft-surface w-[var(--radix-popover-trigger-width)] min-w-[220px] gap-0 overflow-hidden p-0 py-2 ring-0"
                   >
@@ -452,7 +452,7 @@ export function LocalOnDeviceCard({
               !runActionsVisible && "hidden",
             )}
           >
-            {onTrain && (
+            {onTrain && HUB_POST_DOWNLOAD_ACTIONS_VISIBLE && (
               <button
                 type="button"
                 onClick={() => onTrain()}

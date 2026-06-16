@@ -129,8 +129,9 @@ const BACKEND_ADOPTERS: Record<BackendAdoptionSide, () => Promise<void>> = {
   dataset: adoptActiveDatasetDownloads,
 };
 
-// Adopt backend-running downloads this client doesn't know about. Retry only the
-// failed side(s) so transient backend readiness settles without duplicating jobs.
+// Adopt downloads the backend is running that this client doesn't know about.
+// Retry only the side(s) that failed so transient backend readiness settles
+// without duplicating already-polling jobs.
 async function hydrateBackendActiveDownloads(
   attempt = 0,
   sides: readonly BackendAdoptionSide[] = ["model", "dataset"],

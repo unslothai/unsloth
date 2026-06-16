@@ -9,11 +9,10 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { cn } from "@/lib/utils";
 import {
   ChipIcon,
   Database02Icon,
-  RemoveCircleIcon,
+  Logout01Icon,
   PackageIcon,
   RamMemoryIcon,
 } from "@hugeicons/core-free-icons";
@@ -24,30 +23,17 @@ function StatPill({
   icon,
   label,
   value,
-  tone = "default",
 }: {
   icon: IconSvgElement;
   label: string;
   value: string;
-  tone?: "default" | "active";
 }) {
   return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <div
-          className={cn(
-            "inline-flex cursor-default items-center gap-1.5 px-2.5 py-1 text-[11.5px] transition-colors duration-150",
-            tone === "active"
-              ? "rounded-full bg-emerald-500/10 text-emerald-700 ring-1 ring-inset ring-emerald-500/20 dark:text-emerald-300"
-              : "hub-tag-soft text-muted-foreground hover:text-foreground/80",
-          )}
-        >
-          <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-3.5" />
-          <span className="font-medium tabular-nums">{value}</span>
-        </div>
-      </TooltipTrigger>
-      <TooltipContent className="tooltip-compact">{label}</TooltipContent>
-    </Tooltip>
+    <span className="hub-stat-pill">
+      <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-3.5" />
+      <span className="hub-stat-pill-value">{value}</span>
+      <span>{label}</span>
+    </span>
   );
 }
 
@@ -59,6 +45,7 @@ export function ModelsHeader({
   ramLabel,
   activeCheckpoint,
   activeGgufVariant,
+  onTitleClick,
   onEject,
 }: {
   cachedCount: number;
@@ -68,16 +55,18 @@ export function ModelsHeader({
   ramLabel: string;
   activeCheckpoint: string | null;
   activeGgufVariant: string | null;
+  onTitleClick: () => void;
   onEject: () => void;
 }) {
   return (
     <header className="font-heading flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
       <PageHeading
         title="Hub"
+        onTitleClick={onTitleClick}
         subtitle={
           isDataset
             ? "Discover, download, and train on datasets locally."
-            : "Discover, download, and run models locally."
+            : "Discover, download, and run inference models locally."
         }
       />
 
@@ -125,7 +114,7 @@ export function ModelsHeader({
               className="-mr-0.5 ml-0.5 inline-flex cursor-pointer items-center gap-1 rounded-md px-1.5 text-[11px] text-muted-foreground transition-colors hover:text-foreground"
             >
               <HugeiconsIcon
-                icon={RemoveCircleIcon}
+                icon={Logout01Icon}
                 strokeWidth={1.75}
                 className="size-3"
               />

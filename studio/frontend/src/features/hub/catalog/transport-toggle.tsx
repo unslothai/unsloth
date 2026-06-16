@@ -11,7 +11,7 @@ import {
   useTransportMode,
 } from "@/features/hub/download-manager";
 import { cn } from "@/lib/utils";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 
 const OPTIONS: { value: "http" | "xet"; label: string; hint: string }[] = [
   {
@@ -30,12 +30,16 @@ export function TransportToggle() {
   const [mode, setMode] = useTransportMode();
   const { capabilities } = useDownloadTransportCapabilities();
   const xetUnavailable = capabilities?.xet.available === false;
+  const [activeTip, setActiveTip] = useState<"http" | "xet" | null>(null);
 
   useEffect(() => {
     if (mode === "xet" && xetUnavailable) {
       setMode("http");
     }
   }, [mode, setMode, xetUnavailable]);
+
+  const clearTip = (value: "http" | "xet") =>
+    setActiveTip((current) => (current === value ? null : current));
 
   return (
     <fieldset
@@ -50,20 +54,26 @@ export function TransportToggle() {
             ? capabilities.xet.reason
             : opt.hint;
         return (
-          <Tooltip key={opt.value}>
+          <Tooltip key={opt.value} open={activeTip === opt.value}>
             <TooltipTrigger asChild={true}>
               <button
                 type="button"
-                disabled={disabled}
-                onClick={() => setMode(opt.value)}
+                aria-disabled={disabled || undefined}
                 aria-pressed={active}
+                onClick={() => {
+                  if (!disabled) setMode(opt.value);
+                }}
+                onPointerEnter={() => setActiveTip(opt.value)}
+                onPointerLeave={() => clearTip(opt.value)}
+                onFocus={() => setActiveTip(opt.value)}
+                onBlur={() => clearTip(opt.value)}
                 className={cn(
-                  "inline-flex h-[22px] cursor-pointer items-center justify-center rounded-full px-2 font-medium tracking-tight transition-colors",
-                  active
-                    ? "hub-tab-toggle-pill text-foreground"
-                    : disabled
-                      ? "cursor-not-allowed text-muted-foreground/45"
-                      : "text-muted-foreground hover:text-foreground/80",
+                  "inline-flex h-[22px] items-center justify-center rounded-full px-2 font-medium tracking-tight transition-colors",
+                  disabled
+                    ? "cursor-not-allowed text-muted-foreground/45"
+                    : active
+                      ? "hub-tab-toggle-pill cursor-pointer text-foreground"
+                      : "cursor-pointer text-muted-foreground hover:text-foreground/80",
                 )}
               >
                 {opt.label}

@@ -28,7 +28,7 @@ import {
   Delete02Icon,
   FileSearchIcon,
   FolderAddIcon,
-  Folder02Icon,
+  FolderOpenIcon,
   FolderSearchIcon,
   PlusSignIcon,
   RefreshIcon,
@@ -294,7 +294,7 @@ export function OnDeviceFoldersDialog({
                 ) : sortedFolders.length === 0 ? (
                   <div className="flex h-28 flex-col items-center justify-center gap-2 px-4 text-center text-[12px] text-muted-foreground">
                     <HugeiconsIcon
-                      icon={Folder02Icon}
+                      icon={FolderOpenIcon}
                       strokeWidth={1.75}
                       className="size-5 text-muted-foreground/60"
                     />
@@ -310,7 +310,7 @@ export function OnDeviceFoldersDialog({
                       >
                         <div className="flex size-8 shrink-0 items-center justify-center rounded-[9px] bg-muted text-muted-foreground">
                           <HugeiconsIcon
-                            icon={Folder02Icon}
+                            icon={FolderOpenIcon}
                             strokeWidth={1.75}
                             className="size-4"
                           />
@@ -319,12 +319,19 @@ export function OnDeviceFoldersDialog({
                           <p className="truncate text-[12.5px] font-medium text-foreground">
                             {pathTail(folder.path)}
                           </p>
-                          <p
-                            title={folder.path}
-                            className="truncate font-mono text-[10.5px] text-muted-foreground"
-                          >
-                            {folder.path}
-                          </p>
+                          <Tooltip>
+                            <TooltipTrigger asChild={true}>
+                              <p className="truncate font-mono text-[10.5px] text-muted-foreground">
+                                {folder.path}
+                              </p>
+                            </TooltipTrigger>
+                            <TooltipContent
+                              side="bottom"
+                              className="tooltip-compact max-w-xs break-all"
+                            >
+                              {folder.path}
+                            </TooltipContent>
+                          </Tooltip>
                         </div>
                         <Tooltip>
                           <TooltipTrigger asChild={true}>

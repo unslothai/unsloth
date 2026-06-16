@@ -29,8 +29,9 @@ function emitNetworkStatusChange(): void {
 }
 
 export function getBrowserOfflineRetryDelayMs(): number {
-  // Keyed off the empirical remote-offline TTL, not navigator.onLine, so recovery
-  // doesn't stall on platforms where navigator.onLine is stuck false.
+  // Keyed off the empirical remote-offline TTL, not navigator.onLine: a retry
+  // timer must be scheduled whenever we're gating on a real failed fetch, so
+  // recovery doesn't stall on platforms where navigator.onLine is stuck false.
   return Math.max(
     0,
     getRemoteOfflineUntil(HUGGING_FACE_REMOTE_ORIGINS) - Date.now(),
@@ -62,9 +63,12 @@ export function isRemoteNetworkOffline(
 }
 
 export function isHuggingFaceOffline(): boolean {
-  // navigator.onLine is advisory only (false-reports offline on WSL2 / some
-  // WebKitGTK/Tauri webviews). The authoritative signal is the empirical
-  // remote-offline TTL, set when a real fetch fails and cleared on next success.
+  // navigator.onLine is advisory only: it false-reports offline on WSL2 and
+  // some WebKitGTK/Tauri webviews, which would wedge size fetches and the
+  // discover feed off with no recovery. The authoritative signal is the
+  // empirical remote-offline TTL, set when a real fetch fails (fetchWithTimeout)
+  // and cleared on the next success. navigator's online/offline events still
+  // drive re-evaluation via subscribeNetworkStatus.
   return isRemoteNetworkOffline(HUGGING_FACE_REMOTE_ORIGINS);
 }
 

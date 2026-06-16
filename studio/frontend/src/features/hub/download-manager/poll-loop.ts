@@ -124,8 +124,9 @@ function withDownloadTimeout<T>(
 }
 
 export function hasObservedExpectedBytes(job: ManagedDownload): boolean {
-  // Finalized bytes only: a partial whose `.incomplete` blob merely reached the
-  // expected size must not count as finished; the backend must also verify it on disk.
+  // Finalized bytes, never the in-progress total: a partial whose `.incomplete`
+  // blob merely reached the expected size must not count as finished. The
+  // backend must also verify the snapshot/variant is usable on disk.
   return (
     job.expectedBytes > 0 &&
     job.completedBytes >= job.expectedBytes &&
@@ -149,9 +150,11 @@ export function resolveProgressUpdate(
   const isGgufVariantJob =
     job.kind === DOWNLOAD_KIND.MODEL && job.variant !== null;
   const backendOwnsGgufProgress = isGgufVariantJob && reported > 0;
-  // GGUF totals are backend-owned (non-monotonic). Snapshots keep the displayed
-  // total monotonic to absorb jitter, but a fresh attempt (generation changed:
-  // XET redownload, restart, re-adoption) drops the stale high-water mark.
+  // GGUF byte totals are backend-owned (non-monotonic). For model/dataset
+  // snapshots we normally keep the displayed total monotonic to absorb
+  // per-poll jitter, but a fresh attempt (server generation changed: XET
+  // redownload, restart, re-adoption) must drop the stale high-water mark and
+  // snap to the new run's bytes rather than freeze on the old total.
   const trustBackend = backendOwnsGgufProgress || opts.resetMonotonic === true;
   const expected = trustBackend
     ? reported > 0
@@ -177,9 +180,11 @@ export function resolveProgressUpdate(
         ? downloadedBytes / expected
         : 0;
   const cappedFraction = Math.min(rawFraction, MAX_PROGRESS_FRACTION);
-  // Keep the GGUF variant bar monotonic: its backend progress is recomputed from
-  // the shared per-repo blobs/ dir each poll, so a sibling quant or generation
-  // bump can make one reading dip. A fresh download resets via startJob's seed.
+  // Keep the GGUF variant bar monotonic. Its backend progress is recomputed from
+  // the shared per-repo blobs/ dir each poll, so a sibling quant downloading into
+  // that dir, a generation bump as the variant finalizes, or a no-metadata poll
+  // can make a single reading read low. The displayed bar never moves backward
+  // within a job; a brand-new download resets it through startJob's seed fraction.
   const fraction = isGgufVariantJob
     ? Math.max(cappedFraction, job.fraction)
     : cappedFraction;
@@ -257,9 +262,11 @@ export function finalize(
     notify(job, "onCancelled", 0);
     removeJob(key);
   } else if (outcome === "complete") {
-    // Reconcile to the largest known figure so a terminal status arriving before
-    // the final progress poll doesn't leave a stale sub-total: downloaded ==
-    // completed >= expected, fraction 1, and report that figure to listeners.
+    // A verified-complete download has every expected byte on disk, so the
+    // terminal status arriving before a final progress poll must not leave the
+    // row showing a stale sub-total. Reconcile to the largest known figure so
+    // downloaded == completed >= expected with fraction 1, and report that same
+    // figure to listeners rather than the last polled value.
     const bytes = Math.max(
       opts.bytes ?? 0,
       job.downloadedBytes,
@@ -354,7 +361,9 @@ async function finalizeTerminalStatus(
         finalBytes = downloadedBytes;
       }
     } catch {
-      // Terminal status is authoritative; progress reconciliation is best-effort.
+      // The terminal status is authoritative; progress reconciliation only
+      // trims already-cached GGUF companion bytes when the endpoint is
+      // available.
     }
     finalize(key, "complete", { bytes: finalBytes });
   } else if (terminalKind === "error") {
@@ -597,10 +606,13 @@ export async function startJob(
   } = {},
 ): Promise<void> {
   const key = jobKeyOf(req.kind, req.repoId, req.variant);
-  // Peer guard stops a FRESH start from double-starting a variant already
-  // downloading (or colliding with a no-variant snapshot). Skipped when ADOPTING:
-  // the restored own entry would look like a peer and freeze the bar; adoptJob's
-  // `pollingStarted` guard already prevents double-polling the same key.
+  // The peer guard prevents a FRESH start from double-starting a variant that's
+  // already downloading (or colliding with a no-variant snapshot). It must NOT
+  // apply when ADOPTING: after a page refresh the job's own active entry is
+  // restored from persistence, so `hasActiveRepoPeer` would see THIS variant as
+  // a "peer" and bail before beginPolling — leaving the bar frozen with no
+  // speed. adoptJob's own `pollingStarted` guard already prevents double-polling
+  // the same key, so adoption re-attaches safely without this check.
   if (!opts.adopt && hasActiveRepoPeer(req.kind, req.repoId, key, req.variant)) {
     return;
   }
@@ -649,8 +661,10 @@ export async function startJob(
   const seedDownloaded = opts.adopt ? (existing?.downloadedBytes ?? 0) : 0;
   const seedCompleted = opts.adopt ? (existing?.completedBytes ?? 0) : 0;
   const seedFraction = opts.adopt ? (existing?.fraction ?? 0) : 0;
-  // An adopted job never called apiStart, so it learns the run's generation from
-  // the probe (or persisted value) to scope a later cancel to this exact run.
+  // An adopted job never called apiStart, so it must learn the run's
+  // generation from the probe (or a prior persisted value) to scope a later
+  // cancel to this exact run. Without it the cancel omits the generation and
+  // the backend treats it as matching any run for the key.
   const seedGeneration = opts.adopt
     ? Number.isSafeInteger(opts.generation)
       ? opts.generation
@@ -690,8 +704,8 @@ export async function startJob(
       });
       return;
     }
-    // A cancel pressed during this apiStart round-trip can land before the job is
-    // claimable; re-issue against the accepted generation.
+    // A cancel pressed during this apiStart round-trip can reach the backend
+    // before the job is claimable. Re-issue against the accepted generation.
     if (rt.cancelRequested && result.accepted) {
       reissueDroppedStartCancel(req, result.generation);
     }
@@ -851,8 +865,9 @@ export async function cancelJob(key: string): Promise<void> {
   } catch (err) {
     const liveAtError = runtimeRegistry.runtimes.get(key);
     if (rt && liveAtError && liveAtError.epoch !== cancelEpoch) return;
-    // apiCancel failed; the probe below is authoritative. Disarm the watchdog so
-    // it can't finalize "cancelled" mid-probe and tear down a still-running worker.
+    // apiCancel failed; the probe below is the authority on the real backend
+    // state. Disarm the watchdog so it can't finalize "cancelled" mid-probe and
+    // tear down a worker that is actually still running.
     clearWatchdog(liveAtError);
 
     const probe = await probeCancelOutcome(key, job, rt, cancelEpoch);

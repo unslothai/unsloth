@@ -13,12 +13,15 @@ import { AiSecurity03Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
 interface HfTokenIndicatorProps {
-  // true: chip with label (Train wizard); false: icon-only pill (Hub header).
+  /** When true, render a chip with a circular icon badge + "HF Token" label
+   *  (used in the Train page wizard). When false (default), render the
+   *  compact icon-only pill used in the Hub header. */
   showLabel?: boolean;
 }
 
-// Compact "set / not set" indicator for the app-wide Hugging Face token; click
-// opens Settings -> General. Shared by the Hub header and Train wizard.
+// Compact "set / not set" indicator for the app-wide Hugging Face token.
+// Click opens Settings → General where the token field lives. Used by the
+// Hub header and the Train page wizard so all surfaces edit the same store.
 export function HfTokenIndicator({ showLabel = false }: HfTokenIndicatorProps = {}) {
   const hfToken = useHfTokenStore((s) => s.token);
   const openDialog = useSettingsDialogStore((s) => s.openDialog);
@@ -87,10 +90,10 @@ export function HfTokenIndicator({ showLabel = false }: HfTokenIndicatorProps = 
           onClick={() => openDialog("general")}
           aria-label={ariaLabel}
           className={cn(
-            "inline-flex size-[26px] items-center justify-center rounded-full text-[11.5px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+            "inline-flex items-center justify-center px-2.5 py-1 text-[11.5px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
             hasToken
               ? "hub-tag-soft text-muted-foreground hover:text-foreground/80"
-              : "bg-destructive text-destructive-foreground hover:bg-destructive/90",
+              : "rounded-full bg-destructive text-destructive-foreground hover:bg-destructive/90",
           )}
         >
           <HugeiconsIcon

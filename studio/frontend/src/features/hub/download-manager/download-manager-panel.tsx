@@ -9,9 +9,9 @@ import {
 import { hasAuthToken, mustChangePassword } from "@/features/auth/session";
 import { isTauri } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
-import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import {
   Alert02Icon,
+  ArrowDown01Icon,
   Cancel01Icon,
   CheckmarkCircle02Icon,
   Download01Icon,
@@ -139,7 +139,7 @@ function DownloadRow({ jobKey }: { jobKey: string }) {
               }
               className={cn(
                 "inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-[7px] text-muted-foreground transition-colors",
-                "hover:bg-foreground/[0.06] hover:text-foreground disabled:cursor-default disabled:opacity-50 dark:hover:bg-white/[0.1]",
+                "hover:bg-foreground/[0.06] hover:text-foreground disabled:cursor-default disabled:opacity-50 dark:hover:bg-white/[0.06]",
               )}
             >
               <HugeiconsIcon
@@ -234,10 +234,10 @@ export function DownloadManagerPanel() {
               type="button"
               aria-label="Collapse downloads"
               onClick={() => setCollapsed(true)}
-              className="inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-[7px] text-muted-foreground transition-colors hover:bg-foreground/[0.06] hover:text-foreground dark:hover:bg-white/[0.1]"
+              className="inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-[7px] text-muted-foreground transition-colors hover:bg-foreground/[0.06] hover:text-foreground dark:hover:bg-white/[0.06]"
             >
               <HugeiconsIcon
-                icon={ChevronDownStandardIcon}
+                icon={ArrowDown01Icon}
                 strokeWidth={1.75}
                 className="size-3.5"
               />

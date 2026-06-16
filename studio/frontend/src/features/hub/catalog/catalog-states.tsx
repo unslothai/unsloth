@@ -58,7 +58,7 @@ export function NetworkErrorState({
         <button
           type="button"
           onClick={onRetry}
-          className="inline-flex h-8 items-center gap-1.5 rounded-[10px] bg-transparent px-3 text-[12px] font-medium text-foreground transition-colors hover:bg-foreground/[0.04] dark:hover:bg-white/[0.1]"
+          className="inline-flex h-8 items-center gap-1.5 rounded-[10px] bg-transparent px-3 text-[12px] font-medium text-foreground transition-colors hover:bg-foreground/[0.04] dark:hover:bg-white/[0.05]"
         >
           <HugeiconsIcon
             icon={RefreshIcon}
@@ -113,7 +113,7 @@ export function DiscoverFetchMoreState({
           type="button"
           onClick={onFetchMore}
           disabled={isLoadingMore}
-          className="inline-flex h-8 items-center gap-1.5 rounded-[10px] bg-transparent px-3 text-[12px] font-medium text-foreground transition-colors hover:bg-foreground/[0.04] disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-white/[0.1]"
+          className="inline-flex h-8 items-center gap-1.5 rounded-[10px] bg-transparent px-3 text-[12px] font-medium text-foreground transition-colors hover:bg-foreground/[0.04] disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-white/[0.05]"
         >
           <HugeiconsIcon
             icon={RefreshIcon}
@@ -128,26 +128,16 @@ export function DiscoverFetchMoreState({
 }
 
 export function DiscoverFetchMoreFooter({
-  scannedCount,
-  manualFetchAvailable,
-  hasActiveFilters,
   isLoadingMore,
   onFetchMore,
 }: {
-  scannedCount: number;
-  manualFetchAvailable: boolean;
-  hasActiveFilters: boolean;
   isLoadingMore: boolean;
   onFetchMore: () => void;
 }) {
   return (
     <div className="relative z-10 flex flex-col items-center gap-2 bg-card px-4 py-4 text-center">
       <p className="text-[11.5px] leading-4 text-muted-foreground">
-        {hasActiveFilters
-          ? "Some results may be hidden by your filters."
-          : manualFetchAvailable
-            ? `Scanned ${scannedCount.toLocaleString()} results. Load more to continue.`
-            : "More results are available."}
+        Some results may be hidden by your filters.
       </p>
       <button
         type="button"
@@ -191,7 +181,7 @@ export function InventoryErrorState({
       <button
         type="button"
         onClick={onRetry}
-        className="inline-flex h-8 items-center gap-1.5 rounded-[10px] bg-transparent px-3 text-[12px] font-medium text-foreground transition-colors hover:bg-foreground/[0.04] dark:hover:bg-white/[0.1]"
+        className="inline-flex h-8 items-center gap-1.5 rounded-[10px] bg-transparent px-3 text-[12px] font-medium text-foreground transition-colors hover:bg-foreground/[0.04] dark:hover:bg-white/[0.05]"
       >
         <HugeiconsIcon icon={RefreshIcon} strokeWidth={1.75} className="size-3.5" />
         Try again

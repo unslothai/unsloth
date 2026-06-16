@@ -3,40 +3,20 @@
 
 import { cn } from "@/lib/utils";
 import { useEffect, useState } from "react";
+import { ownerPaletteColor } from "../lib/avatar-theme";
 import { useHfOwnerAvatar } from "../lib/hf-owner-avatar";
 import {
   type ProviderLogo,
   resolveOwnerProviderLogo,
 } from "../lib/provider-logos";
 
-const PALETTE = [
-  "hsl(214 42% 42%)",
-  "hsl(172 32% 36%)",
-  "hsl(30 42% 42%)",
-  "hsl(348 36% 44%)",
-  "hsl(198 38% 40%)",
-  "hsl(140 26% 38%)",
-  "hsl(222 24% 46%)",
-  "hsl(16 34% 44%)",
-  "hsl(260 22% 48%)",
-  "hsl(44 44% 40%)",
-];
-
-function hashOwner(owner: string): number {
-  let h = 0;
-  for (let i = 0; i < owner.length; i++) {
-    h = (h * 31 + owner.charCodeAt(i)) | 0;
-  }
-  return Math.abs(h);
-}
-
 type AvatarSize = "xs" | "sm" | "md" | "lg";
 
 const SIZES: Record<AvatarSize, string> = {
-  xs: "size-5 rounded-[6px] text-[9px]",
-  sm: "size-7 rounded-[8px] text-[11px]",
-  md: "size-9 rounded-[10px] text-[13px]",
-  lg: "size-12 rounded-[13px] text-[16px]",
+  xs: "size-5 rounded-[8px] text-[9px]",
+  sm: "size-7 rounded-[10px] text-[11px]",
+  md: "size-9 rounded-[12px] text-[13px]",
+  lg: "size-12 rounded-[15px] text-[16px]",
 };
 
 const AVATAR_IMAGE_RETRY_BASE_MS = 60_000;
@@ -62,8 +42,13 @@ export function OwnerAvatar({
   className,
 }: {
   owner: string;
-  // For an eligible owner (currently "unsloth"), match a known upstream provider
-  // and render its logo (e.g. an Unsloth Qwen2.5 re-upload shows the Qwen logo).
+  /**
+   * Repo name (part after `owner/`). When provided alongside an eligible
+   * owner (currently "unsloth"), the avatar tries to match a known upstream
+   * provider from the registry and renders that provider's logo instead of
+   * the owner's HF profile picture. Used so an Unsloth re-upload of e.g.
+   * Qwen2.5-7B shows the Qwen logo while still labeling the owner "unsloth".
+   */
   repoName?: string;
   size?: AvatarSize;
   className?: string;
@@ -79,6 +64,18 @@ export function OwnerAvatar({
     );
   }
   return <DefaultAvatar owner={owner} size={size} className={className} />;
+}
+
+export function useAvatarImageUrl(
+  owner: string,
+  repoName?: string,
+): string | null {
+  const provider = resolveOwnerProviderLogo(owner, repoName);
+  const remoteUrl = useHfOwnerAvatar(owner.trim() || "?");
+  if (provider) {
+    return provider.treatment === "original" ? provider.logoPath : null;
+  }
+  return remoteUrl;
 }
 
 function ProviderLogoTile({
@@ -112,14 +109,17 @@ function ProviderLogoTile({
           alt=""
           loading="lazy"
           className={cn(
-            fit === "cover" ? "size-full object-cover" : "size-3/4 object-contain",
+            fit === "cover"
+              ? "size-full object-cover"
+              : "size-3/4 object-contain",
           )}
         />
       </span>
     );
   }
 
-  // mono treatments paint a silhouette via CSS mask; host text color drives its color.
+  // mono treatments paint a silhouette via CSS mask; the host element's
+  // text color drives the silhouette color (theme-aware vs. fixed black).
   const colorClass =
     provider.treatment === "mono-black" ? "text-black" : "text-foreground";
   return (
@@ -157,7 +157,7 @@ function DefaultAvatar({
 }) {
   const owned = owner.trim() || "?";
   const initial = owned[0]?.toUpperCase() ?? "?";
-  const color = PALETTE[hashOwner(owned) % PALETTE.length];
+  const color = ownerPaletteColor(owned);
   const remoteUrl = useHfOwnerAvatar(owned);
   const [failedImage, setFailedImage] = useState<FailedAvatarImage | null>(
     null,

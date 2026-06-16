@@ -14,6 +14,8 @@ const ModelsPage = lazy(() =>
 
 export interface ModelsSearch {
   tab?: "discover" | "downloaded";
+  model?: string;
+  section?: "trending" | "latest" | "finetune";
 }
 
 export const Route = createRoute({
@@ -22,8 +24,15 @@ export const Route = createRoute({
   beforeLoad: () => requireAuth(),
   component: ModelsPage,
   validateSearch: (search: Record<string, unknown>): ModelsSearch => {
+    const next: ModelsSearch = {};
     const raw = search.tab;
-    if (raw === "discover" || raw === "downloaded") return { tab: raw };
-    return {};
+    if (raw === "discover" || raw === "downloaded") next.tab = raw;
+    const model = search.model;
+    if (typeof model === "string" && model.length > 0) next.model = model;
+    const section = search.section;
+    if (section === "trending" || section === "latest" || section === "finetune") {
+      next.section = section;
+    }
+    return next;
   },
 });

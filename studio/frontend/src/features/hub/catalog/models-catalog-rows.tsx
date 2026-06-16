@@ -45,16 +45,21 @@ import type {
   LocalInventoryRow,
 } from "../types";
 import { OwnerAvatar } from "./owner-avatar";
+import { AccessGlyphs, CapabilityPill } from "./shared";
+import { detectCapabilities } from "../lib/model-capabilities";
 
 const COARSE_POINTER =
   typeof window !== "undefined" &&
   typeof window.matchMedia === "function" &&
   window.matchMedia("(pointer: coarse)").matches;
 
-// Defer the cached-size chip (a Radix Tooltip + two store subscriptions) until the
-// row is hovered/focused so flicking the list doesn't pay that cost per row. The
-// placeholder renders an identical StatChip, so the swap shifts nothing. Coarse
-// pointers have no hover, so arm immediately; default true so out-of-row usage works.
+// Rows defer the heaviest trailing widget — the cached-size chip, which mounts
+// a Radix Tooltip plus two store subscriptions — until the row is first hovered
+// or focused, so flicking the virtualized list doesn't pay that cost for every
+// row that scrolls through the viewport. The static placeholder renders the
+// identical StatChip, so the swap is invisible and shifts nothing. Touch
+// (coarse pointer) has no hover, so it arms immediately to keep the size
+// tooltip tap-reachable. Default true so any out-of-row usage stays functional.
 const CatalogRowInteractiveContext = createContext(true);
 
 function CachedSizeChip(props: {
@@ -66,7 +71,9 @@ function CachedSizeChip(props: {
 }) {
   const interactive = useContext(CatalogRowInteractiveContext);
   if (!interactive) {
-    return <StatChip icon={PackageIcon} value={formatBytes(props.totalBytes)} />;
+    return (
+      <StatChip icon={PackageIcon} value={formatBytes(props.totalBytes)} />
+    );
   }
   return <CachedSizeChipLive {...props} />;
 }
@@ -216,6 +223,7 @@ function CatalogRow({
   tooltip,
   label,
   children,
+  variant = "flat",
 }: {
   selected: boolean;
   active?: boolean;
@@ -223,25 +231,37 @@ function CatalogRow({
   onClick: () => void;
   label: string;
   children: ReactNode;
+  variant?: "flat" | "card";
 }) {
   const [interactive, setInteractive] = useState(COARSE_POINTER);
   const arm = useCallback(() => setInteractive(true), []);
+  const card = variant === "card";
   const button = (
     <div
       data-selected={selected || undefined}
       data-active={active || undefined}
       onPointerEnter={arm}
       onFocusCapture={arm}
-      className="catalog-row group/row relative block w-full select-none overflow-hidden rounded-[14px] pl-3 pr-4 py-2.5 text-left"
+      className={cn(
+        "group/row relative w-full select-none overflow-hidden text-left",
+        card
+          ? "hub-result-row flex h-full items-center rounded-[24px] px-4"
+          : "catalog-row block rounded-[14px] pl-3 pr-2.5 py-2.5",
+      )}
     >
       <button
         type="button"
         aria-label={label}
         onClick={onClick}
-        className="absolute inset-0 cursor-pointer rounded-[14px] outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
+        className={cn(
+          "absolute inset-0 cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
+          card ? "rounded-[24px]" : "rounded-[14px]",
+        )}
       />
       <CatalogRowInteractiveContext.Provider value={interactive}>
-        <div className="pointer-events-none relative">{children}</div>
+        <div className={cn("pointer-events-none relative", card && "z-[1] w-full")}>
+          {children}
+        </div>
       </CatalogRowInteractiveContext.Provider>
     </div>
   );
@@ -250,9 +270,9 @@ function CatalogRow({
     <Tooltip>
       <TooltipTrigger asChild={true}>{button}</TooltipTrigger>
       <TooltipContent
-        side="right"
-        align="center"
-        sideOffset={8}
+        side={card ? "top" : "right"}
+        align="start"
+        sideOffset={card ? 6 : 8}
         className="tooltip-compact max-w-xs"
       >
         {tooltip}
@@ -304,7 +324,7 @@ function TooltipLegendRow({
   );
 }
 
-function buildRowStatusTooltip({
+export function buildRowStatusTooltip({
   isGguf,
   isAdapter,
   isAvailableOnDevice,
@@ -432,14 +452,19 @@ export const DiscoverModelRow = memo(function DiscoverModelRow({
         <OwnerAvatar
           owner={row.owner}
           repoName={row.repo}
-          className="size-8 rounded-[9px]"
+          className="size-8 rounded-[11px]"
         />
         <div className="flex min-w-0 flex-1 flex-col gap-[3px]">
           <div className="flex h-[18px] min-w-0 items-center justify-between gap-2">
-            <div className="flex min-w-0 items-center gap-1.5 pr-2">
+            <div className="flex min-w-0 items-center gap-2 pr-2">
               <p className="truncate text-[12px] font-medium leading-[18px] tracking-[-0.005em] text-foreground">
                 {row.repo}
               </p>
+              <AccessGlyphs
+                gated={row.result.gated}
+                isPrivate={row.result.private}
+                tooltip={false}
+              />
               {row.result.isGguf && (
                 <span
                   role="img"
@@ -591,9 +616,21 @@ export const InventoryRow = memo(function InventoryRow({
     unsupported,
     resourceLabel: isDataset ? "dataset" : "model",
   });
+  const capabilities = useMemo(
+    () =>
+      isDataset
+        ? []
+        : detectCapabilities(
+            row.tags,
+            row.pipelineTag ?? undefined,
+            rowModelId,
+          ).slice(0, 3),
+    [isDataset, row.tags, row.pipelineTag, rowModelId],
+  );
 
   return (
     <CatalogRow
+      variant="card"
       selected={selected}
       active={active}
       tooltip={tooltip}
@@ -602,21 +639,21 @@ export const InventoryRow = memo(function InventoryRow({
     >
       <div
         className={cn(
-          "flex items-center gap-3 transition-opacity",
+          "flex w-full items-center gap-3 transition-opacity",
           dimmed && "opacity-25 group-hover/row:opacity-60",
         )}
       >
-        <OwnerAvatar
-          owner={row.owner}
-          repoName={title}
-          className="size-8 rounded-[9px]"
-        />
-        <div className="flex min-w-0 flex-1 flex-col gap-[3px]">
-          <div className="flex h-[18px] min-w-0 items-center justify-between gap-2">
-            <div className="flex min-w-0 items-center gap-1.5 pr-2">
-              <p className="truncate text-[12px] font-medium leading-[18px] tracking-[-0.005em] text-foreground">
+        <div className="flex min-w-0 flex-[2] items-center gap-3">
+          <OwnerAvatar
+            owner={row.owner}
+            repoName={title}
+            className="size-9 rounded-[12px]"
+          />
+          <div className="min-w-0 flex-1">
+            <div className="flex min-w-0 items-center gap-1.5">
+              <span className="truncate text-[13.5px] font-semibold leading-[17px] text-foreground">
                 {title}
-              </p>
+              </span>
               {row.isGguf && (
                 <span
                   role="img"
@@ -640,58 +677,7 @@ export const InventoryRow = memo(function InventoryRow({
                 <StatusDot tone="danger" label="May not be supported yet" />
               )}
             </div>
-            <div className="flex shrink-0 items-center gap-1">
-              {canDelete && cacheDeletableRepoId && (
-                <ModelDeleteAction
-                  ariaLabel={`Delete ${cacheDeletableRepoId}`}
-                  title={
-                    isDataset
-                      ? "Delete cached dataset?"
-                      : "Delete cached model?"
-                  }
-                  description={
-                    <>
-                      This will remove{" "}
-                      <span className="font-medium text-foreground">
-                        {cacheDeletableRepoId}
-                      </span>{" "}
-                      {isDataset
-                        ? "and its downloaded files"
-                        : row.isGguf
-                          ? "and all of its downloaded quantizations"
-                          : "and all of its downloaded files"}
-                      {row.kind === "cache"
-                        ? ` (${formatBytes(row.bytes)})`
-                        : ""}{" "}
-                      from disk. You can re-download it later.
-                    </>
-                  }
-                  successMessage={`Deleted ${cacheDeletableRepoId}`}
-                  buttonClassName="pointer-events-auto hub-modal-pe-guard opacity-0 transition-opacity group-hover/row:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 [@media(pointer:coarse)]:opacity-100"
-                  iconClassName="size-3.5"
-                  onConfirm={async () => {
-                    if (isDataset) {
-                      await deleteCachedDataset(cacheDeletableRepoId);
-                    } else {
-                      await deleteCachedModel(cacheDeletableRepoId);
-                    }
-                  }}
-                  onDeleted={onChange}
-                />
-              )}
-              {row.kind === "cache" && (
-                <CachedSizeChip
-                  repoId={row.repoId}
-                  totalBytes={row.bytes}
-                  isGguf={row.isGguf}
-                  isDataset={isDataset}
-                  cachePath={row.cachePath}
-                />
-              )}
-            </div>
-          </div>
-          <div className="flex h-[16px] min-w-0 items-center justify-between gap-2 text-[11.5px] leading-[16px] text-muted-foreground/85">
-            <span className="flex min-w-0 items-center gap-1">
+            <span className="mt-0.5 flex min-w-0 items-center gap-1 text-[11.5px] leading-[15px] text-muted-foreground/80">
               <span className="truncate">{subLabel}</span>
               {subLabel.toLowerCase() === "unsloth" && (
                 <span
@@ -700,12 +686,75 @@ export const InventoryRow = memo(function InventoryRow({
                 />
               )}
             </span>
-            {trailing && (
-              <span className="shrink-0 text-[10.5px] tabular-nums">
-                {trailing}
-              </span>
-            )}
           </div>
+        </div>
+
+        <div className="hidden min-w-0 flex-[1.4] items-center gap-1.5 md:flex">
+          {capabilities.map((capability) => (
+            <CapabilityPill
+              key={capability.key}
+              capability={capability}
+              iconOnly={true}
+              tooltip={false}
+            />
+          ))}
+        </div>
+
+        <div className="hidden w-[84px] shrink-0 truncate text-[12px] tabular-nums text-muted-foreground xl:block">
+          {trailing ?? "—"}
+        </div>
+
+        <div className="flex w-[92px] shrink-0 items-center justify-end">
+          {row.kind === "cache" ? (
+            <CachedSizeChip
+              repoId={row.repoId}
+              totalBytes={row.bytes}
+              isGguf={row.isGguf}
+              isDataset={isDataset}
+              cachePath={row.cachePath}
+            />
+          ) : (
+            <span className="text-[12px] tabular-nums text-muted-foreground/55">
+              —
+            </span>
+          )}
+        </div>
+
+        <div className="flex w-9 shrink-0 items-center justify-end">
+          {canDelete && cacheDeletableRepoId && (
+            <ModelDeleteAction
+              ariaLabel={`Delete ${cacheDeletableRepoId}`}
+              title={
+                isDataset ? "Delete cached dataset?" : "Delete cached model?"
+              }
+              description={
+                <>
+                  This will remove{" "}
+                  <span className="font-medium text-foreground">
+                    {cacheDeletableRepoId}
+                  </span>{" "}
+                  {isDataset
+                    ? "and its downloaded files"
+                    : row.isGguf
+                      ? "and all of its downloaded quantizations"
+                      : "and all of its downloaded files"}
+                  {row.kind === "cache" ? ` (${formatBytes(row.bytes)})` : ""}{" "}
+                  from disk. You can re-download it later.
+                </>
+              }
+              successMessage={`Deleted ${cacheDeletableRepoId}`}
+              buttonClassName="pointer-events-auto hub-modal-pe-guard p-2 opacity-0 transition-opacity group-hover/row:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 [@media(pointer:coarse)]:opacity-100"
+              iconClassName="size-4"
+              onConfirm={async () => {
+                if (isDataset) {
+                  await deleteCachedDataset(cacheDeletableRepoId);
+                } else {
+                  await deleteCachedModel(cacheDeletableRepoId);
+                }
+              }}
+              onDeleted={onChange}
+            />
+          )}
         </div>
       </div>
     </CatalogRow>
@@ -719,19 +768,35 @@ export function VirtualRows<T>({
   scrollElement,
   getKey,
   renderRow,
+  scrollMargin = 0,
+  columns = 1,
+  rowHeight = CATALOG_ROW_HEIGHT_PX,
+  cellHeight = rowHeight,
+  columnGap = 12,
 }: {
   items: readonly T[];
   scrollElement: HTMLDivElement | null;
   getKey: (item: T, index: number) => string;
   renderRow: (item: T) => ReactNode;
+  scrollMargin?: number;
+  columns?: number;
+  rowHeight?: number;
+  cellHeight?: number;
+  columnGap?: number;
 }) {
+  const lanes = Math.max(1, columns);
+  const rowCount = Math.ceil(items.length / lanes);
   // eslint-disable-next-line react-hooks/incompatible-library
   const virtualizer = useVirtualizer({
-    count: items.length,
+    count: rowCount,
     getScrollElement: () => scrollElement,
-    estimateSize: () => CATALOG_ROW_HEIGHT_PX,
+    estimateSize: () => rowHeight,
     overscan: 10,
-    getItemKey: (index) => getKey(items[index], index),
+    scrollMargin,
+    getItemKey: (rowIndex) => {
+      const item = items[rowIndex * lanes];
+      return item ? getKey(item, rowIndex * lanes) : `row-${rowIndex}`;
+    },
   });
 
   return (
@@ -743,26 +808,54 @@ export function VirtualRows<T>({
         overflowAnchor: "none",
       }}
     >
-      {virtualizer.getVirtualItems().map((virtualRow) => (
-        <li
-          key={virtualRow.key}
-          data-index={virtualRow.index}
-          style={{
-            position: "absolute",
-            top: 0,
-            left: 0,
-            width: "100%",
-            transform: `translateY(${virtualRow.start}px)`,
-            // Lock rows to estimateSize with no measureElement ref: per-mount
-            // measurement churns the virtualizer (re-renders + offset recompute)
-            // that reads as a jump. A fixed matching height keeps appends stable.
-            height: `${CATALOG_ROW_HEIGHT_PX}px`,
-            contain: "layout paint",
-          }}
-        >
-          {renderRow(items[virtualRow.index])}
-        </li>
-      ))}
+      {virtualizer.getVirtualItems().map((virtualRow) => {
+        const startIndex = virtualRow.index * lanes;
+        return (
+          <li
+            key={virtualRow.key}
+            data-index={virtualRow.index}
+            style={{
+              position: "absolute",
+              top: 0,
+              left: 0,
+              width: "100%",
+              transform: `translateY(${virtualRow.start - virtualizer.options.scrollMargin}px)`,
+              // Lock every row to the same height as the virtualizer's estimate.
+              // No measureElement ref: dynamic measurement on each row mount
+              // triggers virtualizer state churn (re-renders + occasional offset
+              // recompute) that the user perceives as a jump while new rows
+              // arrive. With a fixed height that matches estimateSize exactly,
+              // appending below the viewport can never shift visible items.
+              height: `${rowHeight}px`,
+              contain: "layout",
+            }}
+          >
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: `repeat(${lanes}, minmax(0, 1fr))`,
+                columnGap: `${columnGap}px`,
+                height: `${cellHeight}px`,
+              }}
+            >
+              {Array.from({ length: lanes }, (_, lane) => {
+                const item = items[startIndex + lane];
+                if (item === undefined) {
+                  return <div key={`empty-${lane}`} />;
+                }
+                return (
+                  <div
+                    key={getKey(item, startIndex + lane)}
+                    className="min-w-0"
+                  >
+                    {renderRow(item)}
+                  </div>
+                );
+              })}
+            </div>
+          </li>
+        );
+      })}
     </ul>
   );
 }

@@ -1,18 +1,21 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// WebView-compatibility shims. AbortSignal.timeout (WebKitGTK < 2.38) and
-// AbortSignal.any (WebKitGTK < 2.44) are missing on older engines Tauri embeds
-// and throw synchronously if called. These ponyfills delegate to the native
-// impl when present, else fall back to an AbortController.
+// WebView-compatibility shims for AbortSignal helpers. AbortSignal.timeout
+// (WebKitGTK < 2.38, Safari < 16) and AbortSignal.any (WebKitGTK < 2.44,
+// Safari < 17.4) are missing on the older engines Tauri can embed; calling
+// them directly throws synchronously before a request even starts. These
+// ponyfills delegate to the native implementation when present and fall back
+// to an AbortController otherwise.
 
 export interface PollSignal {
   signal: AbortSignal;
   dispose: () => void;
 }
 
-// Timeout signal paired with a disposer. On the ponyfill path the setTimeout
-// pins the controller until it fires, so callers settling early MUST dispose.
+// Returns a timeout signal paired with a disposer. On engines without native
+// AbortSignal.timeout the ponyfill's setTimeout would otherwise pin the
+// controller until it fires; callers that settle early MUST dispose to clear it.
 export function disposableTimeoutSignal(ms: number): PollSignal {
   if (typeof AbortSignal.timeout === "function") {
     return { signal: AbortSignal.timeout(ms), dispose: () => {} };
@@ -32,7 +35,8 @@ export function timeoutSignal(ms: number): AbortSignal {
   return disposableTimeoutSignal(ms).signal;
 }
 
-// Callers MUST dispose() once the request settles so abort listeners don't pile up.
+// Callers MUST invoke dispose() once the request settles so the abort
+// listeners don't pile up until the inputs themselves are GC'd.
 export function combineAbortSignals(signals: AbortSignal[]): PollSignal {
   if (typeof AbortSignal.any === "function") {
     return { signal: AbortSignal.any(signals), dispose: () => {} };
@@ -78,8 +82,9 @@ export function abortError(signal: AbortSignal): DOMException {
     : new DOMException("The operation was aborted.", "AbortError");
 }
 
-// Rejects the returned promise on abort but never aborts the wrapped promise,
-// so a request shared across callers keeps running when one caller's signal fires.
+// Rejects the returned promise when *signal* aborts, but never aborts the
+// wrapped *promise* itself, so a request shared across callers keeps running
+// when one caller's signal fires.
 export function withAbort<T>(
   promise: Promise<T>,
   signal?: AbortSignal,

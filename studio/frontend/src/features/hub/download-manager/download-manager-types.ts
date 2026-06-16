@@ -13,11 +13,12 @@ export interface ManagedDownload {
   variant: string | null;
   state: DownloadJobState;
   downloadedBytes: number;
-  // Finalized bytes on disk (excludes the in-progress `.incomplete` portion in
-  // `downloadedBytes`). The idle/registry-loss completion fallback keys off this
-  // so a partial can't be marked complete.
+  // Finalized bytes on disk (excludes the in-progress `.incomplete` portion
+  // that `downloadedBytes` includes for a smooth bar). The idle/registry-loss
+  // completion fallback keys off this so a partial can't be marked complete.
   completedBytes: number;
-  // Server-verified completion; not trusted across reloads (hydration re-probes).
+  // Server-verified snapshot/variant completion. This is intentionally not
+  // trusted across reloads; hydration re-probes before using it.
   completeOnDisk: boolean;
   expectedBytes: number;
   fraction: number;

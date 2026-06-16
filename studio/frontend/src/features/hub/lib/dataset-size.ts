@@ -23,10 +23,11 @@ interface DatasetSizeApiResponse {
   };
 }
 
-// Transient (429/5xx/network) misses cache briefly so a rate-limited burst
-// doesn't pin the size to "unknown" until reload. "longlived" covers stable-ish
-// answers like datasets-server 404 ("not processed yet"); "permanent" is a
-// genuinely missing repo (HF models API 404).
+// 429/5xx/network hiccups are transient: cache briefly so a rate-limited burst
+// doesn't pin the size to "unknown" until reload. "longlived" is for answers
+// that are stable for a while but not forever — notably datasets-server 404s,
+// which often mean "not processed yet" rather than "never". "permanent" is only
+// for a genuinely missing repo (HF models API 404).
 const TRANSIENT_MISS_TTL_MS = 60_000;
 const LONGLIVED_MISS_TTL_MS = 24 * 60 * 60 * 1000;
 const FETCH_TIMEOUT_MS = 10_000;

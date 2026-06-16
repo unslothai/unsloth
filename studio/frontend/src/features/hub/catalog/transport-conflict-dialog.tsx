@@ -23,8 +23,9 @@ export function TransportConflictDialog({
 }: {
   conflict: TransportConflictInfo | null;
   onCancel: () => void;
-  // Continue on the partial download's existing transport (resumes if possible);
-  // distinct from switching transport, which always restarts from scratch.
+  // Continue with the transport the partial download already used (resumes
+  // when possible, otherwise restarts on it). Distinct from switching to the
+  // newly-selected transport, which always restarts from scratch.
   onKeepTransport: () => void;
   onSwitchTransport: () => void;
 }) {
