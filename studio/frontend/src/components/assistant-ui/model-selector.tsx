@@ -206,14 +206,14 @@ type HubSection = "downloaded" | "recommended" | "custom";
 
 const HUB_SECTION_TABS: { value: string; label: string; icon?: ReactNode }[] = [
   {
-    value: "downloaded",
-    label: "Downloaded",
-    icon: <HugeiconsIcon icon={Download01Icon} className="size-3.5" />,
-  },
-  {
     value: "recommended",
     label: "Recommended",
     icon: <HugeiconsIcon icon={StarIcon} className="size-3.5" />,
+  },
+  {
+    value: "downloaded",
+    label: "Downloaded",
+    icon: <HugeiconsIcon icon={Download01Icon} className="size-3.5" />,
   },
   {
     value: "custom",
@@ -363,7 +363,7 @@ function ModelSelectorContent({
   const effectiveTab = tabs.some((tab) => tab.value === activeTab)
     ? activeTab
     : tabs[0].value;
-  const [hubSection, setHubSection] = useState<HubSection>("downloaded");
+  const [hubSection, setHubSection] = useState<HubSection>("recommended");
 
   function focusActiveModelOption(root: HTMLElement): boolean {
     const option =

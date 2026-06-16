@@ -1086,7 +1086,7 @@ export function HubModelPicker({
       return keys;
     }
 
-    if (chatOnly && section === "downloaded") {
+    if (section === "downloaded") {
       keys.push(
         ...lmStudioModels.map((model) =>
           makeModelOptionKey("lm-studio", model.id),
@@ -1255,11 +1255,13 @@ export function HubModelPicker({
   const showCustom = !showHfSection && section === "custom";
   const showRecommendedSection = !showHfSection && section === "recommended";
   const downloadedEmpty =
-    visibleCachedGguf.length === 0 && visibleCachedModelRows.length === 0;
+    visibleCachedGguf.length === 0 &&
+    visibleCachedModelRows.length === 0 &&
+    lmStudioModels.length === 0;
 
   return (
     <div className="space-y-2">
-      <div className="relative">
+      <div className="relative pb-1">
         <HugeiconsIcon
           icon={Search01Icon}
           className="pointer-events-none absolute left-2.5 top-2.5 size-4 text-muted-foreground"
@@ -1416,7 +1418,6 @@ export function HubModelPicker({
 
           {!showHfSection &&
           section === "downloaded" &&
-          chatOnly &&
           lmStudioModels.length > 0 ? (
             <>
               <ListLabel>LM Studio</ListLabel>
