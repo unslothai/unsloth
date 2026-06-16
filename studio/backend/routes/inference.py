@@ -8682,6 +8682,7 @@ async def _openai_passthrough_stream(
             disconnect_watcher = asyncio.create_task(
                 _await_disconnect_then_close(request, resp, cancel_event)
             )
+            monitor_done = False
             try:
                 lines_iter = resp.aiter_lines()
                 async for raw_line in _aiter_llama_stream_items(
@@ -8710,7 +8711,10 @@ async def _openai_passthrough_stream(
                     # finish_reason, delta.tool_calls, and usage chunks.
                     yield raw_line + "\n\n"
                     if monitor_event == "done" or raw_line[6:].strip() == "[DONE]":
+                        monitor_done = True
                         break
+                if not monitor_done:
+                    api_monitor.finish(monitor_id)
             except asyncio.CancelledError:
                 api_monitor.finish(monitor_id, "cancelled")
                 raise
