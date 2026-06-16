@@ -40,6 +40,7 @@ from utils.llama_cpp_freshness import (
     parse_base_build,
     read_install_marker,
     reset_caches,
+    update_download_size_bytes,
 )
 
 logger = structlog.get_logger(__name__)
@@ -345,6 +346,18 @@ def get_update_status(*, force_refresh: bool = False) -> dict:
     # (see llama_cpp_freshness.is_behind).
     update_available = bool(freshness.get("has_marker") and freshness.get("behind"))
 
+    # Size of the prebuilt that Update would download, for the banner. Only when
+    # an update is offered; fails open to None (offline / no matching asset).
+    update_size_bytes = None
+    if update_available:
+        try:
+            update_size_bytes = update_download_size_bytes(
+                marker, latest, freshness.get("published_repo") or repo,
+                force_refresh = force_refresh,
+            )
+        except Exception as exc:  # pragma: no cover - network defensive
+            logger.debug("llama update: size lookup failed", error = str(exc))
+
     with _job_lock:
         job = dict(_job)
 
@@ -358,6 +371,7 @@ def get_update_status(*, force_refresh: bool = False) -> dict:
         "installed_at_utc": freshness.get("installed_at_utc"),
         "age_days": freshness.get("age_days"),
         "source_build": False,
+        "update_size_bytes": update_size_bytes,
         "job": job,
     }
 
