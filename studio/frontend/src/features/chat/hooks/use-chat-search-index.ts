@@ -25,13 +25,31 @@ export interface ChatSearchItem {
 const THREAD_LIMIT = 200;
 const SEARCH_REBUILD_DEBOUNCE_MS = 300;
 
-function safeStringify(value: unknown): string {
-  if (typeof value === "string") return value;
-  try {
-    return JSON.stringify(value) ?? "";
-  } catch {
-    return "";
+// Keys whose values are base64 image/audio payloads, not searchable text.
+const BINARY_KEY = /b64|base64|^(images?|audio|video)$/i;
+
+// Readable text from tool args/results, dropping base64 image/audio blobs so
+// they never bloat the index (object fields by key, plus data URLs / long
+// base64 runs and the "__IMAGES__" suffix inside strings).
+function searchableText(value: unknown, depth = 0): string {
+  if (typeof value === "string") {
+    const cut = value.indexOf("\n__IMAGES__:");
+    return (cut === -1 ? value : value.slice(0, cut))
+      .replace(/data:[^;,\s]+;base64,[A-Za-z0-9+/=]+/g, " ")
+      .replace(/[A-Za-z0-9+/]{120,}={0,2}/g, " ");
   }
+  if (value == null || depth > 4) return "";
+  if (Array.isArray(value)) {
+    return value.map((v) => searchableText(v, depth + 1)).join(" ");
+  }
+  if (typeof value === "object") {
+    const out: string[] = [];
+    for (const [k, v] of Object.entries(value)) {
+      if (!BINARY_KEY.test(k)) out.push(searchableText(v, depth + 1));
+    }
+    return out.join(" ");
+  }
+  return "";
 }
 
 // Pull searchable text from a message: plain text, reasoning/thinking, tool
@@ -50,9 +68,10 @@ function extractText(message: MessageRecord): string {
       if (typeof t === "string") parts.push(t);
     } else if (p.type === "tool-call") {
       if (typeof p.toolName === "string") parts.push(p.toolName);
-      const args = typeof p.argsText === "string" ? p.argsText : safeStringify(p.args);
+      const args = searchableText(typeof p.argsText === "string" ? p.argsText : p.args);
       if (args) parts.push(args);
-      if (p.result != null) parts.push(safeStringify(p.result));
+      const result = searchableText(p.result);
+      if (result) parts.push(result);
     } else if (p.type === "source") {
       for (const v of [p.title, p.url]) if (typeof v === "string") parts.push(v);
     }
