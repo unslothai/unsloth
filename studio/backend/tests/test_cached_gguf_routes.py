@@ -107,6 +107,30 @@ def test_list_cached_gguf_matches_extension_case_insensitively(monkeypatch, tmp_
     ]
 
 
+def test_list_cached_gguf_hides_llama_validation_probe(monkeypatch, tmp_path):
+    """The ggml-org/models / stories260K install validation probe can land in
+    the HF cache as a side effect of installing the prebuilt llama-server.
+    It is not a chat model (it sorts smallest and would be auto-selected), so
+    pickers must hide it while keeping real cached models."""
+    probe = _repo(
+        "ggml-org/models",
+        [_file("tinyllamas/stories260K.gguf", 1_000)],
+        tmp_path / "models--ggml-org--models",
+    )
+    real = _repo(
+        "unsloth/gemma-3-270m-it-GGUF",
+        [_file("gemma-3-270m-it-UD-Q4_K_XL.gguf", 200_000)],
+        tmp_path / "models--unsloth--gemma-3-270m-it-GGUF",
+    )
+    monkeypatch.setattr(models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [probe, real])])
+
+    result = asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))
+
+    repo_ids = [c["repo_id"] for c in result["cached"]]
+    assert "ggml-org/models" not in repo_ids
+    assert "unsloth/gemma-3-270m-it-GGUF" in repo_ids
+
+
 def test_list_cached_gguf_skips_repos_without_positive_gguf_size(monkeypatch, tmp_path):
     missing = _repo(
         "Org/ReadmeOnly",

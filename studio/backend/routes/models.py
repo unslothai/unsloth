@@ -41,12 +41,18 @@ def _safe_is_dir(path) -> bool:
 
 def _is_hidden_model(*values: str | None) -> bool:
     """True if any id/path is the RAG embedding model (EMBEDDING_MODEL or
-    EMBED_GGUF_REPO basename), so pickers hide it (GGUF and non-GGUF)."""
+    EMBED_GGUF_REPO basename) or the llama.cpp install validation probe
+    (ggml-org/models / stories260K), so pickers hide them (GGUF and non-GGUF).
+    None are usable chat models; the probe can be cached as a side effect of
+    installing the prebuilt llama-server and otherwise sorts smallest, so it
+    would be auto-selected."""
     from core.rag import config as rag_config
 
     needles = (
         rag_config.EMBEDDING_MODEL.split("/")[-1].lower(),
         rag_config.EMBED_GGUF_REPO.split("/")[-1].lower(),
+        "ggml-org/models",
+        "stories260k",
     )
     return any(v and any(n in v.lower() for n in needles) for v in values)
 
