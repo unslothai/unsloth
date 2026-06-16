@@ -376,6 +376,11 @@ def test_ps_installers_gate_amd_smi_on_windows():
         assert (
             "UNSLOTH_SETUP_PYTHON" in text
         ), f"{ps.name} venv-internal check must seed the venv root from UNSLOTH_SETUP_PYTHON"
+        # A custom Studio home moves the venv off the default path; it must be
+        # seeded too or its hipInfo escapes the filter and reopens the gate.
+        assert (
+            "UNSLOTH_STUDIO_HOME" in text
+        ), f"{ps.name} venv-internal check must seed the venv root from UNSLOTH_STUDIO_HOME"
 
 
 def test_install_python_stack_gates_every_amd_smi_spawn():
