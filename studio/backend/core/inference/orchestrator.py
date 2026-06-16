@@ -30,13 +30,13 @@ from pathlib import Path
 from typing import Any, Generator, Optional, Tuple, Union
 from utils.hardware import prepare_gpu_selection
 
+# Re-exported from the shared helper so GGUF, training, and inference share one
+# type; kept importable here for backwards compatibility.
+from utils.hf_xet_fallback import DownloadStallError
+
 logger = get_logger(__name__)
 
 _CTX = mp.get_context("spawn")
-
-
-class DownloadStallError(RuntimeError):
-    """Raised when the worker reports no download progress for too long."""
 
 
 # Dispatcher timeout constants (seconds)
