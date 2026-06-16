@@ -1896,16 +1896,24 @@ class LlamaCppBackend:
                     parts = [p.strip() for p in line.split(",")]
                     if len(parts) < 2:
                         continue
-                    # Total is optional: a driver/mock that returns the legacy
-                    # two-column "index,free" yields total 0 (the fit then uses
-                    # the free*frac fallback for that GPU). Skip a malformed line
-                    # rather than abandoning the whole probe to the torch fallback.
+                    # Index and free are required; skip a line missing them rather
+                    # than abandoning the whole probe to the torch fallback.
                     try:
                         idx = int(parts[0])
                         free_mib = int(parts[1])
-                        total_mib = int(parts[2]) if len(parts) >= 3 and parts[2] else 0
                     except ValueError:
                         continue
+                    # Total is optional and parsed SEPARATELY: a legacy two-column
+                    # "index,free" line, or a non-integer total ("N/A" on some
+                    # drivers / MIG / vGPU), yields total 0 -- the GPU is still
+                    # detected and the fit uses the free*frac fallback for it,
+                    # instead of dropping the GPU and silently spilling to CPU.
+                    total_mib = 0
+                    if len(parts) >= 3 and parts[2]:
+                        try:
+                            total_mib = int(parts[2])
+                        except ValueError:
+                            total_mib = 0
                     if allowed is not None and idx not in allowed:
                         continue
                     gpus.append((idx, free_mib, total_mib))
@@ -4652,14 +4660,23 @@ class LlamaCppBackend:
                         _tp_weight_budget_mib = (
                             sum(_gpu_usable(g) for g in tp_gpus) - len(tp_gpus) * reserve_mib
                         )
+                        _tp_flat_mtp = 2 * 1024**3  # flat reserve when dims unavailable
                         if not _mtp_will_engage:
                             _tp_mtp_floor = 0
-                        elif mtp_overhead_fn is not None:
+                        elif mtp_overhead_fn is not None and not _mtp_kv_unsized:
                             _tp_mtp_floor = _mtp_bytes(
                                 min(2048, effective_ctx) if effective_ctx > 0 else 2048
                             )
                         else:
-                            _tp_mtp_floor = 2 * 1024**3  # flat reserve when dims unavailable
+                            # Dims unavailable, or weights-only (KV unsized): tensor
+                            # mode has no --fit safety valve, so keep the flat reserve
+                            # as the cushion for the unsized draft KV, never below the
+                            # known byte reserve (drafter weights). Mirrors the
+                            # layer-split _mtp_kv_unsized handling.
+                            _tp_mtp_floor = max(
+                                _tp_flat_mtp,
+                                _mtp_bytes(min(2048, effective_ctx) if effective_ctx > 0 else 2048),
+                            )
                         _tp_required_mib = (model_size + _tp_mtp_floor) / (1024 * 1024)
                         if _tp_weight_budget_mib <= _tp_required_mib:
                             logger.info(

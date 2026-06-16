@@ -664,6 +664,17 @@ def test_load_model_tensor_admission_and_capacity_gate_use_usable_budget():
     assert "model_size + _tp_mtp_floor" in src
 
 
+def test_load_model_tensor_floor_keeps_flat_reserve_for_weights_only():
+    # Tensor mode has no --fit valve, so a weights-only drafter (KV unsized) must
+    # keep the flat reserve as the draft-KV cushion, not just the byte weights
+    # (Finding H1, the tensor analog of the layer-split _mtp_kv_unsized handling).
+    compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
+    # byte-only floor used only when KV is sizable (not the weights-only case)
+    assert "mtp_overhead_fnisnotNoneandnot_mtp_kv_unsized" in compact
+    # weights-only / dims-unavailable: flat reserve, never below the byte floor
+    assert "_tp_mtp_floor=max(" in compact
+
+
 def test_load_model_reserves_pipeline_per_device_overhead():
     # Layer split allocates a fixed per-device overhead (CUDA context + scratch)
     # on every GPU -- measured ~0.9 GB/device, independent of --parallel. The fit
