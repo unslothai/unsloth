@@ -642,15 +642,16 @@ RUN mkdir -p ${HF_HOME} ${TRITON_CACHE_DIR}
 #   * unsloth-run: headless `unsloth-run <notebook|url>` that auto-picks the
 #     sidecar and executes every cell -- the robust driven path.
 # ---------------------------------------------------------------------------
-COPY unsloth_nb_compat.py unsloth_pip_shim.py unsloth_ipython_startup.py unsloth_run.py unsloth_sync_notebooks.sh /opt/unsloth-nb/
+COPY unsloth_nb_compat.py unsloth_pip_shim.py unsloth_ipython_startup.py unsloth_run.py unsloth_sync_notebooks.sh unsloth_nb_content_sig.py /opt/unsloth-nb/
 RUN set -eux \
  && SP=/opt/unsloth-venv/lib/python${PYTHON_VERSION}/site-packages \
  && cp /opt/unsloth-nb/unsloth_nb_compat.py "$SP/unsloth_nb_compat.py" \
- && chmod +x /opt/unsloth-nb/unsloth_pip_shim.py /opt/unsloth-nb/unsloth_run.py /opt/unsloth-nb/unsloth_sync_notebooks.sh \
+ && chmod +x /opt/unsloth-nb/unsloth_pip_shim.py /opt/unsloth-nb/unsloth_run.py /opt/unsloth-nb/unsloth_sync_notebooks.sh /opt/unsloth-nb/unsloth_nb_content_sig.py \
  && mkdir -p /opt/unsloth-nb/bin \
  && for t in pip pip3 uv; do ln -sf /opt/unsloth-nb/unsloth_pip_shim.py /opt/unsloth-nb/bin/$t; done \
  && ln -sf /opt/unsloth-nb/unsloth_run.py /usr/local/bin/unsloth-run \
  && ln -sf /opt/unsloth-nb/unsloth_sync_notebooks.sh /usr/local/bin/unsloth-sync-notebooks \
+ && ln -sf /opt/unsloth-nb/unsloth_nb_content_sig.py /usr/local/bin/unsloth-nb-content-sig \
  && mkdir -p /root/.ipython/profile_default/startup \
  && cp /opt/unsloth-nb/unsloth_ipython_startup.py /root/.ipython/profile_default/startup/00-unsloth-nb.py \
  && /opt/unsloth-venv/bin/python -c "import sys, glob; sys.path.insert(0, '$SP'); import unsloth_nb_compat; print('nb-compat OK; baked sidecars:', sorted(glob.glob('/opt/unsloth-venv/tf-sidecars/t_*')))"
@@ -661,8 +662,11 @@ ENV PATH=/opt/unsloth-nb/bin:${PATH}
 # present (no git clone or wget needed). Baked here as a READ-ONLY template
 # (~206MB, .git stripped); on boot the entrypoint copies it to
 # /workspace/unsloth-notebooks and best-effort refreshes from GitHub when
-# upstream has advanced, never overwriting a notebook the user has edited (see
-# unsloth_sync_notebooks.sh). Inherited as-is by the studio image (FROM base).
+# upstream has advanced. It never overwrites a notebook the user has touched,
+# and for untouched notebooks it skips the rewrite when only the install header
+# / announcements / footer moved upstream (the tutorial body is unchanged) --
+# see unsloth_sync_notebooks.sh + unsloth_nb_content_sig.py. Inherited as-is by
+# the studio image (FROM base).
 RUN set -eux \
  && git clone --depth 1 https://github.com/unslothai/notebooks /opt/unsloth-notebooks \
  && git -C /opt/unsloth-notebooks rev-parse HEAD > /opt/unsloth-notebooks/.unsloth_template_commit \

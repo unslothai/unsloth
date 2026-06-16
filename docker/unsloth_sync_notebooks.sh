@@ -28,6 +28,33 @@ STATE="$DEST/.unsloth_sync_state"     # "sha256  relpath" of what we last wrote
 SYNCED="$DEST/.unsloth_sync_commit"   # upstream commit we last synced to
 TIMEOUT="${UNSLOTH_NOTEBOOK_FETCH_TIMEOUT:-60}"
 
+# Helper that compares the *content* (the middle, ignoring the auto-generated
+# install header / announcements / footer) of two notebooks. Used so a refresh
+# doesn't rewrite an untouched notebook when only that boilerplate moved
+# upstream. Resolved from an explicit override, then PATH, then a sibling file.
+PYBIN="$(command -v python3 2>/dev/null || command -v python 2>/dev/null || true)"
+SIG_HELPER="${UNSLOTH_NB_SIG_HELPER:-}"
+if [ -z "$SIG_HELPER" ]; then
+    if command -v unsloth-nb-content-sig >/dev/null 2>&1; then
+        SIG_HELPER="$(command -v unsloth-nb-content-sig)"
+    else
+        _self_dir="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"
+        [ -n "$_self_dir" ] && [ -f "$_self_dir/unsloth_nb_content_sig.py" ] \
+            && SIG_HELPER="$_self_dir/unsloth_nb_content_sig.py"
+    fi
+fi
+
+# True only when BOTH are .ipynb, the helper is usable, and it reports the
+# non-boilerplate middle is identical (so only the header/footer changed).
+# Any failure returns false, so the caller falls back to a normal refresh.
+middle_unchanged() {
+    case "$1" in *.ipynb) : ;; *) return 1 ;; esac
+    [ -n "$PYBIN" ] && [ -n "$SIG_HELPER" ] || return 1
+    [ "${UNSLOTH_NOTEBOOK_BODY_AWARE:-1}" = "1" ] || return 1
+    [ "$("$PYBIN" "$SIG_HELPER" "$1" "$2" 2>/dev/null)" = "SAME" ] || return 1
+    return 0
+}
+
 [ "${UNSLOTH_SKIP_NOTEBOOK_SYNC:-0}" = "1" ] && exit 0
 [ -d "$TEMPLATE" ] || exit 0
 mkdir -p "$DEST" 2>/dev/null || exit 0
@@ -83,7 +110,7 @@ if [ -f "$STATE" ]; then
 fi
 
 TMPSTATE="$(mktemp)"
-updated=0; kept=0
+updated=0; kept=0; unchanged=0
 while IFS= read -r -d '' f; do
     rel="${f#"$TMP"/}"
     case "$rel" in .git|.git/*) continue ;; esac
@@ -94,6 +121,14 @@ while IFS= read -r -d '' f; do
             # User changed this file since we wrote it -> keep theirs, keep marker.
             printf '%s  %s\n' "$rec" "$rel" >> "$TMPSTATE"
             kept=$((kept + 1))
+            continue
+        fi
+        if [ -n "$rec" ] && middle_unchanged "$dst" "$f"; then
+            # Untouched notebook whose only upstream change is the install
+            # header / announcements / footer. The tutorial body is identical,
+            # so don't churn the user's file -- keep it and its marker as-is.
+            printf '%s  %s\n' "$rec" "$rel" >> "$TMPSTATE"
+            unchanged=$((unchanged + 1))
             continue
         fi
     fi
@@ -107,5 +142,5 @@ done < <(find "$TMP" -type f -print0)
 mv "$TMPSTATE" "$STATE" 2>/dev/null || rm -f "$TMPSTATE"
 echo "$remote" > "$SYNCED" 2>/dev/null || true
 rm -rf "$TMP"
-echo "[unsloth-nb] notebooks refreshed from GitHub: $updated updated, $kept kept (your edits)"
+echo "[unsloth-nb] notebooks refreshed from GitHub: $updated updated, $kept kept (your edits), $unchanged kept (only header/footer changed upstream)"
 exit 0
