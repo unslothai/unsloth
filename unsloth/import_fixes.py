@@ -629,26 +629,20 @@ def patch_enable_input_require_grads():
 
 
 def patch_unsafe_trainer_rng_load():
-    """Backport transformers' torch.load safety gate into Trainer._load_rng_state
-    (CVE-2026-1839): resuming from an untrusted checkpoint unpickles its
-    rng_state.pth. weights_only=True is not a safe boundary below torch 2.6
-    (CVE-2025-32434) where safe_globals() is also a nullcontext, so we call
-    transformers' own check_torch_load_is_safe() first: it raises on torch < 2.6,
-    and on torch >= 2.6 the load already defaults to weights_only=True. No global
-    torch.load swap, so no thread-safety risk. No-op when transformers is absent
-    or already guards the load (>= 5.0.0rc3)."""
+    """Guard Trainer._load_rng_state against CVE-2026-1839 (RCE from a malicious
+    rng_state.pth on resume). Calls transformers' check_torch_load_is_safe(),
+    which raises on torch < 2.6 where torch.load is unsafe even with weights_only
+    (CVE-2025-32434); torch >= 2.6 already loads with weights_only=True. No-op if
+    transformers is absent or already guards the load (>= 5.0.0rc3)."""
     if importlib.util.find_spec("transformers") is None:
         return
     try:
         from transformers.trainer import Trainer, check_torch_load_is_safe
     except Exception:
         return
-
     load_rng_state = getattr(Trainer, "_load_rng_state", None)
-    # Skip if missing or already wrapped (idempotent).
     if load_rng_state is None or getattr(load_rng_state, "_unsloth_safe_rng_load", False):
         return
-    # Skip if nothing to protect or already guarded upstream.
     try:
         source = inspect.getsource(load_rng_state)
     except Exception:
