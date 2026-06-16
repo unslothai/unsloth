@@ -627,6 +627,29 @@ def _extra_args_requests_mtp(
     return bool(env_spec and _has_mtp(env_spec))
 
 
+def _extra_args_requests_separate_draft(
+    extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
+) -> bool:
+    """True if extras/env request a non-MTP model-based draft mode
+    (``--spec-type draft-simple``/``draft-eagle3``). Those load a separate draft
+    model whose weights+KV the budget must reserve, just like MTP. draft-mtp is
+    handled by _extra_args_requests_mtp; ngram-* load no model. CLI wins."""
+
+    def _has(value: str) -> bool:
+        return any(p.strip().lower() in ("draft-simple", "draft-eagle3") for p in value.split(","))
+
+    args = [str(a) for a in extra_args] if extra_args else []
+    for i, raw in enumerate(args):
+        flag, eq, inline = raw.partition("=")
+        if flag != "--spec-type":
+            continue
+        value = inline if eq else (args[i + 1] if i + 1 < len(args) else "")
+        if _has(value):
+            return True
+    env_spec = (os.environ if env is None else env).get("LLAMA_ARG_SPEC_TYPE")
+    return bool(env_spec and _has(env_spec))
+
+
 def _extra_args_spec_draft_n_max(extra_args: Optional[Iterable[str]]) -> Optional[int]:
     """Draft depth from extras (``--spec-draft-n-max`` or legacy ``--draft-max``), else None."""
     if not extra_args:
@@ -4083,6 +4106,12 @@ class LlamaCppBackend:
                     )
                     # Extras can run MTP even when Studio suppresses its own emission.
                     _user_mtp_via_extras = _extra_args_requests_mtp(extra_args)
+                    # A non-MTP model-based draft mode (draft-simple/draft-eagle3) in
+                    # extras also loads a separate draft model that needs reserving;
+                    # engage only when extras actually name a drafter for it.
+                    _user_draft_via_extras = _extra_args_requests_separate_draft(extra_args) and bool(
+                        _extra_args_mtp_draft_path(extra_args)
+                    )
                     # Mirror _build_speculative_flags: reserve only for MTP the launch
                     # resolver will actually emit (needs a head/drafter and a binary
                     # that supports --spec-type mtp).
@@ -4101,6 +4130,7 @@ class LlamaCppBackend:
                             _mtp_binary_ok = False
                     _mtp_will_engage = bool(
                         _user_mtp_via_extras
+                        or _user_draft_via_extras
                         or (
                             not _extra_args_set_spec_type(extra_args)
                             and _mtp_binary_ok

@@ -60,6 +60,7 @@ from core.inference.llama_cpp import (  # noqa: E402
     _extra_args_mtp_draft_path,
     _extra_args_n_ubatch,
     _extra_args_requests_mtp,
+    _extra_args_requests_separate_draft,
     _extra_args_spec_draft_n_max,
     _kv_bytes_per_elem,
 )
@@ -349,6 +350,33 @@ class TestExtraArgsMtpDetection:
         assert _extra_args_requests_mtp([], env = {"LLAMA_ARG_SPEC_TYPE": "ngram-mod,mtp"}) is True
         assert _extra_args_requests_mtp([], env = {"LLAMA_ARG_SPEC_TYPE": "draft-simple"}) is False
         assert _extra_args_requests_mtp([], env = {"LLAMA_ARG_SPEC_TYPE": "none"}) is False
+
+    @pytest.mark.parametrize(
+        "args,expected",
+        [
+            (["--spec-type", "draft-simple"], True),
+            (["--spec-type", "draft-eagle3"], True),
+            (["--spec-type=draft-eagle3"], True),
+            (["--spec-type", "draft-mtp"], False),  # MTP path handles this one
+            (["--spec-type", "ngram-mod"], False),  # loads no draft model
+            (["-c", "4096"], False),
+            (None, False),
+        ],
+    )
+    def test_requests_separate_draft(self, args, expected):
+        assert _extra_args_requests_separate_draft(args, env={}) is expected
+
+    def test_requests_separate_draft_env(self):
+        assert _extra_args_requests_separate_draft([], env={"LLAMA_ARG_SPEC_TYPE": "draft-simple"}) is True
+        assert _extra_args_requests_separate_draft([], env={"LLAMA_ARG_SPEC_TYPE": "draft-mtp"}) is False
+
+    def test_load_model_reserves_for_non_mtp_draft_modes(self):
+        # load_model engages the draft reserve for a non-MTP model-based draft mode
+        # only when extras also name a drafter (else nothing is loaded to reserve).
+        src = inspect.getsource(LlamaCppBackend.load_model)
+        assert "_user_draft_via_extras" in src
+        assert "_extra_args_requests_separate_draft(extra_args)" in src
+        assert "or _user_draft_via_extras" in src  # OR'd into the reserve gate
 
     @pytest.mark.parametrize(
         "args,expected",
