@@ -40,6 +40,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { Fragment, type ReactNode, memo, useMemo } from "react";
 import { confirmExternalLink } from "../stores/external-link-confirm";
 import type { DiscoverRow } from "../types";
+import { HubOptionMenu } from "./hub-option-menu";
 import { buildRowStatusTooltip } from "./models-catalog-rows";
 import { OwnerAvatar } from "./owner-avatar";
 import { AccessGlyphs, CapabilityPill } from "./shared";
@@ -116,6 +117,8 @@ const INVENTORY_SORTS: { value: InventorySort; label: string }[] = [
   { value: "size", label: "Size" },
 ];
 
+// Sort picker as a compact dropdown pill so it sits beside the view-mode tabs
+// (including in the narrow split pane) instead of taking its own row.
 export function InventorySortControl({
   value,
   onChange,
@@ -124,30 +127,14 @@ export function InventorySortControl({
   onChange: (value: InventorySort) => void;
 }) {
   return (
-    <div
-      className="hub-tab-toggle inline-flex h-8 shrink-0 items-center rounded-full"
-      aria-label="Sort downloads"
-    >
-      {INVENTORY_SORTS.map((opt) => {
-        const active = value === opt.value;
-        return (
-          <button
-            key={opt.value}
-            type="button"
-            aria-pressed={active}
-            onClick={() => onChange(opt.value)}
-            className={cn(
-              "inline-flex h-8 items-center justify-center rounded-full px-3.5 text-[11.5px] transition-colors",
-              active
-                ? "hub-tab-toggle-pill text-foreground"
-                : "cursor-pointer text-muted-foreground hover:text-foreground",
-            )}
-          >
-            {opt.label}
-          </button>
-        );
-      })}
-    </div>
+    <HubOptionMenu<InventorySort>
+      value={value}
+      options={INVENTORY_SORTS}
+      onValueChange={onChange}
+      ariaLabel="Sort downloads"
+      align="end"
+      className="h-8 text-[11.5px]"
+    />
   );
 }
 

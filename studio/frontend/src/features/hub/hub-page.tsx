@@ -1240,10 +1240,8 @@ export function ModelsPage() {
     const ownerToggle = !isDatasetMode ? (
       <OwnerScopeToggle value={ownerScope} onChange={setOwnerScope} />
     ) : undefined;
-    // The split master pane is narrow: keeping the scope toggle inline with the
-    // title + view-mode buttons squeezes the heading into a stack of wrapped
-    // words. There it drops onto its own row below the header instead.
-    const splitView = allModelsView === "split";
+    // A compact dropdown pill, so it stays beside the view-mode tabs even in the
+    // narrow split pane instead of dropping to its own row.
     return (
       <div className="flex flex-col gap-3 pt-6">
         {isChannelListMode ? (
@@ -1253,7 +1251,7 @@ export function ModelsPage() {
             view={allModelsView}
             onViewChange={setAllModelsView}
             onBack={handleBackToFeed}
-            actions={splitView ? undefined : ownerToggle}
+            actions={ownerToggle}
           />
         ) : (
           <HubListHeader
@@ -1261,11 +1259,8 @@ export function ModelsPage() {
             view={allModelsView}
             onViewChange={setAllModelsView}
             onBack={isSortBrowseMode ? handleBackToFeed : undefined}
-            actions={splitView ? undefined : ownerToggle}
+            actions={ownerToggle}
           />
-        )}
-        {splitView && ownerToggle && (
-          <div className="-mt-3 flex justify-start pb-5">{ownerToggle}</div>
         )}
         {allModelsView === "grid" && listCount > 0 && (
           <ResultListHeader isDataset={isDatasetMode} />
@@ -1297,23 +1292,16 @@ export function ModelsPage() {
     const sortControl = (
       <InventorySortControl value={inventorySort} onChange={setInventorySort} />
     );
-    // In the narrow split master pane the title + sort pills + view toggle don't
-    // fit on one row, so (like discover's Unsloth/All) the sort control drops to
-    // its own row below the header instead of squeezing the heading.
-    const splitView = allModelsView === "split";
+    // A compact dropdown pill, so it stays beside the view-mode tabs even in the
+    // narrow split pane instead of dropping to its own row.
     return (
-      <>
-        <HubListHeader
-          title="On device"
-          count={effectiveCachedRows.length + effectiveLocalRows.length}
-          view={allModelsView}
-          onViewChange={setAllModelsView}
-          actions={splitView ? undefined : sortControl}
-        />
-        {splitView && (
-          <div className="-mt-3 flex justify-start pb-5">{sortControl}</div>
-        )}
-      </>
+      <HubListHeader
+        title="On device"
+        count={effectiveCachedRows.length + effectiveLocalRows.length}
+        view={allModelsView}
+        onViewChange={setAllModelsView}
+        actions={sortControl}
+      />
     );
   }, [
     effectiveCachedRows.length,
