@@ -2779,10 +2779,7 @@ class UnslothTrainer:
             return False
 
     def _chat_template_renders_empty(self) -> bool:
-        """True when the model's chat template renders one sample to empty text --
-        the signature of a base (pretrained) model whose template cannot render
-        conversational data (e.g. base Qwen2-VL, whose media-only template emits
-        nothing for role messages). Best-effort; never raises."""
+        """True when the chat template renders a sample to empty text (base-model signature)."""
         try:
             ds = getattr(self.trainer, "train_dataset", None)
             if ds is None or len(ds) == 0:
@@ -2791,7 +2788,7 @@ class UnslothTrainer:
             messages = row.get("messages") if isinstance(row, dict) else None
             if not messages:
                 return False
-            tok = self.tokenizer  # processor for VLM; both expose apply_chat_template
+            tok = self.tokenizer
             if not hasattr(tok, "apply_chat_template"):
                 return False
             rendered = tok.apply_chat_template(
@@ -2802,21 +2799,14 @@ class UnslothTrainer:
             return False
 
     def _preflight_first_batch(self) -> Optional[str]:
-        """Run one real batch through tokenization + collation before train() so an
-        invalid first batch fails fast with an actionable message instead of a
-        cryptic step-1 crash. The classic case: a base model whose chat template
-        renders empty makes the processor return empty `input_ids`, which torch
-        defaults to float32, and the embedding lookup rejects a float tensor.
-
-        Returns None when the batch is fine, else a user-facing error string.
-        Faithful for every path (text SFT is already tokenized so this only
-        collates; VLM/audio-VLM collate the one batch). Self-guarded so it can
-        never spuriously fail a run whose first batch is valid."""
+        """Validate the first real batch before train(). A base model whose chat
+        template renders empty yields empty float32 input_ids that crash the
+        embedding on step 1; catch it here. Returns None for a valid batch."""
         try:
             loader = self.trainer.get_train_dataloader()
             batch = next(iter(loader))
         except StopIteration:
-            return None  # empty dataset is reported by other guards
+            return None
         except Exception as e:
             model = self.model_name or "this model"
             return (
@@ -2829,11 +2819,11 @@ class UnslothTrainer:
         except Exception:
             input_ids = getattr(batch, "input_ids", None)
         if input_ids is None:
-            return None  # custom collators may omit input_ids; don't false-positive
+            return None  # some collators omit input_ids
 
         seq_len = input_ids.shape[-1] if input_ids.ndim > 0 else 0
         if not (input_ids.is_floating_point() or input_ids.numel() == 0 or seq_len == 0):
-            return None  # valid integer, non-empty batch
+            return None
 
         model = self.model_name or "this model"
         if self._chat_template_renders_empty():
@@ -3549,9 +3539,7 @@ class UnslothTrainer:
                 training_args.get("max_steps", 0),
             )
             # ========== START TRAINING ==========
-            # Preflight: validate the first real batch so an invalid one (e.g. a
-            # base model whose chat template renders empty -> empty float input_ids)
-            # fails fast with a clear message instead of a cryptic step-1 crash.
+            # Fail fast on an invalid first batch (empty/float input_ids) vs a step-1 crash.
             preflight_error = self._preflight_first_batch()
             if preflight_error:
                 logger.error(preflight_error)

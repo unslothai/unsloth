@@ -1,16 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Before training starts, _preflight_first_batch runs one real batch through the
-trainer's own tokenization + collation and fails fast with an actionable message
-when input_ids is empty or non-integer -- the signature of the base-model
-empty-chat-template crash (empty -> float32 input_ids -> embedding dtype error)
-that otherwise blows up deep in the model forward on step 1.
-
-The real UnslothTrainer methods are borrowed onto a light fake `self` so the
-logic exercised is the production code, driven with controlled batches.
-"""
+"""_preflight_first_batch rejects an empty/non-integer first batch (the base-model
+empty-chat-template crash) before train(). The real methods are bound onto a light
+fake self so the production logic runs against controlled batches."""
 
 import unittest
 from types import SimpleNamespace
@@ -24,8 +17,6 @@ _renders_empty = UnslothTrainer._chat_template_renders_empty
 
 
 class _FakeInnerTrainer:
-    """Stand-in for self.trainer (the HF/SFT Trainer)."""
-
     def __init__(
         self,
         *,
@@ -50,7 +41,7 @@ def _fake_self(
     tokenizer = None,
 ):
     s = SimpleNamespace(trainer = inner, model_name = model_name, tokenizer = tokenizer)
-    # Bind the real methods so self._chat_template_renders_empty() resolves.
+    # Bind real methods so self._chat_template_renders_empty() resolves.
     s._preflight_first_batch = _preflight.__get__(s)
     s._chat_template_renders_empty = _renders_empty.__get__(s)
     return s
@@ -63,7 +54,7 @@ class _EmptyTemplateTokenizer:
         tokenize = False,
         add_generation_prompt = False,
     ):
-        return ""  # base model: renders nothing for role messages
+        return ""
 
 
 class _RealTemplateTokenizer:
@@ -89,7 +80,7 @@ class TestPreflightFirstBatch(unittest.TestCase):
         msg = s._preflight_first_batch()
         self.assertIsNotNone(msg)
         self.assertIn("chat template", msg)
-        self.assertIn("Qwen/Qwen2-VL-7B-Instruct", msg)  # soft -Instruct hint
+        self.assertIn("Qwen/Qwen2-VL-7B-Instruct", msg)
         self.assertIn("base (pretrained) model", msg)
 
     def test_no_instruct_hint_when_model_already_instruct(self):
@@ -103,12 +94,10 @@ class TestPreflightFirstBatch(unittest.TestCase):
         )
         msg = s._preflight_first_batch()
         self.assertIsNotNone(msg)
-        # No "such as '...-Instruct'" suggestion when the model is already Instruct.
-        self.assertNotIn("such as", msg)
+        self.assertNotIn("such as", msg)  # no Instruct suggestion for an Instruct model
         self.assertIn("instruction-tuned variant", msg)
 
     def test_empty_int_input_ids_generic_message(self):
-        # Empty but integer, template renders fine -> generic invalid-token message.
         inner = _FakeInnerTrainer(
             batch = {"input_ids": torch.zeros((1, 0), dtype = torch.long)},
             train_dataset = [{"text": "already tokenized path"}],
