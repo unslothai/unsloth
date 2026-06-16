@@ -629,15 +629,18 @@ def patch_enable_input_require_grads():
 
 
 def patch_unsafe_trainer_rng_load():
-    """Force Trainer._load_rng_state to torch.load with weights_only=True
-    (CVE-2026-1839): blocks code execution from a malicious rng_state.pth when
-    resuming from an untrusted checkpoint. Wraps the method (vs reimplementing)
-    so it tracks transformers' own safe_globals() allowlist. No-op on torch
-    >= 2.6 (already the default) and transformers >= 5.0.0rc3 (already fixed)."""
+    """Backport transformers' torch.load safety gate into Trainer._load_rng_state
+    (CVE-2026-1839): resuming from an untrusted checkpoint unpickles its
+    rng_state.pth. weights_only=True is not a safe boundary below torch 2.6
+    (CVE-2025-32434) where safe_globals() is also a nullcontext, so we call
+    transformers' own check_torch_load_is_safe() first: it raises on torch < 2.6,
+    and on torch >= 2.6 the load already defaults to weights_only=True. No global
+    torch.load swap, so no thread-safety risk. No-op when transformers is absent
+    or already guards the load (>= 5.0.0rc3)."""
     if importlib.util.find_spec("transformers") is None:
         return
     try:
-        from transformers.trainer import Trainer
+        from transformers.trainer import Trainer, check_torch_load_is_safe
     except Exception:
         return
 
@@ -645,33 +648,22 @@ def patch_unsafe_trainer_rng_load():
     # Skip if missing or already wrapped (idempotent).
     if load_rng_state is None or getattr(load_rng_state, "_unsloth_safe_rng_load", False):
         return
-    # Skip if nothing to protect or already fixed upstream.
+    # Skip if nothing to protect or already guarded upstream.
     try:
         source = inspect.getsource(load_rng_state)
     except Exception:
         return
-    if "torch.load" not in source or "weights_only" in source:
+    if "torch.load" not in source or "check_torch_load_is_safe" in source:
         return
-
-    import torch
 
     @functools.wraps(load_rng_state)
     def _unsloth_safe_load_rng_state(self, checkpoint):
-        original = torch.load
-
-        def _safe_load(*args, **kwargs):
-            kwargs.setdefault("weights_only", True)  # force safe default, honor overrides
-            return original(*args, **kwargs)
-
-        torch.load = _safe_load
-        try:
-            return load_rng_state(self, checkpoint)
-        finally:
-            torch.load = original
+        check_torch_load_is_safe()  # raises on torch < 2.6 (CVE-2025-32434)
+        return load_rng_state(self, checkpoint)
 
     _unsloth_safe_load_rng_state._unsloth_safe_rng_load = True
     Trainer._load_rng_state = _unsloth_safe_load_rng_state
-    logger.info("Unsloth: Hardened Trainer._load_rng_state with weights_only=True (CVE-2026-1839).")
+    logger.info("Unsloth: Guarded Trainer._load_rng_state via check_torch_load_is_safe (CVE-2026-1839).")
 
 
 def _is_custom_torch_build(raw_version_str):
