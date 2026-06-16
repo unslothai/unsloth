@@ -125,6 +125,7 @@ export function AboutTab() {
           {hw.gpus.map((gpu, i) => (
             <SettingsRow
               // Index key: device order from the backend is stable per request.
+              // biome-ignore lint/suspicious/noArrayIndexKey: The hardware API does not expose a stable device id.
               key={i}
               label={
                 hw.gpus.length > 1
