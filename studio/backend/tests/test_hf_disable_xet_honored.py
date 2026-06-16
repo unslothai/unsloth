@@ -20,7 +20,6 @@ import pytest
 def _has_hf() -> bool:
     try:
         import huggingface_hub  # noqa: F401
-
         return True
     except Exception:
         return False
@@ -66,5 +65,4 @@ def test_default_leaves_xet_enabled():
 
 def _safe_path() -> str:
     import os
-
     return os.environ.get("PATH", "")

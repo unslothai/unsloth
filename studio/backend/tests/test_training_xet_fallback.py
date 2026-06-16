@@ -60,8 +60,15 @@ from core.training.training import TrainingBackend
 # pollutes the shared pytest session (a leaked bare ``structlog`` stub without
 # ``get_logger`` would break every later module that logs at import time).
 # training_mod already bound the functional stubs it needs at runtime.
-for _name in ("loggers", "structlog", "matplotlib", "matplotlib.pyplot",
-              "utils.hardware", "utils.native_path_leases", "utils.paths"):
+for _name in (
+    "loggers",
+    "structlog",
+    "matplotlib",
+    "matplotlib.pyplot",
+    "utils.hardware",
+    "utils.native_path_leases",
+    "utils.paths",
+):
     _prev = _SAVED.get(_name)
     if _prev is None:
         sys.modules.pop(_name, None)
@@ -153,10 +160,12 @@ def test_respawn_uses_disable_xet_and_preserves_run_row(monkeypatch):
     monkeypatch.setattr(b, "_pump_loop", lambda: None)  # neutralize the new pump
     created = {"n": 0}
     finalized = {"n": 0}
-    monkeypatch.setattr(b, "_ensure_db_run_created",
-                        lambda: created.__setitem__("n", created["n"] + 1))
-    monkeypatch.setattr(b, "_finalize_run_in_db",
-                        lambda **k: finalized.__setitem__("n", finalized["n"] + 1))
+    monkeypatch.setattr(
+        b, "_ensure_db_run_created", lambda: created.__setitem__("n", created["n"] + 1)
+    )
+    monkeypatch.setattr(
+        b, "_finalize_run_in_db", lambda **k: finalized.__setitem__("n", finalized["n"] + 1)
+    )
 
     b._respawn_worker_disable_xet()
 

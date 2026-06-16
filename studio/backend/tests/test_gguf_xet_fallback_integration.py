@@ -29,18 +29,30 @@ try:
     import httpx  # noqa: F401
 except ImportError:
     _httpx_stub = _types.ModuleType("httpx")
-    for _exc in ("ConnectError", "TimeoutException", "ReadTimeout", "ReadError",
-                 "RemoteProtocolError", "CloseError", "HTTPError", "RequestError",
-                 "HTTPStatusError"):
+    for _exc in (
+        "ConnectError",
+        "TimeoutException",
+        "ReadTimeout",
+        "ReadError",
+        "RemoteProtocolError",
+        "CloseError",
+        "HTTPError",
+        "RequestError",
+        "HTTPStatusError",
+    ):
         setattr(_httpx_stub, _exc, type(_exc, (Exception,), {}))
     _httpx_stub.Response = type("Response", (), {})
     _httpx_stub.Request = type("Request", (), {})
     _httpx_stub.Timeout = type("Timeout", (), {"__init__": lambda self, *a, **k: None})
-    _httpx_stub.Client = type("Client", (), {
-        "__init__": lambda self, **k: None,
-        "__enter__": lambda self: self,
-        "__exit__": lambda self, *a: None,
-    })
+    _httpx_stub.Client = type(
+        "Client",
+        (),
+        {
+            "__init__": lambda self, **k: None,
+            "__enter__": lambda self: self,
+            "__exit__": lambda self, *a: None,
+        },
+    )
     sys.modules.setdefault("httpx", _httpx_stub)
 
 from huggingface_hub import constants as hf_constants
@@ -57,7 +69,12 @@ def hf_cache(tmp_path, monkeypatch):
     return tmp_path
 
 
-def _build_cache(root: Path, repo_id: str, files: dict[str, int], sha: str = "a" * 40) -> Path:
+def _build_cache(
+    root: Path,
+    repo_id: str,
+    files: dict[str, int],
+    sha: str = "a" * 40,
+) -> Path:
     repo_dir = root / f"models--{repo_id.replace('/', '--')}"
     (repo_dir / "blobs").mkdir(parents = True, exist_ok = True)
     snap = repo_dir / "snapshots" / sha
@@ -72,7 +89,12 @@ def test_companion_routes_through_helper(hf_cache):
     backend = LlamaCppBackend()
     captured = {}
 
-    def fake_helper(repo_id, filename, token = None, **kwargs):
+    def fake_helper(
+        repo_id,
+        filename,
+        token = None,
+        **kwargs,
+    ):
         captured["filename"] = filename
         captured["cancel_event"] = kwargs.get("cancel_event")
         return f"/fake/{filename}"
@@ -92,7 +114,12 @@ def test_companion_swallows_terminal_stall_to_none(hf_cache):
     _build_cache(hf_cache, REPO, {"mmproj-vision-F16.gguf": 1})
     backend = LlamaCppBackend()
 
-    def stalling_helper(repo_id, filename, token = None, **kwargs):
+    def stalling_helper(
+        repo_id,
+        filename,
+        token = None,
+        **kwargs,
+    ):
         raise DownloadStallError("both transports stalled")
 
     with (
@@ -110,7 +137,12 @@ def test_companion_cancelled_skips_download(hf_cache):
     backend._cancel_event.set()
     called = {"n": 0}
 
-    def helper(repo_id, filename, token = None, **kwargs):
+    def helper(
+        repo_id,
+        filename,
+        token = None,
+        **kwargs,
+    ):
         called["n"] += 1
         return "/should-not-happen"
 

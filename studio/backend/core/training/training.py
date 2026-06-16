@@ -484,9 +484,7 @@ class TrainingBackend:
                     "Model download stalled even over HTTP -- check your network connection"
                 )
         if recover:
-            logger.warning(
-                "Training model-load stalled on Xet; respawning over HTTP: %s", msg
-            )
+            logger.warning("Training model-load stalled on Xet; respawning over HTTP: %s", msg)
         else:
             logger.error("Training download stalled with no further fallback: %s", msg)
         # Terminate the stalled worker either way so the pump loop proceeds -- to a

@@ -49,7 +49,11 @@ def _blobs_dir(root: Path, repo_id: str = REPO) -> Path:
     return d
 
 
-def _wait(predicate, timeout: float = 2.0, step: float = 0.02) -> bool:
+def _wait(
+    predicate,
+    timeout: float = 2.0,
+    step: float = 0.02,
+) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if predicate():
@@ -70,7 +74,9 @@ def test_constant_incomplete_fires_stall(hf_cache):
         stall_timeout = 0.3,
     )
     try:
-        assert _wait(lambda: len(calls) >= 1, timeout = 3.0), "watchdog never fired on a constant-size .incomplete"
+        assert _wait(
+            lambda: len(calls) >= 1, timeout = 3.0
+        ), "watchdog never fired on a constant-size .incomplete"
     finally:
         stop.set()
     assert "stalled" in calls[0].lower()

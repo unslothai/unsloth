@@ -461,7 +461,12 @@ class TestDownloadMmprojOfflineCacheFallback:
         def boom_list(*a, **k):
             raise OSError("offline")
 
-        def fake_download(repo_id, filename, token = None, **kwargs):
+        def fake_download(
+            repo_id,
+            filename,
+            token = None,
+            **kwargs,
+        ):
             # Echo back so the test can verify the cache-resolved filename
             return f"/fake/cache/{repo_id}/{filename}"
 
@@ -495,7 +500,12 @@ class TestDownloadMmprojOfflineCacheFallback:
 
         captured = {}
 
-        def fake_download(repo_id, filename, token = None, **kwargs):
+        def fake_download(
+            repo_id,
+            filename,
+            token = None,
+            **kwargs,
+        ):
             captured["filename"] = filename
             return f"/fake/{filename}"
 

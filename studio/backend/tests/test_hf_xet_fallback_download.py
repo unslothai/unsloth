@@ -48,12 +48,28 @@ class _FakeAttempt:
         self._results = list(results)
         self.calls = []  # list of (disable_xet,)
 
-    def __call__(self, repo_id, filename, token, *, repo_type, disable_xet,
-                 cancel_event, stall_timeout, interval, grace_period, on_status):
-        self.calls.append(_types.SimpleNamespace(
-            repo_id = repo_id, filename = filename, disable_xet = disable_xet,
-            repo_type = repo_type,
-        ))
+    def __call__(
+        self,
+        repo_id,
+        filename,
+        token,
+        *,
+        repo_type,
+        disable_xet,
+        cancel_event,
+        stall_timeout,
+        interval,
+        grace_period,
+        on_status,
+    ):
+        self.calls.append(
+            _types.SimpleNamespace(
+                repo_id = repo_id,
+                filename = filename,
+                disable_xet = disable_xet,
+                repo_type = repo_type,
+            )
+        )
         return self._results[len(self.calls) - 1]
 
 
@@ -116,7 +132,7 @@ def test_stall_then_http_fallback_succeeds(monkeypatch):
     assert out == "/cache/model.gguf"
     assert len(fake.calls) == 2
     assert fake.calls[0].disable_xet is False  # Xet first
-    assert fake.calls[1].disable_xet is True   # HTTP fallback
+    assert fake.calls[1].disable_xet is True  # HTTP fallback
     assert prepared == [("model", REPO, "http")], "must prep cache for HTTP before the retry"
 
 

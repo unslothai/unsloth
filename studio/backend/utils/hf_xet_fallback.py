@@ -60,9 +60,7 @@ def child_should_disable_xet(config: dict) -> bool:
 
 
 def get_hf_download_state(
-    repo_ids: Optional[list[str]] = None,
-    *,
-    repo_type: str = "model",
+    repo_ids: Optional[list[str]] = None, *, repo_type: str = "model"
 ) -> Optional[tuple[int, bool]]:
     """Return ``(total_on_disk_bytes, has_incomplete)`` for the active HF cache.
 
@@ -199,7 +197,6 @@ def _download_child_entry(
 
     try:
         from huggingface_hub import hf_hub_download
-
         path = hf_hub_download(
             repo_id = repo_id,
             filename = filename,
@@ -211,7 +208,6 @@ def _download_child_entry(
         error = f"{type(e).__name__}: {e}"
         try:
             from hub.utils.download_registry import scrub_secrets
-
             error = scrub_secrets(error, hf_token = token)
         except Exception:
             pass
@@ -356,7 +352,6 @@ def hf_hub_download_with_xet_fallback(
     # preserving the existing fast path for already-downloaded files.
     try:
         from huggingface_hub import try_to_load_from_cache
-
         cached = try_to_load_from_cache(repo_id, filename, repo_type = repo_type)
         if isinstance(cached, str) and os.path.exists(cached):
             return cached
@@ -374,7 +369,6 @@ def hf_hub_download_with_xet_fallback(
             # the HTTP resumer silently corrupts the blob).
             try:
                 from hub.utils.download_registry import prepare_cache_for_transport
-
                 prepare_cache_for_transport(repo_type, repo_id, "http")
             except Exception as e:
                 logger.debug("prepare_cache_for_transport failed for %s: %s", repo_id, e)
