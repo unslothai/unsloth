@@ -30,9 +30,11 @@ export function InfoHint({ children }: { children: ReactNode }) {
         </button>
       </TooltipTrigger>
       <TooltipContent
-        side="left"
-        sideOffset={8}
-        className="tooltip-compact [&_span>svg]:hidden! duration-0 max-w-64"
+        side="top"
+        align="center"
+        sideOffset={6}
+        collisionPadding={12}
+        className="[&_span>svg]:hidden! duration-0 max-w-[240px] text-left"
       >
         {children}
       </TooltipContent>

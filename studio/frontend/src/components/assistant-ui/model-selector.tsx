@@ -395,8 +395,16 @@ function ModelSelectorContent({
             <div className="flex min-w-0 items-center gap-1.5">
               <span>Load on selection</span>
               <InfoHint>
-                When off, picking a model lets you adjust its load options
-                (context length, tensor parallelism) before it loads.
+                <div className="space-y-1">
+                  <div>
+                    <span className="font-medium">On:</span> load the model
+                    immediately after selection.
+                  </div>
+                  <div>
+                    <span className="font-medium">Off:</span> configure options
+                    first, then click Load model.
+                  </div>
+                </div>
               </InfoHint>
             </div>
             <Switch
