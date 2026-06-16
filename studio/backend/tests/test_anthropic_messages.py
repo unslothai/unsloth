@@ -1427,7 +1427,7 @@ def _mock_backend(monkeypatch, **overrides):
 
     def _gen_plain(**kwargs):
         calls.append(("plain", kwargs))
-        yield {"type": "content", "text": "ok"}
+        yield "ok"
 
     def _gen_tools(**kwargs):
         calls.append(("tools", kwargs))

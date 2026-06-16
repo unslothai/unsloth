@@ -1362,6 +1362,8 @@ class TestGgufVisionToolRouting:
             generate_chat_completion_with_tools = _tools,
         )
         monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
 
         payload = ChatCompletionRequest(
             model = "default",

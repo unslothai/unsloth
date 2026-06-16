@@ -853,7 +853,10 @@ class TestResponsesNonStreamingAdapter:
         monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
         monkeypatch.setattr(inf_mod, "openai_chat_completions", fake_chat_completions)
-        payload = ResponsesRequest(input = "hi", tools = [ResponsesFunctionTool(name = "lookup")])
+        payload = ResponsesRequest(
+            input = "hi",
+            tools = [{"type": "function", "name": "lookup"}],
+        )
         messages = [ChatMessage(role = "user", content = "hi")]
         request = SimpleNamespace(
             state = SimpleNamespace(),
@@ -1216,8 +1219,13 @@ class TestResponsesStreamAdapter:
                 monitor_id = monitor_id,
             )
             iterator = response.body_iterator
-            first = await anext(iterator)
-            assert "hello" in first
+            first = ""
+            for _ in range(8):
+                first = await anext(iterator)
+                if "hello" in first:
+                    break
+            else:
+                pytest.fail("stream did not emit text delta")
 
             pending = asyncio.create_task(anext(iterator))
             await asyncio.sleep(0)

@@ -1685,8 +1685,10 @@ def _monitor_anthropic_response(
 
 def _monitor_context_length() -> Optional[int]:
     llama_backend = get_llama_cpp_backend()
-    if llama_backend.is_loaded:
-        return llama_backend.context_length
+    if getattr(llama_backend, "is_loaded", False):
+        context_length = _positive_int_or_none(getattr(llama_backend, "context_length", None))
+        if context_length is not None:
+            return context_length
     backend = get_inference_backend()
     if not backend.active_model_name:
         return None
@@ -1707,8 +1709,8 @@ def _monitor_context_length() -> Optional[int]:
 
 def _monitor_active_model() -> Optional[str]:
     llama_backend = get_llama_cpp_backend()
-    if llama_backend.is_loaded:
-        return llama_backend.model_identifier
+    if getattr(llama_backend, "is_loaded", False):
+        return getattr(llama_backend, "model_identifier", None)
     backend = get_inference_backend()
     return backend.active_model_name
 
@@ -4681,7 +4683,7 @@ async def openai_chat_completions(
                     )
                     if usage_line is not None:
                         yield usage_line
-                    _monitor_usage(monitor_id, _stream_usage, llama_backend.context_length)
+                    _monitor_usage(monitor_id, _stream_usage, _monitor_context_length())
                     api_monitor.finish(
                         monitor_id, "cancelled" if cancel_event.is_set() else "completed"
                     )
@@ -4840,7 +4842,7 @@ async def openai_chat_completions(
                     )
                     if usage_line is not None:
                         yield usage_line
-                    _monitor_usage(monitor_id, _stream_usage, llama_backend.context_length)
+                    _monitor_usage(monitor_id, _stream_usage, _monitor_context_length())
                     api_monitor.finish(
                         monitor_id, "cancelled" if cancel_event.is_set() else "completed"
                     )
@@ -4935,7 +4937,7 @@ async def openai_chat_completions(
                         "completion_tokens": _sum_completion,
                         "total_tokens": _prompt_tokens + _sum_completion,
                     },
-                    llama_backend.context_length,
+                    _monitor_context_length(),
                 )
                 api_monitor.finish(monitor_id)
                 return JSONResponse(content = response.model_dump())
@@ -5982,7 +5984,7 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
         api_monitor.fail(monitor_id, resp.text[:500])
     else:
         try:
-            _monitor_usage(monitor_id, resp.json().get("usage"), llama_backend.context_length)
+            _monitor_usage(monitor_id, resp.json().get("usage"), _monitor_context_length())
         except Exception:
             pass
         api_monitor.finish(monitor_id)
