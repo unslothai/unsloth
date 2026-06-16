@@ -15,6 +15,8 @@ export interface HfModelResult {
   totalParams?: number;
   estimatedSizeBytes?: number;
   isGguf: boolean;
+  tags?: string[];
+  pipelineTag?: string;
 }
 
 /** Tags to exclude on GPU (CUDA/ROCm) — MLX models won't load on GPU. */
@@ -127,6 +129,7 @@ function makeMapModel(excludeGguf: boolean, excludedTags: Set<string>) {
       likes: number;
       safetensors?: { total: number; parameters?: Record<string, number> };
       tags?: string[];
+      pipeline_tag?: string;
     };
     const isEmbedding = m.tags?.some((t) => EMBEDDING_TAGS.has(t));
     if (!isEmbedding && m.tags?.some((t) => excludedTags.has(t))) {
@@ -145,6 +148,8 @@ function makeMapModel(excludeGguf: boolean, excludedTags: Set<string>) {
       totalParams: m.safetensors?.total,
       estimatedSizeBytes: estimateSizeFromDtypes(m.safetensors?.parameters),
       isGguf,
+      tags: m.tags,
+      pipelineTag: m.pipeline_tag,
     };
   };
 }
