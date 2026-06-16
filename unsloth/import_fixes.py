@@ -652,10 +652,12 @@ def patch_unsafe_trainer_rng_load():
         return
 
     import threading, torch
+
     try:
         # Older supported transformers (>= 4.51.3) may not export the helper.
         from transformers.utils.import_utils import check_torch_load_is_safe
     except Exception:
+
         def check_torch_load_is_safe():
             if TrueVersion(torch.__version__.split("+")[0]) < TrueVersion("2.6"):
                 raise RuntimeError(
@@ -673,7 +675,7 @@ def patch_unsafe_trainer_rng_load():
         @functools.wraps(_orig_load)
         def _guarded_torch_load(*args, **kwargs):
             if getattr(_rng_active, "on", False):
-                check_torch_load_is_safe()           # raises on torch < 2.6 (CVE-2025-32434)
+                check_torch_load_is_safe()  # raises on torch < 2.6 (CVE-2025-32434)
                 kwargs.setdefault("weights_only", True)
             return _orig_load(*args, **kwargs)
 
