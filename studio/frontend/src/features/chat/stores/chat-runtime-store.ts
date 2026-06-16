@@ -883,6 +883,20 @@ function setScalarSettingVersion<K extends ScalarSettingKey>(
   saveSettingsPatch({ [key]: value });
 }
 
+/** The "revert to the loaded model" baseline for the editable load knobs.
+ *  Shared by resetModelSettingsToLoaded (full revert) and stageModel (which
+ *  overrides speculative to start a fresh pick from the standing default). */
+function loadedBaselineSettings(s: ChatRuntimeStore) {
+  return {
+    customContextLength: null,
+    kvCacheDtype: s.loadedKvCacheDtype,
+    tensorParallel: s.loadedTensorParallel ?? false,
+    speculativeType: s.loadedSpeculativeType,
+    specDraftNMax: s.loadedSpecDraftNMax,
+    chatTemplateOverride: s.loadedChatTemplateOverride,
+  };
+}
+
 export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   settingsHydrated: false,
   // Hydrate the last external checkpoint so the external picker survives a
@@ -1386,24 +1400,23 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   setSpeculativeType: (speculativeType) => set({ speculativeType }),
   setSpecDraftNMax: (specDraftNMax) => set({ specDraftNMax }),
   setTensorParallel: (tensorParallel) => set({ tensorParallel }),
-  resetModelSettingsToLoaded: () =>
-    set((s) => ({
-      customContextLength: null,
-      kvCacheDtype: s.loadedKvCacheDtype,
-      tensorParallel: s.loadedTensorParallel ?? false,
-      speculativeType: s.loadedSpeculativeType,
-      specDraftNMax: s.loadedSpecDraftNMax,
-      chatTemplateOverride: s.loadedChatTemplateOverride,
-    })),
+  resetModelSettingsToLoaded: () => set((s) => loadedBaselineSettings(s)),
   setLoadOnSelection: (loadOnSelection) => {
     saveBool(CHAT_LOAD_ON_SELECTION_KEY, loadOnSelection);
     set({ loadOnSelection });
   },
   setPendingSelection: (pendingSelection) => set({ pendingSelection }),
-  stageModel: (selection) => {
-    get().resetModelSettingsToLoaded();
-    set({ pendingSelection: selection, settingsPanelOpen: true });
-  },
+  stageModel: (selection) =>
+    set((s) => ({
+      ...loadedBaselineSettings(s),
+      pendingSelection: selection,
+      settingsPanelOpen: true,
+      // Speculative starts from the standing default, not the loaded model's
+      // mode, so a fresh pick doesn't inherit (and then carry, via the staged
+      // Load's keepSpeculative) a forced MTP mode onto a model that may lack it.
+      speculativeType: readPersistedSpeculativeType(),
+      specDraftNMax: null,
+    })),
   setCustomContextLength: (customContextLength) => set({ customContextLength }),
   setChatTemplateOverride: (chatTemplateOverride) =>
     set({ chatTemplateOverride }),
