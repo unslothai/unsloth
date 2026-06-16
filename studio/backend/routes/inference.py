@@ -2133,9 +2133,7 @@ async def validate_model(
                     # model_identifier is the resolved canonical .gguf path.
                     local_gguf = model_identifier
                 else:
-                    local_gguf = resolve_local_gguf_path(
-                        model_identifier, request.gguf_variant
-                    )
+                    local_gguf = resolve_local_gguf_path(model_identifier, request.gguf_variant)
                 if local_gguf:
                     context_length = read_gguf_context_length(local_gguf)
             except Exception as e:
