@@ -173,9 +173,11 @@ export function HubListHeader({
             type="button"
             onClick={onBack}
             aria-label="Back to feed"
-            // Glyph left edge sits at the column content edge so the chevron
-            // lines up with the start of the row hover below it.
-            className="hub-section-chevron -ml-2 inline-flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground"
+            // The arrow glyph is inset ~6px inside its centered icon box, so a
+            // plain edge-aligned button leaves the visible chevron sitting in
+            // from the column. Pull it out far enough (icon centering + glyph
+            // inset) that the chevron tip lands on the row hover's left edge.
+            className="hub-section-chevron -ml-3.5 inline-flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground"
           >
             <HugeiconsIcon
               icon={ArrowLeft01Icon}
