@@ -32,6 +32,7 @@ from core.inference.llama_server_args import (
     parse_cache_override,
     parse_ctx_override,
     parse_fit_override,
+    parse_kv_unified,
     parse_split_mode_override,
     resolve_cache_type_kv,
     resolve_requested_ctx,
@@ -4568,6 +4569,10 @@ class LlamaCppBackend:
                 # retry once with --fit off before declaring the load failed.
                 # Never retry when fit was requested (use_fit) or the caller
                 # passed an explicit fit flag via extra args.
+                # Track the command that actually starts the server so
+                # post-health parsing reflects a --fit off retry.
+                _llama_cmd_used: "list[str]" = cmd
+
                 def _spawn_and_wait(run_cmd, *, label = ""):
                     """Start llama-server with run_cmd and wait for health.
 
@@ -4575,6 +4580,7 @@ class LlamaCppBackend:
                     crashes during startup and run_cmd is eligible (see
                     _fit_off_retry_eligible).
                     """
+                    nonlocal _llama_cmd_used
                     _fit_retry_allowed = self._fit_off_retry_eligible(run_cmd, use_fit)
                     for _spawn_attempt in (0, 1):
                         # Defensive kill: drop an orphan Popen a concurrent load may
@@ -4624,6 +4630,7 @@ class LlamaCppBackend:
                         )
                         self._stdout_thread.start()
                         if self._wait_for_health(timeout = 600.0):
+                            _llama_cmd_used = run_cmd
                             return True
                         _startup_crashed = (
                             self._process.poll() is not None and self._process.returncode != 0
@@ -4672,7 +4679,6 @@ class LlamaCppBackend:
                     max_available_ctx if max_available_ctx > 0 else self._effective_context_length
                 )
                 self._launch_context_length = effective_ctx if effective_ctx > 0 else None
-                self._launch_kv_unified = "--kv-unified" in cmd
                 self._launch_n_parallel = max(1, n_parallel)
 
                 healthy = _spawn_and_wait(cmd)
@@ -4774,10 +4780,13 @@ class LlamaCppBackend:
 
                 self._healthy = True
 
+                # Determine the kv-unified flag from the command that actually started.
+                self._launch_kv_unified = parse_kv_unified(_llama_cmd_used) or False
+
                 # Resolve fit from the command that actually started (covers
                 # --fit off retry and pass-through overrides). llama-server
                 # defaults --fit on when the flag is omitted.
-                launched_fit = parse_fit_override(cmd)
+                launched_fit = parse_fit_override(_llama_cmd_used)
                 self._launch_use_fit = launched_fit if launched_fit is not None else True
 
                 # /props readback backstop (#6164); runs post-health so the

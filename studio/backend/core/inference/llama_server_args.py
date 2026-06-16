@@ -227,13 +227,14 @@ def resolve_requested_ctx(args: Optional[Iterable[str]], fallback_n_ctx: int) ->
 
 
 _FIT_FLAGS: frozenset[str] = frozenset({"-fit", "--fit"})
+_NO_FIT_FLAGS: frozenset[str] = frozenset({"--no-fit"})
 # llama.cpp common.cpp is_truthy / is_falsey value sets.
 _FIT_TRUTHY: frozenset[str] = frozenset({"on", "enabled", "1", "true"})
 _FIT_FALSEY: frozenset[str] = frozenset({"off", "disabled", "0", "false"})
 
 
 def parse_fit_override(args: Optional[Iterable[str]]) -> Optional[bool]:
-    """Return the last user-supplied ``--fit`` on/off value, or None.
+    """Return the last user-supplied ``--fit`` or ``--no-fit`` value, or None.
 
     Studio appends pass-through args after its own ``--fit on``, so a user
     ``--fit`` last-wins at llama-server; runtime context reporting needs the
@@ -248,7 +249,14 @@ def parse_fit_override(args: Optional[Iterable[str]]) -> Optional[bool]:
     while i < n:
         tok = tokens[i]
         flag = _flag_name(tok)
-        if flag is None or flag not in _FIT_FLAGS:
+        if flag is None:
+            i += 1
+            continue
+        if flag in _NO_FIT_FLAGS:
+            override = False
+            i += 1
+            continue
+        if flag not in _FIT_FLAGS:
             i += 1
             continue
 
@@ -268,6 +276,37 @@ def parse_fit_override(args: Optional[Iterable[str]]) -> Optional[bool]:
             override = True
         elif value in _FIT_FALSEY:
             override = False
+
+    return override
+
+
+_KV_UNIFIED_FLAGS: frozenset[str] = frozenset({"--kv-unified"})
+_NO_KV_UNIFIED_FLAGS: frozenset[str] = frozenset({"--no-kv-unified"})
+
+
+def parse_kv_unified(args: Optional[Iterable[str]]) -> Optional[bool]:
+    """Return the last user-supplied ``--kv-unified`` on/off value, or None.
+
+    Mirrors ``parse_fit_override``: Studio appends pass-through args after its
+    own managed flags, so a user ``--no-kv-unified`` must last-win at runtime.
+    """
+    if not args:
+        return None
+
+    tokens = [str(a) for a in args]
+    override: Optional[bool] = None
+    i, n = 0, len(tokens)
+    while i < n:
+        tok = tokens[i]
+        flag = _flag_name(tok)
+        if flag is None:
+            i += 1
+            continue
+        if flag in _KV_UNIFIED_FLAGS:
+            override = True
+        elif flag in _NO_KV_UNIFIED_FLAGS:
+            override = False
+        i += 1
 
     return override
 
