@@ -67,7 +67,6 @@ import {
 } from "./lib/channels";
 import { inventoryRowMatches, tokenizeQuery } from "./lib/inventory-search";
 import {
-  CAPABILITY_FILTER_OPTIONS,
   buildDiscoverRows,
   detectResultFormat,
   isUnslothFinetunable,
@@ -123,39 +122,21 @@ type DiscoverMode = "feed" | "channel-list" | "search";
 
 type ModelLoadOptions = { ggufVariant?: string; expectedBytes?: number };
 
+// Keep the focused list heading simple: just "Models"/"Datasets" regardless of
+// the active format/capability filter, with search the only labelled variation.
 function buildFocusedHeading({
   query,
   channel,
-  format,
-  capability,
   isDataset,
 }: {
   query: string;
   channel: ChannelPreset | null;
-  format: ModelFormatFilter;
-  capability: CapabilityFilter;
   isDataset: boolean;
 }): string {
   const trimmed = query.trim();
-  const noun = isDataset ? "datasets" : "models";
   if (trimmed) return `Results for "${trimmed}"`;
   if (channel && channel.id !== DEFAULT_DISCOVER_CHANNEL) return channel.label;
-  const formatLabel =
-    format === "gguf"
-      ? "GGUF"
-      : format === "checkpoint"
-        ? "Safetensors"
-        : format === "mlx"
-          ? "MLX"
-          : "";
-  const capabilityLabel =
-    capability === "all"
-      ? ""
-      : (CAPABILITY_FILTER_OPTIONS.find((option) => option.value === capability)
-          ?.label ?? "");
-  const parts = [formatLabel, capabilityLabel].filter(Boolean).join(" ");
-  if (parts) return `Showing ${parts} ${noun}`;
-  return isDataset ? "Datasets" : "Showing models";
+  return isDataset ? "Datasets" : "Models";
 }
 
 function discoveryInventorySignature(
@@ -1190,17 +1171,9 @@ export function ModelsPage() {
       buildFocusedHeading({
         query: deferredDebouncedQuery,
         channel: activeChannel,
-        format: deferredFormatFilter,
-        capability: deferredCapabilityFilter,
         isDataset: isDatasetMode,
       }),
-    [
-      deferredDebouncedQuery,
-      activeChannel,
-      deferredFormatFilter,
-      deferredCapabilityFilter,
-      isDatasetMode,
-    ],
+    [deferredDebouncedQuery, activeChannel, isDatasetMode],
   );
 
   const listCount = listRows.length;
