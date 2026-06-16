@@ -4109,9 +4109,9 @@ class LlamaCppBackend:
                     # A non-MTP model-based draft mode (draft-simple/draft-eagle3) in
                     # extras also loads a separate draft model that needs reserving;
                     # engage only when extras actually name a drafter for it.
-                    _user_draft_via_extras = _extra_args_requests_separate_draft(extra_args) and bool(
-                        _extra_args_mtp_draft_path(extra_args)
-                    )
+                    _user_draft_via_extras = _extra_args_requests_separate_draft(
+                        extra_args
+                    ) and bool(_extra_args_mtp_draft_path(extra_args))
                     # Mirror _build_speculative_flags: reserve only for MTP the launch
                     # resolver will actually emit (needs a head/drafter and a binary
                     # that supports --spec-type mtp).

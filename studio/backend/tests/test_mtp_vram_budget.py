@@ -364,11 +364,17 @@ class TestExtraArgsMtpDetection:
         ],
     )
     def test_requests_separate_draft(self, args, expected):
-        assert _extra_args_requests_separate_draft(args, env={}) is expected
+        assert _extra_args_requests_separate_draft(args, env = {}) is expected
 
     def test_requests_separate_draft_env(self):
-        assert _extra_args_requests_separate_draft([], env={"LLAMA_ARG_SPEC_TYPE": "draft-simple"}) is True
-        assert _extra_args_requests_separate_draft([], env={"LLAMA_ARG_SPEC_TYPE": "draft-mtp"}) is False
+        assert (
+            _extra_args_requests_separate_draft([], env = {"LLAMA_ARG_SPEC_TYPE": "draft-simple"})
+            is True
+        )
+        assert (
+            _extra_args_requests_separate_draft([], env = {"LLAMA_ARG_SPEC_TYPE": "draft-mtp"})
+            is False
+        )
 
     def test_load_model_reserves_for_non_mtp_draft_modes(self):
         # load_model engages the draft reserve for a non-MTP model-based draft mode
