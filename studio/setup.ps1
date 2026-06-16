@@ -2035,6 +2035,15 @@ if (Test-Path -LiteralPath $LegacyStudioHome -PathType Container) {
     $LegacyStudioHome = (Resolve-Path -LiteralPath $LegacyStudioHome).Path
 }
 $StudioHomeIsCustom = ($_studioHomeCanon -ne $LegacyStudioHome)
+# Directory-local evidence that Studio created $Path, used to adopt a custom-home
+# llama.cpp predating the .unsloth-studio-owned marker (see setup.sh). Only the
+# prebuilt UNSLOTH_PREBUILT_INFO.json counts; source builds are indistinguishable
+# from a user clone on Windows and stay under the strict guard.
+function Test-StudioOwnedAdoptable {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    if (Test-Path -LiteralPath (Join-Path $Path "UNSLOTH_PREBUILT_INFO.json") -PathType Leaf) { return $true }
+    return $false
+}
 function Assert-StudioOwnedOrAbsent {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
@@ -2042,6 +2051,10 @@ function Assert-StudioOwnedOrAbsent {
     )
     if (-not (Test-Path -LiteralPath $Path -PathType Container)) { return }
     if ($StudioHomeIsCustom -and -not (Test-Path -LiteralPath (Join-Path $Path $StudioOwnedMarker) -PathType Leaf)) {
+        if (Test-StudioOwnedAdoptable $Path) {
+            Mark-StudioOwned $Path
+            return
+        }
         Write-Host "[ERROR] $Path already exists and is not marked as a Studio-owned $Label." -ForegroundColor Red
         Write-Host "        Move it aside or choose an empty UNSLOTH_STUDIO_HOME before re-running." -ForegroundColor Yellow
         exit 1
