@@ -229,6 +229,21 @@ class TestSeparateDrafter:
         assert b._mtp_draft_kv_bytes(65536, drafter_path = "/m/d.gguf") is None
         assert b._estimate_mtp_overhead_bytes(65536, drafter_path = "/m/d.gguf") is None
 
+    def test_keeps_weights_when_drafter_kv_unsizable(self, monkeypatch):
+        # KV can't be sized (exotic/remote drafter), but the local weights are
+        # known: reserve the weights so a drafter larger than the flat fallback
+        # cushion can't slip through and OOM (Finding C). Nothing known -> None.
+        b = _make_backend(nextn = None)
+        monkeypatch.setattr(b, "_draft_backend_for", lambda path: None)
+        assert b._mtp_draft_kv_bytes(65536, drafter_path = "/m/d.gguf") is None
+        assert (
+            b._estimate_mtp_overhead_bytes(
+                65536, drafter_path = "/m/d.gguf", draft_weights_bytes = 3 * GIB
+            )
+            == 3 * GIB
+        )
+        assert b._estimate_mtp_overhead_bytes(65536, drafter_path = "/m/d.gguf") is None
+
 
 # ---------------------------------------------------------------------------
 # Total overhead = draft KV (+ separate drafter weights); no verify constant
@@ -368,6 +383,31 @@ class TestExtraArgsMtpDetection:
         assert _extra_args_requests_mtp([], env = {"LLAMA_ARG_SPEC_TYPE": "ngram-mod,mtp"}) is True
         assert _extra_args_requests_mtp([], env = {"LLAMA_ARG_SPEC_TYPE": "draft-simple"}) is False
         assert _extra_args_requests_mtp([], env = {"LLAMA_ARG_SPEC_TYPE": "none"}) is False
+
+    def test_requests_mtp_effective_spec_type(self):
+        # llama.cpp uses the LAST CLI --spec-type and ignores the env when any CLI
+        # --spec-type is present. The reserve must track that effective value, not
+        # any earlier/MTP-ish one, or it over-reserves a drafter the launch won't
+        # load (Finding B).
+        env_mtp = {"LLAMA_ARG_SPEC_TYPE": "draft-mtp"}
+        # Later CLI value overrides an earlier MTP one (last-wins).
+        assert _extra_args_requests_mtp(
+            ["--spec-type", "draft-mtp", "--spec-type", "ngram-mod"], env = {}
+        ) is False
+        # A non-MTP CLI flag overrides a stale MTP env.
+        assert _extra_args_requests_mtp(["--spec-type", "ngram-mod"], env = env_mtp) is False
+        assert _extra_args_requests_mtp(["--spec-type", "none"], env = env_mtp) is False
+        # A later MTP CLI value still engages.
+        assert _extra_args_requests_mtp(
+            ["--spec-type", "ngram-mod", "--spec-type", "draft-mtp"], env = {}
+        ) is True
+        # Same precedence for separate (draft-simple/eagle3) detection.
+        assert _extra_args_requests_separate_draft(
+            ["--spec-type", "draft-simple", "--spec-type", "ngram-mod"], env = {}
+        ) is False
+        assert _extra_args_requests_separate_draft(
+            ["--spec-type", "ngram-mod"], env = {"LLAMA_ARG_SPEC_TYPE": "draft-simple"}
+        ) is False
 
     @pytest.mark.parametrize(
         "args,expected",

@@ -662,3 +662,28 @@ def test_load_model_tensor_admission_and_capacity_gate_use_usable_budget():
     # not weights alone, or a separate-drafter MTP load can still overcommit.
     assert "_tp_mtp_floor" in src
     assert "model_size + _tp_mtp_floor" in src
+
+
+def test_load_model_reserves_pipeline_per_device_overhead():
+    # Layer split allocates a fixed per-device overhead (CUDA context + scratch)
+    # on every GPU -- measured ~0.9 GB/device, independent of --parallel. The fit
+    # must reserve it per EXTRA device so a tight multi-GPU layer split can't pin a
+    # context that fits the pool on paper but OOMs a device at load (Finding A).
+    # k=1 adds nothing, so single-GPU sizing is unchanged. Match on whitespace-
+    # stripped source so the assertion survives any line-wrapping by the formatter.
+    assert LlamaCppBackend._PIPELINE_PER_DEVICE_OVERHEAD_MIB > 0
+    compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
+    assert "def_subset_model_size(n_gpus:int)->int:" in compact
+    assert "max(0,n_gpus-1)*_pipeline_overhead_bytes" in compact
+    assert "_subset_model_size(n_gpus)" in compact  # used in the layer-split fit
+
+
+def test_load_model_restores_quantized_kv_on_tensor_downgrade():
+    # A quantized KV is dropped for the tensor attempt; if tensor then downgrades
+    # to layer split (which supports it), the dropped type must be restored so the
+    # fallback keeps the user's memory savings instead of silently launching f16
+    # and shrinking context (Finding D). Captured once, restored at both the
+    # GPU-count and capacity-gate downgrades.
+    compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
+    assert "_tensor_dropped_cache_type_kv=cache_type_kv" in compact  # captured pre-null
+    assert compact.count("cache_type_kv=_tensor_dropped_cache_type_kv") >= 2  # restored

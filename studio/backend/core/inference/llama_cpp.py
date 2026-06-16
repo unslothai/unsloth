@@ -605,49 +605,51 @@ def _extra_args_set_any_flag(extra_args: Optional[Iterable[str]], flags: Collect
     return False
 
 
-def _extra_args_requests_mtp(
+def _effective_spec_type(
     extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
-) -> bool:
-    """True if MTP is requested via ``--spec-type draft-mtp`` (or a chain) in extras,
-    else via the ``LLAMA_ARG_SPEC_TYPE`` env the child honors; the budget must reserve
-    for it. CLI wins, but either channel engages MTP, so both count here."""
-
-    def _has_mtp(value: str) -> bool:
-        return any(p.strip().lower() in ("mtp", "draft-mtp") for p in value.split(","))
-
+) -> Optional[str]:
+    """The ``--spec-type`` value llama-server will actually use: the LAST CLI
+    ``--spec-type`` (last-wins), else ``LLAMA_ARG_SPEC_TYPE``. A CLI flag -- even a
+    later non-MTP one -- overrides the env, matching llama.cpp's arg parsing, so a
+    stale MTP env or an earlier MTP flag that a later flag overrides does not make
+    the budget reserve for a drafter the launch will not load. None if neither sets it."""
     args = [str(a) for a in extra_args] if extra_args else []
+    cli_present = False
+    cli_value: Optional[str] = None
     for i, raw in enumerate(args):
         flag, eq, inline = raw.partition("=")
         if flag != "--spec-type":
             continue
-        value = inline if eq else (args[i + 1] if i + 1 < len(args) else "")
-        if _has_mtp(value):
-            return True
-    env_spec = (os.environ if env is None else env).get("LLAMA_ARG_SPEC_TYPE")
-    return bool(env_spec and _has_mtp(env_spec))
+        cli_present = True
+        cli_value = inline if eq else (args[i + 1] if i + 1 < len(args) else "")
+    if cli_present:
+        return cli_value
+    return (os.environ if env is None else env).get("LLAMA_ARG_SPEC_TYPE")
+
+
+def _extra_args_requests_mtp(
+    extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
+) -> bool:
+    """True if the effective ``--spec-type`` (extras last-wins, else the
+    ``LLAMA_ARG_SPEC_TYPE`` env the child honors) selects MTP (``mtp``/``draft-mtp``);
+    the budget must reserve for it. CLI wins over env."""
+    value = _effective_spec_type(extra_args, env)
+    if not value:
+        return False
+    return any(p.strip().lower() in ("mtp", "draft-mtp") for p in value.split(","))
 
 
 def _extra_args_requests_separate_draft(
     extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
 ) -> bool:
-    """True if extras/env request a non-MTP model-based draft mode
-    (``--spec-type draft-simple``/``draft-eagle3``). Those load a separate draft
-    model whose weights+KV the budget must reserve, just like MTP. draft-mtp is
-    handled by _extra_args_requests_mtp; ngram-* load no model. CLI wins."""
-
-    def _has(value: str) -> bool:
-        return any(p.strip().lower() in ("draft-simple", "draft-eagle3") for p in value.split(","))
-
-    args = [str(a) for a in extra_args] if extra_args else []
-    for i, raw in enumerate(args):
-        flag, eq, inline = raw.partition("=")
-        if flag != "--spec-type":
-            continue
-        value = inline if eq else (args[i + 1] if i + 1 < len(args) else "")
-        if _has(value):
-            return True
-    env_spec = (os.environ if env is None else env).get("LLAMA_ARG_SPEC_TYPE")
-    return bool(env_spec and _has(env_spec))
+    """True if the effective ``--spec-type`` selects a non-MTP model-based draft mode
+    (``draft-simple``/``draft-eagle3``). Those load a separate draft model whose
+    weights+KV the budget must reserve, just like MTP. draft-mtp is handled by
+    _extra_args_requests_mtp; ngram-* load no model. CLI wins over env (last-wins)."""
+    value = _effective_spec_type(extra_args, env)
+    if not value:
+        return False
+    return any(p.strip().lower() in ("draft-simple", "draft-eagle3") for p in value.split(","))
 
 
 def _extra_args_spec_draft_n_max(extra_args: Optional[Iterable[str]]) -> Optional[int]:
@@ -1905,6 +1907,13 @@ class LlamaCppBackend:
     # path) returns 0.
     _TENSOR_PARALLEL_BUFFER_RESERVE_MIB = 5120
 
+    # Fixed per-device overhead llama.cpp allocates on every GPU of a LAYER split
+    # (CUDA context + per-device compute scratch), beyond the slot-scaling compute
+    # buffer which is conserved across the split. Measured ~0.9 GB/device on a
+    # Qwen3.6-27B GGUF (b9625), independent of --parallel; reserved per extra GPU
+    # so a tight multi-GPU layer split can't advertise a context that OOMs at load.
+    _PIPELINE_PER_DEVICE_OVERHEAD_MIB = 1024
+
     # KV cache types llama.cpp accepts in tensor mode. A quantized KV cache
     # aborts a --split-mode tensor load, so it's dropped for the tensor attempt.
     _TENSOR_PARALLEL_KV_TYPES = frozenset({"f16", "bf16", "f32"})
@@ -2304,9 +2313,17 @@ class LlamaCppBackend:
             draft_cache_type_k = draft_cache_type_k,
             draft_cache_type_v = draft_cache_type_v,
         )
+        weights = max(0, draft_weights_bytes)
         if draft_kv is None:
-            return None
-        return draft_kv + max(0, draft_weights_bytes)
+            # The draft KV couldn't be sized (e.g. an exotic/remote drafter GGUF
+            # whose metadata didn't parse). Still reserve the drafter's known
+            # weights so a drafter larger than the flat fallback cushion can't
+            # launch over budget; the smaller unsized draft KV rides in the
+            # total-based VRAM cushion. Nothing known at all (an embedded head
+            # with missing dims, or an HF spec with no local size) -> None, so
+            # the caller keeps the flat fallback.
+            return weights if weights > 0 else None
+        return draft_kv + weights
 
     _DEFAULT_N_UBATCH = 512  # llama.cpp --ubatch default; Studio does not override it
     _COMPUTE_BUFFER_SAFETY = 1.15  # upper-bound margin on the compute-buffer estimate
@@ -4004,8 +4021,10 @@ class LlamaCppBackend:
                 tensor_parallel = resolve_tensor_parallel(extra_args, tensor_parallel)
                 # Tensor mode aborts on a quantized KV cache, so drop it for the
                 # tensor attempt (and strip any inherited/explicit --cache-type
-                # that would re-impose it when appended last). The layer-split
-                # fallback re-runs with tensor_parallel False and keeps the type.
+                # that would re-impose it when appended last). Layer split does
+                # support it, so remember the dropped type and restore it if we
+                # later fall back to layer split below.
+                _tensor_dropped_cache_type_kv: Optional[str] = None
                 if (
                     tensor_parallel
                     and cache_type_kv
@@ -4016,6 +4035,7 @@ class LlamaCppBackend:
                         "ignoring cache type %s for the tensor attempt.",
                         cache_type_kv,
                     )
+                    _tensor_dropped_cache_type_kv = cache_type_kv
                     cache_type_kv = None
                     if extra_args:
                         extra_args = strip_shadowing_flags(
@@ -4226,6 +4246,19 @@ class LlamaCppBackend:
                     )
                     model_size_fit = model_size + _compute_buffer_pipeline
 
+                    # Layer split adds a fixed per-device overhead (CUDA context +
+                    # per-device scratch) on every participating GPU. The folded
+                    # compute buffer above covers one device; reserve the extra
+                    # devices' share so a k-GPU layer split can't pin a context
+                    # that fits the pool on paper but OOMs a device at load. k=1
+                    # adds nothing, so single-GPU sizing is unchanged.
+                    _pipeline_overhead_bytes = (
+                        self._PIPELINE_PER_DEVICE_OVERHEAD_MIB * 1024 * 1024
+                    )
+
+                    def _subset_model_size(n_gpus: int) -> int:
+                        return model_size_fit + max(0, n_gpus - 1) * _pipeline_overhead_bytes
+
                     # Auto-cap context to fit GPU VRAM and select GPUs. Two
                     # policies by whether the user set n_ctx:
                     #   Explicit n_ctx: honor it. Try the full context with
@@ -4290,6 +4323,12 @@ class LlamaCppBackend:
                             len(gpus),
                         )
                         tensor_parallel = False
+                        # Layer split supports a quantized KV the tensor attempt
+                        # had to drop; restore it so the fallback keeps the user's
+                        # memory savings (the launch re-emits --cache-type-k/v from
+                        # this variable, so the stripped flag is not needed).
+                        if _tensor_dropped_cache_type_kv is not None:
+                            cache_type_kv = _tensor_dropped_cache_type_kv
                         # A user --split-mode tensor in extras is appended after
                         # Studio's flags, so it would still reach llama-server and
                         # fail here; strip it so the downgrade actually applies.
@@ -4320,6 +4359,11 @@ class LlamaCppBackend:
                                 "per-device compute buffers; falling back to layer split."
                             )
                             tensor_parallel = False
+                            # Restore the quantized KV the tensor attempt dropped;
+                            # the layer-split fallback supports it (re-emitted from
+                            # cache_type_kv at launch).
+                            if _tensor_dropped_cache_type_kv is not None:
+                                cache_type_kv = _tensor_dropped_cache_type_kv
                             extra_args = strip_split_mode_only(extra_args)
 
                     if tensor_parallel and tp_gpus:
@@ -4364,10 +4408,11 @@ class LlamaCppBackend:
                                 subset = ranked_for_cap[:n_gpus]
                                 pool_mib = sum(free for _, free in subset)
                                 pool_total = _pool_total(subset)
+                                _ms = _subset_model_size(n_gpus)
                                 capped = self._fit_context_to_vram(
                                     native_ctx_for_cap,
                                     pool_mib,
-                                    model_size_fit,
+                                    _ms,
                                     cache_type_kv,
                                     n_parallel = n_parallel,
                                     mtp_engaged = _mtp_will_engage,
@@ -4377,7 +4422,7 @@ class LlamaCppBackend:
                                 kv = self._estimate_kv_cache_bytes(
                                     capped, cache_type_kv, n_parallel = n_parallel
                                 )
-                                footprint_mib = (model_size_fit + kv + _mtp_bytes(capped)) / (
+                                footprint_mib = (_ms + kv + _mtp_bytes(capped)) / (
                                     1024 * 1024
                                 )
                                 if footprint_mib <= _pool_budget_mib(
@@ -4419,10 +4464,11 @@ class LlamaCppBackend:
                                 subset = ranked[:n_gpus]
                                 pool_mib = sum(free for _, free in subset)
                                 pool_total = _pool_total(subset)
+                                _ms = _subset_model_size(n_gpus)
                                 capped = self._fit_context_to_vram(
                                     effective_ctx,
                                     pool_mib,
-                                    model_size_fit,
+                                    _ms,
                                     cache_type_kv,
                                     n_parallel = n_parallel,
                                     mtp_engaged = _mtp_will_engage,
@@ -4432,7 +4478,7 @@ class LlamaCppBackend:
                                 kv = self._estimate_kv_cache_bytes(
                                     capped, cache_type_kv, n_parallel = n_parallel
                                 )
-                                footprint_mib = (model_size_fit + kv + _mtp_bytes(capped)) / (
+                                footprint_mib = (_ms + kv + _mtp_bytes(capped)) / (
                                     1024 * 1024
                                 )
                                 if footprint_mib <= _pool_budget_mib(
@@ -4458,7 +4504,9 @@ class LlamaCppBackend:
                                             n_parallel = n_parallel,
                                         )
                                         footprint_mib = (
-                                            model_size_fit + kv + _mtp_bytes(effective_ctx)
+                                            _subset_model_size(n_gpus)
+                                            + kv
+                                            + _mtp_bytes(effective_ctx)
                                         ) / (1024 * 1024)
                                         if footprint_mib <= _pool_budget_mib(
                                             pool_mib, pool_total, pin_fraction
