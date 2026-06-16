@@ -574,6 +574,19 @@ export function ModelsPage() {
     (opts: ModelLoadOptions, isDownloaded: boolean) => {
       if (!selectedModel) return;
       const runId = selectedModel.resource.runId;
+      // "Load on selection" off: stage the pick instead of loading. The chat
+      // page's staging flow reads the header and shows the load options; the
+      // single load then happens from there.
+      if (!useChatRuntimeStore.getState().loadOnSelection) {
+        useChatRuntimeStore.getState().stageModel({
+          id: runId,
+          ggufVariant: opts.ggufVariant,
+          isDownloaded,
+          expectedBytes: opts.expectedBytes,
+        });
+        openNewChat();
+        return;
+      }
       void selectModel({
         id: runId,
         ggufVariant: opts.ggufVariant,
@@ -582,6 +595,7 @@ export function ModelsPage() {
         throwOnError: true,
       })
         .then(() => {
+          // Read fresh: the load is async, so the checkpoint may have changed.
           const store = useChatRuntimeStore.getState();
           if (!modelIdsMatch(store.params.checkpoint, runId)) {
             store.setCheckpoint(runId, opts.ggufVariant ?? null);

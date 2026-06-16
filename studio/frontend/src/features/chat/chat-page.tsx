@@ -62,7 +62,9 @@ import {
   parseExternalModelId,
 } from "./external-providers";
 import { useChatModelRuntime } from "./hooks/use-chat-model-runtime";
+import type { SelectedModelInput } from "./hooks/use-chat-model-runtime";
 import { useChatProjects } from "./hooks/use-chat-projects";
+import { useStagedModelPreparation } from "./hooks/use-staged-model-preparation";
 import {
   type SidebarItem,
   useChatSidebarItems,
@@ -1024,6 +1026,11 @@ export function ChatPage(): ReactElement {
 
   const settingsOpen = useChatRuntimeStore((s) => s.settingsPanelOpen);
   const setSettingsOpen = useChatRuntimeStore((s) => s.setSettingsPanelOpen);
+  const loadOnSelection = useChatRuntimeStore((s) => s.loadOnSelection);
+  const setLoadOnSelection = useChatRuntimeStore((s) => s.setLoadOnSelection);
+  // Deferred-load staging: downloads a staged GGUF (if needed) and reads its
+  // header context so the sheet can show the context slider before the load.
+  const stagedDownload = useStagedModelPreparation();
   const incognito = useChatRuntimeStore((s) => s.incognito);
   const setIncognito = useChatRuntimeStore((s) => s.setIncognito);
   const incognitoLabel = incognito
@@ -1503,12 +1510,55 @@ export function ChatPage(): ReactElement {
     closeArtifactSurface();
   }, [activeThreadId, closeArtifactSurface, selectedArtifact, view]);
 
+  // Abandon a staged (not-yet-loaded) pick when the chat context actually
+  // changes — switching threads or leaving single view — so a stale Load button
+  // can't resurface in a different context. Mirrors the incognito reset pattern.
+  // (Route exit is handled in __root.tsx, which runs after this unmounts.)
+  // Clear only on a real change, never on mount: staging from the Hub sets
+  // pendingSelection then navigates here, and clearing on mount would wipe it.
+  // Comparing the previous context (rather than a first-run flag) is also safe
+  // under StrictMode's double-invoke and component remounts.
+  const prevChatContextRef = useRef<{
+    thread: typeof activeThreadId;
+    mode: typeof view.mode;
+  } | null>(null);
+  useEffect(() => {
+    const prev = prevChatContextRef.current;
+    prevChatContextRef.current = { thread: activeThreadId, mode: view.mode };
+    if (prev == null || (prev.thread === activeThreadId && prev.mode === view.mode)) {
+      return;
+    }
+    const store = useChatRuntimeStore.getState();
+    if (store.pendingSelection) store.setPendingSelection(null);
+  }, [activeThreadId, view.mode]);
+
   const hasActiveModel = Boolean(inferenceParams.checkpoint);
+  // Load immediately, or — when "Load on selection" is off — stage the pick so
+  // its load options can be set first. Shared by the main selector, native
+  // drag-drop/picker, and the dropped-file chip (the Hub stages via the store).
+  const stageOrLoad = useCallback(
+    async (selection: SelectedModelInput) => {
+      const store = useChatRuntimeStore.getState();
+      if (store.loadOnSelection) {
+        await selectModel(selection);
+        return;
+      }
+      store.stageModel({
+        id: selection.id,
+        isLora: selection.isLora,
+        ggufVariant: selection.ggufVariant,
+        isDownloaded: selection.isDownloaded,
+        expectedBytes: selection.expectedBytes,
+        nativePathToken: selection.nativePathToken,
+      });
+    },
+    [selectModel],
+  );
   const loadNativeModelIntent = useCallback(
     async (intent: NativeIntent, loadingDescription: string) => {
       const label =
         intent.path.displayLabel || intent.displayLabel || "Local GGUF model";
-      await selectModel({
+      await stageOrLoad({
         id: label,
         nativePathToken: intent.path.token,
         isDownloaded: true,
@@ -1518,7 +1568,7 @@ export function ChatPage(): ReactElement {
       });
       useNativeIntentStore.getState().clearModelIntent(intent.id);
     },
-    [selectModel],
+    [stageOrLoad],
   );
   const handleNativeModelDropAutoLoad = useCallback(
     (intent: NativeIntent) =>
@@ -1746,20 +1796,25 @@ export function ChatPage(): ReactElement {
             duration: 6000,
           });
         }
-        await selectModel({
+        const selection = {
           id: value,
           isLora: meta?.isLora,
           ggufVariant: meta?.ggufVariant,
           isDownloaded: meta?.isDownloaded,
           expectedBytes: meta?.expectedBytes,
-        });
+        };
+        // "Load on selection" off: stage the model and open settings so its
+        // load knobs (tensor parallel, context length…) can be set, then it
+        // loads once via the sheet's Load button. The currently loaded model
+        // stays put until the user commits.
+        await stageOrLoad(selection);
       })();
     },
     [
       activeThreadId,
       externalProvidersForChat,
       modelsFromStore,
-      selectModel,
+      stageOrLoad,
       view,
     ],
   );
@@ -2139,6 +2194,8 @@ export function ChatPage(): ReactElement {
                 activeGgufVariant={activeGgufVariant}
                 onValueChange={handleCheckpointChange}
                 onEject={handleEject}
+                loadOnSelection={loadOnSelection}
+                onLoadOnSelectionChange={setLoadOnSelection}
                 onFoldersChange={refreshLocalModels}
                 onPickLocalModel={isTauri ? chooseNativeModel : undefined}
                 onModelsChange={refreshModelLists}
@@ -2190,7 +2247,7 @@ export function ChatPage(): ReactElement {
               <NativeModelChip
                 intent={pendingNativeModelIntent}
                 nativeReadsDisabled={!nativePathLeasesSupported}
-                onLoad={(selection) => selectModel(selection)}
+                onLoad={(selection) => void stageOrLoad(selection)}
               />
             ) : null}
             {loadingModel && loadToastDismissed ? (
@@ -2340,7 +2397,13 @@ export function ChatPage(): ReactElement {
 
       <ChatSettingsPanel
         open={settingsOpen}
-        onOpenChange={setSettingsOpen}
+        onOpenChange={(open) => {
+          setSettingsOpen(open);
+          // Closing the sheet abandons a staged (not-yet-loaded) pick, so a
+          // stale Load button can't resurface next time the sheet is opened.
+          const store = useChatRuntimeStore.getState();
+          if (!open && store.pendingSelection) store.setPendingSelection(null);
+        }}
         params={inferenceParams}
         onParamsChange={setInferenceParams}
         isExternalModel={isExternalModel}
@@ -2366,6 +2429,20 @@ export function ChatPage(): ReactElement {
             });
           }
         }}
+        onLoadPendingModel={() => {
+          const pending = useChatRuntimeStore.getState().pendingSelection;
+          // forceReload: the staged model isn't loaded yet, so bypass the
+          // same-checkpoint dedupe (and selectModel clears pendingSelection).
+          // keepSpeculative: honor the speculative mode set on the sidebar.
+          if (pending)
+            selectModel({ ...pending, forceReload: true, keepSpeculative: true });
+        }}
+        stagedDownloadFraction={stagedDownload.progress?.fraction ?? null}
+        onCancelStagedDownload={() =>
+          stagedDownload.cancelDownload(
+            useChatRuntimeStore.getState().pendingSelection?.ggufVariant ?? null,
+          )
+        }
       />
     </div>
   );

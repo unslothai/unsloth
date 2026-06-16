@@ -8,6 +8,8 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import { InfoHint } from "@/components/ui/info-hint";
+import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { usePlatformStore } from "@/config/env";
 import { isCustomProviderType } from "@/features/chat/external-providers";
@@ -108,6 +110,11 @@ interface ModelSelectorProps {
   activeGgufVariant?: string | null;
   onValueChange?: (value: string, meta: ModelSelectorChangeMeta) => void;
   onEject?: () => void;
+  /** When provided, renders a persisted "Load on selection" toggle in the
+   *  popover. Off → picking a model stages it for a deferred, configured load
+   *  instead of loading immediately. */
+  loadOnSelection?: boolean;
+  onLoadOnSelectionChange?: (value: boolean) => void;
   onFoldersChange?: () => void;
   onPickLocalModel?: () => void | Promise<void>;
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
@@ -210,6 +217,8 @@ function ModelSelectorContent({
   onPickLocalModel,
   onModelsChange,
   deleteDisabled,
+  loadOnSelection,
+  onLoadOnSelectionChange,
   className,
   dataTour,
 }: {
@@ -223,6 +232,8 @@ function ModelSelectorContent({
   onPickLocalModel?: () => void;
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
   deleteDisabled?: boolean;
+  loadOnSelection?: boolean;
+  onLoadOnSelectionChange?: (value: boolean) => void;
   className?: string;
   dataTour?: string;
 }) {
@@ -378,6 +389,24 @@ function ModelSelectorContent({
           </button>
         </div>
       ) : null}
+      {onLoadOnSelectionChange ? (
+        <div className="mt-1.5 border-t border-border/70 pt-1.5">
+          <div className="flex w-full items-center justify-between gap-2 rounded-md px-2 py-1.5 text-xs text-muted-foreground">
+            <div className="flex min-w-0 items-center gap-1.5">
+              <span>Load on selection</span>
+              <InfoHint>
+                When off, picking a model lets you adjust its load options
+                (context length, tensor parallelism) before it loads.
+              </InfoHint>
+            </div>
+            <Switch
+              className="panel-switch shrink-0"
+              checked={loadOnSelection ?? true}
+              onCheckedChange={onLoadOnSelectionChange}
+            />
+          </div>
+        </div>
+      ) : null}
     </PopoverContent>
   );
 }
@@ -395,6 +424,8 @@ export function ModelSelector({
   onPickLocalModel,
   onModelsChange,
   deleteDisabled,
+  loadOnSelection,
+  onLoadOnSelectionChange,
   variant = "outline",
   size = "default",
   className,
@@ -513,6 +544,8 @@ export function ModelSelector({
         onPickLocalModel={onPickLocalModel ? handlePickLocalModel : undefined}
         onModelsChange={onModelsChange}
         deleteDisabled={deleteDisabled}
+        loadOnSelection={loadOnSelection}
+        onLoadOnSelectionChange={onLoadOnSelectionChange}
         className={contentClassName}
         dataTour={contentDataTour}
       />

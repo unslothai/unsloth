@@ -323,6 +323,20 @@ def list_partial_gguf_variants_from_state(
     return variants, has_vision
 
 
+def resolve_local_gguf_path(repo_id: str, gguf_variant: Optional[str]) -> Optional[str]:
+    """Absolute path to the (shard-1) GGUF file for ``repo_id`` + ``gguf_variant``
+    if it is already downloaded in the HF cache, else ``None``. Read-only — never
+    triggers a download. Lets callers read header metadata before a load."""
+    for snapshot in iter_hf_cache_snapshots(repo_id):
+        variants, _ = list_local_gguf_variants(str(snapshot))
+        for variant in variants:
+            if gguf_variant is None or variant.quant == gguf_variant:
+                candidate = snapshot / variant.filename
+                if candidate.is_file():
+                    return str(candidate)
+    return None
+
+
 def list_gguf_variants(
     repo_id: str, hf_token: Optional[str] = None
 ) -> tuple[list[GgufVariantInfo], bool, Optional[list]]:

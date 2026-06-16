@@ -35,6 +35,7 @@ export const CHAT_ALLOW_ARTIFACT_NETWORK_ACCESS_KEY =
   "unsloth_chat_allow_artifact_network_access";
 export const CHAT_MCP_ENABLED_KEY = "unsloth_chat_mcp_enabled";
 export const CHAT_CONFIRM_TOOL_CALLS_KEY = "unsloth_chat_confirm_tool_calls";
+export const CHAT_LOAD_ON_SELECTION_KEY = "unsloth_chat_load_on_selection";
 export const CHAT_BYPASS_PERMISSIONS_KEY = "unsloth_chat_bypass_permissions";
 export const CHAT_WEB_FETCH_TOOLS_ENABLED_KEY =
   "unsloth_chat_web_fetch_tools_enabled";
@@ -408,6 +409,32 @@ function notifyHfTokenChanged(value: string): void {
   }
 }
 
+/** A local model staged for a deferred load (see `pendingSelection`). Shape is
+ *  a subset of the load hook's `SelectedModelInput`, structurally assignable. */
+export type PendingModelSelection = {
+  id: string;
+  isLora?: boolean;
+  ggufVariant?: string;
+  isDownloaded?: boolean;
+  expectedBytes?: number;
+  /** Native (drag-drop / picked-from-disk) GGUF: the path token used to read
+   *  the header and to load. Absent for HF-repo models. */
+  nativePathToken?: string;
+  /** Native context length read from the GGUF header once the file is local.
+   *  Scoped here (not the shared `ggufContextLength`) so a staged model's
+   *  metadata never pollutes the currently-loaded model's context display. */
+  contextLength?: number | null;
+};
+
+/** A staged pick is a GGUF (and so shows the GGUF load knobs) when it has a HF
+ *  variant or a native path token. Native files carry no variant. */
+export function isPendingGguf(pending: PendingModelSelection | null): boolean {
+  return (
+    pending != null &&
+    (pending.ggufVariant != null || pending.nativePathToken != null)
+  );
+}
+
 type ChatRuntimeStore = {
   settingsHydrated: boolean;
   params: InferenceParams;
@@ -538,6 +565,13 @@ type ChatRuntimeStore = {
   tensorParallel: boolean;
   /** Backend-reported tensor-parallel state; null until first hydrated. */
   loadedTensorParallel: boolean | null;
+  /** Persisted: when false, picking a local model stages it as
+   *  `pendingSelection` (and opens settings) instead of loading immediately,
+   *  so load settings can be set before the single load. */
+  loadOnSelection: boolean;
+  /** A local model picked while `loadOnSelection` is off: staged, not loaded.
+   *  The settings sheet shows its load knobs and a Load button. */
+  pendingSelection: PendingModelSelection | null;
   loadedIsMultimodal: boolean;
   /** Active model is a block-diffusion model (DiffusionGemma): drives the
    *  denoising-canvas artifact auto-render. */
@@ -638,7 +672,17 @@ type ChatRuntimeStore = {
   setKvCacheDtype: (dtype: string | null) => void;
   setSpeculativeType: (type: string | null) => void;
   setSpecDraftNMax: (value: number | null) => void;
+  /** Revert the editable load knobs to the loaded model's baseline (or defaults
+   *  when nothing is loaded). Used by the settings-sheet Reset button and to
+   *  start each deferred-staging session clean so one staged pick's settings
+   *  don't leak onto the next. */
+  resetModelSettingsToLoaded: () => void;
   setTensorParallel: (value: boolean) => void;
+  setLoadOnSelection: (value: boolean) => void;
+  setPendingSelection: (selection: PendingModelSelection | null) => void;
+  /** Stage a pick for a deferred load: revert knobs to the loaded baseline,
+   *  record the selection, and open the settings sheet. */
+  stageModel: (selection: PendingModelSelection) => void;
   setCustomContextLength: (v: number | null) => void;
   setChatTemplateOverride: (template: string | null) => void;
   setPendingAudio: (base64: string, name: string) => void;
@@ -924,6 +968,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   loadedSpecDraftNMax: null,
   tensorParallel: false,
   loadedTensorParallel: null,
+  loadOnSelection: loadBool(CHAT_LOAD_ON_SELECTION_KEY, true),
+  pendingSelection: null,
   loadedIsMultimodal: false,
   loadedIsDiffusion: false,
   customContextLength: null,
@@ -1107,6 +1153,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       },
       activeGgufVariant: null,
       activeNativePathToken: null,
+      pendingSelection: null,
       ggufContextLength: null,
       ggufMaxContextLength: null,
       ggufNativeContextLength: null,
@@ -1339,6 +1386,24 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   setSpeculativeType: (speculativeType) => set({ speculativeType }),
   setSpecDraftNMax: (specDraftNMax) => set({ specDraftNMax }),
   setTensorParallel: (tensorParallel) => set({ tensorParallel }),
+  resetModelSettingsToLoaded: () =>
+    set((s) => ({
+      customContextLength: null,
+      kvCacheDtype: s.loadedKvCacheDtype,
+      tensorParallel: s.loadedTensorParallel ?? false,
+      speculativeType: s.loadedSpeculativeType,
+      specDraftNMax: s.loadedSpecDraftNMax,
+      chatTemplateOverride: s.loadedChatTemplateOverride,
+    })),
+  setLoadOnSelection: (loadOnSelection) => {
+    saveBool(CHAT_LOAD_ON_SELECTION_KEY, loadOnSelection);
+    set({ loadOnSelection });
+  },
+  setPendingSelection: (pendingSelection) => set({ pendingSelection }),
+  stageModel: (selection) => {
+    get().resetModelSettingsToLoaded();
+    set({ pendingSelection: selection, settingsPanelOpen: true });
+  },
   setCustomContextLength: (customContextLength) => set({ customContextLength }),
   setChatTemplateOverride: (chatTemplateOverride) =>
     set({ chatTemplateOverride }),
