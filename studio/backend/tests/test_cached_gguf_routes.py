@@ -107,6 +107,19 @@ def test_list_cached_gguf_matches_extension_case_insensitively(monkeypatch, tmp_
     ]
 
 
+def test_is_hidden_model_hides_validation_probe_everywhere():
+    """Every picker (model list, local, cached GGUF, cached models) gates on
+    _is_hidden_model, so hiding the probe here hides it in the search menu too.
+    Cover both forms callers pass: the reconstructed repo id and the on-disk
+    snapshot path."""
+    assert models_route._is_hidden_model("ggml-org/models")
+    assert models_route._is_hidden_model("ggml-org/models/tinyllamas/stories260K.gguf")
+    assert models_route._is_hidden_model(
+        None, "/hf/models--ggml-org--models/snapshots/abc/tinyllamas/stories260K.gguf"
+    )
+    assert not models_route._is_hidden_model("unsloth/gemma-3-270m-it-GGUF")
+
+
 def test_list_cached_gguf_hides_llama_validation_probe(monkeypatch, tmp_path):
     """The ggml-org/models / stories260K install validation probe can land in
     the HF cache as a side effect of installing the prebuilt llama-server.
