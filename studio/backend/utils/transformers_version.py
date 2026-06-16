@@ -459,13 +459,29 @@ def get_transformers_tier(model_name: str) -> str:
     if local_cfg.is_file():
         cfg = _load_config_json(model_name)
         if cfg is not None and _config_needs_510(cfg):
+            logger.info(
+                "Transformers tier 510 selected for %s (local config.json check)",
+                model_name,
+            )
             return "510"
         if cfg is not None and _config_needs_550(cfg):
+            logger.info(
+                "Transformers tier 550 selected for %s (local config.json check)",
+                model_name,
+            )
             return "550"
         if cfg is not None:
             local_tc = Path(model_name) / "tokenizer_config.json"
             if local_tc.is_file() and _check_tokenizer_config_needs_v5(model_name):
+                logger.info(
+                    "Transformers tier 530 selected for %s (local tokenizer_config.json check)",
+                    model_name,
+                )
                 return "530"
+            logger.info(
+                "Transformers tier default (4.57.x) selected for %s (local config.json no match)",
+                model_name,
+            )
             return "default"
 
     # --- Fast substring checks (no I/O) ------------------------------------

@@ -568,6 +568,14 @@ class TestGetTransformersTier:
         text = " ".join(r.getMessage() for r in caplog.records).lower()
         assert "default" in text, f"tier selection not logged: {text!r}"
 
+    def test_local_config_json_selection_is_logged(self, tmp_path: Path, caplog):
+        cfg = {"architectures": ["Gemma4ForConditionalGeneration"], "model_type": "gemma4"}
+        (tmp_path / "config.json").write_text(json.dumps(cfg))
+        caplog.set_level(logging.INFO)
+        assert get_transformers_tier(str(tmp_path)) == "550"
+        text = " ".join(r.getMessage() for r in caplog.records).lower()
+        assert "550" in text and "local config.json" in text, f"local tier not logged: {text!r}"
+
     def test_needs_transformers_5_compat(self):
         """needs_transformers_5 should return True for 510, 530, and 550 models."""
         assert needs_transformers_5("unsloth/gemma-4-12b-it") is True
