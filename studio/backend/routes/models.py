@@ -1526,7 +1526,6 @@ async def get_model_config(
         if max_position_embeddings is None:
             try:
                 from transformers import AutoConfig as _AutoConfig
-
                 _ac = _AutoConfig.from_pretrained(
                     model_name, trust_remote_code = False, token = hf_token
                 )
