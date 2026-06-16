@@ -605,20 +605,26 @@ def _extra_args_set_any_flag(extra_args: Optional[Iterable[str]], flags: Collect
     return False
 
 
-def _extra_args_requests_mtp(extra_args: Optional[Iterable[str]]) -> bool:
-    """True if extras request MTP (``--spec-type draft-mtp`` or a chain); the budget must reserve for it."""
-    if not extra_args:
-        return False
-    args = [str(a) for a in extra_args]
+def _extra_args_requests_mtp(
+    extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
+) -> bool:
+    """True if MTP is requested via ``--spec-type draft-mtp`` (or a chain) in extras,
+    else via the ``LLAMA_ARG_SPEC_TYPE`` env the child honors; the budget must reserve
+    for it. CLI wins, but either channel engages MTP, so both count here."""
+
+    def _has_mtp(value: str) -> bool:
+        return any(p.strip().lower() in ("mtp", "draft-mtp") for p in value.split(","))
+
+    args = [str(a) for a in extra_args] if extra_args else []
     for i, raw in enumerate(args):
         flag, eq, inline = raw.partition("=")
         if flag != "--spec-type":
             continue
         value = inline if eq else (args[i + 1] if i + 1 < len(args) else "")
-        pieces = [p.strip().lower() for p in value.split(",")]
-        if any(p in ("mtp", "draft-mtp") for p in pieces):
+        if _has_mtp(value):
             return True
-    return False
+    env_spec = (os.environ if env is None else env).get("LLAMA_ARG_SPEC_TYPE")
+    return bool(env_spec and _has_mtp(env_spec))
 
 
 def _extra_args_spec_draft_n_max(extra_args: Optional[Iterable[str]]) -> Optional[int]:
