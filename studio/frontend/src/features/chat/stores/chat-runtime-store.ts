@@ -420,21 +420,25 @@ export type PendingModelSelection = {
   /** Native (drag-drop / picked-from-disk) GGUF: the path token used to read
    *  the header and to load. Absent for HF-repo models. */
   nativePathToken?: string;
+  /** Direct local .gguf file (custom folder / LM Studio): a GGUF source even
+   *  though it carries neither an HF variant nor a native path token. */
+  isGguf?: boolean;
   /** Native context length read from the GGUF header once the file is local.
    *  Scoped here (not the shared `ggufContextLength`) so a staged model's
    *  metadata never pollutes the currently-loaded model's context display. */
   contextLength?: number | null;
 };
 
-/** A staged pick is a GGUF (and so shows the GGUF load knobs) when it has a HF
- *  variant or a native path token. Native files carry no variant. */
-/** A pick is a GGUF (HF variant or native file) and so has pre-load options
- *  worth staging. Works on both a selection and a staged pending selection. */
+/** A pick is a GGUF (HF variant, native file, or a direct local .gguf) and so
+ *  has pre-load options worth staging. Works on a selection or a staged pick. */
 export function hasGgufSource(x: {
   ggufVariant?: string;
   nativePathToken?: string;
+  isGguf?: boolean;
 }): boolean {
-  return x.ggufVariant != null || x.nativePathToken != null;
+  return (
+    x.ggufVariant != null || x.nativePathToken != null || x.isGguf === true
+  );
 }
 
 export function isPendingGguf(pending: PendingModelSelection | null): boolean {
@@ -1157,6 +1161,14 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         },
         activeGgufVariant: ggufVariant ?? null,
         ...(checkpointChanged ? { contextUsage: null } : {}),
+        // Switching away from a loaded model (e.g. picking an external provider)
+        // abandons any staged pick, so its Load button and edited knobs don't
+        // linger over the newly active model. Same revert as abandonStagedModel.
+        // Guarded on a non-empty current checkpoint: an establishing set from a
+        // background status sync (empty -> active) must not wipe a fresh stage.
+        ...(checkpointChanged && state.params.checkpoint && state.pendingSelection
+          ? { ...loadedBaselineSettings(state), pendingSelection: null }
+          : {}),
       };
     }),
   setActiveThreadId: (activeThreadId) =>

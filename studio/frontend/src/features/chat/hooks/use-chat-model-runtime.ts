@@ -57,6 +57,9 @@ export type SelectedModelInput = {
   expectedBytes?: number;
   forceReload?: boolean;
   nativePathToken?: string;
+  /** Direct local .gguf file (no HF variant / native token) — still a GGUF
+   *  source, so the staging flow treats it as one. */
+  isGguf?: boolean;
   throwOnError?: boolean;
   /** Keep the current speculative-decoding choice across the model switch
    *  instead of resetting it to the standing preference. Set by the deferred

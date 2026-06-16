@@ -65,6 +65,7 @@ import { useChatModelRuntime } from "./hooks/use-chat-model-runtime";
 import type { SelectedModelInput } from "./hooks/use-chat-model-runtime";
 import { useChatProjects } from "./hooks/use-chat-projects";
 import { useStagedModelPreparation } from "./hooks/use-staged-model-preparation";
+import { useLatestRef } from "@/features/hub/hooks/use-latest-ref";
 import {
   type SidebarItem,
   useChatSidebarItems,
@@ -1032,6 +1033,19 @@ export function ChatPage(): ReactElement {
   // Deferred-load staging: downloads a staged GGUF (if needed) and reads its
   // header context so the sheet can show the context slider before the load.
   const stagedDownload = useStagedModelPreparation();
+  // Ref-held so abandonStaged keeps a stable identity (the context-change effect
+  // depends on it and must not re-run every render).
+  const cancelStagedDownloadRef = useLatestRef(stagedDownload.cancelDownload);
+  // Abandon a staged pick: cancel its in-flight download (if any) and revert the
+  // edited knobs, so nothing lingers after the user walks away. Must run before
+  // pendingSelection is cleared, while cancelDownload still targets the stage.
+  const abandonStaged = useCallback(() => {
+    const store = useChatRuntimeStore.getState();
+    const pending = store.pendingSelection;
+    if (!pending) return;
+    cancelStagedDownloadRef.current(pending.ggufVariant ?? null);
+    store.abandonStagedModel();
+  }, [cancelStagedDownloadRef]);
   const incognito = useChatRuntimeStore((s) => s.incognito);
   const setIncognito = useChatRuntimeStore((s) => s.setIncognito);
   const incognitoLabel = incognito
@@ -1512,26 +1526,23 @@ export function ChatPage(): ReactElement {
   }, [activeThreadId, closeArtifactSurface, selectedArtifact, view]);
 
   // Abandon a staged (not-yet-loaded) pick when the chat context actually
-  // changes — switching threads or leaving single view — so a stale Load button
-  // can't resurface in a different context. Mirrors the incognito reset pattern.
-  // (Route exit is handled in __root.tsx, which runs after this unmounts.)
-  // Clear only on a real change, never on mount: staging from the Hub sets
-  // pendingSelection then navigates here, and clearing on mount would wipe it.
-  // Comparing the previous context (rather than a first-run flag) is also safe
-  // under StrictMode's double-invoke and component remounts.
-  const prevChatContextRef = useRef<{
-    thread: typeof activeThreadId;
-    mode: typeof view.mode;
-  } | null>(null);
+  // changes — switching threads, leaving single view, or starting a new chat /
+  // project — so a stale Load button can't resurface in a different context.
+  // New Chat keeps activeThreadId null and only bumps the `new` search nonce, so
+  // the key includes the route identity, not just the thread. Mirrors the
+  // incognito reset pattern. (Route exit is handled in __root.tsx, which runs
+  // after this unmounts.) Clear only on a real change, never on mount: staging
+  // from the Hub sets pendingSelection then navigates here, and clearing on
+  // mount would wipe it. Comparing the previous context (rather than a first-run
+  // flag) is also safe under StrictMode's double-invoke and component remounts.
+  const chatContextKey = `${view.mode}|${activeThreadId ?? ""}|${search.new ?? ""}|${search.project ?? ""}`;
+  const prevChatContextRef = useRef<string | null>(null);
   useEffect(() => {
     const prev = prevChatContextRef.current;
-    prevChatContextRef.current = { thread: activeThreadId, mode: view.mode };
-    if (prev == null || (prev.thread === activeThreadId && prev.mode === view.mode)) {
-      return;
-    }
-    const store = useChatRuntimeStore.getState();
-    if (store.pendingSelection) store.abandonStagedModel();
-  }, [activeThreadId, view.mode]);
+    prevChatContextRef.current = chatContextKey;
+    if (prev === null || prev === chatContextKey) return;
+    abandonStaged();
+  }, [chatContextKey, abandonStaged]);
 
   const hasActiveModel = Boolean(inferenceParams.checkpoint);
   // Load immediately, or — when "Load on selection" is off — stage the pick so
@@ -1554,6 +1565,7 @@ export function ChatPage(): ReactElement {
         isDownloaded: selection.isDownloaded,
         expectedBytes: selection.expectedBytes,
         nativePathToken: selection.nativePathToken,
+        isGguf: selection.isGguf,
       });
     },
     [selectModel],
@@ -1621,6 +1633,7 @@ export function ChatPage(): ReactElement {
         ggufVariant?: string;
         isDownloaded?: boolean;
         expectedBytes?: number;
+        isGguf?: boolean;
       },
     ) => {
       const store = useChatRuntimeStore.getState();
@@ -1633,6 +1646,9 @@ export function ChatPage(): ReactElement {
       )
         return;
       if (meta?.source === "external" || isExternalModelId(value)) {
+        // Switching to an external model abandons any staged local pick: cancel
+        // its download too (setCheckpoint below only clears the pending + knobs).
+        abandonStaged();
         const selectedExternal = parseExternalModelId(value);
         const selectedProvider = selectedExternal
           ? externalProvidersForChat.find(
@@ -1806,6 +1822,7 @@ export function ChatPage(): ReactElement {
           ggufVariant: meta?.ggufVariant,
           isDownloaded: meta?.isDownloaded,
           expectedBytes: meta?.expectedBytes,
+          isGguf: meta?.isGguf,
         };
         // "Load on selection" off: stage the model and open settings so its
         // load knobs (tensor parallel, context length…) can be set, then it
@@ -1815,6 +1832,7 @@ export function ChatPage(): ReactElement {
       })();
     },
     [
+      abandonStaged,
       activeThreadId,
       externalProvidersForChat,
       modelsFromStore,
@@ -2403,11 +2421,10 @@ export function ChatPage(): ReactElement {
         open={settingsOpen}
         onOpenChange={(open) => {
           setSettingsOpen(open);
-          // Closing the sheet abandons a staged (not-yet-loaded) pick, reverting
-          // the staged knobs so they don't linger as dirty edits on the loaded
-          // model.
-          const store = useChatRuntimeStore.getState();
-          if (!open && store.pendingSelection) store.abandonStagedModel();
+          // Closing the sheet abandons a staged (not-yet-loaded) pick: cancel its
+          // download and revert the staged knobs so nothing lingers as a dirty
+          // edit (or a background download) on the loaded model.
+          if (!open) abandonStaged();
         }}
         params={inferenceParams}
         onParamsChange={setInferenceParams}
