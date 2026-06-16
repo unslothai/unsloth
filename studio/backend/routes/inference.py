@@ -1361,6 +1361,33 @@ def _monitor_usage(
     )
 
 
+def _monitor_tool_calls_text(tool_calls: Any) -> str:
+    if not isinstance(tool_calls, list):
+        return ""
+    parts: list[str] = []
+    for tool_call in tool_calls:
+        if not isinstance(tool_call, dict):
+            continue
+        fn = tool_call.get("function") or {}
+        if not isinstance(fn, dict):
+            fn = {}
+        name = fn.get("name") or tool_call.get("name") or "tool"
+        args = fn.get("arguments")
+        if args is None:
+            args = tool_call.get("arguments")
+        if args is None or args == "":
+            parts.append(f"Tool call: {name}")
+            continue
+        if not isinstance(args, str):
+            args_text = json.dumps(args, default = str)
+        else:
+            args_text = args
+        if len(args_text) > 500:
+            args_text = args_text[:497] + "..."
+        parts.append(f"Tool call: {name}({args_text})")
+    return "\n".join(parts)
+
+
 def _monitor_openai_chunk(
     monitor_id: Optional[str],
     data: dict,
@@ -1383,12 +1410,22 @@ def _monitor_openai_chunk(
         content = delta.get("content") if isinstance(delta, dict) else None
         if content:
             api_monitor.append_reply(monitor_id, content)
-        elif isinstance(choice.get("text"), str):
+            continue
+        if isinstance(delta, dict):
+            tool_text = _monitor_tool_calls_text(delta.get("tool_calls"))
+            if tool_text:
+                api_monitor.append_reply(monitor_id, tool_text)
+                continue
+        if isinstance(choice.get("text"), str):
             reply_parts.append((idx, choice["text"]))
         elif isinstance(message, dict):
             text = message.get("content")
             if isinstance(text, str):
                 reply_parts.append((idx, text))
+            else:
+                tool_text = _monitor_tool_calls_text(message.get("tool_calls"))
+                if tool_text:
+                    reply_parts.append((idx, tool_text))
     if not reply_parts:
         return
     if len(choices) == 1:
@@ -5852,9 +5889,42 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
 
     body = await request.json()
     target_url = f"{llama_backend.base_url}/v1/embeddings"
+    raw_input = body.get("input", "")
+    if isinstance(raw_input, list):
+        prompt_text = "\n".join(str(part) for part in raw_input)
+    else:
+        prompt_text = str(raw_input)
+    monitor_id = None
+    if not getattr(request.state, "skip_api_monitor", False):
+        monitor_id = api_monitor.start(
+            endpoint = request.url.path,
+            method = request.method,
+            model = str(body.get("model") or llama_backend.model_identifier or "default"),
+            prompt = prompt_text,
+            context_length = llama_backend.context_length,
+        )
 
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(target_url, json = body, timeout = _DEFAULT_FIRST_TOKEN_TIMEOUT_S)
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                target_url,
+                json = body,
+                timeout = _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
+            )
+    except asyncio.CancelledError:
+        api_monitor.finish(monitor_id, "cancelled")
+        raise
+    except Exception as exc:
+        api_monitor.fail(monitor_id, _friendly_error(exc))
+        raise
+    if resp.status_code != 200:
+        api_monitor.fail(monitor_id, resp.text[:500])
+    else:
+        try:
+            _monitor_usage(monitor_id, resp.json().get("usage"), llama_backend.context_length)
+        except Exception:
+            pass
+        api_monitor.finish(monitor_id)
     return Response(
         content = resp.content,
         status_code = resp.status_code,

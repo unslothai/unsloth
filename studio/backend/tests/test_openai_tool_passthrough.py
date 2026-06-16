@@ -49,6 +49,7 @@ from routes.inference import (
     _proxy_to_external_provider,
     _set_or_prepend_system_message,
     openai_completions,
+    openai_embeddings,
     openai_chat_completions,
 )
 from state.tool_policy import reset_tool_policy
@@ -1769,6 +1770,103 @@ class TestApiMonitorProviderAndCompletionStreams:
         assert entry["prompt_tokens"] == 2
         assert entry["completion_tokens"] == 5
         assert entry["context_length"] == 4096
+
+    def test_monitor_openai_chunk_records_tool_call_reply(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monitor_id = monitor.start(
+            endpoint = "/v1/chat/completions",
+            method = "POST",
+            model = "gguf",
+            prompt = "hi",
+        )
+
+        _monitor_openai_chunk(
+            monitor_id,
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "tool_calls": [
+                                {
+                                    "type": "function",
+                                    "function": {
+                                        "name": "lookup",
+                                        "arguments": '{"query":"weather"}',
+                                    },
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+            4096,
+        )
+
+        entry = monitor.get(monitor_id)
+        assert entry["reply"] == 'Tool call: lookup({"query":"weather"})'
+
+    def test_embeddings_request_is_counted_active_and_completed(self, monkeypatch):
+        async def _run():
+            import routes.inference as inf_mod
+
+            class Request:
+                state = SimpleNamespace()
+                url = SimpleNamespace(path = "/v1/embeddings")
+                method = "POST"
+
+                async def json(self):
+                    return {"input": ["alpha", "beta"], "model": "embed"}
+
+            class FakeAsyncClient:
+                async def __aenter__(self):
+                    return self
+
+                async def __aexit__(self, *_args):
+                    return False
+
+                async def post(self, *_args, **_kwargs):
+                    assert monitor.active_count() == 1
+                    return httpx.Response(
+                        200,
+                        json = {
+                            "data": [{"embedding": [0.1]}],
+                            "usage": {"prompt_tokens": 4, "total_tokens": 4},
+                        },
+                    )
+
+            monitor = ApiMonitor(max_entries = 3)
+            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monkeypatch.setattr(
+                inf_mod.httpx,
+                "AsyncClient",
+                lambda *args, **kwargs: FakeAsyncClient(),
+            )
+            monkeypatch.setattr(
+                inf_mod,
+                "get_llama_cpp_backend",
+                lambda: SimpleNamespace(
+                    is_loaded = True,
+                    base_url = "http://llama.test",
+                    context_length = 4096,
+                    model_identifier = "gguf",
+                ),
+            )
+
+            response = await openai_embeddings(Request(), current_subject = "test")
+
+            assert response.status_code == 200
+            [entry] = monitor.snapshot()
+            assert entry["endpoint"] == "/v1/embeddings"
+            assert entry["status"] == "completed"
+            assert entry["prompt_preview"] == "alpha\nbeta"
+            assert entry["prompt_tokens"] == 4
+            assert entry["total_tokens"] == 4
+            assert monitor.active_count() == 0
+
+        asyncio.run(_run())
 
     def test_passthrough_stream_task_cancel_finalizes_monitor(self, monkeypatch):
         async def _run():
