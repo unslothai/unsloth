@@ -1966,9 +1966,8 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
     os.environ["PYTHONWARNINGS"] = "ignore"  # before imports
 
-    # Worst-case Xet -> HTTP fallback: when the parent respawns this worker after a
-    # model-load stall, disable Xet before any huggingface_hub import (the var is
-    # read at import time). Mirrors core/inference/worker.py.
+    # HTTP-fallback respawn: disable Xet before any huggingface_hub import (the
+    # var is read at import time). Mirrors core/inference/worker.py.
     from utils.hf_xet_fallback import child_should_disable_xet
 
     if child_should_disable_xet(config):
@@ -2700,8 +2699,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         cpt_trains_embeddings = False
 
         # ── 4c. Load training model (uses VRAM — dataset already formatted) ──
-        # Watch the HF cache during the load so the parent can recover a stalled
-        # Xet download by respawning this worker with HF_HUB_DISABLE_XET=1.
+        # Watchdog lets the parent recover a stalled Xet download via respawn.
         _send_status(event_queue, "Loading model...")
         from utils.hf_xet_fallback import start_watchdog
 

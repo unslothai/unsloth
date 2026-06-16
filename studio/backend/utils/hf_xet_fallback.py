@@ -3,20 +3,14 @@
 
 """Xet-primary HF downloads with an automatic HTTP fallback on a no-progress stall.
 
-The Xet transport (``hf_xet``) is the fast default in modern ``huggingface_hub``,
-but a stalled Xet transfer hangs with no progress and no exception, and a blocked
-native thread cannot be killed. The safetensors inference path already recovers
-from this by running the load in a subprocess, watching cache growth, and
-respawning with ``HF_HUB_DISABLE_XET=1`` (see core/inference/orchestrator.py and
-core/inference/worker.py). This module lifts that pattern into a reusable helper
-for the in-process GGUF and training download paths.
-
-Design: keep Xet primary; fall back to plain HTTP only as a worst-case recovery
-when the parent observes a no-progress stall. ``HF_HUB_DISABLE_XET`` is read at
-import time by ``huggingface_hub``, so the fallback must run in a fresh child that
-sets the env var before importing the library -- hence a ``spawn`` child process,
-not a thread. Cached files short-circuit with no child. Deterministic errors
-(401/403/404/disk-full/validation) and cancellation propagate without a fallback.
+Xet (``hf_xet``) is the fast default but can hang with no progress and no
+exception, and a blocked native thread cannot be killed. Keep Xet primary; fall
+back to plain HTTP only when the parent observes a stall. ``HF_HUB_DISABLE_XET``
+is read at import time, so the fallback runs in a fresh ``spawn`` child (not a
+thread) that sets the env before importing ``huggingface_hub``. Cached files
+short-circuit with no child; deterministic errors (401/403/404/disk-full) and
+cancellation propagate without a fallback. Mirrors the safetensors inference
+recovery in core/inference/{orchestrator,worker}.py.
 """
 
 from __future__ import annotations
@@ -34,11 +28,9 @@ from loggers import get_logger
 
 logger = get_logger(__name__)
 
-# Mirror core/inference/orchestrator.py:35 and core/training/training.py:148.
 _CTX = mp.get_context("spawn")
 
-# Defaults match the existing inference watchdog (core/inference/worker.py:147-148)
-# and the hub shutdown deadline (hub/utils/download_registry.py).
+# Defaults match the existing inference watchdog and hub shutdown deadline.
 DEFAULT_HEARTBEAT_INTERVAL = 30.0
 DEFAULT_STALL_TIMEOUT = 180.0
 DEFAULT_GRACE_PERIOD = 10.0
@@ -48,9 +40,7 @@ _POLL_INTERVAL = 0.5
 class DownloadStallError(RuntimeError):
     """Raised when no download progress is observed for too long.
 
-    Canonical home for the type previously defined in
-    core/inference/orchestrator.py; that module now imports it from here so the
-    GGUF, training, and safetensors paths share one exception.
+    Canonical home; orchestrator.py re-imports it so all paths share one type.
     """
 
 
@@ -64,10 +54,9 @@ def get_hf_download_state(
 ) -> Optional[tuple[int, bool]]:
     """Return ``(total_on_disk_bytes, has_incomplete)`` for the active HF cache.
 
-    Sparse-aware: sums ``hf_cache_state.blob_bytes_present`` (st_blocks based) over
-    each repo's ``blobs/`` so a sparse XET/``hf_transfer`` ``.incomplete`` is not
-    mistaken for full-size progress (unlike a plain ``st_size`` sum). ``None`` means
-    the state could not be measured, so callers skip stall logic for that tick.
+    Sparse-aware (st_blocks based) so a sparse Xet/``hf_transfer`` ``.incomplete``
+    is not mistaken for full-size progress. ``None`` means the state could not be
+    measured, so callers skip stall logic for that tick.
     """
     try:
         from hub.utils.hf_cache_state import (
@@ -83,8 +72,7 @@ def get_hf_download_state(
         total = 0
         has_incomplete = False
         for repo_id in repo_ids or []:
-            # Skip local filesystem paths -- HF IDs (org/model) never start with
-            # / . ~ or contain backslashes.
+            # Skip local paths: HF IDs never start with / . ~ or contain "\".
             if not repo_id or repo_id.startswith(("/", ".", "~")) or "\\" in repo_id:
                 continue
             for entry in iter_active_repo_cache_dirs(repo_type, repo_id):
@@ -116,11 +104,10 @@ def start_watchdog(
     on_heartbeat: Optional[Callable[[str], None]] = None,
 ) -> threading.Event:
     """Start a daemon thread that fires ``on_stall(message)`` exactly once iff a
-    ``*.incomplete`` is present AND the total on-disk size is unchanged for
-    *stall_timeout* seconds. The timer resets whenever no ``*.incomplete`` is
-    present, so post-download init is never misread as a stall. Same state machine
-    as core/inference/worker.py:162-215, but sparse-aware and transport-agnostic
-    via callbacks. Returns a stop event the caller sets when the phase ends.
+    ``*.incomplete`` is present AND the on-disk size is unchanged for
+    *stall_timeout* seconds. The timer resets while no ``*.incomplete`` exists, so
+    post-download init is never misread as a stall. Returns a stop event the
+    caller sets when the download phase ends.
     """
     stop = threading.Event()
     transport = "https" if xet_disabled else "xet"
@@ -146,8 +133,8 @@ def start_watchdog(
                 last_size = current_size
                 last_change = now
 
-            # Only fire while .incomplete confirms an active download; reset
-            # otherwise so model init / lock waits are not counted as a stall.
+            # Reset unless .incomplete confirms an active download, so model init
+            # and lock waits are not counted as a stall.
             if not has_incomplete:
                 last_change = now
             elif now - last_change >= stall_timeout:
@@ -177,10 +164,9 @@ def _download_child_entry(
 ) -> None:
     """Spawn-child entrypoint: download one file and report the result.
 
-    Top-level and picklable (primitives + an mp queue only). Sets the Xet env
-    BEFORE importing huggingface_hub (the var is read at import time), forms its
-    own process group so the parent can kill the whole transfer, and never logs
-    the token or signed URLs.
+    Top-level and picklable. Sets the Xet env BEFORE importing huggingface_hub,
+    forms its own process group so the parent can kill the whole transfer, and
+    never logs the token or signed URLs.
     """
     if hasattr(os, "setsid"):
         try:
@@ -190,14 +176,13 @@ def _download_child_entry(
 
     if disable_xet:
         os.environ["HF_HUB_DISABLE_XET"] = "1"
-        # hf_transfer's parallel-Range writer leaves sparse partials; disable so
-        # the HTTP writer stays sequential and resumable (matches the hub worker).
+        # Keep the HTTP writer sequential and resumable (hf_transfer leaves sparse
+        # partials a sequential resume cannot safely continue).
         os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
     os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
 
-    # Test-only fault injection (never set in production): on the Xet attempt,
-    # write a partial blob and hang so the parent's no-progress watchdog fires
-    # and the HTTP fallback can be exercised end to end against a real repo.
+    # Test-only fault injection (never set in production): stall the Xet attempt
+    # so the watchdog + HTTP fallback can be exercised against a real repo.
     if not disable_xet and os.environ.get("UNSLOTH_HF_XET_FORCE_STALL") == "1":
         import time as _t
         try:
@@ -232,13 +217,11 @@ def _download_child_entry(
 
 
 def _terminate_process_group(proc: "mp.process.BaseProcess", grace_period: float) -> None:
-    """Kill *proc* and its whole process group (Xet may spawn helper threads/procs).
+    """Kill *proc* and its whole process group (Xet may spawn helper procs).
 
-    POSIX: the child calls ``os.setsid()`` so its pgid equals its pid; we signal
-    that group via ``os.killpg(pid, ...)`` (NOT ``getpgid`` -- before the child
-    becomes a group leader that would resolve to OUR group). ESRCH there just
-    means the child has not called setsid yet, so we fall back to terminating the
-    single process. SIGTERM, then SIGKILL after *grace_period*.
+    The child calls ``os.setsid()`` so its pgid equals its pid; signal via
+    ``os.killpg(pid, ...)`` -- NOT ``getpgid``, which before the child becomes a
+    group leader resolves to OUR group. SIGTERM, then SIGKILL after *grace_period*.
     """
     pid = proc.pid
 
@@ -275,15 +258,10 @@ def _run_download_attempt(
     grace_period: float,
     on_status: Optional[Callable[[str], None]],
 ) -> tuple[str, Optional[str]]:
-    """Run a single download in a spawn child, supervised by a no-progress
-    watchdog. Returns one of:
+    """Run one download in a spawn child supervised by the no-progress watchdog.
 
-    - ``("ok", path)``         success,
-    - ``("stall", None)``      watchdog saw no progress for *stall_timeout*,
-    - ``("cancelled", None)``  *cancel_event* was set,
-    - ``("error", message)``   the child raised (deterministic error / crash).
-
-    This is the seam tests monkeypatch to avoid spawning real processes.
+    Returns ``("ok", path)``, ``("stall", None)``, ``("cancelled", None)``, or
+    ``("error", message)``. This is the seam tests monkeypatch to avoid spawning.
     """
     result_queue: Any = _CTX.Queue()
     proc = _CTX.Process(
@@ -326,7 +304,7 @@ def _run_download_attempt(
             except queue.Empty:
                 continue
         else:
-            # Process exited; drain any result it managed to enqueue.
+            # Process exited; drain any result it enqueued.
             try:
                 result = result_queue.get_nowait()
             except queue.Empty:
@@ -361,12 +339,10 @@ def hf_hub_download_with_xet_fallback(
     """Download a single file with Xet primary and HTTP as a stall-only fallback.
 
     Returns the local cache path. Raises ``RuntimeError("Cancelled")`` if
-    *cancel_event* is set (the sentinel callers already handle), re-raises a
-    deterministic child error unchanged (no fallback), and raises
-    ``DownloadStallError`` only if BOTH Xet and the HTTP retry stall.
+    *cancel_event* is set, re-raises a deterministic child error unchanged (no
+    fallback), and raises ``DownloadStallError`` only if BOTH transports stall.
     """
-    # Cheap cached-file probe: a finalized blob means no child and no network,
-    # preserving the existing fast path for already-downloaded files.
+    # Finalized blob already cached: return it with no child and no network.
     try:
         from huggingface_hub import try_to_load_from_cache
         cached = try_to_load_from_cache(repo_id, filename, repo_type = repo_type)
@@ -381,9 +357,8 @@ def hf_hub_download_with_xet_fallback(
     disable_xet = False
     for attempt in range(2):
         if disable_xet:
-            # Purge any partial whose provenance is not a sequential HTTP writer
-            # before resuming over HTTP (a sparse Xet/hf_transfer partial fed to
-            # the HTTP resumer silently corrupts the blob).
+            # Purge a non-HTTP partial before resuming over HTTP: an HTTP resume
+            # over a sparse Xet/hf_transfer partial silently corrupts the blob.
             try:
                 from hub.utils.download_registry import prepare_cache_for_transport
                 prepare_cache_for_transport(repo_type, repo_id, "http")
@@ -408,8 +383,7 @@ def hf_hub_download_with_xet_fallback(
         if kind == "cancelled":
             raise RuntimeError("Cancelled")
         if kind == "error":
-            # Deterministic failure (auth / missing / disk / validation): the
-            # second transport would fail identically, so surface it now.
+            # Deterministic failure: the other transport would fail identically.
             raise RuntimeError(payload)
         # kind == "stall"
         if attempt == 0 and not disable_xet:

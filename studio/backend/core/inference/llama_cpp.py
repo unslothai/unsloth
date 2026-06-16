@@ -2705,7 +2705,7 @@ class LlamaCppBackend:
         any time; checks it between each shard download.
         """
         try:
-            import huggingface_hub  # noqa: F401 -- hard dependency, validated up front
+            import huggingface_hub  # noqa: F401 -- presence check only
         except ImportError:
             raise RuntimeError(
                 "huggingface_hub is required for HF model loading. "
@@ -2885,8 +2885,7 @@ class LlamaCppBackend:
             if self._cancel_event.is_set():
                 raise RuntimeError("Cancelled")
             dl_start = time.monotonic()
-            # Xet primary, automatic HTTP fallback if Xet stalls (per-file, so
-            # already-finished shards stay cached). Honors the same _cancel_event.
+            # Xet primary, HTTP fallback on stall; per-file so finished shards stay cached.
             local_path = hf_hub_download_with_xet_fallback(
                 hf_repo,
                 gguf_filename,
@@ -2964,8 +2963,7 @@ class LlamaCppBackend:
 
         try:
             logger.info(f"Downloading {label}: {hf_repo}/{target}")
-            # Same Xet-primary / HTTP-fallback policy; companions stay best-effort
-            # (a terminal stall or error is swallowed to None by the caller below).
+            # Same policy; companions are best-effort (caller below swallows failures to None).
             return hf_hub_download_with_xet_fallback(
                 hf_repo,
                 target,

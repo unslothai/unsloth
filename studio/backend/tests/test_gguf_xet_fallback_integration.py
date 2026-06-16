@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Integration: the GGUF Chat-Mode download path routes through the Xet->HTTP
-fallback helper, while preserving cancellation and the best-effort companion
-contract. No GPU, no network, no real subprocess (the helper is patched).
+"""Integration: GGUF Chat-Mode downloads route through the Xet->HTTP helper,
+preserving cancellation and the best-effort companion contract. No GPU, no
+network, no real subprocess (the helper is patched).
 """
 
 from __future__ import annotations
@@ -20,11 +20,15 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-# Same heavy-dep stubbing as tests/test_offline_gguf_cache_fallback.py.
+# Heavy-dep stubbing; prefer the real structlog so a bare stub never leaks to
+# later modules that log at import time.
 _loggers_stub = _types.ModuleType("loggers")
 _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
 sys.modules.setdefault("loggers", _loggers_stub)
-sys.modules.setdefault("structlog", _types.ModuleType("structlog"))
+try:
+    import structlog  # noqa: F401
+except ImportError:
+    sys.modules["structlog"] = _types.ModuleType("structlog")
 try:
     import httpx  # noqa: F401
 except ImportError:
@@ -106,7 +110,7 @@ def test_companion_routes_through_helper(hf_cache):
         out = backend._download_mmproj(hf_repo = REPO, hf_token = None)
 
     assert out == "/fake/mmproj-vision-F16.gguf"
-    # The backend's _cancel_event must be threaded through so /unload can abort it.
+    # _cancel_event must be threaded through so /unload can abort the download.
     assert captured["cancel_event"] is backend._cancel_event
 
 

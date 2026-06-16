@@ -30,9 +30,8 @@ from pathlib import Path
 from typing import Any, Generator, Optional, Tuple, Union
 from utils.hardware import prepare_gpu_selection
 
-# DownloadStallError now lives in the shared Xet-fallback helper so the GGUF and
-# training download paths can raise/catch the same type; re-exported here for
-# backwards-compatible imports of core.inference.orchestrator.DownloadStallError.
+# Re-exported from the shared helper so GGUF, training, and inference share one
+# type; kept importable here for backwards compatibility.
 from utils.hf_xet_fallback import DownloadStallError
 
 logger = get_logger(__name__)

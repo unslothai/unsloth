@@ -2,7 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """Parent-side training Xet->HTTP fallback: a model-load stall respawns the
-worker once with HF_HUB_DISABLE_XET=1, preserving the DB run row. Driven via
+worker once with Xet disabled, preserving the DB run row. Driven via
 _handle_event with a fake spawn context; no GPU, no network, no real subprocess.
 """
 
@@ -23,7 +23,7 @@ if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
 # Stub the heavy module-level imports of core/training/training.py so it imports
-# under a CPU-only/no-network env, then restore the ones other tests may need.
+# under CPU-only/no-network, then restore them (see the restore loop below).
 _SAVED: dict = {}
 
 
@@ -38,7 +38,7 @@ _stub("loggers", _lg)
 _stub("structlog", _types.ModuleType("structlog"))
 _mpl = _types.ModuleType("matplotlib")
 _plt = _types.ModuleType("matplotlib.pyplot")
-_plt.Figure = type("Figure", (), {})  # used in a type annotation at class-def time
+_plt.Figure = type("Figure", (), {})  # referenced in a class-def annotation
 _mpl.pyplot = _plt
 _stub("matplotlib", _mpl)
 _stub("matplotlib.pyplot", _plt)
@@ -56,10 +56,9 @@ _stub("utils.paths", _pth)
 import core.training.training as training_mod
 from core.training.training import TrainingBackend
 
-# Restore every module we stubbed to its pre-collection state so this file never
-# pollutes the shared pytest session (a leaked bare ``structlog`` stub without
-# ``get_logger`` would break every later module that logs at import time).
-# training_mod already bound the functional stubs it needs at runtime.
+# Restore every stubbed module so this file never pollutes the shared session: a
+# leaked bare ``structlog`` (no ``get_logger``) would break every later module
+# that logs at import. training_mod already bound the stubs it needs at runtime.
 for _name in (
     "loggers",
     "structlog",
@@ -78,8 +77,8 @@ for _name in (
 
 @pytest.fixture(autouse = True)
 def _stub_worker_module():
-    """The respawn lazily does ``from .worker import run_training_process``; give
-    it a stub so importing the real (torch-heavy) worker is never required."""
+    """Stub ``core.training.worker`` so the respawn's lazy import of the
+    torch-heavy worker is never required."""
     prev = sys.modules.get("core.training.worker")
     stub = _types.ModuleType("core.training.worker")
     stub.run_training_process = lambda **kwargs: None

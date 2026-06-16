@@ -217,8 +217,7 @@ class TrainingBackend:
         self._db_config: Optional[dict] = None
         self._db_started_at: Optional[str] = None
 
-        # Xet -> HTTP model-load fallback state. The full config is kept so a
-        # stalled model-load worker can be respawned once with Xet disabled.
+        # Xet -> HTTP model-load fallback state (config kept for the respawn).
         self._last_full_config: Optional[dict] = None
         self._in_model_load: bool = False
         self._xet_fallback_used: bool = False
@@ -318,8 +317,7 @@ class TrainingBackend:
             "trust_remote_code": kwargs.get("trust_remote_code", False),
             "gpu_ids": kwargs.get("gpu_ids"),
             "s3_config": kwargs.get("s3_config"),
-            # Xet stays primary on the first attempt; flipped to True only when a
-            # stalled model-load triggers the HTTP-fallback respawn.
+            # Flipped to True only by the HTTP-fallback respawn after a stall.
             "disable_xet": kwargs.get("disable_xet", False),
         }
 
@@ -396,8 +394,7 @@ class TrainingBackend:
         self._db_total_steps_set = False
         self._db_config = _sanitize_db_config(config)
         self._db_started_at = datetime.now(timezone.utc).isoformat()
-        # Keep the full config so a stalled model-load can be respawned with Xet
-        # disabled; start each job Xet-first with the fallback unused.
+        # Start each job Xet-first; keep config so a stall can respawn over HTTP.
         self._last_full_config = config
         self._in_model_load = False
         self._xet_fallback_used = False
@@ -465,9 +462,9 @@ class TrainingBackend:
     def _handle_stall_event(self, event: dict) -> None:
         """A worker reported a no-progress download stall.
 
-        During the first model-load, terminate the worker so the pump loop
-        respawns it with Xet disabled (HTTP). A later stall (already on HTTP, or
-        outside model-load) surfaces as a normal error instead of recovering.
+        On the first model-load, terminate the worker so the pump loop respawns it
+        over HTTP. A later stall (already on HTTP, or outside model-load) surfaces
+        as an error instead.
         """
         msg = event.get("message", "Download stalled")
         with self._lock:
@@ -487,17 +484,15 @@ class TrainingBackend:
             logger.warning("Training model-load stalled on Xet; respawning over HTTP: %s", msg)
         else:
             logger.error("Training download stalled with no further fallback: %s", msg)
-        # Terminate the stalled worker either way so the pump loop proceeds -- to a
-        # respawn when recovering, or to error finalization otherwise.
+        # Terminate either way so the pump loop proceeds (respawn or finalize).
         if proc is not None and proc.is_alive():
             proc.terminate()
 
     def _respawn_worker_disable_xet(self) -> None:
-        """Respawn the training worker once with HF_HUB_DISABLE_XET=1 after a
-        model-load Xet stall. Runs on the exiting pump thread (the stalled worker
-        was already terminated by the stall handler), reaps it, and starts a fresh
-        worker + pump. DB/progress run-state is preserved so the history row is
-        not duplicated; the new worker re-formats the dataset and loads over HTTP.
+        """Respawn the worker once with HF_HUB_DISABLE_XET=1 after a model-load
+        stall. Runs on the exiting pump thread, reaps the terminated worker, and
+        starts a fresh worker + pump. DB/progress run-state is preserved so the
+        history row is not duplicated; the new worker re-formats and loads over HTTP.
         """
         config = self._last_full_config
         if config is None:
@@ -675,10 +670,9 @@ class TrainingBackend:
             for e in self._drain_queue(self._event_queue):
                 self._handle_event(e)
 
-            # A model-load Xet stall terminated this worker on purpose: respawn it
-            # once with Xet disabled (HTTP) instead of finalizing as a failure. The
-            # respawn runs on THIS (exiting) pump thread and starts a fresh pump, so
-            # we never join the current thread. DB run-state is preserved.
+            # Model-load stall: respawn over HTTP instead of finalizing as failure.
+            # Runs on THIS exiting pump thread and starts a fresh pump (never joins
+            # the current thread); DB run-state is preserved.
             if self._needs_xet_respawn:
                 self._needs_xet_respawn = False
                 self._respawn_worker_disable_xet()
@@ -715,8 +709,7 @@ class TrainingBackend:
         db_action: Optional[str] = None
         db_action_kwargs: dict = {}
 
-        # Model-load lifecycle + Xet-stall recovery, handled before the generic
-        # state machine below (these events carry no DB metrics).
+        # Model-load lifecycle + stall recovery (no DB metrics); handled first.
         if etype == "model_load_started":
             with self._lock:
                 self._in_model_load = True
