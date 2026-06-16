@@ -341,14 +341,14 @@ class TestExtraArgsMtpDetection:
         ],
     )
     def test_requests_mtp(self, args, expected):
-        assert _extra_args_requests_mtp(args, env={}) is expected
+        assert _extra_args_requests_mtp(args, env = {}) is expected
 
     def test_requests_mtp_env(self):
         # The child honors LLAMA_ARG_SPEC_TYPE; env-requested MTP must reserve too.
-        assert _extra_args_requests_mtp([], env={"LLAMA_ARG_SPEC_TYPE": "draft-mtp"}) is True
-        assert _extra_args_requests_mtp([], env={"LLAMA_ARG_SPEC_TYPE": "ngram-mod,mtp"}) is True
-        assert _extra_args_requests_mtp([], env={"LLAMA_ARG_SPEC_TYPE": "draft-simple"}) is False
-        assert _extra_args_requests_mtp([], env={"LLAMA_ARG_SPEC_TYPE": "none"}) is False
+        assert _extra_args_requests_mtp([], env = {"LLAMA_ARG_SPEC_TYPE": "draft-mtp"}) is True
+        assert _extra_args_requests_mtp([], env = {"LLAMA_ARG_SPEC_TYPE": "ngram-mod,mtp"}) is True
+        assert _extra_args_requests_mtp([], env = {"LLAMA_ARG_SPEC_TYPE": "draft-simple"}) is False
+        assert _extra_args_requests_mtp([], env = {"LLAMA_ARG_SPEC_TYPE": "none"}) is False
 
     @pytest.mark.parametrize(
         "args,expected",
