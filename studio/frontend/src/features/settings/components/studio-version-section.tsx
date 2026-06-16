@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { getAuthToken } from "@/features/auth";
+import { getAuthToken, refreshSession } from "@/features/auth";
 import { useT } from "@/i18n";
 import { apiUrl } from "@/lib/api-base";
 import { useEffect, useState } from "react";
@@ -9,29 +9,57 @@ import { SettingsRow } from "./settings-row";
 import { SettingsSection } from "./settings-section";
 
 type ApiObject = Record<string, unknown>;
-
-async function fetchStudioVersions(): Promise<{
+type StudioVersions = {
   packageVersion: string | null;
   studioVersion: string | null;
-}> {
+};
+
+const EMPTY_VERSIONS: StudioVersions = {
+  packageVersion: null,
+  studioVersion: null,
+};
+
+function parseStudioVersions(data: ApiObject): StudioVersions {
+  const packageVersion = data["version"];
+  const studioVersion = data["studio_version"];
+  return {
+    packageVersion:
+      typeof packageVersion === "string" ? packageVersion : null,
+    studioVersion: typeof studioVersion === "string" ? studioVersion : null,
+  };
+}
+
+function hasAllVersions(versions: StudioVersions): boolean {
+  return Boolean(versions.packageVersion && versions.studioVersion);
+}
+
+async function requestStudioVersions(
+  token: string | null,
+): Promise<StudioVersions> {
+  const headers = new Headers();
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  const res = await fetch(apiUrl("/api/health"), { headers });
+  if (!res.ok) {
+    return EMPTY_VERSIONS;
+  }
+  const data = (await res.json()) as ApiObject;
+  return parseStudioVersions(data);
+}
+
+async function fetchStudioVersions(): Promise<StudioVersions> {
   try {
     const token = getAuthToken();
-    const headers = new Headers();
-    if (token) headers.set("Authorization", `Bearer ${token}`);
-    const res = await fetch(apiUrl("/api/health"), { headers });
-    if (!res.ok) {
-      return { packageVersion: null, studioVersion: null };
+    const versions = await requestStudioVersions(token);
+    if (!token || hasAllVersions(versions)) {
+      return versions;
     }
-    const data = (await res.json()) as ApiObject;
-    const packageVersion = data.version;
-    const studioVersion = data.studio_version;
-    return {
-      packageVersion:
-        typeof packageVersion === "string" ? packageVersion : null,
-      studioVersion: typeof studioVersion === "string" ? studioVersion : null,
-    };
+
+    if (await refreshSession()) {
+      return requestStudioVersions(getAuthToken());
+    }
+    return versions;
   } catch {
-    return { packageVersion: null, studioVersion: null };
+    return EMPTY_VERSIONS;
   }
 }
 
