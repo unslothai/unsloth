@@ -835,7 +835,7 @@ export function SharedComposer({
       queueIndexRef.current = 0;
       setQueueProgress({ current: 0, total: 0 });
       toast.error("Prompt queue stopped", {
-        description: "A compare step failed — remaining prompts were not sent.",
+        description: "A compare step failed; remaining prompts were not sent.",
       });
       return;
     }
@@ -1515,6 +1515,20 @@ export function SharedComposer({
       refreshStuckImeTimer();
       return;
     }
+    // Non-IME key while composingRef is stuck; mirrors the fix in thread.tsx.
+    // On macOS, switching input methods without composing can leave composingRef
+    // pinned; clear it immediately on the first non-IME keystroke.
+    if (composingRef.current) {
+      // Candidate-confirming Enter can arrive as non-composing; keep it gated.
+      if (e.key === "Enter") {
+        if (!e.shiftKey) {
+          e.preventDefault();
+        }
+        refreshStuckImeTimer();
+        return;
+      }
+      setCompositionState(false);
+    }
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       if (canSend) {
@@ -1905,6 +1919,12 @@ export function SharedComposer({
           }
         }}
         onKeyDown={onKeyDown}
+        onBlur={() => {
+          // Mac: switching input methods can fire compositionstart without a
+          // matching compositionend, leaving composingRef pinned. The OS always
+          // commits or cancels composition before the element loses focus.
+          setCompositionState(false);
+        }}
         placeholder="Send to both models..."
         className="composer-input"
         rows={1}

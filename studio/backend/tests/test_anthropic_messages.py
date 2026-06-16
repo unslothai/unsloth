@@ -73,7 +73,7 @@ class TestToolActionNudge:
         assert "Use code execution for math" in nudge
         assert "render_html" not in nudge
 
-    def test_balanced_nudge_preserves_compact_web_tip_and_artifact_gate(self):
+    def test_balanced_nudge_preserves_compact_web_tip_and_canvas_gate(self):
         nudge = _build_tool_action_nudge(
             tools = [
                 {"type": "function", "function": {"name": "web_search"}},
@@ -841,7 +841,7 @@ class TestAnthropicToolNonStreaming:
                 "type": "tool_end",
                 "tool_name": "render_html",
                 "tool_call_id": "call_0",
-                "result": "Rendered HTML artifact.",
+                "result": "Rendered HTML canvas.",
             }
 
         response = asyncio.run(_anthropic_tool_non_streaming(_run_gen, "msg_1", "m"))
