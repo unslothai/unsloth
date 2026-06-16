@@ -254,6 +254,8 @@ function PillTabs({
       className={cn(
         "hub-menu-trigger hub-tab-toggle relative inline-flex items-center rounded-full",
         compact ? "h-7" : "h-9",
+        // Don't stretch to fill a flex-column parent (the popover) in fit mode.
+        fit && "w-fit max-w-full self-start",
         className,
       )}
     >
@@ -340,10 +342,13 @@ function ModelSelectorContent({
     const list: { value: string; label: string }[] = [
       { value: "hub", label: "Hub models" },
     ];
-    if (!chatOnly) list.push({ value: "lora", label: "Fine-tuned" });
+    // Only show Fine-tuned when the user actually has fine-tuned models.
+    if (!chatOnly && loraModels.length > 0) {
+      list.push({ value: "lora", label: "Fine-tuned" });
+    }
     if (hasExternal) list.push({ value: "external", label: "Connected" });
     return list;
-  }, [chatOnly, hasExternal]);
+  }, [chatOnly, hasExternal, loraModels.length]);
 
   const [activeTab, setActiveTab] = useState<string>(() =>
     chatOnly ? chatOnlyTabsDefault : studioTabsDefault,
