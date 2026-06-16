@@ -4441,9 +4441,7 @@ class LlamaCppBackend:
                     # devices' share so a k-GPU layer split can't pin a context
                     # that fits the pool on paper but OOMs a device at load. k=1
                     # adds nothing, so single-GPU sizing is unchanged.
-                    _pipeline_overhead_bytes = (
-                        self._PIPELINE_PER_DEVICE_OVERHEAD_MIB * 1024 * 1024
-                    )
+                    _pipeline_overhead_bytes = self._PIPELINE_PER_DEVICE_OVERHEAD_MIB * 1024 * 1024
 
                     def _subset_model_size(n_gpus: int) -> int:
                         return model_size_fit + max(0, n_gpus - 1) * _pipeline_overhead_bytes
@@ -4611,9 +4609,7 @@ class LlamaCppBackend:
                                 kv = self._estimate_kv_cache_bytes(
                                     capped, cache_type_kv, n_parallel = n_parallel
                                 )
-                                footprint_mib = (_ms + kv + _mtp_bytes(capped)) / (
-                                    1024 * 1024
-                                )
+                                footprint_mib = (_ms + kv + _mtp_bytes(capped)) / (1024 * 1024)
                                 if footprint_mib <= _pool_budget_mib(
                                     pool_mib, pool_total, _CTX_FIT_VRAM_FRACTION - _flat_mtp_reserve
                                 ):
@@ -4667,9 +4663,7 @@ class LlamaCppBackend:
                                 kv = self._estimate_kv_cache_bytes(
                                     capped, cache_type_kv, n_parallel = n_parallel
                                 )
-                                footprint_mib = (_ms + kv + _mtp_bytes(capped)) / (
-                                    1024 * 1024
-                                )
+                                footprint_mib = (_ms + kv + _mtp_bytes(capped)) / (1024 * 1024)
                                 if footprint_mib <= _pool_budget_mib(
                                     pool_mib, pool_total, pin_fraction
                                 ):

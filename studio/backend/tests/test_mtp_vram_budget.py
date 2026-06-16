@@ -391,23 +391,35 @@ class TestExtraArgsMtpDetection:
         # load (Finding B).
         env_mtp = {"LLAMA_ARG_SPEC_TYPE": "draft-mtp"}
         # Later CLI value overrides an earlier MTP one (last-wins).
-        assert _extra_args_requests_mtp(
-            ["--spec-type", "draft-mtp", "--spec-type", "ngram-mod"], env = {}
-        ) is False
+        assert (
+            _extra_args_requests_mtp(
+                ["--spec-type", "draft-mtp", "--spec-type", "ngram-mod"], env = {}
+            )
+            is False
+        )
         # A non-MTP CLI flag overrides a stale MTP env.
         assert _extra_args_requests_mtp(["--spec-type", "ngram-mod"], env = env_mtp) is False
         assert _extra_args_requests_mtp(["--spec-type", "none"], env = env_mtp) is False
         # A later MTP CLI value still engages.
-        assert _extra_args_requests_mtp(
-            ["--spec-type", "ngram-mod", "--spec-type", "draft-mtp"], env = {}
-        ) is True
+        assert (
+            _extra_args_requests_mtp(
+                ["--spec-type", "ngram-mod", "--spec-type", "draft-mtp"], env = {}
+            )
+            is True
+        )
         # Same precedence for separate (draft-simple/eagle3) detection.
-        assert _extra_args_requests_separate_draft(
-            ["--spec-type", "draft-simple", "--spec-type", "ngram-mod"], env = {}
-        ) is False
-        assert _extra_args_requests_separate_draft(
-            ["--spec-type", "ngram-mod"], env = {"LLAMA_ARG_SPEC_TYPE": "draft-simple"}
-        ) is False
+        assert (
+            _extra_args_requests_separate_draft(
+                ["--spec-type", "draft-simple", "--spec-type", "ngram-mod"], env = {}
+            )
+            is False
+        )
+        assert (
+            _extra_args_requests_separate_draft(
+                ["--spec-type", "ngram-mod"], env = {"LLAMA_ARG_SPEC_TYPE": "draft-simple"}
+            )
+            is False
+        )
 
     @pytest.mark.parametrize(
         "args,expected",
