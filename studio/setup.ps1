@@ -821,7 +821,15 @@ if (-not $HasNvidiaSmi) {
         # A custom Studio home (UNSLOTH_STUDIO_HOME / STUDIO_HOME alias) moves the
         # venv off the default path; seed it too or its hipInfo escapes the filter.
         $studioHomeEnv = if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_STUDIO_HOME)) { $env:UNSLOTH_STUDIO_HOME.Trim() } elseif (-not [string]::IsNullOrWhiteSpace($env:STUDIO_HOME)) { $env:STUDIO_HOME.Trim() } else { $null }
-        if ($studioHomeEnv) { $venvRoots += (Join-Path $studioHomeEnv "unsloth_studio") }
+        if ($studioHomeEnv) {
+            # Expand a leading ~ like the canonical resolver below; else GetFullPath
+            # keeps the literal ~ (relative to cwd) and the custom-home hipInfo
+            # escapes the filter, reopening the amd-smi/DiskPart gate.
+            if ($studioHomeEnv -eq "~" -or $studioHomeEnv -like "~/*" -or $studioHomeEnv -like "~\*") {
+                $studioHomeEnv = (Join-Path $env:USERPROFILE $studioHomeEnv.Substring(1).TrimStart('/', '\'))
+            }
+            $venvRoots += (Join-Path $studioHomeEnv "unsloth_studio")
+        }
         try { $hip = [System.IO.Path]::GetFullPath($HipinfoPath).TrimEnd('\', '/') } catch { return $false }
         foreach ($root in $venvRoots) {
             if ([string]::IsNullOrWhiteSpace($root)) { continue }

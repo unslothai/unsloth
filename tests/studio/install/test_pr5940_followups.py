@@ -351,6 +351,22 @@ def test_amd_smi_allowed_when_env_root_hipinfo_outside_venv(tmp_path):
         assert prebuilt._amd_smi_allowed() is True
 
 
+def test_path_inside_venv_resolves_symlinks(tmp_path):
+    # realpath (not abspath): a venv reached through a symlink/junction must
+    # still count as inside, else its hipInfo escapes the filter and amd-smi
+    # pops the DiskPart UAC. abspath would leave the alias unresolved here.
+    real = tmp_path / "real"
+    (real / "Scripts").mkdir(parents = True)
+    (real / "Scripts" / "hipInfo.exe").write_text("")
+    link = tmp_path / "link"
+    try:
+        link.symlink_to(real, target_is_directory = True)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks not permitted on this runner")
+    with patch.object(prebuilt.sys, "prefix", str(real)):
+        assert prebuilt._path_inside_venv(str(link / "Scripts" / "hipInfo.exe")) is True
+
+
 def test_ps_installers_gate_amd_smi_on_windows():
     # Both PowerShell installers must gate amd-smi behind HIP-SDK presence + the
     # UNSLOTH_ENABLE_AMD_SMI opt-in, mirroring _amd_smi_allowed().
@@ -381,6 +397,22 @@ def test_ps_installers_gate_amd_smi_on_windows():
         assert (
             "UNSLOTH_STUDIO_HOME" in text
         ), f"{ps.name} venv-internal check must seed the venv root from UNSLOTH_STUDIO_HOME"
+
+
+def test_setup_ps1_expands_tilde_for_custom_studio_home_in_venv_probe():
+    # The early venv-internal hipInfo probe seeds the venv root from a custom
+    # Studio home; a tilde form (~\studio) must be expanded to USERPROFILE like
+    # the canonical resolver, else [IO.Path]::GetFullPath keeps the literal ~
+    # (relative to cwd) and the custom-home hipInfo escapes the filter.
+    text = _SETUP_PS1.read_text(encoding = "utf-8")
+    i = text.find("$studioHomeEnv = ")
+    j = text.find('Join-Path $studioHomeEnv "unsloth_studio"', i)
+    assert i != -1 and j != -1, "studioHomeEnv venv-root seed not found in setup.ps1"
+    block = text[i:j]
+    assert "USERPROFILE" in block and ".Substring(1)" in block, (
+        "the venv-internal probe must expand a leading ~ in the custom Studio "
+        "home before seeding the venv root (mirroring the canonical resolver)"
+    )
 
 
 def test_install_python_stack_gates_every_amd_smi_spawn():

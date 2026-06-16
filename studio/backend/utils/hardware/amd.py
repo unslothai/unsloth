@@ -42,8 +42,10 @@ def _path_inside_venv(path: str) -> bool:
     PATH so bitsandbytes can find it. That venv-internal hipInfo is NOT a HIP
     SDK and must not be mistaken for one (see _hip_sdk_present)."""
     try:
-        root = os.path.normcase(os.path.abspath(sys.prefix))
-        return os.path.normcase(os.path.commonpath([os.path.abspath(path), root])) == root
+        # realpath (not abspath): resolve symlinks/junctions/8.3 names so a venv
+        # reached through an aliased path still matches sys.prefix.
+        root = os.path.normcase(os.path.realpath(sys.prefix))
+        return os.path.normcase(os.path.commonpath([os.path.realpath(path), root])) == root
     except (ValueError, OSError):
         # Different drive / unresolvable -> treat as outside the venv.
         return False

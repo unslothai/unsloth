@@ -62,8 +62,10 @@ def _path_inside_venv(path: str) -> bool:
     That venv-internal hipInfo is NOT a HIP SDK and must not be mistaken for one
     (see _amd_smi_allowed)."""
     try:
-        _root = os.path.normcase(os.path.abspath(sys.prefix))
-        return os.path.normcase(os.path.commonpath([os.path.abspath(path), _root])) == _root
+        # realpath (not abspath): resolve symlinks/junctions/8.3 names so a venv
+        # reached through an aliased path still matches sys.prefix.
+        _root = os.path.normcase(os.path.realpath(sys.prefix))
+        return os.path.normcase(os.path.commonpath([os.path.realpath(path), _root])) == _root
     except (ValueError, OSError):
         # Different drive / unresolvable -> treat as outside the venv.
         return False
