@@ -224,15 +224,11 @@ function CodeBlockActions({
   );
 }
 
-// DiffusionGemma renders its denoising live in the bubble (see DiffusionCanvas in
-// thread.tsx) and has the HTML canvas feature on by default, so a full-HTML answer
-// (e.g. a playable game) renders as an interactive card without the global toggle.
+// Collapse a full-HTML answer in place into an artifact card. Diffusion keeps the
+// raw code visible instead (the trailing MessageHtmlArtifacts appends its card).
 function StreamdownBlock(props: BlockProps) {
   const shouldCollapseHtmlArtifacts = useChatRuntimeStore(
-    (state) =>
-      state.artifactsEnabled ||
-      state.collapseHtmlArtifacts ||
-      state.loadedIsDiffusion,
+    (state) => state.artifactsEnabled || state.collapseHtmlArtifacts,
   );
   const messageHasRenderableRenderHtmlTool = useAuiState(({ message }) =>
     message.parts.some(isRenderableRenderHtmlToolPart),

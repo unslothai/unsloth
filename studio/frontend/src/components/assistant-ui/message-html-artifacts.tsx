@@ -31,12 +31,11 @@ export const MessageHtmlArtifacts: FC = () => {
       .map((part) => (part as { text: string }).text)
       .join(""),
   );
-  // Same collapse gate as markdown-text.tsx: full docs already shown inline.
+  // Same collapse gate as markdown-text.tsx: these full docs already render as a
+  // card in place, so skip them here. Diffusion is excluded, so its full docs get
+  // a trailing card while the raw code stays visible.
   const collapsesFullDocs = useChatRuntimeStore(
-    (state) =>
-      state.artifactsEnabled ||
-      state.collapseHtmlArtifacts ||
-      state.loadedIsDiffusion,
+    (state) => state.artifactsEnabled || state.collapseHtmlArtifacts,
   );
 
   const fences = useMemo(() => {
