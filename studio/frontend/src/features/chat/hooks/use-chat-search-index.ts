@@ -13,40 +13,51 @@ export interface ChatSearchItem {
   type: "single" | "compare";
   id: string;
   title: string;
-  preview: string;
   // Lowercased title + user messages only (short); searched first.
   userSearchText: string;
-  // Lowercased title + every message; fallback haystack when user text alone
-  // matches nothing. Prebuilt so filtering never re-lowercases per keystroke.
+  // Lowercased title + every message (incl. tool calls); fallback when user
+  // text matches nothing. Prebuilt so filtering never re-lowercases per keystroke.
   searchText: string;
   createdAt: number;
   projectId?: string | null;
 }
 
 const THREAD_LIMIT = 200;
-const PREVIEW_MAX = 120;
 const SEARCH_REBUILD_DEBOUNCE_MS = 300;
 
+function safeStringify(value: unknown): string {
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+// Pull searchable text from a message: plain text, reasoning/thinking, tool
+// calls (name + args + result) and cited sources (title + url).
 function extractText(message: MessageRecord): string {
   const content = message.content;
   if (!Array.isArray(content)) return "";
   const parts: string[] = [];
   for (const part of content) {
     if (!part || typeof part !== "object") continue;
-    const p = part as { type?: string; text?: unknown };
-    if (
-      (p.type === "text" || p.type === "reasoning") &&
-      typeof p.text === "string"
-    ) {
+    const p = part as Record<string, unknown>;
+    if ((p.type === "text" || p.type === "reasoning") && typeof p.text === "string") {
       parts.push(p.text);
+    } else if (p.type === "thinking") {
+      const t = typeof p.thinking === "string" ? p.thinking : p.text;
+      if (typeof t === "string") parts.push(t);
+    } else if (p.type === "tool-call") {
+      if (typeof p.toolName === "string") parts.push(p.toolName);
+      const args = typeof p.argsText === "string" ? p.argsText : safeStringify(p.args);
+      if (args) parts.push(args);
+      if (p.result != null) parts.push(safeStringify(p.result));
+    } else if (p.type === "source") {
+      for (const v of [p.title, p.url]) if (typeof v === "string") parts.push(v);
     }
   }
   return parts.join(" ").replace(/\s+/g, " ").trim();
-}
-
-function truncate(text: string, max: number): string {
-  if (text.length <= max) return text;
-  return `${text.slice(0, max).trimEnd()}…`;
 }
 
 async function buildIndex(): Promise<ChatSearchItem[]> {
@@ -57,7 +68,7 @@ async function buildIndex(): Promise<ChatSearchItem[]> {
   const itemThreadIds = new Map<
     string,
     {
-      item: Omit<ChatSearchItem, "preview" | "searchText" | "userSearchText">;
+      item: Omit<ChatSearchItem, "searchText" | "userSearchText">;
       threadIds: string[];
     }
   >();
@@ -133,21 +144,19 @@ async function buildIndex(): Promise<ChatSearchItem[]> {
     }
     merged.sort((a, b) => b.createdAt - a.createdAt);
 
-    let preview = "";
-    // Two tiers: user messages (small, searched first) and the full
-    // conversation (fallback when user text alone matches nothing).
+    // Two tiers: user messages (short, searched first) and the full
+    // conversation incl. tool calls (fallback when user text matches nothing).
     const userParts: string[] = [item.title];
     const allParts: string[] = [item.title];
     for (const m of merged) {
       const text = extractText(m);
       if (!text) continue;
-      if (!preview) preview = truncate(text, PREVIEW_MAX); // newest msg (sorted desc)
       allParts.push(text);
       if (m.role === "user") userParts.push(text);
     }
     const userSearchText = userParts.join(" ").toLowerCase();
     const searchText = allParts.join(" ").toLowerCase();
-    results.push({ ...item, preview, userSearchText, searchText });
+    results.push({ ...item, userSearchText, searchText });
   }
 
   results.sort((a, b) => b.createdAt - a.createdAt);
