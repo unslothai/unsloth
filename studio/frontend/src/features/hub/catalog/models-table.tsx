@@ -847,7 +847,7 @@ export const ResultSplitRow = memo(function ResultSplitRow({
       <OwnerAvatar
         owner={row.owner}
         repoName={row.repo}
-        className="size-8 shrink-0 rounded-[9px] text-[12px] ring-1 ring-black/5 dark:ring-white/10"
+        className="size-8 shrink-0 rounded-[9px] text-[12px]"
         remote={false}
       />
       <div className="flex min-w-0 flex-1 flex-col">
