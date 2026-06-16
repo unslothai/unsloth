@@ -16,6 +16,7 @@ export interface ModelsSearch {
   tab?: "discover" | "downloaded";
   model?: string;
   section?: "trending" | "latest" | "finetune";
+  kind?: "models" | "datasets";
 }
 
 export const Route = createRoute({
@@ -32,6 +33,10 @@ export const Route = createRoute({
     const section = search.section;
     if (section === "trending" || section === "latest" || section === "finetune") {
       next.section = section;
+    }
+    const kind = search.kind;
+    if (kind === "models" || kind === "datasets") {
+      next.kind = kind;
     }
     return next;
   },

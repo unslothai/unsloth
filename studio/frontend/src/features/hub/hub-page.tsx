@@ -334,8 +334,9 @@ export function ModelsPage() {
     () => findChannel(DEFAULT_DISCOVER_CHANNEL)?.sort ?? "trendingScore",
   );
   const [direction, setDirection] = useState<HfSortDirection>("desc");
-  const [resourceType, setResourceType] =
-    useState<ResourceTypeFilter>("models");
+  const [resourceType, setResourceType] = useState<ResourceTypeFilter>(() =>
+    hubSearch.kind === "datasets" ? "datasets" : "models",
+  );
   const [discoverFormat, setDiscoverFormat] = useState<ModelFormatFilter>(
     () => findChannel(DEFAULT_DISCOVER_CHANNEL)?.format ?? "gguf",
   );
@@ -384,9 +385,11 @@ export function ModelsPage() {
   }, []);
   const [foldersDialogOpen, setFoldersDialogOpen] = useState(false);
   const [discoverFetchIntent, setDiscoverFetchIntent] = useState(0);
+  const [sortBrowseActive, setSortBrowseActive] = useState(false);
 
   const handleTabChange = useCallback(
     (next: ModelsTab) => {
+      setSortBrowseActive(false);
       setModelsTab(next);
     },
     [setModelsTab],
@@ -398,21 +401,24 @@ export function ModelsPage() {
       setResourceType(next);
       setDownloadedFormat("all");
       setCapabilityFilter("all");
+      setSortBrowseActive(false);
       if (next === "models") {
         const preset = findChannel(DEFAULT_DISCOVER_CHANNEL);
         setDiscoverFormat(preset?.format ?? "gguf");
         setSortBy(preset?.sort ?? "trendingScore");
         setDirection("desc");
       }
-      if (urlSection) {
-        void navigate({
-          to: "/hub",
-          search: (prev) => ({ ...prev, section: undefined }),
-          replace: true,
-        });
-      }
+      void navigate({
+        to: "/hub",
+        search: (prev) => ({
+          ...prev,
+          kind: next === "datasets" ? "datasets" : undefined,
+          section: undefined,
+        }),
+        replace: true,
+      });
     },
-    [resourceType, urlSection, navigate],
+    [resourceType, navigate],
   );
 
   const handleOpenList = useCallback(
@@ -425,6 +431,7 @@ export function ModelsPage() {
         setDirection("desc");
       }
       setCapabilityFilter("all");
+      setSortBrowseActive(false);
       void navigate({
         to: "/hub",
         search: (prev) => ({ ...prev, section, model: undefined }),
@@ -438,6 +445,7 @@ export function ModelsPage() {
     setSortBy(preset?.sort ?? "trendingScore");
     setDirection("desc");
     setCapabilityFilter("all");
+    setSortBrowseActive(false);
     void navigate({
       to: "/hub",
       search: (prev) => ({ ...prev, section: undefined }),
@@ -453,16 +461,33 @@ export function ModelsPage() {
     setDiscoverFormat(preset?.format ?? "gguf");
     setSortBy(preset?.sort ?? "trendingScore");
     setDirection("desc");
+    setSortBrowseActive(false);
     void navigate({
       to: "/hub",
-      search: (prev) => ({ ...prev, section: undefined, model: undefined }),
+      search: (prev) => ({
+        ...prev,
+        section: undefined,
+        model: undefined,
+        kind: undefined,
+      }),
     });
   }, [navigate, setModelsTab]);
 
-  const handleSortChange = useCallback((next: HfSortKey) => {
-    setSortBy(next);
-    if (next === "trendingScore") setDirection("desc");
-  }, []);
+  const handleSortChange = useCallback(
+    (next: HfSortKey) => {
+      setSortBy(next);
+      if (next === "trendingScore") setDirection("desc");
+      setSortBrowseActive(true);
+      if (urlSection) {
+        void navigate({
+          to: "/hub",
+          search: (prev) => ({ ...prev, section: undefined }),
+          replace: true,
+        });
+      }
+    },
+    [urlSection, navigate],
+  );
 
   const debouncedQuery = useDebouncedValue(query);
   const deferredDebouncedQuery = useDeferredValue(debouncedQuery);
@@ -478,9 +503,13 @@ export function ModelsPage() {
       ? "search"
       : urlSection != null
         ? "channel-list"
-        : "feed";
+        : sortBrowseActive
+          ? "search"
+          : "feed";
   const isFeedMode = mode === "feed";
   const isChannelListMode = mode === "channel-list";
+  const isSortBrowseMode =
+    sortBrowseActive && isModelDiscover && !hasQuery && urlSection == null;
 
   const liveListChannel = useMemo<ChannelPreset | null>(() => {
     if (isChannelListMode) return activeChannel;
@@ -800,6 +829,7 @@ export function ModelsPage() {
       if (next.trim() === "") {
         const preset = findChannel(DEFAULT_DISCOVER_CHANNEL);
         setCapabilityFilter("all");
+        setSortBrowseActive(false);
         if (preset) {
           setDiscoverFormat(preset.format);
           setSortBy(preset.sort);
@@ -823,6 +853,16 @@ export function ModelsPage() {
       setSelected(urlModel);
     }
   }, [urlModel, selectedId, setSelected]);
+
+  useEffect(() => {
+    if (!isModelDiscover || !sectionChannelId) return;
+    const preset = findChannel(sectionChannelId);
+    if (!preset) return;
+    setDiscoverFormat(preset.format);
+    setSortBy(preset.sort);
+    setDirection("desc");
+    setCapabilityFilter("all");
+  }, [isModelDiscover, sectionChannelId]);
   const handleManageLocalFolders = useCallback(
     () => setFoldersDialogOpen(true),
     [],
@@ -843,8 +883,8 @@ export function ModelsPage() {
   );
 
   const isLoadingThisModel = useMemo(() => {
-    if (!loadingModel) return false;
-    return selectedRepoMatchesRuntime(selectedModel, loadingModel.id, null);
+    if (!loadingModel || !selectedModel) return false;
+    return modelIdsMatch(loadingModel.id, selectedModel.resource.runId);
   }, [loadingModel, selectedModel]);
 
   const { vramInfo, minMemory } = useHubModelVram(selectedModel, gpu);
@@ -891,9 +931,6 @@ export function ModelsPage() {
     (opts: ModelLoadOptions = {}) => runSelectedModel(opts, true),
     [runSelectedModel],
   );
-  const handleUseInChat = useCallback(() => {
-    void navigate({ to: "/chat" });
-  }, [navigate]);
   const handleTrain = useCallback(() => {
     // Hub → train integration ships in a later PR.
   }, []);
@@ -905,6 +942,7 @@ export function ModelsPage() {
       setResourceType("models");
       setDiscoverFormat("all");
       setCapabilityFilter("all");
+      setSortBrowseActive(false);
       setQuery(trimmed);
       void navigate({
         to: "/hub",
@@ -913,6 +951,7 @@ export function ModelsPage() {
           tab: "discover",
           section: undefined,
           model: undefined,
+          kind: undefined,
         }),
       });
     },
@@ -948,7 +987,7 @@ export function ModelsPage() {
     () => ({
       onLoad: handleLoad,
       onLoadLocal: handleLoadLocal,
-      onUseInChat: handleUseInChat,
+      onUseInChat: openNewChat,
       onTrain: handleTrain,
       onInventoryChange: refreshInventory,
       onSearchHub: handleSearchHub,
@@ -956,7 +995,7 @@ export function ModelsPage() {
     [
       handleLoad,
       handleLoadLocal,
-      handleUseInChat,
+      openNewChat,
       handleTrain,
       handleSearchHub,
       refreshInventory,
@@ -1114,6 +1153,7 @@ export function ModelsPage() {
             title={focusedHeadingText}
             view={allModelsView}
             onViewChange={setAllModelsView}
+            onBack={isSortBrowseMode ? handleBackToFeed : undefined}
           />
         )}
         {allModelsView === "grid" && listCount > 0 && (
@@ -1125,6 +1165,7 @@ export function ModelsPage() {
     isDiscoverTab,
     isFeedMode,
     isChannelListMode,
+    isSortBrowseMode,
     channelSection,
     handleBackToFeed,
     focusedHeadingText,

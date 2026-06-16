@@ -14,16 +14,16 @@ export function createThrottledStorage(
   delayMs: number,
 ): StateStorage {
   let timer: ReturnType<typeof setTimeout> | null = null;
-  let pending: { name: string; value: string } | null = null;
+  const pending = new Map<string, string>();
   const flush = (): void => {
     if (timer !== null) {
       clearTimeout(timer);
       timer = null;
     }
-    if (pending) {
-      base.setItem(pending.name, pending.value);
-      pending = null;
+    for (const [name, value] of pending) {
+      base.setItem(name, value);
     }
+    pending.clear();
   };
   if (typeof window !== "undefined") {
     window.addEventListener("pagehide", flush);
@@ -31,12 +31,12 @@ export function createThrottledStorage(
   return {
     getItem: (name) => base.getItem(name),
     setItem: (name, value) => {
-      pending = { name, value };
+      pending.set(name, value);
       if (timer === null) timer = setTimeout(flush, delayMs);
     },
     removeItem: (name) => {
-      pending = null;
-      if (timer !== null) {
+      pending.delete(name);
+      if (pending.size === 0 && timer !== null) {
         clearTimeout(timer);
         timer = null;
       }
