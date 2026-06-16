@@ -76,11 +76,8 @@ logger = get_logger(__name__)
 
 
 class LlamaServerNotFoundError(RuntimeError):
-    """A GGUF model needs the llama.cpp runtime but no llama-server binary is
-    installed. Subclasses RuntimeError so existing handlers still catch it, while
-    routes can detect it to show an actionable "install the runtime" message
-    instead of a generic "invalid model".
-    """
+    """GGUF model needs the llama.cpp runtime but no llama-server is installed.
+    Subclasses RuntimeError so existing handlers still catch it."""
 
 
 def _wsl_system_rocm_lib_dirs() -> "list[str]":

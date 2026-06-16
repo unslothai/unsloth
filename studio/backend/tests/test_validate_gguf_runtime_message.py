@@ -1,11 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-/api/inference/validate must surface an actionable message when a GGUF model is
-selected but the llama.cpp runtime (llama-server) is not installed, instead of
-the generic "Invalid model" that hid the real cause.
-"""
+"""/api/inference/validate and /load must surface an actionable "install the runtime"
+message when a GGUF model's llama-server is missing, not a generic error."""
 
 import asyncio
 import importlib.util
@@ -60,8 +57,6 @@ class TestValidateGgufRuntimeMessage(unittest.TestCase):
         self.assertNotEqual(err.detail, "Invalid model")
 
     def test_other_errors_still_generic_invalid_model(self):
-        # A genuinely-unresolvable identifier must keep the safe generic message
-        # (we only special-case the runtime-missing error).
         route = _load_route_module("inf_route_runtime_msg_2", "routes/inference.py")
         err = self._validate(route, "not/a-real-model", RuntimeError("totally different failure"))
         self.assertEqual(err.status_code, 400)
@@ -69,8 +64,7 @@ class TestValidateGgufRuntimeMessage(unittest.TestCase):
 
 
 class TestLoadGgufRuntimeMessage(unittest.TestCase):
-    """/api/inference/load must surface the same actionable message (not a 500)
-    when the GGUF runtime is missing. The error originates in from_identifier."""
+    """/api/inference/load surfaces the same message (not a 500) when the runtime is missing."""
 
     def _load(self, route, model_path, side_effect):
         request = LoadRequest(model_path = model_path)
@@ -98,7 +92,6 @@ class TestLoadGgufRuntimeMessage(unittest.TestCase):
         self.assertIn("llama.cpp runtime", err.detail)
 
     def test_other_load_errors_still_500(self):
-        # Non-runtime failures keep the existing generic 500 path.
         route = _load_route_module("inf_route_load_runtime_msg_2", "routes/inference.py")
         err = self._load(route, "unsloth/some-model", RuntimeError("totally different failure"))
         self.assertEqual(err.status_code, 500)

@@ -2046,8 +2046,7 @@ async def load_model(
         # User-facing validation (e.g. "Invalid gpu_ids [99]"): redact paths, keep detail.
         raise HTTPException(status_code = 400, detail = redact_native_paths(str(e)))
     except LlamaServerNotFoundError as e:
-        # GGUF but no llama.cpp runtime: surface the actionable install message (400),
-        # not a generic 500 "Failed to load model".
+        # Missing GGUF runtime: 400 with the install message, not a generic 500.
         logger.warning("GGUF runtime missing while loading '%s': %s", model_log_label, e)
         raise HTTPException(status_code = 400, detail = str(e))
     except Exception as e:
@@ -2127,8 +2126,7 @@ async def validate_model(
     except HTTPException:
         raise
     except LlamaServerNotFoundError as e:
-        # GGUF model but no llama.cpp runtime installed: surface the actionable
-        # "install the prebuilt" message instead of a generic "Invalid model".
+        # Missing GGUF runtime: 400 with the install message, not a generic "Invalid model".
         logger.warning("GGUF runtime missing while validating '%s': %s", request.model_path, e)
         raise HTTPException(status_code = 400, detail = str(e))
     except Exception as e:
