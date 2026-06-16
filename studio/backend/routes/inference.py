@@ -7548,6 +7548,7 @@ async def _anthropic_passthrough_stream(
         except Exception as e:
             if not cancel_event.is_set():
                 logger.error("anthropic_messages passthrough stream error: %s", e)
+                get_llama_cpp_backend()._maybe_recover_from_mtp_crash(e)
                 event = _anthropic_stream_error_event(
                     e,
                     force = True,
@@ -8102,10 +8103,11 @@ async def _openai_passthrough_stream(
                     yield raw_line + "\n\n"
                     if raw_line[6:].strip() == "[DONE]":
                         break
-            except (httpx.RemoteProtocolError, httpx.ReadError, httpx.CloseError):
+            except (httpx.RemoteProtocolError, httpx.ReadError, httpx.CloseError) as e:
                 # Watcher closed resp on cancel. Emit nothing extra; the client
                 # initiated the cancel or already disconnected.
                 if not cancel_event.is_set():
+                    get_llama_cpp_backend()._maybe_recover_from_mtp_crash(e)
                     raise
             except Exception as e:
                 # 200 headers already flushed; errors must go in the SSE body.

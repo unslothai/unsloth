@@ -5263,8 +5263,11 @@ class LlamaCppBackend:
         """
         url = f"http://127.0.0.1:{self._port}/completion"
         payload = {"prompt": "Hi", "n_predict": 4, "temperature": 0.0, "stream": False}
+        # Direct-stream mode starts llama-server with --api-key; match the auth
+        # the other internal requests use so the probe isn't rejected (401).
+        headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
         try:
-            resp = httpx.post(url, json = payload, timeout = timeout)
+            resp = httpx.post(url, json = payload, timeout = timeout, headers = headers)
         except Exception as e:
             logger.debug(f"MTP decode probe failed: {e}")
             return False
@@ -5325,6 +5328,11 @@ class LlamaCppBackend:
                     "parallelism (%s); reloading without speculative decoding.",
                     type(exc).__name__ if exc is not None else "server exited",
                 )
+                # The user may have unloaded/cancelled during the poll above;
+                # don't resurrect a model they just dropped.
+                if self._cancel_event.is_set():
+                    logger.info("MTP-crash reload skipped: load was cancelled/unloaded.")
+                    return
                 snapshot["speculative_type"] = "off"
                 self.load_model(**snapshot)
                 # load_model with "off" clears the reason; restore it so the UI
@@ -5819,7 +5827,10 @@ class LlamaCppBackend:
                             "finish_reason": _metadata_finish_reason,
                         }
 
-        except httpx.ConnectError:
+        except httpx.ConnectError as e:
+            # Server already down before we could connect (e.g. it crashed on a
+            # prior request); recover if it was a tensor-parallel + MTP crash.
+            self._maybe_recover_from_mtp_crash(e)
             raise RuntimeError("Lost connection to llama-server")
         except Exception as e:
             if cancel_event is not None and cancel_event.is_set():

@@ -403,6 +403,41 @@ def test_runtime_recovery_is_single_flight(monkeypatch):
     release.set()
 
 
+def test_runtime_recovery_rechecks_cancel_before_reload():
+    # A reload scheduled just before an /unload must not resurrect the model:
+    # the background recover() re-checks the cancel flag after the death poll
+    # (load_model would otherwise clear the cancel and reload).
+    src = inspect.getsource(LlamaCppBackend._maybe_recover_from_mtp_crash)
+    cancel = src.rfind("self._cancel_event.is_set()")
+    load = src.find("self.load_model(")
+    assert 0 <= cancel < load, "recovery must re-check cancel before reloading"
+
+
+def test_probe_mtp_decode_uses_api_key_auth(monkeypatch):
+    # Direct-stream mode runs llama-server with --api-key; the probe must send
+    # the same bearer auth or it gets a spurious 401 and falsely drops MTP.
+    backend = LlamaCppBackend()
+    backend._port = 0
+    backend._process = None
+    captured = {}
+
+    class _Resp:
+        status_code = 200
+
+    def _capture(*a, **k):
+        captured.clear()
+        captured.update(k)
+        return _Resp()
+
+    monkeypatch.setattr(llama_cpp_module.httpx, "post", _capture, raising = False)
+    backend._api_key = "secret"
+    backend._probe_mtp_decode(timeout = 1.0)
+    assert captured["headers"] == {"Authorization": "Bearer secret"}
+    backend._api_key = None
+    backend._probe_mtp_decode(timeout = 1.0)
+    assert captured["headers"] is None
+
+
 # ── tensor-mode allocation: conservative VRAM budget ─────────────────
 
 
