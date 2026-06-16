@@ -28,13 +28,13 @@ import {
 import { cn } from "@/lib/utils";
 import { useHfTokenStore } from "../stores/hf-token-store";
 import {
-  ArrowDown01Icon,
   Delete02Icon,
   Download01Icon,
   InformationCircleIcon,
   PencilEdit02Icon,
   PlayIcon,
 } from "@hugeicons/core-free-icons";
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   memo,
@@ -715,8 +715,7 @@ export function GgufDownloadCard({
                     </span>
                   )}
                 <HugeiconsIcon
-                  icon={ArrowDown01Icon}
-                  strokeWidth={1.25}
+                  icon={ChevronDownStandardIcon}
                   className="ml-0.5 size-3.5 shrink-0"
                 />
               </span>

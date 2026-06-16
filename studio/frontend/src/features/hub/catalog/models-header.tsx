@@ -12,9 +12,9 @@ import {
 import {
   ChipIcon,
   Database02Icon,
-  Logout01Icon,
   PackageIcon,
   RamMemoryIcon,
+  RemoveCircleIcon,
 } from "@hugeicons/core-free-icons";
 import type { IconSvgElement } from "@hugeicons/react";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -70,7 +70,7 @@ export function ModelsHeader({
         }
       />
 
-      <div className="flex flex-wrap items-center gap-1.5">
+      <div className="flex min-w-0 flex-wrap items-center justify-end gap-1.5 sm:flex-1">
         <HfTokenIndicator />
         <TransportToggle />
         <StatPill
@@ -114,7 +114,7 @@ export function ModelsHeader({
               className="-mr-0.5 ml-0.5 inline-flex cursor-pointer items-center gap-1 rounded-md px-1.5 text-[11px] text-muted-foreground transition-colors hover:text-foreground"
             >
               <HugeiconsIcon
-                icon={Logout01Icon}
+                icon={RemoveCircleIcon}
                 strokeWidth={1.75}
                 className="size-3"
               />

@@ -30,12 +30,12 @@ import { confirmExternalLink } from "../stores/external-link-confirm";
 import { useHfTokenStore } from "../stores/hf-token-store";
 import {
   Alert02Icon,
-  ArrowDown01Icon,
   CubeIcon,
   PencilEdit02Icon,
   PlayIcon,
   Share05Icon,
 } from "@hugeicons/core-free-icons";
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useMemo, useState } from "react";
 import {
@@ -143,7 +143,7 @@ function BaseModelReference({
               target="_blank"
               rel="noopener noreferrer"
               aria-label={`Open ${baseModelHubId} on Hugging Face`}
-              className="inline-flex size-7 shrink-0 items-center justify-center rounded-[8px] text-muted-foreground transition-colors hover:bg-background hover:text-foreground"
+              className="inline-flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-background hover:text-foreground"
               onClick={(event) => {
                 event.stopPropagation();
                 if (confirmExternalLink(`https://huggingface.co/${baseModelHubId}`)) {
@@ -349,8 +349,7 @@ export function LocalOnDeviceCard({
                         </span>
                       )}
                       <HugeiconsIcon
-                        icon={ArrowDown01Icon}
-                        strokeWidth={1.5}
+                        icon={ChevronDownStandardIcon}
                         className="size-3 shrink-0"
                       />
                     </button>

@@ -7,7 +7,8 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
-import { ArrowDown01Icon, Tick02Icon } from "@hugeicons/core-free-icons";
+import { Tick02Icon } from "@hugeicons/core-free-icons";
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type KeyboardEvent,
@@ -155,7 +156,7 @@ export function HubOptionMenu<T extends string>({
           aria-label={ariaLabel}
           title={title}
           className={cn(
-            "field-trigger hub-menu-trigger field-soft field-filter inline-flex h-9 shrink-0 cursor-pointer items-center justify-between gap-2 rounded-[12px] px-3 text-[12.5px] transition-colors",
+            "field-trigger hub-menu-trigger field-soft field-filter inline-flex h-9 shrink-0 cursor-pointer items-center justify-between gap-0.5 rounded-full pl-3 pr-2 text-[12.5px] transition-colors",
             "focus-visible:border-border focus-visible:ring-0 focus-visible:ring-offset-0",
             className,
           )}
@@ -166,13 +167,12 @@ export function HubOptionMenu<T extends string>({
             }
           }}
         >
-          <span className="flex min-w-0 items-center gap-2 truncate">
+          <span className="min-w-0 flex-1 truncate text-left">
             {triggerContent ?? selected?.triggerLabel ?? selected?.label ?? value}
           </span>
           {showChevron && (
             <HugeiconsIcon
-              icon={ArrowDown01Icon}
-              strokeWidth={2.5}
+              icon={ChevronDownStandardIcon}
               className="size-3.5 shrink-0 text-muted-foreground"
             />
           )}
@@ -214,7 +214,7 @@ export function HubOptionMenu<T extends string>({
                 }}
                 onPointerEnter={() => activateIndex(index)}
                 className={cn(
-                  "relative flex w-full min-w-0 cursor-pointer select-none items-center rounded-xl corner-squircle py-2 pr-8 pl-3 text-left text-sm leading-snug outline-none transition-colors",
+                  "relative flex w-full min-w-0 cursor-pointer select-none items-center rounded-[12px] py-2 pr-8 pl-3 text-left text-sm leading-snug outline-none transition-colors",
                 )}
               >
                 <span className="flex min-w-0 flex-1 items-center gap-2.5 overflow-hidden whitespace-normal break-words">

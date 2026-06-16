@@ -13,14 +13,12 @@ export interface HubFeedSectionData {
 
 export const HubFeed = memo(function HubFeed({
   trending,
-  fineTune,
   deviceType,
   isDataset,
   onSelect,
   onOpenChannel,
 }: {
   trending: HubFeedSectionData;
-  fineTune: HubFeedSectionData;
   deviceType: string | null;
   isDataset: boolean;
   onSelect: (id: string) => void;
@@ -34,15 +32,6 @@ export const HubFeed = memo(function HubFeed({
         isLoading={trending.isLoading}
         onSelect={onSelect}
         onOpenList={() => onOpenChannel("trending")}
-        deviceType={deviceType}
-        isDataset={isDataset}
-      />
-      <HubSectionRow
-        title={HUB_SECTION_TITLE.finetune}
-        rows={fineTune.rows}
-        isLoading={fineTune.isLoading}
-        onSelect={onSelect}
-        onOpenList={() => onOpenChannel("finetune")}
         deviceType={deviceType}
         isDataset={isDataset}
       />

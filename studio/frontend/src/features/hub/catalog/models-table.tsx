@@ -28,10 +28,12 @@ import {
   Copy01Icon,
   Download01Icon,
   FavouriteIcon,
+  LayoutTwoColumnIcon,
   LeftToRightListBulletIcon,
   LinkSquare02Icon,
-  ListViewIcon,
   MoreVerticalIcon,
+  Refresh01Icon,
+  ViewSidebarLeftIcon,
 } from "@hugeicons/core-free-icons";
 import type { IconSvgElement } from "@hugeicons/react";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -49,8 +51,12 @@ export const RESULT_GRID_HEIGHT_PX = 64;
 export const RESULT_GRID_ROW_GAP_PX = 8;
 export const RESULT_GRID_ROW_HEIGHT_PX =
   RESULT_GRID_HEIGHT_PX + RESULT_GRID_ROW_GAP_PX;
+// Compact rows for the split-view master pane.
+export const RESULT_SPLIT_HEIGHT_PX = 56;
+export const RESULT_SPLIT_ROW_HEIGHT_PX =
+  RESULT_SPLIT_HEIGHT_PX + RESULT_ROW_GAP_PX;
 
-export type AllModelsView = "grid" | "card";
+export type AllModelsView = "grid" | "two" | "split";
 
 // Shared column widths so the table header and every row line up exactly.
 // Two flexible lead columns (Model, Capabilities), fixed metric columns that
@@ -86,7 +92,7 @@ function ViewToggleButton({
           aria-label={label}
           onClick={onClick}
           className={cn(
-            "relative z-10 inline-flex h-8 w-9 cursor-pointer items-center justify-center rounded-full transition-colors",
+            "relative z-10 inline-flex size-8 cursor-pointer items-center justify-center rounded-full transition-colors",
             active
               ? "text-foreground"
               : "text-muted-foreground hover:text-foreground",
@@ -117,36 +123,30 @@ export function InventorySortControl({
   value: InventorySort;
   onChange: (value: InventorySort) => void;
 }) {
-  const activeIndex = Math.max(
-    0,
-    INVENTORY_SORTS.findIndex((opt) => opt.value === value),
-  );
   return (
     <div
-      className="hub-tab-toggle relative inline-flex h-8 shrink-0 items-center rounded-full"
+      className="hub-tab-toggle inline-flex h-8 shrink-0 items-center rounded-full"
       aria-label="Sort downloads"
     >
-      <span
-        aria-hidden="true"
-        className="hub-tab-toggle-pill pointer-events-none absolute inset-y-0 left-0 w-1/3 rounded-full transition-transform duration-200 ease-out"
-        style={{ transform: `translateX(${activeIndex * 100}%)` }}
-      />
-      {INVENTORY_SORTS.map((opt) => (
-        <button
-          key={opt.value}
-          type="button"
-          aria-pressed={value === opt.value}
-          onClick={() => onChange(opt.value)}
-          className={cn(
-            "relative z-10 inline-flex h-8 w-[60px] cursor-pointer items-center justify-center rounded-full text-[12px] font-medium transition-colors",
-            value === opt.value
-              ? "text-foreground"
-              : "text-muted-foreground hover:text-foreground",
-          )}
-        >
-          {opt.label}
-        </button>
-      ))}
+      {INVENTORY_SORTS.map((opt) => {
+        const active = value === opt.value;
+        return (
+          <button
+            key={opt.value}
+            type="button"
+            aria-pressed={active}
+            onClick={() => onChange(opt.value)}
+            className={cn(
+              "inline-flex h-8 items-center justify-center rounded-full px-3.5 text-[11.5px] transition-colors",
+              active
+                ? "hub-tab-toggle-pill text-foreground"
+                : "cursor-pointer text-muted-foreground hover:text-foreground",
+            )}
+          >
+            {opt.label}
+          </button>
+        );
+      })}
     </div>
   );
 }
@@ -158,6 +158,8 @@ export function HubListHeader({
   view,
   onViewChange,
   onBack,
+  onRefresh,
+  isRefreshing,
   actions,
 }: {
   title: string;
@@ -166,6 +168,8 @@ export function HubListHeader({
   view?: AllModelsView;
   onViewChange?: (view: AllModelsView) => void;
   onBack?: () => void;
+  onRefresh?: () => void;
+  isRefreshing?: boolean;
   actions?: ReactNode;
 }) {
   const accessibleLabel =
@@ -176,18 +180,20 @@ export function HubListHeader({
       className="flex items-end justify-between gap-4 pb-3"
       aria-label={accessibleLabel}
     >
-      <div className="flex min-w-0 items-center gap-2">
+      <div className="flex min-w-0 items-center gap-1.5">
         {onBack && (
           <button
             type="button"
             onClick={onBack}
             aria-label="Back to feed"
-            className="hub-section-chevron -ml-1 inline-flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground"
+            // Glyph sits at the column's left edge so the header lines up with
+            // the toggle row, the result cards, and the top-bar tabs.
+            className="hub-section-chevron -ml-1.5 inline-flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground"
           >
             <HugeiconsIcon
               icon={ArrowLeft01Icon}
               strokeWidth={2}
-              className="size-5"
+              className="size-4"
             />
           </button>
         )}
@@ -201,6 +207,27 @@ export function HubListHeader({
             </p>
           )}
         </div>
+        {onRefresh && (
+          <Tooltip>
+            <TooltipTrigger asChild={true}>
+              <button
+                type="button"
+                aria-label="Refresh"
+                onClick={onRefresh}
+                className="inline-flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+              >
+                <HugeiconsIcon
+                  icon={Refresh01Icon}
+                  strokeWidth={1.75}
+                  className={cn("size-[11px]", isRefreshing && "animate-spin")}
+                />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" className="tooltip-compact">
+              Refresh from Hugging Face
+            </TooltipContent>
+          </Tooltip>
+        )}
       </div>
       {(actions || onViewChange) && (
         <div className="flex shrink-0 items-center gap-2">
@@ -212,16 +239,24 @@ export function HubListHeader({
             >
               <span
                 aria-hidden="true"
-                className={cn(
-                  "hub-tab-toggle-pill pointer-events-none absolute inset-y-0 left-0 w-1/2 rounded-full transition-transform duration-200 ease-out",
-                  view === "grid" ? "translate-x-full" : "translate-x-0",
-                )}
+                className="hub-tab-toggle-pill pointer-events-none absolute inset-y-0 left-0 w-8 rounded-full transition-transform duration-200 ease-out"
+                style={{
+                  transform: `translateX(${
+                    (view === "split" ? 1 : view === "grid" ? 2 : 0) * 100
+                  }%)`,
+                }}
               />
               <ViewToggleButton
-                active={view === "card"}
-                label="Comfortable"
-                icon={ListViewIcon}
-                onClick={() => onViewChange("card")}
+                active={view === "two"}
+                label="Two columns"
+                icon={LayoutTwoColumnIcon}
+                onClick={() => onViewChange("two")}
+              />
+              <ViewToggleButton
+                active={view === "split"}
+                label="Split view"
+                icon={ViewSidebarLeftIcon}
+                onClick={() => onViewChange("split")}
               />
               <ViewToggleButton
                 active={view === "grid"}
@@ -408,7 +443,7 @@ function RowActions({
 }) {
   const hfUrl = `https://huggingface.co/${isDataset ? "datasets/" : ""}${row.result.id}`;
   const actionClass =
-    "pointer-events-auto inline-flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-[8px] text-muted-foreground/70 transition-colors hover:bg-foreground/[0.07] hover:text-foreground focus-visible:text-foreground data-[state=open]:bg-foreground/[0.07] data-[state=open]:text-foreground";
+    "pointer-events-auto inline-flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground/70 transition-colors hover:bg-foreground/[0.07] hover:text-foreground focus-visible:text-foreground data-[state=open]:bg-foreground/[0.07] data-[state=open]:text-foreground";
   return (
     <>
       <Tooltip>
@@ -571,6 +606,7 @@ export const ResultCard = memo(function ResultCard({
         owner={row.owner}
         repoName={row.repo}
         className="size-[52px] shrink-0 rounded-[16px] text-[16px] ring-1 ring-black/5 dark:ring-white/10"
+        remote={false}
       />
       <div className="flex min-w-0 flex-1 flex-col">
         <div className="flex min-w-0 items-center gap-2">
@@ -689,6 +725,7 @@ export const ResultGridRow = memo(function ResultGridRow({
             owner={row.owner}
             repoName={row.repo}
             className="size-9 shrink-0 rounded-[12px] text-[13px] ring-1 ring-black/5 dark:ring-white/10"
+            remote={false}
           />
           <div className="min-w-0 flex-1">
             <div className="flex min-w-0 items-center gap-1.5">
@@ -767,5 +804,106 @@ export const ResultGridRow = memo(function ResultGridRow({
         </div>
       </div>
     </div>
+  );
+});
+
+// Compact master-pane row for split view: avatar + name/owner on the left,
+// likes / downloads / updated stacked on the right. Light list styling (no card
+// box) with a selected highlight for the model shown in the detail pane.
+export const ResultSplitRow = memo(function ResultSplitRow({
+  row,
+  deviceType,
+  isDataset,
+  selected,
+  onSelect,
+}: {
+  row: DiscoverRow;
+  deviceType: string | null;
+  isDataset: boolean;
+  selected: boolean;
+  onSelect: (id: string) => void;
+}) {
+  const { support, unsupported, partial, onDevice } = useResultRowModel(
+    row,
+    deviceType,
+    isDataset,
+  );
+  const format = isDataset ? null : row.result.isGguf ? "gguf" : "checkpoint";
+  const tip = buildRowStatusTooltip({
+    partialRepoId: partial ? row.result.id : undefined,
+    unsupported,
+    unsupportedReason: support?.reason ?? null,
+    resourceLabel: isDataset ? "dataset" : "model",
+  });
+  const node = (
+    <button
+      type="button"
+      aria-label={row.repo}
+      aria-current={selected || undefined}
+      data-selected={selected || undefined}
+      onClick={() => onSelect(row.id)}
+      className="group/row flex h-full w-full cursor-pointer items-center gap-2.5 rounded-[12px] px-2.5 text-left outline-none transition-colors hover:bg-foreground/[0.04] data-[selected]:bg-foreground/[0.07] focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset dark:hover:bg-white/[0.05] dark:data-[selected]:bg-white/[0.08]"
+    >
+      <OwnerAvatar
+        owner={row.owner}
+        repoName={row.repo}
+        className="size-8 shrink-0 rounded-[9px] text-[12px] ring-1 ring-black/5 dark:ring-white/10"
+        remote={false}
+      />
+      <div className="flex min-w-0 flex-1 flex-col">
+        <div className="flex min-w-0 items-center gap-1.5">
+          <span className="truncate text-[12.5px] font-semibold leading-[16px] text-foreground">
+            {row.repo}
+          </span>
+          <TitleMarkers
+            format={format}
+            gated={row.result.gated}
+            isPrivate={row.result.private}
+            partial={partial}
+            unsupported={unsupported}
+            onDevice={onDevice}
+          />
+        </div>
+        <span className="mt-0.5 flex min-w-0 items-center gap-1 text-[10.5px] leading-[14px] text-muted-foreground/80">
+          <VerifiedOwner owner={row.owner} />
+        </span>
+      </div>
+      <div className="flex shrink-0 flex-col items-end gap-0.5 text-[10.5px] tabular-nums text-muted-foreground/70">
+        <div className="flex items-center gap-2">
+          <span className="inline-flex items-center gap-1">
+            <HugeiconsIcon
+              icon={FavouriteIcon}
+              strokeWidth={1.75}
+              className="size-[11px] shrink-0"
+            />
+            {formatCompact(row.result.likes)}
+          </span>
+          <span className="inline-flex items-center gap-1">
+            <HugeiconsIcon
+              icon={Download01Icon}
+              strokeWidth={1.75}
+              className="size-[11px] shrink-0"
+            />
+            {formatCompact(row.result.downloads)}
+          </span>
+        </div>
+        {row.result.updatedAt && (
+          <span className="text-muted-foreground/60">
+            {formatRelativeShort(row.result.updatedAt)}
+          </span>
+        )}
+      </div>
+    </button>
+  );
+  if (!tip) {
+    return node;
+  }
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild={true}>{node}</TooltipTrigger>
+      <TooltipContent side="top" className="tooltip-compact max-w-[260px]">
+        {tip}
+      </TooltipContent>
+    </Tooltip>
   );
 });

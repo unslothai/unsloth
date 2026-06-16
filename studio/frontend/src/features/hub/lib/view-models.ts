@@ -19,7 +19,11 @@ import {
 } from "./model-capabilities";
 import { ownerOf, repoOf } from "@/features/hub/lib/format";
 import { estimateSizeFromDtypes, isGgufLike } from "./hf-model-meta";
-export { detectResultFormat, matchesFormat } from "./format-filters";
+export {
+  detectResultFormat,
+  isUnslothFinetunable,
+  matchesFormat,
+} from "./format-filters";
 export {
   formatLocalUpdated,
   localSourceLabel,
@@ -32,12 +36,9 @@ export const CAPABILITY_FILTER_OPTIONS: ReadonlyArray<{
 }> = [
   { value: "all", label: "All capabilities" },
   { value: "reasoning", label: "Reasoning" },
-  { value: "code", label: "Code" },
   { value: "vision", label: "Vision" },
   { value: "audio", label: "Audio" },
-  { value: "tools", label: "Tools" },
   { value: "embedding", label: "Embeddings" },
-  { value: "multilingual", label: "Multilingual" },
 ];
 
 export const FORMAT_FILTER_OPTIONS: ReadonlyArray<{
@@ -46,7 +47,7 @@ export const FORMAT_FILTER_OPTIONS: ReadonlyArray<{
 }> = [
   { value: "all", label: "All formats" },
   { value: "gguf", label: "GGUF" },
-  { value: "checkpoint", label: "Checkpoints" },
+  { value: "checkpoint", label: "Safetensors" },
   { value: "mlx", label: "MLX" },
 ];
 

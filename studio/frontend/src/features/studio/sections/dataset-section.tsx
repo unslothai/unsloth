@@ -27,6 +27,7 @@ import {
 } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { cn } from "@/lib/utils";
 import {
   Tooltip,
   TooltipContent,
@@ -590,31 +591,68 @@ export function DatasetSection() {
         }`}
       >
         <div className="flex min-w-0 flex-col gap-4">
-          <Tabs
-            value={datasetSource}
-            onValueChange={(value) => {
-              if (value === datasetSource) return;
-              if (value === "huggingface") {
-                selectHfDataset(dataset);
-              } else if (value === "upload") {
-                selectLocalDataset(uploadedFile);
-              } else if (value === "s3") {
-                if (isMultimodalModel) return;
-                selectS3Source();
-              }
-            }}
-            className="w-full"
-          >
-            <TabsList className="w-full">
-              <TabsTrigger value="huggingface">Hugging Face</TabsTrigger>
-              <TabsTrigger value="upload">
-                {t("studio.dataset.localTab")}
-              </TabsTrigger>
-              {!isMultimodalModel && (
-                <TabsTrigger value="s3">Amazon S3</TabsTrigger>
-              )}
-            </TabsList>
-          </Tabs>
+          {(() => {
+            // Hub-style segmented control (sliding pill) so the dataset-source
+            // switcher matches the Hub's Discover / On Device tabs via the shared
+            // .hub-tab-toggle / .hub-tab-toggle-pill classes.
+            const sourceTabs: {
+              value: "huggingface" | "upload" | "s3";
+              label: string;
+            }[] = [
+              { value: "huggingface", label: "Hugging Face" },
+              { value: "upload", label: t("studio.dataset.localTab") },
+              ...(!isMultimodalModel
+                ? [{ value: "s3" as const, label: "Amazon S3" }]
+                : []),
+            ];
+            const activeIndex = Math.max(
+              0,
+              sourceTabs.findIndex((item) => item.value === datasetSource),
+            );
+            return (
+              <div
+                role="radiogroup"
+                aria-label="Dataset source"
+                className="hub-tab-toggle relative inline-flex h-9 w-full items-center rounded-full"
+              >
+                <span
+                  aria-hidden="true"
+                  className="hub-tab-toggle-pill pointer-events-none absolute inset-y-0 left-0 rounded-full transition-transform duration-200 ease-out"
+                  style={{
+                    width: `${100 / sourceTabs.length}%`,
+                    transform: `translateX(${activeIndex * 100}%)`,
+                  }}
+                />
+                {sourceTabs.map((item) => (
+                  <button
+                    key={item.value}
+                    type="button"
+                    role="radio"
+                    aria-checked={datasetSource === item.value}
+                    onClick={() => {
+                      if (item.value === datasetSource) return;
+                      if (item.value === "huggingface") {
+                        selectHfDataset(dataset);
+                      } else if (item.value === "upload") {
+                        selectLocalDataset(uploadedFile);
+                      } else if (item.value === "s3") {
+                        if (isMultimodalModel) return;
+                        selectS3Source();
+                      }
+                    }}
+                    className={cn(
+                      "relative z-10 inline-flex h-9 flex-1 cursor-pointer items-center justify-center rounded-full px-3 text-[12.5px] font-medium transition-colors",
+                      datasetSource === item.value
+                        ? "text-foreground"
+                        : "text-muted-foreground hover:text-foreground",
+                    )}
+                  >
+                    {item.label}
+                  </button>
+                ))}
+              </div>
+            );
+          })()}
 
           {datasetSource === "s3" && <S3ConfigForm />}
 

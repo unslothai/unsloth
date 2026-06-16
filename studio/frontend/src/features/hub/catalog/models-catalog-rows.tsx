@@ -45,8 +45,8 @@ import type {
   LocalInventoryRow,
 } from "../types";
 import { OwnerAvatar } from "./owner-avatar";
-import { AccessGlyphs, CapabilityPill } from "./shared";
-import { detectCapabilities } from "../lib/model-capabilities";
+import { AccessGlyphs } from "./shared";
+import { paramLabelFromId } from "../lib/view-models";
 
 const COARSE_POINTER =
   typeof window !== "undefined" &&
@@ -197,6 +197,15 @@ function CachedSizeChipLive({
   );
 }
 
+// Thin "·" separator for inline meta lines (owner · format · params).
+function MetaDivider() {
+  return (
+    <span aria-hidden="true" className="shrink-0 text-muted-foreground/35">
+      ·
+    </span>
+  );
+}
+
 export function StatChip({
   icon,
   value,
@@ -245,7 +254,7 @@ function CatalogRow({
       className={cn(
         "group/row relative w-full select-none overflow-hidden text-left",
         card
-          ? "hub-result-row flex h-full items-center rounded-[24px] px-4"
+          ? "hub-result-row flex h-full items-center rounded-[16px] px-4"
           : "catalog-row block rounded-[14px] pl-3 pr-2.5 py-2.5",
       )}
     >
@@ -255,7 +264,7 @@ function CatalogRow({
         onClick={onClick}
         className={cn(
           "absolute inset-0 cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
-          card ? "rounded-[24px]" : "rounded-[14px]",
+          card ? "rounded-[16px]" : "rounded-[14px]",
         )}
       />
       <CatalogRowInteractiveContext.Provider value={interactive}>
@@ -385,8 +394,7 @@ export function buildRowStatusTooltip({
           </span>
         )}
         <span className="mt-0.5 block text-white/75">
-          Still downloadable to your Hugging Face cache, shared with every
-          framework that reads it.
+          Still downloadable to your Hugging Face cache.
         </span>
       </TooltipLegendRow>,
     );
@@ -453,6 +461,7 @@ export const DiscoverModelRow = memo(function DiscoverModelRow({
           owner={row.owner}
           repoName={row.repo}
           className="size-8 rounded-[11px]"
+          remote={false}
         />
         <div className="flex min-w-0 flex-1 flex-col gap-[3px]">
           <div className="flex h-[18px] min-w-0 items-center justify-between gap-2">
@@ -545,6 +554,7 @@ export const InventoryRow = memo(function InventoryRow({
   isDataset,
   dimmed,
   deviceType,
+  compact = false,
   onSelect,
   onChange,
 }: {
@@ -555,6 +565,8 @@ export const InventoryRow = memo(function InventoryRow({
   isDataset: boolean;
   dimmed: boolean;
   deviceType: string | null;
+  /** Narrow split master pane: drop the capability column so the name fits. */
+  compact?: boolean;
   onSelect: (id: string) => void;
   onChange?: () => void;
 }) {
@@ -616,17 +628,213 @@ export const InventoryRow = memo(function InventoryRow({
     unsupported,
     resourceLabel: isDataset ? "dataset" : "model",
   });
-  const capabilities = useMemo(
-    () =>
-      isDataset
-        ? []
-        : detectCapabilities(
-            row.tags,
-            row.pipelineTag ?? undefined,
-            rowModelId,
-          ).slice(0, 3),
-    [isDataset, row.tags, row.pipelineTag, rowModelId],
+  // Uniform, always-derivable stats so on-device rows stop showing a row of
+  // empty "—" cells: a format badge (known for every row), a parameter count
+  // parsed from the repo name, and the GGUF quant variant when one is known.
+  const formatLabel =
+    row.modelFormat === "gguf"
+      ? "GGUF"
+      : row.modelFormat === "adapter"
+        ? "Adapter"
+        : row.modelFormat === "safetensors" || row.modelFormat === "checkpoint"
+          ? "Safetensors"
+          : null;
+  const formatDotClass =
+    row.modelFormat === "gguf"
+      ? "bg-format-gguf"
+      : row.modelFormat === "adapter"
+        ? "bg-format-adapter"
+        : "bg-format-checkpoint";
+  const paramLabel = useMemo(() => paramLabelFromId(title), [title]);
+  const quantLabel = row.formatVariant?.trim() || null;
+
+  const metaChips =
+    !isDataset && (formatLabel || paramLabel || quantLabel) ? (
+      <div className="hidden shrink-0 items-center gap-1.5 sm:flex">
+        {formatLabel && (
+          <span className="hub-chip">
+            <span
+              aria-hidden="true"
+              className={cn("size-[6px] rounded-full", formatDotClass)}
+            />
+            {formatLabel}
+          </span>
+        )}
+        {paramLabel && <span className="hub-chip tabular-nums">{paramLabel}</span>}
+        {quantLabel && (
+          <span className="hub-chip font-mono text-[10.5px] uppercase">
+            {quantLabel}
+          </span>
+        )}
+      </div>
+    ) : null;
+
+  // Single right-aligned value: the on-disk size for cached repos, otherwise the
+  // local source (e.g. "LM Studio") or last-modified date for indexed folders.
+  const sourceLabel = row.kind === "local" ? row.sourceLabel : null;
+
+  const statusMarkers = (
+    <>
+      {row.isGguf && (
+        <span
+          role="img"
+          aria-label="GGUF"
+          className="inline-block size-[5px] shrink-0 rounded-full bg-format-gguf"
+        />
+      )}
+      {row.modelFormat === "adapter" && (
+        <span
+          role="img"
+          aria-label="Adapter"
+          className="inline-block size-[5px] shrink-0 rounded-full bg-format-adapter"
+        />
+      )}
+      {partialRepoId ? (
+        <StatusDot tone="warning" label="Partial download" />
+      ) : (
+        <StatusDot tone="success" label="On device" />
+      )}
+      {unsupported && (
+        <StatusDot tone="danger" label="May not be supported yet" />
+      )}
+    </>
   );
+
+  // Compact (split) rows live in a narrow pane where everything is already
+  // on-device, so the format/on-device dots are noise. Surface only the
+  // genuinely exceptional states; format + params move to the meta line.
+  const compactMarkers =
+    partialRepoId || unsupported ? (
+      <span className="flex shrink-0 items-center gap-1">
+        {partialRepoId && (
+          <StatusDot tone="warning" label="Partial download" />
+        )}
+        {unsupported && (
+          <StatusDot tone="danger" label="May not be supported yet" />
+        )}
+      </span>
+    ) : null;
+
+  const ownerLine = (
+    <span className="mt-0.5 flex min-w-0 items-center gap-1 text-[11.5px] leading-[15px] text-muted-foreground/80">
+      <span className="truncate">{subLabel}</span>
+      {subLabel.toLowerCase() === "unsloth" && (
+        <span
+          aria-label="Verified Unsloth"
+          className="hub-verified-badge size-3.5 shrink-0 text-primary"
+        />
+      )}
+    </span>
+  );
+
+  const deleteAction =
+    canDelete && cacheDeletableRepoId ? (
+      <ModelDeleteAction
+        ariaLabel={`Delete ${cacheDeletableRepoId}`}
+        title={isDataset ? "Delete cached dataset?" : "Delete cached model?"}
+        description={
+          <>
+            This will remove{" "}
+            <span className="font-medium text-foreground">
+              {cacheDeletableRepoId}
+            </span>{" "}
+            {isDataset
+              ? "and its downloaded files"
+              : row.isGguf
+                ? "and all of its downloaded quantizations"
+                : "and all of its downloaded files"}
+            {row.kind === "cache" ? ` (${formatBytes(row.bytes)})` : ""} from
+            disk. You can re-download it later.
+          </>
+        }
+        successMessage={`Deleted ${cacheDeletableRepoId}`}
+        buttonClassName="pointer-events-auto hub-modal-pe-guard p-2 opacity-0 transition-opacity group-hover/row:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 [@media(pointer:coarse)]:opacity-100"
+        iconClassName="size-4"
+        onConfirm={async () => {
+          if (isDataset) {
+            await deleteCachedDataset(cacheDeletableRepoId);
+          } else {
+            await deleteCachedModel(cacheDeletableRepoId);
+          }
+        }}
+        onDeleted={onChange}
+      />
+    ) : null;
+
+  // Compact (split master pane): mirror the full row's avatar + name/owner, but
+  // drop the capability column and collapse size + date into a single trailing
+  // group so the name keeps the whole middle instead of being squeezed thin.
+  if (compact) {
+    return (
+      <CatalogRow
+        variant="flat"
+        selected={selected}
+        active={active}
+        tooltip={tooltip}
+        label={title}
+        onClick={handleClick}
+      >
+        <div
+          className={cn(
+            "flex w-full items-center gap-2.5 transition-opacity",
+            dimmed && "opacity-25 group-hover/row:opacity-60",
+          )}
+        >
+          <OwnerAvatar
+            owner={row.owner}
+            repoName={title}
+            className="size-8 shrink-0 rounded-[9px] text-[12px] ring-1 ring-black/5 dark:ring-white/10"
+            remote={false}
+          />
+          <div className="min-w-0 flex-1">
+            <div className="flex min-w-0 items-center gap-1.5">
+              <span className="truncate text-[12.5px] font-semibold leading-[16px] text-foreground">
+                {title}
+              </span>
+              {compactMarkers}
+            </div>
+            <span className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[10.5px] leading-[14px] text-muted-foreground/75">
+              <span className="flex min-w-0 items-center gap-1">
+                <span className="truncate">{subLabel}</span>
+                {subLabel.toLowerCase() === "unsloth" && (
+                  <span
+                    aria-label="Verified Unsloth"
+                    className="hub-verified-badge size-3 shrink-0 text-primary"
+                  />
+                )}
+              </span>
+              {formatLabel && (
+                <>
+                  <MetaDivider />
+                  <span className="shrink-0">{formatLabel}</span>
+                </>
+              )}
+              {paramLabel && (
+                <>
+                  <MetaDivider />
+                  <span className="shrink-0 tabular-nums">{paramLabel}</span>
+                </>
+              )}
+            </span>
+          </div>
+          <div className="flex shrink-0 items-center gap-2 text-[10.5px] tabular-nums text-muted-foreground/70">
+            {row.kind === "cache" ? (
+              <CachedSizeChip
+                repoId={row.repoId}
+                totalBytes={row.bytes}
+                isGguf={row.isGguf}
+                isDataset={isDataset}
+                cachePath={row.cachePath}
+              />
+            ) : trailing ? (
+              <span>{trailing}</span>
+            ) : null}
+            {deleteAction}
+          </div>
+        </div>
+      </CatalogRow>
+    );
+  }
 
   return (
     <CatalogRow
@@ -643,68 +851,27 @@ export const InventoryRow = memo(function InventoryRow({
           dimmed && "opacity-25 group-hover/row:opacity-60",
         )}
       >
-        <div className="flex min-w-0 flex-[2] items-center gap-3">
+        <div className="flex min-w-0 flex-1 items-center gap-3">
           <OwnerAvatar
             owner={row.owner}
             repoName={title}
             className="size-9 rounded-[12px]"
+            remote={false}
           />
           <div className="min-w-0 flex-1">
             <div className="flex min-w-0 items-center gap-1.5">
               <span className="truncate text-[13.5px] font-semibold leading-[17px] text-foreground">
                 {title}
               </span>
-              {row.isGguf && (
-                <span
-                  role="img"
-                  aria-label="GGUF"
-                  className="inline-block size-[5px] shrink-0 rounded-full bg-format-gguf"
-                />
-              )}
-              {row.modelFormat === "adapter" && (
-                <span
-                  role="img"
-                  aria-label="Adapter"
-                  className="inline-block size-[5px] shrink-0 rounded-full bg-format-adapter"
-                />
-              )}
-              {partialRepoId ? (
-                <StatusDot tone="warning" label="Partial download" />
-              ) : (
-                <StatusDot tone="success" label="On device" />
-              )}
-              {unsupported && (
-                <StatusDot tone="danger" label="May not be supported yet" />
-              )}
+              {statusMarkers}
             </div>
-            <span className="mt-0.5 flex min-w-0 items-center gap-1 text-[11.5px] leading-[15px] text-muted-foreground/80">
-              <span className="truncate">{subLabel}</span>
-              {subLabel.toLowerCase() === "unsloth" && (
-                <span
-                  aria-label="Verified Unsloth"
-                  className="hub-verified-badge size-3.5 shrink-0 text-primary"
-                />
-              )}
-            </span>
+            {ownerLine}
           </div>
         </div>
 
-        <div className="hidden min-w-0 flex-[1.4] items-center gap-1.5 md:flex">
-          {capabilities.map((capability) => (
-            <CapabilityPill
-              key={capability.key}
-              capability={capability}
-              iconOnly={true}
-              tooltip={false}
-            />
-          ))}
-        </div>
+        {metaChips}
 
-        <div className="hidden w-[84px] shrink-0 truncate text-[12px] tabular-nums text-muted-foreground xl:block">
-          {trailing ?? "—"}
-        </div>
-
-        <div className="flex w-[92px] shrink-0 items-center justify-end">
+        <div className="flex w-[96px] shrink-0 items-center justify-end text-right">
           {row.kind === "cache" ? (
             <CachedSizeChip
               repoId={row.repoId}
@@ -713,48 +880,19 @@ export const InventoryRow = memo(function InventoryRow({
               isDataset={isDataset}
               cachePath={row.cachePath}
             />
-          ) : (
-            <span className="text-[12px] tabular-nums text-muted-foreground/55">
-              —
+          ) : trailing ? (
+            <span className="truncate text-[11.5px] tabular-nums text-muted-foreground/70">
+              {trailing}
             </span>
-          )}
+          ) : sourceLabel ? (
+            <span className="truncate text-[11.5px] text-muted-foreground/55">
+              {sourceLabel}
+            </span>
+          ) : null}
         </div>
 
         <div className="flex w-9 shrink-0 items-center justify-end">
-          {canDelete && cacheDeletableRepoId && (
-            <ModelDeleteAction
-              ariaLabel={`Delete ${cacheDeletableRepoId}`}
-              title={
-                isDataset ? "Delete cached dataset?" : "Delete cached model?"
-              }
-              description={
-                <>
-                  This will remove{" "}
-                  <span className="font-medium text-foreground">
-                    {cacheDeletableRepoId}
-                  </span>{" "}
-                  {isDataset
-                    ? "and its downloaded files"
-                    : row.isGguf
-                      ? "and all of its downloaded quantizations"
-                      : "and all of its downloaded files"}
-                  {row.kind === "cache" ? ` (${formatBytes(row.bytes)})` : ""}{" "}
-                  from disk. You can re-download it later.
-                </>
-              }
-              successMessage={`Deleted ${cacheDeletableRepoId}`}
-              buttonClassName="pointer-events-auto hub-modal-pe-guard p-2 opacity-0 transition-opacity group-hover/row:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 [@media(pointer:coarse)]:opacity-100"
-              iconClassName="size-4"
-              onConfirm={async () => {
-                if (isDataset) {
-                  await deleteCachedDataset(cacheDeletableRepoId);
-                } else {
-                  await deleteCachedModel(cacheDeletableRepoId);
-                }
-              }}
-              onDeleted={onChange}
-            />
-          )}
+          {deleteAction}
         </div>
       </div>
     </CatalogRow>

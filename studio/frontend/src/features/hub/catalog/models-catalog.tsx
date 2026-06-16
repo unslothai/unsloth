@@ -29,6 +29,7 @@ import {
   type InventorySort,
   RESULT_GRID_ROW_HEIGHT_PX,
   RESULT_ROW_HEIGHT_PX,
+  RESULT_SPLIT_ROW_HEIGHT_PX,
 } from "./models-table";
 
 export interface ModelsCatalogState {
@@ -357,17 +358,41 @@ export const ModelsCatalog = memo(function ModelsCatalog({
   // fire a synthetic scroll event, which corrupts our saved-per-tab scrollTop
   // mirror. Visibility + pointer-events-none is enough to hide and disarm the
   // inactive pane while preserving its native scroll state.
+  // Non-split: `scrollbar-gutter: stable both-edges` reserves an EQUAL gutter on
+  // both sides, so the centered `max-w-[1100px]` column stays symmetric and its
+  // left edge lines up with the (non-scrolling) top bar — independent of the
+  // scrollbar's width. In split mode the master is a narrow column pinned to the
+  // left, so a both-edges gutter would inset its content past the top bar's left
+  // edge; there we reserve only the right (divider-side) gutter so the list lines
+  // up with the page heading.
   const scrollPaneClassName =
-    "absolute inset-0 min-h-0 overflow-x-hidden overflow-y-auto pb-6 pt-0 [overflow-anchor:none] [scrollbar-gutter:stable] [scrollbar-width:thin]";
-  const discoverColumnClassName = "mx-auto w-full max-w-[1100px] px-5 sm:px-8";
-  const downloadedColumnClassName =
-    "mx-auto w-full max-w-[1100px] px-5 sm:px-8";
+    "absolute inset-0 min-h-0 overflow-x-hidden overflow-y-auto pb-6 pt-0 [overflow-anchor:none] [scrollbar-width:thin] " +
+    (discoverView === "split"
+      ? "[scrollbar-gutter:stable]"
+      : "[scrollbar-gutter:stable_both-edges]");
+  // Split mode shares the top bar's measure (the master pane sits inside the
+  // centered 1100px column), so it keeps the top bar's left padding to align the
+  // list header, but tightens the right padding so the compact rows run wider
+  // toward the divider instead of leaving a gap.
+  const splitView = discoverView === "split";
+  const discoverColumnClassName = splitView
+    ? "mx-auto w-full max-w-[1100px] pl-5 pr-2 sm:pl-8"
+    : "mx-auto w-full max-w-[1100px] px-5 sm:px-8";
+  const downloadedColumnClassName = splitView
+    ? "mx-auto w-full max-w-[1100px] pl-5 pr-2 sm:pl-8"
+    : "mx-auto w-full max-w-[1100px] px-5 sm:px-8";
   const discoverActive = tab === "discover";
   const downloadedActive = tab === "downloaded";
   const discoverInactiveHeight = Math.max(
     savedScrollHeightsRef.current.discover,
-    discoverRows.length *
-      (discoverView === "card" ? RESULT_ROW_HEIGHT_PX : RESULT_GRID_ROW_HEIGHT_PX) +
+    (discoverView === "two"
+      ? Math.ceil(discoverRows.length / 2)
+      : discoverRows.length) *
+      (discoverView === "grid"
+        ? RESULT_GRID_ROW_HEIGHT_PX
+        : discoverView === "split"
+          ? RESULT_SPLIT_ROW_HEIGHT_PX
+          : RESULT_ROW_HEIGHT_PX) +
       lastHeaderHeightRef.current,
   );
   const downloadedInactiveHeight = Math.max(
@@ -389,7 +414,7 @@ export const ModelsCatalog = memo(function ModelsCatalog({
         <div
           aria-hidden="true"
           data-scrolled={scrolled || undefined}
-          className="hub-scroll-fade pointer-events-none absolute inset-x-0 top-0 z-10 h-10"
+          className="hub-scroll-fade pointer-events-none absolute inset-x-0 top-0 z-10 h-7"
         />
         <div
           ref={setDiscoverScrollNode}
@@ -426,6 +451,7 @@ export const ModelsCatalog = memo(function ModelsCatalog({
                 onRetry={onRetry}
                 onSwitchDevice={onSwitchDevice}
                 view={discoverView}
+                selectedId={selectedId}
               />
             </div>
           ) : (
@@ -466,6 +492,8 @@ export const ModelsCatalog = memo(function ModelsCatalog({
                 isDataset={isDataset}
                 inventoryTokens={inventoryTokens}
                 deviceType={deviceType}
+                compact={splitView}
+                columns={discoverView === "two" ? 2 : 1}
                 sort={inventorySort}
                 onInventoryChange={onInventoryChange}
               />

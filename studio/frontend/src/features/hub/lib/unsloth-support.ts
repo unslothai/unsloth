@@ -188,7 +188,15 @@ export function classifyUnslothSupport({
   const formatTags = excludedFormatTagsForDevice(deviceType);
   const normalizedQuant = normalizeQuantMethod(quantMethod);
 
-  if (normalizedQuant) {
+  // GGUF runs through llama.cpp regardless of the base model's quant config
+  // (e.g. a compressed-tensors source still ships a fully supported GGUF), so
+  // the HF quant_method must not disqualify a GGUF repo.
+  const isGguf =
+    lowerTags.has("gguf") ||
+    library === "gguf" ||
+    (modelId ? /(?:^|[-_.])gguf$/i.test(repoLeaf(modelId)) : false);
+
+  if (normalizedQuant && !isGguf) {
     if (SUPPORTED_QUANT_METHODS.has(normalizedQuant)) {
       return { status: "supported", reason: null };
     }

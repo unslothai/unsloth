@@ -277,13 +277,14 @@ export const ModelCard = memo(function ModelCard({
       aria-label={row.repo}
       onClick={() => onSelect(row.id)}
       style={cardAccentStyle}
-      className="hub-model-card hub-trending-card group/card flex h-full w-full cursor-pointer flex-col overflow-hidden p-3.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
+      className="hub-model-card hub-trending-card group/card flex h-full w-full cursor-pointer flex-col overflow-hidden px-3 py-3.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
     >
-      <div className="flex min-w-0 items-start gap-3">
+      <div className="flex min-w-0 items-start gap-2.5">
         <OwnerAvatar
           owner={row.owner}
           repoName={row.repo}
-          className="size-12 shrink-0 rounded-[15px] text-[18px] ring-1 ring-white/10"
+          className="size-11 shrink-0 rounded-[14px] text-[17px] ring-1 ring-white/10"
+          remote={false}
         />
         <div className="min-w-0 flex-1 space-y-0.5">
           <p className="hub-trending-title line-clamp-2 text-[13.5px] font-semibold leading-[16px] text-foreground">

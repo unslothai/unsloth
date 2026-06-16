@@ -90,16 +90,19 @@ export function HfTokenIndicator({ showLabel = false }: HfTokenIndicatorProps = 
           onClick={() => openDialog("general")}
           aria-label={ariaLabel}
           className={cn(
-            "inline-flex items-center justify-center px-2.5 py-1 text-[11.5px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+            // A solid circle reads optically larger than the flatter HTTP/Xet
+            // box at the same height, so keep it a few px smaller (22px) to sit
+            // comfortably within the row rather than bulging above it.
+            "inline-flex h-[22px] w-[22px] items-center justify-center rounded-full text-[11.5px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
             hasToken
               ? "hub-tag-soft text-muted-foreground hover:text-foreground/80"
-              : "rounded-full bg-destructive text-destructive-foreground hover:bg-destructive/90",
+              : "bg-destructive text-destructive-foreground hover:bg-destructive/90",
           )}
         >
           <HugeiconsIcon
             icon={AiSecurity03Icon}
             strokeWidth={1.75}
-            className="size-4"
+            className="block size-[13px] shrink-0"
           />
         </button>
       </TooltipTrigger>

@@ -69,12 +69,12 @@ function ViewRepositoryButton({
   const online = useOnlineStatus();
   const url = `https://huggingface.co/${isDataset ? "datasets/" : ""}${repoId}`;
   const baseClass =
-    "inline-flex size-8 shrink-0 items-center justify-center rounded-[9px] text-muted-foreground transition-colors";
+    "inline-flex size-6 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors";
   const icon = (
     <HugeiconsIcon
       icon={Share05Icon}
       strokeWidth={1.75}
-      className="size-[18px]"
+      className="size-[13px]"
     />
   );
   return (
@@ -129,12 +129,12 @@ function CopyRepoButton({ repoId }: { repoId: string }) {
           type="button"
           aria-label="Copy repository ID"
           onClick={handleCopy}
-          className="inline-flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-[9px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          className="inline-flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
         >
           <HugeiconsIcon
             icon={copied ? Tick02Icon : Copy01Icon}
             strokeWidth={1.75}
-            className="size-[18px]"
+            className="size-[13px]"
           />
         </button>
       </TooltipTrigger>
@@ -318,8 +318,7 @@ function ModelStatusChips({
               </span>
             )}
             <span className="mt-1 block text-[10.5px] font-normal text-white/75">
-              Still downloadable to your Hugging Face cache, shared with every
-              framework that reads it.
+              Still downloadable to your Hugging Face cache.
             </span>
           </TooltipContent>
         </Tooltip>
@@ -531,7 +530,7 @@ export const ModelInspector = memo(function ModelInspector({
           />
           <div className="min-w-0 flex-1">
             <div className="flex min-w-0 items-center gap-1.5">
-              <h2 className="truncate text-[25px] font-semibold leading-[31px] tracking-[-0.025em] text-foreground">
+              <h2 className="truncate text-[25px] font-semibold leading-[31px] tracking-normal text-foreground">
                 {model.title}
               </h2>
               {model.hubRepoId && (

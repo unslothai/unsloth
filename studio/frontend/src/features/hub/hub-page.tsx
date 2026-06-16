@@ -27,11 +27,13 @@ import {
   useDeferredValue,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import { HubDetailView } from "./catalog/hub-detail-view";
 import { HubTopBar } from "./catalog/hub-top-bar";
 import { HubFeed } from "./catalog/hub-feed";
+import { OwnerScopeToggle } from "./catalog/owner-scope-toggle";
 import {
   type AllModelsView,
   HubListHeader,
@@ -68,6 +70,7 @@ import {
   CAPABILITY_FILTER_OPTIONS,
   buildDiscoverRows,
   detectResultFormat,
+  isUnslothFinetunable,
   matchesCapability,
   matchesFormat,
 } from "./lib/view-models";
@@ -85,6 +88,33 @@ import type {
 const MODELS_TAB_STORAGE_KEY = "unsloth.hub.modelsTab";
 const ALL_MODELS_VIEW_STORAGE_KEY = "unsloth.hub.allModelsView";
 const INVENTORY_SORT_STORAGE_KEY = "unsloth.hub.inventorySort";
+const OWNER_SCOPE_STORAGE_KEY = "unsloth.hub.ownerScope";
+
+/** Discover browsing scope: only the unsloth org (default) or the whole Hub. */
+export type OwnerScope = "unsloth" | "all";
+
+function readOwnerScopePreference(): OwnerScope {
+  if (typeof window === "undefined") {
+    return "unsloth";
+  }
+  try {
+    const value = window.localStorage.getItem(OWNER_SCOPE_STORAGE_KEY);
+    return value === "all" ? "all" : "unsloth";
+  } catch {
+    return "unsloth";
+  }
+}
+
+function writeOwnerScopePreference(scope: OwnerScope): void {
+  if (typeof window === "undefined") {
+    return;
+  }
+  try {
+    window.localStorage.setItem(OWNER_SCOPE_STORAGE_KEY, scope);
+  } catch {
+    return;
+  }
+}
 
 const DEFAULT_DISCOVER_CHANNEL: ChannelId = "unsloth-trending";
 const FEED_LIST_CHANNEL_ID: ChannelId = "unsloth-latest";
@@ -173,13 +203,15 @@ function writeModelsTabPreference(tab: ModelsTab): void {
 // list vs. card grid is remembered across sessions.
 function readAllModelsViewPreference(): AllModelsView {
   if (typeof window === "undefined") {
-    return "grid";
+    return "split";
   }
   try {
     const value = window.localStorage.getItem(ALL_MODELS_VIEW_STORAGE_KEY);
-    return value === "grid" || value === "card" ? value : "grid";
+    return value === "grid" || value === "two" || value === "split"
+      ? value
+      : "split";
   } catch {
-    return "grid";
+    return "split";
   }
 }
 
@@ -334,6 +366,13 @@ export function ModelsPage() {
     () => findChannel(DEFAULT_DISCOVER_CHANNEL)?.sort ?? "trendingScore",
   );
   const [direction, setDirection] = useState<HfSortDirection>("desc");
+  const [ownerScope, setOwnerScopeState] = useState<OwnerScope>(
+    readOwnerScopePreference,
+  );
+  const setOwnerScope = useCallback((scope: OwnerScope) => {
+    setOwnerScopeState(scope);
+    writeOwnerScopePreference(scope);
+  }, []);
   const [resourceType, setResourceType] = useState<ResourceTypeFilter>(() =>
     hubSearch.kind === "datasets" ? "datasets" : "models",
   );
@@ -372,10 +411,27 @@ export function ModelsPage() {
   const [allModelsView, setAllModelsViewState] = useState<AllModelsView>(
     readAllModelsViewPreference,
   );
-  const setAllModelsView = useCallback((view: AllModelsView) => {
-    setAllModelsViewState(view);
-    writeAllModelsViewPreference(view);
-  }, []);
+  // Tracks an explicit "Back to Hub" within split view so the master pane shows
+  // the empty placeholder instead of immediately re-selecting the first model.
+  // Remembers the last non-split view so "Back to Hub" can drop out of split
+  // mode into whatever browsing layout the user had before (defaults to the
+  // two-column grid).
+  const lastNonSplitViewRef = useRef<AllModelsView>("two");
+  const setAllModelsView = useCallback(
+    (view: AllModelsView) => {
+      setAllModelsViewState(view);
+      writeAllModelsViewPreference(view);
+      // Leaving split view drops the inline preview so the user lands back on
+      // the full hub list rather than the model detail overlay.
+      if (view !== "split") {
+        void navigate({
+          to: "/hub",
+          search: (prev) => ({ ...prev, model: undefined }),
+        });
+      }
+    },
+    [navigate],
+  );
   const [inventorySort, setInventorySortState] = useState<InventorySort>(
     readInventorySortPreference,
   );
@@ -549,6 +605,7 @@ export function ModelsPage() {
     sortBy: effectiveSort,
     direction: effectiveDirection,
     channel: listChannel,
+    ownerScope,
     online,
   });
 
@@ -624,13 +681,15 @@ export function ModelsPage() {
     return discoverRows.filter(
       (row) =>
         matchesFormat(detectResultFormat(row.result), deferredFormatFilter) &&
-        matchesCapability(row.capabilities, deferredCapabilityFilter),
+        matchesCapability(row.capabilities, deferredCapabilityFilter) &&
+        (!activeChannel?.finetunableOnly || isUnslothFinetunable(row.result)),
     );
   }, [
     discoverRows,
     isDatasetMode,
     deferredFormatFilter,
     deferredCapabilityFilter,
+    activeChannel,
   ]);
 
   const listRows = filteredDiscoverRows;
@@ -651,30 +710,17 @@ export function ModelsPage() {
       ).filter((row) => matchesFormat(row.result.isGguf, "gguf")),
     [hubFeed.trending.results, modelDiscoveryInventorySignature],
   );
-  const feedFineTuneRows = useMemo(
-    () =>
-      buildDiscoverRows(
-        hubFeed.fineTuneReady.results,
-        effectiveCachedRows,
-        effectiveLocalRows,
-      ).filter((row) => matchesFormat(row.result.isGguf, "checkpoint")),
-    [hubFeed.fineTuneReady.results, modelDiscoveryInventorySignature],
-  );
   const feedRows = useMemo(() => {
     if (!isFeedMode) return [];
     const seen = new Set<string>();
     const merged: DiscoverRow[] = [];
-    for (const row of [
-      ...feedTrendingRows,
-      ...feedFineTuneRows,
-      ...filteredDiscoverRows,
-    ]) {
+    for (const row of [...feedTrendingRows, ...filteredDiscoverRows]) {
       if (seen.has(row.id)) continue;
       seen.add(row.id);
       merged.push(row);
     }
     return merged;
-  }, [isFeedMode, feedTrendingRows, feedFineTuneRows, filteredDiscoverRows]);
+  }, [isFeedMode, feedTrendingRows, filteredDiscoverRows]);
   const feedResults = useMemo(() => feedRows.map((row) => row.result), [feedRows]);
   const selectionDiscoverRows = isFeedMode ? feedRows : discoverRows;
   const selectionFilteredDiscoverRows = isFeedMode
@@ -812,11 +858,32 @@ export function ModelsPage() {
     [setSelected, navigate],
   );
   const handleCloseDetail = useCallback(() => {
+    // From split view, "Back to Hub" exits the master-detail layout AND returns
+    // to the main hub feed (trending sections) rather than the current filtered
+    // list. We leave split mode (so the feed can render), reset the discover
+    // state to its defaults, and clear both the inline preview and any channel.
+    if (allModelsView === "split") {
+      const next = lastNonSplitViewRef.current;
+      setAllModelsViewState(next);
+      writeAllModelsViewPreference(next);
+      const preset = findChannel(DEFAULT_DISCOVER_CHANNEL);
+      setDiscoverFormat(preset?.format ?? "gguf");
+      setSortBy(preset?.sort ?? "trendingScore");
+      setDirection("desc");
+      setCapabilityFilter("all");
+      setSortBrowseActive(false);
+      setQuery("");
+      void navigate({
+        to: "/hub",
+        search: (prev) => ({ ...prev, model: undefined, section: undefined }),
+      });
+      return;
+    }
     void navigate({
       to: "/hub",
       search: (prev) => ({ ...prev, model: undefined }),
     });
-  }, [navigate]);
+  }, [navigate, allModelsView]);
   const handleQueryChange = useCallback(
     (next: string) => {
       if (urlModel) {
@@ -853,6 +920,38 @@ export function ModelsPage() {
       setSelected(urlModel);
     }
   }, [urlModel, selectedId, setSelected]);
+
+  // Track the last non-split layout so leaving split mode restores it.
+  useEffect(() => {
+    if (allModelsView !== "split") {
+      lastNonSplitViewRef.current = allModelsView;
+    }
+  }, [allModelsView]);
+
+  // Split view is always two-pane, so when nothing is selected yet, preview the
+  // first available model so the detail pane is never empty.
+  useEffect(() => {
+    if (allModelsView !== "split" || urlModel) return;
+    const firstId = isDiscoverTab
+      ? listRows[0]?.id
+      : (effectiveCachedRows[0]?.id ?? effectiveLocalRows[0]?.id);
+    if (!firstId) return;
+    setSelected(firstId);
+    void navigate({
+      to: "/hub",
+      search: (prev) => ({ ...prev, model: firstId }),
+      replace: true,
+    });
+  }, [
+    allModelsView,
+    urlModel,
+    isDiscoverTab,
+    listRows,
+    effectiveCachedRows,
+    effectiveLocalRows,
+    setSelected,
+    navigate,
+  ]);
 
   useEffect(() => {
     if (!isModelDiscover || !sectionChannelId) return;
@@ -1109,27 +1208,27 @@ export function ModelsPage() {
     if (!isDiscoverTab) return null;
     if (isFeedMode) {
       return (
-        <div className="flex flex-col gap-10 pt-6">
-          <HubFeed
-            trending={{
-              rows: feedTrendingRows,
-              isLoading: hubFeed.trending.isLoading,
-            }}
-            fineTune={{
-              rows: feedFineTuneRows,
-              isLoading: hubFeed.fineTuneReady.isLoading,
-            }}
-            deviceType={deviceType}
-            isDataset={isDatasetMode}
-            onSelect={handleSelect}
-            onOpenChannel={handleOpenList}
-          />
+        <div className="flex flex-col gap-6 pt-6">
+          {allModelsView !== "split" && (
+            <HubFeed
+              trending={{
+                rows: feedTrendingRows,
+                isLoading: hubFeed.trending.isLoading,
+              }}
+              deviceType={deviceType}
+              isDataset={isDatasetMode}
+              onSelect={handleSelect}
+              onOpenChannel={handleOpenList}
+            />
+          )}
           <div className="flex flex-col gap-3">
             <HubListHeader
               title={HUB_SECTION_TITLE.latest}
               count={listCount}
               view={allModelsView}
               onViewChange={setAllModelsView}
+              onRefresh={handleRetrySearch}
+              isRefreshing={isLoading}
             />
             {allModelsView === "grid" && listCount > 0 && (
               <ResultListHeader isDataset={isDatasetMode} />
@@ -1138,6 +1237,13 @@ export function ModelsPage() {
         </div>
       );
     }
+    const ownerToggle = !isDatasetMode ? (
+      <OwnerScopeToggle value={ownerScope} onChange={setOwnerScope} />
+    ) : undefined;
+    // The split master pane is narrow: keeping the scope toggle inline with the
+    // title + view-mode buttons squeezes the heading into a stack of wrapped
+    // words. There it drops onto its own row below the header instead.
+    const splitView = allModelsView === "split";
     return (
       <div className="flex flex-col gap-3 pt-6">
         {isChannelListMode ? (
@@ -1147,6 +1253,7 @@ export function ModelsPage() {
             view={allModelsView}
             onViewChange={setAllModelsView}
             onBack={handleBackToFeed}
+            actions={splitView ? undefined : ownerToggle}
           />
         ) : (
           <HubListHeader
@@ -1154,7 +1261,11 @@ export function ModelsPage() {
             view={allModelsView}
             onViewChange={setAllModelsView}
             onBack={isSortBrowseMode ? handleBackToFeed : undefined}
+            actions={splitView ? undefined : ownerToggle}
           />
+        )}
+        {splitView && ownerToggle && (
+          <div className="-mt-3 flex justify-start pb-5">{ownerToggle}</div>
         )}
         {allModelsView === "grid" && listCount > 0 && (
           <ResultListHeader isDataset={isDatasetMode} />
@@ -1172,38 +1283,49 @@ export function ModelsPage() {
     listCount,
     allModelsView,
     setAllModelsView,
+    ownerScope,
+    setOwnerScope,
     isDatasetMode,
     feedTrendingRows,
-    feedFineTuneRows,
     hubFeed.trending.isLoading,
-    hubFeed.fineTuneReady.isLoading,
     deviceType,
     handleSelect,
     handleOpenList,
   ]);
 
-  const downloadedHeader = useMemo(
-    () => (
-      <HubListHeader
-        title="On device"
-        count={effectiveCachedRows.length + effectiveLocalRows.length}
-        actions={
-          <InventorySortControl
-            value={inventorySort}
-            onChange={setInventorySort}
-          />
-        }
-      />
-    ),
-    [
-      effectiveCachedRows.length,
-      effectiveLocalRows.length,
-      inventorySort,
-      setInventorySort,
-    ],
-  );
+  const downloadedHeader = useMemo(() => {
+    const sortControl = (
+      <InventorySortControl value={inventorySort} onChange={setInventorySort} />
+    );
+    // In the narrow split master pane the title + sort pills + view toggle don't
+    // fit on one row, so (like discover's Unsloth/All) the sort control drops to
+    // its own row below the header instead of squeezing the heading.
+    const splitView = allModelsView === "split";
+    return (
+      <>
+        <HubListHeader
+          title="On device"
+          count={effectiveCachedRows.length + effectiveLocalRows.length}
+          view={allModelsView}
+          onViewChange={setAllModelsView}
+          actions={splitView ? undefined : sortControl}
+        />
+        {splitView && (
+          <div className="-mt-3 flex justify-start pb-5">{sortControl}</div>
+        )}
+      </>
+    );
+  }, [
+    effectiveCachedRows.length,
+    effectiveLocalRows.length,
+    allModelsView,
+    setAllModelsView,
+    inventorySort,
+    setInventorySort,
+  ]);
 
   const detailOpen = urlModel !== null;
+  const splitMode = allModelsView === "split";
 
   return (
     <div className="hub-page flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden bg-background">
@@ -1233,18 +1355,34 @@ export function ModelsPage() {
           onFormatFilterChange={setFormatFilter}
           capabilityFilter={capabilityFilter}
           onCapabilityFilterChange={setCapabilityFilter}
-          onRefresh={handleRetrySearch}
           onManageLocalFolders={handleManageLocalFolders}
+          onOpenFineTune={() => handleOpenList("finetune")}
         />
       </HubTopBar>
 
-      <div className="relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col">
+      <div
+        className={cn(
+          "relative flex min-h-0 min-w-0 flex-1 basis-0",
+          // Split mode shares the top bar's centered 1100px measure so the
+          // master list lines up with the page heading/toolbar instead of
+          // hugging the far-left edge on wide screens.
+          splitMode
+            ? "flex-col lg:mx-auto lg:w-full lg:max-w-[1100px] lg:flex-row"
+            : "flex-col",
+        )}
+      >
         <div
           className={cn(
-            "flex min-h-0 flex-1 flex-col",
-            detailOpen && "pointer-events-none",
+            "flex min-h-0 flex-col",
+            // Split mode keeps the catalog as a fixed-width master pane on
+            // large screens; otherwise it fills the area and the detail view
+            // overlays it.
+            splitMode
+              ? "flex-1 lg:w-[460px] lg:max-w-[44%] lg:flex-none lg:shrink-0 lg:border-r lg:border-border/60"
+              : "flex-1",
+            detailOpen && !splitMode && "pointer-events-none",
           )}
-          aria-hidden={detailOpen || undefined}
+          aria-hidden={(detailOpen && !splitMode) || undefined}
         >
           <ModelsCatalog
             state={catalogState}
@@ -1258,18 +1396,39 @@ export function ModelsPage() {
           />
         </div>
 
-        {detailOpen && (
-          <div className="hub-canvas absolute inset-0 z-20 flex min-h-0 flex-col">
-            <HubDetailView
-              model={selectedModel}
-              isDataset={isDatasetMode}
-              metadataUnavailable={metadataUnavailable}
-              selectionHiddenByFilters={selectionHiddenByFilters}
-              runtime={inspectorRuntime}
-              actions={inspectorActions}
-              onBack={handleCloseDetail}
-            />
-          </div>
+        {splitMode ? (
+          detailOpen ? (
+            <div className="hub-canvas z-20 flex min-h-0 flex-col max-lg:absolute max-lg:inset-0 lg:relative lg:min-w-0 lg:flex-1">
+              <HubDetailView
+                model={selectedModel}
+                isDataset={isDatasetMode}
+                metadataUnavailable={metadataUnavailable}
+                selectionHiddenByFilters={selectionHiddenByFilters}
+                runtime={inspectorRuntime}
+                actions={inspectorActions}
+                onBack={handleCloseDetail}
+                compact={true}
+              />
+            </div>
+          ) : (
+            <div className="hidden min-h-0 flex-1 items-center justify-center px-6 text-center text-[13px] text-muted-foreground lg:flex">
+              Select a model to preview its details.
+            </div>
+          )
+        ) : (
+          detailOpen && (
+            <div className="hub-canvas absolute inset-0 z-20 flex min-h-0 flex-col">
+              <HubDetailView
+                model={selectedModel}
+                isDataset={isDatasetMode}
+                metadataUnavailable={metadataUnavailable}
+                selectionHiddenByFilters={selectionHiddenByFilters}
+                runtime={inspectorRuntime}
+                actions={inspectorActions}
+                onBack={handleCloseDetail}
+              />
+            </div>
+          )
         )}
       </div>
 

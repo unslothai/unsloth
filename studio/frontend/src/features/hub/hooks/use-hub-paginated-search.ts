@@ -20,7 +20,11 @@ const INITIAL: HfPaginatedState<never> = {
   hasMore: false,
   error: null,
 };
-const BATCH = 20;
+// One HF listModels fetch already returns up to 500 models, so iter.next()
+// after the first network round-trip just walks an in-memory page — pulling a
+// bigger batch is essentially free until that page is exhausted. A larger batch
+// (vs the old 20) fills the viewport in one commit instead of trickling rows in.
+const BATCH = 48;
 const MAX_RAW_ITEMS_PER_BATCH = BATCH * 4;
 type BusyKind = "initial" | "more";
 
@@ -35,7 +39,7 @@ type BusyKind = "initial" | "more";
  * starve the visible list (e.g. user picks a GGUF-only filter and every
  * incoming raw row is non-GGUF) keep paginating instead of dead-locking.
  */
-const MIN_FETCH_INTERVAL_MS = 1000;
+const MIN_FETCH_INTERVAL_MS = 350;
 
 // Preserved results older than this are refetched on re-enable so the feed
 // can't lag behind the Hub. Reset by every successful pull, so only idle time

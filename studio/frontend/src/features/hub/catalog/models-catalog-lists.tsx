@@ -34,8 +34,11 @@ import {
   RESULT_GRID_HEIGHT_PX,
   RESULT_GRID_ROW_HEIGHT_PX,
   RESULT_ROW_HEIGHT_PX,
+  RESULT_SPLIT_HEIGHT_PX,
+  RESULT_SPLIT_ROW_HEIGHT_PX,
   ResultCard,
   ResultGridRow,
+  ResultSplitRow,
 } from "./models-table";
 
 type InventoryItem =
@@ -98,9 +101,11 @@ export function DiscoverList({
   onRetry,
   onSwitchDevice,
   view,
+  selectedId,
 }: {
   discoverRows: DiscoverRow[];
   onSelect: (id: string) => void;
+  selectedId?: string | null;
   isLoading: boolean;
   query: string;
   scrollElement: HTMLDivElement | null;
@@ -121,10 +126,22 @@ export function DiscoverList({
   onSwitchDevice?: () => void;
   view: AllModelsView;
 }) {
-  const rowHeight =
-    view === "card" ? RESULT_ROW_HEIGHT_PX : RESULT_GRID_ROW_HEIGHT_PX;
-  const cellHeight =
-    view === "card" ? RESULT_CARD_HEIGHT_PX : RESULT_GRID_HEIGHT_PX;
+  // "two" = comfortable cards laid out two per row; "grid" = the compact table
+  // rows; "split" = a single comfortable card per row in the narrow master pane
+  // alongside an inline detail view.
+  const isSplit = view === "split";
+  const isCardLike = view === "two" || view === "split";
+  const rowHeight = isSplit
+    ? RESULT_SPLIT_ROW_HEIGHT_PX
+    : isCardLike
+      ? RESULT_ROW_HEIGHT_PX
+      : RESULT_GRID_ROW_HEIGHT_PX;
+  const cellHeight = isSplit
+    ? RESULT_SPLIT_HEIGHT_PX
+    : isCardLike
+      ? RESULT_CARD_HEIGHT_PX
+      : RESULT_GRID_HEIGHT_PX;
+  const columns = view === "two" ? 2 : 1;
 
   return (
     <>
@@ -135,11 +152,20 @@ export function DiscoverList({
               items={discoverRows}
               scrollElement={scrollElement}
               scrollMargin={scrollMargin}
+              columns={columns}
               rowHeight={rowHeight}
               cellHeight={cellHeight}
               getKey={(row) => row.id}
               renderRow={(row) =>
-                view === "card" ? (
+                view === "split" ? (
+                  <ResultSplitRow
+                    row={row}
+                    deviceType={deviceType}
+                    isDataset={isDataset}
+                    selected={row.id === selectedId}
+                    onSelect={onSelect}
+                  />
+                ) : isCardLike ? (
                   <ResultCard
                     row={row}
                     deviceType={deviceType}
@@ -225,6 +251,7 @@ export function DownloadedList({
   isDataset,
   inventoryTokens,
   deviceType,
+  compact = false,
   sort,
   onInventoryChange,
 }: {
@@ -242,6 +269,8 @@ export function DownloadedList({
   isDataset: boolean;
   inventoryTokens: readonly string[];
   deviceType: string | null;
+  /** Narrow split master pane: render compact inventory rows. */
+  compact?: boolean;
   sort: InventorySort;
   onInventoryChange?: () => void;
 }) {
@@ -316,8 +345,8 @@ export function DownloadedList({
       items={inventoryItems}
       scrollElement={scrollElement}
       columns={columns}
-      rowHeight={RESULT_GRID_ROW_HEIGHT_PX}
-      cellHeight={RESULT_GRID_HEIGHT_PX}
+      rowHeight={compact ? RESULT_SPLIT_ROW_HEIGHT_PX : RESULT_GRID_ROW_HEIGHT_PX}
+      cellHeight={compact ? RESULT_SPLIT_HEIGHT_PX : RESULT_GRID_HEIGHT_PX}
       getKey={(item) => `${item.variant}-${item.row.id}`}
       renderRow={(item) => (
         <InventoryRow
@@ -328,6 +357,7 @@ export function DownloadedList({
           isDataset={isDataset}
           dimmed={!inventoryRowMatches(item.row, inventoryTokens)}
           deviceType={deviceType}
+          compact={compact}
           onSelect={onSelect}
           onChange={onInventoryChange}
         />

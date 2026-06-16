@@ -2,16 +2,16 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 const PALETTE = [
-  "hsl(214 42% 42%)",
-  "hsl(172 32% 36%)",
-  "hsl(30 42% 42%)",
-  "hsl(348 36% 44%)",
-  "hsl(198 38% 40%)",
-  "hsl(140 26% 38%)",
-  "hsl(222 24% 46%)",
-  "hsl(16 34% 44%)",
-  "hsl(260 22% 48%)",
-  "hsl(44 44% 40%)",
+  "hsl(214 66% 52%)",
+  "hsl(172 54% 44%)",
+  "hsl(30 70% 52%)",
+  "hsl(348 62% 56%)",
+  "hsl(198 64% 50%)",
+  "hsl(140 48% 46%)",
+  "hsl(222 50% 56%)",
+  "hsl(16 64% 54%)",
+  "hsl(260 46% 58%)",
+  "hsl(44 72% 50%)",
 ];
 
 function hashOwner(owner: string): number {

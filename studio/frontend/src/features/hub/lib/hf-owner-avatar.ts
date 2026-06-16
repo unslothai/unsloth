@@ -34,6 +34,16 @@ const TRANSIENT_MISS_MAX_TTL_MS = 30 * 60_000;
 // timeout as a transient miss so it auto-recovers.
 const AVATAR_FETCH_TIMEOUT_MS = 10_000;
 
+// A virtualized list mounts and unmounts rows as the user scrolls. Firing the
+// HF lookup synchronously on mount means a fast scroll through the "All
+// publishers" feed (every row a distinct owner) kicks off hundreds of requests
+// for owners that scroll out of view a frame later, swamping the 6-wide gate and
+// making the few on-screen avatars trickle in one by one. Deferring the *first*
+// network lookup by this much lets a row that's only briefly mounted cancel
+// before it ever touches the network — only owners the user actually lands on
+// get fetched. Cached avatars (url / miss) still resolve synchronously.
+const AVATAR_FETCH_DEBOUNCE_MS = 200;
+
 const cache = new LruMap<string, AvatarCacheEntry>(256);
 const inflight = new Map<string, Promise<string | null>>();
 
@@ -155,7 +165,10 @@ function loadAvatar(name: string): Promise<string | null> {
   return promise;
 }
 
-export function useHfOwnerAvatar(owner: string | null | undefined): string | null {
+export function useHfOwnerAvatar(
+  owner: string | null | undefined,
+  enabled = true,
+): string | null {
   const key = owner?.trim() ?? "";
   const online = useOnlineStatus();
   const [state, setState] = useState<{ key: string; url: string | null }>(() => {
@@ -164,15 +177,33 @@ export function useHfOwnerAvatar(owner: string | null | undefined): string | nul
   const url = state.key === key ? state.url : readCachedUrl(key);
 
   useEffect(() => {
-    if (!key || !online) return;
+    // When disabled (virtualized list rows), never hit the network: show a
+    // cached avatar if one already exists, otherwise the colored-initial tile.
+    // This is what keeps the "All publishers" feed — every row a distinct owner
+    // — from firing a lookup storm that makes avatars trickle in one by one.
+    if (!key || !online || !enabled) return;
     let cancelled = false;
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    let fetchTimer: ReturnType<typeof setTimeout> | null = null;
 
     const scheduleRetry = (until: number) => {
       const wait = Math.max(until - Date.now(), 0) + 100;
       retryTimer = setTimeout(() => {
         if (!cancelled) void attempt();
       }, wait);
+    };
+
+    const runFetch = () => {
+      void loadAvatar(key).then((next) => {
+        if (cancelled) return;
+        setState({ key, url: next });
+        if (next == null) {
+          const post = readCache(key);
+          if (post?.kind === "miss-transient") {
+            scheduleRetry(post.until);
+          }
+        }
+      });
     };
 
     const attempt = async () => {
@@ -195,15 +226,9 @@ export function useHfOwnerAvatar(owner: string | null | undefined): string | nul
         scheduleRetry(cached.until);
         return;
       }
-      const next = await loadAvatar(key);
-      if (cancelled) return;
-      setState({ key, url: next });
-      if (next == null) {
-        const post = readCache(key);
-        if (post?.kind === "miss-transient") {
-          scheduleRetry(post.until);
-        }
-      }
+      // Uncached: defer the network lookup so rows scrolled past in under
+      // AVATAR_FETCH_DEBOUNCE_MS cancel before they ever hit HF.
+      fetchTimer = setTimeout(runFetch, AVATAR_FETCH_DEBOUNCE_MS);
     };
 
     void attempt();
@@ -211,8 +236,9 @@ export function useHfOwnerAvatar(owner: string | null | undefined): string | nul
     return () => {
       cancelled = true;
       if (retryTimer != null) clearTimeout(retryTimer);
+      if (fetchTimer != null) clearTimeout(fetchTimer);
     };
-  }, [key, online]);
+  }, [key, online, enabled]);
 
   return url;
 }

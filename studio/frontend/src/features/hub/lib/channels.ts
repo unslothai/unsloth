@@ -26,6 +26,8 @@ export interface ChannelPreset {
   idSuffix?: string;
   format: ModelFormatFilter;
   sort: HfSortKey;
+  // Keep only formats Unsloth can fine-tune (drops fp8, nvfp4, w4a16, etc.).
+  finetunableOnly?: boolean;
 }
 
 export const CHANNEL_PRESETS: readonly ChannelPreset[] = [
@@ -52,12 +54,11 @@ export const CHANNEL_PRESETS: readonly ChannelPreset[] = [
     id: "unsloth-safetensors",
     label: "Fine-tune ready",
     icon: SlidersHorizontalIcon,
-    hint: "Latest Unsloth bnb-4bit checkpoints ready to fine-tune.",
+    hint: "Checkpoints ready to fine-tune.",
     owner: "unsloth",
-    query: "bnb-4bit",
-    idSuffix: "-bnb-4bit",
     format: "checkpoint",
     sort: "lastModified",
+    finetunableOnly: true,
   },
 ];
 
@@ -88,7 +89,7 @@ export const CHANNEL_TO_SECTION: Record<ChannelId, HubSection> = {
 
 export const HUB_SECTION_TITLE: Record<HubSection, string> = {
   trending: "Trending Now",
-  latest: "Latest Unsloth Updates",
+  latest: "Latest Unsloth Models",
   finetune: "Fine-tune Ready",
 };
 

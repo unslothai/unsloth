@@ -23,14 +23,12 @@ export interface HubFeedSection {
 
 export interface UseHubFeedResult {
   trending: HubFeedSection;
-  fineTuneReady: HubFeedSection;
   refetch: (id: ChannelId) => void;
 }
 
-const CHANNEL_IDS: readonly ChannelId[] = [
-  "unsloth-trending",
-  "unsloth-safetensors",
-];
+// Only the trending row is rendered in the feed now; "Fine-tune ready" moved
+// into the format dropdown and loads its channel on demand (channel-list mode).
+const CHANNEL_IDS: readonly ChannelId[] = ["unsloth-trending"];
 const FEED_PAGE_SIZE = 20;
 const MAX_RETRIES = 5;
 const BACKOFF_BASE_MS = 800;
@@ -255,7 +253,6 @@ export function useHubFeed(opts: {
 
   return {
     trending: buildSection("unsloth-trending"),
-    fineTuneReady: buildSection("unsloth-safetensors"),
     refetch,
   };
 }

@@ -45,7 +45,7 @@ export function CarouselArrow({
       <HugeiconsIcon
         icon={side === "left" ? ArrowLeft01Icon : ArrowRight01Icon}
         strokeWidth={2}
-        className="size-5"
+        className="size-4"
       />
     </button>
   );

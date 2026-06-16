@@ -470,6 +470,66 @@ function createChannelIterator(
   }) as AsyncGenerator<unknown>;
 }
 
+// Bound the dedicated unsloth pass so a huge unsloth slice can't starve the
+// general listing under infinite scroll.
+const UNSLOTH_CHANNEL_PREFETCH = 60;
+
+// For tag/format channels without a fixed owner (e.g. the GGUF format filter),
+// yield unsloth-owned models first (in the requested sort order), then the rest
+// of the slice with the already-seen unsloth repos removed. This floats unsloth
+// to the top even when the user sorts by downloads/likes within the channel.
+async function* channelUnslothFirstIterator(
+  channel: { tags?: string[]; query?: string },
+  opts: {
+    query?: string;
+    sortBy: HfSortKey;
+    sortDirection: HfSortDirection;
+    accessToken?: string;
+    signal: AbortSignal;
+  },
+): AsyncGenerator<unknown> {
+  const queryString = opts.query || channel.query || undefined;
+  const creds = opts.accessToken
+    ? { credentials: { accessToken: opts.accessToken } }
+    : {};
+  const seen = new Set<string>();
+
+  const unslothIter = listModels({
+    search: {
+      ...(queryString ? { query: queryString } : {}),
+      owner: "unsloth",
+      ...(channel.tags ? { tags: channel.tags } : {}),
+    },
+    additionalFields: ALL_FIELDS,
+    fetch: makeSortFetch(opts.sortBy, opts.sortDirection, opts.signal),
+    sort: opts.sortBy,
+    ...creds,
+  }) as AsyncGenerator<unknown>;
+  let count = 0;
+  for await (const model of unslothIter) {
+    const name = (model as { name?: string }).name;
+    if (name) seen.add(name);
+    yield model;
+    if (++count >= UNSLOTH_CHANNEL_PREFETCH) break;
+  }
+
+  const generalIter = listModels({
+    search: {
+      ...(queryString ? { query: queryString } : {}),
+      ...(channel.tags ? { tags: channel.tags } : {}),
+    },
+    additionalFields: ALL_FIELDS,
+    fetch: makeSortFetch(opts.sortBy, opts.sortDirection, opts.signal),
+    sort: opts.sortBy,
+    ...creds,
+  }) as AsyncGenerator<unknown>;
+  for await (const model of generalIter) {
+    const name = (model as { name?: string }).name;
+    if (name && seen.has(name)) continue;
+    yield model;
+  }
+}
+
 export interface FetchChannelFirstPageOptions {
   channel: HfModelSearchChannel;
   sortBy: HfSortKey;
@@ -536,6 +596,12 @@ export function useHubModelSearch(
     sortBy?: HfSortKey;
     sortDirection?: HfSortDirection;
     pinUnslothFirst?: boolean;
+    /**
+     * "unsloth" hard-restricts every listing to the unsloth org (the default
+     * Hub browsing experience); "all" surfaces the whole Hub with unsloth
+     * floated to the top. Owner-fixed channel presets ignore this.
+     */
+    ownerScope?: "unsloth" | "all";
     enabled?: boolean;
     keepUnsupportedTags?: boolean;
     channel?: HfModelSearchChannel | null;
@@ -549,10 +615,12 @@ export function useHubModelSearch(
     sortBy = "downloads",
     sortDirection = "desc",
     pinUnslothFirst = true,
+    ownerScope = "all",
     enabled = true,
     keepUnsupportedTags = false,
     channel = null,
   } = options ?? {};
+  const unslothOnly = ownerScope === "unsloth";
 
   const channelOwner = channel?.owner ?? null;
   const channelTagsKey = channel?.tags ? channel.tags.join("|") : "";
@@ -588,6 +656,38 @@ export function useHubModelSearch(
         const channelTags = channelTagsKey
           ? channelTagsKey.split("|")
           : undefined;
+        // Unsloth-only scope on a tag/format channel with no fixed owner (e.g.
+        // the GGUF filter): hard-restrict the slice to unsloth-owned repos.
+        if (unslothOnly && !channelOwner) {
+          return createChannelIterator(
+            {
+              owner: "unsloth",
+              tags: channelTags,
+              query: channelQuery || undefined,
+            },
+            {
+              query: trimmed || undefined,
+              sortBy,
+              sortDirection,
+              accessToken,
+              signal,
+            },
+          );
+        }
+        // Tag/format channels with no fixed owner (e.g. the GGUF filter): float
+        // unsloth-owned models to the top of the slice, then the rest.
+        if (pinUnslothFirst && channelTagsKey && !channelOwner) {
+          return channelUnslothFirstIterator(
+            { tags: channelTags, query: channelQuery || undefined },
+            {
+              query: trimmed || undefined,
+              sortBy,
+              sortDirection,
+              accessToken,
+              signal,
+            },
+          );
+        }
         // User text query takes precedence over channel.query (so typing inside
         // a channel still refines the slice). Without user input, the channel's
         // own query (e.g. "bnb-4bit") narrows the listing server-side.
@@ -622,13 +722,28 @@ export function useHubModelSearch(
           normalizeTaskFilter(task),
           (task) =>
             listModels({
-              search: { ...(task ? { task } : {}) },
+              // Unsloth-only scope restricts the plain sort browse to the org.
+              search: {
+                ...(unslothOnly ? { owner: "unsloth" } : {}),
+                ...(task ? { task } : {}),
+              },
               additionalFields: ALL_FIELDS,
               fetch: makeSortFetch(sortBy, sortDirection, signal),
               sort: sortBy,
               ...(accessToken ? { credentials: { accessToken } } : {}),
             }) as AsyncGenerator<unknown>,
         );
+      }
+      // Unsloth-only typed query: search within the unsloth org rather than
+      // floating a few unsloth hits above the global relevance ranking.
+      if (unslothOnly) {
+        return listModels({
+          search: { query: searchQuery, owner: "unsloth" },
+          additionalFields: ALL_FIELDS,
+          fetch: makeSortFetch(sortBy, sortDirection, signal),
+          sort: sortBy,
+          ...(accessToken ? { credentials: { accessToken } } : {}),
+        }) as AsyncGenerator<unknown>;
       }
       // Typed query: disable task filter so explicitly searched models still
       // appear even if HF task metadata is wrong/missing.
@@ -659,6 +774,8 @@ export function useHubModelSearch(
       channelOwner,
       channelTagsKey,
       channelQuery,
+      pinUnslothFirst,
+      unslothOnly,
     ],
   );
 
@@ -697,7 +814,6 @@ export function useHubModelSearch(
   // shrinks or zeros), which is when re-ordering is safe (the user has scrolled
   // back to the top or initiated a new search).
   //
-  const channelActive = Boolean(channelOwner || channelTagsKey);
   const [stableCache, setStableCache] = useState<{
     source: HfModelResult[] | null;
     length: number;
@@ -706,8 +822,11 @@ export function useHubModelSearch(
   }>({ source: null, length: 0, results: [], sorted: false });
 
   const incoming = search.results;
+  // Owner-scoped channels already return a single owner, so re-sorting is a
+  // no-op there; for tag/format channels (e.g. GGUF) and plain sort browsing we
+  // still float unsloth-owned models to the top.
   const sortingDisabled =
-    !pinUnslothFirst || isPublisherQuery || trimmed || channelActive;
+    !pinUnslothFirst || isPublisherQuery || trimmed || Boolean(channelOwner);
   const { results, nextCache } = useMemo(() => {
     let results: HfModelResult[];
     let nextCache = stableCache;

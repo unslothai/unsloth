@@ -40,6 +40,7 @@ export function OwnerAvatar({
   repoName,
   size = "md",
   className,
+  remote = true,
 }: {
   owner: string;
   /**
@@ -52,6 +53,14 @@ export function OwnerAvatar({
   repoName?: string;
   size?: AvatarSize;
   className?: string;
+  /**
+   * When false, the fallback avatar never fetches the owner's HF profile
+   * picture — it shows a locally-resolved provider logo or the colored-initial
+   * tile instantly. Virtualized list rows pass `false` so browsing the whole
+   * Hub (every row a different owner) doesn't trigger a per-row request storm.
+   * The single-model inspector keeps the default (`true`).
+   */
+  remote?: boolean;
 }) {
   const providerLogo = resolveOwnerProviderLogo(owner, repoName);
   if (providerLogo) {
@@ -63,7 +72,14 @@ export function OwnerAvatar({
       />
     );
   }
-  return <DefaultAvatar owner={owner} size={size} className={className} />;
+  return (
+    <DefaultAvatar
+      owner={owner}
+      size={size}
+      className={className}
+      remote={remote}
+    />
+  );
 }
 
 export function useAvatarImageUrl(
@@ -107,7 +123,7 @@ function ProviderLogoTile({
         <img
           src={provider.logoPath}
           alt=""
-          loading="lazy"
+          decoding="async"
           className={cn(
             fit === "cover"
               ? "size-full object-cover"
@@ -150,15 +166,17 @@ function DefaultAvatar({
   owner,
   size,
   className,
+  remote = true,
 }: {
   owner: string;
   size: AvatarSize;
   className?: string;
+  remote?: boolean;
 }) {
   const owned = owner.trim() || "?";
   const initial = owned[0]?.toUpperCase() ?? "?";
   const color = ownerPaletteColor(owned);
-  const remoteUrl = useHfOwnerAvatar(owned);
+  const remoteUrl = useHfOwnerAvatar(owned, remote);
   const [failedImage, setFailedImage] = useState<FailedAvatarImage | null>(
     null,
   );
@@ -199,7 +217,7 @@ function DefaultAvatar({
         <img
           src={remoteUrl ?? ""}
           alt=""
-          loading="lazy"
+          decoding="async"
           className="size-full object-cover"
           onLoad={() => setFailedImage(null)}
           onError={() => {

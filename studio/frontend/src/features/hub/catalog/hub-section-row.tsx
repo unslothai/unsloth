@@ -64,7 +64,7 @@ export const HubSectionRow = memo(function HubSectionRow({
           <HugeiconsIcon
             icon={ArrowRight01Icon}
             strokeWidth={2}
-            className="hub-section-chevron size-5 text-muted-foreground"
+            className="hub-section-chevron size-4 text-muted-foreground"
           />
         </button>
       </h2>

@@ -87,6 +87,7 @@ export function useDiscoverSearch({
   sortBy,
   direction,
   channel,
+  ownerScope,
   online,
 }: {
   debouncedQuery: string;
@@ -96,13 +97,15 @@ export function useDiscoverSearch({
   sortBy: HfSortKey;
   direction: HfSortDirection;
   channel: HfModelSearchChannel | null;
+  ownerScope: "unsloth" | "all";
   online: boolean;
 }): DiscoverSearch {
   const modelSearch = useHubModelSearch(debouncedQuery, {
     accessToken,
     sortBy,
     sortDirection: direction,
-    pinUnslothFirst: false,
+    pinUnslothFirst: true,
+    ownerScope,
     enabled: online && isDiscoverTab && !isDatasetMode,
     keepUnsupportedTags: true,
     channel,
