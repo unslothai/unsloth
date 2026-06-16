@@ -620,8 +620,12 @@ def _hidden_payload_findings(
     if not RE_EXEC_EVAL.search(stripped):
         return []
     out = []
+
+    def _hidden(pat):
+        return bool(pat.search(original)) and not pat.search(stripped)
+
     for pat, label in _HIDDEN_PAYLOAD_PATTERNS:
-        if pat.search(original) and not pat.search(stripped):
+        if _hidden(pat):
             out.append(
                 Finding(
                     HIGH,
@@ -631,6 +635,19 @@ def _hidden_payload_findings(
                     f"{label}: {_extract_evidence(original, pat)}",
                 )
             )
+    # Fetch-then-run shape: a network call AND a process/os exec that both live
+    # only in the blanked region (an exec(__doc__) dropper). Either alone in real
+    # code is already covered; hidden together they are the payload itself.
+    if _hidden(RE_NETWORK) and _hidden(RE_SUBPROCESS):
+        out.append(
+            Finding(
+                HIGH,
+                package,
+                filename,
+                "exec/eval with hidden network+exec payload",
+                f"network+exec: {_extract_evidence(original, RE_SUBPROCESS)}",
+            )
+        )
     return out
 
 
@@ -1560,6 +1577,9 @@ _RE_PKG_NAME_SANITIZE = re.compile(r"[^A-Za-z0-9._-]")
 # no build, same no-exec guarantee. Transport failures are still exit 2; only
 # "no wheel" is downgraded to a direct fetch.
 
+# How many levels of indirect-dep recovery to chase (a wheel dep whose own child
+# is sdist-only, and so on). Bounded with dedup so recovery always terminates.
+_MAX_DEP_FOLLOWUP_DEPTH = 2
 _SDIST_DOWNLOAD_TIMEOUT = 180
 # Never fetch an archive larger than we would be willing to scan (iter_archive_files cap).
 _MAX_SDIST_BYTES = HARD_MAX_TOTAL_BYTES
@@ -1573,9 +1593,14 @@ def _spec_pin_version(spec: str) -> str | None:
     return m.group(1) if m else None
 
 
-def _pypi_json(name: str) -> dict | None:
-    """Fetch a project's PyPI metadata JSON (read-only HTTPS GET, no exec); None on error."""
-    url = "https://pypi.org/pypi/" + urllib.parse.quote(name, safe = "") + "/json"
+def _pypi_json(name: str, version: str | None = None) -> dict | None:
+    """Fetch PyPI metadata JSON (read-only HTTPS GET, no exec); None on error.
+    With ``version`` it fetches that release's document, whose ``requires_dist``
+    is accurate for the pin (the project-level doc describes only the latest)."""
+    url = "https://pypi.org/pypi/" + urllib.parse.quote(name, safe = "")
+    if version:
+        url += "/" + urllib.parse.quote(version, safe = "")
+    url += "/json"
     try:
         req = urllib.request.Request(url, headers = {"Accept": "application/json"})
         with urllib.request.urlopen(req, timeout = 30) as resp:
@@ -1588,11 +1613,11 @@ def _pypi_json(name: str) -> dict | None:
 
 
 def _release_files(meta: dict, version: str | None) -> list[dict]:
-    """Distribution files for a specific version, or the latest release's files."""
-    if version:
-        files = meta.get("releases", {}).get(version)
-        if files:
-            return files
+    """Files for a pinned version, else the latest release's. A pin that is
+    absent or empty returns [] (never the latest) so a yanked/bad pin fails
+    closed instead of a different artifact being scanned in its place."""
+    if version is not None:
+        return meta.get("releases", {}).get(version) or []
     return meta.get("urls", []) or []
 
 
@@ -1610,10 +1635,29 @@ def _is_trusted_pypi_url(url: str) -> bool:
     return parsed.scheme == "https" and parsed.hostname in _TRUSTED_PYPI_HOSTS
 
 
-def _requires_dist_names(meta: dict, version: str | None) -> list[str]:
+def _marker_holds_by_default(marker: str) -> bool:
+    """True if a PEP 508 marker can hold for a default install (no extra
+    requested). ``extra == 'x'`` is optional, but ``extra != 'x'`` and
+    ``python_version >= '3.8' or extra == 'x'`` are default-true and must not be
+    dropped. Conservative: on any parse/eval uncertainty, returns True so the dep
+    is still fetched and scanned (over-scan, never silently skip)."""
+    m = marker.strip()
+    if not m:
+        return True
+    try:
+        from packaging.markers import Marker
+        return bool(Marker(m).evaluate({"extra": ""}))
+    except Exception:
+        # packaging missing/unparseable: only drop a pure positive extra-equality
+        # marker (definitely optional); keep everything else.
+        return re.fullmatch(r"\s*extra\s*==\s*['\"][^'\"]+['\"]\s*", m) is None
+
+
+def _requires_dist_names(meta: dict) -> list[str]:
     """Transitive dep specs (name + version specifier) from metadata, to recover
     a sdist-only package's tree. The specifier is kept so a pinned malicious
-    version is fetched, not latest. Skips ``extra``-gated deps."""
+    version is fetched, not latest. Drops deps whose marker cannot hold for a
+    default install."""
     info = meta.get("info", {}) or {}
     reqs = info.get("requires_dist") or []
     specs: list[str] = []
@@ -1623,13 +1667,21 @@ def _requires_dist_names(meta: dict, version: str | None) -> list[str]:
         head = r
         if ";" in r:
             head, marker = r.split(";", 1)
-            if "extra" in marker:
-                continue  # optional extra; default install would not pull it
+            if not _marker_holds_by_default(marker):
+                continue
         if not _RE_NAME.match(head.strip()):
             continue
         # "torch (>=1.10)" / "torch >=1.10" -> "torch>=1.10" (pip-friendly).
         specs.append(re.sub(r"\s+", "", head).replace("(", "").replace(")", ""))
     return specs
+
+
+def _requires_dist_for(name: str, version: str | None, project_meta: dict) -> list[str]:
+    """Declared deps for the pinned version, read from that release's metadata
+    (its ``requires_dist`` can differ from latest); falls back to the
+    project-level document when the pin has no separate metadata."""
+    vmeta = _pypi_json(name, version) if version else None
+    return _requires_dist_names(vmeta or project_meta)
 
 
 def _download_sdist_direct(
@@ -1751,7 +1803,7 @@ def _resolve_per_spec_with_deps(
             if fpath is None:
                 download_errors.append(serr or f"sdist fetch failed for {name}")
                 continue
-            sdist_dep_followups.extend(_requires_dist_names(meta, version))
+            sdist_dep_followups.extend(_requires_dist_for(name, version, meta))
             continue
         # Has a wheel but the full transitive tree won't co-resolve
         # (ResolutionImpossible) -- typically a package the requirement file
@@ -1785,7 +1837,7 @@ def _resolve_per_spec_with_deps(
             # which --no-deps skips. Recover the declared deps so that class is
             # still scanned (each is fetched as a wheel or direct sdist below).
             if meta is not None:
-                sdist_dep_followups.extend(_requires_dist_names(meta, version))
+                sdist_dep_followups.extend(_requires_dist_for(name, version, meta))
             continue
         # --no-deps also failed: last-ditch sdist fetch at the pinned version.
         if meta is not None:
@@ -1796,15 +1848,21 @@ def _resolve_per_spec_with_deps(
             f"per-spec failed for {spec} (with-deps and --no-deps): " f"{nd.stderr.strip()[:240]}"
         )
 
-    # Recover the transitive deps of sdist-only packages (deduped, one level).
-    # `dep` carries the declared version specifier so a pinned version is fetched.
+    # Recover the transitive deps of sdist-only packages. A depth-bounded,
+    # deduped worklist so a wheel dep whose own child is sdist-only is itself
+    # fetched (--no-deps) and scanned -- not silently dropped -- and that child
+    # is then recovered in turn. `dep` carries the version specifier so a pinned
+    # version is fetched.
     seen: set[str] = set()
-    for dep in sdist_dep_followups:
+    worklist: list[tuple[str, int]] = [(d, 0) for d in sdist_dep_followups]
+    while worklist:
+        dep, depth = worklist.pop()
         dep_name = _extract_pkg_name(dep)
         key = _norm_pkg(dep_name)
         if key in seen:
             continue
         seen.add(key)
+        dep_ver = _spec_pin_version(dep)
         cmd = [
             sys.executable,
             "-m",
@@ -1822,13 +1880,41 @@ def _resolve_per_spec_with_deps(
             continue
         if proc.returncode == 0:
             continue
-        dep_ver = _spec_pin_version(dep)
         meta = _pypi_json(dep_name)
-        if meta is not None and not _release_has_wheel(meta, dep_ver):
+        if meta is None:
+            print(f"  [WARN] could not resolve indirect dep {dep}; skipping", file = sys.stderr)
+            continue
+        if not _release_has_wheel(meta, dep_ver):
             fpath, serr = _download_sdist_direct(dep_name, dep_ver, dest, meta = meta)
             if fpath is None:
                 print(f"  [WARN] could not fetch sdist dep {dep}: {serr}", file = sys.stderr)
-        else:
+            elif depth < _MAX_DEP_FOLLOWUP_DEPTH:
+                worklist.extend((d, depth + 1) for d in _requires_dist_for(dep_name, dep_ver, meta))
+            continue
+        # Wheel published but its tree won't co-resolve (a sdist-only child).
+        # Fetch the dep alone so it is scanned, then chase its own declared deps.
+        nd_cmd = [
+            sys.executable,
+            "-m",
+            "pip",
+            "download",
+            "--no-deps",
+            *_PIP_DOWNLOAD_PIN_FLAGS,
+            "--dest",
+            dest,
+            dep,
+        ]
+        try:
+            nd = subprocess.run(nd_cmd, capture_output = True, text = True, timeout = 180, env = env)
+        except subprocess.TimeoutExpired:
+            print(f"  [WARN] dep --no-deps timed out for {dep}", file = sys.stderr)
+            continue
+        if nd.returncode == 0:
+            if depth < _MAX_DEP_FOLLOWUP_DEPTH:
+                worklist.extend((d, depth + 1) for d in _requires_dist_for(dep_name, dep_ver, meta))
+            continue
+        fpath, _serr = _download_sdist_direct(dep_name, dep_ver, dest, meta = meta)
+        if fpath is None:
             print(f"  [WARN] could not resolve indirect dep {dep}; skipping", file = sys.stderr)
 
 
