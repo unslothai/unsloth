@@ -628,6 +628,50 @@ def patch_enable_input_require_grads():
     logger.info("Unsloth: Patched enable_input_require_grads for vision model compatibility")
 
 
+def patch_unsafe_trainer_rng_load():
+    """Force Trainer._load_rng_state to torch.load with weights_only=True
+    (CVE-2026-1839): blocks code execution from a malicious rng_state.pth when
+    resuming from an untrusted checkpoint. Wraps the method (vs reimplementing)
+    so it tracks transformers' own safe_globals() allowlist. No-op on torch
+    >= 2.6 (already the default) and transformers >= 5.0.0rc3 (already fixed)."""
+    if importlib.util.find_spec("transformers") is None:
+        return
+    try:
+        from transformers.trainer import Trainer
+    except Exception:
+        return
+
+    load_rng_state = getattr(Trainer, "_load_rng_state", None)
+    # Skip if missing or already wrapped (idempotent).
+    if load_rng_state is None or getattr(load_rng_state, "_unsloth_safe_rng_load", False):
+        return
+    # Skip if nothing to protect or already fixed upstream.
+    try:
+        source = inspect.getsource(load_rng_state)
+    except Exception:
+        return
+    if "torch.load" not in source or "weights_only" in source:
+        return
+
+    import torch
+
+    @functools.wraps(load_rng_state)
+    def _unsloth_safe_load_rng_state(self, checkpoint):
+        original = torch.load
+        def _safe_load(*args, **kwargs):
+            kwargs.setdefault("weights_only", True)  # force safe default, honor overrides
+            return original(*args, **kwargs)
+        torch.load = _safe_load
+        try:
+            return load_rng_state(self, checkpoint)
+        finally:
+            torch.load = original
+
+    _unsloth_safe_load_rng_state._unsloth_safe_rng_load = True
+    Trainer._load_rng_state = _unsloth_safe_load_rng_state
+    logger.info("Unsloth: Hardened Trainer._load_rng_state with weights_only=True (CVE-2026-1839).")
+
+
 def _is_custom_torch_build(raw_version_str):
     """Check if a raw version string indicates a custom or source build.
 
