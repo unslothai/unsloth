@@ -483,8 +483,7 @@ class TestExtraArgsMtpDetection:
         )
         # A later --spec-type still wins over an earlier --spec-default.
         assert (
-            _extra_args_requests_mtp(["--spec-default", "--spec-type", "draft-mtp"], env = {})
-            is True
+            _extra_args_requests_mtp(["--spec-default", "--spec-type", "draft-mtp"], env = {}) is True
         )
 
     def test_load_model_drafter_budget_precedence(self):
@@ -494,9 +493,7 @@ class TestExtraArgsMtpDetection:
         compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
         assert "_cli_draft_for_budget=_extra_args_mtp_draft_path(extra_args,env={})" in compact
         assert "_env_draft_for_budget=_extra_args_mtp_draft_path([],env=os.environ)" in compact
-        assert (
-            "_cli_draft_for_budgetor_studio_draft_for_budgetor_env_draft_for_budget" in compact
-        )
+        assert "_cli_draft_for_budgetor_studio_draft_for_budgetor_env_draft_for_budget" in compact
 
     def test_load_model_drops_cpu_offloaded_drafter_from_budget(self):
         # A drafter offloaded to CPU (--spec-draft-ngl 0 / --spec-draft-device
