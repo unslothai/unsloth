@@ -3612,7 +3612,9 @@ def _build_external_messages(
 
 
 async def _proxy_to_external_provider(
-    payload: ChatCompletionRequest, request: Request, current_subject: Optional[str] = None
+    payload: ChatCompletionRequest,
+    request: Request,
+    current_subject: Optional[str] = None,
 ) -> StreamingResponse:
     """
     Proxy a chat completion request to an external LLM provider.

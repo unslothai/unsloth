@@ -238,7 +238,12 @@ class ApiMonitor:
                 if subject is None or entry.subject == subject
             ]
 
-    def get(self, entry_id: str, *, subject: Optional[str] = None) -> Optional[dict[str, Any]]:
+    def get(
+        self,
+        entry_id: str,
+        *,
+        subject: Optional[str] = None,
+    ) -> Optional[dict[str, Any]]:
         with self._lock:
             entry = self._find_locked(entry_id)
             if entry is None:
