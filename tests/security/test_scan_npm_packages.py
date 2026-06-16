@@ -284,9 +284,11 @@ def test_strip_fails_open_on_unterminated_block_comment():
 def test_strip_only_applies_to_js_family():
     # A `//`-containing JSON/YAML string must be left intact (wrong lexer).
     PKG = snp.PackageEntry(
-        name = "x", version = "1.0.0",
+        name = "x",
+        version = "1.0.0",
         resolved = "https://registry.npmjs.org/x/-/x-1.0.0.tgz",
-        integrity = "sha512-z", lockfile_key = "node_modules/x",
+        integrity = "sha512-z",
+        lockfile_key = "node_modules/x",
     )
     # scan_text_blob strips for .js but not for .json.
     yaml_like = 'url: "http://h"  # a yaml comment, not JS\n'
@@ -302,9 +304,11 @@ def test_strip_only_applies_to_js_family():
 
 
 _PKG = snp.PackageEntry(
-    name = "x", version = "1.0.0",
+    name = "x",
+    version = "1.0.0",
     resolved = "https://registry.npmjs.org/x/-/x-1.0.0.tgz",
-    integrity = "sha512-z", lockfile_key = "node_modules/x",
+    integrity = "sha512-z",
+    lockfile_key = "node_modules/x",
 )
 _BLOB = "QWxhZGRpbg" * 240  # ~2.4 KiB base64-ish
 
@@ -341,7 +345,12 @@ def test_ioc_in_assigned_string_survives_stripping():
 # ---------------------------------------------------------------------------
 
 
-def _finding(pkg, fn, pattern, sev=snp.HIGH):
+def _finding(
+    pkg,
+    fn,
+    pattern,
+    sev = snp.HIGH,
+):
     return snp.Finding(severity = sev, package = pkg, filename = fn, pattern = pattern)
 
 
@@ -361,13 +370,22 @@ def test_baseline_key_is_version_stable():
 
 def test_baseline_suppresses_listed_but_not_new_pattern(tmp_path):
     bl = tmp_path / "bl.json"
-    bl.write_text(json.dumps({
-        "version": 1,
-        "entries": [
-            {"package": "aws-sdk", "file": "metadata.js",
-             "pattern": "cred-surface-host (outbound)", "severity": "HIGH"}
-        ],
-    }), encoding = "utf-8")
+    bl.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "entries": [
+                    {
+                        "package": "aws-sdk",
+                        "file": "metadata.js",
+                        "pattern": "cred-surface-host (outbound)",
+                        "severity": "HIGH",
+                    }
+                ],
+            }
+        ),
+        encoding = "utf-8",
+    )
     baseline = snp._load_baseline(str(bl))
 
     listed = _finding("aws-sdk@2.0.0", "aws-sdk/metadata.js", "cred-surface-host (outbound)")
@@ -383,7 +401,7 @@ def test_write_then_load_baseline_roundtrip(tmp_path):
     findings = [
         _finding("evil@1.0.0", "evil/a.js", "obfuscated-blob", snp.CRITICAL),
         _finding("evil@1.0.0", "evil/a.js", "obfuscated-blob", snp.CRITICAL),  # dup
-        _finding("noise@1.0.0", "noise/b.js", "js-env-token", snp.MEDIUM),     # below thresh
+        _finding("noise@1.0.0", "noise/b.js", "js-env-token", snp.MEDIUM),  # below thresh
     ]
     n = snp._write_baseline(str(bl), findings, snp._SEVERITY_RANK[snp.HIGH])
     assert n == 1  # dedup + MEDIUM excluded

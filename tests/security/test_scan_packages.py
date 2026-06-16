@@ -389,7 +389,9 @@ def test_baseline_suppresses_listed_but_not_new_check(tmp_path):
     assert suppressed == [listed] and active == []
 
     # A NEW kind of finding in the SAME file is a different check -> still active.
-    new_kind = _mk(sp.CRITICAL, "fastapi", "fastapi/routing.py", "Reverse shell / bind shell pattern")
+    new_kind = _mk(
+        sp.CRITICAL, "fastapi", "fastapi/routing.py", "Reverse shell / bind shell pattern"
+    )
     active2, suppressed2 = sp._partition_baseline([new_kind], baseline)
     assert active2 == [new_kind] and suppressed2 == []
 
@@ -421,7 +423,11 @@ def test_load_baseline_missing_file_is_empty():
 class _FakeResp:
     """Minimal urlopen() context-manager stand-in."""
 
-    def __init__(self, data: bytes = b"", status: int = 200):
+    def __init__(
+        self,
+        data: bytes = b"",
+        status: int = 200,
+    ):
         self._data = data
         self.status = status
 
@@ -439,7 +445,11 @@ def _f(packagetype: str, filename: str, url: str) -> dict:
     return {"packagetype": packagetype, "filename": filename, "url": url}
 
 
-def _meta(files: list[dict], requires=None, version: str = "1.0.0") -> dict:
+def _meta(
+    files: list[dict],
+    requires = None,
+    version: str = "1.0.0",
+) -> dict:
     return {
         "info": {"version": version, "requires_dist": requires or []},
         "urls": files,
@@ -477,7 +487,7 @@ def test_is_trusted_pypi_url_only_https_pypi():
 def test_requires_dist_skips_extras():
     meta = _meta(
         [],
-        requires=[
+        requires = [
             "numpy (>=1.20)",
             "torch ; extra == 'dev'",  # optional extra -> skipped
             "pyyaml>=5 ; python_version >= '3.8'",  # non-extra marker -> kept
@@ -491,24 +501,24 @@ def test_requires_dist_skips_extras():
 
 def test_download_sdist_direct_refuses_non_pypi_url(tmp_path):
     meta = _meta([_f("sdist", "x-1.0.0.tar.gz", "https://evil.example/x.tar.gz")])
-    fpath, err = sp._download_sdist_direct("x", "1.0.0", str(tmp_path), meta=meta)
+    fpath, err = sp._download_sdist_direct("x", "1.0.0", str(tmp_path), meta = meta)
     assert fpath is None and "non-PyPI" in err
     assert list(tmp_path.iterdir()) == []  # nothing was written
 
 
 def test_download_sdist_direct_no_sdist_published(tmp_path):
     meta = _meta([_f("bdist_wheel", "x.whl", "https://files.pythonhosted.org/x.whl")])
-    fpath, err = sp._download_sdist_direct("x", None, str(tmp_path), meta=meta)
+    fpath, err = sp._download_sdist_direct("x", None, str(tmp_path), meta = meta)
     assert fpath is None and "no sdist" in err
 
 
 def test_download_sdist_direct_writes_and_preserves_suffix(tmp_path, monkeypatch):
     payload = b"\x1f\x8b" + b"fake-tar-gz-bytes"
-    monkeypatch.setattr(sp.urllib.request, "urlopen", lambda req, timeout=0: _FakeResp(payload))
+    monkeypatch.setattr(sp.urllib.request, "urlopen", lambda req, timeout = 0: _FakeResp(payload))
     meta = _meta(
         [_f("sdist", "langid-1.1.6.tar.gz", "https://files.pythonhosted.org/langid-1.1.6.tar.gz")]
     )
-    fpath, err = sp._download_sdist_direct("langid", "1.1.6", str(tmp_path), meta=meta)
+    fpath, err = sp._download_sdist_direct("langid", "1.1.6", str(tmp_path), meta = meta)
     assert err is None and fpath is not None
     assert fpath.endswith(".tar.gz")  # suffix preserved -> archive reader picks format
     assert Path(fpath).read_bytes() == payload
@@ -516,9 +526,9 @@ def test_download_sdist_direct_writes_and_preserves_suffix(tmp_path, monkeypatch
 
 def test_download_sdist_direct_size_cap(tmp_path, monkeypatch):
     monkeypatch.setattr(sp, "_MAX_SDIST_BYTES", 8)
-    monkeypatch.setattr(sp.urllib.request, "urlopen", lambda req, timeout=0: _FakeResp(b"x" * 100))
+    monkeypatch.setattr(sp.urllib.request, "urlopen", lambda req, timeout = 0: _FakeResp(b"x" * 100))
     meta = _meta([_f("sdist", "x-1.0.0.tar.gz", "https://files.pythonhosted.org/x.tar.gz")])
-    fpath, err = sp._download_sdist_direct("x", "1.0.0", str(tmp_path), meta=meta)
+    fpath, err = sp._download_sdist_direct("x", "1.0.0", str(tmp_path), meta = meta)
     assert fpath is None and "cap" in err
 
 
@@ -531,7 +541,8 @@ def test_per_spec_genuine_failure_is_recorded_error(tmp_path, monkeypatch):
 
     monkeypatch.setattr(sp.subprocess, "run", lambda *a, **k: _Proc())
     monkeypatch.setattr(
-        sp, "_pypi_json",
+        sp,
+        "_pypi_json",
         lambda name: _meta([_f("bdist_wheel", "x.whl", "https://files.pythonhosted.org/x.whl")]),
     )
     errors: list[str] = []
@@ -547,12 +558,15 @@ def test_per_spec_sdist_only_is_not_error(tmp_path, monkeypatch):
 
     monkeypatch.setattr(sp.subprocess, "run", lambda *a, **k: _Proc())
     monkeypatch.setattr(
-        sp, "_pypi_json",
+        sp,
+        "_pypi_json",
         lambda name: _meta(
             [_f("sdist", "x-1.0.0.tar.gz", "https://files.pythonhosted.org/x-1.0.0.tar.gz")]
         ),
     )
-    monkeypatch.setattr(sp.urllib.request, "urlopen", lambda req, timeout=0: _FakeResp(b"\x1f\x8bdata"))
+    monkeypatch.setattr(
+        sp.urllib.request, "urlopen", lambda req, timeout = 0: _FakeResp(b"\x1f\x8bdata")
+    )
     errors: list[str] = []
     sp._resolve_per_spec_with_deps(["x==1.0.0"], str(tmp_path), {}, errors)
     assert errors == []  # sdist-only handled, not an exit-2 failure

@@ -521,9 +521,7 @@ def check_pth_file(content: str, filename: str, package: str) -> list[Finding]:
 # A STRING after one of these tokens (and before a NEWLINE) is a bare
 # docstring/doctest/prose statement -- the dominant FP source -- so we blank it.
 # A string after `=` or `(` is real code and is never blanked.
-_LINE_START_TOKENS = frozenset(
-    {tokenize.NEWLINE, tokenize.NL, tokenize.INDENT, tokenize.DEDENT}
-)
+_LINE_START_TOKENS = frozenset({tokenize.NEWLINE, tokenize.NL, tokenize.INDENT, tokenize.DEDENT})
 
 
 def _strip_noncode(content: str) -> str:
@@ -570,7 +568,7 @@ def _strip_noncode(content: str) -> str:
     if not spans:
         return content
 
-    buf = content.splitlines(keepends=True)
+    buf = content.splitlines(keepends = True)
     for srow, scol, erow, ecol in spans:
         for row in range(srow, erow + 1):
             line = buf[row - 1]
@@ -1060,7 +1058,7 @@ def _extract_evidence(
     m = pattern.search(content)
     if m:
         line_no = content.count("\n", 0, m.start()) + 1
-        snippet = (lines[line_no - 1].strip() if line_no - 1 < len(lines) else "")
+        snippet = lines[line_no - 1].strip() if line_no - 1 < len(lines) else ""
         if len(snippet) > 160:
             snippet = snippet[:160] + "..."
         return f"L{line_no}: {snippet}" if snippet else f"L{line_no}: <multiline match>"
@@ -1518,9 +1516,7 @@ _SDIST_DOWNLOAD_TIMEOUT = 180
 # Never fetch an archive larger than we would be willing to scan (iter_archive_files cap).
 _MAX_SDIST_BYTES = HARD_MAX_TOTAL_BYTES
 # Direct sdist bytes only ever come from PyPI's own CDN; refuse anything else.
-_TRUSTED_PYPI_HOSTS = frozenset(
-    {"files.pythonhosted.org", "pypi.org", "pypi.python.org"}
-)
+_TRUSTED_PYPI_HOSTS = frozenset({"files.pythonhosted.org", "pypi.org", "pypi.python.org"})
 
 
 def _spec_pin_version(spec: str) -> str | None:
@@ -1554,9 +1550,7 @@ def _release_files(meta: dict, version: str | None) -> list[dict]:
 
 def _release_has_wheel(meta: dict, version: str | None) -> bool:
     """True if the (pinned or latest) release publishes any bdist_wheel."""
-    return any(
-        f.get("packagetype") == "bdist_wheel" for f in _release_files(meta, version)
-    )
+    return any(f.get("packagetype") == "bdist_wheel" for f in _release_files(meta, version))
 
 
 def _is_trusted_pypi_url(url: str) -> bool:
@@ -1638,18 +1632,24 @@ def _download_sdist_direct(
 
 
 def _pip_download_with_deps(
-    specs: list[str], dest: str, env: dict, *, timeout: int = 600
+    specs: list[str],
+    dest: str,
+    env: dict,
+    *,
+    timeout: int = 600,
 ) -> tuple[int, str]:
     """One `pip download --with-deps --only-binary :all:` call. Returns (rc, stderr)."""
     cmd = [
-        sys.executable, "-m", "pip", "download",
+        sys.executable,
+        "-m",
+        "pip",
+        "download",
         *_PIP_DOWNLOAD_PIN_FLAGS,
-        "--dest", dest,
+        "--dest",
+        dest,
     ] + list(specs)
     try:
-        proc = subprocess.run(
-            cmd, capture_output = True, text = True, timeout = timeout, env = env
-        )
+        proc = subprocess.run(cmd, capture_output = True, text = True, timeout = timeout, env = env)
         return proc.returncode, proc.stderr or ""
     except subprocess.TimeoutExpired:
         return 124, "pip download (with deps) timed out"
@@ -1679,14 +1679,17 @@ def _resolve_per_spec_with_deps(
         name = _extract_pkg_name(spec)
         version = _spec_pin_version(spec)
         cmd = [
-            sys.executable, "-m", "pip", "download",
+            sys.executable,
+            "-m",
+            "pip",
+            "download",
             *_PIP_DOWNLOAD_PIN_FLAGS,
-            "--dest", dest, spec,
+            "--dest",
+            dest,
+            spec,
         ]
         try:
-            proc = subprocess.run(
-                cmd, capture_output = True, text = True, timeout = 300, env = env
-            )
+            proc = subprocess.run(cmd, capture_output = True, text = True, timeout = 300, env = env)
         except subprocess.TimeoutExpired:
             download_errors.append(f"per-spec --with-deps timed out for {spec}")
             continue
@@ -1707,14 +1710,18 @@ def _resolve_per_spec_with_deps(
         # is still scanned; its conflicting deps are out of scope here (the file
         # excludes them on purpose). Only a genuine fetch failure is an error.
         nd_cmd = [
-            sys.executable, "-m", "pip", "download", "--no-deps",
+            sys.executable,
+            "-m",
+            "pip",
+            "download",
+            "--no-deps",
             *_PIP_DOWNLOAD_PIN_FLAGS,
-            "--dest", dest, spec,
+            "--dest",
+            dest,
+            spec,
         ]
         try:
-            nd = subprocess.run(
-                nd_cmd, capture_output = True, text = True, timeout = 180, env = env
-            )
+            nd = subprocess.run(nd_cmd, capture_output = True, text = True, timeout = 180, env = env)
         except subprocess.TimeoutExpired:
             download_errors.append(f"per-spec --no-deps timed out for {spec}")
             continue
@@ -1731,8 +1738,7 @@ def _resolve_per_spec_with_deps(
             if fpath is not None:
                 continue
         download_errors.append(
-            f"per-spec failed for {spec} (with-deps and --no-deps): "
-            f"{nd.stderr.strip()[:240]}"
+            f"per-spec failed for {spec} (with-deps and --no-deps): " f"{nd.stderr.strip()[:240]}"
         )
 
     # Recover the transitive deps of sdist-only packages (deduped, one level).
@@ -1743,14 +1749,17 @@ def _resolve_per_spec_with_deps(
             continue
         seen.add(key)
         cmd = [
-            sys.executable, "-m", "pip", "download",
+            sys.executable,
+            "-m",
+            "pip",
+            "download",
             *_PIP_DOWNLOAD_PIN_FLAGS,
-            "--dest", dest, dep,
+            "--dest",
+            dest,
+            dep,
         ]
         try:
-            proc = subprocess.run(
-                cmd, capture_output = True, text = True, timeout = 300, env = env
-            )
+            proc = subprocess.run(cmd, capture_output = True, text = True, timeout = 300, env = env)
         except subprocess.TimeoutExpired:
             print(f"  [WARN] dep download timed out for {dep}", file = sys.stderr)
             continue
@@ -1816,14 +1825,18 @@ def download_packages(
             pkg_dir = os.path.join(dest, safe_name)
             os.makedirs(pkg_dir, exist_ok = True)
             cmd = [
-                sys.executable, "-m", "pip", "download", "--no-deps",
+                sys.executable,
+                "-m",
+                "pip",
+                "download",
+                "--no-deps",
                 *_PIP_DOWNLOAD_PIN_FLAGS,
-                "--dest", pkg_dir, spec,
+                "--dest",
+                pkg_dir,
+                spec,
             ]
             try:
-                proc = subprocess.run(
-                    cmd, capture_output = True, text = True, timeout = 120, env = env
-                )
+                proc = subprocess.run(cmd, capture_output = True, text = True, timeout = 120, env = env)
             except subprocess.TimeoutExpired:
                 download_errors.append(f"pip download timed out for {spec}")
                 continue
@@ -2329,19 +2342,17 @@ def _finding_key(f: Finding) -> tuple[str, str, str]:
 def _load_baseline(path: str) -> set[tuple[str, str, str]]:
     """Load an allowlist JSON into a set of match keys. Missing file -> empty."""
     try:
-        with open(path, "r", encoding="utf-8") as fh:
+        with open(path, "r", encoding = "utf-8") as fh:
             data = json.load(fh)
     except FileNotFoundError:
         return set()
     except (OSError, json.JSONDecodeError) as exc:
-        print(f"  [WARN] could not read baseline {path}: {exc}", file=sys.stderr)
+        print(f"  [WARN] could not read baseline {path}: {exc}", file = sys.stderr)
         return set()
     keys: set[tuple[str, str, str]] = set()
     for e in data.get("entries", []):
         try:
-            keys.add(
-                (_norm_pkg(e["package"]), os.path.basename(e["file"]), e["check"])
-            )
+            keys.add((_norm_pkg(e["package"]), os.path.basename(e["file"]), e["check"]))
         except (KeyError, TypeError):
             continue
     return keys
@@ -2351,7 +2362,7 @@ def _write_baseline(path: str, findings: list[Finding]) -> None:
     """Persist CRITICAL/HIGH findings as an allowlist for human triage."""
     entries = []
     seen: set[tuple[str, str, str]] = set()
-    for f in sorted(findings, key=lambda f: SEVERITY_ORDER.get(f.severity, 99)):
+    for f in sorted(findings, key = lambda f: SEVERITY_ORDER.get(f.severity, 99)):
         if f.severity not in (CRITICAL, HIGH):
             continue
         key = _finding_key(f)
@@ -2377,8 +2388,8 @@ def _write_baseline(path: str, findings: list[Finding]) -> None:
         "version": 1,
         "entries": entries,
     }
-    with open(path, "w", encoding="utf-8") as fh:
-        json.dump(doc, fh, indent=2, sort_keys=False)
+    with open(path, "w", encoding = "utf-8") as fh:
+        json.dump(doc, fh, indent = 2, sort_keys = False)
         fh.write("\n")
     print(f"  Wrote {len(entries)} baseline entr(y/ies) to {path}")
 

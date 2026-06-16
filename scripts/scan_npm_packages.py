@@ -929,13 +929,23 @@ _JS_FAMILY_SUFFIXES = (".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx")
 # Keywords after which a `/` begins a regex literal (not division).
 _REGEX_PRECEDING_KEYWORDS = frozenset(
     {
-        "return", "typeof", "instanceof", "in", "of", "new", "delete",
-        "void", "throw", "yield", "await", "do", "else", "case",
+        "return",
+        "typeof",
+        "instanceof",
+        "in",
+        "of",
+        "new",
+        "delete",
+        "void",
+        "throw",
+        "yield",
+        "await",
+        "do",
+        "else",
+        "case",
     }
 )
-_IDENT_CHARS = frozenset(
-    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_$"
-)
+_IDENT_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_$")
 
 
 def _slash_is_regex(prev_tok: str) -> bool:
@@ -999,60 +1009,102 @@ def _strip_js_noncode(text: str) -> str:
                     _blank(start, i)
                     continue
                 if c == "'":
-                    state = "sq"; i += 1; continue
+                    state = "sq"
+                    i += 1
+                    continue
                 if c == '"':
-                    state = "dq"; i += 1; continue
+                    state = "dq"
+                    i += 1
+                    continue
                 if c == "`":
-                    state = "tmpl"; i += 1; continue
+                    state = "tmpl"
+                    i += 1
+                    continue
                 if c == "/":
                     if _slash_is_regex(prev_tok):
-                        state = "regex"; i += 1; continue
-                    prev_tok = "/"; i += 1; continue
+                        state = "regex"
+                        i += 1
+                        continue
+                    prev_tok = "/"
+                    i += 1
+                    continue
                 if c.isspace():
-                    i += 1; continue
+                    i += 1
+                    continue
                 if c in _IDENT_CHARS:
                     j = i
                     while j < n and text[j] in _IDENT_CHARS:
                         j += 1
-                    prev_tok = text[i:j]; i = j; continue
+                    prev_tok = text[i:j]
+                    i = j
+                    continue
                 if c == "}" and tmpl_stack:
-                    state = tmpl_stack.pop(); i += 1; continue
-                prev_tok = c; i += 1; continue
+                    state = tmpl_stack.pop()
+                    i += 1
+                    continue
+                prev_tok = c
+                i += 1
+                continue
             elif state in ("sq", "dq"):
                 q = "'" if state == "sq" else '"'
                 if c == "\\":
-                    i += 2; continue
+                    i += 2
+                    continue
                 if c == q:
-                    state = "code"; prev_tok = "_v"; i += 1; continue
+                    state = "code"
+                    prev_tok = "_v"
+                    i += 1
+                    continue
                 if c in nl:
                     return text  # unterminated string literal
-                i += 1; continue
+                i += 1
+                continue
             elif state == "tmpl":
                 if c == "\\":
-                    i += 2; continue
+                    i += 2
+                    continue
                 if c == "`":
-                    state = "code"; prev_tok = "_v"; i += 1; continue
+                    state = "code"
+                    prev_tok = "_v"
+                    i += 1
+                    continue
                 if c == "$" and nxt == "{":
-                    tmpl_stack.append("tmpl"); state = "code"; prev_tok = "{"; i += 2; continue
-                i += 1; continue
+                    tmpl_stack.append("tmpl")
+                    state = "code"
+                    prev_tok = "{"
+                    i += 2
+                    continue
+                i += 1
+                continue
             elif state == "regex":
                 if c == "\\":
-                    i += 2; continue
+                    i += 2
+                    continue
                 if c == "[":
-                    state = "regex_cc"; i += 1; continue
+                    state = "regex_cc"
+                    i += 1
+                    continue
                 if c == "/":
-                    state = "code"; prev_tok = "_v"; i += 1; continue
+                    state = "code"
+                    prev_tok = "_v"
+                    i += 1
+                    continue
                 if c in nl:
                     return text  # unterminated regex literal
-                i += 1; continue
+                i += 1
+                continue
             elif state == "regex_cc":
                 if c == "\\":
-                    i += 2; continue
+                    i += 2
+                    continue
                 if c == "]":
-                    state = "regex"; i += 1; continue
+                    state = "regex"
+                    i += 1
+                    continue
                 if c in nl:
                     return text
-                i += 1; continue
+                i += 1
+                continue
             else:
                 return text
         if state != "code" or tmpl_stack:
@@ -1399,9 +1451,7 @@ def scan_one(pkg: PackageEntry, workspace: Path) -> tuple[list[Finding], str | N
 # Mirrors scan_packages.py. Regenerate with ``--write-baseline``.
 # ─────────────────────────────────────────────────────────────────────
 
-_DEFAULT_BASELINE_PATH = str(
-    Path(__file__).resolve().parent / "scan_npm_packages_baseline.json"
-)
+_DEFAULT_BASELINE_PATH = str(Path(__file__).resolve().parent / "scan_npm_packages_baseline.json")
 
 
 def _norm_pkg_name(display: str) -> str:
@@ -1436,9 +1486,7 @@ def _load_baseline(path: str) -> set[tuple[str, str, str]]:
     keys: set[tuple[str, str, str]] = set()
     for e in data.get("entries", []):
         try:
-            keys.add(
-                (_norm_pkg_name(e["package"]), os.path.basename(e["file"]), e["pattern"])
-            )
+            keys.add((_norm_pkg_name(e["package"]), os.path.basename(e["file"]), e["pattern"]))
         except (KeyError, TypeError):
             continue
     return keys
