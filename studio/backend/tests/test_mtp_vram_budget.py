@@ -67,6 +67,7 @@ from core.inference.llama_cpp import (  # noqa: E402
     _CTX_FIT_VRAM_FRACTION,
     LlamaCppBackend,
     _extra_args_draft_cache_types,
+    _extra_args_draft_offloaded_to_cpu,
     _extra_args_mtp_draft_path,
     _extra_args_n_ubatch,
     _extra_args_requests_mtp,
@@ -453,8 +454,49 @@ class TestExtraArgsMtpDetection:
         # formatter applies to the call (pre-commit black wraps long lines).
         compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
         assert "_user_draft_via_extras" in compact
-        assert "_extra_args_requests_separate_draft(extra_args)" in compact
+        # called with extra_args (an env kwarg may follow); prefix match stays
+        # robust to that and to any formatter line-wrapping.
+        assert "_extra_args_requests_separate_draft(extra_args" in compact
         assert "or_user_draft_via_extras" in compact  # OR'd into the reserve gate
+
+    def test_load_model_gates_env_spec_type_on_off_mode(self):
+        # LLAMA_ARG_SPEC_TYPE only reaches the child when Studio emits no spec
+        # flag (UI mode "off", no user --spec-type); otherwise the emitted
+        # --spec-type/--spec-default overrides the env, so the reserve must not
+        # consult it or a stale MTP env over-reserves (Finding F3). Whitespace-
+        # stripped so the check survives formatter line-wrapping.
+        compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
+        assert '_mtp_canonical=="off"' in compact  # the env-reaches-child gate
+        assert "_extra_args_requests_mtp(extra_args,env=_spec_env)" in compact
+
+    def test_load_model_drops_cpu_offloaded_drafter_from_budget(self):
+        # A drafter offloaded to CPU (--spec-draft-ngl 0 / --spec-draft-device
+        # none) consumes no GPU, so it must be dropped from the budget and get no
+        # flat reserve either (Finding F2).
+        compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
+        assert "_draft_on_cpu=_extra_args_draft_offloaded_to_cpu(extra_args)" in compact
+        assert "if_draft_on_cpu:_mtp_draft_for_budget=None" in compact
+        assert "andnot_draft_on_cpu" in compact  # excluded from the flat reserve
+
+    @pytest.mark.parametrize(
+        "args,expected",
+        [
+            (["--spec-draft-ngl", "0"], True),
+            (["-ngld", "0"], True),
+            (["--spec-draft-ngl=0"], True),
+            (["--n-gpu-layers-draft", "0"], True),
+            (["--spec-draft-ngl", "20"], False),
+            (["--spec-draft-device", "none"], True),
+            (["--spec-draft-device", "CPU"], True),
+            (["-devd", "cpu,none"], True),
+            (["--spec-draft-device", "CUDA0"], False),
+            (["--spec-draft-device", "CUDA0,CPU"], False),  # any GPU -> on GPU
+            (["-c", "4096"], False),
+            (None, False),
+        ],
+    )
+    def test_draft_offloaded_to_cpu(self, args, expected):
+        assert _extra_args_draft_offloaded_to_cpu(args) is expected
 
     @pytest.mark.parametrize(
         "args,expected",

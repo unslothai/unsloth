@@ -826,6 +826,31 @@ def _extra_args_draft_cache_types(
     return k_type, v_type
 
 
+def _extra_args_draft_offloaded_to_cpu(extra_args: Optional[Iterable[str]]) -> bool:
+    """True if extras put the SEPARATE draft model on CPU, so its weights + KV do
+    not consume GPU VRAM and the budget must not charge them: ``--spec-draft-ngl 0``
+    (no draft layers on GPU) or ``--spec-draft-device`` naming only CPU/none. An
+    embedded MTP head (Qwen) is part of the main model and follows the main -ngl,
+    so these draft-only flags do not move it off the GPU."""
+    ngl_flags = {"--spec-draft-ngl", "-ngld", "--gpu-layers-draft", "--n-gpu-layers-draft"}
+    dev_flags = {"--spec-draft-device", "-devd", "--device-draft"}
+    args = [str(a) for a in extra_args] if extra_args else []
+    for i, raw in enumerate(args):
+        flag, eq, inline = raw.partition("=")
+        value = inline if eq else (args[i + 1] if i + 1 < len(args) else "")
+        if flag in ngl_flags:
+            try:
+                if int(value) == 0:
+                    return True
+            except (TypeError, ValueError):
+                continue
+        elif flag in dev_flags:
+            devs = [d.strip().lower() for d in value.split(",") if d.strip()]
+            if devs and all(d in ("cpu", "none") for d in devs):
+                return True
+    return False
+
+
 def _extra_args_n_ubatch(
     extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
 ) -> Optional[int]:
@@ -2177,6 +2202,7 @@ class LlamaCppBackend:
         gpus: list[tuple[int, int]],
         usable_fraction: Optional[float] = None,
         total_by_idx: Optional[dict[int, int]] = None,
+        per_device_overhead_bytes: int = 0,
     ) -> tuple[Optional[list[int]], bool]:
         """Pick GPU(s) for a model from estimated VRAM and free memory.
 
@@ -2187,6 +2213,10 @@ class LlamaCppBackend:
         ``total_by_idx`` maps gpu index -> total VRAM (MiB); when given, the
         headroom is an ABSOLUTE ``(1 - fraction) * total`` per GPU (so it does
         not shrink as the GPU fills) instead of a fraction of free.
+        ``per_device_overhead_bytes`` is the fixed cost a layer split adds on
+        every GPU beyond the first (CUDA context + per-device scratch); a k-GPU
+        pin must hold ``model + (k-1) * overhead`` or it can OOM a device after
+        being pinned with -ngl -1 (no --fit fallback). A single-GPU fit adds none.
 
         Returns (gpu_indices, use_fit):
           - ([1], False)       fits on 1 GPU at the headroom threshold
@@ -2217,13 +2247,15 @@ class LlamaCppBackend:
         if _usable(ranked[0][0], ranked[0][1]) >= model_size_mib:
             return [ranked[0][0]], False
 
-        # Try N GPUs (accumulate usable memory from most-free)
+        # Try N GPUs (accumulate usable memory from most-free). Each GPU beyond
+        # the first adds a fixed per-device overhead the pooled budget must hold.
+        overhead_mib = per_device_overhead_bytes / (1024 * 1024)
         cumulative = 0.0
         selected = []
         for idx, free_mib in ranked:
             selected.append(idx)
             cumulative += _usable(idx, free_mib)
-            if cumulative >= model_size_mib:
+            if cumulative >= model_size_mib + (len(selected) - 1) * overhead_mib:
                 return sorted(selected), False
 
         # Too large even for all GPUs; let --fit handle it
@@ -4325,13 +4357,25 @@ class LlamaCppBackend:
                         and _mtp_size_for_fit < _MTP_MIN_SIZE_B
                         and not bool(mtp_draft_path)
                     )
+                    # llama-server's CLI args override env (last/CLI wins), and
+                    # _build_speculative_flags emits a --spec-type/--spec-default for
+                    # every mode except "off". So LLAMA_ARG_SPEC_TYPE only reaches the
+                    # child when neither extras nor Studio emit a spec flag: mode "off"
+                    # with no user --spec-type. Consult the env for the reserve only
+                    # then; otherwise the emitted flag decides and a stale MTP env
+                    # would over-reserve (shrink context / pick extra GPUs).
+                    _spec_env: Mapping[str, str] = (
+                        os.environ
+                        if (not _extra_args_set_spec_type(extra_args) and _mtp_canonical == "off")
+                        else {}
+                    )
                     # Extras can run MTP even when Studio suppresses its own emission.
-                    _user_mtp_via_extras = _extra_args_requests_mtp(extra_args)
+                    _user_mtp_via_extras = _extra_args_requests_mtp(extra_args, env = _spec_env)
                     # A non-MTP model-based draft mode (draft-simple/draft-eagle3) in
                     # extras also loads a separate draft model that needs reserving;
                     # engage only when extras actually name a drafter for it.
                     _user_draft_via_extras = _extra_args_requests_separate_draft(
-                        extra_args
+                        extra_args, env = _spec_env
                     ) and bool(_extra_args_mtp_draft_path(extra_args))
                     # Mirror _build_speculative_flags: reserve only for MTP the launch
                     # resolver will actually emit (needs a head/drafter and a binary
@@ -4373,6 +4417,13 @@ class LlamaCppBackend:
                     # already in model_size). A user --model-draft in extras wins at
                     # launch (last-wins), so size it, not Studio's auto drafter.
                     _mtp_draft_for_budget = _extra_args_mtp_draft_path(extra_args) or mtp_draft_path
+                    # A user who offloads the separate drafter to CPU
+                    # (--spec-draft-ngl 0 / --spec-draft-device none) keeps its
+                    # weights+KV off the GPU, so drop it from the budget. An embedded
+                    # head (if any) is in the main model and unaffected.
+                    _draft_on_cpu = _extra_args_draft_offloaded_to_cpu(extra_args)
+                    if _draft_on_cpu:
+                        _mtp_draft_for_budget = None
                     _mtp_draft_weights = 0
                     if _mtp_draft_for_budget:
                         try:
@@ -4463,9 +4514,12 @@ class LlamaCppBackend:
                     # byte-accurate overhead (mtp_overhead_fn) the reserve is
                     # added to the totals per candidate context instead, so the
                     # flat fraction applies only as the dims-unavailable fallback.
+                    # A drafter offloaded to CPU consumes no GPU, so it gets no
+                    # flat reserve either (an embedded head would have produced a
+                    # byte-accurate mtp_overhead_fn and skipped this branch).
                     _flat_mtp_reserve = (
                         _MTP_VRAM_RESERVE_FRAC
-                        if (_mtp_will_engage and mtp_overhead_fn is None)
+                        if (_mtp_will_engage and mtp_overhead_fn is None and not _draft_on_cpu)
                         else 0.0
                     )
                     _pin_fraction = self._GPU_PIN_VRAM_FRACTION - _flat_mtp_reserve
@@ -4638,6 +4692,7 @@ class LlamaCppBackend:
                                 gpus,
                                 usable_fraction = _pin_fraction,
                                 total_by_idx = total_by_idx,
+                                per_device_overhead_bytes = _pipeline_overhead_bytes,
                             )
                             # No silent shrink: effective_ctx stays == requested_ctx.
                         else:
@@ -4716,6 +4771,7 @@ class LlamaCppBackend:
                             gpus,
                             usable_fraction = _pin_fraction,
                             total_by_idx = total_by_idx,
+                            per_device_overhead_bytes = _pipeline_overhead_bytes,
                         )
                         if use_fit and not explicit_ctx:
                             # Weights don't fit on any subset; default UI to 4096
