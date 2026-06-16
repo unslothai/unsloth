@@ -743,6 +743,50 @@ class TestExtraArgsMtpDetection:
         assert "split_mode_overrideisNone" in compact
         assert "_env_split_mode_is_tensor()" in compact
 
+    def test_load_model_does_not_emit_env_only_cache_type(self):
+        # Cluster C: an env-only (budget) cache type must not be re-emitted as
+        # --cache-type flags (that would rewrite an asymmetric K/V env). Emission
+        # is guarded by `not _cache_type_from_env`, set when the value came from
+        # _env_main_cache_type_for_budget(). Whitespace-stripped for formatter.
+        compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
+        assert "cache_type_kv=_env_main_cache_type_for_budget()" in compact
+        assert "_cache_type_from_env=cache_type_kvisnotNone" in compact
+        assert "andnot_cache_type_from_env" in compact
+
+    def test_load_model_clears_inherited_split_mode_on_layer(self):
+        # Cluster A: when the final decision is layer split, an inherited
+        # non-layer LLAMA_ARG_SPLIT_MODE (and paired LLAMA_ARG_TENSOR_SPLIT) must
+        # be popped from the child env so the child cannot run tensor/row/none
+        # against Studio's layer budget. Whitespace-stripped for formatter.
+        compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
+        assert 'env.get("LLAMA_ARG_SPLIT_MODE")' in compact
+        assert '_inherited_sm!="layer"' in compact
+        assert 'env.pop("LLAMA_ARG_SPLIT_MODE",None)' in compact
+        assert 'env.pop("LLAMA_ARG_TENSOR_SPLIT",None)' in compact
+
+    def test_load_model_clears_quantized_kv_env_for_tensor(self):
+        # Cluster B: tensor mode aborts on quantized KV. An inherited quantized
+        # LLAMA_ARG_CACHE_TYPE_K/_V must be popped from the child env so it cannot
+        # crash the tensor child (and matches the tensor-safe budget).
+        # Whitespace-stripped for formatter.
+        compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
+        assert '("LLAMA_ARG_CACHE_TYPE_K","LLAMA_ARG_CACHE_TYPE_V")' in compact
+        assert "_ct_rawnotinself._TENSOR_PARALLEL_KV_TYPES" in compact
+        assert "env.pop(_ct_var,None)" in compact
+
+    def test_pool_budget_sums_per_gpu_usable(self):
+        # Finding #1: the multi-GPU pooled budget must sum each GPU's own usable
+        # budget (so an unknown-total GPU gets the free*frac cushion) rather than
+        # pooling free and total separately. The fit calls pass the precomputed
+        # budget as an absolute (budget_frac=1.0, total_mib=None) so fit and check
+        # agree. Whitespace-stripped for formatter.
+        compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
+        assert "def_pool_budget_mib(subset,frac):" in compact
+        assert "sum(max(0.0,_gpu_usable(g,frac))forginsubset)" in compact
+        # No revert to the pooled free/total form.
+        assert "def_pool_total(" not in compact
+        assert "budget_frac=1.0" in compact
+
 
 # ---------------------------------------------------------------------------
 # Regression: the reported Qwen3.6-27B MTP / 24 GB scenario

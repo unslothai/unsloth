@@ -4310,14 +4310,19 @@ class LlamaCppBackend:
                 requested_ctx = resolve_requested_ctx(extra_args, n_ctx)
                 cache_override = parse_cache_override(extra_args)
                 cache_type_kv = resolve_cache_type_kv(extra_args, cache_type_kv)
+                _cache_type_from_env = False
                 if cache_type_kv is None:
                     # Neither param nor extras set the main KV type, so Studio
                     # emits no --cache-type and the child inherits
                     # LLAMA_ARG_CACHE_TYPE_K/_V. A heavier env type (f32) would
-                    # otherwise be budgeted as the f16 default and under-reserved;
-                    # adopt it so the reserve matches the child (the launch below
-                    # re-emits it, keeping child and budget byte-consistent).
+                    # otherwise be budgeted as the f16 default and under-reserved,
+                    # so adopt it for the reserve only. The launch does NOT re-emit
+                    # it: the env already reaches the child, and re-emitting a
+                    # single value would rewrite an asymmetric K/V env (e.g. K=f32,
+                    # V=f16) into symmetric flags. _cache_type_from_env keeps this
+                    # budget-only value out of the emitted --cache-type flags.
                     cache_type_kv = _env_main_cache_type_for_budget()
+                    _cache_type_from_env = cache_type_kv is not None
                 # A user --split-mode in extras last-wins-overrides the
                 # toggle, so reconcile it back into tensor_parallel state.
                 split_mode_override = parse_split_mode_override(extra_args)
@@ -4402,9 +4407,6 @@ class LlamaCppBackend:
                     gpus = [(idx, free) for idx, free, _t in _gpu_mem]
                     total_by_idx = {idx: total for idx, _f, total in _gpu_mem}
 
-                    def _pool_total(subset):
-                        return sum(total_by_idx.get(idx, 0) for idx, _ in subset)
-
                     def _gpu_usable(g, frac = _CTX_FIT_VRAM_FRACTION):
                         # Per-GPU usable budget for ranking: free - (1-frac)*total
                         # (a more-used big card can rank below a less-used small one).
@@ -4418,12 +4420,13 @@ class LlamaCppBackend:
                             return free - (1.0 - frac) * t
                         return free * frac
 
-                    def _pool_budget_mib(pool_free, pool_total, frac):
-                        # Cap pooled occupancy at ``frac`` of pooled total when
-                        # totals are known; else fall back to a fraction of free.
-                        if pool_total > 0:
-                            return pool_free - (1.0 - frac) * pool_total
-                        return pool_free * frac
+                    def _pool_budget_mib(subset, frac):
+                        # Sum each GPU's own usable budget (total-based when its
+                        # total is known, else free*frac). Pooling free and total
+                        # separately let an unknown-total GPU (MIG/vGPU/N/A) add its
+                        # full free with no cushion when mixed with known-total
+                        # GPUs, over-advertising the pool by ~(1-frac)*free there.
+                        return sum(max(0.0, _gpu_usable(g, frac)) for g in subset)
 
                     # Resolve effective context: 0 means let llama-server use
                     # the model's native length. Only expand to a known native
@@ -4801,28 +4804,30 @@ class LlamaCppBackend:
                                 reverse = True,
                             )
                             best_cap = 0
+                            _cap_fraction = _CTX_FIT_VRAM_FRACTION - _flat_mtp_reserve
                             for n_gpus in range(1, len(ranked_for_cap) + 1):
                                 subset = ranked_for_cap[:n_gpus]
-                                pool_mib = sum(free for _, free in subset)
-                                pool_total = _pool_total(subset)
+                                # Per-GPU-consistent pool budget (fixes mixed
+                                # known/unknown totals); pass it as an absolute
+                                # budget so the fit and the check below agree.
+                                pool_budget = _pool_budget_mib(subset, _cap_fraction)
                                 _ms = _subset_model_size(n_gpus)
                                 capped = self._fit_context_to_vram(
                                     native_ctx_for_cap,
-                                    pool_mib,
+                                    pool_budget,
                                     _ms,
                                     cache_type_kv,
                                     n_parallel = n_parallel,
                                     mtp_engaged = _mtp_will_engage,
                                     mtp_overhead_fn = mtp_overhead_fn,
-                                    total_mib = pool_total,
+                                    budget_frac = 1.0,
+                                    total_mib = None,
                                 )
                                 kv = self._estimate_kv_cache_bytes(
                                     capped, cache_type_kv, n_parallel = n_parallel
                                 )
                                 footprint_mib = (_ms + kv + _mtp_bytes(capped)) / (1024 * 1024)
-                                if footprint_mib <= _pool_budget_mib(
-                                    pool_mib, pool_total, _CTX_FIT_VRAM_FRACTION - _flat_mtp_reserve
-                                ):
+                                if footprint_mib <= pool_budget:
                                     best_cap = max(best_cap, capped)
                             if best_cap > 0:
                                 max_available_ctx = best_cap
@@ -4861,26 +4866,24 @@ class LlamaCppBackend:
                             )
                             for n_gpus in range(1, len(ranked) + 1):
                                 subset = ranked[:n_gpus]
-                                pool_mib = sum(free for _, free in subset)
-                                pool_total = _pool_total(subset)
+                                pool_budget = _pool_budget_mib(subset, pin_fraction)
                                 _ms = _subset_model_size(n_gpus)
                                 capped = self._fit_context_to_vram(
                                     effective_ctx,
-                                    pool_mib,
+                                    pool_budget,
                                     _ms,
                                     cache_type_kv,
                                     n_parallel = n_parallel,
                                     mtp_engaged = _mtp_will_engage,
                                     mtp_overhead_fn = mtp_overhead_fn,
-                                    total_mib = pool_total,
+                                    budget_frac = 1.0,
+                                    total_mib = None,
                                 )
                                 kv = self._estimate_kv_cache_bytes(
                                     capped, cache_type_kv, n_parallel = n_parallel
                                 )
                                 footprint_mib = (_ms + kv + _mtp_bytes(capped)) / (1024 * 1024)
-                                if footprint_mib <= _pool_budget_mib(
-                                    pool_mib, pool_total, pin_fraction
-                                ):
+                                if footprint_mib <= pool_budget:
                                     effective_ctx = capped
                                     gpu_indices = sorted(idx for idx, _ in subset)
                                     use_fit = False
@@ -4893,8 +4896,6 @@ class LlamaCppBackend:
                                 if effective_ctx > 0:
                                     for n_gpus in range(1, len(ranked) + 1):
                                         subset = ranked[:n_gpus]
-                                        pool_mib = sum(free for _, free in subset)
-                                        pool_total = _pool_total(subset)
                                         kv = self._estimate_kv_cache_bytes(
                                             effective_ctx,
                                             cache_type_kv,
@@ -4906,7 +4907,7 @@ class LlamaCppBackend:
                                             + _mtp_bytes(effective_ctx)
                                         ) / (1024 * 1024)
                                         if footprint_mib <= _pool_budget_mib(
-                                            pool_mib, pool_total, pin_fraction
+                                            subset, pin_fraction
                                         ):
                                             gpu_indices = sorted(idx for idx, _ in subset)
                                             use_fit = False
@@ -5066,7 +5067,11 @@ class LlamaCppBackend:
                     "iq4_nl",
                     "f32",
                 }
-                if cache_type_kv and cache_type_kv in _valid_cache_types:
+                if (
+                    cache_type_kv
+                    and cache_type_kv in _valid_cache_types
+                    and not _cache_type_from_env
+                ):
                     cmd.extend(
                         [
                             "--cache-type-k",
@@ -5078,6 +5083,10 @@ class LlamaCppBackend:
                     self._cache_type_kv = cache_type_kv
                     logger.info(f"KV cache type: {cache_type_kv}")
                 else:
+                    # When the type came only from the env (_cache_type_from_env),
+                    # leave the inherited LLAMA_ARG_CACHE_TYPE_K/_V untouched so an
+                    # asymmetric K/V env reaches the child as set; the budget above
+                    # already sized the heavier of the two.
                     self._cache_type_kv = None
 
                 # Tensor parallelism: split the model across GPUs by tensor
@@ -5229,6 +5238,31 @@ class LlamaCppBackend:
 
                 # Library paths so llama-server finds its shared libs and CUDA DLLs.
                 env = self._llama_server_env_for_binary(binary)
+
+                # Reconcile the child env with Studio's final split-mode/KV
+                # decision. The child inherits LLAMA_ARG_* (see
+                # child_env_without_native_path_secret); stripping CLI extras on a
+                # tensor->layer downgrade does not remove these, so they can run
+                # the child in a mode Studio neither chose nor budgeted.
+                if not tensor_parallel:
+                    # Final decision is layer split. An inherited tensor/row/none
+                    # split mode (and any paired tensor-split) would override
+                    # Studio's layer plan and per-device budget, so clear them and
+                    # let llama-server use layer split across the pinned GPUs.
+                    _inherited_sm = (env.get("LLAMA_ARG_SPLIT_MODE") or "").strip().lower()
+                    if _inherited_sm and _inherited_sm != "layer":
+                        env.pop("LLAMA_ARG_SPLIT_MODE", None)
+                        env.pop("LLAMA_ARG_TENSOR_SPLIT", None)
+                else:
+                    # Final decision is tensor split, which aborts on a quantized
+                    # KV cache. Studio drops a quantized cache_type_kv for the
+                    # tensor attempt, but an inherited quantized LLAMA_ARG_CACHE_TYPE_K/_V
+                    # would still crash the child (and was budgeted as tensor-safe);
+                    # clear it so the child uses the tensor-safe default.
+                    for _ct_var in ("LLAMA_ARG_CACHE_TYPE_K", "LLAMA_ARG_CACHE_TYPE_V"):
+                        _ct_raw = (env.get(_ct_var) or "").strip().lower()
+                        if _ct_raw and _ct_raw not in self._TENSOR_PARALLEL_KV_TYPES:
+                            env.pop(_ct_var, None)
 
                 # Windows + full offload: PASSIVE OMP + 2 threads stop
                 # spin-wait burning CPU. CPU/partial offload keeps default
