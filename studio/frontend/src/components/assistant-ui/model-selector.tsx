@@ -215,12 +215,18 @@ function PillTabs({
   onValueChange,
   ariaLabel,
   className,
+  compact = false,
+  fit = false,
 }: {
   tabs: { value: string; label: string }[];
   value: string;
   onValueChange: (value: string) => void;
   ariaLabel: string;
   className?: string;
+  compact?: boolean;
+  /** Size each tab to its label instead of equal widths. The active tab carries
+   * the pill background directly (the toggle never animates). */
+  fit?: boolean;
 }) {
   const activeIndex = Math.max(
     0,
@@ -231,18 +237,21 @@ function PillTabs({
       role="tablist"
       aria-label={ariaLabel}
       className={cn(
-        "hub-menu-trigger hub-tab-toggle relative inline-flex h-9 items-center rounded-full",
+        "hub-menu-trigger hub-tab-toggle relative inline-flex items-center rounded-full",
+        compact ? "h-7" : "h-9",
         className,
       )}
     >
-      <span
-        aria-hidden="true"
-        style={{
-          width: `${100 / tabs.length}%`,
-          transform: `translateX(${activeIndex * 100}%)`,
-        }}
-        className="hub-tab-toggle-pill pointer-events-none absolute inset-y-0 left-0 rounded-full transition-transform duration-200 ease-out"
-      />
+      {!fit && (
+        <span
+          aria-hidden="true"
+          style={{
+            width: `${100 / tabs.length}%`,
+            transform: `translateX(${activeIndex * 100}%)`,
+          }}
+          className="hub-tab-toggle-pill pointer-events-none absolute inset-y-0 left-0 rounded-full transition-transform duration-200 ease-out"
+        />
+      )}
       {tabs.map((tab) => (
         <button
           key={tab.value}
@@ -251,10 +260,13 @@ function PillTabs({
           aria-selected={value === tab.value}
           onClick={() => onValueChange(tab.value)}
           className={cn(
-            "relative z-10 inline-flex h-9 min-w-0 flex-1 items-center justify-center rounded-full px-3 text-[12.5px] transition-colors",
+            "relative z-10 inline-flex items-center justify-center rounded-full transition-colors",
+            fit ? "shrink-0" : "min-w-0 flex-1",
+            compact ? "h-7 px-2.5 text-[11px]" : "h-9 px-3 text-[12.5px]",
             value === tab.value
               ? "text-foreground"
               : "text-muted-foreground hover:text-foreground",
+            fit && value === tab.value && "hub-tab-toggle-pill",
           )}
         >
           {tab.label}
@@ -380,27 +392,14 @@ function ModelSelectorContent({
         className,
       )}
     >
-      {tabs.length > 1 || effectiveTab === "hub" ? (
-        <div className="mb-2 flex items-center gap-2">
-          {tabs.length > 1 ? (
-            <PillTabs
-              ariaLabel="Model source"
-              tabs={tabs}
-              value={effectiveTab}
-              onValueChange={setActiveTab}
-              className={effectiveTab === "hub" ? "shrink-0" : "w-full"}
-            />
-          ) : null}
-          {effectiveTab === "hub" ? (
-            <PillTabs
-              ariaLabel="Hub section"
-              tabs={HUB_SECTION_TABS}
-              value={hubSection}
-              onValueChange={(next) => setHubSection(next as HubSection)}
-              className="min-w-0 flex-1"
-            />
-          ) : null}
-        </div>
+      {tabs.length > 1 ? (
+        <PillTabs
+          ariaLabel="Model source"
+          tabs={tabs}
+          value={effectiveTab}
+          onValueChange={setActiveTab}
+          className="mb-2 w-full"
+        />
       ) : null}
 
       {effectiveTab === "hub" ? (
@@ -410,6 +409,16 @@ function ModelSelectorContent({
           onSelect={onSelect}
           onFoldersChange={onFoldersChange}
           section={hubSection}
+          sectionToggle={
+            <PillTabs
+              ariaLabel="Hub section"
+              tabs={HUB_SECTION_TABS}
+              value={hubSection}
+              onValueChange={(next) => setHubSection(next as HubSection)}
+              compact={true}
+              fit={true}
+            />
+          }
         />
       ) : null}
 

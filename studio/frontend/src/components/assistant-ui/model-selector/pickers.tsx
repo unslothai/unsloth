@@ -822,6 +822,7 @@ export function HubModelPicker({
   onSelect,
   onFoldersChange,
   section = "downloaded",
+  sectionToggle,
 }: {
   models: ModelOption[];
   value?: string;
@@ -829,6 +830,8 @@ export function HubModelPicker({
   onFoldersChange?: () => void;
   /** Section shown when not searching. Search spans all sections. */
   section?: "downloaded" | "recommended" | "custom";
+  /** Section toggle rendered under the search bar. */
+  sectionToggle?: ReactNode;
 }) {
   const gpu = useGpuInfo();
   const [query, setQuery] = useState("");
@@ -1358,6 +1361,8 @@ export function HubModelPicker({
           <Spinner className="pointer-events-none absolute right-2.5 top-2.5 size-4 text-muted-foreground" />
         )}
       </div>
+
+      {sectionToggle}
 
       <div
         ref={scrollRef}
