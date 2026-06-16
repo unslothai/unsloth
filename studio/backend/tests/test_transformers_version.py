@@ -46,6 +46,26 @@ from utils.transformers_version import (
 )
 
 
+@pytest.fixture(autouse = True)
+def _capturable_logger(monkeypatch):
+    """Make the ``caplog`` assertions independent of test collection order.
+
+    The ``sys.modules.setdefault("loggers", ...)`` stub above only installs the
+    stdlib-logger stub when ``loggers`` has not been imported yet. In a full
+    backend pytest run another module (e.g. ``test_log_filter_no_truncation``,
+    collected earlier) imports the real ``loggers`` first, so the stub is a
+    no-op and ``transformers_version.logger`` ends up a structlog/stdout logger
+    that ``caplog`` cannot see -- the tier/activation/install log assertions
+    would then fail even though the line was emitted. Bind a real stdlib logger
+    for the duration of each test so the module logs through ``logging`` and
+    ``caplog`` captures them regardless of import order.
+    """
+    monkeypatch.setattr(
+        "utils.transformers_version.logger",
+        logging.getLogger("utils.transformers_version"),
+    )
+
+
 # ---------------------------------------------------------------------------
 # _resolve_base_model — config.json fallback
 # ---------------------------------------------------------------------------
