@@ -481,6 +481,8 @@ class TestChatCompletionRequestToolFields:
         self._assert_unsupported_n(resp)
 
     def test_n_rejected_for_gguf_tools_passthrough_path(self, monkeypatch):
+        import routes.inference as inference_route
+
         class _GGUFBackend:
             is_loaded = True
             model_identifier = "test-gguf"
@@ -489,6 +491,8 @@ class TestChatCompletionRequestToolFields:
             _is_audio = False
             context_length = 4096
 
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inference_route, "api_monitor", monitor)
         client = self._v1_client(monkeypatch, _GGUFBackend())
         resp = client.post(
             "/v1/chat/completions",
@@ -507,6 +511,10 @@ class TestChatCompletionRequestToolFields:
             },
         )
         self._assert_unsupported_n(resp)
+        [entry] = monitor.snapshot()
+        assert entry["status"] == "error"
+        assert "n > 1 is not supported" in entry["error"]
+        assert monitor.active_count() == 0
 
     def test_n_rejected_for_non_gguf_path(self, monkeypatch):
         class _NoGGUFBackend:
@@ -549,6 +557,8 @@ class TestChatCompletionRequestToolFields:
             "_detect_safetensors_features",
             lambda backend, chat_template: {"supports_tools": True},
         )
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inference_route, "api_monitor", monitor)
         client = self._v1_client(monkeypatch, _NoGGUFBackend(), _InferenceBackend())
         resp = client.post(
             "/v1/chat/completions",
@@ -565,6 +575,10 @@ class TestChatCompletionRequestToolFields:
         body = resp.json()
         assert body["error"]["param"] == "confirm_tool_calls"
         assert "requires stream=true" in body["error"]["message"]
+        [entry] = monitor.snapshot()
+        assert entry["status"] == "error"
+        assert "confirm_tool_calls requires stream=true" in entry["error"]
+        assert monitor.active_count() == 0
 
     def test_multiturn_tool_loop_messages(self):
         req = ChatCompletionRequest(
@@ -1305,6 +1319,8 @@ class TestGgufVisionToolRouting:
             generate_chat_completion = _plain,
             generate_chat_completion_with_tools = _tools,
         )
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
         monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
 
         payload = ChatCompletionRequest(
@@ -1361,6 +1377,10 @@ class TestGgufVisionToolRouting:
             )
         assert exc.value.status_code == 400
         assert "requires stream=true" in exc.value.detail["error"]["message"]
+        [entry] = monitor.snapshot()
+        assert entry["status"] == "error"
+        assert "confirm_tool_calls requires stream=true" in entry["error"]
+        assert monitor.active_count() == 0
 
     def test_standard_gguf_merges_system_and_developer_messages(self, monkeypatch):
         import routes.inference as inf_mod

@@ -4020,10 +4020,22 @@ async def openai_chat_completions(
         )
 
     # Finalize the monitor entry on validation rejection before raising.
-    def _reject(status_code: int, detail: str) -> "HTTPException":
+    def _reject(status_code: int, detail: Any) -> "HTTPException":
         if monitor_id is not None:
-            api_monitor.fail(monitor_id, detail)
+            fail_detail = detail if isinstance(detail, str) else json.dumps(detail, default = str)
+            api_monitor.fail(monitor_id, fail_detail)
         return HTTPException(status_code = status_code, detail = detail)
+
+    def _reject_unsupported_n(path_label: str) -> "HTTPException":
+        return _reject(
+            400,
+            openai_error_body(
+                f"n > 1 is not supported for {path_label}.",
+                status = 400,
+                code = "unsupported_parameter",
+                param = "n",
+            ),
+        )
 
     # ── Standard OpenAI function-calling pass-through (GGUF only) ────
     # When a client (opencode / Claude Code via OpenAI compat / Cursor /
@@ -4056,7 +4068,7 @@ async def openai_chat_completions(
         and (_tools_passthrough or _has_response_format)
     ):
         if _wants_multiple_choices(payload):
-            _raise_unsupported_n("GGUF tool or response_format passthrough")
+            raise _reject_unsupported_n("GGUF tool or response_format passthrough")
         if payload.audio_base64:
             # This path forwards the request verbatim, so the transcoded audio
             # never gets injected. (The agentic tool loop below does support
@@ -4198,9 +4210,9 @@ async def openai_chat_completions(
             # Bypass Permissions suppresses confirm, so the stream requirement
             # (the gate needs streaming to prompt) no longer applies.
             if payload.confirm_tool_calls and not payload.bypass_permissions and not payload.stream:
-                raise HTTPException(
-                    status_code = 400,
-                    detail = openai_error_body(
+                raise _reject(
+                    400,
+                    openai_error_body(
                         "confirm_tool_calls requires stream=true for local tool execution.",
                         status = 400,
                         code = "invalid_request_error",
@@ -4208,7 +4220,7 @@ async def openai_chat_completions(
                     ),
                 )
             if _wants_multiple_choices(payload):
-                _raise_unsupported_n("GGUF tool chat completions")
+                raise _reject_unsupported_n("GGUF tool chat completions")
             # ── Tool-use system prompt nudge ──────────────────────
             _nudge = _build_tool_action_nudge(
                 tools = tools_to_use,
@@ -4467,7 +4479,7 @@ async def openai_chat_completions(
 
         if payload.stream:
             if _wants_multiple_choices(payload):
-                _raise_unsupported_n("streaming GGUF chat completions")
+                raise _reject_unsupported_n("streaming GGUF chat completions")
             _cancel_keys = (payload.cancel_id, payload.session_id, completion_id)
             _tracker = _TrackedCancel(cancel_event, *_cancel_keys)
             _tracker.__enter__()
@@ -4777,9 +4789,9 @@ async def openai_chat_completions(
         # Bypass Permissions suppresses confirm, so the stream requirement
         # (the gate needs streaming to prompt) no longer applies.
         if payload.confirm_tool_calls and not payload.bypass_permissions and not payload.stream:
-            raise HTTPException(
-                status_code = 400,
-                detail = openai_error_body(
+            raise _reject(
+                400,
+                openai_error_body(
                     "confirm_tool_calls requires stream=true for local tool execution.",
                     status = 400,
                     code = "invalid_request_error",
