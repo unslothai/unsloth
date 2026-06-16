@@ -109,6 +109,33 @@ def is_gguf_filename(filename: str) -> bool:
     return filename.lower().endswith(".gguf")
 
 
+_BIG_ENDIAN_GGUF_FILENAME_RE = re.compile(r"(^|[-_])be(?:[._-]|$)", re.IGNORECASE)
+
+
+def is_big_endian_gguf_path(path: str, quant: str = "") -> bool:
+    normalized = path.replace("\\", "/")
+    name = normalized.rsplit("/", 1)[-1]
+    stem = name.rsplit(".", 1)[0].lower()
+    quant_key = quant.strip().lower()
+    quant_index = stem.find(quant_key) if quant_key else -1
+    parent = normalized.rsplit("/", 1)[0].lower() if "/" in normalized else ""
+    quant_in_parent_only = (
+        bool(parent)
+        and quant_index < 0
+        and (
+            (quant_key and quant_key in parent)
+            or (not quant_key and _GGUF_QUANT_RE.search(parent) is not None)
+        )
+    )
+    for match in _BIG_ENDIAN_GGUF_FILENAME_RE.finditer(stem):
+        if quant_index >= 0 and quant_index < match.start():
+            return True
+        tail = stem[match.end() :].lstrip("._-")
+        if not tail or _GGUF_QUANT_RE.search(tail) is None:
+            return not quant_in_parent_only
+    return False
+
+
 # Cap recursive walks so a huge or system path cannot run unbounded.
 _MAX_LOCAL_SCAN_ENTRIES = 100_000
 
@@ -143,7 +170,10 @@ def pick_best_gguf(filenames: list[str]) -> Optional[str]:
     gguf_files = [
         name
         for name in filenames
-        if is_gguf_filename(name) and not is_mmproj_filename(name) and not is_mtp_drafter_path(name)
+        if is_gguf_filename(name)
+        and not is_mmproj_filename(name)
+        and not is_mtp_drafter_path(name)
+        and not is_big_endian_gguf_path(name, extract_quant_label(name))
     ]
     if not gguf_files:
         return None
@@ -386,6 +416,8 @@ def list_gguf_variants(
             has_vision = True
             continue
         quant = extract_quant_label(filename)
+        if is_big_endian_gguf_path(filename, quant):
+            continue
         quant_totals[quant] = quant_totals.get(quant, 0) + int(getattr(sibling, "size", 0) or 0)
         quant_first_file.setdefault(quant, filename)
 
@@ -438,6 +470,8 @@ def list_local_gguf_variants(directory: str) -> tuple[list[GgufVariantInfo], boo
         if is_mtp_drafter_path(rel):
             continue
         quant = extract_quant_label(rel)
+        if is_big_endian_gguf_path(rel, quant):
+            continue
         quant_totals[quant] = quant_totals.get(quant, 0) + size
         quant_first_file.setdefault(quant, rel)
 
