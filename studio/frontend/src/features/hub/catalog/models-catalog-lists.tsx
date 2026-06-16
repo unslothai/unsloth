@@ -184,6 +184,7 @@ export function DiscoverList({
             />
             {hasMore && (
               <DiscoverFetchMoreFooter
+                hasActiveFilters={hasActiveFilters}
                 isLoadingMore={isLoadingMore}
                 onFetchMore={onFetchMore}
               />

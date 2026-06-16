@@ -128,17 +128,22 @@ export function DiscoverFetchMoreState({
 }
 
 export function DiscoverFetchMoreFooter({
+  hasActiveFilters,
   isLoadingMore,
   onFetchMore,
 }: {
+  hasActiveFilters: boolean;
   isLoadingMore: boolean;
   onFetchMore: () => void;
 }) {
   return (
     <div className="relative z-10 flex flex-col items-center gap-2 rounded-[16px] bg-card px-4 py-4 text-center">
-      <p className="text-[11.5px] leading-4 text-muted-foreground">
-        Some results may be hidden by your filters.
-      </p>
+      {/* Only warn about hidden results when a filter is actually narrowing them. */}
+      {hasActiveFilters && (
+        <p className="text-[11.5px] leading-4 text-muted-foreground">
+          Some results may be hidden by your filters.
+        </p>
+      )}
       <button
         type="button"
         onClick={onFetchMore}

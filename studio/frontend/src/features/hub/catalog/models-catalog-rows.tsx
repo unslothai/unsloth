@@ -957,7 +957,7 @@ export function VirtualRows<T>({
               top: 0,
               left: 0,
               width: "100%",
-              transform: `translateY(${virtualRow.start - virtualizer.options.scrollMargin}px)`,
+              transform: `translateY(${virtualRow.start - scrollMargin}px)`,
               // Lock every row to the same height as the virtualizer's estimate.
               // No measureElement ref: dynamic measurement on each row mount
               // triggers virtualizer state churn (re-renders + occasional offset
