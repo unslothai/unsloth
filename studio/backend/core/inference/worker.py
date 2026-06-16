@@ -655,10 +655,17 @@ def run_inference_process(*, cmd_queue: Any, resp_queue: Any, cancel_event, conf
 
     _hw.detect_hardware()
     if _hw.DEVICE == _hw.DeviceType.MLX:
+        # Non-fatal: fall through with the installed version, but log the cause
+        # instead of swallowing it (issue #6103).
         try:
             _activate_transformers_version(model_name)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning(
+                "Failed to activate transformers version for '%s' (MLX inference); "
+                "inference may fail if this model requires a specific version. Error: %s",
+                model_name,
+                exc,
+            )
         try:
             from core.inference.mlx_inference import MLXInferenceBackend
 
