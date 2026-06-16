@@ -29,14 +29,14 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any, Generator, Optional, Tuple, Union
 from utils.hardware import prepare_gpu_selection
+# DownloadStallError now lives in the shared Xet-fallback helper so the GGUF and
+# training download paths can raise/catch the same type; re-exported here for
+# backwards-compatible imports of core.inference.orchestrator.DownloadStallError.
+from utils.hf_xet_fallback import DownloadStallError
 
 logger = get_logger(__name__)
 
 _CTX = mp.get_context("spawn")
-
-
-class DownloadStallError(RuntimeError):
-    """Raised when the worker reports no download progress for too long."""
 
 
 # Dispatcher timeout constants (seconds)
