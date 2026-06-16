@@ -658,9 +658,11 @@ def patch_unsafe_trainer_rng_load():
     @functools.wraps(load_rng_state)
     def _unsloth_safe_load_rng_state(self, checkpoint):
         original = torch.load
+
         def _safe_load(*args, **kwargs):
             kwargs.setdefault("weights_only", True)  # force safe default, honor overrides
             return original(*args, **kwargs)
+
         torch.load = _safe_load
         try:
             return load_rng_state(self, checkpoint)
