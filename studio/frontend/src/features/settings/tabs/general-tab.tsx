@@ -296,6 +296,8 @@ export function GeneralTab() {
         </SettingsRow>
       </SettingsSection>
 
+      <StudioVersionSection />
+
       <SettingsSection title={t("settings.general.helperLlm.sectionTitle")}>
         <SettingsRow
           label={t("settings.general.helperLlm.preloadOnStartup")}
