@@ -75,6 +75,99 @@ from state.tool_approvals import (
 logger = get_logger(__name__)
 
 
+# llama-server can serve HTTP 200 while running a model entirely on CPU when a
+# GPU backend fails to init (#5807 / #5106 / #5830). Classify the startup log so
+# Studio can warn. Priority: explicit "offloaded N/M layers to GPU" counts
+# (authoritative), then GPU "model buffer size" lines (host-pinned _Host
+# excluded), then the "device_info:" device table (disconfirm only).
+_GPU_OFFLOAD_MARKERS = (
+    "CUDA",
+    "ROCm",
+    "ROCM",
+    "HIP",
+    "Metal",
+    "Vulkan",
+    "OpenCL",
+    "SYCL",
+    "MUSA",
+    "CANN",
+)
+_OFFLOADED_LAYERS_RE = re.compile(
+    r"offloaded\s+(\d+)\s*/\s*(\d+)\s+layers?\s+to\s+gpu", re.IGNORECASE
+)
+_DEVICE_ROW_RE = re.compile(
+    r"-\s*(CUDA|ROCm|ROCM|HIP|Metal|Vulkan|SYCL|OpenCL|MUSA|CANN|CPU)\w*\s*:",
+    re.IGNORECASE,
+)
+_GPU_DEVICE_PREFIXES = (
+    "cuda",
+    "rocm",
+    "hip",
+    "metal",
+    "vulkan",
+    "sycl",
+    "opencl",
+    "musa",
+    "cann",
+)
+
+
+def classify_gpu_offload_lines(lines: "list[str]") -> Optional[bool]:
+    """True if the model landed on a GPU, False if it stayed on CPU despite GPU
+    intent, None when the log has no usable signal."""
+    # Counted offload is authoritative, keyed on the model with the most layers.
+    # A separate MTP/draft model logs its own (much smaller) "offloaded N/M"
+    # line, so decide on the largest-M line: a drafter that fits on GPU must not
+    # mask a main model running on CPU. N>0 on that model is True, 0 is False.
+    max_total = -1
+    offloaded_at_max = 0
+    for line in lines:
+        match = _OFFLOADED_LAYERS_RE.search(line)
+        if not match:
+            continue
+        offloaded, total = int(match.group(1)), int(match.group(2))
+        if total > max_total or (total == max_total and offloaded > offloaded_at_max):
+            max_total, offloaded_at_max = total, offloaded
+    if max_total >= 0:
+        return offloaded_at_max > 0
+
+    # GPU marker on a *model* buffer; _Host buffers are CPU-pinned, not offload.
+    # Buffer lines are authoritative: present but none on a GPU means CPU-only,
+    # so do not let the device table below override that.
+    saw_model_buffer = False
+    for line in lines:
+        if "model buffer size" not in line:
+            continue
+        saw_model_buffer = True
+        if "_Host" not in line and any(m in line for m in _GPU_OFFLOAD_MARKERS):
+            return True
+    if saw_model_buffer:
+        return False
+
+    # device_info: lists *available* devices (printed whenever a GPU backend is
+    # visible), not where the model loaded, so it can only disconfirm: an
+    # all-CPU table means no usable GPU. A visible GPU device is not proof the
+    # model used it, so it does not return True. Rows after the header only.
+    after_header = False
+    saw_device_row = False
+    saw_gpu_device = False
+    for line in lines:
+        if "device_info:" in line:
+            after_header = True
+            continue
+        if not after_header:
+            continue
+        match = _DEVICE_ROW_RE.search(line)
+        if not match:
+            continue
+        saw_device_row = True
+        if match.group(1).lower().startswith(_GPU_DEVICE_PREFIXES):
+            saw_gpu_device = True
+    if saw_device_row and not saw_gpu_device:
+        return False
+    return None
+
+
 def _wsl_system_rocm_lib_dirs() -> "list[str]":
     """System ROCm lib dir(s) to load before a prebuilt's bundled HIP, on WSL.
 
@@ -1453,12 +1546,14 @@ class LlamaCppBackend:
         supports_ctx_checkpoints = False
         supports_no_cache_prompt = False
         try:
+            probe_env = cls._llama_server_env_for_binary(bin_path)
             result = subprocess.run(
                 [bin_path, "--help"],
                 capture_output = True,
                 text = True,
                 timeout = 10,
                 check = False,
+                env = probe_env,
             )
             help_text = (result.stdout or "") + "\n" + (result.stderr or "")
             # Split into per-flag blocks (each --flag line + its indented
@@ -1981,6 +2076,100 @@ class LlamaCppBackend:
             if os.path.isdir(cuda_bin_x64):
                 path_dirs.append(cuda_bin_x64)
         return path_dirs
+
+    @staticmethod
+    def _llama_server_env_for_binary(binary: str) -> dict[str, str]:
+        """Build a subprocess env that lets llama-server resolve native libs."""
+        env = child_env_without_native_path_secret()
+        binary_dir = str(Path(binary).parent)
+
+        if sys.platform == "win32":
+            # Ordering: see _build_windows_path_dirs. #5106.
+            path_dirs = LlamaCppBackend._build_windows_path_dirs(
+                binary_dir,
+                sys.prefix,
+                os.environ.get("CUDA_PATH", ""),
+            )
+            existing_path = env.get("PATH", "")
+            env["PATH"] = ";".join(path_dirs) + ";" + existing_path
+
+            # ROCm: the prebuilt bundles rocblas.dll but NOT the Tensile
+            # kernel files (rocblas/library/*.dat + *.hsaco); the DLL searches
+            # <binary_dir>/rocblas/library/ which doesn't exist.
+            _hip_path = os.environ.get("HIP_PATH", os.environ.get("ROCM_PATH", ""))
+            if _hip_path:
+                _rocblas_lib = os.path.join(_hip_path, "bin", "rocblas", "library")
+                if os.path.isdir(_rocblas_lib):
+                    env.setdefault("ROCBLAS_TENSILE_LIBPATH", _rocblas_lib)
+        else:
+            # Linux: LD_LIBRARY_PATH for shared libs next to the binary plus
+            # CUDA runtime libs (libcudart, libcublas, etc.)
+            import platform
+
+            lib_dirs = []
+            # WSL: system HIP before the bundle's (which segfaults on /dev/dxg).
+            for _wsl_rocm in _wsl_system_rocm_lib_dirs():
+                lib_dirs.append(_wsl_rocm)
+            if lib_dirs:
+                env.setdefault("HSA_ENABLE_DXG_DETECTION", "1")
+            lib_dirs.append(binary_dir)
+            _arch = platform.machine()  # x86_64, aarch64, etc.
+
+            # Pip-installed nvidia CUDA runtime libs. The prebuilt binary links
+            # libcudart.so.13 / libcublas.so.13 which live here, not in
+            # /usr/local/cuda.
+            import glob as _glob
+
+            for _nv_pattern in [
+                os.path.join(
+                    sys.prefix,
+                    "lib",
+                    "python*",
+                    "site-packages",
+                    "nvidia",
+                    "cu*",
+                    "lib",
+                ),
+                os.path.join(
+                    sys.prefix,
+                    "lib",
+                    "python*",
+                    "site-packages",
+                    "nvidia",
+                    "cudnn",
+                    "lib",
+                ),
+                os.path.join(
+                    sys.prefix,
+                    "lib",
+                    "python*",
+                    "site-packages",
+                    "nvidia",
+                    "nvjitlink",
+                    "lib",
+                ),
+            ]:
+                for _nv_dir in _glob.glob(_nv_pattern):
+                    if os.path.isdir(_nv_dir):
+                        lib_dirs.append(_nv_dir)
+
+            for cuda_lib in [
+                "/usr/local/cuda/lib64",
+                f"/usr/local/cuda/targets/{_arch}-linux/lib",
+                # Fallback CUDA compat paths (e.g. binary built with CUDA 12
+                # where default /usr/local/cuda is CUDA 13+).
+                "/usr/local/cuda-12/lib64",
+                "/usr/local/cuda-12.8/lib64",
+                f"/usr/local/cuda-12/targets/{_arch}-linux/lib",
+                f"/usr/local/cuda-12.8/targets/{_arch}-linux/lib",
+            ]:
+                if os.path.isdir(cuda_lib):
+                    lib_dirs.append(cuda_lib)
+            existing_ld = env.get("LD_LIBRARY_PATH", "")
+            new_ld = ":".join(lib_dirs)
+            env["LD_LIBRARY_PATH"] = f"{new_ld}:{existing_ld}" if existing_ld else new_ld
+
+        return env
 
     @staticmethod
     def _select_gpus(
@@ -4830,8 +5019,15 @@ class LlamaCppBackend:
                 logger.info(f"Starting llama-server: {' '.join(_log_cmd)}")
 
                 # Library paths so llama-server finds its shared libs and CUDA DLLs.
-                env = child_env_without_native_path_secret()
-                binary_dir = str(Path(binary).parent)
+                env = self._llama_server_env_for_binary(binary)
+
+                # Windows + full offload: PASSIVE OMP + 2 threads stop
+                # spin-wait burning CPU. CPU/partial offload keeps default
+                # OMP parallelism. #5692.
+                if sys.platform == "win32" and full_offload_tuning_active:
+                    env.setdefault("OMP_WAIT_POLICY", "PASSIVE")
+                    if not threads_overridden:
+                        env.setdefault("OMP_NUM_THREADS", "2")
 
                 # AMD unified-memory APUs (gfx1150/gfx1151): let llama.cpp use
                 # shared system RAM. setdefault so a user value wins.
@@ -4846,104 +5042,6 @@ class LlamaCppBackend:
                     logger.info(
                         f"Data-center GPU detected: applied DC llama.cpp env tuning (multi_gpu={multi_gpu})"
                     )
-
-                if sys.platform == "win32":
-                    # Ordering: see _build_windows_path_dirs. #5106.
-                    path_dirs = self._build_windows_path_dirs(
-                        binary_dir,
-                        sys.prefix,
-                        os.environ.get("CUDA_PATH", ""),
-                    )
-                    existing_path = env.get("PATH", "")
-                    env["PATH"] = ";".join(path_dirs) + ";" + existing_path
-
-                    # Windows + full offload: PASSIVE OMP + 2 threads stop
-                    # spin-wait burning CPU. CPU/partial offload keeps
-                    # default OMP parallelism. #5692.
-                    if full_offload_tuning_active:
-                        env.setdefault("OMP_WAIT_POLICY", "PASSIVE")
-                        if not threads_overridden:
-                            env.setdefault("OMP_NUM_THREADS", "2")
-
-                    # ROCm: the prebuilt bundles rocblas.dll but NOT the Tensile
-                    # kernel files (rocblas/library/*.dat + *.hsaco); the DLL
-                    # searches <binary_dir>/rocblas/library/ which doesn't exist
-                    # -> silent crash on the first GEMM. ROCBLAS_TENSILE_LIBPATH
-                    # repoints that search at the ROCm install.
-                    _hip_path = os.environ.get("HIP_PATH", os.environ.get("ROCM_PATH", ""))
-                    if _hip_path:
-                        _rocblas_lib = os.path.join(_hip_path, "bin", "rocblas", "library")
-                        if os.path.isdir(_rocblas_lib):
-                            env.setdefault("ROCBLAS_TENSILE_LIBPATH", _rocblas_lib)
-                else:
-                    # Linux: LD_LIBRARY_PATH for shared libs next to the binary
-                    # plus CUDA runtime libs (libcudart, libcublas, etc.)
-                    import platform
-
-                    lib_dirs = []
-                    # WSL: system HIP before the bundle's (which segfaults on
-                    # /dev/dxg). Mirror install_llama_prebuilt.binary_env, which
-                    # validates the prebuilt with this same ordering.
-                    for _wsl_rocm in _wsl_system_rocm_lib_dirs():
-                        lib_dirs.append(_wsl_rocm)
-                    if lib_dirs:
-                        env.setdefault("HSA_ENABLE_DXG_DETECTION", "1")
-                    lib_dirs.append(binary_dir)
-                    _arch = platform.machine()  # x86_64, aarch64, etc.
-
-                    # Pip-installed nvidia CUDA runtime libs. The prebuilt
-                    # binary links libcudart.so.13 / libcublas.so.13 which live
-                    # here, not in /usr/local/cuda.
-                    import glob as _glob
-
-                    for _nv_pattern in [
-                        os.path.join(
-                            sys.prefix,
-                            "lib",
-                            "python*",
-                            "site-packages",
-                            "nvidia",
-                            "cu*",
-                            "lib",
-                        ),
-                        os.path.join(
-                            sys.prefix,
-                            "lib",
-                            "python*",
-                            "site-packages",
-                            "nvidia",
-                            "cudnn",
-                            "lib",
-                        ),
-                        os.path.join(
-                            sys.prefix,
-                            "lib",
-                            "python*",
-                            "site-packages",
-                            "nvidia",
-                            "nvjitlink",
-                            "lib",
-                        ),
-                    ]:
-                        for _nv_dir in _glob.glob(_nv_pattern):
-                            if os.path.isdir(_nv_dir):
-                                lib_dirs.append(_nv_dir)
-
-                    for cuda_lib in [
-                        "/usr/local/cuda/lib64",
-                        f"/usr/local/cuda/targets/{_arch}-linux/lib",
-                        # Fallback CUDA compat paths (e.g. binary built with
-                        # CUDA 12 where default /usr/local/cuda is CUDA 13+).
-                        "/usr/local/cuda-12/lib64",
-                        "/usr/local/cuda-12.8/lib64",
-                        f"/usr/local/cuda-12/targets/{_arch}-linux/lib",
-                        f"/usr/local/cuda-12.8/targets/{_arch}-linux/lib",
-                    ]:
-                        if os.path.isdir(cuda_lib):
-                            lib_dirs.append(cuda_lib)
-                    existing_ld = env.get("LD_LIBRARY_PATH", "")
-                    new_ld = ":".join(lib_dirs)
-                    env["LD_LIBRARY_PATH"] = f"{new_ld}:{existing_ld}" if existing_ld else new_ld
 
                 # Pin to selected GPU(s). On ROCm, narrowing only
                 # CUDA_VISIBLE_DEVICES leaves an AMD child seeing the full
@@ -5615,26 +5713,13 @@ class LlamaCppBackend:
     def _classify_gpu_offload(
         self, expected_gpu: bool, detected_gpus: list[tuple[int, int]]
     ) -> Optional[bool]:
-        """True if a GPU model buffer was allocated, False if only CPU
-        buffers landed despite GPU intent, None when there's no signal (no
-        GPU detected, no buffer-size lines, etc.)."""
+        """True if the model landed on a GPU, False if only CPU buffers landed
+        despite GPU intent, None when there's no signal. Delegates to the shared
+        classifier so it tracks current llama.cpp logs (offloaded-layer counts /
+        device_info), not just the older "model buffer size" lines."""
         if not detected_gpus or not expected_gpu:
             return None
-        # llama-server logs one "model buffer size = N MiB" line per backend
-        # buffer; CUDA/ROCm/Metal/Vulkan/OpenCL/SYCL are GPU, CPU* are not.
-        gpu_markers = ("CUDA", "ROCm", "Metal", "Vulkan", "OpenCL", "SYCL")
-        saw_buffer_line = False
-        saw_gpu_buffer = False
-        for line in self._stdout_lines:
-            if "model buffer size" not in line:
-                continue
-            saw_buffer_line = True
-            if any(marker in line for marker in gpu_markers):
-                saw_gpu_buffer = True
-                break
-        if not saw_buffer_line:
-            return None
-        return saw_gpu_buffer
+        return classify_gpu_offload_lines(self._stdout_lines)
 
     def load_cancelled(self) -> bool:
         """True if a load was cancelled (e.g. via unload/_cancel_event) and not
