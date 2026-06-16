@@ -14,6 +14,9 @@ export interface ChatSearchItem {
   id: string;
   title: string;
   preview: string;
+  // Lowercased title + text of every message; matched by chatSearchFilter.
+  // Prebuilt once so filtering never re-lowercases this blob per keystroke.
+  searchText: string;
   createdAt: number;
   projectId?: string | null;
 }
@@ -51,7 +54,7 @@ async function buildIndex(): Promise<ChatSearchItem[]> {
 
   const itemThreadIds = new Map<
     string,
-    { item: Omit<ChatSearchItem, "preview">; threadIds: string[] }
+    { item: Omit<ChatSearchItem, "preview" | "searchText">; threadIds: string[] }
   >();
   const seenPairs = new Set<string>();
 
@@ -126,14 +129,16 @@ async function buildIndex(): Promise<ChatSearchItem[]> {
     merged.sort((a, b) => b.createdAt - a.createdAt);
 
     let preview = "";
+    // Title + every message so search spans the whole conversation.
+    const haystackParts: string[] = [item.title];
     for (const m of merged) {
       const text = extractText(m);
-      if (text) {
-        preview = truncate(text, PREVIEW_MAX);
-        break;
-      }
+      if (!text) continue;
+      if (!preview) preview = truncate(text, PREVIEW_MAX); // newest msg (sorted desc)
+      haystackParts.push(text);
     }
-    results.push({ ...item, preview });
+    const searchText = haystackParts.join(" ").toLowerCase();
+    results.push({ ...item, preview, searchText });
   }
 
   results.sort((a, b) => b.createdAt - a.createdAt);

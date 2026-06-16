@@ -18,7 +18,7 @@ import { useChatSearchStore } from "../stores/chat-search-store";
 
 // cmdk's default fuzzy scorer keeps non-matching rows visible (issue #5572), so
 // require every whitespace token to be a substring of the item's keywords.
-// `value` is the unique thread id (cmdk selection); title/preview come via keywords.
+// `value` is the thread id; keywords carry the title + every message's text.
 export function chatSearchFilter(
   _value: string,
   search: string,
@@ -26,7 +26,8 @@ export function chatSearchFilter(
 ): number {
   const query = search.trim().toLowerCase();
   if (query === "") return 1;
-  const haystack = (keywords ?? []).join(" ").toLowerCase();
+  // searchText is already lowercased in the index, so only lowercase the query.
+  const haystack = (keywords ?? []).join(" ");
   const tokens = query.split(/\s+/);
   return tokens.every((token) => haystack.includes(token)) ? 1 : 0;
 }
@@ -100,7 +101,7 @@ export function ChatSearchDialog() {
               <CommandPrimitive.Item
                 key={item.id}
                 value={item.id}
-                keywords={[item.title, item.preview]}
+                keywords={[item.searchText]}
                 onSelect={() => {
                   navigate({
                     to: "/chat",
