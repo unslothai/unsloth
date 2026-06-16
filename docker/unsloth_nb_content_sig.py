@@ -27,17 +27,17 @@ import sys
 
 # Lowercased substrings that mark a markdown cell as top/bottom boilerplate.
 _BOILERPLATE_MD = (
-    "to run this, press",                       # Colab/AMD run announcement
+    "to run this, press",  # Colab/AMD run announcement
     'press "*runtime*"',
-    "### news",                                  # News heading
-    "introducing **unsloth studio**",            # rotating announcement body
-    "you will learn how to do",                  # announcement tail
-    "this notebook is licensed",                 # announcement license line
-    "and we're done",                            # footer opener
+    "### news",  # News heading
+    "introducing **unsloth studio**",  # rotating announcement body
+    "you will learn how to do",  # announcement tail
+    "this notebook is licensed",  # announcement license line
+    "and we're done",  # footer opener
     "this notebook and all unsloth notebooks are licensed",  # footer license
-    "join discord if you need help",             # footer
-    "star us on",                                # footer
-    "some other resources",                      # footer resources block
+    "join discord if you need help",  # footer
+    "star us on",  # footer
+    "some other resources",  # footer resources block
 )
 
 
@@ -73,7 +73,7 @@ def _is_boilerplate(cell):
 def middle_digest(path):
     """sha256 over the (type, source) of every non-boilerplate cell, or None."""
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding = "utf-8") as f:
             nb = json.load(f)
     except Exception:
         return None
