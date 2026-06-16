@@ -41,12 +41,21 @@ def _safe_is_dir(path) -> bool:
 
 def _is_hidden_model(*values: str | None) -> bool:
     """True if any id/path is the RAG embedding model (EMBEDDING_MODEL or
-    EMBED_GGUF_REPO basename), so pickers hide it (GGUF and non-GGUF)."""
+    EMBED_GGUF_REPO basename) or the llama.cpp install validation probe
+    (ggml-org/models / stories260K), so pickers hide them (GGUF and non-GGUF).
+    None are usable chat models; the probe can be cached as a side effect of
+    installing the prebuilt llama-server and otherwise sorts smallest, so it
+    would be auto-selected."""
     from core.rag import config as rag_config
 
     needles = (
         rag_config.EMBEDDING_MODEL.split("/")[-1].lower(),
         rag_config.EMBED_GGUF_REPO.split("/")[-1].lower(),
+        # The validation probe's repo (matches the cached repo id) and its exact
+        # filename (matches the on-disk path). The filename carries the .gguf so
+        # it does not hide unrelated repos like ``user/stories260K-finetune-GGUF``.
+        "ggml-org/models",
+        "stories260k.gguf",
     )
     return any(v and any(n in v.lower() for n in needles) for v in values)
 
@@ -81,6 +90,7 @@ try:
     from utils.models.model_config import (
         _pick_best_gguf,
         _extract_quant_label,
+        _is_big_endian_gguf_path,
         is_audio_input_type,
     )
     from core.inference import get_inference_backend
@@ -112,6 +122,7 @@ except ImportError:
     from utils.models.model_config import (
         _pick_best_gguf,
         _extract_quant_label,
+        _is_big_endian_gguf_path,
         is_audio_input_type,
     )
     from core.inference import get_inference_backend
@@ -2106,7 +2117,11 @@ async def get_gguf_variants(
                                     size = f.stat().st_size
                                 except OSError:
                                     continue  # broken symlink / unreadable: skip
-                                q = _extract_quant_label(f.name).lower()
+                                rel = f.relative_to(snap).as_posix()
+                                q = _extract_quant_label(rel)
+                                if _is_big_endian_gguf_path(rel, q):
+                                    continue
+                                q = q.lower()
                                 by_quant[q] = by_quant.get(q, 0) + size
                             if by_quant:
                                 cached_bytes_by_quant_per_snapshot.append(by_quant)
@@ -2182,8 +2197,12 @@ async def get_gguf_download_progress(
                 for f in _iter_gguf_paths(entry):
                     if _is_mmproj_filename(f.name):
                         continue
-                    fname = f.name.lower().replace("-", "").replace("_", "")
-                    if not variant_lower or variant_lower in fname:
+                    rel = f.relative_to(entry).as_posix()
+                    quant = _extract_quant_label(rel)
+                    if _is_big_endian_gguf_path(rel, quant):
+                        continue
+                    rel_key = rel.lower().replace("-", "").replace("_", "")
+                    if not variant_lower or variant_lower in rel_key:
                         try:
                             downloaded_bytes += f.stat().st_size
                         except OSError:
