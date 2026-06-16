@@ -144,7 +144,7 @@ function buildFocusedHeading({
     format === "gguf"
       ? "GGUF"
       : format === "checkpoint"
-        ? "Checkpoint"
+        ? "Safetensors"
         : format === "mlx"
           ? "MLX"
           : "";
