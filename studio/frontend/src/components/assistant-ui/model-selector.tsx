@@ -26,6 +26,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { type KeyboardEvent, type ReactNode, useMemo, useState } from "react";
 import { Input } from "../ui/input";
 import { HubModelPicker, LoraModelPicker } from "./model-selector/pickers";
+import { buildSourceTabs, isFineTunedSource } from "./model-selector/source-tabs";
 import type {
   DeletedModelRef,
   ExternalModelOption,
@@ -324,6 +325,13 @@ function ModelSelectorContent({
   const hasSelection = Boolean(value);
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
   const hasExternal = externalModels.length > 0;
+  // The Fine-tuned tab is for fine-tuned models only. Local models (LM Studio,
+  // Ollama, custom folders) carry source "local" and live in the Hub tab's
+  // Downloaded / Custom sections instead.
+  const fineTunedModels = useMemo(
+    () => loraModels.filter((model) => isFineTunedSource(model.source)),
+    [loraModels],
+  );
   const chatOnlyTabsDefault = useMemo(
     () => (value && externalModels.some((model) => model.id === value) ? "external" : "hub"),
     [externalModels, value],
@@ -332,23 +340,21 @@ function ModelSelectorContent({
     if (value && externalModels.some((model) => model.id === value)) {
       return "external";
     }
-    if (value && loraModels.some((model) => model.id === value)) {
+    if (value && fineTunedModels.some((model) => model.id === value)) {
       return "lora";
     }
     return "hub";
-  }, [externalModels, loraModels, value]);
+  }, [externalModels, fineTunedModels, value]);
 
-  const tabs = useMemo(() => {
-    const list: { value: string; label: string }[] = [
-      { value: "hub", label: "Hub models" },
-    ];
-    // Only show Fine-tuned when the user actually has fine-tuned models.
-    if (!chatOnly && loraModels.length > 0) {
-      list.push({ value: "lora", label: "Fine-tuned" });
-    }
-    if (hasExternal) list.push({ value: "external", label: "Connected" });
-    return list;
-  }, [chatOnly, hasExternal, loraModels.length]);
+  const tabs = useMemo(
+    () =>
+      buildSourceTabs({
+        chatOnly,
+        fineTunedCount: fineTunedModels.length,
+        hasExternal,
+      }),
+    [chatOnly, hasExternal, fineTunedModels.length],
+  );
 
   const [activeTab, setActiveTab] = useState<string>(() =>
     chatOnly ? chatOnlyTabsDefault : studioTabsDefault,
@@ -446,7 +452,7 @@ function ModelSelectorContent({
 
       {effectiveTab === "lora" ? (
         <LoraModelPicker
-          loraModels={loraModels}
+          loraModels={fineTunedModels}
           value={value}
           onSelect={onSelect}
           onModelsChange={onModelsChange}

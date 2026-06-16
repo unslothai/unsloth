@@ -1,0 +1,29 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+// Pure rules for the source toggle (Hub models / Fine-tuned / Connected).
+
+export type SourceTab = { value: string; label: string };
+
+/** Local models (LM Studio, Ollama, custom folders) are not fine-tuned; they
+ * live in the Hub tab's Downloaded / Custom sections. */
+export function isFineTunedSource(source?: string): boolean {
+  return source !== "local";
+}
+
+/** Build the source tabs. Fine-tuned only appears when the user has fine-tuned
+ * (non-local) models. Connected only appears with external providers. */
+export function buildSourceTabs(opts: {
+  chatOnly: boolean;
+  fineTunedCount: number;
+  hasExternal: boolean;
+}): SourceTab[] {
+  const list: SourceTab[] = [{ value: "hub", label: "Hub models" }];
+  if (!opts.chatOnly && opts.fineTunedCount > 0) {
+    list.push({ value: "lora", label: "Fine-tuned" });
+  }
+  if (opts.hasExternal) {
+    list.push({ value: "external", label: "Connected" });
+  }
+  return list;
+}
