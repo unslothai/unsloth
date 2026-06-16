@@ -1061,6 +1061,27 @@ def _activate_transformers_version(model_name: str) -> None:
     activate_transformers_for_subprocess(model_name)
 
 
+def _activate_transformers_version_or_warn(model_name: str) -> None:
+    """Activate the required transformers version for the MLX fast-path.
+
+    Unlike the non-MLX path (which treats activation failure as fatal and
+    reports it via the event queue), the MLX path is intentionally non-fatal:
+    it falls through with whatever transformers version is installed. The
+    failure used to be swallowed by a bare ``except: pass``, leaving no trace
+    and only a confusing downstream crash. Log a warning instead so the cause
+    is visible, while keeping the fall-through behaviour.
+    """
+    try:
+        _activate_transformers_version(model_name)
+    except Exception as exc:
+        logger.warning(
+            "Failed to activate transformers version for '%s' (MLX); "
+            "training may fail if this model requires a specific version. Error: %s",
+            model_name,
+            exc,
+        )
+
+
 def _mlx_vlm_max_resized_size(width: int, height: int, target: int) -> tuple[int, int]:
     if width <= 0 or height <= 0 or target <= 0:
         return width, height
@@ -2031,11 +2052,10 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             )
             return
         # Activate correct transformers version (Gemma-4 needs a 5.x sidecar, etc.)
-        # before any transformers/mlx-lm imports in _run_mlx_training.
-        try:
-            _activate_transformers_version(model_name)
-        except Exception:
-            pass  # Non-fatal: fall through with whatever version is installed
+        # Must happen before any transformers/mlx-lm imports in _run_mlx_training.
+        # Non-fatal: fall through with whatever version is installed, but log
+        # the failure instead of swallowing it (issue #6103).
+        _activate_transformers_version_or_warn(model_name)
         try:
             _run_mlx_training(event_queue, stop_queue, config)
         except Exception as exc:
