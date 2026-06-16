@@ -57,7 +57,11 @@ def _blobs_dir(root: Path, repo_id: str = REPO) -> Path:
     return d
 
 
-def _wait(predicate, timeout: float = 2.0, step: float = 0.02) -> bool:
+def _wait(
+    predicate,
+    timeout: float = 2.0,
+    step: float = 0.02,
+) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if predicate():
@@ -311,7 +315,6 @@ def test_per_file_independent_fallback(monkeypatch):
 # --------------------------------------------------------------------------- #
 def _safe_path() -> str:
     import os
-
     return os.environ.get("PATH", "")
 
 
