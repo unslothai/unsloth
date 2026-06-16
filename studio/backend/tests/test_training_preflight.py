@@ -5,12 +5,47 @@
 empty-chat-template crash) before train(). The real methods are bound onto a light
 fake self so the production logic runs against controlled batches."""
 
+import importlib
+import sys
+import types
 import unittest
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import torch
 
-from core.training.trainer import UnslothTrainer
+
+def _stub_if_missing(name, attrs):
+    """Register a stub module for a dep the CPU backend CI job does not install.
+
+    The pytest job has studio.txt + torch + transformers but not unsloth/trl,
+    which core.training.trainer imports at module scope. Stub the absent ones
+    (real installs are left alone) so importing it for the two pure helper
+    methods never breaks test collection. __spec__ = None keeps the trainer's
+    own _ensure_real_packages namespace-shadow guard a no-op on the stub.
+    """
+    if name in sys.modules:
+        return
+    try:
+        importlib.import_module(name)
+        return
+    except Exception:
+        pass
+    mod = types.ModuleType(name)
+    mod.__spec__ = None
+    for attr in attrs:
+        setattr(mod, attr, MagicMock())
+    sys.modules[name] = mod
+    parent, _, child = name.rpartition(".")
+    if parent and parent in sys.modules:
+        setattr(sys.modules[parent], child, mod)
+
+
+_stub_if_missing("unsloth", ("FastLanguageModel", "FastVisionModel", "is_bfloat16_supported"))
+_stub_if_missing("unsloth.chat_templates", ("get_chat_template",))
+_stub_if_missing("trl", ("SFTTrainer", "SFTConfig"))
+
+from core.training.trainer import UnslothTrainer  # noqa: E402
 
 _preflight = UnslothTrainer._preflight_first_batch
 _renders_empty = UnslothTrainer._chat_template_renders_empty
