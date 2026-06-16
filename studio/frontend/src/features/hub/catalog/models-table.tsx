@@ -164,7 +164,7 @@ export function HubListHeader({
 
   return (
     <div
-      className="flex items-end justify-between gap-4 pb-3"
+      className="flex items-center justify-between gap-4 pb-3"
       aria-label={accessibleLabel}
     >
       <div className="flex min-w-0 items-center gap-1.5">
@@ -173,9 +173,9 @@ export function HubListHeader({
             type="button"
             onClick={onBack}
             aria-label="Back to feed"
-            // Glyph sits at the column's left edge so the header lines up with
-            // the toggle row, the result cards, and the top-bar tabs.
-            className="hub-section-chevron -ml-1.5 inline-flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground"
+            // Glyph left edge sits at the column content edge so the chevron
+            // lines up with the start of the row hover below it.
+            className="hub-section-chevron -ml-2 inline-flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground"
           >
             <HugeiconsIcon
               icon={ArrowLeft01Icon}
