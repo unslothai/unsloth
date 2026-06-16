@@ -447,11 +447,9 @@ def test_tp_plan_drops_gpu_below_buffer_reserve():
 
 
 # ── route auto-fallback survives a *raised* tensor-load crash ─────────
-# A tensor-incompatible model makes load_model RAISE (Gemma 3n aborts) rather
-# than return False. The /load fallback helper must catch that and retry with
-# layer split -- stripping any --split-mode from the extras so the retry can't
-# relaunch tensor -- while a non-tensor load propagates its exception. These
-# exercise the real helper with a fake loader (no GPU, no llama-server).
+# A tensor-incompatible model makes load_model RAISE (not return False); the
+# /load fallback must catch it and retry with layer split (stripping --split-mode
+# so the retry can't relaunch tensor), while a non-tensor load propagates.
 
 
 class _RecordingLoader:
@@ -676,12 +674,9 @@ def test_load_model_tensor_floor_keeps_flat_reserve_for_weights_only():
 
 
 def test_load_model_reserves_pipeline_per_device_overhead():
-    # Layer split allocates a fixed per-device overhead (CUDA context + scratch)
-    # on every GPU -- measured ~0.9 GB/device, independent of --parallel. The fit
-    # must reserve it per EXTRA device so a tight multi-GPU layer split can't pin a
-    # context that fits the pool on paper but OOMs a device at load (Finding A).
-    # k=1 adds nothing, so single-GPU sizing is unchanged. Match on whitespace-
-    # stripped source so the assertion survives any line-wrapping by the formatter.
+    # Layer split must reserve the fixed per-device overhead per EXTRA device so a
+    # tight multi-GPU split can't pin a context that OOMs a device (Finding A); k=1
+    # adds nothing.
     assert LlamaCppBackend._PIPELINE_PER_DEVICE_OVERHEAD_MIB > 0
     compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
     assert "def_subset_model_size(n_gpus:int)->int:" in compact
@@ -690,10 +685,8 @@ def test_load_model_reserves_pipeline_per_device_overhead():
 
 
 def test_load_model_restores_quantized_kv_on_tensor_downgrade():
-    # A quantized KV is dropped for the tensor attempt; if tensor then downgrades
-    # to layer split (which supports it), the dropped type must be restored so the
-    # fallback keeps the user's memory savings instead of silently launching f16
-    # and shrinking context (Finding D). Captured once, restored at both the
+    # A quantized KV dropped for the tensor attempt must be restored if tensor
+    # downgrades to layer split (Finding D); captured once, restored at both the
     # GPU-count and capacity-gate downgrades.
     compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
     assert "_tensor_dropped_cache_type_kv=cache_type_kv" in compact  # captured pre-null

@@ -656,21 +656,10 @@ def _kv_bytes_per_elem(cache_type: Optional[str]) -> float:
 
 
 def _env_main_cache_type_for_budget(env: Optional[Mapping[str, str]] = None) -> Optional[str]:
-    """Main KV cache type the budget must adopt from the environment, or None.
-
-    The child process inherits ``LLAMA_ARG_CACHE_TYPE_K`` / ``LLAMA_ARG_CACHE_TYPE_V``
-    (see ``child_env_without_native_path_secret``), but Studio only emits
-    ``--cache-type-k/-v`` when the param or extras set the type. When neither
-    does, a heavier env type (``f32``) reaches the child while the budget assumes
-    the ``f16`` default, under-reserving the main KV. Return the heavier of K/V
-    only when it exceeds ``f16`` so the budget covers it; quantized env types are
-    already <= ``f16`` and stay over-reserved by the default (None -> no change).
-
-    A single value is returned because the budget's KV estimate has one
-    ``cache_type_kv`` knob -- using the heavier over-reserves the lighter axis,
-    matching ``parse_cache_override``'s existing key/value collapse. The value is
-    lower-cased so the launch's ``_valid_cache_types`` re-emits it for the child.
-    """
+    """Heavier of the inherited LLAMA_ARG_CACHE_TYPE_K/_V env types when it
+    exceeds the f16 default, else None. Studio emits --cache-type only for the
+    param/extras path, so a heavier env (f32) would otherwise reach the child
+    unbudgeted; quantized env types stay over-reserved by f16 (-> None)."""
     e = os.environ if env is None else env
     f16_bpe = _kv_bytes_per_elem("f16")
     heaviest: Optional[str] = None
@@ -686,16 +675,10 @@ def _env_main_cache_type_for_budget(env: Optional[Mapping[str, str]] = None) -> 
 
 
 def _env_split_mode_is_tensor(env: Optional[Mapping[str, str]] = None) -> bool:
-    """True when ``LLAMA_ARG_SPLIT_MODE`` env selects tensor parallel.
-
-    The child inherits this env var, but Studio emits ``--split-mode tensor``
-    only on its tensor branch; the default layer-split path emits nothing, so a
-    ``tensor`` env would silently run the child tensor-parallel (heavier
-    per-device compute buffer) while the budget reserved only the layer-split
-    per-device overhead -> under-reserve. Used to flip the budget to tensor when
-    extras don't set the split mode. Other modes (layer/row/none) are not a
-    runtime-heavier surprise, so only ``tensor`` is acted on.
-    """
+    """True when the inherited LLAMA_ARG_SPLIT_MODE env selects tensor. Studio
+    emits --split-mode only on its tensor branch, so a tensor env on the layer
+    path would run the child tensor-parallel unbudgeted; this flips the budget
+    to tensor. Only tensor is heavier, so other modes are ignored."""
     raw = (os.environ if env is None else env).get("LLAMA_ARG_SPLIT_MODE")
     return bool(raw) and raw.strip().lower() == "tensor"
 
@@ -746,20 +729,16 @@ def _extra_args_set_any_flag(extra_args: Optional[Iterable[str]], flags: Collect
 def _effective_spec_type(
     extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
 ) -> Optional[str]:
-    """The ``--spec-type`` value llama-server will actually use: the LAST CLI
-    ``--spec-type`` (last-wins), else ``LLAMA_ARG_SPEC_TYPE``. A CLI flag -- even a
-    later non-MTP one -- overrides the env, matching llama.cpp's arg parsing, so a
-    stale MTP env or an earlier MTP flag that a later flag overrides does not make
-    the budget reserve for a drafter the launch will not load. ``--spec-default`` is
-    also a CLI spec flag (resolves to the model default, non-MTP) and likewise
-    overrides the env. None if neither sets it."""
+    """The --spec-type llama-server will use: the last CLI --spec-type (or
+    --spec-default, which resolves non-MTP), else LLAMA_ARG_SPEC_TYPE. A CLI flag
+    overrides the env (matching llama.cpp), so a stale MTP env can't make the
+    budget reserve a drafter the launch won't load. None if neither sets it."""
     args = [str(a) for a in extra_args] if extra_args else []
     cli_present = False
     cli_value: Optional[str] = None
     for i, raw in enumerate(args):
         flag, eq, inline = raw.partition("=")
         if flag == "--spec-default":
-            # A CLI default-spec selection overrides the env and is non-MTP.
             cli_present = True
             cli_value = "default"
             continue
@@ -775,9 +754,8 @@ def _effective_spec_type(
 def _extra_args_requests_mtp(
     extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
 ) -> bool:
-    """True if the effective ``--spec-type`` (extras last-wins, else the
-    ``LLAMA_ARG_SPEC_TYPE`` env the child honors) selects MTP (``mtp``/``draft-mtp``);
-    the budget must reserve for it. CLI wins over env."""
+    """True if the effective --spec-type selects MTP (mtp/draft-mtp), so the
+    budget must reserve for it."""
     value = _effective_spec_type(extra_args, env)
     if not value:
         return False
@@ -787,10 +765,9 @@ def _extra_args_requests_mtp(
 def _extra_args_requests_separate_draft(
     extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
 ) -> bool:
-    """True if the effective ``--spec-type`` selects a non-MTP model-based draft mode
-    (``draft-simple``/``draft-eagle3``). Those load a separate draft model whose
-    weights+KV the budget must reserve, just like MTP. draft-mtp is handled by
-    _extra_args_requests_mtp; ngram-* load no model. CLI wins over env (last-wins)."""
+    """True if the effective --spec-type selects a non-MTP model draft mode
+    (draft-simple/draft-eagle3), which loads a separate draft model the budget
+    must reserve (draft-mtp -> _extra_args_requests_mtp; ngram-* load no model)."""
     value = _effective_spec_type(extra_args, env)
     if not value:
         return False
@@ -818,11 +795,10 @@ def _extra_args_spec_draft_n_max(extra_args: Optional[Iterable[str]]) -> Optiona
 def _extra_args_mtp_draft_path(
     extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
 ) -> Optional[str]:
-    """Separate drafter from extras (local ``--model-draft``/``--spec-draft-model``/``-md``
-    or HF ``--spec-draft-hf``/``-hfd``/``-hfrd``/``--hf-repo-draft``), else the
-    ``LLAMA_ARG_SPEC_DRAFT_MODEL``/``LLAMA_ARG_SPEC_DRAFT_HF_REPO`` env the child honors,
-    else None. CLI wins. An HF repo spec is not a local file, so the budget can't size it
-    and falls back to the flat reserve -- but recognizing it avoids sizing the wrong drafter."""
+    """Separate drafter path from extras (local --model-draft/-md or HF
+    --spec-draft-hf/-hfd/...), else the LLAMA_ARG_SPEC_DRAFT_MODEL/_HF_REPO env,
+    else None. An HF repo isn't a local file, so the budget can't size it (falls
+    back to the flat reserve), but recognizing it avoids sizing the wrong one."""
     flags = {
         "--model-draft",
         "--spec-draft-model",
@@ -850,10 +826,9 @@ def _extra_args_mtp_draft_path(
 def _extra_args_draft_cache_types(
     extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
 ) -> tuple[Optional[str], Optional[str]]:
-    """Draft KV cache types as ``(k_type, v_type)``, each from extras, else the
-    ``LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_K``/``_V`` env the child honors, else None
-    (llama.cpp uses f16). K and V are independent axes -- a one-sided override must
-    not be applied to both, or the budget under-reserves the f16 axis. CLI wins."""
+    """Draft KV cache types (k_type, v_type), each from extras else the
+    LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_K/_V env, else None (f16). K and V are
+    independent: a one-sided override must not apply to both."""
     args = [str(a) for a in extra_args] if extra_args else []
     k_flags = {"--cache-type-k-draft", "--spec-draft-type-k", "-ctkd"}
     v_flags = {"--cache-type-v-draft", "--spec-draft-type-v", "-ctvd"}
@@ -879,13 +854,10 @@ def _extra_args_draft_cache_types(
 
 
 def _extra_args_draft_offloaded_to_cpu(extra_args: Optional[Iterable[str]]) -> bool:
-    """True if extras put the SEPARATE draft model on CPU, so its weights + KV do
-    not consume GPU VRAM and the budget must not charge them: ``--spec-draft-ngl 0``
-    (no draft layers on GPU) or ``--spec-draft-device`` naming only CPU/none. An
-    embedded MTP head (Qwen) is part of the main model and follows the main -ngl,
-    so these draft-only flags do not move it off the GPU. llama-server is last-wins,
-    so only the final value of each flag counts (e.g. ``--spec-draft-ngl 0
-    --spec-draft-ngl -1`` keeps the drafter on GPU)."""
+    """True if extras put the SEPARATE draft model on CPU (so the budget must
+    not charge its weights+KV): --spec-draft-ngl 0, or --spec-draft-device naming
+    only cpu/none. An embedded MTP head follows the main -ngl, so these draft-only
+    flags don't move it. Last-wins, so only each flag's final value counts."""
     ngl_flags = {"--spec-draft-ngl", "-ngld", "--gpu-layers-draft", "--n-gpu-layers-draft"}
     dev_flags = {"--spec-draft-device", "-devd", "--device-draft"}
     args = [str(a) for a in extra_args] if extra_args else []
@@ -900,7 +872,7 @@ def _extra_args_draft_offloaded_to_cpu(extra_args: Optional[Iterable[str]]) -> b
             last_dev = value
     if last_ngl is not None:
         try:
-            if int(last_ngl) == 0:  # zero draft layers on GPU -> CPU
+            if int(last_ngl) == 0:
                 return True
         except (TypeError, ValueError):
             pass
@@ -914,9 +886,9 @@ def _extra_args_draft_offloaded_to_cpu(extra_args: Optional[Iterable[str]]) -> b
 def _extra_args_n_ubatch(
     extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
 ) -> Optional[int]:
-    """Physical micro-batch from extras (``--ubatch-size``/``-ub``), else the
-    ``LLAMA_ARG_UBATCH`` env the child honors, else None. It drives the compute-graph
-    buffer size, so an override must reach the VRAM reserve or it under-budgets. CLI wins."""
+    """Physical micro-batch from extras (--ubatch-size/-ub) else the LLAMA_ARG_UBATCH
+    env, else None. It sizes the compute-graph buffer, so an override must reach
+    the VRAM reserve."""
     args = [str(a) for a in extra_args] if extra_args else []
     found: Optional[int] = None
     for i, raw in enumerate(args):
@@ -1941,18 +1913,16 @@ class LlamaCppBackend:
                     parts = [p.strip() for p in line.split(",")]
                     if len(parts) < 2:
                         continue
-                    # Index and free are required; skip a line missing them rather
-                    # than abandoning the whole probe to the torch fallback.
+                    # Index and free required; skip a bad line rather than abandon
+                    # the probe to the torch fallback.
                     try:
                         idx = int(parts[0])
                         free_mib = int(parts[1])
                     except ValueError:
                         continue
-                    # Total is optional and parsed SEPARATELY: a legacy two-column
-                    # "index,free" line, or a non-integer total ("N/A" on some
-                    # drivers / MIG / vGPU), yields total 0 -- the GPU is still
-                    # detected and the fit uses the free*frac fallback for it,
-                    # instead of dropping the GPU and silently spilling to CPU.
+                    # Total parsed separately: a two-column line or a non-integer
+                    # total ("N/A" on MIG/vGPU) keeps the GPU at total 0 (fit uses
+                    # the free*frac fallback) instead of dropping it.
                     total_mib = 0
                     if len(parts) >= 3 and parts[2]:
                         try:
@@ -2095,11 +2065,10 @@ class LlamaCppBackend:
     # path) returns 0.
     _TENSOR_PARALLEL_BUFFER_RESERVE_MIB = 5120
 
-    # Fixed per-device overhead llama.cpp allocates on every GPU of a LAYER split
-    # (CUDA context + per-device compute scratch), beyond the slot-scaling compute
-    # buffer which is conserved across the split. Measured ~0.9 GB/device on a
-    # Qwen3.6-27B GGUF (b9625), independent of --parallel; reserved per extra GPU
-    # so a tight multi-GPU layer split can't advertise a context that OOMs at load.
+    # Fixed per-device overhead on every GPU of a LAYER split (CUDA context +
+    # scratch), beyond the conserved slot-scaling buffer. ~0.9 GB/device measured
+    # (Qwen3.6-27B, b9625), independent of --parallel; reserved per extra GPU so a
+    # tight layer split can't advertise a context that OOMs at load.
     _PIPELINE_PER_DEVICE_OVERHEAD_MIB = 1024
 
     # KV cache types llama.cpp accepts in tensor mode. A quantized KV cache
@@ -2278,13 +2247,11 @@ class LlamaCppBackend:
         ``usable_fraction`` (default ``_GPU_PIN_VRAM_FRACTION``) provides
         headroom for compute buffers, CUDA context, and other runtime
         overhead; callers lower it when MTP reserves VRAM for a draft model.
-        ``total_by_idx`` maps gpu index -> total VRAM (MiB); when given, the
-        headroom is an ABSOLUTE ``(1 - fraction) * total`` per GPU (so it does
-        not shrink as the GPU fills) instead of a fraction of free.
-        ``per_device_overhead_bytes`` is the fixed cost a layer split adds on
-        every GPU beyond the first (CUDA context + per-device scratch); a k-GPU
-        pin must hold ``model + (k-1) * overhead`` or it can OOM a device after
-        being pinned with -ngl -1 (no --fit fallback). A single-GPU fit adds none.
+        ``total_by_idx`` (index -> total MiB) makes the headroom an ABSOLUTE
+        ``(1 - fraction) * total`` per GPU instead of a fraction of free.
+        ``per_device_overhead_bytes`` is the fixed layer-split cost per GPU beyond
+        the first; a k-GPU pin must hold ``model + (k-1) * overhead`` or it can OOM
+        a device after -ngl -1 (no --fit fallback). Single-GPU adds none.
 
         Returns (gpu_indices, use_fit):
           - ([1], False)       fits on 1 GPU at the headroom threshold
@@ -2298,9 +2265,8 @@ class LlamaCppBackend:
         if usable_fraction is None:
             usable_fraction = LlamaCppBackend._GPU_PIN_VRAM_FRACTION
 
-        # Per-GPU usable budget: free - (1-frac)*total when total is known (cap
-        # occupancy at frac of the card), else the legacy free*frac (also covers a
-        # two-column probe that reports total 0).
+        # Per-GPU usable budget: free - (1-frac)*total when total is known, else
+        # the legacy free*frac (also covers a total-0 two-column probe).
         def _usable(idx: int, free_mib: int) -> float:
             t = total_by_idx.get(idx, 0) if total_by_idx else 0
             if t > 0:
@@ -2315,8 +2281,8 @@ class LlamaCppBackend:
         if _usable(ranked[0][0], ranked[0][1]) >= model_size_mib:
             return [ranked[0][0]], False
 
-        # Try N GPUs (accumulate usable memory from most-free). Each GPU beyond
-        # the first adds a fixed per-device overhead the pooled budget must hold.
+        # Try N GPUs (accumulate usable memory from most-free). Each GPU past the
+        # first adds a fixed per-device overhead the pool must hold.
         overhead_mib = per_device_overhead_bytes / (1024 * 1024)
         cumulative = 0.0
         selected = []
@@ -2378,14 +2344,10 @@ class LlamaCppBackend:
           5. Legacy   -- fallback using embed // n_heads
 
         Server-flag knobs (mirror llama-server's CLI):
-          swa_full        -- ``--swa-full``: force SWA layers to cache full
-                             ``n_ctx`` (collapses path 3 to path 4 for them).
-          n_parallel      -- ``--parallel`` slots: non-SWA layers stay constant
-                             (cells split across slots), SWA layers scale linearly.
-          kv_unified      -- ``--kv-unified`` (default on): no-op for memory math;
-                             kept for API forward-compat.
-          ctx_checkpoints -- ``--ctx-checkpoints`` (PR #15293): N SWA snapshots
-                             per slot, one sliding-window of state per SWA layer.
+          swa_full        -- --swa-full: SWA layers cache full n_ctx (path 3->4).
+          n_parallel      -- --parallel slots: non-SWA constant, SWA scale linearly.
+          kv_unified      -- --kv-unified: memory no-op (API forward-compat).
+          ctx_checkpoints -- --ctx-checkpoints: N SWA snapshots per slot.
 
         Returns 0 if metadata is insufficient.
         """
@@ -2428,15 +2390,12 @@ class LlamaCppBackend:
             head_dim = self._embedding_length // self._n_heads if self._n_heads else 128  # type: ignore[operator]
             return int(n_attn * n_ctx * n_kv * 2 * head_dim * bpe)
 
-        # Path 3: Sliding window (Gemma 2/3/3n/4, gpt-oss, Cohere2 ...).
-        # Pattern filled by the resolver at parse time; if absent, falls through
-        # to the legacy 1/4-global heuristic below. Per-layer-type --parallel N
-        # accounting (verified against llama-server):
-        #   * non-SWA layers: total cells = n_ctx split across slots -> CONSTANT.
-        #   * SWA layers:     per-slot cells = 2*sliding_window (capped at n_ctx
-        #                     and per_slot_ctx) -> grows LINEARLY in slots.
-        # --swa-full forces full n_ctx for SWA layers; --ctx-checkpoints N adds
-        # N snapshots per SWA layer per slot.
+        # Path 3: Sliding window (Gemma 2/3/3n/4, gpt-oss, Cohere2 ...). Pattern
+        # from the resolver; if absent, falls through to the legacy 1/4-global
+        # heuristic. --parallel N accounting (verified against llama-server):
+        # non-SWA cells = n_ctx split across slots (CONSTANT); SWA per-slot cells
+        # = 2*sliding_window (capped at n_ctx/per_slot_ctx) -> LINEAR in slots.
+        # --swa-full forces full n_ctx for SWA; --ctx-checkpoints N adds snapshots.
         if (
             self._sliding_window is not None
             and self._sliding_window > 0
@@ -2445,8 +2404,7 @@ class LlamaCppBackend:
         ):
             swa = self._sliding_window
             per_slot_ctx = max(1, n_ctx // slots)
-            # --swa-full caches full context like non-SWA (per-slot cells =
-            # per_slot_ctx, collapsing to constant n_ctx total); otherwise SWA
+            # --swa-full caches full per_slot_ctx (constant n_ctx total); else SWA
             # caches 2*sliding_window per slot, clamped at per-slot ctx.
             swa_cells_per_slot = per_slot_ctx if swa_full else min(n_ctx, 2 * swa, per_slot_ctx)
             key_len_swa = self._kv_key_length_swa or key_len
@@ -2546,12 +2504,10 @@ class LlamaCppBackend:
         draft_cache_type_v: Optional[str] = None,
         n_parallel: int = 1,
     ) -> Optional[int]:
-        """Draft KV cache bytes at ``n_ctx``, sized from GGUF dims. K and V cache
-        types are independent. Separate drafter (Gemma): the drafter's own KV via
-        _estimate_kv_cache_bytes, using the heavier of the two types (it takes one
-        type, so this never under-reserves an asymmetric split). Embedded head
-        (Qwen): nextn_predict_layers attention layers from the main model's dims,
-        sized per axis. None when dims are missing (caller keeps the flat fallback)."""
+        """Draft KV cache bytes at n_ctx, sized from GGUF dims (K and V types are
+        independent). Separate drafter (Gemma): its own KV via _estimate_kv_cache_bytes
+        at the heavier type. Embedded head (Qwen): nextn_predict_layers attention
+        layers from the main dims. None when dims are missing (flat fallback)."""
         if n_ctx <= 0:
             return None
         bpe_k = _kv_bytes_per_elem(draft_cache_type_k)
@@ -2572,15 +2528,10 @@ class LlamaCppBackend:
         v_len = self._kv_value_length
         if not (nextn and n_kv and k_len and v_len):
             return None
-        # The embedded MTP head is a single draft layer, so llama.cpp's
-        # quantized-KV overhead cannot be amortized over many layers: a
-        # quantized draft KV (e.g. --spec-draft-type-k q4_0) actually fits
-        # *less* context than f16, not more (ggml-org/llama.cpp#24102, where a
-        # collaborator recommends sticking to f16 for the draft KV). So floor
-        # the embedded draft KV at f16 -- a quantized override is priced as f16
-        # (never under-reserved), while f32 still costs its full 4 bytes. The
-        # separate-drafter branch above is a full multi-layer model where
-        # quantization does amortize, so it keeps the user's actual type.
+        # The embedded MTP head is one draft layer, so a quantized draft KV can't
+        # amortize its overhead and fits *less* context than f16 (llama.cpp#24102).
+        # Floor it at f16: a quantized override is priced as f16, f32 keeps its 4
+        # bytes. The separate-drafter branch is multi-layer, so it keeps its type.
         f16_bpe = _kv_bytes_per_elem("f16")
         bpe_k = max(bpe_k, f16_bpe)
         bpe_v = max(bpe_v, f16_bpe)
@@ -2610,13 +2561,10 @@ class LlamaCppBackend:
         )
         weights = max(0, draft_weights_bytes)
         if draft_kv is None:
-            # The draft KV couldn't be sized (e.g. an exotic/remote drafter GGUF
-            # whose metadata didn't parse). Still reserve the drafter's known
-            # weights so a drafter larger than the flat fallback cushion can't
-            # launch over budget; the smaller unsized draft KV rides in the
-            # total-based VRAM cushion. Nothing known at all (an embedded head
-            # with missing dims, or an HF spec with no local size) -> None, so
-            # the caller keeps the flat fallback.
+            # KV unsized (exotic/remote drafter): still reserve known weights so a
+            # large drafter can't launch over budget (the small unsized KV rides in
+            # the cushion). Nothing known -> None, so the caller keeps the flat
+            # fallback.
             return weights if weights > 0 else None
         return draft_kv + weights
 
@@ -2646,11 +2594,9 @@ class LlamaCppBackend:
             # Output + comm/staging materialized on every device, every slot.
             compute = 2 * act_scratch + out_buffer * par
         else:
-            # Single-token decode is ~free; each extra concurrent slot adds one
-            # output buffer. This assumes a small n_outputs_max (chat decode, where
-            # llama.cpp sizes the graph for ~one logit row per slot); it would
-            # under-count for embeddings / --logits-all / reranking, which Studio
-            # does not run on this path. Matches measured {1:36,2:492,4:1388,8:3220} MiB.
+            # Each extra concurrent slot adds one output buffer (chat decode sizes
+            # ~one logit row per slot; would under-count embeddings/--logits-all,
+            # not run here). Matches measured {1:36,2:492,4:1388,8:3220} MiB.
             compute = act_scratch + out_buffer * max(0, par - 1)
         return int(compute * self._COMPUTE_BUFFER_SAFETY)
 
@@ -2675,9 +2621,8 @@ class LlamaCppBackend:
         """Return the largest context length that fits in GPU VRAM.
 
         Budget caps occupancy at ``_CTX_FIT_VRAM_FRACTION`` of the card: an
-        absolute ``free - (1 - frac) * total`` when ``total_mib`` is given (does not
-        shrink as the GPU fills), else ``free * frac``. Weights alone over budget
-        returns ``requested_ctx``.
+        absolute ``free - (1 - frac) * total`` when ``total_mib`` is given, else
+        ``free * frac``. Weights alone over budget returns ``requested_ctx``.
 
         ``kv_on_gpu`` mirrors ``--kv-offload`` (default on); when False the KV
         cache lives in CPU RAM and the requested context is honored verbatim.
@@ -2705,14 +2650,12 @@ class LlamaCppBackend:
             ctx_checkpoints = ctx_checkpoints,
         )
 
-        # mtp_overhead_fn (byte-accurate, per-ctx) supersedes the flat fraction;
-        # the flat fraction is the fallback when dims can't size the draft KV.
-        # Callers may override budget_frac (tensor mode passes a fatter margin).
+        # byte-accurate mtp_overhead_fn supersedes the flat fraction (the fallback
+        # when dims can't size the draft KV); callers may override budget_frac.
         if budget_frac is None:
             flat_mtp = mtp_engaged and mtp_overhead_fn is None
             budget_frac = _CTX_FIT_VRAM_FRACTION - (_MTP_VRAM_RESERVE_FRAC if flat_mtp else 0.0)
-        # Absolute reserve off total when known (stays constant as the GPU fills),
-        # else fraction-of-free. Clamp >=0 so a near-full GPU yields an empty budget.
+        # Absolute reserve off total when known, else fraction-of-free; clamp >=0.
         if total_mib is not None and total_mib > 0:
             budget_mib = max(0.0, available_mib - (1.0 - budget_frac) * total_mib)
         else:
@@ -4312,15 +4255,11 @@ class LlamaCppBackend:
                 cache_type_kv = resolve_cache_type_kv(extra_args, cache_type_kv)
                 _cache_type_from_env = False
                 if cache_type_kv is None:
-                    # Neither param nor extras set the main KV type, so Studio
-                    # emits no --cache-type and the child inherits
-                    # LLAMA_ARG_CACHE_TYPE_K/_V. A heavier env type (f32) would
-                    # otherwise be budgeted as the f16 default and under-reserved,
-                    # so adopt it for the reserve only. The launch does NOT re-emit
-                    # it: the env already reaches the child, and re-emitting a
-                    # single value would rewrite an asymmetric K/V env (e.g. K=f32,
-                    # V=f16) into symmetric flags. _cache_type_from_env keeps this
-                    # budget-only value out of the emitted --cache-type flags.
+                    # Param/extras set nothing, so the child inherits
+                    # LLAMA_ARG_CACHE_TYPE_K/_V. Adopt a heavier env type (f32) for
+                    # the reserve only; the launch does NOT re-emit it (that would
+                    # rewrite an asymmetric K=f32,V=f16 env into symmetric flags),
+                    # so _cache_type_from_env keeps it out of the emitted flags.
                     cache_type_kv = _env_main_cache_type_for_budget()
                     _cache_type_from_env = cache_type_kv is not None
                 # A user --split-mode in extras last-wins-overrides the
@@ -4408,12 +4347,9 @@ class LlamaCppBackend:
                     total_by_idx = {idx: total for idx, _f, total in _gpu_mem}
 
                     def _gpu_usable(g, frac = _CTX_FIT_VRAM_FRACTION):
-                        # Per-GPU usable budget for ranking: free - (1-frac)*total
-                        # (a more-used big card can rank below a less-used small one).
-                        # Callers pass the ACTIVE fraction (_pin_fraction, lowered by
-                        # the flat MTP reserve) so the ranking order matches the
-                        # budget the fit then tests; otherwise mixed-total GPUs can
-                        # be mis-ordered and a worse subset chosen.
+                        # Per-GPU usable budget for ranking: free - (1-frac)*total.
+                        # Callers pass the ACTIVE fraction so the ranking matches the
+                        # budget the fit then tests (else mixed totals mis-order).
                         idx, free = g
                         t = total_by_idx.get(idx, 0)
                         if t > 0:
@@ -4421,11 +4357,9 @@ class LlamaCppBackend:
                         return free * frac
 
                     def _pool_budget_mib(subset, frac):
-                        # Sum each GPU's own usable budget (total-based when its
-                        # total is known, else free*frac). Pooling free and total
-                        # separately let an unknown-total GPU (MIG/vGPU/N/A) add its
-                        # full free with no cushion when mixed with known-total
-                        # GPUs, over-advertising the pool by ~(1-frac)*free there.
+                        # Sum each GPU's own usable budget. Pooling free and total
+                        # separately would let an unknown-total GPU (MIG/vGPU/N/A)
+                        # add full free with no cushion among known-total GPUs.
                         return sum(max(0.0, _gpu_usable(g, frac)) for g in subset)
 
                     # Resolve effective context: 0 means let llama-server use
@@ -4442,12 +4376,10 @@ class LlamaCppBackend:
                     # GPU/VRAM-fit logic below may shrink it on limited HW.
                     max_available_ctx = self._context_length or effective_ctx
 
-                    # Will MTP engage on this load? If so, auto-fit reserves
-                    # extra VRAM for the draft model. Mirrors
-                    # _build_speculative_flags' resolver: forced mtp / mtp+ngram
-                    # always engage; auto only on an MTP model >= 3B; ngram /
-                    # ngram-simple / off never engage MTP. A separate drafter
-                    # (Gemma) counts as an MTP model just like a baked-in head.
+                    # Will MTP engage? If so, auto-fit reserves draft-model VRAM.
+                    # Mirrors _build_speculative_flags: forced mtp/mtp+ngram always
+                    # engage; auto only on an MTP model >= 3B; ngram/off never. A
+                    # separate drafter (Gemma) counts as an MTP model.
                     _mtp_canonical = _canonicalize_spec_mode(speculative_type)
                     _mtp_effective = _mtp_canonical or "auto"
                     _mtp_size_for_fit = _extract_model_size_b(model_identifier)
@@ -4458,13 +4390,11 @@ class LlamaCppBackend:
                         and _mtp_size_for_fit < _MTP_MIN_SIZE_B
                         and not bool(mtp_draft_path)
                     )
-                    # llama-server's CLI args override env (last/CLI wins), and
-                    # _build_speculative_flags emits a --spec-type/--spec-default for
-                    # every mode except "off". So LLAMA_ARG_SPEC_TYPE only reaches the
-                    # child when neither extras nor Studio emit a spec flag: mode "off"
-                    # with no user --spec-type. Consult the env for the reserve only
-                    # then; otherwise the emitted flag decides and a stale MTP env
-                    # would over-reserve (shrink context / pick extra GPUs).
+                    # LLAMA_ARG_SPEC_TYPE only reaches the child when neither extras
+                    # nor Studio emit a spec flag (mode "off", no user --spec-type),
+                    # since _build_speculative_flags emits one for every other mode.
+                    # Consult the env for the reserve only then, else a stale MTP env
+                    # would over-reserve.
                     _spec_env: Mapping[str, str] = (
                         os.environ
                         if (not _extra_args_set_spec_type(extra_args) and _mtp_canonical == "off")
@@ -4514,14 +4444,11 @@ class LlamaCppBackend:
                     _mtp_eff_n_max = _extra_n_max if _extra_n_max is not None else spec_draft_n_max
                     if _mtp_eff_n_max is None:
                         _mtp_eff_n_max = 2 if gpus else 3
-                    # Separate-drafter weights live on GPU too (an embedded head is
-                    # already in model_size). Size the drafter the launch actually
-                    # loads, by precedence: a user --model-draft in extras is
-                    # appended last and wins; else Studio's emitted --model-draft
-                    # (mtp_draft_path, emitted only when MTP engages and the user
-                    # doesn't own --spec-type) -- it overrides LLAMA_ARG_SPEC_DRAFT_MODEL;
-                    # the env drafter applies only when neither emits one. Sizing the
-                    # wrong (e.g. smaller env) drafter would under-reserve and OOM.
+                    # Separate-drafter weights live on GPU (an embedded head is
+                    # already in model_size). Size the drafter the launch loads, by
+                    # precedence: extras --model-draft (last-wins), else Studio's
+                    # emitted mtp_draft_path, else the env drafter. Sizing the wrong
+                    # one would under-reserve and OOM.
                     _cli_draft_for_budget = _extra_args_mtp_draft_path(extra_args, env = {})
                     _studio_draft_for_budget = (
                         mtp_draft_path
@@ -4536,10 +4463,8 @@ class LlamaCppBackend:
                     _mtp_draft_for_budget = (
                         _cli_draft_for_budget or _studio_draft_for_budget or _env_draft_for_budget
                     )
-                    # A user who offloads the separate drafter to CPU
-                    # (--spec-draft-ngl 0 / --spec-draft-device none) keeps its
-                    # weights+KV off the GPU, so drop it from the budget. An embedded
-                    # head (if any) is in the main model and unaffected.
+                    # Drafter offloaded to CPU keeps its weights+KV off the GPU, so
+                    # drop it from the budget (an embedded head stays in the model).
                     _draft_on_cpu = _extra_args_draft_offloaded_to_cpu(extra_args)
                     if _draft_on_cpu:
                         _mtp_draft_for_budget = None
@@ -4623,40 +4548,27 @@ class LlamaCppBackend:
                     )
                     model_size_fit = model_size + _compute_buffer_pipeline
 
-                    # Layer split adds a fixed per-device overhead (CUDA context +
-                    # per-device scratch) on every participating GPU. The folded
-                    # compute buffer above covers one device; reserve the extra
-                    # devices' share so a k-GPU layer split can't pin a context
-                    # that fits the pool on paper but OOMs a device at load. k=1
-                    # adds nothing, so single-GPU sizing is unchanged.
+                    # Layer split adds a fixed per-device overhead on every GPU. The
+                    # folded buffer covers one device; reserve the extra devices'
+                    # share so a k-GPU split can't pin a context that OOMs a device
+                    # (k=1 adds nothing).
                     _pipeline_overhead_bytes = self._PIPELINE_PER_DEVICE_OVERHEAD_MIB * 1024 * 1024
 
                     def _subset_model_size(n_gpus: int) -> int:
                         return model_size_fit + max(0, n_gpus - 1) * _pipeline_overhead_bytes
 
-                    # Auto-cap context to fit GPU VRAM and select GPUs. Two
-                    # policies by whether the user set n_ctx:
-                    #   Explicit n_ctx: honor it. Try the full context with
-                    #     _select_gpus (as many GPUs as needed); cap only if it
-                    #     doesn't fit on any combination.
-                    #   Auto n_ctx=0 (native): prefer fewer GPUs with reduced
-                    #     context, since multi-GPU is slower.
+                    # Auto-cap context to fit VRAM and select GPUs. Explicit n_ctx:
+                    # honor it, cap only if it fits no combination. Auto (native):
+                    # prefer fewer GPUs with reduced context (multi-GPU is slower).
                     gpu_indices, use_fit = None, True
                     # Per-GPU weight proportions for tensor mode (None = even).
                     tp_tensor_split: Optional[list[int]] = None
                     explicit_ctx = requested_ctx > 0
-                    # MTP draft model lives outside the main estimates; carve
-                    # its reserve out of every fit budget and pin threshold so
-                    # a load can't pin into the drafter's headroom. With a
-                    # byte-accurate overhead (mtp_overhead_fn) the reserve is
-                    # added to the totals per candidate context instead, so the
-                    # flat fraction applies only as the dims-unavailable fallback --
-                    # but also when only the drafter weights could be sized
-                    # (_mtp_kv_unsized): the flat fraction is then the cushion for
-                    # the still-unsized draft KV, on top of the byte-accurate weights.
-                    # A separate drafter offloaded to CPU consumes no GPU, so it gets
-                    # no flat reserve; an embedded head is on GPU regardless of the
-                    # draft-only offload flags, so keep its reserve.
+                    # Flat MTP reserve fraction: used only as the fallback when the
+                    # byte-accurate mtp_overhead_fn can't size the draft KV (dims
+                    # unavailable, or _mtp_kv_unsized = weights-only). A separate
+                    # drafter on CPU uses no GPU (no reserve); an embedded head is on
+                    # GPU regardless of draft-offload flags (keep its reserve).
                     _flat_mtp_engages = _mtp_will_engage and (
                         mtp_overhead_fn is None or _mtp_kv_unsized
                     )
@@ -4668,12 +4580,9 @@ class LlamaCppBackend:
                     )
                     _pin_fraction = self._GPU_PIN_VRAM_FRACTION - _flat_mtp_reserve
 
-                    # Tensor mode allocates a compute-graph buffer on every
-                    # participating GPU, so a GPU with less free VRAM than that
-                    # reserve can't host it and would OOM at load. Drop those
-                    # from the tensor-parallel set up front (gpu_indices below
-                    # becomes the CUDA_VISIBLE_DEVICES mask, so they're excluded
-                    # from llama-server entirely, not just given zero weight).
+                    # Tensor mode replicates a compute buffer on every GPU, so drop
+                    # GPUs below that reserve from the set up front (gpu_indices
+                    # becomes the CUDA_VISIBLE_DEVICES mask, fully excluding them).
                     tp_gpus = gpus
                     if tensor_parallel:
                         # Deterministic per-device compute buffer (replicated on
@@ -4709,22 +4618,17 @@ class LlamaCppBackend:
                         )
                         tensor_parallel = False
                         # Layer split supports a quantized KV the tensor attempt
-                        # had to drop; restore it so the fallback keeps the user's
-                        # memory savings (the launch re-emits --cache-type-k/v from
-                        # this variable, so the stripped flag is not needed).
+                        # dropped; restore it (re-emitted from cache_type_kv).
                         if _tensor_dropped_cache_type_kv is not None:
                             cache_type_kv = _tensor_dropped_cache_type_kv
-                        # A user --split-mode tensor in extras is appended after
-                        # Studio's flags, so it would still reach llama-server and
-                        # fail here; strip it so the downgrade actually applies.
+                        # Strip a user --split-mode tensor from extras so the
+                        # downgrade actually applies (extras are appended last).
                         extra_args = strip_split_mode_only(extra_args)
 
                     if tensor_parallel and tp_gpus:
-                        # The pooled usable budget, after each device's compute
-                        # buffer, must hold the non-shrinkable footprint: weights
-                        # plus the MTP reserve (drafter weights + floor draft KV).
-                        # The planner can shrink context/KV, not these, so it would
-                        # only floor the context and still launch overcommitted.
+                        # Pooled usable budget (after each device's compute buffer)
+                        # must hold the non-shrinkable footprint: weights + the MTP
+                        # reserve. The planner can shrink ctx/KV, not these.
                         _tp_weight_budget_mib = (
                             sum(_gpu_usable(g) for g in tp_gpus) - len(tp_gpus) * reserve_mib
                         )
@@ -4736,11 +4640,9 @@ class LlamaCppBackend:
                                 min(2048, effective_ctx) if effective_ctx > 0 else 2048
                             )
                         else:
-                            # Dims unavailable, or weights-only (KV unsized): tensor
-                            # mode has no --fit safety valve, so keep the flat reserve
-                            # as the cushion for the unsized draft KV, never below the
-                            # known byte reserve (drafter weights). Mirrors the
-                            # layer-split _mtp_kv_unsized handling.
+                            # Dims unavailable / weights-only: tensor mode has no
+                            # --fit valve, so keep the flat reserve as the unsized-KV
+                            # cushion, never below the known byte reserve.
                             _tp_mtp_floor = max(
                                 _tp_flat_mtp,
                                 _mtp_bytes(min(2048, effective_ctx) if effective_ctx > 0 else 2048),
@@ -4753,18 +4655,13 @@ class LlamaCppBackend:
                                 "per-device compute buffers; falling back to layer split."
                             )
                             tensor_parallel = False
-                            # Restore the quantized KV the tensor attempt dropped;
-                            # the layer-split fallback supports it (re-emitted from
-                            # cache_type_kv at launch).
+                            # Restore the dropped quantized KV (layer split supports it).
                             if _tensor_dropped_cache_type_kv is not None:
                                 cache_type_kv = _tensor_dropped_cache_type_kv
                             extra_args = strip_split_mode_only(extra_args)
 
                     if tensor_parallel and tp_gpus:
-                        # Tensor-parallel allocation: use all usable GPUs, weight
-                        # the split by (free - buffer), and cap context to the
-                        # pooled VRAM after weights + per-device compute-graph
-                        # buffers. See _plan_tensor_parallel for the policy.
+                        # Tensor-parallel allocation; see _plan_tensor_parallel.
                         target_ctx = (
                             effective_ctx
                             if explicit_ctx
@@ -4936,9 +4833,7 @@ class LlamaCppBackend:
                             # so the slider isn't on an unusable native ctx.
                             effective_ctx = min(4096, effective_ctx) if effective_ctx > 0 else 4096
 
-                    # MTP reserve at the final context, for the logs below. Spells
-                    # out why a context was reduced for the "110k selected then
-                    # OOM mid-generation" class of reports.
+                    # MTP reserve at the final context, for the logs below.
                     _mtp_reserve_bytes = _mtp_bytes(effective_ctx) if _mtp_will_engage else 0
                     if _mtp_will_engage:
                         _mtp_note = (
@@ -5081,10 +4976,8 @@ class LlamaCppBackend:
                     self._cache_type_kv = cache_type_kv
                     logger.info(f"KV cache type: {cache_type_kv}")
                 else:
-                    # When the type came only from the env (_cache_type_from_env),
-                    # leave the inherited LLAMA_ARG_CACHE_TYPE_K/_V untouched so an
-                    # asymmetric K/V env reaches the child as set; the budget above
-                    # already sized the heavier of the two.
+                    # An env-only type is left inherited (untouched) so an
+                    # asymmetric K/V env reaches the child as set.
                     self._cache_type_kv = None
 
                 # Tensor parallelism: split the model across GPUs by tensor
@@ -5237,26 +5130,20 @@ class LlamaCppBackend:
                 # Library paths so llama-server finds its shared libs and CUDA DLLs.
                 env = self._llama_server_env_for_binary(binary)
 
-                # Reconcile the child env with Studio's final split-mode/KV
-                # decision. The child inherits LLAMA_ARG_* (see
-                # child_env_without_native_path_secret); stripping CLI extras on a
-                # tensor->layer downgrade does not remove these, so they can run
-                # the child in a mode Studio neither chose nor budgeted.
+                # Reconcile the inherited LLAMA_ARG_* env with Studio's final
+                # decision: stripping CLI extras on a tensor->layer downgrade
+                # can't remove env vars, so the child could run a mode/KV Studio
+                # didn't budget.
                 if not tensor_parallel:
-                    # Final decision is layer split. An inherited tensor/row/none
-                    # split mode (and any paired tensor-split) would override
-                    # Studio's layer plan and per-device budget, so clear them and
-                    # let llama-server use layer split across the pinned GPUs.
+                    # Layer split: clear a non-layer inherited split mode (and any
+                    # paired tensor-split) so the child can't override the layer plan.
                     _inherited_sm = (env.get("LLAMA_ARG_SPLIT_MODE") or "").strip().lower()
                     if _inherited_sm and _inherited_sm != "layer":
                         env.pop("LLAMA_ARG_SPLIT_MODE", None)
                         env.pop("LLAMA_ARG_TENSOR_SPLIT", None)
                 else:
-                    # Final decision is tensor split, which aborts on a quantized
-                    # KV cache. Studio drops a quantized cache_type_kv for the
-                    # tensor attempt, but an inherited quantized LLAMA_ARG_CACHE_TYPE_K/_V
-                    # would still crash the child (and was budgeted as tensor-safe);
-                    # clear it so the child uses the tensor-safe default.
+                    # Tensor split aborts on a quantized KV; clear an inherited
+                    # quantized cache type so the child uses the tensor-safe default.
                     for _ct_var in ("LLAMA_ARG_CACHE_TYPE_K", "LLAMA_ARG_CACHE_TYPE_V"):
                         _ct_raw = (env.get(_ct_var) or "").strip().lower()
                         if _ct_raw and _ct_raw not in self._TENSOR_PARALLEL_KV_TYPES:
