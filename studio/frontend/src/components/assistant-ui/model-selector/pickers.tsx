@@ -44,6 +44,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { DotTag } from "@/features/hub/catalog/dot-tag";
 import { FolderBrowser } from "./folder-browser";
 import { ModelDeleteAction } from "./model-delete-action";
+import { parseMetaTokens, splitRepoLabel } from "./row-meta";
 import { ChevronDownIcon, ChevronRightIcon } from "lucide-react";
 import {
   type KeyboardEvent,
@@ -278,93 +279,6 @@ function formatBytes(bytes: number): string {
   const i = Math.floor(Math.log(bytes) / Math.log(1024));
   const value = bytes / 1024 ** i;
   return `${value.toFixed(value < 10 ? 1 : 0)} ${units[i]}`;
-}
-
-// ── Row presentation helpers ──
-// Reuse the on-device card's look: DotTag format pills, owner/name split,
-// param chip, tabular size.
-
-type FormatTone = "gguf" | "checkpoint" | "adapter";
-
-// Format keyword to DotTag tone. Looked up by full token and by first word,
-// so "Full finetune" resolves via "full".
-const FORMAT_TONE: Record<string, FormatTone> = {
-  gguf: "gguf",
-  local: "checkpoint",
-  safetensors: "checkpoint",
-  checkpoint: "checkpoint",
-  lora: "adapter",
-  merged: "adapter",
-  adapter: "adapter",
-  exported: "adapter",
-  full: "adapter",
-};
-
-/** Split "owner/name" on the last slash. No slash means name only. */
-function splitRepoLabel(label: string): { owner: string | null; name: string } {
-  const slash = label.lastIndexOf("/");
-  if (slash <= 0 || slash === label.length - 1) {
-    return { owner: null, name: label };
-  }
-  return { owner: label.slice(0, slash), name: label.slice(slash + 1) };
-}
-
-type MetaToken =
-  | { kind: "format"; label: string; tone: FormatTone }
-  | { kind: "size"; label: string }
-  | { kind: "param"; label: string }
-  | { kind: "text"; label: string };
-
-const META_SIZE_RE = /(?:KB|MB|GB|TB)\b/i;
-const META_APPROX_RE = /^~/;
-const META_PARAM_RE = /^\d+(?:\.\d+)?B$/i;
-const META_WHITESPACE_RE = /\s+/;
-
-/** Classify a meta token: size (has KB/MB/GB/TB or leading "~"), param (bare
- * "<n>B" like "4B"), format keyword, or plain text. */
-function classifyMetaToken(raw: string): MetaToken | null {
-  const t = raw.trim();
-  if (!t) return null;
-  if (META_SIZE_RE.test(t) || META_APPROX_RE.test(t)) {
-    return { kind: "size", label: t };
-  }
-  if (META_PARAM_RE.test(t)) {
-    return { kind: "param", label: t.toUpperCase() };
-  }
-  const lower = t.toLowerCase();
-  const tone = FORMAT_TONE[lower] ?? FORMAT_TONE[lower.split(META_WHITESPACE_RE)[0]];
-  if (tone) {
-    return { kind: "format", label: t, tone };
-  }
-  return { kind: "text", label: t };
-}
-
-/** Parse the dot-separated meta string into structured tokens. */
-function parseMetaTokens(meta?: string | null): {
-  formats: { label: string; tone: FormatTone }[];
-  param?: string;
-  size?: string;
-  texts: string[];
-} {
-  const formats: { label: string; tone: FormatTone }[] = [];
-  const texts: string[] = [];
-  let param: string | undefined;
-  let size: string | undefined;
-  if (!meta) return { formats, texts };
-  for (const part of meta.split("·")) {
-    const token = classifyMetaToken(part);
-    if (!token) continue;
-    if (token.kind === "format") {
-      formats.push({ label: token.label, tone: token.tone });
-    } else if (token.kind === "size") {
-      size ??= token.label;
-    } else if (token.kind === "param") {
-      param ??= token.label;
-    } else {
-      texts.push(token.label);
-    }
-  }
-  return { formats, param, size, texts };
 }
 
 function ModelRow({
