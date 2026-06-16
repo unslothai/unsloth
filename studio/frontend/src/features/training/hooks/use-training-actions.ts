@@ -317,8 +317,12 @@ async function resumePayloadRequiresTrustRemoteCode(
 
   try {
     return await getModelTrustRemoteCodeRequirement(payload.model_name);
-  } catch {
-    return false;
+  } catch (error) {
+    const detail =
+      error instanceof Error ? error.message : "Unknown trust_remote_code lookup error";
+    throw new Error(
+      `Could not verify whether ${payload.model_name} requires trust_remote_code before resuming training. ${detail}`,
+    );
   }
 }
 

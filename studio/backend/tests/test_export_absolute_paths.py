@@ -204,6 +204,7 @@ def _install_lightweight_backend_stubs(monkeypatch):
         "LoRABaseModelResponse",
         "VisionCheckResponse",
         "EmbeddingCheckResponse",
+        "TrustRemoteCodeCheckResponse",
     ):
         setattr(models_responses, name, object)
     monkeypatch.setitem(sys.modules, "models.responses", models_responses)
