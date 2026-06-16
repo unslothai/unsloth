@@ -1,21 +1,17 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Shared robustness helpers for the Studio Playwright tests.
+"""Shared robustness helpers for the Studio Playwright tests, the single
+point of truth for the CI-runner workarounds (Chromium flags, view-transition
+killer, page recovery, post-action response wait) that both
+`playwright_chat_ui.py` and `playwright_extra_ui.py` need.
 
-Both `playwright_chat_ui.py` and `playwright_extra_ui.py` re-implemented
-the same set of CI-runner workarounds (Chromium launch flags, view-
-transition CSS killer, change-password retry / page-recovery, post-
-action response wait). When one diverged the other slowly rotted; the
-mac/win/linux failure modes are mostly identical so the cure is the
-same. This module is the single point of truth.
-
-Importable directly by the standalone scripts via:
+Importable directly by the standalone scripts:
 
     sys.path.insert(0, str(Path(__file__).parent))
     from _playwright_robust import (...)
 
-It does NOT depend on pytest -- both consumers run as plain Python.
+Does NOT depend on pytest -- both consumers run as plain Python.
 """
 
 from __future__ import annotations
@@ -30,28 +26,16 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Callable
 
-# ─────────────────────────────────────────────────────────────────────
 # Chromium launch args.
-# ─────────────────────────────────────────────────────────────────────
 #
-# Base set works on every CI runner. The four "throttling" flags fight
-# Chromium's tendency to deprioritise CPU + timers when it thinks the
-# window is backgrounded -- which CI runners routinely flag because
-# the headless context has no real focus. Without these, gemma-3-270m
-# inference on Mac slowed to a crawl mid-test (run 25586583024 had a
-# turn budget that never released the Stop button) and the React
-# render queue stalled long enough for `wait_for_function` waits to
-# crowd their per-turn budget.
+# The throttling flags stop Chromium deprioritising CPU/timers when it thinks
+# the headless window is backgrounded (run 25586583024 stalled gemma-3-270m
+# inference and the React render queue mid-test). TranslateUI strips a popup
+# that intercepts pointer events; ipc-flooding-protection off lets rapid clicks
+# through during the slider sweep.
 #
-# `--disable-features=TranslateUI` strips the translate prompt that
-# occasionally adds a popup which intercepts pointer events.
-# `--disable-ipc-flooding-protection` lets us send rapid-fire clicks
-# during the slider sweep without Chromium queuing them.
-#
-# `--single-process` is darwin-only. On Mac it is the documented free-
-# runner fix for the pipeTransport.js JSON-RPC crash; on Win/Linux it
-# strictly destabilises the renderer-isolation safety net so any
-# crash takes the whole context down.
+# `--single-process` is darwin-only: the documented free-runner fix for the
+# pipeTransport.js JSON-RPC crash; on Win/Linux it destabilises the renderer.
 _BASE_CHROMIUM_ARGS = (
     "--disable-dev-shm-usage",
     "--no-sandbox",
@@ -65,11 +49,8 @@ _BASE_CHROMIUM_ARGS = (
 
 
 def chromium_launch_args(platform: str | None = None) -> list[str]:
-    """Return the Chromium launch arg list appropriate for `platform`.
-
-    Defaults to the running interpreter's `sys.platform`. Pass a
-    string to test the darwin branch on Linux.
-    """
+    """Return Chromium launch args for `platform` (defaults to `sys.platform`;
+    pass a string to test the darwin branch on Linux)."""
     p = sys.platform if platform is None else platform
     args = list(_BASE_CHROMIUM_ARGS)
     if p == "darwin":
@@ -77,19 +58,14 @@ def chromium_launch_args(platform: str | None = None) -> list[str]:
     return args
 
 
-# ─────────────────────────────────────────────────────────────────────
 # Init scripts injected into every Playwright context.
-# ─────────────────────────────────────────────────────────────────────
 #
-# CSS view-transitions are otherwise rendered as a full-window
-# pseudo-element that intercepts pointer events for a beat after each
-# theme/route swap. Even with `reduced_motion = "reduce"` set on the
-# context, Studio's components run their own startViewTransition() in
-# a few places (theme toggle, sidebar collapse) and Playwright's
-# actionability check then reports `<html> intercepts pointer events`
-# on the next click. Killing the pseudo-elements + monkey-patching
-# document.startViewTransition into a synchronous shim removes both
-# failure modes. Idempotent and safe to install on every page.
+# CSS view-transitions render a full-window pseudo-element that intercepts
+# pointer events for a beat after each theme/route swap, so Playwright reports
+# `<html> intercepts pointer events` on the next click (even with
+# reduced_motion, since Studio calls startViewTransition() directly). Killing
+# the pseudo-elements + shimming startViewTransition synchronously fixes both.
+# Idempotent and safe to install on every page.
 _VIEW_TRANSITION_KILLER_JS = """
 (function () {
     try {
@@ -130,16 +106,11 @@ def install_view_transition_killer(ctx: Any) -> None:
     ctx.add_init_script(_VIEW_TRANSITION_KILLER_JS)
 
 
-# ─────────────────────────────────────────────────────────────────────
 # Server health pre-flight.
-# ─────────────────────────────────────────────────────────────────────
 #
-# Both workflows already wait for /api/health at the bash level before
-# launching the Python script, but the macos-14 free runner has been
-# observed to surface a brief window where /api/health responds 200
-# yet /api/auth endpoints still 503 because the auth DB hasn't
-# finished migrating. A second probe inside the script catches that
-# narrow gap before we sink 60s into a change-password timeout.
+# The bash wait already gates on /api/health, but on the macos-14 free runner
+# /api/health can return 200 while /api/auth still 503s (auth DB mid-migration).
+# A second in-script probe catches that gap before a 60s change-password timeout.
 
 
 def _http_get_status_and_body(url: str, timeout: float) -> tuple[int, dict | None]:
@@ -162,13 +133,9 @@ def wait_for_health(
     timeout: float = 30.0,
     info: Callable[[str], None] | None = None,
 ) -> bool:
-    """Poll {base_url}/api/health until status==200 with healthy body.
-
-    Returns True on success, False on timeout. Never raises -- the
-    caller decides whether to fail. The test scripts use the boolean
-    only for diagnostic logging, since the workflow's own /api/health
-    wait is the authoritative gate.
-    """
+    """Poll {base_url}/api/health until status==200. Returns True on success,
+    False on timeout; never raises. Diagnostic only -- the workflow's own
+    /api/health wait is the authoritative gate."""
     deadline = time.monotonic() + timeout
     last_status: int | None = None
     last_body: dict | None = None
@@ -182,9 +149,7 @@ def wait_for_health(
         # but accept any 200 -- different Studio builds report differently.
         if status == 200:
             if info is not None:
-                info(
-                    f"health pre-flight OK: status=200, body keys={list((body or {}).keys())}"
-                )
+                info(f"health pre-flight OK: status=200, body keys={list((body or {}).keys())}")
             return True
         time.sleep(0.5)
     if info is not None:
@@ -195,14 +160,11 @@ def wait_for_health(
     return False
 
 
-# ─────────────────────────────────────────────────────────────────────
 # Page recovery.
-# ─────────────────────────────────────────────────────────────────────
 #
-# The single canonical "did the page die mid-test" recovery path. Used
-# by every retry block in both scripts. If the page is closed, opens a
-# fresh one in the same context (auth state in localStorage survives);
-# otherwise leaves the page alone. Optionally re-navigates.
+# Canonical "did the page die mid-test" path used by every retry block. If the
+# page is closed, opens a fresh one in the same context (localStorage auth
+# survives); otherwise leaves it alone. Optionally re-navigates.
 
 
 def recover_or_replace_page(
@@ -214,13 +176,9 @@ def recover_or_replace_page(
     settle_networkidle: bool = True,
     info: Callable[[str], None] | None = None,
 ) -> Any:
-    """Return a usable page. Replaces `page` if it is closed.
-
-    If `goto_url` is provided, navigates the (possibly new) page there
-    and best-effort waits for networkidle. Errors during recovery are
-    logged through `info` (if provided) and swallowed -- the caller
-    handles a still-broken page on the next retry iteration.
-    """
+    """Return a usable page, replacing `page` if it is closed. If `goto_url` is
+    given, navigates there and best-effort waits for networkidle. Recovery
+    errors are logged and swallowed; the caller retries a still-broken page."""
     try:
         if page.is_closed():
             page = ctx.new_page()
@@ -230,9 +188,7 @@ def recover_or_replace_page(
             info(f"recovery: page.is_closed() check failed: {exc!r}")
     if goto_url is not None:
         try:
-            page.goto(
-                goto_url, wait_until = "domcontentloaded", timeout = default_timeout_ms
-            )
+            page.goto(goto_url, wait_until = "domcontentloaded", timeout = default_timeout_ms)
             if settle_networkidle:
                 try:
                     page.wait_for_load_state("networkidle", timeout = 30_000)
@@ -258,15 +214,10 @@ def click_and_wait_for_response(
     timeout_ms: int = 30_000,
     info: Callable[[str], None] | None = None,
 ) -> tuple[int | None, Exception | None]:
-    """Click + wait for the matching XHR/fetch response in one step.
-
-    Returns (status, err). On success: (status, None). On failure to
-    capture the response: (None, exception). Callers typically check
-    `status >= 400` to surface a server-side rejection immediately
-    rather than discovering it 60s later via a downstream wait_for.
-    Falls back to a fire-and-forget click on any wait error so the
-    outer retry loop still runs.
-    """
+    """Click + wait for the matching XHR/fetch response. Returns (status, None)
+    on success or (None, exception) on capture failure. Callers check
+    `status >= 400` to surface server rejections immediately. Falls back to a
+    fire-and-forget click on any wait error so the outer retry loop runs."""
     try:
         with page.expect_response(
             lambda r: url_substr in r.url and r.request.method == method,
@@ -288,19 +239,13 @@ def click_and_wait_for_response(
         return None, exc
 
 
-# ─────────────────────────────────────────────────────────────────────
 # Console-error / page-error filtering.
-# ─────────────────────────────────────────────────────────────────────
 #
-# Two categories:
-#   - BENIGN_PAGE_ERROR_PATTERNS: thrown JS errors that fire as a side
-#     effect of slow CI infra (server timeouts, request races) and have
-#     no user-visible consequence. The page-error gate at the end of
-#     each test should NOT count these.
-#   - BENIGN_CONSOLE_ERROR_PATTERNS: console.error events that fire
-#     for the same reason. Tests don't gate on console.error today
-#     (they only count for diagnostics), but the same list is useful
-#     for filtering noise out of the diagnostic dumps.
+#   - BENIGN_PAGE_ERROR_PATTERNS: JS errors from slow CI infra (timeouts,
+#     request races) with no user-visible effect; the page-error gate must not
+#     count these.
+#   - BENIGN_CONSOLE_ERROR_PATTERNS: same-cause console.error events, used only
+#     to filter noise from diagnostic dumps (tests don't gate on console.error).
 
 BENIGN_PAGE_ERROR_PATTERNS: tuple[str, ...] = (
     "Request failed (422)",
@@ -312,21 +257,15 @@ BENIGN_PAGE_ERROR_PATTERNS: tuple[str, ...] = (
 )
 
 BENIGN_CONSOLE_ERROR_PATTERNS: tuple[str, ...] = (
-    # macos-14 free runner buffer-exhaustion under --single-process
-    # Chromium. The browser surfaces this on resource fetches but the
-    # test catches the underlying request failure via expect_response
-    # and retries; the console line itself is informational.
+    # macos-14 buffer-exhaustion under --single-process; the test catches the
+    # underlying request failure via expect_response and retries.
     "net::ERR_NO_BUFFER_SPACE",
-    # Chromium emits a console.error every time a fetch is aborted,
-    # even when the abort is intentional (component unmount, route
-    # change). All four scripts trigger several of these per run.
+    # Intentional fetch aborts (unmount, route change) log a console.error.
     "AbortError",
     "The user aborted a request",
-    # Same shape: lazy-loaded chunk that's no longer needed because
-    # the user navigated away mid-load.
+    # Lazy chunk no longer needed because the user navigated away mid-load.
     "Loading chunk",
-    # Filtered as a benign page-error too; included here for the
-    # parallel diagnostic dump path.
+    # Also a benign page-error; here for the diagnostic dump path.
     "Failed to fetch",
 )
 
@@ -352,14 +291,9 @@ def dump_diagnostics(
     info: Callable[[str], None] | None = None,
     extra: dict | None = None,
 ) -> None:
-    """Write a screenshot + URL/title + body excerpt + storage dump.
-
-    Diagnostic only. Never raises. The screenshot path lives in
-    `art_dir/{name}.png`; the JSON sidecar lives in `art_dir/{name}.json`.
-    The screenshot is wrapped in try/except because Page.screenshot
-    waits for webfonts to load and can crowd CI font load on macos-14
-    even at 90s. The JSON sidecar is best-effort too.
-    """
+    """Write a screenshot (`art_dir/{name}.png`) + a JSON sidecar
+    (`art_dir/{name}.json`) with URL/title/body/storage. Diagnostic only, never
+    raises; both are best-effort (screenshot can crowd CI font load on macos-14)."""
     art = Path(art_dir)
     try:
         art.mkdir(parents = True, exist_ok = True)
@@ -408,26 +342,13 @@ def dump_diagnostics(
             info(f"diagnostics: json sidecar {name} failed: {exc}")
 
 
-# ─────────────────────────────────────────────────────────────────────
 # Bounded in-page fetch.
-# ─────────────────────────────────────────────────────────────────────
 #
-# Playwright's `page.evaluate(...)` has no `timeout=` argument. If the
-# JS body awaits a fetch that never resolves (the renderer's network
-# thread wedges, the server accepts the connection but never replies,
-# the macos-14 free runner under --single-process Chromium loses its
-# IPC pipe), the entire Python script hangs until the runner-level
-# timeout fires. Run 25696797934 / job 75446949358 on PR #5387 showed
-# this exact failure: studio.log went idle after the chat surface
-# mounted, no further requests reached the server, and Playwright
-# burned 27+ minutes on a single page.evaluate(fetch /api/inference/
-# load) before the 30-min runner cancel.
-#
-# `evaluate_fetch` wraps the fetch in an AbortController.signal so the
-# JS side resolves either with a real response or with a synthetic
-# `{status: 0, error: "AbortError..."}` after `timeout_ms` ms. Either
-# way page.evaluate returns and the script proceeds (or fails) with
-# a debuggable signal instead of a silent wedge.
+# `page.evaluate(...)` has no `timeout=`, so a fetch that never resolves hangs
+# the whole script until the runner timeout (run 25696797934 / PR #5387 burned
+# 27+ min on one page.evaluate). `evaluate_fetch` wraps the fetch in an
+# AbortController.signal so the JS side always resolves -- with a real response
+# or a synthetic `{status: 0, error: "AbortError..."}` after `timeout_ms`.
 def evaluate_fetch(
     page: Any,
     url: str,
@@ -436,19 +357,14 @@ def evaluate_fetch(
     headers: dict[str, str] | None = None,
     body: Any = None,
     timeout_ms: int = 20_000,
+    transport_retries: int = 2,
+    transport_backoff_ms: int = 250,
 ) -> dict[str, Any]:
-    """Run `fetch(url, opts)` inside the page with an AbortSignal deadline.
-
-    Returns `{"status": int, "body": parsed_or_text, "error": str|None}`.
-    On AbortSignal timeout returns `{"status": 0, "body": None, "error":
-    "AbortError: ..."}`. Callers should treat `status == 0` (or any
-    non-None `error`) as a transport failure rather than an HTTP
-    response.
-
-    `body` may be a `str` (sent verbatim) or a `dict`/`list` (JSON-
-    encoded here). Pass headers explicitly when you need
-    `Content-Type: application/json` or an `Authorization` bearer.
-    """
+    """Run `fetch(url, opts)` in the page with an AbortSignal deadline. Returns
+    `{"status", "body", "error"}`; on timeout `status==0` with an AbortError
+    string. Treat `status == 0` or a non-None `error` as transport failure, not
+    an HTTP response. `body` may be a str (verbatim) or dict/list (JSON-encoded
+    here); pass headers explicitly for Content-Type / Authorization."""
     body_arg: str | None
     if body is None:
         body_arg = None
@@ -482,48 +398,64 @@ def evaluate_fetch(
             }
         }
     """
-    return page.evaluate(
-        js,
-        {
-            "url": url,
-            "method": method,
-            "headers": headers or {},
-            "body": body_arg,
-            "timeoutMs": int(timeout_ms),
-        },
-    )
+    payload = {
+        "url": url,
+        "method": method,
+        "headers": headers or {},
+        "body": body_arg,
+        "timeoutMs": int(timeout_ms),
+    }
+    # Bounded retry on transport failures only:
+    #   status != 0 -> real HTTP response (incl. 4xx/5xx); propagate.
+    #   AbortError  -> caller's deadline; propagate.
+    #   else (==0)  -> stale-keepalive / "Failed to fetch" after auth rotation;
+    #                  retry after backoff so the pool evicts the dead socket.
+    last: dict[str, Any] | None = None
+    attempts = max(1, int(transport_retries) + 1)
+    for attempt in range(attempts):
+        result = page.evaluate(js, payload)
+        last = result
+        try:
+            status = int(result.get("status") or 0)
+        except (TypeError, ValueError):
+            status = 0
+        if status != 0:
+            return result
+        err = str(result.get("error") or "")
+        if "AbortError" in err:
+            return result
+        if attempt < attempts - 1:
+            wait_ms = transport_backoff_ms * (2**attempt)
+            try:
+                sys.stderr.write(
+                    f"[evaluate_fetch] {method} {url}: transport failure "
+                    f"({attempt + 1}/{attempts}, err={err!r}); "
+                    f"retrying in {wait_ms}ms\n"
+                )
+                sys.stderr.flush()
+            except Exception:
+                pass
+            time.sleep(wait_ms / 1000.0)
+    return last or {"status": 0, "body": None, "error": "no attempt made"}
 
 
-# ─────────────────────────────────────────────────────────────────────
 # Wall-clock watchdog.
-# ─────────────────────────────────────────────────────────────────────
 #
-# Even with every action and fetch bounded, a sufficiently strange
-# wedge inside the browser (a CPU-pinned JS infinite loop, a renderer
-# crash that doesn't propagate to Playwright, an asyncio deadlock in
-# the sync wrapper) can still hang the script. The watchdog is a
-# daemon Timer that calls `os._exit(2)` after `deadline_s` seconds,
-# printing the wedge location to stderr so the CI log shows where the
-# script was at force-kill time. The exit code matches "test failure
-# by deadline" so the workflow's `set -e` propagates correctly.
-#
-# Pick `deadline_s` generously enough to cover the slowest healthy
-# run -- macos-14 free runners with cold caches measure ~7-9 min for
-# the comprehensive chat UI test. 12 minutes (720 s) leaves headroom
-# without amplifying every real wedge to the 30-min runner-level cap.
+# Even with every action/fetch bounded, a strange browser wedge (CPU-pinned JS
+# loop, renderer crash that doesn't propagate, asyncio deadlock) can hang the
+# script. A daemon Timer calls `os._exit(2)` after `deadline_s`, printing the
+# wedge location to stderr; exit code 2 lets the workflow's `set -e` propagate.
+# Pick `deadline_s` above the slowest healthy run (macos-14 cold cache ~7-9 min;
+# 720s leaves headroom without nearing the 30-min runner cap).
 def install_wall_clock_watchdog(
     deadline_s: float,
     *,
     label: str = "playwright",
     info: Callable[[str], None] | None = None,
 ) -> threading.Timer:
-    """Start a daemon Timer that hard-exits the process at `deadline_s`.
-
-    Returns the Timer so the caller can `.cancel()` it on clean exit.
-    The Timer is daemonised; if the script exits normally before the
-    deadline the Timer dies with the process even without an explicit
-    cancel.
-    """
+    """Start a daemon Timer that hard-exits the process at `deadline_s`. Returns
+    it so the caller can `.cancel()` on clean exit; being daemonised, it also
+    dies with the process if the script exits first."""
 
     def _kaboom() -> None:
         msg = (

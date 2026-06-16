@@ -19,14 +19,22 @@ WORKFLOW_YML = REPO / ".github/workflows/studio-ui-smoke.yml"
 IME_PY = REPO / "tests/studio/playwright_chat_ime_i18n.py"
 
 
-def _block_around(src: str, anchor: str, radius: int = 600) -> str:
+def _block_around(
+    src: str,
+    anchor: str,
+    radius: int = 600,
+) -> str:
     idx = src.find(anchor)
     assert idx != -1, f"anchor {anchor!r} not found"
     return src[max(idx - radius, 0) : idx + radius]
 
 
 def test_main_composer_has_dir_auto():
-    block = _block_around(THREAD_TSX.read_text(), 'aria-label="Message input"')
+    # PR #5784 rewrote the literal attribute into a JSX conditional
+    # (`aria-label={overlay ? "Image edit instructions" : "Message input"}`),
+    # so anchor on the inner string literal instead -- it survives both
+    # the old and new spellings.
+    block = _block_around(THREAD_TSX.read_text(), '"Message input"')
     assert 'dir="auto"' in block, 'main composer is missing dir="auto"'
 
 
@@ -79,9 +87,9 @@ def test_main_composer_has_stuck_compositionend_watchdog():
     composing flag once events go silent; without it Send stays disabled
     forever and CJK input is effectively dropped."""
     src = THREAD_TSX.read_text()
-    assert "IME_STUCK_TIMEOUT_MS" in src, (
-        "main composer is missing the stuck-compositionend watchdog " "(issue #5546)"
-    )
+    assert (
+        "IME_STUCK_TIMEOUT_MS" in src
+    ), "main composer is missing the stuck-compositionend watchdog (issue #5546)"
     assert "onCompositionUpdate" in src, (
         "main composer is missing onCompositionUpdate wiring; the "
         "watchdog only resets while the IME is actively emitting events"
@@ -90,12 +98,10 @@ def test_main_composer_has_stuck_compositionend_watchdog():
 
 def test_compare_composer_has_stuck_compositionend_watchdog():
     src = SHARED_TSX.read_text()
-    assert "IME_STUCK_TIMEOUT_MS" in src, (
-        "compare composer is missing the stuck-compositionend watchdog " "(issue #5546)"
-    )
     assert (
-        "onCompositionUpdate" in src
-    ), "compare composer is missing onCompositionUpdate wiring"
+        "IME_STUCK_TIMEOUT_MS" in src
+    ), "compare composer is missing the stuck-compositionend watchdog (issue #5546)"
+    assert "onCompositionUpdate" in src, "compare composer is missing onCompositionUpdate wiring"
 
 
 def test_main_composer_keydown_repins_composing_during_ime():
@@ -121,11 +127,15 @@ def test_compare_composer_keydown_repins_composing_during_ime():
     )
 
 
-def _extract_block(src: str, anchor: str, opener: str = "(", closer: str = ")") -> str:
-    """Return the source between the first balanced opener/closer that
-    starts at or after `anchor`. Used to scope assertions to a specific
-    handler so a re-arm call in some other function does not satisfy
-    the gate test."""
+def _extract_block(
+    src: str,
+    anchor: str,
+    opener: str = "(",
+    closer: str = ")",
+) -> str:
+    """Return the source within the first balanced opener/closer at or
+    after `anchor`. Scopes assertions to one handler so a re-arm call
+    elsewhere does not satisfy the gate test."""
     start = src.find(anchor)
     assert start != -1, f"anchor {anchor!r} not found"
     open_idx = src.find(opener, start)
@@ -145,8 +155,7 @@ def _extract_block(src: str, anchor: str, opener: str = "(", closer: str = ")") 
 def test_main_composer_keydown_rearms_watchdog():
     """After the keydown re-pin sets composingRef=true the watchdog must
     be re-armed; otherwise the WSL+Chrome no-compositionend path this PR
-    targets would lock Send permanently after any IME keypress
-    (Codex P1 on commit 597af0d0)."""
+    targets would lock Send permanently after any IME keypress."""
     src = THREAD_TSX.read_text()
     block = _extract_block(src, "const onKeyDown = useCallback")
     assert "refreshStuckTimer" in block, (
@@ -158,7 +167,7 @@ def test_main_composer_keydown_rearms_watchdog():
         "clearStuckTimer,", ""
     ), (
         "main composer keydown gate must not leave the watchdog only "
-        "cleared — that's the Codex P1 regression"
+        "cleared; that would regress the stuck-compositionend path"
     )
 
 
@@ -170,3 +179,37 @@ def test_compare_composer_keydown_rearms_watchdog():
         "compare composer keydown gate must call refreshStuckImeTimer "
         "after re-pinning composingRef"
     )
+
+
+def _assert_enter_guard_before_immediate_recovery(block: str, refresh_call: str) -> None:
+    enter_idx = block.find('e.key === "Enter"')
+    recovery_idx = block.find("setCompositionState(false)")
+    assert enter_idx != -1, "keydown handler is missing an Enter guard"
+    assert recovery_idx != -1, "keydown handler is missing immediate recovery"
+    assert enter_idx < recovery_idx, (
+        "stuck-composition recovery must guard Enter before clearing "
+        "composingRef; candidate-confirming Enter must not submit"
+    )
+    guard_block = block[enter_idx:recovery_idx]
+    assert "preventDefault()" in guard_block, (
+        "Enter while composingRef is stuck must prevent the same key from "
+        "falling through to submit"
+    )
+    assert (
+        refresh_call in guard_block
+    ), "Enter while composingRef is stuck must keep the watchdog armed"
+    assert (
+        "return;" in guard_block
+    ), "Enter while composingRef is stuck must not reach immediate recovery"
+
+
+def test_main_composer_stuck_enter_does_not_clear_before_submit():
+    src = THREAD_TSX.read_text()
+    block = _extract_block(src, "const onKeyDown = useCallback")
+    _assert_enter_guard_before_immediate_recovery(block, "refreshStuckTimer")
+
+
+def test_compare_composer_stuck_enter_does_not_clear_before_submit():
+    src = SHARED_TSX.read_text()
+    block = _extract_block(src, "function onKeyDown", opener = "{", closer = "}")
+    _assert_enter_guard_before_immediate_recovery(block, "refreshStuckImeTimer")

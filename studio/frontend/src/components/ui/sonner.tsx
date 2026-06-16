@@ -5,10 +5,10 @@ import {
   Alert02Icon,
   CheckmarkCircle02Icon,
   InformationCircleIcon,
-  Loading03Icon,
   MultiplicationSignCircleIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { Spinner } from "@/components/ui/spinner";
 import { useTheme } from "next-themes";
 import { Toaster as Sonner, type ToasterProps } from "sonner";
 
@@ -51,24 +51,19 @@ const Toaster = ({ ...props }: ToasterProps) => {
             className="size-4"
           />
         ),
-        loading: (
-          <HugeiconsIcon
-            icon={Loading03Icon}
-            strokeWidth={2}
-            className="size-4 animate-spin"
-          />
-        ),
+        // App-wide arc spinner so loading toasts match the "Downloading model" toast.
+        loading: <Spinner className="size-4 text-muted-foreground" />,
       }}
       style={
         {
           "--normal-bg": "var(--popover)",
           "--normal-text": "var(--popover-foreground)",
-          "--normal-border": "var(--border)",
+          // No border line; elevation comes from the composer's drop shadow.
+          "--normal-border": "transparent",
           "--border-radius": "var(--radius)",
-          // Pin close button to the top-right corner inside the toast.
-          // Overrides sonner's default left placement and outside-corner
-          // translate; top offset is set via a rule in index.css since sonner
-          // hardcodes `top: 0` (not a CSS variable).
+          // Pin the close button inside the toast's top-right corner.
+          // Sonner defaults to the left/outside edge, so keep the horizontal
+          // override here and the top offset in index.css.
           "--toast-close-button-start": "unset",
           "--toast-close-button-end": "8px",
           "--toast-close-button-transform": "none",

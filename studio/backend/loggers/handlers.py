@@ -1,27 +1,18 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Logging handlers and middleware for structured logging.
+"""Structured logging handlers and middleware.
 
-This module provides FastAPI middleware and structlog processors for:
-- Request/response logging with timing
-- Sensitive data filtering in logs
-- Structured logging configuration
-- Error handling with detailed context
-
-Key Components:
-- LoggingMiddleware: FastAPI middleware for request/response logging
-- filter_sensitive_data: Structlog processor for data sanitization
-- get_logger: Factory function for structured loggers
+LoggingMiddleware (request/response logging with timing),
+filter_sensitive_data (structlog processor for sanitization), and
+get_logger (factory for structured loggers).
 """
 
 import re
 import time
-from typing import Callable
 
 import structlog
-from fastapi import Request, Response
-from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from utils.native_path_leases import redact_native_paths
 
@@ -29,52 +20,72 @@ logger = structlog.get_logger(__name__)
 _NATIVE_PATH_LEASE_RE = re.compile(
     r"(?i)(\b(?:native_path_lease|nativePathLease)[\"']?\s*[:=]\s*[\"']?)[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"
 )
+_EXCLUDED_PATHS = {
+    "/api/train/status",
+    "/api/train/metrics",
+    "/api/train/hardware",
+    "/api/system",
+}
+_EXCLUDED_SUFFIXES = (
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".svg",
+    ".ico",
+    ".woff",
+    ".woff2",
+    ".ttf",
+)
 
 
-class LoggingMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next: Callable) -> Response:
-        start_time = time.time()
+class LoggingMiddleware:
+    """ASGI request logger that avoids BaseHTTPMiddleware streaming wrappers."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        path = scope["path"]
+        excluded = (
+            path in _EXCLUDED_PATHS
+            or path.startswith("/assets/")
+            or path.endswith(_EXCLUDED_SUFFIXES)
+        )
+        start_time = time.perf_counter()
+        status_code = 500
+
+        async def send_wrapper(message: Message) -> None:
+            nonlocal status_code
+            if message["type"] == "http.response.start":
+                status_code = message["status"]
+            await send(message)
 
         try:
-            response = await call_next(request)
-
-            # Log response
-            process_time = (time.time() - start_time) * 1000
-
-            EXCLUDED_PATHS = {
-                "/api/train/status",
-                "/api/train/metrics",
-                "/api/train/hardware",
-                "/api/system",
-            }
-            is_excluded = (
-                request.url.path in EXCLUDED_PATHS
-                or request.url.path.startswith("/assets/")
-                or request.url.path.endswith(
-                    (".png", ".jpg", ".jpeg", ".ico", ".woff", ".woff2", ".ttf")
-                )
-            )
-
-            if not is_excluded:
-                logger.info(
-                    "request_completed",
-                    method = request.method,
-                    path = request.url.path,
-                    status_code = response.status_code,
-                    process_time_ms = round(process_time, 2),
-                )
-
-            return response
-
-        except Exception as e:
+            await self.app(scope, receive, send_wrapper)
+        except Exception as exc:
             logger.error(
                 "request_failed",
-                path = request.url.path,
-                method = request.method,
-                error = str(e),
+                path = path,
+                method = scope["method"],
+                status_code = status_code,
+                error = str(exc),
+                process_time_ms = round((time.perf_counter() - start_time) * 1000, 2),
                 exc_info = True,
             )
             raise
+        else:
+            if not excluded:
+                logger.info(
+                    "request_completed",
+                    method = scope["method"],
+                    path = path,
+                    status_code = status_code,
+                    process_time_ms = round((time.perf_counter() - start_time) * 1000, 2),
+                )
 
 
 def filter_sensitive_data(logger, method_name, event_dict):
@@ -108,10 +119,5 @@ def filter_sensitive_data(logger, method_name, event_dict):
 
 
 def get_logger(name: str) -> structlog.BoundLogger:
-    """Get a logger instance for a specific module.
-    Args:
-        name: Usually __name__ of the module
-    Returns:
-        A bound structured logger
-    """
+    """Get a bound structured logger for a module (name is usually __name__)."""
     return structlog.get_logger(name)

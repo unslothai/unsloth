@@ -1,13 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { publicAssetUrl } from "@/components/mascot-img";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { getAuthToken } from "@/features/auth";
+import { cn } from "@/lib/utils";
+import { useT } from "@/i18n";
 import { toastError, toastSuccess } from "@/shared/toast";
-import { Camera } from "lucide-react";
+import { Camera01Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { useMemo, useRef, useState } from "react";
+import { SLOTH_AVATARS } from "../sloth-avatars";
 import { decodeJwtSubject } from "../utils/jwt-subject";
 import { resizeImageFileToDataUrl } from "../utils/resize-image-file";
 import { useUserProfileStore } from "../stores/user-profile-store";
@@ -15,7 +20,11 @@ import { UserAvatar } from "./user-avatar";
 
 const PROFILE_STORAGE_KEY = "unsloth_user_profile";
 
-function readPersistedProfile(): { displayName: string; avatarDataUrl: string | null } | null {
+function readPersistedProfile(): {
+  displayName: string;
+  nickname: string;
+  avatarDataUrl: string | null;
+} | null {
   try {
     const raw = window.localStorage.getItem(PROFILE_STORAGE_KEY);
     if (!raw) return null;
@@ -25,10 +34,15 @@ function readPersistedProfile(): { displayName: string; avatarDataUrl: string | 
     // Zustand persist shape: { state: {...}, version }
     const maybeState = "state" in parsed ? (parsed as { state?: unknown }).state : parsed;
     if (!maybeState || typeof maybeState !== "object") return null;
-    const state = maybeState as { displayName?: unknown; avatarDataUrl?: unknown };
+    const state = maybeState as {
+      displayName?: unknown;
+      nickname?: unknown;
+      avatarDataUrl?: unknown;
+    };
 
     return {
       displayName: typeof state.displayName === "string" ? state.displayName : "",
+      nickname: typeof state.nickname === "string" ? state.nickname : "",
       avatarDataUrl: typeof state.avatarDataUrl === "string" ? state.avatarDataUrl : null,
     };
   } catch {
@@ -37,13 +51,19 @@ function readPersistedProfile(): { displayName: string; avatarDataUrl: string | 
 }
 
 export function ProfilePersonalizationPanel() {
+  const t = useT();
   const displayName = useUserProfileStore((s) => s.displayName);
+  const nickname = useUserProfileStore((s) => s.nickname);
   const avatarDataUrl = useUserProfileStore((s) => s.avatarDataUrl);
   const setDisplayName = useUserProfileStore((s) => s.setDisplayName);
+  const setNickname = useUserProfileStore((s) => s.setNickname);
   const setAvatarDataUrl = useUserProfileStore((s) => s.setAvatarDataUrl);
+  const avatarShape = useUserProfileStore((s) => s.avatarShape);
+  const setAvatarShape = useUserProfileStore((s) => s.setAvatarShape);
 
   const [imageError, setImageError] = useState<string | null>(null);
   const [draftName, setDraftName] = useState(displayName);
+  const [draftNickname, setDraftNickname] = useState(nickname);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const sessionSub = decodeJwtSubject(getAuthToken()) ?? "";
@@ -51,6 +71,10 @@ export function ProfilePersonalizationPanel() {
   const hasNameChanges = useMemo(
     () => draftName.trim() !== displayName.trim(),
     [draftName, displayName],
+  );
+  const hasNicknameChanges = useMemo(
+    () => draftNickname.trim() !== nickname.trim(),
+    [draftNickname, nickname],
   );
 
   const saveName = () => {
@@ -60,13 +84,44 @@ export function ProfilePersonalizationPanel() {
       setDisplayName(trimmed);
       const persisted = readPersistedProfile();
       if (persisted && persisted.displayName === trimmed) {
-        toastSuccess("Profile name saved");
+        toastSuccess(t("settings.profile.nameSaved"));
       } else {
         toastError(
-          "Could not persist profile name",
-          "Name updated for this session, but may not persist after reload.",
+          t("settings.profile.namePersistErrorTitle"),
+          t("settings.profile.namePersistErrorDescription"),
         );
       }
+    }
+  };
+
+  const saveNickname = () => {
+    const trimmed = draftNickname.trim();
+    if (trimmed !== draftNickname) setDraftNickname(trimmed);
+    if (trimmed !== nickname) {
+      setNickname(trimmed);
+      const persisted = readPersistedProfile();
+      if (persisted && persisted.nickname === trimmed) {
+        toastSuccess(t("settings.profile.nicknameSaved"));
+      } else {
+        toastError(
+          t("settings.profile.namePersistErrorTitle"),
+          t("settings.profile.namePersistErrorDescription"),
+        );
+      }
+    }
+  };
+
+  // Persist an avatar value (data URL or asset URL) and toast the result.
+  const applyAvatar = (value: string) => {
+    setAvatarDataUrl(value);
+    const persisted = readPersistedProfile();
+    if (persisted && persisted.avatarDataUrl === value) {
+      toastSuccess(t("settings.profile.photoUpdated"));
+    } else {
+      toastError(
+        t("settings.profile.photoPersistErrorTitle"),
+        t("settings.profile.photoPersistErrorDescription"),
+      );
     }
   };
 
@@ -74,22 +129,19 @@ export function ProfilePersonalizationPanel() {
     if (!file) return;
     setImageError(null);
     try {
-      const dataUrl = await resizeImageFileToDataUrl(file);
-      setAvatarDataUrl(dataUrl);
-      const persisted = readPersistedProfile();
-      if (persisted && persisted.avatarDataUrl === dataUrl) {
-        toastSuccess("Profile photo updated");
-      } else {
-        toastError(
-          "Could not persist profile photo",
-          "Photo updated for this session, but may not persist after reload.",
-        );
-      }
+      applyAvatar(await resizeImageFileToDataUrl(file));
     } catch (e) {
-      const message = e instanceof Error ? e.message : "Could not use this image.";
+      const message =
+        e instanceof Error ? e.message : t("settings.profile.imageUseError");
       setImageError(message);
-      toastError("Could not update profile photo", message);
+      toastError(t("settings.profile.photoUpdateErrorTitle"), message);
     }
+  };
+
+  // Use a bundled sloth sticker as the avatar.
+  const pickSloth = (path: string) => {
+    setImageError(null);
+    applyAvatar(publicAssetUrl(path));
   };
 
   return (
@@ -114,16 +166,16 @@ export function ProfilePersonalizationPanel() {
         <button
           type="button"
           onClick={() => fileInputRef.current?.click()}
-          className="absolute right-0 bottom-0 -translate-x-[15.625%] -translate-y-[15.625%] flex size-8 items-center justify-center rounded-full border border-border bg-background text-foreground shadow-sm transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
-          aria-label="Change profile picture"
+          className="absolute right-0 bottom-0 -translate-x-[15.625%] -translate-y-[15.625%] flex size-8 items-center justify-center rounded-full border border-border bg-background text-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+          aria-label={t("settings.profile.changePicture")}
         >
-          <Camera className="size-3.5" strokeWidth={2} />
+          <HugeiconsIcon icon={Camera01Icon} className="size-3.5" strokeWidth={2} />
         </button>
       </div>
 
       <div className="flex w-full max-w-[560px] flex-col gap-2">
         <Label htmlFor="profile-display-name" className="text-xs font-medium text-muted-foreground">
-          Display name
+          {t("settings.profile.displayName")}
         </Label>
         <div className="flex items-center gap-2">
           <Input
@@ -142,8 +194,92 @@ export function ProfilePersonalizationPanel() {
             className="h-10 min-w-0 flex-1 rounded-full text-sm"
           />
           <Button type="button" size="sm" className="h-10 px-5" onClick={saveName} disabled={!hasNameChanges}>
-            Save
+            {t("common.save")}
           </Button>
+        </div>
+      </div>
+
+      <div className="flex w-full max-w-[560px] flex-col gap-2">
+        <Label htmlFor="profile-nickname" className="text-xs font-medium text-muted-foreground">
+          {t("settings.profile.nickname")}
+        </Label>
+        <div className="flex items-center gap-2">
+          <Input
+            id="profile-nickname"
+            type="text"
+            value={draftNickname}
+            onChange={(e) => setDraftNickname(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                saveNickname();
+              }
+            }}
+            autoComplete="off"
+            placeholder={t("settings.profile.nicknamePlaceholder")}
+            className="h-10 min-w-0 flex-1 rounded-full text-sm"
+          />
+          <Button type="button" size="sm" className="h-10 px-5" onClick={saveNickname} disabled={!hasNicknameChanges}>
+            {t("common.save")}
+          </Button>
+        </div>
+      </div>
+
+      <div className="flex w-full max-w-[560px] flex-col gap-2">
+        <Label className="text-xs font-medium text-muted-foreground">
+          {t("settings.profile.avatarShape")}
+        </Label>
+        <div className="inline-flex w-fit items-center gap-1 rounded-full border border-border/70 bg-muted/40 p-1">
+          {(["circle", "rounded"] as const).map((shape) => (
+            <button
+              key={shape}
+              type="button"
+              onClick={() => setAvatarShape(shape)}
+              aria-pressed={avatarShape === shape}
+              className={cn(
+                "rounded-full px-4 py-1.5 text-xs font-medium transition-colors",
+                avatarShape === shape
+                  ? "bg-background text-foreground shadow-sm"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              {shape === "circle"
+                ? t("settings.profile.avatarShapeCircle")
+                : t("settings.profile.avatarShapeRounded")}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="flex w-full max-w-[560px] flex-col gap-2">
+        <Label className="text-xs font-medium text-muted-foreground">
+          {t("settings.profile.chooseSloth")}
+        </Label>
+        <div className="grid grid-cols-7 gap-2 sm:grid-cols-9">
+          {SLOTH_AVATARS.map((path) => {
+            const url = publicAssetUrl(path);
+            const selected = avatarDataUrl === url;
+            // Readable accessible name from the filename, e.g. "sloth yay".
+            const label =
+              path.split("/").pop()?.replace(/\.png$/i, "").replace(/^large\s+/i, "").trim() ??
+              "sloth";
+            return (
+              <button
+                key={path}
+                type="button"
+                onClick={() => pickSloth(path)}
+                aria-pressed={selected}
+                aria-label={label}
+                title={label}
+                className={cn(
+                  "relative aspect-square overflow-hidden rounded-full bg-muted ring-1 ring-border transition hover:ring-primary/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                  selected && "ring-2 ring-primary",
+                )}
+              >
+                <img src={url} alt="" loading="lazy" className="size-full object-cover" />
+              </button>
+            );
+          })}
         </div>
       </div>
 

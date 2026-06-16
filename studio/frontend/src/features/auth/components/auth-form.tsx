@@ -3,6 +3,7 @@
 
 import { apiUrl } from "@/lib/api-base";
 import { Button } from "@/components/ui/button";
+import { MascotImg } from "@/components/mascot-img";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Link, useNavigate } from "@tanstack/react-router";
@@ -10,11 +11,10 @@ import { Eye, EyeOff } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { ReactElement } from "react";
 import type { SyntheticEvent } from "react";
-import { usePlatformStore } from "@/config/env";
 import { refreshSession } from "../api";
 
-// Bootstrap credentials injected into index.html by the backend
-// (only present while default admin must_change_password is true)
+// Bootstrap credentials injected into index.html by the backend (only present
+// while default admin must_change_password is true)
 declare global {
   interface Window {
     __UNSLOTH_BOOTSTRAP__?: { username: string; password: string };
@@ -94,9 +94,9 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
     let canceled = false;
 
     async function initializeAuthForm(): Promise<void> {
-      // Always check the server first — localStorage flags can be stale
-      // (e.g. tokens from a previous install attempt).  The server's
-      // /api/auth/status is the source of truth for requires_password_change.
+      // Always check the server first; localStorage flags can be stale (e.g.
+      // tokens from a previous install). /api/auth/status is the source of
+      // truth for requires_password_change.
       try {
         const response = await fetch(apiUrl("/api/auth/status"));
         if (!response.ok) throw new Error("Failed to load auth status.");
@@ -110,7 +110,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
             setMustChangePassword(result.requires_password_change);
           }
 
-          // Redirect between login ↔ change-password based on server state
+          // Redirect between login / change-password per server state
           if (mode === "login" && result.requires_password_change) {
             navigate({ to: "/change-password" });
             return;
@@ -120,8 +120,8 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
             return;
           }
 
-          // On login page, if user already has a valid session and no
-          // password change is required, skip straight to the app.
+          // On login, skip to the app if a valid session exists and no
+          // password change is required.
           if (isLoginMode && !result.requires_password_change) {
             if (hasRefreshToken()) {
               const refreshed = await refreshSession();
@@ -294,13 +294,13 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
       storeAuthTokens(token.access_token, token.refresh_token);
       navigate({ to: getPostAuthRoute() });
     } catch (err: unknown) {
-      let msg = err instanceof Error ? err.message : "Auth failed.";
-      if (msg.includes("unsloth studio reset-password") && usePlatformStore.getState().deviceType === "windows") {
-        msg = msg.replace(
-          "unsloth studio reset-password",
-          ".\\unsloth_studio\\Scripts\\unsloth.exe studio reset-password",
-        );
-      }
+      // The backend returns the correct PATH-based command ("unsloth studio
+      // reset-password"), which the installer puts on PATH on every platform.
+      // Do NOT rewrite it to a relative Windows path like
+      // ".\unsloth_studio\Scripts\unsloth.exe ..." -- that only resolves inside
+      // the Studio home dir and fails with CommandNotFoundException elsewhere.
+      // Show the backend message as-is.
+      const msg = err instanceof Error ? err.message : "Auth failed.";
       setError(msg);
     } finally {
       setLoading(false);
@@ -312,9 +312,8 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
   return (
     <div className="w-full max-w-sm space-y-6">
       <div className="space-y-1.5 text-center">
-        <img
-          src="/Sloth emojis/large sloth wave.png"
-          alt="Unsloth waving mascot"
+        <MascotImg
+          src="Sloth emojis/large sloth wave.png"
           className="mx-auto mb-2 h-20 w-20 object-contain"
         />
         <h2 className="text-2xl font-semibold text-foreground">{title}</h2>
@@ -444,7 +443,7 @@ export function AuthForm({ mode }: AuthFormProps): ReactElement | null {
 
         <Button
           type="submit"
-          className="w-full"
+          className="mx-auto flex w-fit px-4"
           disabled={
             loading ||
             statusLoading ||
