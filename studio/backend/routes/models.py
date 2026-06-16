@@ -51,8 +51,11 @@ def _is_hidden_model(*values: str | None) -> bool:
     needles = (
         rag_config.EMBEDDING_MODEL.split("/")[-1].lower(),
         rag_config.EMBED_GGUF_REPO.split("/")[-1].lower(),
+        # The validation probe's repo (matches the cached repo id) and its exact
+        # filename (matches the on-disk path). The filename carries the .gguf so
+        # it does not hide unrelated repos like ``user/stories260K-finetune-GGUF``.
         "ggml-org/models",
-        "stories260k",
+        "stories260k.gguf",
     )
     return any(v and any(n in v.lower() for n in needles) for v in values)
 

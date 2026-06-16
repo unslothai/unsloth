@@ -118,6 +118,9 @@ def test_is_hidden_model_hides_validation_probe_everywhere():
         None, "/hf/models--ggml-org--models/snapshots/abc/tinyllamas/stories260K.gguf"
     )
     assert not models_route._is_hidden_model("unsloth/gemma-3-270m-it-GGUF")
+    # The exact-filename needle must not hide a real repo that merely
+    # references stories260K in its name.
+    assert not models_route._is_hidden_model("user/stories260K-finetune-GGUF")
 
 
 def test_list_cached_gguf_hides_llama_validation_probe(monkeypatch, tmp_path):
