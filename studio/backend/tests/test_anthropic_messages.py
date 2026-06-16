@@ -1467,6 +1467,38 @@ class TestAnthropicMessagesToolRouting:
         assert entry["context_length"] == 2048
         assert monitor.active_count() == 0
 
+    def test_tool_use_non_streaming_records_api_monitor_reply(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        def _gen_tools(**_kwargs):
+            yield {
+                "type": "tool_start",
+                "tool_call_id": "call_1",
+                "tool_name": "lookup",
+                "arguments": {"query": "weather"},
+            }
+
+        _mock_backend(
+            monkeypatch,
+            context_length = 2048,
+            generate_chat_completion_with_tools = _gen_tools,
+        )
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        payload = _basic_payload(
+            enable_tools = True,
+            tools = [{"type": "web_search_20250305", "name": "web_search"}],
+        )
+
+        response = _drive(
+            anthropic_messages(payload, request = self._Request(), current_subject = "t")
+        )
+
+        assert response.status_code == 200
+        [entry] = monitor.snapshot()
+        assert entry["status"] == "completed"
+        assert entry["reply_preview"] == 'Tool call: lookup({"query": "weather"})'
+
     def test_plain_streaming_records_active_and_completed_monitor_entry(self, monkeypatch):
         import routes.inference as inf_mod
 

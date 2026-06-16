@@ -1361,6 +1361,19 @@ def _monitor_usage(
     )
 
 
+def _monitor_call_text(name: Any, arguments: Any = None) -> str:
+    call_name = str(name or "tool")
+    if arguments is None or arguments == "":
+        return f"Tool call: {call_name}"
+    if not isinstance(arguments, str):
+        args_text = json.dumps(arguments, default = str)
+    else:
+        args_text = arguments
+    if len(args_text) > 500:
+        args_text = args_text[:497] + "..."
+    return f"Tool call: {call_name}({args_text})"
+
+
 def _monitor_tool_calls_text(tool_calls: Any) -> str:
     if not isinstance(tool_calls, list):
         return ""
@@ -1375,16 +1388,7 @@ def _monitor_tool_calls_text(tool_calls: Any) -> str:
         args = fn.get("arguments")
         if args is None:
             args = tool_call.get("arguments")
-        if args is None or args == "":
-            parts.append(f"Tool call: {name}")
-            continue
-        if not isinstance(args, str):
-            args_text = json.dumps(args, default = str)
-        else:
-            args_text = args
-        if len(args_text) > 500:
-            args_text = args_text[:497] + "..."
-        parts.append(f"Tool call: {name}({args_text})")
+        parts.append(_monitor_call_text(name, args))
     return "\n".join(parts)
 
 
@@ -1560,6 +1564,8 @@ def _monitor_anthropic_content_blocks(content: Any) -> str:
             continue
         if block.get("type") == "text" and isinstance(block.get("text"), str):
             parts.append(block["text"])
+        elif block.get("type") == "tool_use":
+            parts.append(_monitor_call_text(block.get("name"), block.get("input")))
     return "".join(parts)
 
 
@@ -6536,10 +6542,13 @@ async def _responses_non_streaming(
             max_output_tokens = payload.max_output_tokens,
             instructions = payload.instructions,
         )
-        api_monitor.set_reply(monitor_id, text)
+        api_monitor.set_reply(monitor_id, text or _monitor_tool_calls_text(tool_calls))
         _monitor_usage(monitor_id, usage_data, _monitor_context_length())
         api_monitor.finish(monitor_id)
         return JSONResponse(content = response.model_dump())
+    except asyncio.CancelledError:
+        api_monitor.finish(monitor_id, "cancelled")
+        raise
     except Exception as exc:
         api_monitor.fail(monitor_id, _friendly_error(exc))
         raise
@@ -7238,6 +7247,7 @@ async def _responses_stream(
                     "arguments": st["arguments"],
                 },
             }
+            api_monitor.append_reply(monitor_id, _monitor_call_text(st["name"], st["arguments"]))
             yield _sse("response.output_item.done", item_done)
 
         # response.completed
@@ -9126,6 +9136,9 @@ async def _openai_passthrough_non_streaming(
                     json = body,
                     timeout = _llama_non_streaming_generation_timeout(),
                 )
+        except asyncio.CancelledError:
+            api_monitor.finish(monitor_id, "cancelled")
+            raise
         except httpx.RequestError as e:
             # llama-server subprocess crashed / starting / unreachable. Surface the
             # same friendly message the sync chat path emits so operators don't see

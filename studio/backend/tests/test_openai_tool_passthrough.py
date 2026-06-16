@@ -44,6 +44,7 @@ from routes.inference import (
     _monitor_openai_chunk,
     _monitor_openai_sse_event,
     _openai_messages_for_gguf_chat,
+    _openai_passthrough_non_streaming,
     _openai_passthrough_stream,
     _openai_stream_usage_chunk,
     _proxy_to_external_provider,
@@ -1934,6 +1935,65 @@ class TestApiMonitorProviderAndCompletionStreams:
             [entry] = monitor.snapshot()
             assert entry["status"] == "cancelled"
             assert entry["reply"] == "hello"
+            assert monitor.active_count() == 0
+
+        asyncio.run(_run())
+
+    def test_passthrough_non_streaming_cancel_finalizes_monitor(self, monkeypatch):
+        async def _run():
+            import routes.inference as inf_mod
+
+            class CancellingAsyncClient:
+                async def __aenter__(self):
+                    return self
+
+                async def __aexit__(self, *_args):
+                    return False
+
+                async def post(self, *_args, **_kwargs):
+                    raise asyncio.CancelledError()
+
+            monitor = ApiMonitor(max_entries = 3)
+            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monkeypatch.setattr(
+                inf_mod.httpx,
+                "AsyncClient",
+                lambda *args, **kwargs: CancellingAsyncClient(),
+            )
+            monitor_id = monitor.start(
+                endpoint = "/v1/chat/completions",
+                method = "POST",
+                model = "gguf",
+                prompt = "hi",
+            )
+            payload = ChatCompletionRequest(
+                model = "default",
+                messages = [ChatMessage(role = "user", content = "hi")],
+                tools = [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "lookup",
+                            "parameters": {"type": "object", "properties": {}},
+                        },
+                    }
+                ],
+            )
+
+            with pytest.raises(asyncio.CancelledError):
+                await _openai_passthrough_non_streaming(
+                    SimpleNamespace(
+                        base_url = "http://llama.test",
+                        context_length = 4096,
+                        _request_reasoning_kwargs = lambda *_args, **_kwargs: None,
+                    ),
+                    payload,
+                    "gguf",
+                    monitor_id = monitor_id,
+                )
+
+            [entry] = monitor.snapshot()
+            assert entry["status"] == "cancelled"
             assert monitor.active_count() == 0
 
         asyncio.run(_run())
