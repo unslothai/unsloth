@@ -440,13 +440,11 @@ if [ "$_studio_home_canon" != "$_LEGACY_STUDIO_HOME" ]; then
     _STUDIO_HOME_IS_CUSTOM=true
 fi
 # Directory-local evidence that Studio created "$1", used to adopt a custom-home
-# llama.cpp that predates the .unsloth-studio-owned marker without weakening the
-# guard. Only UNSLOTH_PREBUILT_INFO.json counts: it is written exclusively by the
-# prebuilt installer (the default path, older than the marker). A top-level
-# llama-quantize symlink is NOT trusted -- a user may have their own build with
-# one, and this guard runs right before a destructive rm -rf, so we match Windows
-# and keep markerless source builds strict (they get the "move it aside"
-# message). Sidecar venvs have no such fingerprint and stay strict.
+# llama.cpp predating the .unsloth-studio-owned marker without weakening the guard.
+# Only UNSLOTH_PREBUILT_INFO.json counts (written exclusively by the prebuilt
+# installer). A top-level llama-quantize symlink is NOT trusted: a user may have
+# their own build with one, and this runs right before a destructive rm -rf, so we
+# match Windows and keep markerless source builds strict.
 _studio_owned_adoptable() {
     [ -f "$1/UNSLOTH_PREBUILT_INFO.json" ] && return 0
     return 1

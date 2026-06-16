@@ -2028,15 +2028,10 @@ if (Test-Path -LiteralPath $LegacyStudioHome -PathType Container) {
     $LegacyStudioHome = (Resolve-Path -LiteralPath $LegacyStudioHome).Path
 }
 $StudioHomeIsCustom = ($_studioHomeCanon -ne $LegacyStudioHome)
-# Directory-local evidence that Studio itself created $Path (see setup.sh for
-# the full rationale). Used to adopt a Studio llama.cpp that predates the
-# .unsloth-studio-owned marker or otherwise lost it, without weakening the guard.
-# The evidence must live INSIDE the directory so an unrelated directory the user
-# placed at a Studio-managed path -- even inside an established Studio home -- is
-# never silently adopted. On Windows the prebuilt metadata is the reliable
-# signal; source builds are git checkouts indistinguishable from a user clone, so
-# they are left to the strict guard. Sidecar venvs carry no fingerprint and stay
-# strict; their marker has been written since the guard was introduced.
+# Directory-local evidence that Studio created $Path, used to adopt a custom-home
+# llama.cpp predating the .unsloth-studio-owned marker (see setup.sh). Only the
+# prebuilt UNSLOTH_PREBUILT_INFO.json counts; source builds are indistinguishable
+# from a user clone on Windows and stay under the strict guard.
 function Test-StudioOwnedAdoptable {
     param([Parameter(Mandatory = $true)][string]$Path)
     if (Test-Path -LiteralPath (Join-Path $Path "UNSLOTH_PREBUILT_INFO.json") -PathType Leaf) { return $true }

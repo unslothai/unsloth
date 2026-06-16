@@ -163,23 +163,16 @@ run_install_cmd() {
     return $_rc
 }
 
-# Network-resilient wrapper around run_install_cmd: retries transient failures
-# (e.g. uv "connection reset" mid-download) with backoff. uv's cache makes
-# retries cheap (already-downloaded wheels are reused). First-attempt success
-# is byte-identical to run_install_cmd; permanent failure returns the last exit
-# code so the existing set -e + rollback trap still fires.
+# Retry run_install_cmd on transient uv download failures with backoff. Returns
+# the last exit code on permanent failure so the set -e rollback trap still fires.
 : "${UNSLOTH_INSTALL_RETRIES:=3}"
 : "${UNSLOTH_INSTALL_RETRY_DELAY:=3}"
 run_install_cmd_retry() {
     _ricr_label="$1"
-    # Sanitize overrides; a non-positive-integer value falls back to the default
-    # of 3 (a typo must not silently disable retries). Set =1 to disable retry.
-    # The length guard runs BEFORE the numeric test so an oversized all-digit
-    # value (e.g. a fat-fingered "99999999999999999999") cannot overflow the
-    # shell integer range and make `[ -ge ]` error out mid-loop; such values fall
-    # back to the default instead. Bounds: 1..100 retries, 0..3600s base delay.
-    # 0?* rejects leading-zero delays: "08"/"09" are non-octal and would make the
-    # later $((_ricr_delay * 2)) backoff a fatal error. Bare "0" stays valid.
+    # Sanitize overrides to a default of 3 (a typo must not disable retries; =1 disables).
+    # Length guard precedes the numeric test so a huge value can't overflow `[ -ge ]`.
+    # 0?* rejects leading-zero delays ("08"/"09" break the later $((delay*2)) as octal);
+    # bare "0" stays valid. Bounds: 1..100 retries, 0..3600s base delay.
     case "$UNSLOTH_INSTALL_RETRIES" in
         ''|*[!0-9]*|0) _ricr_max=3 ;;
         *) if [ "${#UNSLOTH_INSTALL_RETRIES}" -le 3 ] && [ "$UNSLOTH_INSTALL_RETRIES" -ge 1 ] 2>/dev/null && [ "$UNSLOTH_INSTALL_RETRIES" -le 100 ] 2>/dev/null; then _ricr_max=$UNSLOTH_INSTALL_RETRIES; else _ricr_max=3; fi ;;
@@ -190,9 +183,8 @@ run_install_cmd_retry() {
     esac
     _ricr_attempt=1
     while :; do
-        # why: "&& return 0" (not "if ...; then"): $? after a non-taken if is 0
-        # in sh/dash/bash, which would corrupt the final-failure exit code and
-        # break the rollback path. The AND-OR form preserves the real code.
+        # AND-OR (not `if`) preserves the real failure code: $? after a non-taken
+        # `if` is 0 in sh/dash/bash, which would break the rollback path.
         run_install_cmd "$@" && return 0
         _ricr_rc=$?
         if [ "$_ricr_attempt" -ge "$_ricr_max" ]; then
@@ -1504,9 +1496,8 @@ UV_MIN_VERSION="0.8.16"
 : "${UV_COMPILE_BYTECODE_TIMEOUT:=180}"
 export UV_COMPILE_BYTECODE_TIMEOUT
 
-# Large wheel downloads (torch, unsloth) are sensitive to transient network
-# resets. uv >= 0.8.16 retries HTTP/2 streaming body errors; raise the retry
-# count and read timeout too. ":=" preserves any user-provided override.
+# uv >= 0.8.16 retries HTTP/2 streaming body errors; raise retries and read
+# timeout for large wheel downloads. ":=" preserves any user override.
 : "${UV_HTTP_RETRIES:=5}"
 export UV_HTTP_RETRIES
 : "${UV_HTTP_TIMEOUT:=180}"

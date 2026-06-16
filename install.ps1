@@ -482,22 +482,15 @@ function Install-UnslothStudio {
         }
     }
 
-    # Network-resilient wrapper around Invoke-InstallCommand: retries transient
-    # failures (e.g. uv "connection reset" mid-download) with backoff. uv's cache
-    # makes retries cheap (already-downloaded wheels are reused). First-attempt
-    # success is identical to Invoke-InstallCommand; a permanent failure returns
-    # the last exit code so the existing Exit-InstallFailure rollback still fires.
+    # Retry Invoke-InstallCommand on transient uv download failures with backoff.
+    # Returns the last exit code on permanent failure so rollback still fires.
     function Invoke-InstallCommandRetry {
         param(
             [Parameter(Mandatory = $true, Position = 0)][ScriptBlock]$Command,
             [string]$Label = "install step"
         )
-        # Sanitize overrides; a non-positive-integer value falls back to the
-        # default of 3 (a typo must not silently disable retries). Set =1 to disable.
-        # Use [int]::TryParse with bounds rather than a bare [int] cast so an
-        # oversized all-digit value (e.g. "99999999999999999999") falls back to
-        # the default instead of throwing an Int32 overflow under
-        # $ErrorActionPreference = "Stop". Bounds: 1..100 retries, 0..3600s delay.
+        # Sanitize overrides to a default of 3 (a typo must not disable retries; =1 disables).
+        # TryParse with bounds avoids an Int32 overflow throw. Bounds: 1..100 retries, 0..3600s.
         $maxAttempts = 3
         $parsedAttempts = 0
         if ([int]::TryParse($env:UNSLOTH_INSTALL_RETRIES, [ref]$parsedAttempts) -and $parsedAttempts -ge 1 -and $parsedAttempts -le 100) {
@@ -1290,9 +1283,8 @@ shell.Run cmd, 0, False
         $env:UV_COMPILE_BYTECODE_TIMEOUT = "180"
     }
 
-    # Large wheel downloads (torch, unsloth) are sensitive to transient network
-    # resets. uv >= 0.8.16 retries HTTP/2 streaming body errors; raise the retry
-    # count and read timeout too. Existing user-provided values are preserved.
+    # uv >= 0.8.16 retries HTTP/2 streaming body errors; raise retries and read
+    # timeout for large wheel downloads. User-provided values are preserved.
     if (-not $env:UV_HTTP_RETRIES) {
         $env:UV_HTTP_RETRIES = "5"
     }
