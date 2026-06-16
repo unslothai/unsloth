@@ -50,4 +50,3 @@ export function classifyGgufFit(
   if (required <= combined) return "partial";
   return "oom";
 }
-

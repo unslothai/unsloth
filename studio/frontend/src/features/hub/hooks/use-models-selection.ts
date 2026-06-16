@@ -18,7 +18,7 @@ import {
   resolveDownloadedSelection,
 } from "../lib/selection-resolution";
 import { ownerOf, repoOf } from "@/features/hub/lib/format";
-import { buildDiscoverRows } from "../lib/view-models";
+import { buildDiscoverRows, isGgufLike } from "../lib/view-models";
 import type {
   CachedInventoryRow,
   DiscoverRow,
@@ -41,7 +41,7 @@ function stubDiscoverRow(id: string): DiscoverRow {
     id,
     owner: ownerOf(id),
     repo: repoOf(id),
-    result: { id, downloads: 0, likes: 0, isGguf: false },
+    result: { id, downloads: 0, likes: 0, isGguf: isGgufLike(id) },
     isAvailableOnDevice: false,
     isPartialOnDevice: false,
     summary: "",

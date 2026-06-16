@@ -258,19 +258,21 @@ function useModelsTabState(): {
   const navigate = useNavigate();
   const search = useSearch({ from: "/hub" });
   const urlTab: ModelsTab | null = search.tab ?? null;
+  const hasModelDeepLink =
+    typeof search.model === "string" && search.model.length > 0;
   const [fallbackTab, setFallbackTab] = useState<ModelsTab>(
     () => readModelsTabPreference() ?? "discover",
   );
-  const tab = urlTab ?? fallbackTab;
+  const tab = urlTab ?? (hasModelDeepLink ? "discover" : fallbackTab);
 
   useEffect(() => {
     if (urlTab !== null) return;
     void navigate({
       to: "/hub",
-      search: (prev) => ({ ...prev, tab: fallbackTab }),
+      search: (prev) => ({ ...prev, tab }),
       replace: true,
     });
-  }, [urlTab, fallbackTab, navigate]);
+  }, [urlTab, tab, navigate]);
 
   const setTab = useCallback(
     (next: ModelsTab) => {
@@ -470,6 +472,7 @@ export function ModelsPage() {
           ...prev,
           kind: next === "datasets" ? "datasets" : undefined,
           section: undefined,
+          model: undefined,
         }),
         replace: true,
       });
@@ -886,13 +889,6 @@ export function ModelsPage() {
   }, [navigate, allModelsView]);
   const handleQueryChange = useCallback(
     (next: string) => {
-      if (urlModel) {
-        void navigate({
-          to: "/hub",
-          search: (prev) => ({ ...prev, model: undefined }),
-          replace: true,
-        });
-      }
       if (next.trim() === "") {
         const preset = findChannel(DEFAULT_DISCOVER_CHANNEL);
         setCapabilityFilter("all");
@@ -903,10 +899,14 @@ export function ModelsPage() {
           setDirection("desc");
         }
       }
-      if (urlSection) {
+      if (urlModel || urlSection) {
         void navigate({
           to: "/hub",
-          search: (prev) => ({ ...prev, section: undefined }),
+          search: (prev) => ({
+            ...prev,
+            model: undefined,
+            section: undefined,
+          }),
           replace: true,
         });
       }
