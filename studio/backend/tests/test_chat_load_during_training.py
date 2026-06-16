@@ -612,7 +612,11 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             def _can_estimate_kv(self):
                 return True
 
-            def _estimate_kv_cache_bytes(self, ctx, n_parallel = 1):
+            def _estimate_kv_cache_bytes(
+                self,
+                ctx,
+                n_parallel = 1,
+            ):
                 seen["ctx"] = ctx
                 seen["n_parallel"] = n_parallel
                 return ctx * n_parallel * (1024**2)  # 1 MiB per ctx unit per slot
