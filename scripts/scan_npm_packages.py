@@ -1453,6 +1453,12 @@ def scan_one(pkg: PackageEntry, workspace: Path) -> tuple[list[Finding], str | N
 
 _DEFAULT_BASELINE_PATH = str(Path(__file__).resolve().parent / "scan_npm_packages_baseline.json")
 
+# Bumped when the entry-key semantics change. v2 keys on the package-relative
+# path; v1 stored only a basename, so a v1 entry could suppress a same-named file
+# in a different directory. A pre-v2 baseline with entries is ignored (fail
+# closed) rather than mis-applied.
+_BASELINE_SCHEMA_VERSION = 2
+
 
 def _norm_pkg_name(display: str) -> str:
     """``@scope/pkg@1.2.3`` / ``pkg@1.2.3`` -> name without the version.
@@ -1495,8 +1501,16 @@ def _load_baseline(path: str) -> set[tuple[str, str, str]]:
     except (OSError, json.JSONDecodeError) as exc:
         print(f"  [WARN] could not read baseline {path}: {exc}", file = sys.stderr)
         return set()
+    entries = data.get("entries", [])
+    if entries and data.get("version") != _BASELINE_SCHEMA_VERSION:
+        print(
+            f"  [WARN] baseline schema v{data.get('version')} predates package-relative "
+            f"keys; ignoring {len(entries)} entr(y/ies). Regenerate with --write-baseline.",
+            file = sys.stderr,
+        )
+        return set()
     keys: set[tuple[str, str, str]] = set()
-    for e in data.get("entries", []):
+    for e in entries:
         try:
             keys.add((_norm_pkg_name(e["package"]), _relpath_in_package(e["file"]), e["pattern"]))
         except (KeyError, TypeError):
@@ -1531,7 +1545,7 @@ def _write_baseline(path: str, findings: list[Finding], threshold_rank: int) -> 
             "package-relative path, pattern); evidence/severity are for review "
             "only. Regenerate with --write-baseline AFTER reviewing every line."
         ),
-        "version": 1,
+        "version": _BASELINE_SCHEMA_VERSION,
         "entries": entries,
     }
     with open(path, "w", encoding = "utf-8") as fh:

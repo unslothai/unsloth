@@ -383,7 +383,7 @@ def test_baseline_suppresses_listed_but_not_new_pattern(tmp_path):
     bl.write_text(
         json.dumps(
             {
-                "version": 1,
+                "version": snp._BASELINE_SCHEMA_VERSION,
                 "entries": [
                     {
                         "package": "aws-sdk",
@@ -419,6 +419,25 @@ def test_write_then_load_baseline_roundtrip(tmp_path):
     assert (snp._norm_pkg_name("evil@1.0.0"), "a.js", "obfuscated-blob") in keys
     # MEDIUM was below the HIGH threshold -> not written.
     assert all(k[2] != "js-env-token" for k in keys)
+
+
+def test_legacy_schema_baseline_is_ignored(tmp_path):
+    # A pre-v2 baseline stored basenames; its keys are ambiguous under
+    # package-relative matching, so a populated legacy file is ignored (fail
+    # closed) rather than silently suppressing a different same-named file.
+    bl = tmp_path / "legacy.json"
+    bl.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "entries": [
+                    {"package": "aws-sdk", "file": "index.js", "pattern": "obfuscated-blob"}
+                ],
+            }
+        ),
+        encoding = "utf-8",
+    )
+    assert snp._load_baseline(str(bl)) == set()
 
 
 def test_committed_baseline_is_empty_and_valid():

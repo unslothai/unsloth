@@ -619,10 +619,17 @@ def _hidden_payload_findings(
     scanning yet ``exec(__doc__)`` / ``exec(<str>)`` could still run it."""
     if not RE_EXEC_EVAL.search(stripped):
         return []
+    # The text code-only scanning removed (docstrings/comments/strings), with real
+    # code spaced out. _strip_noncode blanks in place and preserves length, so a
+    # char was removed exactly where stripped differs from original.
+    removed = "".join(o if o != s else " " for o, s in zip(original, stripped))
     out = []
 
     def _hidden(pat):
-        return bool(pat.search(original)) and not pat.search(stripped)
+        # Carrier present in a blanked region but NOT in real code. A carrier in
+        # real code is already caught by the normal check, so restricting to
+        # blanked-only avoids re-flagging legitimate in-code constants.
+        return bool(pat.search(removed)) and not pat.search(stripped)
 
     for pat, label in _HIDDEN_PAYLOAD_PATTERNS:
         if _hidden(pat):
@@ -632,20 +639,21 @@ def _hidden_payload_findings(
                     package,
                     filename,
                     "exec/eval with payload hidden in a docstring/string",
-                    f"{label}: {_extract_evidence(original, pat)}",
+                    f"{label}: {_extract_evidence(removed, pat)}",
                 )
             )
-    # Fetch-then-run shape: a network call AND a process/os exec that both live
-    # only in the blanked region (an exec(__doc__) dropper). Either alone in real
-    # code is already covered; hidden together they are the payload itself.
-    if _hidden(RE_NETWORK) and _hidden(RE_SUBPROCESS):
+    # Fetch-then-run dropper: a network call AND an os/subprocess exec that both
+    # live in the blanked region. Search the removed span directly (not "absent
+    # from real code") so a benign visible network/subprocess call cannot mask
+    # the docstring payload.
+    if RE_NETWORK.search(removed) and RE_SUBPROCESS.search(removed):
         out.append(
             Finding(
                 HIGH,
                 package,
                 filename,
                 "exec/eval with hidden network+exec payload",
-                f"network+exec: {_extract_evidence(original, RE_SUBPROCESS)}",
+                f"network+exec: {_extract_evidence(removed, RE_SUBPROCESS)}",
             )
         )
     return out
@@ -1635,21 +1643,42 @@ def _is_trusted_pypi_url(url: str) -> bool:
     return parsed.scheme == "https" and parsed.hostname in _TRUSTED_PYPI_HOSTS
 
 
+_MARKER_ENV_VARS = (
+    "sys_platform",
+    "platform_system",
+    "platform_machine",
+    "platform_release",
+    "platform_version",
+    "platform_python_implementation",
+    "os_name",
+    "python_version",
+    "python_full_version",
+    "implementation_name",
+    "implementation_version",
+)
+
+
 def _marker_holds_by_default(marker: str) -> bool:
-    """True if a PEP 508 marker can hold for a default install (no extra
-    requested). ``extra == 'x'`` is optional, but ``extra != 'x'`` and
-    ``python_version >= '3.8' or extra == 'x'`` are default-true and must not be
-    dropped. Conservative: on any parse/eval uncertainty, returns True so the dep
-    is still fetched and scanned (over-scan, never silently skip)."""
+    """Keep (scan) a dep unless its marker is purely ``extra``-gated. The scanner
+    runs on one OS/Python but a package may be installed on another, so a marker
+    that can be true on a different target (``sys_platform == 'win32'``,
+    ``python_version == '3.13'``) is always kept; only a marker depending solely
+    on ``extra`` and false with no extra requested is dropped. Conservative: on
+    any uncertainty, keep (over-scan, never silently skip)."""
     m = marker.strip()
-    if not m:
-        return True
+    if not m or "extra" not in m:
+        return True  # no extra gate: installed by default on some target -> scan
+    if any(v in m for v in _MARKER_ENV_VARS):
+        return True  # also platform/python gated: true on some target -> scan
+    # Pure extra marker: decide by evaluating with no extra requested.
     try:
-        from packaging.markers import Marker
-        return bool(Marker(m).evaluate({"extra": ""}))
+        from packaging.markers import Marker, default_environment
+
+        env = default_environment()
+        env["extra"] = ""
+        return bool(Marker(m).evaluate(env))
     except Exception:
-        # packaging missing/unparseable: only drop a pure positive extra-equality
-        # marker (definitely optional); keep everything else.
+        # packaging missing/unparseable: drop only a pure positive extra-equality.
         return re.fullmatch(r"\s*extra\s*==\s*['\"][^'\"]+['\"]\s*", m) is None
 
 
@@ -1678,10 +1707,20 @@ def _requires_dist_names(meta: dict) -> list[str]:
 
 def _requires_dist_for(name: str, version: str | None, project_meta: dict) -> list[str]:
     """Declared deps for the pinned version, read from that release's metadata
-    (its ``requires_dist`` can differ from latest); falls back to the
-    project-level document when the pin has no separate metadata."""
-    vmeta = _pypi_json(name, version) if version else None
-    return _requires_dist_names(vmeta or project_meta)
+    (its ``requires_dist`` can differ from latest). Unpinned uses the
+    project-level (latest) document. A pinned version whose own metadata cannot
+    be fetched returns [] rather than substituting latest's deps, which would
+    scan the wrong tree."""
+    if not version:
+        return _requires_dist_names(project_meta)
+    vmeta = _pypi_json(name, version)
+    if vmeta is None:
+        print(
+            f"  [WARN] no metadata for pinned {name}=={version}; not substituting latest deps",
+            file = sys.stderr,
+        )
+        return []
+    return _requires_dist_names(vmeta)
 
 
 def _download_sdist_direct(
@@ -1916,6 +1955,8 @@ def _resolve_per_spec_with_deps(
         fpath, _serr = _download_sdist_direct(dep_name, dep_ver, dest, meta = meta)
         if fpath is None:
             print(f"  [WARN] could not resolve indirect dep {dep}; skipping", file = sys.stderr)
+        elif depth < _MAX_DEP_FOLLOWUP_DEPTH:
+            worklist.extend((d, depth + 1) for d in _requires_dist_for(dep_name, dep_ver, meta))
 
 
 def download_packages(

