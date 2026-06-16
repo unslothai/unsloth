@@ -8,7 +8,6 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { usePlatformStore } from "@/config/env";
 import { isCustomProviderType } from "@/features/chat/external-providers";
 import { cn } from "@/lib/utils";
@@ -199,6 +198,72 @@ function ModelSelectorTrigger({
   );
 }
 
+type HubSection = "downloaded" | "recommended" | "custom";
+
+const HUB_SECTION_TABS: { value: string; label: string }[] = [
+  { value: "downloaded", label: "Downloaded" },
+  { value: "recommended", label: "Recommended" },
+  { value: "custom", label: "Custom" },
+];
+
+/** Segmented pill toggle reusing the Hub's .hub-tab-toggle styling (extended in
+ * hub.css to also match .unsloth-model-selector-menu). Keeps tab roles for
+ * keyboard nav. */
+function PillTabs({
+  tabs,
+  value,
+  onValueChange,
+  ariaLabel,
+  className,
+}: {
+  tabs: { value: string; label: string }[];
+  value: string;
+  onValueChange: (value: string) => void;
+  ariaLabel: string;
+  className?: string;
+}) {
+  const activeIndex = Math.max(
+    0,
+    tabs.findIndex((tab) => tab.value === value),
+  );
+  return (
+    <div
+      role="tablist"
+      aria-label={ariaLabel}
+      className={cn(
+        "hub-menu-trigger hub-tab-toggle relative inline-flex h-9 items-center rounded-full",
+        className,
+      )}
+    >
+      <span
+        aria-hidden="true"
+        style={{
+          width: `${100 / tabs.length}%`,
+          transform: `translateX(${activeIndex * 100}%)`,
+        }}
+        className="hub-tab-toggle-pill pointer-events-none absolute inset-y-0 left-0 rounded-full transition-transform duration-200 ease-out"
+      />
+      {tabs.map((tab) => (
+        <button
+          key={tab.value}
+          type="button"
+          role="tab"
+          aria-selected={value === tab.value}
+          onClick={() => onValueChange(tab.value)}
+          className={cn(
+            "relative z-10 inline-flex h-9 min-w-0 flex-1 items-center justify-center rounded-full px-3 text-[12.5px] transition-colors",
+            value === tab.value
+              ? "text-foreground"
+              : "text-muted-foreground hover:text-foreground",
+          )}
+        >
+          {tab.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function ModelSelectorContent({
   models,
   loraModels,
@@ -242,6 +307,24 @@ function ModelSelectorContent({
     }
     return "hub";
   }, [externalModels, loraModels, value]);
+
+  const tabs = useMemo(() => {
+    const list: { value: string; label: string }[] = [
+      { value: "hub", label: "Hub models" },
+    ];
+    if (!chatOnly) list.push({ value: "lora", label: "Fine-tuned" });
+    if (hasExternal) list.push({ value: "external", label: "Connected" });
+    return list;
+  }, [chatOnly, hasExternal]);
+
+  const [activeTab, setActiveTab] = useState<string>(() =>
+    chatOnly ? chatOnlyTabsDefault : studioTabsDefault,
+  );
+  // Fall back to the first tab if the active one disappears.
+  const effectiveTab = tabs.some((tab) => tab.value === activeTab)
+    ? activeTab
+    : tabs[0].value;
+  const [hubSection, setHubSection] = useState<HubSection>("downloaded");
 
   function focusActiveModelOption(root: HTMLElement): boolean {
     const option =
@@ -293,64 +376,60 @@ function ModelSelectorContent({
       data-tour={dataTour}
       onKeyDown={handlePickerEntryKeyDown}
       className={cn(
-        "unsloth-model-selector-menu menu-soft-surface ring-0 w-[min(440px,calc(100vw-1rem))] max-w-[calc(100vw-1rem)] min-w-0 gap-0 px-3 pt-3 pb-2",
+        "unsloth-model-selector-menu menu-soft-surface ring-0 w-[min(520px,calc(100vw-1rem))] max-w-[calc(100vw-1rem)] min-w-0 gap-0 px-3 pt-3 pb-2",
         className,
       )}
     >
-      {chatOnly ? (
-        hasExternal ? (
-          <Tabs defaultValue={chatOnlyTabsDefault} className="w-full">
-            <TabsList className="mb-2 w-full">
-              <TabsTrigger value="hub">Hub models</TabsTrigger>
-              <TabsTrigger value="external">Connected</TabsTrigger>
-            </TabsList>
-            <TabsContent value="hub" className="m-0">
-              <HubModelPicker models={models} value={value} onSelect={onSelect} onFoldersChange={onFoldersChange} />
-            </TabsContent>
-            <TabsContent value="external" className="m-0">
-              <ExternalModelPicker
-                externalModels={externalModels}
-                value={value}
-                onSelect={onSelect}
-              />
-            </TabsContent>
-          </Tabs>
-        ) : (
-          <HubModelPicker models={models} value={value} onSelect={onSelect} onFoldersChange={onFoldersChange} />
-        )
-      ) : (
-        <Tabs defaultValue={studioTabsDefault} className="w-full">
-          <TabsList className="mb-2 w-full">
-            <TabsTrigger value="hub">Hub models</TabsTrigger>
-            <TabsTrigger value="lora">Fine-tuned</TabsTrigger>
-            {hasExternal ? <TabsTrigger value="external">Connected</TabsTrigger> : null}
-          </TabsList>
-
-          <TabsContent value="hub" className="m-0">
-            <HubModelPicker models={models} value={value} onSelect={onSelect} onFoldersChange={onFoldersChange} />
-          </TabsContent>
-
-          <TabsContent value="lora" className="m-0">
-            <LoraModelPicker
-              loraModels={loraModels}
-              value={value}
-              onSelect={onSelect}
-              onModelsChange={onModelsChange}
-              deleteDisabled={deleteDisabled}
+      {tabs.length > 1 || effectiveTab === "hub" ? (
+        <div className="mb-2 flex items-center gap-2">
+          {tabs.length > 1 ? (
+            <PillTabs
+              ariaLabel="Model source"
+              tabs={tabs}
+              value={effectiveTab}
+              onValueChange={setActiveTab}
+              className={effectiveTab === "hub" ? "shrink-0" : "w-full"}
             />
-          </TabsContent>
-
-          {hasExternal ? (
-            <TabsContent value="external" className="m-0">
-              <ExternalModelPicker
-                externalModels={externalModels}
-                value={value}
-                onSelect={onSelect}
-              />
-            </TabsContent>
           ) : null}
-        </Tabs>
-      )}
+          {effectiveTab === "hub" ? (
+            <PillTabs
+              ariaLabel="Hub section"
+              tabs={HUB_SECTION_TABS}
+              value={hubSection}
+              onValueChange={(next) => setHubSection(next as HubSection)}
+              className="min-w-0 flex-1"
+            />
+          ) : null}
+        </div>
+      ) : null}
+
+      {effectiveTab === "hub" ? (
+        <HubModelPicker
+          models={models}
+          value={value}
+          onSelect={onSelect}
+          onFoldersChange={onFoldersChange}
+          section={hubSection}
+        />
+      ) : null}
+
+      {effectiveTab === "lora" ? (
+        <LoraModelPicker
+          loraModels={loraModels}
+          value={value}
+          onSelect={onSelect}
+          onModelsChange={onModelsChange}
+          deleteDisabled={deleteDisabled}
+        />
+      ) : null}
+
+      {effectiveTab === "external" ? (
+        <ExternalModelPicker
+          externalModels={externalModels}
+          value={value}
+          onSelect={onSelect}
+        />
+      ) : null}
 
       {onPickLocalModel ? (
         <div className="mt-1.5 border-t border-border/70 pt-1.5">
@@ -581,7 +660,7 @@ function ExternalModelPicker({
           className="h-9 pl-8"
         />
       </div>
-      <div className="max-h-64 overflow-y-auto">
+      <div className="-mr-1.5 max-h-64 overflow-y-auto pr-1.5">
         <div className="space-y-2 p-1">
           {grouped.length === 0 ? (
             <div className="px-2.5 py-2 text-xs leading-relaxed text-muted-foreground">

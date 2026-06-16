@@ -247,19 +247,19 @@
 		-webkit-user-select: none;
 	}
 
-	html:not(.dark) .hub-page .hub-tab-toggle {
+	html:not(.dark) :is(.hub-page, .unsloth-model-selector-menu) .hub-tab-toggle {
 		background-color: color-mix(in srgb, var(--foreground) 5%, transparent);
 		border: 0;
 		box-shadow: none;
 	}
 
-	html.dark .hub-page .hub-tab-toggle {
+	html.dark :is(.hub-page, .unsloth-model-selector-menu) .hub-tab-toggle {
 		background-color: color-mix(in srgb, var(--foreground) 4.5%, transparent);
 		border: 0;
 		box-shadow: none;
 	}
 
-	html:not(.dark) .hub-page .hub-tab-toggle-pill {
+	html:not(.dark) :is(.hub-page, .unsloth-model-selector-menu) .hub-tab-toggle-pill {
 		background-color: var(--background);
 		border: 0;
 		box-shadow:
@@ -267,7 +267,7 @@
 			0 4px 10px -3px color-mix(in srgb, var(--foreground) 6%, transparent);
 	}
 
-	html.dark .hub-page .hub-tab-toggle-pill {
+	html.dark :is(.hub-page, .unsloth-model-selector-menu) .hub-tab-toggle-pill {
 		background-color: color-mix(in srgb, var(--foreground) 10%, transparent);
 		border: 0;
 		box-shadow:

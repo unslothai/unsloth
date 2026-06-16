@@ -41,6 +41,7 @@ import type { VramFitStatus } from "@/lib/vram";
 import { checkVramFit, estimateLoadingVram } from "@/lib/vram";
 import { Add01Icon, Cancel01Icon, Download01Icon, Folder02Icon, Search01Icon, StarIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { DotTag } from "@/features/hub/catalog/dot-tag";
 import { FolderBrowser } from "./folder-browser";
 import { ModelDeleteAction } from "./model-delete-action";
 import { ChevronDownIcon, ChevronRightIcon } from "lucide-react";
@@ -279,6 +280,93 @@ function formatBytes(bytes: number): string {
   return `${value.toFixed(value < 10 ? 1 : 0)} ${units[i]}`;
 }
 
+// ── Row presentation helpers ──
+// Reuse the on-device card's look: DotTag format pills, owner/name split,
+// param chip, tabular size.
+
+type FormatTone = "gguf" | "checkpoint" | "adapter";
+
+// Format keyword to DotTag tone. Looked up by full token and by first word,
+// so "Full finetune" resolves via "full".
+const FORMAT_TONE: Record<string, FormatTone> = {
+  gguf: "gguf",
+  local: "checkpoint",
+  safetensors: "checkpoint",
+  checkpoint: "checkpoint",
+  lora: "adapter",
+  merged: "adapter",
+  adapter: "adapter",
+  exported: "adapter",
+  full: "adapter",
+};
+
+/** Split "owner/name" on the last slash. No slash means name only. */
+function splitRepoLabel(label: string): { owner: string | null; name: string } {
+  const slash = label.lastIndexOf("/");
+  if (slash <= 0 || slash === label.length - 1) {
+    return { owner: null, name: label };
+  }
+  return { owner: label.slice(0, slash), name: label.slice(slash + 1) };
+}
+
+type MetaToken =
+  | { kind: "format"; label: string; tone: FormatTone }
+  | { kind: "size"; label: string }
+  | { kind: "param"; label: string }
+  | { kind: "text"; label: string };
+
+const META_SIZE_RE = /(?:KB|MB|GB|TB)\b/i;
+const META_APPROX_RE = /^~/;
+const META_PARAM_RE = /^\d+(?:\.\d+)?B$/i;
+const META_WHITESPACE_RE = /\s+/;
+
+/** Classify a meta token: size (has KB/MB/GB/TB or leading "~"), param (bare
+ * "<n>B" like "4B"), format keyword, or plain text. */
+function classifyMetaToken(raw: string): MetaToken | null {
+  const t = raw.trim();
+  if (!t) return null;
+  if (META_SIZE_RE.test(t) || META_APPROX_RE.test(t)) {
+    return { kind: "size", label: t };
+  }
+  if (META_PARAM_RE.test(t)) {
+    return { kind: "param", label: t.toUpperCase() };
+  }
+  const lower = t.toLowerCase();
+  const tone = FORMAT_TONE[lower] ?? FORMAT_TONE[lower.split(META_WHITESPACE_RE)[0]];
+  if (tone) {
+    return { kind: "format", label: t, tone };
+  }
+  return { kind: "text", label: t };
+}
+
+/** Parse the dot-separated meta string into structured tokens. */
+function parseMetaTokens(meta?: string | null): {
+  formats: { label: string; tone: FormatTone }[];
+  param?: string;
+  size?: string;
+  texts: string[];
+} {
+  const formats: { label: string; tone: FormatTone }[] = [];
+  const texts: string[] = [];
+  let param: string | undefined;
+  let size: string | undefined;
+  if (!meta) return { formats, texts };
+  for (const part of meta.split("·")) {
+    const token = classifyMetaToken(part);
+    if (!token) continue;
+    if (token.kind === "format") {
+      formats.push({ label: token.label, tone: token.tone });
+    } else if (token.kind === "size") {
+      size ??= token.label;
+    } else if (token.kind === "param") {
+      param ??= token.label;
+    } else {
+      texts.push(token.label);
+    }
+  }
+  return { formats, param, size, texts };
+}
+
 function ModelRow({
   label,
   meta,
@@ -314,6 +402,11 @@ function ModelRow({
           : `~${vramEst}GB VRAM`
       : null;
 
+  const { owner, name } = splitRepoLabel(label);
+  const parsed = parseMetaTokens(meta);
+  // Param chip from meta, else derived from the name so GGUF rows show it too.
+  const paramLabel = parsed.param ?? extractParamLabel(name) ?? null;
+
   const content = (
     <button
       type="button"
@@ -331,23 +424,47 @@ function ModelRow({
         selected && "bg-[#ececec] dark:bg-[#3a3d44]",
       )}
     >
-      <span
-        className={cn(
-          "block min-w-0 flex-1 truncate",
-          exceeds && "!text-gray-500 dark:!text-gray-400",
-        )}
-      >
-        {label}
+      <span className="flex min-w-0 flex-1 items-baseline">
+        {owner ? (
+          <span className="inline-flex min-w-0 max-w-[45%] shrink items-baseline text-[13px] text-muted-foreground/90">
+            <span className="truncate">{owner}</span>
+            <span className="shrink-0 text-muted-foreground/45">/</span>
+          </span>
+        ) : null}
+        <span
+          className={cn(
+            "min-w-0 flex-1 truncate font-medium",
+            exceeds && "!text-gray-500 dark:!text-gray-400",
+          )}
+        >
+          {name}
+        </span>
       </span>
-      <span className="ml-auto flex items-center gap-1.5 shrink-0">
+      <span className="ml-auto flex shrink-0 items-center gap-1.5">
+        {selected && <DotTag tone="success" label="Loaded" className="h-[18px] gap-1 px-1" />}
         {vramStatus === "exceeds" && (
           <span className="text-[9px] font-medium !text-red-700 !bg-red-50 dark:!text-red-400 dark:!bg-red-950 px-1.5 py-0.5 rounded">OOM</span>
         )}
         {vramStatus === "tight" && (
           <span className="text-[9px] font-medium !text-amber-400">TIGHT</span>
         )}
-        {meta ? (
-          <span className="text-[10px] text-muted-foreground">{meta}</span>
+        {paramLabel ? (
+          <span className="rounded-md border border-border/60 px-1 py-px text-[10px] font-medium text-muted-foreground tabular-nums">
+            {paramLabel}
+          </span>
+        ) : null}
+        {parsed.formats.map((f) => (
+          <DotTag key={f.label} tone={f.tone} label={f.label} className="h-[18px] gap-1 px-1" />
+        ))}
+        {parsed.texts.map((text) => (
+          <span key={text} className="text-[10px] text-muted-foreground">
+            {text}
+          </span>
+        ))}
+        {parsed.size ? (
+          <span className="text-[10px] text-muted-foreground tabular-nums">
+            {parsed.size}
+          </span>
         ) : null}
       </span>
     </button>
@@ -704,11 +821,14 @@ export function HubModelPicker({
   value,
   onSelect,
   onFoldersChange,
+  section = "downloaded",
 }: {
   models: ModelOption[];
   value?: string;
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
   onFoldersChange?: () => void;
+  /** Section shown when not searching. Search spans all sections. */
+  section?: "downloaded" | "recommended" | "custom";
 }) {
   const gpu = useGpuInfo();
   const [query, setQuery] = useState("");
@@ -1020,7 +1140,9 @@ export function HubModelPicker({
   const hubOptionKeys = useMemo(() => {
     const keys: string[] = [];
 
+    // Downloaded is shown while searching, or when its section is selected.
     if (
+      (showHfSection || section === "downloaded") &&
       cachedReady &&
       !downloadedCollapsed &&
       (visibleCachedGguf.length > 0 || visibleCachedModelRows.length > 0)
@@ -1047,7 +1169,7 @@ export function HubModelPicker({
       return keys;
     }
 
-    if (chatOnly) {
+    if (chatOnly && section === "downloaded") {
       keys.push(
         ...lmStudioModels.map((model) =>
           makeModelOptionKey("lm-studio", model.id),
@@ -1055,7 +1177,7 @@ export function HubModelPicker({
       );
     }
 
-    if (!customFoldersCollapsed) {
+    if (section === "custom" && !customFoldersCollapsed) {
       keys.push(
         ...customFolderModels.map((model) =>
           makeModelOptionKey("custom-folder", model.id),
@@ -1063,7 +1185,7 @@ export function HubModelPicker({
       );
     }
 
-    if (cachedReady && !recommendedCollapsed) {
+    if (section === "recommended" && cachedReady && !recommendedCollapsed) {
       keys.push(
         ...visibleRecommendedIds.map((id) =>
           makeModelOptionKey("recommended", id),
@@ -1082,6 +1204,7 @@ export function HubModelPicker({
     hfIds,
     lmStudioModels,
     recommendedCollapsed,
+    section,
     showHfSection,
     visibleCachedGguf,
     visibleCachedModelRows,
@@ -1209,6 +1332,14 @@ export function HubModelPicker({
     [onSelect, isKnownGgufRepo],
   );
 
+  // Section gating, ignored while searching. Downloaded stays visible while
+  // searching so a searched-for downloaded model doesn't disappear.
+  const showDownloaded = showHfSection || section === "downloaded";
+  const showCustom = !showHfSection && section === "custom";
+  const showRecommendedSection = !showHfSection && section === "recommended";
+  const downloadedEmpty =
+    visibleCachedGguf.length === 0 && visibleCachedModelRows.length === 0;
+
   return (
     <div className="space-y-2">
       <div className="relative">
@@ -1230,15 +1361,15 @@ export function HubModelPicker({
 
       <div
         ref={scrollRef}
-        className="max-h-64 overflow-y-auto"
+        className="-mr-1.5 max-h-64 overflow-y-auto pr-1.5"
         {...hubModelList.listboxProps}
       >
         <div className="py-1">
           {/* First-load spinner only when nothing cached is shown yet. */}
-          {!cachedReady &&
+          {showDownloaded &&
+          !cachedReady &&
           !showHfSection &&
-          visibleCachedGguf.length === 0 &&
-          visibleCachedModelRows.length === 0 ? (
+          downloadedEmpty ? (
             <div className="flex items-center gap-2 px-5 py-3">
               <Spinner className="size-3 text-muted-foreground" />
               <span className="text-xs text-muted-foreground">
@@ -1247,8 +1378,19 @@ export function HubModelPicker({
             </div>
           ) : null}
 
+          {/* Downloaded selected but nothing cached yet. */}
+          {showDownloaded &&
+          !showHfSection &&
+          cachedReady &&
+          downloadedEmpty ? (
+            <div className="px-2.5 py-2 text-xs text-muted-foreground">
+              No downloaded models yet. Search above or pick Recommended.
+            </div>
+          ) : null}
+
           {/* Downloaded stays visible (filtered) while searching. */}
-          {visibleCachedGguf.length > 0 || visibleCachedModelRows.length > 0 ? (
+          {showDownloaded &&
+          (visibleCachedGguf.length > 0 || visibleCachedModelRows.length > 0) ? (
             <>
               <ListLabel
                 icon={<HugeiconsIcon icon={Download01Icon} className="size-3" />}
@@ -1353,7 +1495,10 @@ export function HubModelPicker({
             </>
           ) : null}
 
-          {!showHfSection && chatOnly && lmStudioModels.length > 0 ? (
+          {!showHfSection &&
+          section === "downloaded" &&
+          chatOnly &&
+          lmStudioModels.length > 0 ? (
             <>
               <ListLabel>LM Studio</ListLabel>
               {lmStudioModels.map((m) => {
@@ -1417,7 +1562,7 @@ export function HubModelPicker({
             </>
           ) : null}
 
-          {!showHfSection ? (
+          {showCustom ? (
             <>
               <div className="flex items-center gap-1 px-2.5 py-1.5">
                 <span className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
@@ -1640,7 +1785,7 @@ export function HubModelPicker({
             </>
           ) : null}
 
-          {!showHfSection && cachedReady ? (
+          {showRecommendedSection && cachedReady ? (
             <>
               <ListLabel
                 icon={<HugeiconsIcon icon={StarIcon} className="size-3" />}
@@ -1977,7 +2122,7 @@ export function LoraModelPicker({
         />
       </div>
 
-      <div className="max-h-64 overflow-y-auto" {...loraModelList.listboxProps}>
+      <div className="-mr-1.5 max-h-64 overflow-y-auto pr-1.5" {...loraModelList.listboxProps}>
         <div className="py-1">
           {grouped.length === 0 ? (
             <div className="px-2.5 py-2 text-xs text-muted-foreground">
