@@ -1042,6 +1042,9 @@ export function ModelsPage() {
       setDiscoverFormat("all");
       setCapabilityFilter("all");
       setSortBrowseActive(false);
+      // Base models come from other publishers, so search the whole Hub
+      // rather than staying restricted to the Unsloth org.
+      setOwnerScope("all");
       setQuery(trimmed);
       void navigate({
         to: "/hub",
@@ -1054,7 +1057,7 @@ export function ModelsPage() {
         }),
       });
     },
-    [navigate, setModelsTab],
+    [navigate, setModelsTab, setOwnerScope],
   );
 
   const inspectorRuntime = useMemo(
