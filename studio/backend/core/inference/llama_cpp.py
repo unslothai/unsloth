@@ -75,6 +75,99 @@ from state.tool_approvals import (
 logger = get_logger(__name__)
 
 
+# llama-server can serve HTTP 200 while running a model entirely on CPU when a
+# GPU backend fails to init (#5807 / #5106 / #5830). Classify the startup log so
+# Studio can warn. Priority: explicit "offloaded N/M layers to GPU" counts
+# (authoritative), then GPU "model buffer size" lines (host-pinned _Host
+# excluded), then the "device_info:" device table (disconfirm only).
+_GPU_OFFLOAD_MARKERS = (
+    "CUDA",
+    "ROCm",
+    "ROCM",
+    "HIP",
+    "Metal",
+    "Vulkan",
+    "OpenCL",
+    "SYCL",
+    "MUSA",
+    "CANN",
+)
+_OFFLOADED_LAYERS_RE = re.compile(
+    r"offloaded\s+(\d+)\s*/\s*(\d+)\s+layers?\s+to\s+gpu", re.IGNORECASE
+)
+_DEVICE_ROW_RE = re.compile(
+    r"-\s*(CUDA|ROCm|ROCM|HIP|Metal|Vulkan|SYCL|OpenCL|MUSA|CANN|CPU)\w*\s*:",
+    re.IGNORECASE,
+)
+_GPU_DEVICE_PREFIXES = (
+    "cuda",
+    "rocm",
+    "hip",
+    "metal",
+    "vulkan",
+    "sycl",
+    "opencl",
+    "musa",
+    "cann",
+)
+
+
+def classify_gpu_offload_lines(lines: "list[str]") -> Optional[bool]:
+    """True if the model landed on a GPU, False if it stayed on CPU despite GPU
+    intent, None when the log has no usable signal."""
+    # Counted offload is authoritative, keyed on the model with the most layers.
+    # A separate MTP/draft model logs its own (much smaller) "offloaded N/M"
+    # line, so decide on the largest-M line: a drafter that fits on GPU must not
+    # mask a main model running on CPU. N>0 on that model is True, 0 is False.
+    max_total = -1
+    offloaded_at_max = 0
+    for line in lines:
+        match = _OFFLOADED_LAYERS_RE.search(line)
+        if not match:
+            continue
+        offloaded, total = int(match.group(1)), int(match.group(2))
+        if total > max_total or (total == max_total and offloaded > offloaded_at_max):
+            max_total, offloaded_at_max = total, offloaded
+    if max_total >= 0:
+        return offloaded_at_max > 0
+
+    # GPU marker on a *model* buffer; _Host buffers are CPU-pinned, not offload.
+    # Buffer lines are authoritative: present but none on a GPU means CPU-only,
+    # so do not let the device table below override that.
+    saw_model_buffer = False
+    for line in lines:
+        if "model buffer size" not in line:
+            continue
+        saw_model_buffer = True
+        if "_Host" not in line and any(m in line for m in _GPU_OFFLOAD_MARKERS):
+            return True
+    if saw_model_buffer:
+        return False
+
+    # device_info: lists *available* devices (printed whenever a GPU backend is
+    # visible), not where the model loaded, so it can only disconfirm: an
+    # all-CPU table means no usable GPU. A visible GPU device is not proof the
+    # model used it, so it does not return True. Rows after the header only.
+    after_header = False
+    saw_device_row = False
+    saw_gpu_device = False
+    for line in lines:
+        if "device_info:" in line:
+            after_header = True
+            continue
+        if not after_header:
+            continue
+        match = _DEVICE_ROW_RE.search(line)
+        if not match:
+            continue
+        saw_device_row = True
+        if match.group(1).lower().startswith(_GPU_DEVICE_PREFIXES):
+            saw_gpu_device = True
+    if saw_device_row and not saw_gpu_device:
+        return False
+    return None
+
+
 def _wsl_system_rocm_lib_dirs() -> "list[str]":
     """System ROCm lib dir(s) to load before a prebuilt's bundled HIP, on WSL.
 
@@ -4958,26 +5051,13 @@ class LlamaCppBackend:
     def _classify_gpu_offload(
         self, expected_gpu: bool, detected_gpus: list[tuple[int, int]]
     ) -> Optional[bool]:
-        """True if a GPU model buffer was allocated, False if only CPU
-        buffers landed despite GPU intent, None when there's no signal (no
-        GPU detected, no buffer-size lines, etc.)."""
+        """True if the model landed on a GPU, False if only CPU buffers landed
+        despite GPU intent, None when there's no signal. Delegates to the shared
+        classifier so it tracks current llama.cpp logs (offloaded-layer counts /
+        device_info), not just the older "model buffer size" lines."""
         if not detected_gpus or not expected_gpu:
             return None
-        # llama-server logs one "model buffer size = N MiB" line per backend
-        # buffer; CUDA/ROCm/Metal/Vulkan/OpenCL/SYCL are GPU, CPU* are not.
-        gpu_markers = ("CUDA", "ROCm", "Metal", "Vulkan", "OpenCL", "SYCL")
-        saw_buffer_line = False
-        saw_gpu_buffer = False
-        for line in self._stdout_lines:
-            if "model buffer size" not in line:
-                continue
-            saw_buffer_line = True
-            if any(marker in line for marker in gpu_markers):
-                saw_gpu_buffer = True
-                break
-        if not saw_buffer_line:
-            return None
-        return saw_gpu_buffer
+        return classify_gpu_offload_lines(self._stdout_lines)
 
     def load_cancelled(self) -> bool:
         """True if a load was cancelled (e.g. via unload/_cancel_event) and not

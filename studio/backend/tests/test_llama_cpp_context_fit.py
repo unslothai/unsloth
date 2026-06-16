@@ -67,7 +67,7 @@ _httpx_stub.Client = type(
 )
 sys.modules.setdefault("httpx", _httpx_stub)
 
-from core.inference.llama_cpp import LlamaCppBackend
+from core.inference.llama_cpp import LlamaCppBackend, classify_gpu_offload_lines
 from core.inference.llama_server_args import parse_ctx_override, resolve_requested_ctx
 
 
@@ -557,3 +557,110 @@ class TestClassifyGpuOffload:
             ]
         )
         assert inst._classify_gpu_offload(True, [(0, 22805)]) is True
+
+    def test_offloaded_zero_count_returns_false(self):
+        # Authoritative count overrides any GPU-looking buffer line.
+        inst = self._backend(
+            [
+                "load_tensors: offloaded 0/33 layers to GPU",
+                "load_tensors:        CUDA0 model buffer size = 21000.0 MiB",
+            ]
+        )
+        assert inst._classify_gpu_offload(True, [(0, 22805)]) is False
+
+    def test_offloaded_draft_then_main_returns_true(self):
+        # A small draft model (0/2) does not mask the main model (33/33).
+        inst = self._backend(
+            [
+                "load_tensors: offloaded 0/2 layers to GPU",
+                "load_tensors: offloaded 33/33 layers to GPU",
+            ]
+        )
+        assert inst._classify_gpu_offload(True, [(0, 22805)]) is True
+
+    def test_main_on_cpu_with_draft_on_gpu_returns_false(self):
+        # MTP: the small drafter fits on GPU (1/1) but the main model is on CPU
+        # (0/33). Decide on the largest model, so the warning still fires.
+        inst = self._backend(
+            [
+                "load_tensors: offloaded 0/33 layers to GPU",
+                "load_tensors: offloaded 1/1 layers to GPU",
+            ]
+        )
+        assert inst._classify_gpu_offload(True, [(0, 22805)]) is False
+
+    def test_main_on_gpu_with_draft_on_cpu_returns_true(self):
+        # Reverse: main model on GPU (33/33), drafter on CPU (0/1) -> no warning.
+        inst = self._backend(
+            [
+                "load_tensors: offloaded 33/33 layers to GPU",
+                "load_tensors: offloaded 0/1 layers to GPU",
+            ]
+        )
+        assert inst._classify_gpu_offload(True, [(0, 22805)]) is True
+
+    def test_cuda_host_buffer_excluded_returns_false(self):
+        # CUDA_Host is CPU-pinned memory, not a model offload.
+        inst = self._backend(
+            [
+                "load_tensors:    CUDA_Host model buffer size =   500.0 MiB",
+                "load_tensors:          CPU model buffer size = 21000.0 MiB",
+            ]
+        )
+        assert inst._classify_gpu_offload(True, [(0, 22805)]) is False
+
+    def test_device_info_gpu_row_alone_is_inconclusive(self):
+        # device_info lists available devices, not where the model loaded, so a
+        # GPU row alone is not proof of offload.
+        inst = self._backend(
+            [
+                "print_info: device_info:",
+                "  - CUDA0 : 24564 MiB free",
+            ]
+        )
+        assert inst._classify_gpu_offload(True, [(0, 22805)]) is None
+
+    def test_cpu_buffers_with_gpu_device_row_returns_false(self):
+        # Definite CPU-only buffers must win over a GPU device-inventory row.
+        inst = self._backend(
+            [
+                "load_tensors:          CPU model buffer size = 21000.0 MiB",
+                "print_info: device_info:",
+                "  - CUDA0 : 24564 MiB free",
+            ]
+        )
+        assert inst._classify_gpu_offload(True, [(0, 22805)]) is False
+
+    def test_device_info_cpu_only_returns_false(self):
+        inst = self._backend(
+            [
+                "print_info: device_info:",
+                "  - CPU : 64000 MiB free",
+            ]
+        )
+        assert inst._classify_gpu_offload(True, [(0, 22805)]) is False
+
+    def test_system_info_cuda_before_device_info_does_not_count(self):
+        # A compiled-in backend named in system_info is not proof of offload;
+        # only the device_info table (here CPU only) decides.
+        inst = self._backend(
+            [
+                "system_info: CUDA : ARCHS = 890 | n_threads = 8",
+                "print_info: device_info:",
+                "  - CPU : 64000 MiB free",
+            ]
+        )
+        assert inst._classify_gpu_offload(True, [(0, 22805)]) is False
+
+    @pytest.mark.parametrize(
+        "marker",
+        ["CUDA0", "ROCm0", "HIP0", "Metal", "Vulkan0", "OpenCL0", "SYCL0", "MUSA0", "CANN0"],
+    )
+    def test_all_gpu_buffer_markers_return_true(self, marker):
+        assert (
+            classify_gpu_offload_lines([f"load_tensors: {marker} model buffer size = 8000.0 MiB"])
+            is True
+        )
+
+    def test_module_level_no_signal_returns_none(self):
+        assert classify_gpu_offload_lines(["INFO starting server"]) is None
