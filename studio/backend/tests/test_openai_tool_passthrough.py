@@ -2131,6 +2131,77 @@ class TestApiMonitorSafetensorsUsage:
 
         asyncio.run(_run())
 
+    def test_non_streaming_safetensors_tool_cancel_records_cancelled(self, monkeypatch):
+        async def _run():
+            import routes.inference as inf_mod
+
+            reset_tool_policy()
+
+            class DummyBackend:
+                active_model_name = "safe-model"
+                models = {"safe-model": {"context_length": 2048}}
+
+                def generate_chat_response(self, **_kwargs):
+                    raise AssertionError("plain safetensors path should not be used")
+
+                def generate_chat_completion_with_tools(
+                    self, *, cancel_event, stats_holder, **_kwargs
+                ):
+                    stats_holder["stats"] = {
+                        "usage": {
+                            "prompt_tokens": 8,
+                            "completion_tokens": 5,
+                            "total_tokens": 13,
+                        }
+                    }
+                    yield {"type": "content", "text": "partial"}
+                    cancel_event.set()
+                    yield {"type": "content", "text": "ignored"}
+
+                def reset_generation_state(self):
+                    pass
+
+            monitor = ApiMonitor(max_entries = 3)
+            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monkeypatch.setattr(
+                inf_mod,
+                "get_llama_cpp_backend",
+                lambda: SimpleNamespace(
+                    is_loaded = False,
+                    supports_tools = False,
+                    is_vision = False,
+                    context_length = None,
+                ),
+            )
+            monkeypatch.setattr(inf_mod, "get_inference_backend", lambda: DummyBackend())
+            monkeypatch.setattr(
+                inf_mod,
+                "_detect_safetensors_features",
+                lambda *_args, **_kwargs: {"supports_tools": True},
+            )
+            payload = ChatCompletionRequest(
+                model = "default",
+                messages = [ChatMessage(role = "user", content = "hi")],
+                enable_tools = True,
+                enabled_tools = ["web_search"],
+                cancel_id = "safe-cancel",
+            )
+
+            response = await openai_chat_completions(
+                payload,
+                request = self._Request(),
+                current_subject = "test",
+            )
+            body = json.loads(response.body)
+
+            assert body["choices"][0]["message"]["content"] == "partial"
+            [entry] = monitor.snapshot()
+            assert entry["status"] == "cancelled"
+            assert entry["reply"] == "partial"
+            assert monitor.active_count() == 0
+
+        asyncio.run(_run())
+
 
 class TestApiMonitorAudioInput:
     def _patch_audio_backend(self, monkeypatch, chunks):

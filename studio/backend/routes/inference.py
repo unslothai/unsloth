@@ -1507,6 +1507,16 @@ def _monitor_anthropic_usage(
     )
 
 
+_ANTHROPIC_MONITOR_TOOL_BLOCKS: dict[str, dict[int, bool]] = {}
+
+
+def _monitor_anthropic_index(data: dict) -> int:
+    try:
+        return int(data.get("index") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _monitor_anthropic_payload(
     monitor_id: Optional[str],
     data: dict,
@@ -1520,11 +1530,36 @@ def _monitor_anthropic_payload(
         if isinstance(message, dict):
             _monitor_anthropic_usage(monitor_id, message.get("usage"), context_length)
         return None
+    if event_type == "content_block_start":
+        content_block = data.get("content_block") or {}
+        if isinstance(content_block, dict) and content_block.get("type") == "tool_use":
+            index = _monitor_anthropic_index(data)
+            _ANTHROPIC_MONITOR_TOOL_BLOCKS.setdefault(monitor_id, {})[index] = False
+            api_monitor.append_reply(monitor_id, _monitor_call_text(content_block.get("name")))
+        return None
     if event_type == "content_block_delta":
         delta = data.get("delta") or {}
         text = delta.get("text") if isinstance(delta, dict) else None
         if isinstance(text, str) and text:
             api_monitor.append_reply(monitor_id, text)
+        elif isinstance(delta, dict) and delta.get("type") == "input_json_delta":
+            index = _monitor_anthropic_index(data)
+            tool_blocks = _ANTHROPIC_MONITOR_TOOL_BLOCKS.get(monitor_id) or {}
+            if index in tool_blocks:
+                if not tool_blocks[index]:
+                    api_monitor.append_reply(monitor_id, "\nInput: ")
+                    tool_blocks[index] = True
+                partial_json = delta.get("partial_json")
+                if isinstance(partial_json, str) and partial_json:
+                    api_monitor.append_reply(monitor_id, partial_json)
+        return None
+    if event_type == "content_block_stop":
+        index = _monitor_anthropic_index(data)
+        tool_blocks = _ANTHROPIC_MONITOR_TOOL_BLOCKS.get(monitor_id)
+        if tool_blocks is not None:
+            tool_blocks.pop(index, None)
+            if not tool_blocks:
+                _ANTHROPIC_MONITOR_TOOL_BLOCKS.pop(monitor_id, None)
         return None
     if event_type == "message_delta":
         _monitor_anthropic_usage(monitor_id, data.get("usage"), context_length)
@@ -1632,13 +1667,16 @@ def _monitor_anthropic_response(
                     if cancel_event is not None and cancel_event.is_set()
                     else "completed",
                 )
+            _ANTHROPIC_MONITOR_TOOL_BLOCKS.pop(monitor_id, None)
         except asyncio.CancelledError:
             if cancel_event is not None:
                 cancel_event.set()
             api_monitor.finish(monitor_id, "cancelled")
+            _ANTHROPIC_MONITOR_TOOL_BLOCKS.pop(monitor_id, None)
             raise
         except Exception as exc:
             api_monitor.fail(monitor_id, _friendly_error(exc))
+            _ANTHROPIC_MONITOR_TOOL_BLOCKS.pop(monitor_id, None)
             raise
 
     response.body_iterator = _monitored_body()
@@ -2629,7 +2667,7 @@ async def confirm_tool_call(
 async def get_api_monitor(current_subject: str = Depends(get_current_subject)):
     """Return recent OpenAI-compatible API activity for Studio."""
     active_model = _monitor_active_model()
-    active_requests = api_monitor.active_count()
+    active_requests = api_monitor.active_count(subject = current_subject)
     if active_requests:
         operating_status = "generating"
     elif active_model:
@@ -2641,14 +2679,14 @@ async def get_api_monitor(current_subject: str = Depends(get_current_subject)):
         "active_model": active_model,
         "context_length": _monitor_context_length(),
         "active_requests": active_requests,
-        "entries": api_monitor.snapshot(include_details = False),
+        "entries": api_monitor.snapshot(include_details = False, subject = current_subject),
     }
 
 
 @studio_router.get("/monitor/{entry_id}")
 async def get_api_monitor_entry(entry_id: str, current_subject: str = Depends(get_current_subject)):
     """Return full prompt/reply details for one OpenAI-compatible API request."""
-    entry = api_monitor.get(entry_id)
+    entry = api_monitor.get(entry_id, subject = current_subject)
     if entry is None:
         raise HTTPException(status_code = 404, detail = "Monitor entry not found")
     return entry
@@ -3574,7 +3612,7 @@ def _build_external_messages(
 
 
 async def _proxy_to_external_provider(
-    payload: ChatCompletionRequest, request: Request
+    payload: ChatCompletionRequest, request: Request, current_subject: Optional[str] = None
 ) -> StreamingResponse:
     """
     Proxy a chat completion request to an external LLM provider.
@@ -3653,6 +3691,7 @@ async def _proxy_to_external_provider(
             model = model,
             prompt = _monitor_prompt_from_messages(payload.messages),
             context_length = None,
+            subject = current_subject,
         )
 
     client = ExternalProviderClient(
@@ -3977,7 +4016,7 @@ async def openai_chat_completions(
             )
         if _wants_multiple_choices(payload):
             _raise_unsupported_n("external provider chat completions")
-        return await _proxy_to_external_provider(payload, request)
+        return await _proxy_to_external_provider(payload, request, current_subject)
 
     # Reject a malformed function tool here: it would otherwise reach
     # llama-server and surface as an opaque 500 "Failed to parse tools".
@@ -4037,6 +4076,7 @@ async def openai_chat_completions(
                 model = model_label,
                 prompt = _monitor_prompt_from_messages(payload.messages),
                 context_length = context_length,
+                subject = current_subject,
             )
         try:
             response = await generate_audio(payload, request)
@@ -4100,6 +4140,7 @@ async def openai_chat_completions(
                 model = model_name,
                 prompt = _monitor_prompt_from_messages(payload.messages),
                 context_length = _monitor_context_length(),
+                subject = current_subject,
             )
 
         # ── Audio INPUT path: decode WAV and route to audio input generation ──
@@ -4239,6 +4280,7 @@ async def openai_chat_completions(
             model = model_name,
             prompt = _monitor_prompt_from_messages(payload.messages),
             context_length = _monitor_context_length(),
+            subject = current_subject,
         )
 
     # Finalize the monitor entry on validation rejection before raising.
@@ -5282,7 +5324,7 @@ async def openai_chat_completions(
             _stats = _sf_stats_holder.get("stats")
             if _stats:
                 _monitor_usage(monitor_id, _stats.get("usage"))
-            api_monitor.finish(monitor_id)
+            api_monitor.finish(monitor_id, "cancelled" if cancel_event.is_set() else "completed")
             response = ChatCompletion(
                 id = completion_id,
                 created = created,
@@ -5725,6 +5767,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
         model = str(body.get("model") or llama_backend.model_identifier or "default"),
         prompt = prompt_text,
         context_length = llama_backend.context_length,
+        subject = current_subject,
     )
 
     if is_stream:
@@ -5908,6 +5951,7 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
             model = str(body.get("model") or llama_backend.model_identifier or "default"),
             prompt = prompt_text,
             context_length = llama_backend.context_length,
+            subject = current_subject,
         )
 
     try:
@@ -6444,7 +6488,10 @@ def _chat_tool_calls_to_responses_output(tool_calls: list[dict]) -> list[dict]:
 
 
 async def _responses_non_streaming(
-    payload: ResponsesRequest, messages: list[ChatMessage], request: Request
+    payload: ResponsesRequest,
+    messages: list[ChatMessage],
+    request: Request,
+    current_subject: Optional[str] = None,
 ) -> JSONResponse:
     """Handle a non-streaming Responses API call."""
     chat_req = _build_chat_request(payload, messages, stream = False)
@@ -6468,6 +6515,7 @@ async def _responses_non_streaming(
             model = payload.model,
             prompt = _monitor_prompt_from_messages(messages),
             context_length = _monitor_context_length(),
+            subject = current_subject,
         )
     if request_state is not None:
         request_state.skip_api_monitor = True
@@ -7308,6 +7356,7 @@ async def openai_responses(
                 model = payload.model,
                 prompt = _monitor_prompt_from_messages(messages),
                 context_length = _monitor_context_length(),
+                subject = current_subject,
             )
         try:
             return await _responses_stream(payload, messages, request, monitor_id)
@@ -7320,7 +7369,7 @@ async def openai_responses(
         except Exception as exc:
             api_monitor.fail(monitor_id, _friendly_error(exc))
             raise
-    return await _responses_non_streaming(payload, messages, request)
+    return await _responses_non_streaming(payload, messages, request, current_subject)
 
 
 # =====================================================================
@@ -7651,6 +7700,7 @@ async def anthropic_messages(
             model = model_name,
             prompt = _monitor_prompt_from_messages(openai_messages),
             context_length = monitor_context_length,
+            subject = current_subject,
         )
 
     async def _monitored_anthropic(coro):

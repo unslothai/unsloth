@@ -41,6 +41,7 @@ from routes.inference import (
     _anthropic_requested_studio_tools,
     _anthropic_passthrough_stream,
     _anthropic_tool_non_streaming,
+    _monitor_anthropic_sse_line,
     anthropic_messages,
 )
 from state.tool_policy import reset_tool_policy, set_tool_policy
@@ -49,6 +50,46 @@ import asyncio
 import base64 as _b64
 from io import BytesIO as _BytesIO
 from types import SimpleNamespace
+
+
+def test_streamed_anthropic_tool_use_records_api_monitor_reply(monkeypatch):
+    import routes.inference as inf_mod
+
+    monitor = ApiMonitor(max_entries = 3)
+    monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+    monitor_id = monitor.start(
+        endpoint = "/v1/messages",
+        method = "POST",
+        model = "m",
+        prompt = "hi",
+    )
+
+    for payload in (
+        {
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {
+                "type": "tool_use",
+                "id": "toolu_1",
+                "name": "lookup",
+                "input": {},
+            },
+        },
+        {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {
+                "type": "input_json_delta",
+                "partial_json": '{"query":"weather"}',
+            },
+        },
+        {"type": "content_block_stop", "index": 0},
+    ):
+        _monitor_anthropic_sse_line(monitor_id, f"data: {json.dumps(payload)}")
+
+    entry = monitor.get(monitor_id)
+    assert entry is not None
+    assert entry["reply"] == 'Tool call: lookup\nInput: {"query":"weather"}'
 
 
 # =====================================================================

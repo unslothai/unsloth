@@ -40,6 +40,7 @@ class ApiMonitorEntry:
     status: str
     started_at: float
     updated_at: float
+    subject: Optional[str] = None
     # Monotonic anchors so duration math survives wall-clock steps (NTP).
     started_monotonic: float = 0.0
     finished_monotonic: Optional[float] = None
@@ -105,6 +106,7 @@ class ApiMonitor:
         model: str,
         prompt: str,
         context_length: Optional[int] = None,
+        subject: Optional[str] = None,
     ) -> str:
         now = time.time()
         entry = ApiMonitorEntry(
@@ -116,6 +118,7 @@ class ApiMonitor:
             status = "running",
             started_at = now,
             updated_at = now,
+            subject = subject,
             started_monotonic = time.monotonic(),
             context_length = context_length,
         )
@@ -222,20 +225,35 @@ class ApiMonitor:
             self._entries.appendleft(entry)
             self._trim_terminal_locked()
 
-    def snapshot(self, *, include_details: bool = True) -> list[dict[str, Any]]:
+    def snapshot(
+        self,
+        *,
+        include_details: bool = True,
+        subject: Optional[str] = None,
+    ) -> list[dict[str, Any]]:
         with self._lock:
-            return [entry.snapshot(include_details = include_details) for entry in self._entries]
+            return [
+                entry.snapshot(include_details = include_details)
+                for entry in self._entries
+                if subject is None or entry.subject == subject
+            ]
 
-    def get(self, entry_id: str) -> Optional[dict[str, Any]]:
+    def get(self, entry_id: str, *, subject: Optional[str] = None) -> Optional[dict[str, Any]]:
         with self._lock:
             entry = self._find_locked(entry_id)
             if entry is None:
                 return None
+            if subject is not None and entry.subject != subject:
+                return None
             return entry.snapshot(include_details = True)
 
-    def active_count(self) -> int:
+    def active_count(self, *, subject: Optional[str] = None) -> int:
         with self._lock:
-            return sum(1 for entry in self._entries if entry.status == "running")
+            return sum(
+                1
+                for entry in self._entries
+                if entry.status == "running" and (subject is None or entry.subject == subject)
+            )
 
     def clear(self) -> None:
         with self._lock:

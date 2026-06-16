@@ -55,6 +55,32 @@ def test_api_monitor_summary_omits_full_prompt_and_reply():
     assert detail["reply"] == "r" * 500
 
 
+def test_api_monitor_filters_entries_by_subject():
+    monitor = ApiMonitor(max_entries = 3)
+    alice = monitor.start(
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "m",
+        prompt = "alice prompt",
+        subject = "alice",
+    )
+    bob = monitor.start(
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "m",
+        prompt = "bob prompt",
+        subject = "bob",
+    )
+    monitor.finish(bob)
+
+    alice_entries = monitor.snapshot(subject = "alice")
+    assert [entry["id"] for entry in alice_entries] == [alice]
+    assert monitor.get(bob, subject = "alice") is None
+    assert monitor.get(bob, subject = "bob")["id"] == bob
+    assert monitor.active_count(subject = "alice") == 1
+    assert monitor.active_count(subject = "bob") == 0
+
+
 def test_api_monitor_keeps_bounded_recent_history():
     monitor = ApiMonitor(max_entries = 2)
 
