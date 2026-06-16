@@ -122,7 +122,9 @@ def test_list_cached_gguf_hides_llama_validation_probe(monkeypatch, tmp_path):
         [_file("gemma-3-270m-it-UD-Q4_K_XL.gguf", 200_000)],
         tmp_path / "models--unsloth--gemma-3-270m-it-GGUF",
     )
-    monkeypatch.setattr(models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [probe, real])])
+    monkeypatch.setattr(
+        models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [probe, real])]
+    )
 
     result = asyncio.run(models_route.list_cached_gguf(current_subject = "test-user"))
 
