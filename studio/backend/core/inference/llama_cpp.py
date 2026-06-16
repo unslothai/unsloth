@@ -23,7 +23,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Callable, Generator, Iterable, List, Optional
+from typing import Callable, Collection, Generator, Iterable, List, Optional, Union
 
 import httpx
 
@@ -78,6 +78,99 @@ logger = get_logger(__name__)
 class LlamaServerNotFoundError(RuntimeError):
     """GGUF model needs the llama.cpp runtime but no llama-server is installed.
     Subclasses RuntimeError so existing handlers still catch it."""
+
+
+# llama-server can serve HTTP 200 while running a model entirely on CPU when a
+# GPU backend fails to init (#5807 / #5106 / #5830). Classify the startup log so
+# Studio can warn. Priority: explicit "offloaded N/M layers to GPU" counts
+# (authoritative), then GPU "model buffer size" lines (host-pinned _Host
+# excluded), then the "device_info:" device table (disconfirm only).
+_GPU_OFFLOAD_MARKERS = (
+    "CUDA",
+    "ROCm",
+    "ROCM",
+    "HIP",
+    "Metal",
+    "Vulkan",
+    "OpenCL",
+    "SYCL",
+    "MUSA",
+    "CANN",
+)
+_OFFLOADED_LAYERS_RE = re.compile(
+    r"offloaded\s+(\d+)\s*/\s*(\d+)\s+layers?\s+to\s+gpu", re.IGNORECASE
+)
+_DEVICE_ROW_RE = re.compile(
+    r"-\s*(CUDA|ROCm|ROCM|HIP|Metal|Vulkan|SYCL|OpenCL|MUSA|CANN|CPU)\w*\s*:",
+    re.IGNORECASE,
+)
+_GPU_DEVICE_PREFIXES = (
+    "cuda",
+    "rocm",
+    "hip",
+    "metal",
+    "vulkan",
+    "sycl",
+    "opencl",
+    "musa",
+    "cann",
+)
+
+
+def classify_gpu_offload_lines(lines: "list[str]") -> Optional[bool]:
+    """True if the model landed on a GPU, False if it stayed on CPU despite GPU
+    intent, None when the log has no usable signal."""
+    # Counted offload is authoritative, keyed on the model with the most layers.
+    # A separate MTP/draft model logs its own (much smaller) "offloaded N/M"
+    # line, so decide on the largest-M line: a drafter that fits on GPU must not
+    # mask a main model running on CPU. N>0 on that model is True, 0 is False.
+    max_total = -1
+    offloaded_at_max = 0
+    for line in lines:
+        match = _OFFLOADED_LAYERS_RE.search(line)
+        if not match:
+            continue
+        offloaded, total = int(match.group(1)), int(match.group(2))
+        if total > max_total or (total == max_total and offloaded > offloaded_at_max):
+            max_total, offloaded_at_max = total, offloaded
+    if max_total >= 0:
+        return offloaded_at_max > 0
+
+    # GPU marker on a *model* buffer; _Host buffers are CPU-pinned, not offload.
+    # Buffer lines are authoritative: present but none on a GPU means CPU-only,
+    # so do not let the device table below override that.
+    saw_model_buffer = False
+    for line in lines:
+        if "model buffer size" not in line:
+            continue
+        saw_model_buffer = True
+        if "_Host" not in line and any(m in line for m in _GPU_OFFLOAD_MARKERS):
+            return True
+    if saw_model_buffer:
+        return False
+
+    # device_info: lists *available* devices (printed whenever a GPU backend is
+    # visible), not where the model loaded, so it can only disconfirm: an
+    # all-CPU table means no usable GPU. A visible GPU device is not proof the
+    # model used it, so it does not return True. Rows after the header only.
+    after_header = False
+    saw_device_row = False
+    saw_gpu_device = False
+    for line in lines:
+        if "device_info:" in line:
+            after_header = True
+            continue
+        if not after_header:
+            continue
+        match = _DEVICE_ROW_RE.search(line)
+        if not match:
+            continue
+        saw_device_row = True
+        if match.group(1).lower().startswith(_GPU_DEVICE_PREFIXES):
+            saw_gpu_device = True
+    if saw_device_row and not saw_gpu_device:
+        return False
+    return None
 
 
 def _wsl_system_rocm_lib_dirs() -> "list[str]":
@@ -159,8 +252,8 @@ def _should_suppress_forced_no_tool_output(text: str) -> bool:
 
 
 # ── Pre-compiled patterns for GGUF shard detection ───────────
-_SHARD_FULL_RE = re.compile(r"^(.*)-(\d{5})-of-(\d{5})\.gguf$")
-_SHARD_RE = re.compile(r"^(.*)-\d{5}-of-\d{5}\.gguf$")
+_SHARD_FULL_RE = re.compile(r"^(.*)-(\d{5})-of-(\d{5})\.gguf$", re.IGNORECASE)
+_SHARD_RE = re.compile(r"^(.*)-\d{5}-of-\d{5}\.gguf$", re.IGNORECASE)
 
 
 # ── Sliding-window-pattern resolver ───────────────────────────
@@ -538,6 +631,99 @@ def _is_companion_gguf_path(path: str) -> bool:
     return name.startswith("mtp-") or "/mtp/" in f"/{p}"
 
 
+_BIG_ENDIAN_GGUF_FILENAME_RE = re.compile(r"(^|[-_])be(?:[._-]|$)", re.IGNORECASE)
+_GGUF_KNOWN_QUANT_RE = re.compile(
+    r"(UD-)?"
+    r"(MXFP[0-9]+(?:_[A-Z0-9]+)*"
+    r"|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?"
+    r"|TQ[0-9]+_[0-9]+"
+    r"|Q[0-9]+_K_[A-Z]+"
+    r"|Q[0-9]+_[0-9]+"
+    r"|Q[0-9]+_K"
+    r"|BF16|F16|F32)",
+    re.IGNORECASE,
+)
+
+
+def _is_big_endian_gguf_path(path: str, variant_key: str = "") -> bool:
+    normalized = path.replace("\\", "/")
+    name = normalized.rsplit("/", 1)[-1]
+    stem = name.rsplit(".", 1)[0].lower()
+    variant_key = variant_key.strip().lower()
+    variant_index = stem.find(variant_key) if variant_key else -1
+    parent = normalized.rsplit("/", 1)[0].lower() if "/" in normalized else ""
+    variant_in_parent_only = (
+        bool(parent)
+        and variant_index < 0
+        and (
+            (variant_key and variant_key in parent)
+            or (not variant_key and _GGUF_KNOWN_QUANT_RE.search(parent) is not None)
+        )
+    )
+    for match in _BIG_ENDIAN_GGUF_FILENAME_RE.finditer(stem):
+        if variant_index >= 0 and variant_index < match.start():
+            return True
+        tail = stem[match.end() :].lstrip("._-")
+        if not tail or _GGUF_KNOWN_QUANT_RE.search(tail) is None:
+            return not variant_in_parent_only
+    return False
+
+
+def _gguf_snapshot_files(snapshot: Path) -> list[str]:
+    return [
+        p.relative_to(snapshot).as_posix()
+        for p in snapshot.rglob("*")
+        if p.is_file() and p.name.lower().endswith(".gguf")
+    ]
+
+
+def _gguf_extra_shards(files: Iterable[str], first_shard: str) -> list[str]:
+    m = _SHARD_FULL_RE.match(first_shard)
+    if not m:
+        return []
+    prefix = m.group(1)
+    total = m.group(3)
+    sibling_pat = re.compile(
+        r"^" + re.escape(prefix) + r"-\d{5}-of-" + re.escape(total) + r"\.gguf$",
+        re.IGNORECASE,
+    )
+    return sorted(f for f in files if f != first_shard and sibling_pat.match(f))
+
+
+def _gguf_files_for_variant(files: Iterable[str], variant: str) -> list[str]:
+    """Return main GGUF files matching a requested variant.
+
+    Prefer exact quant-label matches over loose substring matches so a request
+    for ``stories260K`` does not resolve to ``stories260K-be.gguf``.
+    """
+    variant_key = variant.strip().lower()
+    main_files = [
+        f
+        for f in files
+        if f.lower().endswith(".gguf")
+        and not _is_companion_gguf_path(f)
+        and not _is_big_endian_gguf_path(f, variant_key)
+    ]
+    if not variant_key:
+        return sorted(main_files)
+
+    try:
+        from utils.models.model_config import _extract_quant_label
+    except Exception:
+        _extract_quant_label = None
+
+    if _extract_quant_label is not None:
+        try:
+            exact = sorted(f for f in main_files if _extract_quant_label(f).lower() == variant_key)
+            if exact:
+                return exact
+        except Exception as e:
+            logger.warning("Failed to extract GGUF quant labels: %s", e)
+
+    boundary = re.compile(r"(?<![a-zA-Z0-9])" + re.escape(variant_key) + r"(?![a-zA-Z0-9])")
+    return sorted(f for f in main_files if boundary.search(f.lower()))
+
+
 # Below this many B params, draft-mtp regresses vs spec-off (bench in
 # _build_speculative_flags); auto mode drops MTP under it.
 _MTP_MIN_SIZE_B = 3.0
@@ -572,14 +758,27 @@ def _auto_mode_drops_mtp(
 def _extra_args_set_spec_type(extra_args: Optional[Iterable[str]]) -> bool:
     """User passed --spec-type / --spec-default? llama-server takes one
     --spec-type (comma-separated to chain), so suppress auto-emit."""
+    return _extra_args_set_any_flag(extra_args, {"--spec-type", "--spec-default"})
+
+
+_GPU_OFFLOAD_OVERRIDE_FLAGS = frozenset({"-ngl", "--gpu-layers", "--n-gpu-layers", "-fit", "--fit"})
+_THREAD_OVERRIDE_FLAGS = frozenset({"-t", "--threads"})
+
+
+def _extra_arg_flag_name(token: str) -> Optional[str]:
+    if not token.startswith("-") or token in {"-", "--"}:
+        return None
+    if len(token) >= 2 and (token[1].isdigit() or token[1] == "."):
+        return None
+    return token.split("=", 1)[0]
+
+
+def _extra_args_set_any_flag(extra_args: Optional[Iterable[str]], flags: Collection[str]) -> bool:
     if not extra_args:
         return False
     for raw in extra_args:
-        tok = str(raw)
-        if not tok.startswith("--"):
-            continue
-        flag = tok.split("=", 1)[0]
-        if flag in ("--spec-type", "--spec-default"):
+        flag = _extra_arg_flag_name(str(raw))
+        if flag in flags:
             return True
     return False
 
@@ -808,7 +1007,11 @@ class LlamaCppBackend:
         # to decide whether to wait for the VRAM reclaim to finish.
         self._last_kill_monotonic: float = 0.0
 
-        self._kill_orphaned_servers()
+        _reaped = self._kill_orphaned_servers()
+        if _reaped:
+            # Reaped VRAM frees lazily; arm the settle wait so the first load
+            # waits before ranking GPUs by free memory.
+            self._last_kill_monotonic = time.monotonic()
         atexit.register(self._cleanup)
 
     # ── Properties ────────────────────────────────────────────────
@@ -941,12 +1144,13 @@ class LlamaCppBackend:
                 m = _SHARD_RE.match(stem)
                 prefix = m.group(1) if m else None
                 if prefix and parent.is_dir():
+                    prefix_lower = prefix.lower()
                     for sibling in parent.iterdir():
                         if (
                             sibling.is_file()
-                            and sibling.name.startswith(prefix)
+                            and sibling.name.lower().startswith(prefix_lower)
                             and sibling.name != stem
-                            and sibling.suffix == ".gguf"
+                            and sibling.suffix.lower() == ".gguf"
                         ):
                             try:
                                 bytes_total += sibling.stat().st_size
@@ -1222,7 +1426,7 @@ class LlamaCppBackend:
     def probe_server_capabilities(cls, binary: Optional[str] = None) -> dict[str, object]:
         """Parse `llama-server --help` for feature flags. Returns
         {found, mtp_token, supports_mtp, ngram_mod_flavor,
-        supports_ngram_mod, spec_draft_n_max_flag}.
+        supports_ngram_mod, spec_draft_n_max_flag, cache flag support}.
 
         ``ngram_mod_flavor``: ``"new"`` when the post-rename
         ``--spec-ngram-mod-n-match / -n-min / -n-max`` are real args;
@@ -1247,6 +1451,9 @@ class LlamaCppBackend:
                 "spec_draft_n_max_flag": None,
                 "supports_kv_unified": False,
                 "supports_fit_ctx": False,
+                "supports_cache_ram": False,
+                "supports_ctx_checkpoints": False,
+                "supports_no_cache_prompt": False,
             }
         try:
             mtime = int(Path(bin_path).stat().st_mtime)
@@ -1262,13 +1469,18 @@ class LlamaCppBackend:
         spec_draft_n_max_flag: Optional[str] = None
         supports_kv_unified = False
         supports_fit_ctx = False
+        supports_cache_ram = False
+        supports_ctx_checkpoints = False
+        supports_no_cache_prompt = False
         try:
+            probe_env = cls._llama_server_env_for_binary(bin_path)
             result = subprocess.run(
                 [bin_path, "--help"],
                 capture_output = True,
                 text = True,
                 timeout = 10,
                 check = False,
+                env = probe_env,
             )
             help_text = (result.stdout or "") + "\n" + (result.stderr or "")
             # Split into per-flag blocks (each --flag line + its indented
@@ -1352,6 +1564,9 @@ class LlamaCppBackend:
 
             supports_kv_unified = _is_real("--kv-unified")
             supports_fit_ctx = _is_real("--fit-ctx")
+            supports_cache_ram = _is_real("--cache-ram")
+            supports_ctx_checkpoints = _is_real("--ctx-checkpoints")
+            supports_no_cache_prompt = _is_real("--no-cache-prompt")
         except (OSError, subprocess.SubprocessError) as exc:
             logger.debug(f"llama-server --help probe failed: {exc}")
 
@@ -1364,6 +1579,9 @@ class LlamaCppBackend:
             "spec_draft_n_max_flag": spec_draft_n_max_flag,
             "supports_kv_unified": supports_kv_unified,
             "supports_fit_ctx": supports_fit_ctx,
+            "supports_cache_ram": supports_cache_ram,
+            "supports_ctx_checkpoints": supports_ctx_checkpoints,
+            "supports_no_cache_prompt": supports_no_cache_prompt,
         }
         cls._capability_cache[cache_key] = info
         return info
@@ -1381,7 +1599,8 @@ class LlamaCppBackend:
         if m:
             prefix, _, num_total = m.group(1), m.group(2), m.group(3)
             sibling_pat = re.compile(
-                r"^" + re.escape(prefix) + r"-\d{5}-of-" + re.escape(num_total) + r"\.gguf$"
+                r"^" + re.escape(prefix) + r"-\d{5}-of-" + re.escape(num_total) + r"\.gguf$",
+                re.IGNORECASE,
             )
             for sibling in main.parent.iterdir():
                 if sibling != main and sibling_pat.match(sibling.name):
@@ -1772,6 +1991,100 @@ class LlamaCppBackend:
         return path_dirs
 
     @staticmethod
+    def _llama_server_env_for_binary(binary: str) -> dict[str, str]:
+        """Build a subprocess env that lets llama-server resolve native libs."""
+        env = child_env_without_native_path_secret()
+        binary_dir = str(Path(binary).parent)
+
+        if sys.platform == "win32":
+            # Ordering: see _build_windows_path_dirs. #5106.
+            path_dirs = LlamaCppBackend._build_windows_path_dirs(
+                binary_dir,
+                sys.prefix,
+                os.environ.get("CUDA_PATH", ""),
+            )
+            existing_path = env.get("PATH", "")
+            env["PATH"] = ";".join(path_dirs) + ";" + existing_path
+
+            # ROCm: the prebuilt bundles rocblas.dll but NOT the Tensile
+            # kernel files (rocblas/library/*.dat + *.hsaco); the DLL searches
+            # <binary_dir>/rocblas/library/ which doesn't exist.
+            _hip_path = os.environ.get("HIP_PATH", os.environ.get("ROCM_PATH", ""))
+            if _hip_path:
+                _rocblas_lib = os.path.join(_hip_path, "bin", "rocblas", "library")
+                if os.path.isdir(_rocblas_lib):
+                    env.setdefault("ROCBLAS_TENSILE_LIBPATH", _rocblas_lib)
+        else:
+            # Linux: LD_LIBRARY_PATH for shared libs next to the binary plus
+            # CUDA runtime libs (libcudart, libcublas, etc.)
+            import platform
+
+            lib_dirs = []
+            # WSL: system HIP before the bundle's (which segfaults on /dev/dxg).
+            for _wsl_rocm in _wsl_system_rocm_lib_dirs():
+                lib_dirs.append(_wsl_rocm)
+            if lib_dirs:
+                env.setdefault("HSA_ENABLE_DXG_DETECTION", "1")
+            lib_dirs.append(binary_dir)
+            _arch = platform.machine()  # x86_64, aarch64, etc.
+
+            # Pip-installed nvidia CUDA runtime libs. The prebuilt binary links
+            # libcudart.so.13 / libcublas.so.13 which live here, not in
+            # /usr/local/cuda.
+            import glob as _glob
+
+            for _nv_pattern in [
+                os.path.join(
+                    sys.prefix,
+                    "lib",
+                    "python*",
+                    "site-packages",
+                    "nvidia",
+                    "cu*",
+                    "lib",
+                ),
+                os.path.join(
+                    sys.prefix,
+                    "lib",
+                    "python*",
+                    "site-packages",
+                    "nvidia",
+                    "cudnn",
+                    "lib",
+                ),
+                os.path.join(
+                    sys.prefix,
+                    "lib",
+                    "python*",
+                    "site-packages",
+                    "nvidia",
+                    "nvjitlink",
+                    "lib",
+                ),
+            ]:
+                for _nv_dir in _glob.glob(_nv_pattern):
+                    if os.path.isdir(_nv_dir):
+                        lib_dirs.append(_nv_dir)
+
+            for cuda_lib in [
+                "/usr/local/cuda/lib64",
+                f"/usr/local/cuda/targets/{_arch}-linux/lib",
+                # Fallback CUDA compat paths (e.g. binary built with CUDA 12
+                # where default /usr/local/cuda is CUDA 13+).
+                "/usr/local/cuda-12/lib64",
+                "/usr/local/cuda-12.8/lib64",
+                f"/usr/local/cuda-12/targets/{_arch}-linux/lib",
+                f"/usr/local/cuda-12.8/targets/{_arch}-linux/lib",
+            ]:
+                if os.path.isdir(cuda_lib):
+                    lib_dirs.append(cuda_lib)
+            existing_ld = env.get("LD_LIBRARY_PATH", "")
+            new_ld = ":".join(lib_dirs)
+            env["LD_LIBRARY_PATH"] = f"{new_ld}:{existing_ld}" if existing_ld else new_ld
+
+        return env
+
+    @staticmethod
     def _select_gpus(
         model_size_bytes: int,
         gpus: list[tuple[int, int]],
@@ -2106,7 +2419,11 @@ class LlamaCppBackend:
 
             files = list_repo_files(hf_repo, token = hf_token)
             gguf_files = [
-                f for f in files if f.endswith(".gguf") and not _is_companion_gguf_path(f)
+                f
+                for f in files
+                if f.lower().endswith(".gguf")
+                and not _is_companion_gguf_path(f)
+                and not _is_big_endian_gguf_path(f)
             ]
             if not gguf_files:
                 return None
@@ -2699,27 +3016,10 @@ class LlamaCppBackend:
                 from huggingface_hub import list_repo_files
 
                 files = list_repo_files(hf_repo, token = hf_token)
-                variant_lower = hf_variant.lower()
-                boundary = re.compile(
-                    r"(?<![a-zA-Z0-9])" + re.escape(variant_lower) + r"(?![a-zA-Z0-9])"
-                )
-                gguf_files = sorted(
-                    f
-                    for f in files
-                    if f.endswith(".gguf")
-                    and boundary.search(f.lower())
-                    and not _is_companion_gguf_path(f)
-                )
+                gguf_files = _gguf_files_for_variant(files, hf_variant)
                 if gguf_files:
                     gguf_filename = gguf_files[0]
-                    m = _SHARD_FULL_RE.match(gguf_filename)
-                    if m:
-                        prefix = m.group(1)
-                        total = m.group(3)
-                        sibling_pat = re.compile(
-                            r"^" + re.escape(prefix) + r"-\d{5}-of-" + re.escape(total) + r"\.gguf$"
-                        )
-                        gguf_extra_shards = [f for f in gguf_files[1:] if sibling_pat.match(f)]
+                    gguf_extra_shards = _gguf_extra_shards(gguf_files, gguf_filename)
             except Exception as e:
                 logger.warning(f"Could not list repo files: {e}")
 
@@ -2731,33 +3031,13 @@ class LlamaCppBackend:
             if not gguf_filename:
                 try:
                     from utils.models.model_config import _iter_hf_cache_snapshots
-                    boundary = re.compile(
-                        r"(?<![a-zA-Z0-9])" + re.escape(hf_variant.lower()) + r"(?![a-zA-Z0-9])"
-                    )
                     for snap in _iter_hf_cache_snapshots(hf_repo):
-                        matches = sorted(
-                            p.relative_to(snap).as_posix()
-                            for p in snap.rglob("*.gguf")
-                            if not _is_companion_gguf_path(p.relative_to(snap).as_posix())
-                            and boundary.search(p.relative_to(snap).as_posix().lower())
-                        )
+                        cached_files = _gguf_snapshot_files(snap)
+                        matches = _gguf_files_for_variant(cached_files, hf_variant)
                         if not matches:
                             continue
                         gguf_filename = matches[0]
-                        m = _SHARD_FULL_RE.match(Path(gguf_filename).name)
-                        if m:
-                            prefix = m.group(1)
-                            total = m.group(3)
-                            sibling_pat = re.compile(
-                                r"^"
-                                + re.escape(prefix)
-                                + r"-\d{5}-of-"
-                                + re.escape(total)
-                                + r"\.gguf$"
-                            )
-                            gguf_extra_shards = [
-                                f for f in matches[1:] if sibling_pat.match(Path(f).name)
-                            ]
+                        gguf_extra_shards = _gguf_extra_shards(matches, gguf_filename)
                         logger.info(
                             "Resolved variant %s -> %s from local HF cache",
                             hf_variant,
@@ -2837,10 +3117,11 @@ class LlamaCppBackend:
                         _m = _SHARD_RE.match(gguf_filename)
                         _prefix = _m.group(1) if _m else None
                         if _prefix:
+                            prefix_lower = _prefix.lower()
                             gguf_extra_shards = sorted(
                                 f
                                 for f in all_gguf_files
-                                if f.startswith(_prefix)
+                                if f.lower().startswith(prefix_lower)
                                 and f != gguf_filename
                                 and not _is_companion_gguf_path(f)
                             )
@@ -2925,7 +3206,7 @@ class LlamaCppBackend:
             try:
                 from utils.models.model_config import _iter_hf_cache_snapshots
                 for snap in _iter_hf_cache_snapshots(hf_repo):
-                    rel_files = [p.relative_to(snap).as_posix() for p in snap.rglob("*.gguf")]
+                    rel_files = _gguf_snapshot_files(snap)
                     target = pick(rel_files)
                     if target is not None:
                         logger.info("Resolved %s %s from local HF cache", label, target)
@@ -3929,27 +4210,45 @@ class LlamaCppBackend:
                     "--no-context-shift",
                 ]
 
+                fully_gpu_offloaded = False
                 if use_fit:
                     cmd.extend(["--fit", "on"])
                 elif gpu_indices is not None:
                     # Fits on selected GPU(s) -- offload all layers
                     cmd.extend(["-ngl", "-1"])
+                    fully_gpu_offloaded = True
 
+                server_caps = self.probe_server_capabilities(binary)
                 cmd.extend(
                     self._ctx_integrity_flags(
                         n_parallel,
                         use_fit,
                         requested_ctx,
                         effective_ctx,
-                        self.probe_server_capabilities(binary),
+                        server_caps,
                     )
                 )
+                offload_overridden = _extra_args_set_any_flag(
+                    extra_args, _GPU_OFFLOAD_OVERRIDE_FLAGS
+                )
+                threads_overridden = _extra_args_set_any_flag(extra_args, _THREAD_OVERRIDE_FLAGS)
+                full_offload_tuning_active = fully_gpu_offloaded and not offload_overridden
 
-                # -1 = llama.cpp auto-detect (physical cores). Pass explicitly
-                # so we don't inherit llama-server's internal default, which
-                # has varied (hardware concurrency incl. hyperthreads on some
-                # builds).
-                cmd.extend(["--threads", str(n_threads if n_threads is not None else -1)])
+                # Thread count: an unset --threads makes llama.cpp pick physical
+                # cores (common_cpu_get_num_math), but an explicit --threads -1
+                # resolves to hardware_concurrency() (every hyperthread), which
+                # contends on the memory bus and slows CPU / hybrid decode. So
+                # omit the flag when unset and only pin it for an explicit
+                # override or the Windows full-offload OpenMP cap. Pass-through
+                # thread flags in extra_args still win (appended last). #5692
+                if (
+                    sys.platform == "win32"
+                    and full_offload_tuning_active
+                    and not threads_overridden
+                ):
+                    cmd.extend(["--threads", "2"])
+                elif n_threads is not None and n_threads > 0:
+                    cmd.extend(["--threads", str(n_threads)])
 
                 # Enable Jinja chat template rendering
                 cmd.extend(["--jinja"])
@@ -4091,6 +4390,28 @@ class LlamaCppBackend:
                 else:
                     self._api_key = None
 
+                # Windows + full offload: disable KV checkpoints (WDDM/PCI-E
+                # overhead). CPU/partial offload keeps prompt caching. #5692.
+                if sys.platform == "win32" and full_offload_tuning_active:
+                    unsupported_cache_flags: list[str] = []
+                    if server_caps.get("supports_cache_ram"):
+                        cmd.extend(["--cache-ram", "0"])
+                    else:
+                        unsupported_cache_flags.append("--cache-ram")
+                    if server_caps.get("supports_ctx_checkpoints"):
+                        cmd.extend(["--ctx-checkpoints", "0"])
+                    else:
+                        unsupported_cache_flags.append("--ctx-checkpoints")
+                    if server_caps.get("supports_no_cache_prompt"):
+                        cmd.append("--no-cache-prompt")
+                    else:
+                        unsupported_cache_flags.append("--no-cache-prompt")
+                    if unsupported_cache_flags:
+                        logger.info(
+                            "Skipping unsupported Windows cache flags for llama-server: %s",
+                            ", ".join(unsupported_cache_flags),
+                        )
+
                 # User pass-through args go last so llama.cpp's last-wins parsing
                 # lets the user override Studio's auto-set flags. Already
                 # validated by the route via validate_extra_args().
@@ -4106,11 +4427,20 @@ class LlamaCppBackend:
                 logger.info(f"Starting llama-server: {' '.join(_log_cmd)}")
 
                 # Library paths so llama-server finds its shared libs and CUDA DLLs.
-                import os
-                import sys
+                env = self._llama_server_env_for_binary(binary)
+                # Omitting --threads relies on llama.cpp's physical-core default, so
+                # drop an inherited LLAMA_ARG_THREADS that would otherwise feed the
+                # arg handler and silently force hardware_concurrency(). #5692
+                if "--threads" not in cmd:
+                    env.pop("LLAMA_ARG_THREADS", None)
 
-                env = child_env_without_native_path_secret()
-                binary_dir = str(Path(binary).parent)
+                # Windows + full offload: PASSIVE OMP + 2 threads stop
+                # spin-wait burning CPU. CPU/partial offload keeps default
+                # OMP parallelism. #5692.
+                if sys.platform == "win32" and full_offload_tuning_active:
+                    env.setdefault("OMP_WAIT_POLICY", "PASSIVE")
+                    if not threads_overridden:
+                        env.setdefault("OMP_NUM_THREADS", "2")
 
                 # AMD unified-memory APUs (gfx1150/gfx1151): let llama.cpp use
                 # shared system RAM. setdefault so a user value wins.
@@ -4125,96 +4455,6 @@ class LlamaCppBackend:
                     logger.info(
                         f"Data-center GPU detected: applied DC llama.cpp env tuning (multi_gpu={multi_gpu})"
                     )
-
-                if sys.platform == "win32":
-                    # Ordering: see _build_windows_path_dirs. #5106.
-                    path_dirs = self._build_windows_path_dirs(
-                        binary_dir,
-                        sys.prefix,
-                        os.environ.get("CUDA_PATH", ""),
-                    )
-                    existing_path = env.get("PATH", "")
-                    env["PATH"] = ";".join(path_dirs) + ";" + existing_path
-
-                    # ROCm: the prebuilt bundles rocblas.dll but NOT the Tensile
-                    # kernel files (rocblas/library/*.dat + *.hsaco); the DLL
-                    # searches <binary_dir>/rocblas/library/ which doesn't exist
-                    # -> silent crash on the first GEMM. ROCBLAS_TENSILE_LIBPATH
-                    # repoints that search at the ROCm install.
-                    _hip_path = os.environ.get("HIP_PATH", os.environ.get("ROCM_PATH", ""))
-                    if _hip_path:
-                        _rocblas_lib = os.path.join(_hip_path, "bin", "rocblas", "library")
-                        if os.path.isdir(_rocblas_lib):
-                            env.setdefault("ROCBLAS_TENSILE_LIBPATH", _rocblas_lib)
-                else:
-                    # Linux: LD_LIBRARY_PATH for shared libs next to the binary
-                    # plus CUDA runtime libs (libcudart, libcublas, etc.)
-                    import platform
-
-                    lib_dirs = []
-                    # WSL: system HIP before the bundle's (which segfaults on
-                    # /dev/dxg). Mirror install_llama_prebuilt.binary_env, which
-                    # validates the prebuilt with this same ordering.
-                    for _wsl_rocm in _wsl_system_rocm_lib_dirs():
-                        lib_dirs.append(_wsl_rocm)
-                    if lib_dirs:
-                        env.setdefault("HSA_ENABLE_DXG_DETECTION", "1")
-                    lib_dirs.append(binary_dir)
-                    _arch = platform.machine()  # x86_64, aarch64, etc.
-
-                    # Pip-installed nvidia CUDA runtime libs. The prebuilt
-                    # binary links libcudart.so.13 / libcublas.so.13 which live
-                    # here, not in /usr/local/cuda.
-                    import glob as _glob
-
-                    for _nv_pattern in [
-                        os.path.join(
-                            sys.prefix,
-                            "lib",
-                            "python*",
-                            "site-packages",
-                            "nvidia",
-                            "cu*",
-                            "lib",
-                        ),
-                        os.path.join(
-                            sys.prefix,
-                            "lib",
-                            "python*",
-                            "site-packages",
-                            "nvidia",
-                            "cudnn",
-                            "lib",
-                        ),
-                        os.path.join(
-                            sys.prefix,
-                            "lib",
-                            "python*",
-                            "site-packages",
-                            "nvidia",
-                            "nvjitlink",
-                            "lib",
-                        ),
-                    ]:
-                        for _nv_dir in _glob.glob(_nv_pattern):
-                            if os.path.isdir(_nv_dir):
-                                lib_dirs.append(_nv_dir)
-
-                    for cuda_lib in [
-                        "/usr/local/cuda/lib64",
-                        f"/usr/local/cuda/targets/{_arch}-linux/lib",
-                        # Fallback CUDA compat paths (e.g. binary built with
-                        # CUDA 12 where default /usr/local/cuda is CUDA 13+).
-                        "/usr/local/cuda-12/lib64",
-                        "/usr/local/cuda-12.8/lib64",
-                        f"/usr/local/cuda-12/targets/{_arch}-linux/lib",
-                        f"/usr/local/cuda-12.8/targets/{_arch}-linux/lib",
-                    ]:
-                        if os.path.isdir(cuda_lib):
-                            lib_dirs.append(cuda_lib)
-                    existing_ld = env.get("LD_LIBRARY_PATH", "")
-                    new_ld = ":".join(lib_dirs)
-                    env["LD_LIBRARY_PATH"] = f"{new_ld}:{existing_ld}" if existing_ld else new_ld
 
                 # Pin to selected GPU(s). On ROCm, narrowing only
                 # CUDA_VISIBLE_DEVICES leaves an AMD child seeing the full
@@ -4886,26 +5126,13 @@ class LlamaCppBackend:
     def _classify_gpu_offload(
         self, expected_gpu: bool, detected_gpus: list[tuple[int, int]]
     ) -> Optional[bool]:
-        """True if a GPU model buffer was allocated, False if only CPU
-        buffers landed despite GPU intent, None when there's no signal (no
-        GPU detected, no buffer-size lines, etc.)."""
+        """True if the model landed on a GPU, False if only CPU buffers landed
+        despite GPU intent, None when there's no signal. Delegates to the shared
+        classifier so it tracks current llama.cpp logs (offloaded-layer counts /
+        device_info), not just the older "model buffer size" lines."""
         if not detected_gpus or not expected_gpu:
             return None
-        # llama-server logs one "model buffer size = N MiB" line per backend
-        # buffer; CUDA/ROCm/Metal/Vulkan/OpenCL/SYCL are GPU, CPU* are not.
-        gpu_markers = ("CUDA", "ROCm", "Metal", "Vulkan", "OpenCL", "SYCL")
-        saw_buffer_line = False
-        saw_gpu_buffer = False
-        for line in self._stdout_lines:
-            if "model buffer size" not in line:
-                continue
-            saw_buffer_line = True
-            if any(marker in line for marker in gpu_markers):
-                saw_gpu_buffer = True
-                break
-        if not saw_buffer_line:
-            return None
-        return saw_gpu_buffer
+        return classify_gpu_offload_lines(self._stdout_lines)
 
     def load_cancelled(self) -> bool:
         """True if a load was cancelled (e.g. via unload/_cancel_event) and not
@@ -5018,7 +5245,7 @@ class LlamaCppBackend:
                 self._llama_log_fh = None
 
     @staticmethod
-    def _kill_orphaned_servers():
+    def _kill_orphaned_servers() -> int:
         """Kill orphaned llama-server processes started by studio.
 
         Only kills processes whose resolved binary lives under a known
@@ -5030,7 +5257,11 @@ class LlamaCppBackend:
         Uses psutil for cross-platform support (Linux, macOS, Windows);
         falls back to pgrep + /proc/<pid>/exe on Linux when psutil is
         absent.
+
+        Returns the count of processes killed; callers arm the VRAM-settle
+        wait on a positive count.
         """
+        killed = 0
         try:
             # -- Build the ownership allowlist --------------------------------
             # exact_binaries -- env var overrides (exact path match).
@@ -5122,6 +5353,7 @@ class LlamaCppBackend:
                             continue
 
                         proc.kill()
+                        killed += 1
                         logger.info(
                             f"Killed orphaned llama-server process (pid={proc.info['pid']})"
                         )
@@ -5134,7 +5366,7 @@ class LlamaCppBackend:
             else:
                 # -- Fallback: pgrep + /proc/<pid>/exe (Linux only) -----------
                 if sys.platform != "linux":
-                    return
+                    return killed
                 result = subprocess.run(
                     ["pgrep", "-a", "-f", "llama-server"],
                     capture_output = True,
@@ -5143,7 +5375,7 @@ class LlamaCppBackend:
                     env = child_env_without_native_path_secret(),
                 )
                 if result.returncode != 0:
-                    return
+                    return killed
 
                 for line in result.stdout.strip().splitlines():
                     parts = line.strip().split(None, 1)
@@ -5174,6 +5406,7 @@ class LlamaCppBackend:
 
                     try:
                         os.kill(pid, signal.SIGKILL)
+                        killed += 1
                         logger.info(f"Killed orphaned llama-server process (pid={pid})")
                     except ProcessLookupError:
                         pass
@@ -5181,6 +5414,7 @@ class LlamaCppBackend:
                         pass
         except Exception:
             logger.warning("Error during orphan server cleanup", exc_info = True)
+        return killed
 
     def _cleanup(self):
         """atexit handler to ensure llama-server is terminated."""
@@ -5517,7 +5751,7 @@ class LlamaCppBackend:
         reasoning_effort: Optional[str] = None,
         preserve_thinking: Optional[bool] = None,
         seed: Optional[int] = None,
-    ) -> Generator[str | dict, None, None]:
+    ) -> Generator[Union[str, dict], None, None]:
         """
         Send a chat completion to llama-server and stream tokens back.
 
@@ -5715,6 +5949,7 @@ class LlamaCppBackend:
         seed: Optional[int] = None,
         disable_parallel_tool_use: bool = False,
         confirm_tool_calls: bool = False,
+        bypass_permissions: bool = False,
     ) -> Generator[dict, None, None]:
         """
         Agentic loop: let the model call tools, execute them, and continue.
@@ -6415,7 +6650,9 @@ class LlamaCppBackend:
                             decision.as_assistant_tool_call()
                         )
 
-                    needs_confirm = bool(confirm_tool_calls)
+                    # Bypass wins over the confirm gate at the loop level too,
+                    # so a direct internal caller with both flags never prompts.
+                    needs_confirm = bool(confirm_tool_calls) and not bypass_permissions
                     approval_id = new_approval_id() if needs_confirm else ""
                     decision_slot = (
                         begin_tool_decision(session_id, approval_id) if needs_confirm else None
@@ -6476,6 +6713,7 @@ class LlamaCppBackend:
                             timeout = _effective_timeout,
                             session_id = session_id,
                             rag_scope = rag_scope,
+                            disable_sandbox = bypass_permissions,
                         )
                         if decision.tool_name == "search_knowledge_base":
                             _kb_search_count += 1

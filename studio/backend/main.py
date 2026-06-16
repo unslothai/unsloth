@@ -250,7 +250,7 @@ if os.getenv("ENVIRONMENT_TYPE", "production") == "production":
     # warnings.filterwarnings("ignore", category=DeprecationWarning)
     # warnings.filterwarnings("ignore", module="triton.*")
 
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse, Response
@@ -296,6 +296,7 @@ from utils.hardware import (
 import utils.hardware.hardware as _hw_module
 
 from utils.cache_cleanup import clear_unsloth_compiled_cache
+from utils.lifespan_shutdown import run_lifespan_shutdown
 from utils.native_path_leases import native_path_leases_supported
 from utils.update_status import (
     get_studio_install_source_status,
@@ -463,9 +464,12 @@ async def lifespan(app: FastAPI):
     else:
         app.state.bootstrap_password = storage.get_bootstrap_password()
     yield
-    await asyncio.to_thread(terminate_hub_downloads)
-    _hw_module.DEVICE = None
-    clear_unsloth_compiled_cache()
+
+    await run_lifespan_shutdown(
+        terminate_hub_downloads,
+        clear_unsloth_compiled_cache,
+        _hw_module,
+    )
 
 
 app = FastAPI(
@@ -873,6 +877,10 @@ async def health_check(request: Request):
         "version": UNSLOTH_VERSION,
         "studio_version": STUDIO_VERSION,
         "device_type": device_type,
+        # API-screen fields (authed-only; they fingerprint how the host is exposed).
+        "cloudflare_url": getattr(request.app.state, "cloudflare_url", None),
+        "server_url": getattr(request.app.state, "server_url", None),
+        "secure": bool(getattr(request.app.state, "secure", False)),
     }
 
 
@@ -963,17 +971,40 @@ async def get_gpu_visibility(current_subject: str = Depends(get_current_subject)
 
 
 @app.get("/api/system/hardware")
-async def get_hardware_info(current_subject: str = Depends(get_current_subject)):
+def get_hardware_info(
+    include_details: bool = Query(False), current_subject: str = Depends(get_current_subject)
+):
     """Return GPU name, total VRAM, and key ML package versions.
 
     Gated behind auth alongside /api/system -- same fingerprinting concern.
     /api/system/gpu-visibility is also auth-gated.
+
+    ``include_details`` is for About/diagnostics. The default response stays
+    cheap for callers that only need the primary GPU summary, like training
+    method auto-selection. Sync def (not async): hardware/detail probes can
+    shell out, and FastAPI runs sync endpoints in a threadpool.
     """
     from utils.hardware import get_gpu_summary, get_package_versions
-    return {
+
+    body = {
         "gpu": get_gpu_summary(),
         "versions": get_package_versions(),
     }
+    if include_details:
+        from utils.llama_cpp_update import get_installed_llama_version
+
+        # All backend-visible GPUs (respects CUDA_VISIBLE_DEVICES), so multi-GPU
+        # hosts list every device -- get_gpu_summary alone reports only the primary.
+        # Sort by visible_ordinal: the nvidia-smi path returns rows in physical order,
+        # so under a reordering CUDA_VISIBLE_DEVICES (e.g. "5,3") labeling by array
+        # index would otherwise disagree with the GPU 0/1 the backend actually sees.
+        devices = get_backend_visible_gpu_info().get("devices", [])
+        body["gpus"] = [
+            {"name": d.get("name"), "vram_total_gb": d.get("memory_total_gb")}
+            for d in sorted(devices, key = lambda d: d.get("visible_ordinal", 0))
+        ]
+        body["llama_cpp"] = get_installed_llama_version()
+    return body
 
 
 # ============ Serve Frontend (Optional) ============
