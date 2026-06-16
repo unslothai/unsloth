@@ -1966,6 +1966,20 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
     os.environ["PYTHONWARNINGS"] = "ignore"  # before imports
 
+    # Worst-case Xet -> HTTP fallback: when the parent respawns this worker after a
+    # model-load stall, disable Xet before any huggingface_hub import (the var is
+    # read at import time). Mirrors core/inference/worker.py.
+    from utils.hf_xet_fallback import child_should_disable_xet
+
+    if child_should_disable_xet(config):
+        os.environ["HF_HUB_DISABLE_XET"] = "1"
+        os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
+        print(
+            "Xet transport disabled for this training worker (HF_HUB_DISABLE_XET=1).",
+            file = sys.stderr,
+            flush = True,
+        )
+
     # Offline auto-detect: skip ~25s of HF retries per call when DNS is dead.
     if "HF_HUB_OFFLINE" not in os.environ:
         import socket as _socket
@@ -2686,18 +2700,34 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         cpt_trains_embeddings = False
 
         # ── 4c. Load training model (uses VRAM — dataset already formatted) ──
+        # Watch the HF cache during the load so the parent can recover a stalled
+        # Xet download by respawning this worker with HF_HUB_DISABLE_XET=1.
         _send_status(event_queue, "Loading model...")
-        success = trainer.load_model(
-            model_name = model_name,
-            max_seq_length = config["max_seq_length"],
-            load_in_4bit = config["load_in_4bit"],
-            full_finetuning = not use_lora,
-            hf_token = hf_token,
-            is_dataset_image = config.get("is_dataset_image", False),
-            is_dataset_audio = config.get("is_dataset_audio", False),
-            trust_remote_code = config.get("trust_remote_code", False),
-            gpu_ids = config.get("resolved_gpu_ids"),
+        from utils.hf_xet_fallback import start_watchdog
+
+        event_queue.put({"type": "model_load_started", "ts": time.time()})
+        _load_watchdog_stop = start_watchdog(
+            repo_ids = [model_name],
+            on_stall = lambda msg: event_queue.put(
+                {"type": "stall", "message": msg, "ts": time.time()}
+            ),
+            xet_disabled = os.environ.get("HF_HUB_DISABLE_XET") == "1",
         )
+        try:
+            success = trainer.load_model(
+                model_name = model_name,
+                max_seq_length = config["max_seq_length"],
+                load_in_4bit = config["load_in_4bit"],
+                full_finetuning = not use_lora,
+                hf_token = hf_token,
+                is_dataset_image = config.get("is_dataset_image", False),
+                is_dataset_audio = config.get("is_dataset_audio", False),
+                trust_remote_code = config.get("trust_remote_code", False),
+                gpu_ids = config.get("resolved_gpu_ids"),
+            )
+        finally:
+            _load_watchdog_stop.set()
+            event_queue.put({"type": "model_load_completed", "ts": time.time()})
         if not success or trainer.should_stop:
             if trainer.should_stop:
                 event_queue.put({"type": "complete", "output_dir": None, "ts": time.time()})
