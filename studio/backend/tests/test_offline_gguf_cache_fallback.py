@@ -208,7 +208,12 @@ class TestGgufVariantFileResolution:
         ):
             return [_types.SimpleNamespace(path = path, size = 1) for path in paths if path is not None]
 
-        def fake_download(repo_id, filename, token = None, **_kwargs):
+        def fake_download(
+            repo_id,
+            filename,
+            token = None,
+            **_kwargs,
+        ):
             downloaded.append(filename)
             return f"/fake/{repo_id}/{filename}"
 
@@ -250,7 +255,12 @@ class TestGgufVariantFileResolution:
         ):
             return [_types.SimpleNamespace(path = path, size = 1) for path in paths if path is not None]
 
-        def fake_download(repo_id, filename, token = None, **_kwargs):
+        def fake_download(
+            repo_id,
+            filename,
+            token = None,
+            **_kwargs,
+        ):
             downloaded.append(filename)
             return f"/fake/{repo_id}/{filename}"
 
