@@ -4713,7 +4713,9 @@ class LlamaCppBackend:
                         if native_ctx_for_cap > 0:
                             ranked_for_cap = sorted(
                                 gpus,
-                                key = lambda g: _gpu_usable(g, _CTX_FIT_VRAM_FRACTION - _flat_mtp_reserve),
+                                key = lambda g: _gpu_usable(
+                                    g, _CTX_FIT_VRAM_FRACTION - _flat_mtp_reserve
+                                ),
                                 reverse = True,
                             )
                             best_cap = 0
