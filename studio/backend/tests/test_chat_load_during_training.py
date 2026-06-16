@@ -612,9 +612,10 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             def _can_estimate_kv(self):
                 return True
 
-            def _estimate_kv_cache_bytes(self, ctx):
+            def _estimate_kv_cache_bytes(self, ctx, n_parallel = 1):
                 seen["ctx"] = ctx
-                return ctx * (1024**2)  # 1 MiB per ctx unit -> GB = ctx / 1024
+                seen["n_parallel"] = n_parallel
+                return ctx * n_parallel * (1024**2)  # 1 MiB per ctx unit per slot
 
         with patch.object(self.route, "LlamaCppBackend", _FakeBackend):
             r = self.route
@@ -623,6 +624,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
                 r._estimate_gguf_kv_gb("m", 4096, ["--ctx-size", "131072"]), 128.0
             )
             self.assertEqual(seen["ctx"], 131072)
+            self.assertEqual(seen["n_parallel"], 1)  # default single slot
             # override below max_seq_length -> larger (max_seq_length) wins
             self.assertAlmostEqual(r._estimate_gguf_kv_gb("m", 4096, ["--ctx-size", "1024"]), 4.0)
             self.assertEqual(seen["ctx"], 4096)
@@ -631,6 +633,9 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             self.assertEqual(seen["ctx"], 2048)
             # malformed extras are ignored (fall back to max_seq_length)
             self.assertAlmostEqual(r._estimate_gguf_kv_gb("m", 4096, ["--ctx-size", "oops"]), 4.0)
+            # --parallel slots scale the cache the same way the launcher does
+            self.assertAlmostEqual(r._estimate_gguf_kv_gb("m", 4096, None, 4), 16.0)
+            self.assertEqual(seen["n_parallel"], 4)
 
 
 # ── load_model integration: authoritative 409, and no unload before refusal ──
