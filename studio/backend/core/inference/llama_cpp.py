@@ -2270,6 +2270,18 @@ class LlamaCppBackend:
         v_len = self._kv_value_length
         if not (nextn and n_kv and k_len and v_len):
             return None
+        # The embedded MTP head is a single draft layer, so llama.cpp's
+        # quantized-KV overhead cannot be amortized over many layers: a
+        # quantized draft KV (e.g. --spec-draft-type-k q4_0) actually fits
+        # *less* context than f16, not more (ggml-org/llama.cpp#24102, where a
+        # collaborator recommends sticking to f16 for the draft KV). So floor
+        # the embedded draft KV at f16 -- a quantized override is priced as f16
+        # (never under-reserved), while f32 still costs its full 4 bytes. The
+        # separate-drafter branch above is a full multi-layer model where
+        # quantization does amortize, so it keeps the user's actual type.
+        f16_bpe = _kv_bytes_per_elem("f16")
+        bpe_k = max(bpe_k, f16_bpe)
+        bpe_v = max(bpe_v, f16_bpe)
         return int(nextn * n_kv * (k_len * bpe_k + v_len * bpe_v) * n_ctx)
 
     def _estimate_mtp_overhead_bytes(

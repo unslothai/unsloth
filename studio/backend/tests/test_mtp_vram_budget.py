@@ -158,24 +158,29 @@ class TestEmbeddedDraftKv:
         two = _make_backend(nextn = 2)._mtp_draft_kv_bytes(65536)
         assert two == pytest.approx(2 * one)
 
-    def test_draft_cache_type_changes_bytes(self):
+    def test_embedded_draft_kv_floored_at_f16(self):
+        # The embedded MTP head is one layer, so llama.cpp's quantized-KV
+        # overhead is not amortized: a quantized draft KV fits LESS context than
+        # f16, not more (ggml-org/llama.cpp#24102). The embedded reserve floors a
+        # quantized draft type at f16 (never under-reserved); f32 still costs more.
         b = _make_backend()
         f16 = b._mtp_draft_kv_bytes(65536, draft_cache_type_k = "f16", draft_cache_type_v = "f16")
         q8 = b._mtp_draft_kv_bytes(65536, draft_cache_type_k = "q8_0", draft_cache_type_v = "q8_0")
         q4 = b._mtp_draft_kv_bytes(65536, draft_cache_type_k = "q4_0", draft_cache_type_v = "q4_0")
-        assert q8 < f16 and q4 < q8
-        assert q8 == pytest.approx(f16 * (34 / 32) / 2.0)
-        assert q4 == pytest.approx(f16 * 0.5625 / 2.0)
+        f32 = b._mtp_draft_kv_bytes(65536, draft_cache_type_k = "f32", draft_cache_type_v = "f32")
+        assert q8 == f16 and q4 == f16  # quantized draft KV priced as f16, not less
+        assert f32 == pytest.approx(f16 * 2.0)  # f32 genuinely larger, not floored
 
     def test_draft_kv_split_axes_no_under_reserve(self):
-        # One-sided q4_0 (V left f16) must NOT be applied to both axes.
+        # A quantized draft type on either or both axes never reserves below the
+        # all-f16 value for the single-layer embedded head (the f16 floor; #24102).
         b = _make_backend()
         both_q4 = b._mtp_draft_kv_bytes(
             131072, draft_cache_type_k = "q4_0", draft_cache_type_v = "q4_0"
         )
         k_only = b._mtp_draft_kv_bytes(131072, draft_cache_type_k = "q4_0")  # V defaults f16
         both_f16 = b._mtp_draft_kv_bytes(131072, draft_cache_type_k = "f16", draft_cache_type_v = "f16")
-        assert both_q4 < k_only < both_f16  # split sits between, never collapses to q4_0
+        assert both_q4 == k_only == both_f16  # floored at f16, never under-reserved
 
     def test_none_when_dims_missing(self):
         assert _make_backend(nextn = 0)._mtp_draft_kv_bytes(65536) is None
@@ -279,8 +284,11 @@ class TestFitContextWithMtp:
         )
         assert 0 < with_mtp < without
 
-    def test_quantized_draft_kv_allows_more_context(self):
-        # q4_0 draft KV is smaller than f16 -> fit can keep a larger context.
+    def test_quantized_embedded_draft_kv_does_not_inflate_context(self):
+        # For the single-layer embedded head, quantizing the draft KV does NOT
+        # buy more context (it fits less in practice; ggml-org/llama.cpp#24102),
+        # so the f16-floored reserve advertises the same context as f16 -- never
+        # a larger one off a smaller (unsafe) reserve.
         b = self._fit_backend()
         avail_mib, model = 24_000, 8 * GIB
         f16 = b._fit_context_to_vram(
@@ -301,7 +309,7 @@ class TestFitContextWithMtp:
             )
             or 0,
         )
-        assert 0 < f16 <= q4
+        assert 0 < q4 == f16
 
     def test_no_mtp_unchanged(self):
         b = self._fit_backend()
@@ -379,10 +387,12 @@ class TestExtraArgsMtpDetection:
     def test_load_model_reserves_for_non_mtp_draft_modes(self):
         # load_model engages the draft reserve for a non-MTP model-based draft mode
         # only when extras also name a drafter (else nothing is loaded to reserve).
-        src = inspect.getsource(LlamaCppBackend.load_model)
-        assert "_user_draft_via_extras" in src
-        assert "_extra_args_requests_separate_draft(extra_args)" in src
-        assert "or _user_draft_via_extras" in src  # OR'd into the reserve gate
+        # Strip all whitespace so the check survives any line-wrapping the
+        # formatter applies to the call (pre-commit black wraps long lines).
+        compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
+        assert "_user_draft_via_extras" in compact
+        assert "_extra_args_requests_separate_draft(extra_args)" in compact
+        assert "or_user_draft_via_extras" in compact  # OR'd into the reserve gate
 
     @pytest.mark.parametrize(
         "args,expected",
