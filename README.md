@@ -84,7 +84,12 @@ Use the same command to update.
 ```bash
 unsloth studio -p 8888
 ```
-For cloud or global access, add `-H 0.0.0.0`. By default, Unsloth is accessible only locally.
+By default Studio binds to `127.0.0.1` and is accessible on this machine only. For network or cloud access:
+
+* `unsloth studio --secure` exposes Studio only through an HTTPS Cloudflare link (a `https://<random>.trycloudflare.com` URL). The local port stays on loopback, nothing is opened on a public interface, and Studio exits if the tunnel cannot start.
+* `unsloth studio -H 0.0.0.0` serves the raw port on every interface for direct network or cloud access, and also creates a free Cloudflare HTTPS tunnel automatically.
+
+See [advanced launch options](#advanced-launch-options) for the full flag list.
 
 #### Docker
 Use our [Docker image](https://hub.docker.com/r/unsloth/unsloth) ```unsloth/unsloth``` container. Run:
@@ -247,6 +252,18 @@ $env:UNSLOTH_STUDIO_HOME='C:\path'; irm https://unsloth.ai/install.ps1 | iex
 ```
 
 Cap Studio's native CPU thread pools on high-core hosts: `UNSLOTH_CPU_THREADS=8 unsloth studio -p 8888`.
+
+**Server flags** (passed to `unsloth studio`, not the installer):
+
+| Flag | Default | What it does |
+| --- | --- | --- |
+| `-p`, `--port` | `8888` | Port to bind. Auto-increments if the port is busy. |
+| `-H`, `--host` | `127.0.0.1` | Bind address. Use `0.0.0.0` to serve the raw port on all interfaces for network or cloud access. |
+| `--secure` / `--not-secure` | `--not-secure` | `--secure` exposes Studio only through an HTTPS Cloudflare link, keeps the port on loopback, forces server-side tools off, and exits if the tunnel cannot start. |
+| `--cloudflare` / `--no-cloudflare` | `--cloudflare` | Auto-create a free Cloudflare HTTPS tunnel when bound to `0.0.0.0`. `--no-cloudflare` serves the raw port only. |
+| `--parallel`, `--n-parallel` | `1` | llama-server parallel decode slots (1 to 64). `unsloth studio run` defaults to 4. |
+
+For example, `unsloth studio --secure` serves over an HTTPS Cloudflare link without opening any public port.
 
 #### Uninstall
 The recommended way to fully remove Unsloth Studio is the matching uninstall script for your OS. It stops any running servers, removes the install dir, the launcher data dir, the desktop shortcut, and any platform-specific entries (macOS `.app` bundle + Launch Services on Mac; Start Menu, `HKCU\Software\Unsloth` registry key and user `PATH` entries on Windows):
