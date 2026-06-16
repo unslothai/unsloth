@@ -32,10 +32,12 @@ def _looks_like_installer_managed_studio_home(candidate: Path) -> bool:
     """Sentinel check (studio.conf or bin shim) so a dev venv named
     unsloth_studio is not misidentified as a custom Studio root.
     """
-    shim_name = "unsloth.exe" if platform.system() == "Windows" else "unsloth"
-    return (candidate / "share" / "studio.conf").is_file() or (
-        candidate / "bin" / shim_name
-    ).is_file()
+    if platform.system() == "Windows":
+        shim_path = candidate / "Scripts" / "unsloth.exe"
+    else:
+        shim_path = candidate / "bin" / "unsloth"
+
+    return (candidate / "share" / "studio.conf").is_file() or shim_path.is_file()
 
 
 def _resolve_studio_home() -> tuple[Path, bool]:
@@ -157,7 +159,7 @@ def _stream_for_subprocess(stream):
 def _studio_venv_python() -> Optional[Path]:
     """Return the studio venv Python binary, or None if not set up."""
     if platform.system() == "Windows":
-        p = STUDIO_HOME / "unsloth_studio" / "Scripts" / "python.exe"
+        p = STUDIO_HOME / "unsloth_studio" / "python.exe"
     else:
         p = STUDIO_HOME / "unsloth_studio" / "bin" / "python"
     return p if p.is_file() else None
