@@ -4166,19 +4166,21 @@ class LlamaCppBackend:
                 threads_overridden = _extra_args_set_any_flag(extra_args, _THREAD_OVERRIDE_FLAGS)
                 full_offload_tuning_active = fully_gpu_offloaded and not offload_overridden
 
-                # Pass --threads explicitly so we do not inherit llama-server
-                # defaults. Windows + full offload caps at 2 to stop OpenMP
-                # spin-wait burning CPU during GPU decode. User pass-through
-                # offload/thread flags keep last-wins semantics. #5692.
+                # Thread count: an unset --threads makes llama.cpp pick physical
+                # cores (common_cpu_get_num_math), but an explicit --threads -1
+                # resolves to hardware_concurrency() (every hyperthread), which
+                # contends on the memory bus and slows CPU / hybrid decode. So
+                # omit the flag when unset and only pin it for an explicit
+                # override or the Windows full-offload OpenMP cap. Pass-through
+                # thread flags in extra_args still win (appended last). #5692
                 if (
                     sys.platform == "win32"
                     and full_offload_tuning_active
                     and not threads_overridden
                 ):
-                    threads_arg = 2
-                else:
-                    threads_arg = n_threads if n_threads is not None else -1
-                cmd.extend(["--threads", str(threads_arg)])
+                    cmd.extend(["--threads", "2"])
+                elif n_threads is not None and n_threads > 0:
+                    cmd.extend(["--threads", str(n_threads)])
 
                 # Enable Jinja chat template rendering
                 cmd.extend(["--jinja"])
@@ -4358,6 +4360,11 @@ class LlamaCppBackend:
 
                 # Library paths so llama-server finds its shared libs and CUDA DLLs.
                 env = self._llama_server_env_for_binary(binary)
+                # Omitting --threads relies on llama.cpp's physical-core default, so
+                # drop an inherited LLAMA_ARG_THREADS that would otherwise feed the
+                # arg handler and silently force hardware_concurrency(). #5692
+                if "--threads" not in cmd:
+                    env.pop("LLAMA_ARG_THREADS", None)
 
                 # Windows + full offload: PASSIVE OMP + 2 threads stop
                 # spin-wait burning CPU. CPU/partial offload keeps default
