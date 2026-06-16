@@ -51,6 +51,7 @@ from core.tool_healing import (
     strip_tool_call_markup,
 )
 from utils.native_path_leases import child_env_without_native_path_secret
+from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
 from utils.subprocess_compat import (
     windows_hidden_subprocess_kwargs as _windows_hidden_subprocess_kwargs,
 )
@@ -2996,7 +2997,7 @@ class LlamaCppBackend:
         any time; checks it between each shard download.
         """
         try:
-            from huggingface_hub import hf_hub_download
+            import huggingface_hub  # noqa: F401 -- presence check only
         except ImportError:
             raise RuntimeError(
                 "huggingface_hub is required for HF model loading. "
@@ -3140,19 +3141,23 @@ class LlamaCppBackend:
             if self._cancel_event.is_set():
                 raise RuntimeError("Cancelled")
             dl_start = time.monotonic()
-            local_path = hf_hub_download(
-                repo_id = hf_repo,
-                filename = gguf_filename,
-                token = hf_token,
+            # Xet primary, HTTP fallback on stall; per-file so finished shards stay cached.
+            local_path = hf_hub_download_with_xet_fallback(
+                hf_repo,
+                gguf_filename,
+                hf_token,
+                cancel_event = self._cancel_event,
+                on_status = lambda m: logger.info(m),
             )
             for shard in gguf_extra_shards:
                 if self._cancel_event.is_set():
                     raise RuntimeError("Cancelled")
                 logger.info(f"Resolving GGUF shard: {shard}")
-                hf_hub_download(
-                    repo_id = hf_repo,
-                    filename = shard,
-                    token = hf_token,
+                hf_hub_download_with_xet_fallback(
+                    hf_repo,
+                    shard,
+                    hf_token,
+                    cancel_event = self._cancel_event,
                 )
         except RuntimeError as e:
             if "Cancelled" in str(e):
@@ -3213,12 +3218,13 @@ class LlamaCppBackend:
             return None
 
         try:
-            from huggingface_hub import hf_hub_download
             logger.info(f"Downloading {label}: {hf_repo}/{target}")
-            return hf_hub_download(
-                repo_id = hf_repo,
-                filename = target,
-                token = hf_token,
+            # Same policy; companions are best-effort (caller below swallows failures to None).
+            return hf_hub_download_with_xet_fallback(
+                hf_repo,
+                target,
+                hf_token,
+                cancel_event = self._cancel_event,
             )
         except Exception as e:
             logger.warning(f"Could not download {label}: {e}")
