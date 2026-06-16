@@ -1455,9 +1455,7 @@ class TestAnthropicMessagesToolRouting:
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
         payload = _basic_payload()
 
-        response = _drive(
-            anthropic_messages(payload, request = self._Request(), current_subject = "t")
-        )
+        response = _drive(anthropic_messages(payload, request = self._Request(), current_subject = "t"))
 
         assert response.status_code == 200
         [entry] = monitor.snapshot()
@@ -1477,9 +1475,7 @@ class TestAnthropicMessagesToolRouting:
         monkeypatch.setattr(inf_mod, "api_monitor", monitor)
         payload = _basic_payload(stream = True)
 
-        response = _drive(
-            anthropic_messages(payload, request = self._Request(), current_subject = "t")
-        )
+        response = _drive(anthropic_messages(payload, request = self._Request(), current_subject = "t"))
 
         assert monitor.active_count() == 1
         self._consume_response(response)

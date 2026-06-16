@@ -1539,7 +1539,12 @@ def _monitor_anthropic_json_response(
     api_monitor.finish(monitor_id)
 
 
-def _monitor_anthropic_response(response, monitor_id, context_length = None, cancel_event = None):
+def _monitor_anthropic_response(
+    response,
+    monitor_id,
+    context_length = None,
+    cancel_event = None,
+):
     if not monitor_id:
         return response
     body_iterator = getattr(response, "body_iterator", None)
@@ -1557,11 +1562,14 @@ def _monitor_anthropic_response(response, monitor_id, context_length = None, can
                     else str(chunk)
                 )
                 for line in text.splitlines():
-                    if _monitor_anthropic_sse_line(
-                        monitor_id,
-                        line.strip(),
-                        context_length,
-                    ) == "error":
+                    if (
+                        _monitor_anthropic_sse_line(
+                            monitor_id,
+                            line.strip(),
+                            context_length,
+                        )
+                        == "error"
+                    ):
                         terminal = True
                 yield chunk
             if not terminal:
@@ -4820,8 +4828,7 @@ async def openai_chat_completions(
                 monitor_reply = full_text
                 if _n > 1:
                     monitor_reply = "\n\n".join(
-                        f"Choice {_idx + 1}:\n{text}"
-                        for _idx, text in enumerate(_monitor_replies)
+                        f"Choice {_idx + 1}:\n{text}" for _idx, text in enumerate(_monitor_replies)
                     )
                 api_monitor.set_reply(monitor_id, monitor_reply)
                 _monitor_usage(
