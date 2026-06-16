@@ -25,6 +25,7 @@ from utils.models.gguf_metadata import (
 import structlog
 from loggers import get_logger
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -1243,7 +1244,9 @@ def detect_gguf_model(path: str) -> Optional[str]:
         # (-m drafter --model-draft drafter). Include the immediate parent
         # dir so the MTP/ subdir copies are caught -- the basename alone
         # (...-MTP.gguf) doesn't match the predicate's mtp- prefix.
-        if _is_mmproj(p.name) or _is_mtp_drafter(f"{p.parent.name}/{p.name}"):
+        rel = f"{p.parent.name}/{p.name}"
+        quant = _extract_quant_label(rel)
+        if _is_mmproj(p.name) or _is_mtp_drafter(rel) or _is_big_endian_gguf_path(rel, quant):
             return None
         # Extension is authoritative: don't gate on is_file()/exists(), which
         # can fail in the Windows lock window after llama-server is killed.
@@ -1257,15 +1260,18 @@ def detect_gguf_model(path: str) -> Optional[str]:
 
     # Case 2: directory containing .gguf files (skip mmproj / MTP drafter)
     if p.is_dir():
-        gguf_files = sorted(
-            (
-                f
-                for f in _iter_gguf_files(p)
-                if not _is_mmproj(f.name) and not _is_mtp_drafter(f"{f.parent.name}/{f.name}")
-            ),
-            key = lambda f: f.stat().st_size,
-            reverse = True,
-        )
+        gguf_files = []
+        for f in _iter_gguf_files(p):
+            context_rel = f"{f.parent.name}/{f.name}"
+            quant = _extract_quant_label(context_rel)
+            if (
+                _is_mmproj(f.name)
+                or _is_mtp_drafter(context_rel)
+                or _is_big_endian_gguf_path(context_rel, quant)
+            ):
+                continue
+            gguf_files.append(f)
+        gguf_files.sort(key = lambda f: f.stat().st_size, reverse = True)
         if gguf_files:
             return str(gguf_files[0].resolve())
 
@@ -1389,6 +1395,44 @@ def _extract_quant_label(filename: str) -> str:
         return f"{prefix}{match.group(2)}{bpw}"
     # Fallback: last hyphen-separated segment
     return stem.split("-")[-1]
+
+
+_BIG_ENDIAN_GGUF_FILENAME_RE = re.compile(r"(^|[-_])be(?:[._-]|$)", re.IGNORECASE)
+_GGUF_KNOWN_QUANT_RE = re.compile(
+    r"(UD-)?"
+    r"(MXFP[0-9]+(?:_[A-Z0-9]+)*"
+    r"|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?"
+    r"|TQ[0-9]+_[0-9]+"
+    r"|Q[0-9]+_K_[A-Z]+"
+    r"|Q[0-9]+_[0-9]+"
+    r"|Q[0-9]+_K"
+    r"|BF16|F16|F32)",
+    re.IGNORECASE,
+)
+
+
+def _is_big_endian_gguf_path(path: str, quant: str = "") -> bool:
+    normalized = path.replace("\\", "/")
+    name = normalized.rsplit("/", 1)[-1]
+    stem = name.rsplit(".", 1)[0].lower()
+    quant_key = quant.strip().lower()
+    quant_index = stem.find(quant_key) if quant_key else -1
+    parent = normalized.rsplit("/", 1)[0].lower() if "/" in normalized else ""
+    quant_in_parent_only = (
+        bool(parent)
+        and quant_index < 0
+        and (
+            (quant_key and quant_key in parent)
+            or (not quant_key and _GGUF_KNOWN_QUANT_RE.search(parent) is not None)
+        )
+    )
+    for match in _BIG_ENDIAN_GGUF_FILENAME_RE.finditer(stem):
+        if quant_index >= 0 and quant_index < match.start():
+            return True
+        tail = stem[match.end() :].lstrip("._-")
+        if not tail or _GGUF_KNOWN_QUANT_RE.search(tail) is None:
+            return not quant_in_parent_only
+    return False
 
 
 def _local_gguf_companion_search_root(selected_path: str, gguf_file: str) -> str:
@@ -1530,6 +1574,8 @@ def list_gguf_variants(
             continue
 
         quant = _extract_quant_label(fname)
+        if _is_big_endian_gguf_path(fname, quant):
+            continue
         quant_totals[quant] = quant_totals.get(quant, 0) + size
         if quant not in quant_first_file:
             quant_first_file[quant] = fname
@@ -1606,6 +1652,8 @@ def list_local_gguf_variants(directory: str) -> tuple[list[GgufVariantInfo], boo
         if _is_mtp_drafter(rel):
             continue
         quant = _extract_quant_label(rel)
+        if _is_big_endian_gguf_path(rel, quant):
+            continue
         quant_totals[quant] = quant_totals.get(quant, 0) + size
         if quant not in quant_first_file:
             quant_first_file[quant] = rel
@@ -1638,13 +1686,16 @@ def _find_local_gguf_by_variant(directory: str, variant: str) -> Optional[str]:
     # ``BF16/foo-BF16-00001-of-00002.gguf``) are found. Match the relative
     # path so the quant label can come from the dir name when the basename
     # omits it.
-    matches = sorted(
-        f
-        for f in _iter_gguf_files(p, recursive = True)
-        if not _is_mmproj(f.name)
-        and not _is_mtp_drafter(f.relative_to(p).as_posix())
-        and _extract_quant_label(f.relative_to(p).as_posix()) == variant
-    )
+    matches = []
+    for f in _iter_gguf_files(p, recursive = True):
+        rel = f.relative_to(p).as_posix()
+        if _is_mmproj(f.name) or _is_mtp_drafter(rel):
+            continue
+        quant = _extract_quant_label(rel)
+        if quant != variant or _is_big_endian_gguf_path(rel, quant):
+            continue
+        matches.append(f)
+    matches.sort()
     if matches:
         return str(matches[0].resolve())
     return None
@@ -1657,11 +1708,13 @@ def _detect_gguf_from_hf_cache(repo_id: str) -> Optional[str]:
     the projector cannot route it as the main model.
     """
     for snap in _iter_hf_cache_snapshots(repo_id):
-        rel_files = [
-            rel
-            for f in _iter_gguf_files(snap, recursive = True)
-            if not _is_mtp_drafter(rel := f.relative_to(snap).as_posix()) and not _is_mmproj(f.name)
-        ]
+        rel_files = []
+        for f in _iter_gguf_files(snap, recursive = True):
+            rel = f.relative_to(snap).as_posix()
+            quant = _extract_quant_label(rel)
+            if _is_mmproj(f.name) or _is_mtp_drafter(rel) or _is_big_endian_gguf_path(rel, quant):
+                continue
+            rel_files.append(rel)
         if rel_files:
             return _pick_best_gguf(rel_files)
     return None
@@ -1686,7 +1739,19 @@ def detect_gguf_model_remote(repo_id: str, hf_token: Optional[str] = None) -> Op
     for attempt in range(3):
         try:
             info = hf_model_info(repo_id, token = hf_token)
-            repo_files = [s.rfilename for s in info.siblings]
+            repo_files = []
+            for sibling in info.siblings:
+                fname = sibling.rfilename
+                if not fname.lower().endswith(".gguf"):
+                    continue
+                quant = _extract_quant_label(fname)
+                if (
+                    _is_mmproj(fname)
+                    or _is_mtp_drafter(fname)
+                    or _is_big_endian_gguf_path(fname, quant)
+                ):
+                    continue
+                repo_files.append(fname)
             return _pick_best_gguf(repo_files)
         except Exception as e:
             last_err = e
