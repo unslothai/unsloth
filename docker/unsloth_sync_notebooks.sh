@@ -16,6 +16,8 @@
 #   UNSLOTH_SKIP_NOTEBOOK_SYNC=1      do nothing (no populate, no refresh)
 #   UNSLOTH_SKIP_NOTEBOOK_REFRESH=1   populate from the baked template only;
 #                                     never touch the network
+#   UNSLOTH_KEEP_DELETED_NOTEBOOKS=1  do not restore notebooks the user deleted
+#                                     (default: deleted files are healed back)
 #   UNSLOTH_NOTEBOOKS_DIR=<path>      target dir (default /workspace/unsloth-notebooks)
 #   UNSLOTH_NOTEBOOKS_REPO=<url>      source repo (default unslothai/notebooks)
 #   UNSLOTH_NOTEBOOK_FETCH_TIMEOUT=N  seconds for each network op (default 60)
@@ -85,6 +87,35 @@ if [ ! -f "$STATE" ]; then
     record_state
     cp -a "$TEMPLATE/.unsloth_template_commit" "$SYNCED" 2>/dev/null || true
     echo "[unsloth-nb] notebooks ready at $DEST"
+fi
+
+# 1b) Every-boot OFFLINE restore of deleted notebooks. A file we previously wrote
+# that the user has since DELETED is restored from the baked template -- works
+# with no network and even when upstream has not advanced. Files that still exist
+# (edited or not) are never touched, so this cannot resurrect or clobber an edit;
+# the GitHub refresh below then bumps any restored file to the latest upstream.
+# The restored file's recorded hash is reset to the template's so the refresh
+# treats it as pristine (not as a user edit). Opt out with
+# UNSLOTH_KEEP_DELETED_NOTEBOOKS=1 (for users who prune notebooks on purpose).
+if [ -f "$STATE" ] && [ "${UNSLOTH_KEEP_DELETED_NOTEBOOKS:-0}" != "1" ]; then
+    restored=0
+    RS_TMP="$(mktemp)"
+    while IFS= read -r line; do
+        h="${line%%  *}"; rel="${line#*  }"
+        if [ -n "$rel" ] && [ "$rel" != "$line" ] \
+           && [ ! -e "$DEST/$rel" ] && [ -f "$TEMPLATE/$rel" ]; then
+            mkdir -p "$DEST/$(dirname "$rel")" 2>/dev/null || true
+            if cp -a "$TEMPLATE/$rel" "$DEST/$rel" 2>/dev/null; then
+                printf '%s  %s\n' "$(hash_of "$DEST/$rel")" "$rel" >> "$RS_TMP"
+                restored=$((restored + 1))
+                continue
+            fi
+        fi
+        printf '%s\n' "$line" >> "$RS_TMP"
+    done < "$STATE"
+    mv "$RS_TMP" "$STATE" 2>/dev/null || rm -f "$RS_TMP"
+    [ "$restored" -gt 0 ] \
+        && echo "[unsloth-nb] restored $restored deleted notebook(s) from the baked set"
 fi
 
 # 2) Best-effort GitHub refresh -- only when upstream has advanced. Edits win.

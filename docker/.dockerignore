@@ -10,3 +10,4 @@
 !unsloth_ipython_startup.py
 !unsloth_run.py
 !unsloth_sync_notebooks.sh
+!unsloth_nb_content_sig.py
