@@ -33,3 +33,4 @@ Thank you so much for reading and we hope you have lots of fun using Unsloth! ðŸ
 - Keep PRs focused on a single change
 - Include a concise description and motivation
 - Link related issues when applicable
+- For cherry-picks from upstream dependencies, follow the [CHERRY-PICK-POLICY.md](CHERRY-PICK-POLICY.md)
