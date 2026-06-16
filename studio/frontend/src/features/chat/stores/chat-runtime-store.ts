@@ -3,7 +3,7 @@
 
 import { toast } from "@/lib/toast";
 import { create } from "zustand";
-import { cancelStagedModelDownload } from "@/features/hub/download-manager/download-manager-controller";
+import { cancelStagedModelDownload } from "@/features/hub";
 import {
   type ChatPresetSource,
   type Preset,
@@ -88,6 +88,7 @@ function saveRagSource(value: RagSource): void {
   try {
     window.localStorage.setItem(CHAT_RAG_SOURCE_KEY, JSON.stringify(value));
   } catch {
+    // Ignore storage failures; the default RAG source still works for this session.
   }
 }
 
@@ -1135,6 +1136,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       // Clear stale per-turn usage on model change; the relaxed external-provider
       // render gate would otherwise show old counters until the next completion.
       const checkpointChanged = state.params.checkpoint !== modelId;
+      const pendingToClear =
+        checkpointChanged && state.params.checkpoint ? state.pendingSelection : null;
+      if (pendingToClear) {
+        cancelStagedModelDownload(pendingToClear);
+      }
       // Clamp maxTokens to the new model's cap when switching into an external
       // model so a value carried over from a local session doesn't exceed the
       // slider's max.
@@ -1167,7 +1173,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         // linger over the newly active model. Same revert as abandonStagedModel.
         // Guarded on a non-empty current checkpoint: an establishing set from a
         // background status sync (empty -> active) must not wipe a fresh stage.
-        ...(checkpointChanged && state.params.checkpoint && state.pendingSelection
+        ...(pendingToClear
           ? { ...loadedBaselineSettings(state), pendingSelection: null }
           : {}),
       };
@@ -1182,6 +1188,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     // clear any stored external selection so the next refresh doesn't snap
     // back to a model the user intentionally cleared.
     saveLastExternalCheckpoint(null);
+    cancelStagedModelDownload(get().pendingSelection);
     return set((state) => ({
       params: {
         ...state.params,
@@ -1429,16 +1436,26 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   },
   setPendingSelection: (pendingSelection) => set({ pendingSelection }),
   stageModel: (selection) =>
-    set((s) => ({
-      ...loadedBaselineSettings(s),
-      pendingSelection: selection,
-      settingsPanelOpen: true,
-      // Speculative starts from the standing default, not the loaded model's
-      // mode, so a fresh pick doesn't inherit (and then carry, via the staged
-      // Load's keepSpeculative) a forced MTP mode onto a model that may lack it.
-      speculativeType: readPersistedSpeculativeType(),
-      specDraftNMax: null,
-    })),
+    set((s) => {
+      if (
+        s.pendingSelection &&
+        (s.pendingSelection.id !== selection.id ||
+          (s.pendingSelection.ggufVariant ?? null) !==
+            (selection.ggufVariant ?? null))
+      ) {
+        cancelStagedModelDownload(s.pendingSelection);
+      }
+      return {
+        ...loadedBaselineSettings(s),
+        pendingSelection: selection,
+        settingsPanelOpen: true,
+        // Speculative starts from the standing default, not the loaded model's
+        // mode, so a fresh pick doesn't inherit (and then carry, via the staged
+        // Load's keepSpeculative) a forced MTP mode onto a model that may lack it.
+        speculativeType: readPersistedSpeculativeType(),
+        specDraftNMax: null,
+      };
+    }),
   abandonStagedModel: () => {
     const { pendingSelection } = get();
     if (!pendingSelection) return;

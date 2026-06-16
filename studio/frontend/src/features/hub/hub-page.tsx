@@ -579,11 +579,12 @@ export function ModelsPage() {
       // Non-GGUF models have nothing to configure pre-load, so they load now.
       if (
         !useChatRuntimeStore.getState().loadOnSelection &&
-        opts.ggufVariant != null
+        (opts.ggufVariant != null || selectedModel.isGguf)
       ) {
         useChatRuntimeStore.getState().stageModel({
           id: runId,
           ggufVariant: opts.ggufVariant,
+          isGguf: selectedModel.isGguf,
           isDownloaded,
           expectedBytes: opts.expectedBytes,
         });
