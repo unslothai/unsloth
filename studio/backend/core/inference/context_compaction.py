@@ -159,7 +159,11 @@ class SlidingWindowCompact(CompactStrategy):
     groups. Asst+tools form one group. No-op when within budget.
     """
 
-    def __init__(self, keep_recent: int = 2, compact_threshold: float = 0.85) -> None:
+    def __init__(
+        self,
+        keep_recent: int = 2,
+        compact_threshold: float = 0.85,
+    ) -> None:
         if keep_recent < 0:
             raise ValueError("keep_recent must be >= 0")
         if not (0.0 < compact_threshold <= 1.0):

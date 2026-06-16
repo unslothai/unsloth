@@ -21,7 +21,13 @@ from core.inference.context_compaction import (
 )
 
 
-def _msg(role, content = "", tool_calls = None, tool_call_id = None, name = None):
+def _msg(
+    role,
+    content = "",
+    tool_calls = None,
+    tool_call_id = None,
+    name = None,
+):
     m = {"role": role}
     if content is not None:
         m["content"] = content
@@ -34,7 +40,12 @@ def _msg(role, content = "", tool_calls = None, tool_call_id = None, name = None
     return m
 
 
-def _long(role, length, *, content_prefix = "x"):
+def _long(
+    role,
+    length,
+    *,
+    content_prefix = "x",
+):
     return _msg(role, content_prefix * length)
 
 
@@ -117,7 +128,11 @@ class TestSlidingWindowUnderBudget:
 
 
 class TestSlidingWindowInvariants:
-    def _make_long_chat(self, n_turns, length_per_turn = 1000):
+    def _make_long_chat(
+        self,
+        n_turns,
+        length_per_turn = 1000,
+    ):
         msgs = [_msg("system", "system prompt")]
         msgs.append(_msg("user", "the original task: " + "x" * length_per_turn))
         # Alternating assistant/user follow-ups.
@@ -131,10 +146,7 @@ class TestSlidingWindowInvariants:
         out = SlidingWindowCompact(keep_recent = 2).compact(msgs, budget_tokens = 200)
         assert out[0]["role"] == "system"
         # First user message must survive.
-        assert any(
-            m.get("role") == "user" and "original task" in m.get("content", "")
-            for m in out
-        )
+        assert any(m.get("role") == "user" and "original task" in m.get("content", "") for m in out)
 
     def test_keeps_last_n_turns(self):
         msgs = self._make_long_chat(n_turns = 20)
@@ -209,9 +221,7 @@ class TestSlidingWindowToolPairs:
         # Force aggressive compaction.
         out = SlidingWindowCompact(keep_recent = 2).compact(msgs, budget_tokens = 50)
         kept_assistant_with_calls = [
-            m
-            for m in out
-            if m.get("role") == "assistant" and isinstance(m.get("tool_calls"), list)
+            m for m in out if m.get("role") == "assistant" and isinstance(m.get("tool_calls"), list)
         ]
         kept_tool_msgs = [m for m in out if m.get("role") == "tool"]
         # If the assistant tool-call message survives, every matching
@@ -258,8 +268,7 @@ class TestSlidingWindowToolPairs:
         ids = [
             (
                 m.get("role"),
-                m.get("tool_call_id")
-                or (m.get("tool_calls") and m["tool_calls"][0].get("id")),
+                m.get("tool_call_id") or (m.get("tool_calls") and m["tool_calls"][0].get("id")),
             )
             for m in out
         ]
@@ -350,21 +359,18 @@ class TestAnchoredMultimodalPairCleanup:
         out = SlidingWindowCompact(keep_recent = 1).compact(msgs, budget_tokens = 50)
         # Anchored multimodal assistant must still be there.
         assert any(
-            m.get("role") == "assistant" and isinstance(m.get("content"), list)
-            for m in out
+            m.get("role") == "assistant" and isinstance(m.get("content"), list) for m in out
         ), "multimodal assistant got dropped by pair_map cleanup"
 
 
 class TestConstructorValidation:
     def test_negative_keep_recent_raises(self):
         import pytest
-
         with pytest.raises(ValueError):
             SlidingWindowCompact(keep_recent = -1)
 
     def test_invalid_threshold_raises(self):
         import pytest
-
         with pytest.raises(ValueError):
             SlidingWindowCompact(compact_threshold = 0.0)
         with pytest.raises(ValueError):

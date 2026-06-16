@@ -34,7 +34,13 @@ from core.inference.context_compaction import (
 )
 
 
-def _msg(role, content = "", tool_calls = None, tool_call_id = None, name = None):
+def _msg(
+    role,
+    content = "",
+    tool_calls = None,
+    tool_call_id = None,
+    name = None,
+):
     m = {"role": role}
     if content is not None:
         m["content"] = content
@@ -47,11 +53,20 @@ def _msg(role, content = "", tool_calls = None, tool_call_id = None, name = None
     return m
 
 
-def _long(role, length, *, content_prefix = "x"):
+def _long(
+    role,
+    length,
+    *,
+    content_prefix = "x",
+):
     return _msg(role, content_prefix * length)
 
 
-def _tool_call(tcid, name = "web_search", args = '{"q":"x"}'):
+def _tool_call(
+    tcid,
+    name = "web_search",
+    args = '{"q":"x"}',
+):
     return {
         "id": tcid,
         "type": "function",
@@ -272,9 +287,7 @@ class TestDuplicateToolCallIds:
         ]
         out = SlidingWindowCompact(keep_recent = 2).compact(msgs, budget_tokens = 30)
         # The recent-window assistant+tool group must stay linked.
-        kept_asst_tool = [
-            m for m in out if m.get("role") == "assistant" and m.get("tool_calls")
-        ]
+        kept_asst_tool = [m for m in out if m.get("role") == "assistant" and m.get("tool_calls")]
         kept_tools = [m for m in out if m.get("role") == "tool"]
         if kept_tools:
             tool_ids_in_out = {m["tool_call_id"] for m in kept_tools}
@@ -355,8 +368,7 @@ class TestNoSystemNoFirstUser:
         out = SlidingWindowCompact(keep_recent = 1).compact(msgs, budget_tokens = 30)
         # The first user must be present.
         assert any(
-            m.get("role") == "user" and "real first task" in m.get("content", "")
-            for m in out
+            m.get("role") == "user" and "real first task" in m.get("content", "") for m in out
         )
 
 
@@ -851,9 +863,7 @@ def test_compaction_content_part_is_not_multimodal_anchor():
     assert not any(
         m.get("role") == "assistant"
         and isinstance(m.get("content"), list)
-        and any(
-            isinstance(p, dict) and p.get("type") == "compaction" for p in m["content"]
-        )
+        and any(isinstance(p, dict) and p.get("type") == "compaction" for p in m["content"])
         for m in out
     )
 
