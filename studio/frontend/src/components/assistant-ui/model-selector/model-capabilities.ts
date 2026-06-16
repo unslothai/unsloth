@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Pure helpers that infer what a model can do (vision / reasoning / audio) and
-// its architecture family from HF tags + pipeline tag, falling back to repo-name
-// keywords. No React/DOM deps so they stay easy to test.
+// Pure helpers that infer what a model can do (vision / reasoning / audio) from
+// its HF tags + pipeline tag, falling back to repo-name keywords. No React/DOM
+// deps so they stay easy to test.
 
 export interface ModelCapabilities {
   vision: boolean;
@@ -71,29 +71,4 @@ export function detectCapabilities(opts: {
 /** True when at least one capability is present (worth rendering a badge). */
 export function hasAnyCapability(caps: ModelCapabilities): boolean {
   return caps.vision || caps.reasoning || caps.audio;
-}
-
-// Generic tags that are never an architecture family.
-const FAMILY_STOPWORDS = new Set([
-  "transformers",
-  "gguf",
-  "mlx",
-  "safetensors",
-  "unsloth",
-]);
-// Architecture/family tags look like "gemma4", "qwen2", "deepseek_v3",
-// "kimi_k25": lowercase word(s) with a version digit, no separators HF uses for
-// other tag kinds (":" for base_model/license/region, "-" for pipelines).
-const FAMILY_RE = /^[a-z][a-z0-9_.]*[0-9][a-z0-9_.]*$/;
-
-/** Best-effort architecture family from HF tags (e.g. "gemma4"), or undefined.
- * The first version-bearing tag wins, matching what HF surfaces on model cards. */
-export function familyFromTags(tags?: readonly string[]): string | undefined {
-  if (!tags) return undefined;
-  for (const tag of tags) {
-    const t = tag.toLowerCase();
-    if (FAMILY_STOPWORDS.has(t)) continue;
-    if (FAMILY_RE.test(t)) return t;
-  }
-  return undefined;
 }

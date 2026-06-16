@@ -55,7 +55,6 @@ import {
 import {
   type ModelCapabilities,
   detectCapabilities,
-  familyFromTags,
   hasAnyCapability,
 } from "./model-capabilities";
 import { parseMetaTokens, splitRepoLabel } from "./row-meta";
@@ -318,7 +317,6 @@ function ModelRow({
   optionProps,
   onArrowDownIntoChildren,
   capabilities,
-  family,
   hideOwner,
 }: {
   label: string;
@@ -333,8 +331,6 @@ function ModelRow({
   onArrowDownIntoChildren?: () => boolean;
   /** Capability override (HF rows have tags); falls back to name detection. */
   capabilities?: ModelCapabilities;
-  /** Architecture family tag (e.g. "gemma4") from the HF listing. */
-  family?: string;
   /** Hide the "owner/" prefix (e.g. Recommended, where all are unsloth). */
   hideOwner?: boolean;
 }) {
@@ -403,11 +399,6 @@ function ModelRow({
         {paramLabel ? (
           <span className="rounded-md border border-border/60 px-1 py-px text-[10px] font-medium text-muted-foreground tabular-nums">
             {paramLabel}
-          </span>
-        ) : null}
-        {family ? (
-          <span className="rounded-md border border-border/60 px-1 py-px text-[10px] font-medium text-muted-foreground">
-            {family}
           </span>
         ) : null}
         {parsed.formats.map((f) => (
@@ -773,8 +764,8 @@ function canDeleteLoraModel(model: LoraModelOption): boolean {
 
 // ── Hub Model Picker ──────────────────────────────────────────
 
-// Recommended section sort. "recommended" = recent unsloth GGUF/MLX that fit
-// the device; the rest are plain HF sort keys over all unsloth models.
+// Recommended section sort. "recommended" = newly created unsloth GGUF/MLX that
+// fit the device; the rest are plain HF sort keys over all unsloth models.
 type RecommendedSortKey =
   | "recommended"
   | "trendingScore"
@@ -1062,8 +1053,9 @@ export function HubModelPicker({
   // Recommended section: a live unsloth listing sorted by the dropdown.
   const [recommendedSort, setRecommendedSort] =
     useState<RecommendedSortKey>("recommended");
+  // "recommended" surfaces the most recently created Unsloth repos.
   const recommendedHfSort: HfModelSort =
-    recommendedSort === "recommended" ? "lastModified" : recommendedSort;
+    recommendedSort === "recommended" ? "createdAt" : recommendedSort;
   const recommendedSearch = useHfModelSearch("", { sort: recommendedHfSort });
   // Independent sort for each local section's inline dropdown.
   const [downloadedSort, setDownloadedSort] = useState<LocalSortKey>("recent");
@@ -1122,24 +1114,20 @@ export function HubModelPicker({
     return map;
   }, [recommendedSearch.results, isKnownGgufRepo, gpu]);
 
-  // Tag-derived row metadata (capabilities + architecture family) keyed by repo
-  // id, pooled from both HF listings. Rows look it up by id; capabilities fall
-  // back to name detection when a row has no listing entry.
-  const hubMetaById = useMemo(() => {
-    const map = new Map<
-      string,
-      { caps: ModelCapabilities; family?: string }
-    >();
+  // Tag-accurate capabilities keyed by repo id, pooled from both HF listings.
+  // Rows look it up by id and fall back to name detection when absent.
+  const capsById = useMemo(() => {
+    const map = new Map<string, ModelCapabilities>();
     for (const r of [...results, ...recommendedSearch.results]) {
       if (map.has(r.id)) continue;
-      map.set(r.id, {
-        caps: detectCapabilities({
+      map.set(
+        r.id,
+        detectCapabilities({
           id: r.id,
           tags: r.tags,
           pipelineTag: r.pipelineTag,
         }),
-        family: familyFromTags(r.tags),
-      });
+      );
     }
     return map;
   }, [results, recommendedSearch.results]);
@@ -1412,7 +1400,8 @@ export function HubModelPicker({
   // Fixed-width sort dropdown, sized to "Recently updated" with a little extra,
   // shown inline to the right of the section toggle. Options depend on the tab;
   // hidden while searching (sorting doesn't apply to search results).
-  const sortTriggerClassName = "w-[160px] shrink-0 justify-between pr-3";
+  const sortTriggerClassName =
+    "w-[140px] shrink-0 justify-between pr-3 !border-0";
   const sectionSortDropdown = showHfSection ? null : section === "recommended" ? (
     <HubOptionMenu
       value={recommendedSort}
@@ -1921,8 +1910,7 @@ export function HubModelPicker({
                       <ModelRow
                         label={id}
                         hideOwner
-                        capabilities={hubMetaById.get(id)?.caps}
-                        family={hubMetaById.get(id)?.family}
+                        capabilities={capsById.get(id)}
                         meta={info?.meta ?? (isG ? "GGUF" : extractParamLabel(id))}
                         selected={value === id}
                         optionProps={hubModelList.getOptionProps(
@@ -1987,8 +1975,7 @@ export function HubModelPicker({
                   <div key={id}>
                     <ModelRow
                       label={id}
-                      capabilities={hubMetaById.get(id)?.caps}
-                        family={hubMetaById.get(id)?.family}
+                      capabilities={capsById.get(id)}
                       meta={
                         isKnownGgufRepo(id)
                           ? "GGUF"
@@ -2065,8 +2052,7 @@ export function HubModelPicker({
                     <div key={id}>
                       <ModelRow
                         label={id}
-                        capabilities={hubMetaById.get(id)?.caps}
-                        family={hubMetaById.get(id)?.family}
+                        capabilities={capsById.get(id)}
                         meta={
                           isSearchGguf
                             ? "GGUF"
