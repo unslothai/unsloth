@@ -377,6 +377,8 @@ export function useChatModelRuntime() {
         typeof selection === "string" ? false : selection.forceReload ?? false;
       const nativePathToken =
         typeof selection === "string" ? undefined : selection.nativePathToken;
+      const explicitIsGguf =
+        typeof selection === "string" ? undefined : selection.isGguf;
       const throwOnError =
         typeof selection === "string" ? false : selection.throwOnError ?? false;
       const keepSpeculative =
@@ -406,6 +408,7 @@ export function useChatModelRuntime() {
         typeof selection === "string" ? false : selection.isDownloaded ?? false;
       const model = models.find((entry) => entry.id === modelId);
       const lora = loras.find((entry) => entry.id === modelId);
+      const isGguf = explicitIsGguf ?? model?.isGguf ?? false;
       const loraIsAdapter = lora?.exportType === "lora";
       const isLora =
         explicitIsLora ?? model?.isLora ?? loraIsAdapter ?? false;
@@ -543,6 +546,7 @@ export function useChatModelRuntime() {
             const effectiveMaxSeqLength = resolveLoadMaxSeqLength({
               modelId,
               ggufVariant,
+              isGguf,
               customContextLength,
               ggufContextLength,
               currentCheckpoint,

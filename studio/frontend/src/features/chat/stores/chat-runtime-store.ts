@@ -902,12 +902,15 @@ function setScalarSettingVersion<K extends ScalarSettingKey>(
  *  Shared by resetModelSettingsToLoaded (full revert) and stageModel (which
  *  overrides speculative to start a fresh pick from the standing default). */
 function loadedBaselineSettings(s: ChatRuntimeStore) {
+  const hasLoadedModel = Boolean(s.params.checkpoint);
   return {
     customContextLength: null,
     kvCacheDtype: s.loadedKvCacheDtype,
     tensorParallel: s.loadedTensorParallel ?? false,
-    speculativeType: s.loadedSpeculativeType,
-    specDraftNMax: s.loadedSpecDraftNMax,
+    speculativeType: hasLoadedModel
+      ? s.loadedSpeculativeType
+      : readPersistedSpeculativeType(),
+    specDraftNMax: hasLoadedModel ? s.loadedSpecDraftNMax : null,
     chatTemplateOverride: s.loadedChatTemplateOverride,
   };
 }
