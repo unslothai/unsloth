@@ -79,6 +79,9 @@ export function isFullHtmlDocument(source: string): boolean {
 export interface HtmlFence {
   source: string;
   isFullDocument: boolean;
+  // Plain 3-backtick unindented fence: the only form the in-place collapser
+  // (CODE_FENCE_RE) recognizes, so only these may be skipped as already shown.
+  isPlainFence: boolean;
   index: number;
 }
 
@@ -105,6 +108,8 @@ export function extractHtmlFences(text: string): HtmlFence[] {
     const lang = open[3].trim().split(/\s+/)[0]?.toLowerCase() ?? "";
 
     const closeRe = new RegExp(`^ {0,3}\`{${ticks},}\\s*$`);
+    // Strip up to `indent` leading spaces (CommonMark fence indentation).
+    const indentRe = indent > 0 ? new RegExp(`^ {0,${indent}}`) : null;
     let j = i + 1;
     const body: string[] = [];
     let closed = false;
@@ -113,8 +118,7 @@ export function extractHtmlFences(text: string): HtmlFence[] {
         closed = true;
         break;
       }
-      // Strip up to `indent` leading spaces (CommonMark fence indentation).
-      body.push(indent > 0 ? lines[j].replace(new RegExp(`^ {0,${indent}}`), "") : lines[j]);
+      body.push(indentRe ? lines[j].replace(indentRe, "") : lines[j]);
       j++;
     }
 
@@ -128,6 +132,7 @@ export function extractHtmlFences(text: string): HtmlFence[] {
         fences.push({
           source,
           isFullDocument: isFullHtmlDocument(source),
+          isPlainFence: indent === 0 && ticks === 3,
           index: index++,
         });
       }

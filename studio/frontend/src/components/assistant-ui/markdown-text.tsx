@@ -228,7 +228,9 @@ function CodeBlockActions({
 // raw code visible instead (the trailing MessageHtmlArtifacts appends its card).
 function StreamdownBlock(props: BlockProps) {
   const shouldCollapseHtmlArtifacts = useChatRuntimeStore(
-    (state) => state.artifactsEnabled || state.collapseHtmlArtifacts,
+    (state) =>
+      (state.artifactsEnabled || state.collapseHtmlArtifacts) &&
+      !state.loadedIsDiffusion,
   );
   const messageHasRenderableRenderHtmlTool = useAuiState(({ message }) =>
     message.parts.some(isRenderableRenderHtmlToolPart),

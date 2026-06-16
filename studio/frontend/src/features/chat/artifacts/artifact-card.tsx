@@ -47,7 +47,9 @@ export function ArtifactCard({
   const activeThreadId = useChatRuntimeStore((state) => state.activeThreadId);
   // Canvas mode collapses the raw code in place, so offer a Code button too.
   // Diffusion keeps its code inline, so it needs no Code button.
-  const showCodeButton = useChatRuntimeStore((state) => state.artifactsEnabled);
+  const showCodeButton = useChatRuntimeStore(
+    (state) => state.artifactsEnabled && !state.loadedIsDiffusion,
+  );
   const messageIdFromContext = useAuiState(({ message }) => message.id);
   const threadIdFromContext = useAuiState(
     ({ threads }) => threads.mainThreadId,
