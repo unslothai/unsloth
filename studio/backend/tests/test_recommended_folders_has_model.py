@@ -32,11 +32,7 @@ def _load_has_downloaded_model():
     ``_safe_is_dir`` dependency) without importing the heavy module."""
     tree = ast.parse(_models_src.read_text())
     wanted = {"_safe_is_dir", "_dir_has_downloaded_model"}
-    fns = [
-        node
-        for node in tree.body
-        if isinstance(node, ast.FunctionDef) and node.name in wanted
-    ]
+    fns = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in wanted]
     assert {f.name for f in fns} == wanted, "helpers missing from source"
     module = ast.Module(body = fns, type_ignores = [])
     ns: dict = {"Path": Path, "os": os}
