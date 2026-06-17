@@ -2536,6 +2536,33 @@ async def validate_model(
                 detail = f"Invalid model identifier: {model_log_label}",
             )
 
+        is_gguf = getattr(config, "is_gguf", False)
+        # Native context length, read from the local GGUF header when present.
+        # Lets the staged ("Load on selection" off) flow populate the context
+        # slider before the GPU load; None until the file is downloaded.
+        context_length: Optional[int] = None
+        if request.include_context_length and is_gguf:
+            from hub.utils.gguf import resolve_local_gguf_path
+            from utils.models.gguf_metadata import read_gguf_context_length
+
+            # Best-effort: a header-read failure must never fail validation of an
+            # otherwise-valid model (the outer except turns it into a 400).
+            try:
+                if native_grant_backed:
+                    # model_identifier is the resolved canonical .gguf path.
+                    local_gguf = model_identifier
+                else:
+                    # Local folder / exported GGUFs already have their file
+                    # resolved on the config (gguf_file is None for HF repos, so
+                    # those fall back to the HF-cache lookup).
+                    local_gguf = config.gguf_file or resolve_local_gguf_path(
+                        model_identifier, request.gguf_variant
+                    )
+                if local_gguf:
+                    context_length = read_gguf_context_length(local_gguf)
+            except Exception as e:
+                logger.debug("Context-length probe failed for %s: %s", model_log_label, e)
+
         return ValidateModelResponse(
             valid = True,
             message = "Model identifier is valid.",
@@ -2543,12 +2570,13 @@ async def validate_model(
             display_name = model_log_label
             if native_grant_backed
             else getattr(config, "display_name", config.identifier),
-            is_gguf = getattr(config, "is_gguf", False),
+            is_gguf = is_gguf,
             is_lora = getattr(config, "is_lora", False),
             is_vision = getattr(config, "is_vision", False),
             requires_trust_remote_code = bool(
                 load_inference_config(config.identifier).get("trust_remote_code", False)
             ),
+            context_length = context_length,
         )
 
     except HTTPException:
