@@ -162,7 +162,7 @@ import {
   useState,
 } from "react";
 import { create } from "zustand";
-import { updateThreadMessage } from "@/features/chat/utils/update-thread-message";
+import { extractTaggedText, updateThreadMessage } from "@/features/chat/utils/update-thread-message";
 
 // True while a file is dragged anywhere over the chat page, so the composer
 // can show its "Drop files here" affordance.
@@ -3196,61 +3196,28 @@ const DiffusionCanvas: FC = () => {
   );
 };
 
+/**
+ * AssistantMessage handles the display and inline-editing of AI responses.
+ * 
+ * It uses a "Tagged Text" system (<THINK> and <TOOL> tags) to allow users 
+ * to edit structured reasoning and tool outputs within a plain-text textarea 
+ * while preserving the underlying data schema.
+ */
 const AssistantMessage: FC = () => {
   const aui = useAui();
   const messageId = useAuiState(({ message }) => message.id);
-  const [isEditing, setIsEditing] = useState(false);
   const messageContent = useAuiState(({ message }) => message.content);
-  const [overrideContent, setOverrideContent] = useState<any>(null);
-  const [refreshKey, setRefreshKey] = useState(0);
   
+  const [isEditing, setIsEditing] = useState(false);
+  const [refreshKey, setRefreshKey] = useState(0);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const mirrorRef = useRef<HTMLDivElement>(null);
 
-  const extractTaggedText = (content: any) => {
-    if (typeof content === 'string') return content;
-    if (Array.isArray(content)) {
-      const open = "\u003C";
-      const close = "\u003E";
-      return content
-        .map((part: any) => {
-          const text = part.text || part.content || (typeof part === 'string' ? part : "");
-          if (!text) return "";
-          switch (part.type) {
-            case 'reasoning': return `${open}THINK${close}\n${text}\n${open}/THINK${close}`;
-            case 'tool_call':
-            case 'tool': return `${open}TOOL${close}\n${text}\n${open}/TOOL${close}`;
-            default: return text;
-          }
-        })
-        .filter(Boolean)
-        .join('\n\n');
-    }
-    return "";
-  };
-
-  useEffect(() => {
-    setOverrideContent(null);
-  }, [messageId]);
-
-  useEffect(() => {
-    if (overrideContent && JSON.stringify(messageContent) === JSON.stringify(overrideContent)) {
-      setOverrideContent(null);
-    }
-  }, [messageContent, overrideContent]);
-
+  // Simple height adjustment for the edit textarea to prevent layout jumps
   const adjustHeight = () => {
-    const textarea = textareaRef.current;
-    const mirror = mirrorRef.current;
-    if (textarea && mirror) {
-      mirror.innerText = textarea.value;
-      textarea.style.height = `${mirror.offsetHeight}px`;
-      textarea.scrollIntoView({ block: 'nearest', behavior: 'auto' });
-      const rect = textarea.getBoundingClientRect();
-      if (rect.bottom > window.innerHeight - 100) {
-        const container = textarea.closest('.aui-thread-viewport');
-        if (container) container.scrollTop += 80;
-      }
+    const el = textareaRef.current;
+    if (el) {
+      el.style.height = "auto";
+      el.style.height = `${el.scrollHeight}px`;
     }
   };
 
@@ -3258,6 +3225,8 @@ const AssistantMessage: FC = () => {
     const handleEditTrigger = () => setIsEditing(true);
     const handleRefresh = () => setRefreshKey(prev => prev + 1);
     
+    // We use window events here to trigger edit mode from the action bar
+    // without requiring modifications to the global Zustand store.
     window.addEventListener(`edit-message-${messageId}`, handleEditTrigger);
     window.addEventListener(`refresh-message-${messageId}`, handleRefresh);
     
@@ -3274,6 +3243,7 @@ const AssistantMessage: FC = () => {
   const handleSave = async () => {
     const finalText = textareaRef.current?.value || "";
     let remoteId = aui.threadListItem().getState().remoteId;
+    
     if (!remoteId) {
       const threadState = aui.thread();
       remoteId = (threadState as any).remoteId || (threadState as any).id;
@@ -3285,66 +3255,25 @@ const AssistantMessage: FC = () => {
       return;
     }
 
-    const thread = aui.thread();
     try {
-      const result = await updateThreadMessage({
-        thread: { export: () => thread.export(), import: (data) => thread.import(data) },
+      // updateThreadMessage calls thread.import(), which automatically
+      // triggers a re-render of this component with the new content.
+      await updateThreadMessage({
+        thread: { 
+          export: () => aui.thread().export(), 
+          import: (data) => aui.thread().import(data) 
+        },
         messageId,
         remoteId,
         newText: finalText,
       });
-      setOverrideContent(result);
-    } catch (error: any) {
+    } catch (error) {
       console.error("UI: Error during save:", error);
+      toast.error("Failed to save message edits.");
     } finally {
       setIsEditing(false);
     }
   };
-
-  const displayContent = overrideContent || messageContent;
-
-  const renderSafeContent = () => {
-    if (!displayContent) return null;
-    if (typeof displayContent === 'string') {
-      return <div className="whitespace-pre-wrap">{displayContent}</div>;
-    }
-    if (Array.isArray(displayContent)) {
-      return displayContent.map((part, i) => {
-        if (part.type === 'reasoning') {
-          return (
-            <div key={i} className="my-2 rounded-lg bg-muted/50 border border-border overflow-hidden">
-              <button 
-                onClick={() => setIsReasoningExpanded(!isReasoningExpanded)}
-                className="w-full flex items-center justify-between p-2 bg-muted/80 hover:bg-muted transition-colors"
-              >
-                <div className="text-[10px] font-bold uppercase tracking-wider opacity-60">Reasoning</div>
-                <div className={`transition-transform duration-200 ${isReasoningExpanded ? 'rotate-180' : ''}`}>
-                  <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0, 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m6 9 6 6 6-6"/></svg>
-                </div>
-              </button>
-              {isReasoningExpanded && (
-                <div className="p-3 text-muted-foreground italic font-light whitespace-pre-wrap border-t border-border">
-                  {part.text || ""}
-                </div>
-              )}
-            </div>
-          );
-        }
-        if (part.type === 'tool' || part.type === 'tool_call') {
-          return (
-            <div key={i} className="my-2 rounded-lg bg-muted border border-border p-3 font-mono text-xs">
-              <div className="text-[10px] font-bold uppercase tracking-wider opacity-50 mb-1">Tool Output</div>
-              <div className="whitespace-pre-wrap">{part.text || part.content || ""}</div>
-            </div>
-          );
-        }
-        return <div key={i} className="whitespace-pre-wrap">{part.text || part.content || ""}</div>;
-      });
-    }
-    return null;
-  };
-
-  const [isReasoningExpanded, setIsReasoningExpanded] = useState(false);
 
   return (
     <MessagePrimitive.Root
@@ -3354,18 +3283,9 @@ const AssistantMessage: FC = () => {
       <div className="aui-assistant-message-content wrap-break-word min-w-0 text-[#0d0d0d] dark:text-foreground leading-relaxed">
         {isEditing ? (
           <div className="flex flex-col gap-2 w-full">
-            <div 
-              ref={mirrorRef}
-              style={{
-                position: 'absolute', top: 0, left: 0, width: 'var(--thread-content-max-width)',
-                visibility: 'hidden', whiteSpace: 'pre-wrap', wordWrap: 'break-word',
-                padding: '12px', fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
-                fontSize: '0.875rem', lineHeight: '1.25rem', pointerEvents: 'none', zIndex: -1,
-              }}
-            />
             <textarea 
               ref={textareaRef}
-              defaultValue={extractTaggedText(displayContent)}
+              defaultValue={extractTaggedText(messageContent)}
               className="w-full p-3 rounded-xl bg-muted border border-border text-foreground focus:ring-2 focus:ring-primary outline-none overflow-y-auto resize-none font-mono text-sm max-h-[70vh]" 
               autoFocus
               onInput={adjustHeight} 
@@ -3384,31 +3304,27 @@ const AssistantMessage: FC = () => {
             <GeneratingIndicator />
             <CancelledIndicator />
             <DiffusionCanvas />
-            {overrideContent ? (
-              <div className="flex flex-col gap-2">{renderSafeContent()}</div>
-            ) : (
-              <MessagePrimitive.Parts
-                components={{
-                  Text: MarkdownText,
-                  Reasoning: Reasoning,
-                  ReasoningGroup: ReasoningGroup,
-                  Source: Sources,
-                  ToolGroup: ToolGroup,
-                  tools: {
-                    by_name: {
-                      web_search: WebSearchToolUIConfirmable,
-                      search_knowledge_base: KnowledgeBaseToolUIConfirmable,
-                      python: PythonToolUIConfirmable,
-                      terminal: TerminalToolUIConfirmable,
-                      code_execution: CodeExecutionToolUIConfirmable,
-                      image_generation: ImageGenerationToolUIConfirmable,
-                      render_html: RenderHtmlToolUIConfirmable,
-                    },
-                    Fallback: ToolFallbackConfirmable,
+            <MessagePrimitive.Parts
+              components={{
+                Text: MarkdownText,
+                Reasoning: Reasoning,
+                ReasoningGroup: ReasoningGroup,
+                Source: Sources,
+                ToolGroup: ToolGroup,
+                tools: {
+                  by_name: {
+                    web_search: WebSearchToolUIConfirmable,
+                    search_knowledge_base: KnowledgeBaseToolUIConfirmable,
+                    python: PythonToolUIConfirmable,
+                    terminal: TerminalToolUIConfirmable,
+                    code_execution: CodeExecutionToolUIConfirmable,
+                    image_generation: ImageGenerationToolUIConfirmable,
+                    render_html: RenderHtmlToolUIConfirmable,
                   },
-                }}
-              />
-            )}
+                  Fallback: ToolFallbackConfirmable,
+                },
+              }}
+            />
             <SourcesGroup />
             <RagSourcesGroup />
             <MessageError />
@@ -3605,16 +3521,13 @@ const EditAssistantMessageButton: FC = () => {
   const messageId = useAuiState(({ message }) => message.id);
   const isRunning = useAuiState(({ thread }) => thread.isRunning);
 
-  const handleEdit = () => {
-    // This sends a signal to the message body to enter "edit mode"
-    window.dispatchEvent(new CustomEvent(`edit-message-${messageId}`));
-  };
-
   return (
     <TooltipIconButton
       tooltip="Edit response"
       disabled={isRunning}
-      onClick={handleEdit}
+      onClick={() => {
+        window.dispatchEvent(new CustomEvent(`edit-message-${messageId}`));
+      }}
     >
       <HugeiconsIcon
         icon={Edit03Icon}
@@ -3667,7 +3580,11 @@ const AssistantActionBar: FC = () => {
           </ActionBarMorePrimitive.Item>
           <ActionBarPrimitive.ExportMarkdown asChild={true}>
             <ActionBarMorePrimitive.Item className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground">
-              <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-icon" />
+              <HugeiconsIcon
+                icon={Download01Icon}
+                strokeWidth={1.75}
+                className="size-icon"
+              />
               Export as Markdown
             </ActionBarMorePrimitive.Item>
           </ActionBarPrimitive.ExportMarkdown>
