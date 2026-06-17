@@ -1086,7 +1086,31 @@ fi
 
 verbose_substep "requested llama.cpp tag: $_REQUESTED_LLAMA_TAG (repo: $_HELPER_RELEASE_REPO)"
 
-if [ "$_LLAMA_FORCE_COMPILE" = "1" ]; then
+_LOCAL_LLAMA_CPP_LINKED=false
+if [ -n "${UNSLOTH_LOCAL_LLAMA_CPP_DIR:-}" ]; then
+    if [ ! -d "$UNSLOTH_LOCAL_LLAMA_CPP_DIR" ]; then
+        step "llama.cpp" "UNSLOTH_LOCAL_LLAMA_CPP_DIR does not exist: $UNSLOTH_LOCAL_LLAMA_CPP_DIR" "$C_ERR"
+        exit 1
+    fi
+    _RESOLVED_LOCAL="$(cd "$UNSLOTH_LOCAL_LLAMA_CPP_DIR" && pwd)"
+    if [ "$_RESOLVED_LOCAL" = "$LLAMA_CPP_DIR" ]; then
+        substep "UNSLOTH_LOCAL_LLAMA_CPP_DIR points to the canonical install location; ignoring"
+    else
+        if [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
+            _assert_studio_owned_or_absent "$LLAMA_CPP_DIR" "llama.cpp install"
+        fi
+        rm -rf "$LLAMA_CPP_DIR"
+        ln -sfn "$_RESOLVED_LOCAL" "$LLAMA_CPP_DIR"
+        step "llama.cpp" "linked local directory: $_RESOLVED_LOCAL"
+        _LOCAL_LLAMA_CPP_LINKED=true
+        _NEED_LLAMA_SOURCE_BUILD=false
+        _SKIP_PREBUILT_INSTALL=true
+    fi
+fi
+
+if [ "$_LOCAL_LLAMA_CPP_LINKED" = true ]; then
+    : # local directory linked above; skip prebuilt install
+elif [ "$_LLAMA_FORCE_COMPILE" = "1" ]; then
     step "llama.cpp" "UNSLOTH_LLAMA_FORCE_COMPILE=1 -- skipping prebuilt" "$C_WARN"
     _NEED_LLAMA_SOURCE_BUILD=true
 elif [ "${_SKIP_PREBUILT_INSTALL:-false}" = true ]; then

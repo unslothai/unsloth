@@ -2754,7 +2754,38 @@ if ($LlamaPr) {
     $SkipPrebuiltInstall = $true
 }
 
-if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
+$LocalLlamaCppLinked = $false
+$LocalLlamaCppSrc = $env:UNSLOTH_LOCAL_LLAMA_CPP_DIR
+if ($LocalLlamaCppSrc) {
+    if (-not (Test-Path -LiteralPath $LocalLlamaCppSrc -PathType Container)) {
+        step "llama.cpp" "UNSLOTH_LOCAL_LLAMA_CPP_DIR does not exist: $LocalLlamaCppSrc" "Red"
+        exit 1
+    }
+    $ResolvedLocal = (Resolve-Path -LiteralPath $LocalLlamaCppSrc).Path
+    if ($ResolvedLocal -eq $LlamaCppDir) {
+        substep "UNSLOTH_LOCAL_LLAMA_CPP_DIR points to the canonical install location; ignoring" "Yellow"
+    } else {
+        if ($StudioHomeIsCustom) {
+            Assert-StudioOwnedOrAbsent -Path $LlamaCppDir -Label "llama.cpp install"
+        }
+        if (Test-Path -LiteralPath $LlamaCppDir) {
+            Remove-Item -Recurse -Force -LiteralPath $LlamaCppDir -ErrorAction SilentlyContinue
+        }
+        cmd /c "mklink /J `"$LlamaCppDir`" `"$ResolvedLocal`"" 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            substep "Could not create directory junction; copying instead..." "Yellow"
+            Copy-Item -Recurse -Path $ResolvedLocal -Destination $LlamaCppDir
+        }
+        Write-Host ""
+        step "llama.cpp" "linked local directory: $ResolvedLocal"
+        $LocalLlamaCppLinked = $true
+        $NeedLlamaSourceBuild = $false
+    }
+}
+
+if ($LocalLlamaCppLinked) {
+    # local directory linked above; skip prebuilt install
+} elseif ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
     Write-Host ""
     substep "UNSLOTH_LLAMA_FORCE_COMPILE=1 -- skipping prebuilt llama.cpp install" "Yellow"
     $NeedLlamaSourceBuild = $true
@@ -2962,7 +2993,7 @@ if (Test-Path -LiteralPath $LlamaServerBin) {
     }
 }
 
-if (-not $NeedLlamaSourceBuild) {
+if (-not $NeedLlamaSourceBuild -and -not $LocalLlamaCppLinked) {
     Write-Host ""
     step "llama.cpp" "prebuilt (validated)"
 } elseif ((Test-Path -LiteralPath $LlamaServerBin) -and -not $NeedRebuild -and $RequestedLlamaTag -ne "master") {
