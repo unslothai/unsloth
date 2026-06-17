@@ -1615,7 +1615,6 @@ async def scan_model_remote_code(
         # touching a model the user already had (or a local path).
         try:
             from utils.paths import get_cache_path
-
             created_by_scan = (not is_local_path(model_name)) and get_cache_path(model_name) is None
         except Exception:
             created_by_scan = False
@@ -1636,8 +1635,7 @@ async def scan_model_remote_code(
 
 @router.post("/discard-remote-code")
 async def discard_remote_code_download(
-    model_name: str = Body(..., embed = True),
-    current_subject: str = Depends(get_current_subject),
+    model_name: str = Body(..., embed = True), current_subject: str = Depends(get_current_subject)
 ):
     """Purge a repo the consent scan downloaded after the user DECLINED its custom
     code, so untrusted code is not left on disk.
@@ -1656,7 +1654,6 @@ async def discard_remote_code_download(
     # Never delete a model that is loaded for inference.
     try:
         from routes.inference import get_llama_cpp_backend
-
         llama_backend = get_llama_cpp_backend()
         if llama_backend.is_loaded and llama_backend.model_identifier:
             loaded = llama_backend.model_identifier.lower()
