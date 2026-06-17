@@ -425,7 +425,7 @@ export const GPU_LAYERS_ALL = 999;
 // warns on a mismatch, and a forced wrong count surfaces llama.cpp's own error.
 export function parseGpuSplit(value: string): number[] | null {
   const parts = value
-    .split(/[,/]+/)
+    .split(/[\s,/]+/)
     .map((s) => s.trim())
     .filter((s) => s.length > 0);
   if (parts.length < 2) return null;

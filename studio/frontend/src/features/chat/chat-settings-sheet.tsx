@@ -654,7 +654,7 @@ export function ChatSettingsPanel({
   const gpusInUse = selectedGpuIds ?? gpuDevices.map((d) => d.index);
   const showGpuSplit = isManual && showGpuPicker && gpusInUse.length > 1;
   const gpuSplitTokens = gpuSplit
-    .split(/[,/]+/)
+    .split(/[\s,/]+/)
     .map((s) => s.trim())
     .filter((s) => s.length > 0);
   const gpuSplitWarning =
@@ -1295,6 +1295,40 @@ export function ChatSettingsPanel({
                         </>
                       }
                     />
+                    {showGpuSplit && (
+                      <div className="space-y-1.5">
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="flex min-w-0 items-center gap-1.5">
+                            <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+                              GPU split
+                            </span>
+                            <InfoHint>
+                              Relative share of the model per GPU
+                              (--tensor-split), in GPU order. e.g. 2,1 puts
+                              twice as much on the first GPU. Leave blank for an
+                              even split.
+                            </InfoHint>
+                          </div>
+                          <input
+                            type="text"
+                            value={gpuSplit}
+                            placeholder={[
+                              "2",
+                              ...Array(gpusInUse.length - 1).fill("1"),
+                            ].join(",")}
+                            onChange={(e) => setGpuSplit(e.target.value)}
+                            data-test-id="gpu-split-input"
+                            aria-label="GPU split"
+                            className="h-7 w-[96px] rounded-full border-transparent bg-black/[0.04] dark:bg-white/[0.05] hover:bg-black/[0.06] dark:hover:bg-white/[0.1] pl-3 pr-2 py-0 text-right text-[13px] font-medium text-nav-fg outline-none focus-visible:ring-0"
+                          />
+                        </div>
+                        {gpuSplitWarning && (
+                          <p className="text-[11px] text-amber-500">
+                            {gpuSplitWarning}
+                          </p>
+                        )}
+                      </div>
+                    )}
                     {showMoeSlider && (
                       <ParamSlider
                         label="MoE Layers on CPU"
@@ -1349,39 +1383,6 @@ export function ChatSettingsPanel({
                         </div>
                       ))}
                     </div>
-                  </div>
-                )}
-                {showGpuSplit && (
-                  <div className="space-y-1.5">
-                    <div className="flex items-center justify-between gap-3">
-                      <div className="flex min-w-0 items-center gap-1.5">
-                        <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
-                          GPU split
-                        </span>
-                        <InfoHint>
-                          Relative share of the model per GPU (--tensor-split),
-                          in the order of the GPUs above. e.g. 2,1 puts twice as
-                          much on the first GPU. Leave blank for an even split.
-                        </InfoHint>
-                      </div>
-                      <input
-                        type="text"
-                        value={gpuSplit}
-                        placeholder={[
-                          "2",
-                          ...Array(gpusInUse.length - 1).fill("1"),
-                        ].join(",")}
-                        onChange={(e) => setGpuSplit(e.target.value)}
-                        data-test-id="gpu-split-input"
-                        aria-label="GPU split"
-                        className="h-7 w-[96px] rounded-full border-transparent bg-black/[0.04] dark:bg-white/[0.05] hover:bg-black/[0.06] dark:hover:bg-white/[0.1] pl-3 pr-2 py-0 text-right text-[13px] font-medium text-nav-fg outline-none focus-visible:ring-0"
-                      />
-                    </div>
-                    {gpuSplitWarning && (
-                      <p className="text-[11px] text-amber-500">
-                        {gpuSplitWarning}
-                      </p>
-                    )}
                   </div>
                 )}
                 <div className="flex items-center justify-between gap-3">
