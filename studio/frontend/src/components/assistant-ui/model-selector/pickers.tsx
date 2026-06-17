@@ -40,7 +40,7 @@ import { extractParamLabel } from "@/lib/model-size";
 import { cn, formatCompact } from "@/lib/utils";
 import type { VramFitStatus } from "@/lib/vram";
 import { checkVramFit, estimateLoadingVram } from "@/lib/vram";
-import { AiBrain01Icon, Add01Icon, AudioWave01Icon, Cancel01Icon, DashboardCircleIcon, Download01Icon, Folder02Icon, Search01Icon, StarIcon, ViewIcon } from "@hugeicons/core-free-icons";
+import { Add01Icon, AudioWave01Icon, Cancel01Icon, DashboardCircleIcon, Download01Icon, Folder02Icon, Search01Icon, StarIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { DotTag } from "@/features/hub/catalog/dot-tag";
 import { HubOptionMenu, type HubOption } from "@/features/hub/catalog/hub-option-menu";
@@ -291,9 +291,8 @@ function formatBytes(bytes: number): string {
 }
 
 // Small icon badges for what a model can do (vision / reasoning / audio).
+// Vision and reasoning badges were dropped to keep rows uncluttered.
 const CAPABILITY_BADGES = [
-  { key: "vision" as const, icon: ViewIcon, title: "Vision" },
-  { key: "reasoning" as const, icon: AiBrain01Icon, title: "Reasoning" },
   { key: "audio" as const, icon: AudioWave01Icon, title: "Audio" },
 ];
 
