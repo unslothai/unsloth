@@ -794,18 +794,11 @@ function canDeleteLoraModel(model: LoraModelOption): boolean {
 
 // Recommended section sort. "recommended" = newly created unsloth GGUF/MLX that
 // fit the device; the rest are plain HF sort keys over all unsloth models.
-type RecommendedSortKey =
-  | "recommended"
-  | "trendingScore"
-  | "likes"
-  | "downloads"
-  | "lastModified";
+type RecommendedSortKey = "recommended" | "trendingScore" | "lastModified";
 
 const RECOMMENDED_SORT_OPTIONS: HubOption<RecommendedSortKey>[] = [
   { value: "recommended", label: "Recommended" },
   { value: "trendingScore", label: "Trending" },
-  { value: "likes", label: "Most likes" },
-  { value: "downloads", label: "Downloads" },
   { value: "lastModified", label: "Recent" },
 ];
 
