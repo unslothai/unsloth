@@ -37,8 +37,12 @@ export function useStagedModelPreparation(): DownloadJob {
   const pendingDownloaded = useChatRuntimeStore(
     (s) => s.pendingSelection?.isDownloaded ?? false,
   );
-  const pendingHasContext = useChatRuntimeStore(
-    (s) => s.pendingSelection?.contextLength != null,
+  // The probe fills context length and MoE-layer count together; either being
+  // set means the staged header has already been read (don't re-probe).
+  const pendingHasMetadata = useChatRuntimeStore(
+    (s) =>
+      s.pendingSelection?.contextLength != null ||
+      s.pendingSelection?.moeLayerCount != null,
   );
   const setPendingSelection = useChatRuntimeStore((s) => s.setPendingSelection);
 
@@ -89,7 +93,7 @@ export function useStagedModelPreparation(): DownloadJob {
   const fetchMetadataRef = useLatestRef(fetchContextMetadata);
 
   useEffect(() => {
-    if (!pendingId || !pendingIsGguf || pendingHasContext) return;
+    if (!pendingId || !pendingIsGguf || pendingHasMetadata) return;
     // Native files and already-downloaded HF files are local: read the header
     // now. Otherwise download first; onComplete then reads it.
     if (pendingNativeToken || pendingDownloaded) {
@@ -105,7 +109,7 @@ export function useStagedModelPreparation(): DownloadJob {
     pendingNativeToken,
     pendingIsGguf,
     pendingDownloaded,
-    pendingHasContext,
+    pendingHasMetadata,
     startDownloadRef,
     fetchMetadataRef,
   ]);

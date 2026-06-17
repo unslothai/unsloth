@@ -167,102 +167,17 @@ def read_gguf_context_length(path: str) -> Optional[int]:
     return result
 
 
-def _parse_gguf_context_length(path: str) -> Optional[int]:
-    # The context key is architecture-namespaced (``llama.context_length`` etc.),
-    # so we learn the key only after reading ``general.architecture``. GGUF writes
-    # general.* before arch.* keys, matching the loader's own parser.
-    ctx_key: Optional[str] = None
-    try:
-        with open(path, "rb") as f:
-            head = f.read(24)
-            if len(head) < 24:
-                return None
-            magic, _version, _tcount, kv_count = struct.unpack("<IIQQ", head)
-            if magic != _GGUF_MAGIC:
-                return None
-
-            for _ in range(kv_count):
-                try:
-                    klen_bytes = f.read(8)
-                    if len(klen_bytes) < 8:
-                        break
-                    klen = struct.unpack("<Q", klen_bytes)[0]
-                    if klen > 1 << 20:  # 1 MB sanity bound
-                        break
-                    kbytes = f.read(klen)
-                    if len(kbytes) < klen:
-                        break
-                    key = kbytes.decode("utf-8", "replace")
-                    vt_bytes = f.read(4)
-                    if len(vt_bytes) < 4:
-                        break
-                    vtype = struct.unpack("<I", vt_bytes)[0]
-
-                    if vtype == 8 and key == "general.architecture":
-                        slen_bytes = f.read(8)
-                        if len(slen_bytes) < 8:
-                            break
-                        slen = struct.unpack("<Q", slen_bytes)[0]
-                        if slen > 1 << 22:  # 4 MB sanity bound
-                            break
-                        sbytes = f.read(slen)
-                        if len(sbytes) < slen:
-                            break
-                        ctx_key = f"{sbytes.decode('utf-8', 'replace')}.context_length"
-                    elif ctx_key is not None and key == ctx_key and vtype in (4, 10):
-                        width = 4 if vtype == 4 else 8
-                        n_bytes = f.read(width)
-                        if len(n_bytes) < width:
-                            break
-                        value = struct.unpack("<I" if vtype == 4 else "<Q", n_bytes)[0]
-                        # A real context length is positive; treat 0/garbage as
-                        # absent so the UI never builds a slider with max < min.
-                        return value if value > 0 else None
-                    else:
-                        if not _skip_gguf_value(f, vtype):
-                            break
-                except (struct.error, UnicodeDecodeError):
-                    break
-    except OSError as e:
-        logger.debug(f"read_gguf_context_length: cannot open {path}: {e}")
-        return None
-    except Exception as e:
-        logger.debug(f"read_gguf_context_length: parse failure on {path}: {e}")
-        return None
-    return None
-
-
-def read_gguf_moe_layer_count(path: str) -> Optional[int]:
-    """Return the GGUF's MoE expert-layer count (``{arch}.block_count`` minus
-    ``{arch}.leading_dense_block_count``), 0 for a dense model, or ``None`` if
-    unreadable/not a GGUF. Cached by (path, mtime, size). Lets the UI size the
-    manual MoE-offload slider (and hide it for dense models) before the load."""
-    key = _cache_key(path)
-    if key is None:
-        return None
-    with _CACHE_LOCK:
-        if key in _MOE_CACHE:
-            return _MOE_CACHE[key]
-    result = _parse_gguf_moe_layer_count(path)
-    with _CACHE_LOCK:
-        while len(_MOE_CACHE) >= _CACHE_MAX_ENTRIES:
-            try:
-                _MOE_CACHE.pop(next(iter(_MOE_CACHE)))
-            except StopIteration:
-                break
-        _MOE_CACHE[key] = result
-    return result
-
-
-def _parse_gguf_moe_layer_count(path: str) -> Optional[int]:
-    # MoE layer count = block_count - leading_dense_block_count, but only when the
-    # model has experts (expert_count > 0); else 0. Keys are arch-namespaced, so
-    # learn the arch from general.architecture first, then collect all three
-    # (mirrors --n-cpu-moe's ceiling in core/inference/llama_cpp.py:n_moe_layers).
+def _parse_gguf_arch_uints(
+    path: str, wanted_suffixes: frozenset[str]
+) -> Optional[Dict[str, int]]:
+    """Walk a GGUF header once and return the requested architecture-namespaced
+    uint (vtype 4/10) keys, e.g. ``{"block_count": 32}``. Keys are
+    ``{arch}.<suffix>``; the arch is learned from ``general.architecture`` (GGUF
+    writes general.* before arch.* keys, matching the loader's own parser).
+    Returns ``None`` if not a GGUF / unreadable, else a dict (possibly empty or
+    partial when some keys are absent)."""
     arch: Optional[str] = None
-    block_count: Optional[int] = None
-    expert_count: Optional[int] = None
-    leading_dense: Optional[int] = None
+    found: Dict[str, int] = {}
     try:
         with open(path, "rb") as f:
             head = f.read(24)
@@ -303,29 +218,17 @@ def _parse_gguf_moe_layer_count(path: str) -> Optional[int]:
                     elif (
                         arch is not None
                         and vtype in (4, 10)
-                        and key
-                        in (
-                            f"{arch}.block_count",
-                            f"{arch}.expert_count",
-                            f"{arch}.leading_dense_block_count",
-                        )
+                        and key.startswith(f"{arch}.")
+                        and key[len(arch) + 1 :] in wanted_suffixes
                     ):
                         width = 4 if vtype == 4 else 8
                         n_bytes = f.read(width)
                         if len(n_bytes) < width:
                             break
-                        value = struct.unpack("<I" if vtype == 4 else "<Q", n_bytes)[0]
-                        if key == f"{arch}.block_count":
-                            block_count = value
-                        elif key == f"{arch}.expert_count":
-                            expert_count = value
-                        else:
-                            leading_dense = value
-                        if (
-                            block_count is not None
-                            and expert_count is not None
-                            and leading_dense is not None
-                        ):
+                        found[key[len(arch) + 1 :]] = struct.unpack(
+                            "<I" if vtype == 4 else "<Q", n_bytes
+                        )[0]
+                        if len(found) == len(wanted_suffixes):
                             break
                     else:
                         if not _skip_gguf_value(f, vtype):
@@ -333,15 +236,59 @@ def _parse_gguf_moe_layer_count(path: str) -> Optional[int]:
                 except (struct.error, UnicodeDecodeError):
                     break
     except OSError as e:
-        logger.debug(f"read_gguf_moe_layer_count: cannot open {path}: {e}")
+        logger.debug(f"_parse_gguf_arch_uints: cannot open {path}: {e}")
         return None
     except Exception as e:
-        logger.debug(f"read_gguf_moe_layer_count: parse failure on {path}: {e}")
+        logger.debug(f"_parse_gguf_arch_uints: parse failure on {path}: {e}")
         return None
+    return found
 
-    if not expert_count or not block_count:
+
+def _parse_gguf_context_length(path: str) -> Optional[int]:
+    vals = _parse_gguf_arch_uints(path, frozenset({"context_length"}))
+    if not vals:
+        return None
+    value = vals.get("context_length")
+    # A real context length is positive; treat 0/garbage as absent so the UI
+    # never builds a slider with max < min.
+    return value if value and value > 0 else None
+
+
+def read_gguf_moe_layer_count(path: str) -> Optional[int]:
+    """Return the GGUF's MoE expert-layer count (``{arch}.block_count`` minus
+    ``{arch}.leading_dense_block_count``), 0 for a dense model, or ``None`` if
+    unreadable/not a GGUF. Cached by (path, mtime, size). Lets the UI size the
+    manual MoE-offload slider (and hide it for dense models) before the load."""
+    key = _cache_key(path)
+    if key is None:
+        return None
+    with _CACHE_LOCK:
+        if key in _MOE_CACHE:
+            return _MOE_CACHE[key]
+    result = _parse_gguf_moe_layer_count(path)
+    with _CACHE_LOCK:
+        while len(_MOE_CACHE) >= _CACHE_MAX_ENTRIES:
+            try:
+                _MOE_CACHE.pop(next(iter(_MOE_CACHE)))
+            except StopIteration:
+                break
+        _MOE_CACHE[key] = result
+    return result
+
+
+def _parse_gguf_moe_layer_count(path: str) -> Optional[int]:
+    # MoE layer count = block_count - leading_dense_block_count, but only when the
+    # model has experts (expert_count > 0); else 0 (dense -> slider hidden).
+    # Mirrors --n-cpu-moe's ceiling in core/inference/llama_cpp.py:n_moe_layers.
+    vals = _parse_gguf_arch_uints(
+        path,
+        frozenset({"block_count", "expert_count", "leading_dense_block_count"}),
+    )
+    if vals is None:
+        return None
+    if not vals.get("expert_count") or not vals.get("block_count"):
         return 0
-    return max(0, block_count - (leading_dense or 0))
+    return max(0, vals["block_count"] - (vals.get("leading_dense_block_count") or 0))
 
 
 # Strings (8) and arrays (9) are handled inline.
