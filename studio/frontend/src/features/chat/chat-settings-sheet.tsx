@@ -101,7 +101,7 @@ import {
 import {
   GPU_LAYERS_ALL,
   isPendingGguf,
-  parseGpuSplit,
+  parseSplitRatio,
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
 import { RetrievalSettingsSection } from "@/features/rag/components/retrieval-settings-section";
@@ -561,9 +561,9 @@ export function ChatSettingsPanel({
   const nCpuMoe = useChatRuntimeStore((s) => s.nCpuMoe);
   const setNCpuMoe = useChatRuntimeStore((s) => s.setNCpuMoe);
   const loadedNCpuMoe = useChatRuntimeStore((s) => s.loadedNCpuMoe);
-  const gpuSplit = useChatRuntimeStore((s) => s.gpuSplit);
-  const setGpuSplit = useChatRuntimeStore((s) => s.setGpuSplit);
-  const loadedGpuSplit = useChatRuntimeStore((s) => s.loadedGpuSplit);
+  const splitRatio = useChatRuntimeStore((s) => s.splitRatio);
+  const setSplitRatio = useChatRuntimeStore((s) => s.setSplitRatio);
+  const loadedSplitRatio = useChatRuntimeStore((s) => s.loadedSplitRatio);
   const ggufLayerCount = useChatRuntimeStore((s) => s.ggufLayerCount);
   const moeLayerCount = useChatRuntimeStore((s) => s.moeLayerCount);
   const selectedGpuIds = useChatRuntimeStore((s) => s.selectedGpuIds);
@@ -649,26 +649,26 @@ export function ChatSettingsPanel({
   };
   const gpuIdsKey = (ids: number[] | null) => (ids === null ? "auto" : ids.join(","));
   const gpuIdsDirty = gpuIdsKey(selectedGpuIds) !== gpuIdsKey(loadedGpuIds);
-  // GPU split (--tensor-split): manual + 2+ GPUs in use. The text is free-form,
+  // Split ratio (--tensor-split): manual + 2+ GPUs in use. The text is free-form,
   // so warn (don't block) when it can't map to the GPUs in use.
   const gpusInUse = selectedGpuIds ?? gpuDevices.map((d) => d.index);
-  const showGpuSplit = isManual && showGpuPicker && gpusInUse.length > 1;
-  const gpuSplitTokens = gpuSplit
+  const showSplitRatio = isManual && showGpuPicker && gpusInUse.length > 1;
+  const splitRatioTokens = splitRatio
     .split(/[\s,/]+/)
     .map((s) => s.trim())
     .filter((s) => s.length > 0);
-  const gpuSplitWarning =
-    gpuSplit.trim() === ""
+  const splitRatioWarning =
+    splitRatio.trim() === ""
       ? null
-      : gpuSplitTokens.map(Number).some((n) => !Number.isFinite(n) || n < 0)
+      : splitRatioTokens.map(Number).some((n) => !Number.isFinite(n) || n < 0)
         ? "Use numbers like 2,1."
-        : gpuSplitTokens.length !== gpusInUse.length
+        : splitRatioTokens.length !== gpusInUse.length
           ? `Enter ${gpusInUse.length} values, one per GPU in use.`
           : null;
-  const gpuSplitDirty =
+  const splitRatioDirty =
     isManual &&
-    JSON.stringify(parseGpuSplit(gpuSplit)) !==
-      JSON.stringify(loadedGpuSplit ?? null);
+    JSON.stringify(parseSplitRatio(splitRatio)) !==
+      JSON.stringify(loadedSplitRatio ?? null);
   // Auto-fit context: null / <= 0 means "Auto" (let --fit size it); a positive
   // value pins it (--fit optimizes gpu-layers around it). After a fit load,
   // surface the length --fit actually chose.
@@ -684,7 +684,7 @@ export function ChatSettingsPanel({
     gpuDirty ||
     manualDirty ||
     gpuIdsDirty ||
-    gpuSplitDirty;
+    splitRatioDirty;
   const [presetNameInput, setPresetNameInput] = useState(activePreset);
   const [systemPromptEditorOpen, setSystemPromptEditorOpen] = useState(false);
   const [systemPromptDraft, setSystemPromptDraft] = useState("");
@@ -1295,12 +1295,12 @@ export function ChatSettingsPanel({
                         </>
                       }
                     />
-                    {showGpuSplit && (
+                    {showSplitRatio && (
                       <div className="space-y-1.5">
                         <div className="flex items-center justify-between gap-3">
                           <div className="flex min-w-0 items-center gap-1.5">
                             <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
-                              GPU split
+                              Split ratio
                             </span>
                             <InfoHint>
                               Relative share of the model per GPU
@@ -1311,20 +1311,20 @@ export function ChatSettingsPanel({
                           </div>
                           <input
                             type="text"
-                            value={gpuSplit}
+                            value={splitRatio}
                             placeholder={[
                               "2",
                               ...Array(gpusInUse.length - 1).fill("1"),
                             ].join(",")}
-                            onChange={(e) => setGpuSplit(e.target.value)}
-                            data-test-id="gpu-split-input"
-                            aria-label="GPU split"
+                            onChange={(e) => setSplitRatio(e.target.value)}
+                            data-test-id="split-ratio-input"
+                            aria-label="Split ratio"
                             className="h-7 w-[96px] rounded-full border-transparent bg-black/[0.04] dark:bg-white/[0.05] hover:bg-black/[0.06] dark:hover:bg-white/[0.1] pl-3 pr-2 py-0 text-right text-[13px] font-medium text-nav-fg outline-none focus-visible:ring-0"
                           />
                         </div>
-                        {gpuSplitWarning && (
+                        {splitRatioWarning && (
                           <p className="text-[11px] text-amber-500">
-                            {gpuSplitWarning}
+                            {splitRatioWarning}
                           </p>
                         )}
                       </div>

@@ -418,12 +418,12 @@ export function saveGpuMemoryMode(value: "auto" | "fit" | "manual"): void {
 // the model's actual layer count).
 export const GPU_LAYERS_ALL = 999;
 
-// Parse the "GPU split" text field (e.g. "2,1" or "2/1") into per-GPU shares.
+// Parse the "Split ratio" text field (e.g. "2,1" or "2/1") into per-GPU shares.
 // Returns null when blank, non-numeric/negative, fewer than 2 values, or all
 // values equal (an even split, which is llama.cpp's default and needs no flag).
 // Does NOT check the value count against the GPUs in use: the settings sheet
 // warns on a mismatch, and a forced wrong count surfaces llama.cpp's own error.
-export function parseGpuSplit(value: string): number[] | null {
+export function parseSplitRatio(value: string): number[] | null {
   const parts = value
     .split(/[\s,/]+/)
     .map((s) => s.trim())
@@ -453,7 +453,7 @@ export function loadedGpuMemoryFields(resp: {
     loadedGpuMemoryMode: mode,
     loadedGpuLayers: resp.gpu_layers ?? null,
     loadedNCpuMoe: resp.n_cpu_moe ?? null,
-    loadedGpuSplit: resp.tensor_split ?? null,
+    loadedSplitRatio: resp.tensor_split ?? null,
     ggufLayerCount: resp.n_layers ?? null,
     // MoE expert-layer count: the n_cpu_moe slider max, and 0 hides the slider.
     moeLayerCount: resp.n_moe_layers ?? null,
@@ -465,7 +465,7 @@ export function loadedGpuMemoryFields(resp: {
     ...(mode === "manual" && {
       gpuLayers: resp.gpu_layers ?? GPU_LAYERS_ALL,
       nCpuMoe: resp.n_cpu_moe ?? 0,
-      gpuSplit: (resp.tensor_split ?? []).join(","),
+      splitRatio: (resp.tensor_split ?? []).join(","),
     }),
   };
 }
@@ -666,10 +666,10 @@ type ChatRuntimeStore = {
   /** Manual mode: MoE expert layers to keep on CPU (--n-cpu-moe); 0 = none. */
   nCpuMoe: number;
   loadedNCpuMoe: number | null;
-  /** Manual mode: per-GPU model split as raw text (e.g. "2,1"); "" = even. */
-  gpuSplit: string;
-  /** Backend-reported per-GPU split (--tensor-split); null = even / not set. */
-  loadedGpuSplit: number[] | null;
+  /** Manual mode: per-GPU model split ratio as raw text (e.g. "2,1"); "" = even. */
+  splitRatio: string;
+  /** Backend-reported per-GPU split ratio (--tensor-split); null = even / unset. */
+  loadedSplitRatio: number[] | null;
   /** Model layer count (GGUF block_count); the manual gpu-layers ceiling. */
   ggufLayerCount: number | null;
   /** MoE expert-layer count: the nCpuMoe slider max; 0/null hides the slider. */
@@ -795,7 +795,7 @@ type ChatRuntimeStore = {
   setGpuMemoryMode: (mode: "auto" | "fit" | "manual") => void;
   setGpuLayers: (value: number) => void;
   setNCpuMoe: (value: number) => void;
-  setGpuSplit: (value: string) => void;
+  setSplitRatio: (value: string) => void;
   setSelectedGpuIds: (ids: number[] | null) => void;
   setLoadOnSelection: (value: boolean) => void;
   setPendingSelection: (selection: PendingModelSelection | null) => void;
@@ -1027,7 +1027,7 @@ function loadedBaselineSettings(s: ChatRuntimeStore) {
       : readPersistedGpuMemoryMode(),
     gpuLayers: s.loadedGpuLayers ?? GPU_LAYERS_ALL,
     nCpuMoe: s.loadedNCpuMoe ?? 0,
-    gpuSplit: (s.loadedGpuSplit ?? []).join(","),
+    splitRatio: (s.loadedSplitRatio ?? []).join(","),
     selectedGpuIds: s.loadedGpuIds,
   };
 }
@@ -1123,8 +1123,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   loadedGpuLayers: null,
   nCpuMoe: 0,
   loadedNCpuMoe: null,
-  gpuSplit: "",
-  loadedGpuSplit: null,
+  splitRatio: "",
+  loadedSplitRatio: null,
   ggufLayerCount: null,
   moeLayerCount: null,
   selectedGpuIds: null,
@@ -1374,8 +1374,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       loadedGpuLayers: null,
       nCpuMoe: 0,
       loadedNCpuMoe: null,
-      gpuSplit: "",
-      loadedGpuSplit: null,
+      splitRatio: "",
+      loadedSplitRatio: null,
       ggufLayerCount: null,
       moeLayerCount: null,
       selectedGpuIds: null,
@@ -1582,7 +1582,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   },
   setGpuLayers: (gpuLayers) => set({ gpuLayers }),
   setNCpuMoe: (nCpuMoe) => set({ nCpuMoe }),
-  setGpuSplit: (gpuSplit) => set({ gpuSplit }),
+  setSplitRatio: (splitRatio) => set({ splitRatio }),
   setSelectedGpuIds: (selectedGpuIds) => set({ selectedGpuIds }),
   resetModelSettingsToLoaded: () => set((s) => loadedBaselineSettings(s)),
   setLoadOnSelection: (loadOnSelection) => {
