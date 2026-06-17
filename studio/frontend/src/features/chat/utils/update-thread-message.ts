@@ -58,22 +58,29 @@ export async function updateThreadMessage(args: {
   const repo = new MessageRepository();
   repo.import(exported);
   const message = repo.getMessage(messageId);
-  if (message) {
-    message.content = updatedContent;
+  
+  if (!message) {
+    console.error("Could not find message in repository to update.");
+    return;
   }
+
+  const originalParentId = message.parentId;
+  const originalCreatedAt = message.createdAt;
+
+  message.content = updatedContent;
 
   const next = repo.export();
   thread.import(next);
 
   if (remoteId) {
     try {
-      const timestamp = message?.createdAt || Date.now();
       await saveChatMessage({
         id: messageId,
         threadId: remoteId,
+        parentId: originalParentId,
         role: "assistant",
         content: updatedContent,
-        createdAt: timestamp, 
+        createdAt: originalCreatedAt || Date.now(), 
       });
     } catch (e) {
       console.error("Backend sync failed:", e);

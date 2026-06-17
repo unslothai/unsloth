@@ -3202,7 +3202,7 @@ const AssistantMessage: FC = () => {
   const [isEditing, setIsEditing] = useState(false);
   const messageContent = useAuiState(({ message }) => message.content);
   const [overrideContent, setOverrideContent] = useState<any>(null);
-  const [isReasoningExpanded, setIsReasoningExpanded] = useState(false);
+  const [refreshKey, setRefreshKey] = useState(0);
   
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const mirrorRef = useRef<HTMLDivElement>(null);
@@ -3229,6 +3229,11 @@ const AssistantMessage: FC = () => {
     return "";
   };
 
+  // --- NEW: Clear the shield when the active message changes ---
+  useEffect(() => {
+    setOverrideContent(null);
+  }, [messageId]);
+
   useEffect(() => {
     if (overrideContent && JSON.stringify(messageContent) === JSON.stringify(overrideContent)) {
       setOverrideContent(null);
@@ -3252,8 +3257,15 @@ const AssistantMessage: FC = () => {
 
   useEffect(() => {
     const handleEditTrigger = () => setIsEditing(true);
+    const handleRefresh = () => setRefreshKey(prev => prev + 1);
+    
     window.addEventListener(`edit-message-${messageId}`, handleEditTrigger);
-    return () => window.removeEventListener(`edit-message-${messageId}`, handleEditTrigger);
+    window.addEventListener(`refresh-message-${messageId}`, handleRefresh);
+    
+    return () => {
+      window.removeEventListener(`edit-message-${messageId}`, handleEditTrigger);
+      window.removeEventListener(`refresh-message-${messageId}`, handleRefresh);
+    };
   }, [messageId]);
 
   useEffect(() => {
@@ -3306,11 +3318,9 @@ const AssistantMessage: FC = () => {
                 onClick={() => setIsReasoningExpanded(!isReasoningExpanded)}
                 className="w-full flex items-center justify-between p-2 bg-muted/80 hover:bg-muted transition-colors"
               >
-                <div className="text-[10px] font-bold uppercase tracking-wider opacity-60">
-                  Reasoning
-                </div>
+                <div className="text-[10px] font-bold uppercase tracking-wider opacity-60">Reasoning</div>
                 <div className={`transition-transform duration-200 ${isReasoningExpanded ? 'rotate-180' : ''}`}>
-                  <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+                  <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0, 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m6 9 6 6 6-6"/></svg>
                 </div>
               </button>
               {isReasoningExpanded && (
@@ -3334,6 +3344,8 @@ const AssistantMessage: FC = () => {
     }
     return null;
   };
+
+  const [isReasoningExpanded, setIsReasoningExpanded] = useState(false);
 
   return (
     <MessagePrimitive.Root
@@ -3404,8 +3416,7 @@ const AssistantMessage: FC = () => {
           </>
         )}
       </div>
-
-      <div className="aui-assistant-message-footer mt-1.5 -ml-[var(--icon-btn-inset)] flex min-h-8">
+      <div key={refreshKey} className="aui-assistant-message-footer mt-1.5 -ml-[var(--icon-btn-inset)] flex min-h-8">
         <BranchPicker className="mr-0.5" />
         <AssistantActionBar />
       </div>
