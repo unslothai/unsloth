@@ -211,9 +211,7 @@ def test_streaming_responses_triggers_auto_switch(monkeypatch):
 
     payload = ResponsesRequest(model = "unsloth/B-GGUF", stream = True)
     request = SimpleNamespace(state = SimpleNamespace())
-    result = asyncio.run(
-        inference_route.openai_responses(payload, request, current_subject = "t")
-    )
+    result = asyncio.run(inference_route.openai_responses(payload, request, current_subject = "t"))
     assert result == "DISPATCHED"
     assert called == ["unsloth/B-GGUF"]
 
