@@ -151,7 +151,7 @@ export function FolderBrowser({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
-        className="corner-squircle dialog-soft-surface sm:max-w-md p-0 gap-0"
+        className="corner-squircle dialog-soft-surface sm:max-w-md p-0 gap-0 [&_[data-slot=dialog-close]]:top-4"
         overlayClassName="bg-black/20 backdrop-blur-none"
         data-testid="folder-browser-dialog"
       >
