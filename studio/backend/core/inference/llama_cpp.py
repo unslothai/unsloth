@@ -4540,11 +4540,22 @@ class LlamaCppBackend:
                         or _user_draft_via_extras
                         or (
                             not _extra_args_set_spec_type(extra_args)
-                            and _mtp_binary_ok
                             and _mtp_model_for_fit
                             and (
                                 _mtp_effective in ("mtp", "mtp+ngram")
                                 or (_mtp_effective == "auto" and not _mtp_sub_3b_for_fit)
+                            )
+                            and (
+                                _mtp_binary_ok
+                                # probe_server_capabilities can throw an uncaught
+                                # exception on the first call (Windows encoding,
+                                # startup timing), leaving _mtp_binary_ok=False
+                                # while the result is not cached.  _build_speculative_flags
+                                # then calls the probe again, succeeds, and launches
+                                # --spec-type draft-mtp --model-draft regardless.
+                                # Reserve drafter VRAM whenever a drafter file exists:
+                                # it will be loaded whether the probe succeeded or not.
+                                or bool(mtp_draft_path)
                             )
                         )
                     )
