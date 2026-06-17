@@ -378,8 +378,8 @@ function ModelRow({
       }}
       onClick={onClick}
       className={cn(
-        "flex w-full items-center gap-2 rounded-full px-3 py-1.5 text-left text-sm transition-colors hover:bg-[#ececec] focus-visible:bg-[#ececec] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/45 dark:hover:bg-[#3a3d44] dark:focus-visible:bg-[#3a3d44]",
-        selected && "bg-[#ececec] dark:bg-[#3a3d44]",
+        "flex w-full items-center gap-2 rounded-full px-3 py-1.5 text-left text-sm transition-colors hover:bg-[#ececec] focus-visible:bg-[#ececec] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/45 dark:hover:bg-[var(--sidebar-accent)] dark:focus-visible:bg-[var(--sidebar-accent)]",
+        selected && "bg-[#ececec] dark:bg-[var(--sidebar-accent)]",
       )}
     >
       <span className="flex min-w-0 flex-1 items-baseline">
@@ -679,7 +679,7 @@ function GgufVariantExpander({
                 handleVariantClick(v.quant, v.downloaded, v.size_bytes)
               }
               className={cn(
-                "flex min-w-0 flex-1 items-center justify-between gap-2 rounded-full px-3 py-1 text-left text-sm transition-colors hover:bg-[#ececec] focus-visible:bg-[#ececec] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/45 dark:hover:bg-[#3a3d44] dark:focus-visible:bg-[#3a3d44]",
+                "flex min-w-0 flex-1 items-center justify-between gap-2 rounded-full px-3 py-1 text-left text-sm transition-colors hover:bg-[#ececec] focus-visible:bg-[#ececec] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/45 dark:hover:bg-[var(--sidebar-accent)] dark:focus-visible:bg-[var(--sidebar-accent)]",
               )}
             >
               <span className="min-w-0 flex-1 truncate font-mono text-xs">
@@ -1629,7 +1629,7 @@ export function HubModelPicker({
             onChange={(event) => setQuery(event.target.value)}
             placeholder="Search models"
             data-model-picker-search-input={true}
-            className="h-9 border-[#f2f2f2] dark:border-input pl-8 pr-8"
+            className="h-9 border-[#f2f2f2] dark:border-transparent dark:!bg-[var(--sidebar-accent)] pl-8 pr-8"
           />
           {isLoading && (
             <Spinner className="pointer-events-none absolute right-2.5 top-2.5 size-4 text-muted-foreground" />
@@ -1640,7 +1640,7 @@ export function HubModelPicker({
             type="button"
             onClick={onBrowseHub}
             aria-label="Search more models on the Hub"
-            className="hub-browse-trigger flex h-9 w-[112px] shrink-0 items-center justify-center gap-[5px] rounded-full border-0 text-xs text-muted-foreground transition-colors hover:text-foreground"
+            className="hub-browse-trigger flex h-9 w-[112px] shrink-0 items-center justify-center gap-[5px] rounded-full border-0 text-xs text-muted-foreground dark:text-foreground transition-colors hover:text-foreground"
           >
             <HugeiconsIcon icon={DashboardCircleIcon} className="size-4" />
             Search Hub

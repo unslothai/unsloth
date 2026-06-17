@@ -958,6 +958,8 @@
 	}
 
 	.dark .unsloth-model-selector-menu.menu-soft-surface {
+		/* Match the left sidebar background. */
+		background-color: var(--sidebar);
 		box-shadow: none;
 	}
 
