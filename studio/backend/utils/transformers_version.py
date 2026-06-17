@@ -530,18 +530,16 @@ def get_transformers_tier(model_name: str) -> str:
                 return "530"
             # Architecture not in any config set — resolve the base model name
             # (reuses _resolve_base_model which reads _name_or_path/model_name)
-            # and run the same substring rules on that HF ID.  Handles renamed
-            # local folders without false-positives from filesystem path fragments.
+            # and run full tier detection on it so all detection paths apply.
             resolved = _resolve_base_model(model_name)
             if resolved != model_name:
-                result = _tier_from_name(resolved)
-                if result is not None:
-                    tier, match = result
+                tier = get_transformers_tier(resolved)
+                if tier != "default":
                     logger.info(
-                        "Transformers tier %s selected for %s (resolved base model match: %s)",
+                        "Transformers tier %s selected for %s (resolved base model: %s)",
                         tier,
                         model_name,
-                        match,
+                        resolved,
                     )
                     return tier
             local_tc = Path(model_name) / "tokenizer_config.json"
