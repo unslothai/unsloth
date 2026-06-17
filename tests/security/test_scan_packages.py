@@ -596,3 +596,61 @@ def test_per_spec_sdist_only_is_not_error(tmp_path, monkeypatch):
     sp._resolve_per_spec_with_deps(["x==1.0.0"], str(tmp_path), {}, errors)
     assert errors == []  # sdist-only handled, not an exit-2 failure
     assert any(p.name.endswith(".tar.gz") for p in tmp_path.iterdir())
+
+
+# ---------------------------------------------------------------------------
+# --fix path: download_packages() returns (results, download_errors); both
+# --fix call sites must unpack the tuple, not treat it as the results list.
+# ---------------------------------------------------------------------------
+
+
+def test_find_safe_version_handles_download_tuple(monkeypatch):
+    # One downloaded archive, returned as the real (results, download_errors) tuple.
+    monkeypatch.setattr(sp, "fetch_pypi_versions", lambda name: ["0.9.0", "1.0.0"])
+    monkeypatch.setattr(
+        sp,
+        "download_packages",
+        lambda specs, dest, **kw: ([("foo==0.9.0", "/tmp/foo-0.9.0.whl")], []),
+    )
+    monkeypatch.setattr(sp, "scan_archive", lambda archive_path, name: [])  # clean
+    monkeypatch.setattr(sp.os, "makedirs", lambda *a, **k: None)
+    monkeypatch.setattr(sp.os, "remove", lambda *a, **k: None)
+    monkeypatch.setattr(sp.shutil, "rmtree", lambda *a, **k: None)
+
+    # bad_ver 1.0.0 -> the only older candidate is 0.9.0, which is clean.
+    result = sp.find_safe_version("foo", "1.0.0", "/tmp/ignored", max_search = 10)
+    assert result == "0.9.0"
+
+
+def test_run_fix_uses_first_archive_path(monkeypatch):
+    monkeypatch.setattr(
+        sp,
+        "download_packages",
+        lambda specs, dest, **kw: ([("foo", "/tmp/foo-1.2.3.whl")], []),
+    )
+    seen = {}
+
+    def fake_get_downloaded_version(path):
+        seen["path"] = path
+        return "1.2.3"
+
+    monkeypatch.setattr(sp, "get_downloaded_version", fake_get_downloaded_version)
+    monkeypatch.setattr(sp, "find_safe_version", lambda *a, **k: None)
+    monkeypatch.setattr(sp.os, "makedirs", lambda *a, **k: None)
+    monkeypatch.setattr(sp.shutil, "rmtree", lambda *a, **k: None)
+
+    # CRITICAL package with no pinned version -> must download to resolve it,
+    # reaching downloaded[0][1] (the first archive's path).
+    entries = [
+        {
+            "name": "foo",
+            "is_git": False,
+            "spec": "foo",
+            "source_file": None,
+            "raw_line": "foo",
+            "line_num": 1,
+        }
+    ]
+    sp._run_fix({"foo"}, entries, max_search = 10)  # must not raise
+
+    assert seen.get("path") == "/tmp/foo-1.2.3.whl"

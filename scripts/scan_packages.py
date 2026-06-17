@@ -2154,7 +2154,7 @@ def find_safe_version(
         scan_dir = os.path.join(tmpdir, f"{name}_{ver}")
         os.makedirs(scan_dir, exist_ok = True)
 
-        downloaded = download_packages([spec], scan_dir)
+        downloaded, _ = download_packages([spec], scan_dir)
         if not downloaded:
             continue
 
@@ -2288,7 +2288,7 @@ def _run_fix(critical_pkgs: set[str], entries: list[dict], max_search: int) -> N
                 # If no pinned version, download to find what pip resolves
                 dl_dir = os.path.join(tmpdir, f"resolve_{pkg_name}")
                 os.makedirs(dl_dir, exist_ok = True)
-                downloaded = download_packages([pkg_name], dl_dir)
+                downloaded, _ = download_packages([pkg_name], dl_dir)
                 if downloaded:
                     current_ver = get_downloaded_version(downloaded[0][1])
                 shutil.rmtree(dl_dir, ignore_errors = True)
