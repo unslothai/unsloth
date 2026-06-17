@@ -11,6 +11,7 @@ import {
 } from "@/components/assistant-ui/generated-image-overlay-context";
 import { downloadImagePart } from "@/components/assistant-ui/image";
 import { MarkdownText } from "@/components/assistant-ui/markdown-text";
+import { MessageHtmlArtifacts } from "@/components/assistant-ui/message-html-artifacts";
 import { MessageTiming } from "@/components/assistant-ui/message-timing";
 import { Reasoning, ReasoningGroup } from "@/components/assistant-ui/reasoning";
 import { RagSourcesGroup } from "@/components/assistant-ui/rag-sources";
@@ -3250,6 +3251,7 @@ const AssistantMessage: FC = () => {
         />
         <SourcesGroup />
         <RagSourcesGroup />
+        <MessageHtmlArtifacts />
         <MessageError />
       </div>
 
