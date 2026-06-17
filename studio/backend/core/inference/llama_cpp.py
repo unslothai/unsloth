@@ -29,16 +29,13 @@ import httpx
 
 from core.inference.llama_server_args import (
     _effective_tensor_parallel,
-    _env_split_mode_is_tensor,
     _tensor_parallel_matches_loaded,
     extra_args_disable_mmproj,
     parse_cache_override,
     parse_cache_override_per_axis,
     parse_ctx_override,
     parse_split_mode_override,
-    resolve_cache_type_kv,
     resolve_requested_ctx,
-    resolve_tensor_parallel,
     strip_shadowing_flags,
     strip_split_mode_only,
 )

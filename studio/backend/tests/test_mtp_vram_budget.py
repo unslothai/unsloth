@@ -76,11 +76,11 @@ from core.inference.llama_cpp import (  # noqa: E402
     _extra_args_spec_draft_n_max,
     _effective_tensor_parallel,
     _env_main_cache_type_for_budget,
-    _env_split_mode_is_tensor,
     _extra_args_main_cache_type_for_budget,
     _kv_bytes_per_elem,
     _tensor_parallel_matches_loaded,
 )
+from core.inference.llama_server_args import _env_split_mode_is_tensor  # noqa: E402
 
 MIB = 1024 * 1024
 GIB = 1024**3
