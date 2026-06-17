@@ -4540,18 +4540,11 @@ class LlamaCppBackend:
                         or _user_draft_via_extras
                         or (
                             not _extra_args_set_spec_type(extra_args)
+                            and _mtp_binary_ok
                             and _mtp_model_for_fit
                             and (
                                 _mtp_effective in ("mtp", "mtp+ngram")
                                 or (_mtp_effective == "auto" and not _mtp_sub_3b_for_fit)
-                            )
-                            and (
-                                _mtp_binary_ok
-                                # Probe failure does not prevent loading a separate
-                                # drafter: the launch resolver emits --spec-type
-                                # draft-mtp based on mtp_draft_path alone, so the
-                                # drafter weights hit GPU regardless of probe result.
-                                or bool(mtp_draft_path)
                             )
                         )
                     )
