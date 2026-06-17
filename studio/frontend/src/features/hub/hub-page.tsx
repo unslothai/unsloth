@@ -926,10 +926,11 @@ export function ModelsPage() {
     }
   }, [allModelsView]);
 
-  // Split view previews the first row so the detail pane isn't empty, except in
-  // feed mode where the feed must stay visible.
+  // Split view previews the first row so the detail pane isn't empty. Feed mode
+  // included: split view hides the trending feed and shows only the master list,
+  // so previewing its first row lands on a real README instead of a placeholder.
   useEffect(() => {
-    if (allModelsView !== "split" || urlModel || isFeedMode) return;
+    if (allModelsView !== "split" || urlModel) return;
     // Use the filtered rows the master pane renders, not raw inventory, so the
     // preview never lands on a filtered-out row.
     const firstId = isDiscoverTab
@@ -945,7 +946,6 @@ export function ModelsPage() {
   }, [
     allModelsView,
     urlModel,
-    isFeedMode,
     isDiscoverTab,
     listRows,
     filteredCachedRows,
