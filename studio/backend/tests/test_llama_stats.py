@@ -43,12 +43,22 @@ def test_gen_tok_s_uses_token_metrics_not_decode_calls():
     # tokens_predicted_total jumps 95 while n_decode_total only moves 9; the
     # gauge reports 95 tok/s. Decode-call rate (9) must not be reported.
     snaps = [
-        {"tokens_predicted_total": 0.0, "prompt_tokens_total": 0.0, "n_decode_total": 0.0,
-         "predicted_tokens_seconds": 95.0, "prompt_tokens_seconds": 30.0,
-         "requests_processing": 1.0},
-        {"tokens_predicted_total": 95.0, "prompt_tokens_total": 30.0, "n_decode_total": 9.0,
-         "predicted_tokens_seconds": 95.0, "prompt_tokens_seconds": 30.0,
-         "requests_processing": 1.0},
+        {
+            "tokens_predicted_total": 0.0,
+            "prompt_tokens_total": 0.0,
+            "n_decode_total": 0.0,
+            "predicted_tokens_seconds": 95.0,
+            "prompt_tokens_seconds": 30.0,
+            "requests_processing": 1.0,
+        },
+        {
+            "tokens_predicted_total": 95.0,
+            "prompt_tokens_total": 30.0,
+            "n_decode_total": 9.0,
+            "predicted_tokens_seconds": 95.0,
+            "prompt_tokens_seconds": 30.0,
+            "requests_processing": 1.0,
+        },
     ]
     stats = _drive(snaps)
     assert stats, "expected engine_stats while a request is processing"
@@ -59,10 +69,18 @@ def test_gen_tok_s_uses_token_metrics_not_decode_calls():
 def test_kv_cache_pct_not_emitted_when_metric_absent():
     # llama.cpp does not expose kv_cache_usage_ratio, so it must not appear.
     snaps = [
-        {"tokens_predicted_total": 0.0, "prompt_tokens_total": 0.0,
-         "predicted_tokens_seconds": 10.0, "requests_processing": 1.0},
-        {"tokens_predicted_total": 10.0, "prompt_tokens_total": 5.0,
-         "predicted_tokens_seconds": 10.0, "requests_processing": 1.0},
+        {
+            "tokens_predicted_total": 0.0,
+            "prompt_tokens_total": 0.0,
+            "predicted_tokens_seconds": 10.0,
+            "requests_processing": 1.0,
+        },
+        {
+            "tokens_predicted_total": 10.0,
+            "prompt_tokens_total": 5.0,
+            "predicted_tokens_seconds": 10.0,
+            "requests_processing": 1.0,
+        },
     ]
     stats = _drive(snaps)
     assert stats

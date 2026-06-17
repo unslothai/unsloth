@@ -201,8 +201,12 @@ def test_distinct_query_strings_are_not_deduped(logs, monkeypatch):
         pass
 
     def scope(query):
-        return {"type": "http", "path": "/api/models/browse-folders",
-                "method": "GET", "query_string": query}
+        return {
+            "type": "http",
+            "path": "/api/models/browse-folders",
+            "method": "GET",
+            "query_string": query,
+        }
 
     mw = LoggingMiddleware(app)
     _run(mw(scope(b"path=/tmp/a"), _noop_receive, send))
