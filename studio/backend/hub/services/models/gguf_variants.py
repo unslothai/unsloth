@@ -562,10 +562,17 @@ async def get_gguf_variants_response(
                 )
             ):
                 return True
-            # Fall back to the quant's GGUF bytes on disk — the same signal the
-            # inventory uses to mark a repo on-device — so a present quant is
-            # never demoted by a missing mmproj or a main-filename mismatch.
-            return _quant_bytes_present(quant, variant.size_bytes)
+            # Byte fallback so a present quant is not demoted by a filename
+            # mismatch. Vision repos still need an mmproj cached (any precision).
+            if not _quant_bytes_present(quant, variant.size_bytes):
+                return False
+            if (
+                requirement is not None
+                and requirement.mmproj_filenames
+                and not _any_mmproj_cached(requirement.mmproj_filenames)
+            ):
+                return False
+            return True
 
         partial_quants: set[str] = set()
         partial_quant_transports: dict[str, Optional[str]] = {}

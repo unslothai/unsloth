@@ -356,9 +356,16 @@ export function ModelsPage() {
     setOwnerScopeState(scope);
     writeOwnerScopePreference(scope);
   }, []);
-  const [resourceType, setResourceType] = useState<ResourceTypeFilter>(() =>
-    hubSearch.kind === "datasets" ? "datasets" : "models",
-  );
+  const urlResourceType: ResourceTypeFilter =
+    hubSearch.kind === "datasets" ? "datasets" : "models";
+  const [resourceType, setResourceType] =
+    useState<ResourceTypeFilter>(urlResourceType);
+  // Resync on URL kind change (back/forward); it is only seeded on mount.
+  useEffect(() => {
+    setResourceType((current) =>
+      current === urlResourceType ? current : urlResourceType,
+    );
+  }, [urlResourceType]);
   const [discoverFormat, setDiscoverFormat] = useState<ModelFormatFilter>(
     () => findChannel(DEFAULT_DISCOVER_CHANNEL)?.format ?? "gguf",
   );
@@ -383,11 +390,18 @@ export function ModelsPage() {
     (next: ModelFormatFilter) => {
       if (isDiscoverTab) {
         setDiscoverFormat(next);
+        if (urlSection) {
+          // Exit the section so its preset does not re-impose its own format.
+          void navigate({
+            to: "/hub",
+            search: (prev) => ({ ...prev, section: undefined }),
+          });
+        }
       } else {
         setDownloadedFormat(next);
       }
     },
-    [isDiscoverTab],
+    [isDiscoverTab, urlSection, navigate],
   );
   const [capabilityFilter, setCapabilityFilter] =
     useState<CapabilityFilter>("all");
@@ -566,6 +580,9 @@ export function ModelsPage() {
   const effectiveSort: HfSortKey =
     isFeedMode && liveListChannel ? liveListChannel.sort : sortBy;
   const effectiveDirection: HfSortDirection = isFeedMode ? "desc" : direction;
+  // Feed mode uses the live channel format so it does not hide non-matching rows.
+  const effectiveDiscoverFormat: ModelFormatFilter =
+    isFeedMode && liveListChannel ? liveListChannel.format : deferredFormatFilter;
 
   const listChannel = useMemo<HfModelSearchChannel | null>(() => {
     if (!liveListChannel) return null;
@@ -670,14 +687,14 @@ export function ModelsPage() {
     if (isDatasetMode) return discoverRows;
     return discoverRows.filter(
       (row) =>
-        matchesFormat(detectResultFormat(row.result), deferredFormatFilter) &&
+        matchesFormat(detectResultFormat(row.result), effectiveDiscoverFormat) &&
         matchesCapability(row.capabilities, deferredCapabilityFilter) &&
         (!activeChannel?.finetunableOnly || isUnslothFinetunable(row.result)),
     );
   }, [
     discoverRows,
     isDatasetMode,
-    deferredFormatFilter,
+    effectiveDiscoverFormat,
     deferredCapabilityFilter,
     activeChannel,
   ]);
@@ -763,6 +780,7 @@ export function ModelsPage() {
         effectiveSort,
         effectiveDirection,
         activeChannelId,
+        ownerScope,
       ]),
     [
       deferredDebouncedQuery,
@@ -772,6 +790,7 @@ export function ModelsPage() {
       effectiveSort,
       effectiveDirection,
       activeChannelId,
+      ownerScope,
     ],
   );
   const handleClearFilters = useCallback(() => {
@@ -915,10 +934,10 @@ export function ModelsPage() {
     }
   }, [allModelsView]);
 
-  // Split view is always two-pane, so when nothing is selected yet, preview the
-  // first available model so the detail pane is never empty.
+  // Split view previews the first row so the detail pane is not empty, except in
+  // feed mode where the feed itself must stay visible.
   useEffect(() => {
-    if (allModelsView !== "split" || urlModel) return;
+    if (allModelsView !== "split" || urlModel || isFeedMode) return;
     // Use the filtered rows the master pane renders, not raw inventory, so the
     // preview never lands on a row hidden by the active format filter.
     const firstId = isDiscoverTab
@@ -934,6 +953,7 @@ export function ModelsPage() {
   }, [
     allModelsView,
     urlModel,
+    isFeedMode,
     isDiscoverTab,
     listRows,
     filteredCachedRows,
