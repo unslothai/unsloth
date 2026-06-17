@@ -58,17 +58,22 @@ export async function updateThreadMessage(args: {
   const repo = new MessageRepository();
   repo.import(exported);
   const message = repo.getMessage(messageId);
-  if (message) message.content = updatedContent;
-  thread.import(repo.export());
+  if (message) {
+    message.content = updatedContent;
+  }
+
+  const next = repo.export();
+  thread.import(next);
 
   if (remoteId) {
     try {
+      const timestamp = message?.createdAt || Date.now();
       await saveChatMessage({
         id: messageId,
         threadId: remoteId,
         role: "assistant",
         content: updatedContent,
-        createdAt: Date.now(),
+        createdAt: timestamp, 
       });
     } catch (e) {
       console.error("Backend sync failed:", e);

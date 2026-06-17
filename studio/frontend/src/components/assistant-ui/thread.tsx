@@ -11,6 +11,7 @@ import {
 } from "@/components/assistant-ui/generated-image-overlay-context";
 import { downloadImagePart } from "@/components/assistant-ui/image";
 import { MarkdownText } from "@/components/assistant-ui/markdown-text";
+import { MessageHtmlArtifacts } from "@/components/assistant-ui/message-html-artifacts";
 import { MessageTiming } from "@/components/assistant-ui/message-timing";
 import { Reasoning, ReasoningGroup } from "@/components/assistant-ui/reasoning";
 import { RagSourcesGroup } from "@/components/assistant-ui/rag-sources";
@@ -3201,8 +3202,6 @@ const AssistantMessage: FC = () => {
   const [isEditing, setIsEditing] = useState(false);
   const messageContent = useAuiState(({ message }) => message.content);
   const [overrideContent, setOverrideContent] = useState<any>(null);
-  
-  // --- NEW: State to track if the reasoning section is expanded ---
   const [isReasoningExpanded, setIsReasoningExpanded] = useState(false);
   
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -3293,7 +3292,6 @@ const AssistantMessage: FC = () => {
 
   const displayContent = overrideContent || messageContent;
 
-  // --- INTERACTIVE SAFE RENDERER ---
   const renderSafeContent = () => {
     if (!displayContent) return null;
     if (typeof displayContent === 'string') {
@@ -3304,7 +3302,6 @@ const AssistantMessage: FC = () => {
         if (part.type === 'reasoning') {
           return (
             <div key={i} className="my-2 rounded-lg bg-muted/50 border border-border overflow-hidden">
-              {/* Clickable Header for Expand/Collapse */}
               <button 
                 onClick={() => setIsReasoningExpanded(!isReasoningExpanded)}
                 className="w-full flex items-center justify-between p-2 bg-muted/80 hover:bg-muted transition-colors"
@@ -3316,8 +3313,6 @@ const AssistantMessage: FC = () => {
                   <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m6 9 6 6 6-6"/></svg>
                 </div>
               </button>
-              
-              {/* Collapsible Content */}
               {isReasoningExpanded && (
                 <div className="p-3 text-muted-foreground italic font-light whitespace-pre-wrap border-t border-border">
                   {part.text || ""}
@@ -3409,6 +3404,7 @@ const AssistantMessage: FC = () => {
           </>
         )}
       </div>
+
       <div className="aui-assistant-message-footer mt-1.5 -ml-[var(--icon-btn-inset)] flex min-h-8">
         <BranchPicker className="mr-0.5" />
         <AssistantActionBar />
