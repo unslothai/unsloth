@@ -25,7 +25,6 @@ if str(_BACKEND) not in sys.path:
 # becomes a no-op and the route imports resolve a usable ``get_logger``.
 try:
     import structlog  # noqa: F401
-
     _structlog_usable = hasattr(structlog, "get_logger")
 except Exception:
     _structlog_usable = False

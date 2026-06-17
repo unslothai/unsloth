@@ -18,7 +18,6 @@ def _pdf_backend_available() -> bool:
     otherwise; the CPU CI image ships pymupdf but not pymupdf4llm."""
     try:
         from core.chat.document_extractor import document_parser_support
-
         return bool(document_parser_support().get("pdf"))
     except Exception:
         return False
@@ -26,7 +25,7 @@ def _pdf_backend_available() -> bool:
 
 _REQUIRES_PDF_BACKEND = pytest.mark.skipif(
     not _pdf_backend_available(),
-    reason="PDF extraction backend (pymupdf + pymupdf4llm) not installed",
+    reason = "PDF extraction backend (pymupdf + pymupdf4llm) not installed",
 )
 
 
