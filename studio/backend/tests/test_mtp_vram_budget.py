@@ -780,17 +780,15 @@ class TestExtraArgsMtpDetection:
         # No extras, toggle off, tensor env -> flips on.
         assert _effective_tensor_parallel(None, False, env = tensor_env) is True
         # Extras override (any --split-mode) beats the env, even if non-tensor.
-        assert _effective_tensor_parallel(
-            ["--split-mode", "layer"], False, env = tensor_env
-        ) is False
+        assert _effective_tensor_parallel(["--split-mode", "layer"], False, env = tensor_env) is False
         # Explicit extras/toggle tensor stays on regardless of env.
         assert _effective_tensor_parallel(["--split-mode", "tensor"], False, env = {}) is True
         assert _effective_tensor_parallel(None, True, env = {}) is True
         # One-directional: a non-tensor env never downgrades, and no env -> no flip.
         assert _effective_tensor_parallel(None, False, env = {}) is False
-        assert _effective_tensor_parallel(
-            None, False, env = {"LLAMA_ARG_SPLIT_MODE": "layer"}
-        ) is False
+        assert (
+            _effective_tensor_parallel(None, False, env = {"LLAMA_ARG_SPLIT_MODE": "layer"}) is False
+        )
 
     def test_route_matcher_uses_effective_tensor_parallel(self):
         # Fix: the route duplicate-load matcher must compare the env-aware tensor
