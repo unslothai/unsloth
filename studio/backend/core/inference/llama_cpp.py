@@ -4296,9 +4296,11 @@ class LlamaCppBackend:
                 # Tensor mode aborts on a quantized KV cache, so drop it for the
                 # tensor attempt (and strip any inherited/explicit --cache-type
                 # that would re-impose it when appended last). Layer split does
-                # support it, so remember the dropped type and restore it if we
-                # later fall back to layer split below.
+                # support it, so remember the dropped type and the original extras
+                # to restore (verbatim, incl. an asymmetric K/V) if we later fall
+                # back to layer split below.
                 _tensor_dropped_cache_type_kv: Optional[str] = None
+                _tensor_dropped_extra_args: Optional[list] = None
                 # Tensor mode rejects any quantized axis. cache_type_kv is the
                 # heavier-by-bytes budget type, which can mask a quantized axis (an
                 # f16 budget hides a paired q4_0), so also test each explicit
@@ -4317,6 +4319,10 @@ class LlamaCppBackend:
                     _tensor_dropped_cache_type_kv = cache_type_kv
                     cache_type_kv = None
                     if extra_args:
+                        # Keep the originals so a layer downgrade restores the real
+                        # (possibly asymmetric) --cache-type-k/-v the layer path
+                        # supports, not just the scalar heavier type.
+                        _tensor_dropped_extra_args = list(extra_args)
                         extra_args = strip_shadowing_flags(
                             extra_args,
                             strip_context = False,
@@ -4614,6 +4620,10 @@ class LlamaCppBackend:
                         mtp_overhead_fn is None or _mtp_kv_unsized
                     )
                     _draft_cpu_no_embedded = _draft_on_cpu and not self._nextn_predict_layers
+                    # MTP reserves GPU VRAM unless its only drafter is a separate
+                    # CPU-offloaded one (an embedded head stays on GPU). The tensor
+                    # path reserves like the layer path; gate both on this.
+                    _mtp_reserves_gpu = _mtp_will_engage and not _draft_cpu_no_embedded
                     _flat_mtp_reserve = (
                         _MTP_VRAM_RESERVE_FRAC
                         if (_flat_mtp_engages and not _draft_cpu_no_embedded)
@@ -4665,9 +4675,15 @@ class LlamaCppBackend:
                         if _tensor_dropped_cache_type_kv is not None:
                             cache_type_kv = _tensor_dropped_cache_type_kv
                             _cache_type_from_env = False
-                        # Strip a user --split-mode tensor from extras so the
-                        # downgrade actually applies (extras are appended last).
-                        extra_args = strip_split_mode_only(extra_args)
+                        # Restore the original extras (with the real, possibly
+                        # asymmetric, --cache-type-k/-v the tensor attempt stripped),
+                        # then drop the user --split-mode tensor so the downgrade
+                        # actually applies (extras are appended last).
+                        extra_args = strip_split_mode_only(
+                            _tensor_dropped_extra_args
+                            if _tensor_dropped_extra_args is not None
+                            else extra_args
+                        )
 
                     if tensor_parallel and tp_gpus:
                         # Pooled usable budget (after each device's compute buffer)
@@ -4677,7 +4693,8 @@ class LlamaCppBackend:
                             sum(_gpu_usable(g) for g in tp_gpus) - len(tp_gpus) * reserve_mib
                         )
                         _tp_flat_mtp = 2 * 1024**3  # flat reserve when dims unavailable
-                        if not _mtp_will_engage:
+                        if not _mtp_reserves_gpu:
+                            # No MTP, or its only drafter is CPU-offloaded (no GPU).
                             _tp_mtp_floor = 0
                         elif mtp_overhead_fn is not None and not _mtp_kv_unsized:
                             _tp_mtp_floor = _mtp_bytes(
@@ -4704,7 +4721,13 @@ class LlamaCppBackend:
                             if _tensor_dropped_cache_type_kv is not None:
                                 cache_type_kv = _tensor_dropped_cache_type_kv
                                 _cache_type_from_env = False
-                            extra_args = strip_split_mode_only(extra_args)
+                            # Restore the original (possibly asymmetric) cache extras
+                            # too, dropping only the user --split-mode tensor.
+                            extra_args = strip_split_mode_only(
+                                _tensor_dropped_extra_args
+                                if _tensor_dropped_extra_args is not None
+                                else extra_args
+                            )
 
                     if tensor_parallel and tp_gpus:
                         # Tensor-parallel allocation; see _plan_tensor_parallel.
@@ -4718,7 +4741,7 @@ class LlamaCppBackend:
                         # weights, so pass the flat cushion for the unsized KV (else
                         # the binary search spends it on context).
                         _tp_unsized_mtp_reserve = (
-                            2 * 1024**3 if (_mtp_will_engage and _mtp_kv_unsized) else 0
+                            2 * 1024**3 if (_mtp_reserves_gpu and _mtp_kv_unsized) else 0
                         )
                         (
                             effective_ctx,
@@ -4731,7 +4754,7 @@ class LlamaCppBackend:
                             target_ctx,
                             cache_type_kv = cache_type_kv,
                             n_parallel = n_parallel,
-                            mtp_engaged = _mtp_will_engage,
+                            mtp_engaged = _mtp_reserves_gpu,
                             mtp_overhead_fn = mtp_overhead_fn,
                             mtp_flat_reserve_bytes = _tp_unsized_mtp_reserve,
                             # Report the UI ceiling from native ctx, not the
@@ -4769,7 +4792,7 @@ class LlamaCppBackend:
                                     _ms,
                                     cache_type_kv,
                                     n_parallel = n_parallel,
-                                    mtp_engaged = _mtp_will_engage,
+                                    mtp_engaged = _mtp_reserves_gpu,
                                     mtp_overhead_fn = mtp_overhead_fn,
                                     budget_frac = 1.0,
                                     total_mib = None,
@@ -4825,7 +4848,7 @@ class LlamaCppBackend:
                                     _ms,
                                     cache_type_kv,
                                     n_parallel = n_parallel,
-                                    mtp_engaged = _mtp_will_engage,
+                                    mtp_engaged = _mtp_reserves_gpu,
                                     mtp_overhead_fn = mtp_overhead_fn,
                                     budget_frac = 1.0,
                                     total_mib = None,

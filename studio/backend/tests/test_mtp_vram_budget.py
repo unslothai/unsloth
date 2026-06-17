@@ -857,6 +857,25 @@ class TestExtraArgsMtpDetection:
         assert "forcin(cache_type_kv,_ck_extra,_cv_extra)" in load
         assert "iftensor_paralleland_cache_non_tensor_safe:" in load
 
+    def test_load_model_layer_downgrade_restores_original_cache_extras(self):
+        # Tensor mode strips asymmetric --cache-type-k/-v (it rejects quantized),
+        # but layer split supports them, so a downgrade must restore the ORIGINAL
+        # extras, not just the scalar heavier type (else q4_0/f16 silently becomes
+        # f16/f16 on the layer fallback) (#6312).
+        load = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
+        assert "_tensor_dropped_extra_args=list(extra_args)" in load
+        # Both tensor->layer downgrade points restore the saved originals.
+        assert load.count("strip_split_mode_only(_tensor_dropped_extra_argsif") == 2
+
+    def test_load_model_tensor_skips_reserve_for_cpu_drafter(self):
+        # A separate CPU-offloaded drafter (no embedded head) uses no GPU, so the
+        # tensor reserve must be suppressed like the layer path -- else tensor mode
+        # subtracts a phantom flat MTP reserve and under-advertises context (#6312).
+        load = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
+        assert "_mtp_will_engageandnot_draft_cpu_no_embedded" in load
+        assert "ifnot_mtp_reserves_gpu:" in load
+        assert "mtp_engaged=_mtp_reserves_gpu" in load
+
     def test_load_model_adopts_env_tensor_split_mode(self):
         # load_model delegates the tensor decision to _effective_tensor_parallel,
         # which flips to tensor only one-directionally: extras set no split mode,
@@ -927,7 +946,8 @@ class TestExtraArgsMtpDetection:
         # unsized draft KV on context and OOMs.
         compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
         assert "_tp_unsized_mtp_reserve=" in compact
-        assert "(_mtp_will_engageand_mtp_kv_unsized)" in compact
+        # Gated on _mtp_reserves_gpu so a CPU-offloaded drafter reserves nothing.
+        assert "(_mtp_reserves_gpuand_mtp_kv_unsized)" in compact
         assert "mtp_flat_reserve_bytes=_tp_unsized_mtp_reserve" in compact
 
     def test_pool_budget_sums_per_gpu_usable(self):
