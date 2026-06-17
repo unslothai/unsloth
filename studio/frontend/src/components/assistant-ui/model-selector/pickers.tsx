@@ -1630,7 +1630,7 @@ export function HubModelPicker({
   // dropdown always line up; text-xs matches that button too. The trigger label
   // clips (no ellipsis) when long; the open menu expands to show it in full.
   const sortTriggerClassName =
-    "w-[112px] shrink-0 justify-between pr-2.5 !border-0 text-xs [&>span]:!text-clip";
+    "w-[100px] shrink-0 justify-between pr-2.5 !border-0 text-xs [&>span]:!text-clip";
   // Tighter menu like the Projects activity Select: less left/top padding and
   // text-xs to match the trigger. Keep the option's right padding so the
   // selected-item checkmark never overlaps the label.
@@ -1692,7 +1692,7 @@ export function HubModelPicker({
             type="button"
             onClick={onBrowseHub}
             aria-label="Search more models on the Hub"
-            className="field-soft flex h-9 w-[112px] shrink-0 items-center justify-center gap-[5px] rounded-full border-0 text-xs text-muted-foreground transition-colors hover:text-foreground"
+            className="field-soft flex h-9 w-[100px] shrink-0 items-center justify-center gap-[5px] rounded-full border-0 text-xs text-muted-foreground transition-colors hover:text-foreground"
           >
             <HugeiconsIcon icon={DashboardCircleIcon} className="size-4" />
             Search Hub
@@ -1700,9 +1700,9 @@ export function HubModelPicker({
         ) : null}
       </div>
 
-      {/* Section tabs, then the format and sort dropdowns, all spaced by the
-          same gap so the row reads evenly. Wraps if the labels ever run long. */}
-      <div className="flex flex-wrap items-center gap-2">
+      {/* Section tabs, then the format and sort dropdowns, all on one row
+          spaced by the same gap so the row reads evenly. */}
+      <div className="flex items-center gap-2">
         {sectionToggle}
         <div className="flex items-center gap-2">
           {!showHfSection ? (
