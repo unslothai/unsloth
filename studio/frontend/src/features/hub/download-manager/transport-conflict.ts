@@ -152,8 +152,8 @@ export async function requestStart(req: DownloadRequest): Promise<void> {
         "Transport status check failed; starting without partial-conflict preflight.",
         err,
       );
-      // Fail safe: Xet purges any partial unconditionally, so when we couldn't
-      // verify the partial we downgrade this one start to HTTP (resumes an HTTP
+      // Fail safe: Xet purges any partial unconditionally, so when the partial
+      // can't be verified we downgrade this one start to HTTP (resumes an HTTP
       // partial, harmless for a fresh download); the Xet preference is kept for
       // next time. Only downgrade once we confirmed no sibling variant is
       // downloading, since a live sibling may be mid-transfer on Xet.
