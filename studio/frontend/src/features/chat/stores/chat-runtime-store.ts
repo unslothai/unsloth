@@ -411,6 +411,34 @@ export function saveGpuMemoryMode(value: "auto" | "fit" | "manual"): void {
   saveString(CHAT_GPU_MEMORY_MODE_KEY, value);
 }
 
+// Manual-mode gpu_layers sentinel: offload every layer (llama.cpp caps it to
+// the model's actual layer count).
+export const GPU_LAYERS_ALL = 999;
+
+// Store fields derived from a load/status response's GPU-memory settings.
+// Shared by every load path so the manual-knob round-trip can't drift.
+export function loadedGpuMemoryFields(resp: {
+  gpu_memory_mode?: "auto" | "fit" | "manual";
+  gpu_layers?: number;
+  cpu_moe?: boolean;
+  n_layers?: number | null;
+}) {
+  const mode = resp.gpu_memory_mode ?? "auto";
+  return {
+    gpuMemoryMode: mode,
+    loadedGpuMemoryMode: mode,
+    loadedGpuLayers: resp.gpu_layers ?? null,
+    loadedCpuMoe: resp.cpu_moe ?? null,
+    ggufLayerCount: resp.n_layers ?? null,
+    // Sync the editable knobs only from a manual load; otherwise keep the
+    // user's pending choice for when they switch to Manual.
+    ...(mode === "manual" && {
+      gpuLayers: resp.gpu_layers ?? GPU_LAYERS_ALL,
+      cpuMoe: resp.cpu_moe ?? false,
+    }),
+  };
+}
+
 function notifyHfTokenChanged(value: string): void {
   if (!canUseStorage()) return;
   try {
@@ -958,8 +986,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   loadedTensorParallel: null,
   gpuMemoryMode: readPersistedGpuMemoryMode(),
   loadedGpuMemoryMode: null,
-  // 999 = offload all layers; llama.cpp caps it to the model's layer count.
-  gpuLayers: 999,
+  gpuLayers: GPU_LAYERS_ALL,
   loadedGpuLayers: null,
   cpuMoe: false,
   loadedCpuMoe: null,
@@ -1186,7 +1213,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       // Standing preference: survives unload, unlike the per-model knobs above.
       gpuMemoryMode: readPersistedGpuMemoryMode(),
       loadedGpuMemoryMode: null,
-      gpuLayers: 999,
+      gpuLayers: GPU_LAYERS_ALL,
       loadedGpuLayers: null,
       cpuMoe: false,
       loadedCpuMoe: null,

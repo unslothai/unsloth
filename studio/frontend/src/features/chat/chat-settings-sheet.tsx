@@ -101,7 +101,10 @@ import {
   providerSupportsBuiltinCodeExecution,
   providerSupportsFastMode,
 } from "./provider-capabilities";
-import { useChatRuntimeStore } from "./stores/chat-runtime-store";
+import {
+  GPU_LAYERS_ALL,
+  useChatRuntimeStore,
+} from "./stores/chat-runtime-store";
 import { RetrievalSettingsSection } from "@/features/rag/components/retrieval-settings-section";
 import type { InferenceParams } from "./types/runtime";
 
@@ -900,8 +903,7 @@ export function ChatSettingsPanel({
                     <Select
                       value={gpuMemoryMode}
                       onValueChange={(v) => {
-                        const mode =
-                          v === "fit" ? "fit" : v === "manual" ? "manual" : "auto";
+                        const mode = v as "auto" | "fit" | "manual";
                         setGpuMemoryMode(mode);
                         // fit/manual bypass Unsloth's tensor-parallel planning.
                         if (mode !== "auto") setTensorParallel(false);
@@ -926,37 +928,22 @@ export function ChatSettingsPanel({
                 </div>
                 {isManual && (
                   <>
-                    <div className="space-y-3.5">
-                      <div className="flex items-center justify-between gap-3">
-                        <div className="flex min-w-0 items-center gap-1.5">
-                          <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
-                            GPU Layers
-                          </span>
-                          <InfoHint>
-                            Layers to offload to the GPU (--gpu-layers, --fit
-                            off); the rest run on CPU. At the maximum, all layers
-                            are on the GPU.
-                          </InfoHint>
-                        </div>
-                        <NumericValueInput
-                          value={Math.min(gpuLayers, gpuLayersMax)}
-                          min={0}
-                          max={gpuLayersMax}
-                          step={1}
-                          onChange={(v) => setGpuLayers(v)}
-                          ariaLabel="GPU Layers"
-                          size={6}
-                        />
-                      </div>
-                      <Slider
-                        min={0}
-                        max={gpuLayersMax}
-                        step={1}
-                        value={[Math.min(gpuLayers, gpuLayersMax)]}
-                        onValueChange={([v]) => setGpuLayers(Math.round(v))}
-                        className="panel-slider"
-                      />
-                    </div>
+                    <ParamSlider
+                      label="GPU Layers"
+                      value={Math.min(gpuLayers, gpuLayersMax)}
+                      min={0}
+                      max={gpuLayersMax}
+                      step={1}
+                      onChange={setGpuLayers}
+                      valueSize={6}
+                      info={
+                        <>
+                          Layers to offload to the GPU (--gpu-layers, --fit off);
+                          the rest run on CPU. At the maximum, all layers are on
+                          the GPU.
+                        </>
+                      }
+                    />
                     <div className="flex items-center justify-between gap-3">
                       <div className="flex min-w-0 items-center gap-1.5">
                         <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
@@ -1308,7 +1295,7 @@ export function ChatSettingsPanel({
                     setSpecDraftNMax(loadedSpecDraftNMax);
                     setTensorParallel(loadedTensorParallel ?? false);
                     setGpuMemoryMode(loadedGpuMemoryMode ?? "auto");
-                    setGpuLayers(loadedGpuLayers ?? 999);
+                    setGpuLayers(loadedGpuLayers ?? GPU_LAYERS_ALL);
                     setCpuMoe(loadedCpuMoe ?? false);
                     setChatTemplateOverride(loadedChatTemplateOverride);
                   }}

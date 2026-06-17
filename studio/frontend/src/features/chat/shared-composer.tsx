@@ -75,6 +75,7 @@ import {
   usePlusMenuPrefsStore,
 } from "./stores/plus-menu-prefs-store";
 import {
+  loadedGpuMemoryFields,
   type ReasoningEffort,
   resolveLoadedSpeculativeSettings,
   resolveSpeculativeSettingsForLoad,
@@ -989,15 +990,7 @@ export function SharedComposer({
           supportsTools: resp.supports_tools ?? false,
           tensorParallel: resp.tensor_parallel ?? false,
           loadedTensorParallel: resp.tensor_parallel ?? false,
-          gpuMemoryMode: resp.gpu_memory_mode ?? "auto",
-          loadedGpuMemoryMode: resp.gpu_memory_mode ?? "auto",
-          loadedGpuLayers: resp.gpu_layers ?? null,
-          loadedCpuMoe: resp.cpu_moe ?? null,
-          ggufLayerCount: resp.n_layers ?? null,
-          ...(resp.gpu_memory_mode === "manual" && {
-            gpuLayers: resp.gpu_layers ?? 999,
-            cpuMoe: resp.cpu_moe ?? false,
-          }),
+          ...loadedGpuMemoryFields(resp),
           loadedIsMultimodal: isMultimodalResponse(resp),
           ...resolveLoadedSpeculativeSettings(resp),
         });

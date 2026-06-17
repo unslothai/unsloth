@@ -24,6 +24,7 @@ import {
 } from "../api/chat-api";
 import { formatEta, formatRate } from "../utils/format-transfer";
 import {
+  loadedGpuMemoryFields,
   readPersistedSpeculativeType,
   resolveToolsEnabledOnLoad,
   saveSpeculativeType,
@@ -596,7 +597,6 @@ export function useChatModelRuntime() {
             }
             const loadedKv = loadResponse.cache_type_kv ?? null;
             const loadedTp = loadResponse.tensor_parallel ?? false;
-            const loadedGpuMode = loadResponse.gpu_memory_mode ?? "auto";
             const loadedSpec = normalizeSpeculativeType(
               loadResponse.speculative_type,
             );
@@ -655,17 +655,7 @@ export function useChatModelRuntime() {
               loadedKvCacheDtype: loadedKv,
               tensorParallel: loadedTp,
               loadedTensorParallel: loadedTp,
-              gpuMemoryMode: loadedGpuMode,
-              loadedGpuMemoryMode: loadedGpuMode,
-              loadedGpuLayers: loadResponse.gpu_layers ?? null,
-              loadedCpuMoe: loadResponse.cpu_moe ?? null,
-              ggufLayerCount: loadResponse.n_layers ?? null,
-              // Only sync the manual knobs from a manual load; otherwise keep
-              // the user's pending choice for when they switch to Manual.
-              ...(loadedGpuMode === "manual" && {
-                gpuLayers: loadResponse.gpu_layers ?? 999,
-                cpuMoe: loadResponse.cpu_moe ?? false,
-              }),
+              ...loadedGpuMemoryFields(loadResponse),
               speculativeType: loadedSpec,
               loadedSpeculativeType: loadedSpec,
               specDraftNMax: loadResponse.spec_draft_n_max ?? null,
