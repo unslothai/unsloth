@@ -845,13 +845,51 @@ async def remove_scan_folder_endpoint(
     return {"ok": True}
 
 
+def _dir_has_downloaded_model(directory: Path, max_entries: int = 4000) -> bool:
+    """True if *directory* actually holds a downloaded model.
+
+    Recommended-folder chips should only appear once the well-known dir
+    has real weights, not just an empty LM Studio/Ollama scaffold. Two
+    layouts: a GGUF/safetensors file anywhere in the tree (LM Studio,
+    plain dirs) or the Ollama content-addressable store (a non-empty
+    ``manifests/`` beside ``blobs/``, whose blobs carry no extension).
+    Bounded by *max_entries* so a huge tree can't stall the request.
+    """
+    # Ollama layout: manifest files reference blobs that lack extensions.
+    manifests = directory / "manifests"
+    blobs = directory / "blobs"
+    try:
+        if _safe_is_dir(manifests) and _safe_is_dir(blobs):
+            for m in manifests.rglob("*"):
+                if m.is_file():
+                    return True
+    except OSError:
+        pass
+    # Generic weights: any GGUF/safetensors in a bounded walk.
+    visited = 0
+    try:
+        for f in directory.rglob("*"):
+            visited += 1
+            if visited > max_entries:
+                break
+            try:
+                if f.is_file() and f.name.lower().endswith((".gguf", ".safetensors")):
+                    return True
+            except OSError:
+                continue
+    except OSError:
+        pass
+    return False
+
+
 @router.get("/recommended-folders")
 async def get_recommended_folders(current_subject: str = Depends(get_current_subject)):
-    """Return well-known model directories that exist on this machine.
+    """Return well-known model directories that hold a downloaded model.
 
     Lightweight alternative to ``browse-folders`` for the frontend's
-    one-click "Recommended" chips; returns existing paths only (HF
-    cache, LM Studio, Ollama, ``~/models``, etc.).
+    one-click "Recommended" chips. Only paths that actually contain
+    weights are returned, so an empty LM Studio/Ollama scaffold no longer
+    shows up as a suggestion.
     """
     from utils.paths.storage_roots import lmstudio_model_dirs
 
@@ -867,7 +905,11 @@ async def get_recommended_folders(current_subject: str = Depends(get_current_sub
             return
         if resolved in seen:
             return
-        if _safe_is_dir(resolved) and os.access(resolved, os.R_OK | os.X_OK):
+        if (
+            _safe_is_dir(resolved)
+            and os.access(resolved, os.R_OK | os.X_OK)
+            and _dir_has_downloaded_model(Path(resolved))
+        ):
             seen.add(resolved)
             folders.append(resolved)
 

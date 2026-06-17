@@ -247,14 +247,15 @@
 		-webkit-user-select: none;
 	}
 
+	/* Track matches the resting sort/format dropdown background (.field-soft). */
 	html:not(.dark) :is(.hub-page, .unsloth-model-selector-menu) .hub-tab-toggle {
-		background-color: color-mix(in srgb, var(--foreground) 5%, transparent);
+		background-color: color-mix(in srgb, var(--foreground) 3%, transparent);
 		border: 0;
 		box-shadow: none;
 	}
 
 	html.dark :is(.hub-page, .unsloth-model-selector-menu) .hub-tab-toggle {
-		background-color: color-mix(in srgb, var(--foreground) 4.5%, transparent);
+		background-color: color-mix(in srgb, var(--foreground) 4%, transparent);
 		border: 0;
 		box-shadow: none;
 	}
@@ -288,10 +289,38 @@
 	html.dark .unsloth-model-selector-menu .hub-browse-trigger {
 		background-color: color-mix(in srgb, var(--foreground) 10%, transparent);
 		border: 0;
+		box-shadow: none;
+	}
+
+	/* Inner option-menu dropdowns: softer, lighter shadow in dark mode. */
+	html.dark .unsloth-model-selector-menu .hub-menu-instant.menu-soft-surface {
 		box-shadow:
-			0 -1px 2px rgba(0, 0, 0, 0.06),
-			0 1px 2px rgba(0, 0, 0, 0.14),
-			0 4px 10px -3px rgba(0, 0, 0, 0.1);
+			inset 0 0 0 1px rgba(255, 255, 255, 0.06),
+			0 4px 16px -6px rgba(0, 0, 0, 0.16);
+	}
+
+	/* Selector menu only: lift the toggle track and the sort/format field
+	   triggers a touch off the popover so their edges read. Track stays
+	   matched to the dropdowns; Hub page keeps its lighter values. */
+	html:not(.dark) .unsloth-model-selector-menu .hub-tab-toggle,
+	html:not(.dark) .unsloth-model-selector-menu .field-soft {
+		background-color: color-mix(in srgb, var(--foreground) 6%, transparent);
+	}
+	html:not(.dark) .unsloth-model-selector-menu .field-soft:hover,
+	html:not(.dark) .unsloth-model-selector-menu .field-soft[data-state="open"],
+	html:not(.dark) .unsloth-model-selector-menu .field-soft:focus,
+	html:not(.dark) .unsloth-model-selector-menu .field-soft:focus-within {
+		background-color: color-mix(in srgb, var(--foreground) 9%, transparent);
+	}
+	html.dark .unsloth-model-selector-menu .hub-tab-toggle,
+	html.dark .unsloth-model-selector-menu .field-soft {
+		background-color: color-mix(in srgb, var(--foreground) 7%, transparent);
+	}
+	html.dark .unsloth-model-selector-menu .field-soft:hover,
+	html.dark .unsloth-model-selector-menu .field-soft[data-state="open"],
+	html.dark .unsloth-model-selector-menu .field-soft:focus,
+	html.dark .unsloth-model-selector-menu .field-soft:focus-within {
+		background-color: color-mix(in srgb, var(--foreground) 10%, transparent);
 	}
 
 	html:not(.dark) .hub-page .catalog-row {

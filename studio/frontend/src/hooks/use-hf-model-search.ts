@@ -67,7 +67,7 @@ const EXCLUDED_TASKS = new Set([
 
 // Name fallback for well-known diffusion/video families with no task tag.
 const DIFFUSION_NAME_RE =
-  /(?:^|[-_/. ])(?:ltx(?:v|-video)?|flux|stable-diffusion|sdxl|sd3|wan2|hunyuan-?video|cogvideo|mochi|animatediff|qwen-image)(?=$|[-_/. ])/i;
+  /(?:^|[-_/. ])(?:ltx(?:v|-video)?|flux|stable-diffusion|sdxl|sd3|wan2|hunyuan-?video|cogvideox?|mochi|animatediff|qwen-image)(?=$|[-_/. ])/i;
 
 function withPopularitySort(
   input: Parameters<typeof fetch>[0],
