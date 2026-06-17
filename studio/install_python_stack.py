@@ -102,6 +102,72 @@ _CUDA_TORCH_PKG_SPEC: tuple[str, str, str] = (
     "torchaudio>=2.4,<2.11.0",
 )
 
+# torchao's C++ extensions are built against ONE exact torch release; a newer
+# torch makes torchao skip its cpp kernels ("Skipping import of cpp extensions
+# due to incompatible torch version ...") and fall back to slow Python. Because
+# the torch pin above is a range (and every CUDA index now tops out at torch
+# 2.10), the torch actually installed drifts ahead of a fixed torchao pin. So
+# pick the torchao whose build matches the torch in the venv. Table: pytorch/ao#2919.
+#   torch 2.9.x  -> torchao 0.14.0 (today's pin; built for torch 2.9.0)
+#   torch 2.10.x -> torchao 0.16.0 (built for torch 2.10.0)
+#   torch 2.11.x -> torchao 0.17.0 (built for torch 2.11.0; reachable via ROCm rocm7.2)
+# Unknown/older torch keeps the conservative default (no regression vs today).
+_TORCHAO_DEFAULT_SPEC = "torchao==0.14.0"
+_TORCHAO_BY_TORCH_MINOR: dict[int, str] = {
+    10: "torchao==0.16.0",
+    11: "torchao==0.17.0",
+}
+
+
+def _select_torchao_spec(torch_version: str | None) -> str:
+    """Map an installed torch version string (e.g. '2.10.0+cu130') to the torchao
+    pip spec whose cpp extensions match it. Falls back to _TORCHAO_DEFAULT_SPEC for
+    torch <=2.9, a non-2.x major, or an unparseable/missing version. Pure function.
+    """
+    if not torch_version:
+        return _TORCHAO_DEFAULT_SPEC
+    release = str(torch_version).split("+", 1)[0]  # drop +cu130/+rocm6.4/+cpu
+    parts = release.split(".")
+    try:
+        # Strip any pre-release/dev suffix from the minor (e.g. '10rc1' -> '10'),
+        # matching wheel_utils.probe_torch_wheel_env.
+        minor_str = re.sub(r"[^0-9].*", "", parts[1]) if len(parts) > 1 else ""
+        major, minor = int(parts[0]), int(minor_str)
+    except (IndexError, ValueError):
+        return _TORCHAO_DEFAULT_SPEC
+    if major != 2:
+        return _TORCHAO_DEFAULT_SPEC
+    if minor >= 11:
+        return _TORCHAO_BY_TORCH_MINOR[11]  # newest known build; covers 2.11+
+    return _TORCHAO_BY_TORCH_MINOR.get(minor, _TORCHAO_DEFAULT_SPEC)
+
+
+def _probe_installed_torch_version() -> str | None:
+    """Return torch.__version__ from the target venv (sys.executable), or None if
+    torch is absent/unimportable. Cross-platform (unlike probe_torch_wheel_env,
+    which is Linux-only); mirrors the subprocess probe in _ensure_cuda_torch.
+    """
+    try:
+        probe = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import torch, sys; sys.stdout.write(getattr(torch, '__version__', ''))",
+            ],
+            stdout = subprocess.PIPE,
+            stderr = subprocess.DEVNULL,
+            text = True,
+            timeout = 90,
+            **_windows_hidden_subprocess_kwargs(),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if probe.returncode != 0:
+        return None
+    lines = [line.strip() for line in (probe.stdout or "").splitlines() if line.strip()]
+    return lines[-1] if lines else None
+
+
 # AMD Windows ROCm wheels (repo.amd.com/rocm/whl/{arch_family}/).
 # Override with UNSLOTH_ROCM_WINDOWS_MIRROR for air-gapped/mirror installs.
 _ROCM_WINDOWS_INDEX_BASE = (
@@ -2072,25 +2138,29 @@ def install_python_stack() -> int:
         req = REQ_ROOT / "extras-no-deps.txt",
     )
 
-    # 4. Overrides (torchao, transformers) -- force-reinstall.
-    #    Skip when torch is unavailable (e.g. Intel Mac GGUF-only mode):
-    #    overrides.txt contains torchao, which requires torch.
+    # 4. Overrides (torchao) -- force-reinstall. The torchao version is chosen to
+    #    match the torch installed in the venv so its C++ extensions load (see
+    #    _select_torchao_spec). Skip when torch is unavailable (e.g. Intel Mac
+    #    GGUF-only mode): torchao requires torch.
     if NO_TORCH:
         _progress("dependency overrides (skipped, no torch)")
     else:
         _progress("dependency overrides")
+        _torch_ver = _probe_installed_torch_version()
+        _torchao_spec = _select_torchao_spec(_torch_ver)
+        _safe_print(f"   torch {_torch_ver or 'unknown'} detected -- installing {_torchao_spec}")
         _override_extra_args: tuple[str, ...] = ()
         if _rocm_windows_torch_installed:
-            # torchao in overrides.txt declares torch as a dependency; without
-            # --no-deps uv would install CPU torch from PyPI, overwriting the
-            # AMD ROCm wheels we just installed.
+            # torchao declares torch as a dependency; without --no-deps uv would
+            # install CPU torch from PyPI, overwriting the AMD ROCm wheels we just
+            # installed.
             _override_extra_args = ("--no-deps",)
         pip_install(
             "Installing dependency overrides",
             "--force-reinstall",
             "--no-cache-dir",
             *_override_extra_args,
-            req = REQ_ROOT / "overrides.txt",
+            _torchao_spec,
         )
 
     # 5. Triton kernels (no-deps, from source). Skip on Windows and macOS
