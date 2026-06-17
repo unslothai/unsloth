@@ -99,9 +99,7 @@ def _fetch_security_status(model_name: str, hf_token: Optional[str]):
     return None
 
 
-def evaluate_file_security(
-    model_name: str, hf_token: Optional[str] = None
-) -> FileSecurityDecision:
+def evaluate_file_security(model_name: str, hf_token: Optional[str] = None) -> FileSecurityDecision:
     """Block a load when Hugging Face's security scan flags unsafe serialized files.
 
     Call this UNCONDITIONALLY before any load (independent of trust_remote_code),
@@ -112,7 +110,6 @@ def evaluate_file_security(
     # Local folders and GGUF files have no Hub security scan; nothing to check.
     try:
         from utils.paths import is_local_path
-
         if is_local_path(model_name) or _is_gguf(model_name):
             return FileSecurityDecision(model_name, False, reason = "local or gguf; no Hub scan")
     except Exception:
@@ -121,7 +118,9 @@ def evaluate_file_security(
 
     status = _fetch_security_status(model_name, hf_token)
     if not isinstance(status, dict):
-        return FileSecurityDecision(model_name, False, reason = "scan unavailable; allowed (fail-open)")
+        return FileSecurityDecision(
+            model_name, False, reason = "scan unavailable; allowed (fail-open)"
+        )
 
     # Block on any file the Hub has ALREADY flagged with a blocking level. We do
     # NOT gate on ``scansDone``: it is frequently false even for fully-clean

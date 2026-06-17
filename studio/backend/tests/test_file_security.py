@@ -20,6 +20,7 @@ from utils.security import evaluate_file_security
 
 def _patch_status(status):
     """Patch huggingface_hub.model_info to return one fixed security_repo_status."""
+
     def _mi(*_args, **_kwargs):
         return SimpleNamespace(security_repo_status = status)
 
@@ -41,7 +42,10 @@ def test_blocks_each_blocking_level(level):
 
 
 def test_ignores_safe_only():
-    status = {"scansDone": True, "filesWithIssues": [{"path": "model.safetensors", "level": "safe"}]}
+    status = {
+        "scansDone": True,
+        "filesWithIssues": [{"path": "model.safetensors", "level": "safe"}],
+    }
     with _patch_status(status):
         d = evaluate_file_security("good/repo")
     assert d.blocked is False
@@ -92,14 +96,20 @@ def test_skips_gguf():
 
 def test_no_first_party_exemption():
     # A poisoned pickle in a first-party repo still blocks (compromised-repo defense).
-    status = {"scansDone": True, "filesWithIssues": [{"path": "pytorch_model.bin", "level": "unsafe"}]}
+    status = {
+        "scansDone": True,
+        "filesWithIssues": [{"path": "pytorch_model.bin", "level": "unsafe"}],
+    }
     with _patch_status(status):
         d = evaluate_file_security("unsloth/some-model")
     assert d.blocked is True
 
 
 def test_malformed_entries_are_ignored():
-    status = {"scansDone": True, "filesWithIssues": ["not-a-dict", {"path": "ok.pkl", "level": "unsafe"}]}
+    status = {
+        "scansDone": True,
+        "filesWithIssues": ["not-a-dict", {"path": "ok.pkl", "level": "unsafe"}],
+    }
     with _patch_status(status):
         d = evaluate_file_security("evil/repo")
     assert d.blocked is True
