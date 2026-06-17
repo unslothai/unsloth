@@ -514,7 +514,7 @@ export function useChatModelRuntime() {
                 // (gpuMemoryMode is a standing preference and is kept).
                 selectedGpuIds: null,
                 gpuLayers: GPU_LAYERS_ALL,
-                cpuMoe: false,
+                nCpuMoe: 0,
               });
             }
 
@@ -528,7 +528,7 @@ export function useChatModelRuntime() {
               tensorParallel,
               gpuMemoryMode,
               gpuLayers,
-              cpuMoe,
+              nCpuMoe,
               selectedGpuIds,
               activePresetSource,
               activeGgufVariant,
@@ -570,7 +570,7 @@ export function useChatModelRuntime() {
               tensor_parallel: tensorParallel,
               gpu_memory_mode: gpuMemoryMode,
               gpu_layers: gpuLayers,
-              cpu_moe: cpuMoe,
+              n_cpu_moe: nCpuMoe,
               gpu_ids: selectedGpuIds ?? undefined,
             });
 
@@ -744,7 +744,7 @@ export function useChatModelRuntime() {
                   tensor_parallel: stateBeforeUnload.loadedTensorParallel ?? false,
                   gpu_memory_mode: stateBeforeUnload.loadedGpuMemoryMode ?? "auto",
                   gpu_layers: stateBeforeUnload.loadedGpuLayers ?? -1,
-                  cpu_moe: stateBeforeUnload.loadedCpuMoe ?? false,
+                  n_cpu_moe: stateBeforeUnload.loadedNCpuMoe ?? 0,
                   gpu_ids: stateBeforeUnload.loadedGpuIds ?? undefined,
                 });
                 useChatRuntimeStore.setState({

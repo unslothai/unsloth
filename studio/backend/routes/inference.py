@@ -1823,7 +1823,7 @@ def _request_matches_loaded_settings(
         return False
     if request.gpu_memory_mode == "manual" and (
         request.gpu_layers != llama_backend.gpu_layers
-        or request.cpu_moe != llama_backend.cpu_moe
+        or request.n_cpu_moe != llama_backend.n_cpu_moe
     ):
         return False
     _req_gpu_ids = sorted(request.gpu_ids) if request.gpu_ids else None
@@ -2050,8 +2050,9 @@ async def load_model(
                     tensor_parallel = llama_backend.tensor_parallel,
                     gpu_memory_mode = llama_backend.gpu_memory_mode,
                     gpu_layers = llama_backend.gpu_layers,
-                    cpu_moe = llama_backend.cpu_moe,
+                    n_cpu_moe = llama_backend.n_cpu_moe,
                     n_layers = llama_backend.n_layers,
+                    n_moe_layers = llama_backend.n_moe_layers,
                     gpu_ids = llama_backend.gpu_ids,
                 )
         else:
@@ -2236,7 +2237,7 @@ async def load_model(
                 spec_draft_n_max = request.spec_draft_n_max,
                 gpu_memory_mode = request.gpu_memory_mode,
                 gpu_layers = request.gpu_layers,
-                cpu_moe = request.cpu_moe,
+                n_cpu_moe = request.n_cpu_moe,
                 gpu_ids = effective_gpu_ids,
                 n_parallel = _n_parallel,
                 extra_args = extra_llama_args,
@@ -2351,8 +2352,9 @@ async def load_model(
                 tensor_parallel = llama_backend.tensor_parallel,
                 gpu_memory_mode = llama_backend.gpu_memory_mode,
                 gpu_layers = llama_backend.gpu_layers,
-                cpu_moe = llama_backend.cpu_moe,
+                n_cpu_moe = llama_backend.n_cpu_moe,
                 n_layers = llama_backend.n_layers,
+                n_moe_layers = llama_backend.n_moe_layers,
                 gpu_ids = llama_backend.gpu_ids,
             )
 
@@ -2904,8 +2906,9 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 tensor_parallel = llama_backend.tensor_parallel,
                 gpu_memory_mode = llama_backend.gpu_memory_mode,
                 gpu_layers = llama_backend.gpu_layers,
-                cpu_moe = llama_backend.cpu_moe,
+                n_cpu_moe = llama_backend.n_cpu_moe,
                 n_layers = llama_backend.n_layers,
+                n_moe_layers = llama_backend.n_moe_layers,
                 gpu_ids = llama_backend.gpu_ids,
                 llama_cpp_supports_mtp = _supports_mtp,
                 spec_fallback_reason = llama_backend.spec_fallback_reason,

@@ -245,7 +245,7 @@ def test_fit_mode_never_sends_ctx_size_zero():
     assert guard != -1 and zero - guard < 120, '"-c 0" must sit under non-fit guard'
 
 
-# ── Manual mode (--gpu-layers + --fit off + --cpu-moe) ───────────────
+# ── Manual mode (--gpu-layers + --fit off + --n-cpu-moe) ─────────────
 
 
 def test_load_request_accepts_manual():
@@ -253,17 +253,17 @@ def test_load_request_accepts_manual():
         model_path = "owner/repo",
         gpu_memory_mode = "manual",
         gpu_layers = 20,
-        cpu_moe = True,
+        n_cpu_moe = 8,
     )
     assert req.gpu_memory_mode == "manual"
     assert req.gpu_layers == 20
-    assert req.cpu_moe is True
+    assert req.n_cpu_moe == 8
 
 
 def test_load_request_manual_defaults():
     req = LoadRequest(model_path = "owner/repo")
     assert req.gpu_layers == -1
-    assert req.cpu_moe is False
+    assert req.n_cpu_moe == 0
 
 
 @pytest.mark.parametrize("model_cls", [LoadResponse, InferenceStatusResponse])
@@ -276,32 +276,51 @@ def test_response_models_emit_manual_fields(model_cls):
             inference = {},
             gpu_memory_mode = "manual",
             gpu_layers = 20,
-            cpu_moe = True,
+            n_cpu_moe = 8,
             n_layers = 32,
+            n_moe_layers = 32,
         )
     else:
         obj = model_cls(
-            gpu_memory_mode = "manual", gpu_layers = 20, cpu_moe = True, n_layers = 32
+            gpu_memory_mode = "manual", gpu_layers = 20, n_cpu_moe = 8,
+            n_layers = 32, n_moe_layers = 32,
         )
     dumped = obj.model_dump()
     assert dumped["gpu_memory_mode"] == "manual"
     assert dumped["gpu_layers"] == 20
-    assert dumped["cpu_moe"] is True
+    assert dumped["n_cpu_moe"] == 8
     assert dumped["n_layers"] == 32
+    assert dumped["n_moe_layers"] == 32
 
 
 def test_manual_properties_default_and_reflect_and_reset():
     backend = LlamaCppBackend()
-    assert backend.gpu_layers == -1 and backend.cpu_moe is False
+    assert backend.gpu_layers == -1 and backend.n_cpu_moe == 0
     backend._gpu_layers = 20
-    backend._cpu_moe = True
-    assert backend.gpu_layers == 20 and backend.cpu_moe is True
+    backend._n_cpu_moe = 8
+    assert backend.gpu_layers == 20 and backend.n_cpu_moe == 8
     backend._process = _FakeProcess()
     backend.unload_model()
-    assert backend.gpu_layers == -1 and backend.cpu_moe is False
+    assert backend.gpu_layers == -1 and backend.n_cpu_moe == 0
 
 
-def _target_state_manual(backend, *, gpu_layers, cpu_moe):
+def test_n_moe_layers_property():
+    # Behavior: 0 for a dense model (hides the slider); block_count for an
+    # all-MoE model; block_count - leading_dense for a leading-dense model
+    # (GLM-4.7-Flash: deepseek2, block_count 47, leading_dense 1 -> 46).
+    b = LlamaCppBackend()
+    b._n_layers = 36
+    b._n_experts = None
+    assert b.n_moe_layers == 0
+    b._n_experts = 128
+    b._leading_dense_block_count = None
+    assert b.n_moe_layers == 36
+    b._n_layers = 47
+    b._leading_dense_block_count = 1
+    assert b.n_moe_layers == 46
+
+
+def _target_state_manual(backend, *, gpu_layers, n_cpu_moe):
     return backend._already_in_target_state(
         gguf_path = None,
         model_identifier = "owner/repo",
@@ -314,23 +333,23 @@ def _target_state_manual(backend, *, gpu_layers, cpu_moe):
         is_vision = False,
         gpu_memory_mode = "manual",
         gpu_layers = gpu_layers,
-        cpu_moe = cpu_moe,
+        n_cpu_moe = n_cpu_moe,
     )
 
 
-def test_manual_reloads_on_gpu_layers_or_cpu_moe_change():
+def test_manual_reloads_on_gpu_layers_or_n_cpu_moe_change():
     backend = _loaded_backend("manual")
     backend._gpu_layers = 20
-    backend._cpu_moe = False
+    backend._n_cpu_moe = 0
     # Same knobs -> no reload.
-    assert _target_state_manual(backend, gpu_layers = 20, cpu_moe = False) is True
+    assert _target_state_manual(backend, gpu_layers = 20, n_cpu_moe = 0) is True
     # Changed layer count -> reload.
-    assert _target_state_manual(backend, gpu_layers = 16, cpu_moe = False) is False
-    # Toggled MoE offload -> reload.
-    assert _target_state_manual(backend, gpu_layers = 20, cpu_moe = True) is False
+    assert _target_state_manual(backend, gpu_layers = 16, n_cpu_moe = 0) is False
+    # Changed MoE offload -> reload.
+    assert _target_state_manual(backend, gpu_layers = 20, n_cpu_moe = 8) is False
 
 
-def test_manual_emits_gpu_layers_fit_off_and_cpu_moe():
+def test_manual_emits_gpu_layers_fit_off_and_n_cpu_moe():
     src = _load_model_source()
     gate = src.find('elif gpu_memory_mode == "manual":')
     assert gate != -1, "load_model must branch on manual mode"
@@ -339,12 +358,28 @@ def test_manual_emits_gpu_layers_fit_off_and_cpu_moe():
     # tensor parallelism off -- the toggle is honored (see test below).
     assert "gpus = []" in block
     assert "tensor_parallel = False" not in block
-    # The cmd emits an explicit layer count with fit disabled, plus cpu-moe.
+    # The cmd emits an explicit layer count with fit disabled.
     assert 'cmd.extend(["--gpu-layers", str(gpu_layers), "--fit", "off"])' in src
-    assert 'cmd.append("--cpu-moe")' in src
+    # MoE offload uses --n-cpu-moe via _resolve_cpu_moe_flag (tested behaviorally
+    # below); the cmd only emits it when the helper returns a value.
+    assert "_resolve_cpu_moe_flag(" in src
+    assert 'cmd.extend(["--n-cpu-moe", str(moe_flag)])' in src
     # Manual forces use_fit False so --fit-ctx is never added under --fit off.
     emit = src.find('cmd.extend(["--gpu-layers", str(gpu_layers), "--fit", "off"])')
     assert "use_fit = False" in src[src.rfind("\n", 0, emit) - 200 : emit + 80]
+
+
+def test_resolve_cpu_moe_flag():
+    # Behavior: clamp the requested MoE-layer count to the model's MoE layers,
+    # then offset past leading dense layers (--n-cpu-moe counts from layer 0).
+    R = LlamaCppBackend._resolve_cpu_moe_flag
+    assert R(0, 40, 0) is None  # nothing requested
+    assert R(8, 0, 0) is None  # dense model (no MoE layers)
+    assert R(8, 40, 0) == 8  # all-MoE: direct
+    assert R(100, 40, 0) == 40  # clamp to the MoE layer count
+    # GLM-4.7-Flash (deepseek2): block_count 47, leading_dense 1, n_moe 46.
+    assert R(5, 46, 1) == 6  # offset past the 1 dense layer
+    assert R(46, 46, 1) == 47  # all MoE on CPU == block_count
 
 
 def test_manual_allows_tensor_parallel_via_split_mode():

@@ -1190,7 +1190,8 @@ class LlamaCppBackend:
         self._gpu_memory_mode: str = "auto"
         # Manual-mode load options (echoed back so the UI round-trips them).
         self._gpu_layers: int = -1
-        self._cpu_moe: bool = False
+        # MoE expert layers to keep on CPU (--n-cpu-moe); 0 = none.
+        self._n_cpu_moe: int = 0
         # User-picked physical GPU indices (None = automatic selection).
         self._gpu_ids: Optional[List[int]] = None
         self._reasoning_default: bool = True
@@ -1204,6 +1205,11 @@ class LlamaCppBackend:
         self._spec_draft_n_max: Optional[int] = None
         # KV-cache estimation fields (populated by _read_gguf_metadata)
         self._n_layers: Optional[int] = None
+        # MoE metadata (populated by _read_gguf_metadata): expert count (>0 =
+        # MoE) and leading dense-layer count (offsets --n-cpu-moe, which counts
+        # from layer 0). See the n_moe_layers property.
+        self._n_experts: Optional[int] = None
+        self._leading_dense_block_count: Optional[int] = None
         self._n_kv_heads: Optional[int] = None
         self._n_kv_heads_by_layer: Optional[list[int]] = None
         self._n_heads: Optional[int] = None
@@ -1526,9 +1532,9 @@ class LlamaCppBackend:
         return self._gpu_layers
 
     @property
-    def cpu_moe(self) -> bool:
-        """Whether manual mode pinned MoE experts to CPU (--cpu-moe)."""
-        return self._cpu_moe
+    def n_cpu_moe(self) -> int:
+        """MoE expert layers manual mode kept on CPU (--n-cpu-moe); 0 = none."""
+        return self._n_cpu_moe
 
     @property
     def gpu_ids(self) -> Optional[List[int]]:
@@ -1539,6 +1545,31 @@ class LlamaCppBackend:
     def n_layers(self) -> Optional[int]:
         """Model layer count (GGUF block_count), or None if unknown."""
         return self._n_layers
+
+    @property
+    def n_moe_layers(self) -> int:
+        """Number of MoE expert layers (the --n-cpu-moe ceiling), 0 if not MoE.
+
+        block_count minus the leading dense layers (which carry no experts):
+        --n-cpu-moe counts from layer 0, so those dense layers are no-ops.
+        """
+        if not self._n_experts or not self._n_layers:
+            return 0
+        return max(0, self._n_layers - (self._leading_dense_block_count or 0))
+
+    @staticmethod
+    def _resolve_cpu_moe_flag(
+        n_cpu_moe: int, n_moe_layers: int, leading_dense: int
+    ) -> Optional[int]:
+        """The --n-cpu-moe value (absolute first-N layers), or None to omit it.
+
+        Clamps the requested count to the model's MoE layers, then offsets past
+        the leading dense layers (--n-cpu-moe counts from layer 0). Returns None
+        for nothing-to-offload (0 requested) or a non-MoE model.
+        """
+        if n_cpu_moe <= 0 or n_moe_layers <= 0:
+            return None
+        return leading_dense + min(n_cpu_moe, n_moe_layers)
 
     @property
     def speculative_type(self) -> Optional[str]:
@@ -3017,6 +3048,8 @@ class LlamaCppBackend:
         self._supports_preserve_thinking = False
         self._supports_tools = False
         self._n_layers = None
+        self._n_experts = None
+        self._leading_dense_block_count = None
         self._n_kv_heads = None
         self._n_kv_heads_by_layer = None
         self._n_heads = None
@@ -3106,6 +3139,8 @@ class LlamaCppBackend:
                                     arch_keys = {
                                         f"{arch}.context_length": "context_length",
                                         f"{arch}.block_count": "n_layers",
+                                        f"{arch}.expert_count": "n_experts",
+                                        f"{arch}.leading_dense_block_count": "leading_dense_block_count",
                                         f"{arch}.attention.head_count_kv": "n_kv_heads",
                                         f"{arch}.attention.head_count": "n_heads",
                                         f"{arch}.embedding_length": "embedding_length",
@@ -4187,7 +4222,7 @@ class LlamaCppBackend:
         tensor_parallel: bool = False,
         gpu_memory_mode: Literal["auto", "fit", "manual"] = "auto",
         gpu_layers: int = -1,
-        cpu_moe: bool = False,
+        n_cpu_moe: int = 0,
         gpu_ids: Optional[List[int]] = None,
         n_threads: Optional[int] = None,
         n_gpu_layers: Optional[int] = None,  # caller compat, unused
@@ -4223,7 +4258,7 @@ class LlamaCppBackend:
                 tensor_parallel = tensor_parallel,
                 gpu_memory_mode = gpu_memory_mode,
                 gpu_layers = gpu_layers,
-                cpu_moe = cpu_moe,
+                n_cpu_moe = n_cpu_moe,
                 gpu_ids = gpu_ids,
                 chat_template_override = chat_template_override,
                 extra_args = extra_args,
@@ -4419,7 +4454,7 @@ class LlamaCppBackend:
                 # value is the value actually applied.
                 self._gpu_memory_mode = gpu_memory_mode
                 self._gpu_layers = gpu_layers
-                self._cpu_moe = cpu_moe
+                self._n_cpu_moe = n_cpu_moe
                 self._gpu_ids = sorted(gpu_ids) if gpu_ids else None
                 # Tensor mode aborts on a quantized KV cache, so drop it for the
                 # tensor attempt (and strip any inherited/explicit --cache-type
@@ -5180,8 +5215,14 @@ class LlamaCppBackend:
                     # also means _ctx_integrity_flags must not add --fit-ctx.
                     use_fit = False
                     cmd.extend(["--gpu-layers", str(gpu_layers), "--fit", "off"])
-                    if cpu_moe:
-                        cmd.append("--cpu-moe")
+                    # Keep the first n_cpu_moe MoE layers' experts on CPU.
+                    moe_flag = self._resolve_cpu_moe_flag(
+                        n_cpu_moe,
+                        self.n_moe_layers,
+                        self._leading_dense_block_count or 0,
+                    )
+                    if moe_flag is not None:
+                        cmd.extend(["--n-cpu-moe", str(moe_flag)])
                 elif use_fit:
                     cmd.extend(["--fit", "on"])
                 elif gpu_indices is not None:
@@ -6071,7 +6112,7 @@ class LlamaCppBackend:
         tensor_parallel: bool = False,
         gpu_memory_mode: Literal["auto", "fit", "manual"] = "auto",
         gpu_layers: int = -1,
-        cpu_moe: bool = False,
+        n_cpu_moe: int = 0,
         gpu_ids: Optional[List[int]] = None,
         mtp_draft_path: Optional[str] = None,
     ) -> bool:
@@ -6122,7 +6163,7 @@ class LlamaCppBackend:
             return False
         # In manual mode a changed layer count or MoE-offload also reloads.
         if gpu_memory_mode == "manual" and (
-            self._gpu_layers != gpu_layers or self._cpu_moe != cpu_moe
+            self._gpu_layers != gpu_layers or self._n_cpu_moe != n_cpu_moe
         ):
             return False
         # A changed GPU pick must reload (compare order-insensitively; None/[]
@@ -6229,12 +6270,14 @@ class LlamaCppBackend:
             self._tensor_parallel = False
             self._gpu_memory_mode = "auto"
             self._gpu_layers = -1
-            self._cpu_moe = False
+            self._n_cpu_moe = 0
             self._gpu_ids = None
             self._speculative_type = None
             self._requested_spec_mode = None
             self._spec_draft_n_max = None
             self._n_layers = None
+            self._n_experts = None
+            self._leading_dense_block_count = None
             self._n_kv_heads = None
             self._n_kv_heads_by_layer = None
             self._n_heads = None

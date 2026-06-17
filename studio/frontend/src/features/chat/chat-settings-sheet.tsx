@@ -556,10 +556,11 @@ export function ChatSettingsPanel({
   const gpuLayers = useChatRuntimeStore((s) => s.gpuLayers);
   const setGpuLayers = useChatRuntimeStore((s) => s.setGpuLayers);
   const loadedGpuLayers = useChatRuntimeStore((s) => s.loadedGpuLayers);
-  const cpuMoe = useChatRuntimeStore((s) => s.cpuMoe);
-  const setCpuMoe = useChatRuntimeStore((s) => s.setCpuMoe);
-  const loadedCpuMoe = useChatRuntimeStore((s) => s.loadedCpuMoe);
+  const nCpuMoe = useChatRuntimeStore((s) => s.nCpuMoe);
+  const setNCpuMoe = useChatRuntimeStore((s) => s.setNCpuMoe);
+  const loadedNCpuMoe = useChatRuntimeStore((s) => s.loadedNCpuMoe);
   const ggufLayerCount = useChatRuntimeStore((s) => s.ggufLayerCount);
+  const moeLayerCount = useChatRuntimeStore((s) => s.moeLayerCount);
   const selectedGpuIds = useChatRuntimeStore((s) => s.selectedGpuIds);
   const setSelectedGpuIds = useChatRuntimeStore((s) => s.setSelectedGpuIds);
   const loadedGpuIds = useChatRuntimeStore((s) => s.loadedGpuIds);
@@ -593,9 +594,12 @@ export function ChatSettingsPanel({
   const tpDisabled = isAutoFit;
   // Manual gpu-layers ceiling = model layer count (else a safe fallback).
   const gpuLayersMax = ggufLayerCount ?? 256;
+  // MoE-offload slider: shown only for MoE models, capped at their MoE-layer count.
+  const moeLayersMax = moeLayerCount ?? 0;
+  const showMoeSlider = isManual && moeLayersMax > 0;
   const manualDirty =
     isManual &&
-    (gpuLayers !== loadedGpuLayers || cpuMoe !== (loadedCpuMoe ?? false));
+    (gpuLayers !== loadedGpuLayers || nCpuMoe !== (loadedNCpuMoe ?? 0));
   // GPU picker: only meaningful on multi-GPU, and only when the reported
   // indices are physical (relative ordinals from a parent CUDA_VISIBLE_DEVICES
   // mask can't be mapped back to pin a device). null = use all (auto).
@@ -1252,24 +1256,24 @@ export function ChatSettingsPanel({
                         </>
                       }
                     />
-                    <div className="flex items-center justify-between gap-3">
-                      <div className="flex min-w-0 items-center gap-1.5">
-                        <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
-                          Keep MoE on CPU
-                        </span>
-                        <InfoHint>
-                          Move MoE expert tensors to the CPU (--cpu-moe). Saves
-                          VRAM on MoE models at some speed cost; no effect on
-                          dense models.
-                        </InfoHint>
-                      </div>
-                      <Switch
-                        className="panel-switch shrink-0"
-                        checked={cpuMoe}
-                        onCheckedChange={setCpuMoe}
-                        data-test-id="cpu-moe-switch"
+                    {showMoeSlider && (
+                      <ParamSlider
+                        label="MoE Layers on CPU"
+                        value={Math.min(nCpuMoe, moeLayersMax)}
+                        min={0}
+                        max={moeLayersMax}
+                        step={1}
+                        onChange={setNCpuMoe}
+                        valueSize={6}
+                        info={
+                          <>
+                            Keep the experts of this many MoE layers on the CPU
+                            (--n-cpu-moe) to save VRAM. 0 = all experts on the
+                            GPU; at the maximum, all are on the CPU.
+                          </>
+                        }
                       />
-                    </div>
+                    )}
                   </>
                 )}
                 {showGpuPicker && (
@@ -1368,7 +1372,7 @@ export function ChatSettingsPanel({
                     setTensorParallel(loadedTensorParallel ?? false);
                     setGpuMemoryMode(loadedGpuMemoryMode ?? "auto");
                     setGpuLayers(loadedGpuLayers ?? GPU_LAYERS_ALL);
-                    setCpuMoe(loadedCpuMoe ?? false);
+                    setNCpuMoe(loadedNCpuMoe ?? 0);
                     setSelectedGpuIds(loadedGpuIds);
                     setChatTemplateOverride(loadedChatTemplateOverride);
                   }}

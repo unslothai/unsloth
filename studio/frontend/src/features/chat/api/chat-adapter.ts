@@ -1265,7 +1265,7 @@ async function autoLoadSmallestModel(): Promise<{
               // GPU Memory is a standing preference, so honor it on auto-load.
               gpu_memory_mode: rt.gpuMemoryMode,
               gpu_layers: rt.gpuLayers,
-              cpu_moe: rt.cpuMoe,
+              n_cpu_moe: rt.nCpuMoe,
               gpu_ids: rt.selectedGpuIds ?? undefined,
             });
             saveSpeculativeType(specSettings.speculativeType);
@@ -1451,7 +1451,7 @@ async function autoLoadSmallestModel(): Promise<{
         // GPU Memory is a standing preference, so honor it on auto-load.
         gpu_memory_mode: rt.gpuMemoryMode,
         gpu_layers: rt.gpuLayers,
-        cpu_moe: rt.cpuMoe,
+        n_cpu_moe: rt.nCpuMoe,
         gpu_ids: rt.selectedGpuIds ?? undefined,
       });
       saveSpeculativeType(specSettings.speculativeType);

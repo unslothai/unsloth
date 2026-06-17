@@ -420,8 +420,9 @@ export const GPU_LAYERS_ALL = 999;
 export function loadedGpuMemoryFields(resp: {
   gpu_memory_mode?: "auto" | "fit" | "manual";
   gpu_layers?: number;
-  cpu_moe?: boolean;
+  n_cpu_moe?: number;
   n_layers?: number | null;
+  n_moe_layers?: number;
   gpu_ids?: number[] | null;
 }) {
   const mode = resp.gpu_memory_mode ?? "auto";
@@ -430,8 +431,10 @@ export function loadedGpuMemoryFields(resp: {
     gpuMemoryMode: mode,
     loadedGpuMemoryMode: mode,
     loadedGpuLayers: resp.gpu_layers ?? null,
-    loadedCpuMoe: resp.cpu_moe ?? null,
+    loadedNCpuMoe: resp.n_cpu_moe ?? null,
     ggufLayerCount: resp.n_layers ?? null,
+    // MoE expert-layer count: the n_cpu_moe slider max, and 0 hides the slider.
+    moeLayerCount: resp.n_moe_layers ?? null,
     // The picker reflects what loaded (the request sent the user's pick).
     selectedGpuIds: gpuIds,
     loadedGpuIds: gpuIds,
@@ -439,7 +442,7 @@ export function loadedGpuMemoryFields(resp: {
     // user's pending choice for when they switch to Manual.
     ...(mode === "manual" && {
       gpuLayers: resp.gpu_layers ?? GPU_LAYERS_ALL,
-      cpuMoe: resp.cpu_moe ?? false,
+      nCpuMoe: resp.n_cpu_moe ?? 0,
     }),
   };
 }
@@ -587,7 +590,7 @@ type ChatRuntimeStore = {
    * GPU memory strategy for GGUF loads. "auto" = Unsloth picks GPUs and
    * context to fit the model; "fit" = hand memory management to llama.cpp's
    * --fit (no device masking, no context/gpu-layer/tensor-split calc);
-   * "manual" = pin gpuLayers/cpuMoe yourself (--fit off).
+   * "manual" = pin gpuLayers/nCpuMoe yourself (--fit off).
    */
   gpuMemoryMode: "auto" | "fit" | "manual";
   /** Backend-reported gpu memory mode; null until first hydrated. */
@@ -595,11 +598,13 @@ type ChatRuntimeStore = {
   /** Manual mode: layers to offload to GPU (>= model layer count = all). */
   gpuLayers: number;
   loadedGpuLayers: number | null;
-  /** Manual mode: move MoE experts to CPU (--cpu-moe). */
-  cpuMoe: boolean;
-  loadedCpuMoe: boolean | null;
+  /** Manual mode: MoE expert layers to keep on CPU (--n-cpu-moe); 0 = none. */
+  nCpuMoe: number;
+  loadedNCpuMoe: number | null;
   /** Model layer count (GGUF block_count); the manual gpu-layers ceiling. */
   ggufLayerCount: number | null;
+  /** MoE expert-layer count: the nCpuMoe slider max; 0/null hides the slider. */
+  moeLayerCount: number | null;
   /** Picked physical GPU indices (null = use all / automatic). */
   selectedGpuIds: number[] | null;
   loadedGpuIds: number[] | null;
@@ -706,7 +711,7 @@ type ChatRuntimeStore = {
   setTensorParallel: (value: boolean) => void;
   setGpuMemoryMode: (mode: "auto" | "fit" | "manual") => void;
   setGpuLayers: (value: number) => void;
-  setCpuMoe: (value: boolean) => void;
+  setNCpuMoe: (value: number) => void;
   setSelectedGpuIds: (ids: number[] | null) => void;
   setCustomContextLength: (v: number | null) => void;
   setChatTemplateOverride: (template: string | null) => void;
@@ -997,9 +1002,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   loadedGpuMemoryMode: null,
   gpuLayers: GPU_LAYERS_ALL,
   loadedGpuLayers: null,
-  cpuMoe: false,
-  loadedCpuMoe: null,
+  nCpuMoe: 0,
+  loadedNCpuMoe: null,
   ggufLayerCount: null,
+  moeLayerCount: null,
   selectedGpuIds: null,
   loadedGpuIds: null,
   loadedIsMultimodal: false,
@@ -1226,9 +1232,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       loadedGpuMemoryMode: null,
       gpuLayers: GPU_LAYERS_ALL,
       loadedGpuLayers: null,
-      cpuMoe: false,
-      loadedCpuMoe: null,
+      nCpuMoe: 0,
+      loadedNCpuMoe: null,
       ggufLayerCount: null,
+      moeLayerCount: null,
       selectedGpuIds: null,
       loadedGpuIds: null,
       loadedIsMultimodal: false,
@@ -1432,7 +1439,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     set({ gpuMemoryMode });
   },
   setGpuLayers: (gpuLayers) => set({ gpuLayers }),
-  setCpuMoe: (cpuMoe) => set({ cpuMoe }),
+  setNCpuMoe: (nCpuMoe) => set({ nCpuMoe }),
   setSelectedGpuIds: (selectedGpuIds) => set({ selectedGpuIds }),
   setCustomContextLength: (customContextLength) => set({ customContextLength }),
   setChatTemplateOverride: (chatTemplateOverride) =>

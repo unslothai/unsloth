@@ -971,7 +971,7 @@ export function SharedComposer({
           tensor_parallel: currentStore.tensorParallel,
           gpu_memory_mode: currentStore.gpuMemoryMode,
           gpu_layers: currentStore.gpuLayers,
-          cpu_moe: currentStore.cpuMoe,
+          n_cpu_moe: currentStore.nCpuMoe,
           gpu_ids: currentStore.selectedGpuIds ?? undefined,
         });
         saveSpeculativeType(specSettings.speculativeType);

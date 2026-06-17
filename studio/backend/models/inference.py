@@ -103,7 +103,7 @@ class LoadRequest(BaseModel):
             "selects GPUs and caps context to fit VRAM. 'fit': hand memory "
             "management to llama.cpp's --fit -- no device masking, no context "
             "auto-reduce, no gpu-layer/tensor-split planning. 'manual': pin "
-            "gpu_layers and cpu_moe yourself (--fit off); tensor_parallel still "
+            "gpu_layers and n_cpu_moe yourself (--fit off); tensor_parallel still "
             "applies (even split, no planner). Ignored for non-GGUF."
         ),
     )
@@ -116,12 +116,14 @@ class LoadRequest(BaseModel):
             "offloads all of them. Ignored unless gpu_memory_mode is 'manual'."
         ),
     )
-    cpu_moe: bool = Field(
-        False,
+    n_cpu_moe: int = Field(
+        0,
+        ge = 0,
         description = (
-            "Manual mode only: move MoE expert tensors to the CPU (--cpu-moe) "
-            "to save VRAM on MoE models. Ignored unless gpu_memory_mode is "
-            "'manual'."
+            "Manual mode only: keep the first N MoE expert layers on the CPU "
+            "(--n-cpu-moe) to save VRAM on MoE models. 0 = none, N = number of "
+            "MoE layers offloaded (the backend offsets past any leading dense "
+            "layers). Ignored unless gpu_memory_mode is 'manual'."
         ),
     )
     llama_extra_args: Optional[List[str]] = Field(
@@ -276,13 +278,17 @@ class LoadResponse(BaseModel):
         -1,
         description = "Manual mode: requested --gpu-layers value (-1 when not manual).",
     )
-    cpu_moe: bool = Field(
-        False,
-        description = "Manual mode: whether MoE experts are pinned to CPU (--cpu-moe).",
+    n_cpu_moe: int = Field(
+        0,
+        description = "Manual mode: MoE expert layers pinned to CPU (--n-cpu-moe); 0 = none.",
     )
     n_layers: Optional[int] = Field(
         None,
         description = "Model's layer count (GGUF block_count), for the manual gpu-layers ceiling.",
+    )
+    n_moe_layers: int = Field(
+        0,
+        description = "Model's MoE expert-layer count (the n_cpu_moe ceiling); 0 if not an MoE model.",
     )
     gpu_ids: Optional[List[int]] = Field(
         None,
@@ -418,13 +424,17 @@ class InferenceStatusResponse(BaseModel):
         -1,
         description = "Manual mode: requested --gpu-layers value (-1 when not manual).",
     )
-    cpu_moe: bool = Field(
-        False,
-        description = "Manual mode: whether MoE experts are pinned to CPU (--cpu-moe).",
+    n_cpu_moe: int = Field(
+        0,
+        description = "Manual mode: MoE expert layers pinned to CPU (--n-cpu-moe); 0 = none.",
     )
     n_layers: Optional[int] = Field(
         None,
         description = "Model's layer count (GGUF block_count), for the manual gpu-layers ceiling.",
+    )
+    n_moe_layers: int = Field(
+        0,
+        description = "Model's MoE expert-layer count (the n_cpu_moe ceiling); 0 if not an MoE model.",
     )
     gpu_ids: Optional[List[int]] = Field(
         None,
