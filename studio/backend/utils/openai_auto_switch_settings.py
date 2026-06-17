@@ -83,6 +83,7 @@ def set_openai_auto_switch_enabled(value: Any) -> bool:
     if parsed is None:
         raise ValueError("OpenAI auto-switch must be true or false.")
     from storage.studio_db import upsert_app_settings
+
     upsert_app_settings({OPENAI_AUTO_SWITCH_SETTING_KEY: parsed})
     _invalidate(OPENAI_AUTO_SWITCH_SETTING_KEY)
     return parsed
@@ -98,6 +99,7 @@ def set_auto_unload_idle_seconds(value: Any) -> int:
     if parsed is None:
         raise ValueError("Auto-unload idle seconds must be a non-negative integer.")
     from storage.studio_db import upsert_app_settings
+
     upsert_app_settings({AUTO_UNLOAD_IDLE_SETTING_KEY: parsed})
     _invalidate(AUTO_UNLOAD_IDLE_SETTING_KEY)
     return parsed

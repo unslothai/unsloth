@@ -432,6 +432,7 @@ async def lifespan(app: FastAPI):
 
     # Idle auto-unload loop (no-op unless the OpenAI auto-unload TTL is set).
     from core.inference.llama_keepwarm import idle_unload_loop
+
     app.state.idle_unload_task = asyncio.create_task(idle_unload_loop())
 
     # Warm the RAG embedder so the first upload skips the cold load. Non-fatal.

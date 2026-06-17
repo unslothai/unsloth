@@ -68,6 +68,7 @@ class LlamaKeepWarmMiddleware:
             return
         # Track only while the feature is enabled; otherwise pass straight through.
         from utils.openai_auto_switch_settings import get_auto_unload_idle_seconds
+
         if get_auto_unload_idle_seconds() <= 0:
             await self.app(scope, receive, send)
             return
@@ -94,7 +95,6 @@ class LlamaKeepWarmMiddleware:
 async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
     """Unload the loaded GGUF once idle past the configured TTL. Inert when off."""
     from utils.openai_auto_switch_settings import get_auto_unload_idle_seconds
-
     while True:
         await asyncio.sleep(poll_seconds)
         try:
@@ -102,6 +102,7 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
             if ttl <= 0 or not _is_idle(ttl):
                 continue
             from routes.inference import get_llama_cpp_backend
+
             backend = get_llama_cpp_backend()
             # Re-check idle just before unload to shrink the arrival race window.
             if backend.is_loaded and _is_idle(ttl):
