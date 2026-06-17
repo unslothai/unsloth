@@ -307,29 +307,33 @@ class TestLogGpuMemory:
 
 
 class TestCudaDeviceOrder:
-    """Importing the hardware module pins CUDA_DEVICE_ORDER=PCI_BUS_ID so that
-    nvidia-smi indices, torch ordinals, and CUDA_VISIBLE_DEVICES agree on a
-    mixed-GPU host (the GPU-selection ordering bug)."""
+    """Importing the hardware module pins CUDA_DEVICE_ORDER=PCI_BUS_ID when unset,
+    but setdefault keeps an explicit user override, so nvidia-smi indices, torch
+    ordinals, and CUDA_VISIBLE_DEVICES agree on a mixed-GPU host."""
 
-    def test_module_import_sets_pci_bus_id(self):
-        # The module-level setdefault runs on import; by the time any test runs
-        # the var must be present and pinned to PCI_BUS_ID.
-        import os
-        assert os.environ.get("CUDA_DEVICE_ORDER") == "PCI_BUS_ID"
+    @staticmethod
+    def _order_after_fresh_import(preset):
+        # Fresh interpreter so the module-level setdefault runs against a clean env.
+        import os, subprocess, sys
+        from pathlib import Path
+        env = os.environ.copy()
+        env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1]) + os.pathsep + env.get("PYTHONPATH", "")
+        if preset is None:
+            env.pop("CUDA_DEVICE_ORDER", None)
+        else:
+            env["CUDA_DEVICE_ORDER"] = preset
+        out = subprocess.run(
+            [sys.executable, "-c",
+             "import os, utils.hardware.hardware; print(os.environ.get('CUDA_DEVICE_ORDER'))"],
+            env = env, capture_output = True, text = True, check = True,
+        )
+        return out.stdout.strip().splitlines()[-1]
 
-    def test_setdefault_respects_explicit_user_override(self):
-        # Re-running the module's setdefault must not clobber a user value.
-        import os
-        original = os.environ.get("CUDA_DEVICE_ORDER")
-        try:
-            os.environ["CUDA_DEVICE_ORDER"] = "FASTEST_FIRST"
-            os.environ.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
-            assert os.environ["CUDA_DEVICE_ORDER"] == "FASTEST_FIRST"
-        finally:
-            if original is None:
-                os.environ.pop("CUDA_DEVICE_ORDER", None)
-            else:
-                os.environ["CUDA_DEVICE_ORDER"] = original
+    def test_import_pins_pci_bus_id_when_unset(self):
+        assert self._order_after_fresh_import(None) == "PCI_BUS_ID"
+
+    def test_import_respects_explicit_user_override(self):
+        assert self._order_after_fresh_import("FASTEST_FIRST") == "FASTEST_FIRST"
 
 
 # ========== _print_cuda_device_list() ==========
