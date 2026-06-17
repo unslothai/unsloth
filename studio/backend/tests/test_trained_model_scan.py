@@ -146,13 +146,21 @@ def test_lora_identifier_retries_transient_then_resolves(tmp_path: Path):
     assert calls["n"] == 2  # retried once
 
 
-def test_lora_identifier_persistent_transient_returns_none(capsys):
+def test_lora_identifier_persistent_transient_returns_none():
     # Both attempts hit a transient error -> None, and it is logged at WARNING (a
     # missed base would be scanned by neither gate) rather than silently at debug.
-    with patch("huggingface_hub.hf_hub_download", side_effect = RuntimeError("down")):
+    # Assert on the logger directly so it is robust to the logging backend (the
+    # real structlog vs this module's stub, which varies with collection order).
+    from utils.models import model_config as _mc
+
+    with (
+        patch("huggingface_hub.hf_hub_download", side_effect = RuntimeError("down")),
+        patch.object(_mc.logger, "warning") as mock_warn,
+    ):
         assert get_base_model_from_lora_identifier("someone/remote-lora") is None
-    out = capsys.readouterr()
-    assert "Could not resolve remote LoRA base" in (out.out + out.err)
+    assert any(
+        "Could not resolve remote LoRA base" in str(c.args[0]) for c in mock_warn.call_args_list
+    )
 
 
 @patch("utils.models.model_config.is_audio_input_type", return_value = False)
