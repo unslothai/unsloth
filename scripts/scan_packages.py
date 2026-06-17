@@ -2154,8 +2154,10 @@ def find_safe_version(
         scan_dir = os.path.join(tmpdir, f"{name}_{ver}")
         os.makedirs(scan_dir, exist_ok = True)
 
-        downloaded, _ = download_packages([spec], scan_dir)
+        downloaded, download_errors = download_packages([spec], scan_dir)
         if not downloaded:
+            for err in download_errors:
+                print(f"    [WARN] {err}", file = sys.stderr)
             continue
 
         clean = True
