@@ -4561,7 +4561,9 @@ class LlamaCppBackend:
                         per_device_tensor = False,
                     )
                     if _compute_buffer_pipeline <= 0:
-                        _compute_buffer_pipeline = self._TENSOR_PARALLEL_BUFFER_RESERVE_MIB * 1024 * 1024
+                        _compute_buffer_pipeline = (
+                            self._TENSOR_PARALLEL_BUFFER_RESERVE_MIB * 1024 * 1024
+                        )
                     model_size_fit = model_size + _compute_buffer_pipeline
 
                     # Layer split adds a fixed per-device overhead on every GPU. The

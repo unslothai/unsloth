@@ -642,11 +642,19 @@ def test_plan_tensor_carries_unsized_mtp_flat_reserve():
     model = int(8 * _GB)
     weights_only = lambda c: 3 * _GB  # noqa: E731 -- constant drafter weights, no KV term
     ctx_no_flat, *_ = b._plan_tensor_parallel(
-        gpus, model, 131072, mtp_engaged = True, mtp_overhead_fn = weights_only,
+        gpus,
+        model,
+        131072,
+        mtp_engaged = True,
+        mtp_overhead_fn = weights_only,
         mtp_flat_reserve_bytes = 0,
     )
     ctx_flat, *_ = b._plan_tensor_parallel(
-        gpus, model, 131072, mtp_engaged = True, mtp_overhead_fn = weights_only,
+        gpus,
+        model,
+        131072,
+        mtp_engaged = True,
+        mtp_overhead_fn = weights_only,
         mtp_flat_reserve_bytes = 2 * _GB,
     )
     assert 0 < ctx_flat < ctx_no_flat

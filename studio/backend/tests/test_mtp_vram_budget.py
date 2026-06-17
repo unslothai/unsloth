@@ -542,7 +542,9 @@ class TestExtraArgsMtpDetection:
         # suppressed when there is no embedded head (Finding G5).
         compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
         # env-aware: also honors the inherited LLAMA_ARG_N_GPU_LAYERS_DRAFT.
-        assert "_draft_on_cpu=_extra_args_draft_offloaded_to_cpu(extra_args,env=os.environ)" in compact
+        assert (
+            "_draft_on_cpu=_extra_args_draft_offloaded_to_cpu(extra_args,env=os.environ)" in compact
+        )
         assert "if_draft_on_cpu:_mtp_draft_for_budget=None" in compact
         # flat reserve suppressed only for a CPU drafter with no embedded head
         assert "_draft_cpu_no_embedded=_draft_on_cpuandnotself._nextn_predict_layers" in compact
@@ -828,7 +830,9 @@ class TestExtraArgsMtpDetection:
         # layer buffer), not fold 0, or it under-reserves at high --parallel.
         compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
         assert "if_compute_buffer_pipeline<=0:" in compact
-        assert "_compute_buffer_pipeline=self._TENSOR_PARALLEL_BUFFER_RESERVE_MIB*1024*1024" in compact
+        assert (
+            "_compute_buffer_pipeline=self._TENSOR_PARALLEL_BUFFER_RESERVE_MIB*1024*1024" in compact
+        )
 
     def test_load_model_passes_unsized_mtp_reserve_to_tensor_planner(self):
         # review run3 #1/#5: a weights-only (KV-unsized) MTP reserve must flow into
