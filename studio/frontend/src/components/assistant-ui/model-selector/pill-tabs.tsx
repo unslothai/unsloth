@@ -58,12 +58,27 @@ export function PillTabs({
           className="hub-tab-toggle-pill pointer-events-none absolute inset-y-0 left-0 rounded-full transition-transform duration-200 ease-out"
         />
       )}
-      {tabs.map((tab) => (
+      {tabs.map((tab, index) => (
         <button
           key={tab.value}
           type="button"
           role="tab"
           aria-selected={value === tab.value}
+          // Roving tabindex: only the active tab is in the tab order; Arrow
+          // Left/Right move between tabs (WAI-ARIA tablist pattern). ArrowDown
+          // is left to bubble so the picker's "enter the list" handler still runs.
+          tabIndex={value === tab.value ? 0 : -1}
+          onKeyDown={(e) => {
+            if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
+            e.preventDefault();
+            const next =
+              (index + (e.key === "ArrowRight" ? 1 : -1) + tabs.length) %
+              tabs.length;
+            onValueChange(tabs[next].value);
+            e.currentTarget.parentElement
+              ?.querySelectorAll<HTMLElement>('button[role="tab"]')
+              [next]?.focus();
+          }}
           onClick={() => onValueChange(tab.value)}
           className={cn(
             "relative z-10 inline-flex items-center justify-center gap-1 rounded-full transition-colors",

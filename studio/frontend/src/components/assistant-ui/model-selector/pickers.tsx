@@ -887,6 +887,14 @@ export function HubModelPicker({
   const debouncedQuery = useDebouncedValue(query);
   const { results, isLoading, isLoadingMore, fetchMore } =
     useHfModelSearch(debouncedQuery);
+  // Recommended section: a live unsloth listing sorted by the dropdown.
+  // Declared here (not lower) so its GGUF hints feed the gguf-id set below.
+  const [recommendedSort, setRecommendedSort] =
+    useState<RecommendedSortKey>("trendingScore");
+  // "recommended" surfaces the most recently created Unsloth repos.
+  const recommendedHfSort: HfModelSort =
+    recommendedSort === "recommended" ? "createdAt" : recommendedSort;
+  const recommendedSearch = useHfModelSearch("", { sort: recommendedHfSort });
 
   // Lowercased repo ids confirmed GGUF by the store or HF search.
   // Absence means "no hint" -> hasGgufSuffix is the fallback (don't
@@ -899,13 +907,15 @@ export function HubModelPicker({
     }
     return ids;
   }, [models]);
+  // Both listings contribute GGUF hints so a tag-only GGUF (no "-GGUF" suffix)
+  // in Recommended still expands variants instead of loading as a checkpoint.
   const resultGgufIds = useMemo(() => {
     const ids = new Set<string>();
-    for (const result of results) {
+    for (const result of [...results, ...recommendedSearch.results]) {
       if (result.isGguf) ids.add(result.id.toLowerCase());
     }
     return ids;
-  }, [results]);
+  }, [results, recommendedSearch.results]);
   const isKnownGgufRepo = useCallback(
     (id: string): boolean => {
       const key = id.toLowerCase();
@@ -1098,13 +1108,6 @@ export function HubModelPicker({
 
   const showHfSection = debouncedQuery.trim().length > 0;
 
-  // Recommended section: a live unsloth listing sorted by the dropdown.
-  const [recommendedSort, setRecommendedSort] =
-    useState<RecommendedSortKey>("trendingScore");
-  // "recommended" surfaces the most recently created Unsloth repos.
-  const recommendedHfSort: HfModelSort =
-    recommendedSort === "recommended" ? "createdAt" : recommendedSort;
-  const recommendedSearch = useHfModelSearch("", { sort: recommendedHfSort });
   // Independent sort for each local section's inline dropdown.
   const [downloadedSort, setDownloadedSort] = useState<LocalSortKey>("recent");
   const [customSort, setCustomSort] = useState<LocalSortKey>("recent");
@@ -1122,6 +1125,10 @@ export function HubModelPicker({
       rows = rows.filter((r) =>
         matchesFormatFilter(r.id, r.isGguf, formatFilter),
       );
+    }
+    // Chat-only Studio runs GGUF/MLX only; never list raw checkpoints in any sort.
+    if (chatOnly) {
+      rows = rows.filter((r) => isRunnableRecommendedFormat(r.id, r.isGguf));
     }
     if (recommendedSort !== "recommended") return rows;
     return rows.filter((r) => {
@@ -1146,7 +1153,7 @@ export function HubModelPicker({
         requireKnown: true,
       });
     });
-  }, [recommendedSearch.results, downloadedSet, recommendedSort, formatFilter, gpu]);
+  }, [recommendedSearch.results, downloadedSet, recommendedSort, formatFilter, chatOnly, gpu]);
 
   // Per-row meta + VRAM badge from the recommended listing's own metadata.
   const recommendedMeta = useMemo(() => {
