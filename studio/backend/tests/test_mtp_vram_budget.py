@@ -77,6 +77,7 @@ from core.inference.llama_cpp import (  # noqa: E402
     _effective_tensor_parallel,
     _env_main_cache_type_for_budget,
     _env_split_mode_is_tensor,
+    _extra_args_main_cache_type_for_budget,
     _kv_bytes_per_elem,
     _tensor_parallel_matches_loaded,
 )
@@ -754,12 +755,12 @@ class TestExtraArgsMtpDetection:
         assert _env_main_cache_type_for_budget(env = {"LLAMA_ARG_CACHE_TYPE_K": "wat"}) is None
 
     def test_load_model_adopts_env_main_cache_type(self):
-        # Source-level: load_model adopts the env main KV type only when neither
-        # param nor extras set it (cache_type_kv is None after resolve), so the
-        # reserve covers a child that inherits a heavier LLAMA_ARG_CACHE_TYPE_*.
-        # Whitespace-stripped so the check survives any formatter line-wrapping.
+        # Source-level: load_model budgets the heavier of asymmetric --cache-type
+        # extras, then (only when neither param nor extras set it) adopts the env
+        # main KV type, so the reserve covers a child that inherits a heavier
+        # LLAMA_ARG_CACHE_TYPE_*. Whitespace-stripped to survive formatter wraps.
         compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
-        assert "cache_type_kv=resolve_cache_type_kv(extra_args,cache_type_kv)" in compact
+        assert "_extra_args_main_cache_type_for_budget(extra_args)" in compact
         assert "ifcache_type_kvisNone:" in compact
         assert "cache_type_kv=_env_main_cache_type_for_budget()" in compact
 
@@ -827,6 +828,24 @@ class TestExtraArgsMtpDetection:
             "_tensor_parallel_matches_loaded(effective_extra,"
             "request.tensor_parallel,llama_backend.tensor_parallel)" in body
         )
+
+    def test_extra_args_main_cache_type_heavier_axis(self):
+        # Asymmetric --cache-type-k/-v must budget the heavier axis (extras win
+        # per axis at launch), not the last-wins single type that under-reserves.
+        H = _extra_args_main_cache_type_for_budget
+        assert H(["--cache-type-k", "f32", "--cache-type-v", "f16"]) == "f32"
+        assert H(["--cache-type-v", "f16", "--cache-type-k", "f32"]) == "f32"  # order-free
+        assert H(["--cache-type-k=f32", "--cache-type-v=f16"]) == "f32"  # = form
+        assert H(["-ctk", "q4_0", "-ctv", "q8_0"]) == "q8_0"  # heavier quant
+        assert H(["--cache-type-k", "q8_0"]) == "q8_0"  # single axis honored as-is
+        assert H(["-c", "4096"]) is None  # no cache flags
+        assert H(None) is None
+
+    def test_load_model_budgets_heavier_asymmetric_cache_axis(self):
+        # load_model must reserve from the heavier of asymmetric cache extras, or
+        # an f32 K against an f16 budget over-advertises context and can OOM.
+        load = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
+        assert "_extra_args_main_cache_type_for_budget(extra_args)" in load
 
     def test_load_model_adopts_env_tensor_split_mode(self):
         # load_model delegates the tensor decision to _effective_tensor_parallel,

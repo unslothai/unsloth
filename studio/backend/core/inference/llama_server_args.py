@@ -125,7 +125,9 @@ def is_managed_flag(flag: str) -> bool:
 # from inherited extras so they can't last-wins-override an Apply that
 # re-sets the same field.
 _CONTEXT_FLAGS: frozenset[str] = frozenset({"-c", "--ctx-size"})
-_CACHE_FLAGS: frozenset[str] = frozenset({"-ctk", "--cache-type-k", "-ctv", "--cache-type-v"})
+_CACHE_TYPE_K_FLAGS: frozenset[str] = frozenset({"-ctk", "--cache-type-k"})
+_CACHE_TYPE_V_FLAGS: frozenset[str] = frozenset({"-ctv", "--cache-type-v"})
+_CACHE_FLAGS: frozenset[str] = _CACHE_TYPE_K_FLAGS | _CACHE_TYPE_V_FLAGS
 _SPEC_FLAGS: frozenset[str] = frozenset(
     {
         "--spec-default",
@@ -273,6 +275,20 @@ def parse_cache_override(args: Optional[Iterable[str]]) -> Optional[str]:
     Studio's KV estimate has a single cache_type_kv knob.
     """
     return _last_flag_value(args, _CACHE_FLAGS)
+
+
+def parse_cache_override_per_axis(
+    args: Optional[Iterable[str]],
+) -> tuple[Optional[str], Optional[str]]:
+    """Last-wins --cache-type-k / --cache-type-v values kept apart, as (k, v).
+
+    parse_cache_override collapses both axes to one last-wins value; this keeps
+    them separate so an asymmetric K/V can be budgeted by its heavier axis.
+    """
+    return (
+        _last_flag_value(args, _CACHE_TYPE_K_FLAGS),
+        _last_flag_value(args, _CACHE_TYPE_V_FLAGS),
+    )
 
 
 def resolve_cache_type_kv(

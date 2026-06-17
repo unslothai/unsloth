@@ -24,6 +24,7 @@ _lsa = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_lsa)
 is_managed_flag = _lsa.is_managed_flag
 parse_cache_override = _lsa.parse_cache_override
+parse_cache_override_per_axis = _lsa.parse_cache_override_per_axis
 parse_ctx_override = _lsa.parse_ctx_override
 parse_split_mode_override = _lsa.parse_split_mode_override
 resolve_cache_type_kv = _lsa.resolve_cache_type_kv
@@ -465,6 +466,25 @@ def test_parse_cache_override(args, expected):
 def test_parse_cache_override_rejects_malformed_values(args):
     with pytest.raises(ValueError, match = "cache-type|'-ctk'"):
         parse_cache_override(args)
+
+
+@pytest.mark.parametrize(
+    "args, expected",
+    [
+        (["--cache-type-k", "f32", "--cache-type-v", "f16"], ("f32", "f16")),
+        (["-ctk", "q8_0", "-ctv", "q4_0"], ("q8_0", "q4_0")),
+        (["--cache-type-k=f32"], ("f32", None)),
+        (["--cache-type-v", "f16"], (None, "f16")),
+        (["-c", "4096"], (None, None)),
+        (None, (None, None)),
+        # Last-wins is kept per axis.
+        (["-ctk", "f16", "-ctk", "f32"], ("f32", None)),
+    ],
+)
+def test_parse_cache_override_per_axis(args, expected):
+    # Unlike parse_cache_override (collapses both axes to one last-wins value),
+    # this keeps K and V apart so an asymmetric cache can be budgeted per axis.
+    assert parse_cache_override_per_axis(args) == expected
 
 
 def test_resolve_cache_type_kv_uses_override_when_present():

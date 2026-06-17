@@ -33,6 +33,7 @@ from core.inference.llama_server_args import (
     _tensor_parallel_matches_loaded,
     extra_args_disable_mmproj,
     parse_cache_override,
+    parse_cache_override_per_axis,
     parse_ctx_override,
     parse_split_mode_override,
     resolve_cache_type_kv,
@@ -675,6 +676,21 @@ def _env_main_cache_type_for_budget(env: Optional[Mapping[str, str]] = None) -> 
         if bpe > heaviest_bpe:
             heaviest, heaviest_bpe = raw, bpe
     return heaviest
+
+
+def _extra_args_main_cache_type_for_budget(
+    extra_args: Optional[Iterable[str]],
+) -> Optional[str]:
+    """Heavier (max bytes/elem) of the explicit --cache-type-k/-v extras, or None.
+
+    Extras are appended last and win per axis, so an asymmetric K=f32,V=f16 must be
+    budgeted by its heavier axis. resolve_cache_type_kv returns only the last-wins
+    single type, which under-reserves the heavier axis when the lighter one is last."""
+    k, v = parse_cache_override_per_axis(extra_args)
+    candidates = [c for c in (k, v) if c]
+    if not candidates:
+        return None
+    return max(candidates, key = _kv_bytes_per_elem)
 
 
 def _auto_mode_drops_mtp(
@@ -4257,7 +4273,13 @@ class LlamaCppBackend:
                 ctx_override = parse_ctx_override(extra_args)
                 requested_ctx = resolve_requested_ctx(extra_args, n_ctx)
                 cache_override = parse_cache_override(extra_args)
-                cache_type_kv = resolve_cache_type_kv(extra_args, cache_type_kv)
+                # Budget the heavier of asymmetric --cache-type-k/-v extras (they
+                # win per axis at launch, appended last); resolve_cache_type_kv only
+                # returns the last-wins type, which under-reserves the heavier axis.
+                # The user's extras still set the real (possibly asymmetric) child
+                # cache, so this only affects the reserve, not the emitted command.
+                _extras_cache = _extra_args_main_cache_type_for_budget(extra_args)
+                cache_type_kv = _extras_cache if _extras_cache is not None else cache_type_kv
                 _cache_type_from_env = False
                 if cache_type_kv is None:
                     # Param/extras set nothing, so the child inherits
@@ -4313,7 +4335,11 @@ class LlamaCppBackend:
                 if ctx_override is not None and ctx_override > 0:
                     logger.info(f"User --ctx-size {ctx_override} honored; skipping auto-reduce")
                 if cache_override is not None:
-                    logger.info(f"User --cache-type-k/-v {cache_override} honored for KV estimate")
+                    _ck, _cv = parse_cache_override_per_axis(extra_args)
+                    logger.info(
+                        f"User --cache-type-k/-v (k={_ck}, v={_cv}) honored; "
+                        "KV estimate budgets the heavier axis"
+                    )
                 if split_mode_override is not None:
                     logger.info(
                         f"User --split-mode {split_mode_override} honored; "
