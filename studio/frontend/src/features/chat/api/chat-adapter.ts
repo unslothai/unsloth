@@ -45,6 +45,7 @@ import {
   saveSpeculativeType,
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
+import { resolveFitMaxSeqLength } from "../presets/preset-policy";
 import { useExternalProvidersStore } from "../stores/external-providers-store";
 import { isMultimodalResponse } from "../types/api";
 import type {
@@ -1256,7 +1257,11 @@ async function autoLoadSmallestModel(): Promise<{
             const loadResp = await loadModel({
               model_path: repo.repo_id,
               hf_token: hfToken,
-              max_seq_length: 0,
+              max_seq_length: resolveFitMaxSeqLength(
+                rt.gpuMemoryMode,
+                rt.customContextLength,
+                0,
+              ),
               load_in_4bit: true,
               is_lora: false,
               gguf_variant: variant.quant,
@@ -1443,7 +1448,11 @@ async function autoLoadSmallestModel(): Promise<{
       const loadResp = await loadModel({
         model_path: "unsloth/Qwen3.5-4B-MTP-GGUF",
         hf_token: hfToken,
-        max_seq_length: 0,
+        max_seq_length: resolveFitMaxSeqLength(
+          rt.gpuMemoryMode,
+          rt.customContextLength,
+          0,
+        ),
         load_in_4bit: true,
         is_lora: false,
         gguf_variant: "UD-Q4_K_XL",

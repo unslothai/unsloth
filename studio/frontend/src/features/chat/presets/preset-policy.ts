@@ -336,3 +336,19 @@ export function resolveLoadMaxSeqLength({
   }
   return maxSeqLength;
 }
+
+/**
+ * Adjust a resolved max-seq-length for the GPU Memory mode. In "fit" mode
+ * llama.cpp's --fit owns context sizing, so send 0 (the backend omits -c)
+ * unless the user pinned a length, which --fit then optimizes gpu-layers
+ * around. Other modes pass the already-resolved fallback through unchanged.
+ * Shared by every GGUF load path so they can't drift.
+ */
+export function resolveFitMaxSeqLength(
+  gpuMemoryMode: "auto" | "fit" | "manual",
+  customContextLength: number | null,
+  fallback: number,
+): number {
+  if (gpuMemoryMode !== "fit") return fallback;
+  return customContextLength && customContextLength > 0 ? customContextLength : 0;
+}

@@ -64,6 +64,7 @@ import { KnowledgeBaseComposerButton } from "@/features/rag/components/knowledge
 import { NewProjectDialog } from "./components/new-project-dialog";
 import { useChatProjects } from "./hooks/use-chat-projects";
 import { loadModel, validateModel } from "./api/chat-api";
+import { resolveFitMaxSeqLength } from "./presets/preset-policy";
 import {
   parseExternalModelId,
   providerTypeSupportsVision,
@@ -958,9 +959,11 @@ export function SharedComposer({
         const resp = await loadModel({
           model_path: sel.id,
           hf_token: useChatRuntimeStore.getState().hfToken || null,
-          // Auto-fit owns context sizing; send 0 so the backend omits -c.
-          max_seq_length:
-            currentStore.gpuMemoryMode === "fit" ? 0 : maxSeqLength,
+          max_seq_length: resolveFitMaxSeqLength(
+            currentStore.gpuMemoryMode,
+            currentStore.customContextLength,
+            maxSeqLength,
+          ),
           load_in_4bit: true,
           is_lora: sel.isLora,
           gguf_variant: sel.ggufVariant ?? null,

@@ -97,7 +97,8 @@ export function useGpuInfo(): GpuInfo {
     cachedSystem ? toGpuInfo(cachedSystem) : DEFAULT_GPU,
   );
   useEffect(() => {
-    if (cachedSystem) return;
+    // No early return on cachedSystem: a consumer mounting as the cache fills
+    // (between render and effect) would otherwise stay stuck at the default.
     let cancelled = false;
     fetchSystemOnce().then((d) => {
       if (!cancelled) setGpu(toGpuInfo(d));
@@ -115,7 +116,8 @@ export function useGpuDevices(): SystemGpuDevice[] {
     cachedSystem ? toGpuDevices(cachedSystem) : [],
   );
   useEffect(() => {
-    if (cachedSystem) return;
+    // No early return on cachedSystem: a consumer mounting as the cache fills
+    // (between render and effect) would otherwise stay stuck at the default.
     let cancelled = false;
     fetchSystemOnce().then((d) => {
       if (!cancelled) setDevices(toGpuDevices(d));

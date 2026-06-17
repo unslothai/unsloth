@@ -40,6 +40,7 @@ import {
 } from "../lib/apply-inference-status-to-store";
 import {
   mergeBackendRecommendedInference,
+  resolveFitMaxSeqLength,
   resolveLoadMaxSeqLength,
 } from "../presets/preset-policy";
 import {
@@ -578,15 +579,11 @@ export function useChatModelRuntime() {
               maxSeqLength,
               presetSource: activePresetSource,
             });
-            // In auto-fit mode llama.cpp's --fit owns context sizing: send 0
-            // (the backend omits -c so --fit sizes it) unless the user pinned
-            // an explicit length, which --fit then optimizes gpu-layers around.
-            const loadMaxSeqLength =
-              gpuMemoryMode === "fit"
-                ? customContextLength && customContextLength > 0
-                  ? customContextLength
-                  : 0
-                : effectiveMaxSeqLength;
+            const loadMaxSeqLength = resolveFitMaxSeqLength(
+              gpuMemoryMode,
+              customContextLength,
+              effectiveMaxSeqLength,
+            );
             const effectiveChatTemplateOverride =
               chatTemplateOverride?.trim() ? chatTemplateOverride : null;
             const loadResponse = await loadModel({
