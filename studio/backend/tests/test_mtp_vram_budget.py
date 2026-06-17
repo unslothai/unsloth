@@ -807,9 +807,10 @@ class TestExtraArgsMtpDetection:
         assert _tensor_parallel_matches_loaded(None, True, False, env = {}) is False
         assert _tensor_parallel_matches_loaded(None, True, True, env = {}) is True
         # An explicit non-tensor --split-mode beats the env (no flip).
-        assert _tensor_parallel_matches_loaded(
-            ["--split-mode", "layer"], False, True, env = tensor_env
-        ) is False
+        assert (
+            _tensor_parallel_matches_loaded(["--split-mode", "layer"], False, True, env = tensor_env)
+            is False
+        )
 
     def test_route_matcher_uses_tensor_parallel_matches_loaded(self):
         # Fix: the route duplicate-load matcher must use the downgrade-aware

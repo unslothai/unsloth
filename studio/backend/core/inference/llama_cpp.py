@@ -5826,9 +5826,7 @@ class LlamaCppBackend:
         # launched tensor: if load_model downgraded to layer split it scrubbed
         # the child env, so the env must not force an endless reload of a healthy
         # server. An identical request would downgrade the same way.
-        if not _tensor_parallel_matches_loaded(
-            extra_args, tensor_parallel, self._tensor_parallel
-        ):
+        if not _tensor_parallel_matches_loaded(extra_args, tensor_parallel, self._tensor_parallel):
             return False
 
         # Compare on the canonical requested mode. With --spec-type in
