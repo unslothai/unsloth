@@ -913,9 +913,11 @@ export function ModelsPage() {
   // first available model so the detail pane is never empty.
   useEffect(() => {
     if (allModelsView !== "split" || urlModel) return;
+    // Use the filtered rows the master pane renders, not raw inventory, so the
+    // preview never lands on a row hidden by the active format filter.
     const firstId = isDiscoverTab
       ? listRows[0]?.id
-      : (effectiveCachedRows[0]?.id ?? effectiveLocalRows[0]?.id);
+      : (filteredCachedRows[0]?.id ?? filteredLocalRows[0]?.id);
     if (!firstId) return;
     setSelected(firstId);
     void navigate({
@@ -928,8 +930,8 @@ export function ModelsPage() {
     urlModel,
     isDiscoverTab,
     listRows,
-    effectiveCachedRows,
-    effectiveLocalRows,
+    filteredCachedRows,
+    filteredLocalRows,
     setSelected,
     navigate,
   ]);
