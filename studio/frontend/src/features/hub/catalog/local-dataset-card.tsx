@@ -47,7 +47,7 @@ export function LocalDatasetCard({
             className="ml-1 mr-0 h-5 w-px shrink-0 bg-foreground/[0.06] opacity-100 transition-opacity duration-150 group-hover/dl:opacity-0 dark:bg-white/[0.04]"
           />
         )}
-        {/* Train CTA hidden until Hub->train picker ships. */}
+        {/* Train CTA hidden until Hub→train picker ships. */}
         {onTrain && HUB_POST_DOWNLOAD_ACTIONS_VISIBLE && (
           <button
             type="button"

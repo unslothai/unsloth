@@ -2231,6 +2231,9 @@ class UnslothTrainer:
         for dataset_file in file_paths:
             if os.path.isabs(dataset_file):
                 file_path = dataset_file
+            elif os.path.exists(dataset_file):
+                # A path relative to the current working directory (CLI usage)
+                file_path = os.path.abspath(dataset_file)
             else:
                 file_path = str(resolve_dataset_path(dataset_file))
 
