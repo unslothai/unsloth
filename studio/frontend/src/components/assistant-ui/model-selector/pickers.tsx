@@ -1626,14 +1626,15 @@ export function HubModelPicker({
 
   // Sort dropdown shown inline to the right of the section toggle. Options
   // depend on the tab; hidden while searching (sorting doesn't apply to search
-  // results). Sizes to its label (so "Recommended" never truncates) with a
-  // shared min width so short labels stay aligned with the format dropdown.
+  // results). Sizes to its label with a shared min width; text-xs matches the
+  // Search Hub button. Clips (no ellipsis) so a long label shows as many
+  // letters as fit.
   const sortTriggerClassName =
-    "w-fit min-w-[88px] max-w-[148px] shrink-0 justify-between pr-2.5 !border-0";
+    "w-fit min-w-[80px] max-w-[150px] shrink-0 justify-between pr-2.5 !border-0 text-xs [&>span]:!text-clip";
   // Tighter menu like the Projects activity Select: less padding on the
-  // container (left/right/top) and rows. Scoped here, not the Hub default.
+  // container (left/right/top) and rows, text-xs to match the trigger.
   const sortMenuContentClassName =
-    "!p-1 !rounded-[14px] [&_[role=option]]:!px-2 [&_[role=option]]:!py-1.5";
+    "!p-1 !rounded-[14px] [&_[role=option]]:!px-2 [&_[role=option]]:!py-1.5 [&_[role=option]]:!text-xs";
   const sectionSortDropdown = showHfSection ? null : section === "recommended" ? (
     <HubOptionMenu
       value={recommendedSort}
