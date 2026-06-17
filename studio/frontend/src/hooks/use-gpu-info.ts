@@ -15,6 +15,12 @@ export interface SystemGpuDevice {
   index: number;
   name: string;
   memoryTotalGb: number;
+  /**
+   * "physical" = `index` is a stable physical/PCI id safe to pin via gpu_ids;
+   * "relative" = an ordinal into a parent CUDA_VISIBLE_DEVICES mask, which the
+   * backend can't map back, so the picker must not offer it.
+   */
+  physicalIndex: boolean;
 }
 
 const DEFAULT_GPU: GpuInfo = {
@@ -27,7 +33,12 @@ const DEFAULT_GPU: GpuInfo = {
 interface SystemPayload {
   gpu?: {
     available?: boolean;
-    devices?: Array<{ index?: number; name?: string; memory_total_gb?: number }>;
+    devices?: Array<{
+      index?: number;
+      name?: string;
+      memory_total_gb?: number;
+      index_kind?: string;
+    }>;
   };
   memory?: { available_gb?: number };
 }
@@ -73,6 +84,7 @@ function toGpuDevices(data: SystemPayload | null): SystemGpuDevice[] {
       index: d.index as number,
       name: d.name ?? `GPU ${d.index}`,
       memoryTotalGb: d.memory_total_gb ?? 0,
+      physicalIndex: d.index_kind === "physical",
     }));
 }
 

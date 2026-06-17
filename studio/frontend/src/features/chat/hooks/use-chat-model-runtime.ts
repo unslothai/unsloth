@@ -24,6 +24,7 @@ import {
 } from "../api/chat-api";
 import { formatEta, formatRate } from "../utils/format-transfer";
 import {
+  GPU_LAYERS_ALL,
   loadedGpuMemoryFields,
   readPersistedSpeculativeType,
   resolveToolsEnabledOnLoad,
@@ -509,6 +510,11 @@ export function useChatModelRuntime() {
                 loadedSpeculativeType: persistedSpeculativeType,
                 specDraftNMax: null,
                 loadedSpecDraftNMax: null,
+                // Per-model GPU knobs must not follow onto a different model
+                // (gpuMemoryMode is a standing preference and is kept).
+                selectedGpuIds: null,
+                gpuLayers: GPU_LAYERS_ALL,
+                cpuMoe: false,
               });
             }
 

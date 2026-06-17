@@ -159,6 +159,7 @@ export interface LoadModelResponse {
   gpu_layers?: number;
   cpu_moe?: boolean;
   n_layers?: number | null;
+  gpu_ids?: number[] | null;
 }
 
 export interface UnloadModelRequest {

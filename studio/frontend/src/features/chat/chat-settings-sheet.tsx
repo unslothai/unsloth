@@ -596,8 +596,13 @@ export function ChatSettingsPanel({
   const manualDirty =
     isManual &&
     (gpuLayers !== loadedGpuLayers || cpuMoe !== (loadedCpuMoe ?? false));
-  // GPU picker: only meaningful on multi-GPU. null = use all (auto).
-  const showGpuPicker = isGguf && gpuDevices.length > 1;
+  // GPU picker: only meaningful on multi-GPU, and only when the reported
+  // indices are physical (relative ordinals from a parent CUDA_VISIBLE_DEVICES
+  // mask can't be mapped back to pin a device). null = use all (auto).
+  const showGpuPicker =
+    isGguf &&
+    gpuDevices.length > 1 &&
+    gpuDevices.every((d) => d.physicalIndex);
   const isGpuChecked = (index: number) =>
     selectedGpuIds === null || selectedGpuIds.includes(index);
   const toggleGpu = (index: number) => {
