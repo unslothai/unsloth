@@ -36,6 +36,7 @@ _HERMES_ENV_KEY = "UNSLOTH_API_KEY"
 _HERMES_PROVIDER = "unsloth"
 _PROVIDER_HEADER = f"[model_providers.{_CODEX_PROFILE}]"
 _PASSTHROUGH = {"allow_extra_args": True, "ignore_unknown_options": True}
+_CLAUDE_ENV_UNSET = ("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN")
 
 # Shared by every agent command; only the config/env/command differ.
 _MODEL_OPTION = typer.Option(
@@ -391,27 +392,59 @@ def write_codex_config(base: str, model: dict) -> None:
         typer.echo(f"Updated {profile}")
 
 
-def _print_env(env: dict, command: list) -> None:
+def _wsl_windows_executable(command: list) -> Optional[str]:
+    if os.name == "nt" or not os.environ.get("WSL_DISTRO_NAME"):
+        return None
+    executable = shutil.which(command[0])
+    if executable and executable.startswith("/mnt/"):
+        return executable
+    return None
+
+
+def _merge_wslenv(current: str, names: tuple) -> str:
+    entries = [entry for entry in current.split(":") if entry]
+    existing = {entry.split("/", 1)[0] for entry in entries}
+    entries.extend(name for name in names if name not in existing)
+    return ":".join(entries)
+
+
+def _print_env(env: dict, command: list, unset_env: tuple = (), wsl_env_bridge: tuple = ()) -> None:
     if os.name == "nt":
+        for name in unset_env:
+            typer.echo(f"Remove-Item Env:{name} -ErrorAction SilentlyContinue")
         for name, value in env.items():
             # PowerShell: ` is the escape char, and $ triggers expansion inside "".
             escaped = value.replace("`", "``").replace('"', '`"').replace("$", "`$")
             typer.echo(f'$env:{name} = "{escaped}"')
         typer.echo(subprocess.list2cmdline(command))
         return
+    for name in unset_env:
+        typer.echo(f"export {name}=" if wsl_env_bridge else f"unset {name}")
     for name, value in env.items():
         typer.echo(f"export {name}={shlex.quote(value)}")
+    if wsl_env_bridge:
+        typer.echo(f"export WSLENV={shlex.quote(_merge_wslenv(os.environ.get('WSLENV', ''), wsl_env_bridge))}")
     typer.echo(shlex.join(command))
 
 
-def _launch(command: list, env: dict, install_hint: str) -> NoReturn:
+def _launch(command: list, env: dict, install_hint: str, unset_env: tuple = ()) -> NoReturn:
     executable = shutil.which(command[0])
     if executable is None:
         _fail(f"`{command[0]}` not found on PATH. Install it with: {install_hint}")
+    wsl_env_bridge = tuple(dict.fromkeys((*env.keys(), *unset_env))) if _wsl_windows_executable(command) else ()
+    child_env = dict(os.environ)
+    if wsl_env_bridge:
+        child_env["WSLENV"] = _merge_wslenv(child_env.get("WSLENV", ""), wsl_env_bridge)
+        for name in unset_env:
+            child_env[name] = ""
+    else:
+        for name in unset_env:
+            child_env.pop(name, None)
+    child_env.update(env)
     # Ctrl+C cancels a turn inside the agent; don't let it kill this wrapper.
     previous = signal.signal(signal.SIGINT, signal.SIG_IGN)
     try:
-        code = subprocess.run([executable, *command[1:]], env = {**os.environ, **env}).returncode
+        code = subprocess.run([executable, *command[1:]], env = child_env).returncode
     finally:
         signal.signal(signal.SIGINT, previous)
     # Negative returncode means killed by signal N; shells expect 128+N.
@@ -425,13 +458,21 @@ def _connect(api_key: Optional[str], model: Optional[str]) -> tuple:
 
 
 def _run(
-    base: str, entry: dict, env: dict, command: list, *, launch: bool, install_hint: str
+    base: str,
+    entry: dict,
+    env: dict,
+    command: list,
+    *,
+    launch: bool,
+    install_hint: str,
+    unset_env: tuple = (),
 ) -> None:
     typer.echo(f"Studio {base} · model {entry['id']}")
+    wsl_env_bridge = tuple(dict.fromkeys((*env.keys(), *unset_env))) if _wsl_windows_executable(command) else ()
     if not launch:
-        _print_env(env, command)
+        _print_env(env, command, unset_env = unset_env, wsl_env_bridge = wsl_env_bridge)
         return
-    _launch(command, env, install_hint = install_hint)
+    _launch(command, env, install_hint = install_hint, unset_env = unset_env)
 
 
 def openclaw_config_path() -> Path:
@@ -581,7 +622,15 @@ def claude(
         if os.name == "nt"
         else "curl -fsSL https://claude.ai/install.sh | bash"
     )
-    _run(base, entry, env, command, launch = launch, install_hint = install_hint)
+    _run(
+        base,
+        entry,
+        env,
+        command,
+        launch = launch,
+        install_hint = install_hint,
+        unset_env = _CLAUDE_ENV_UNSET,
+    )
 
 
 @connect_app.command("codex", context_settings = _PASSTHROUGH)

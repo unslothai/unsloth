@@ -186,6 +186,8 @@ def fake_studio(tmp_path, monkeypatch, claude_settings):
 def test_connect_claude_no_launch(fake_studio, claude_settings):
     result = CliRunner().invoke(connect.connect_app, ["claude", "--no-launch"])
     assert result.exit_code == 0, result.output
+    assert "unset ANTHROPIC_API_KEY" in result.output
+    assert "unset CLAUDE_CODE_OAUTH_TOKEN" in result.output
     assert f"export ANTHROPIC_BASE_URL={BASE}" in result.output
     assert "export ANTHROPIC_AUTH_TOKEN=sk-unsloth-feedfacefeedface" in result.output
     assert f"export ANTHROPIC_MODEL={MODEL['id']}" in result.output
@@ -194,6 +196,81 @@ def test_connect_claude_no_launch(fake_studio, claude_settings):
     assert f"claude --model {MODEL['id']} --exclude-dynamic-system-prompt-sections" in result.output
     settings = json.loads(claude_settings.read_text())
     assert settings["env"]["CLAUDE_CODE_ATTRIBUTION_HEADER"] == "0"
+
+
+def test_connect_claude_launch_scrubs_conflicting_auth_env(fake_studio, monkeypatch):
+    captured = {}
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-anthropic-stale")
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "oauth-stale")
+    monkeypatch.setattr(connect.shutil, "which", lambda _: "/usr/local/bin/claude")
+    monkeypatch.setattr(connect, "_claude_cache_flags", lambda: [])
+
+    def run(command, env):
+        captured["command"] = command
+        captured["env"] = env
+        return SimpleNamespace(returncode = 0)
+
+    monkeypatch.setattr(connect.subprocess, "run", run)
+    result = CliRunner().invoke(connect.connect_app, ["claude"])
+
+    assert result.exit_code == 0, result.output
+    assert captured["command"] == ["/usr/local/bin/claude", "--model", MODEL["id"]]
+    assert "ANTHROPIC_API_KEY" not in captured["env"]
+    assert "CLAUDE_CODE_OAUTH_TOKEN" not in captured["env"]
+    assert captured["env"]["ANTHROPIC_AUTH_TOKEN"] == "sk-unsloth-feedfacefeedface"
+    assert captured["env"]["ANTHROPIC_BASE_URL"] == BASE
+    assert captured["env"]["ANTHROPIC_MODEL"] == MODEL["id"]
+
+
+def test_connect_claude_windows_shim_from_wsl_bridges_env(fake_studio, monkeypatch):
+    captured = {}
+    monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-anthropic-stale")
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "oauth-stale")
+    monkeypatch.setattr(connect.shutil, "which", lambda _: "/mnt/c/Users/samle/AppData/Roaming/npm/claude")
+    monkeypatch.setattr(connect, "_claude_cache_flags", lambda: [])
+
+    def run(command, env):
+        captured["command"] = command
+        captured["env"] = env
+        return SimpleNamespace(returncode = 0)
+
+    monkeypatch.setattr(connect.subprocess, "run", run)
+    result = CliRunner().invoke(connect.connect_app, ["claude"])
+
+    assert result.exit_code == 0, result.output
+    assert captured["command"] == [
+        "/mnt/c/Users/samle/AppData/Roaming/npm/claude",
+        "--model",
+        MODEL["id"],
+    ]
+    assert captured["env"]["ANTHROPIC_API_KEY"] == ""
+    assert captured["env"]["CLAUDE_CODE_OAUTH_TOKEN"] == ""
+    assert captured["env"]["ANTHROPIC_AUTH_TOKEN"] == "sk-unsloth-feedfacefeedface"
+    assert captured["env"]["ANTHROPIC_BASE_URL"] == BASE
+    assert captured["env"]["ANTHROPIC_MODEL"] == MODEL["id"]
+    for name in (
+        "ANTHROPIC_AUTH_TOKEN",
+        "ANTHROPIC_BASE_URL",
+        "ANTHROPIC_MODEL",
+        "ANTHROPIC_API_KEY",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+    ):
+        assert name in captured["env"]["WSLENV"].split(":")
+
+
+def test_connect_claude_no_launch_windows_shim_from_wsl_prints_wslenv(fake_studio, monkeypatch):
+    monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu")
+    monkeypatch.setattr(connect.shutil, "which", lambda _: "/mnt/c/Users/samle/AppData/Roaming/npm/claude")
+
+    result = CliRunner().invoke(connect.connect_app, ["claude", "--no-launch"])
+
+    assert result.exit_code == 0, result.output
+    assert "export ANTHROPIC_API_KEY=" in result.output
+    assert "export CLAUDE_CODE_OAUTH_TOKEN=" in result.output
+    assert "export WSLENV=" in result.output
+    assert "ANTHROPIC_AUTH_TOKEN" in result.output
+    assert "CLAUDE_CODE_OAUTH_TOKEN" in result.output
 
 
 def test_connect_codex_no_launch(fake_studio, tmp_path):
