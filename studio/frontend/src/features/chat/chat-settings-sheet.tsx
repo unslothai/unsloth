@@ -1203,25 +1203,6 @@ export function ChatSettingsPanel({
                 <div className="flex items-center justify-between gap-3">
                   <div className="flex min-w-0 items-center gap-1.5">
                     <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
-                      Tensor Parallelism
-                    </span>
-                    <InfoHint>
-                      No effect on a single GPU. On multi-GPU setups, improves
-                      tokens/sec during generation when using dense models. MoE
-                      models don't benefit and can be much slower.
-                    </InfoHint>
-                  </div>
-                  <Switch
-                    className="panel-switch shrink-0"
-                    checked={tensorParallel}
-                    onCheckedChange={setTensorParallel}
-                    disabled={tpDisabled}
-                    data-test-id="tensor-parallel-switch"
-                  />
-                </div>
-                <div className="flex items-center justify-between gap-3">
-                  <div className="flex min-w-0 items-center gap-1.5">
-                    <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
                       GPU Memory
                     </span>
                     <InfoHint>
@@ -1345,6 +1326,25 @@ export function ChatSettingsPanel({
                     </div>
                   </div>
                 )}
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex min-w-0 items-center gap-1.5">
+                    <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+                      Tensor Parallelism
+                    </span>
+                    <InfoHint>
+                      No effect on a single GPU. On multi-GPU setups, improves
+                      tokens/sec during generation when using dense models. MoE
+                      models don't benefit and can be much slower.
+                    </InfoHint>
+                  </div>
+                  <Switch
+                    className="panel-switch shrink-0"
+                    checked={tensorParallel}
+                    onCheckedChange={setTensorParallel}
+                    disabled={tpDisabled}
+                    data-test-id="tensor-parallel-switch"
+                  />
+                </div>
               </>
             )}
             {!isGguf && params.checkpoint && (
