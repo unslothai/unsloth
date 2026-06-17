@@ -154,6 +154,9 @@ def run(args):
         # works even when --save_gguf is omitted (the local save is guarded
         # separately below).
         if args.save_gguf or args.push_gguf:
+            # Push-only GGUF (no --save_gguf) skips the local save; warn so it is not silent.
+            if not args.save_gguf:
+                print("Warning: --save_gguf not set, pushing GGUF to hub without saving locally.")
             if isinstance(args.quantization, list):
                 for quantization_method in args.quantization:
                     if args.save_gguf:
