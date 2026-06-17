@@ -1297,6 +1297,24 @@ export function ChatSettingsPanel({
                         </>
                       }
                     />
+                    {showMoeSlider && (
+                      <ParamSlider
+                        label="MoE Layers on CPU"
+                        value={Math.min(nCpuMoe, moeLayersMax)}
+                        min={0}
+                        max={moeLayersMax}
+                        step={1}
+                        onChange={setNCpuMoe}
+                        valueSize={6}
+                        info={
+                          <>
+                            Keep the experts of this many MoE layers on the CPU
+                            (--n-cpu-moe) to save VRAM. 0 = all experts on the
+                            GPU; at the maximum, all are on the CPU.
+                          </>
+                        }
+                      />
+                    )}
                     {showSplitRatio && (
                       <div className="space-y-1.5">
                         <div className="flex items-center justify-between gap-3">
@@ -1330,24 +1348,6 @@ export function ChatSettingsPanel({
                           </p>
                         )}
                       </div>
-                    )}
-                    {showMoeSlider && (
-                      <ParamSlider
-                        label="MoE Layers on CPU"
-                        value={Math.min(nCpuMoe, moeLayersMax)}
-                        min={0}
-                        max={moeLayersMax}
-                        step={1}
-                        onChange={setNCpuMoe}
-                        valueSize={6}
-                        info={
-                          <>
-                            Keep the experts of this many MoE layers on the CPU
-                            (--n-cpu-moe) to save VRAM. 0 = all experts on the
-                            GPU; at the maximum, all are on the CPU.
-                          </>
-                        }
-                      />
                     )}
                   </>
                 )}
