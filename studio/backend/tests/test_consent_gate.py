@@ -671,3 +671,69 @@ class TestScannerCoversAllExecutableCode:
         assert d.has_remote_code is True
         assert d.blocked is True
         assert d.fingerprint
+
+
+# ---------------------------------------------------------------------------
+# POST /discard-remote-code: purge what the scan downloaded when the user
+# declines, but never a model the user already had (weights), a loaded model,
+# or a local path.
+# ---------------------------------------------------------------------------
+
+
+class TestDiscardRemoteCodeDownload:
+    @staticmethod
+    def _fake_cache(filenames):
+        files = [
+            SimpleNamespace(file_name = fn, file_path = f"/snap/{fn}", blob_path = f"/blob/{fn}")
+            for fn in filenames
+        ]
+        rev = SimpleNamespace(commit_hash = "deadbeef", files = files)
+        repo = SimpleNamespace(repo_type = "model", repo_id = "evil/repo", revisions = [rev])
+        return SimpleNamespace(repos = [repo], delete_revisions = MagicMock())
+
+    def _run(self, model_name, cache_scans):
+        import asyncio
+
+        import routes.models as M
+
+        not_loaded = SimpleNamespace(active_model_name = None)
+        with (
+            patch.object(M, "is_local_path", return_value = model_name.startswith("/")),
+            patch.object(M, "_all_hf_cache_scans", return_value = cache_scans),
+            patch.object(M, "get_inference_backend", return_value = not_loaded),
+            patch(
+                "routes.inference.get_llama_cpp_backend",
+                return_value = SimpleNamespace(is_loaded = False, model_identifier = None),
+            ),
+        ):
+            return asyncio.run(M.discard_remote_code_download(model_name, current_subject = "t"))
+
+    def test_purges_metadata_only_entry(self):
+        cache = self._fake_cache(["config.json", "tokenizer_config.json", "modeling_evil.py"])
+        res = self._run("evil/repo", [cache])
+        assert res["deleted"] is True
+        cache.delete_revisions.assert_called_once_with("deadbeef")
+
+    def test_refuses_when_weights_present(self):
+        cache = self._fake_cache(["config.json", "model.safetensors"])
+        res = self._run("evil/repo", [cache])
+        assert res == {"deleted": False, "reason": "has_weights"}
+        cache.delete_revisions.assert_not_called()
+
+    def test_refuses_when_gguf_present(self):
+        cache = self._fake_cache(["config.json", "model.Q4_K_M.gguf"])
+        res = self._run("evil/repo", [cache])
+        assert res["reason"] == "has_weights"
+
+    def test_refuses_local_path(self):
+        res = self._run("/home/me/model", [])
+        assert res == {"deleted": False, "reason": "local"}
+
+    def test_noop_when_not_cached(self):
+        res = self._run("evil/repo", [])
+        assert res == {"deleted": False, "reason": "not_cached"}
+
+    def test_route_source_reports_created_by_scan(self):
+        src = (_BACKEND / "routes/models.py").read_text()
+        assert "created_by_scan" in src
+        assert "discard-remote-code" in src

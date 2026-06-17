@@ -1610,9 +1610,19 @@ async def scan_model_remote_code(
                 model_name = _base
         except Exception:
             pass
+        # Whether OUR scan is what first pulls this repo into the HF cache. A later
+        # decline uses this to purge exactly what the scan downloaded, without
+        # touching a model the user already had (or a local path).
+        try:
+            from utils.paths import get_cache_path
+
+            created_by_scan = (not is_local_path(model_name)) and get_cache_path(model_name) is None
+        except Exception:
+            created_by_scan = False
         decision = preflight_remote_code_consent(model_name, hf_token = hf_token)
         payload = decision.response_payload()
         payload["requires_trust_remote_code"] = decision.has_remote_code
+        payload["created_by_scan"] = created_by_scan
         return payload
     except Exception as e:
         raise log_and_http_error(
@@ -1622,6 +1632,79 @@ async def scan_model_remote_code(
             event = "models.remote_code_scan_failed",
             log = logger,
         )
+
+
+@router.post("/discard-remote-code")
+async def discard_remote_code_download(
+    model_name: str = Body(..., embed = True),
+    current_subject: str = Depends(get_current_subject),
+):
+    """Purge a repo the consent scan downloaded after the user DECLINED its custom
+    code, so untrusted code is not left on disk.
+
+    Safety: only ever deletes a metadata-only cache entry the scan created. It
+    refuses a local path (never touches user files), a currently-loaded model, and
+    any repo that has weight files cached (``*.safetensors`` / ``*.bin`` /
+    ``*.gguf``) -- i.e. a model the user actually downloaded. The frontend only
+    calls this when the scan reported ``created_by_scan``.
+    """
+    if is_local_path(model_name):
+        return {"deleted": False, "reason": "local"}
+    if not _is_valid_repo_id(model_name):
+        return {"deleted": False, "reason": "invalid"}
+
+    # Never delete a model that is loaded for inference.
+    try:
+        from routes.inference import get_llama_cpp_backend
+
+        llama_backend = get_llama_cpp_backend()
+        if llama_backend.is_loaded and llama_backend.model_identifier:
+            loaded = llama_backend.model_identifier.lower()
+            if loaded == model_name.lower() or loaded.startswith(model_name.lower()):
+                return {"deleted": False, "reason": "loaded"}
+    except Exception:
+        pass
+    try:
+        inference_backend = get_inference_backend()
+        if inference_backend.active_model_name:
+            active = inference_backend.active_model_name.lower()
+            if active == model_name.lower() or active.startswith(model_name.lower()):
+                return {"deleted": False, "reason": "loaded"}
+    except Exception:
+        pass
+
+    _WEIGHTS = (".safetensors", ".bin", ".pt", ".pth", ".h5", ".msgpack", ".gguf")
+    try:
+        target_repo = None
+        hf_cache = None
+        for cache in _all_hf_cache_scans():
+            for repo_info in cache.repos:
+                if repo_info.repo_type != "model":
+                    continue
+                if repo_info.repo_id.lower() == model_name.lower():
+                    target_repo, hf_cache = repo_info, cache
+                    break
+            if target_repo is not None:
+                break
+
+        if target_repo is None:
+            return {"deleted": False, "reason": "not_cached"}
+
+        # Hard guard: a repo with weights is a real model the user has -- leave it.
+        for rev in target_repo.revisions:
+            for f in rev.files:
+                if f.file_name.lower().endswith(_WEIGHTS):
+                    return {"deleted": False, "reason": "has_weights"}
+
+        revision_hashes = [rev.commit_hash for rev in target_repo.revisions]
+        if not revision_hashes:
+            return {"deleted": False, "reason": "not_cached"}
+        hf_cache.delete_revisions(*revision_hashes).execute()
+        logger.info("Discarded declined remote-code download: %s", model_name)
+        return {"deleted": True}
+    except Exception as e:
+        logger.warning("Could not discard remote-code download for %s: %s", model_name, e)
+        return {"deleted": False, "reason": "error"}
 
 
 @router.get("/loras")

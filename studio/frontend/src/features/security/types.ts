@@ -34,4 +34,7 @@ export interface RemoteCodeScan {
   findings: RemoteCodeFinding[];
   findingsSummary: string;
   modelName: string;
+  // True when our scan is what first downloaded this repo into the HF cache, so a
+  // decline may safely purge it (a model the user already had stays put).
+  createdByScan: boolean;
 }

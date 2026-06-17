@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { getRemoteCodeScan } from "../api/remote-code-api";
+import {
+  discardRemoteCodeDownload,
+  getRemoteCodeScan,
+} from "../api/remote-code-api";
 import { useRemoteCodeConsentDialogStore } from "../stores/remote-code-consent-dialog-store";
 import type { RemoteCodeScan } from "../types";
 
@@ -40,6 +43,7 @@ export async function confirmRemoteCodeIfNeeded({
       findings: [],
       findingsSummary: "",
       modelName,
+      createdByScan: false,
     };
   }
 
@@ -48,7 +52,13 @@ export async function confirmRemoteCodeIfNeeded({
   const confirmed = await useRemoteCodeConsentDialogStore
     .getState()
     .requestConsent(scan);
-  if (!confirmed) return false;
+  if (!confirmed) {
+    // Declined: if our scan was the first to download this repo, purge it so the
+    // untrusted custom code is not left on disk (the backend leaves models the
+    // user already had, weighted repos, and local paths untouched).
+    if (scan.createdByScan) void discardRemoteCodeDownload(scan.modelName);
+    return false;
+  }
   onApprove(scan.fingerprint);
   return true;
 }

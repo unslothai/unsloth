@@ -1570,11 +1570,11 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         if (!loaded) {
           toast.error(
             blockedByTrustRemoteCode
-              ? "Enable custom code to auto-load this model"
+              ? "This model needs custom code approval"
               : "No model loaded",
             {
               description: blockedByTrustRemoteCode
-                ? 'Turn on "Enable custom code" in Chat Settings, or pick another model in the top bar.'
+                ? "Select it from the top bar to review and approve its custom code, or pick another model."
                 : "Pick a model in the top bar, then retry.",
             },
           );

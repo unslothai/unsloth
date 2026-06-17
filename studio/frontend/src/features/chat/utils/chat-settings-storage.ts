@@ -140,11 +140,8 @@ function sanitizeInferenceParams(
   if (typeof value.systemPrompt === "string") {
     params.systemPrompt = value.systemPrompt;
   }
-  if (typeof value.trustRemoteCode === "boolean") {
-    params.trustRemoteCode = value.trustRemoteCode;
-  }
-  // Mirror trustRemoteCode handling so the toggle survives reload
-  // and the /api/chat/settings round-trip.
+  // trustRemoteCode is no longer a persisted user setting: custom code is
+  // consented per model via the load-time review dialog, not a saved toggle.
   if (typeof value.fastMode === "boolean") {
     params.fastMode = value.fastMode;
   }

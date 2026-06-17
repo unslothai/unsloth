@@ -225,7 +225,7 @@ function toLoraSummary(lora: {
 }
 
 function getTrustRemoteCodeRequiredMessage(modelName: string): string {
-  return `${modelName} needs custom code enabled to load. Turn on "Enable custom code" in Chat Settings, then try again.`;
+  return `${modelName} was not loaded because its custom code was not approved. Load it again to review the code and approve it.`;
 }
 
 export function useChatModelRuntime() {
@@ -495,10 +495,11 @@ export function useChatModelRuntime() {
               is_lora: isLora,
               gguf_variant: ggufVariant ?? null,
             });
-            // Always gate custom-code loads on consent, even if the legacy
-            // "Enable custom code" toggle is on: the worker now requires a
-            // matching fingerprint, which only the dialog produces. Clean
-            // custom code returns immediately without a dialog.
+            // Always gate custom-code loads on consent, even when the internal
+            // trustRemoteCode flag is preset on (e.g. a first-party YAML/preset
+            // default): the worker now requires a matching fingerprint, which
+            // only the dialog produces. Clean custom code returns immediately
+            // without a dialog.
             if (validation.requires_trust_remote_code) {
               const approved = await confirmRemoteCodeIfNeeded({
                 modelName: modelId,

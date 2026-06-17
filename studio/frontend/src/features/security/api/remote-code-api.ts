@@ -34,6 +34,7 @@ interface RemoteCodeScanResponse {
   }>;
   findings_summary?: string;
   model_name?: string;
+  created_by_scan?: boolean;
 }
 
 /**
@@ -82,5 +83,23 @@ export async function getRemoteCodeScan(
     findings,
     findingsSummary: data.findings_summary ?? "",
     modelName: data.model_name ?? modelName,
+    createdByScan: Boolean(data.created_by_scan),
   };
+}
+
+/**
+ * After a user declines a model's custom code, purge what the scan downloaded.
+ * Fire-and-forget: the backend only removes a metadata-only cache entry the scan
+ * created (never a model with weights, a loaded model, or a local path).
+ */
+export async function discardRemoteCodeDownload(modelName: string): Promise<void> {
+  try {
+    await authFetch(`/api/models/discard-remote-code`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model_name: modelName }),
+    });
+  } catch {
+    // Best-effort cleanup; ignore failures.
+  }
 }

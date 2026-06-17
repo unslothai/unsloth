@@ -2,11 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
-  Alert,
-  AlertDescription,
-  AlertTitle,
-} from "@/components/ui/alert";
-import {
   AlertDialog,
   AlertDialogAction,
   AlertDialogCancel,
@@ -527,9 +522,6 @@ export function ChatSettingsPanel({
   const loadedSpecDraftNMax = useChatRuntimeStore(
     (s) => s.loadedSpecDraftNMax,
   );
-  const modelRequiresTrustRemoteCode = useChatRuntimeStore(
-    (s) => s.modelRequiresTrustRemoteCode,
-  );
   const currentCheckpoint = params.checkpoint;
   const ggufContextLength = useChatRuntimeStore((s) => s.ggufContextLength);
   const ggufMaxContextLength = useChatRuntimeStore(
@@ -621,10 +613,6 @@ export function ChatSettingsPanel({
     [activePreset, hasUnsavedPresetChanges, presetNameInput, presets],
   );
   const systemPromptEditorDirty = systemPromptDraft !== params.systemPrompt;
-  const trustRemoteCodeMissing =
-    Boolean(currentCheckpoint) &&
-    modelRequiresTrustRemoteCode &&
-    !(params.trustRemoteCode ?? false);
   const showPromptCacheTtlControl = Boolean(
     activeExternalProvider &&
       supportsProviderPromptCacheTtl(activeExternalProvider.providerType),
@@ -1064,38 +1052,9 @@ export function ChatSettingsPanel({
                 </div>
               </>
             )}
-            {!isGguf && params.checkpoint && (
-              <>
-                <div className="flex items-center justify-between gap-3">
-                  <div className="flex min-w-0 items-center gap-1.5">
-                    <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
-                      Enable custom code
-                    </span>
-                    <InfoHint>
-                      Run custom Python from the model repo (e.g. Nemotron).
-                      Only enable for trusted sources.
-                    </InfoHint>
-                  </div>
-                  <Switch
-                    className="panel-switch shrink-0"
-                    checked={params.trustRemoteCode ?? false}
-                    onCheckedChange={set("trustRemoteCode")}
-                  />
-                </div>
-                {trustRemoteCodeMissing && (
-                  <Alert className="rounded-[14px] border-amber-200/70 bg-amber-50/70 px-3 py-2 text-amber-950 dark:border-amber-900/70 dark:bg-amber-950/35 dark:text-amber-100">
-                    <AlertTitle className="text-[12px] font-medium">
-                      Keep custom code enabled for this model
-                    </AlertTitle>
-                    <AlertDescription className="text-[11.5px] leading-[1.45] text-amber-800 dark:text-amber-200">
-                      This model requires custom code to load. You can edit the
-                      toggle, but loading will stay blocked until it is turned
-                      back on.
-                    </AlertDescription>
-                  </Alert>
-                )}
-              </>
-            )}
+            {/* Custom code is consented per model through the load-time review
+                dialog (which scans the code and pins approval to its exact
+                version), so there is no persistent "enable custom code" toggle. */}
             {/* Apply/Reset belongs to the model-reload settings above (context
                 length, KV cache, speculative decoding). Render it here, before
                 the Chat Template row, so it never reads as attached to Chat
