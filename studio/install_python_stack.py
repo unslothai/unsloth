@@ -163,6 +163,7 @@ def _probe_installed_torch_version() -> str | None:
     lines = [line.strip() for line in (probe.stdout or "").splitlines() if line.strip()]
     return lines[-1] if lines else None
 
+
 # AMD Windows ROCm wheels (repo.amd.com/rocm/whl/{arch_family}/).
 # Override with UNSLOTH_ROCM_WINDOWS_MIRROR for air-gapped/mirror installs.
 _ROCM_WINDOWS_INDEX_BASE = (
