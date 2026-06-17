@@ -550,10 +550,7 @@ def test_update_size_unsloth_prebuilt_exact_match(monkeypatch):
             }
         },
     )
-    assert (
-        fr.update_download_size_bytes(marker, "b9300", "unslothai/llama.cpp")
-        == 123_456_789
-    )
+    assert fr.update_download_size_bytes(marker, "b9300", "unslothai/llama.cpp") == 123_456_789
 
 
 def test_update_size_macos_fork_asset_suffix_fallback(monkeypatch):
@@ -567,10 +564,7 @@ def test_update_size_macos_fork_asset_suffix_fallback(monkeypatch):
         monkeypatch,
         {"unslothai/llama.cpp": {"llama-b9300-bin-macos-arm64.tar.gz": 55_000_000}},
     )
-    assert (
-        fr.update_download_size_bytes(marker, "b9300", "unslothai/llama.cpp")
-        == 55_000_000
-    )
+    assert fr.update_download_size_bytes(marker, "b9300", "unslothai/llama.cpp") == 55_000_000
 
 
 def test_update_size_upstream_ubuntu_uses_binary_repo(monkeypatch):
@@ -591,10 +585,7 @@ def test_update_size_upstream_ubuntu_uses_binary_repo(monkeypatch):
             },
         },
     )
-    assert (
-        fr.update_download_size_bytes(marker, "b9300", "unslothai/llama.cpp")
-        == 42_000_000
-    )
+    assert fr.update_download_size_bytes(marker, "b9300", "unslothai/llama.cpp") == 42_000_000
 
 
 def test_update_size_upstream_windows_uses_binary_repo(monkeypatch):
@@ -608,10 +599,7 @@ def test_update_size_upstream_windows_uses_binary_repo(monkeypatch):
         monkeypatch,
         {"ggml-org/llama.cpp": {"llama-b9673-bin-win-cpu-x64.zip": 33_000_000}},
     )
-    assert (
-        fr.update_download_size_bytes(marker, "b9300", "unslothai/llama.cpp")
-        == 33_000_000
-    )
+    assert fr.update_download_size_bytes(marker, "b9300", "unslothai/llama.cpp") == 33_000_000
 
 
 def test_update_size_no_matching_asset_fails_open(monkeypatch):
@@ -642,9 +630,4 @@ def test_update_size_missing_inputs_fail_open(monkeypatch):
         )
         is None
     )
-    assert (
-        fr.update_download_size_bytes(
-            {"asset": None}, "b9300", "unslothai/llama.cpp"
-        )
-        is None
-    )
+    assert fr.update_download_size_bytes({"asset": None}, "b9300", "unslothai/llama.cpp") is None

@@ -906,13 +906,9 @@ def test_start_update_marked_refuses_when_not_behind(monkeypatch, tmp_path):
 def test_status_update_available_includes_size(monkeypatch, tmp_path):
     # Marker (prebuilt) update path attaches the download size of the asset the
     # banner would fetch.
-    binary = _write_install(
-        tmp_path, "b9493", asset = "app-b9493-linux-x64-cuda13-newer.tar.gz"
-    )
+    binary = _write_install(tmp_path, "b9493", asset = "app-b9493-linux-x64-cuda13-newer.tar.gz")
     monkeypatch.setattr(upd, "_find_binary", lambda: binary)
-    monkeypatch.setattr(
-        freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9518"
-    )
+    monkeypatch.setattr(freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9518")
     monkeypatch.setattr(
         freshness,
         "latest_release_assets",
