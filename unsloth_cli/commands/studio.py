@@ -682,6 +682,12 @@ def studio_default(
         help = "Log every API request, including the high-frequency polling that is "
         "deduplicated by default.",
     ),
+    enable_tools: Optional[bool] = typer.Option(
+        None,
+        "--enable-tools/--disable-tools",
+        help = "Force server-side tools (web search, code execution) on or off for "
+        "every request. Default: on for every bind, with the per-chat UI toggle honored.",
+    ),
 ):
     """Launch the Unsloth Studio server."""
     # Runs before every subcommand (run/setup/update/...).
@@ -726,6 +732,17 @@ def studio_default(
                 f"plain-server path only. For `unsloth studio "
                 f"{ctx.invoked_subcommand}`, put it after the subcommand: "
                 f"`unsloth studio {ctx.invoked_subcommand} --verbose ...`",
+                err = True,
+            )
+            raise typer.Exit(2)
+        # Same for --enable-tools/--disable-tools: it would not reach the subcommand.
+        if enable_tools is not None:
+            _tool_flag = "--enable-tools" if enable_tools else "--disable-tools"
+            typer.echo(
+                f"Error: {_tool_flag} on `unsloth studio` applies to the "
+                f"plain-server path only. For `unsloth studio "
+                f"{ctx.invoked_subcommand}`, put it after the subcommand: "
+                f"`unsloth studio {ctx.invoked_subcommand} {_tool_flag} ...`",
                 err = True,
             )
             raise typer.Exit(2)
@@ -782,6 +799,12 @@ def studio_default(
             # Forward the explicit polarity (matches run.py's BooleanOptionalAction).
             args.append("--cloudflare" if cloudflare else "--no-cloudflare")
             args.append("--secure" if secure else "--not-secure")
+            # Forward an explicit tool policy; omit when None so run.py leaves the
+            # process policy unset (tools on, per-chat UI toggle honored).
+            if enable_tools is True:
+                args.append("--enable-tools")
+            elif enable_tools is False:
+                args.append("--disable-tools")
             # On Windows os.execvp keeps the parent alive, so Ctrl+C
             # would orphan the child; use Popen+wait instead.
             if sys.platform == "win32":
@@ -825,6 +848,7 @@ def studio_default(
         llama_parallel_slots = parallel,
         cloudflare = cloudflare,
         secure = secure,
+        enable_tools = enable_tools,
     )
     if frontend is not None:
         run_kwargs["frontend_path"] = frontend
@@ -1103,16 +1127,15 @@ def run(
             raise typer.Exit(2)
         host = "127.0.0.1"
 
-    # Gate tools on the *public* exposure: --secure is public via the tunnel, so
-    # tools default off even though the bind is loopback.
-    tool_policy_host = "0.0.0.0" if secure else host
-
-    # Resolve tool policy here so the re-exec'd child inherits a
-    # concrete decision and never re-prompts.
+    # Tool policy no longer depends on the bind. --secure is a loopback bind
+    # behind an authenticated Cloudflare HTTPS tunnel (not a raw public port),
+    # and the operator owns network security for a raw bind, so tools default on
+    # everywhere; only --disable-tools turns them off. Resolve here so the
+    # re-exec'd child inherits a concrete decision.
     from unsloth_cli._tool_policy import is_external_host, resolve_tool_policy
 
     enable_tools = resolve_tool_policy(
-        host = tool_policy_host,
+        host = host,
         flag = enable_tools,
         yes = yes,
         silent = silent,
@@ -1161,8 +1184,9 @@ def run(
             args.append("--enable-tools")
         else:
             args.append("--disable-tools")
-        # Forward --yes if the parent already cleared the network-bind prompt.
-        if yes or (enable_tools and is_external_host(tool_policy_host)):
+        # Forward --yes only if the user passed it; tool resolution no longer
+        # prompts, so there is no network-bind confirmation to pre-clear.
+        if yes:
             args.append("--yes")
         # Typer claims --parallel outside ctx.args; without this the
         # child reverts to its default and silently drops the value.
@@ -1265,27 +1289,26 @@ def run(
     # Orange so the tool-policy notice stands out; printed under
     # --silent / --yes too so the policy is never invisible.
     _tool_notice_fg = (217, 119, 87)
-    _is_external = is_external_host(tool_policy_host)
-    _exposure = "the public Cloudflare tunnel" if secure else host
-    if _is_external and enable_tools:
+    _is_external = is_external_host(host)
+    if not enable_tools:
+        _tool_notice = "Server-side tools are DISABLED (--disable-tools)."
+    elif secure:
         _tool_notice = (
-            f"Server-side tools are ENABLED on {_exposure} (network-reachable). "
-            f"Anyone with the API key can run code on this machine. "
-            f"Do not share the API key."
+            "Server-side tools are ENABLED, reachable via the authenticated "
+            "Cloudflare HTTPS tunnel. Anyone with the API key can run code on "
+            "this machine. Do not share the API key. Pass --disable-tools to turn off."
         )
     elif _is_external:
         _tool_notice = (
-            f"Server-side tools are disabled by default on {_exposure} "
-            f"(network-reachable). Pass --enable-tools to turn on "
-            f"(you will be warned about API-key risk)."
-        )
-    elif enable_tools:
-        _tool_notice = (
-            "Server-side tools are enabled by default for loopback. "
-            "Pass --disable-tools to turn off."
+            "Server-side tools are ENABLED and this port is network-reachable. "
+            "Anyone who can reach it with the API key can run code on this "
+            "machine. Do not share the API key. Pass --disable-tools to turn off."
         )
     else:
-        _tool_notice = "Server-side tools are disabled."
+        _tool_notice = (
+            "Server-side tools are ENABLED for loopback. "
+            "Pass --disable-tools to turn off."
+        )
 
     if not silent:
         typer.echo("")

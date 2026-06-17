@@ -237,11 +237,13 @@ def test_studio_default_rejects_secure_with_subcommand():
     assert "--secure" in combined, combined
 
 
-# ── secure resolves tools against the PUBLIC exposure, not the loopback bind ──
+# ── secure resolves tools against the loopback bind (tools stay ON) ──
 
 
-def test_run_secure_resolves_tools_against_public_host(monkeypatch):
-    # --secure is public via the tunnel, so tools resolve against 0.0.0.0 (OFF), not loopback (ON).
+def test_run_secure_resolves_tools_against_loopback(monkeypatch):
+    # --secure is a loopback bind behind an authenticated HTTPS tunnel, not a raw
+    # public port, so tools resolve against 127.0.0.1 and stay ON. The child gets
+    # --enable-tools (default), never --disable-tools.
     studio_mod = _studio()
     monkeypatch.setattr(sys, "prefix", "/nonexistent/outer/venv")
     fake_venv = Path("/fake/studio/venv/unsloth_studio")
@@ -261,7 +263,7 @@ def test_run_secure_resolves_tools_against_public_host(monkeypatch):
 
     def rec(host, flag, yes, silent):
         calls.append(host)
-        return (not _tp_mod.is_external_host(host)) if flag is None else bool(flag)
+        return True if flag is None else bool(flag)  # default ON everywhere
 
     monkeypatch.setattr(_tp_mod, "resolve_tool_policy", rec)
 
@@ -281,14 +283,62 @@ def test_run_secure_resolves_tools_against_public_host(monkeypatch):
     )(studio_mod.run)
     CliRunner().invoke(app, _BASE + ["-H", "0.0.0.0", "--secure"], catch_exceptions = True)
 
-    assert calls and calls[0] == "0.0.0.0", calls
+    # Resolved against the forced-loopback bind, not the public 0.0.0.0 exposure.
+    assert calls and calls[0] == "127.0.0.1", calls
+    assert len(captured) == 1, captured
+    assert "--enable-tools" in captured[0] and "--disable-tools" not in captured[0], captured[0]
+
+
+def test_run_secure_enable_tools_no_auto_yes(monkeypatch):
+    # Tool resolution no longer prompts, so enabling tools on a secure endpoint
+    # forwards --enable-tools but does NOT auto-add --yes (only an explicit --yes
+    # passed by the user is forwarded).
+    captured = _invoke_run(monkeypatch, _BASE + ["-H", "0.0.0.0", "--secure", "--enable-tools"])
+    assert len(captured) == 1, captured
+    argv = captured[0]
+    assert "--enable-tools" in argv, argv
+    assert "--yes" not in argv, argv
+
+
+# ── plain `unsloth studio` exposes + forwards --enable-tools/--disable-tools ──
+
+
+def test_studio_default_exposes_enable_tools_option_default_none():
+    import inspect
+
+    opt = inspect.signature(_studio().studio_default).parameters["enable_tools"].default
+    decls = set(getattr(opt, "param_decls", []) or [])
+    assert "--enable-tools/--disable-tools" in decls
+    assert opt.default is None  # tri-state: omitted -> leave policy unset (tools on)
+
+
+def test_studio_default_forwards_disable_tools(monkeypatch):
+    captured = _invoke_studio_default(monkeypatch, ["--disable-tools"])
     assert len(captured) == 1, captured
     assert "--disable-tools" in captured[0] and "--enable-tools" not in captured[0], captured[0]
 
 
-def test_run_secure_enable_tools_forwards_yes(monkeypatch):
-    # Enabling tools on a secure endpoint forwards --yes so the child doesn't re-prompt.
-    captured = _invoke_run(monkeypatch, _BASE + ["-H", "0.0.0.0", "--secure", "--enable-tools"])
+def test_studio_default_forwards_enable_tools(monkeypatch):
+    captured = _invoke_studio_default(monkeypatch, ["--enable-tools"])
     assert len(captured) == 1, captured
-    argv = captured[0]
-    assert "--enable-tools" in argv and "--yes" in argv, argv
+    assert "--enable-tools" in captured[0] and "--disable-tools" not in captured[0], captured[0]
+
+
+def test_studio_default_no_tool_flag_omits_both(monkeypatch):
+    # No flag -> run.py leaves the process policy unset (tools on for every bind,
+    # per-chat UI toggle honored). Neither flag is forwarded.
+    captured = _invoke_studio_default(monkeypatch, [])
+    assert len(captured) == 1, captured
+    assert "--enable-tools" not in captured[0] and "--disable-tools" not in captured[0], captured[0]
+
+
+def test_studio_default_rejects_enable_tools_with_subcommand():
+    import typer as _typer
+
+    studio_mod = _studio()
+    app = _typer.Typer()
+    app.add_typer(studio_mod.studio_app, name = "studio")
+    result = CliRunner().invoke(app, ["studio", "--enable-tools", "run", "--model", "X"])
+    assert result.exit_code == 2, result.output
+    combined = (result.output or "") + (getattr(result, "stderr", "") or "")
+    assert "--enable-tools" in combined, combined

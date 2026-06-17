@@ -838,15 +838,20 @@ def _cloudflare_tunnel_should_start(
     return cloudflare and (host == "0.0.0.0" or secure) and not api_only and not is_colab
 
 
-def _apply_default_tool_policy(host: str, secure: bool) -> None:
-    """Force server-side tools off on network-reachable launches (0.0.0.0 or --secure)
-    so a public endpoint can't run code via a client's `enable_tools`. `unsloth studio
-    run` installs its own resolved policy and bypasses this."""
-    if not (secure or host == "0.0.0.0"):
+def _apply_cli_tool_policy(enable_tools: "Optional[bool]") -> None:
+    """Install an explicit `--enable-tools/--disable-tools` decision, if any.
+
+    Tools default ON for every bind -- loopback, the `--secure` authenticated
+    Cloudflare HTTPS tunnel, and a raw network bind alike -- so the bind host is
+    never inspected here: `enable_tools is None` leaves the process policy
+    untouched (per-request `enable_tools` honored). Only an explicit flag forces
+    tools on (`True`) or off (`False`) for every request. `unsloth studio run`
+    installs its own resolved policy and passes None here."""
+    if enable_tools is None:
         return
     from state.tool_policy import set_tool_policy
 
-    set_tool_policy(False)
+    set_tool_policy(enable_tools)
 
 
 def run_server(
@@ -858,6 +863,7 @@ def run_server(
     llama_parallel_slots: int = 1,
     cloudflare: bool = True,
     secure: bool = False,
+    enable_tools: "Optional[bool]" = None,
 ):
     """
     Start the FastAPI server.
@@ -869,6 +875,9 @@ def run_server(
         silent: Suppress startup messages
         api_only: API server only, no frontend (for Tauri desktop app)
         llama_parallel_slots: parallel slots for llama-server
+        enable_tools: explicit server-side tool policy from
+            `--enable-tools/--disable-tools` (None = leave default; tools stay
+            on for every bind and the per-request `enable_tools` is honored)
 
     Note:
         Signal handlers are NOT registered here so embedders (e.g. Colab) keep
@@ -885,8 +894,10 @@ def run_server(
     if secure:
         host = "127.0.0.1"
 
-    # `unsloth studio run` overrides this afterward with its resolved policy.
-    _apply_default_tool_policy(host, secure)
+    # Tools default on for every bind; only an explicit --enable-tools/
+    # --disable-tools changes the process policy. `unsloth studio run` installs
+    # its own resolved policy before calling run_server and passes None here.
+    _apply_cli_tool_policy(enable_tools)
 
     # Windows cp1252 can't encode emoji; reconfigure stdout to UTF-8.
     if sys.platform == "win32" and hasattr(sys.stdout, "reconfigure"):
@@ -1177,6 +1188,25 @@ if __name__ == "__main__":
         "if the tunnel can't start. Without it, --not-secure also serves the raw "
         "0.0.0.0 port, which is reachable from anywhere on the network",
     )
+    # Explicit server-side tool policy. Tri-state: neither flag -> None (tools
+    # stay on for every bind, per-request enable_tools honored); --enable-tools
+    # -> forced on; --disable-tools -> forced off. `unsloth studio run` installs
+    # its policy in-process instead of going through these flags.
+    parser.add_argument(
+        "--enable-tools",
+        dest = "enable_tools",
+        action = "store_true",
+        default = None,
+        help = "Force server-side tools (web search, code execution) on for "
+        "every request. Default: on for every bind, per-request setting honored.",
+    )
+    parser.add_argument(
+        "--disable-tools",
+        dest = "enable_tools",
+        action = "store_false",
+        default = None,
+        help = "Force server-side tools off for every request.",
+    )
     # Mirror unsloth_cli/commands/studio.py's _PARALLEL_*. Default 1 is for direct
     # backend launches; `unsloth studio run` always passes its own value (4).
     _PARALLEL_MIN = 1
@@ -1209,6 +1239,7 @@ if __name__ == "__main__":
         llama_parallel_slots = args.parallel,
         cloudflare = args.cloudflare,
         secure = args.secure,
+        enable_tools = args.enable_tools,
     )
     if args.frontend is not None:
         kwargs["frontend_path"] = Path(args.frontend)
