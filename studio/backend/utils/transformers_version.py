@@ -156,7 +156,9 @@ def activate_transformers_for_subprocess(model_name: str) -> None:
         if _VENV_T5_510_DIR not in sys.path:
             sys.path.insert(0, _VENV_T5_510_DIR)
         logger.info(
-            "Activated transformers %s from %s",
+            "Prepended transformers %s venv to sys.path from %s "
+            "(path only; the loaded version is confirmed later by "
+            "'Subprocess loaded transformers ...' on first import)",
             TRANSFORMERS_510_VERSION,
             _VENV_T5_510_DIR,
         )
@@ -171,7 +173,9 @@ def activate_transformers_for_subprocess(model_name: str) -> None:
         if _VENV_T5_550_DIR not in sys.path:
             sys.path.insert(0, _VENV_T5_550_DIR)
         logger.info(
-            "Activated transformers %s from %s",
+            "Prepended transformers %s venv to sys.path from %s "
+            "(path only; the loaded version is confirmed later by "
+            "'Subprocess loaded transformers ...' on first import)",
             TRANSFORMERS_550_VERSION,
             _VENV_T5_550_DIR,
         )
@@ -185,7 +189,13 @@ def activate_transformers_for_subprocess(model_name: str) -> None:
             )
         if _VENV_T5_530_DIR not in sys.path:
             sys.path.insert(0, _VENV_T5_530_DIR)
-        logger.info("Activated transformers 5.3.0 from %s", _VENV_T5_530_DIR)
+        logger.info(
+            "Prepended transformers %s venv to sys.path from %s "
+            "(path only; the loaded version is confirmed later by "
+            "'Subprocess loaded transformers ...' on first import)",
+            TRANSFORMERS_530_VERSION,
+            _VENV_T5_530_DIR,
+        )
         _pp = os.environ.get("PYTHONPATH", "")
         os.environ["PYTHONPATH"] = _VENV_T5_530_DIR + (os.pathsep + _pp if _pp else "")
     else:
@@ -449,33 +459,78 @@ def get_transformers_tier(model_name: str) -> str:
     if local_cfg.is_file():
         cfg = _load_config_json(model_name)
         if cfg is not None and _config_needs_510(cfg):
+            logger.info(
+                "Transformers tier 510 selected for %s (local config.json check)",
+                model_name,
+            )
             return "510"
         if cfg is not None and _config_needs_550(cfg):
+            logger.info(
+                "Transformers tier 550 selected for %s (local config.json check)",
+                model_name,
+            )
             return "550"
         if cfg is not None:
             local_tc = Path(model_name) / "tokenizer_config.json"
             if local_tc.is_file() and _check_tokenizer_config_needs_v5(model_name):
+                logger.info(
+                    "Transformers tier 530 selected for %s (local tokenizer_config.json check)",
+                    model_name,
+                )
                 return "530"
+            logger.info(
+                "Transformers tier default (4.57.x) selected for %s (local config.json no match)",
+                model_name,
+            )
             return "default"
 
     # --- Fast substring checks (no I/O) ------------------------------------
     if "assistant" in lowered and ("gemma-4" in lowered or "gemma4" in lowered):
+        logger.info(
+            "Transformers tier 510 selected for %s (gemma-4 assistant variant)",
+            model_name,
+        )
         return "510"
-    if any(sub in lowered for sub in TRANSFORMERS_510_MODEL_SUBSTRINGS):
+    match = next((sub for sub in TRANSFORMERS_510_MODEL_SUBSTRINGS if sub in lowered), None)
+    if match is not None:
+        logger.info(
+            "Transformers tier 510 selected for %s (substring match: %s)",
+            model_name,
+            match,
+        )
         return "510"
-    if any(sub in lowered for sub in TRANSFORMERS_550_MODEL_SUBSTRINGS):
+    match = next((sub for sub in TRANSFORMERS_550_MODEL_SUBSTRINGS if sub in lowered), None)
+    if match is not None:
+        logger.info(
+            "Transformers tier 550 selected for %s (substring match: %s)",
+            model_name,
+            match,
+        )
         return "550"
-    if any(sub in lowered for sub in TRANSFORMERS_5_MODEL_SUBSTRINGS):
+    match = next((sub for sub in TRANSFORMERS_5_MODEL_SUBSTRINGS if sub in lowered), None)
+    if match is not None:
+        logger.info(
+            "Transformers tier 530 selected for %s (substring match: %s)",
+            model_name,
+            match,
+        )
         return "530"
 
     # --- Slow config fallbacks (network for HF IDs) ------------------------
     if _check_config_needs_510(model_name):
+        logger.info("Transformers tier 510 selected for %s (config.json check)", model_name)
         return "510"
     if _check_config_needs_550(model_name):
+        logger.info("Transformers tier 550 selected for %s (config.json check)", model_name)
         return "550"
     if _check_tokenizer_config_needs_v5(model_name):
+        logger.info(
+            "Transformers tier 530 selected for %s (tokenizer_config.json check)",
+            model_name,
+        )
         return "530"
 
+    logger.info("Transformers tier default (4.57.x) selected for %s (no match)", model_name)
     return "default"
 
 
@@ -590,8 +645,8 @@ def _venv_dir_is_valid(venv_dir: str, packages: tuple[str, ...]) -> bool:
                 if line.startswith("Version:"):
                     installed_ver = line.split(":", 1)[1].strip()
                     if installed_ver != pkg_version:
-                        logger.info(
-                            "%s has %s==%s but need %s",
+                        logger.warning(
+                            "%s has %s==%s but need %s -- venv will be wiped and reinstalled",
                             venv_dir,
                             pkg_name,
                             installed_ver,
@@ -672,7 +727,9 @@ def _ensure_venv_dir(venv_dir: str, packages: tuple[str, ...], label: str) -> bo
     logger.warning("%s not found or incomplete at %s -- installing at runtime", label, venv_dir)
     shutil.rmtree(venv_dir, ignore_errors = True)
     os.makedirs(venv_dir, exist_ok = True)
-    for pkg in packages:
+    total = len(packages)
+    for idx, pkg in enumerate(packages, start = 1):
+        logger.info("Installing %s (%d/%d) into %s ...", pkg, idx, total, venv_dir)
         if not _install_to_dir(pkg, venv_dir):
             return False
     logger.info("Installed %s to %s", label, venv_dir)

@@ -40,7 +40,7 @@ export function TransportToggle() {
   return (
     <fieldset
       aria-label="Download transport"
-      className="hub-tag-soft m-0 inline-flex h-[26px] min-w-0 items-center gap-0.5 rounded-[11px] border-0 p-0.5 text-[11px]"
+      className="hub-tag-soft m-0 inline-flex h-[26px] min-w-0 items-center gap-0.5 rounded-full border-0 p-0.5 text-[11px]"
     >
       {OPTIONS.map((opt) => {
         const active = mode === opt.value;
@@ -54,16 +54,18 @@ export function TransportToggle() {
             <TooltipTrigger asChild={true}>
               <button
                 type="button"
-                disabled={disabled}
-                onClick={() => setMode(opt.value)}
+                aria-disabled={disabled || undefined}
                 aria-pressed={active}
+                onClick={() => {
+                  if (!disabled) setMode(opt.value);
+                }}
                 className={cn(
-                  "inline-flex h-[22px] cursor-pointer items-center justify-center rounded-[8px] px-2 font-medium tracking-tight transition-colors",
-                  active
-                    ? "hub-tab-toggle-pill text-foreground"
-                    : disabled
-                      ? "cursor-not-allowed text-muted-foreground/45"
-                      : "text-muted-foreground hover:text-foreground/80",
+                  "inline-flex h-[22px] items-center justify-center rounded-full px-2 font-medium tracking-tight transition-colors",
+                  disabled
+                    ? "cursor-not-allowed text-muted-foreground/45"
+                    : active
+                      ? "hub-tab-toggle-pill cursor-pointer text-foreground"
+                      : "cursor-pointer text-muted-foreground hover:text-foreground/80",
                 )}
               >
                 {opt.label}

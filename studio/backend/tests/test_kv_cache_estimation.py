@@ -71,7 +71,7 @@ except ImportError:
     )
     sys.modules["httpx"] = _httpx_stub
 
-from core.inference.llama_cpp import LlamaCppBackend
+from core.inference.llama_cpp import _CTX_FIT_VRAM_FRACTION, LlamaCppBackend
 
 # Helpers
 
@@ -1484,8 +1484,8 @@ class TestServerFlags:
         assert fitted < 32_768
 
     def test_fit_mtp_engaged_returns_smaller_or_equal_context(self):
-        # MTP budget is 0.85 of available, non-MTP is 0.90; on a tight
-        # budget MTP must yield <= non-MTP.
+        # Flat MTP fallback budget is _CTX_FIT_VRAM_FRACTION - 0.05; non-MTP is
+        # the full fraction. On a tight budget MTP must yield <= non-MTP.
         b = self._gqa_backend()
         common = dict(
             requested_ctx = 32_768,
@@ -1518,7 +1518,7 @@ class TestServerFlags:
         kv_full = b._estimate_kv_cache_bytes(ctx, "f16", swa_full = True)
         assert kv_full > kv_default
         # Budget = model + kv_default (rounded up) -- swa_full must not fit.
-        budget_mib = (1024 * 1024 + kv_default) / (1024 * 1024) / 0.90 + 1
+        budget_mib = (1024 * 1024 + kv_default) / (1024 * 1024) / _CTX_FIT_VRAM_FRACTION + 1
         fitted_default = b._fit_context_to_vram(
             requested_ctx = ctx,
             available_mib = int(budget_mib),

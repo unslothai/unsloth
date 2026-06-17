@@ -8,6 +8,7 @@ import {
   getJob,
   streamJobEvents,
   uploadKnowledgeBaseDocument,
+  uploadProjectDocument,
   uploadThreadDocument,
 } from "../api/rag-api";
 import type { DocumentStatus, RagDocument } from "../types/rag";
@@ -23,7 +24,8 @@ function fileSignature(file: File): string {
 
 export type RagDocumentScope =
   | { type: "kb"; kbId: string }
-  | { type: "thread"; threadId: string };
+  | { type: "thread"; threadId: string }
+  | { type: "project"; projectId: string };
 
 type Lister = () => Promise<RagDocument[]>;
 
@@ -57,7 +59,9 @@ export function useRagDocuments(
   const scopeKey = scope
     ? scope.type === "kb"
       ? `kb:${scope.kbId}`
-      : `thread:${scope.threadId}`
+      : scope.type === "project"
+        ? `project:${scope.projectId}`
+        : `thread:${scope.threadId}`
     : null;
   const prevScopeKeyRef = useRef<string | null>(null);
 
@@ -81,6 +85,7 @@ export function useRagDocuments(
       const finish = (status: DocumentStatus, error?: string | null) => {
         if (status === "failed") {
           // Drop the chip rather than show "Failed"; warn via toast.
+          sigByDocId.current.delete(documentId);
           setDocuments((rows) => rows.filter((row) => row.id !== documentId));
           toast.error(`Couldn't index ${filename}`, {
             description: error ?? "Indexing failed",
@@ -229,7 +234,9 @@ export function useRagDocuments(
         const result =
           activeScope.type === "kb"
             ? await uploadKnowledgeBaseDocument(activeScope.kbId, file)
-            : await uploadThreadDocument(activeScope.threadId, file);
+            : activeScope.type === "project"
+              ? await uploadProjectDocument(activeScope.projectId, file)
+              : await uploadThreadDocument(activeScope.threadId, file);
         sigByDocId.current.set(result.documentId, fileSignature(file));
         if (seenIds.has(result.documentId)) {
           setDocuments((rows) => rows.filter((row) => row.id !== tempId));

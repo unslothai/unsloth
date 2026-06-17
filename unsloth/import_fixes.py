@@ -49,7 +49,7 @@ def Version(version):
         new_version = str(version)
         new_version = re.match(r"[0-9\.]{1,}", new_version)
         if new_version is None:
-            raise Exception(str(e))
+            raise ValueError(f"Could not parse version: {version}")
         new_version = new_version.group(0).rstrip(".")
         if new_version != version:
             new_version += ".1"  # Add .1 for dev / alpha / beta / rc
@@ -626,6 +626,75 @@ def patch_enable_input_require_grads():
     PreTrainedModel.enable_input_require_grads = _patched_enable_input_require_grads
 
     logger.info("Unsloth: Patched enable_input_require_grads for vision model compatibility")
+
+
+def patch_unsafe_trainer_rng_load():
+    """Harden Trainer._load_rng_state against CVE-2026-1839 (RCE from a malicious
+    rng_state.pth on resume). Hardens only the rng torch.load, via a thread-local
+    flag, so it forces weights_only=True (defeats TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD)
+    and refuses torch < 2.6 (CVE-2025-32434), while rng-less resumes and unrelated
+    torch.load calls are untouched. No-op if transformers is absent or already
+    guards the load (>= 5.0.0rc3)."""
+    if importlib.util.find_spec("transformers") is None:
+        return
+    try:
+        from transformers.trainer import Trainer
+    except Exception:
+        return
+    load_rng_state = getattr(Trainer, "_load_rng_state", None)
+    if load_rng_state is None or getattr(load_rng_state, "_unsloth_safe_rng_load", False):
+        return
+    try:
+        source = inspect.getsource(load_rng_state)
+    except Exception:
+        return
+    if "torch.load" not in source or "check_torch_load_is_safe" in source:
+        return
+
+    import threading, torch
+
+    try:
+        # Older supported transformers (>= 4.51.3) may not export the helper.
+        from transformers.utils.import_utils import check_torch_load_is_safe
+    except Exception:
+
+        def check_torch_load_is_safe():
+            if TrueVersion(torch.__version__.split("+")[0]) < TrueVersion("2.6"):
+                raise RuntimeError(
+                    "Unsloth: refusing to load checkpoint RNG state on torch < 2.6 "
+                    "(CVE-2026-1839 / CVE-2025-32434); upgrade to torch >= 2.6."
+                )
+
+    # Install one process-wide torch.load shim that stays inert unless the calling
+    # thread is inside _load_rng_state, so we gate only at the real rng load with
+    # no global-swap race and no effect on other torch.load callers.
+    if not getattr(torch.load, "_unsloth_rng_guard", False):
+        _orig_load = torch.load
+        _rng_active = threading.local()
+
+        @functools.wraps(_orig_load)
+        def _guarded_torch_load(*args, **kwargs):
+            if getattr(_rng_active, "on", False):
+                check_torch_load_is_safe()  # raises on torch < 2.6 (CVE-2025-32434)
+                kwargs.setdefault("weights_only", True)
+            return _orig_load(*args, **kwargs)
+
+        _guarded_torch_load._unsloth_rng_guard = True
+        _guarded_torch_load._unsloth_rng_flag = _rng_active
+        torch.load = _guarded_torch_load
+    _rng_active = torch.load._unsloth_rng_flag
+
+    @functools.wraps(load_rng_state)
+    def _unsloth_safe_load_rng_state(self, checkpoint):
+        _rng_active.on = True
+        try:
+            return load_rng_state(self, checkpoint)
+        finally:
+            _rng_active.on = False
+
+    _unsloth_safe_load_rng_state._unsloth_safe_rng_load = True
+    Trainer._load_rng_state = _unsloth_safe_load_rng_state
+    logger.info("Unsloth: Hardened Trainer._load_rng_state rng loading (CVE-2026-1839).")
 
 
 def _is_custom_torch_build(raw_version_str):
@@ -2584,3 +2653,93 @@ def maybe_set_windows_rocm_bnb_version():
             "(detected from the installed bitsandbytes ROCm wheel on Windows)."
         )
     return version
+
+
+def patch_accelerate_recursively_apply():
+    """
+    Make Accelerate's recursive utilities tolerate Unsloth's EmptyLogits
+    sentinel. recursively_apply returns the sentinel unchanged instead of
+    raising TypeError, and find_device skips it while still finding real
+    tensors, falling back to PartialState().device only for sentinel-only
+    payloads. Both wrappers are idempotent and are propagated to every
+    already imported accelerate namespace.
+    """
+    try:
+        import accelerate.utils.operations as acc_ops
+    except Exception:
+        return
+
+    original_recursively_apply = getattr(acc_ops, "recursively_apply", None)
+    if original_recursively_apply is not None and not getattr(
+        original_recursively_apply, "__unsloth_patched__", False
+    ):
+
+        @functools.wraps(original_recursively_apply)
+        def _patched_recursively_apply(func, data, *args, **kwargs):
+            if type(data).__name__ == "EmptyLogits":
+                cls = type(data)
+                if cls.__eq__ is object.__eq__:
+                    # Debug mode compares gathered metadata across ranks with ==
+                    cls.__eq__ = lambda self, other: type(other).__name__ == "EmptyLogits"
+                return data
+            return original_recursively_apply(func, data, *args, **kwargs)
+
+        _patched_recursively_apply.__unsloth_patched__ = True
+
+        for mod_name, mod in tuple(sys.modules.items()):
+            if mod_name.startswith("accelerate") and mod is not None:
+                if getattr(mod, "recursively_apply", None) is original_recursively_apply:
+                    try:
+                        setattr(mod, "recursively_apply", _patched_recursively_apply)
+                    except Exception:
+                        pass
+
+    original_find_device = getattr(acc_ops, "find_device", None)
+    if original_find_device is not None and not getattr(
+        original_find_device, "__unsloth_patched__", False
+    ):
+        from collections.abc import Mapping
+
+        @functools.wraps(original_find_device)
+        def _patched_find_device(data):
+            import torch
+
+            found_sentinel = False
+
+            def _search(obj):
+                nonlocal found_sentinel
+                if type(obj).__name__ == "EmptyLogits":
+                    found_sentinel = True
+                elif isinstance(obj, Mapping):
+                    for value in obj.values():
+                        device = _search(value)
+                        if device is not None:
+                            return device
+                elif isinstance(obj, (tuple, list)):
+                    for value in obj:
+                        device = _search(value)
+                        if device is not None:
+                            return device
+                elif isinstance(obj, torch.Tensor):
+                    return obj.device
+                return None
+
+            device = _search(data)
+            if device is None and found_sentinel:
+                # Debug mode calls find_device(...).type on gather/broadcast inputs
+                try:
+                    from accelerate.state import PartialState
+                    return PartialState().device
+                except Exception:
+                    pass
+            return device
+
+        _patched_find_device.__unsloth_patched__ = True
+
+        for mod_name, mod in tuple(sys.modules.items()):
+            if mod_name.startswith("accelerate") and mod is not None:
+                if getattr(mod, "find_device", None) is original_find_device:
+                    try:
+                        setattr(mod, "find_device", _patched_find_device)
+                    except Exception:
+                        pass

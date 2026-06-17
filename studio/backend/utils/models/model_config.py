@@ -25,6 +25,7 @@ from utils.models.gguf_metadata import (
 import structlog
 from loggers import get_logger
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -721,6 +722,25 @@ def is_vision_model(model_name: str, hf_token: Optional[str] = None) -> bool:
         model_name: Model identifier (HF repo or local path)
         hf_token: Optional HF token for gated/private models
     """
+    # Local GGUF models are served by llama-server. Their multimodal
+    # capability comes from a companion mmproj, not a Transformers config.
+    # Do not cache this lookup: a projector may be added beside an existing
+    # weight file after it was first inspected.
+    if is_local_path(model_name):
+        local_path = normalize_path(model_name)
+        gguf_file = detect_gguf_model(local_path)
+        if gguf_file:
+            companion_root = _local_gguf_companion_search_root(local_path, gguf_file)
+            mmproj_file = detect_mmproj_file(gguf_file, search_root = companion_root)
+            is_vision = mmproj_file is not None
+            logger.debug(
+                "Local GGUF vision check for '%s': mmproj=%s, is_vision=%s",
+                gguf_file,
+                mmproj_file,
+                is_vision,
+            )
+            return is_vision
+
     # Normalize model name so different casings of the same repo share a key
     try:
         if is_local_path(model_name):
@@ -1216,7 +1236,9 @@ def detect_gguf_model(path: str) -> Optional[str]:
         # (-m drafter --model-draft drafter). Include the immediate parent
         # dir so the MTP/ subdir copies are caught -- the basename alone
         # (...-MTP.gguf) doesn't match the predicate's mtp- prefix.
-        if _is_mmproj(p.name) or _is_mtp_drafter(f"{p.parent.name}/{p.name}"):
+        rel = f"{p.parent.name}/{p.name}"
+        quant = _extract_quant_label(rel)
+        if _is_mmproj(p.name) or _is_mtp_drafter(rel) or _is_big_endian_gguf_path(rel, quant):
             return None
         # Extension is authoritative: don't gate on is_file()/exists(), which
         # can fail in the Windows lock window after llama-server is killed.
@@ -1230,15 +1252,18 @@ def detect_gguf_model(path: str) -> Optional[str]:
 
     # Case 2: directory containing .gguf files (skip mmproj / MTP drafter)
     if p.is_dir():
-        gguf_files = sorted(
-            (
-                f
-                for f in _iter_gguf_files(p)
-                if not _is_mmproj(f.name) and not _is_mtp_drafter(f"{f.parent.name}/{f.name}")
-            ),
-            key = lambda f: f.stat().st_size,
-            reverse = True,
-        )
+        gguf_files = []
+        for f in _iter_gguf_files(p):
+            context_rel = f"{f.parent.name}/{f.name}"
+            quant = _extract_quant_label(context_rel)
+            if (
+                _is_mmproj(f.name)
+                or _is_mtp_drafter(context_rel)
+                or _is_big_endian_gguf_path(context_rel, quant)
+            ):
+                continue
+            gguf_files.append(f)
+        gguf_files.sort(key = lambda f: f.stat().st_size, reverse = True)
         if gguf_files:
             return str(gguf_files[0].resolve())
 
@@ -1324,6 +1349,7 @@ def _extract_quant_label(filename: str) -> str:
         "model-UD-IQ1_S.gguf"                 → "UD-IQ1_S"
         "model-UD-TQ1_0.gguf"                 → "UD-TQ1_0"
         "MXFP4_MOE/model-MXFP4_MOE-0001.gguf"→ "MXFP4_MOE"
+        "Qwen3.6-IQ4_XS-3.53bpw.gguf"         → "IQ4_XS-3.53bpw"
     """
     import re
 
@@ -1339,6 +1365,10 @@ def _extract_quant_label(filename: str) -> str:
         r"|Q[0-9]+_[0-9]+"  # Standard: Q8_0, Q5_1
         r"|Q[0-9]+_K"  # Short K-quant: Q6_K
         r"|BF16|F16|F32)"  # Full precision
+        # Optional bits-per-weight modifier so repos that ship multiple
+        # files at the same base quant (e.g. byteshape's IQ4_XS at 3.53,
+        # 3.97, 4.19 bpw) don't collapse into a single merged variant.
+        r"(-[0-9]+(?:\.[0-9]+)?bpw)?"
     )
     match = re.search(quant_re, stem, re.IGNORECASE)
     # Subdir layouts like ``BF16/foo.gguf`` keep the quant in the directory,
@@ -1353,9 +1383,77 @@ def _extract_quant_label(filename: str) -> str:
                 break
     if match:
         prefix = match.group(1) or ""
-        return f"{prefix}{match.group(2)}"
+        bpw = match.group(3) or ""
+        return f"{prefix}{match.group(2)}{bpw}"
     # Fallback: last hyphen-separated segment
     return stem.split("-")[-1]
+
+
+_BIG_ENDIAN_GGUF_FILENAME_RE = re.compile(r"(^|[-_])be(?:[._-]|$)", re.IGNORECASE)
+_GGUF_KNOWN_QUANT_RE = re.compile(
+    r"(UD-)?"
+    r"(MXFP[0-9]+(?:_[A-Z0-9]+)*"
+    r"|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?"
+    r"|TQ[0-9]+_[0-9]+"
+    r"|Q[0-9]+_K_[A-Z]+"
+    r"|Q[0-9]+_[0-9]+"
+    r"|Q[0-9]+_K"
+    r"|BF16|F16|F32)",
+    re.IGNORECASE,
+)
+
+
+def _is_big_endian_gguf_path(path: str, quant: str = "") -> bool:
+    normalized = path.replace("\\", "/")
+    name = normalized.rsplit("/", 1)[-1]
+    stem = name.rsplit(".", 1)[0].lower()
+    quant_key = quant.strip().lower()
+    quant_index = stem.find(quant_key) if quant_key else -1
+    parent = normalized.rsplit("/", 1)[0].lower() if "/" in normalized else ""
+    quant_in_parent_only = (
+        bool(parent)
+        and quant_index < 0
+        and (
+            (quant_key and quant_key in parent)
+            or (not quant_key and _GGUF_KNOWN_QUANT_RE.search(parent) is not None)
+        )
+    )
+    for match in _BIG_ENDIAN_GGUF_FILENAME_RE.finditer(stem):
+        if quant_index >= 0 and quant_index < match.start():
+            return True
+        tail = stem[match.end() :].lstrip("._-")
+        if not tail or _GGUF_KNOWN_QUANT_RE.search(tail) is None:
+            return not quant_in_parent_only
+    return False
+
+
+def _local_gguf_companion_search_root(selected_path: str, gguf_file: str) -> str:
+    """Directory to scan upward from for local GGUF companion files."""
+    import re
+
+    selected = Path(selected_path)
+    gguf_path = Path(gguf_file)
+    if selected.suffix.lower() != ".gguf":
+        return selected_path
+
+    gguf_dir = gguf_path.parent
+    if not gguf_dir.name:
+        return str(gguf_dir)
+
+    quant_dir_re = (
+        r"(UD-)?("
+        r"MXFP[0-9]+(?:_[A-Z0-9]+)*"
+        r"|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?"
+        r"|TQ[0-9]+_[0-9]+"
+        r"|Q[0-9]+_K_[A-Z]+"
+        r"|Q[0-9]+_[0-9]+"
+        r"|Q[0-9]+_K"
+        r"|BF16|F16|F32"
+        r")"
+    )
+    if re.fullmatch(quant_dir_re, gguf_dir.name, re.IGNORECASE):
+        return str(gguf_dir.parent)
+    return str(gguf_dir)
 
 
 def _iter_hf_cache_snapshots(repo_id: str):
@@ -1371,12 +1469,11 @@ def _iter_hf_cache_snapshots(repo_id: str):
         return
 
     cache_dir = Path(hf_constants.HF_HUB_CACHE)
-    if not cache_dir.is_dir():
-        return
-
     target = f"models--{repo_id.replace('/', '--')}".lower()
     repo_dir: Optional[Path] = None
     try:
+        if not cache_dir.is_dir():
+            return
         for entry in cache_dir.iterdir():
             if entry.is_dir() and entry.name.lower() == target:
                 repo_dir = entry
@@ -1387,10 +1484,9 @@ def _iter_hf_cache_snapshots(repo_id: str):
         return
 
     snapshots = repo_dir / "snapshots"
-    if not snapshots.is_dir():
-        return
-
     try:
+        if not snapshots.is_dir():
+            return
         snap_dirs = [s for s in snapshots.iterdir() if s.is_dir()]
     except OSError:
         return
@@ -1470,6 +1566,8 @@ def list_gguf_variants(
             continue
 
         quant = _extract_quant_label(fname)
+        if _is_big_endian_gguf_path(fname, quant):
+            continue
         quant_totals[quant] = quant_totals.get(quant, 0) + size
         if quant not in quant_first_file:
             quant_first_file[quant] = fname
@@ -1546,6 +1644,8 @@ def list_local_gguf_variants(directory: str) -> tuple[list[GgufVariantInfo], boo
         if _is_mtp_drafter(rel):
             continue
         quant = _extract_quant_label(rel)
+        if _is_big_endian_gguf_path(rel, quant):
+            continue
         quant_totals[quant] = quant_totals.get(quant, 0) + size
         if quant not in quant_first_file:
             quant_first_file[quant] = rel
@@ -1578,13 +1678,16 @@ def _find_local_gguf_by_variant(directory: str, variant: str) -> Optional[str]:
     # ``BF16/foo-BF16-00001-of-00002.gguf``) are found. Match the relative
     # path so the quant label can come from the dir name when the basename
     # omits it.
-    matches = sorted(
-        f
-        for f in _iter_gguf_files(p, recursive = True)
-        if not _is_mmproj(f.name)
-        and not _is_mtp_drafter(f.relative_to(p).as_posix())
-        and _extract_quant_label(f.relative_to(p).as_posix()) == variant
-    )
+    matches = []
+    for f in _iter_gguf_files(p, recursive = True):
+        rel = f.relative_to(p).as_posix()
+        if _is_mmproj(f.name) or _is_mtp_drafter(rel):
+            continue
+        quant = _extract_quant_label(rel)
+        if quant != variant or _is_big_endian_gguf_path(rel, quant):
+            continue
+        matches.append(f)
+    matches.sort()
     if matches:
         return str(matches[0].resolve())
     return None
@@ -1597,11 +1700,13 @@ def _detect_gguf_from_hf_cache(repo_id: str) -> Optional[str]:
     the projector cannot route it as the main model.
     """
     for snap in _iter_hf_cache_snapshots(repo_id):
-        rel_files = [
-            rel
-            for f in _iter_gguf_files(snap, recursive = True)
-            if not _is_mtp_drafter(rel := f.relative_to(snap).as_posix()) and not _is_mmproj(f.name)
-        ]
+        rel_files = []
+        for f in _iter_gguf_files(snap, recursive = True):
+            rel = f.relative_to(snap).as_posix()
+            quant = _extract_quant_label(rel)
+            if _is_mmproj(f.name) or _is_mtp_drafter(rel) or _is_big_endian_gguf_path(rel, quant):
+                continue
+            rel_files.append(rel)
         if rel_files:
             return _pick_best_gguf(rel_files)
     return None
@@ -1626,7 +1731,19 @@ def detect_gguf_model_remote(repo_id: str, hf_token: Optional[str] = None) -> Op
     for attempt in range(3):
         try:
             info = hf_model_info(repo_id, token = hf_token)
-            repo_files = [s.rfilename for s in info.siblings]
+            repo_files = []
+            for sibling in info.siblings:
+                fname = sibling.rfilename
+                if not fname.lower().endswith(".gguf"):
+                    continue
+                quant = _extract_quant_label(fname)
+                if (
+                    _is_mmproj(fname)
+                    or _is_mtp_drafter(fname)
+                    or _is_big_endian_gguf_path(fname, quant)
+                ):
+                    continue
+                repo_files.append(fname)
             return _pick_best_gguf(repo_files)
         except Exception as e:
             last_err = e
@@ -2277,10 +2394,10 @@ class ModelConfig:
                     except Exception as e:
                         logger.debug(f"Could not read export metadata: {e}")
 
-                # Pass search_root=path so detect_mmproj_file walks up to the
-                # snapshot root: the weight may sit in a quant subdir while
-                # mmproj-*.gguf lives at the root.
-                mmproj_file = detect_mmproj_file(gguf_file, search_root = path)
+                # Direct file selections may point into a quant subdir while
+                # mmproj-*.gguf lives at the snapshot root.
+                companion_root = _local_gguf_companion_search_root(path, gguf_file)
+                mmproj_file = detect_mmproj_file(gguf_file, search_root = companion_root)
                 if mmproj_file:
                     gguf_is_vision = True
                     logger.info(f"Detected mmproj for vision: {mmproj_file}")
@@ -2288,7 +2405,7 @@ class ModelConfig:
                     logger.warning(f"Base model is vision but no mmproj file found in {gguf_dir}")
 
                 # Separate MTP drafter sibling (Gemma 4), mirroring mmproj.
-                mtp_file = detect_mtp_file(gguf_file, search_root = path)
+                mtp_file = detect_mtp_file(gguf_file, search_root = companion_root)
                 if mtp_file:
                     logger.info(f"Detected MTP drafter: {mtp_file}")
 
@@ -2309,10 +2426,13 @@ class ModelConfig:
             # Does the HF repo contain GGUF files?
             gguf_filename = detect_gguf_model_remote(identifier, hf_token = hf_token)
             if gguf_filename:
-                # Preflight: verify llama-server binary exists before a multi-GB download
+                # Preflight: verify llama-server binary exists before a multi-GB
+                # download. include_denied: a transiently locked binary still
+                # exists (the lock clears long before the download finishes; the
+                # load itself reports a still-locked binary distinctly).
                 from core.inference.llama_cpp import LlamaCppBackend
 
-                if not LlamaCppBackend._find_llama_server_binary():
+                if not LlamaCppBackend._find_llama_server_binary(include_denied = True):
                     raise RuntimeError(
                         "llama-server binary not found — cannot load GGUF models. "
                         "Run setup.sh to build it, or set LLAMA_SERVER_PATH."
@@ -2477,6 +2597,15 @@ class ModelConfig:
             if resolved_identifier != identifier:
                 identifier = resolved_identifier
                 path = resolved_identifier
+
+        # Keep existing local GGUF selections on the llama-server path. This
+        # constructor is still used by older inference helpers and must not
+        # describe a .gguf weight file as loadable by FastVisionModel.
+        if is_local and not is_lora and detect_gguf_model(path):
+            gguf_config = cls.from_identifier(path, hf_token = hf_token)
+            if gguf_config is not None:
+                gguf_config.display_name = display_name
+                return gguf_config
 
         # --- Base Model and Vision Detection ---
         base_model = None

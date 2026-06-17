@@ -82,18 +82,21 @@ def _write_install(
     tag: str,
     repo: str = "unslothai/llama.cpp",
     asset: str | None = None,
+    release_tag: str | None = None,
 ) -> str:
     """Create a fake prebuilt install tree and return the llama-server path.
 
     ``asset`` is the bundle filename recorded in the marker; omit it to model an
-    older marker that predates asset-based ROCm forwarding (backward compat)."""
+    older marker that predates asset-based ROCm forwarding (backward compat).
+    ``release_tag`` is the full release tag (e.g. a ``b9596-mix-<sha>`` mix
+    build); defaults to ``tag`` for a plain prebuilt."""
     bin_dir = dir_ / "build" / "bin"
     bin_dir.mkdir(parents = True, exist_ok = True)
     binary = bin_dir / "llama-server"
     binary.write_text("#!/bin/sh\necho stub\n")
     marker = {
         "tag": tag,
-        "release_tag": tag,
+        "release_tag": release_tag or tag,
         "published_repo": repo,
         "installed_at_utc": "2020-01-01T00:00:00Z",
         "bundle_profile": "cuda13-newer",
@@ -106,10 +109,13 @@ def _write_install(
 
 
 @pytest.fixture(autouse = True)
-def _clean_state(monkeypatch):
+def _clean_state(monkeypatch, tmp_path):
     freshness.reset_caches()
     upd._reset_job_for_tests()
     upd._resolve_memo.clear()
+    # Isolate the freshness disk cache so the suite never writes the real
+    # ~/.unsloth cache (the default when storage_roots can't be imported).
+    monkeypatch.setattr(freshness, "_cache_dir", lambda: tmp_path / ".freshness_cache")
     # Deterministic markerless paths: no host-pinned binary, no custom dir.
     monkeypatch.delenv("LLAMA_SERVER_PATH", raising = False)
     monkeypatch.delenv("UNSLOTH_LLAMA_CPP_PATH", raising = False)
@@ -227,6 +233,39 @@ def test_status_source_build_suppressed_when_newer(monkeypatch, tmp_path):
     assert st["installed_tag"] == "b9600"
 
 
+def test_status_source_build_offers_same_base_mix(monkeypatch, tmp_path):
+    # The reported banner bug: a source build at the same upstream base as a new
+    # Unsloth prebuilt that adds a mix-<sha> suffix. The base build numbers match
+    # (9596 == 9596) but the mix carries extra patches the source build lacks, so
+    # the update must still surface -- mirroring the marker path's is_behind.
+    binary = tmp_path / "llama.cpp" / "build" / "bin" / "llama-server"
+    binary.parent.mkdir(parents = True)
+    binary.write_text("stub")
+    monkeypatch.setattr(upd, "_find_binary", lambda: str(binary))
+    _prebuilt(monkeypatch, release_tag = "b9596-mix-e6f2453", llama_tag = "b9596")
+    monkeypatch.setattr(upd, "_installed_build_number", lambda b: 9596)
+    st = upd.get_update_status()
+    assert st["supported"] is True
+    assert st["update_available"] is True
+    assert st["source_build"] is True
+    assert st["installed_tag"] == "b9596"
+    assert st["latest_tag"] == "b9596-mix-e6f2453"
+
+
+def test_status_source_build_same_base_bare_not_offered(monkeypatch, tmp_path):
+    # Same base, but the prebuilt is a bare rebuild (no mix suffix): nothing extra
+    # to gain, so do not nag.
+    binary = tmp_path / "llama.cpp" / "build" / "bin" / "llama-server"
+    binary.parent.mkdir(parents = True)
+    binary.write_text("stub")
+    monkeypatch.setattr(upd, "_find_binary", lambda: str(binary))
+    _prebuilt(monkeypatch, release_tag = "b9596", llama_tag = "b9596")
+    monkeypatch.setattr(upd, "_installed_build_number", lambda b: 9596)
+    st = upd.get_update_status()
+    assert st["update_available"] is False
+    assert st["latest_tag"] == "b9596"
+
+
 def test_status_source_build_skips_probe_while_job_runs(monkeypatch, tmp_path):
     # While the updater swaps the tree, status polls must not exec the binary
     # being replaced (on Windows that exec can fail the installer's os.replace);
@@ -252,6 +291,33 @@ def test_status_source_build_skips_probe_while_job_runs(monkeypatch, tmp_path):
     st = upd.get_update_status()
     assert st["job"]["state"] == "running"
     assert probes == {"resolve": 0, "version": 0}
+
+
+def test_installed_version_skips_probe_while_job_runs(monkeypatch, tmp_path):
+    # Markerless build: get_installed_llama_version falls back to exec'ing
+    # `llama-server --version`. While the updater swaps the tree that exec can
+    # fail the installer's os.replace on Windows, so the About-panel probe must
+    # be skipped (return None) exactly like get_update_status's source probe.
+    binary = tmp_path / "build" / "bin" / "llama-server"
+    binary.parent.mkdir(parents = True)
+    binary.write_text("stub")  # markerless: no UNSLOTH_PREBUILT_INFO.json
+    monkeypatch.setattr(upd, "_find_binary", lambda: str(binary))
+    probed = {"n": 0}
+
+    def _count_version(b):
+        probed["n"] += 1
+        return 9585
+
+    monkeypatch.setattr(upd, "_installed_build_number", _count_version)
+
+    with upd._job_lock:
+        upd._job["state"] = upd._JOB_RUNNING
+    assert upd.get_installed_llama_version() is None
+    assert probed["n"] == 0  # never exec'd the binary mid-swap
+
+    upd._reset_job_for_tests()  # back to idle -> probe runs
+    assert upd.get_installed_llama_version() == "b9585"
+    assert probed["n"] == 1
 
 
 def test_status_update_available(monkeypatch, tmp_path):
@@ -395,6 +461,7 @@ def test_start_update_installer_failure_reports_error(monkeypatch, tmp_path):
     binary = _write_install(install_dir, "b9493")
     monkeypatch.setattr(upd, "_find_binary", lambda: binary)
     monkeypatch.setattr(upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py")
+    monkeypatch.setattr(freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9518")
 
     _patch_installer_popen(monkeypatch, returncode = 2, lines = ["boom: network error\n"])
 
@@ -413,8 +480,8 @@ def test_start_update_installer_failure_reports_error(monkeypatch, tmp_path):
 # --- installer-argument construction (mirrors the post-#5963 setup scripts) ---
 
 
-def test_rocm_install_args_lemonade_gfx():
-    # Lemonade HIP app bundle: gfx family lives in the asset name.
+def test_rocm_install_args_gfx_family():
+    # Per-gfx ROCm bundle: gfx family lives in the asset name.
     assert upd._rocm_install_args("app-b9585-linux-x64-rocm-gfx110X.tar.gz") == [
         "--rocm-gfx",
         "gfx110x",
@@ -617,6 +684,7 @@ def test_update_clears_maintenance_flag_on_installer_failure(monkeypatch, tmp_pa
     binary = _write_install(install_dir, "b9493")
     monkeypatch.setattr(upd, "_find_binary", lambda: binary)
     monkeypatch.setattr(upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py")
+    monkeypatch.setattr(freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9518")
 
     backend = _FakeBackend()
     _inject_backend(monkeypatch, backend)
@@ -792,6 +860,44 @@ def test_start_update_source_build_refuses_when_newer(monkeypatch, tmp_path):
     monkeypatch.setattr(upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py")
     _prebuilt(monkeypatch, release_tag = "b9518")
     monkeypatch.setattr(upd, "_installed_build_number", lambda b: 9600)
+    res = upd.start_update()
+    assert res["started"] is False
+    assert res["reason"] == "up_to_date"
+
+
+# --- mix-tag detection + apply guard (the reported banner bug) ---
+
+
+def test_status_not_offered_on_mix_latest(monkeypatch, tmp_path):
+    # Installed the mix latest; GitHub latest is that same full tag -> no banner.
+    binary = _write_install(tmp_path / "llama.cpp", "b9596", release_tag = "b9596-mix-e6f2453")
+    monkeypatch.setattr(upd, "_find_binary", lambda: binary)
+    monkeypatch.setattr(
+        freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9596-mix-e6f2453"
+    )
+    st = upd.get_update_status()
+    assert st["update_available"] is False
+    assert st["installed_tag"] == "b9596"
+    assert st["latest_tag"] == "b9596-mix-e6f2453"
+
+
+def test_status_not_offered_when_latest_lags(monkeypatch, tmp_path):
+    # A lagging latest (older build than installed) must never be offered.
+    binary = _write_install(tmp_path / "llama.cpp", "b9585")
+    monkeypatch.setattr(upd, "_find_binary", lambda: binary)
+    monkeypatch.setattr(freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9518")
+    st = upd.get_update_status()
+    assert st["update_available"] is False
+
+
+def test_start_update_marked_refuses_when_not_behind(monkeypatch, tmp_path):
+    # A direct POST / stale banner must not reinstall when already on the latest.
+    binary = _write_install(tmp_path / "llama.cpp", "b9596", release_tag = "b9596-mix-e6f2453")
+    monkeypatch.setattr(upd, "_find_binary", lambda: binary)
+    monkeypatch.setattr(upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py")
+    monkeypatch.setattr(
+        freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9596-mix-e6f2453"
+    )
     res = upd.start_update()
     assert res["started"] is False
     assert res["reason"] == "up_to_date"

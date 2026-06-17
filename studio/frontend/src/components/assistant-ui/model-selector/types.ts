@@ -31,6 +31,9 @@ export interface ModelSelectorChangeMeta {
   ggufVariant?: string;
   isDownloaded?: boolean;
   expectedBytes?: number;
+  /** Direct local .gguf file picked without a variant (custom folder / LM
+   *  Studio). Marks it as a GGUF source for the deferred-load staging flow. */
+  isGguf?: boolean;
 }
 
 export interface DeletedModelRef {

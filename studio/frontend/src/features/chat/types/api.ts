@@ -56,6 +56,11 @@ export interface LoadModelRequest {
    * when speculative_type resolves to "mtp" or "mtp+ngram".
    */
   spec_draft_n_max?: number | null;
+  /**
+   * Split the model across GPUs by tensor (--split-mode tensor) instead
+   * of by layer for GGUF models. Multi-GPU only; no effect on a single GPU.
+   */
+  tensor_parallel?: boolean | null;
 }
 
 export interface ValidateModelResponse {
@@ -67,6 +72,8 @@ export interface ValidateModelResponse {
   is_lora?: boolean;
   is_vision?: boolean;
   requires_trust_remote_code?: boolean;
+  /** Native context length from the local GGUF header; null until downloaded. */
+  context_length?: number | null;
 }
 
 export interface GgufVariantDetail {
@@ -109,6 +116,7 @@ export interface LoadModelResponse {
   is_vision: boolean;
   is_lora: boolean;
   is_gguf?: boolean;
+  is_diffusion?: boolean;
   is_audio?: boolean;
   audio_type?: string | null;
   has_audio_input?: boolean;
@@ -134,6 +142,8 @@ export interface LoadModelResponse {
   /** Canonical UI-facing mode the load request resolved to. See LoadModelRequest. */
   speculative_type?: string | null;
   spec_draft_n_max?: number | null;
+  /** Whether tensor-parallel split (--split-mode tensor) is active. */
+  tensor_parallel?: boolean;
 }
 
 export interface UnloadModelRequest {
@@ -145,6 +155,7 @@ export interface InferenceStatusResponse {
   model_identifier?: string | null;
   is_vision: boolean;
   is_gguf?: boolean;
+  is_diffusion?: boolean;
   gguf_variant?: string | null;
   is_audio?: boolean;
   audio_type?: string | null;
@@ -174,12 +185,46 @@ export interface InferenceStatusResponse {
   /** Canonical UI-facing mode currently active. See LoadModelRequest. */
   speculative_type?: string | null;
   spec_draft_n_max?: number | null;
+  /** Whether tensor-parallel split (--split-mode tensor) is active. */
+  tensor_parallel?: boolean;
   /**
    * Why MTP was disabled on the loaded model despite being requested.
    * "binary_no_mtp" / "binary_outdated" -> updating llama.cpp would re-enable
    * it; "runtime_error" -> the current build could not run it. Null otherwise.
    */
   spec_fallback_reason?: string | null;
+}
+
+export interface ApiMonitorEntry {
+  id: string;
+  endpoint: string;
+  method: string;
+  model: string;
+  prompt?: string;
+  reply?: string;
+  prompt_preview: string;
+  reply_preview: string;
+  prompt_truncated: boolean;
+  reply_truncated: boolean;
+  status: "running" | "completed" | "cancelled" | "error";
+  started_at: number;
+  updated_at: number;
+  finished_at?: number | null;
+  duration_ms?: number | null;
+  context_length?: number | null;
+  context_usage?: number | null;
+  prompt_tokens?: number | null;
+  completion_tokens?: number | null;
+  total_tokens?: number | null;
+  error?: string | null;
+}
+
+export interface ApiMonitorResponse {
+  status: "idle" | "ready" | "generating";
+  active_model?: string | null;
+  context_length?: number | null;
+  active_requests: number;
+  entries: ApiMonitorEntry[];
 }
 
 export interface AudioGenerationResponse {
@@ -278,13 +323,17 @@ export interface OpenAIChatCompletionsRequest {
     | "xhigh"
     | null;
   preserve_thinking?: boolean | null;
+  thinking?: {type: "disabled" | "enabled";} | null;
   enable_tools?: boolean | null;
   enabled_tools?: string[];
   /** Local models + enable_tools only. */
   mcp_enabled?: boolean;
-  /** Exactly one of `kb_id` (a KB) or `thread_id` (thread docs). */
+  /** Local models + enable_tools only. */
+  confirm_tool_calls?: boolean;
+  /** `kb_id` is exclusive; otherwise project and thread scopes may combine. */
   rag_scope?: {
     kb_id?: string;
+    project_id?: string;
     thread_id?: string;
     default_top_k: number;
     mode: "hybrid" | "lexical" | "dense";

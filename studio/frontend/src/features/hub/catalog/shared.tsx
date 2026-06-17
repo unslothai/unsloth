@@ -3,15 +3,24 @@
 
 import {
   BrainIcon,
+  Chat01Icon,
   CodeIcon,
   GlobeIcon,
   HeadphonesIcon,
+  LockIcon,
+  LockKeyIcon,
   SparklesIcon,
   ViewIcon,
   Wrench01Icon,
 } from "@hugeicons/core-free-icons";
 import type { IconSvgElement } from "@hugeicons/react";
 import { HugeiconsIcon } from "@hugeicons/react";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import { cn } from "@/lib/utils";
 import type { Capability, CapabilityKey } from "../lib/model-capabilities";
 
 const CAPABILITY_ICON: Record<CapabilityKey, IconSvgElement> = {
@@ -22,13 +31,13 @@ const CAPABILITY_ICON: Record<CapabilityKey, IconSvgElement> = {
   code: CodeIcon,
   embedding: SparklesIcon,
   multilingual: GlobeIcon,
+  conversational: Chat01Icon,
 };
 
 const CAPABILITY_TONE: Record<CapabilityKey, string> = {
   vision:
     "bg-indigo-500/10 text-indigo-700 dark:bg-indigo-400/20 dark:text-indigo-300",
-  audio:
-    "bg-rose-500/10 text-rose-700 dark:bg-rose-400/20 dark:text-rose-300",
+  audio: "bg-rose-500/10 text-rose-700 dark:bg-rose-400/20 dark:text-rose-300",
   tools:
     "bg-amber-500/10 text-amber-800 dark:bg-amber-400/20 dark:text-amber-300",
   reasoning:
@@ -38,19 +47,121 @@ const CAPABILITY_TONE: Record<CapabilityKey, string> = {
     "bg-emerald-500/10 text-emerald-700 dark:bg-emerald-400/20 dark:text-emerald-300",
   multilingual:
     "bg-sky-500/10 text-sky-700 dark:bg-sky-400/20 dark:text-sky-300",
+  conversational:
+    "bg-fuchsia-500/10 text-fuchsia-700 dark:bg-fuchsia-400/20 dark:text-fuchsia-300",
 };
 
-export function CapabilityPill({ capability }: { capability: Capability }) {
+export function AccessChip({ label }: { label: string }) {
   return (
+    <span className="inline-flex h-6 shrink-0 items-center rounded-full border border-amber-500/30 bg-amber-500/8 px-2 text-[11px] font-medium leading-none text-amber-700 dark:text-amber-300">
+      {label}
+    </span>
+  );
+}
+
+function isGatedAccess(
+  gated: false | "auto" | "manual" | undefined,
+): boolean {
+  return gated !== false && gated !== undefined;
+}
+
+function AccessGlyph({
+  icon,
+  label,
+  tooltip,
+  className,
+}: {
+  icon: IconSvgElement;
+  label: string;
+  tooltip: boolean;
+  className: string;
+}) {
+  const glyph = (
     <span
-      className={`inline-flex h-6 items-center gap-1.5 rounded-full px-2.5 text-[11.5px] font-medium ${CAPABILITY_TONE[capability.key]}`}
+      role="img"
+      aria-label={label}
+      className={cn("inline-flex shrink-0", className)}
+    >
+      <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-3" />
+    </span>
+  );
+  if (!tooltip) return glyph;
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild={true}>{glyph}</TooltipTrigger>
+      <TooltipContent side="top" className="tooltip-compact">
+        {label}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+export function AccessGlyphs({
+  gated,
+  isPrivate,
+  tooltip = true,
+}: {
+  gated?: false | "auto" | "manual";
+  isPrivate?: boolean;
+  tooltip?: boolean;
+}) {
+  const gatedAccess = isGatedAccess(gated);
+  if (!gatedAccess && !isPrivate) return null;
+  return (
+    <>
+      {isPrivate && (
+        <AccessGlyph
+          icon={LockIcon}
+          label="Private"
+          tooltip={tooltip}
+          className="text-muted-foreground/70"
+        />
+      )}
+      {gatedAccess && (
+        <AccessGlyph
+          icon={LockKeyIcon}
+          label="Gated"
+          tooltip={tooltip}
+          className="text-amber-600 dark:text-amber-400"
+        />
+      )}
+    </>
+  );
+}
+
+export function CapabilityPill({
+  capability,
+  iconOnly = false,
+  tooltip = true,
+}: {
+  capability: Capability;
+  iconOnly?: boolean;
+  tooltip?: boolean;
+}) {
+  const pill = (
+    <span
+      aria-label={iconOnly ? capability.label : undefined}
+      className={cn(
+        "inline-flex h-6 shrink-0 items-center rounded-full text-[11.5px] font-medium",
+        iconOnly ? "w-6 justify-center px-0" : "gap-1.5 px-2.5",
+        CAPABILITY_TONE[capability.key],
+      )}
     >
       <HugeiconsIcon
         icon={CAPABILITY_ICON[capability.key]}
         strokeWidth={1.75}
         className="size-3"
       />
-      {capability.label}
+      {!iconOnly && capability.label}
     </span>
+  );
+  if (!iconOnly || !tooltip) return pill;
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild={true}>{pill}</TooltipTrigger>
+      <TooltipContent side="top" className="tooltip-compact">
+        {capability.label}
+      </TooltipContent>
+    </Tooltip>
   );
 }

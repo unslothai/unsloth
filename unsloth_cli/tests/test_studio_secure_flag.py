@@ -1,0 +1,294 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Tests for the `--secure/--not-secure` Studio flag: option registration,
+re-exec/run_server forwarding, the forced 127.0.0.1 bind, and rejection
+alongside --no-cloudflare or before a subcommand. Modeled on
+test_studio_cloudflare_flag.py."""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+import pytest
+from typer.testing import CliRunner
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+
+def _studio():
+    from unsloth_cli.commands import studio as _studio_mod
+    return _studio_mod
+
+
+_BASE = ["--model", "unsloth/Qwen3-1.7B-GGUF"]
+
+
+# ── option registration ──────────────────────────────────────────────
+
+
+def test_run_exposes_secure_option_default_off():
+    import inspect
+
+    opt = inspect.signature(_studio().run).parameters["secure"].default
+    decls = set(getattr(opt, "param_decls", []) or [])
+    assert "--secure/--not-secure" in decls
+    assert getattr(opt, "default", None) is False
+
+
+def test_studio_default_exposes_secure_option_default_off():
+    import inspect
+
+    opt = inspect.signature(_studio().studio_default).parameters["secure"].default
+    decls = set(getattr(opt, "param_decls", []) or [])
+    assert "--secure/--not-secure" in decls
+    assert getattr(opt, "default", None) is False
+
+
+# ── re-exec capture plumbing (mirrors test_studio_cloudflare_flag.py) ─
+
+
+class _ExecCaptured(SystemExit):
+    def __init__(self, argv):
+        super().__init__(0)
+        self.argv = list(argv)
+
+
+def _install_run_reexec_capture(monkeypatch):
+    studio_mod = _studio()
+    captured = []
+    monkeypatch.setattr(sys, "prefix", "/nonexistent/outer/venv")
+    fake_venv = Path("/fake/studio/venv/unsloth_studio")
+    monkeypatch.setattr(studio_mod, "_studio_venv_python", lambda: fake_venv / "bin" / "python")
+    fake_bin = fake_venv / "bin" / "unsloth"
+    real_is_file = Path.is_file
+    monkeypatch.setattr(
+        Path,
+        "is_file",
+        lambda self: True if str(self) == str(fake_bin) else real_is_file(self),
+    )
+    from unsloth_cli import _tool_policy as _tp_mod
+
+    monkeypatch.setattr(
+        _tp_mod,
+        "resolve_tool_policy",
+        lambda host, flag, yes, silent: False if flag is None else bool(flag),
+    )
+    monkeypatch.setattr(sys, "platform", "linux")
+
+    def fake_execvp(file, argv):
+        captured.append(list(argv))
+        raise _ExecCaptured(argv)
+
+    monkeypatch.setattr(studio_mod.os, "execvp", fake_execvp)
+    return captured
+
+
+def _invoke_run(monkeypatch, args):
+    import typer as _typer
+
+    captured = _install_run_reexec_capture(monkeypatch)
+    app = _typer.Typer()
+    app.command(
+        context_settings = {"allow_extra_args": True, "ignore_unknown_options": True},
+    )(_studio().run)
+    CliRunner().invoke(app, args, catch_exceptions = True)
+    return captured
+
+
+def _invoke_studio_default(monkeypatch, args):
+    import typer as _typer
+
+    studio_mod = _studio()
+    captured = []
+    monkeypatch.setattr(sys, "prefix", "/nonexistent/outer/venv")
+    monkeypatch.setattr(studio_mod, "_ensure_studio_env_exported", lambda: None)
+    fake_venv = Path("/fake/studio/venv/unsloth_studio")
+    monkeypatch.setattr(studio_mod, "_studio_venv_python", lambda: fake_venv / "bin" / "python")
+    monkeypatch.setattr(studio_mod, "_find_run_py", lambda: Path("/fake/studio/run.py"))
+    monkeypatch.setattr(studio_mod, "_find_frontend_dist", lambda: None)
+    monkeypatch.setattr(sys, "platform", "linux")
+
+    def fake_execvp(file, argv):
+        captured.append(list(argv))
+        raise _ExecCaptured(argv)
+
+    monkeypatch.setattr(studio_mod.os, "execvp", fake_execvp)
+    app = _typer.Typer()
+    app.command()(studio_mod.studio_default)
+    CliRunner().invoke(app, args, catch_exceptions = True)
+    return captured
+
+
+# ── re-exec forwarding ────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "user_flag,expected,unexpected",
+    [
+        (None, "--not-secure", "--secure"),  # default off
+        ("--secure", "--secure", "--not-secure"),
+        ("--not-secure", "--not-secure", "--secure"),
+    ],
+)
+def test_run_reexec_forwards_secure_polarity(monkeypatch, user_flag, expected, unexpected):
+    extras = [user_flag] if user_flag else []
+    captured = _invoke_run(monkeypatch, _BASE + extras)
+    assert len(captured) == 1, captured
+    argv = captured[0]
+    assert expected in argv and unexpected not in argv, argv
+
+
+def test_run_secure_forces_localhost_in_reexec(monkeypatch):
+    # `unsloth studio run -H 0.0.0.0 --secure` must re-exec with --host 127.0.0.1.
+    captured = _invoke_run(monkeypatch, _BASE + ["-H", "0.0.0.0", "--secure"])
+    assert len(captured) == 1, captured
+    argv = captured[0]
+    assert "--secure" in argv
+    assert argv[argv.index("--host") + 1] == "127.0.0.1", argv
+
+
+def test_studio_default_reexec_forwards_secure(monkeypatch):
+    captured = _invoke_studio_default(monkeypatch, ["-H", "0.0.0.0", "--secure"])
+    assert len(captured) == 1, captured
+    argv = captured[0]
+    assert "--secure" in argv
+    # studio_default also forces the loopback bind under --secure.
+    assert argv[argv.index("--host") + 1] == "127.0.0.1", argv
+
+
+# ── in-venv path forwards secure + forced host into run_server ────────
+
+
+class _RunServerCaptured(SystemExit):
+    def __init__(self, kwargs):
+        super().__init__(0)
+        self.kwargs = dict(kwargs)
+
+
+def test_run_in_venv_passes_secure_and_forces_host(monkeypatch):
+    import types
+
+    studio_mod = _studio()
+    fake_venv = Path("/fake/studio/venv/unsloth_studio")
+    monkeypatch.setattr(sys, "prefix", str(fake_venv))
+    monkeypatch.setattr(studio_mod, "STUDIO_HOME", fake_venv.parent)
+
+    from unsloth_cli import _tool_policy as _tp_mod
+
+    monkeypatch.setattr(
+        _tp_mod,
+        "resolve_tool_policy",
+        lambda host, flag, yes, silent: False if flag is None else bool(flag),
+    )
+
+    captured: dict = {}
+
+    def fake_run_server(**kwargs):
+        captured.update(kwargs)
+        raise _RunServerCaptured(kwargs)
+
+    fake_backend_run = sys.modules.setdefault(
+        "studio.backend.run", types.ModuleType("studio.backend.run")
+    )
+    fake_backend_run.run_server = fake_run_server
+    fake_backend_run._resolve_external_ip = lambda: "127.0.0.1"
+    monkeypatch.setattr(studio_mod, "_RUN_MODULE", fake_backend_run)
+
+    import typer as _typer
+
+    app = _typer.Typer()
+    app.command(
+        context_settings = {"allow_extra_args": True, "ignore_unknown_options": True},
+    )(studio_mod.run)
+    CliRunner().invoke(app, _BASE + ["-H", "0.0.0.0", "--secure"], catch_exceptions = True)
+
+    assert captured.get("secure") is True, captured
+    assert captured.get("host") == "127.0.0.1", captured
+
+
+# ── --secure + --no-cloudflare is rejected ───────────────────────────
+
+
+def test_run_secure_rejects_no_cloudflare(monkeypatch):
+    studio_mod = _studio()
+    import typer as _typer
+
+    app = _typer.Typer()
+    app.command(
+        context_settings = {"allow_extra_args": True, "ignore_unknown_options": True},
+    )(studio_mod.run)
+    result = CliRunner().invoke(app, _BASE + ["--secure", "--no-cloudflare"])
+    assert result.exit_code == 2, result.output
+
+
+def test_studio_default_rejects_secure_with_subcommand():
+    import typer as _typer
+
+    studio_mod = _studio()
+    app = _typer.Typer()
+    app.add_typer(studio_mod.studio_app, name = "studio")
+    result = CliRunner().invoke(app, ["studio", "--secure", "run", "--model", "X"])
+    assert result.exit_code == 2, result.output
+    combined = (result.output or "") + (getattr(result, "stderr", "") or "")
+    assert "--secure" in combined, combined
+
+
+# ── secure resolves tools against the PUBLIC exposure, not the loopback bind ──
+
+
+def test_run_secure_resolves_tools_against_public_host(monkeypatch):
+    # --secure is public via the tunnel, so tools resolve against 0.0.0.0 (OFF), not loopback (ON).
+    studio_mod = _studio()
+    monkeypatch.setattr(sys, "prefix", "/nonexistent/outer/venv")
+    fake_venv = Path("/fake/studio/venv/unsloth_studio")
+    monkeypatch.setattr(studio_mod, "_studio_venv_python", lambda: fake_venv / "bin" / "python")
+    fake_bin = fake_venv / "bin" / "unsloth"
+    real_is_file = Path.is_file
+    monkeypatch.setattr(
+        Path,
+        "is_file",
+        lambda self: True if str(self) == str(fake_bin) else real_is_file(self),
+    )
+    monkeypatch.setattr(sys, "platform", "linux")
+
+    from unsloth_cli import _tool_policy as _tp_mod
+
+    calls = []
+
+    def rec(host, flag, yes, silent):
+        calls.append(host)
+        return (not _tp_mod.is_external_host(host)) if flag is None else bool(flag)
+
+    monkeypatch.setattr(_tp_mod, "resolve_tool_policy", rec)
+
+    captured = []
+
+    def fake_execvp(file, argv):
+        captured.append(list(argv))
+        raise _ExecCaptured(argv)
+
+    monkeypatch.setattr(studio_mod.os, "execvp", fake_execvp)
+
+    import typer as _typer
+
+    app = _typer.Typer()
+    app.command(
+        context_settings = {"allow_extra_args": True, "ignore_unknown_options": True},
+    )(studio_mod.run)
+    CliRunner().invoke(app, _BASE + ["-H", "0.0.0.0", "--secure"], catch_exceptions = True)
+
+    assert calls and calls[0] == "0.0.0.0", calls
+    assert len(captured) == 1, captured
+    assert "--disable-tools" in captured[0] and "--enable-tools" not in captured[0], captured[0]
+
+
+def test_run_secure_enable_tools_forwards_yes(monkeypatch):
+    # Enabling tools on a secure endpoint forwards --yes so the child doesn't re-prompt.
+    captured = _invoke_run(monkeypatch, _BASE + ["-H", "0.0.0.0", "--secure", "--enable-tools"])
+    assert len(captured) == 1, captured
+    argv = captured[0]
+    assert "--enable-tools" in argv and "--yes" in argv, argv
