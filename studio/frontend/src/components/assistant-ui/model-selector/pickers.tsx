@@ -52,7 +52,7 @@ import {
   fitsDevice,
   isMlxId,
   isMobileVariant,
-  isRunnableRecommendedFormat,
+  isRecommendableFormat,
   matchesFormatFilter,
   paramsFromId,
 } from "./recommended-fit";
@@ -1158,6 +1158,7 @@ export function HubModelPicker({
   }, [cachedGguf, cachedModels]);
 
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
+  const isMac = usePlatformStore((s) => s.deviceType) === "mac";
 
   const recommendedIds = useMemo(() => {
     const all = dedupe([...models.map((model) => model.id), value ?? ""])
@@ -1182,29 +1183,24 @@ export function HubModelPicker({
   // Format filter toggle for the Unsloth listing.
   const [formatFilter, setFormatFilter] = useState<FormatFilter>("all");
 
-  // "recommended" keeps only runnable local formats (GGUF/MLX) that fit the
-  // device; the other sorts pass everything through (badged, never hidden).
-  // Already-downloaded models stay visible (badged) rather than being hidden.
+  // Recommended only suggests GGUF (anywhere) and MLX (Mac only); safetensors
+  // are never recommended. The "recommended" sort also drops models too big for
+  // the device. Already-downloaded models stay visible (badged), never hidden.
   const recommendedRows = useMemo(() => {
     // Never list mobile-targeted builds in the Unsloth section.
     let rows = recommendedSearch.results.filter((r) => !isMobileVariant(r.id));
-    // The format toggle applies to every sort.
+    // Keep only formats we recommend for this device.
+    rows = rows.filter((r) => isRecommendableFormat(r.id, r.isGguf, isMac));
+    // The format toggle narrows further.
     if (formatFilter !== "all") {
       rows = rows.filter((r) =>
         matchesFormatFilter(r.id, r.isGguf, formatFilter),
       );
     }
-    // Chat-only Studio runs GGUF/MLX only; never list raw checkpoints in any sort.
-    if (chatOnly) {
-      rows = rows.filter((r) => isRunnableRecommendedFormat(r.id, r.isGguf));
-    }
     if (recommendedSort !== "recommended") return rows;
     return rows.filter((r) => {
       // Downloaded models always show, regardless of device fit.
       if (downloadedSet.has(r.id.toLowerCase())) return true;
-      // Default keeps ready-to-run local formats; an explicit format pick wins.
-      if (formatFilter === "all" && !isRunnableRecommendedFormat(r.id, r.isGguf))
-        return false;
       if (!gpu.available) return true;
       // GGUF/MLX repos rarely expose safetensors metadata, so fall back to the
       // GGUF param count, then the repo name, for a size estimate. Anything we
@@ -1221,7 +1217,7 @@ export function HubModelPicker({
         requireKnown: true,
       });
     });
-  }, [recommendedSearch.results, downloadedSet, recommendedSort, formatFilter, chatOnly, gpu]);
+  }, [recommendedSearch.results, downloadedSet, recommendedSort, formatFilter, isMac, gpu]);
 
   // Per-row meta + VRAM badge from the recommended listing's own metadata.
   const recommendedMeta = useMemo(() => {
@@ -1628,12 +1624,12 @@ export function HubModelPicker({
     sortedLmStudio.length === 0 &&
     sortedLocalDir.length === 0;
 
-  // Fixed-width sort dropdown, sized to the longest label with a little extra,
-  // shown inline to the right of the section toggle. Options depend on the tab;
-  // hidden while searching (sorting doesn't apply to search results).
-  // Shared so the format and sort dropdowns are the same width.
+  // Sort dropdown shown inline to the right of the section toggle. Options
+  // depend on the tab; hidden while searching (sorting doesn't apply to search
+  // results). Sizes to its label (so "Recommended" never truncates) with a
+  // shared min width so short labels stay aligned with the format dropdown.
   const sortTriggerClassName =
-    "w-[112px] shrink-0 justify-between pr-2.5 !border-0";
+    "w-fit min-w-[88px] max-w-[148px] shrink-0 justify-between pr-2.5 !border-0";
   // Tighter menu like the Projects activity Select: less padding on the
   // container (left/right/top) and rows. Scoped here, not the Hub default.
   const sortMenuContentClassName =
@@ -1703,8 +1699,8 @@ export function HubModelPicker({
       </div>
 
       {/* Section tabs, then the format and sort dropdowns, all spaced by the
-          same gap so the row reads evenly. */}
-      <div className="flex items-center gap-2">
+          same gap so the row reads evenly. Wraps if the labels ever run long. */}
+      <div className="flex flex-wrap items-center gap-2">
         {sectionToggle}
         <div className="flex items-center gap-2">
           {!showHfSection ? (
