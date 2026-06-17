@@ -2601,8 +2601,7 @@ async def validate_model(
                 trc_target, request.hf_token
             ),
             requires_security_review = any(
-                _requires_security_review_for_model(_t, request.hf_token)
-                for _t in security_targets
+                _requires_security_review_for_model(_t, request.hf_token) for _t in security_targets
             ),
         )
 

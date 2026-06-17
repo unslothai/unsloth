@@ -633,7 +633,11 @@ class TestScannerCoversAllExecutableCode:
         # {"AutoTokenizer": ["owner/repo--tokenization_x.Slow", null]}. The external
         # tokenizer code in the list must be fetched + scanned, not skipped because
         # the value is a list rather than a string.
-        def _dl(repo, fn, token = None):
+        def _dl(
+            repo,
+            fn,
+            token = None,
+        ):
             import json
             import tempfile
 
