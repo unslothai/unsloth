@@ -64,7 +64,7 @@ function parseTaggedTextToContent(text: string): ThreadMessage["content"] {
     if (remainingText) parts.push({ type: currentType, text: remainingText });
   }
 
-  return parts.length > 0 ? (parts as any) : text; 
+  return (parts.length > 0 ? parts : text) as any;
 }
 
 export async function updateThreadMessage(args: {
@@ -89,11 +89,13 @@ export async function updateThreadMessage(args: {
     m.message.id === messageId 
       ? { ...m, message: { ...m.message, content: updatedContent } } 
       : m
-  );
+  ) as typeof currentExport.messages;
 
   thread.import({ ...currentExport, messages: updatedMessages });
 
-  if (remoteId) {
+  // Only sync to the backend if we have a remoteId AND it's not a local temporary ID.
+  // Temporary (incognito) chats use IDs starting with "__LOCALID_" and should not be persisted.
+  if (remoteId && !remoteId.startsWith("__LOCALID_")) {
     try {
       await saveChatMessage({
         id: messageId,

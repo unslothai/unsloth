@@ -3198,21 +3198,21 @@ const DiffusionCanvas: FC = () => {
 
 /**
  * AssistantMessage handles the display and inline-editing of AI responses.
- * 
- * It uses a "Tagged Text" system (<THINK> and <TOOL> tags) to allow users 
- * to edit structured reasoning and tool outputs within a plain-text textarea 
- * while preserving the underlying data schema.
+ * It uses the ChatRuntimeStore to track which message is currently being edited.
  */
 const AssistantMessage: FC = () => {
   const aui = useAui();
   const messageId = useAuiState(({ message }) => message.id);
   const messageContent = useAuiState(({ message }) => message.content);
   
-  const [isEditing, setIsEditing] = useState(false);
+  // Use global store instead of window events for editing state
+  const editingId = useChatRuntimeStore((s) => s.editingMessageId);
+  const setEditingId = useChatRuntimeStore((s) => s.setEditingMessageId);
+  const isEditing = editingId === messageId;
+
   const [refreshKey, setRefreshKey] = useState(0);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  // Simple height adjustment for the edit textarea to prevent layout jumps
   const adjustHeight = () => {
     const el = textareaRef.current;
     if (el) {
@@ -3222,18 +3222,9 @@ const AssistantMessage: FC = () => {
   };
 
   useEffect(() => {
-    const handleEditTrigger = () => setIsEditing(true);
     const handleRefresh = () => setRefreshKey(prev => prev + 1);
-    
-    // We use window events here to trigger edit mode from the action bar
-    // without requiring modifications to the global Zustand store.
-    window.addEventListener(`edit-message-${messageId}`, handleEditTrigger);
     window.addEventListener(`refresh-message-${messageId}`, handleRefresh);
-    
-    return () => {
-      window.removeEventListener(`edit-message-${messageId}`, handleEditTrigger);
-      window.removeEventListener(`refresh-message-${messageId}`, handleRefresh);
-    };
+    return () => window.removeEventListener(`refresh-message-${messageId}`, handleRefresh);
   }, [messageId]);
 
   useEffect(() => {
@@ -3251,13 +3242,11 @@ const AssistantMessage: FC = () => {
 
     if (!remoteId || remoteId === "" || remoteId === "/") {
       toast.error("Save failed: No thread ID found.");
-      setIsEditing(false);
+      setEditingId(null);
       return;
     }
 
     try {
-      // updateThreadMessage calls thread.import(), which automatically
-      // triggers a re-render of this component with the new content.
       await updateThreadMessage({
         thread: { 
           export: () => aui.thread().export(), 
@@ -3271,7 +3260,7 @@ const AssistantMessage: FC = () => {
       console.error("UI: Error during save:", error);
       toast.error("Failed to save message edits.");
     } finally {
-      setIsEditing(false);
+      setEditingId(null);
     }
   };
 
@@ -3295,7 +3284,7 @@ const AssistantMessage: FC = () => {
               }}
             />
             <div className="flex justify-end gap-2">
-              <Button size="sm" variant="ghost" onClick={() => setIsEditing(false)} className="h-8 text-xs">Cancel</Button>
+              <Button size="sm" variant="ghost" onClick={() => setEditingId(null)} className="h-8 text-xs">Cancel</Button>
               <Button size="sm" onClick={handleSave} className="h-8 text-xs">Save</Button>
             </div>
           </div>
@@ -3517,17 +3506,15 @@ const CopyButton: FC = () => {
 };
 
 const EditAssistantMessageButton: FC = () => {
-  const aui = useAui();
   const messageId = useAuiState(({ message }) => message.id);
   const isRunning = useAuiState(({ thread }) => thread.isRunning);
+  const setEditingId = useChatRuntimeStore((s) => s.setEditingMessageId);
 
   return (
     <TooltipIconButton
       tooltip="Edit response"
       disabled={isRunning}
-      onClick={() => {
-        window.dispatchEvent(new CustomEvent(`edit-message-${messageId}`));
-      }}
+      onClick={() => setEditingId(messageId)}
     >
       <HugeiconsIcon
         icon={Edit03Icon}

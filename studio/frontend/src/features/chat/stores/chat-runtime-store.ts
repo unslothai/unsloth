@@ -560,6 +560,7 @@ type ChatRuntimeStore = {
    */
   incognito: boolean;
   settingsPanelOpen: boolean;
+  editingMessageId: string | null;
   pendingAudioBase64: string | null;
   pendingAudioName: string | null;
   pendingImageEditReference: PendingImageEditReference | null;
@@ -593,6 +594,7 @@ type ChatRuntimeStore = {
   setActiveProjectId: (projectId: string | null) => void;
   setIncognito: (incognito: boolean) => void;
   setSettingsPanelOpen: (open: boolean) => void;
+  setEditingMessageId: (id: string | null) => void;
   clearCheckpoint: () => void;
   setReasoningEnabled: (
     enabled: boolean,
@@ -934,6 +936,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   activeProjectId: null,
   incognito: false,
   settingsPanelOpen: false,
+  editingMessageId: null,
   pendingAudioBase64: null,
   pendingAudioName: null,
   pendingImageEditReference: null,
@@ -1095,6 +1098,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   setActiveProjectId: (activeProjectId) => set({ activeProjectId }),
   setIncognito: (incognito) => set({ incognito }),
   setSettingsPanelOpen: (settingsPanelOpen) => set({ settingsPanelOpen }),
+  setEditingMessageId: (id) => set({ editingMessageId: id }),
   clearCheckpoint: () => {
     // Mirror setCheckpoint's persistence: dropping the checkpoint must also
     // clear any stored external selection so the next refresh doesn't snap
