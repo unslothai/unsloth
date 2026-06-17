@@ -16,8 +16,7 @@ export function HubDetailView({
 }: InspectorProps & { onBack: () => void; compact?: boolean }) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const [scrolled, setScrolled] = useState(false);
-  // The split master-detail pane is much narrower than the full-page overlay, so
-  // the readme/inspector reads better with a tighter measure and less gutter.
+  // Split pane is narrower than the full-page overlay; tighter measure reads better.
   const measure = compact
     ? "mx-auto w-full max-w-[860px] px-5 sm:px-5"
     : "mx-auto w-full max-w-[1100px] px-5 sm:px-8";
@@ -36,8 +35,8 @@ export function HubDetailView({
 
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
-      {/* Same top scroll fade as the left column, so scrolling the readme reads
-          consistently. The sticky back-bar (when shown) sits above and hides it. */}
+      {/* Same top scroll fade as the left column. The sticky back-bar, when
+          shown, sits above and hides it. */}
       <div
         aria-hidden="true"
         data-scrolled={scrolled || undefined}
@@ -46,16 +45,14 @@ export function HubDetailView({
       <div
         ref={scrollRef}
         data-hub-scroll="true"
-        // Slight right margin nudges the scrollbar in from the pane's edge so it
-        // sits a touch closer to the readme content instead of hugging the far edge.
+        // Right margin nudges the scrollbar in from the pane's edge.
         className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto [overflow-anchor:none] mr-2 [scrollbar-gutter:stable] [scrollbar-width:thin]"
       >
         <div
           className={cn(
             "hub-detail-bar sticky top-0 z-20",
-            // In split view on large screens the master list sits alongside, so
-            // "Back to Hub" is redundant. Keep it only for the overlay (small
-            // screens / full-page mode) where the list is hidden.
+            // In split view on large screens the list sits alongside, so "Back
+            // to Hub" is redundant; keep it only for the overlay where it's hidden.
             compact && "lg:hidden",
           )}
           data-scrolled={scrolled || undefined}

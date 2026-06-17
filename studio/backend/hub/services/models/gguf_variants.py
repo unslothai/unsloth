@@ -562,8 +562,8 @@ async def get_gguf_variants_response(
                 )
             ):
                 return True
-            # Byte fallback so a present quant is not demoted by a filename
-            # mismatch. Vision repos still need an mmproj cached (any precision).
+            # Byte fallback so a present quant isn't demoted by a filename mismatch;
+            # vision repos still need an mmproj cached (any precision).
             if not _quant_bytes_present(quant, variant.size_bytes):
                 return False
             if (

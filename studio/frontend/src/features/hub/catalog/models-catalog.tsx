@@ -142,11 +142,8 @@ export const ModelsCatalog = memo(function ModelsCatalog({
   const [downloadedScrollEl, setDownloadedScrollEl] =
     useState<HTMLDivElement | null>(null);
   const activeTabRef = useRef(tab);
-  // Per-tab scroll positions. The visibility-hidden pane should preserve its
-  // scrollTop in DOM by spec, but some browsers (and our absolute-positioned
-  // overlay scheme) drop it intermittently — keep a live mirror via the scroll
-  // listener and restore on entry so the user always lands exactly where they
-  // left.
+  // Per-tab scroll positions: some browsers drop the hidden pane's scrollTop,
+  // so mirror it live via the scroll listener and restore on tab entry.
   const savedScrollTopsRef = useRef<Record<ModelsTab, number>>({
     discover: 0,
     downloaded: 0,
@@ -167,12 +164,9 @@ export const ModelsCatalog = memo(function ModelsCatalog({
     setDownloadedScrollEl(node);
   }, []);
 
-  // Synchronously restore the incoming pane's scrollTop and rebind the shared
-  // scrollRef. We deliberately do NOT read scrollTop off the outgoing pane
-  // here — the scroll listener has already kept `savedScrollTopsRef` live, and
-  // toggling overflow between auto and hidden can clamp scrollTop to 0 in some
-  // engines before this effect runs. Reading after the swap would clobber the
-  // saved value with 0; trusting the listener avoids that race.
+  // Restore the incoming pane's scrollTop and rebind scrollRef. Don't read
+  // scrollTop off the outgoing pane: overflow toggling can clamp it to 0 before
+  // this runs, so trust the live listener mirror instead and avoid that race.
   useLayoutEffect(() => {
     let restoreFrame: number | null = null;
     const previousTab = activeTabRef.current;
@@ -218,9 +212,8 @@ export const ModelsCatalog = memo(function ModelsCatalog({
   useEffect(() => {
     const discoverEl = discoverScrollRef.current;
     const downloadedEl = downloadedScrollRef.current;
-    // Mirror scrollTop ONLY from the active pane. CSS state changes, inventory
-    // refreshes, or layout settles on the inactive pane can fire spurious
-    // scroll events that would otherwise overwrite the saved position with 0.
+    // Mirror scrollTop ONLY from the active pane; the inactive pane can fire
+    // spurious scroll events that would overwrite the saved position with 0.
     const onDiscoverScroll = () => {
       if (!discoverEl || activeTabRef.current !== "discover") {
         return;
@@ -317,8 +310,7 @@ export const ModelsCatalog = memo(function ModelsCatalog({
   }, [tab, header]);
 
   useEffect(() => {
-    // Only the Discover tab drives the streaming loading bar; on other tabs
-    // keep the bar off and don't churn state on every prop change.
+    // Only the Discover tab drives the streaming loading bar.
     if (tab !== "discover") {
       previousScannedCountRef.current = scannedCount;
       previousLoadingIntentRef.current = loadingIntentCount;
@@ -353,27 +345,19 @@ export const ModelsCatalog = memo(function ModelsCatalog({
   }, [tab, isLoading, isLoadingMore, scannedCount, loadingIntentCount]);
 
   const showDiscoverLoading = tab === "discover" && streamingActive;
-  // overflow-y stays `auto` on BOTH panes at all times. Toggling it to `hidden`
-  // for the inactive pane would make the browser clamp its scrollTop to 0 and
-  // fire a synthetic scroll event, which corrupts our saved-per-tab scrollTop
-  // mirror. Visibility + pointer-events-none is enough to hide and disarm the
-  // inactive pane while preserving its native scroll state.
-  // Non-split: `scrollbar-gutter: stable both-edges` reserves an EQUAL gutter on
-  // both sides, so the centered `max-w-[1100px]` column stays symmetric and its
-  // left edge lines up with the (non-scrolling) top bar — independent of the
-  // scrollbar's width. In split mode the master is a narrow column pinned to the
-  // left, so a both-edges gutter would inset its content past the top bar's left
-  // edge; there we reserve only the right (divider-side) gutter so the list lines
-  // up with the page heading.
+  // overflow-y stays `auto` on BOTH panes: toggling to `hidden` clamps the
+  // inactive pane's scrollTop to 0 and corrupts the mirror; visibility +
+  // pointer-events-none hides it while preserving native scroll state.
+  // Non-split reserves an equal `both-edges` gutter so the centered 1100px
+  // column stays symmetric and aligned with the top bar; split mode pins a
+  // narrow master left, so it reserves only the right (divider) gutter.
   const scrollPaneClassName =
     "absolute inset-0 min-h-0 overflow-x-hidden overflow-y-auto pb-6 pt-0 [overflow-anchor:none] [scrollbar-width:thin] " +
     (discoverView === "split"
       ? "[scrollbar-gutter:stable]"
       : "[scrollbar-gutter:stable_both-edges]");
-  // Split mode shares the top bar's measure (the master pane sits inside the
-  // centered 1100px column), so it keeps the top bar's left padding to align the
-  // list header, but tightens the right padding so the compact rows run wider
-  // toward the divider instead of leaving a gap.
+  // Split mode keeps the top bar's left padding to align the list header but
+  // tightens the right padding so compact rows run wider toward the divider.
   const splitView = discoverView === "split";
   const discoverColumnClassName = splitView
     ? "mx-auto w-full max-w-[1100px] pl-5 pr-2 sm:pl-8"
@@ -402,8 +386,7 @@ export const ModelsCatalog = memo(function ModelsCatalog({
 
   return (
     <div className="relative flex h-full min-h-0 flex-1 flex-col overflow-hidden">
-      {/* Render the inventory-warning banner OUTSIDE the scroll container so
-         appearing/disappearing it never shifts virtualized rows below. */}
+      {/* Banner sits outside the scroll container so toggling it never shifts virtualized rows. */}
       {downloadedActive && inventoryWarning && (
         <InventoryWarningRow
           isDataset={isDataset}

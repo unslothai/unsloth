@@ -214,12 +214,9 @@ export function fetchInventorySource<K extends DeviceInventorySource>(
     return Promise.resolve(current.rows);
   }
 
-  // Keep whatever `ready` was set last time across refetches. A stale-but-known
-  // state should NOT briefly flip to "loading" on a bump — that's what caused
-  // every consumer (Hub catalog, chat picker, train picker) to re-render with a
-  // spinner the instant a download completed elsewhere, producing the laggy
-  // feel users reported. The forthcoming success path resolves with fresh
-  // data; we just keep showing the previous rows until then.
+  // Carry `ready` across refetches so a stale-but-known state doesn't flip to
+  // "loading" on a bump and flash a spinner in every consumer; keep showing
+  // prior rows until the success path lands fresh data.
   updateSourceState(source, {
     loading: true,
     ready: current.ready,
@@ -242,9 +239,8 @@ export function fetchInventorySource<K extends DeviceInventorySource>(
     })
     .catch((error) => {
       if (useDeviceInventoryStore.getState()[source].key === key) {
-        // Preserve prior `ready` on failure (same reason as the start path): a
-        // transient error on a background refetch must not blank consumers that
-        // already hold good rows. Initial loads keep ready=false here.
+        // Preserve prior `ready` on failure so a transient background-refetch
+        // error doesn't blank consumers that already hold good rows.
         updateSourceState(source, {
           loading: false,
           ready: current.ready,

@@ -74,11 +74,9 @@ export function GgufDownloadStatusCard({
 }
 
 /**
- * Shown when a download is in flight but the variant list isn't loaded yet (or
- * failed). The live job stays the source of truth so the progress bar + cancel
- * keep working across a remount (On Device tab, page refresh) instead of being
- * replaced by the "Loading…/Unavailable" variant-status card, which would hide
- * progress the download panel is still reporting.
+ * Shown when a download is in flight but the variant list isn't loaded. Keeps the
+ * live job as source of truth so progress + cancel survive a remount instead of
+ * being replaced by the variant-status card.
  */
 export function GgufDownloadingFallbackCard({
   job,

@@ -96,8 +96,8 @@ function ToolFallbackRoot({
 
 type ToolStatus = ToolCallMessagePartStatus["type"];
 
-// The shared app tick is icon data, not a component, so wrap it to slot into
-// the status map alongside the lucide icons rendered as <StatusIcon … />.
+// The shared app tick is icon data, not a component; wrap it to slot into the
+// status map alongside the lucide icons.
 function CompleteTickIcon(props: Omit<ComponentProps<typeof HugeiconsIcon>, "icon">) {
   return <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} {...props} />;
 }

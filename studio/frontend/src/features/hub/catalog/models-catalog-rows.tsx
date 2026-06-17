@@ -53,13 +53,11 @@ const COARSE_POINTER =
   typeof window.matchMedia === "function" &&
   window.matchMedia("(pointer: coarse)").matches;
 
-// Rows defer the heaviest trailing widget — the cached-size chip, which mounts
-// a Radix Tooltip plus two store subscriptions — until the row is first hovered
-// or focused, so flicking the virtualized list doesn't pay that cost for every
-// row that scrolls through the viewport. The static placeholder renders the
-// identical StatChip, so the swap is invisible and shifts nothing. Touch
-// (coarse pointer) has no hover, so it arms immediately to keep the size
-// tooltip tap-reachable. Default true so any out-of-row usage stays functional.
+// Defer the cached-size chip (Radix Tooltip + two store subscriptions) until a
+// row is first hovered/focused so scrolling the virtualized list doesn't pay
+// that cost per row; an identical StatChip placeholder makes the swap invisible.
+// Coarse pointers have no hover, so they arm immediately. Default true so any
+// out-of-row usage stays functional.
 const CatalogRowInteractiveContext = createContext(true);
 
 function CachedSizeChip(props: {
@@ -179,8 +177,7 @@ function CachedSizeChipLive({
               >
                 <span className="min-w-0 truncate">{row.label}</span>
                 <span className="ml-auto">
-                  {/* Brighten + size-match for the black pill: muted grey reads
-                      poorly on the dark tooltip in light mode. */}
+                  {/* Brightened for the dark tooltip: muted grey reads poorly there. */}
                   <StatChip
                     icon={PackageIcon}
                     value={formatBytes(row.size_bytes)}
@@ -638,9 +635,8 @@ export const InventoryRow = memo(function InventoryRow({
     unsupported,
     resourceLabel: isDataset ? "dataset" : "model",
   });
-  // Uniform, always-derivable stats so on-device rows stop showing a row of
-  // empty "—" cells: a format badge (known for every row), a parameter count
-  // parsed from the repo name, and the GGUF quant variant when one is known.
+  // Always-derivable stats so on-device rows don't show empty placeholder cells:
+  // format badge, parameter count from the repo name, and GGUF quant variant.
   const formatLabel =
     row.modelFormat === "gguf"
       ? "GGUF"
@@ -655,8 +651,7 @@ export const InventoryRow = memo(function InventoryRow({
   const metaChips =
     !isDataset && (formatLabel || paramLabel || quantLabel) ? (
       <div className="hidden shrink-0 items-center gap-1.5 sm:flex">
-        {/* Format colour already shows as the status dot after the name, so the
-            pill stays neutral text to avoid doubling the signifier. */}
+        {/* Format already shows as the status dot, so the pill stays neutral. */}
         {formatLabel && <span className="hub-chip">{formatLabel}</span>}
         {paramLabel && <span className="hub-chip tabular-nums">{paramLabel}</span>}
         {quantLabel && (
@@ -667,8 +662,7 @@ export const InventoryRow = memo(function InventoryRow({
       </div>
     ) : null;
 
-  // Single right-aligned value: the on-disk size for cached repos, otherwise the
-  // local source (e.g. "LM Studio") or last-modified date for indexed folders.
+  // On-disk size for cached repos, else local source or last-modified date.
   const sourceLabel = row.kind === "local" ? row.sourceLabel : null;
 
   const statusMarkers = (
@@ -698,9 +692,8 @@ export const InventoryRow = memo(function InventoryRow({
     </>
   );
 
-  // Compact (split) rows live in a narrow pane where everything is already
-  // on-device, so the format/on-device dots are noise. Surface only the
-  // genuinely exceptional states; format + params move to the meta line.
+  // Compact rows are all on-device, so the format dots are noise: surface only
+  // exceptional states; format + params move to the meta line.
   const compactMarkers =
     partialRepoId || unsupported ? (
       <span className="flex shrink-0 items-center gap-1">
@@ -759,9 +752,8 @@ export const InventoryRow = memo(function InventoryRow({
       />
     ) : null;
 
-  // Compact (split master pane): mirror the full row's avatar + name/owner, but
-  // drop the capability column and collapse size + date into a single trailing
-  // group so the name keeps the whole middle instead of being squeezed thin.
+  // Compact master pane: drop the capability column and collapse size + date
+  // into one trailing group so the name keeps the whole middle.
   if (compact) {
     return (
       <CatalogRow
@@ -956,12 +948,9 @@ export function VirtualRows<T>({
               left: 0,
               width: "100%",
               transform: `translateY(${virtualRow.start - scrollMargin}px)`,
-              // Lock every row to the same height as the virtualizer's estimate.
-              // No measureElement ref: dynamic measurement on each row mount
-              // triggers virtualizer state churn (re-renders + occasional offset
-              // recompute) that the user perceives as a jump while new rows
-              // arrive. With a fixed height that matches estimateSize exactly,
-              // appending below the viewport can never shift visible items.
+              // Fixed height matching estimateSize (no measureElement ref):
+              // dynamic per-row measurement churns virtualizer state and causes
+              // visible jumps as new rows arrive.
               height: `${rowHeight}px`,
               contain: "layout",
             }}

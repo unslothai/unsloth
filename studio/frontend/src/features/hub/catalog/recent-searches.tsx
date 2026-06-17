@@ -5,11 +5,9 @@ import { Cancel01Icon, Clock01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
 /**
- * Suggestion panel anchored beneath the search field, listing the user's most
- * recent searches. Presentational only — the parent owns visibility and the
- * recent-search store. The panel is shown while the input holds focus, so it
- * suppresses the default mousedown action on itself: clicks still fire, but the
- * input never blurs and the panel doesn't close out from under the pointer.
+ * Recent-searches suggestion panel beneath the search field. Presentational only
+ * (parent owns visibility and store). Suppresses its own mousedown so clicks fire
+ * without blurring the focused input and closing the panel.
  */
 export function RecentSearches({
   searches,

@@ -44,21 +44,17 @@ export function OwnerAvatar({
 }: {
   owner: string;
   /**
-   * Repo name (part after `owner/`). When provided alongside an eligible
-   * owner (currently "unsloth"), the avatar tries to match a known upstream
-   * provider from the registry and renders that provider's logo instead of
-   * the owner's HF profile picture. Used so an Unsloth re-upload of e.g.
-   * Qwen2.5-7B shows the Qwen logo while still labeling the owner "unsloth".
+   * Repo name (after `owner/`). For an eligible owner (currently "unsloth"),
+   * renders the matched upstream provider's logo instead of the HF profile pic
+   * (e.g. an Unsloth Qwen2.5 re-upload shows the Qwen logo).
    */
   repoName?: string;
   size?: AvatarSize;
   className?: string;
   /**
-   * When false, the fallback avatar never fetches the owner's HF profile
-   * picture — it shows a locally-resolved provider logo or the colored-initial
-   * tile instantly. Virtualized list rows pass `false` so browsing the whole
-   * Hub (every row a different owner) doesn't trigger a per-row request storm.
-   * The single-model inspector keeps the default (`true`).
+   * When false, never fetch the owner's HF profile picture; show a local
+   * provider logo or colored-initial tile instantly. Virtualized list rows pass
+   * `false` to avoid a per-row request storm; the inspector keeps `true`.
    */
   remote?: boolean;
 }) {
@@ -134,8 +130,7 @@ function ProviderLogoTile({
     );
   }
 
-  // mono treatments paint a silhouette via CSS mask; the host element's
-  // text color drives the silhouette color (theme-aware vs. fixed black).
+  // mono treatments paint a silhouette via CSS mask; host text color drives its color.
   const colorClass =
     provider.treatment === "mono-black" ? "text-black" : "text-foreground";
   return (

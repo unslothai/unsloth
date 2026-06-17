@@ -588,10 +588,8 @@ export function GgufDownloadCard({
   const variantListUnavailable = !sortedVariants || sortedVariants.length === 0;
   const showVariantLoadingState = loading && variantListUnavailable;
 
-  // A live download for this repo must keep showing progress even while the
-  // variant list is still loading, failed to load, or cannot identify the
-  // running variant. A remount (On Device tab, page refresh) must never hide an
-  // in-flight download behind the variant status card.
+  // Keep showing download progress while the variant list is unavailable, so a
+  // remount never hides an in-flight download behind the variant status card.
   if (progress && variantListUnavailable) {
     return (
       <GgufDownloadingFallbackCard

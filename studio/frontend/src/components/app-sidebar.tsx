@@ -335,9 +335,8 @@ export function AppSidebar() {
       undefined
     : undefined;
 
-  // Training runs. Surfaced as the sidebar "Recents" on Train, and also on the
-  // Recipes / Export pages so the training history is at hand there — falling
-  // back to chat recents when there are no runs yet.
+  // Training runs: surfaced as sidebar "Recents" on Train, Recipes, and Export,
+  // falling back to chat recents when there are no runs yet.
   const trainingRecentsRoute = isStudioRoute || isRecipesRoute || isExportRoute;
   const { items: runItems } = useTrainingHistorySidebarItems(
     !chatOnly && trainingRecentsRoute,

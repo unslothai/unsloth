@@ -122,8 +122,8 @@ type DiscoverMode = "feed" | "channel-list" | "search";
 
 type ModelLoadOptions = { ggufVariant?: string; expectedBytes?: number };
 
-// Keep the focused list heading simple: just "Models"/"Datasets" regardless of
-// the active format/capability filter, with search the only labelled variation.
+// Focused list heading stays "Models"/"Datasets" regardless of filters; only
+// search changes the label.
 function buildFocusedHeading({
   query,
   channel,
@@ -180,8 +180,7 @@ function writeModelsTabPreference(tab: ModelsTab): void {
   }
 }
 
-// "All models" results default to the list (rows) layout; the user's choice of
-// list vs. card grid is remembered across sessions.
+// "All models" defaults to list layout; list-vs-grid choice persists across sessions.
 function readAllModelsViewPreference(): AllModelsView {
   if (typeof window === "undefined") {
     return "split";
@@ -408,18 +407,15 @@ export function ModelsPage() {
   const [allModelsView, setAllModelsViewState] = useState<AllModelsView>(
     readAllModelsViewPreference,
   );
-  // Tracks an explicit "Back to Hub" within split view so the master pane shows
-  // the empty placeholder instead of immediately re-selecting the first model.
   // Remembers the last non-split view so "Back to Hub" can drop out of split
-  // mode into whatever browsing layout the user had before (defaults to the
-  // two-column grid).
+  // mode into the prior browsing layout (defaults to the two-column grid).
   const lastNonSplitViewRef = useRef<AllModelsView>("two");
   const setAllModelsView = useCallback(
     (view: AllModelsView) => {
       setAllModelsViewState(view);
       writeAllModelsViewPreference(view);
-      // Leaving split view drops the inline preview so the user lands back on
-      // the full hub list rather than the model detail overlay.
+      // Leaving split view drops the inline preview so the user lands on the
+      // full hub list, not the model detail overlay.
       if (view !== "split") {
         void navigate({
           to: "/hub",
@@ -486,8 +482,8 @@ export function ModelsPage() {
       }
       setCapabilityFilter("all");
       setSortBrowseActive(false);
-      // Clear search: an active query outranks the section in `mode`, so the
-      // curated list would stay hidden behind global results otherwise.
+      // Clear search: an active query outranks the section in `mode`, hiding
+      // the curated list behind global results otherwise.
       setQuery("");
       void navigate({
         to: "/hub",
@@ -521,8 +517,8 @@ export function ModelsPage() {
     setSortBrowseActive(false);
     void navigate({
       to: "/hub",
-      // Assert the tab here too: this fires alongside setModelsTab's own
-      // navigation, and spreading prev could otherwise restore the old tab.
+      // Assert the tab here too: fires alongside setModelsTab's navigation, and
+      // spreading prev could otherwise restore the old tab.
       search: (prev) => ({
         ...prev,
         tab: "discover",
@@ -739,11 +735,9 @@ export function ModelsPage() {
     () => (isDiscoverTab ? [] : tokenizeQuery(deferredDebouncedQuery)),
     [isDiscoverTab, deferredDebouncedQuery],
   );
-  // Format filter is a deliberate scope narrowing — hard-filter it out.
-  // The text query, by contrast, drives dim-not-filter on the On Device tab
-  // (see ModelsCatalog) so selection survives typing. Matching rows are
-  // partitioned to the top so the dim becomes a tail of the list, not noise
-  // the user has to scan past.
+  // Format filter is a deliberate scope narrowing, so hard-filter it out. The
+  // text query instead drives dim-not-filter on On Device (see ModelsCatalog) so
+  // selection survives typing; matching rows are partitioned to the top.
   const filteredCachedRows = useMemo(
     () =>
       partitionByMatch(
@@ -819,11 +813,10 @@ export function ModelsPage() {
     fetchMoreManually: fetchMoreDiscoverManually,
   } = useHubInfiniteScroll(
     fetchMore,
-    // Drive re-evaluation off the raw fetched count, not the filtered one —
-    // the page-level format/capability filters can reject every incoming
-    // row, leaving filteredDiscoverRows.length stalled while results keep
-    // growing. Using the raw count guarantees the auto-fire effect re-runs
-    // after each fetch lands so we don't dead-end on aggressive filters.
+    // Re-evaluate off the raw fetched count, not the filtered one: aggressive
+    // format/capability filters can reject every row, stalling
+    // filteredDiscoverRows.length while results grow. The raw count guarantees
+    // the auto-fire effect re-runs after each fetch lands.
     scannedCount,
     {
       enabled: online && isDiscoverTab && hasMore,
@@ -867,10 +860,9 @@ export function ModelsPage() {
     [setSelected, navigate],
   );
   const handleCloseDetail = useCallback(() => {
-    // From split view, "Back to Hub" exits the master-detail layout AND returns
-    // to the main hub feed (trending sections) rather than the current filtered
-    // list. We leave split mode (so the feed can render), reset the discover
-    // state to its defaults, and clear both the inline preview and any channel.
+    // From split view, "Back to Hub" exits the master-detail layout and returns
+    // to the main hub feed (not the filtered list): leave split mode, reset
+    // discover state to defaults, and clear the inline preview and channel.
     if (allModelsView === "split") {
       const next = lastNonSplitViewRef.current;
       setAllModelsViewState(next);
@@ -934,12 +926,12 @@ export function ModelsPage() {
     }
   }, [allModelsView]);
 
-  // Split view previews the first row so the detail pane is not empty, except in
-  // feed mode where the feed itself must stay visible.
+  // Split view previews the first row so the detail pane isn't empty, except in
+  // feed mode where the feed must stay visible.
   useEffect(() => {
     if (allModelsView !== "split" || urlModel || isFeedMode) return;
     // Use the filtered rows the master pane renders, not raw inventory, so the
-    // preview never lands on a row hidden by the active format filter.
+    // preview never lands on a filtered-out row.
     const firstId = isDiscoverTab
       ? listRows[0]?.id
       : (filteredCachedRows[0]?.id ?? filteredLocalRows[0]?.id);
@@ -1051,8 +1043,7 @@ export function ModelsPage() {
       setDiscoverFormat("all");
       setCapabilityFilter("all");
       setSortBrowseActive(false);
-      // Base models come from other publishers, so search the whole Hub
-      // rather than staying restricted to the Unsloth org.
+      // Base models come from other publishers, so search the whole Hub.
       setOwnerScope("all");
       setQuery(trimmed);
       void navigate({
@@ -1244,8 +1235,8 @@ export function ModelsPage() {
     const ownerToggle = !isDatasetMode ? (
       <OwnerScopeToggle value={ownerScope} onChange={setOwnerScope} />
     ) : undefined;
-    // A compact dropdown pill, so it stays beside the view-mode tabs even in the
-    // narrow split pane instead of dropping to its own row.
+    // Compact pill so it stays beside the view-mode tabs even in the narrow
+    // split pane instead of dropping to its own row.
     return (
       <div className="flex flex-col gap-3 pt-6">
         {isChannelListMode ? (
@@ -1296,8 +1287,8 @@ export function ModelsPage() {
     const sortControl = (
       <InventorySortControl value={inventorySort} onChange={setInventorySort} />
     );
-    // A compact dropdown pill, so it stays beside the view-mode tabs even in the
-    // narrow split pane instead of dropping to its own row.
+    // Compact pill so it stays beside the view-mode tabs even in the narrow
+    // split pane instead of dropping to its own row.
     return (
       <HubListHeader
         title="On device"
@@ -1356,8 +1347,7 @@ export function ModelsPage() {
         className={cn(
           "relative flex min-h-0 min-w-0 flex-1 basis-0",
           // Split mode shares the top bar's centered 1100px measure so the
-          // master list lines up with the page heading/toolbar instead of
-          // hugging the far-left edge on wide screens.
+          // master list lines up with the heading instead of hugging the edge.
           splitMode
             ? "flex-col lg:mx-auto lg:w-full lg:max-w-[1100px] lg:flex-row"
             : "flex-col",
@@ -1366,9 +1356,8 @@ export function ModelsPage() {
         <div
           className={cn(
             "flex min-h-0 flex-col",
-            // Split mode keeps the catalog as a fixed-width master pane on
-            // large screens; otherwise it fills the area and the detail view
-            // overlays it.
+            // Split mode keeps the catalog as a fixed-width master pane on large
+            // screens; otherwise it fills the area and the detail view overlays it.
             splitMode
               ? "flex-1 lg:w-[460px] lg:max-w-[44%] lg:flex-none lg:shrink-0 lg:border-r lg:border-border/60"
               : "flex-1",

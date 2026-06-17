@@ -7,11 +7,9 @@ import { useTrainingHistorySidebarItems } from "@/features/training/hooks/use-tr
 import { HistoryCardGrid } from "./history-card-grid";
 
 /**
- * Recent training runs, surfaced on the Data Recipes and Export pages so a user
- * can jump back into a past run without first returning to Train. Selecting a
- * run stores its id and navigates to the Studio page, which auto-opens its
- * History tab (studio-page reacts to selectedHistoryRunId). Renders nothing once
- * we know there are no runs, so pages without any training history stay clean.
+ * Recent training runs surfaced on Data Recipes and Export. Selecting a run
+ * stores its id and navigates to Studio, which auto-opens its History tab.
+ * Renders nothing once we know there are no runs.
  */
 export function RecentTrainingsSection() {
   const navigate = useNavigate();

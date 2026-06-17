@@ -113,9 +113,8 @@ function toPersistedJob(
 }
 
 // Mirrors the backend's normalize_repo_key (strip().lower()) so two casings of
-// one repo share a key: otherwise a repo can spawn duplicate jobs and listeners
-// keyed under one casing miss events fired under the other. Keys only — the
-// job's `repoId` keeps original casing for display and API calls.
+// one repo share a key (else duplicate jobs / mismatched listeners). Keys only;
+// `repoId` keeps original casing for display and API calls.
 function normalizeRepoIdentity(repoId: string): string {
   return repoId.trim().toLowerCase();
 }
@@ -285,9 +284,9 @@ function hasRuntimePeerForRepo(
   return false;
 }
 
-// Shared rule for what blocks a fresh GGUF variant start. The peer guard passes
-// includeOwnRuntime:false (it runs after this start made its own runtime); the
-// requestStart guard passes both true (it runs before any runtime or job exists).
+// Shared rule for what blocks a fresh GGUF variant start. Peer guard passes
+// includeOwnRuntime:false (runs after this start made its own runtime);
+// requestStart passes both true (runs before any runtime or job exists).
 export function hasVariantRepoActivity(
   kind: DownloadKind,
   repoId: string,

@@ -59,9 +59,8 @@ export const RESULT_SPLIT_ROW_HEIGHT_PX =
 
 export type AllModelsView = "grid" | "two" | "split";
 
-// Shared column widths so the table header and every row line up exactly.
-// Two flexible lead columns (Model, Capabilities), fixed metric columns that
-// drop out progressively on narrower viewports.
+// Shared column widths so header and rows align: two flexible lead columns
+// (Model, Capabilities) plus fixed metric columns that drop on narrow viewports.
 const LIST_COLS = {
   model: "flex min-w-0 flex-[2.4] items-center gap-3",
   caps: "hidden min-w-0 flex-[1.7] items-center gap-1.5 md:flex",
@@ -117,8 +116,7 @@ const INVENTORY_SORTS: { value: InventorySort; label: string }[] = [
   { value: "size", label: "Size" },
 ];
 
-// Sort picker as a compact dropdown pill so it sits beside the view-mode tabs
-// (including in the narrow split pane) instead of taking its own row.
+// Sort picker as a compact dropdown pill so it sits beside the view-mode tabs.
 export function InventorySortControl({
   value,
   onChange,
@@ -173,9 +171,8 @@ export function HubListHeader({
             type="button"
             onClick={onBack}
             aria-label="Back to feed"
-            // The arrow glyph is inset inside its centered icon box; pull the
-            // button left so the visible chevron sits just inside the row
-            // hover's left edge, lining up with the avatars below.
+            // Pull the button left so the inset chevron lines up with the
+            // avatars below, just inside the row hover's left edge.
             className="hub-section-chevron -ml-3 inline-flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground"
           >
             <HugeiconsIcon
@@ -202,8 +199,7 @@ export function HubListHeader({
                 type="button"
                 aria-label="Refresh"
                 onClick={onRefresh}
-                // Tiny drop so the icon lines up with the heading text rather
-                // than its vertical centre.
+                // Tiny drop so the icon aligns with the heading text.
                 className="inline-flex size-7 shrink-0 translate-y-px cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
               >
                 <HugeiconsIcon
@@ -797,9 +793,8 @@ export const ResultGridRow = memo(function ResultGridRow({
   );
 });
 
-// Compact master-pane row for split view: avatar + name/owner on the left,
-// likes / downloads / updated stacked on the right. Light list styling (no card
-// box) with a selected highlight for the model shown in the detail pane.
+// Compact master-pane row for split view: avatar + name/owner left, stats right,
+// with a selected highlight for the model shown in the detail pane.
 export const ResultSplitRow = memo(function ResultSplitRow({
   row,
   deviceType,

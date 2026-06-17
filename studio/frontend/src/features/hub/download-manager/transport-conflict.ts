@@ -152,13 +152,11 @@ export async function requestStart(req: DownloadRequest): Promise<void> {
         "Transport status check failed; starting without partial-conflict preflight.",
         err,
       );
-      // Fail safe, not open: Xet purges any partial unconditionally, so when we
-      // could not verify the partial we downgrade this one start to HTTP, which
-      // resumes an HTTP partial and is harmless for a fresh download. The user
-      // keeps their Xet preference for the next attempt. Only downgrade once we
-      // positively confirmed no sibling variant is downloading: a live sibling
-      // (or one we couldn't probe) means the repo may be mid-transfer on Xet,
-      // and HTTP would only force a transport conflict.
+      // Fail safe: Xet purges any partial unconditionally, so when the partial
+      // can't be verified we downgrade this one start to HTTP (resumes an HTTP
+      // partial, harmless for a fresh download); the Xet preference is kept for
+      // next time. Only downgrade once we confirmed no sibling variant is
+      // downloading, since a live sibling may be mid-transfer on Xet.
       if (mode === TRANSPORT.XET && siblingProbed && !siblingTransport) {
         toast.warning("Couldn't verify existing partial download", {
           description:

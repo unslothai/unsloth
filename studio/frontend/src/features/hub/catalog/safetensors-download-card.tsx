@@ -238,16 +238,13 @@ export function SafetensorsDownloadCard({
             )}
           </div>
         </div>
-        {/* Divider sits above the Download CTA in non-action-pair states; in the
-            action-pair state the pair is hidden for this PR, so the divider is
-            hidden alongside it. */}
+        {/* Divider sits above the Download CTA; in the action-pair state it hides with the pair. */}
         {(!showActionPair || HUB_POST_DOWNLOAD_ACTIONS_VISIBLE) && <CardDivider />}
         {showActionPair ? (
           <div
             className={cn(
               "group/pair flex h-9 shrink-0 items-stretch gap-1.5",
-              // Hide the Run+Train action pair until Hub→chat / Hub→train
-              // pickers ship.
+              // Run+Train pair hidden until Hub→chat / Hub→train pickers ship.
               !HUB_POST_DOWNLOAD_ACTIONS_VISIBLE && "hidden",
             )}
           >

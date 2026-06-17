@@ -39,9 +39,8 @@ import {
 import { RecentSearches } from "./recent-searches";
 import { memo, useMemo, useState } from "react";
 
-// The format dropdown also exposes the curated "Fine-tune ready" channel as a
-// pseudo-option; it never becomes the active format filter (it's intercepted
-// to open the channel), so it lives in a widened value type here only.
+// Widened so the format dropdown can carry the "Fine-tune ready" pseudo-option,
+// which opens the curated channel instead of becoming the active format filter.
 type FormatMenuValue = ModelFormatFilter | "finetune";
 
 const SORT_OPTIONS: ReadonlyArray<{
@@ -90,9 +89,8 @@ export const ModelsToolbar = memo(function ModelsToolbar({
    *  format-dropdown option rather than a standalone feed section. */
   onOpenFineTune: () => void;
 }) {
-  // Recent searches surface as a suggestion panel while the (empty) search
-  // field is focused — only on Discover, where the query hits Hugging Face.
-  // On-device search is a local filter, so it isn't recorded.
+  // Recent searches surface while the empty search field is focused, only on
+  // Discover (on-device search is a local filter and isn't recorded).
   const recentSearches = useRecentSearches();
   const [searchFocused, setSearchFocused] = useState(false);
   const isDiscover = tab === "discover";
@@ -127,9 +125,8 @@ export const ModelsToolbar = memo(function ModelsToolbar({
         </>
       ),
     }));
-    // "Fine-tune ready" is a curated Unsloth channel (bnb-4bit checkpoints),
-    // not a true format. Surfaced here as a dropdown action that opens the
-    // channel rather than setting the format filter (see onValueChange below).
+    // "Fine-tune ready" is a curated channel (bnb-4bit checkpoints), not a
+    // format: it opens the channel rather than setting the filter (onValueChange).
     if (tab === "discover") {
       options.push({
         value: "finetune",
@@ -222,9 +219,8 @@ export const ModelsToolbar = memo(function ModelsToolbar({
             className="pointer-events-none absolute left-3.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
           />
           <Input
-            // `type="search"` keeps the browser's password manager from
-            // offering saved credentials on this field; the remaining flags
-            // disable third-party managers and noisy text assistance.
+            // `type="search"` plus these flags stop password managers and noisy
+            // text assistance from acting on this field.
             type="search"
             name="hub-search"
             autoComplete="off"

@@ -126,9 +126,8 @@ export function DiscoverList({
   onSwitchDevice?: () => void;
   view: AllModelsView;
 }) {
-  // "two" = comfortable cards laid out two per row; "grid" = the compact table
-  // rows; "split" = a single comfortable card per row in the narrow master pane
-  // alongside an inline detail view.
+  // "two" = two cards per row; "grid" = compact table rows; "split" = one card
+  // per row in the master pane alongside an inline detail view.
   const isSplit = view === "split";
   const isCardLike = view === "two" || view === "split";
   const rowHeight = isSplit

@@ -11,9 +11,8 @@ const OPTIONS: { value: OwnerScope; label: string }[] = [
 ];
 
 /**
- * "Unsloth / All" publisher scope as a compact dropdown pill that sits beside
- * the view-mode tabs (including in the narrow split pane) instead of taking its
- * own row. Only appears while browsing a model list, never on the hub feed.
+ * "Unsloth / All" publisher scope as a compact dropdown pill beside the
+ * view-mode tabs. Only shown while browsing a model list, never on the hub feed.
  */
 export function OwnerScopeToggle({
   value,

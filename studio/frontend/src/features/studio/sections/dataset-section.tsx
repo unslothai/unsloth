@@ -592,9 +592,8 @@ export function DatasetSection() {
       >
         <div className="flex min-w-0 flex-col gap-4">
           {(() => {
-            // Hub-style segmented control (sliding pill) so the dataset-source
-            // switcher matches the Hub's Discover / On Device tabs via the shared
-            // .hub-tab-toggle / .hub-tab-toggle-pill classes.
+            // Hub-style sliding-pill segmented control, matching the Hub tabs
+            // via the shared .hub-tab-toggle / .hub-tab-toggle-pill classes.
             const sourceTabs: {
               value: "huggingface" | "upload" | "s3";
               label: string;
