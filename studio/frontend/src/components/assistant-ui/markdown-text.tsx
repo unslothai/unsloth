@@ -4,6 +4,13 @@
 "use client";
 
 import { ArtifactCard, useChatRuntimeStore } from "@/features/chat";
+import {
+  getCodeFence,
+  isFullHtmlDocument,
+  isHtmlFence,
+  isRenderableRenderHtmlToolPart,
+  isSvgFence,
+} from "@/features/chat/artifacts/html-fences";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { preprocessLaTeX } from "@/lib/latex";
 import { openLink } from "@/lib/open-link";
@@ -45,60 +52,14 @@ const STREAMDOWN_COMPONENTS = {
 };
 const COPY_RESET_MS = 2000;
 const MERMAID_SOURCE_RE = /```mermaid\s*([\s\S]*?)```/i;
-const CODE_FENCE_RE = /^```([^\r\n`]*)\r?\n([\s\S]*?)\r?\n?```$/;
 const ACTION_PANEL_CLASS =
   "pointer-events-auto flex shrink-0 items-center gap-1";
 const ACTION_BUTTON_CLASS =
   "flex size-8 cursor-pointer items-center justify-center rounded-[10px] text-chat-icon-fg transition-all hover:bg-chat-icon-bg-hover hover:text-chat-icon-fg-hover disabled:cursor-not-allowed disabled:opacity-50";
 
-type CodeFence = {
-  language: string | null;
-  source: string;
-};
-
-type ToolCallPartLike = {
-  type?: string;
-  toolName?: string;
-  args?: unknown;
-  result?: unknown;
-};
-
-function isRenderableRenderHtmlToolPart(part: unknown): boolean {
-  const toolPart = part as ToolCallPartLike;
-  if (toolPart.type !== "tool-call" || toolPart.toolName !== "render_html") {
-    return false;
-  }
-  if (
-    typeof toolPart.result === "string" &&
-    toolPart.result.startsWith("Error:")
-  ) {
-    return false;
-  }
-  if (
-    typeof toolPart.result === "string" &&
-    toolPart.result.startsWith("Rendered HTML canvas")
-  ) {
-    return true;
-  }
-  const args = toolPart.args as { code?: unknown } | undefined;
-  return typeof args?.code === "string" && args.code.trim().length > 0;
-}
-
 function getMermaidSource(blockContent: string): string | null {
   const source = blockContent.match(MERMAID_SOURCE_RE)?.[1]?.trim();
   return source && source.length > 0 ? source : null;
-}
-
-function getCodeFence(blockContent: string): CodeFence | null {
-  const match = blockContent.trimEnd().match(CODE_FENCE_RE);
-  if (!match) {
-    return null;
-  }
-
-  return {
-    language: match[1]?.trim() || null,
-    source: match[2],
-  };
 }
 
 function getCodeFilename(language: string | null) {
@@ -129,28 +90,6 @@ function getCodeFilename(language: string | null) {
     ? extByLanguage[normalized] || fallbackExt || "txt"
     : "txt";
   return `snippet.${ext}`;
-}
-
-function isSvgFence(codeFence: CodeFence): boolean {
-  const lang = codeFence.language?.toLowerCase() ?? "";
-  if (lang === "svg") return true;
-  if (lang === "xml" || lang === "html") {
-    const trimmed = codeFence.source.trimStart();
-    // Match <svg directly or <?xml ...?> followed by <svg
-    if (trimmed.startsWith("<svg")) return true;
-    if (trimmed.startsWith("<?xml") && trimmed.includes("<svg")) return true;
-  }
-  return false;
-}
-
-function isHtmlFence(codeFence: CodeFence): boolean {
-  const lang = codeFence.language?.toLowerCase() ?? "";
-  return lang === "html" && !isSvgFence(codeFence);
-}
-
-function isFullHtmlDocument(source: string): boolean {
-  const trimmed = source.trimStart();
-  return /^<!doctype\s+html\b/i.test(trimmed) || /^<html[\s>]/i.test(trimmed);
 }
 
 const UNSAFE_SVG_RE =
@@ -285,15 +224,13 @@ function CodeBlockActions({
   );
 }
 
-// DiffusionGemma renders its denoising live in the bubble (see DiffusionCanvas in
-// thread.tsx) and has the HTML canvas feature on by default, so a full-HTML answer
-// (e.g. a playable game) renders as an interactive card without the global toggle.
+// Collapse a full-HTML answer in place into an artifact card. Diffusion keeps the
+// raw code visible instead (the trailing MessageHtmlArtifacts appends its card).
 function StreamdownBlock(props: BlockProps) {
   const shouldCollapseHtmlArtifacts = useChatRuntimeStore(
     (state) =>
-      state.artifactsEnabled ||
-      state.collapseHtmlArtifacts ||
-      state.loadedIsDiffusion,
+      (state.artifactsEnabled || state.collapseHtmlArtifacts) &&
+      !state.loadedIsDiffusion,
   );
   const messageHasRenderableRenderHtmlTool = useAuiState(({ message }) =>
     message.parts.some(isRenderableRenderHtmlToolPart),
