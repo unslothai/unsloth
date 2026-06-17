@@ -326,7 +326,14 @@ def test_connect_requested_model_not_loaded_fails(fake_studio, monkeypatch):
     # silently connecting to whatever else happens to be loaded.
     inner = connect._http_json
 
-    def http_json(method, url, token, payload = None, timeout = 30, error = None):
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
         if url.endswith("/api/inference/load"):
             return {}
         if url.endswith("/v1/models"):
