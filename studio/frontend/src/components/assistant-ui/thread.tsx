@@ -3198,21 +3198,24 @@ const DiffusionCanvas: FC = () => {
 
 /**
  * AssistantMessage handles the display and inline-editing of AI responses.
- * It uses the ChatRuntimeStore to track which message is currently being edited.
+ * 
+ * It utilizes a "Tagged Text" system (<THINK> and <TOOL> tags) to allow users 
+ * to edit structured reasoning and tool outputs within a plain-text textarea 
+ * while preserving the underlying data schema and tool-call metadata.
  */
 const AssistantMessage: FC = () => {
   const aui = useAui();
   const messageId = useAuiState(({ message }) => message.id);
   const messageContent = useAuiState(({ message }) => message.content);
   
-  // Use global store instead of window events for editing state
+  // Use global store for editing state to ensure a single source of truth
   const editingId = useChatRuntimeStore((s) => s.editingMessageId);
   const setEditingId = useChatRuntimeStore((s) => s.setEditingMessageId);
   const isEditing = editingId === messageId;
 
-  const [refreshKey, setRefreshKey] = useState(0);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
+  // Auto-grow textarea height based on content
   const adjustHeight = () => {
     const el = textareaRef.current;
     if (el) {
@@ -3220,12 +3223,6 @@ const AssistantMessage: FC = () => {
       el.style.height = `${el.scrollHeight}px`;
     }
   };
-
-  useEffect(() => {
-    const handleRefresh = () => setRefreshKey(prev => prev + 1);
-    window.addEventListener(`refresh-message-${messageId}`, handleRefresh);
-    return () => window.removeEventListener(`refresh-message-${messageId}`, handleRefresh);
-  }, [messageId]);
 
   useEffect(() => {
     if (isEditing) setTimeout(adjustHeight, 0);
@@ -3247,6 +3244,8 @@ const AssistantMessage: FC = () => {
     }
 
     try {
+      // updateThreadMessage handles the Merge Strategy and backend sync.
+      // It calls thread.import(), which automatically triggers a re-render.
       await updateThreadMessage({
         thread: { 
           export: () => aui.thread().export(), 
@@ -3280,7 +3279,12 @@ const AssistantMessage: FC = () => {
               onInput={adjustHeight} 
               onKeyDown={(e) => {
                 e.stopPropagation(); 
-                if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) handleSave();
+                if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+                  handleSave();
+                }
+                if (e.key === 'Escape') {
+                  setEditingId(null); // UX: Close editor on Escape
+                }
               }}
             />
             <div className="flex justify-end gap-2">
@@ -3293,6 +3297,12 @@ const AssistantMessage: FC = () => {
             <GeneratingIndicator />
             <CancelledIndicator />
             <DiffusionCanvas />
+            
+            {/* 
+                We use the standard MessagePrimitive.Parts. This ensures that 
+                edited messages maintain the same professional styling, 
+                Markdown rendering, and tool-call components as original responses.
+            */}
             <MessagePrimitive.Parts
               components={{
                 Text: MarkdownText,
@@ -3321,7 +3331,7 @@ const AssistantMessage: FC = () => {
         )}
       </div>
 
-      <div key={refreshKey} className="aui-assistant-message-footer mt-1.5 -ml-[var(--icon-btn-inset)] flex min-h-8">
+      <div className="aui-assistant-message-footer mt-1.5 -ml-[var(--icon-btn-inset)] flex min-h-8">
         <BranchPicker className="mr-0.5" />
         <AssistantActionBar />
       </div>

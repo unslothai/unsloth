@@ -9,8 +9,8 @@ type ThreadImportExport = {
 type ContentPart = { type: "text" | "reasoning" | "tool"; text: string };
 
 /**
- * Converts structured message content (with reasoning/tools) into a tagged string
- * suitable for editing in a plain-text textarea.
+ * Extracts only the editable text and reasoning from a message, 
+ * ignoring structured parts like tool calls that cannot be edited as plain text.
  */
 export function extractTaggedText(content: any): string {
   if (typeof content === 'string') return content;
@@ -21,16 +21,20 @@ export function extractTaggedText(content: any): string {
 
   return content
     .map((part: any) => {
-      const text = part.text || part.content || (typeof part === 'string' ? part : "");
+      if (typeof part === 'string') return part;
+      if (!part) return "";
+      
+      // Only extract text from 'text' or 'reasoning' parts.
+      // Tool calls/responses are ignored here so they aren't accidentally 
+      // deleted or corrupted by the user in the textarea.
+      const text = part.text || part.content || "";
       if (!text) return "";
       
       switch (part.type) {
         case 'reasoning': 
           return `${open}THINK${close}\n${text}\n${open}/THINK${close}`;
-        case 'tool_call':
-        case 'tool': 
-          return `${open}TOOL${close}\n${text}\n${open}/TOOL${close}`;
-        default: 
+        case 'text':
+        default:
           return text;
       }
     })
@@ -38,7 +42,7 @@ export function extractTaggedText(content: any): string {
     .join('\n\n');
 }
 
-function parseTaggedTextToContent(text: string): ThreadMessage["content"] {
+function parseTaggedTextToContent(text: string): ContentPart[] {
   const parts: ContentPart[] = [];
   const tagRegex = /(<\/?(THINK|TOOL)>)/g;
   let lastIndex = 0;
@@ -64,7 +68,7 @@ function parseTaggedTextToContent(text: string): ThreadMessage["content"] {
     if (remainingText) parts.push({ type: currentType, text: remainingText });
   }
 
-  return (parts.length > 0 ? parts : text) as any;
+  return parts;
 }
 
 export async function updateThreadMessage(args: {
@@ -74,7 +78,7 @@ export async function updateThreadMessage(args: {
   newText: string;
 }) {
   const { thread, messageId, remoteId, newText } = args;
-  const updatedContent = parseTaggedTextToContent(newText);
+  const parsedEditableContent = parseTaggedTextToContent(newText);
   const currentExport = thread.export();
 
   const targetMessageEntry = currentExport.messages.find(m => m.message.id === messageId);
@@ -85,16 +89,57 @@ export async function updateThreadMessage(args: {
   const { parentId: originalParentId } = targetMessageEntry; 
   const { createdAt: originalCreatedAt } = targetMessageEntry.message;
 
-  const updatedMessages = currentExport.messages.map((m) => 
-    m.message.id === messageId 
-      ? { ...m, message: { ...m.message, content: updatedContent } } 
-      : m
-  ) as typeof currentExport.messages;
+  // MERGE STRATEGY:
+  // We want to preserve original tool_calls/responses but update the text/reasoning.
+  const updatedMessages = currentExport.messages.map((m) => {
+    if (m.message.id !== messageId) return m;
 
+    const originalContent = m.message.content;
+    let finalContent: any[] = [];
+
+    if (Array.isArray(originalContent)) {
+      // 1. Find the index of the very first editable part (text or reasoning)
+      const firstEditableIndex = originalContent.findIndex((part: any) => 
+        part.type === 'text' || part.type === 'reasoning'
+      );
+
+      if (firstEditableIndex === -1) {
+        // If there was no text at all, just put the new text at the start 
+        // and keep the tools.
+        const nonEditableParts = originalContent.filter((part: any) => 
+          part.type !== 'text' && part.type !== 'reasoning'
+        );
+        finalContent = [...parsedEditableContent, ...nonEditableParts];
+      } else {
+        // 2. PRESERVE ORDER: 
+        // - Keep everything that came BEFORE the first piece of text (e.g., early tool calls).
+        // - Inject the entire new edited block at that first slot.
+        // - Keep everything that came AFTER, but filter out the old editable text.
+        const before = originalContent.slice(0, firstEditableIndex);
+        const after = originalContent.slice(firstEditableIndex + 1).filter((part: any) => 
+          part.type !== 'text' && part.type !== 'reasoning'
+        );
+        
+        finalContent = [...before, ...parsedEditableContent, ...after];
+      }
+    } else {
+      // If the original was just a string, we just use the parsed array.
+      finalContent = parsedEditableContent;
+    }
+
+    return {
+      ...m,
+      message: {
+        ...m.message,
+        content: finalContent,
+      },
+    };
+  }) as typeof currentExport.messages;
+
+  // Snapshot for rollback
+  const originalExport = currentExport;
   thread.import({ ...currentExport, messages: updatedMessages });
 
-  // Only sync to the backend if we have a remoteId AND it's not a local temporary ID.
-  // Temporary (incognito) chats use IDs starting with "__LOCALID_" and should not be persisted.
   if (remoteId && !remoteId.startsWith("__LOCALID_")) {
     try {
       await saveChatMessage({
@@ -102,14 +147,16 @@ export async function updateThreadMessage(args: {
         threadId: remoteId,
         parentId: originalParentId,
         role: "assistant",
-        content: updatedContent,
+        content: (updatedMessages.find(m => m.message.id === messageId)?.message.content) || [],
         createdAt: originalCreatedAt ? Number(originalCreatedAt) : Date.now(),
       });
     } catch (e) {
-      console.error("Backend sync failed for message update:", e);
+      // ROLLBACK: If backend sync fails, revert the UI to the original state
+      thread.import(originalExport);
+      console.error("Backend sync failed for message update. Rolling back UI.", e);
       throw e;
     }
   }
 
-  return updatedContent;
+  return (updatedMessages.find(m => m.message.id === messageId)?.message.content) || [];
 }
