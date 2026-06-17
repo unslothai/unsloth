@@ -752,7 +752,7 @@ class TestResponsesNonStreamingAdapter:
                 }
             )
 
-        monkeypatch.setattr(inf_mod, "openai_chat_completions", fake_chat_completions)
+        monkeypatch.setattr(inf_mod, "_openai_chat_completions_impl", fake_chat_completions)
         if llama_backend is not None:
             monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: llama_backend)
         payload = payload or ResponsesRequest(input = "hi")

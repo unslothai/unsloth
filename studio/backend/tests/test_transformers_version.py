@@ -34,7 +34,6 @@ from utils.transformers_version import (
     _check_tokenizer_config_needs_v5,
     _check_config_needs_510,
     _check_config_needs_550,
-    _check_config_needs_530,
     _config_json_cache,
     _tokenizer_class_cache,
     _config_needs_510_cache,

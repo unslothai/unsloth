@@ -1456,7 +1456,7 @@ async def list_models(current_subject: str = Depends(get_current_subject)):
             loaded_models.append(model_info)
 
         # Include active GGUF model (loaded via llama-server).
-        from core.inference.llama_cpp import get_llama_cpp_backend
+        from routes.inference import get_llama_cpp_backend
 
         llama_backend = get_llama_cpp_backend()
         if llama_backend.is_loaded and llama_backend.model_identifier:
@@ -2747,7 +2747,7 @@ async def delete_cached_model(
 
     # Refuse if the model is currently loaded.
     try:
-        from core.inference.llama_cpp import get_llama_cpp_backend
+        from routes.inference import get_llama_cpp_backend
         llama_backend = get_llama_cpp_backend()
         if llama_backend.is_loaded and llama_backend.model_identifier:
             loaded_id = llama_backend.model_identifier.lower()

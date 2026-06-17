@@ -46,7 +46,6 @@ from routes.inference import (
     _openai_messages_for_gguf_chat,
     _openai_stream_usage_chunk,
     _set_or_prepend_system_message,
-    openai_chat_completions,
 )
 from state.tool_policy import reset_tool_policy
 

@@ -8574,7 +8574,6 @@ try:
         SUPPORTED_MIME_TYPES as _DOC_MIME_OK,
         SUPPORTED_SUFFIXES as _DOC_SUFFIX_OK,
         VlmCapability as _VlmCapability,
-        _EXTRACT_SEMAPHORE,
         _drain_future_exception as _drain_doc_future_exception,
         detect_loaded_vlm as _detect_loaded_vlm,
         document_parser_support as _document_parser_support,
@@ -8611,8 +8610,6 @@ except ImportError:  # pragma: no cover - package always installed alongside
 
     class _DocumentExtractionEncrypted(RuntimeError):  # type: ignore[no-redef]
         pass
-
-    _EXTRACT_SEMAPHORE = threading.BoundedSemaphore(1)
 
 
 _EXTRACT_MAX_BYTES = 100 * 1024 * 1024
@@ -9057,7 +9054,7 @@ async def document_support_endpoint(
         else:  # pragma: no cover - only when core.chat import fallback is active
             cap = None
     return DocumentSupportResponse(
-        extraction_available = True,
+        extraction_available = _DOCUMENT_EXTRACTION_AVAILABLE,
         max_visual_payloads = _MAX_DOCUMENT_VISUAL_PAYLOADS,
         max_extract_concurrency = _DOCUMENT_EXTRACT_CONCURRENCY,
         format_support = _document_parser_support(),

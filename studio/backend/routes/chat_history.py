@@ -152,6 +152,7 @@ class ChatInferenceSettings(BaseModel):
     systemPrompt: Optional[str] = None
     trustRemoteCode: Optional[bool] = None
     fastMode: Optional[bool] = None
+    loadIn4Bit: Optional[bool] = None
 
 
 class ChatPreset(BaseModel):
