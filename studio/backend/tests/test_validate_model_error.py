@@ -27,7 +27,12 @@ import routes.inference as inf  # noqa: E402
 from models.inference import ValidateModelRequest  # noqa: E402
 
 
-def _provoke(monkeypatch, exc: BaseException, *, native: bool = False) -> HTTPException:
+def _provoke(
+    monkeypatch,
+    exc: BaseException,
+    *,
+    native: bool = False,
+) -> HTTPException:
     """Drive validate_model so from_identifier raises ``exc``; return the
     HTTPException it converts that into."""
     monkeypatch.setattr(
