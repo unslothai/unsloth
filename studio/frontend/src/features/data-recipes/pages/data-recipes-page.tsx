@@ -41,6 +41,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
+import { RecentTrainingsSection } from "@/features/studio/recent-trainings-section";
 import type { ReactElement } from "react";
 import { useEffect, useState } from "react";
 import {
@@ -528,6 +529,8 @@ export function DataRecipesPage(): ReactElement {
             ))}
           </div>
         )}
+
+        <RecentTrainingsSection />
       </main>
 
       <Dialog open={learningDialogOpen} onOpenChange={setLearningDialogOpen}>
