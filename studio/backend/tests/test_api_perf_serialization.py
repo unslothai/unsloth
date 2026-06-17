@@ -75,6 +75,7 @@ def test_pooled_client_is_per_event_loop():
     clients = []
     # Each asyncio.run uses a fresh loop; the pooled client must not leak across.
     for _ in range(2):
+
         async def _grab():
             clients.append(llama_http.nonstreaming_client())
             await llama_http.aclose()
