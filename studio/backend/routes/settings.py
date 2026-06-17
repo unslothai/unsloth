@@ -22,6 +22,14 @@ from utils.helper_precache_settings import (
     helper_model_disabled_by_env,
     set_helper_precache_enabled,
 )
+from utils.openai_auto_switch_settings import (
+    DEFAULT_AUTO_UNLOAD_IDLE_SECONDS,
+    DEFAULT_OPENAI_AUTO_SWITCH_ENABLED,
+    get_auto_unload_idle_seconds,
+    get_openai_auto_switch_enabled,
+    set_auto_unload_idle_seconds,
+    set_openai_auto_switch_enabled,
+)
 
 router = APIRouter()
 
@@ -49,6 +57,17 @@ class HelperPrecacheResponse(BaseModel):
     enabled: bool
     default_enabled: bool = DEFAULT_HELPER_PRECACHE_ENABLED
     disabled_by_env: bool
+
+
+class OpenAIAutoSwitchPayload(BaseModel):
+    enabled: bool
+    auto_unload_idle_seconds: int = Field(default = DEFAULT_AUTO_UNLOAD_IDLE_SECONDS, ge = 0)
+
+
+class OpenAIAutoSwitchResponse(BaseModel):
+    enabled: bool
+    auto_unload_idle_seconds: int
+    default_enabled: bool = DEFAULT_OPENAI_AUTO_SWITCH_ENABLED
 
 
 def _upload_limit_response(limit_mb: int) -> UploadLimitResponse:
@@ -111,3 +130,31 @@ def update_helper_precache(
             log = logger,
         ) from exc
     return _helper_precache_response(enabled)
+
+
+@router.get("/openai-auto-switch", response_model = OpenAIAutoSwitchResponse)
+def get_openai_auto_switch(
+    current_subject: str = Depends(get_current_subject),
+) -> OpenAIAutoSwitchResponse:
+    return OpenAIAutoSwitchResponse(
+        enabled = get_openai_auto_switch_enabled(),
+        auto_unload_idle_seconds = get_auto_unload_idle_seconds(),
+    )
+
+
+@router.put("/openai-auto-switch", response_model = OpenAIAutoSwitchResponse)
+def update_openai_auto_switch(
+    payload: OpenAIAutoSwitchPayload, current_subject: str = Depends(get_current_subject)
+) -> OpenAIAutoSwitchResponse:
+    try:
+        enabled = set_openai_auto_switch_enabled(payload.enabled)
+        idle_seconds = set_auto_unload_idle_seconds(payload.auto_unload_idle_seconds)
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_error_detail(exc, fallback = "Invalid OpenAI auto-switch setting."),
+            event = "settings.update_openai_auto_switch_failed",
+            log = logger,
+        ) from exc
+    return OpenAIAutoSwitchResponse(enabled = enabled, auto_unload_idle_seconds = idle_seconds)

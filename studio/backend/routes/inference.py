@@ -1503,6 +1503,46 @@ def get_llama_cpp_backend() -> LlamaCppBackend:
     return _llama_cpp_backend
 
 
+# Serializes opt-in auto-switch loads from the OpenAI-compatible endpoints so
+# two requests naming different models cannot race a swap.
+_auto_switch_lock = asyncio.Lock()
+
+
+async def _maybe_auto_switch_model(
+    requested_model: Optional[str], fastapi_request: Request, current_subject: str
+) -> None:
+    """Load a downloaded local GGUF named by an OpenAI request when auto-switch is on.
+
+    No-op unless the setting is enabled and ``requested_model`` resolves to a
+    downloaded local model different from the loaded one. Unknown names fall
+    through so drop-in OpenAI compatibility (any name serves the loaded model)
+    is preserved, and no remote download is triggered.
+    """
+    from utils.openai_auto_switch_settings import get_openai_auto_switch_enabled
+    from core.inference.local_model_resolver import resolve_local_gguf
+
+    if not requested_model or not get_openai_auto_switch_enabled():
+        return
+    resolved = resolve_local_gguf(requested_model)
+    if resolved is None:
+        return
+    target_id, variant = resolved
+    backend = get_llama_cpp_backend()
+    loaded = backend.model_identifier if backend.is_loaded else None
+    if loaded and loaded.lower() == target_id.lower():
+        return
+    async with _auto_switch_lock:
+        loaded = backend.model_identifier if backend.is_loaded else None
+        if loaded and loaded.lower() == target_id.lower():
+            return
+        # Reuse the load route so its dedup, tensor fallback, and threading apply.
+        await load_model(
+            LoadRequest(model_path = target_id, gguf_variant = variant),
+            fastapi_request,
+            current_subject = current_subject,
+        )
+
+
 @router.post("/load", response_model = LoadResponse)
 async def load_model(
     request: LoadRequest,
@@ -3575,6 +3615,8 @@ async def openai_chat_completions(
                     ),
                 )
 
+    await _maybe_auto_switch_model(payload.model, request, current_subject)
+
     llama_backend = get_llama_cpp_backend()
     using_gguf = llama_backend.is_loaded
 
@@ -5126,13 +5168,16 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
     when a GGUF model is loaded.
     """
     llama_backend = get_llama_cpp_backend()
+
+    body = await request.json()
+    # Opt-in: load the requested local GGUF before the loaded-state check.
+    await _maybe_auto_switch_model(body.get("model"), request, current_subject)
     if not llama_backend.is_loaded:
         raise HTTPException(
             status_code = 503,
             detail = "No GGUF model loaded. Load a GGUF model first.",
         )
 
-    body = await request.json()
     if body.get("max_tokens") is None:
         body["max_tokens"] = llama_backend.context_length or _DEFAULT_MAX_TOKENS_FLOOR
     target_url = f"{llama_backend.base_url}/v1/completions"
@@ -6763,6 +6808,7 @@ async def anthropic_messages(
     JSON).
     """
     llama_backend = get_llama_cpp_backend()
+    await _maybe_auto_switch_model(payload.model, request, current_subject)
     if not llama_backend.is_loaded:
         raise HTTPException(
             status_code = 503,

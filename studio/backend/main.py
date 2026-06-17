@@ -430,6 +430,10 @@ async def lifespan(app: FastAPI):
 
     _start_helper_precache_if_enabled()
 
+    # Idle auto-unload loop (no-op unless the OpenAI auto-unload TTL is set).
+    from core.inference.llama_keepwarm import idle_unload_loop
+    app.state.idle_unload_task = asyncio.create_task(idle_unload_loop())
+
     # Warm the RAG embedder so the first upload skips the cold load. Non-fatal.
     def _warm_rag_embedder():
         try:
@@ -464,6 +468,10 @@ async def lifespan(app: FastAPI):
     else:
         app.state.bootstrap_password = storage.get_bootstrap_password()
     yield
+
+    _idle_task = getattr(app.state, "idle_unload_task", None)
+    if _idle_task is not None:
+        _idle_task.cancel()
 
     await run_lifespan_shutdown(
         terminate_hub_downloads,
@@ -759,6 +767,12 @@ app.add_middleware(
     upload_passthrough_prefixes = _BODY_UPLOAD_PASSTHROUGH_PREFIXES,
     upload_passthrough_max_bytes_getter = _get_upload_passthrough_request_max_bytes,
 )
+
+# Tracks in-flight inference requests for opt-in idle auto-unload; passes
+# straight through when the feature is off.
+from core.inference.llama_keepwarm import LlamaKeepWarmMiddleware  # noqa: E402
+
+app.add_middleware(LlamaKeepWarmMiddleware)
 
 
 from starlette.responses import RedirectResponse as _RedirectResponse  # noqa: E402
