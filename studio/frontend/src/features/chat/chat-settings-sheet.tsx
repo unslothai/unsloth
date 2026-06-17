@@ -613,7 +613,9 @@ export function ChatSettingsPanel({
   const isManual = gpuMemoryMode === "manual";
   // Only fit forces TP off: llama.cpp's --fit aborts under --split-mode tensor.
   // Manual allows it (--fit off, so no abort) -- it just skips Unsloth's planner.
-  const tpDisabled = isAutoFit;
+  // Also off on a single GPU: tensor split is a no-op there (and aborts on some
+  // archs), so don't offer it -- mirrors the multi-GPU gate on the GPU picker.
+  const tpDisabled = isAutoFit || gpuDevices.length <= 1;
   // Manual gpu-layers ceiling = model layer count (else a safe fallback). While
   // staging, use the staged model's layer count (read from its header).
   const stagedLayerCount = pendingSelection?.layerCount ?? null;

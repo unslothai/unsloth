@@ -5328,9 +5328,11 @@ class LlamaCppBackend:
                     self._cache_type_kv = None
 
                 # Tensor parallelism: split the model across GPUs by tensor
-                # rather than by layer. Multi-GPU only -- a no-op on a single
-                # GPU. Default (layer split) is left implicit by omitting the
-                # flag. See llama.cpp --split-mode.
+                # rather than by layer. The UI only offers it on multi-GPU; a
+                # direct single-GPU caller is redundant (supported archs no-op,
+                # unsupported ones abort and the /load path retries layer split).
+                # Default (layer split) is left implicit by omitting the flag.
+                # See llama.cpp --split-mode.
                 if tensor_parallel:
                     cmd.extend(["--split-mode", "tensor"])
                     if tp_tensor_split and len(tp_tensor_split) > 1:

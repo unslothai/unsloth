@@ -788,6 +788,9 @@ export function useChatModelRuntime() {
                   activeNativePathToken: previousActiveNativePathToken ?? null,
                   loadedSpeculativeType: null,
                   loadedSpecDraftNMax: null,
+                  // Re-baseline the GPU knobs from the rolled-back model, else
+                  // the on-switch reset shows phantom unsaved changes.
+                  loadedGpuMemoryMode: null,
                 });
                 await refresh();
               } catch {

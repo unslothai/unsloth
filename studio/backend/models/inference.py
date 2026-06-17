@@ -104,7 +104,8 @@ class LoadRequest(BaseModel):
             "management to llama.cpp's --fit -- no device masking, no context "
             "auto-reduce, no gpu-layer/tensor-split planning. 'manual': pin "
             "gpu_layers and n_cpu_moe yourself (--fit off); tensor_parallel still "
-            "applies (even split, no planner). Ignored for non-GGUF."
+            "applies (split by free VRAM unless tensor_split is set, no planner). "
+            "Ignored for non-GGUF."
         ),
     )
     gpu_layers: int = Field(
@@ -130,9 +131,10 @@ class LoadRequest(BaseModel):
         None,
         description = (
             "Manual mode only: relative share of the model per GPU (--tensor-split), "
-            "in the order of the GPUs in use, e.g. [2, 1] for 2:1. None or an even "
-            "split lets llama.cpp distribute by its default. Ignored unless "
-            "gpu_memory_mode is 'manual'."
+            "in the order of the GPUs in use, e.g. [2, 1] for 2:1. Omit it to let "
+            "llama.cpp use its default, which splits by free VRAM. Any list given is "
+            "passed through as-is, so send [1, 1] to force an even split. Ignored "
+            "unless gpu_memory_mode is 'manual'."
         ),
     )
     llama_extra_args: Optional[List[str]] = Field(

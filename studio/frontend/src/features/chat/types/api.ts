@@ -220,6 +220,7 @@ export interface InferenceStatusResponse {
   gpu_layers?: number;
   n_cpu_moe?: number;
   tensor_split?: number[] | null;
+  gpu_ids?: number[] | null;
   n_layers?: number | null;
   /** Model's MoE expert-layer count (the n_cpu_moe ceiling); 0 if not MoE. */
   n_moe_layers?: number;
