@@ -345,8 +345,17 @@ def test_manual_emits_gpu_layers_fit_off_and_cpu_moe():
 
 
 def test_fit_auto_floors_fit_ctx_at_8192():
-    src = inspect.getsource(llama_cpp_module.LlamaCppBackend._ctx_integrity_flags)
-    assert '"--fit-ctx", "8192"' in src, "fit-auto must floor --fit-ctx at 8192"
+    # Behavior: --fit on with an auto (0) context floors --fit-ctx at 8192.
+    caps = {"supports_fit_ctx": True, "supports_kv_unified": True}
+    flags = LlamaCppBackend._ctx_integrity_flags(1, True, 0, 0, caps)
+    assert flags[flags.index("--fit-ctx") + 1] == "8192"
+    # An explicit requested context floors at that value instead.
+    explicit = LlamaCppBackend._ctx_integrity_flags(1, True, 16384, 16384, caps)
+    assert explicit[explicit.index("--fit-ctx") + 1] == "16384"
+    # No --fit-ctx when the binary lacks support.
+    assert "--fit-ctx" not in LlamaCppBackend._ctx_integrity_flags(
+        1, True, 0, 0, {"supports_fit_ctx": False}
+    )
 
 
 # ── GPU picker (gpu_ids -> CUDA_VISIBLE_DEVICES) ─────────────────────

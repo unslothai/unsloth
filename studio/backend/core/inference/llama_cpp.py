@@ -4553,11 +4553,12 @@ class LlamaCppBackend:
                     # llama.cpp auto-fit (--fit on): hand all memory management
                     # to llama-server. Emptying the probed GPU set makes the
                     # selection and tensor-parallel planning below no-op, so
-                    # gpu_indices stays None (no CUDA/HIP device masking),
-                    # use_fit stays True (--fit on), and tp_tensor_split stays
-                    # None (no --tensor-split). Honor an explicit context (so
-                    # --fit optimizes the gpu-layer offload around it); 0 lets
-                    # --fit size the context itself.
+                    # gpu_indices stays None (no AUTOMATIC device masking -- an
+                    # explicit gpu_ids pick still pins below), use_fit stays True
+                    # (--fit on), and tp_tensor_split stays None (no
+                    # --tensor-split). Honor an explicit context (so --fit
+                    # optimizes the gpu-layer offload around it); 0 lets --fit
+                    # size the context itself.
                     if gpu_memory_mode == "fit":
                         gpus = []
                         tensor_parallel = False
@@ -4569,8 +4570,9 @@ class LlamaCppBackend:
                         # downgrade does.
                         extra_args = strip_split_mode_only(extra_args)
                     elif gpu_memory_mode == "manual":
-                        # Manual offload (--gpu-layers + --fit off): no device
-                        # masking and no context auto-cap -- the user owns layer
+                        # Manual offload (--gpu-layers + --fit off): no automatic
+                        # device masking (an explicit gpu_ids pick still pins
+                        # below) and no context auto-cap -- the user owns layer
                         # count and context (slider value, native default). Same
                         # split-mode strip as fit (manual never tensor-splits).
                         gpus = []
