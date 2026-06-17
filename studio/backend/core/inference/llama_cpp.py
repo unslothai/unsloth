@@ -1769,6 +1769,7 @@ class LlamaCppBackend:
                 "spec_draft_n_max_flag": None,
                 "supports_kv_unified": False,
                 "supports_fit_ctx": False,
+                "supports_fit_target": False,
                 "supports_cache_ram": False,
                 "supports_ctx_checkpoints": False,
                 "supports_no_cache_prompt": False,
@@ -1788,6 +1789,7 @@ class LlamaCppBackend:
         spec_draft_n_max_flag: Optional[str] = None
         supports_kv_unified = False
         supports_fit_ctx = False
+        supports_fit_target = False
         supports_cache_ram = False
         supports_ctx_checkpoints = False
         supports_no_cache_prompt = False
@@ -1884,6 +1886,7 @@ class LlamaCppBackend:
 
             supports_kv_unified = _is_real("--kv-unified")
             supports_fit_ctx = _is_real("--fit-ctx")
+            supports_fit_target = _is_real("--fit-target")
             supports_cache_ram = _is_real("--cache-ram")
             supports_ctx_checkpoints = _is_real("--ctx-checkpoints")
             supports_no_cache_prompt = _is_real("--no-cache-prompt")
@@ -1900,6 +1903,7 @@ class LlamaCppBackend:
             "spec_draft_n_max_flag": spec_draft_n_max_flag,
             "supports_kv_unified": supports_kv_unified,
             "supports_fit_ctx": supports_fit_ctx,
+            "supports_fit_target": supports_fit_target,
             "supports_cache_ram": supports_cache_ram,
             "supports_ctx_checkpoints": supports_ctx_checkpoints,
             "supports_no_cache_prompt": supports_no_cache_prompt,
@@ -6628,7 +6632,9 @@ class LlamaCppBackend:
         windows of ``-c / N``; restore the shared pool so one request can use
         the full context. With ``--fit on``, ``--fit-ctx`` floors the fit step
         -- at an explicitly requested ctx, else 8192 -- so it offloads or fails
-        instead of silently shrinking the window to a tiny size.
+        instead of silently shrinking the window to a tiny size, and
+        ``--fit-target`` tightens the per-device VRAM margin so the fit packs
+        more onto the GPU.
         """
         flags: list[str] = []
         if n_parallel > 1 and caps.get("supports_kv_unified"):
@@ -6641,6 +6647,11 @@ class LlamaCppBackend:
                 # Auto ctx: floor at 8192 so --fit doesn't shrink the window
                 # below a usable size.
                 flags.extend(["--fit-ctx", "8192"])
+        if use_fit and caps.get("supports_fit_target"):
+            # llama.cpp's --fit leaves 1 GiB free per device by default;
+            # tighten that to 512 MiB so it packs more of the model onto
+            # the GPU before spilling to system RAM.
+            flags.extend(["--fit-target", "512"])
         return flags
 
     def _query_server_n_ctx(self) -> Optional[int]:

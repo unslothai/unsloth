@@ -448,6 +448,21 @@ def test_fit_auto_floors_fit_ctx_at_8192():
     )
 
 
+def test_fit_sets_target_margin():
+    # Behavior: --fit on tightens the per-device VRAM margin to 512 MiB.
+    caps = {"supports_fit_target": True}
+    flags = LlamaCppBackend._ctx_integrity_flags(1, True, 0, 0, caps)
+    assert flags[flags.index("--fit-target") + 1] == "512"
+    # Not emitted when fit is off.
+    assert "--fit-target" not in LlamaCppBackend._ctx_integrity_flags(
+        1, False, 0, 0, caps
+    )
+    # Not emitted when the binary lacks support.
+    assert "--fit-target" not in LlamaCppBackend._ctx_integrity_flags(
+        1, True, 0, 0, {"supports_fit_target": False}
+    )
+
+
 # ── GPU picker (gpu_ids -> CUDA_VISIBLE_DEVICES) ─────────────────────
 
 
