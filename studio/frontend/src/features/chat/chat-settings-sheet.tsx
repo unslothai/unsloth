@@ -482,6 +482,15 @@ export function ChatSettingsPanel({
   // A staged GGUF pick (deferred load) shows the GGUF load knobs so they can be
   // set before the single load.
   const pendingIsGguf = isPendingGguf(pendingSelection);
+  // Short, human-readable name for the staged pick (HF ids carry an org prefix;
+  // native picks are already a display label). Drives the "staged, not loaded"
+  // callout so it's obvious the selection hasn't loaded yet.
+  const stagedLabel = (() => {
+    const id = pendingSelection?.id ?? "";
+    const slash = id.lastIndexOf("/");
+    const base = slash >= 0 ? id.slice(slash + 1) : id;
+    return base || id;
+  })();
   const isLoadedGguf =
     useChatRuntimeStore((s) => s.activeGgufVariant) != null;
   const isGguf = isLoadedGguf || pendingIsGguf;
@@ -851,6 +860,16 @@ export function ChatSettingsPanel({
         {hasModelContent && (
         <CollapsibleSection label="Model" defaultOpen={true} first>
           <div className="flex flex-col gap-4 pt-1">
+            {pendingSelection && (
+              <Alert className="rounded-[14px] border-primary/30 bg-primary/5 px-3 py-2">
+                <AlertTitle className="text-[12px] font-medium">
+                  {stagedLabel} is staged, not loaded yet
+                </AlertTitle>
+                <AlertDescription className="text-[11.5px] leading-[1.45] text-muted-foreground">
+                  Set the options below, then choose Load model to load it.
+                </AlertDescription>
+              </Alert>
+            )}
             {isGguf && (
               <>
                 {showContextControl && (

@@ -392,20 +392,25 @@ function ModelSelectorContent({
       {onLoadOnSelectionChange ? (
         <div className="mt-1.5 border-t border-border/70 pt-1.5">
           <div className="flex w-full items-center justify-between gap-2 rounded-md px-2 py-1.5 text-xs text-muted-foreground">
-            <div className="flex min-w-0 items-center gap-1.5">
-              <span>Load on selection</span>
-              <InfoHint>
-                <div className="space-y-1">
-                  <div>
-                    <span className="font-medium">On:</span> load the model
-                    immediately after selection.
+            <div className="flex min-w-0 flex-col gap-0.5">
+              <div className="flex min-w-0 items-center gap-1.5">
+                <span>Load on selection</span>
+                <InfoHint>
+                  <div className="space-y-1">
+                    <div>
+                      <span className="font-medium">On:</span> load the model
+                      immediately after selection.
+                    </div>
+                    <div>
+                      <span className="font-medium">Off:</span> configure options
+                      first, then click Load model.
+                    </div>
                   </div>
-                  <div>
-                    <span className="font-medium">Off:</span> configure options
-                    first, then click Load model.
-                  </div>
-                </div>
-              </InfoHint>
+                </InfoHint>
+              </div>
+              <span className="text-[10px] leading-none text-muted-foreground/70">
+                Local GGUF models only
+              </span>
             </div>
             <Switch
               className="panel-switch shrink-0"
