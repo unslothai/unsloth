@@ -697,10 +697,14 @@ def test_strip_shadowing_flags_keeps_draft_tuning_with_spec():
     # them via the same parsers the child honors (so they stay consistent on
     # inherit), and stripping --spec-draft-ngl would move a CPU drafter to GPU.
     keep = [
-        "--spec-draft-type-k", "q4_0",
-        "--spec-draft-type-v", "q4_0",
-        "--spec-draft-ngl", "0",
-        "--spec-draft-device", "cpu",
+        "--spec-draft-type-k",
+        "q4_0",
+        "--spec-draft-type-v",
+        "q4_0",
+        "--spec-draft-ngl",
+        "0",
+        "--spec-draft-device",
+        "cpu",
     ]
     out = strip_shadowing_flags(
         list(keep),
