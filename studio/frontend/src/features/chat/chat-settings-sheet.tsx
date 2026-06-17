@@ -1188,13 +1188,22 @@ export function ChatSettingsPanel({
                       GPU Memory
                     </span>
                     <InfoHint>
-                      Default: Unsloth picks GPUs and context length to fit your
-                      model, kept on GPU. llama.cpp --fit on: hands memory
-                      management to llama.cpp, which sizes context and offloads
-                      any overflow (including MoE experts) to system RAM so
-                      oversized models still load -- slower. Manual: pin the GPU
-                      layer count and MoE offload yourself. fit and Manual turn
-                      off Tensor Parallelism.
+                      <div className="flex flex-col gap-1.5">
+                        <div>
+                          <span className="font-medium">Default:</span> Unsloth
+                          fits the model and context to your GPUs.
+                        </div>
+                        <div>
+                          <span className="font-medium">llama.cpp --fit on:</span>{" "}
+                          llama.cpp sizes context and offloads overflow
+                          (including MoE experts) to RAM.
+                        </div>
+                        <div>
+                          <span className="font-medium">Manual:</span> pin GPU
+                          layers and MoE offload yourself.
+                        </div>
+                        <div>fit and Manual turn off Tensor Parallelism.</div>
+                      </div>
                     </InfoHint>
                   </div>
                   <div className="flex shrink-0 items-center gap-1.5">
