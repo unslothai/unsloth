@@ -607,6 +607,7 @@ try:
         _DEFAULT_MAX_TOKENS_FLOOR,
         _DEFAULT_STREAM_STALL_TIMEOUT_S,
         _canonicalize_spec_mode,
+        _effective_tensor_parallel,
         _extra_args_set_spec_type,
         _hf_offline_if_dns_dead,
         detect_reasoning_flags,
@@ -641,6 +642,7 @@ except ImportError:
         _DEFAULT_MAX_TOKENS_FLOOR,
         _DEFAULT_STREAM_STALL_TIMEOUT_S,
         _canonicalize_spec_mode,
+        _effective_tensor_parallel,
         _extra_args_set_spec_type,
         _hf_offline_if_dns_dead,
         detect_reasoning_flags,
@@ -1396,7 +1398,7 @@ def _request_matches_loaded_settings(
         )
     )
     if (
-        resolve_tensor_parallel(effective_extra, request.tensor_parallel)
+        _effective_tensor_parallel(effective_extra, request.tensor_parallel)
         != llama_backend.tensor_parallel
     ):
         return False

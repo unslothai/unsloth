@@ -683,6 +683,27 @@ def _env_split_mode_is_tensor(env: Optional[Mapping[str, str]] = None) -> bool:
     return bool(raw) and raw.strip().lower() == "tensor"
 
 
+def _effective_tensor_parallel(
+    extra_args: Optional[Iterable[str]],
+    tensor_parallel: bool,
+    env: Optional[Mapping[str, str]] = None,
+) -> bool:
+    """Tensor-parallel decision including the inherited LLAMA_ARG_SPLIT_MODE env.
+
+    resolve_tensor_parallel (extras + toggle), flipped on when extras set no split
+    mode but the child inherits a tensor split env. Shared by load_model (which
+    budgets and launches it) and the duplicate-load matchers (which must agree, or
+    a healthy env-driven tensor server is needlessly reloaded)."""
+    resolved = resolve_tensor_parallel(extra_args, tensor_parallel)
+    if (
+        not resolved
+        and parse_split_mode_override(extra_args) is None
+        and _env_split_mode_is_tensor(env)
+    ):
+        return True
+    return resolved
+
+
 def _auto_mode_drops_mtp(
     req_mode: Optional[str],
     size_b: Optional[float],
@@ -4273,22 +4294,12 @@ class LlamaCppBackend:
                     # so _cache_type_from_env keeps it out of the emitted flags.
                     cache_type_kv = _env_main_cache_type_for_budget()
                     _cache_type_from_env = cache_type_kv is not None
-                # A user --split-mode in extras last-wins-overrides the
-                # toggle, so reconcile it back into tensor_parallel state.
+                # A user --split-mode in extras last-wins-overrides the toggle, and
+                # an inherited tensor LLAMA_ARG_SPLIT_MODE flips it on (the child
+                # would run tensor unbudgeted otherwise). The duplicate-load matchers
+                # use the same helper so a healthy env-driven tensor server matches.
                 split_mode_override = parse_split_mode_override(extra_args)
-                tensor_parallel = resolve_tensor_parallel(extra_args, tensor_parallel)
-                if (
-                    not tensor_parallel
-                    and split_mode_override is None
-                    and _env_split_mode_is_tensor()
-                ):
-                    # No extras --split-mode, but the child inherits a tensor
-                    # LLAMA_ARG_SPLIT_MODE. Plan/reserve/emit tensor so the
-                    # heavier per-device compute buffer is budgeted instead of
-                    # the lighter layer-split overhead (env-only flip would
-                    # under-reserve). One-directional: never flips a tensor plan
-                    # back to layer (Studio's emitted --split-mode tensor wins).
-                    tensor_parallel = True
+                tensor_parallel = _effective_tensor_parallel(extra_args, tensor_parallel)
                 # Tensor mode aborts on a quantized KV cache, so drop it for the
                 # tensor attempt (and strip any inherited/explicit --cache-type
                 # that would re-impose it when appended last). Layer split does
@@ -4316,6 +4327,16 @@ class LlamaCppBackend:
                             strip_template = False,
                             strip_split_mode = False,
                         )
+                    # The launch keeps an inherited tensor-safe env cache type (the
+                    # env cleanup only pops quantized ones), so re-adopt a heavier
+                    # env type (f32) for the budget here too -- mirrors the initial
+                    # adoption, which was skipped because the param/extras set the
+                    # (now-dropped) quantized type. Else the child allocates f32 KV
+                    # against an f16 budget.
+                    _env_tensor_cache = _env_main_cache_type_for_budget()
+                    if _env_tensor_cache is not None:
+                        cache_type_kv = _env_tensor_cache
+                        _cache_type_from_env = True
                 if ctx_override is not None and ctx_override > 0:
                     logger.info(f"User --ctx-size {ctx_override} honored; skipping auto-reduce")
                 if cache_override is not None:
@@ -4636,9 +4657,12 @@ class LlamaCppBackend:
                         )
                         tensor_parallel = False
                         # Layer split supports a quantized KV the tensor attempt
-                        # dropped; restore it (re-emitted from cache_type_kv).
+                        # dropped; restore it and re-emit it (clear the env flag the
+                        # tensor re-adoption may have set, so the restored type wins
+                        # over a stale inherited env on the layer launch).
                         if _tensor_dropped_cache_type_kv is not None:
                             cache_type_kv = _tensor_dropped_cache_type_kv
+                            _cache_type_from_env = False
                         # Strip a user --split-mode tensor from extras so the
                         # downgrade actually applies (extras are appended last).
                         extra_args = strip_split_mode_only(extra_args)
@@ -4673,9 +4697,11 @@ class LlamaCppBackend:
                                 "per-device compute buffers; falling back to layer split."
                             )
                             tensor_parallel = False
-                            # Restore the dropped quantized KV (layer split supports it).
+                            # Restore the dropped quantized KV (layer split supports
+                            # it); clear the env flag so the restored type is emitted.
                             if _tensor_dropped_cache_type_kv is not None:
                                 cache_type_kv = _tensor_dropped_cache_type_kv
+                                _cache_type_from_env = False
                             extra_args = strip_split_mode_only(extra_args)
 
                     if tensor_parallel and tp_gpus:
@@ -5817,10 +5843,11 @@ class LlamaCppBackend:
         if _norm(self._cache_type_kv) != _norm(cache_type_kv):
             return False
 
-        # Reconcile a user --split-mode in extras (load_model does the same), so
-        # an extras-driven tensor load isn't seen as a mismatch that needlessly
-        # kills/reloads a healthy server.
-        if self._tensor_parallel != resolve_tensor_parallel(extra_args, tensor_parallel):
+        # Reconcile a user --split-mode in extras AND an inherited tensor
+        # LLAMA_ARG_SPLIT_MODE env (load_model uses the same helper), so an
+        # extras- or env-driven tensor load isn't seen as a mismatch that
+        # needlessly kills/reloads a healthy server.
+        if self._tensor_parallel != _effective_tensor_parallel(extra_args, tensor_parallel):
             return False
 
         # Compare on the canonical requested mode. With --spec-type in

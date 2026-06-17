@@ -74,6 +74,7 @@ from core.inference.llama_cpp import (  # noqa: E402
     _extra_args_requests_mtp,
     _extra_args_requests_separate_draft,
     _extra_args_spec_draft_n_max,
+    _effective_tensor_parallel,
     _env_main_cache_type_for_budget,
     _env_split_mode_is_tensor,
     _kv_bytes_per_elem,
@@ -773,15 +774,47 @@ class TestExtraArgsMtpDetection:
         assert _env_split_mode_is_tensor(env = {"LLAMA_ARG_SPLIT_MODE": "row"}) is False
         assert _env_split_mode_is_tensor(env = {"LLAMA_ARG_SPLIT_MODE": "none"}) is False
 
+    def test_effective_tensor_parallel_env_flip(self):
+        # Shared by load_model and both duplicate-load matchers, so they agree.
+        tensor_env = {"LLAMA_ARG_SPLIT_MODE": "tensor"}
+        # No extras, toggle off, tensor env -> flips on.
+        assert _effective_tensor_parallel(None, False, env = tensor_env) is True
+        # Extras override (any --split-mode) beats the env, even if non-tensor.
+        assert _effective_tensor_parallel(
+            ["--split-mode", "layer"], False, env = tensor_env
+        ) is False
+        # Explicit extras/toggle tensor stays on regardless of env.
+        assert _effective_tensor_parallel(["--split-mode", "tensor"], False, env = {}) is True
+        assert _effective_tensor_parallel(None, True, env = {}) is True
+        # One-directional: a non-tensor env never downgrades, and no env -> no flip.
+        assert _effective_tensor_parallel(None, False, env = {}) is False
+        assert _effective_tensor_parallel(
+            None, False, env = {"LLAMA_ARG_SPLIT_MODE": "layer"}
+        ) is False
+
+    def test_route_matcher_uses_effective_tensor_parallel(self):
+        # Fix: the route duplicate-load matcher must compare the env-aware tensor
+        # decision, or an env-driven tensor server is needlessly reloaded (#6312).
+        # Read from disk (importing routes.inference drags in heavy deps).
+        routes_src = (
+            Path(__file__).resolve().parent.parent / "routes" / "inference.py"
+        ).read_text()
+        start = routes_src.index("def _request_matches_loaded_settings")
+        end = routes_src.index("\ndef ", start + 1)
+        body = "".join(routes_src[start:end].split())
+        assert "_effective_tensor_parallel(effective_extra,request.tensor_parallel)" in body
+
     def test_load_model_adopts_env_tensor_split_mode(self):
-        # Source-level: load_model flips to tensor when extras don't set a split
-        # mode but the env selects tensor, and only one-directionally (guarded on
-        # `not tensor_parallel` so an existing tensor plan is never downgraded).
-        # Whitespace-stripped so the check survives any formatter line-wrapping.
-        compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
-        assert "nottensor_parallel" in compact
-        assert "split_mode_overrideisNone" in compact
-        assert "_env_split_mode_is_tensor()" in compact
+        # load_model delegates the tensor decision to _effective_tensor_parallel,
+        # which flips to tensor only one-directionally: extras set no split mode,
+        # none is overridden, and the env selects tensor (an existing tensor plan
+        # is never downgraded). Whitespace-stripped to survive formatter wrapping.
+        load = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
+        assert "tensor_parallel=_effective_tensor_parallel(extra_args,tensor_parallel)" in load
+        helper = "".join(inspect.getsource(_effective_tensor_parallel).split())
+        assert "notresolved" in helper
+        assert "parse_split_mode_override(extra_args)isNone" in helper
+        assert "_env_split_mode_is_tensor(env)" in helper
 
     def test_load_model_does_not_emit_env_only_cache_type(self):
         # Cluster C: an env-only (budget) cache type must not be re-emitted as
@@ -830,9 +863,10 @@ class TestExtraArgsMtpDetection:
         # layer buffer), not fold 0, or it under-reserves at high --parallel.
         compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
         assert "if_compute_buffer_pipeline<=0:" in compact
-        assert (
-            "_compute_buffer_pipeline=self._TENSOR_PARALLEL_BUFFER_RESERVE_MIB*1024*1024" in compact
-        )
+        # The RHS expression only (no `_compute_buffer_pipeline=` prefix) so the
+        # match survives the formatter wrapping it in parens. It's unique within
+        # load_model (the other use of this constant is in MiB, no *1024*1024).
+        assert "self._TENSOR_PARALLEL_BUFFER_RESERVE_MIB*1024*1024" in compact
 
     def test_load_model_passes_unsized_mtp_reserve_to_tensor_planner(self):
         # review run3 #1/#5: a weights-only (KV-unsized) MTP reserve must flow into
