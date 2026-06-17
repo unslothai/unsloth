@@ -910,140 +910,6 @@ export function ChatSettingsPanel({
           <div className="flex flex-col gap-4 pt-1">
             {isGguf && (
               <>
-                <div className="flex items-center justify-between gap-3">
-                  <div className="flex min-w-0 items-center gap-1.5">
-                    <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
-                      GPU Memory
-                    </span>
-                    <InfoHint>
-                      Default: Unsloth picks GPUs and context length to fit your
-                      model, kept on GPU. llama.cpp --fit on: hands memory
-                      management to llama.cpp, which sizes context and offloads
-                      any overflow (including MoE experts) to system RAM so
-                      oversized models still load -- slower. Manual: pin the GPU
-                      layer count and MoE offload yourself. fit and Manual turn
-                      off Tensor Parallelism.
-                    </InfoHint>
-                  </div>
-                  <div className="flex shrink-0 items-center gap-1.5">
-                    <Select
-                      value={gpuMemoryMode}
-                      onValueChange={(v) => {
-                        const mode = v as "auto" | "fit" | "manual";
-                        setGpuMemoryMode(mode);
-                        // fit/manual bypass Unsloth's tensor-parallel planning.
-                        if (mode !== "auto") setTensorParallel(false);
-                      }}
-                    >
-                      <SelectTrigger
-                        animateRadius={false}
-                        icon={ChevronDownStandardIcon}
-                        iconClassName="size-3.5"
-                        className="grid h-7 w-[160px] min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-1 rounded-full border-transparent bg-black/[0.04] dark:bg-white/[0.05] hover:bg-black/[0.06] dark:hover:bg-white/[0.1] pl-3 pr-2 py-0 text-[13px]! font-medium text-nav-fg focus-visible:ring-0 focus-visible:border-transparent [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate [&>svg]:shrink-0"
-                        data-test-id="gpu-memory-mode-select"
-                      >
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent className="menu-soft-surface ring-0 border-0 rounded-lg">
-                        <SelectItem value="auto">Default</SelectItem>
-                        <SelectItem value="fit">llama.cpp --fit on</SelectItem>
-                        <SelectItem value="manual">Manual</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                </div>
-                {showGpuPicker && (
-                  <div className="space-y-2">
-                    <div className="flex min-w-0 items-center gap-1.5">
-                      <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
-                        GPUs
-                      </span>
-                      <InfoHint>
-                        Which GPUs this model may use. Unchecked GPUs are hidden
-                        from llama.cpp (CUDA_VISIBLE_DEVICES). Leave all checked
-                        to use every GPU.
-                      </InfoHint>
-                    </div>
-                    <div className="flex flex-col gap-2">
-                      {gpuDevices.map((d) => (
-                        <div
-                          key={d.index}
-                          className="flex items-center justify-between gap-3"
-                        >
-                          <span className="min-w-0 truncate text-[12px] text-nav-fg/80">
-                            GPU {d.index}: {d.name}
-                            {d.memoryTotalGb
-                              ? ` · ${Math.round(d.memoryTotalGb)} GB`
-                              : ""}
-                          </span>
-                          <Switch
-                            className="panel-switch shrink-0"
-                            checked={isGpuChecked(d.index)}
-                            onCheckedChange={() => toggleGpu(d.index)}
-                            data-test-id={`gpu-pick-${d.index}`}
-                          />
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-                {isManual && (
-                  <>
-                    <ParamSlider
-                      label="GPU Layers"
-                      value={Math.min(gpuLayers, gpuLayersMax)}
-                      min={0}
-                      max={gpuLayersMax}
-                      step={1}
-                      onChange={setGpuLayers}
-                      valueSize={6}
-                      info={
-                        <>
-                          Layers to offload to the GPU (--gpu-layers, --fit off);
-                          the rest run on CPU. At the maximum, all layers are on
-                          the GPU.
-                        </>
-                      }
-                    />
-                    <div className="flex items-center justify-between gap-3">
-                      <div className="flex min-w-0 items-center gap-1.5">
-                        <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
-                          Keep MoE on CPU
-                        </span>
-                        <InfoHint>
-                          Move MoE expert tensors to the CPU (--cpu-moe). Saves
-                          VRAM on MoE models at some speed cost; no effect on
-                          dense models.
-                        </InfoHint>
-                      </div>
-                      <Switch
-                        className="panel-switch shrink-0"
-                        checked={cpuMoe}
-                        onCheckedChange={setCpuMoe}
-                        data-test-id="cpu-moe-switch"
-                      />
-                    </div>
-                  </>
-                )}
-                <div className="flex items-center justify-between gap-3">
-                  <div className="flex min-w-0 items-center gap-1.5">
-                    <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
-                      Tensor Parallelism
-                    </span>
-                    <InfoHint>
-                      No effect on a single GPU. On multi-GPU setups, improves
-                      tokens/sec during generation when using dense models. MoE
-                      models don't benefit and can be much slower.
-                    </InfoHint>
-                  </div>
-                  <Switch
-                    className="panel-switch shrink-0"
-                    checked={tensorParallel}
-                    onCheckedChange={setTensorParallel}
-                    disabled={tpDisabled}
-                    data-test-id="tensor-parallel-switch"
-                  />
-                </div>
                 {isAutoFit ? (
                   <div className="space-y-3.5">
                     <div className="flex items-center justify-between gap-3">
@@ -1297,6 +1163,140 @@ export function ChatSettingsPanel({
                     />
                   </div>
                 )}
+                {showGpuPicker && (
+                  <div className="space-y-2">
+                    <div className="flex min-w-0 items-center gap-1.5">
+                      <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+                        GPUs
+                      </span>
+                      <InfoHint>
+                        Which GPUs this model may use. Unchecked GPUs are hidden
+                        from llama.cpp (CUDA_VISIBLE_DEVICES). Leave all checked
+                        to use every GPU.
+                      </InfoHint>
+                    </div>
+                    <div className="flex flex-col gap-2">
+                      {gpuDevices.map((d) => (
+                        <div
+                          key={d.index}
+                          className="flex items-center justify-between gap-3"
+                        >
+                          <span className="min-w-0 truncate text-[12px] text-nav-fg/80">
+                            GPU {d.index}: {d.name}
+                            {d.memoryTotalGb
+                              ? ` · ${Math.round(d.memoryTotalGb)} GB`
+                              : ""}
+                          </span>
+                          <Switch
+                            className="panel-switch shrink-0"
+                            checked={isGpuChecked(d.index)}
+                            onCheckedChange={() => toggleGpu(d.index)}
+                            data-test-id={`gpu-pick-${d.index}`}
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex min-w-0 items-center gap-1.5">
+                    <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+                      GPU Memory
+                    </span>
+                    <InfoHint>
+                      Default: Unsloth picks GPUs and context length to fit your
+                      model, kept on GPU. llama.cpp --fit on: hands memory
+                      management to llama.cpp, which sizes context and offloads
+                      any overflow (including MoE experts) to system RAM so
+                      oversized models still load -- slower. Manual: pin the GPU
+                      layer count and MoE offload yourself. fit and Manual turn
+                      off Tensor Parallelism.
+                    </InfoHint>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-1.5">
+                    <Select
+                      value={gpuMemoryMode}
+                      onValueChange={(v) => {
+                        const mode = v as "auto" | "fit" | "manual";
+                        setGpuMemoryMode(mode);
+                        // fit/manual bypass Unsloth's tensor-parallel planning.
+                        if (mode !== "auto") setTensorParallel(false);
+                      }}
+                    >
+                      <SelectTrigger
+                        animateRadius={false}
+                        icon={ChevronDownStandardIcon}
+                        iconClassName="size-3.5"
+                        className="grid h-7 w-[160px] min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-1 rounded-full border-transparent bg-black/[0.04] dark:bg-white/[0.05] hover:bg-black/[0.06] dark:hover:bg-white/[0.1] pl-3 pr-2 py-0 text-[13px]! font-medium text-nav-fg focus-visible:ring-0 focus-visible:border-transparent [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate [&>svg]:shrink-0"
+                        data-test-id="gpu-memory-mode-select"
+                      >
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent className="menu-soft-surface ring-0 border-0 rounded-lg">
+                        <SelectItem value="auto">Default</SelectItem>
+                        <SelectItem value="fit">llama.cpp --fit on</SelectItem>
+                        <SelectItem value="manual">Manual</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+                {isManual && (
+                  <>
+                    <ParamSlider
+                      label="GPU Layers"
+                      value={Math.min(gpuLayers, gpuLayersMax)}
+                      min={0}
+                      max={gpuLayersMax}
+                      step={1}
+                      onChange={setGpuLayers}
+                      valueSize={6}
+                      info={
+                        <>
+                          Layers to offload to the GPU (--gpu-layers, --fit off);
+                          the rest run on CPU. At the maximum, all layers are on
+                          the GPU.
+                        </>
+                      }
+                    />
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="flex min-w-0 items-center gap-1.5">
+                        <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+                          Keep MoE on CPU
+                        </span>
+                        <InfoHint>
+                          Move MoE expert tensors to the CPU (--cpu-moe). Saves
+                          VRAM on MoE models at some speed cost; no effect on
+                          dense models.
+                        </InfoHint>
+                      </div>
+                      <Switch
+                        className="panel-switch shrink-0"
+                        checked={cpuMoe}
+                        onCheckedChange={setCpuMoe}
+                        data-test-id="cpu-moe-switch"
+                      />
+                    </div>
+                  </>
+                )}
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex min-w-0 items-center gap-1.5">
+                    <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+                      Tensor Parallelism
+                    </span>
+                    <InfoHint>
+                      No effect on a single GPU. On multi-GPU setups, improves
+                      tokens/sec during generation when using dense models. MoE
+                      models don't benefit and can be much slower.
+                    </InfoHint>
+                  </div>
+                  <Switch
+                    className="panel-switch shrink-0"
+                    checked={tensorParallel}
+                    onCheckedChange={setTensorParallel}
+                    disabled={tpDisabled}
+                    data-test-id="tensor-parallel-switch"
+                  />
+                </div>
               </>
             )}
             {!isGguf && params.checkpoint && (
