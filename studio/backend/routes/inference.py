@@ -2128,7 +2128,6 @@ async def load_model(
             # is a clean 400, not a silent CPU fallback.
             if effective_gpu_ids is not None:
                 from utils.hardware.hardware import resolve_requested_gpu_ids
-
                 try:
                     resolve_requested_gpu_ids(effective_gpu_ids)
                 except ValueError as exc:

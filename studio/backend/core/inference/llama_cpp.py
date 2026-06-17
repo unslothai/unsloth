@@ -4633,9 +4633,7 @@ class LlamaCppBackend:
                         # this is compatible -- --fit off means no fit/tensor abort).
                         gpus = []
                         effective_ctx = (
-                            requested_ctx
-                            if requested_ctx > 0
-                            else (self._context_length or 0)
+                            requested_ctx if requested_ctx > 0 else (self._context_length or 0)
                         )
                         original_ctx = effective_ctx
                         extra_args = strip_split_mode_only(extra_args)
@@ -5246,9 +5244,7 @@ class LlamaCppBackend:
                     # (--tensor-split). Works with the default layer split and with
                     # tensor parallelism; --fit off means no fit/tensor abort.
                     if tensor_split:
-                        cmd.extend(
-                            ["--tensor-split", ",".join(f"{x:g}" for x in tensor_split)]
-                        )
+                        cmd.extend(["--tensor-split", ",".join(f"{x:g}" for x in tensor_split)])
                 elif use_fit:
                     cmd.extend(["--fit", "on"])
                 elif gpu_indices is not None:

@@ -286,8 +286,12 @@ def test_response_models_emit_manual_fields(model_cls):
         )
     else:
         obj = model_cls(
-            gpu_memory_mode = "manual", gpu_layers = 20, n_cpu_moe = 8,
-            tensor_split = [2, 1], n_layers = 32, n_moe_layers = 32,
+            gpu_memory_mode = "manual",
+            gpu_layers = 20,
+            n_cpu_moe = 8,
+            tensor_split = [2, 1],
+            n_layers = 32,
+            n_moe_layers = 32,
         )
     dumped = obj.model_dump()
     assert dumped["gpu_memory_mode"] == "manual"
@@ -329,7 +333,13 @@ def test_n_moe_layers_property():
     assert b.n_moe_layers == 46
 
 
-def _target_state_manual(backend, *, gpu_layers, n_cpu_moe, tensor_split = None):
+def _target_state_manual(
+    backend,
+    *,
+    gpu_layers,
+    n_cpu_moe,
+    tensor_split = None,
+):
     return backend._already_in_target_state(
         gguf_path = None,
         model_identifier = "owner/repo",
@@ -359,16 +369,10 @@ def test_manual_reloads_on_gpu_layers_or_n_cpu_moe_or_split_change():
     # Changed MoE offload -> reload.
     assert _target_state_manual(backend, gpu_layers = 20, n_cpu_moe = 8) is False
     # Added a GPU split -> reload.
-    assert (
-        _target_state_manual(backend, gpu_layers = 20, n_cpu_moe = 0, tensor_split = [2, 1])
-        is False
-    )
+    assert _target_state_manual(backend, gpu_layers = 20, n_cpu_moe = 0, tensor_split = [2, 1]) is False
     # Same GPU split -> no reload.
     backend._tensor_split = [2, 1]
-    assert (
-        _target_state_manual(backend, gpu_layers = 20, n_cpu_moe = 0, tensor_split = [2, 1])
-        is True
-    )
+    assert _target_state_manual(backend, gpu_layers = 20, n_cpu_moe = 0, tensor_split = [2, 1]) is True
 
 
 def test_manual_emits_gpu_layers_fit_off_and_n_cpu_moe():
@@ -454,9 +458,7 @@ def test_fit_sets_target_margin():
     flags = LlamaCppBackend._ctx_integrity_flags(1, True, 0, 0, caps)
     assert flags[flags.index("--fit-target") + 1] == "512"
     # Not emitted when fit is off.
-    assert "--fit-target" not in LlamaCppBackend._ctx_integrity_flags(
-        1, False, 0, 0, caps
-    )
+    assert "--fit-target" not in LlamaCppBackend._ctx_integrity_flags(1, False, 0, 0, caps)
     # Not emitted when the binary lacks support.
     assert "--fit-target" not in LlamaCppBackend._ctx_integrity_flags(
         1, True, 0, 0, {"supports_fit_target": False}
@@ -475,9 +477,7 @@ def test_load_request_accepts_gpu_ids():
 @pytest.mark.parametrize("model_cls", [LoadResponse, InferenceStatusResponse])
 def test_response_models_emit_gpu_ids(model_cls):
     if model_cls is LoadResponse:
-        obj = model_cls(
-            status = "loaded", model = "m", display_name = "m", inference = {}, gpu_ids = [1]
-        )
+        obj = model_cls(status = "loaded", model = "m", display_name = "m", inference = {}, gpu_ids = [1])
     else:
         obj = model_cls(gpu_ids = [1])
     assert obj.model_dump()["gpu_ids"] == [1]
