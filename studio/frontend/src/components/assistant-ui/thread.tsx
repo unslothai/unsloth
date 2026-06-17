@@ -3324,6 +3324,7 @@ const AssistantMessage: FC = () => {
             />
             <SourcesGroup />
             <RagSourcesGroup />
+            <MessageHtmlArtifacts />
             <MessageError />
           </>
         )}
