@@ -1306,8 +1306,7 @@ def run(
         )
     else:
         _tool_notice = (
-            "Server-side tools are ENABLED for loopback. "
-            "Pass --disable-tools to turn off."
+            "Server-side tools are ENABLED for loopback. Pass --disable-tools to turn off."
         )
 
     if not silent:

@@ -79,15 +79,15 @@ def test_tool_policy_not_auto_disabled_by_bind():
 
     for host in ("127.0.0.1", "localhost", "0.0.0.0"):
         reset_tool_policy()
-        run._apply_cli_tool_policy(None)        # no flag, on any bind
+        run._apply_cli_tool_policy(None)  # no flag, on any bind
         assert get_tool_policy() is None, host  # untouched: per-request honored
 
     reset_tool_policy()
-    run._apply_cli_tool_policy(True)            # --enable-tools: forced on
+    run._apply_cli_tool_policy(True)  # --enable-tools: forced on
     assert get_tool_policy() is True
 
     reset_tool_policy()
-    run._apply_cli_tool_policy(False)           # --disable-tools: forced off
+    run._apply_cli_tool_policy(False)  # --disable-tools: forced off
     assert get_tool_policy() is False
     reset_tool_policy()
 
