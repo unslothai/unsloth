@@ -905,9 +905,11 @@ export function ChatSettingsPanel({
         className="run-settings-scroll relative min-h-0 flex-1 overflow-y-auto"
       >
       <div className="px-[18px] pt-3">
-        {hasModelContent && isGguf && (
-        <CollapsibleSection label="GPU" defaultOpen={true} first>
+        {hasModelContent && (
+        <CollapsibleSection label="Model" defaultOpen={true} first>
           <div className="flex flex-col gap-4 pt-1">
+            {isGguf && (
+              <>
                 <div className="flex items-center justify-between gap-3">
                   <div className="flex min-w-0 items-center gap-1.5">
                     <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
@@ -1023,14 +1025,25 @@ export function ChatSettingsPanel({
                     </div>
                   </>
                 )}
-          </div>
-        </CollapsibleSection>
-        )}
-        {hasModelContent && (
-        <CollapsibleSection label="Model" defaultOpen={true} first={!isGguf}>
-          <div className="flex flex-col gap-4 pt-1">
-            {isGguf && (
-              <>
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex min-w-0 items-center gap-1.5">
+                    <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+                      Tensor Parallelism
+                    </span>
+                    <InfoHint>
+                      No effect on a single GPU. On multi-GPU setups, improves
+                      tokens/sec during generation when using dense models. MoE
+                      models don't benefit and can be much slower.
+                    </InfoHint>
+                  </div>
+                  <Switch
+                    className="panel-switch shrink-0"
+                    checked={tensorParallel}
+                    onCheckedChange={setTensorParallel}
+                    disabled={tpDisabled}
+                    data-test-id="tensor-parallel-switch"
+                  />
+                </div>
                 {isAutoFit ? (
                   <div className="space-y-3.5">
                     <div className="flex items-center justify-between gap-3">
@@ -1284,25 +1297,6 @@ export function ChatSettingsPanel({
                     />
                   </div>
                 )}
-                <div className="flex items-center justify-between gap-3">
-                  <div className="flex min-w-0 items-center gap-1.5">
-                    <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
-                      Tensor Parallelism
-                    </span>
-                    <InfoHint>
-                      No effect on a single GPU. On multi-GPU setups, improves
-                      tokens/sec during generation when using dense models. MoE
-                      models don't benefit and can be much slower.
-                    </InfoHint>
-                  </div>
-                  <Switch
-                    className="panel-switch shrink-0"
-                    checked={tensorParallel}
-                    onCheckedChange={setTensorParallel}
-                    disabled={tpDisabled}
-                    data-test-id="tensor-parallel-switch"
-                  />
-                </div>
               </>
             )}
             {!isGguf && params.checkpoint && (
