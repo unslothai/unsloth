@@ -1279,8 +1279,9 @@ export function ChatSettingsPanel({
                       </span>
                       <InfoHint>
                         Which GPUs this model may use. Unchecked GPUs are hidden
-                        from llama.cpp (CUDA_VISIBLE_DEVICES). Leave all checked
-                        to use every GPU.
+                        from llama.cpp (CUDA_VISIBLE_DEVICES, or
+                        HIP_VISIBLE_DEVICES on ROCm). Leave all checked to use
+                        every GPU.
                       </InfoHint>
                     </div>
                     <div className="flex flex-col gap-2">
