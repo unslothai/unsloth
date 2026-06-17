@@ -50,13 +50,11 @@ _CACHE_MAX_ENTRIES = 4096
 # keyed by (file cache key, wanted key). None = key absent / file unreadable.
 _BOOL_CACHE: Dict[Tuple[_CacheKey, str], Optional[bool]] = {}
 
-# Native training context length (``{arch}.context_length``). None = absent /
-# unreadable. Lets the UI show the real context ceiling before a model loads.
-_CONTEXT_CACHE: Dict[_CacheKey, Optional[int]] = {}
-
-# MoE expert-layer count (block_count minus leading dense layers; 0 if not MoE).
-# Lets the UI size the manual MoE-offload slider before a model loads.
-_MOE_CACHE: Dict[_CacheKey, Optional[int]] = {}
+# GGUF header dims for the staged/deferred-load UI: context_length, layer_count
+# (block_count), and moe_layer_count (block_count minus leading dense layers; 0
+# if not MoE). One cached pass fills all three so the staged sheet can size every
+# slider before the model loads. None = unreadable / not a GGUF.
+_DIMS_CACHE: Dict[_CacheKey, Optional[Dict[str, Optional[int]]]] = {}
 
 
 def _cache_key(path: str) -> Optional[_CacheKey]:
@@ -146,25 +144,34 @@ def _parse_gguf_header(path: str) -> Optional[Dict[str, str]]:
     return out
 
 
-def read_gguf_context_length(path: str) -> Optional[int]:
-    """Return the GGUF's native training context length (``{arch}.context_length``),
-    or ``None`` if missing/unreadable/not a GGUF. Cached by (path, mtime, size).
-    Lets the UI populate the context slider before the model is loaded."""
+def read_gguf_staged_dims(path: str) -> Optional[Dict[str, Optional[int]]]:
+    """GGUF header dims for the staged-load UI in one cached pass:
+    ``{"context_length", "layer_count", "moe_layer_count"}``. Each may be None
+    when absent (moe_layer_count is 0 for a dense model). Returns ``None`` if not
+    a GGUF / unreadable. Cached by (path, mtime, size). Lets the staged sheet size
+    the context, GPU-layers and MoE sliders before the model loads."""
     key = _cache_key(path)
     if key is None:
         return None
     with _CACHE_LOCK:
-        if key in _CONTEXT_CACHE:
-            return _CONTEXT_CACHE[key]
-    result = _parse_gguf_context_length(path)
+        if key in _DIMS_CACHE:
+            return _DIMS_CACHE[key]
+    result = _parse_gguf_staged_dims(path)
     with _CACHE_LOCK:
-        while len(_CONTEXT_CACHE) >= _CACHE_MAX_ENTRIES:
+        while len(_DIMS_CACHE) >= _CACHE_MAX_ENTRIES:
             try:
-                _CONTEXT_CACHE.pop(next(iter(_CONTEXT_CACHE)))
+                _DIMS_CACHE.pop(next(iter(_DIMS_CACHE)))
             except StopIteration:
                 break
-        _CONTEXT_CACHE[key] = result
+        _DIMS_CACHE[key] = result
     return result
+
+
+def read_gguf_context_length(path: str) -> Optional[int]:
+    """Native training context length (``{arch}.context_length``), or ``None``.
+    Thin accessor over read_gguf_staged_dims."""
+    dims = read_gguf_staged_dims(path)
+    return dims["context_length"] if dims else None
 
 
 def _parse_gguf_arch_uints(
@@ -244,51 +251,45 @@ def _parse_gguf_arch_uints(
     return found
 
 
-def _parse_gguf_context_length(path: str) -> Optional[int]:
-    vals = _parse_gguf_arch_uints(path, frozenset({"context_length"}))
-    if not vals:
-        return None
-    value = vals.get("context_length")
-    # A real context length is positive; treat 0/garbage as absent so the UI
-    # never builds a slider with max < min.
-    return value if value and value > 0 else None
-
-
-def read_gguf_moe_layer_count(path: str) -> Optional[int]:
-    """Return the GGUF's MoE expert-layer count (``{arch}.block_count`` minus
-    ``{arch}.leading_dense_block_count``), 0 for a dense model, or ``None`` if
-    unreadable/not a GGUF. Cached by (path, mtime, size). Lets the UI size the
-    manual MoE-offload slider (and hide it for dense models) before the load."""
-    key = _cache_key(path)
-    if key is None:
-        return None
-    with _CACHE_LOCK:
-        if key in _MOE_CACHE:
-            return _MOE_CACHE[key]
-    result = _parse_gguf_moe_layer_count(path)
-    with _CACHE_LOCK:
-        while len(_MOE_CACHE) >= _CACHE_MAX_ENTRIES:
-            try:
-                _MOE_CACHE.pop(next(iter(_MOE_CACHE)))
-            except StopIteration:
-                break
-        _MOE_CACHE[key] = result
-    return result
-
-
-def _parse_gguf_moe_layer_count(path: str) -> Optional[int]:
-    # MoE layer count = block_count - leading_dense_block_count, but only when the
-    # model has experts (expert_count > 0); else 0 (dense -> slider hidden).
-    # Mirrors --n-cpu-moe's ceiling in core/inference/llama_cpp.py:n_moe_layers.
+def _parse_gguf_staged_dims(path: str) -> Optional[Dict[str, Optional[int]]]:
     vals = _parse_gguf_arch_uints(
         path,
-        frozenset({"block_count", "expert_count", "leading_dense_block_count"}),
+        frozenset(
+            {
+                "context_length",
+                "block_count",
+                "expert_count",
+                "leading_dense_block_count",
+            }
+        ),
     )
     if vals is None:
         return None
-    if not vals.get("expert_count") or not vals.get("block_count"):
-        return 0
-    return max(0, vals["block_count"] - (vals.get("leading_dense_block_count") or 0))
+    ctx = vals.get("context_length")
+    block = vals.get("block_count")
+    # A real context/layer count is positive; treat 0/garbage as absent so the
+    # UI never builds a slider with max < min.
+    context_length = ctx if ctx and ctx > 0 else None
+    layer_count = block if block and block > 0 else None
+    # MoE layer count = block_count - leading dense layers, only when experts
+    # exist; else 0 (dense -> slider hidden). Mirrors n_moe_layers in
+    # core/inference/llama_cpp.py.
+    if not vals.get("expert_count") or not block:
+        moe_layer_count: Optional[int] = 0
+    else:
+        moe_layer_count = max(0, block - (vals.get("leading_dense_block_count") or 0))
+    return {
+        "context_length": context_length,
+        "layer_count": layer_count,
+        "moe_layer_count": moe_layer_count,
+    }
+
+
+def read_gguf_moe_layer_count(path: str) -> Optional[int]:
+    """MoE expert-layer count (the manual --n-cpu-moe ceiling), 0 for a dense
+    model, or ``None`` if unreadable. Thin accessor over read_gguf_staged_dims."""
+    dims = read_gguf_staged_dims(path)
+    return dims["moe_layer_count"] if dims else None
 
 
 # Strings (8) and arrays (9) are handled inline.

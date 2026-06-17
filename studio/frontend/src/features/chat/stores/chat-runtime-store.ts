@@ -477,6 +477,9 @@ export type PendingModelSelection = {
    *  Scoped here (not the shared `ggufContextLength`) so a staged model's
    *  metadata never pollutes the currently-loaded model's context display. */
   contextLength?: number | null;
+  /** Total layer count (GGUF block_count), the manual gpu-layers ceiling;
+   *  scoped here like contextLength. */
+  layerCount?: number | null;
   /** MoE expert-layer count from the GGUF header (manual --n-cpu-moe ceiling);
    *  0 for dense models, scoped here like contextLength. */
   moeLayerCount?: number | null;

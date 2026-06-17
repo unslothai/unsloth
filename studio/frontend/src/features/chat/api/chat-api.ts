@@ -117,19 +117,23 @@ export async function validateModel(
 }
 
 /**
- * Read a GGUF's header metadata (native context length + MoE expert-layer count)
- * from its local file (no GPU load, no download). Both are null when the file
- * isn't downloaded yet, the model isn't a GGUF, or it's gated. For a native
- * (drag-drop / picked) file, pass `nativePathToken` so the backend reads the
- * granted local path. Used by the deferred-load staging flow to fill the context
- * slider and size the MoE-offload slider before the single load.
+ * Read a GGUF's header dims (native context length, total layer count, MoE
+ * expert-layer count) from its local file (no GPU load, no download). All are
+ * null when the file isn't downloaded yet, the model isn't a GGUF, or it's
+ * gated. For a native (drag-drop / picked) file, pass `nativePathToken` so the
+ * backend reads the granted local path. Used by the deferred-load staging flow
+ * to size the context, GPU-layers and MoE sliders before the single load.
  */
 export async function fetchGgufStagedMetadata(payload: {
   model_path: string;
   gguf_variant?: string | null;
   hf_token?: string | null;
   nativePathToken?: string | null;
-}): Promise<{ contextLength: number | null; moeLayerCount: number | null }> {
+}): Promise<{
+  contextLength: number | null;
+  layerCount: number | null;
+  moeLayerCount: number | null;
+}> {
   let nativePathLease: string | null = null;
   if (payload.nativePathToken) {
     try {
@@ -138,7 +142,7 @@ export async function fetchGgufStagedMetadata(payload: {
       ).nativePathLease;
     } catch {
       // Lease expired / revoked: degrade to no metadata (the load can re-mint).
-      return { contextLength: null, moeLayerCount: null };
+      return { contextLength: null, layerCount: null, moeLayerCount: null };
     }
   }
   const response = await authFetch("/api/inference/validate", {
@@ -155,6 +159,7 @@ export async function fetchGgufStagedMetadata(payload: {
   const res = await parseJsonOrThrow<ValidateModelResponse>(response);
   return {
     contextLength: res.context_length ?? null,
+    layerCount: res.layer_count ?? null,
     moeLayerCount: res.moe_layer_count ?? null,
   };
 }

@@ -37,11 +37,12 @@ export function useStagedModelPreparation(): DownloadJob {
   const pendingDownloaded = useChatRuntimeStore(
     (s) => s.pendingSelection?.isDownloaded ?? false,
   );
-  // The probe fills context length and MoE-layer count together; either being
-  // set means the staged header has already been read (don't re-probe).
+  // The probe fills the header dims together; any being set means the staged
+  // header has already been read (don't re-probe).
   const pendingHasMetadata = useChatRuntimeStore(
     (s) =>
       s.pendingSelection?.contextLength != null ||
+      s.pendingSelection?.layerCount != null ||
       s.pendingSelection?.moeLayerCount != null,
   );
   const setPendingSelection = useChatRuntimeStore((s) => s.setPendingSelection);
@@ -51,12 +52,13 @@ export function useStagedModelPreparation(): DownloadJob {
     if (!current?.id || !isPendingGguf(current)) return;
     const { id, ggufVariant, nativePathToken } = current;
     try {
-      const { contextLength, moeLayerCount } = await fetchGgufStagedMetadata({
-        model_path: id,
-        gguf_variant: ggufVariant,
-        hf_token: useChatRuntimeStore.getState().hfToken || null,
-        nativePathToken,
-      });
+      const { contextLength, layerCount, moeLayerCount } =
+        await fetchGgufStagedMetadata({
+          model_path: id,
+          gguf_variant: ggufVariant,
+          hf_token: useChatRuntimeStore.getState().hfToken || null,
+          nativePathToken,
+        });
       // Apply only if the same model is still staged (the user may have switched
       // picks or loaded/cancelled while the request was in flight). Native ids
       // are display labels, not paths, so two files can share an id -- compare
@@ -66,9 +68,16 @@ export function useStagedModelPreparation(): DownloadJob {
         latest?.id === id &&
         (latest.ggufVariant ?? null) === (ggufVariant ?? null) &&
         (latest.nativePathToken ?? null) === (nativePathToken ?? null) &&
-        (contextLength != null || moeLayerCount != null)
+        (contextLength != null ||
+          layerCount != null ||
+          moeLayerCount != null)
       ) {
-        setPendingSelection({ ...latest, contextLength, moeLayerCount });
+        setPendingSelection({
+          ...latest,
+          contextLength,
+          layerCount,
+          moeLayerCount,
+        });
       }
     } catch {
       // Leave metadata null: the context/MoE sliders stay hidden and the user

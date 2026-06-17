@@ -610,8 +610,10 @@ export function ChatSettingsPanel({
   // Only fit forces TP off: llama.cpp's --fit aborts under --split-mode tensor.
   // Manual allows it (--fit off, so no abort) -- it just skips Unsloth's planner.
   const tpDisabled = isAutoFit;
-  // Manual gpu-layers ceiling = model layer count (else a safe fallback).
-  const gpuLayersMax = ggufLayerCount ?? 256;
+  // Manual gpu-layers ceiling = model layer count (else a safe fallback). While
+  // staging, use the staged model's layer count (read from its header).
+  const stagedLayerCount = pendingSelection?.layerCount ?? null;
+  const gpuLayersMax = (pendingIsGguf ? stagedLayerCount : ggufLayerCount) ?? 256;
   // MoE-offload slider: shown only for MoE models, capped at their MoE-layer
   // count. While staging, use the staged model's count (read from its header);
   // otherwise the loaded model's.

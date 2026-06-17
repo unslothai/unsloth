@@ -2571,16 +2571,15 @@ async def validate_model(
         # Native context length, read from the local GGUF header when present.
         # Lets the staged ("Load on selection" off) flow populate the context
         # slider before the GPU load; None until the file is downloaded.
+        # Staged header dims (one read): native context, total layer count, and
+        # MoE expert-layer count -- let the staged flow size the context, GPU-
+        # layers and manual --n-cpu-moe sliders before the load.
         context_length: Optional[int] = None
-        # MoE expert-layer count, read from the same header so the staged flow can
-        # size the manual --n-cpu-moe slider (and hide it for dense models).
+        layer_count: Optional[int] = None
         moe_layer_count: Optional[int] = None
         if request.include_context_length and is_gguf:
             from hub.utils.gguf import resolve_local_gguf_path
-            from utils.models.gguf_metadata import (
-                read_gguf_context_length,
-                read_gguf_moe_layer_count,
-            )
+            from utils.models.gguf_metadata import read_gguf_staged_dims
 
             # Best-effort: a header-read failure must never fail validation of an
             # otherwise-valid model (the outer except turns it into a 400).
@@ -2596,8 +2595,11 @@ async def validate_model(
                         model_identifier, request.gguf_variant
                     )
                 if local_gguf:
-                    context_length = read_gguf_context_length(local_gguf)
-                    moe_layer_count = read_gguf_moe_layer_count(local_gguf)
+                    dims = read_gguf_staged_dims(local_gguf)
+                    if dims:
+                        context_length = dims["context_length"]
+                        layer_count = dims["layer_count"]
+                        moe_layer_count = dims["moe_layer_count"]
             except Exception as e:
                 logger.debug("Header probe failed for %s: %s", model_log_label, e)
 
@@ -2615,6 +2617,7 @@ async def validate_model(
                 load_inference_config(config.identifier).get("trust_remote_code", False)
             ),
             context_length = context_length,
+            layer_count = layer_count,
             moe_layer_count = moe_layer_count,
         )
 

@@ -87,6 +87,9 @@ export interface ValidateModelResponse {
   requires_trust_remote_code?: boolean;
   /** Native context length from the local GGUF header; null until downloaded. */
   context_length?: number | null;
+  /** Total layer count (GGUF block_count), the manual gpu-layers ceiling; null
+   *  until downloaded. */
+  layer_count?: number | null;
   /** MoE expert-layer count from the GGUF header (manual --n-cpu-moe ceiling);
    *  0 for dense models, null until downloaded. */
   moe_layer_count?: number | null;
