@@ -209,10 +209,10 @@ class TestGgufVariantFileResolution:
             return [_types.SimpleNamespace(path = path, size = 1) for path in paths if path is not None]
 
         def fake_download(
-            *,
             repo_id,
             filename,
             token = None,
+            **_kwargs,
         ):
             downloaded.append(filename)
             return f"/fake/{repo_id}/{filename}"
@@ -229,7 +229,7 @@ class TestGgufVariantFileResolution:
             ),
             patch("huggingface_hub.get_paths_info", fake_get_paths_info),
             patch("huggingface_hub.try_to_load_from_cache", lambda *_a, **_k: None),
-            patch("huggingface_hub.hf_hub_download", fake_download),
+            patch("core.inference.llama_cpp.hf_hub_download_with_xet_fallback", fake_download),
         ):
             out = backend._download_gguf(
                 hf_repo = "ggml-org/models",
@@ -256,10 +256,10 @@ class TestGgufVariantFileResolution:
             return [_types.SimpleNamespace(path = path, size = 1) for path in paths if path is not None]
 
         def fake_download(
-            *,
             repo_id,
             filename,
             token = None,
+            **_kwargs,
         ):
             downloaded.append(filename)
             return f"/fake/{repo_id}/{filename}"
@@ -269,7 +269,7 @@ class TestGgufVariantFileResolution:
             patch("huggingface_hub.list_repo_files", lambda *_a, **_k: files),
             patch("huggingface_hub.get_paths_info", fake_get_paths_info),
             patch("huggingface_hub.try_to_load_from_cache", lambda *_a, **_k: None),
-            patch("huggingface_hub.hf_hub_download", fake_download),
+            patch("core.inference.llama_cpp.hf_hub_download_with_xet_fallback", fake_download),
         ):
             out = backend._download_gguf(
                 hf_repo = "org/repo",
@@ -639,17 +639,20 @@ class TestDownloadMmprojOfflineCacheFallback:
             raise OSError("offline")
 
         def fake_download(
-            *,
             repo_id,
             filename,
             token = None,
+            **kwargs,
         ):
             # Echo back so the test can verify the cache-resolved filename
             return f"/fake/cache/{repo_id}/{filename}"
 
         with (
             patch("huggingface_hub.list_repo_files", boom_list),
-            patch("huggingface_hub.hf_hub_download", fake_download),
+            patch(
+                "core.inference.llama_cpp.hf_hub_download_with_xet_fallback",
+                fake_download,
+            ),
         ):
             out = backend._download_mmproj(
                 hf_repo = "unsloth/vision-GGUF",
@@ -675,17 +678,20 @@ class TestDownloadMmprojOfflineCacheFallback:
         captured = {}
 
         def fake_download(
-            *,
             repo_id,
             filename,
             token = None,
+            **kwargs,
         ):
             captured["filename"] = filename
             return f"/fake/{filename}"
 
         with (
             patch("huggingface_hub.list_repo_files", boom_list),
-            patch("huggingface_hub.hf_hub_download", fake_download),
+            patch(
+                "core.inference.llama_cpp.hf_hub_download_with_xet_fallback",
+                fake_download,
+            ),
         ):
             backend._download_mmproj(
                 hf_repo = "unsloth/vision-GGUF",

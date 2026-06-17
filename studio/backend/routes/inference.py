@@ -875,6 +875,7 @@ from auth.authentication import get_current_subject
 from state.tool_approvals import resolve_tool_decision
 
 from core.inference.key_exchange import decrypt_api_key
+from core.inference.api_monitor import api_monitor
 from core.inference.providers import get_provider_info, get_base_url
 from core.inference.external_provider import ExternalProviderClient
 from core.inference.chat_templates import resolve_effective_chat_template_override
@@ -1295,6 +1296,423 @@ def _strip_tool_xml_for_display(text: str, *, auto_heal_tool_calls: bool) -> str
 
 
 logger = get_logger(__name__)
+
+
+def _monitor_content_text(content) -> str:
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for part in content:
+            if isinstance(part, dict):
+                ptype = part.get("type")
+                if ptype in ("text", "input_text", "output_text"):
+                    text = part.get("text")
+                    if isinstance(text, str):
+                        parts.append(text)
+                elif ptype in ("image_url", "input_image", "image"):
+                    parts.append("[image]")
+                else:
+                    parts.append(f"[{ptype or 'content'}]")
+            else:
+                ptype = getattr(part, "type", None)
+                text = getattr(part, "text", None)
+                if isinstance(text, str):
+                    parts.append(text)
+                elif ptype in ("image_url", "input_image", "image"):
+                    parts.append("[image]")
+                elif ptype:
+                    parts.append(f"[{ptype}]")
+        return "\n".join(parts)
+    return str(content)
+
+
+def _monitor_prompt_from_messages(messages) -> str:
+    lines: list[str] = []
+    for msg in messages or []:
+        role = msg.get("role") if isinstance(msg, dict) else getattr(msg, "role", "")
+        content = msg.get("content") if isinstance(msg, dict) else getattr(msg, "content", "")
+        tool_calls = (
+            msg.get("tool_calls") if isinstance(msg, dict) else getattr(msg, "tool_calls", None)
+        )
+        text = _monitor_content_text(content)
+        if tool_calls and not text:
+            text = "[tool calls]"
+        if text:
+            lines.append(f"{role or 'message'}: {text}")
+    return "\n\n".join(lines)
+
+
+def _monitor_usage(
+    monitor_id: Optional[str],
+    usage: Optional[dict],
+    context_length = None,
+):
+    if not usage:
+        return
+    api_monitor.set_usage(
+        monitor_id,
+        prompt_tokens = usage.get("prompt_tokens") or usage.get("input_tokens"),
+        completion_tokens = usage.get("completion_tokens") or usage.get("output_tokens"),
+        total_tokens = usage.get("total_tokens"),
+        context_length = context_length,
+    )
+
+
+def _monitor_call_text(name: Any, arguments: Any = None) -> str:
+    call_name = str(name or "tool")
+    if arguments is None or arguments == "":
+        return f"Tool call: {call_name}"
+    if not isinstance(arguments, str):
+        args_text = json.dumps(arguments, default = str)
+    else:
+        args_text = arguments
+    if len(args_text) > 500:
+        args_text = args_text[:497] + "..."
+    return f"Tool call: {call_name}({args_text})"
+
+
+def _monitor_tool_calls_text(tool_calls: Any) -> str:
+    if not isinstance(tool_calls, list):
+        return ""
+    parts: list[str] = []
+    for tool_call in tool_calls:
+        if not isinstance(tool_call, dict):
+            continue
+        fn = tool_call.get("function") or {}
+        if not isinstance(fn, dict):
+            fn = {}
+        name = fn.get("name") or tool_call.get("name") or "tool"
+        args = fn.get("arguments")
+        if args is None:
+            args = tool_call.get("arguments")
+        parts.append(_monitor_call_text(name, args))
+    return "\n".join(parts)
+
+
+def _monitor_openai_chunk(
+    monitor_id: Optional[str],
+    data: dict,
+    context_length = None,
+):
+    if not monitor_id:
+        return
+    _monitor_usage(monitor_id, data.get("usage"), context_length)
+    # Defensive: ignore malformed shapes so the helper never raises into the
+    # streaming generator and aborts the user's response.
+    choices = data.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return
+    reply_parts: list[tuple[int, str]] = []
+    for idx, choice in enumerate(choices):
+        if not isinstance(choice, dict):
+            continue
+        delta = choice.get("delta") or {}
+        message = choice.get("message") or {}
+        content = delta.get("content") if isinstance(delta, dict) else None
+        if content:
+            api_monitor.append_reply(monitor_id, content)
+            continue
+        if isinstance(delta, dict):
+            tool_text = _monitor_tool_calls_text(delta.get("tool_calls"))
+            if tool_text:
+                api_monitor.append_reply(monitor_id, tool_text)
+                continue
+        if isinstance(choice.get("text"), str):
+            reply_parts.append((idx, choice["text"]))
+        elif isinstance(message, dict):
+            text = message.get("content")
+            if isinstance(text, str):
+                reply_parts.append((idx, text))
+            else:
+                tool_text = _monitor_tool_calls_text(message.get("tool_calls"))
+                if tool_text:
+                    reply_parts.append((idx, tool_text))
+    if not reply_parts:
+        return
+    if len(choices) == 1:
+        api_monitor.append_reply(monitor_id, reply_parts[0][1])
+        return
+    api_monitor.append_reply(
+        monitor_id,
+        "\n\n".join(f"Choice {idx + 1}:\n{text}" for idx, text in reply_parts),
+    )
+
+
+def _monitor_openai_error_message(data: dict) -> Optional[str]:
+    error = data.get("error")
+    if isinstance(error, dict):
+        message = error.get("message")
+        if isinstance(message, str) and message:
+            return message
+        return json.dumps(error)
+    if isinstance(error, str) and error:
+        return error
+    return None
+
+
+def _monitor_openai_sse_line(
+    monitor_id: Optional[str],
+    raw_line: str,
+    context_length = None,
+) -> Optional[str]:
+    if not monitor_id:
+        return None
+    # SSE spec allows `data:value` and `data: value`; accept both.
+    if not raw_line.startswith("data:"):
+        return None
+    data_str = raw_line[5:].lstrip()
+    if data_str == "[DONE]":
+        api_monitor.finish(monitor_id)
+        return "done"
+    try:
+        data = json.loads(data_str)
+    except json.JSONDecodeError:
+        return None
+    if isinstance(data, dict):
+        error_message = _monitor_openai_error_message(data)
+        if error_message:
+            api_monitor.fail(monitor_id, error_message)
+            return "error"
+        _monitor_openai_chunk(monitor_id, data, context_length)
+    return None
+
+
+def _monitor_openai_sse_event(
+    monitor_id: Optional[str],
+    event: bytes,
+    context_length = None,
+) -> None:
+    for line in event.decode("utf-8", errors = "ignore").splitlines():
+        _monitor_openai_sse_line(monitor_id, line.strip(), context_length)
+
+
+def _monitor_anthropic_usage(
+    monitor_id: Optional[str],
+    usage: Optional[dict],
+    context_length = None,
+) -> None:
+    if not usage:
+        return
+    _monitor_usage(
+        monitor_id,
+        {
+            "prompt_tokens": usage.get("input_tokens") or usage.get("prompt_tokens"),
+            "completion_tokens": usage.get("output_tokens") or usage.get("completion_tokens"),
+            "total_tokens": usage.get("total_tokens"),
+        },
+        context_length,
+    )
+
+
+_ANTHROPIC_MONITOR_TOOL_BLOCKS: dict[str, dict[int, bool]] = {}
+
+
+def _monitor_anthropic_index(data: dict) -> int:
+    try:
+        return int(data.get("index") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _monitor_anthropic_payload(
+    monitor_id: Optional[str],
+    data: dict,
+    context_length = None,
+) -> Optional[str]:
+    if not monitor_id or not isinstance(data, dict):
+        return None
+    event_type = data.get("type")
+    if event_type == "message_start":
+        message = data.get("message") or {}
+        if isinstance(message, dict):
+            _monitor_anthropic_usage(monitor_id, message.get("usage"), context_length)
+        return None
+    if event_type == "content_block_start":
+        content_block = data.get("content_block") or {}
+        if isinstance(content_block, dict) and content_block.get("type") == "tool_use":
+            index = _monitor_anthropic_index(data)
+            _ANTHROPIC_MONITOR_TOOL_BLOCKS.setdefault(monitor_id, {})[index] = False
+            api_monitor.append_reply(monitor_id, _monitor_call_text(content_block.get("name")))
+        return None
+    if event_type == "content_block_delta":
+        delta = data.get("delta") or {}
+        text = delta.get("text") if isinstance(delta, dict) else None
+        if isinstance(text, str) and text:
+            api_monitor.append_reply(monitor_id, text)
+        elif isinstance(delta, dict) and delta.get("type") == "input_json_delta":
+            index = _monitor_anthropic_index(data)
+            tool_blocks = _ANTHROPIC_MONITOR_TOOL_BLOCKS.get(monitor_id) or {}
+            if index in tool_blocks:
+                if not tool_blocks[index]:
+                    api_monitor.append_reply(monitor_id, "\nInput: ")
+                    tool_blocks[index] = True
+                partial_json = delta.get("partial_json")
+                if isinstance(partial_json, str) and partial_json:
+                    api_monitor.append_reply(monitor_id, partial_json)
+        return None
+    if event_type == "content_block_stop":
+        index = _monitor_anthropic_index(data)
+        tool_blocks = _ANTHROPIC_MONITOR_TOOL_BLOCKS.get(monitor_id)
+        if tool_blocks is not None:
+            tool_blocks.pop(index, None)
+            if not tool_blocks:
+                _ANTHROPIC_MONITOR_TOOL_BLOCKS.pop(monitor_id, None)
+        return None
+    if event_type == "message_delta":
+        _monitor_anthropic_usage(monitor_id, data.get("usage"), context_length)
+        return None
+    if event_type == "error":
+        error = data.get("error") or {}
+        if isinstance(error, dict):
+            message = error.get("message") or json.dumps(error, default = str)
+        else:
+            message = str(error)
+        api_monitor.fail(monitor_id, message)
+        return "error"
+    return None
+
+
+def _monitor_anthropic_sse_line(
+    monitor_id: Optional[str],
+    raw_line: str,
+    context_length = None,
+) -> Optional[str]:
+    if not monitor_id or not raw_line.startswith("data:"):
+        return None
+    data_str = raw_line[5:].lstrip()
+    try:
+        data = json.loads(data_str)
+    except json.JSONDecodeError:
+        return None
+    return _monitor_anthropic_payload(monitor_id, data, context_length)
+
+
+def _monitor_anthropic_content_blocks(content: Any) -> str:
+    if not isinstance(content, list):
+        return ""
+    parts: list[str] = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") == "text" and isinstance(block.get("text"), str):
+            parts.append(block["text"])
+        elif block.get("type") == "tool_use":
+            parts.append(_monitor_call_text(block.get("name"), block.get("input")))
+    return "".join(parts)
+
+
+def _monitor_anthropic_json_response(
+    response,
+    monitor_id: Optional[str],
+    context_length = None,
+) -> None:
+    if not monitor_id:
+        return
+    body = getattr(response, "body", b"")
+    try:
+        data = json.loads(body.decode("utf-8") if isinstance(body, bytes) else body)
+    except Exception:
+        api_monitor.finish(monitor_id)
+        return
+    if not isinstance(data, dict):
+        api_monitor.finish(monitor_id)
+        return
+    text = _monitor_anthropic_content_blocks(data.get("content"))
+    if text:
+        api_monitor.set_reply(monitor_id, text)
+    _monitor_anthropic_usage(monitor_id, data.get("usage"), context_length)
+    api_monitor.finish(monitor_id)
+
+
+def _monitor_anthropic_response(
+    response,
+    monitor_id,
+    context_length = None,
+    cancel_event = None,
+):
+    if not monitor_id:
+        return response
+    body_iterator = getattr(response, "body_iterator", None)
+    if body_iterator is None:
+        _monitor_anthropic_json_response(response, monitor_id, context_length)
+        return response
+
+    async def _monitored_body():
+        terminal = False
+        try:
+            async for chunk in body_iterator:
+                text = (
+                    chunk.decode("utf-8", errors = "ignore")
+                    if isinstance(chunk, (bytes, bytearray))
+                    else str(chunk)
+                )
+                for line in text.splitlines():
+                    if (
+                        _monitor_anthropic_sse_line(
+                            monitor_id,
+                            line.strip(),
+                            context_length,
+                        )
+                        == "error"
+                    ):
+                        terminal = True
+                yield chunk
+            if not terminal:
+                api_monitor.finish(
+                    monitor_id,
+                    "cancelled"
+                    if cancel_event is not None and cancel_event.is_set()
+                    else "completed",
+                )
+            _ANTHROPIC_MONITOR_TOOL_BLOCKS.pop(monitor_id, None)
+        except asyncio.CancelledError:
+            if cancel_event is not None:
+                cancel_event.set()
+            api_monitor.finish(monitor_id, "cancelled")
+            _ANTHROPIC_MONITOR_TOOL_BLOCKS.pop(monitor_id, None)
+            raise
+        except Exception as exc:
+            api_monitor.fail(monitor_id, _friendly_error(exc))
+            _ANTHROPIC_MONITOR_TOOL_BLOCKS.pop(monitor_id, None)
+            raise
+
+    response.body_iterator = _monitored_body()
+    return response
+
+
+def _monitor_context_length() -> Optional[int]:
+    llama_backend = get_llama_cpp_backend()
+    if getattr(llama_backend, "is_loaded", False):
+        context_length = _positive_int_or_none(getattr(llama_backend, "context_length", None))
+        if context_length is not None:
+            return context_length
+    backend = get_inference_backend()
+    if not backend.active_model_name:
+        return None
+    models = getattr(backend, "models", {}) or {}
+    model_info = models.get(backend.active_model_name, {}) if isinstance(models, dict) else {}
+    context_length = _positive_int_or_none(model_info.get("context_length"))
+    if context_length is not None:
+        return context_length
+    for candidate in (
+        getattr(backend, "context_length", None),
+        getattr(backend, "max_seq_length", None),
+    ):
+        context_length = _positive_int_or_none(candidate)
+        if context_length is not None:
+            return context_length
+    return None
+
+
+def _monitor_active_model() -> Optional[str]:
+    llama_backend = get_llama_cpp_backend()
+    if getattr(llama_backend, "is_loaded", False):
+        return getattr(llama_backend, "model_identifier", None)
+    backend = get_inference_backend()
+    return backend.active_model_name
 
 
 def _validate_native_gguf_companion(
@@ -2247,6 +2665,35 @@ async def confirm_tool_call(
     return {"resolved": True}
 
 
+@studio_router.get("/monitor")
+async def get_api_monitor(current_subject: str = Depends(get_current_subject)):
+    """Return recent OpenAI-compatible API activity for Studio."""
+    active_model = _monitor_active_model()
+    active_requests = api_monitor.active_count(subject = current_subject)
+    if active_requests:
+        operating_status = "generating"
+    elif active_model:
+        operating_status = "ready"
+    else:
+        operating_status = "idle"
+    return {
+        "status": operating_status,
+        "active_model": active_model,
+        "context_length": _monitor_context_length(),
+        "active_requests": active_requests,
+        "entries": api_monitor.snapshot(include_details = False, subject = current_subject),
+    }
+
+
+@studio_router.get("/monitor/{entry_id}")
+async def get_api_monitor_entry(entry_id: str, current_subject: str = Depends(get_current_subject)):
+    """Return full prompt/reply details for one OpenAI-compatible API request."""
+    entry = api_monitor.get(entry_id, subject = current_subject)
+    if entry is None:
+        raise HTTPException(status_code = 404, detail = "Monitor entry not found")
+    return entry
+
+
 @router.post("/generate/stream")
 async def generate_stream(
     request: GenerateRequest, current_subject: str = Depends(get_current_subject)
@@ -3182,7 +3629,9 @@ def _build_external_messages(
 
 
 async def _proxy_to_external_provider(
-    payload: ChatCompletionRequest, request: Request
+    payload: ChatCompletionRequest,
+    request: Request,
+    current_subject: Optional[str] = None,
 ) -> StreamingResponse:
     """
     Proxy a chat completion request to an external LLM provider.
@@ -3253,6 +3702,16 @@ async def _proxy_to_external_provider(
         provider_type = provider_type,
         base_url = base_url,
     )
+    monitor_id = None
+    if not getattr(request.state, "skip_api_monitor", False):
+        monitor_id = api_monitor.start(
+            endpoint = request.url.path,
+            method = request.method,
+            model = model,
+            prompt = _monitor_prompt_from_messages(payload.messages),
+            context_length = None,
+            subject = current_subject,
+        )
 
     client = ExternalProviderClient(
         provider_type = provider_type,
@@ -3294,14 +3753,29 @@ async def _proxy_to_external_provider(
         )
         try:
             sent_done = False
+            stream_failed = False
             async for line in gen:
+                monitor_event = _monitor_openai_sse_line(monitor_id, line)
+                if monitor_event is None:
+                    try:
+                        _monitor_openai_chunk(monitor_id, json.loads(line))
+                    except Exception:
+                        pass
+                if monitor_event == "error":
+                    stream_failed = True
                 yield f"{line}\n\n"
-                if "[DONE]" in line:
+                if monitor_event == "done":
                     sent_done = True
             if not sent_done:
+                if not stream_failed:
+                    api_monitor.finish(monitor_id)
                 yield "data: [DONE]\n\n"
+        except asyncio.CancelledError:
+            api_monitor.finish(monitor_id, "cancelled")
+            raise
         except Exception as exc:
             logger.error("external_provider.stream_error", error = str(exc))
+            api_monitor.fail(monitor_id, _friendly_error(exc))
         finally:
             try:
                 await gen.aclose()
@@ -3561,7 +4035,7 @@ async def openai_chat_completions(
             )
         if _wants_multiple_choices(payload):
             _raise_unsupported_n("external provider chat completions")
-        return await _proxy_to_external_provider(payload, request)
+        return await _proxy_to_external_provider(payload, request, current_subject)
 
     # Reject a malformed function tool here: it would otherwise reach
     # llama-server and surface as an opaque 500 "Failed to parse tools".
@@ -3610,12 +4084,49 @@ async def openai_chat_completions(
     # ── Determine which backend is active ─────────────────────
     # Single-model server: any model name serves the loaded model (drop-in
     # OpenAI compat), so payload.model is only a fallback label here.
+    monitor_id = None
+
+    async def _monitored_generate_audio(model_label: str, context_length: Optional[int] = None):
+        tts_monitor_id = None
+        if not getattr(request.state, "skip_api_monitor", False):
+            tts_monitor_id = api_monitor.start(
+                endpoint = request.url.path,
+                method = request.method,
+                model = model_label,
+                prompt = _monitor_prompt_from_messages(payload.messages),
+                context_length = context_length,
+                subject = current_subject,
+            )
+        try:
+            response = await generate_audio(payload, request)
+        except asyncio.CancelledError:
+            api_monitor.finish(tts_monitor_id, "cancelled")
+            raise
+        except Exception as e:
+            api_monitor.fail(tts_monitor_id, _friendly_error(e))
+            raise
+        if isinstance(response, JSONResponse):
+            try:
+                body = json.loads(response.body.decode())
+                choices = body.get("choices") or []
+                message = (choices[0].get("message") or {}) if choices else {}
+                content = message.get("content")
+                if isinstance(content, str):
+                    api_monitor.set_reply(tts_monitor_id, content)
+            except Exception:
+                pass
+        api_monitor.finish(tts_monitor_id)
+        return response
+
     if using_gguf:
         model_name = llama_backend.model_identifier or payload.model
         if getattr(llama_backend, "_is_audio", False):
             if _wants_multiple_choices(payload):
                 _raise_unsupported_n("GGUF audio chat completions")
-            return await generate_audio(payload, request)
+            return await _monitored_generate_audio(
+                model_name,
+                context_length = llama_backend.context_length,
+            )
     else:
         backend = get_inference_backend()
         if not backend.active_model_name:
@@ -3631,7 +4142,7 @@ async def openai_chat_completions(
         # (Whisper is ASR not TTS -- handled below in audio input path)
         model_info = backend.models.get(backend.active_model_name, {})
         if model_info.get("is_audio") and model_info.get("audio_type") != "whisper":
-            return await generate_audio(payload, request)
+            return await _monitored_generate_audio(model_name)
 
         # ── Whisper without audio: return clear error ──
         if model_info.get("audio_type") == "whisper" and not payload.audio_base64:
@@ -3640,10 +4151,25 @@ async def openai_chat_completions(
                 detail = "Whisper models require audio input. Please upload an audio file.",
             )
 
+        monitor_id = None
+        if not getattr(request.state, "skip_api_monitor", False):
+            monitor_id = api_monitor.start(
+                endpoint = request.url.path,
+                method = request.method,
+                model = model_name,
+                prompt = _monitor_prompt_from_messages(payload.messages),
+                context_length = _monitor_context_length(),
+                subject = current_subject,
+            )
+
         # ── Audio INPUT path: decode WAV and route to audio input generation ──
         if payload.audio_base64 and model_info.get("has_audio_input"):
-            audio_array = _decode_audio_base64(payload.audio_base64)
-            system_prompt, chat_messages, _ = _extract_content_parts(payload.messages)
+            try:
+                audio_array = _decode_audio_base64(payload.audio_base64)
+                system_prompt, chat_messages, _ = _extract_content_parts(payload.messages)
+            except Exception as e:
+                api_monitor.fail(monitor_id, _friendly_error(e))
+                raise
             cancel_event = threading.Event()
             completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
             created = int(time.time())
@@ -3689,16 +4215,20 @@ async def openai_chat_completions(
 
                         gen = audio_input_generate()
                         _DONE = object()
+                        cancelled = False
                         while True:
                             if cancel_event.is_set():
+                                cancelled = True
                                 break
                             if await request.is_disconnected():
                                 cancel_event.set()
+                                api_monitor.finish(monitor_id, "cancelled")
                                 return
                             chunk_text = await asyncio.to_thread(next, gen, _DONE)
                             if chunk_text is _DONE:
                                 break
                             if chunk_text:
+                                api_monitor.append_reply(monitor_id, chunk_text)
                                 chunk = ChatCompletionChunk(
                                     id = completion_id,
                                     created = created,
@@ -3718,13 +4248,16 @@ async def openai_chat_completions(
                             model = model_name,
                             choices = [ChunkChoice(delta = ChoiceDelta(), finish_reason = "stop")],
                         )
+                        api_monitor.finish(monitor_id, "cancelled" if cancelled else "completed")
                         yield f"data: {final_chunk.model_dump_json(exclude_none = True)}\n\n"
                         yield "data: [DONE]\n\n"
                     except asyncio.CancelledError:
                         cancel_event.set()
+                        api_monitor.finish(monitor_id, "cancelled")
                         raise
                     except Exception as e:
                         logger.error(f"Error during audio input streaming: {e}", exc_info = True)
+                        api_monitor.fail(monitor_id, _friendly_error(e))
                         yield f"data: {json.dumps({'error': {'message': _friendly_error(e), 'type': 'server_error'}})}\n\n"
                     finally:
                         _tracker.__exit__(None, None, None)
@@ -3739,7 +4272,13 @@ async def openai_chat_completions(
                     },
                 )
             else:
-                full_text = "".join(audio_input_generate())
+                try:
+                    full_text = "".join(audio_input_generate())
+                except Exception as e:
+                    api_monitor.fail(monitor_id, _friendly_error(e))
+                    raise
+                api_monitor.set_reply(monitor_id, full_text)
+                api_monitor.finish(monitor_id)
                 response = ChatCompletion(
                     id = completion_id,
                     created = created,
@@ -3752,6 +4291,34 @@ async def openai_chat_completions(
                     ],
                 )
                 return JSONResponse(content = response.model_dump())
+
+    if monitor_id is None and not getattr(request.state, "skip_api_monitor", False):
+        monitor_id = api_monitor.start(
+            endpoint = request.url.path,
+            method = request.method,
+            model = model_name,
+            prompt = _monitor_prompt_from_messages(payload.messages),
+            context_length = _monitor_context_length(),
+            subject = current_subject,
+        )
+
+    # Finalize the monitor entry on validation rejection before raising.
+    def _reject(status_code: int, detail: Any) -> "HTTPException":
+        if monitor_id is not None:
+            fail_detail = detail if isinstance(detail, str) else json.dumps(detail, default = str)
+            api_monitor.fail(monitor_id, fail_detail)
+        return HTTPException(status_code = status_code, detail = detail)
+
+    def _reject_unsupported_n(path_label: str) -> "HTTPException":
+        return _reject(
+            400,
+            openai_error_body(
+                f"n > 1 is not supported for {path_label}.",
+                status = 400,
+                code = "unsupported_parameter",
+                param = "n",
+            ),
+        )
 
     # ── Standard OpenAI function-calling pass-through (GGUF only) ────
     # When a client (opencode / Claude Code via OpenAI compat / Cursor /
@@ -3784,14 +4351,14 @@ async def openai_chat_completions(
         and (_tools_passthrough or _has_response_format)
     ):
         if _wants_multiple_choices(payload):
-            _raise_unsupported_n("GGUF tool or response_format passthrough")
+            raise _reject_unsupported_n("GGUF tool or response_format passthrough")
         if payload.audio_base64:
             # This path forwards the request verbatim, so the transcoded audio
             # never gets injected. (The agentic tool loop below does support
             # audio.)
-            raise HTTPException(
-                status_code = 400,
-                detail = "Audio input is not supported together with guided decoding or client-supplied tools yet.",
+            raise _reject(
+                400,
+                "Audio input is not supported together with guided decoding or client-supplied tools yet.",
             )
 
         # Preserve the vision guard from the non-passthrough path below:
@@ -3806,9 +4373,9 @@ async def openai_chat_completions(
                 for m in payload.messages
             )
         ):
-            raise HTTPException(
-                status_code = 400,
-                detail = "Image provided but current GGUF model does not support vision.",
+            raise _reject(
+                400,
+                "Image provided but current GGUF model does not support vision.",
             )
 
         cancel_event = threading.Event()
@@ -3824,21 +4391,20 @@ async def openai_chat_completions(
                 payload,
                 model_name,
                 completion_id,
+                monitor_id = monitor_id,
             )
         return await _openai_passthrough_non_streaming(
             llama_backend,
             payload,
             model_name,
+            monitor_id = monitor_id,
         )
 
     # ── Parse messages (handles multimodal content parts) ─────
     system_prompt, chat_messages, extracted_image_b64 = _extract_content_parts(payload.messages)
 
     if not chat_messages:
-        raise HTTPException(
-            status_code = 400,
-            detail = "At least one non-system message is required.",
-        )
+        raise _reject(400, "At least one non-system message is required.")
 
     # ── GGUF path: proxy to llama-server /v1/chat/completions ──
     if using_gguf:
@@ -3851,25 +4417,19 @@ async def openai_chat_completions(
         audio_format = "wav"
         if payload.audio_base64:
             if not getattr(llama_backend, "_has_audio_input", False):
-                raise HTTPException(
-                    status_code = 400,
-                    detail = "Audio provided but current GGUF model does not support audio input.",
+                raise _reject(
+                    400,
+                    "Audio provided but current GGUF model does not support audio input.",
                 )
             if len(payload.audio_base64) > _MAX_AUDIO_B64_CHARS:
-                raise HTTPException(
-                    status_code = 413,
-                    detail = "Audio file is too large (max ~25 MB).",
-                )
+                raise _reject(413, "Audio file is too large (max ~25 MB).")
             try:
                 audio_b64, audio_format = await asyncio.to_thread(
                     _prepare_audio_for_llama, payload.audio_base64
                 )
             except Exception as e:
                 logger.warning("Audio decode failed: %s", e, exc_info = True)
-                raise HTTPException(
-                    status_code = 400,
-                    detail = "Could not decode the provided audio file.",
-                )
+                raise _reject(400, "Could not decode the provided audio file.")
 
         gguf_messages, _ = _openai_messages_for_gguf_chat(
             payload,
@@ -3933,9 +4493,9 @@ async def openai_chat_completions(
             # Bypass Permissions suppresses confirm, so the stream requirement
             # (the gate needs streaming to prompt) no longer applies.
             if payload.confirm_tool_calls and not payload.bypass_permissions and not payload.stream:
-                raise HTTPException(
-                    status_code = 400,
-                    detail = openai_error_body(
+                raise _reject(
+                    400,
+                    openai_error_body(
                         "confirm_tool_calls requires stream=true for local tool execution.",
                         status = 400,
                         code = "invalid_request_error",
@@ -3943,7 +4503,7 @@ async def openai_chat_completions(
                     ),
                 )
             if _wants_multiple_choices(payload):
-                _raise_unsupported_n("GGUF tool chat completions")
+                raise _reject_unsupported_n("GGUF tool chat completions")
             # ── Tool-use system prompt nudge ──────────────────────
             _nudge = _build_tool_action_nudge(
                 tools = tools_to_use,
@@ -4053,6 +4613,7 @@ async def openai_chat_completions(
                             break
                         if await request.is_disconnected():
                             cancel_event.set()
+                            api_monitor.finish(monitor_id, "cancelled")
                             return
 
                         event = await asyncio.to_thread(next, gen, _tool_sentinel)
@@ -4101,6 +4662,7 @@ async def openai_chat_completions(
                         prev_text = clean_cumulative
                         if not new_text:
                             continue
+                        api_monitor.append_reply(monitor_id, new_text)
                         chunk = ChatCompletionChunk(
                             id = completion_id,
                             created = created,
@@ -4136,16 +4698,22 @@ async def openai_chat_completions(
                     )
                     if usage_line is not None:
                         yield usage_line
+                    _monitor_usage(monitor_id, _stream_usage, _monitor_context_length())
+                    api_monitor.finish(
+                        monitor_id, "cancelled" if cancel_event.is_set() else "completed"
+                    )
                     yield "data: [DONE]\n\n"
 
                 except asyncio.CancelledError:
                     cancel_event.set()
+                    api_monitor.finish(monitor_id, "cancelled")
                     raise
                 except Exception as e:
                     import traceback
 
                     tb = traceback.format_exc()
                     logger.error(f"Error during GGUF tool streaming: {e}\n{tb}")
+                    api_monitor.fail(monitor_id, _friendly_error(e))
                     error_chunk = _openai_stream_error_chunk(e)
                     yield f"data: {json.dumps(error_chunk)}\n\n"
                 finally:
@@ -4194,7 +4762,7 @@ async def openai_chat_completions(
 
         if payload.stream:
             if _wants_multiple_choices(payload):
-                _raise_unsupported_n("streaming GGUF chat completions")
+                raise _reject_unsupported_n("streaming GGUF chat completions")
             _cancel_keys = (payload.cancel_id, payload.session_id, completion_id)
             _tracker = _TrackedCancel(cancel_event, *_cancel_keys)
             _tracker.__enter__()
@@ -4227,6 +4795,7 @@ async def openai_chat_completions(
                             break
                         if await request.is_disconnected():
                             cancel_event.set()
+                            api_monitor.finish(monitor_id, "cancelled")
                             return
                         cumulative = await asyncio.to_thread(next, gen, _gguf_sentinel)
                         if cumulative is _gguf_sentinel:
@@ -4251,6 +4820,7 @@ async def openai_chat_completions(
                         prev_text = cumulative
                         if not new_text:
                             continue
+                        api_monitor.append_reply(monitor_id, new_text)
                         chunk = ChatCompletionChunk(
                             id = completion_id,
                             created = created,
@@ -4287,13 +4857,19 @@ async def openai_chat_completions(
                     )
                     if usage_line is not None:
                         yield usage_line
+                    _monitor_usage(monitor_id, _stream_usage, _monitor_context_length())
+                    api_monitor.finish(
+                        monitor_id, "cancelled" if cancel_event.is_set() else "completed"
+                    )
                     yield "data: [DONE]\n\n"
 
                 except asyncio.CancelledError:
                     cancel_event.set()
+                    api_monitor.finish(monitor_id, "cancelled")
                     raise
                 except Exception as e:
                     logger.error(f"Error during GGUF streaming: {e}", exc_info = True)
+                    api_monitor.fail(monitor_id, _friendly_error(e))
                     error_chunk = _openai_stream_error_chunk(e)
                     yield f"data: {json.dumps(error_chunk)}\n\n"
                 finally:
@@ -4315,6 +4891,7 @@ async def openai_chat_completions(
                 _n = payload.n or 1
 
                 _choices = []
+                _monitor_replies = []
                 _prompt_tokens = 0
                 _sum_completion = 0
                 _prompt_details = None
@@ -4340,6 +4917,7 @@ async def openai_chat_completions(
                             finish_reason = _clamp_finish_reason(completion_finish),
                         )
                     )
+                    _monitor_replies.append(full_text)
                     if completion_usage:
                         # The prompt is shared across all n choices, so count its
                         # tokens ONCE (OpenAI bills only generated tokens for each
@@ -4361,10 +4939,27 @@ async def openai_chat_completions(
                         prompt_tokens_details = _prompt_tokens_details(_prompt_details),
                     ),
                 )
+                monitor_reply = full_text
+                if _n > 1:
+                    monitor_reply = "\n\n".join(
+                        f"Choice {_idx + 1}:\n{text}" for _idx, text in enumerate(_monitor_replies)
+                    )
+                api_monitor.set_reply(monitor_id, monitor_reply)
+                _monitor_usage(
+                    monitor_id,
+                    {
+                        "prompt_tokens": _prompt_tokens,
+                        "completion_tokens": _sum_completion,
+                        "total_tokens": _prompt_tokens + _sum_completion,
+                    },
+                    _monitor_context_length(),
+                )
+                api_monitor.finish(monitor_id)
                 return JSONResponse(content = response.model_dump())
 
             except Exception as e:
                 logger.error(f"Error during GGUF completion: {e}", exc_info = True)
+                api_monitor.fail(monitor_id, _friendly_error(e))
                 # An over-context prompt makes llama-server return 400; map any
                 # upstream 4xx to a 400 client error rather than leaking a 500.
                 _cls = _classify_llama_generation_error(e)
@@ -4484,9 +5079,9 @@ async def openai_chat_completions(
         # Bypass Permissions suppresses confirm, so the stream requirement
         # (the gate needs streaming to prompt) no longer applies.
         if payload.confirm_tool_calls and not payload.bypass_permissions and not payload.stream:
-            raise HTTPException(
-                status_code = 400,
-                detail = openai_error_body(
+            raise _reject(
+                400,
+                openai_error_body(
                     "confirm_tool_calls requires stream=true for local tool execution.",
                     status = 400,
                     code = "invalid_request_error",
@@ -4608,6 +5203,7 @@ async def openai_chat_completions(
                     if await request.is_disconnected():
                         cancel_event.set()
                         backend.reset_generation_state()
+                        api_monitor.finish(monitor_id, "cancelled")
                         return
 
                     event = await asyncio.to_thread(next, gen, _sf_tool_sentinel)
@@ -4642,6 +5238,7 @@ async def openai_chat_completions(
                     prev_text = clean_cumulative
                     if not new_text:
                         continue
+                    api_monitor.append_reply(monitor_id, new_text)
                     chunk = ChatCompletionChunk(
                         id = completion_id,
                         created = created,
@@ -4682,17 +5279,23 @@ async def openai_chat_completions(
                     )
                     if usage_line is not None:
                         yield usage_line
+                    _monitor_usage(monitor_id, _stats.get("usage"))
+                api_monitor.finish(
+                    monitor_id, "cancelled" if cancel_event.is_set() else "completed"
+                )
                 yield "data: [DONE]\n\n"
 
             except asyncio.CancelledError:
                 cancel_event.set()
                 backend.reset_generation_state()
+                api_monitor.finish(monitor_id, "cancelled")
                 raise
             except Exception:
                 backend.reset_generation_state()
                 # Generic wire message; full trace stays in the log (CWE-209:
                 # transformers/torch errors may leak paths).
                 logger.exception("safetensors tool stream error")
+                api_monitor.fail(monitor_id, "An internal error occurred.")
                 error_chunk = {
                     "error": {
                         "message": "An internal error occurred.",
@@ -4736,6 +5339,11 @@ async def openai_chat_completions(
                 return full_text
 
             content_text = await asyncio.to_thread(_drain_to_text)
+            api_monitor.set_reply(monitor_id, content_text)
+            _stats = _sf_stats_holder.get("stats")
+            if _stats:
+                _monitor_usage(monitor_id, _stats.get("usage"))
+            api_monitor.finish(monitor_id, "cancelled" if cancel_event.is_set() else "completed")
             response = ChatCompletion(
                 id = completion_id,
                 created = created,
@@ -4748,10 +5356,16 @@ async def openai_chat_completions(
                 ],
             )
             return JSONResponse(content = response.model_dump())
+        except asyncio.CancelledError:
+            cancel_event.set()
+            backend.reset_generation_state()
+            api_monitor.finish(monitor_id, "cancelled")
+            raise
         except Exception:
             backend.reset_generation_state()
             # CWE-209: generic detail; full trace in log.
             logger.exception("safetensors tool completion error")
+            api_monitor.fail(monitor_id, "An internal error occurred.")
             raise HTTPException(
                 status_code = 500,
                 detail = "An internal error occurred.",
@@ -4845,11 +5459,13 @@ async def openai_chat_completions(
                     if await request.is_disconnected():
                         cancel_event.set()
                         backend.reset_generation_state()
+                        api_monitor.finish(monitor_id, "cancelled")
                         return
                     new_text = cumulative[len(prev_text) :]
                     prev_text = cumulative
                     if not new_text:
                         continue
+                    api_monitor.append_reply(monitor_id, new_text)
                     chunk = ChatCompletionChunk(
                         id = completion_id,
                         created = created,
@@ -4891,15 +5507,21 @@ async def openai_chat_completions(
                     )
                     if usage_line is not None:
                         yield usage_line
+                    _monitor_usage(monitor_id, _stats.get("usage"))
+                api_monitor.finish(
+                    monitor_id, "cancelled" if cancel_event.is_set() else "completed"
+                )
                 yield "data: [DONE]\n\n"
 
             except asyncio.CancelledError:
                 cancel_event.set()
                 backend.reset_generation_state()
+                api_monitor.finish(monitor_id, "cancelled")
                 raise
             except Exception as e:
                 backend.reset_generation_state()
                 logger.error(f"Error during OpenAI streaming: {e}", exc_info = True)
+                api_monitor.fail(monitor_id, _friendly_error(e))
                 error_chunk = {
                     "error": {
                         "message": _friendly_error(e),
@@ -4938,11 +5560,17 @@ async def openai_chat_completions(
                     )
                 ],
             )
+            api_monitor.set_reply(monitor_id, full_text)
+            _stats = stats_holder.get("stats")
+            if _stats:
+                _monitor_usage(monitor_id, _stats.get("usage"))
+            api_monitor.finish(monitor_id)
             return JSONResponse(content = response.model_dump())
 
         except Exception as e:
             backend.reset_generation_state()
             logger.error(f"Error during OpenAI completion: {e}", exc_info = True)
+            api_monitor.fail(monitor_id, _friendly_error(e))
             raise HTTPException(status_code = 500, detail = safe_error_detail(e))
 
 
@@ -5152,6 +5780,19 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
         body["max_tokens"] = llama_backend.context_length or _DEFAULT_MAX_TOKENS_FLOOR
     target_url = f"{llama_backend.base_url}/v1/completions"
     is_stream = body.get("stream", False)
+    raw_prompt = body.get("prompt", "")
+    if isinstance(raw_prompt, list):
+        prompt_text = "\n".join(str(part) for part in raw_prompt)
+    else:
+        prompt_text = str(raw_prompt)
+    monitor_id = api_monitor.start(
+        endpoint = request.url.path,
+        method = request.method,
+        model = str(body.get("model") or llama_backend.model_identifier or "default"),
+        prompt = prompt_text,
+        context_length = llama_backend.context_length,
+        subject = current_subject,
+    )
 
     if is_stream:
 
@@ -5179,10 +5820,12 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                 first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
                 resp = await _send_stream_with_preheader_cancel(client, req, request = request)
                 if resp is None:
+                    api_monitor.finish(monitor_id, "cancelled")
                     return
                 if resp.status_code != 200:
                     err_bytes = await resp.aread()
                     err_text = err_bytes.decode("utf-8", errors = "replace")
+                    api_monitor.fail(monitor_id, err_text[:500])
                     raise RuntimeError(f"llama-server returned {resp.status_code}: {err_text}")
                 disconnect_watcher = asyncio.create_task(
                     _await_disconnect_then_close(request, resp, disconnect_event)
@@ -5199,26 +5842,49 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                     buffer += chunk
                     while b"\n\n" in buffer:
                         event, buffer = buffer.split(b"\n\n", 1)
+                        _monitor_openai_sse_event(
+                            monitor_id,
+                            event,
+                            llama_backend.context_length,
+                        )
                         out = _cmpl_stream_event_out(event, _include_usage)
                         if out is not None:
                             yield out + b"\n\n"
                 if not disconnect_event.is_set() and buffer:
+                    _monitor_openai_sse_event(
+                        monitor_id,
+                        buffer,
+                        llama_backend.context_length,
+                    )
                     out = _cmpl_stream_event_out(buffer, _include_usage)
                     if out is not None:
                         # Re-add the SSE separator the split consumed, so a final
                         # event arriving without a trailing blank line is still
                         # terminated for the client's parser.
                         yield out + b"\n\n"
+                if disconnect_event.is_set():
+                    api_monitor.finish(monitor_id, "cancelled")
+                    return
+                api_monitor.finish(monitor_id)
             except (httpx.RemoteProtocolError, httpx.ReadError, httpx.CloseError) as e:
                 if not disconnect_event.is_set():
                     logger.error("openai_completions stream error: %s", e)
+                    api_monitor.fail(monitor_id, _friendly_error(e))
                     error_chunk = _openai_stream_error_chunk(e)
                     yield f"data: {json.dumps(error_chunk)}\n\n".encode("utf-8")
                     return
+                api_monitor.finish(monitor_id, "cancelled")
+                return
+            except asyncio.CancelledError:
+                disconnect_event.set()
+                api_monitor.finish(monitor_id, "cancelled")
+                raise
             except Exception as e:
                 if disconnect_event.is_set():
+                    api_monitor.finish(monitor_id, "cancelled")
                     return
                 logger.error("openai_completions stream error: %s", e)
+                api_monitor.fail(monitor_id, _friendly_error(e))
                 error_chunk = _openai_stream_error_chunk(e)
                 yield f"data: {json.dumps(error_chunk)}\n\n".encode("utf-8")
                 return
@@ -5246,15 +5912,28 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
 
         return StreamingResponse(_stream(), media_type = "text/event-stream")
     else:
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(
-                target_url,
-                json = body,
-                timeout = _llama_non_streaming_generation_timeout(),
-            )
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(
+                    target_url,
+                    json = body,
+                    timeout = _llama_non_streaming_generation_timeout(),
+                )
+        except asyncio.CancelledError:
+            api_monitor.finish(monitor_id, "cancelled")
+            raise
+        except Exception as e:
+            api_monitor.fail(monitor_id, _friendly_error(e))
+            raise
 
         if resp.status_code != 200:
+            api_monitor.fail(monitor_id, resp.text[:500])
             raise _openai_passthrough_error(resp.status_code, resp.text)
+        try:
+            _monitor_openai_chunk(monitor_id, resp.json(), llama_backend.context_length)
+        except Exception:
+            pass
+        api_monitor.finish(monitor_id)
 
         return Response(
             content = _rewrite_cmpl_id(resp.content),
@@ -5287,9 +5966,43 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
 
     body = await request.json()
     target_url = f"{llama_backend.base_url}/v1/embeddings"
+    raw_input = body.get("input", "")
+    if isinstance(raw_input, list):
+        prompt_text = "\n".join(str(part) for part in raw_input)
+    else:
+        prompt_text = str(raw_input)
+    monitor_id = None
+    if not getattr(request.state, "skip_api_monitor", False):
+        monitor_id = api_monitor.start(
+            endpoint = request.url.path,
+            method = request.method,
+            model = str(body.get("model") or llama_backend.model_identifier or "default"),
+            prompt = prompt_text,
+            context_length = llama_backend.context_length,
+            subject = current_subject,
+        )
 
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(target_url, json = body, timeout = _DEFAULT_FIRST_TOKEN_TIMEOUT_S)
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                target_url,
+                json = body,
+                timeout = _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
+            )
+    except asyncio.CancelledError:
+        api_monitor.finish(monitor_id, "cancelled")
+        raise
+    except Exception as exc:
+        api_monitor.fail(monitor_id, _friendly_error(exc))
+        raise
+    if resp.status_code != 200:
+        api_monitor.fail(monitor_id, resp.text[:500])
+    else:
+        try:
+            _monitor_usage(monitor_id, resp.json().get("usage"), _monitor_context_length())
+        except Exception:
+            pass
+        api_monitor.finish(monitor_id)
     return Response(
         content = resp.content,
         status_code = resp.status_code,
@@ -5803,84 +6516,128 @@ def _chat_tool_calls_to_responses_output(tool_calls: list[dict]) -> list[dict]:
 
 
 async def _responses_non_streaming(
-    payload: ResponsesRequest, messages: list[ChatMessage], request: Request
+    payload: ResponsesRequest,
+    messages: list[ChatMessage],
+    request: Request,
+    current_subject: Optional[str] = None,
 ) -> JSONResponse:
     """Handle a non-streaming Responses API call."""
     chat_req = _build_chat_request(payload, messages, stream = False)
-    result = await openai_chat_completions(chat_req, request)
-
-    # openai_chat_completions returns a JSONResponse for non-streaming.
-    if isinstance(result, JSONResponse):
-        body = json.loads(result.body.decode())
-    elif isinstance(result, Response):
-        body = json.loads(result.body.decode())
-    else:
-        body = result
-
-    choices = body.get("choices", [])
-    text = ""
-    reasoning_text = ""
-    tool_calls: list[dict] = []
-    if choices:
-        msg = choices[0].get("message", {}) or {}
-        raw_content = msg.get("content", "") or ""
-        raw_text = raw_content if isinstance(raw_content, str) else json.dumps(raw_content)
-        llama_backend = get_llama_cpp_backend()
-        reasoning_text, text = _extract_responses_reasoning(
-            raw_text,
-            msg.get("reasoning_content"),
-            parse_think_markers = _responses_should_parse_think_markers(chat_req, llama_backend),
-        )
-        tool_calls = msg.get("tool_calls") or []
-
-    usage_data = body.get("usage", {})
-    input_tokens = usage_data.get("prompt_tokens", 0)
-    output_tokens = usage_data.get("completion_tokens", 0)
-
-    resp_id = f"resp_{uuid.uuid4().hex[:12]}"
-
-    # Responses API emits each tool call as its own top-level output item,
-    # plus an optional assistant text message. Emit the text message only when
-    # the model produced content, so clients expecting a pure tool-call turn
-    # (finish_reason="tool_calls") don't see a spurious empty message item.
-    output_items: list[dict] = []
-    if reasoning_text and not text and not tool_calls:
-        text = reasoning_text
-    if reasoning_text:
-        output_items.append(_responses_reasoning_output_item(reasoning_text))
-    if text:
-        msg_id = f"msg_{uuid.uuid4().hex[:12]}"
-        output_items.append(
-            ResponsesOutputMessage(
-                id = msg_id,
-                status = "completed",
-                role = "assistant",
-                content = [ResponsesOutputTextContent(text = text)],
-            ).model_dump()
-        )
-    output_items.extend(_chat_tool_calls_to_responses_output(tool_calls))
-
-    response = ResponsesResponse(
-        id = resp_id,
-        created_at = int(time.time()),
-        status = "completed",
-        model = body.get("model", payload.model),
-        output = output_items,
-        usage = ResponsesUsage(
-            input_tokens = input_tokens,
-            output_tokens = output_tokens,
-            total_tokens = input_tokens + output_tokens,
-        ),
-        temperature = payload.temperature,
-        top_p = payload.top_p,
-        max_output_tokens = payload.max_output_tokens,
-        instructions = payload.instructions,
+    request_state = getattr(request, "state", None)
+    if request_state is None:
+        request_state = type("_RequestState", (), {})()
+        try:
+            setattr(request, "state", request_state)
+        except Exception:
+            request_state = None
+    previous_skip_monitor = (
+        bool(getattr(request_state, "skip_api_monitor", False))
+        if request_state is not None
+        else False
     )
-    return JSONResponse(content = response.model_dump())
+    monitor_id = None
+    if not previous_skip_monitor:
+        monitor_id = api_monitor.start(
+            endpoint = getattr(getattr(request, "url", None), "path", "/v1/responses"),
+            method = getattr(request, "method", "POST"),
+            model = payload.model,
+            prompt = _monitor_prompt_from_messages(messages),
+            context_length = _monitor_context_length(),
+            subject = current_subject,
+        )
+    if request_state is not None:
+        request_state.skip_api_monitor = True
+
+    try:
+        result = await openai_chat_completions(chat_req, request)
+
+        # openai_chat_completions returns a JSONResponse for non-streaming.
+        if isinstance(result, JSONResponse):
+            body = json.loads(result.body.decode())
+        elif isinstance(result, Response):
+            body = json.loads(result.body.decode())
+        else:
+            body = result
+
+        choices = body.get("choices", [])
+        text = ""
+        reasoning_text = ""
+        tool_calls: list[dict] = []
+        if choices:
+            msg = choices[0].get("message", {}) or {}
+            raw_content = msg.get("content", "") or ""
+            raw_text = raw_content if isinstance(raw_content, str) else json.dumps(raw_content)
+            llama_backend = get_llama_cpp_backend()
+            reasoning_text, text = _extract_responses_reasoning(
+                raw_text,
+                msg.get("reasoning_content"),
+                parse_think_markers = _responses_should_parse_think_markers(chat_req, llama_backend),
+            )
+            tool_calls = msg.get("tool_calls") or []
+
+        usage_data = body.get("usage", {})
+        input_tokens = usage_data.get("prompt_tokens", 0)
+        output_tokens = usage_data.get("completion_tokens", 0)
+
+        resp_id = f"resp_{uuid.uuid4().hex[:12]}"
+
+        # Responses API emits each tool call as its own top-level output item,
+        # plus an optional assistant text message. Emit the text message only when
+        # the model produced content, so clients expecting a pure tool-call turn
+        # (finish_reason="tool_calls") don't see a spurious empty message item.
+        output_items: list[dict] = []
+        if reasoning_text and not text and not tool_calls:
+            text = reasoning_text
+        if reasoning_text:
+            output_items.append(_responses_reasoning_output_item(reasoning_text))
+        if text:
+            msg_id = f"msg_{uuid.uuid4().hex[:12]}"
+            output_items.append(
+                ResponsesOutputMessage(
+                    id = msg_id,
+                    status = "completed",
+                    role = "assistant",
+                    content = [ResponsesOutputTextContent(text = text)],
+                ).model_dump()
+            )
+        output_items.extend(_chat_tool_calls_to_responses_output(tool_calls))
+
+        response = ResponsesResponse(
+            id = resp_id,
+            created_at = int(time.time()),
+            status = "completed",
+            model = body.get("model", payload.model),
+            output = output_items,
+            usage = ResponsesUsage(
+                input_tokens = input_tokens,
+                output_tokens = output_tokens,
+                total_tokens = input_tokens + output_tokens,
+            ),
+            temperature = payload.temperature,
+            top_p = payload.top_p,
+            max_output_tokens = payload.max_output_tokens,
+            instructions = payload.instructions,
+        )
+        api_monitor.set_reply(monitor_id, text or _monitor_tool_calls_text(tool_calls))
+        _monitor_usage(monitor_id, usage_data, _monitor_context_length())
+        api_monitor.finish(monitor_id)
+        return JSONResponse(content = response.model_dump())
+    except asyncio.CancelledError:
+        api_monitor.finish(monitor_id, "cancelled")
+        raise
+    except Exception as exc:
+        api_monitor.fail(monitor_id, _friendly_error(exc))
+        raise
+    finally:
+        if request_state is not None:
+            request_state.skip_api_monitor = previous_skip_monitor
 
 
 async def _responses_stream(
-    payload: ResponsesRequest, messages: list[ChatMessage], request: Request
+    payload: ResponsesRequest,
+    messages: list[ChatMessage],
+    request: Request,
+    monitor_id: Optional[str] = None,
 ):
     """Handle a streaming Responses API call, emitting named SSE events.
 
@@ -6145,9 +6902,11 @@ async def _responses_stream(
             try:
                 resp = await _send_stream_with_preheader_cancel(client, req, request = request)
                 if resp is None:
+                    api_monitor.finish(monitor_id, "cancelled")
                     return
             except httpx.RequestError as e:
                 logger.error("responses stream: upstream unreachable: %s", e)
+                api_monitor.fail(monitor_id, _friendly_error(e))
                 yield _sse(
                     "response.failed",
                     {
@@ -6173,6 +6932,7 @@ async def _responses_stream(
                     resp.status_code,
                     err_text[:500],
                 )
+                api_monitor.fail(monitor_id, err_text[:500])
                 yield _sse(
                     "response.failed",
                     {
@@ -6224,6 +6984,11 @@ async def _responses_stream(
                     if usage:
                         input_tokens = usage.get("prompt_tokens", input_tokens)
                         output_tokens = usage.get("completion_tokens", output_tokens)
+                        _monitor_usage(
+                            monitor_id,
+                            usage,
+                            llama_backend.context_length,
+                        )
                     continue
 
                 delta = choices[0].get("delta", {}) or {}
@@ -6249,6 +7014,7 @@ async def _responses_stream(
                     for event in _ensure_message_open():
                         yield event
                     full_text += visible_delta
+                    api_monitor.append_reply(monitor_id, visible_delta)
                     yield _sse(
                         "response.output_text.delta",
                         {
@@ -6320,9 +7086,18 @@ async def _responses_stream(
                 if usage:
                     input_tokens = usage.get("prompt_tokens", input_tokens)
                     output_tokens = usage.get("completion_tokens", output_tokens)
+                    _monitor_usage(
+                        monitor_id,
+                        usage,
+                        llama_backend.context_length,
+                    )
+        except asyncio.CancelledError:
+            api_monitor.finish(monitor_id, "cancelled")
+            raise
         except (httpx.RemoteProtocolError, httpx.ReadError, httpx.CloseError) as e:
             if not disconnect_event.is_set():
                 logger.error("responses stream error: %s", e)
+                api_monitor.fail(monitor_id, _friendly_error(e))
                 status_code = 400 if _classify_llama_generation_error(e) is not None else 500
                 yield _sse(
                     "response.failed",
@@ -6331,8 +7106,10 @@ async def _responses_stream(
                 return
         except Exception as e:
             if disconnect_event.is_set():
+                api_monitor.finish(monitor_id, "cancelled")
                 return
             logger.error("responses stream error: %s", e)
+            api_monitor.fail(monitor_id, _friendly_error(e))
             status_code = 400 if _classify_llama_generation_error(e) is not None else 500
             yield _sse(
                 "response.failed",
@@ -6362,6 +7139,7 @@ async def _responses_stream(
                 pass
 
         if disconnect_event.is_set():
+            api_monitor.finish(monitor_id, "cancelled")
             return
 
         final_reasoning, final_visible = extractor.finish()
@@ -6383,6 +7161,7 @@ async def _responses_stream(
             for event in _ensure_message_open():
                 yield event
             full_text += final_visible
+            api_monitor.append_reply(monitor_id, final_visible)
             yield _sse(
                 "response.output_text.delta",
                 {
@@ -6397,6 +7176,7 @@ async def _responses_stream(
             for event in _ensure_message_open():
                 yield event
             full_text = full_reasoning
+            api_monitor.set_reply(monitor_id, full_text)
             yield _sse(
                 "response.output_text.delta",
                 {
@@ -6543,6 +7323,7 @@ async def _responses_stream(
                     "arguments": st["arguments"],
                 },
             }
+            api_monitor.append_reply(monitor_id, _monitor_call_text(st["name"], st["arguments"]))
             yield _sse("response.output_item.done", item_done)
 
         # response.completed
@@ -6563,6 +7344,7 @@ async def _responses_stream(
                 },
             },
         }
+        api_monitor.finish(monitor_id)
         yield _sse("response.completed", completed_response)
 
     return StreamingResponse(
@@ -6594,8 +7376,28 @@ async def openai_responses(
         raise HTTPException(status_code = 400, detail = "No input provided.")
 
     if payload.stream:
-        return await _responses_stream(payload, messages, request)
-    return await _responses_non_streaming(payload, messages, request)
+        monitor_id = None
+        if not getattr(request.state, "skip_api_monitor", False):
+            monitor_id = api_monitor.start(
+                endpoint = request.url.path,
+                method = request.method,
+                model = payload.model,
+                prompt = _monitor_prompt_from_messages(messages),
+                context_length = _monitor_context_length(),
+                subject = current_subject,
+            )
+        try:
+            return await _responses_stream(payload, messages, request, monitor_id)
+        except HTTPException as exc:
+            detail = exc.detail
+            if not isinstance(detail, str):
+                detail = json.dumps(detail, default = str)
+            api_monitor.fail(monitor_id, detail)
+            raise
+        except Exception as exc:
+            api_monitor.fail(monitor_id, _friendly_error(exc))
+            raise
+    return await _responses_non_streaming(payload, messages, request, current_subject)
 
 
 # =====================================================================
@@ -6915,14 +7717,67 @@ async def anthropic_messages(
         and payload.tool_choice.get("disable_parallel_tool_use")
     )
 
+    monitor_id = None
+    monitor_context_length = _monitor_context_length()
+    request_state = getattr(request, "state", None)
+    if not getattr(request_state, "skip_api_monitor", False):
+        request_url = getattr(request, "url", None)
+        monitor_id = api_monitor.start(
+            endpoint = getattr(request_url, "path", "/v1/messages"),
+            method = getattr(request, "method", "POST"),
+            model = model_name,
+            prompt = _monitor_prompt_from_messages(openai_messages),
+            context_length = monitor_context_length,
+            subject = current_subject,
+        )
+
+    async def _monitored_anthropic(coro):
+        try:
+            response = await coro
+        except asyncio.CancelledError:
+            cancel_event.set()
+            api_monitor.finish(monitor_id, "cancelled")
+            raise
+        except Exception as exc:
+            api_monitor.fail(monitor_id, _friendly_error(exc))
+            raise
+        return _monitor_anthropic_response(
+            response,
+            monitor_id,
+            monitor_context_length,
+            cancel_event,
+        )
+
     # ── Client-side pass-through path ─────────────────────────
     if client_tools:
         openai_tools = openai_client_tools
 
         if payload.stream:
-            return await _anthropic_passthrough_stream(
-                request,
-                cancel_event,
+            return await _monitored_anthropic(
+                _anthropic_passthrough_stream(
+                    request,
+                    cancel_event,
+                    llama_backend,
+                    openai_messages,
+                    openai_tools,
+                    temperature,
+                    top_p,
+                    top_k,
+                    payload.max_tokens,
+                    message_id,
+                    model_name,
+                    stop = stop,
+                    min_p = min_p,
+                    repetition_penalty = repetition_penalty,
+                    presence_penalty = presence_penalty,
+                    tool_choice = openai_tool_choice,
+                    session_id = payload.session_id,
+                    cancel_id = payload.cancel_id,
+                    disable_parallel_tool_use = _disable_parallel,
+                )
+            )
+        return await _monitored_anthropic(
+            _anthropic_passthrough_non_streaming(
                 llama_backend,
                 openai_messages,
                 openai_tools,
@@ -6937,26 +7792,8 @@ async def anthropic_messages(
                 repetition_penalty = repetition_penalty,
                 presence_penalty = presence_penalty,
                 tool_choice = openai_tool_choice,
-                session_id = payload.session_id,
-                cancel_id = payload.cancel_id,
                 disable_parallel_tool_use = _disable_parallel,
             )
-        return await _anthropic_passthrough_non_streaming(
-            llama_backend,
-            openai_messages,
-            openai_tools,
-            temperature,
-            top_p,
-            top_k,
-            payload.max_tokens,
-            message_id,
-            model_name,
-            stop = stop,
-            min_p = min_p,
-            repetition_penalty = repetition_penalty,
-            presence_penalty = presence_penalty,
-            tool_choice = openai_tool_choice,
-            disable_parallel_tool_use = _disable_parallel,
         )
 
     if server_tools:
@@ -6964,6 +7801,10 @@ async def anthropic_messages(
         if bool(getattr(payload, "confirm_tool_calls", False)) and not bool(
             getattr(payload, "bypass_permissions", False)
         ):
+            api_monitor.fail(
+                monitor_id,
+                "confirm_tool_calls is not supported for Anthropic Messages server tools.",
+            )
             raise HTTPException(
                 status_code = 400,
                 detail = anthropic_error_body(
@@ -7024,22 +7865,26 @@ async def anthropic_messages(
             )
 
         if payload.stream:
-            return await _anthropic_tool_stream(
-                request,
-                cancel_event,
+            return await _monitored_anthropic(
+                _anthropic_tool_stream(
+                    request,
+                    cancel_event,
+                    _run_tool_gen,
+                    message_id,
+                    model_name,
+                    llama_backend = llama_backend,
+                    openai_messages = openai_messages,
+                    openai_tools = openai_tools,
+                    disable_parallel_tool_use = _disable_parallel,
+                )
+            )
+        return await _monitored_anthropic(
+            _anthropic_tool_non_streaming(
                 _run_tool_gen,
                 message_id,
                 model_name,
-                llama_backend = llama_backend,
-                openai_messages = openai_messages,
-                openai_tools = openai_tools,
                 disable_parallel_tool_use = _disable_parallel,
             )
-        return await _anthropic_tool_non_streaming(
-            _run_tool_gen,
-            message_id,
-            model_name,
-            disable_parallel_tool_use = _disable_parallel,
         )
 
     # ── No-tool path ──────────────────────────────────────────
@@ -7058,19 +7903,23 @@ async def anthropic_messages(
         )
 
     if payload.stream:
-        return await _anthropic_plain_stream(
-            request,
-            cancel_event,
+        return await _monitored_anthropic(
+            _anthropic_plain_stream(
+                request,
+                cancel_event,
+                _run_plain_gen,
+                message_id,
+                model_name,
+                llama_backend = llama_backend,
+                openai_messages = openai_messages,
+            )
+        )
+    return await _monitored_anthropic(
+        _anthropic_plain_non_streaming(
             _run_plain_gen,
             message_id,
             model_name,
-            llama_backend = llama_backend,
-            openai_messages = openai_messages,
         )
-    return await _anthropic_plain_non_streaming(
-        _run_plain_gen,
-        message_id,
-        model_name,
     )
 
 
@@ -8121,7 +8970,13 @@ def _build_openai_passthrough_body(
 
 
 async def _openai_passthrough_stream(
-    request, cancel_event, llama_backend, payload, model_name, completion_id
+    request,
+    cancel_event,
+    llama_backend,
+    payload,
+    model_name,
+    completion_id,
+    monitor_id: Optional[str] = None,
 ):
     """Streaming client-side pass-through for /v1/chat/completions.
 
@@ -8165,6 +9020,7 @@ async def _openai_passthrough_stream(
             except httpx.RequestError as e:
                 # llama-server subprocess crashed / starting / unreachable.
                 logger.error("openai passthrough stream: upstream unreachable: %s", e)
+                api_monitor.fail(monitor_id, _friendly_error(e))
                 if resp is not None:
                     try:
                         await resp.aclose()
@@ -8179,6 +9035,7 @@ async def _openai_passthrough_stream(
                     detail = _friendly_error(e),
                 )
             if resp is None:
+                api_monitor.finish(monitor_id, "cancelled")
                 try:
                     await client.aclose()
                 except Exception:
@@ -8220,6 +9077,7 @@ async def _openai_passthrough_stream(
                 await client.aclose()
             except Exception:
                 pass
+            api_monitor.fail(monitor_id, err_text[:500])
             raise _openai_passthrough_error(upstream_status, err_text)
 
         async def _stream():
@@ -8233,6 +9091,7 @@ async def _openai_passthrough_stream(
             disconnect_watcher = asyncio.create_task(
                 _await_disconnect_then_close(request, resp, cancel_event)
             )
+            monitor_done = False
             try:
                 lines_iter = resp.aiter_lines()
                 async for raw_line in _aiter_llama_stream_items(
@@ -8252,21 +9111,39 @@ async def _openai_passthrough_stream(
                     # relayed byte-for-byte.
                     if payload.parallel_tool_calls is False and '"tool_calls"' in raw_line:
                         raw_line = _cap_parallel_tool_calls_sse_line(raw_line)
+                    monitor_event = _monitor_openai_sse_line(
+                        monitor_id,
+                        raw_line,
+                        llama_backend.context_length,
+                    )
                     # Relay verbatim to preserve llama-server's native id,
                     # finish_reason, delta.tool_calls, and usage chunks.
                     yield raw_line + "\n\n"
-                    if raw_line[6:].strip() == "[DONE]":
+                    if monitor_event == "done" or raw_line[6:].strip() == "[DONE]":
+                        monitor_done = True
                         break
+                if not monitor_done:
+                    api_monitor.finish(
+                        monitor_id,
+                        "cancelled" if cancel_event.is_set() else "completed",
+                    )
+            except asyncio.CancelledError:
+                api_monitor.finish(monitor_id, "cancelled")
+                raise
             except (httpx.RemoteProtocolError, httpx.ReadError, httpx.CloseError):
                 # Watcher closed resp on cancel. Emit nothing extra; the client
                 # initiated the cancel or already disconnected.
                 if not cancel_event.is_set():
+                    api_monitor.fail(monitor_id, "Stream interrupted")
                     raise
+                api_monitor.finish(monitor_id, "cancelled")
             except Exception as e:
                 if cancel_event.is_set():
+                    api_monitor.finish(monitor_id, "cancelled")
                     return
                 # 200 headers already flushed; errors must go in the SSE body.
                 logger.error("openai passthrough stream error: %s", e)
+                api_monitor.fail(monitor_id, _friendly_error(e))
                 err = _openai_stream_error_chunk(e)
                 yield f"data: {json.dumps(err)}\n\n"
             finally:
@@ -8309,7 +9186,12 @@ async def _openai_passthrough_stream(
         raise
 
 
-async def _openai_passthrough_non_streaming(llama_backend, payload, model_name):
+async def _openai_passthrough_non_streaming(
+    llama_backend,
+    payload,
+    model_name,
+    monitor_id: Optional[str] = None,
+):
     """Non-streaming client-side pass-through for /v1/chat/completions.
 
     Returns llama-server's JSON response verbatim so the client sees the native
@@ -8332,11 +9214,15 @@ async def _openai_passthrough_non_streaming(llama_backend, payload, model_name):
                     json = body,
                     timeout = _llama_non_streaming_generation_timeout(),
                 )
+        except asyncio.CancelledError:
+            api_monitor.finish(monitor_id, "cancelled")
+            raise
         except httpx.RequestError as e:
             # llama-server subprocess crashed / starting / unreachable. Surface the
             # same friendly message the sync chat path emits so operators don't see
             # a bare 500 with no diagnostic.
             logger.error("openai passthrough non-streaming: upstream unreachable: %s", e)
+            api_monitor.fail(monitor_id, _friendly_error(e))
             raise HTTPException(
                 status_code = 502,
                 detail = _friendly_error(e),
@@ -8352,6 +9238,7 @@ async def _openai_passthrough_non_streaming(llama_backend, payload, model_name):
         ):
             _truncate_budget -= 1
             continue
+        api_monitor.fail(monitor_id, resp.text[:500])
         raise _openai_passthrough_error(resp.status_code, resp.text)
 
     # The guided-decoding fence wraps each choice's JSON content in a
@@ -8372,6 +9259,7 @@ async def _openai_passthrough_non_streaming(llama_backend, payload, model_name):
             "openai passthrough non-streaming: response not JSON, relaying raw: %s",
             exc,
         )
+        api_monitor.finish(monitor_id)
         return Response(content = resp.content, media_type = "application/json")
 
     changed = False
@@ -8409,5 +9297,9 @@ async def _openai_passthrough_non_streaming(llama_backend, payload, model_name):
     # Nothing mutated: relay the upstream bytes verbatim, skipping a redundant
     # parse + re-serialize round-trip.
     if not changed:
+        _monitor_openai_chunk(monitor_id, data, llama_backend.context_length)
+        api_monitor.finish(monitor_id)
         return Response(content = resp.content, media_type = "application/json")
+    _monitor_openai_chunk(monitor_id, data, llama_backend.context_length)
+    api_monitor.finish(monitor_id)
     return JSONResponse(content = data)
