@@ -929,6 +929,59 @@ class TestScannerCoversAllExecutableCode:
             configs = consent._load_remote_code_configs("some/gated-repo")
         assert configs is None
 
+    def test_gguf_repo_auto_map_is_ignored(self):
+        # A GGUF repo whose config.json carries a (vestigial) auto_map loads via
+        # llama.cpp, which NEVER runs auto_map. _config_has_auto_map must return False
+        # so the consent flow is never triggered, even though the config declares one.
+        def _dl(repo_id = None, filename = None, token = None, **kw):
+            import json
+            import tempfile
+
+            if filename == "config.json":
+                p = Path(tempfile.mkdtemp()) / "config.json"
+                p.write_text(json.dumps({"auto_map": {"AutoModelForCausalLM": "modeling_decilm.X"}}))
+                return str(p)
+            raise EntryNotFoundError(filename)
+
+        with (
+            patch("huggingface_hub.hf_hub_download", side_effect = _dl),
+            patch(
+                "huggingface_hub.list_repo_files",
+                return_value = ["config.json", "model-00001-of-00097.gguf"],
+            ),
+        ):
+            assert consent._config_has_auto_map("unsloth/Some-Model-GGUF") is False
+
+    def test_direct_gguf_file_reference_has_no_auto_map(self):
+        # A direct .gguf reference is a GGUF load -> no remote code, no Hub call.
+        with patch(
+            "huggingface_hub.hf_hub_download", side_effect = AssertionError("no Hub call")
+        ):
+            assert consent._config_has_auto_map("org/repo/model.gguf") is False
+
+    def test_mixed_gguf_and_safetensors_repo_is_still_gated(self):
+        # A repo with BOTH .gguf and .safetensors is NOT treated as GGUF: the user
+        # could load the safetensors via transformers, where auto_map WOULD run, so
+        # the consent gate must still apply.
+        def _dl(repo_id = None, filename = None, token = None, **kw):
+            import json
+            import tempfile
+
+            if filename == "config.json":
+                p = Path(tempfile.mkdtemp()) / "config.json"
+                p.write_text(json.dumps({"auto_map": {"AutoModelForCausalLM": "modeling_x.X"}}))
+                return str(p)
+            raise EntryNotFoundError(filename)
+
+        with (
+            patch("huggingface_hub.hf_hub_download", side_effect = _dl),
+            patch(
+                "huggingface_hub.list_repo_files",
+                return_value = ["config.json", "model.safetensors", "model.gguf"],
+            ),
+        ):
+            assert consent._config_has_auto_map("org/Mixed-Repo") is True
+
 
 # ---------------------------------------------------------------------------
 # POST /discard-remote-code: purge what the scan downloaded when the user
