@@ -102,6 +102,7 @@ class LlamaKeepWarmMiddleware:
 async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
     """Unload the loaded GGUF once idle past the configured TTL. Inert when off."""
     from utils.openai_auto_switch_settings import get_auto_unload_idle_seconds
+
     seen_model = None
     while True:
         await asyncio.sleep(poll_seconds)

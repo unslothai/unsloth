@@ -18,7 +18,11 @@ from utils import openai_auto_switch_settings as settings
 
 
 class _FakeBackend:
-    def __init__(self, loaded_id = None, hf_variant = None):
+    def __init__(
+        self,
+        loaded_id = None,
+        hf_variant = None,
+    ):
         self.model_identifier = loaded_id
         self.is_loaded = loaded_id is not None
         self.hf_variant = hf_variant
@@ -202,9 +206,7 @@ def test_streaming_responses_triggers_auto_switch(monkeypatch):
     monkeypatch.setattr(inference_route, "_normalise_responses_input", lambda _p: [object()])
 
     payload = ResponsesRequest(model = "unsloth/B-GGUF", stream = True)
-    result = asyncio.run(
-        inference_route.openai_responses(payload, object(), current_subject = "t")
-    )
+    result = asyncio.run(inference_route.openai_responses(payload, object(), current_subject = "t"))
     assert result == "STREAM"
     assert called == ["unsloth/B-GGUF"]
 
