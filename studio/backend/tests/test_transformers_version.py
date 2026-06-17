@@ -34,6 +34,7 @@ from utils.transformers_version import (
     _check_tokenizer_config_needs_v5,
     _check_config_needs_510,
     _check_config_needs_550,
+    _config_needs_530,
     _config_json_cache,
     _tokenizer_class_cache,
     _config_needs_510_cache,
@@ -789,3 +790,50 @@ class TestEnsureVenvDirProgressLogging:
         assert ok is True
         mock_install.assert_not_called()
         assert "Installing" not in " ".join(r.getMessage() for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# Local-folder 5.3.0 tier detection via config.json (Qwen3.5 et al.)
+#
+# A local checkpoint with a config.json whose architecture/tokenizer didn't match
+# the Gemma4 (510/550) signals short-circuited to "default", mis-routing a local
+# Qwen3.5 folder (model_type "qwen3_5", needs transformers >= 5.2.0) to
+# transformers 4.57.x, which fails to load it. Adding a config-based 530 check
+# fixes it without weakening the directory-name false-positive guard.
+# ---------------------------------------------------------------------------
+
+
+class TestLocalConfig530Tier:
+    def setup_method(self):
+        _config_json_cache.clear()
+        _tokenizer_class_cache.clear()
+
+    def test_config_needs_530_model_type(self):
+        """config.json with model_type=qwen3_5 is the 5.3.0 tier."""
+        assert _config_needs_530({"model_type": "qwen3_5"}) is True
+
+    def test_config_needs_530_plain_qwen3_is_false(self):
+        """A regular Qwen3 checkpoint must not be promoted to 5.3.0."""
+        assert _config_needs_530({"model_type": "qwen3"}) is False
+
+    def test_tier_local_qwen35_config_selects_530(self, tmp_path: Path):
+        """The reported case: a local Qwen3.5 folder with a qwen3_5 config
+        resolves to 530 instead of short-circuiting to default."""
+        named = tmp_path / "Qwen3.5-2B"
+        named.mkdir()
+        (named / "config.json").write_text(json.dumps({"model_type": "qwen3_5"}))
+        assert get_transformers_tier(str(named)) == "530"
+
+    def test_tier_local_plain_model_still_default(self, tmp_path: Path):
+        """A local non-5.x checkpoint still resolves default, so the
+        directory-name false-positive guard is preserved."""
+        plain = tmp_path / "checkpoint-1000"
+        plain.mkdir()
+        (plain / "config.json").write_text(
+            json.dumps({"architectures": ["LlamaForCausalLM"], "model_type": "llama"})
+        )
+        with patch(
+            "utils.transformers_version._check_tokenizer_config_needs_v5",
+            return_value = False,
+        ):
+            assert get_transformers_tier(str(plain)) == "default"

@@ -103,6 +103,16 @@ _TRANSFORMERS_550_MODEL_TYPES: set[str] = {
     "gemma4",
 }
 
+# Architecture classes / model_type values that require transformers 5.3.0.
+# Checked via config.json so a local checkpoint whose directory name does not
+# advertise the family (e.g. a renamed Qwen3.5 folder) is still routed correctly.
+_TRANSFORMERS_530_ARCHITECTURES: set[str] = {
+    "Qwen3_5ForCausalLM",
+}
+_TRANSFORMERS_530_MODEL_TYPES: set[str] = {
+    "qwen3_5",
+}
+
 # Tokenizer classes that only exist in transformers>=5.x.
 _TRANSFORMERS_5_TOKENIZER_CLASSES: set[str] = {
     "TokenizersBackend",
@@ -389,6 +399,14 @@ def _config_needs_510(cfg: dict) -> bool:
     )
 
 
+def _config_needs_530(cfg: dict) -> bool:
+    return _config_matches_tier(
+        cfg,
+        _TRANSFORMERS_530_ARCHITECTURES,
+        _TRANSFORMERS_530_MODEL_TYPES,
+    )
+
+
 def _check_config_needs_550(model_name: str) -> bool:
     """True if ``config.json`` has architectures/model_type needing transformers
     5.5.0 (e.g. Gemma 4).
@@ -470,6 +488,12 @@ def get_transformers_tier(model_name: str) -> str:
                 model_name,
             )
             return "550"
+        if cfg is not None and _config_needs_530(cfg):
+            logger.info(
+                "Transformers tier 530 selected for %s (local config.json check)",
+                model_name,
+            )
+            return "530"
         if cfg is not None:
             local_tc = Path(model_name) / "tokenizer_config.json"
             if local_tc.is_file() and _check_tokenizer_config_needs_v5(model_name):
