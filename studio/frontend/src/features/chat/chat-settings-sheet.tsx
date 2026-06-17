@@ -1194,7 +1194,7 @@ export function ChatSettingsPanel({
                           fits the model and context to your GPUs.
                         </div>
                         <div>
-                          <span className="font-medium">llama.cpp --fit on:</span>{" "}
+                          <span className="font-medium">llama.cpp --fit:</span>{" "}
                           llama.cpp sizes context and offloads overflow
                           (including MoE experts) to RAM.
                         </div>
