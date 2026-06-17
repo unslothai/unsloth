@@ -1415,7 +1415,7 @@ export function ChatSettingsPanel({
           </div>
         </CollapsibleSection>
 
-        <CollapsibleSection label="Custom Prompt" defaultOpen={true}>
+        <CollapsibleSection label="Custom Varible" defaultOpen={true}>
           <div className="panel-text-surface -mt-1 h-20 w-full overflow-hidden corner-squircle">
             <textarea
               value={params.systemVariables}

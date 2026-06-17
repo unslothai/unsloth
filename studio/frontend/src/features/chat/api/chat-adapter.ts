@@ -1807,7 +1807,14 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       }
 
       const safeSystemPrompt =
-        typeof params.systemPrompt === "string" ? params.systemPrompt : "";
+        typeof params.systemPrompt === "string"
+          ? resolveSystemPromptVariables(
+              params.systemPrompt,
+              typeof params.systemVariables === "string"
+                ? params.systemVariables
+                : "{}",
+            )
+          : "";
       const projectInstructions =
         await resolveProjectInstructions(resolvedThreadId);
       const combinedSystemPrompt = [
