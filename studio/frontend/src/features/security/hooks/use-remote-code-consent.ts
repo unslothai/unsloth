@@ -1,0 +1,54 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import { getRemoteCodeScan } from "../api/remote-code-api";
+import { useRemoteCodeConsentDialogStore } from "../stores/remote-code-consent-dialog-store";
+import type { RemoteCodeScan } from "../types";
+
+interface ConfirmArgs {
+  modelName: string;
+  // Sent to the scan endpoint so gated/private repos resolve the same findings
+  // and fingerprint the worker will later require.
+  hfToken?: string | null;
+  // Coarse fallback when the scan endpoint is unreachable (gated/offline).
+  requiresTrustRemoteCode?: boolean;
+  // Called on approval with the fingerprint that pins this code version.
+  onApprove: (fingerprint: string | null) => void;
+}
+
+/**
+ * Gate a load that may need trust_remote_code. Scans the model's custom code,
+ * shows the consent dialog with findings, and on approval calls `onApprove` with
+ * the pinning fingerprint. Returns true if the load may proceed (no custom code,
+ * or the user approved), false if the user declined.
+ */
+export async function confirmRemoteCodeIfNeeded({
+  modelName,
+  hfToken,
+  requiresTrustRemoteCode,
+  onApprove,
+}: ConfirmArgs): Promise<boolean> {
+  let scan: RemoteCodeScan;
+  try {
+    scan = await getRemoteCodeScan(modelName, hfToken);
+  } catch {
+    scan = {
+      requiresTrustRemoteCode: Boolean(requiresTrustRemoteCode),
+      approvable: true,
+      maxSeverity: null,
+      fingerprint: null,
+      findings: [],
+      findingsSummary: "",
+      modelName,
+    };
+  }
+
+  if (!scan.requiresTrustRemoteCode) return true; // no custom code -> nothing to confirm
+
+  const confirmed = await useRemoteCodeConsentDialogStore
+    .getState()
+    .requestConsent(scan);
+  if (!confirmed) return false;
+  onApprove(scan.fingerprint);
+  return true;
+}

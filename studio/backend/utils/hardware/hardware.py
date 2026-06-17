@@ -1082,14 +1082,24 @@ def _get_hf_safetensors_total_params(
 
 
 def _load_config_for_gpu_estimate(model_name: str, hf_token: Optional[str] = None):
+    # GPU/VRAM estimation needs only declarative config.json fields (hidden
+    # size, layers, heads, etc.). This probe runs automatically on model
+    # selection, so it must never execute a model repo's auto_map Python.
+    # Read raw config.json and expose it as an attribute namespace so
+    # downstream getattr(config, ...) access keeps working.
     try:
-        from transformers import AutoConfig
-        trust_remote_code = model_name.lower().startswith("unsloth/")
-        return AutoConfig.from_pretrained(
-            model_name,
-            token = hf_token,
-            trust_remote_code = trust_remote_code,
-        )
+        from utils.transformers_version import _load_config_json
+
+        cfg = _load_config_json(model_name, hf_token = hf_token)
+        if cfg is None:
+            return None
+
+        def _to_ns(d):
+            if isinstance(d, dict):
+                return types.SimpleNamespace(**{k: _to_ns(v) for k, v in d.items()})
+            return d
+
+        return _to_ns(cfg)
     except Exception as e:
         logger.warning("Could not load config for '%s': %s", model_name, e)
         return None

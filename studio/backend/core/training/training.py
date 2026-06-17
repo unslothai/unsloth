@@ -315,6 +315,7 @@ class TrainingBackend:
             "tensorboard_dir": kwargs.get("tensorboard_dir", "runs"),
             "resume_from_checkpoint": kwargs.get("resume_from_checkpoint"),
             "trust_remote_code": kwargs.get("trust_remote_code", False),
+            "approved_remote_code_fingerprint": kwargs.get("approved_remote_code_fingerprint"),
             "gpu_ids": kwargs.get("gpu_ids"),
             "s3_config": kwargs.get("s3_config"),
             # Flipped to True only by the HTTP-fallback respawn after a stall.

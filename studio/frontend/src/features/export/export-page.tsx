@@ -36,6 +36,7 @@ import {
   type LocalModelInfo,
   useTrainingConfigStore,
 } from "@/features/training";
+import { confirmRemoteCodeIfNeeded } from "@/features/security";
 import {
   useDebouncedValue,
   useHfModelSearch,
@@ -489,13 +490,32 @@ export function ExportPage() {
       // 1. Load model source
       if (sourceMode === "checkpoint") {
         if (!checkpointPath) return;
-        await loadCheckpoint({ checkpoint_path: checkpointPath });
+        await loadCheckpoint({
+          checkpoint_path: checkpointPath,
+          hf_token: hfToken || null,
+        });
       } else {
+        // Consent gate: if the source model ships custom (auto_map) code, scan
+        // it and have the user review the findings before trust_remote_code.
+        let trustRemoteCode = modelSource === "hf" ? hfExportTrustRemoteCode : true;
+        let approvedRemoteCodeFingerprint: string | null = null;
+        const remoteCodeOk = await confirmRemoteCodeIfNeeded({
+          modelName: source,
+          hfToken: hfToken || null,
+          requiresTrustRemoteCode: trustRemoteCode,
+          onApprove: (fingerprint) => {
+            trustRemoteCode = true;
+            approvedRemoteCodeFingerprint = fingerprint;
+          },
+        });
+        if (!remoteCodeOk) return;
+
         await loadCheckpoint({
           checkpoint_path: source,
           load_in_4bit: false,
-          trust_remote_code:
-            modelSource === "hf" ? hfExportTrustRemoteCode : true,
+          trust_remote_code: trustRemoteCode,
+          approved_remote_code_fingerprint: approvedRemoteCodeFingerprint,
+          hf_token: hfToken || null,
         });
       }
 

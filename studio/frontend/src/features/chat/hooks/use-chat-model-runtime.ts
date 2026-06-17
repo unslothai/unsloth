@@ -3,6 +3,7 @@
 
 import { createElement, useCallback, useRef, useState } from "react";
 import { toast } from "@/lib/toast";
+import { confirmRemoteCodeIfNeeded } from "@/features/security";
 import { consumeNativePathToken } from "@/features/native-intents/api";
 import {
   notifyNative,
@@ -453,7 +454,8 @@ export function useChatModelRuntime() {
           const currentCheckpoint =
             useChatRuntimeStore.getState().params.checkpoint;
           const stateBeforeUnload = useChatRuntimeStore.getState();
-          const trustRemoteCode = stateBeforeUnload.params.trustRemoteCode ?? false;
+          let trustRemoteCode = stateBeforeUnload.params.trustRemoteCode ?? false;
+          let approvedRemoteCodeFingerprint: string | null = null;
           const maxSeqLength = stateBeforeUnload.params.maxSeqLength;
           const previousIsGguf =
             previousModel?.isGguf === true
@@ -482,8 +484,23 @@ export function useChatModelRuntime() {
               is_lora: isLora,
               gguf_variant: ggufVariant ?? null,
             });
-            if (validation.requires_trust_remote_code && !trustRemoteCode) {
-              throw new Error(getTrustRemoteCodeRequiredMessage(displayName));
+            // Always gate custom-code loads on consent, even if the legacy
+            // "Enable custom code" toggle is on: the worker now requires a
+            // matching fingerprint, which only the dialog produces. Clean
+            // custom code returns immediately without a dialog.
+            if (validation.requires_trust_remote_code) {
+              const approved = await confirmRemoteCodeIfNeeded({
+                modelName: modelId,
+                hfToken,
+                requiresTrustRemoteCode: true,
+                onApprove: (fp) => {
+                  trustRemoteCode = true;
+                  approvedRemoteCodeFingerprint = fp;
+                },
+              });
+              if (!approved) {
+                throw new Error(getTrustRemoteCodeRequiredMessage(displayName));
+              }
             }
             if (abortCtrl.signal.aborted) throw new Error("Cancelled");
             const loadNativePathLease = nativePathToken
@@ -543,6 +560,7 @@ export function useChatModelRuntime() {
               is_lora: isLora,
               gguf_variant: ggufVariant ?? null,
               trust_remote_code: trustRemoteCode,
+              approved_remote_code_fingerprint: approvedRemoteCodeFingerprint,
               chat_template_override: effectiveChatTemplateOverride,
               cache_type_kv: kvCacheDtype,
               speculative_type: speculativeType,

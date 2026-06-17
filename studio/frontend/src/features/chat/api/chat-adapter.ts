@@ -1215,7 +1215,10 @@ async function autoLoadSmallestModel(): Promise<{
       load_in_4bit: true,
       trust_remote_code: trustRemoteCode,
     });
-    if (validation.requires_trust_remote_code && !trustRemoteCode) {
+    // Auto-load runs in the background, so it never executes a repo's custom
+    // code on its own (regardless of the legacy toggle). Custom-code models are
+    // skipped here and loaded explicitly through the consent dialog instead.
+    if (validation.requires_trust_remote_code) {
       blockedByTrustRemoteCode = true;
       return false;
     }

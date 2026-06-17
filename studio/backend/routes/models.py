@@ -1532,16 +1532,24 @@ async def get_model_config(
         except Exception:
             pass
 
-        # Fallback: try AutoConfig directly.
+        # Fallback: read raw config.json (declarative fields only). This is a
+        # metadata probe that runs on model selection, so it must never execute
+        # a model repo's auto_map Python. Reuses the same
+        # code-free reader as transformers-version detection.
         if max_position_embeddings is None:
             try:
-                from transformers import AutoConfig as _AutoConfig
+                from utils.transformers_version import _load_config_json
+                from types import SimpleNamespace
 
-                _trust = model_name.lower().startswith("unsloth/")
-                _ac = _AutoConfig.from_pretrained(
-                    model_name, trust_remote_code = _trust, token = hf_token
-                )
-                max_position_embeddings = _get_max_position_embeddings(_ac)
+                _cfg = _load_config_json(model_name, hf_token = hf_token)
+                if _cfg is not None:
+
+                    def _to_ns(d):
+                        if isinstance(d, dict):
+                            return SimpleNamespace(**{k: _to_ns(v) for k, v in d.items()})
+                        return d
+
+                    max_position_embeddings = _get_max_position_embeddings(_to_ns(_cfg))
             except Exception:
                 pass
 
@@ -1570,6 +1578,36 @@ async def get_model_config(
             500,
             "Failed to get model config",
             event = "models.get_model_config_failed",
+            log = logger,
+        )
+
+
+@router.get("/remote-code-scan/{model_name:path}")
+async def scan_model_remote_code(
+    model_name: str,
+    hf_token: Optional[str] = Query(None),
+    current_subject: str = Depends(get_current_subject),
+):
+    """Scan a model's ``auto_map`` custom code so the UI can show findings before
+    the user enables ``trust_remote_code``. Code-free: reads ``config.json`` and
+    statically scans the repo ``.py`` (never loads the model). Returns
+    ``has_remote_code`` plus the severity-tagged findings + a pinning fingerprint.
+    """
+    try:
+        from utils.security import preflight_remote_code_consent
+
+        if not is_local_path(model_name):
+            model_name = resolve_cached_repo_id_case(model_name)
+        decision = preflight_remote_code_consent(model_name, hf_token = hf_token)
+        payload = decision.response_payload()
+        payload["requires_trust_remote_code"] = decision.has_remote_code
+        return payload
+    except Exception as e:
+        raise log_and_http_error(
+            e,
+            500,
+            "Failed to scan model remote code",
+            event = "models.remote_code_scan_failed",
             log = logger,
         )
 

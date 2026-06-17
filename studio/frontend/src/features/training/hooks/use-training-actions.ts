@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { primeNativeNotificationPermission } from "@/lib/native-notifications";
+import { confirmRemoteCodeIfNeeded } from "@/features/security";
 import { useCallback } from "react";
 import { toast } from "@/lib/toast";
 import { checkDatasetFormat } from "../api/datasets-api";
@@ -125,6 +126,25 @@ export function useTrainingActions() {
       if (useTrainingRuntimeStore.getState().stopRequested) {
         runtimeStore.setStarting(false);
         return false;
+      }
+
+      // Consent gate: if the selected model ships custom (auto_map) code, scan it
+      // and have the user review the findings before enabling trust_remote_code.
+      if (config.selectedModel) {
+        const remoteCodeOk = await confirmRemoteCodeIfNeeded({
+          modelName: config.selectedModel,
+          hfToken: config.hfToken.trim() || null,
+          requiresTrustRemoteCode: config.trustRemoteCode,
+          onApprove: (fingerprint) =>
+            useTrainingConfigStore.setState({
+              trustRemoteCode: true,
+              approvedRemoteCodeFingerprint: fingerprint,
+            }),
+        });
+        if (!remoteCodeOk) {
+          runtimeStore.setStarting(false);
+          return false;
+        }
       }
 
       // Re-read config after potential store updates from dataset check

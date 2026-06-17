@@ -6,6 +6,7 @@ import { Navbar } from "@/components/navbar";
 import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { SettingsDialog, useSettingsDialogStore } from "@/features/settings";
+import { RemoteCodeConsentDialog } from "@/features/security";
 import { clearNewChatDraft, useChatRuntimeStore } from "@/features/chat";
 import { useTrainingUnloadGuard } from "@/features/training";
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
@@ -140,6 +141,7 @@ function RootLayout() {
   return (
     <AppProvider>
       <SettingsDialog />
+      <RemoteCodeConsentDialog />
       {hideNavbar ? (
         <main className="flex-1">
           <Suspense fallback={<RouteFallback />}>

@@ -77,6 +77,7 @@ export interface TrainingConfigState {
   isDatasetImage: boolean | null;
   isDatasetAudio: boolean;
   trustRemoteCode: boolean;
+  approvedRemoteCodeFingerprint?: string | null;
   finetuneVisionLayers: boolean;
   finetuneLanguageLayers: boolean;
   finetuneAttentionModules: boolean;

@@ -470,9 +470,15 @@ def load_model_config(
     model_name: str,
     use_auth: bool = False,
     token: Optional[str] = None,
-    trust_remote_code: bool = True,
+    trust_remote_code: bool = False,
 ):
-    """Load model config with optional authentication control."""
+    """Load model config with optional authentication control.
+
+    ``trust_remote_code`` defaults to ``False``: capability detection and
+    metadata lookups must never execute a model repo's ``auto_map`` Python.
+    Deliberate remote-code loads pass the flag explicitly through
+    ``FastLanguageModel.from_pretrained`` with the user's own consent.
+    """
     from transformers import AutoConfig
 
     if token:
@@ -496,22 +502,79 @@ def load_model_config(
     )
 
 
-# VLM architecture suffixes and known VLM model_type values.
-_VLM_ARCH_SUFFIXES = ("ForConditionalGeneration", "ForVisionText2Text")
-_VLM_MODEL_TYPES = {
-    "phi3_v",
-    "llava",
-    "llava_next",
-    "llava_onevision",
-    "internvl_chat",
-    "cogvlm2",
-    "minicpmv",
-    "gemma4",
-}
+# Vision/audio detection sets are derived from the installed transformers
+# registry (auto-maintained by HF) rather than a hand-curated list. The
+# registry only knows *native* architectures, so we union a small curated set
+# of repo-code (``auto_map``) VLMs whose architecture is defined in the model
+# repo and is therefore absent from every transformers version (e.g.
+# DeepSeek-OCR ``deepseek_vl_v2``, Kimi ``kimi_k25``, ``phi3_v``).
+#
+# IMPORTANT: ``ForConditionalGeneration`` is deliberately NOT used as a positive
+# vision signal -- it is overloaded across text seq2seq (T5/Bart), audio
+# (Whisper/Csm) and vision (Llava), so matching it produced false positives.
+# ``ForVisionText2Text`` is vision-specific and safe.
+_VLM_ARCH_SUFFIXES = ("ForVisionText2Text",)
 
-# Audio-only models that share the ForConditionalGeneration suffix
-# (e.g. CsmForConditionalGeneration, WhisperForConditionalGeneration).
-_AUDIO_ONLY_MODEL_TYPES = {"csm", "whisper"}
+_CURATED_REMOTE_VLM_TYPES = frozenset(
+    {
+        "phi3_v",
+        "llava",
+        "llava_next",
+        "llava_onevision",
+        "internvl_chat",
+        "cogvlm2",
+        "minicpmv",
+        "gemma4",
+        "deepseek_vl_v2",
+        "kimi_k25",
+    }
+)
+
+# Fallbacks used only if the transformers registry import fails.
+_FALLBACK_AUDIO_MODEL_TYPES = frozenset({"csm", "whisper"})
+
+
+def _build_detection_sets():
+    """Return (vlm_model_types, vlm_class_names, audio_model_types) from the
+    installed transformers registry, unioned with the curated repo-code VLM
+    set. Reads only static name dicts -- no model is loaded, no code runs.
+    Falls back to curated/hardcoded values if transformers is unavailable.
+    """
+    try:
+        from transformers.models.auto import modeling_auto as _ma
+
+        def _names(attr):
+            d = getattr(_ma, attr, None)
+            return dict(d) if d else {}
+
+        itt = _names("MODEL_FOR_IMAGE_TEXT_TO_TEXT_MAPPING_NAMES")
+        v2s = _names("MODEL_FOR_VISION_2_SEQ_MAPPING_NAMES")
+        vlm_types = set(itt) | set(v2s) | set(_CURATED_REMOTE_VLM_TYPES)
+        vlm_classes = set(itt.values()) | set(v2s.values())
+
+        audio_types: set = set()
+        for attr in (
+            "MODEL_FOR_CTC_MAPPING_NAMES",
+            "MODEL_FOR_SPEECH_SEQ_2_SEQ_MAPPING_NAMES",
+            "MODEL_FOR_AUDIO_CLASSIFICATION_MAPPING_NAMES",
+            "MODEL_FOR_TEXT_TO_WAVEFORM_MAPPING_NAMES",
+            "MODEL_FOR_TEXT_TO_SPECTROGRAM_MAPPING_NAMES",
+            "MODEL_FOR_AUDIO_XVECTOR_MAPPING_NAMES",
+        ):
+            audio_types |= set(_names(attr))
+        audio_types |= set(_FALLBACK_AUDIO_MODEL_TYPES)
+
+        return frozenset(vlm_types), frozenset(vlm_classes), frozenset(audio_types)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("Could not build detection sets from transformers: %s", exc)
+        return (
+            frozenset(_CURATED_REMOTE_VLM_TYPES),
+            frozenset(),
+            frozenset(_FALLBACK_AUDIO_MODEL_TYPES),
+        )
+
+
+_VLM_MODEL_TYPES, _VLM_CLASS_NAMES, _AUDIO_ONLY_MODEL_TYPES = _build_detection_sets()
 
 # Pre-computed .venv_t5 paths and backend dir for subprocess version switching.
 # Vision check uses the Gemma 4 5.5 sidecar for existing Gemma 4 architectures.
@@ -524,13 +587,20 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent.parent)
 def _is_vlm(config) -> bool:
     architectures = getattr(config, "architectures", None) or []
     model_type = getattr(config, "model_type", None)
-    if model_type in _AUDIO_ONLY_MODEL_TYPES:
-        return False
-    return (
-        any(x.endswith(_VLM_ARCH_SUFFIXES) for x in architectures)
-        or hasattr(config, "vision_config")
+    explicit_vision = (
+        hasattr(config, "vision_config")
         or hasattr(config, "img_processor")
         or hasattr(config, "image_token_index")
+        or hasattr(config, "projector_config")
+    )
+    # Audio-only models (whisper, csm, ...) are never vision unless they carry
+    # an explicit vision sub-config (true multimodal "omni" models).
+    if model_type in _AUDIO_ONLY_MODEL_TYPES and not explicit_vision:
+        return False
+    return (
+        explicit_vision
+        or any(x in _VLM_CLASS_NAMES for x in architectures)
+        or any(isinstance(x, str) and x.endswith(_VLM_ARCH_SUFFIXES) for x in architectures)
         or model_type in _VLM_MODEL_TYPES
     )
 
@@ -553,13 +623,20 @@ def _raw_config_has_vision_config(
         config = json.loads(config_path.read_text())
         architectures = config.get("architectures") or []
         model_type = config.get("model_type")
-        if model_type in _AUDIO_ONLY_MODEL_TYPES:
-            return False
-        return (
-            any(isinstance(x, str) and x.endswith(_VLM_ARCH_SUFFIXES) for x in architectures)
-            or "vision_config" in config
+        explicit_vision = (
+            "vision_config" in config
             or "img_processor" in config
             or "image_token_index" in config
+            or "projector_config" in config
+        )
+        # Audio-only models are never vision unless they carry an explicit
+        # vision sub-config (true multimodal "omni" models).
+        if model_type in _AUDIO_ONLY_MODEL_TYPES and not explicit_vision:
+            return False
+        return (
+            explicit_vision
+            or any(isinstance(x, str) and x in _VLM_CLASS_NAMES for x in architectures)
+            or any(isinstance(x, str) and x.endswith(_VLM_ARCH_SUFFIXES) for x in architectures)
             or model_type in _VLM_MODEL_TYPES
         )
     except Exception as exc:
@@ -570,19 +647,25 @@ def _raw_config_has_vision_config(
 # why: inline _is_vlm and constants are prepended so the subprocess stays
 # self-contained and does not import the parent backend module graph.
 _VISION_CHECK_INLINE_HELPERS = (
-    "_VLM_ARCH_SUFFIXES = " + repr(_VLM_ARCH_SUFFIXES) + "\n"
-    "_VLM_MODEL_TYPES = " + repr(_VLM_MODEL_TYPES) + "\n"
-    "_AUDIO_ONLY_MODEL_TYPES = " + repr(_AUDIO_ONLY_MODEL_TYPES) + "\n"
+    "_VLM_ARCH_SUFFIXES = " + repr(tuple(_VLM_ARCH_SUFFIXES)) + "\n"
+    "_VLM_MODEL_TYPES = " + repr(set(_VLM_MODEL_TYPES)) + "\n"
+    "_VLM_CLASS_NAMES = " + repr(set(_VLM_CLASS_NAMES)) + "\n"
+    "_AUDIO_ONLY_MODEL_TYPES = " + repr(set(_AUDIO_ONLY_MODEL_TYPES)) + "\n"
     "def _is_vlm(config):\n"
     "    architectures = getattr(config, 'architectures', None) or []\n"
     "    model_type = getattr(config, 'model_type', None)\n"
-    "    if model_type in _AUDIO_ONLY_MODEL_TYPES:\n"
-    "        return False\n"
-    "    return (\n"
-    "        any(x.endswith(_VLM_ARCH_SUFFIXES) for x in architectures)\n"
-    "        or hasattr(config, 'vision_config')\n"
+    "    explicit_vision = (\n"
+    "        hasattr(config, 'vision_config')\n"
     "        or hasattr(config, 'img_processor')\n"
     "        or hasattr(config, 'image_token_index')\n"
+    "        or hasattr(config, 'projector_config')\n"
+    "    )\n"
+    "    if model_type in _AUDIO_ONLY_MODEL_TYPES and not explicit_vision:\n"
+    "        return False\n"
+    "    return (\n"
+    "        explicit_vision\n"
+    "        or any(x in _VLM_CLASS_NAMES for x in architectures)\n"
+    "        or any(isinstance(x, str) and x.endswith(_VLM_ARCH_SUFFIXES) for x in architectures)\n"
     "        or model_type in _VLM_MODEL_TYPES\n"
     "    )\n"
 )
@@ -610,7 +693,8 @@ if backend_dir not in sys.path:
 try:
     from transformers import AutoConfig
 
-    kwargs = {"trust_remote_code": True}
+    # Capability detection never executes model repo code.
+    kwargs = {"trust_remote_code": False}
     if token:
         kwargs["token"] = token
     config = AutoConfig.from_pretrained(model_name, **kwargs)
@@ -780,8 +864,18 @@ def _is_vision_model_uncached(model_name: str, hf_token: Optional[str] = None) -
     Returns True/False for definitive results, or None on transient errors
     (network, timeout, subprocess failure) so the caller knows not to cache.
     """
-    # Models needing transformers 5.x must be checked in a subprocess: the main
-    # process (transformers 4.57.x) doesn't recognize their architectures.
+    # Capability detection reads only declarative config.json fields, so it
+    # never needs to execute a model repo's auto_map Python. Try the raw-config
+    # reader FIRST (code-free, version-independent): it classifies repo-code
+    # VLMs like DeepSeek-OCR via their declarative `vision_config` without any
+    # remote-code execution and without a transformers-5.x subprocess.
+    raw = _raw_config_has_vision_config(model_name, hf_token = hf_token)
+    if raw is not None:
+        return raw
+
+    # Raw read failed transiently (e.g. network/permission). Fall back to
+    # AutoConfig with remote code DISABLED -- in a transformers-5.x subprocess
+    # for architectures the main process can't parse, else in-process.
     from utils.transformers_version import needs_transformers_5
 
     if needs_transformers_5(model_name):
@@ -789,21 +883,13 @@ def _is_vision_model_uncached(model_name: str, hf_token: Optional[str] = None) -
             "Model '%s' needs transformers 5.x -- checking vision via subprocess",
             model_name,
         )
-        result = _is_vision_model_subprocess(model_name, hf_token = hf_token)
-        if result is not None:
-            return result
-        return _raw_config_has_vision_config(model_name, hf_token = hf_token)
+        return _is_vision_model_subprocess(model_name, hf_token = hf_token)
 
     try:
         config = load_model_config(model_name, use_auth = True, token = hf_token)
 
-        # Exclude audio-only models sharing the ForConditionalGeneration suffix
-        # (e.g. CsmForConditionalGeneration, WhisperForConditionalGeneration)
-        model_type = getattr(config, "model_type", None)
-        if model_type in _AUDIO_ONLY_MODEL_TYPES:
-            return False
-
         if _is_vlm(config):
+            model_type = getattr(config, "model_type", None)
             archs = getattr(config, "architectures", None) or []
             logger.info(
                 "Model %s detected as VLM (model_type=%s, architectures=%s)",
@@ -2135,7 +2221,7 @@ def get_base_model_from_lora(lora_path: str) -> Optional[str]:
                     return base_model
 
         # Fallback: try training_args.bin (requires torch)
-        # TODO: torch.load default weights_only=True (torch >= 2.6) rejects pickled TrainingArguments; also an RCE sink for third-party LoRAs via this route, re-enable behind a trust check if needed.
+        # TODO: torch.load default weights_only=True (torch >= 2.6) rejects pickled TrainingArguments; also an remote code execution sink for third-party LoRAs via this route, re-enable behind a trust check if needed.
         # training_args_path = lora_path_obj / "training_args.bin"
         # if training_args_path.exists():
         #     try:

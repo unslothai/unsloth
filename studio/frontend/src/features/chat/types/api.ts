@@ -41,6 +41,8 @@ export interface LoadModelRequest {
   gguf_variant?: string | null;
   /** Allow loading models with custom code (e.g. NVIDIA Nemotron). Only enable for repos you trust. */
   trust_remote_code?: boolean;
+  /** sha256 fingerprint pinning user approval of this exact custom-code version. */
+  approved_remote_code_fingerprint?: string | null;
   chat_template_override?: string | null;
   cache_type_kv?: string | null;
   /**

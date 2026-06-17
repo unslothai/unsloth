@@ -2403,6 +2403,7 @@ async def load_model(
             load_in_4bit = load_in_4bit,
             hf_token = request.hf_token,
             trust_remote_code = request.trust_remote_code,
+            approved_remote_code_fingerprint = request.approved_remote_code_fingerprint,
             gpu_ids = effective_gpu_ids,
         )
 
@@ -2507,6 +2508,29 @@ async def load_model(
         raise HTTPException(status_code = 500, detail = f"Failed to load model: {msg}")
 
 
+def _requires_trust_remote_code_for_model(
+    model_identifier: str, hf_token: Optional[str] = None
+) -> bool:
+    """Whether loading this model would execute custom repo code, so the consent
+    dialog must run first. True if the Studio YAML default enables
+    ``trust_remote_code`` OR the raw config declares an ``auto_map`` (Hub/local,
+    config.json or tokenizer_config.json). Reads raw JSON only; never imports
+    model code."""
+    from utils.inference import load_inference_config
+
+    try:
+        if bool(load_inference_config(model_identifier).get("trust_remote_code", False)):
+            return True
+    except Exception:
+        pass
+    try:
+        from utils.security.consent import _config_has_auto_map
+
+        return _config_has_auto_map(model_identifier, hf_token) is True
+    except Exception:
+        return False
+
+
 @router.post("/validate", response_model = ValidateModelResponse)
 async def validate_model(
     request: ValidateModelRequest, current_subject: str = Depends(get_current_subject)
@@ -2545,8 +2569,8 @@ async def validate_model(
             is_gguf = getattr(config, "is_gguf", False),
             is_lora = getattr(config, "is_lora", False),
             is_vision = getattr(config, "is_vision", False),
-            requires_trust_remote_code = bool(
-                load_inference_config(config.identifier).get("trust_remote_code", False)
+            requires_trust_remote_code = _requires_trust_remote_code_for_model(
+                config.identifier, request.hf_token
             ),
         )
 

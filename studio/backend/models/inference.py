@@ -42,6 +42,10 @@ class LoadRequest(BaseModel):
         False,
         description = "Allow loading models with custom code (e.g. NVIDIA Nemotron). Only enable for repos you trust.",
     )
+    approved_remote_code_fingerprint: Optional[str] = Field(
+        None,
+        description = "sha256 fingerprint from the remote-code scan, pinning user approval of this exact custom-code version.",
+    )
     chat_template_override: Optional[str] = Field(
         None,
         description = "Custom Jinja2 chat template to use instead of the model's default",

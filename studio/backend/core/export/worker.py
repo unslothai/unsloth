@@ -188,16 +188,63 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
 
     # Auto-enable trust_remote_code for NemotronH/Nano models.
     if not trust_remote_code:
+        from utils.security.trusted_org import is_trusted_org_repo
+
         _NEMOTRON_TRUST_SUBSTRINGS = ("nemotron_h", "nemotron-h", "nemotron-3-nano")
         _cp_lower = checkpoint_path.lower()
-        if any(sub in _cp_lower for sub in _NEMOTRON_TRUST_SUBSTRINGS) and (
-            _cp_lower.startswith("unsloth/") or _cp_lower.startswith("nvidia/")
+        if (
+            any(sub in _cp_lower for sub in _NEMOTRON_TRUST_SUBSTRINGS)
+            and (_cp_lower.startswith("unsloth/") or _cp_lower.startswith("nvidia/"))
+            # Genuine first-party Hub repo only, not a local-path/spoof that
+            # starts with "unsloth/". Authenticated so private/gated first-party
+            # repos still resolve.
+            and is_trusted_org_repo(checkpoint_path, hf_token = cmd.get("hf_token"))
         ):
             trust_remote_code = True
             logger.info(
                 "Auto-enabled trust_remote_code for Nemotron model: %s",
                 checkpoint_path,
             )
+
+    # Consent gate: scan auto_map repo code before executing it; block
+    # CRITICAL/HIGH findings unless pinned-approved. A LoRA checkpoint merges its
+    # base model, whose custom code runs, so gate that repo too.
+    if trust_remote_code:
+        from utils.security import evaluate_remote_code_consent
+
+        consent_targets = [checkpoint_path]
+        try:
+            from utils.models.model_config import get_base_model_from_lora
+
+            base_model = get_base_model_from_lora(checkpoint_path)
+            if base_model:
+                consent_targets.append(base_model)
+        except Exception as exc:
+            logger.debug("Could not resolve LoRA base for consent scan: %s", exc)
+        for target in dict.fromkeys(consent_targets):
+            _rc = evaluate_remote_code_consent(
+                target,
+                hf_token = cmd.get("hf_token"),
+                trust_remote_code = True,
+                approved_fingerprint = cmd.get("approved_remote_code_fingerprint"),
+            )
+            if _rc.blocked:
+                _send_response(
+                    resp_queue,
+                    {
+                        "type": "loaded",
+                        "success": False,
+                        "message": (
+                            f"Checkpoint '{target}' ships custom code flagged as "
+                            f"{_rc.max_severity} by the security scan. Review and "
+                            f"approve it to proceed."
+                        ),
+                        "error_kind": "remote_code_blocked",
+                        "remote_code": _rc.response_payload(),
+                        "ts": time.time(),
+                    },
+                )
+                return
 
     try:
         _send_response(
