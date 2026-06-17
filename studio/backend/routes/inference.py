@@ -1508,6 +1508,18 @@ def get_llama_cpp_backend() -> LlamaCppBackend:
 _auto_switch_lock = asyncio.Lock()
 
 
+def _auto_switch_target_loaded(backend, target_id: str, variant: Optional[str]) -> bool:
+    """True when the live backend already serves target_id (and variant, if given)."""
+    loaded = backend.model_identifier if backend.is_loaded else None
+    if not loaded or loaded.lower() != target_id.lower():
+        return False
+    if variant:
+        # Mirror /load dedup: a different quant of the same repo is not "loaded".
+        loaded_variant = (getattr(backend, "hf_variant", None) or "").lower()
+        return loaded_variant == variant.lower()
+    return True
+
+
 async def _maybe_auto_switch_model(
     requested_model: Optional[str], fastapi_request: Request, current_subject: str
 ) -> None:
@@ -1528,12 +1540,10 @@ async def _maybe_auto_switch_model(
         return
     target_id, variant = resolved
     backend = get_llama_cpp_backend()
-    loaded = backend.model_identifier if backend.is_loaded else None
-    if loaded and loaded.lower() == target_id.lower():
+    if _auto_switch_target_loaded(backend, target_id, variant):
         return
     async with _auto_switch_lock:
-        loaded = backend.model_identifier if backend.is_loaded else None
-        if loaded and loaded.lower() == target_id.lower():
+        if _auto_switch_target_loaded(backend, target_id, variant):
             return
         # Reuse the load route so its dedup, tensor fallback, and threading apply.
         await load_model(
@@ -6619,6 +6629,9 @@ async def openai_responses(
     internally, and returns a response matching the Responses API schema
     (output array, input_tokens/output_tokens, named SSE events for streaming).
     """
+    # Hook here so the streaming path switches too; non-streaming re-checks via
+    # openai_chat_completions, which is idempotent once the model is loaded.
+    await _maybe_auto_switch_model(payload.model, request, current_subject)
     messages = _normalise_responses_input(payload)
     if not messages:
         raise HTTPException(status_code = 400, detail = "No input provided.")

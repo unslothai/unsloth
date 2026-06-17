@@ -60,13 +60,21 @@ def _index() -> dict[str, str]:
 def resolve_local_gguf(requested: str) -> Optional[tuple[str, Optional[str]]]:
     """Return ``(loader_id, gguf_variant)`` for a downloaded local match, else None.
 
-    ``requested`` may be ``repo`` or ``repo:VARIANT``; the variant is split off
-    and matched on the base name so it can be forwarded to the loader.
+    ``requested`` may be ``repo`` or ``repo:VARIANT``. An exact id match wins
+    first so ids that themselves contain a colon (e.g. a Windows path) still
+    resolve; only then is a trailing ``:VARIANT`` split off the last colon.
     """
     if not requested or not requested.strip():
         return None
-    base, _, variant = requested.strip().partition(":")
-    loader_id = _index().get(base.strip().lower())
+    requested = requested.strip()
+    index = _index()
+    loader_id = index.get(requested.lower())
+    if loader_id is not None:
+        return loader_id, None
+    base, sep, variant = requested.rpartition(":")
+    if not sep:
+        return None
+    loader_id = index.get(base.strip().lower())
     if loader_id is None:
         return None
     return loader_id, (variant.strip() or None)

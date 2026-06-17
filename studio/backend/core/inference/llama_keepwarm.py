@@ -56,6 +56,13 @@ def _is_idle(ttl_seconds: float) -> bool:
         return _inflight == 0 and (time.monotonic() - _last_active) >= ttl_seconds
 
 
+def _note_activity() -> None:
+    """Stamp activity, e.g. on a (re)load, so the model survives at least one TTL."""
+    global _last_active
+    with _lock:
+        _last_active = time.monotonic()
+
+
 class LlamaKeepWarmMiddleware:
     """Pure ASGI: count in-flight inference requests and stamp activity on completion."""
 
@@ -95,18 +102,28 @@ class LlamaKeepWarmMiddleware:
 async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
     """Unload the loaded GGUF once idle past the configured TTL. Inert when off."""
     from utils.openai_auto_switch_settings import get_auto_unload_idle_seconds
+    seen_model = None
     while True:
         await asyncio.sleep(poll_seconds)
         try:
             ttl = get_auto_unload_idle_seconds()
-            if ttl <= 0 or not _is_idle(ttl):
+            if ttl <= 0:
                 continue
             from routes.inference import get_llama_cpp_backend
 
             backend = get_llama_cpp_backend()
+            # A newly loaded or swapped model counts as activity so it is never
+            # unloaded before its first request (loads bypass the inference
+            # middleware that stamps activity).
+            current = backend.model_identifier if backend.is_loaded else None
+            if current != seen_model:
+                seen_model = current
+                if current is not None:
+                    _note_activity()
             # Re-check idle just before unload to shrink the arrival race window.
             if backend.is_loaded and _is_idle(ttl):
                 await asyncio.to_thread(backend.unload_model)
                 logger.info("Idle auto-unload: freed GGUF after %ss idle", ttl)
+                seen_model = None
         except Exception as exc:
             logger.debug("idle_unload_loop iteration failed: %s", exc)
