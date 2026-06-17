@@ -35,7 +35,14 @@ export function HubDetailView({
   }, []);
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    <div className="relative flex min-h-0 flex-1 flex-col">
+      {/* Same top scroll fade as the left column, so scrolling the readme reads
+          consistently. The sticky back-bar (when shown) sits above and hides it. */}
+      <div
+        aria-hidden="true"
+        data-scrolled={scrolled || undefined}
+        className="hub-scroll-fade pointer-events-none absolute inset-x-0 top-0 z-10 h-7"
+      />
       <div
         ref={scrollRef}
         data-hub-scroll="true"
