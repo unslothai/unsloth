@@ -7,7 +7,7 @@
 
 import { Combobox as ComboboxPrimitive } from "@base-ui/react";
 import * as React from "react";
-import { createContext, useContext, useState } from "react";
+import { createContext, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { useDialogPortalContainer } from "@/components/ui/dialog";
@@ -18,11 +18,9 @@ import {
   InputGroupInput,
 } from "@/components/ui/input-group";
 import { Tick02Icon } from "@/lib/tick-icon";
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
-import {
-  ArrowDown01Icon,
-  Cancel01Icon,
-} from "@hugeicons/core-free-icons";
+import { Cancel01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
 const ComboboxOpenContext = createContext(false);
@@ -68,7 +66,7 @@ function ComboboxTrigger({
     >
       {children}
       <HugeiconsIcon
-        icon={ArrowDown01Icon}
+        icon={ChevronDownStandardIcon}
         strokeWidth={2}
         className="text-muted-foreground size-4 pointer-events-none"
       />
@@ -107,18 +105,8 @@ function ComboboxInput({
   showTrigger?: boolean;
   showClear?: boolean;
 }): React.ReactElement {
-  const isOpen = useContext(ComboboxOpenContext);
-
   return (
-    <InputGroup
-      className={cn("w-auto", className)}
-      style={{
-        borderRadius: isOpen ? "12px" : undefined,
-        transition: isOpen
-          ? "border-radius 0ms"
-          : "border-radius 150ms cubic-bezier(0.645, 0.045, 0.355, 1)",
-      }}
-    >
+    <InputGroup className={cn("w-auto", className)}>
       <ComboboxPrimitive.Input
         render={<InputGroupInput disabled={disabled} />}
         {...props}
@@ -130,7 +118,7 @@ function ComboboxInput({
             variant="ghost"
             asChild
             data-slot="input-group-button"
-            className="group-has-data-[slot=combobox-clear]/input-group:hidden data-pressed:bg-transparent"
+            className="group-has-data-[slot=combobox-clear]/input-group:hidden bg-transparent hover:bg-transparent data-pressed:bg-transparent aria-expanded:bg-transparent dark:hover:bg-transparent"
             disabled={disabled}
           >
             <ComboboxTrigger />
@@ -209,7 +197,7 @@ function ComboboxItem({
     <ComboboxPrimitive.Item
       data-slot="combobox-item"
       className={cn(
-        "data-highlighted:bg-accent data-highlighted:text-accent-foreground not-data-[variant=destructive]:data-highlighted:**:text-accent-foreground gap-2 rounded-xl corner-squircle py-2 pr-2 pl-3 text-sm [&[aria-selected=true]]:pr-7 [&_svg:not([class*='size-'])]:size-4 relative flex w-full cursor-pointer items-center outline-hidden select-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0",
+        "data-highlighted:bg-accent data-highlighted:text-accent-foreground not-data-[variant=destructive]:data-highlighted:**:text-accent-foreground gap-2 rounded-[10px] py-2 pr-2 pl-3 text-sm [&[aria-selected=true]]:pr-7 [&_svg:not([class*='size-'])]:size-4 relative flex w-full cursor-pointer items-center outline-hidden select-none data-[disabled]:pointer-events-none data-[disabled]:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0",
         className,
       )}
       {...props}
