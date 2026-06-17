@@ -242,6 +242,13 @@ def _resolve_model(base: str, key: str, requested: Optional[str]) -> dict:
         match = next((m for m in models if m["id"] in wanted), None)
     if match is not None:
         return match
+    if requested:
+        # We asked Studio to load it and it didn't surface in /v1/models; don't
+        # silently hand back an unrelated loaded model.
+        _fail(
+            f"Studio didn't report '{requested}' as loaded. Double-check the model "
+            "id, or load it from the model dropdown in the UI."
+        )
     if not models:
         _fail(
             "No model is loaded in Studio. Load one from the model dropdown in "
@@ -519,6 +526,14 @@ def write_hermes_config(base: str, model: dict) -> None:
             return
         if isinstance(loaded, dict):
             config = loaded
+        elif loaded is not None:
+            # Non-empty, non-mapping YAML is a user-managed file; leave it.
+            typer.echo(
+                f"Warning: couldn't parse {path} — configure the custom endpoint "
+                "there yourself, or move the file aside and re-run.",
+                err = True,
+            )
+            return
     # Hermes only reads the key for a *named* custom provider (a bare
     # `provider: custom` ignores it), so register it under providers.*.
     _subdict(config, "model").update(

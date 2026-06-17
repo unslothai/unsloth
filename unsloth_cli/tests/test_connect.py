@@ -321,6 +321,26 @@ def test_connect_no_model_loaded_errors(fake_studio, monkeypatch):
     assert "No model is loaded" in result.output
 
 
+def test_connect_requested_model_not_loaded_fails(fake_studio, monkeypatch):
+    # Studio never surfaces the requested model; fail loudly rather than
+    # silently connecting to whatever else happens to be loaded.
+    inner = connect._http_json
+
+    def http_json(method, url, token, payload = None, timeout = 30, error = None):
+        if url.endswith("/api/inference/load"):
+            return {}
+        if url.endswith("/v1/models"):
+            return {"object": "list", "data": [MODEL]}  # decoy; request never appears
+        return inner(method, url, token, payload, timeout, error)
+
+    monkeypatch.setattr(connect, "_http_json", http_json)
+    result = CliRunner().invoke(
+        connect.connect_app, ["claude", "--no-launch", "--model", "unsloth/Missing-7B"]
+    )
+    assert result.exit_code == 1
+    assert "unsloth/Missing-7B" in result.output
+
+
 def test_connect_codex_rejects_non_gguf_model(fake_studio, monkeypatch):
     inner = connect._http_json
 
@@ -547,6 +567,15 @@ def test_write_hermes_config_preserves_and_idempotent(hermes_config):
     before = hermes_config.read_text()
     connect.write_hermes_config(BASE, MODEL)
     assert hermes_config.read_text() == before
+
+
+def test_write_hermes_config_preserves_non_mapping_file(hermes_config, capsys):
+    pytest.importorskip("yaml")
+    original = "- just\n- a\n- list\n"  # valid YAML, but not a mapping
+    hermes_config.write_text(original)
+    connect.write_hermes_config(BASE, MODEL)
+    assert hermes_config.read_text() == original  # user-managed file left untouched
+    assert "couldn't parse" in capsys.readouterr().err
 
 
 def test_connect_hermes_no_launch(fake_studio, hermes_config):
