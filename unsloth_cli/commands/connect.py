@@ -408,7 +408,12 @@ def _merge_wslenv(current: str, names: tuple) -> str:
     return ":".join(entries)
 
 
-def _print_env(env: dict, command: list, unset_env: tuple = (), wsl_env_bridge: tuple = ()) -> None:
+def _print_env(
+    env: dict,
+    command: list,
+    unset_env: tuple = (),
+    wsl_env_bridge: tuple = (),
+) -> None:
     if os.name == "nt":
         for name in unset_env:
             typer.echo(f"Remove-Item Env:{name} -ErrorAction SilentlyContinue")
@@ -423,15 +428,24 @@ def _print_env(env: dict, command: list, unset_env: tuple = (), wsl_env_bridge: 
     for name, value in env.items():
         typer.echo(f"export {name}={shlex.quote(value)}")
     if wsl_env_bridge:
-        typer.echo(f"export WSLENV={shlex.quote(_merge_wslenv(os.environ.get('WSLENV', ''), wsl_env_bridge))}")
+        typer.echo(
+            f"export WSLENV={shlex.quote(_merge_wslenv(os.environ.get('WSLENV', ''), wsl_env_bridge))}"
+        )
     typer.echo(shlex.join(command))
 
 
-def _launch(command: list, env: dict, install_hint: str, unset_env: tuple = ()) -> NoReturn:
+def _launch(
+    command: list,
+    env: dict,
+    install_hint: str,
+    unset_env: tuple = (),
+) -> NoReturn:
     executable = shutil.which(command[0])
     if executable is None:
         _fail(f"`{command[0]}` not found on PATH. Install it with: {install_hint}")
-    wsl_env_bridge = tuple(dict.fromkeys((*env.keys(), *unset_env))) if _wsl_windows_executable(command) else ()
+    wsl_env_bridge = (
+        tuple(dict.fromkeys((*env.keys(), *unset_env))) if _wsl_windows_executable(command) else ()
+    )
     child_env = dict(os.environ)
     if wsl_env_bridge:
         child_env["WSLENV"] = _merge_wslenv(child_env.get("WSLENV", ""), wsl_env_bridge)
@@ -468,7 +482,9 @@ def _run(
     unset_env: tuple = (),
 ) -> None:
     typer.echo(f"Studio {base} · model {entry['id']}")
-    wsl_env_bridge = tuple(dict.fromkeys((*env.keys(), *unset_env))) if _wsl_windows_executable(command) else ()
+    wsl_env_bridge = (
+        tuple(dict.fromkeys((*env.keys(), *unset_env))) if _wsl_windows_executable(command) else ()
+    )
     if not launch:
         _print_env(env, command, unset_env = unset_env, wsl_env_bridge = wsl_env_bridge)
         return

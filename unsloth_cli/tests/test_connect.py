@@ -227,7 +227,9 @@ def test_connect_claude_windows_shim_from_wsl_bridges_env(fake_studio, monkeypat
     monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-anthropic-stale")
     monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "oauth-stale")
-    monkeypatch.setattr(connect.shutil, "which", lambda _: "/mnt/c/Users/samle/AppData/Roaming/npm/claude")
+    monkeypatch.setattr(
+        connect.shutil, "which", lambda _: "/mnt/c/Users/samle/AppData/Roaming/npm/claude"
+    )
     monkeypatch.setattr(connect, "_claude_cache_flags", lambda: [])
 
     def run(command, env):
@@ -261,7 +263,9 @@ def test_connect_claude_windows_shim_from_wsl_bridges_env(fake_studio, monkeypat
 
 def test_connect_claude_no_launch_windows_shim_from_wsl_prints_wslenv(fake_studio, monkeypatch):
     monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu")
-    monkeypatch.setattr(connect.shutil, "which", lambda _: "/mnt/c/Users/samle/AppData/Roaming/npm/claude")
+    monkeypatch.setattr(
+        connect.shutil, "which", lambda _: "/mnt/c/Users/samle/AppData/Roaming/npm/claude"
+    )
 
     result = CliRunner().invoke(connect.connect_app, ["claude", "--no-launch"])
 
