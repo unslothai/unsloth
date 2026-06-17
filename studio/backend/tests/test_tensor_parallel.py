@@ -632,6 +632,26 @@ def test_tensor_reserve_scales_with_ubatch():
     assert big_ub < small_ub
 
 
+def test_plan_tensor_carries_unsized_mtp_flat_reserve():
+    # review run3 #1/#5: with a weights-only (KV-unsized) MTP reserve, the planner
+    # gets a non-None mtp_overhead_fn but must still subtract the flat unsized-KV
+    # cushion, or its binary search spends it on context. Passing the reserve must
+    # pick a strictly smaller context than passing 0.
+    b = _kv_seeded_backend()
+    gpus = [(0, 14000), (1, 14000)]  # tight pool so the context is actually capped
+    model = int(8 * _GB)
+    weights_only = lambda c: 3 * _GB  # noqa: E731 -- constant drafter weights, no KV term
+    ctx_no_flat, *_ = b._plan_tensor_parallel(
+        gpus, model, 131072, mtp_engaged = True, mtp_overhead_fn = weights_only,
+        mtp_flat_reserve_bytes = 0,
+    )
+    ctx_flat, *_ = b._plan_tensor_parallel(
+        gpus, model, 131072, mtp_engaged = True, mtp_overhead_fn = weights_only,
+        mtp_flat_reserve_bytes = 2 * _GB,
+    )
+    assert 0 < ctx_flat < ctx_no_flat
+
+
 def test_tensor_admission_drops_gpu_below_usable_budget():
     # A partly-used big card can clear the buffer reserve on raw free yet have no
     # usable budget left (free - 0.05*total). Admit by usable budget: GPU 0 here is

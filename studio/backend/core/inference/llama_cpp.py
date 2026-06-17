@@ -853,11 +853,14 @@ def _extra_args_draft_cache_types(
     return k_type, v_type
 
 
-def _extra_args_draft_offloaded_to_cpu(extra_args: Optional[Iterable[str]]) -> bool:
-    """True if extras put the SEPARATE draft model on CPU (so the budget must
-    not charge its weights+KV): --spec-draft-ngl 0, or --spec-draft-device naming
-    only cpu/none. An embedded MTP head follows the main -ngl, so these draft-only
-    flags don't move it. Last-wins, so only each flag's final value counts."""
+def _extra_args_draft_offloaded_to_cpu(
+    extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
+) -> bool:
+    """True if the SEPARATE draft model is on CPU (so the budget must not charge
+    its weights+KV): --spec-draft-ngl 0, or --spec-draft-device naming only
+    cpu/none, else the LLAMA_ARG_N_GPU_LAYERS_DRAFT env the child honors (the
+    device flag has no env). An embedded MTP head follows the main -ngl, so these
+    draft-only flags don't move it. Last-wins, so only each flag's final value counts."""
     ngl_flags = {"--spec-draft-ngl", "-ngld", "--gpu-layers-draft", "--n-gpu-layers-draft"}
     dev_flags = {"--spec-draft-device", "-devd", "--device-draft"}
     args = [str(a) for a in extra_args] if extra_args else []
@@ -870,6 +873,8 @@ def _extra_args_draft_offloaded_to_cpu(extra_args: Optional[Iterable[str]]) -> b
             last_ngl = value
         elif flag in dev_flags:
             last_dev = value
+    if last_ngl is None:
+        last_ngl = (os.environ if env is None else env).get("LLAMA_ARG_N_GPU_LAYERS_DRAFT")
     if last_ngl is not None:
         try:
             if int(last_ngl) == 0:
@@ -3799,6 +3804,7 @@ class LlamaCppBackend:
         n_parallel: int = 1,
         mtp_engaged: bool = False,
         mtp_overhead_fn: Optional[Callable[[int], int]] = None,
+        mtp_flat_reserve_bytes: int = 0,
         max_target_ctx: Optional[int] = None,
         total_by_idx: Optional[dict[int, int]] = None,
         n_ubatch: Optional[int] = None,
@@ -3862,11 +3868,17 @@ class LlamaCppBackend:
         free_by_idx = {idx: free for idx, free in usable_gpus}
         usable_by_idx = {idx: _usable(idx, free_by_idx[idx]) for idx in gpu_indices}
         pool_mib = sum(usable_by_idx.values())
-        kv_budget_b = (pool_mib - len(gpu_indices) * reserve_mib) * 1024 * 1024 - model_size
-        # MTP reserve: byte-accurate per-ctx inside _fit_ctx when available, else a
-        # flat 2 GiB here.
+        # MTP reserve: byte-accurate per-ctx inside _fit_ctx (mtp_overhead_fn) plus
+        # a flat cushion that the byte fn can't size -- 2 GiB when dims are wholly
+        # unavailable (no fn), or mtp_flat_reserve_bytes when the fn is weights-only
+        # because the draft KV couldn't be sized (_mtp_kv_unsized). Without this the
+        # binary search spends the unsized-KV cushion on main context and OOMs.
+        flat_mtp_bytes = max(0, mtp_flat_reserve_bytes)
         if mtp_engaged and mtp_overhead_fn is None:
-            kv_budget_b -= 2 * 1024**3
+            flat_mtp_bytes = max(flat_mtp_bytes, 2 * 1024**3)
+        kv_budget_b = (
+            (pool_mib - len(gpu_indices) * reserve_mib) * 1024 * 1024 - model_size - flat_mtp_bytes
+        )
 
         def _mtp_at(ctx: int) -> int:
             return mtp_overhead_fn(ctx) if mtp_overhead_fn is not None else 0
@@ -3918,10 +3930,9 @@ class LlamaCppBackend:
             if (self._can_estimate_kv() and effective_ctx > 0)
             else 0
         )
-        # The MTP reserve also has to fit the even split (mirror the pooled budget).
-        mtp_bytes = _mtp_at(effective_ctx) if effective_ctx > 0 else 0
-        if mtp_engaged and mtp_overhead_fn is None:
-            mtp_bytes = 2 * 1024**3
+        # The MTP reserve also has to fit the even split (mirror the pooled budget):
+        # byte-accurate per-ctx (0 when no fn) plus the same flat cushion as above.
+        mtp_bytes = (_mtp_at(effective_ctx) if effective_ctx > 0 else 0) + flat_mtp_bytes
         even_share_mib = (model_size + kv_bytes + mtp_bytes) / len(gpu_indices) / (1024 * 1024)
         tensor_split: Optional[list[int]] = None
         if even_share_mib > (min_usable_mib - reserve_mib):
@@ -4465,7 +4476,8 @@ class LlamaCppBackend:
                     )
                     # Drafter offloaded to CPU keeps its weights+KV off the GPU, so
                     # drop it from the budget (an embedded head stays in the model).
-                    _draft_on_cpu = _extra_args_draft_offloaded_to_cpu(extra_args)
+                    # Consult the env too: the child honors LLAMA_ARG_N_GPU_LAYERS_DRAFT.
+                    _draft_on_cpu = _extra_args_draft_offloaded_to_cpu(extra_args, env = os.environ)
                     if _draft_on_cpu:
                         _mtp_draft_for_budget = None
                     _mtp_draft_weights = 0
@@ -4540,12 +4552,16 @@ class LlamaCppBackend:
 
                     # Layer-split compute buffer (one lump; tensor mode reserves it
                     # per device in _plan_tensor_parallel). Context-independent, so
-                    # fold it into the model footprint for the branches below.
+                    # fold it into the model footprint for the branches below. Falls
+                    # back to the flat reserve when dims are missing (returns 0), a
+                    # safe upper bound since the tensor buffer >= the layer one.
                     _compute_buffer_pipeline = self._estimate_compute_buffer_bytes(
                         n_ubatch = _effective_ubatch,
                         n_parallel = n_parallel,
                         per_device_tensor = False,
                     )
+                    if _compute_buffer_pipeline <= 0:
+                        _compute_buffer_pipeline = self._TENSOR_PARALLEL_BUFFER_RESERVE_MIB * 1024 * 1024
                     model_size_fit = model_size + _compute_buffer_pipeline
 
                     # Layer split adds a fixed per-device overhead on every GPU. The
@@ -4667,6 +4683,13 @@ class LlamaCppBackend:
                             if explicit_ctx
                             else (self._context_length or effective_ctx)
                         )
+                        # When the draft KV couldn't be sized (weights-only reserve),
+                        # the planner's mtp_overhead_fn is non-None but covers only
+                        # weights, so pass the flat cushion for the unsized KV (else
+                        # the binary search spends it on context).
+                        _tp_unsized_mtp_reserve = (
+                            2 * 1024**3 if (_mtp_will_engage and _mtp_kv_unsized) else 0
+                        )
                         (
                             effective_ctx,
                             max_available_ctx,
@@ -4680,6 +4703,7 @@ class LlamaCppBackend:
                             n_parallel = n_parallel,
                             mtp_engaged = _mtp_will_engage,
                             mtp_overhead_fn = mtp_overhead_fn,
+                            mtp_flat_reserve_bytes = _tp_unsized_mtp_reserve,
                             # Report the UI ceiling from native ctx, not the
                             # explicit small request.
                             max_target_ctx = self._context_length or target_ctx,
@@ -5142,6 +5166,12 @@ class LlamaCppBackend:
                         env.pop("LLAMA_ARG_SPLIT_MODE", None)
                         env.pop("LLAMA_ARG_TENSOR_SPLIT", None)
                 else:
+                    # Studio owns the tensor split: it emits --tensor-split when it
+                    # picks an uneven one (CLI wins) and nothing when an even split
+                    # is safe. Clear any inherited LLAMA_ARG_TENSOR_SPLIT so the even
+                    # case can't be overridden by a stale env (the layer branch above
+                    # clears it too).
+                    env.pop("LLAMA_ARG_TENSOR_SPLIT", None)
                     # Tensor split aborts on a quantized KV; clear an inherited
                     # quantized cache type so the child uses the tensor-safe default.
                     for _ct_var in ("LLAMA_ARG_CACHE_TYPE_K", "LLAMA_ARG_CACHE_TYPE_V"):

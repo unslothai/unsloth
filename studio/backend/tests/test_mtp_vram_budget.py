@@ -541,7 +541,8 @@ class TestExtraArgsMtpDetection:
         # GPU regardless of those draft-only flags, so the flat reserve is only
         # suppressed when there is no embedded head (Finding G5).
         compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
-        assert "_draft_on_cpu=_extra_args_draft_offloaded_to_cpu(extra_args)" in compact
+        # env-aware: also honors the inherited LLAMA_ARG_N_GPU_LAYERS_DRAFT.
+        assert "_draft_on_cpu=_extra_args_draft_offloaded_to_cpu(extra_args,env=os.environ)" in compact
         assert "if_draft_on_cpu:_mtp_draft_for_budget=None" in compact
         # flat reserve suppressed only for a CPU drafter with no embedded head
         assert "_draft_cpu_no_embedded=_draft_on_cpuandnotself._nextn_predict_layers" in compact
@@ -586,7 +587,27 @@ class TestExtraArgsMtpDetection:
         ],
     )
     def test_draft_offloaded_to_cpu(self, args, expected):
-        assert _extra_args_draft_offloaded_to_cpu(args) is expected
+        assert _extra_args_draft_offloaded_to_cpu(args, env = {}) is expected
+
+    def test_draft_offloaded_to_cpu_env(self):
+        # The child honors LLAMA_ARG_N_GPU_LAYERS_DRAFT; an env-only CPU offload
+        # must drop the drafter from the budget too (review run3 #3). CLI wins.
+        assert (
+            _extra_args_draft_offloaded_to_cpu([], env = {"LLAMA_ARG_N_GPU_LAYERS_DRAFT": "0"})
+            is True
+        )
+        assert (
+            _extra_args_draft_offloaded_to_cpu([], env = {"LLAMA_ARG_N_GPU_LAYERS_DRAFT": "-1"})
+            is False
+        )
+        # CLI --spec-draft-ngl wins over the env (last-wins is CLI-only).
+        assert (
+            _extra_args_draft_offloaded_to_cpu(
+                ["--spec-draft-ngl", "-1"], env = {"LLAMA_ARG_N_GPU_LAYERS_DRAFT": "0"}
+            )
+            is False
+        )
+        assert _extra_args_draft_offloaded_to_cpu([], env = {}) is False
 
     @pytest.mark.parametrize(
         "args,expected",
@@ -790,6 +811,33 @@ class TestExtraArgsMtpDetection:
         assert '("LLAMA_ARG_CACHE_TYPE_K","LLAMA_ARG_CACHE_TYPE_V")' in compact
         assert "_ct_rawnotinself._TENSOR_PARALLEL_KV_TYPES" in compact
         assert "env.pop(_ct_var,None)" in compact
+
+    def test_load_model_clears_tensor_split_env_in_tensor_mode(self):
+        # review run3 #2: Studio owns the tensor split. When it emits no
+        # --tensor-split (even split), a stale inherited LLAMA_ARG_TENSOR_SPLIT must
+        # be cleared in the TENSOR branch too (not just the layer downgrade), or the
+        # child runs a split Studio didn't budget. The else (tensor) branch pops it.
+        src = inspect.getsource(LlamaCppBackend.load_model)
+        compact = "".join(src.split())
+        # appears in both the layer branch and the tensor branch.
+        assert compact.count('env.pop("LLAMA_ARG_TENSOR_SPLIT",None)') >= 2
+
+    def test_load_model_layer_compute_buffer_fallback(self):
+        # review run3 #4: when GGUF dims are missing the compute-buffer estimate is
+        # 0; the layer path must still reserve the flat fallback (tensor buffer >=
+        # layer buffer), not fold 0, or it under-reserves at high --parallel.
+        compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
+        assert "if_compute_buffer_pipeline<=0:" in compact
+        assert "_compute_buffer_pipeline=self._TENSOR_PARALLEL_BUFFER_RESERVE_MIB*1024*1024" in compact
+
+    def test_load_model_passes_unsized_mtp_reserve_to_tensor_planner(self):
+        # review run3 #1/#5: a weights-only (KV-unsized) MTP reserve must flow into
+        # _plan_tensor_parallel as a flat cushion, else its binary search spends the
+        # unsized draft KV on context and OOMs.
+        compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
+        assert "_tp_unsized_mtp_reserve=" in compact
+        assert "(_mtp_will_engageand_mtp_kv_unsized)" in compact
+        assert "mtp_flat_reserve_bytes=_tp_unsized_mtp_reserve" in compact
 
     def test_pool_budget_sums_per_gpu_usable(self):
         # Finding #1: the multi-GPU pooled budget must sum each GPU's own usable
