@@ -85,6 +85,8 @@ export interface ValidateModelResponse {
   is_lora?: boolean;
   is_vision?: boolean;
   requires_trust_remote_code?: boolean;
+  /** Native context length from the local GGUF header; null until downloaded. */
+  context_length?: number | null;
 }
 
 export interface GgufVariantDetail {
