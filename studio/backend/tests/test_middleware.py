@@ -328,6 +328,36 @@ class TestSecurityHeadersMiddleware:
         assert "x-frame-options" not in {k.lower() for k in r.headers.keys()}
         assert r.headers["referrer-policy"] == "no-referrer"
 
+    def test_response_start_with_tuple_headers_is_hardened(self, main_module):
+        # An ASGI server may emit tuple-valued raw headers; the middleware must
+        # coerce to a list and still inject security headers without crashing.
+        import asyncio
+
+        async def _inner_app(scope, receive, send):
+            await send({
+                "type": "http.response.start",
+                "status": 200,
+                "headers": ((b"content-type", b"text/plain"),),  # tuple, not list
+            })
+            await send({"type": "http.response.body", "body": b"ok"})
+
+        captured = {}
+
+        async def _send(message):
+            if message["type"] == "http.response.start":
+                captured["headers"] = dict(message["headers"])
+
+        async def _receive():
+            return {"type": "http.request"}
+
+        mw = main_module.SecurityHeadersMiddleware(_inner_app)
+        asyncio.run(mw({"type": "http", "path": "/plain"}, _receive, _send))
+
+        hdrs = captured["headers"]
+        assert hdrs[b"server"] == b"unsloth-studio"
+        assert b"content-security-policy" in hdrs
+        assert hdrs[b"x-frame-options"] == b"DENY"
+
 
 # /api/health auth gate
 

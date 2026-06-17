@@ -567,13 +567,19 @@ class SecurityHeadersMiddleware:
 
         async def send_wrapper(message):
             if message["type"] == "http.response.start":
-                headers = MutableHeaders(raw = message["headers"])
+                # ASGI headers are an iterable; coerce to a list so MutableHeaders
+                # can mutate in place even if a server sends a tuple or omits it.
+                raw = message.setdefault("headers", [])
+                if not isinstance(raw, list):
+                    raw = list(raw)
+                    message["headers"] = raw
+                headers = MutableHeaders(raw = raw)
                 # Strip the internal nonce hand-off header so it never reaches the client
                 nonce = headers.get(_CSP_SCRIPT_NONCE_HEADER)
                 if nonce is not None:
                     del headers[_CSP_SCRIPT_NONCE_HEADER]
                 headers.setdefault("Content-Security-Policy", _build_csp(nonce))
-                # Omit X-Frame-Options in Colab — CSP frame-ancestors handles it, and
+                # Omit X-Frame-Options in Colab: CSP frame-ancestors handles it, and
                 # DENY would block serve_kernel_port_as_iframe regardless of CSP.
                 if not _IS_COLAB and path != _ARTIFACT_PREVIEW_FRAME_PATH:
                     headers.setdefault("X-Frame-Options", "DENY")
