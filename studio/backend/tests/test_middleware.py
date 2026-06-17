@@ -334,11 +334,13 @@ class TestSecurityHeadersMiddleware:
         import asyncio
 
         async def _inner_app(scope, receive, send):
-            await send({
-                "type": "http.response.start",
-                "status": 200,
-                "headers": ((b"content-type", b"text/plain"),),  # tuple, not list
-            })
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 200,
+                    "headers": ((b"content-type", b"text/plain"),),  # tuple, not list
+                }
+            )
             await send({"type": "http.response.body", "body": b"ok"})
 
         captured = {}
