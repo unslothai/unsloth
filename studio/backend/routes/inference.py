@@ -2202,6 +2202,10 @@ async def load_model(
                         strip_split_mode = _should_strip_split_mode(
                             request, llama_backend.extra_args
                         ),
+                        # fit/manual emit their own --fit/--gpu-layers, so an
+                        # inherited offload flag must not last-wins-override them.
+                        # auto leaves a user's inherited -ngl alone (offload_overridden).
+                        strip_offload = request.gpu_memory_mode in ("fit", "manual"),
                     )
                     try:
                         extra_llama_args = validate_extra_args(stripped)

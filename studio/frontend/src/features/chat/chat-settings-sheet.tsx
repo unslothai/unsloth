@@ -651,9 +651,12 @@ export function ChatSettingsPanel({
       : [...current, index].sort((a, b) => a - b);
     if (next.length === 0) return; // keep at least one GPU selected
     setSelectedGpuIds(next.length === all.length ? null : next);
-    // TP needs 2+ GPUs; narrowing to one disables its toggle, so clear the value
-    // too (mirrors the fit-mode reset) -- else it reads on but is ignored.
-    if (next.length <= 1) setTensorParallel(false);
+    // Split ratio and TP need 2+ GPUs; narrowing to one hides/disables them, so
+    // clear their values too -- else a stale ratio/toggle is sent but ignored.
+    if (next.length <= 1) {
+      setTensorParallel(false);
+      setSplitRatio("");
+    }
   };
   const gpuIdsKey = (ids: number[] | null) => (ids === null ? "auto" : ids.join(","));
   const gpuIdsDirty = gpuIdsKey(selectedGpuIds) !== gpuIdsKey(loadedGpuIds);

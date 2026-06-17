@@ -38,6 +38,7 @@ from typing import (
 import httpx
 
 from core.inference.llama_server_args import (
+    _OFFLOAD_SHADOWING_FLAGS,
     _effective_tensor_parallel,
     _tensor_parallel_matches_loaded,
     extra_args_disable_mmproj,
@@ -813,7 +814,9 @@ def _extra_args_set_spec_type(extra_args: Optional[Iterable[str]]) -> bool:
     return _extra_args_set_any_flag(extra_args, {"--spec-type", "--spec-default"})
 
 
-_GPU_OFFLOAD_OVERRIDE_FLAGS = frozenset({"-ngl", "--gpu-layers", "--n-gpu-layers", "-fit", "--fit"})
+# Same flags whether detecting a user override here or stripping an inherited
+# one in llama_server_args; single-source the set so they can't drift.
+_GPU_OFFLOAD_OVERRIDE_FLAGS = _OFFLOAD_SHADOWING_FLAGS
 _THREAD_OVERRIDE_FLAGS = frozenset({"-t", "--threads"})
 
 
@@ -4567,6 +4570,10 @@ class LlamaCppBackend:
                         "Vision-capable GGUF loaded without a usable mmproj; "
                         "image input will be disabled for this session"
                     )
+                # Seed before the try: the except (GPU-selection failure ->
+                # --fit on) falls through to the launch which reads gpu_present,
+                # and the probe that assigns it may throw first.
+                gpu_present = False
                 try:
                     gguf_size = self._get_gguf_size_bytes(model_path)
                     # Include GPU-loaded mmproj in the fit budget (#5825).
@@ -5265,8 +5272,11 @@ class LlamaCppBackend:
                         cmd.extend(["--n-cpu-moe", str(moe_flag)])
                     # Distribute the model across GPUs by the user's per-GPU shares
                     # (--tensor-split). Works with the default layer split and with
-                    # tensor parallelism; --fit off means no fit/tensor abort.
-                    if tensor_split:
+                    # tensor parallelism; --fit off means no fit/tensor abort. Only
+                    # when >1 GPU is in use: the field is hidden (not cleared) when
+                    # the picker narrows to one, so a stale ratio would otherwise
+                    # emit a split that doesn't match the GPUs and abort.
+                    if tensor_split and self._effective_gpu_count(gpu_indices) > 1:
                         cmd.extend(["--tensor-split", ",".join(f"{x:g}" for x in tensor_split)])
                 elif use_fit:
                     cmd.extend(["--fit", "on"])

@@ -181,6 +181,13 @@ _SPLIT_MODE_FLAGS: frozenset[str] = frozenset({"-sm", "--split-mode"})
 _TENSOR_SPLIT_FLAGS: frozenset[str] = frozenset({"-ts", "--tensor-split"})
 _SPLIT_SHADOWING_FLAGS: frozenset[str] = _SPLIT_MODE_FLAGS | _TENSOR_SPLIT_FLAGS
 
+# GPU-offload flags. Stripped only when the GPU Memory mode owns offload
+# (fit/manual emit --fit / --gpu-layers); in auto, a user's inherited -ngl is
+# respected (the offload_overridden path), so this group is opt-in, not default.
+_OFFLOAD_SHADOWING_FLAGS: frozenset[str] = frozenset(
+    {"-ngl", "--gpu-layers", "--n-gpu-layers", "-fit", "--fit"}
+)
+
 _SHADOWING_FLAGS: frozenset[str] = (
     _CONTEXT_FLAGS | _CACHE_FLAGS | _SPEC_FLAGS | _TEMPLATE_FLAGS | _SPLIT_SHADOWING_FLAGS
 )
@@ -419,6 +426,7 @@ def strip_shadowing_flags(
     strip_spec: bool = True,
     strip_template: bool = True,
     strip_split_mode: bool = True,
+    strip_offload: bool = False,
 ) -> list[str]:
     """Strip flags that shadow first-class Studio settings.
 
@@ -439,6 +447,8 @@ def strip_shadowing_flags(
         shadowing |= _TEMPLATE_FLAGS
     if strip_split_mode:
         shadowing |= _SPLIT_SHADOWING_FLAGS
+    if strip_offload:
+        shadowing |= _OFFLOAD_SHADOWING_FLAGS
 
     tokens = [str(a) for a in (args or [])]
     out: list[str] = []

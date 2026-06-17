@@ -396,9 +396,10 @@ def test_manual_emits_gpu_layers_fit_off_and_n_cpu_moe():
 
 
 def test_manual_emits_tensor_split():
-    # Manual emits --tensor-split from the per-GPU shares, only when provided.
+    # Manual emits --tensor-split from the per-GPU shares, only when provided and
+    # only with >1 GPU in use (a stale ratio on a narrowed picker must not emit).
     src = _load_model_source()
-    assert "if tensor_split:" in src
+    assert "if tensor_split and self._effective_gpu_count(gpu_indices) > 1:" in src
     assert '"--tensor-split"' in src
     # Joined as a comma list (e.g. "2,1") within the manual branch.
     gate = src.find('elif gpu_memory_mode == "manual":')

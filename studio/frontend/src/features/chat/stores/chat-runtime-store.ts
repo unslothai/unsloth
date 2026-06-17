@@ -1012,7 +1012,7 @@ function setScalarSettingVersion<K extends ScalarSettingKey>(
 
 /** The "revert to the loaded model" baseline for the editable load knobs.
  *  Shared by resetModelSettingsToLoaded (full revert) and stageModel (which
- *  overrides speculative to start a fresh pick from the standing default). */
+ *  overrides speculative and the per-model GPU knobs to start a fresh pick). */
 function loadedBaselineSettings(s: ChatRuntimeStore) {
   const hasLoadedModel = Boolean(s.params.checkpoint);
   return {
@@ -1614,6 +1614,13 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         // Load's keepSpeculative) a forced MTP mode onto a model that may lack it.
         speculativeType: readPersistedSpeculativeType(),
         specDraftNMax: null,
+        // Per-model GPU knobs start from defaults too (gpuMemoryMode stays a
+        // standing preference) so a fresh pick doesn't inherit the loaded
+        // model's layer/MoE/split/GPU choices, matching the immediate-switch reset.
+        gpuLayers: GPU_LAYERS_ALL,
+        nCpuMoe: 0,
+        splitRatio: "",
+        selectedGpuIds: null,
       };
     }),
   abandonStagedModel: () => {
