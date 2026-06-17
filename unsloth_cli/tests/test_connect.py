@@ -268,6 +268,30 @@ def test_connect_model_flag_loads_on_server(fake_studio):
     assert "export ANTHROPIC_MODEL=unsloth/Qwen3.5-35B-A3B" in result.output
 
 
+def test_connect_model_flag_matches_canonical_id(fake_studio, monkeypatch):
+    # Studio registers a loaded model under a canonical id (resolved identifier
+    # / casing) that can differ from the path we passed. The agent must connect
+    # to that model, not silently fall through to the first loaded one.
+    requested = "Unsloth/Qwen3.5-35B-A3B"
+    canonical = "unsloth/Qwen3.5-35B-A3B"
+    inner = connect._http_json
+
+    def http_json(method, url, token, payload = None, timeout = 30, error = None):
+        if url.endswith("/api/inference/load"):
+            return {"model": canonical, "display_name": canonical}
+        if url.endswith("/v1/models"):
+            # Decoy sorts first, so models[0] is the wrong pick on the old code.
+            return {"object": "list", "data": [MODEL, {"id": canonical, "context_length": 4096}]}
+        return inner(method, url, token, payload, timeout, error)
+
+    monkeypatch.setattr(connect, "_http_json", http_json)
+    result = CliRunner().invoke(
+        connect.connect_app, ["claude", "--no-launch", "--model", requested]
+    )
+    assert result.exit_code == 0, result.output
+    assert f"export ANTHROPIC_MODEL={canonical}" in result.output
+
+
 def test_connect_no_model_loaded_errors(fake_studio, monkeypatch):
     monkeypatch.setattr(
         connect,

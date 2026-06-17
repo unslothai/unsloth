@@ -121,6 +121,8 @@ def _cached_keys(cache: Path) -> list:
         data = json.loads(cache.read_text())
     except Exception:
         return []
+    if not isinstance(data, dict):
+        return []
     keys = [k for k in data.get("keys", []) if isinstance(k, str)]
     legacy = data.get("key")  # pre-multi-key cache format
     if isinstance(legacy, str) and legacy not in keys:
@@ -221,7 +223,7 @@ def _resolve_model(base: str, key: str, requested: Optional[str]) -> dict:
     match = next((m for m in models if m["id"] == requested), None)
     if requested and match is None:
         typer.echo(f"Loading {requested} on the Studio server (this can take a while)…")
-        _http_json(
+        loaded = _http_json(
             "POST",
             f"{base}/api/inference/load",
             key,
@@ -229,8 +231,15 @@ def _resolve_model(base: str, key: str, requested: Optional[str]) -> dict:
             timeout = 3600,
             error = "Model load failed",
         )
+        # Studio registers the model under a canonical id (resolved identifier,
+        # casing) that /v1/models echoes but which may differ from the path we
+        # passed; match on the id the load reports so we don't silently fall
+        # through to models[0] and connect to a different loaded model.
+        wanted = {requested}
+        if isinstance(loaded, dict):
+            wanted |= {loaded.get("model"), loaded.get("display_name")} - {None}
         models = _loaded_models(base, key)
-        match = next((m for m in models if m["id"] == requested), None)
+        match = next((m for m in models if m["id"] in wanted), None)
     if match is not None:
         return match
     if not models:
@@ -378,8 +387,10 @@ def write_codex_config(base: str, model: dict) -> None:
 def _print_env(env: dict, command: list) -> None:
     if os.name == "nt":
         for name, value in env.items():
-            typer.echo(f'$env:{name} = "{value}"')
-        typer.echo(" ".join(command))
+            # PowerShell: ` is the escape char, and $ triggers expansion inside "".
+            escaped = value.replace("`", "``").replace('"', '`"').replace("$", "`$")
+            typer.echo(f'$env:{name} = "{escaped}"')
+        typer.echo(subprocess.list2cmdline(command))
         return
     for name, value in env.items():
         typer.echo(f"export {name}={shlex.quote(value)}")
