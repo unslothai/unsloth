@@ -925,9 +925,9 @@ export function ChatSettingsPanel({
                         </InfoHint>
                       </div>
                       <NumericValueInput
-                        value={fitCtxAuto ? -1 : (customContextLength ?? 0)}
+                        value={fitCtxAuto ? 0 : (customContextLength ?? 0)}
                         displayValue={fitCtxAuto ? "Auto" : undefined}
-                        min={-1}
+                        min={0}
                         max={ctxMaxValue ?? undefined}
                         step={1}
                         onChange={(v) => {
@@ -938,12 +938,12 @@ export function ChatSettingsPanel({
                       />
                     </div>
                     <Slider
-                      min={-1}
+                      min={0}
                       max={ctxMaxValue ?? 4096}
                       step={1024}
                       value={[
                         fitCtxAuto
-                          ? -1
+                          ? 0
                           : Math.min(
                               customContextLength ?? 0,
                               ctxMaxValue ?? 4096,
@@ -1188,10 +1188,13 @@ export function ChatSettingsPanel({
                       GPU Memory
                     </span>
                     <InfoHint>
-                      Default: Unsloth fits the model and context to your
-                      GPUs. llama.cpp --fit on: lets llama.cpp size context and
-                      offload any overflow (including MoE experts) to RAM.
-                      Manual: set GPU layers and MoE offload yourself.
+                      Default: Unsloth picks GPUs and context length to fit your
+                      model, kept on GPU. llama.cpp --fit on: hands memory
+                      management to llama.cpp, which sizes context and offloads
+                      any overflow (including MoE experts) to system RAM so
+                      oversized models still load -- slower. Manual: pin the GPU
+                      layer count and MoE offload yourself. fit and Manual turn
+                      off Tensor Parallelism.
                     </InfoHint>
                   </div>
                   <div className="flex shrink-0 items-center gap-1.5">
@@ -1215,7 +1218,7 @@ export function ChatSettingsPanel({
                       </SelectTrigger>
                       <SelectContent className="menu-soft-surface ring-0 border-0 rounded-lg">
                         <SelectItem value="auto">Default</SelectItem>
-                        <SelectItem value="fit">llama.cpp --fit on</SelectItem>
+                        <SelectItem value="fit">llama.cpp --fit</SelectItem>
                         <SelectItem value="manual">Manual</SelectItem>
                       </SelectContent>
                     </Select>
