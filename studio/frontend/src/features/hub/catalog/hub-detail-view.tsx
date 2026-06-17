@@ -3,6 +3,7 @@
 
 import { ArrowLeft01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { cn } from "@/lib/utils";
 import { type ComponentProps, useEffect, useRef, useState } from "react";
 import { ModelInspector } from "./model-inspector";
 
@@ -43,7 +44,13 @@ export function HubDetailView({
         className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto [overflow-anchor:none] mr-2 [scrollbar-gutter:stable] [scrollbar-width:thin]"
       >
         <div
-          className="hub-detail-bar sticky top-0 z-20"
+          className={cn(
+            "hub-detail-bar sticky top-0 z-20",
+            // In split view on large screens the master list sits alongside, so
+            // "Back to Hub" is redundant. Keep it only for the overlay (small
+            // screens / full-page mode) where the list is hidden.
+            compact && "lg:hidden",
+          )}
           data-scrolled={scrolled || undefined}
         >
           <div className={`${measure} py-3`}>
@@ -61,7 +68,7 @@ export function HubDetailView({
             </button>
           </div>
         </div>
-        <div className={`${measure} pb-20`}>
+        <div className={cn(measure, "pb-20", compact && "lg:pt-4")}>
           <ModelInspector {...inspectorProps} />
         </div>
       </div>
