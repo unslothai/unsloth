@@ -43,6 +43,7 @@ import {
   isMultimodalResponse,
 } from "../types/api";
 import { isExternalModelId } from "../external-providers";
+import { cancelStagedModelDownload } from "@/features/hub";
 import type {
   ChatLoraSummary,
   ChatModelSummary,
@@ -386,7 +387,16 @@ export function useChatModelRuntime() {
       // Picking/loading any model abandons a staged (deferred) selection.
       // Before the early-returns below so even a no-op re-select clears the
       // stage, and so the Load button unmounts on first click (no double-load).
-      if (useChatRuntimeStore.getState().pendingSelection) {
+      const staged = useChatRuntimeStore.getState().pendingSelection;
+      if (staged) {
+        // Loading a DIFFERENT model abandons this stage, so cancel its in-flight
+        // download. Loading the staged pick itself keeps it (that download feeds
+        // this load).
+        const loadingStagedPick =
+          staged.id === modelId &&
+          (staged.ggufVariant ?? null) === (ggufVariant ?? null) &&
+          (staged.nativePathToken ?? null) === (nativePathToken ?? null);
+        if (!loadingStagedPick) cancelStagedModelDownload(staged);
         useChatRuntimeStore.getState().setPendingSelection(null);
       }
       const currentVariant = useChatRuntimeStore.getState().activeGgufVariant;
