@@ -4472,6 +4472,21 @@ class LlamaCppBackend:
                 self._n_cpu_moe = n_cpu_moe
                 self._tensor_split = tensor_split
                 self._gpu_ids = sorted(gpu_ids) if gpu_ids else None
+                # Manual mode skips the TP planner but still emits --split-mode
+                # tensor at launch; drop it when fewer than 2 GPUs are in use
+                # (single GPU, or the picker narrowed to one) -- tensor split is a
+                # no-op there and aborts on some architectures. Done before the
+                # cache-drop below so a quantized KV survives the layer-split load.
+                if (
+                    tensor_parallel
+                    and gpu_memory_mode == "manual"
+                    and self._effective_gpu_count(sorted(gpu_ids) if gpu_ids else None) < 2
+                ):
+                    logger.info(
+                        "Tensor parallelism requested in manual mode but fewer "
+                        "than 2 GPUs are in use; ignoring (needs >= 2)."
+                    )
+                    tensor_parallel = False
                 # Tensor mode aborts on a quantized KV cache, so drop it for the
                 # tensor attempt (and strip any inherited/explicit --cache-type
                 # that would re-impose it when appended last). Layer split does
@@ -4570,6 +4585,11 @@ class LlamaCppBackend:
                     if gpu_ids:
                         _picked = set(gpu_ids)
                         gpus = [g for g in gpus if g[0] in _picked]
+
+                    # Whether the model will run on GPU at all -- captured before
+                    # fit/manual empty `gpus` to bypass the planner, so the
+                    # speculative defaults below stay GPU-aware (not CPU-oriented).
+                    gpu_present = bool(gpus)
 
                     def _gpu_usable(g, frac = _CTX_FIT_VRAM_FRACTION):
                         # Per-GPU usable budget for ranking: free - (1-frac)*total.
@@ -4705,7 +4725,10 @@ class LlamaCppBackend:
                     _extra_n_max = _extra_args_spec_draft_n_max(extra_args)
                     _mtp_eff_n_max = _extra_n_max if _extra_n_max is not None else spec_draft_n_max
                     if _mtp_eff_n_max is None:
-                        _mtp_eff_n_max = 2 if gpus else 3
+                        # gpu_present (not gpus) so fit/manual -- which empty gpus
+                        # to bypass the planner -- keep the GPU draft depth that the
+                        # launch flags also use, instead of the CPU default.
+                        _mtp_eff_n_max = 2 if gpu_present else 3
                     # Separate-drafter weights live on GPU (an embedded head is
                     # already in model_size). Size the drafter the launch loads, by
                     # precedence: extras --model-draft (last-wins), else Studio's
@@ -5357,7 +5380,7 @@ class LlamaCppBackend:
                     extra_args = extra_args,
                     model_identifier = model_identifier,
                     model_path = model_path,
-                    gpus = bool(gpus),
+                    gpus = gpu_present,
                     binary = binary,
                     mtp_draft_path = launch_mtp_draft_path,
                 )

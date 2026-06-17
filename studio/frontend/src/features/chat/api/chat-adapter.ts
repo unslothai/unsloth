@@ -1258,6 +1258,7 @@ async function autoLoadSmallestModel(): Promise<{
               model_path: repo.repo_id,
               hf_token: hfToken,
               max_seq_length: resolveFitMaxSeqLength(
+                /* isGguf */ true,
                 rt.gpuMemoryMode,
                 rt.customContextLength,
                 0,
@@ -1449,6 +1450,7 @@ async function autoLoadSmallestModel(): Promise<{
         model_path: "unsloth/Qwen3.5-4B-MTP-GGUF",
         hf_token: hfToken,
         max_seq_length: resolveFitMaxSeqLength(
+          /* isGguf */ true,
           rt.gpuMemoryMode,
           rt.customContextLength,
           0,

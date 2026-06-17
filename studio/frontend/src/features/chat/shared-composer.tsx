@@ -960,6 +960,7 @@ export function SharedComposer({
           model_path: sel.id,
           hf_token: useChatRuntimeStore.getState().hfToken || null,
           max_seq_length: resolveFitMaxSeqLength(
+            sel.id.toLowerCase().endsWith(".gguf") || sel.ggufVariant != null,
             currentStore.gpuMemoryMode,
             currentStore.customContextLength,
             maxSeqLength,

@@ -611,11 +611,14 @@ export function ChatSettingsPanel({
   const gpuDirty = gpuMemoryMode !== (loadedGpuMemoryMode ?? "auto");
   const isAutoFit = gpuMemoryMode === "fit";
   const isManual = gpuMemoryMode === "manual";
+  // GPUs actually in use: the picked subset, or all visible when none picked.
+  const gpusInUse = selectedGpuIds ?? gpuDevices.map((d) => d.index);
   // Only fit forces TP off: llama.cpp's --fit aborts under --split-mode tensor.
   // Manual allows it (--fit off, so no abort) -- it just skips Unsloth's planner.
-  // Also off on a single GPU: tensor split is a no-op there (and aborts on some
-  // archs), so don't offer it -- mirrors the multi-GPU gate on the GPU picker.
-  const tpDisabled = isAutoFit || gpuDevices.length <= 1;
+  // Also off with fewer than 2 GPUs in use (single GPU, or the picker narrowed
+  // to one): tensor split is a no-op there and aborts on some archs. Mirrors the
+  // multi-GPU gate on the GPU picker / Split ratio.
+  const tpDisabled = isAutoFit || gpusInUse.length <= 1;
   // Manual gpu-layers ceiling = model layer count (else a safe fallback). While
   // staging, use the staged model's layer count (read from its header).
   const stagedLayerCount = pendingSelection?.layerCount ?? null;
@@ -648,12 +651,14 @@ export function ChatSettingsPanel({
       : [...current, index].sort((a, b) => a - b);
     if (next.length === 0) return; // keep at least one GPU selected
     setSelectedGpuIds(next.length === all.length ? null : next);
+    // TP needs 2+ GPUs; narrowing to one disables its toggle, so clear the value
+    // too (mirrors the fit-mode reset) -- else it reads on but is ignored.
+    if (next.length <= 1) setTensorParallel(false);
   };
   const gpuIdsKey = (ids: number[] | null) => (ids === null ? "auto" : ids.join(","));
   const gpuIdsDirty = gpuIdsKey(selectedGpuIds) !== gpuIdsKey(loadedGpuIds);
   // Split ratio (--tensor-split): manual + 2+ GPUs in use. The text is free-form,
   // so warn (don't block) when it can't map to the GPUs in use.
-  const gpusInUse = selectedGpuIds ?? gpuDevices.map((d) => d.index);
   const showSplitRatio = isManual && showGpuPicker && gpusInUse.length > 1;
   const splitRatioTokens = splitRatio
     .split(/[\s,/]+/)

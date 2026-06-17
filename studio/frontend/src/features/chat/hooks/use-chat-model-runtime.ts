@@ -580,6 +580,7 @@ export function useChatModelRuntime() {
               presetSource: activePresetSource,
             });
             const loadMaxSeqLength = resolveFitMaxSeqLength(
+              isGguf,
               gpuMemoryMode,
               customContextLength,
               effectiveMaxSeqLength,

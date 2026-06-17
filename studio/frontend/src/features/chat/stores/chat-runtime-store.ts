@@ -447,7 +447,10 @@ export function loadedGpuMemoryFields(resp: {
   n_moe_layers?: number;
   gpu_ids?: number[] | null;
 }) {
-  const mode = resp.gpu_memory_mode ?? "auto";
+  // gpu_memory_mode is GGUF-only; a non-GGUF response omits it. Don't touch the
+  // standing preference or the GGUF baselines on those loads.
+  if (resp.gpu_memory_mode === undefined) return {};
+  const mode = resp.gpu_memory_mode;
   const gpuIds = resp.gpu_ids ?? null;
   return {
     gpuMemoryMode: mode,
