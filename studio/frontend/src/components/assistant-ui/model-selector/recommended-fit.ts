@@ -15,6 +15,15 @@ export function isMlxId(id: string): boolean {
   return MLX_RE.test(id);
 }
 
+// "mobile" build token (e.g. "gemma-4-E4B-it-qat-mobile-GGUF"); bounded so it
+// never matches inside a longer word.
+const MOBILE_RE = /(?:^|[-_/. ])mobile(?:$|[-_/. ])/i;
+
+/** A mobile-targeted build, which we keep out of the Recommended list. */
+export function isMobileVariant(id: string): boolean {
+  return MOBILE_RE.test(id);
+}
+
 /** Recommended only surfaces ready-to-run local formats (GGUF / MLX). */
 export function isRunnableRecommendedFormat(
   id: string,
@@ -59,13 +68,14 @@ export function paramsFromId(id: string): number | undefined {
   return Number.isFinite(billions) && billions > 0 ? billions * 1e9 : undefined;
 }
 
-// Representative 4-bit weight size (~Q4_K_M / MLX 4bit). GGUF/MLX repos rarely
-// expose safetensors metadata, so this is our fallback on-disk estimate.
-const QUANT_BYTES_PER_PARAM = 0.6;
+// Smallest practical GGUF/MLX quant (~Q2_K, low-bit). The fit check asks whether
+// a model can run at all, so it uses this rather than a default 4-bit size; a
+// user with a smaller device can still pick a low-bit variant.
+const MIN_QUANT_BYTES_PER_PARAM = 0.4;
 
-/** Rough on-disk bytes for a 4-bit quant of `params` weights. */
+/** Rough on-disk bytes for the smallest practical quant of `params` weights. */
 export function estimateQuantBytes(params: number): number {
-  return params * QUANT_BYTES_PER_PARAM;
+  return params * MIN_QUANT_BYTES_PER_PARAM;
 }
 
 /** A model fits when its on-disk size (or a precomputed VRAM estimate) is within

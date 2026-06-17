@@ -40,17 +40,17 @@ import { extractParamLabel } from "@/lib/model-size";
 import { cn, formatCompact } from "@/lib/utils";
 import type { VramFitStatus } from "@/lib/vram";
 import { checkVramFit, estimateLoadingVram } from "@/lib/vram";
-import { AiBrain01Icon, Add01Icon, AudioWave01Icon, Cancel01Icon, EyeIcon, Folder02Icon, Search01Icon, StarIcon } from "@hugeicons/core-free-icons";
+import { AiBrain01Icon, Add01Icon, AudioWave01Icon, Cancel01Icon, Download01Icon, Folder02Icon, Search01Icon, StarIcon, ViewIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { DotTag } from "@/features/hub/catalog/dot-tag";
 import { HubOptionMenu, type HubOption } from "@/features/hub/catalog/hub-option-menu";
-import { PillTabs } from "./pill-tabs";
 import { FolderBrowser } from "./folder-browser";
 import { ModelDeleteAction } from "./model-delete-action";
 import {
   type FormatFilter,
   estimateQuantBytes,
   fitsDevice,
+  isMobileVariant,
   isRunnableRecommendedFormat,
   matchesFormatFilter,
   paramsFromId,
@@ -60,6 +60,11 @@ import {
   detectCapabilities,
   hasAnyCapability,
 } from "./model-capabilities";
+import {
+  type ModelLoadTimes,
+  loadedAt,
+  useModelLoadTimes,
+} from "./model-usage";
 import { parseMetaTokens, splitRepoLabel } from "./row-meta";
 import { ChevronDownIcon, ChevronRightIcon } from "lucide-react";
 import {
@@ -286,7 +291,7 @@ function formatBytes(bytes: number): string {
 
 // Small icon badges for what a model can do (vision / reasoning / audio).
 const CAPABILITY_BADGES = [
-  { key: "vision" as const, icon: EyeIcon, title: "Vision" },
+  { key: "vision" as const, icon: ViewIcon, title: "Vision" },
   { key: "reasoning" as const, icon: AiBrain01Icon, title: "Reasoning" },
   { key: "audio" as const, icon: AudioWave01Icon, title: "Audio" },
 ];
@@ -321,6 +326,7 @@ function ModelRow({
   onArrowDownIntoChildren,
   capabilities,
   hideOwner,
+  downloaded,
 }: {
   label: string;
   meta?: string | null;
@@ -336,6 +342,8 @@ function ModelRow({
   capabilities?: ModelCapabilities;
   /** Hide the "owner/" prefix (e.g. Recommended, where all are unsloth). */
   hideOwner?: boolean;
+  /** Mark a row already on disk (shown in Recommended instead of being hidden). */
+  downloaded?: boolean;
 }) {
   const exceeds = vramStatus === "exceeds";
   const showVramTooltip =
@@ -393,6 +401,15 @@ function ModelRow({
       <span className="ml-auto flex shrink-0 items-center gap-1.5">
         {showCaps && <CapabilityIcons caps={caps} />}
         {selected && <DotTag tone="success" label="Loaded" className="h-[18px] gap-1 px-1" />}
+        {downloaded && !selected && (
+          <span
+            title="Already downloaded"
+            aria-label="Already downloaded"
+            className="flex size-[18px] shrink-0 items-center justify-center rounded-md border border-border/60 text-muted-foreground"
+          >
+            <HugeiconsIcon icon={Download01Icon} className="size-3" strokeWidth={1.8} />
+          </span>
+        )}
         {vramStatus === "exceeds" && (
           <span className="text-[9px] font-medium !text-red-700 !bg-red-50 dark:!text-red-400 dark:!bg-red-950 px-1.5 py-0.5 rounded">OOM</span>
         )}
@@ -784,48 +801,71 @@ const RECOMMENDED_SORT_OPTIONS: HubOption<RecommendedSortKey>[] = [
   { value: "lastModified", label: "Recently updated" },
 ];
 
-// Sort for the Downloaded / Custom (local) lists. "downloaded" sorts by download
-// date; locally that is the same file timestamp as "recent".
-type LocalSortKey = "recent" | "size" | "downloaded";
+// Sort for the On Device / Custom (local) lists. "recent" = last loaded;
+// "downloaded" = file download date.
+type LocalSortKey = "recent" | "downloaded" | "size" | "name";
 
 const LOCAL_SORT_OPTIONS: HubOption<LocalSortKey>[] = [
   { value: "recent", label: "Recent" },
-  { value: "size", label: "Size" },
   { value: "downloaded", label: "Downloaded" },
+  { value: "size", label: "Size" },
+  { value: "name", label: "Name" },
 ];
 
-// Format filter toggle for the Unsloth listing.
-const FORMAT_FILTER_TABS: { value: FormatFilter; label: string }[] = [
-  { value: "all", label: "All" },
+// Format filter dropdown for the Unsloth listing.
+const FORMAT_FILTER_OPTIONS: HubOption<FormatFilter>[] = [
+  { value: "all", label: "All formats" },
   { value: "gguf", label: "GGUF" },
   { value: "mlx", label: "MLX" },
   { value: "safetensors", label: "Safetensors" },
 ];
 
-/** Sort cached repos (have size + timestamp): by size desc, else newest first. */
+/** Sort cached repos: by last-loaded, download date, size desc, or name. */
 function sortCachedRepos<
   T extends { repo_id: string; size_bytes: number; last_modified?: number },
->(rows: T[], key: LocalSortKey): T[] {
+>(rows: T[], key: LocalSortKey, loadTimes: ModelLoadTimes): T[] {
+  const byDate = (a: T, b: T) =>
+    (b.last_modified ?? -1) - (a.last_modified ?? -1) ||
+    a.repo_id.localeCompare(b.repo_id);
   return [...rows].sort((a, b) => {
+    if (key === "name") return a.repo_id.localeCompare(b.repo_id);
     if (key === "size") {
       return b.size_bytes - a.size_bytes || a.repo_id.localeCompare(b.repo_id);
     }
-    // "recent" and "downloaded" both order by the file timestamp.
-    return (
-      (b.last_modified ?? -1) - (a.last_modified ?? -1) ||
-      a.repo_id.localeCompare(b.repo_id)
-    );
+    if (key === "recent") {
+      const d = loadedAt(loadTimes, b.repo_id) - loadedAt(loadTimes, a.repo_id);
+      return d !== 0 ? d : byDate(a, b);
+    }
+    return byDate(a, b); // "downloaded"
   });
 }
 
-/** Sort local-provider models. They carry no size, so "size" falls back to the
- * download timestamp like the other keys. */
-function sortLocalModels(rows: LocalModelInfo[], _key: LocalSortKey): LocalModelInfo[] {
-  return [...rows].sort(
-    (a, b) =>
-      (b.updated_at ?? -1) - (a.updated_at ?? -1) ||
-      (a.model_id ?? a.display_name).localeCompare(b.model_id ?? b.display_name),
-  );
+/** Sort local-provider models. They carry no size, so "size" falls back to name. */
+function sortLocalModels(
+  rows: LocalModelInfo[],
+  key: LocalSortKey,
+  loadTimes: ModelLoadTimes,
+): LocalModelInfo[] {
+  const name = (m: LocalModelInfo) => m.model_id ?? m.display_name ?? m.id;
+  const byDate = (a: LocalModelInfo, b: LocalModelInfo) =>
+    (b.updated_at ?? -1) - (a.updated_at ?? -1) || name(a).localeCompare(name(b));
+  return [...rows].sort((a, b) => {
+    if (key === "recent") {
+      const d = loadedAt(loadTimes, a.id) - loadedAt(loadTimes, b.id);
+      return d !== 0 ? -d : byDate(a, b);
+    }
+    if (key === "downloaded") return byDate(a, b);
+    return name(a).localeCompare(name(b)); // "size" (no size) and "name"
+  });
+}
+
+/** Whether a local model matches the format toggle (GGUF detected by name/path). */
+function localModelMatchesFormat(m: LocalModelInfo, filter: FormatFilter): boolean {
+  const isGguf =
+    isGgufRepo(m.id) ||
+    isGgufRepo(m.display_name) ||
+    m.path.toLowerCase().endsWith(".gguf");
+  return matchesFormatFilter(m.model_id ?? m.display_name ?? m.id, isGguf, filter);
 }
 
 export function HubModelPicker({
@@ -846,6 +886,10 @@ export function HubModelPicker({
   sectionToggle?: ReactNode;
 }) {
   const gpu = useGpuInfo();
+  // Last-loaded timestamps power the "Recent" sort (vs "Downloaded" = file date).
+  const loadTimes = useModelLoadTimes(value);
+  // Fade the list's top edge once scrolled (under the search / tab bar).
+  const [listScrolled, setListScrolled] = useState(false);
   const [query, setQuery] = useState("");
   const debouncedQuery = useDebouncedValue(query);
   const { results, isLoading, isLoadingMore, fetchMore } =
@@ -1063,7 +1107,7 @@ export function HubModelPicker({
 
   // Recommended section: a live unsloth listing sorted by the dropdown.
   const [recommendedSort, setRecommendedSort] =
-    useState<RecommendedSortKey>("recommended");
+    useState<RecommendedSortKey>("trendingScore");
   // "recommended" surfaces the most recently created Unsloth repos.
   const recommendedHfSort: HfModelSort =
     recommendedSort === "recommended" ? "createdAt" : recommendedSort;
@@ -1076,10 +1120,10 @@ export function HubModelPicker({
 
   // "recommended" keeps only runnable local formats (GGUF/MLX) that fit the
   // device; the other sorts pass everything through (badged, never hidden).
+  // Already-downloaded models stay visible (badged) rather than being hidden.
   const recommendedRows = useMemo(() => {
-    let rows = recommendedSearch.results.filter(
-      (r) => !downloadedSet.has(r.id.toLowerCase()),
-    );
+    // Never list mobile-targeted builds in the Unsloth section.
+    let rows = recommendedSearch.results.filter((r) => !isMobileVariant(r.id));
     // The format toggle applies to every sort.
     if (formatFilter !== "all") {
       rows = rows.filter((r) =>
@@ -1088,6 +1132,8 @@ export function HubModelPicker({
     }
     if (recommendedSort !== "recommended") return rows;
     return rows.filter((r) => {
+      // Downloaded models always show, regardless of device fit.
+      if (downloadedSet.has(r.id.toLowerCase())) return true;
       // Default keeps ready-to-run local formats; an explicit format pick wins.
       if (formatFilter === "all" && !isRunnableRecommendedFormat(r.id, r.isGguf))
         return false;
@@ -1124,12 +1170,33 @@ export function HubModelPicker({
         : r.totalParams
           ? formatCompact(r.totalParams)
           : extractParamLabel(r.id);
-      const est =
-        !isG && r.totalParams ? estimateLoadingVram(r.totalParams, "qlora") : 0;
+      if (isG) {
+        // GGUF fit is size-based: flag OOM when even the smallest quant we can
+        // size exceeds the device budget. Repos we cannot size show no badge.
+        const params = r.totalParams ?? paramsFromId(r.id);
+        const sizeBytes =
+          r.estimatedSizeBytes ??
+          (params ? estimateQuantBytes(params) : undefined);
+        const exceeds =
+          gpu.available &&
+          sizeBytes != null &&
+          !fitsDevice({
+            sizeBytes,
+            gpuGb: gpu.memoryTotalGb,
+            systemRamGb: gpu.systemRamAvailableGb,
+          });
+        map.set(r.id, {
+          meta,
+          status: exceeds ? "exceeds" : null,
+          est: sizeBytes ? Math.round(sizeBytes / 1024 ** 3) : 0,
+        });
+        continue;
+      }
+      const est = r.totalParams
+        ? estimateLoadingVram(r.totalParams, "qlora")
+        : 0;
       const status =
-        !isG && est > 0 && gpu.available
-          ? checkVramFit(est, gpu.memoryTotalGb)
-          : null;
+        est > 0 && gpu.available ? checkVramFit(est, gpu.memoryTotalGb) : null;
       map.set(r.id, { meta, status, est });
     }
     return map;
@@ -1153,36 +1220,52 @@ export function HubModelPicker({
     return map;
   }, [results, recommendedSearch.results]);
 
-  // Ordered by the Downloaded dropdown (recent/size/download date).
+  // Ordered by the On Device dropdown (recent/download date/size/name).
   const sortedCachedGguf = useMemo(
-    () => sortCachedRepos(cachedGguf, downloadedSort),
-    [cachedGguf, downloadedSort],
+    () => sortCachedRepos(cachedGguf, downloadedSort, loadTimes),
+    [cachedGguf, downloadedSort, loadTimes],
   );
   const sortedCachedModels = useMemo(
-    () => sortCachedRepos(cachedModels, downloadedSort),
-    [cachedModels, downloadedSort],
+    () => sortCachedRepos(cachedModels, downloadedSort, loadTimes),
+    [cachedModels, downloadedSort, loadTimes],
   );
   const sortedLmStudio = useMemo(
-    () => sortLocalModels(lmStudioModels, downloadedSort),
-    [lmStudioModels, downloadedSort],
+    () =>
+      sortLocalModels(
+        lmStudioModels.filter((m) => localModelMatchesFormat(m, formatFilter)),
+        downloadedSort,
+        loadTimes,
+      ),
+    [lmStudioModels, downloadedSort, formatFilter, loadTimes],
   );
   const sortedCustomFolderModels = useMemo(
-    () => sortLocalModels(customFolderModels, customSort),
-    [customFolderModels, customSort],
+    () =>
+      sortLocalModels(
+        customFolderModels.filter((m) => localModelMatchesFormat(m, formatFilter)),
+        customSort,
+        loadTimes,
+      ),
+    [customFolderModels, customSort, formatFilter, loadTimes],
   );
 
   // While searching, filter Downloaded by the query instead of hiding it, so a
   // downloaded model the user is searching for stays visible.
   const visibleCachedGguf = useMemo(() => {
-    if (!showHfSection) return sortedCachedGguf;
+    if (!showHfSection)
+      return sortedCachedGguf.filter((c) =>
+        matchesFormatFilter(c.repo_id, true, formatFilter),
+      );
     const q = normalizeForSearch(debouncedQuery.trim());
     return sortedCachedGguf.filter((c) => normalizeForSearch(c.repo_id).includes(q));
-  }, [sortedCachedGguf, showHfSection, debouncedQuery]);
+  }, [sortedCachedGguf, showHfSection, debouncedQuery, formatFilter]);
   const visibleCachedModels = useMemo(() => {
-    if (!showHfSection) return sortedCachedModels;
+    if (!showHfSection)
+      return sortedCachedModels.filter((c) =>
+        matchesFormatFilter(c.repo_id, false, formatFilter),
+      );
     const q = normalizeForSearch(debouncedQuery.trim());
     return sortedCachedModels.filter((c) => normalizeForSearch(c.repo_id).includes(q));
-  }, [sortedCachedModels, showHfSection, debouncedQuery]);
+  }, [sortedCachedModels, showHfSection, debouncedQuery, formatFilter]);
 
   // Non-GGUF cached rows are not shown in chat-only mode, so the empty-state
   // logic must use this (not visibleCachedModels) or the picker can go blank.
@@ -1416,13 +1499,14 @@ export function HubModelPicker({
   const downloadedEmpty =
     visibleCachedGguf.length === 0 &&
     visibleCachedModelRows.length === 0 &&
-    lmStudioModels.length === 0;
+    sortedLmStudio.length === 0;
 
   // Fixed-width sort dropdown, sized to "Recently updated" with a little extra,
   // shown inline to the right of the section toggle. Options depend on the tab;
   // hidden while searching (sorting doesn't apply to search results).
+  // Shared so the format and sort dropdowns are the same width.
   const sortTriggerClassName =
-    "w-[140px] shrink-0 justify-between pr-3 !border-0";
+    "w-[124px] shrink-0 justify-between pr-3 !border-0";
   const sectionSortDropdown = showHfSection ? null : section === "recommended" ? (
     <HubOptionMenu
       value={recommendedSort}
@@ -1462,7 +1546,7 @@ export function HubModelPicker({
         <Input
           value={query}
           onChange={(event) => setQuery(event.target.value)}
-          placeholder="Search models"
+          placeholder="Search all models"
           data-model-picker-search-input={true}
           className="h-9 border-[#f2f2f2] dark:border-input pl-8 pr-8"
         />
@@ -1471,26 +1555,34 @@ export function HubModelPicker({
         )}
       </div>
 
+      {/* Section tabs, with the format and sort dropdowns inline on the right. */}
       <div className="flex items-center justify-between gap-2">
         {sectionToggle}
-        {sectionSortDropdown}
+        <div className="flex items-center gap-2">
+          {!showHfSection ? (
+            <HubOptionMenu
+              value={formatFilter}
+              options={FORMAT_FILTER_OPTIONS}
+              onValueChange={setFormatFilter}
+              ariaLabel="Filter by format"
+              align="end"
+              className={sortTriggerClassName}
+            />
+          ) : null}
+          {sectionSortDropdown}
+        </div>
       </div>
-
-      {/* Format filter, only on the Unsloth listing. */}
-      {!showHfSection && section === "recommended" ? (
-        <PillTabs
-          ariaLabel="Model format"
-          tabs={FORMAT_FILTER_TABS}
-          value={formatFilter}
-          onValueChange={(next) => setFormatFilter(next as FormatFilter)}
-          compact={true}
-          fit={true}
-        />
-      ) : null}
 
       <div
         ref={scrollRef}
-        className="-mr-1.5 max-h-72 overflow-y-auto pr-1.5"
+        onScroll={(e) => {
+          const next = e.currentTarget.scrollTop > 0;
+          setListScrolled((prev) => (prev === next ? prev : next));
+        }}
+        className={cn(
+          "model-list-scroll -mr-1.5 max-h-72 overflow-y-auto pr-1.5",
+          listScrolled && "is-scrolled",
+        )}
         {...hubModelList.listboxProps}
       >
         <div className="py-1">
@@ -1529,7 +1621,7 @@ export function HubModelPicker({
                     this group "Unsloth" so the two are easy to tell apart. */}
                 {!showHfSection &&
                 section === "downloaded" &&
-                lmStudioModels.length > 0
+                sortedLmStudio.length > 0
                   ? "Unsloth"
                   : "Downloaded"}
               </ListLabel>
@@ -1633,7 +1725,7 @@ export function HubModelPicker({
 
           {!showHfSection &&
           section === "downloaded" &&
-          lmStudioModels.length > 0 ? (
+          sortedLmStudio.length > 0 ? (
             <>
               <ListLabel>LM Studio</ListLabel>
               {sortedLmStudio.map((m) => {
@@ -1943,6 +2035,7 @@ export function HubModelPicker({
                       <ModelRow
                         label={id}
                         hideOwner
+                        downloaded={downloadedSet.has(id.toLowerCase())}
                         capabilities={capsById.get(id)}
                         meta={info?.meta ?? (isG ? "GGUF" : extractParamLabel(id))}
                         selected={value === id}
@@ -1957,8 +2050,8 @@ export function HubModelPicker({
                             handleModelClick(id);
                           }
                         }}
-                        vramStatus={isG ? null : (info?.status ?? null)}
-                        vramEst={isG ? undefined : info?.est}
+                        vramStatus={info?.status ?? null}
+                        vramEst={info?.est}
                         gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
                         onArrowDownIntoChildren={
                           expandedGguf === id

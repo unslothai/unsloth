@@ -45,6 +45,12 @@
 		height: 40px;
 		background: linear-gradient(to top, var(--sidebar), transparent);
 	}
+	/* Model picker list: once scrolled, the top edge fades so rows dissolve as
+	   they pass under the pinned search / tab bar. */
+	.model-list-scroll.is-scrolled {
+		-webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 14px);
+		mask-image: linear-gradient(to bottom, transparent 0, #000 14px);
+	}
 	/* RAG chip strip: sidebar-style bottom fade while more chips sit below
 	   the scroll fold (JS-toggled). */
 	.rag-docs-bottom-fade {
