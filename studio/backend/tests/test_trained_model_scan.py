@@ -152,7 +152,6 @@ def test_lora_identifier_persistent_transient_returns_none():
     # Assert on the logger directly so it is robust to the logging backend (the
     # real structlog vs this module's stub, which varies with collection order).
     from utils.models import model_config as _mc
-
     with (
         patch("huggingface_hub.hf_hub_download", side_effect = RuntimeError("down")),
         patch.object(_mc.logger, "warning") as mock_warn,
