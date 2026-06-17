@@ -58,6 +58,19 @@ REMOTE_CODE_CONFIG_FILES = (
     "video_preprocessor_config.json",
 )
 
+
+class RemoteCodeUnscannable(Exception):
+    """The repo's executable code could not be fully fetched/listed to scan.
+
+    Raised (not returned empty) so the consent gate can tell two very different
+    outcomes apart: code is PRESENT but we could not read all of it (offline /
+    gated / transient / a present .py that 404s / a repo-listing failure) -> fail
+    CLOSED; versus the repo simply has NO executable .py (an empty result) ->
+    ``trust_remote_code`` is a no-op -> allow. Conflating them would either block a
+    legitimate code-free repo (e.g. a GGUF repo whose config.json carries a
+    vestigial auto_map) or fail open on code we could not see.
+    """
+
 # --- Fallback patterns (only used if scripts/scan_packages.py is absent) -----
 # (regex, check-name, severity). A flat subset of the canonical scanner, kept so
 # a stripped packaged install without scripts/ still scans. The canonical
@@ -407,11 +420,14 @@ def remote_code_fingerprint(files: dict[str, str]) -> str:
 def repo_remote_code_files(model_name: str, hf_token: Optional[str] = None) -> dict[str, str]:
     """Download a repo's executable ``.py`` (auto_map targets + modeling/config).
 
-    Returns {filename: content}. Returns {} when the repo cannot be fully fetched
-    or listed (offline/gated/transient, a referenced ``.py`` that 404s, or a
-    repo-listing failure that could hide an imported helper) so the caller treats
-    an unscannable repo as such and fails closed -- we never fingerprint a partial
-    view of code transformers would later execute in full.
+    Returns {filename: content}. An EMPTY dict means the repo genuinely ships no
+    executable ``.py`` (so ``trust_remote_code`` is a no-op). Raises
+    ``RemoteCodeUnscannable`` when code is present but cannot be fully fetched or
+    listed (offline/gated/transient, a referenced ``.py`` that 404s, or a
+    repo-listing failure that could hide an imported helper), so the caller can fail
+    closed rather than fingerprint a partial view of code transformers would later
+    execute in full. The empty-vs-raise split is what lets the gate allow a code-free
+    repo while still blocking truly unscannable code.
     """
     import json
     from pathlib import Path
@@ -441,7 +457,7 @@ def repo_remote_code_files(model_name: str, hf_token: Optional[str] = None) -> d
                     except Exception:
                         pass
             if not _add_external_refs(files, ext_refs, hf_token, model_name):
-                return {}
+                raise RemoteCodeUnscannable(f"{model_name}: external auto_map code unreachable")
             return files
 
         from huggingface_hub import hf_hub_download, list_repo_files
@@ -459,13 +475,9 @@ def repo_remote_code_files(model_name: str, hf_token: Optional[str] = None) -> d
             except EntryNotFoundError:
                 continue
             except Exception as exc:
-                logger.warning(
-                    "repo_remote_code_files(%s): %s could not be fetched (%s); unscannable",
-                    model_name,
-                    cfg_name,
-                    exc,
-                )
-                return {}
+                raise RemoteCodeUnscannable(
+                    f"{model_name}: config {cfg_name} could not be fetched ({exc})"
+                ) from exc
             try:
                 refs |= _auto_map_refs(json.loads(Path(cfg_path).read_text()))
             except Exception:
@@ -478,12 +490,9 @@ def repo_remote_code_files(model_name: str, hf_token: Optional[str] = None) -> d
         try:
             repo_files = list_repo_files(model_name, token = hf_token)
         except Exception as exc:
-            logger.warning(
-                "repo_remote_code_files(%s): could not list repo files (%s); unscannable",
-                model_name,
-                exc,
-            )
-            return {}
+            raise RemoteCodeUnscannable(
+                f"{model_name}: could not list repo files ({exc})"
+            ) from exc
         repo_file_set = set(repo_files)
         # Scan every present .py (the import closure the loader can execute) PLUS the
         # own-repo auto_map targets that ACTUALLY EXIST in this revision. An auto_map
@@ -511,23 +520,25 @@ def repo_remote_code_files(model_name: str, hf_token: Optional[str] = None) -> d
             except Exception as exc:
                 # A .py CONFIRMED PRESENT in the listing could not be fetched. Returning
                 # the partial set would fingerprint "clean" code while transformers
-                # later fetches and runs this file. Fail closed so the caller treats
-                # the repo as unscannable. (Stale/absent refs were dropped above and
-                # never reach here, so this only fires on a present-file fetch failure.)
-                logger.warning(
-                    "repo_remote_code_files(%s): %s could not be fetched (%s); unscannable",
-                    model_name,
-                    fn,
-                    exc,
-                )
-                return {}
+                # later fetches and runs this file. Fail closed (unscannable) so the
+                # caller blocks. (Stale/absent refs were dropped above and never reach
+                # here, so this only fires on a present-file fetch failure.)
+                raise RemoteCodeUnscannable(
+                    f"{model_name}: present file {fn} could not be fetched ({exc})"
+                ) from exc
             files[fn] = Path(fp).read_text(errors = "replace")
         # Code referenced from another repo executes too: scan it or fail closed.
         if not _add_external_refs(files, refs, hf_token, model_name):
-            return {}
+            raise RemoteCodeUnscannable(f"{model_name}: external auto_map code unreachable")
+    except RemoteCodeUnscannable:
+        logger.warning("repo_remote_code_files(%s): unscannable; failing closed", model_name)
+        raise
     except Exception as exc:
-        logger.warning("repo_remote_code_files(%s): could not fetch (%s)", model_name, exc)
-        return {}
+        # An UNEXPECTED error mid-scan means we could not complete it -> unscannable.
+        raise RemoteCodeUnscannable(f"{model_name}: scan failed ({exc})") from exc
+    # Reaching here with an empty dict means the listing succeeded and the repo
+    # genuinely ships no executable .py (and no fetchable external refs) -> no remote
+    # code -> the caller treats trust_remote_code as a no-op.
     return files
 
 

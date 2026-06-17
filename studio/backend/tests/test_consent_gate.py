@@ -32,6 +32,7 @@ from utils.security.remote_code_scan import (
     CRITICAL,
     HIGH,
     REMOTE_CODE_CONFIG_FILES,
+    RemoteCodeUnscannable,
     repo_remote_code_files,
 )
 from utils.security.trusted_org import clear_cache
@@ -255,20 +256,41 @@ class TestConsentGate:
         assert d1.fingerprint != d2.fingerprint  # pinned approval would re-prompt
 
     def test_unscannable_auto_map_blocked_fail_closed(self):
-        # auto_map present but code could not be fetched/listed (gated/offline/
-        # transient, or a repo-listing failure that could hide an imported helper).
-        # We cannot verify -- or fingerprint -- code we cannot see, so fail closed:
-        # a hard, non-approvable block. The load can be retried once the repo is
-        # reachable with the right token.
+        # auto_map present and code IS shipped, but it could not be fetched/listed
+        # (gated/offline/transient, or a repo-listing failure that could hide an
+        # imported helper): repo_remote_code_files RAISES RemoteCodeUnscannable. We
+        # cannot verify -- or fingerprint -- code we cannot see, so fail closed: a
+        # hard, non-approvable block.
         with (
             patch.object(consent, "_config_has_auto_map", return_value = True),
-            patch.object(consent, "repo_remote_code_files", return_value = {}),
+            patch.object(
+                consent,
+                "repo_remote_code_files",
+                side_effect = RemoteCodeUnscannable("gated"),
+            ),
         ):
             d = evaluate_remote_code_consent("unsloth/Gated", trust_remote_code = True)
         assert d.has_remote_code is True
         assert d.blocked is True
         assert d.approvable is False
         assert "could not be scanned" in d.reason
+
+    def test_auto_map_with_no_executable_code_is_a_noop(self):
+        # A config declares auto_map but the repo ships NO executable .py (the
+        # listing succeeded; repo_remote_code_files returns {}). The common case is a
+        # GGUF repo whose config.json carries a vestigial auto_map -- there is nothing
+        # to run, so trust_remote_code is a no-op and the load is allowed, NOT blocked
+        # as unscannable.
+        with (
+            patch.object(consent, "_config_has_auto_map", return_value = True),
+            patch.object(consent, "repo_remote_code_files", return_value = {}),
+        ):
+            d = evaluate_remote_code_consent(
+                "unsloth/Llama-3_1-Nemotron-Ultra-253B-v1-GGUF", trust_remote_code = True
+            )
+        assert d.blocked is False
+        assert d.has_remote_code is False
+        assert "no-op" in d.reason
 
 
 class TestWorkersWireTheGate:
@@ -640,8 +662,8 @@ class TestScannerCoversAllExecutableCode:
             patch("huggingface_hub.hf_hub_download", side_effect = _dl),
             patch("huggingface_hub.list_repo_files", return_value = ["modeling_x.py"]),
         ):
-            files = repo_remote_code_files("third/party")
-        assert files == {}
+            with pytest.raises(RemoteCodeUnscannable):
+                repo_remote_code_files("third/party")
 
     def test_external_auto_map_repo_is_scanned(self):
         # auto_map can point at code in ANOTHER repo (owner/name--module.Class);
@@ -741,8 +763,8 @@ class TestScannerCoversAllExecutableCode:
             patch("huggingface_hub.hf_hub_download", side_effect = _dl),
             patch("huggingface_hub.list_repo_files", return_value = ["config.json", "modeling_x.py"]),
         ):
-            files = repo_remote_code_files("third/party")
-        assert files == {}  # present-but-unfetchable -> fail closed
+            with pytest.raises(RemoteCodeUnscannable):  # present-but-unfetchable -> fail closed
+                repo_remote_code_files("third/party")
 
     def test_external_tokenizer_auto_map_list_is_scanned(self):
         # transformers encodes a tokenizer auto_map as a [slow, fast] LIST, e.g.
@@ -814,8 +836,36 @@ class TestScannerCoversAllExecutableCode:
             patch("huggingface_hub.hf_hub_download", side_effect = _dl),
             patch("huggingface_hub.list_repo_files", return_value = []),
         ):
-            files = repo_remote_code_files("victim/model")
-        assert files == {}
+            with pytest.raises(RemoteCodeUnscannable):
+                repo_remote_code_files("victim/model")
+
+    def test_gguf_repo_vestigial_auto_map_no_py_is_no_code(self):
+        # A GGUF repo whose config.json carries an auto_map copied from the original
+        # model but ships NO .py (only .gguf). The listing SUCCEEDS and there is
+        # nothing to execute, so the result is an EMPTY dict (no code) -- NOT a raise
+        # (which would be "unscannable" -> a false block). This is the real shape of
+        # unsloth/Llama-3_1-Nemotron-Ultra-253B-v1-GGUF.
+        def _dl(repo, fn, token = None):
+            import json
+            import tempfile
+
+            p = Path(tempfile.mkdtemp()) / fn
+            if fn == "config.json":
+                p.write_text(
+                    json.dumps({"auto_map": {"AutoModelForCausalLM": "modeling_decilm.DeciLM"}})
+                )
+                return str(p)
+            raise EntryNotFoundError(fn)  # no other config, and modeling_decilm.py is absent
+
+        with (
+            patch("huggingface_hub.hf_hub_download", side_effect = _dl),
+            patch(
+                "huggingface_hub.list_repo_files",
+                return_value = ["config.json", "model-00001-of-00097.gguf"],
+            ),
+        ):
+            files = repo_remote_code_files("unsloth/Some-Model-GGUF")
+        assert files == {}  # no executable code -> empty (no raise)
 
     def test_tokenizer_only_auto_map_is_gated(self, tmp_path):
         # config.json is plain, but tokenizer_config.json declares auto_map: an

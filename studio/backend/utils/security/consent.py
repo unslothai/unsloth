@@ -47,6 +47,7 @@ from utils.security.remote_code_scan import (
     CRITICAL,
     HIGH,
     REMOTE_CODE_CONFIG_FILES,
+    RemoteCodeUnscannable,
     remote_code_fingerprint,
     repo_remote_code_files,
     scan_remote_code_files,
@@ -207,13 +208,14 @@ def evaluate_remote_code_consent(
             "no auto_map; trust_remote_code is a no-op",
         )
 
-    files = repo_remote_code_files(model_name, hf_token = hf_token)
-    if not files:
-        # auto_map present but the code could NOT be fully fetched/listed to scan
-        # (gated/offline/transient, or a repo-listing failure that could hide an
-        # imported helper module). We cannot verify -- or fingerprint -- code we
-        # can't see, so fail closed: block with no approval path. The load can be
-        # retried once the repo is reachable with the right token.
+    try:
+        files = repo_remote_code_files(model_name, hf_token = hf_token)
+    except RemoteCodeUnscannable:
+        # auto_map present and code IS shipped, but it could NOT be fully fetched/
+        # listed to scan (gated/offline/transient, a present .py that 404s, or a
+        # repo-listing failure that could hide an imported helper). We cannot verify
+        # -- or fingerprint -- code we can't see, so fail closed: block with no
+        # approval path. Retry once the repo is reachable with the right token.
         logger.warning(
             "Blocking trust_remote_code load of '%s': remote code present (auto_map) "
             "but could not be downloaded and scanned.",
@@ -230,6 +232,24 @@ def evaluate_remote_code_consent(
             "token is set.",
             "blocked: remote code could not be scanned",
             approvable = False,
+        )
+
+    if not files:
+        # An auto_map is declared in a config, but the repo ships NO executable .py
+        # (and no fetchable external code): the listing succeeded and there is simply
+        # nothing to run. This is the common case for a GGUF repo whose config.json
+        # carries a vestigial auto_map copied from the original model, or an auto_map
+        # that points only at files absent from this revision. transformers cannot
+        # execute code that is not there, and a GGUF load (llama.cpp) ignores auto_map
+        # entirely, so trust_remote_code is a no-op -> allow.
+        return RemoteCodeDecision(
+            model_name,
+            False,
+            False,
+            None,
+            None,
+            "",
+            "auto_map declared but no executable code present; trust_remote_code is a no-op",
         )
 
     result = scan_remote_code_files(files)
