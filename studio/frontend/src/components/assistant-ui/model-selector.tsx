@@ -24,7 +24,14 @@ import {
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
-import { type KeyboardEvent, type ReactNode, useMemo, useState } from "react";
+import {
+  type KeyboardEvent,
+  type ReactNode,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { Input } from "../ui/input";
 import { HubModelPicker, LoraModelPicker } from "./model-selector/pickers";
 import { PillTabs } from "./model-selector/pill-tabs";
@@ -225,6 +232,7 @@ const HUB_SECTION_TABS: { value: string; label: string; icon?: ReactNode }[] = [
 ];
 
 function ModelSelectorContent({
+  open,
   models,
   loraModels,
   externalModels,
@@ -239,6 +247,7 @@ function ModelSelectorContent({
   className,
   dataTour,
 }: {
+  open: boolean;
   models: ModelOption[];
   loraModels: LoraModelOption[];
   externalModels: ExternalModelOption[];
@@ -295,6 +304,17 @@ function ModelSelectorContent({
     ? activeTab
     : tabs[0].value;
   const [hubSection, setHubSection] = useState<HubSection>("recommended");
+
+  // The picker below remounts on each open, but this tab state does not, so a
+  // persisted selection that lands in lora/external after async load would
+  // reopen on Hub. Re-derive the default tab on the open edge.
+  const wasOpen = useRef(open);
+  useEffect(() => {
+    if (open && !wasOpen.current) {
+      setActiveTab(chatOnly ? chatOnlyTabsDefault : studioTabsDefault);
+    }
+    wasOpen.current = open;
+  }, [open, chatOnly, chatOnlyTabsDefault, studioTabsDefault]);
 
   function focusActiveModelOption(root: HTMLElement): boolean {
     const option =
@@ -556,6 +576,7 @@ export function ModelSelector({
         dataTour={triggerDataTour}
       />
       <ModelSelectorContent
+        open={open}
         models={models}
         loraModels={loraModels}
         externalModels={externalModels}
