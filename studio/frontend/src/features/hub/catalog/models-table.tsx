@@ -202,9 +202,9 @@ export function HubListHeader({
                 type="button"
                 aria-label="Refresh"
                 onClick={onRefresh}
-                // Drop the button to the heading's baseline instead of its
-                // vertical centre, so it sits at the bottom of the text.
-                className="inline-flex size-7 shrink-0 translate-y-[5px] cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                // Small drop so the icon lines up with the bottom of the
+                // heading text rather than its vertical centre.
+                className="inline-flex size-7 shrink-0 translate-y-[2px] cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
               >
                 <HugeiconsIcon
                   icon={Refresh01Icon}
