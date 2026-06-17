@@ -46,19 +46,15 @@ export async function updateThreadMessage(args: {
 
   const currentExport = thread.export();
 
-  // 1. FIND THE MESSAGE AND ITS PARENT
-  // We search the exported messages to find the exact metadata for the message being edited.
   const targetMessageEntry = currentExport.messages.find(m => m.message.id === messageId);
   
   if (!targetMessageEntry) {
     throw new Error("MESSAGE_NOT_FOUND");
   }
 
-  const originalMsg = targetMessageEntry.message;
-  const originalParentId = originalMsg.parentId;
-  const originalCreatedAt = originalMsg.createdAt;
+  const originalParentId = targetMessageEntry.parentId; 
+  const originalCreatedAt = targetMessageEntry.message.createdAt;
 
-  // 2. UPDATE LOCAL UI IMMEDIATELY
   const updatedMessages = currentExport.messages.map((m) => {
     if (m.message.id === messageId) {
       return {
@@ -79,13 +75,12 @@ export async function updateThreadMessage(args: {
 
   thread.import(nextExport);
 
-  // 3. BACKEND SYNC
   if (remoteId) {
     try {
       await saveChatMessage({
         id: messageId,
         threadId: remoteId,
-        parentId: originalParentId, // CRITICAL: Force the original parentId
+        parentId: originalParentId,
         role: "assistant",
         content: updatedContent,
         createdAt: originalCreatedAt ? Number(originalCreatedAt) : Date.now(),

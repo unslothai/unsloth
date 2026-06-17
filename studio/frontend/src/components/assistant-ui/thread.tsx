@@ -3295,11 +3295,6 @@ const AssistantMessage: FC = () => {
       });
       setOverrideContent(result);
     } catch (error: any) {
-      if (error.message === "THREAD_ID_LOCAL") {
-        toast.error("Cannot save: This is a temporary chat. Please save the chat to a project first to enable editing.");
-      } else {
-        toast.error("Failed to save changes to server.");
-      }
       console.error("UI: Error during save:", error);
     } finally {
       setIsEditing(false);
