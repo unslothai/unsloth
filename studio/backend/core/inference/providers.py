@@ -332,6 +332,33 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "notes": "Unified gateway to 300+ models across all major providers. HTTP-Referer and X-Title headers sent for attribution.",
         "model_list_mode": "curated",
     },
+    "atlas": {
+        "display_name": "Atlas Cloud",
+        # OpenAI-compatible Chat Completions API. https://www.atlascloud.ai
+        "base_url": "https://api.atlascloud.ai/v1",
+        # Curated flagship lineup (the platform serves 300+ models across
+        # DeepSeek / Qwen / GLM / Kimi / MiniMax and more). Locked list, not
+        # live /models, to keep the picker focused on current chat models.
+        "default_models": [
+            "deepseek-ai/deepseek-v4-pro",
+            "deepseek-ai/deepseek-v4-flash",
+            "Qwen/Qwen3-Coder",
+            "Qwen/Qwen3-VL-235B-A22B-Instruct",
+            "zai-org/glm-5",
+            "moonshotai/kimi-k2.6",
+            "minimaxai/minimax-m2.5",
+            "anthropic/claude-sonnet-4.6",
+        ],
+        "supports_streaming": True,
+        "supports_vision": True,
+        "supports_tool_calling": True,
+        "auth_header": "Authorization",
+        "auth_prefix": "Bearer ",
+        # Default reasoning-class flagship: deepseek-v4-pro emits chain-of-thought.
+        # Standard OpenAI-compatible /v1/chat/completions, so no special branch.
+        "notes": "Full-modal, OpenAI-compatible inference platform. One API key for DeepSeek, Qwen, GLM, Kimi, MiniMax and more. deepseek-ai/deepseek-v4-pro is a reasoning model.",
+        "model_list_mode": "curated",
+    },
 }
 
 
