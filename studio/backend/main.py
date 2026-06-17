@@ -466,6 +466,7 @@ async def lifespan(app: FastAPI):
     yield
 
     from core.inference.llama_http import aclose as _close_llama_http
+
     await _close_llama_http()
 
     await run_lifespan_shutdown(
