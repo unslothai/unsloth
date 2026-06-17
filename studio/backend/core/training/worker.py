@@ -1463,8 +1463,9 @@ def _run_mlx_training(event_queue, stop_queue, config):
 
     malware_targets = [model_name]
     try:
-        from utils.models.model_config import get_base_model_from_lora
-        _base = get_base_model_from_lora(model_name)
+        from utils.models.model_config import get_base_model_from_lora_identifier
+        # Resolve a LOCAL or REMOTE adapter's base so a remote LoRA base is gated too.
+        _base = get_base_model_from_lora_identifier(model_name, config.get("hf_token") or None)
         if _base:
             malware_targets.append(_base)
     except Exception as exc:
@@ -1490,8 +1491,9 @@ def _run_mlx_training(event_queue, stop_queue, config):
 
         consent_targets = [model_name]
         try:
-            from utils.models.model_config import get_base_model_from_lora
-            base_model = get_base_model_from_lora(model_name)
+            from utils.models.model_config import get_base_model_from_lora_identifier
+            # Resolve a LOCAL or REMOTE adapter's base so a remote LoRA base is gated too.
+            base_model = get_base_model_from_lora_identifier(model_name, config.get("hf_token") or None)
             if base_model:
                 consent_targets.append(base_model)
         except Exception as exc:
@@ -2190,8 +2192,9 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
 
     malware_targets = [model_name]
     try:
-        from utils.models.model_config import get_base_model_from_lora
-        _base = get_base_model_from_lora(model_name)
+        from utils.models.model_config import get_base_model_from_lora_identifier
+        # Resolve a LOCAL or REMOTE adapter's base so a remote LoRA base is gated too.
+        _base = get_base_model_from_lora_identifier(model_name, config.get("hf_token") or None)
         if _base:
             malware_targets.append(_base)
     except Exception as exc:
@@ -2220,8 +2223,9 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         # base model's custom code is what runs, so gate that repo too.
         consent_targets = [model_name]
         try:
-            from utils.models.model_config import get_base_model_from_lora
-            base_model = get_base_model_from_lora(model_name)
+            from utils.models.model_config import get_base_model_from_lora_identifier
+            # Resolve a LOCAL or REMOTE adapter's base so a remote LoRA base is gated too.
+            base_model = get_base_model_from_lora_identifier(model_name, config.get("hf_token") or None)
             if base_model:
                 consent_targets.append(base_model)
         except Exception as exc:
@@ -3199,6 +3203,74 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
         max_seq_length = config.get("max_seq_length", 512)
         training_type = config.get("training_type", "LoRA/QLoRA")
         use_lora = training_type == "LoRA/QLoRA"
+
+        # ── Malware gate (embedding path) ──
+        # Independent of trust_remote_code: a malicious pickle in a weight file
+        # deserializes when FastSentenceTransformer loads it even with
+        # trust_remote_code False, so check Hugging Face's security scan
+        # (metadata-only) before any load. For a LoRA, gate the base whose weights
+        # deserialize (resolving a LOCAL or REMOTE adapter's base).
+        from utils.security import evaluate_file_security
+
+        malware_targets = [model_name]
+        try:
+            from utils.models.model_config import get_base_model_from_lora_identifier
+            _base = get_base_model_from_lora_identifier(model_name, hf_token)
+            if _base:
+                malware_targets.append(_base)
+        except Exception as exc:
+            logger.debug("Could not resolve LoRA base for malware scan: %s", exc)
+        for target in dict.fromkeys(malware_targets):
+            _fs = evaluate_file_security(target, hf_token = hf_token)
+            if _fs.blocked:
+                event_queue.put(
+                    {
+                        "type": "error",
+                        "error": _fs.reason,
+                        "error_kind": "malware_blocked",
+                        "security": _fs.response_payload(),
+                        "ts": time.time(),
+                    }
+                )
+                return
+
+        # ── Consent gate (embedding path) ──
+        # If a custom embedding model ships auto_map repo code, scan it before
+        # FastSentenceTransformer executes it; block CRITICAL/HIGH unless
+        # pinned-approved. A no-op for models without auto_map.
+        if config.get("trust_remote_code", False):
+            from utils.security import evaluate_remote_code_consent
+
+            consent_targets = [model_name]
+            try:
+                from utils.models.model_config import get_base_model_from_lora_identifier
+                _cbase = get_base_model_from_lora_identifier(model_name, hf_token)
+                if _cbase:
+                    consent_targets.append(_cbase)
+            except Exception as exc:
+                logger.debug("Could not resolve LoRA base for consent scan: %s", exc)
+            for target in dict.fromkeys(consent_targets):
+                _rc = evaluate_remote_code_consent(
+                    target,
+                    hf_token = hf_token,
+                    trust_remote_code = True,
+                    approved_fingerprint = config.get("approved_remote_code_fingerprint"),
+                )
+                if _rc.blocked:
+                    event_queue.put(
+                        {
+                            "type": "error",
+                            "error": (
+                                f"Model '{target}' ships custom code flagged as "
+                                f"{_rc.max_severity} by the security scan. Review it and "
+                                f"re-run with approval to proceed.\n\n{_rc.findings_summary}"
+                            ),
+                            "error_kind": "remote_code_blocked",
+                            "remote_code": _rc.response_payload(),
+                            "ts": time.time(),
+                        }
+                    )
+                    return
 
         model = FastSentenceTransformer.from_pretrained(
             model_name = model_name,

@@ -44,6 +44,20 @@ HIGH = "HIGH"
 MEDIUM = "MEDIUM"
 _SEVERITY_ORDER = {CRITICAL: 0, HIGH: 1, MEDIUM: 2}
 
+# Single source of truth for the configs that can carry an ``auto_map`` pointing at
+# executable repo ``.py``. ``trust_remote_code`` runs code referenced from ANY of
+# these (model architecture, tokenizer, image/feature processor, processor, video
+# processor), so both the scanner and the consent gate (which imports this) must
+# read the same set -- scanning only config.json/tokenizer would miss a
+# custom-processor VLM entirely. Keep this list and the gate in lockstep.
+REMOTE_CODE_CONFIG_FILES = (
+    "config.json",
+    "tokenizer_config.json",
+    "preprocessor_config.json",
+    "processor_config.json",
+    "video_preprocessor_config.json",
+)
+
 # --- Fallback patterns (only used if scripts/scan_packages.py is absent) -----
 # (regex, check-name, severity). A flat subset of the canonical scanner, kept so
 # a stripped packaged install without scripts/ still scans. The canonical
@@ -393,8 +407,11 @@ def remote_code_fingerprint(files: dict[str, str]) -> str:
 def repo_remote_code_files(model_name: str, hf_token: Optional[str] = None) -> dict[str, str]:
     """Download a repo's executable ``.py`` (auto_map targets + modeling/config).
 
-    Returns {filename: content}. Returns {} on any error / offline so callers can
-    treat an unscannable repo as "unknown" and warn accordingly.
+    Returns {filename: content}. Returns {} when the repo cannot be fully fetched
+    or listed (offline/gated/transient, a referenced ``.py`` that 404s, or a
+    repo-listing failure that could hide an imported helper) so the caller treats
+    an unscannable repo as such and fails closed -- we never fingerprint a partial
+    view of code transformers would later execute in full.
     """
     import json
     from pathlib import Path
@@ -413,8 +430,10 @@ def repo_remote_code_files(model_name: str, hf_token: Optional[str] = None) -> d
                     files[str(p.relative_to(root))] = p.read_text(errors = "replace")
             # A local config can still point auto_map at an EXTERNAL Hub repo
             # (owner/name--module.Class); that code executes on load, so fetch it.
+            # Every config that can declare auto_map is checked, not just the model
+            # + tokenizer, so a custom processor's external code is not missed.
             ext_refs = set()
-            for name in ("config.json", "tokenizer_config.json"):
+            for name in REMOTE_CODE_CONFIG_FILES:
                 p = root / name
                 if p.is_file():
                     try:
@@ -426,22 +445,46 @@ def repo_remote_code_files(model_name: str, hf_token: Optional[str] = None) -> d
             return files
 
         from huggingface_hub import hf_hub_download, list_repo_files
+        from huggingface_hub.utils import EntryNotFoundError
 
-        cfg_path = hf_hub_download(model_name, "config.json", token = hf_token)
-        cfg = json.loads(Path(cfg_path).read_text())
-        refs = set(_auto_map_refs(cfg))
-        # tokenizer_config.json can declare a custom tokenizer; collect its
-        # auto_map directly rather than relying only on list_repo_files.
-        try:
-            tok_path = hf_hub_download(model_name, "tokenizer_config.json", token = hf_token)
-            refs |= _auto_map_refs(json.loads(Path(tok_path).read_text()))
-        except Exception:
-            pass
+        # Collect auto_map refs from EVERY config that can declare one (model,
+        # tokenizer, image/feature processor, processor, video processor). A genuine
+        # 404 (EntryNotFoundError) means the config is absent -> skip it; any other
+        # failure is transient/auth and could hide an auto_map we must scan, so fail
+        # closed (unscannable) rather than fingerprint an incomplete view.
+        refs = set()
+        for cfg_name in REMOTE_CODE_CONFIG_FILES:
+            try:
+                cfg_path = hf_hub_download(model_name, cfg_name, token = hf_token)
+            except EntryNotFoundError:
+                continue
+            except Exception as exc:
+                logger.warning(
+                    "repo_remote_code_files(%s): %s could not be fetched (%s); unscannable",
+                    model_name,
+                    cfg_name,
+                    exc,
+                )
+                return {}
+            try:
+                refs |= _auto_map_refs(json.loads(Path(cfg_path).read_text()))
+            except Exception:
+                pass
         wanted = {fn for repo, fn in refs if repo is None}
+        # The full file list is needed to catch helper .py the auto_map code imports
+        # but does not name. If we cannot list the repo, an imported module could be
+        # missed and the fingerprint would cover less than transformers executes, so
+        # fail closed (unscannable) rather than scan a partial set.
         try:
-            wanted |= {f for f in list_repo_files(model_name, token = hf_token) if f.endswith(".py")}
-        except Exception:
-            pass
+            repo_files = list_repo_files(model_name, token = hf_token)
+        except Exception as exc:
+            logger.warning(
+                "repo_remote_code_files(%s): could not list repo files (%s); unscannable",
+                model_name,
+                exc,
+            )
+            return {}
+        wanted |= {f for f in repo_files if f.endswith(".py")}
         for fn in wanted:
             try:
                 fp = hf_hub_download(model_name, fn, token = hf_token)

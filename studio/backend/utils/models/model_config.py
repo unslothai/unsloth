@@ -2255,6 +2255,51 @@ def get_base_model_from_lora(lora_path: str) -> Optional[str]:
         return None
 
 
+def get_base_model_from_lora_identifier(
+    identifier: str, hf_token: Optional[str] = None
+) -> Optional[str]:
+    """Resolve a LoRA adapter's base model for a LOCAL dir OR a REMOTE HF repo.
+
+    ``get_base_model_from_lora`` only reads a local adapter directory (it requires
+    ``is_dir()``). The SECURITY gates must also follow a *remote* adapter's base,
+    because the base model's code / weights are what execute on load: an attacker's
+    adapter repo can point ``base_model_name_or_path`` at a base carrying a poisoned
+    pickle or HIGH auto_map code. For a remote repo id we fetch ONLY the small
+    ``adapter_config.json`` (metadata; never a weight file) and read the base. Use
+    this in the gate paths so a remote LoRA base is scanned, not just the adapter.
+
+    Returns the base model id, or ``None`` when the identifier is not a LoRA adapter
+    or the base cannot be determined (the caller still scans the identifier itself).
+    """
+    # Local path: reuse the existing directory reader (identical behavior).
+    try:
+        if is_local_path(identifier):
+            return get_base_model_from_lora(identifier)
+    except Exception:
+        return get_base_model_from_lora(identifier)
+
+    # Remote repo id: read base_model_name_or_path from adapter_config.json only.
+    # A missing adapter_config.json (not a LoRA) or an unreachable repo => None.
+    try:
+        from huggingface_hub import hf_hub_download
+
+        cfg_path = hf_hub_download(
+            identifier, "adapter_config.json", token = hf_token if hf_token else None
+        )
+        with open(cfg_path, "r") as f:
+            base_model = json.load(f).get("base_model_name_or_path")
+        if base_model:
+            logger.info(
+                "Detected base model from remote adapter_config.json (%s): %s",
+                identifier,
+                base_model,
+            )
+            return base_model
+    except Exception as exc:
+        logger.debug("Could not resolve remote LoRA base for '%s': %s", identifier, exc)
+    return None
+
+
 # Status indicators that appear in UI dropdowns
 UI_STATUS_INDICATORS = [" (Ready)", " (Loading...)", " (Active)", "↓ "]
 

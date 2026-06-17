@@ -2578,8 +2578,10 @@ async def validate_model(
         trc_target = config.identifier
         security_targets = [config.identifier]
         try:
-            from utils.models.model_config import get_base_model_from_lora
-            _base = get_base_model_from_lora(model_identifier)
+            from utils.models.model_config import get_base_model_from_lora_identifier
+            # Resolve the base for a LOCAL or a REMOTE adapter so a remote LoRA's
+            # base (where the code/weights actually execute) is reviewed too.
+            _base = get_base_model_from_lora_identifier(model_identifier, request.hf_token)
             if _base:
                 trc_target = _base
                 security_targets.append(_base)

@@ -7,7 +7,8 @@ The gate queries Hugging Face's own security scan
 (``model_info(securityStatus=True).security_repo_status``) -- metadata only, it
 never downloads the flagged files. Only the Hub call is stubbed (no network).
 Policy: hard block on unsafe/suspicious/malicious; fail open when the scan is
-unavailable; skip local paths and GGUF; no first-party exemption.
+unavailable; skip local paths only (a remote *.gguf-named repo is still scanned);
+no first-party exemption.
 """
 
 from types import SimpleNamespace
@@ -88,10 +89,26 @@ def test_skips_local_path():
     assert "local" in d.reason
 
 
-def test_skips_gguf():
+def test_remote_gguf_named_repo_is_still_scanned():
+    # A repo must not evade the scan by ending its NAME in .gguf: only LOCAL paths
+    # skip the Hub scan. A remote repo id (even "evil/model.gguf") is scanned, so a
+    # poisoned pickle smuggled into such a repo is still blocked.
+    status = {
+        "scansDone": True,
+        "filesWithIssues": [{"path": "pytorch_model.bin", "level": "unsafe"}],
+    }
+    with _patch_status(status):
+        d = evaluate_file_security("evil/model.gguf")
+    assert d.blocked is True
+    assert d.unsafe_files
+
+
+def test_skips_local_gguf_file():
+    # A local .gguf path is caught by is_local_path -- no Hub call.
     with patch("huggingface_hub.model_info", side_effect = AssertionError("should not be called")):
-        d = evaluate_file_security("unsloth/Model-GGUF/model.gguf")
+        d = evaluate_file_security("/tmp/models/model.gguf")
     assert d.blocked is False
+    assert "local" in d.reason
 
 
 def test_no_first_party_exemption():

@@ -10,24 +10,28 @@ right before it would pass ``trust_remote_code=True`` to the loader.
 
 The gate answers: *is it safe to run this model's repo code now?*
 
-* No ``auto_map`` in ``config.json`` -> ``trust_remote_code`` executes nothing;
-  allow (``has_remote_code=False``).
+* No ``auto_map`` in any config (model/tokenizer/processor) -> ``trust_remote_code``
+  executes nothing; allow (``has_remote_code=False``).
 * ``auto_map`` present -> statically scan the repo's ``.py`` (reusing
-  ``remote_code_scan``) and decide by severity and provenance:
+  ``remote_code_scan``) and decide by severity:
     - CRITICAL findings (reverse shell, cloud-metadata/IMDS, credential theft,
-      remote-code loaders, droppers) -> block even for first-party repos
-      (defense against a compromised trusted repo), unless pinned-approved.
-    - HIGH findings (``subprocess``/``exec``/``eval``/network/``b64decode``) are
-      common in legitimate modeling code (DeepSeek-OCR, Kimi, etc. all trip
-      HIGH), so they block only for UNTRUSTED third-party repos. First-party
-      ``unsloth``/``nvidia`` repos (``is_trusted_org_repo``) load through -- the
-      org is the trust anchor.
+      remote-code loaders, droppers) -> hard block (never approvable), even for
+      first-party repos (defense against a compromised trusted repo).
+    - HIGH findings (``subprocess``/``exec``/``eval``/network/``b64decode``) ->
+      block, but user-approvable: the consent dialog pins approval to the scanned
+      ``fingerprint``. This applies to EVERY repo, including first-party
+      ``unsloth``/``nvidia`` -- the org is not a blanket bypass, since a
+      compromised first-party repo with HIGH code still warrants per-version
+      review. (A first-party model whose remote code scans clean, like
+      DeepSeek-OCR, still prompts for consent because it has an ``auto_map``, then
+      loads; one that tripped HIGH would load only after a pinned-fingerprint
+      approval.)
   In every blocking case the caller surfaces ``findings_summary`` +
   ``fingerprint`` so the user can make an informed, pinned decision and retry.
-* ``auto_map`` present but the code cannot be fetched (gated/offline) -> cannot
-  verify; allow with a warning, since the load only reaches here on an explicit
-  opt-in (user toggle or trusted-org auto-enable). We never silently *run* code
-  the scan flagged, but we do not break legitimate gated repos either.
+* ``auto_map`` present but the code cannot be fully fetched/listed to scan
+  (gated/offline/transient, or a repo-listing failure that could hide an imported
+  helper) -> fail closed: hard block, no approval path, since we cannot verify or
+  fingerprint code we cannot see. Retry when the repo is reachable with the token.
 
 The gate is hardening + consent-driven, not a hard sandbox: a determined attacker
 can obfuscate past static patterns. Its job is to raise the bar and inform
@@ -42,6 +46,7 @@ from loggers import get_logger
 from utils.security.remote_code_scan import (
     CRITICAL,
     HIGH,
+    REMOTE_CODE_CONFIG_FILES,
     remote_code_fingerprint,
     repo_remote_code_files,
     scan_remote_code_files,
@@ -86,20 +91,27 @@ class RemoteCodeDecision:
         }
 
 
-# ``trust_remote_code`` executes custom code for BOTH the model architecture
-# (config.json auto_map) and the tokenizer (tokenizer_config.json auto_map), so
-# either declaring auto_map must gate the consent flow.
-_REMOTE_CODE_CONFIG_FILES = ("config.json", "tokenizer_config.json")
+# ``trust_remote_code`` executes custom code from EVERY config that can carry an
+# ``auto_map`` (model architecture, tokenizer, image/feature processor, processor,
+# video processor). transformers' AutoImageProcessor / AutoFeatureExtractor /
+# AutoProcessor read auto_map from these and run the referenced .py under
+# trust_remote_code, so any of them declaring auto_map must gate the consent flow
+# -- scanning only config.json/tokenizer would miss a custom-processor VLM
+# entirely. The list lives in ``remote_code_scan`` (the scanner) so the gate and
+# the scanner stay in lockstep.
+_REMOTE_CODE_CONFIG_FILES = REMOTE_CODE_CONFIG_FILES
 
 
 def _config_has_auto_map(model_name: str, hf_token: Optional[str] = None) -> Optional[bool]:
-    """Whether ``config.json`` OR ``tokenizer_config.json`` declares an
-    ``auto_map`` (repo code).
+    """Whether ANY config that can carry one (model/tokenizer/processor) declares
+    an ``auto_map`` (repo code).
 
     Reads raw JSON only (never executes), using ``hf_token`` so private/gated
     repos resolve with the same auth the later load will use. Returns ``None``
-    when no config could be read, so the caller treats it as "unknown" and scans
-    rather than assuming there is no remote code.
+    only when a config could not be read due to a transient/auth error, so the
+    caller treats it as "unknown" and scans rather than assuming there is no
+    remote code. A repo that genuinely ships none of these configs returns
+    ``False`` (definitively no remote code).
     """
     configs = _load_remote_code_configs(model_name, hf_token)
     if configs is None:
@@ -108,10 +120,15 @@ def _config_has_auto_map(model_name: str, hf_token: Optional[str] = None) -> Opt
 
 
 def _load_remote_code_configs(model_name: str, hf_token: Optional[str] = None) -> Optional[list]:
-    """Read every config that can declare ``auto_map`` (model + tokenizer) as raw
-    dicts. Returns the configs that exist (possibly ``[]`` for a local dir with
-    none), or ``None`` when nothing could be read at all (e.g. an unreachable
-    remote repo) so the caller treats the repo as "unknown" and scans it."""
+    """Read every config that can declare ``auto_map`` (model/tokenizer/processor)
+    as raw dicts.
+
+    Returns the configs that exist (possibly ``[]`` when the repo genuinely ships
+    none of them -- a 404 on every one -- which definitively means no config-based
+    auto_map), or ``None`` only when a config could NOT be read due to a transient/
+    auth/network failure, so the caller treats that repo as "unknown" and scans it.
+    The 404-vs-error split matters: a real absence is "no remote code" (allow); an
+    unreadable config is "unknown" (fail closed to a scan)."""
     import json
     from pathlib import Path
 
@@ -128,16 +145,23 @@ def _load_remote_code_configs(model_name: str, hf_token: Optional[str] = None) -
             return configs
 
         from huggingface_hub import hf_hub_download
+        from huggingface_hub.utils import EntryNotFoundError
 
-        configs, read_any = [], False
+        configs = []
         for name in _REMOTE_CODE_CONFIG_FILES:
             try:
                 p = hf_hub_download(repo_id = model_name, filename = name, token = hf_token)
+            except EntryNotFoundError:
+                continue  # this config genuinely does not exist (404) -> truly absent
             except Exception:
-                continue  # file absent (404) or a transient miss for this name
-            read_any = True
+                # A transient/auth/network failure is NOT "absent": treating it as
+                # absent could let a tokenizer/processor-only auto_map slip through
+                # as "no remote code". Fail closed to "unknown" so the caller scans.
+                return None
             configs.append(json.loads(Path(p).read_text()))
-        return configs if read_any else None
+        # Reaching here means every config was either read or a genuine 404, so an
+        # empty list is a definitive "no config-based auto_map", not "unknown".
+        return configs
     except Exception as exc:
         logger.debug("auto_map check could not read config for %s: %s", model_name, exc)
         return None
@@ -159,9 +183,10 @@ def evaluate_remote_code_consent(
     accept, re-issue the load with ``approved_fingerprint`` set to
     ``decision.fingerprint``.
 
-    ``trusted_org`` may be supplied if the caller already computed
-    ``is_trusted_org_repo``; otherwise it is resolved lazily, and only when it
-    matters (a HIGH-severity result), to avoid an extra Hub call.
+    ``trusted_org`` is accepted for backward compatibility but no longer changes
+    the decision: first-party is not a blanket bypass, so a HIGH-severity result
+    requires per-version approval for EVERY repo and CRITICAL is a hard block for
+    every repo. The parameter is retained so existing call sites keep working.
     """
     if not trust_remote_code:
         return RemoteCodeDecision(
@@ -184,21 +209,27 @@ def evaluate_remote_code_consent(
 
     files = repo_remote_code_files(model_name, hf_token = hf_token)
     if not files:
-        # auto_map present but unscannable (gated/offline). Reached only on an
-        # explicit opt-in; allow but record that we could not verify.
+        # auto_map present but the code could NOT be fully fetched/listed to scan
+        # (gated/offline/transient, or a repo-listing failure that could hide an
+        # imported helper module). We cannot verify -- or fingerprint -- code we
+        # can't see, so fail closed: block with no approval path. The load can be
+        # retried once the repo is reachable with the right token.
         logger.warning(
-            "Remote code for '%s' could not be fetched to scan; allowing on "
-            "explicit opt-in but it was NOT verified.",
+            "Blocking trust_remote_code load of '%s': remote code present (auto_map) "
+            "but could not be downloaded and scanned.",
             model_name,
         )
         return RemoteCodeDecision(
             model_name,
             True,
-            False,
+            True,
             None,
             None,
-            "Remote code present (auto_map) but could not be downloaded to scan.",
-            "unscannable; allowed via explicit opt-in",
+            "Remote code is present (auto_map) but could not be downloaded and "
+            "scanned. Retry when the repo is reachable and the correct Hugging Face "
+            "token is set.",
+            "blocked: remote code could not be scanned",
+            approvable = False,
         )
 
     result = scan_remote_code_files(files)
@@ -219,17 +250,12 @@ def evaluate_remote_code_consent(
     elif approved:
         blocked, reason = False, "approved by fingerprint"
     elif sev == HIGH:
-        # exec/eval/subprocess/b64decode are common in legitimate modeling code,
-        # so HIGH blocks only for untrusted third-party repos. First-party repos
-        # (the org is the trust anchor) load through.
-        trusted = trusted_org
-        if trusted is None:
-            from utils.security.trusted_org import is_trusted_org_repo
-            trusted = is_trusted_org_repo(model_name, hf_token = hf_token)
-        if trusted:
-            blocked, reason = False, "allowed: first-party repo (HIGH findings hardening)"
-        else:
-            blocked, reason = True, "blocked: scan found HIGH patterns in third-party repo"
+        # HIGH (exec/eval/subprocess/network/b64decode) is user-approvable, but
+        # EVERY repo -- including first-party unsloth/nvidia -- must pin approval to
+        # the scanned fingerprint through the consent dialog. The org is no longer a
+        # blanket bypass: a compromised first-party repo with HIGH code still
+        # requires explicit, per-version review. CRITICAL stays a hard block above.
+        blocked, reason = True, "blocked: scan found HIGH patterns; approval required"
     else:
         blocked, reason = False, "allowed: no high-risk patterns"
 

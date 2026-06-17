@@ -22,13 +22,19 @@ unpickles the flagged files.
 
 Policy (confirmed product decisions):
   * Hard block, non-approvable -- a flagged file cannot be overridden by the user.
-  * Fail-open -- block only when the Hub reports ``scansDone`` true AND a blocking
-    level is present. Missing scan / ``scansDone`` false / offline / any error =>
-    allow (subprocess isolation + transformers ``weights_only`` remain the
-    backstop), matching the remote-code gate's "unscannable => allow".
+  * Block whenever ``filesWithIssues`` already lists a blocking level, regardless
+    of ``scansDone``: ``scansDone`` is frequently false even for fully-clean
+    safetensors repos, and a file the Hub has ALREADY flagged ``unsafe`` is unsafe
+    whether or not the rest of the scan has finished. The ONLY fail-open path is an
+    unavailable status (missing scan field / offline / any error) => allow
+    (subprocess isolation + transformers ``weights_only`` remain the backstop).
   * No first-party exemption -- a poisoned pickle in a compromised trusted repo is
     exactly the CRITICAL-class threat we block even for first parties.
-  * Local paths / GGUF are skipped (no Hub scan exists; GGUF is not a pickle).
+  * Local paths are skipped (no Hub scan exists; a local ``.gguf`` lands here too).
+    A REMOTE reference is always scanned, even one whose name ends in ``.gguf``, so
+    a repo cannot dodge the scan by suffixing its name (``evil/model.gguf``). GGUF
+    is not a pickle format, but a repo can still ship a flagged pickle alongside
+    one; a reference that is not a real repo id simply fails open.
 """
 
 from dataclasses import dataclass, field
@@ -62,10 +68,6 @@ class FileSecurityDecision:
             "security_blocked": self.blocked,
             "reason": self.reason,
         }
-
-
-def _is_gguf(model_name: str) -> bool:
-    return model_name.lower().endswith(".gguf")
 
 
 def _fetch_security_status(model_name: str, hf_token: Optional[str]):
@@ -107,11 +109,13 @@ def evaluate_file_security(model_name: str, hf_token: Optional[str] = None) -> F
     Metadata-only: never touches the flagged file bytes. Fails open when the scan
     cannot be obtained.
     """
-    # Local folders and GGUF files have no Hub security scan; nothing to check.
+    # Local folders/files (including a local .gguf) have no Hub security scan;
+    # nothing to check. A REMOTE reference is scanned even if it ends in .gguf, so a
+    # repo cannot evade the scan by naming itself "*.gguf".
     try:
         from utils.paths import is_local_path
-        if is_local_path(model_name) or _is_gguf(model_name):
-            return FileSecurityDecision(model_name, False, reason = "local or gguf; no Hub scan")
+        if is_local_path(model_name):
+            return FileSecurityDecision(model_name, False, reason = "local path; no Hub scan")
     except Exception:
         # If we cannot even classify the path, do not block on that account.
         return FileSecurityDecision(model_name, False, reason = "path check failed; not blocked")

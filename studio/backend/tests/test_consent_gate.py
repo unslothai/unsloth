@@ -26,7 +26,14 @@ from utils.security import (
     scan_remote_code_files,
     should_block_remote_code,
 )
-from utils.security.remote_code_scan import CRITICAL, HIGH, repo_remote_code_files
+from huggingface_hub.utils import EntryNotFoundError
+
+from utils.security.remote_code_scan import (
+    CRITICAL,
+    HIGH,
+    REMOTE_CODE_CONFIG_FILES,
+    repo_remote_code_files,
+)
 from utils.security.trusted_org import clear_cache
 
 _BACKEND = Path(__file__).resolve().parent.parent
@@ -132,17 +139,25 @@ class TestConsentGate:
         f0 = p["findings"][0]
         assert {"severity", "file", "check"} <= set(f0)
 
-    def test_high_first_party_allowed(self):
-        # Same HIGH patterns, but a first-party repo -> allowed (DeepSeek-OCR
-        # / Kimi trip HIGH on eval/b64decode and must still load).
+    def test_high_first_party_requires_approval(self):
+        # First-party is no longer a blanket bypass. HIGH patterns from a first-party
+        # repo now require explicit, per-version approval through the consent dialog,
+        # exactly like a third-party repo: a compromised first-party repo with HIGH
+        # code still warrants review. It is approvable (the user can load it on
+        # consent), unlike CRITICAL which stays a hard block (separate test). (Real
+        # first-party models like DeepSeek-OCR scan clean; this uses a synthetic HIGH
+        # payload to exercise the policy regardless of any specific repo's contents.)
         a, b = _with_auto_map(_HIGH)
         with a, b:
             d = evaluate_remote_code_consent(
                 "unsloth/DeepSeek-OCR", trust_remote_code = True, trusted_org = True
             )
         assert d.has_remote_code is True
-        assert d.blocked is False
-        assert "first-party" in d.reason
+        assert d.blocked is True
+        assert d.approvable is True
+        assert d.max_severity == "HIGH"
+        assert d.fingerprint
+        assert "approval required" in d.reason
 
     def test_bare_subprocess_blocked_third_party(self):
         # A bare subprocess.Popen in a config __init__ -- ignored by the package
@@ -239,16 +254,21 @@ class TestConsentGate:
             )
         assert d1.fingerprint != d2.fingerprint  # pinned approval would re-prompt
 
-    def test_unscannable_auto_map_allowed_with_warning(self):
-        # auto_map present but code could not be fetched (gated/offline).
+    def test_unscannable_auto_map_blocked_fail_closed(self):
+        # auto_map present but code could not be fetched/listed (gated/offline/
+        # transient, or a repo-listing failure that could hide an imported helper).
+        # We cannot verify -- or fingerprint -- code we cannot see, so fail closed:
+        # a hard, non-approvable block. The load can be retried once the repo is
+        # reachable with the right token.
         with (
             patch.object(consent, "_config_has_auto_map", return_value = True),
             patch.object(consent, "repo_remote_code_files", return_value = {}),
         ):
             d = evaluate_remote_code_consent("unsloth/Gated", trust_remote_code = True)
         assert d.has_remote_code is True
-        assert d.blocked is False
-        assert "unscannable" in d.reason
+        assert d.blocked is True
+        assert d.approvable is False
+        assert "could not be scanned" in d.reason
 
 
 class TestWorkersWireTheGate:
@@ -282,6 +302,30 @@ class TestWorkersWireTheGate:
             src = (_BACKEND / rel).read_text()
             assert "consent_targets" in src
             assert "get_base_model_from_lora" in src or "mc.base_model" in src
+
+    def test_remote_lora_base_is_resolved_in_gate_paths(self):
+        # validate / scan / training / export must resolve a REMOTE adapter's base
+        # (not just a local dir), so a remote LoRA's base model is scanned and not
+        # silently trusted. (The inference worker gets the resolved base from
+        # ModelConfig.base_model, which already handles remote adapters.)
+        for rel in (
+            "routes/inference.py",
+            "routes/models.py",
+            "core/training/worker.py",
+            "core/export/worker.py",
+        ):
+            src = (_BACKEND / rel).read_text()
+            assert "get_base_model_from_lora_identifier" in src, rel
+
+    def test_embedding_training_path_gates_before_load(self):
+        # The embedding pipeline (FastSentenceTransformer) must run the malware gate
+        # and the consent gate before loading, like the LLM/VLM/audio paths.
+        src = (_BACKEND / "core/training/worker.py").read_text()
+        start = src.index("def _run_embedding_training(")
+        end = src.index("FastSentenceTransformer.from_pretrained(", start)
+        region = src[start:end]
+        assert "evaluate_file_security" in region
+        assert "evaluate_remote_code_consent" in region
 
 
 class TestCanonicalScannerSource:
@@ -588,7 +632,9 @@ class TestScannerCoversAllExecutableCode:
                 p = Path(tempfile.mkdtemp()) / "config.json"
                 p.write_text(json.dumps({"auto_map": {"AutoModel": "modeling_x.M"}}))
                 return str(p)
-            raise RuntimeError("download failed")
+            if fn in REMOTE_CODE_CONFIG_FILES:
+                raise EntryNotFoundError(fn)  # repo ships no tokenizer/processor config
+            raise RuntimeError("download failed")  # the referenced .py cannot be fetched
 
         with (
             patch("huggingface_hub.hf_hub_download", side_effect = _dl),
@@ -616,6 +662,8 @@ class TestScannerCoversAllExecutableCode:
                 )
             elif repo == "evilorg/evilrepo" and fn == "modeling_evil.py":
                 p.write_text("import os\nos.system('id')\n")
+            elif fn in REMOTE_CODE_CONFIG_FILES:
+                raise EntryNotFoundError(fn)  # victim repo ships no tokenizer/processor config
             else:
                 raise RuntimeError(f"unexpected fetch {repo}:{fn}")
             return str(p)
@@ -659,6 +707,8 @@ class TestScannerCoversAllExecutableCode:
                 )
             elif repo == "evilorg/evilrepo" and fn == "tokenization_evil.py":
                 p.write_text("import os\nos.system('id')\n")
+            elif fn in REMOTE_CODE_CONFIG_FILES:
+                raise EntryNotFoundError(fn)  # victim repo ships no image/processor config
             else:
                 raise RuntimeError(f"unexpected fetch {repo}:{fn}")
             return str(p)
@@ -688,7 +738,9 @@ class TestScannerCoversAllExecutableCode:
                     json.dumps({"auto_map": {"AutoModel": "evilorg/evilrepo--modeling_evil.M"}})
                 )
                 return str(p)
-            raise RuntimeError("download failed")
+            if fn in REMOTE_CODE_CONFIG_FILES:
+                raise EntryNotFoundError(fn)  # victim repo ships no tokenizer/processor config
+            raise RuntimeError("download failed")  # the external repo's .py is unreachable
 
         with (
             patch("huggingface_hub.hf_hub_download", side_effect = _dl),
@@ -714,6 +766,36 @@ class TestScannerCoversAllExecutableCode:
         assert d.has_remote_code is True
         assert d.blocked is True
         assert d.fingerprint
+
+    def test_config_file_list_covers_transformers_auto_map_sources(self):
+        # Model authors cannot pick arbitrary filenames: transformers only reads
+        # auto_map (the trust_remote_code entrypoint) from a fixed set of config
+        # files, exposed as filename constants. Pin our scanned set to those exact
+        # constants from the INSTALLED transformers so a future upgrade that adds or
+        # renames an auto_map-bearing config (e.g. a new processor type) trips here
+        # instead of silently leaving that config's custom code unscanned.
+        from transformers.tokenization_utils_base import TOKENIZER_CONFIG_FILE
+        from transformers.utils import (
+            CONFIG_NAME,
+            FEATURE_EXTRACTOR_NAME,
+            IMAGE_PROCESSOR_NAME,
+            PROCESSOR_NAME,
+            VIDEO_PROCESSOR_NAME,
+        )
+
+        expected = {
+            CONFIG_NAME,  # AutoConfig / AutoModel
+            TOKENIZER_CONFIG_FILE,  # AutoTokenizer
+            FEATURE_EXTRACTOR_NAME,  # AutoFeatureExtractor (preprocessor_config.json)
+            IMAGE_PROCESSOR_NAME,  # AutoImageProcessor (preprocessor_config.json)
+            PROCESSOR_NAME,  # AutoProcessor
+            VIDEO_PROCESSOR_NAME,  # AutoVideoProcessor
+        }
+        missing = expected - set(REMOTE_CODE_CONFIG_FILES)
+        assert not missing, (
+            "transformers reads auto_map from config files the consent gate does not "
+            f"scan: {sorted(missing)}. Add them to REMOTE_CODE_CONFIG_FILES."
+        )
 
 
 # ---------------------------------------------------------------------------

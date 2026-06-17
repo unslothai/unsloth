@@ -24,6 +24,7 @@ from utils.models.model_config import (
     ModelConfig,
     get_base_model_from_checkpoint,
     get_base_model_from_lora,
+    get_base_model_from_lora_identifier,
     scan_trained_models,
 )
 
@@ -74,6 +75,45 @@ def test_get_base_model_from_lora_rejects_full_finetune_dirs(tmp_path: Path):
     (tmp_path / "model.safetensors").write_bytes(b"")
 
     assert get_base_model_from_lora(str(tmp_path)) is None
+
+
+def test_lora_identifier_resolves_local_dir_like_the_local_helper(tmp_path: Path):
+    # For a local path, the identifier helper must behave exactly like the
+    # directory reader (no Hub call).
+    (tmp_path / "adapter_config.json").write_text(
+        json.dumps({"base_model_name_or_path": "HuggingFaceTB/SmolLM-135M"})
+    )
+    (tmp_path / "adapter_model.safetensors").write_bytes(b"")
+    with patch("huggingface_hub.hf_hub_download", side_effect = AssertionError("no Hub call")):
+        assert get_base_model_from_lora_identifier(str(tmp_path)) == "HuggingFaceTB/SmolLM-135M"
+
+
+def test_lora_identifier_resolves_remote_adapter_base(tmp_path: Path):
+    # A REMOTE adapter repo has no local dir, so the local helper returns None; the
+    # identifier helper must fetch adapter_config.json from the Hub and surface the
+    # base model so the security gate can scan the base, not just the adapter.
+    cfg = tmp_path / "adapter_config.json"
+    cfg.write_text(json.dumps({"base_model_name_or_path": "unsloth/Llama-3.2-1B-Instruct"}))
+
+    def _dl(repo, fn, token = None):
+        assert repo == "someone/my-remote-lora"
+        assert fn == "adapter_config.json"
+        return str(cfg)
+
+    assert get_base_model_from_lora("someone/my-remote-lora") is None  # local-only: misses it
+    with patch("huggingface_hub.hf_hub_download", side_effect = _dl):
+        base = get_base_model_from_lora_identifier("someone/my-remote-lora")
+    assert base == "unsloth/Llama-3.2-1B-Instruct"
+
+
+def test_lora_identifier_returns_none_for_non_adapter_remote_repo():
+    # A normal (non-LoRA) remote repo has no adapter_config.json: the Hub raises
+    # EntryNotFoundError and the helper returns None (the caller still scans the
+    # identifier itself).
+    from huggingface_hub.utils import EntryNotFoundError
+
+    with patch("huggingface_hub.hf_hub_download", side_effect = EntryNotFoundError("404")):
+        assert get_base_model_from_lora_identifier("unsloth/Llama-3.2-1B-Instruct") is None
 
 
 @patch("utils.models.model_config.is_audio_input_type", return_value = False)
