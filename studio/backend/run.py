@@ -395,7 +395,42 @@ def _verify_global_reachability(display_host: str, port: int) -> None:
         pass
 
 
-def _emit_secure_startup_output(port: int) -> None:
+def _tool_policy_notice(host: str, secure: bool, enable_tools: "Optional[bool]") -> str:
+    """One-line server-side tool policy summary for the startup banner.
+
+    Tools default on for every bind, so this makes the resolved policy visible on
+    the plain-server path (which has no per-command banner): a network-reachable
+    launch must never be silent about code execution. `unsloth studio run` prints
+    its own equivalent notice."""
+    if enable_tools is False:
+        return "Server-side tools are DISABLED (--disable-tools)."
+    state = (
+        "ENABLED (--enable-tools)"
+        if enable_tools
+        else "ENABLED by default (per-request setting honored)"
+    )
+    if secure:
+        return (
+            f"Server-side tools are {state}, reachable via the authenticated "
+            "Cloudflare HTTPS tunnel. Anyone with the API key can run code on "
+            "this machine. Do not share the API key. Pass --disable-tools to turn off."
+        )
+    from utils.host_policy import is_external_host
+
+    if host in ("0.0.0.0", "::") or is_external_host(host):
+        return (
+            f"Server-side tools are {state} and this port is network-reachable. "
+            "Anyone who can reach it with the API key can run code on this "
+            "machine. Do not share the API key. Pass --disable-tools to turn off."
+        )
+    return f"Server-side tools are {state} for loopback. Pass --disable-tools to turn off."
+
+
+def _emit_tool_policy_notice(host: str, secure: bool, enable_tools: "Optional[bool]") -> None:
+    print(_tool_policy_notice(host, secure, enable_tools), flush = True)
+
+
+def _emit_secure_startup_output(port: int, enable_tools: "Optional[bool]" = None) -> None:
     """Secure-mode banner: only the Cloudflare link (loopback has no public raw URL)."""
     print("")
     print("🦥 Unsloth Studio is running (secure)")
@@ -403,6 +438,7 @@ def _emit_secure_startup_output(port: int) -> None:
     _print_cloudflare_line()
     print(f"  On this machine only: http://127.0.0.1:{port}/")
     print("─" * 52)
+    _emit_tool_policy_notice("127.0.0.1", True, enable_tools)
     print_studio_stop_hint()
 
 
@@ -411,35 +447,33 @@ def _emit_startup_output(
     port: int,
     display_host: str,
     secure: bool = False,
+    enable_tools: "Optional[bool]" = None,
 ) -> None:
-    """Print the access banner plus any post-startup warnings.
+    """Print the access banner, post-startup warnings, and the tool-policy notice.
 
-    Extracted from ``_run`` so the banner/warning wiring is testable. The
-    ``localhost``-to-::1 mismatch warning and the wildcard reachability
-    check are mutually exclusive (the mismatch helper returns None for any
-    non-127.0.0.1 bind, and wildcard binds are never 127.0.0.1), so the
-    trailing stop hint is emitted exactly once.
+    Extracted from ``_run`` so the banner/warning wiring is testable. The access
+    banner is printed without its stop hint; any ``localhost``-to-::1 mismatch or
+    wildcard reachability warning follows, then the one-line tool-policy notice,
+    then a single trailing stop hint.
     """
     if secure:
-        _emit_secure_startup_output(port)
+        _emit_secure_startup_output(port, enable_tools)
         return
     wildcard_bind = host in ("0.0.0.0", "::")
     localhost_mismatch_url = _localhost_ipv6_mismatch_url(host, port)
-    # For wildcard binds, run the reachability check between the URL
-    # section and the stop hint so the stop hint stays last.
     print_studio_access_banner(
         port = port,
         bind_host = host,
         display_host = display_host,
-        include_stop_hint = not wildcard_bind and not localhost_mismatch_url,
+        include_stop_hint = False,
     )
     if localhost_mismatch_url:
         _print_localhost_ipv6_mismatch_warning(localhost_mismatch_url, port)
-        print_studio_stop_hint()
     elif wildcard_bind:
         _verify_global_reachability(display_host, port)
         _print_cloudflare_line()
-        print_studio_stop_hint()
+    _emit_tool_policy_notice(host, False, enable_tools)
+    print_studio_stop_hint()
 
 
 def _print_cloudflare_line() -> None:
@@ -1136,7 +1170,7 @@ def run_server(
         sys.exit(1)
 
     if not silent:
-        _emit_startup_output(host, port, display_host, secure = secure)
+        _emit_startup_output(host, port, display_host, secure = secure, enable_tools = enable_tools)
 
     return app
 

@@ -1005,15 +1005,15 @@ def run(
         None,
         "--enable-tools/--disable-tools",
         help = (
-            "Force server-side tools on/off for all requests. "
-            "Default: on for 127.0.0.1, off for 0.0.0.0."
+            "Force server-side tools (web search, code execution) on or off for "
+            "every request. Default: on for every bind."
         ),
     ),
     yes: bool = typer.Option(
         False,
         "--yes",
         "-y",
-        help = "Skip the 0.0.0.0 + --enable-tools confirmation prompt.",
+        help = "Accepted for backward compatibility; the tool policy no longer prompts.",
     ),
     parallel: int = typer.Option(
         _PARALLEL_DEFAULT_RUN,

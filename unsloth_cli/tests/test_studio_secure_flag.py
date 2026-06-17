@@ -342,3 +342,18 @@ def test_studio_default_rejects_enable_tools_with_subcommand():
     assert result.exit_code == 2, result.output
     combined = (result.output or "") + (getattr(result, "stderr", "") or "")
     assert "--enable-tools" in combined, combined
+
+
+def test_run_tool_help_reflects_default_on_everywhere():
+    # Help text must match the new policy (tools on for every bind, no prompt),
+    # not the removed loopback-on/network-off default + confirmation prompt.
+    import inspect
+
+    params = inspect.signature(_studio().run).parameters
+    tools_help = params["enable_tools"].default.help or ""
+    assert "on for every bind" in tools_help, tools_help
+    assert "0.0.0.0" not in tools_help, tools_help
+
+    yes_help = params["yes"].default.help or ""
+    assert "Skip the 0.0.0.0" not in yes_help, yes_help
+    assert "no longer prompts" in yes_help, yes_help
