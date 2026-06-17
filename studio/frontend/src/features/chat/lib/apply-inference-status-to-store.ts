@@ -179,6 +179,18 @@ export function applyActiveModelStatusToStore(
         tensorParallel: status.tensor_parallel,
         loadedTensorParallel: status.tensor_parallel,
       }),
+    ...(status.gpu_memory_mode !== undefined &&
+      prevState.loadedGpuMemoryMode === null && {
+        gpuMemoryMode: status.gpu_memory_mode,
+        loadedGpuMemoryMode: status.gpu_memory_mode,
+        ...(status.gpu_memory_mode === "manual" && {
+          gpuLayers: status.gpu_layers ?? 999,
+          cpuMoe: status.cpu_moe ?? false,
+        }),
+        loadedGpuLayers: status.gpu_layers ?? null,
+        loadedCpuMoe: status.cpu_moe ?? null,
+      }),
+    ...(status.n_layers != null && { ggufLayerCount: status.n_layers }),
     ...(status.chat_template_override !== undefined &&
       prevState.loadedChatTemplateOverride === null &&
       prevState.chatTemplateOverride === null && {

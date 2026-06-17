@@ -45,6 +45,7 @@ export const CHAT_RAG_AUTOINJECT_KEY = "unsloth_chat_rag_autoinject";
 export const CHAT_RAG_AUTOINJECT_MIN_SCORE_KEY =
   "unsloth_chat_rag_autoinject_min_score";
 export const CHAT_SPECULATIVE_TYPE_KEY = "unsloth_chat_speculative_type";
+export const CHAT_GPU_MEMORY_MODE_KEY = "unsloth_chat_gpu_memory_mode";
 
 // Persist only the model-agnostic intents (auto/ngram/off). MTP modes
 // (mtp/mtp+ngram) and spec_draft_n_max stay session-only: a persisted MTP
@@ -399,6 +400,17 @@ export function saveSpeculativeType(value: string | null): void {
   }
 }
 
+// GPU Memory strategy is a standing preference (like speculative type), not a
+// per-model setting: a "fit" choice persists across model switches and reloads.
+export function readPersistedGpuMemoryMode(): "auto" | "fit" | "manual" {
+  const raw = loadString(CHAT_GPU_MEMORY_MODE_KEY, "auto");
+  return raw === "fit" || raw === "manual" ? raw : "auto";
+}
+
+export function saveGpuMemoryMode(value: "auto" | "fit" | "manual"): void {
+  saveString(CHAT_GPU_MEMORY_MODE_KEY, value);
+}
+
 function notifyHfTokenChanged(value: string): void {
   if (!canUseStorage()) return;
   try {
@@ -538,6 +550,23 @@ type ChatRuntimeStore = {
   tensorParallel: boolean;
   /** Backend-reported tensor-parallel state; null until first hydrated. */
   loadedTensorParallel: boolean | null;
+  /**
+   * GPU memory strategy for GGUF loads. "auto" = Unsloth picks GPUs and
+   * context to fit the model; "fit" = hand memory management to llama.cpp's
+   * --fit (no device masking, no context/gpu-layer/tensor-split calc);
+   * "manual" = pin gpuLayers/cpuMoe yourself (--fit off).
+   */
+  gpuMemoryMode: "auto" | "fit" | "manual";
+  /** Backend-reported gpu memory mode; null until first hydrated. */
+  loadedGpuMemoryMode: "auto" | "fit" | "manual" | null;
+  /** Manual mode: layers to offload to GPU (>= model layer count = all). */
+  gpuLayers: number;
+  loadedGpuLayers: number | null;
+  /** Manual mode: move MoE experts to CPU (--cpu-moe). */
+  cpuMoe: boolean;
+  loadedCpuMoe: boolean | null;
+  /** Model layer count (GGUF block_count); the manual gpu-layers ceiling. */
+  ggufLayerCount: number | null;
   loadedIsMultimodal: boolean;
   /** Active model is a block-diffusion model (DiffusionGemma): drives the
    *  denoising-canvas artifact auto-render. */
@@ -639,6 +668,9 @@ type ChatRuntimeStore = {
   setSpeculativeType: (type: string | null) => void;
   setSpecDraftNMax: (value: number | null) => void;
   setTensorParallel: (value: boolean) => void;
+  setGpuMemoryMode: (mode: "auto" | "fit" | "manual") => void;
+  setGpuLayers: (value: number) => void;
+  setCpuMoe: (value: boolean) => void;
   setCustomContextLength: (v: number | null) => void;
   setChatTemplateOverride: (template: string | null) => void;
   setPendingAudio: (base64: string, name: string) => void;
@@ -924,6 +956,14 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   loadedSpecDraftNMax: null,
   tensorParallel: false,
   loadedTensorParallel: null,
+  gpuMemoryMode: readPersistedGpuMemoryMode(),
+  loadedGpuMemoryMode: null,
+  // 999 = offload all layers; llama.cpp caps it to the model's layer count.
+  gpuLayers: 999,
+  loadedGpuLayers: null,
+  cpuMoe: false,
+  loadedCpuMoe: null,
+  ggufLayerCount: null,
   loadedIsMultimodal: false,
   loadedIsDiffusion: false,
   customContextLength: null,
@@ -1143,6 +1183,14 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       loadedSpecDraftNMax: null,
       tensorParallel: false,
       loadedTensorParallel: null,
+      // Standing preference: survives unload, unlike the per-model knobs above.
+      gpuMemoryMode: readPersistedGpuMemoryMode(),
+      loadedGpuMemoryMode: null,
+      gpuLayers: 999,
+      loadedGpuLayers: null,
+      cpuMoe: false,
+      loadedCpuMoe: null,
+      ggufLayerCount: null,
       loadedIsMultimodal: false,
       loadedIsDiffusion: false,
       customContextLength: null,
@@ -1339,6 +1387,12 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   setSpeculativeType: (speculativeType) => set({ speculativeType }),
   setSpecDraftNMax: (specDraftNMax) => set({ specDraftNMax }),
   setTensorParallel: (tensorParallel) => set({ tensorParallel }),
+  setGpuMemoryMode: (gpuMemoryMode) => {
+    saveGpuMemoryMode(gpuMemoryMode);
+    set({ gpuMemoryMode });
+  },
+  setGpuLayers: (gpuLayers) => set({ gpuLayers }),
+  setCpuMoe: (cpuMoe) => set({ cpuMoe }),
   setCustomContextLength: (customContextLength) => set({ customContextLength }),
   setChatTemplateOverride: (chatTemplateOverride) =>
     set({ chatTemplateOverride }),

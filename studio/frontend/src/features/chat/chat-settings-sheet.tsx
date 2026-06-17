@@ -546,6 +546,16 @@ export function ChatSettingsPanel({
   const loadedTensorParallel = useChatRuntimeStore(
     (s) => s.loadedTensorParallel,
   );
+  const gpuMemoryMode = useChatRuntimeStore((s) => s.gpuMemoryMode);
+  const setGpuMemoryMode = useChatRuntimeStore((s) => s.setGpuMemoryMode);
+  const loadedGpuMemoryMode = useChatRuntimeStore((s) => s.loadedGpuMemoryMode);
+  const gpuLayers = useChatRuntimeStore((s) => s.gpuLayers);
+  const setGpuLayers = useChatRuntimeStore((s) => s.setGpuLayers);
+  const loadedGpuLayers = useChatRuntimeStore((s) => s.loadedGpuLayers);
+  const cpuMoe = useChatRuntimeStore((s) => s.cpuMoe);
+  const setCpuMoe = useChatRuntimeStore((s) => s.setCpuMoe);
+  const loadedCpuMoe = useChatRuntimeStore((s) => s.loadedCpuMoe);
+  const ggufLayerCount = useChatRuntimeStore((s) => s.ggufLayerCount);
   const customContextLength = useChatRuntimeStore((s) => s.customContextLength);
   const setCustomContextLength = useChatRuntimeStore(
     (s) => s.setCustomContextLength,
@@ -567,8 +577,31 @@ export function ChatSettingsPanel({
   const specDirty = speculativeType !== loadedSpeculativeType;
   const specDraftDirty = specDraftNMax !== loadedSpecDraftNMax;
   const tpDirty = tensorParallel !== (loadedTensorParallel ?? false);
+  const gpuDirty = gpuMemoryMode !== (loadedGpuMemoryMode ?? "auto");
+  const isAutoFit = gpuMemoryMode === "fit";
+  const isManual = gpuMemoryMode === "manual";
+  // fit and manual both bypass Unsloth's tensor-parallel planning, so the
+  // Tensor Parallelism toggle is disabled outside Automatic.
+  const tpDisabled = gpuMemoryMode !== "auto";
+  // Manual gpu-layers ceiling = model layer count (else a safe fallback).
+  const gpuLayersMax = ggufLayerCount ?? 256;
+  const manualDirty =
+    isManual &&
+    (gpuLayers !== loadedGpuLayers || cpuMoe !== (loadedCpuMoe ?? false));
+  // Auto-fit context: null / <= 0 means "Auto" (let --fit size it); a positive
+  // value pins it (--fit optimizes gpu-layers around it). After a fit load,
+  // surface the length --fit actually chose.
+  const fitCtxAuto = isAutoFit && (customContextLength ?? 0) <= 0;
+  const fitResolvedCtx =
+    fitCtxAuto && loadedGpuMemoryMode === "fit" ? ggufContextLength : null;
   const modelSettingsDirty =
-    kvDirty || ctxDirty || specDirty || specDraftDirty || tpDirty;
+    kvDirty ||
+    ctxDirty ||
+    specDirty ||
+    specDraftDirty ||
+    tpDirty ||
+    gpuDirty ||
+    manualDirty;
   const loadedChatTemplateOverride = useChatRuntimeStore(
     (s) => s.loadedChatTemplateOverride,
   );
@@ -848,6 +881,158 @@ export function ChatSettingsPanel({
           <div className="flex flex-col gap-4 pt-1">
             {isGguf && (
               <>
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex min-w-0 items-center gap-1.5">
+                    <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+                      GPU Memory
+                    </span>
+                    <InfoHint>
+                      Default: Unsloth picks GPUs and context length to fit your
+                      model, kept on GPU. llama.cpp --fit on: hands memory
+                      management to llama.cpp, which sizes context and offloads
+                      any overflow (including MoE experts) to system RAM so
+                      oversized models still load -- slower. Manual: pin the GPU
+                      layer count and MoE offload yourself. fit and Manual turn
+                      off Tensor Parallelism.
+                    </InfoHint>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-1.5">
+                    <Select
+                      value={gpuMemoryMode}
+                      onValueChange={(v) => {
+                        const mode =
+                          v === "fit" ? "fit" : v === "manual" ? "manual" : "auto";
+                        setGpuMemoryMode(mode);
+                        // fit/manual bypass Unsloth's tensor-parallel planning.
+                        if (mode !== "auto") setTensorParallel(false);
+                      }}
+                    >
+                      <SelectTrigger
+                        animateRadius={false}
+                        icon={ChevronDownStandardIcon}
+                        iconClassName="size-3.5"
+                        className="grid h-7 w-[160px] min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-1 rounded-full border-transparent bg-black/[0.04] dark:bg-white/[0.05] hover:bg-black/[0.06] dark:hover:bg-white/[0.1] pl-3 pr-2 py-0 text-[13px]! font-medium text-nav-fg focus-visible:ring-0 focus-visible:border-transparent [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate [&>svg]:shrink-0"
+                        data-test-id="gpu-memory-mode-select"
+                      >
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent className="menu-soft-surface ring-0 border-0 rounded-lg">
+                        <SelectItem value="auto">Default</SelectItem>
+                        <SelectItem value="fit">llama.cpp --fit on</SelectItem>
+                        <SelectItem value="manual">Manual</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+                {isManual && (
+                  <>
+                    <div className="space-y-3.5">
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="flex min-w-0 items-center gap-1.5">
+                          <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+                            GPU Layers
+                          </span>
+                          <InfoHint>
+                            Layers to offload to the GPU (--gpu-layers, --fit
+                            off); the rest run on CPU. At the maximum, all layers
+                            are on the GPU.
+                          </InfoHint>
+                        </div>
+                        <NumericValueInput
+                          value={Math.min(gpuLayers, gpuLayersMax)}
+                          min={0}
+                          max={gpuLayersMax}
+                          step={1}
+                          onChange={(v) => setGpuLayers(v)}
+                          ariaLabel="GPU Layers"
+                          size={6}
+                        />
+                      </div>
+                      <Slider
+                        min={0}
+                        max={gpuLayersMax}
+                        step={1}
+                        value={[Math.min(gpuLayers, gpuLayersMax)]}
+                        onValueChange={([v]) => setGpuLayers(Math.round(v))}
+                        className="panel-slider"
+                      />
+                    </div>
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="flex min-w-0 items-center gap-1.5">
+                        <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+                          Keep MoE on CPU
+                        </span>
+                        <InfoHint>
+                          Move MoE expert tensors to the CPU (--cpu-moe). Saves
+                          VRAM on MoE models at some speed cost; no effect on
+                          dense models.
+                        </InfoHint>
+                      </div>
+                      <Switch
+                        className="panel-switch shrink-0"
+                        checked={cpuMoe}
+                        onCheckedChange={setCpuMoe}
+                        data-test-id="cpu-moe-switch"
+                      />
+                    </div>
+                  </>
+                )}
+                {isAutoFit ? (
+                  <div className="space-y-3.5">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="flex min-w-0 items-center gap-1.5">
+                        <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+                          Context Length
+                        </span>
+                        <InfoHint>
+                          Auto: llama.cpp's --fit sizes the context to fit VRAM.
+                          Set a length to pin it instead -- --fit then optimizes
+                          GPU layer offload around it. The length --fit chose
+                          shows here after loading.
+                        </InfoHint>
+                      </div>
+                      <NumericValueInput
+                        value={fitCtxAuto ? -1 : (customContextLength ?? 0)}
+                        displayValue={fitCtxAuto ? "Auto" : undefined}
+                        min={-1}
+                        max={ctxMaxValue ?? undefined}
+                        step={1}
+                        onChange={(v) => {
+                          setCustomContextLength(v > 0 ? v : null);
+                        }}
+                        ariaLabel="Context Length"
+                        size={8}
+                      />
+                    </div>
+                    <Slider
+                      min={-1}
+                      max={ctxMaxValue ?? 4096}
+                      step={1024}
+                      value={[
+                        fitCtxAuto
+                          ? -1
+                          : Math.min(
+                              customContextLength ?? 0,
+                              ctxMaxValue ?? 4096,
+                            ),
+                      ]}
+                      onValueChange={([v]) => {
+                        // Far-left snaps to Auto; otherwise to the nearest 1024.
+                        if (v < 512) {
+                          setCustomContextLength(null);
+                        } else {
+                          setCustomContextLength(Math.round(v / 1024) * 1024);
+                        }
+                      }}
+                      className="panel-slider"
+                    />
+                    {fitResolvedCtx != null && (
+                      <p className="text-[11px] text-nav-fg/40">
+                        llama.cpp loaded {fitResolvedCtx.toLocaleString()} tokens.
+                      </p>
+                    )}
+                  </div>
+                ) : (
                 <div className="space-y-3.5">
                   <div className="flex items-center justify-between gap-3">
                     <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
@@ -901,6 +1086,7 @@ export function ChatSettingsPanel({
                       </p>
                     )}
                 </div>
+                )}
                 <div className="flex items-center justify-between gap-3">
                   <div className="flex min-w-0 items-center gap-1.5">
                     <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
@@ -1059,6 +1245,7 @@ export function ChatSettingsPanel({
                     className="panel-switch shrink-0"
                     checked={tensorParallel}
                     onCheckedChange={setTensorParallel}
+                    disabled={tpDisabled}
                     data-test-id="tensor-parallel-switch"
                   />
                 </div>
@@ -1120,6 +1307,9 @@ export function ChatSettingsPanel({
                     setSpeculativeType(loadedSpeculativeType);
                     setSpecDraftNMax(loadedSpecDraftNMax);
                     setTensorParallel(loadedTensorParallel ?? false);
+                    setGpuMemoryMode(loadedGpuMemoryMode ?? "auto");
+                    setGpuLayers(loadedGpuLayers ?? 999);
+                    setCpuMoe(loadedCpuMoe ?? false);
                     setChatTemplateOverride(loadedChatTemplateOverride);
                   }}
                   className="h-7 px-3 text-[12px] font-medium tracking-nav text-muted-foreground"

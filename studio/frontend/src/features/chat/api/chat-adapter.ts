@@ -1220,6 +1220,10 @@ async function autoLoadSmallestModel(): Promise<{
               trust_remote_code: trustRemoteCode,
               speculative_type: specSettings.speculativeType,
               spec_draft_n_max: specSettings.specDraftNMax,
+              // GPU Memory is a standing preference, so honor it on auto-load.
+              gpu_memory_mode: useChatRuntimeStore.getState().gpuMemoryMode,
+              gpu_layers: useChatRuntimeStore.getState().gpuLayers,
+              cpu_moe: useChatRuntimeStore.getState().cpuMoe,
             });
             saveSpeculativeType(specSettings.speculativeType);
             useChatRuntimeStore
@@ -1266,6 +1270,15 @@ async function autoLoadSmallestModel(): Promise<{
               loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
               tensorParallel: loadResp.tensor_parallel ?? false,
               loadedTensorParallel: loadResp.tensor_parallel ?? false,
+              gpuMemoryMode: loadResp.gpu_memory_mode ?? "auto",
+              loadedGpuMemoryMode: loadResp.gpu_memory_mode ?? "auto",
+              loadedGpuLayers: loadResp.gpu_layers ?? null,
+              loadedCpuMoe: loadResp.cpu_moe ?? null,
+              ggufLayerCount: loadResp.n_layers ?? null,
+              ...(loadResp.gpu_memory_mode === "manual" && {
+                gpuLayers: loadResp.gpu_layers ?? 999,
+                cpuMoe: loadResp.cpu_moe ?? false,
+              }),
               defaultChatTemplate: loadResp.chat_template ?? null,
               chatTemplateOverride: null,
               loadedChatTemplateOverride: null,
@@ -1399,6 +1412,10 @@ async function autoLoadSmallestModel(): Promise<{
         trust_remote_code: trustRemoteCode,
         speculative_type: specSettings.speculativeType,
         spec_draft_n_max: specSettings.specDraftNMax,
+        // GPU Memory is a standing preference, so honor it on auto-load.
+        gpu_memory_mode: useChatRuntimeStore.getState().gpuMemoryMode,
+        gpu_layers: useChatRuntimeStore.getState().gpuLayers,
+        cpu_moe: useChatRuntimeStore.getState().cpuMoe,
       });
       saveSpeculativeType(specSettings.speculativeType);
       useChatRuntimeStore
@@ -1437,6 +1454,15 @@ async function autoLoadSmallestModel(): Promise<{
         loadedKvCacheDtype: loadResp.cache_type_kv ?? null,
         tensorParallel: loadResp.tensor_parallel ?? false,
         loadedTensorParallel: loadResp.tensor_parallel ?? false,
+        gpuMemoryMode: loadResp.gpu_memory_mode ?? "auto",
+        loadedGpuMemoryMode: loadResp.gpu_memory_mode ?? "auto",
+        loadedGpuLayers: loadResp.gpu_layers ?? null,
+        loadedCpuMoe: loadResp.cpu_moe ?? null,
+        ggufLayerCount: loadResp.n_layers ?? null,
+        ...(loadResp.gpu_memory_mode === "manual" && {
+          gpuLayers: loadResp.gpu_layers ?? 999,
+          cpuMoe: loadResp.cpu_moe ?? false,
+        }),
         defaultChatTemplate: loadResp.chat_template ?? null,
         chatTemplateOverride: null,
         loadedIsMultimodal: isMultimodalResponse(loadResp),

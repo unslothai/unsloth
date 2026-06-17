@@ -956,7 +956,9 @@ export function SharedComposer({
         const resp = await loadModel({
           model_path: sel.id,
           hf_token: useChatRuntimeStore.getState().hfToken || null,
-          max_seq_length: maxSeqLength,
+          // Auto-fit owns context sizing; send 0 so the backend omits -c.
+          max_seq_length:
+            currentStore.gpuMemoryMode === "fit" ? 0 : maxSeqLength,
           load_in_4bit: true,
           is_lora: sel.isLora,
           gguf_variant: sel.ggufVariant ?? null,
@@ -964,8 +966,11 @@ export function SharedComposer({
           chat_template_override: effectiveChatTemplateOverride,
           speculative_type: specSettings.speculativeType,
           spec_draft_n_max: specSettings.specDraftNMax,
-          // Honor the Tensor Parallelism toggle on compare loads too.
+          // Honor the Tensor Parallelism + GPU Memory choices on compare loads.
           tensor_parallel: currentStore.tensorParallel,
+          gpu_memory_mode: currentStore.gpuMemoryMode,
+          gpu_layers: currentStore.gpuLayers,
+          cpu_moe: currentStore.cpuMoe,
         });
         saveSpeculativeType(specSettings.speculativeType);
         const store = useChatRuntimeStore.getState();
@@ -984,6 +989,15 @@ export function SharedComposer({
           supportsTools: resp.supports_tools ?? false,
           tensorParallel: resp.tensor_parallel ?? false,
           loadedTensorParallel: resp.tensor_parallel ?? false,
+          gpuMemoryMode: resp.gpu_memory_mode ?? "auto",
+          loadedGpuMemoryMode: resp.gpu_memory_mode ?? "auto",
+          loadedGpuLayers: resp.gpu_layers ?? null,
+          loadedCpuMoe: resp.cpu_moe ?? null,
+          ggufLayerCount: resp.n_layers ?? null,
+          ...(resp.gpu_memory_mode === "manual" && {
+            gpuLayers: resp.gpu_layers ?? 999,
+            cpuMoe: resp.cpu_moe ?? false,
+          }),
           loadedIsMultimodal: isMultimodalResponse(resp),
           ...resolveLoadedSpeculativeSettings(resp),
         });

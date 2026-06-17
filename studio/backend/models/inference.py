@@ -96,6 +96,33 @@ class LoadRequest(BaseModel):
             "No effect on a single GPU. Ignored for non-GGUF models."
         ),
     )
+    gpu_memory_mode: Literal["auto", "fit", "manual"] = Field(
+        "auto",
+        description = (
+            "GPU memory strategy for GGUF models. 'auto' (default): Unsloth "
+            "selects GPUs and caps context to fit VRAM. 'fit': hand memory "
+            "management to llama.cpp's --fit -- no device masking, no context "
+            "auto-reduce, no gpu-layer/tensor-split planning. 'manual': pin "
+            "gpu_layers and cpu_moe yourself (--fit off). Ignored for non-GGUF."
+        ),
+    )
+    gpu_layers: int = Field(
+        -1,
+        ge = -1,
+        description = (
+            "Manual mode only: number of layers to offload to the GPU "
+            "(--gpu-layers, with --fit off). A value >= the model's layer count "
+            "offloads all of them. Ignored unless gpu_memory_mode is 'manual'."
+        ),
+    )
+    cpu_moe: bool = Field(
+        False,
+        description = (
+            "Manual mode only: move MoE expert tensors to the CPU (--cpu-moe) "
+            "to save VRAM on MoE models. Ignored unless gpu_memory_mode is "
+            "'manual'."
+        ),
+    )
     llama_extra_args: Optional[List[str]] = Field(
         None,
         description = (
@@ -240,6 +267,22 @@ class LoadResponse(BaseModel):
         False,
         description = "Whether tensor-parallel split (--split-mode tensor) is active.",
     )
+    gpu_memory_mode: Literal["auto", "fit", "manual"] = Field(
+        "auto",
+        description = "Active GPU memory strategy ('auto', 'fit' = --fit on, or 'manual').",
+    )
+    gpu_layers: int = Field(
+        -1,
+        description = "Manual mode: requested --gpu-layers value (-1 when not manual).",
+    )
+    cpu_moe: bool = Field(
+        False,
+        description = "Manual mode: whether MoE experts are pinned to CPU (--cpu-moe).",
+    )
+    n_layers: Optional[int] = Field(
+        None,
+        description = "Model's layer count (GGUF block_count), for the manual gpu-layers ceiling.",
+    )
 
 
 class UnloadResponse(BaseModel):
@@ -361,6 +404,22 @@ class InferenceStatusResponse(BaseModel):
     tensor_parallel: bool = Field(
         False,
         description = "Whether tensor-parallel split (--split-mode tensor) is active.",
+    )
+    gpu_memory_mode: Literal["auto", "fit", "manual"] = Field(
+        "auto",
+        description = "Active GPU memory strategy ('auto', 'fit' = --fit on, or 'manual').",
+    )
+    gpu_layers: int = Field(
+        -1,
+        description = "Manual mode: requested --gpu-layers value (-1 when not manual).",
+    )
+    cpu_moe: bool = Field(
+        False,
+        description = "Manual mode: whether MoE experts are pinned to CPU (--cpu-moe).",
+    )
+    n_layers: Optional[int] = Field(
+        None,
+        description = "Model's layer count (GGUF block_count), for the manual gpu-layers ceiling.",
     )
     llama_cpp_supports_mtp: bool = Field(
         True,

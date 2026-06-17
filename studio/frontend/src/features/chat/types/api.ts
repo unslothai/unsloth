@@ -61,6 +61,17 @@ export interface LoadModelRequest {
    * of by layer for GGUF models. Multi-GPU only; no effect on a single GPU.
    */
   tensor_parallel?: boolean | null;
+  /**
+   * GPU memory strategy for GGUF models. "auto" (default): Unsloth selects
+   * GPUs and caps context to fit VRAM. "fit": hand memory management to
+   * llama.cpp's --fit (no device masking / context / gpu-layer / split calc).
+   * "manual": pin gpu_layers and cpu_moe yourself (--fit off).
+   */
+  gpu_memory_mode?: "auto" | "fit" | "manual";
+  /** Manual mode: layers to offload to GPU (--gpu-layers, --fit off). */
+  gpu_layers?: number;
+  /** Manual mode: move MoE experts to CPU (--cpu-moe). */
+  cpu_moe?: boolean;
 }
 
 export interface ValidateModelResponse {
@@ -142,6 +153,10 @@ export interface LoadModelResponse {
   spec_draft_n_max?: number | null;
   /** Whether tensor-parallel split (--split-mode tensor) is active. */
   tensor_parallel?: boolean;
+  gpu_memory_mode?: "auto" | "fit" | "manual";
+  gpu_layers?: number;
+  cpu_moe?: boolean;
+  n_layers?: number | null;
 }
 
 export interface UnloadModelRequest {
@@ -185,6 +200,10 @@ export interface InferenceStatusResponse {
   spec_draft_n_max?: number | null;
   /** Whether tensor-parallel split (--split-mode tensor) is active. */
   tensor_parallel?: boolean;
+  gpu_memory_mode?: "auto" | "fit" | "manual";
+  gpu_layers?: number;
+  cpu_moe?: boolean;
+  n_layers?: number | null;
   /**
    * Why MTP was disabled on the loaded model despite being requested.
    * "binary_no_mtp" / "binary_outdated" -> updating llama.cpp would re-enable

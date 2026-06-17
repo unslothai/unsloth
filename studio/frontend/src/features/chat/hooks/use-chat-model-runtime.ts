@@ -519,6 +519,9 @@ export function useChatModelRuntime() {
               speculativeType,
               specDraftNMax,
               tensorParallel,
+              gpuMemoryMode,
+              gpuLayers,
+              cpuMoe,
               activePresetSource,
               activeGgufVariant,
             } = useChatRuntimeStore.getState();
@@ -532,13 +535,22 @@ export function useChatModelRuntime() {
               maxSeqLength,
               presetSource: activePresetSource,
             });
+            // In auto-fit mode llama.cpp's --fit owns context sizing: send 0
+            // (the backend omits -c so --fit sizes it) unless the user pinned
+            // an explicit length, which --fit then optimizes gpu-layers around.
+            const loadMaxSeqLength =
+              gpuMemoryMode === "fit"
+                ? customContextLength && customContextLength > 0
+                  ? customContextLength
+                  : 0
+                : effectiveMaxSeqLength;
             const effectiveChatTemplateOverride =
               chatTemplateOverride?.trim() ? chatTemplateOverride : null;
             const loadResponse = await loadModel({
               model_path: modelId,
               nativePathLease: loadNativePathLease,
               hf_token: hfToken,
-              max_seq_length: effectiveMaxSeqLength,
+              max_seq_length: loadMaxSeqLength,
               load_in_4bit: true,
               is_lora: isLora,
               gguf_variant: ggufVariant ?? null,
@@ -548,6 +560,9 @@ export function useChatModelRuntime() {
               speculative_type: speculativeType,
               spec_draft_n_max: specDraftNMax,
               tensor_parallel: tensorParallel,
+              gpu_memory_mode: gpuMemoryMode,
+              gpu_layers: gpuLayers,
+              cpu_moe: cpuMoe,
             });
 
             // If cancelled while loading, don't update UI to show
@@ -581,6 +596,7 @@ export function useChatModelRuntime() {
             }
             const loadedKv = loadResponse.cache_type_kv ?? null;
             const loadedTp = loadResponse.tensor_parallel ?? false;
+            const loadedGpuMode = loadResponse.gpu_memory_mode ?? "auto";
             const loadedSpec = normalizeSpeculativeType(
               loadResponse.speculative_type,
             );
@@ -639,6 +655,17 @@ export function useChatModelRuntime() {
               loadedKvCacheDtype: loadedKv,
               tensorParallel: loadedTp,
               loadedTensorParallel: loadedTp,
+              gpuMemoryMode: loadedGpuMode,
+              loadedGpuMemoryMode: loadedGpuMode,
+              loadedGpuLayers: loadResponse.gpu_layers ?? null,
+              loadedCpuMoe: loadResponse.cpu_moe ?? null,
+              ggufLayerCount: loadResponse.n_layers ?? null,
+              // Only sync the manual knobs from a manual load; otherwise keep
+              // the user's pending choice for when they switch to Manual.
+              ...(loadedGpuMode === "manual" && {
+                gpuLayers: loadResponse.gpu_layers ?? 999,
+                cpuMoe: loadResponse.cpu_moe ?? false,
+              }),
               speculativeType: loadedSpec,
               loadedSpeculativeType: loadedSpec,
               specDraftNMax: loadResponse.spec_draft_n_max ?? null,
@@ -717,6 +744,9 @@ export function useChatModelRuntime() {
                   // Restore the previous model in the split mode it was running,
                   // not the default layer split.
                   tensor_parallel: stateBeforeUnload.loadedTensorParallel ?? false,
+                  gpu_memory_mode: stateBeforeUnload.loadedGpuMemoryMode ?? "auto",
+                  gpu_layers: stateBeforeUnload.loadedGpuLayers ?? -1,
+                  cpu_moe: stateBeforeUnload.loadedCpuMoe ?? false,
                 });
                 useChatRuntimeStore.setState({
                   activeNativePathToken: previousActiveNativePathToken ?? null,

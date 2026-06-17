@@ -23,7 +23,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Callable, Collection, Generator, Iterable, List, Optional, Union
+from typing import Callable, Collection, Generator, Iterable, List, Literal, Optional, Union
 
 import httpx
 
@@ -752,6 +752,11 @@ class LlamaCppBackend:
         self._cache_type_kv: Optional[str] = None
         # Whether --split-mode tensor was applied on the active load.
         self._tensor_parallel: bool = False
+        # GPU memory strategy applied on the active load ("auto"/"fit"/"manual").
+        self._gpu_memory_mode: str = "auto"
+        # Manual-mode load options (echoed back so the UI round-trips them).
+        self._gpu_layers: int = -1
+        self._cpu_moe: bool = False
         self._reasoning_default: bool = True
         self._speculative_type: Optional[str] = None
         # Canonical UI-facing mode the user requested
@@ -1069,6 +1074,26 @@ class LlamaCppBackend:
     def tensor_parallel(self) -> bool:
         """Whether --split-mode tensor is active on the loaded server."""
         return self._tensor_parallel
+
+    @property
+    def gpu_memory_mode(self) -> str:
+        """Active GPU memory strategy: 'auto' (Unsloth), 'fit' (--fit on), or 'manual'."""
+        return self._gpu_memory_mode
+
+    @property
+    def gpu_layers(self) -> int:
+        """Requested --gpu-layers for manual mode (-1 when not manual)."""
+        return self._gpu_layers
+
+    @property
+    def cpu_moe(self) -> bool:
+        """Whether manual mode pinned MoE experts to CPU (--cpu-moe)."""
+        return self._cpu_moe
+
+    @property
+    def n_layers(self) -> Optional[int]:
+        """Model layer count (GGUF block_count), or None if unknown."""
+        return self._n_layers
 
     @property
     def speculative_type(self) -> Optional[str]:
@@ -3501,6 +3526,9 @@ class LlamaCppBackend:
         speculative_type: Optional[str] = None,
         spec_draft_n_max: Optional[int] = None,
         tensor_parallel: bool = False,
+        gpu_memory_mode: Literal["auto", "fit", "manual"] = "auto",
+        gpu_layers: int = -1,
+        cpu_moe: bool = False,
         n_threads: Optional[int] = None,
         n_gpu_layers: Optional[int] = None,  # caller compat, unused
         n_parallel: int = 1,
@@ -3533,6 +3561,9 @@ class LlamaCppBackend:
                 speculative_type = speculative_type,
                 spec_draft_n_max = spec_draft_n_max,
                 tensor_parallel = tensor_parallel,
+                gpu_memory_mode = gpu_memory_mode,
+                gpu_layers = gpu_layers,
+                cpu_moe = cpu_moe,
                 chat_template_override = chat_template_override,
                 extra_args = extra_args,
                 is_vision = is_vision,
@@ -3705,6 +3736,12 @@ class LlamaCppBackend:
                 # toggle, so reconcile it back into tensor_parallel state.
                 split_mode_override = parse_split_mode_override(extra_args)
                 tensor_parallel = resolve_tensor_parallel(extra_args, tensor_parallel)
+                # Record the requested strategy for /status and the load
+                # response. 'fit'/'manual' have no fallback, so the request
+                # value is the value actually applied.
+                self._gpu_memory_mode = gpu_memory_mode
+                self._gpu_layers = gpu_layers
+                self._cpu_moe = cpu_moe
                 # Tensor mode aborts on a quantized KV cache, so drop it for the
                 # tensor attempt (and strip any inherited/explicit --cache-type
                 # that would re-impose it when appended last). The layer-split
@@ -3779,6 +3816,39 @@ class LlamaCppBackend:
                     # Default UI ceiling to the native context length;
                     # GPU/VRAM-fit logic below may shrink it on limited HW.
                     max_available_ctx = self._context_length or effective_ctx
+
+                    # llama.cpp auto-fit (--fit on): hand all memory management
+                    # to llama-server. Emptying the probed GPU set makes the
+                    # selection and tensor-parallel planning below no-op, so
+                    # gpu_indices stays None (no CUDA/HIP device masking),
+                    # use_fit stays True (--fit on), and tp_tensor_split stays
+                    # None (no --tensor-split). Honor an explicit context (so
+                    # --fit optimizes the gpu-layer offload around it); 0 lets
+                    # --fit size the context itself.
+                    if gpu_memory_mode == "fit":
+                        gpus = []
+                        tensor_parallel = False
+                        effective_ctx = requested_ctx if requested_ctx > 0 else 0
+                        original_ctx = effective_ctx
+                        # --fit aborts under --split-mode tensor; a raw extras
+                        # --split-mode/--tensor-split (appended last) would
+                        # otherwise reach llama-server. Strip it like the TP
+                        # downgrade does.
+                        extra_args = strip_split_mode_only(extra_args)
+                    elif gpu_memory_mode == "manual":
+                        # Manual offload (--gpu-layers + --fit off): no device
+                        # masking and no context auto-cap -- the user owns layer
+                        # count and context (slider value, native default). Same
+                        # split-mode strip as fit (manual never tensor-splits).
+                        gpus = []
+                        tensor_parallel = False
+                        effective_ctx = (
+                            requested_ctx
+                            if requested_ctx > 0
+                            else (self._context_length or 0)
+                        )
+                        original_ctx = effective_ctx
+                        extra_args = strip_split_mode_only(extra_args)
 
                     # Will MTP engage on this load? If so, auto-fit reserves
                     # extra VRAM for the draft model. Mirrors
@@ -4039,8 +4109,6 @@ class LlamaCppBackend:
                     model_path,
                     "--port",
                     str(self._port),
-                    "-c",
-                    str(effective_ctx) if effective_ctx > 0 else "0",
                     "--parallel",
                     str(n_parallel),
                     "--flash-attn",
@@ -4048,9 +4116,26 @@ class LlamaCppBackend:
                     # Error out at n_ctx instead of silently rotating the KV cache; frontend catches it and points the user at "Context Length".
                     "--no-context-shift",
                 ]
+                # A positive context is always passed (in auto-fit, --fit then
+                # optimizes the gpu-layer offload around it). When auto-fit has
+                # no explicit context, omit -c so --fit sizes it to fit VRAM:
+                # "-c 0" would instead pin the FULL native context (llama.cpp's
+                # -c handler sets fit_params_min_ctx = UINT32_MAX on value 0,
+                # disabling --fit's reduction). See gpu_memory_mode.
+                if effective_ctx > 0:
+                    cmd.extend(["-c", str(effective_ctx)])
+                elif gpu_memory_mode != "fit":
+                    cmd.extend(["-c", "0"])
 
                 fully_gpu_offloaded = False
-                if use_fit:
+                if gpu_memory_mode == "manual":
+                    # Pin the user's layer count and disable auto-fit. --fit off
+                    # also means _ctx_integrity_flags must not add --fit-ctx.
+                    use_fit = False
+                    cmd.extend(["--gpu-layers", str(gpu_layers), "--fit", "off"])
+                    if cpu_moe:
+                        cmd.append("--cpu-moe")
+                elif use_fit:
                     cmd.extend(["--fit", "on"])
                 elif gpu_indices is not None:
                     # Fits on selected GPU(s) -- offload all layers
@@ -4427,7 +4512,6 @@ class LlamaCppBackend:
                 self._effective_context_length = (
                     effective_ctx if effective_ctx > 0 else self._context_length
                 )
-                self._reconcile_effective_ctx_with_server()
                 self._max_context_length = (
                     max_available_ctx if max_available_ctx > 0 else self._effective_context_length
                 )
@@ -4530,6 +4614,13 @@ class LlamaCppBackend:
                         )
 
                 self._healthy = True
+
+                # Server is up: adopt the real per-request context it allocated
+                # -- the length --fit chose, or a --parallel slot split -- so the
+                # reported context_length matches reality. (Querying /props
+                # before the spawn above always failed; the seeded value was the
+                # requested/native length.)
+                self._reconcile_effective_ctx_with_server()
 
                 # Commit caller intent only after _healthy=True so a failed start
                 # can't poison the next inheritance check. None keeps prior, []
@@ -4866,6 +4957,9 @@ class LlamaCppBackend:
         gguf_path: Optional[str] = None,
         spec_draft_n_max: Optional[int] = None,
         tensor_parallel: bool = False,
+        gpu_memory_mode: Literal["auto", "fit", "manual"] = "auto",
+        gpu_layers: int = -1,
+        cpu_moe: bool = False,
         mtp_draft_path: Optional[str] = None,
     ) -> bool:
         """True iff the live server already satisfies these load kwargs.
@@ -4906,6 +5000,15 @@ class LlamaCppBackend:
         # an extras-driven tensor load isn't seen as a mismatch that needlessly
         # kills/reloads a healthy server.
         if self._tensor_parallel != resolve_tensor_parallel(extra_args, tensor_parallel):
+            return False
+
+        # A GPU-memory-mode flip (Unsloth / --fit / manual) must always reload.
+        if self._gpu_memory_mode != gpu_memory_mode:
+            return False
+        # In manual mode a changed layer count or MoE-offload also reloads.
+        if gpu_memory_mode == "manual" and (
+            self._gpu_layers != gpu_layers or self._cpu_moe != cpu_moe
+        ):
             return False
 
         # Compare on the canonical requested mode. With --spec-type in
@@ -5018,6 +5121,9 @@ class LlamaCppBackend:
             self._supports_tools = False
             self._cache_type_kv = None
             self._tensor_parallel = False
+            self._gpu_memory_mode = "auto"
+            self._gpu_layers = -1
+            self._cpu_moe = False
             self._speculative_type = None
             self._requested_spec_mode = None
             self._spec_draft_n_max = None
@@ -5342,14 +5448,20 @@ class LlamaCppBackend:
         ``--kv-unified`` default, silently splitting ``-c`` into per-slot
         windows of ``-c / N``; restore the shared pool so one request can use
         the full context. With ``--fit on``, ``--fit-ctx`` floors the fit step
-        at an explicitly requested ctx (default floor is 4096) so it offloads
-        or fails instead of silently shrinking the window.
+        -- at an explicitly requested ctx, else 8192 -- so it offloads or fails
+        instead of silently shrinking the window to a tiny size.
         """
         flags: list[str] = []
         if n_parallel > 1 and caps.get("supports_kv_unified"):
             flags.append("--kv-unified")
-        if use_fit and requested_ctx > 0 and effective_ctx > 0 and caps.get("supports_fit_ctx"):
-            flags.extend(["--fit-ctx", str(effective_ctx)])
+        if use_fit and caps.get("supports_fit_ctx"):
+            if requested_ctx > 0 and effective_ctx > 0:
+                # Floor the fit step at the explicitly requested ctx.
+                flags.extend(["--fit-ctx", str(effective_ctx)])
+            else:
+                # Auto ctx: floor at 8192 so --fit doesn't shrink the window
+                # below a usable size.
+                flags.extend(["--fit-ctx", "8192"])
         return flags
 
     def _query_server_n_ctx(self) -> Optional[int]:

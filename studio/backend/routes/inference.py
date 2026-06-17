@@ -1400,6 +1400,13 @@ def _request_matches_loaded_settings(
         != llama_backend.tensor_parallel
     ):
         return False
+    if request.gpu_memory_mode != llama_backend.gpu_memory_mode:
+        return False
+    if request.gpu_memory_mode == "manual" and (
+        request.gpu_layers != llama_backend.gpu_layers
+        or request.cpu_moe != llama_backend.cpu_moe
+    ):
+        return False
     # Spec decoding works on vision models too (MTP is mmproj-compatible,
     # llama.cpp #22673; the old ``not is_vision`` gate is gone), so compare
     # the real requested mode -- coercing vision to ``off`` here used to
@@ -1619,6 +1626,10 @@ async def load_model(
                     speculative_type = llama_backend.requested_spec_mode,
                     spec_draft_n_max = llama_backend.spec_draft_n_max,
                     tensor_parallel = llama_backend.tensor_parallel,
+                    gpu_memory_mode = llama_backend.gpu_memory_mode,
+                    gpu_layers = llama_backend.gpu_layers,
+                    cpu_moe = llama_backend.cpu_moe,
+                    n_layers = llama_backend.n_layers,
                 )
         else:
             if (
@@ -1795,6 +1806,9 @@ async def load_model(
                 cache_type_kv = request.cache_type_kv,
                 speculative_type = request.speculative_type,
                 spec_draft_n_max = request.spec_draft_n_max,
+                gpu_memory_mode = request.gpu_memory_mode,
+                gpu_layers = request.gpu_layers,
+                cpu_moe = request.cpu_moe,
                 n_parallel = _n_parallel,
                 extra_args = extra_llama_args,
             )
@@ -1906,6 +1920,10 @@ async def load_model(
                 speculative_type = llama_backend.requested_spec_mode,
                 spec_draft_n_max = llama_backend.spec_draft_n_max,
                 tensor_parallel = llama_backend.tensor_parallel,
+                gpu_memory_mode = llama_backend.gpu_memory_mode,
+                gpu_layers = llama_backend.gpu_layers,
+                cpu_moe = llama_backend.cpu_moe,
+                n_layers = llama_backend.n_layers,
             )
 
         # ── Standard path: load via Unsloth/transformers ──────────
@@ -2411,6 +2429,10 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 speculative_type = llama_backend.requested_spec_mode,
                 spec_draft_n_max = llama_backend.spec_draft_n_max,
                 tensor_parallel = llama_backend.tensor_parallel,
+                gpu_memory_mode = llama_backend.gpu_memory_mode,
+                gpu_layers = llama_backend.gpu_layers,
+                cpu_moe = llama_backend.cpu_moe,
+                n_layers = llama_backend.n_layers,
                 llama_cpp_supports_mtp = _supports_mtp,
                 spec_fallback_reason = llama_backend.spec_fallback_reason,
                 llama_cpp_prebuilt_stale = _stale,
