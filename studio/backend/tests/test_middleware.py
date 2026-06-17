@@ -293,6 +293,41 @@ class TestSecurityHeadersMiddleware:
             # not read directive-string `in` membership as URL sanitisation.
             assert any(src == "https:" for src in directives[name])
 
+    def test_headers_applied_to_streaming_response(self, main_module):
+        # The ASGI middleware must set headers on streaming responses too.
+        from fastapi.responses import StreamingResponse
+
+        app = FastAPI()
+        app.add_middleware(main_module.SecurityHeadersMiddleware)
+
+        @app.get("/stream")
+        async def stream():
+            async def gen():
+                yield b"a"
+                yield b"b"
+
+            return StreamingResponse(gen(), media_type = "text/plain")
+
+        r = TestClient(app).get("/stream")
+        assert r.status_code == 200
+        assert r.text == "ab"
+        assert r.headers["x-content-type-options"] == "nosniff"
+        assert r.headers["server"] == "unsloth-studio"
+        assert "content-security-policy" in r.headers
+
+    def test_artifact_preview_frame_omits_x_frame_options(self, main_module):
+        app = FastAPI()
+        app.add_middleware(main_module.SecurityHeadersMiddleware)
+
+        @app.get(main_module._ARTIFACT_PREVIEW_FRAME_PATH)
+        async def frame():
+            return Response(content = b"<html></html>", media_type = "text/html")
+
+        r = TestClient(app).get(main_module._ARTIFACT_PREVIEW_FRAME_PATH)
+        assert r.status_code == 200
+        assert "x-frame-options" not in {k.lower() for k in r.headers.keys()}
+        assert r.headers["referrer-policy"] == "no-referrer"
+
 
 # /api/health auth gate
 
