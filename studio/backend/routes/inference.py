@@ -2571,17 +2571,21 @@ async def validate_model(
                 detail = f"Invalid model identifier: {model_log_label}",
             )
 
-        # For a LoRA adapter the base model's code is what executes on load, so
-        # the consent flag (and scan target) must follow the base, matching the
-        # workers' gate.
+        # For a LoRA adapter the base model's CODE is what executes on load, so the
+        # remote-code consent flag follows the base. A poisoned pickle can live in
+        # the ADAPTER repo itself, so the security review must cover both the
+        # adapter and the base (matching the workers, which gate both).
         trc_target = config.identifier
+        security_targets = [config.identifier]
         try:
             from utils.models.model_config import get_base_model_from_lora
             _base = get_base_model_from_lora(model_identifier)
             if _base:
                 trc_target = _base
+                security_targets.append(_base)
         except Exception:
             pass
+        security_targets = list(dict.fromkeys(security_targets))
 
         return ValidateModelResponse(
             valid = True,
@@ -2596,8 +2600,9 @@ async def validate_model(
             requires_trust_remote_code = _requires_trust_remote_code_for_model(
                 trc_target, request.hf_token
             ),
-            requires_security_review = _requires_security_review_for_model(
-                trc_target, request.hf_token
+            requires_security_review = any(
+                _requires_security_review_for_model(_t, request.hf_token)
+                for _t in security_targets
             ),
         )
 

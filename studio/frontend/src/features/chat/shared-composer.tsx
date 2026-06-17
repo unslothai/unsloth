@@ -955,7 +955,10 @@ export function SharedComposer({
           trust_remote_code: loadTrustRemoteCode,
           chat_template_override: effectiveChatTemplateOverride,
         });
-        if (validation.requires_trust_remote_code) {
+        if (
+          validation.requires_trust_remote_code ||
+          validation.requires_security_review
+        ) {
           const approved = await confirmRemoteCodeIfNeeded({
             modelName: sel.id,
             hfToken: currentStore.hfToken || null,

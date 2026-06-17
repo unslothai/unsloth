@@ -1216,9 +1216,13 @@ async function autoLoadSmallestModel(): Promise<{
       trust_remote_code: trustRemoteCode,
     });
     // Auto-load runs in the background, so it never executes a repo's custom
-    // code on its own (regardless of the legacy toggle). Custom-code models are
-    // skipped here and loaded explicitly through the consent dialog instead.
-    if (validation.requires_trust_remote_code) {
+    // code on its own (regardless of the legacy toggle), and it never loads a
+    // model whose files the Hub flagged as unsafe. Both are skipped here and
+    // surfaced explicitly through the consent dialog instead.
+    if (
+      validation.requires_trust_remote_code ||
+      validation.requires_security_review
+    ) {
       blockedByTrustRemoteCode = true;
       return false;
     }

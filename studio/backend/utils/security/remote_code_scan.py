@@ -467,6 +467,25 @@ def repo_remote_code_files(model_name: str, hf_token: Optional[str] = None) -> d
     return files
 
 
+def _iter_auto_map_strings(value):
+    """Yield every string class-ref inside one ``auto_map`` value.
+
+    A value can be a bare string (``"modeling_x.Cls"``) OR a list/tuple --
+    transformers encodes a tokenizer as ``"AutoTokenizer": [slow, fast]`` (and may
+    nest), e.g. ``["owner/repo--tokenization_x.Slow", "owner/repo--tokenization_x.Fast"]``
+    or ``[..., null]``. Flatten all forms so external tokenizer code in the list
+    shape is scanned, not silently trusted.
+    """
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, (list, tuple, set)):
+        for item in value:
+            yield from _iter_auto_map_strings(item)
+    elif isinstance(value, dict):
+        for item in value.values():
+            yield from _iter_auto_map_strings(item)
+
+
 def _auto_map_refs(cfg: dict) -> set:
     """``(repo, filename)`` pairs referenced by config auto_map.
 
@@ -478,16 +497,18 @@ def _auto_map_refs(cfg: dict) -> set:
     out = set()
     am = cfg.get("auto_map") or {}
     if isinstance(am, dict):
-        for ref in am.values():
-            # ref like "modeling_deepseekocr.Cls" or "owner/name--modeling.Cls"
-            if not (isinstance(ref, str) and "." in ref):
-                continue
-            module = ref.rsplit(".", 1)[0]  # drop trailing .ClassName
-            if "--" in module:
-                repo, mod = module.split("--", 1)
-                out.add((repo or None, mod + ".py"))
-            else:
-                out.add((None, module + ".py"))
+        for value in am.values():
+            # A value may be a string OR a [slow, fast] list (tokenizers); cover both.
+            for ref in _iter_auto_map_strings(value):
+                # ref like "modeling_deepseekocr.Cls" or "owner/name--modeling.Cls"
+                if "." not in ref:
+                    continue
+                module = ref.rsplit(".", 1)[0]  # drop trailing .ClassName
+                if "--" in module:
+                    repo, mod = module.split("--", 1)
+                    out.add((repo or None, mod + ".py"))
+                else:
+                    out.add((None, module + ".py"))
     return out
 
 

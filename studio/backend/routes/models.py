@@ -1601,15 +1601,21 @@ async def scan_model_remote_code(
 
         if not is_local_path(model_name):
             model_name = resolve_cached_repo_id_case(model_name)
-        # For a LoRA adapter the base model's code is what runs, so scan the base
-        # (its findings + fingerprint are what the worker gate requires).
+        # For a LoRA adapter the base model's CODE is what runs, so the remote-code
+        # scan follows the base (its findings + fingerprint are what the worker gate
+        # requires). But a poisoned pickle can live in the ADAPTER repo itself, so
+        # the malware scan must cover both the adapter and the base (matching the
+        # workers, which gate both).
+        security_targets = [model_name]
         try:
             from utils.models.model_config import get_base_model_from_lora
             _base = get_base_model_from_lora(model_name)
             if _base:
                 model_name = _base
+                security_targets.append(_base)
         except Exception:
             pass
+        security_targets = list(dict.fromkeys(security_targets))
         # Whether OUR scan is what first pulls this repo into the HF cache. A later
         # decline uses this to purge exactly what the scan downloaded, without
         # touching a model the user already had (or a local path).
@@ -1629,10 +1635,15 @@ async def scan_model_remote_code(
         # repo with no custom code at all.
         from utils.security import evaluate_file_security
 
-        sec = evaluate_file_security(model_name, hf_token = hf_token)
-        payload["unsafe_files"] = sec.unsafe_files
-        payload["security_blocked"] = sec.blocked
-        if sec.blocked:
+        unsafe_files: list = []
+        security_blocked = False
+        for _target in security_targets:
+            _sec = evaluate_file_security(_target, hf_token = hf_token)
+            security_blocked = security_blocked or _sec.blocked
+            unsafe_files.extend(_sec.unsafe_files)
+        payload["unsafe_files"] = unsafe_files
+        payload["security_blocked"] = security_blocked
+        if security_blocked:
             # Open the dialog as a non-approvable hard block: approvable False hides
             # the "Enable and continue" button, and flagging the model as requiring
             # review makes the frontend open the consent gate even for a repo with

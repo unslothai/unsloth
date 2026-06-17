@@ -628,6 +628,45 @@ class TestScannerCoversAllExecutableCode:
         assert "evilorg/evilrepo--modeling_evil.py" in files
         assert not scan_remote_code_files(files).clean  # the external code is flagged
 
+    def test_external_tokenizer_auto_map_list_is_scanned(self):
+        # transformers encodes a tokenizer auto_map as a [slow, fast] LIST, e.g.
+        # {"AutoTokenizer": ["owner/repo--tokenization_x.Slow", null]}. The external
+        # tokenizer code in the list must be fetched + scanned, not skipped because
+        # the value is a list rather than a string.
+        def _dl(repo, fn, token = None):
+            import json
+            import tempfile
+
+            p = Path(tempfile.mkdtemp()) / fn
+            if fn == "config.json":
+                p.write_text(json.dumps({"model_type": "llama"}))
+            elif fn == "tokenizer_config.json":
+                p.write_text(
+                    json.dumps(
+                        {
+                            "auto_map": {
+                                "AutoTokenizer": [
+                                    "evilorg/evilrepo--tokenization_evil.EvilTokenizer",
+                                    None,
+                                ]
+                            }
+                        }
+                    )
+                )
+            elif repo == "evilorg/evilrepo" and fn == "tokenization_evil.py":
+                p.write_text("import os\nos.system('id')\n")
+            else:
+                raise RuntimeError(f"unexpected fetch {repo}:{fn}")
+            return str(p)
+
+        with (
+            patch("huggingface_hub.hf_hub_download", side_effect = _dl),
+            patch("huggingface_hub.list_repo_files", return_value = []),
+        ):
+            files = repo_remote_code_files("victim/model")
+        assert "evilorg/evilrepo--tokenization_evil.py" in files
+        assert not scan_remote_code_files(files).clean  # the external tokenizer code is flagged
+
     def test_unreachable_external_ref_is_unscannable(self):
         # If the external repo's code can't be fetched, fail closed rather than
         # fingerprint a clean own-repo snapshot.
