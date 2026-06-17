@@ -4573,10 +4573,13 @@ class LlamaCppBackend:
                         # Manual offload (--gpu-layers + --fit off): no automatic
                         # device masking (an explicit gpu_ids pick still pins
                         # below) and no context auto-cap -- the user owns layer
-                        # count and context (slider value, native default). Same
-                        # split-mode strip as fit (manual never tensor-splits).
+                        # count and context (slider value, native default).
+                        # tensor_parallel is honored, but manual skips the
+                        # memory-based TP planner below (gpus = []); the toggle
+                        # just emits --split-mode tensor for an even split. Strip
+                        # any user --split-mode so the toggle owns it (unlike fit,
+                        # this is compatible -- --fit off means no fit/tensor abort).
                         gpus = []
-                        tensor_parallel = False
                         effective_ctx = (
                             requested_ctx
                             if requested_ctx > 0
@@ -4804,7 +4807,11 @@ class LlamaCppBackend:
                     # GPUs below that reserve from the set up front (gpu_indices
                     # becomes the CUDA_VISIBLE_DEVICES mask, fully excluding them).
                     tp_gpus = gpus
-                    if tensor_parallel:
+                    # Manual mode owns the layer count and context, so it skips
+                    # the memory-based planner; its toggle still emits
+                    # --split-mode tensor (even split) below. auto plans here.
+                    plan_tp = tensor_parallel and gpu_memory_mode != "manual"
+                    if plan_tp:
                         # Deterministic per-device compute buffer (replicated on
                         # every device in tensor mode); flat fallback when dims
                         # are unavailable. _plan_tensor_parallel uses the same.
@@ -4823,7 +4830,7 @@ class LlamaCppBackend:
                         # free yet have no budget left.
                         tp_gpus = [g for g in gpus if _gpu_usable(g) >= reserve_mib]
 
-                    if tensor_parallel and len(tp_gpus) < 2:
+                    if plan_tp and len(tp_gpus) < 2:
                         # Tensor parallelism needs >= 2 usable GPUs. On a single
                         # GPU --split-mode tensor is a no-op; with 0 GPUs (CPU-only
                         # or probe failed) it must not reach llama-server; and a

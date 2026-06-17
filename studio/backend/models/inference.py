@@ -103,7 +103,8 @@ class LoadRequest(BaseModel):
             "selects GPUs and caps context to fit VRAM. 'fit': hand memory "
             "management to llama.cpp's --fit -- no device masking, no context "
             "auto-reduce, no gpu-layer/tensor-split planning. 'manual': pin "
-            "gpu_layers and cpu_moe yourself (--fit off). Ignored for non-GGUF."
+            "gpu_layers and cpu_moe yourself (--fit off); tensor_parallel still "
+            "applies (even split, no planner). Ignored for non-GGUF."
         ),
     )
     gpu_layers: int = Field(

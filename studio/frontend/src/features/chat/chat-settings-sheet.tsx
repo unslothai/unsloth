@@ -588,9 +588,9 @@ export function ChatSettingsPanel({
   const gpuDirty = gpuMemoryMode !== (loadedGpuMemoryMode ?? "auto");
   const isAutoFit = gpuMemoryMode === "fit";
   const isManual = gpuMemoryMode === "manual";
-  // fit and manual both bypass Unsloth's tensor-parallel planning, so the
-  // Tensor Parallelism toggle is disabled outside Automatic.
-  const tpDisabled = gpuMemoryMode !== "auto";
+  // Only fit forces TP off: llama.cpp's --fit aborts under --split-mode tensor.
+  // Manual allows it (--fit off, so no abort) -- it just skips Unsloth's planner.
+  const tpDisabled = isAutoFit;
   // Manual gpu-layers ceiling = model layer count (else a safe fallback).
   const gpuLayersMax = ggufLayerCount ?? 256;
   const manualDirty =
@@ -1202,7 +1202,7 @@ export function ChatSettingsPanel({
                           <span className="font-medium">Manual:</span> pin GPU
                           layers and MoE offload yourself.
                         </div>
-                        <div>fit and Manual turn off Tensor Parallelism.</div>
+                        <div>fit turns off Tensor Parallelism.</div>
                       </div>
                     </InfoHint>
                   </div>
@@ -1212,8 +1212,9 @@ export function ChatSettingsPanel({
                       onValueChange={(v) => {
                         const mode = v as "auto" | "fit" | "manual";
                         setGpuMemoryMode(mode);
-                        // fit/manual bypass Unsloth's tensor-parallel planning.
-                        if (mode !== "auto") setTensorParallel(false);
+                        // Only fit forces TP off (--fit aborts under tensor
+                        // split); manual keeps the user's TP choice.
+                        if (mode === "fit") setTensorParallel(false);
                       }}
                     >
                       <SelectTrigger

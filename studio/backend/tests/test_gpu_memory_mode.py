@@ -335,13 +335,35 @@ def test_manual_emits_gpu_layers_fit_off_and_cpu_moe():
     gate = src.find('elif gpu_memory_mode == "manual":')
     assert gate != -1, "load_model must branch on manual mode"
     block = src[gate : gate + 700]
-    assert "gpus = []" in block and "tensor_parallel = False" in block
+    # Manual empties the probed set (skips the planner) but no longer forces
+    # tensor parallelism off -- the toggle is honored (see test below).
+    assert "gpus = []" in block
+    assert "tensor_parallel = False" not in block
     # The cmd emits an explicit layer count with fit disabled, plus cpu-moe.
     assert 'cmd.extend(["--gpu-layers", str(gpu_layers), "--fit", "off"])' in src
     assert 'cmd.append("--cpu-moe")' in src
     # Manual forces use_fit False so --fit-ctx is never added under --fit off.
     emit = src.find('cmd.extend(["--gpu-layers", str(gpu_layers), "--fit", "off"])')
     assert "use_fit = False" in src[src.rfind("\n", 0, emit) - 200 : emit + 80]
+
+
+def test_manual_allows_tensor_parallel_via_split_mode():
+    # Manual keeps the user's TP choice but skips the memory-based planner
+    # (plan_tp excludes manual, so its empty gpu set can't downgrade TP). The
+    # --split-mode tensor emission gates on tensor_parallel alone, so manual
+    # reaches it -- with tp_tensor_split None it's an even split (no
+    # --tensor-split). --fit off means no fit/tensor abort.
+    src = _load_model_source()
+    assert 'plan_tp = tensor_parallel and gpu_memory_mode != "manual"' in src
+    assert "if plan_tp:" in src
+    assert "if plan_tp and len(tp_gpus) < 2:" in src
+    sm = src.find('cmd.extend(["--split-mode", "tensor"])')
+    assert sm != -1, "TP must emit --split-mode tensor"
+    guard = src.rfind("if tensor_parallel:", 0, sm)
+    assert guard != -1 and sm - guard < 200, "split-mode gates on tensor_parallel"
+    # The tensor-split is only emitted for a planned (non-even) split, which
+    # manual never produces, so manual stays an even split.
+    assert "if tp_tensor_split and len(tp_tensor_split) > 1:" in src
 
 
 def test_fit_auto_floors_fit_ctx_at_8192():
