@@ -21,6 +21,12 @@ export interface RemoteCodeFinding {
   snippet?: RemoteCodeSnippetRow[]; // surrounding code (+/- 3 lines)
 }
 
+/** A repo file Hugging Face's security scan flagged (e.g. a malicious pickle). */
+export interface UnsafeFile {
+  path: string;
+  level: string; // Hugging Face level: "unsafe" | "suspicious" | "malicious"
+}
+
 /**
  * Result of the backend remote-code scan for a model that ships custom
  * (`auto_map`) Python. Drives the consent dialog: the findings are shown to the
@@ -37,4 +43,9 @@ export interface RemoteCodeScan {
   // True when our scan is what first downloaded this repo into the HF cache, so a
   // decline may safely purge it (a model the user already had stays put).
   createdByScan: boolean;
+  // Files Hugging Face's security scan flagged as unsafe (malicious pickles etc.).
+  // When non-empty the load is a hard block (approvable is false).
+  unsafeFiles: UnsafeFile[];
+  // True when the load is blocked specifically by the malware/unsafe-file scan.
+  securityBlocked: boolean;
 }

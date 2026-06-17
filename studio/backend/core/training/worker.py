@@ -1454,6 +1454,32 @@ def _run_mlx_training(event_queue, stop_queue, config):
     _lora_seed = config.get("lora_random_state")
     lora_random_state = random_seed if _lora_seed is None else int(_lora_seed)
 
+    # ── Malware gate (MLX path) ──
+    # Independent of trust_remote_code: a malicious pickle in a weight file
+    # deserializes when FastMLXModel loads it even with trust_remote_code False,
+    # so check Hugging Face's security scan (metadata-only) here before any load.
+    # For a LoRA, gate the base whose weights deserialize.
+    from utils.security import evaluate_file_security
+
+    malware_targets = [model_name]
+    try:
+        from utils.models.model_config import get_base_model_from_lora
+        _base = get_base_model_from_lora(model_name)
+        if _base:
+            malware_targets.append(_base)
+    except Exception as exc:
+        logger.debug("Could not resolve LoRA base for malware scan: %s", exc)
+    for target in dict.fromkeys(malware_targets):
+        _fs = evaluate_file_security(target, hf_token = hf_token)
+        if _fs.blocked:
+            _send(
+                "error",
+                error = _fs.reason,
+                error_kind = "malware_blocked",
+                security = _fs.response_payload(),
+            )
+            return
+
     # ── Consent gate (MLX path) ──
     # The CUDA path gates in run_training_process, but MLX training returns
     # before reaching it, so scan auto_map repo code here before FastMLXModel
@@ -2155,6 +2181,34 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             "Auto-enabled trust_remote_code for Nemotron model: %s",
             model_name,
         )
+
+    # ── 1a. Malware gate: independent of trust_remote_code. A malicious pickle in
+    # a weight file deserializes when the trainer loads it even with
+    # trust_remote_code False, so check Hugging Face's security scan (metadata-only)
+    # before any load. For a LoRA, gate the base whose weights deserialize.
+    from utils.security import evaluate_file_security
+
+    malware_targets = [model_name]
+    try:
+        from utils.models.model_config import get_base_model_from_lora
+        _base = get_base_model_from_lora(model_name)
+        if _base:
+            malware_targets.append(_base)
+    except Exception as exc:
+        logger.debug("Could not resolve LoRA base for malware scan: %s", exc)
+    for target in dict.fromkeys(malware_targets):
+        _fs = evaluate_file_security(target, hf_token = config.get("hf_token") or None)
+        if _fs.blocked:
+            event_queue.put(
+                {
+                    "type": "error",
+                    "error": _fs.reason,
+                    "error_kind": "malware_blocked",
+                    "security": _fs.response_payload(),
+                    "ts": time.time(),
+                }
+            )
+            return
 
     # ── 1a'. Consent gate: before running any model repo code, scan the
     # auto_map Python and refuse code flagged CRITICAL/HIGH unless the user

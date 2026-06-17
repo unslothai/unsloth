@@ -2530,6 +2530,19 @@ def _requires_trust_remote_code_for_model(
         return False
 
 
+def _requires_security_review_for_model(
+    model_identifier: str, hf_token: Optional[str] = None
+) -> bool:
+    """Whether Hugging Face's security scan flagged unsafe files for this repo, so
+    the consent dialog must open as a hard block before loading. Metadata-only;
+    never downloads the flagged files. Fails open (False) on any error."""
+    try:
+        from utils.security import evaluate_file_security
+        return evaluate_file_security(model_identifier, hf_token).blocked
+    except Exception:
+        return False
+
+
 @router.post("/validate", response_model = ValidateModelResponse)
 async def validate_model(
     request: ValidateModelRequest, current_subject: str = Depends(get_current_subject)
@@ -2581,6 +2594,9 @@ async def validate_model(
             is_lora = getattr(config, "is_lora", False),
             is_vision = getattr(config, "is_vision", False),
             requires_trust_remote_code = _requires_trust_remote_code_for_model(
+                trc_target, request.hf_token
+            ),
+            requires_security_review = _requires_security_review_for_model(
                 trc_target, request.hf_token
             ),
         )

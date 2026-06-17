@@ -25,6 +25,7 @@ import type {
   RemoteCodeFinding,
   RemoteCodeSeverity,
   RemoteCodeSnippetRow,
+  UnsafeFile,
 } from "../types";
 
 /** Background tint for the flagged line + matched span, by severity. */
@@ -106,6 +107,26 @@ function SnippetLine({
   );
 }
 
+function UnsafeFileCard({ file }: { file: UnsafeFile }) {
+  return (
+    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border bg-muted/40 px-3 py-2">
+      <Badge
+        variant="outline"
+        className={cn(
+          "shrink-0 text-[10px] font-semibold uppercase tracking-wide",
+          severityTone("CRITICAL"),
+        )}
+      >
+        {file.level}
+      </Badge>
+      <span className="flex min-w-0 items-center gap-1 font-mono text-xs text-muted-foreground">
+        <HugeiconsIcon icon={SourceCodeSquareIcon} className="size-3.5 shrink-0" />
+        <span className="truncate">{file.path}</span>
+      </span>
+    </div>
+  );
+}
+
 function FindingCard({ finding }: { finding: RemoteCodeFinding }) {
   const fileLabel = finding.line ? `${finding.file}:${finding.line}` : finding.file;
   const snippet = finding.snippet ?? [];
@@ -156,6 +177,10 @@ export function RemoteCodeConsentDialog() {
   const displayName = scan?.modelName?.split("/").pop() || "This model";
   const blocked = scan ? !scan.approvable : false;
   const findings = scan?.findings ?? [];
+  const unsafeFiles = scan?.unsafeFiles ?? [];
+  // Malware (an unsafe serialized file flagged by Hugging Face's scan) is a hard
+  // block with its own copy, distinct from a CRITICAL custom-code finding.
+  const malware = unsafeFiles.length > 0;
 
   return (
     <AlertDialog
@@ -182,22 +207,53 @@ export function RemoteCodeConsentDialog() {
             </div>
             <div className="min-w-0 space-y-1">
               <AlertDialogTitle>
-                {blocked
-                  ? "Custom code blocked"
-                  : "Enable custom code for this model?"}
+                {malware
+                  ? "Unsafe files detected"
+                  : blocked
+                    ? "Custom code blocked"
+                    : "Enable custom code for this model?"}
               </AlertDialogTitle>
               <AlertDialogDescription>
-                <span className="font-medium text-foreground">{displayName}</span>{" "}
-                declares custom Python code in its repository.{" "}
-                {blocked
-                  ? "A security scan flagged CRITICAL issues, so it cannot be enabled."
-                  : findings.length > 0
-                    ? "Review the security scan below. Continue only if you trust the model source."
-                    : "Continue only if you trust the model source."}
+                {malware ? (
+                  <>
+                    <span className="font-medium text-foreground">
+                      {displayName}
+                    </span>{" "}
+                    contains files that Hugging Face's security scan flagged as
+                    unsafe (for example, a malicious pickle that would run code
+                    when the model loads). It cannot be loaded. The flagged files
+                    were never downloaded.
+                  </>
+                ) : (
+                  <>
+                    <span className="font-medium text-foreground">
+                      {displayName}
+                    </span>{" "}
+                    declares custom Python code in its repository.{" "}
+                    {blocked
+                      ? "A security scan flagged CRITICAL issues, so it cannot be enabled."
+                      : findings.length > 0
+                        ? "Review the security scan below. Continue only if you trust the model source."
+                        : "Continue only if you trust the model source."}
+                  </>
+                )}
               </AlertDialogDescription>
             </div>
           </div>
         </AlertDialogHeader>
+
+        {malware ? (
+          <div className="space-y-2">
+            <p className="text-xs font-medium text-muted-foreground">
+              Flagged by Hugging Face's security scan:
+            </p>
+            <div className="max-h-[14rem] space-y-2 overflow-y-auto pr-1">
+              {unsafeFiles.map((f, i) => (
+                <UnsafeFileCard key={`${f.path}-${i}`} file={f} />
+              ))}
+            </div>
+          </div>
+        ) : null}
 
         {findings.length > 0 ? (
           <div className="max-h-[22rem] space-y-3 overflow-y-auto pr-1">

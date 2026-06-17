@@ -495,12 +495,16 @@ export function useChatModelRuntime() {
               is_lora: isLora,
               gguf_variant: ggufVariant ?? null,
             });
-            // Always gate custom-code loads on consent, even when the internal
+            // Gate the load on the consent dialog when the model needs custom-code
+            // consent OR Hugging Face's security scan flagged unsafe files (a hard
+            // block). The custom-code gate fires even when the internal
             // trustRemoteCode flag is preset on (e.g. a first-party YAML/preset
-            // default): the worker now requires a matching fingerprint, which
-            // only the dialog produces. Clean custom code returns immediately
-            // without a dialog.
-            if (validation.requires_trust_remote_code) {
+            // default): the worker requires a matching fingerprint, which only the
+            // dialog produces. A clean model returns immediately without a dialog.
+            if (
+              validation.requires_trust_remote_code
+              || validation.requires_security_review
+            ) {
               const approved = await confirmRemoteCodeIfNeeded({
                 modelName: modelId,
                 hfToken,

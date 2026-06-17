@@ -206,6 +206,37 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
                 checkpoint_path,
             )
 
+    # Malware gate: independent of trust_remote_code. A malicious pickle in a
+    # weight file deserializes on load even when trust_remote_code is False, so
+    # check Hugging Face's security scan (metadata-only) for every load. Local
+    # checkpoints (the common export case) have no Hub scan and are skipped inside
+    # the helper; a LoRA merges its base weights, so gate that repo too.
+    from utils.security import evaluate_file_security
+
+    malware_targets = [checkpoint_path]
+    try:
+        from utils.models.model_config import get_base_model_from_lora
+        _base = get_base_model_from_lora(checkpoint_path)
+        if _base:
+            malware_targets.append(_base)
+    except Exception as exc:
+        logger.debug("Could not resolve LoRA base for malware scan: %s", exc)
+    for target in dict.fromkeys(malware_targets):
+        _fs = evaluate_file_security(target, hf_token = cmd.get("hf_token"))
+        if _fs.blocked:
+            _send_response(
+                resp_queue,
+                {
+                    "type": "loaded",
+                    "success": False,
+                    "message": _fs.reason,
+                    "error_kind": "malware_blocked",
+                    "security": _fs.response_payload(),
+                    "ts": time.time(),
+                },
+            )
+            return
+
     # Consent gate: scan auto_map repo code before executing it; block
     # CRITICAL/HIGH findings unless pinned-approved. A LoRA checkpoint merges its
     # base model, whose custom code runs, so gate that repo too.

@@ -148,6 +148,11 @@ class ValidateModelResponse(BaseModel):
         False,
         description = "Whether the model defaults require trust_remote_code to be enabled for loading.",
     )
+    requires_security_review: bool = Field(
+        False,
+        description = "Whether Hugging Face's security scan flagged unsafe files (e.g. a "
+        "malicious pickle), so the load is hard-blocked pending review.",
+    )
 
 
 class GenerateRequest(BaseModel):

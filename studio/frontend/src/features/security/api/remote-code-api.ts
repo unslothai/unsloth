@@ -8,6 +8,7 @@ import type {
   RemoteCodeScan,
   RemoteCodeSeverity,
   RemoteCodeSnippetRow,
+  UnsafeFile,
 } from "../types";
 
 interface SnippetRowResponse {
@@ -35,6 +36,8 @@ interface RemoteCodeScanResponse {
   findings_summary?: string;
   model_name?: string;
   created_by_scan?: boolean;
+  unsafe_files?: Array<{ path?: string; level?: string }>;
+  security_blocked?: boolean;
 }
 
 /**
@@ -73,6 +76,10 @@ export async function getRemoteCodeScan(
       }),
     ),
   }));
+  const unsafeFiles: UnsafeFile[] = (data.unsafe_files ?? []).map((u) => ({
+    path: u.path ?? "",
+    level: u.level ?? "unsafe",
+  }));
   return {
     requiresTrustRemoteCode: Boolean(
       data.requires_trust_remote_code ?? data.has_remote_code,
@@ -84,6 +91,8 @@ export async function getRemoteCodeScan(
     findingsSummary: data.findings_summary ?? "",
     modelName: data.model_name ?? modelName,
     createdByScan: Boolean(data.created_by_scan),
+    unsafeFiles,
+    securityBlocked: Boolean(data.security_blocked),
   };
 }
 

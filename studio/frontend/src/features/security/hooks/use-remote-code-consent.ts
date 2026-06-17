@@ -44,10 +44,14 @@ export async function confirmRemoteCodeIfNeeded({
       findingsSummary: "",
       modelName,
       createdByScan: false,
+      unsafeFiles: [],
+      securityBlocked: false,
     };
   }
 
-  if (!scan.requiresTrustRemoteCode) return true; // no custom code -> nothing to confirm
+  // Open the dialog when the model needs custom-code consent OR Hugging Face's
+  // security scan flagged unsafe files (a hard block). Otherwise nothing to confirm.
+  if (!scan.requiresTrustRemoteCode && scan.unsafeFiles.length === 0) return true;
 
   const confirmed = await useRemoteCodeConsentDialogStore
     .getState()

@@ -281,6 +281,32 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                     model_name,
                 )
 
+        # Malware gate: independent of trust_remote_code. A malicious pickle in a
+        # weight file deserializes during from_pretrained even when
+        # trust_remote_code is False, so check Hugging Face's own security scan
+        # (metadata-only; never downloads the flagged files) for every load. For a
+        # LoRA adapter the base weights are what deserialize, so gate that repo too.
+        from utils.security import evaluate_file_security
+
+        malware_targets = [config["model_name"]]
+        if mc.is_lora and getattr(mc, "base_model", None):
+            malware_targets.append(str(mc.base_model))
+        for target in dict.fromkeys(malware_targets):
+            _fs = evaluate_file_security(target, hf_token = hf_token)
+            if _fs.blocked:
+                _send_response(
+                    resp_queue,
+                    {
+                        "type": "loaded",
+                        "success": False,
+                        "message": _fs.reason,
+                        "error_kind": "malware_blocked",
+                        "security": _fs.response_payload(),
+                        "ts": time.time(),
+                    },
+                )
+                return
+
         # Consent gate: scan auto_map repo code before executing it; block
         # CRITICAL/HIGH findings unless pinned-approved. For a LoRA adapter the
         # base model's custom code is what runs, so gate that repo too.

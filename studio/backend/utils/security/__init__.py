@@ -35,6 +35,10 @@ from utils.security.consent import (  # noqa: F401
     RemoteCodeDecision,
     evaluate_remote_code_consent,
 )
+from utils.security.file_security import (  # noqa: F401
+    FileSecurityDecision,
+    evaluate_file_security,
+)
 from utils.security.remote_code_scan import (  # noqa: F401
     CRITICAL,
     HIGH,
@@ -55,6 +59,8 @@ __all__ = [
     "should_block_remote_code",
     "evaluate_remote_code_consent",
     "preflight_remote_code_consent",
+    "evaluate_file_security",
+    "FileSecurityDecision",
     "RemoteCodeDecision",
     "ScanResult",
     "Finding",

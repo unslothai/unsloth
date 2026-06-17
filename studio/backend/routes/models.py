@@ -1622,6 +1622,24 @@ async def scan_model_remote_code(
         payload = decision.response_payload()
         payload["requires_trust_remote_code"] = decision.has_remote_code
         payload["created_by_scan"] = created_by_scan
+
+        # Malware gate (metadata-only): surface any files Hugging Face's security
+        # scan flagged as unsafe so the dialog can hard-block. This is orthogonal
+        # to remote code (a poisoned pickle needs no auto_map), so it can block a
+        # repo with no custom code at all.
+        from utils.security import evaluate_file_security
+
+        sec = evaluate_file_security(model_name, hf_token = hf_token)
+        payload["unsafe_files"] = sec.unsafe_files
+        payload["security_blocked"] = sec.blocked
+        if sec.blocked:
+            # Open the dialog as a non-approvable hard block: approvable False hides
+            # the "Enable and continue" button, and flagging the model as requiring
+            # review makes the frontend open the consent gate even for a repo with
+            # no custom code at all.
+            payload["approvable"] = False
+            payload["requires_trust_remote_code"] = True
+            payload["error_kind"] = "malware_blocked"
         return payload
     except Exception as e:
         raise log_and_http_error(
