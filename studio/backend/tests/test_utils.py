@@ -316,16 +316,25 @@ class TestCudaDeviceOrder:
         # Fresh interpreter so the module-level setdefault runs against a clean env.
         import os, subprocess, sys
         from pathlib import Path
+
         env = os.environ.copy()
-        env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1]) + os.pathsep + env.get("PYTHONPATH", "")
+        env["PYTHONPATH"] = (
+            str(Path(__file__).resolve().parents[1]) + os.pathsep + env.get("PYTHONPATH", "")
+        )
         if preset is None:
             env.pop("CUDA_DEVICE_ORDER", None)
         else:
             env["CUDA_DEVICE_ORDER"] = preset
         out = subprocess.run(
-            [sys.executable, "-c",
-             "import os, utils.hardware.hardware; print(os.environ.get('CUDA_DEVICE_ORDER'))"],
-            env = env, capture_output = True, text = True, check = True,
+            [
+                sys.executable,
+                "-c",
+                "import os, utils.hardware.hardware; print(os.environ.get('CUDA_DEVICE_ORDER'))",
+            ],
+            env = env,
+            capture_output = True,
+            text = True,
+            check = True,
         )
         return out.stdout.strip().splitlines()[-1]
 
