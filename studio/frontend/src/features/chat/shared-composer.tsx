@@ -76,6 +76,7 @@ import {
 } from "./stores/plus-menu-prefs-store";
 import {
   loadedGpuMemoryFields,
+  parseGpuSplit,
   type ReasoningEffort,
   resolveLoadedSpeculativeSettings,
   resolveSpeculativeSettingsForLoad,
@@ -972,6 +973,7 @@ export function SharedComposer({
           gpu_memory_mode: currentStore.gpuMemoryMode,
           gpu_layers: currentStore.gpuLayers,
           n_cpu_moe: currentStore.nCpuMoe,
+          tensor_split: parseGpuSplit(currentStore.gpuSplit) ?? undefined,
           gpu_ids: currentStore.selectedGpuIds ?? undefined,
         });
         saveSpeculativeType(specSettings.speculativeType);

@@ -1824,6 +1824,7 @@ def _request_matches_loaded_settings(
     if request.gpu_memory_mode == "manual" and (
         request.gpu_layers != llama_backend.gpu_layers
         or request.n_cpu_moe != llama_backend.n_cpu_moe
+        or (request.tensor_split or None) != (llama_backend.tensor_split or None)
     ):
         return False
     _req_gpu_ids = sorted(request.gpu_ids) if request.gpu_ids else None
@@ -2051,6 +2052,7 @@ async def load_model(
                     gpu_memory_mode = llama_backend.gpu_memory_mode,
                     gpu_layers = llama_backend.gpu_layers,
                     n_cpu_moe = llama_backend.n_cpu_moe,
+                    tensor_split = llama_backend.tensor_split,
                     n_layers = llama_backend.n_layers,
                     n_moe_layers = llama_backend.n_moe_layers,
                     gpu_ids = llama_backend.gpu_ids,
@@ -2238,6 +2240,7 @@ async def load_model(
                 gpu_memory_mode = request.gpu_memory_mode,
                 gpu_layers = request.gpu_layers,
                 n_cpu_moe = request.n_cpu_moe,
+                tensor_split = request.tensor_split,
                 gpu_ids = effective_gpu_ids,
                 n_parallel = _n_parallel,
                 extra_args = extra_llama_args,
@@ -2353,6 +2356,7 @@ async def load_model(
                 gpu_memory_mode = llama_backend.gpu_memory_mode,
                 gpu_layers = llama_backend.gpu_layers,
                 n_cpu_moe = llama_backend.n_cpu_moe,
+                tensor_split = llama_backend.tensor_split,
                 n_layers = llama_backend.n_layers,
                 n_moe_layers = llama_backend.n_moe_layers,
                 gpu_ids = llama_backend.gpu_ids,
@@ -2946,6 +2950,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 gpu_memory_mode = llama_backend.gpu_memory_mode,
                 gpu_layers = llama_backend.gpu_layers,
                 n_cpu_moe = llama_backend.n_cpu_moe,
+                tensor_split = llama_backend.tensor_split,
                 n_layers = llama_backend.n_layers,
                 n_moe_layers = llama_backend.n_moe_layers,
                 gpu_ids = llama_backend.gpu_ids,

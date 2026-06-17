@@ -72,6 +72,8 @@ export interface LoadModelRequest {
   gpu_layers?: number;
   /** Manual mode: MoE expert layers to keep on CPU (--n-cpu-moe); 0 = none. */
   n_cpu_moe?: number;
+  /** Manual mode: relative model share per GPU (--tensor-split), in GPU order. */
+  tensor_split?: number[] | null;
   /** Picked physical GPU indices (omit/empty = automatic). */
   gpu_ids?: number[];
 }
@@ -166,6 +168,7 @@ export interface LoadModelResponse {
   gpu_memory_mode?: "auto" | "fit" | "manual";
   gpu_layers?: number;
   n_cpu_moe?: number;
+  tensor_split?: number[] | null;
   n_layers?: number | null;
   /** Model's MoE expert-layer count (the n_cpu_moe ceiling); 0 if not MoE. */
   n_moe_layers?: number;
@@ -216,6 +219,7 @@ export interface InferenceStatusResponse {
   gpu_memory_mode?: "auto" | "fit" | "manual";
   gpu_layers?: number;
   n_cpu_moe?: number;
+  tensor_split?: number[] | null;
   n_layers?: number | null;
   /** Model's MoE expert-layer count (the n_cpu_moe ceiling); 0 if not MoE. */
   n_moe_layers?: number;

@@ -126,6 +126,15 @@ class LoadRequest(BaseModel):
             "layers). Ignored unless gpu_memory_mode is 'manual'."
         ),
     )
+    tensor_split: Optional[List[float]] = Field(
+        None,
+        description = (
+            "Manual mode only: relative share of the model per GPU (--tensor-split), "
+            "in the order of the GPUs in use, e.g. [2, 1] for 2:1. None or an even "
+            "split lets llama.cpp distribute by its default. Ignored unless "
+            "gpu_memory_mode is 'manual'."
+        ),
+    )
     llama_extra_args: Optional[List[str]] = Field(
         None,
         description = (
@@ -302,6 +311,10 @@ class LoadResponse(BaseModel):
         0,
         description = "Manual mode: MoE expert layers pinned to CPU (--n-cpu-moe); 0 = none.",
     )
+    tensor_split: Optional[List[float]] = Field(
+        None,
+        description = "Manual mode: relative model share per GPU (--tensor-split); None = even.",
+    )
     n_layers: Optional[int] = Field(
         None,
         description = "Model's layer count (GGUF block_count), for the manual gpu-layers ceiling.",
@@ -447,6 +460,10 @@ class InferenceStatusResponse(BaseModel):
     n_cpu_moe: int = Field(
         0,
         description = "Manual mode: MoE expert layers pinned to CPU (--n-cpu-moe); 0 = none.",
+    )
+    tensor_split: Optional[List[float]] = Field(
+        None,
+        description = "Manual mode: relative model share per GPU (--tensor-split); None = even.",
     )
     n_layers: Optional[int] = Field(
         None,

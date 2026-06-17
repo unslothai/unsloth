@@ -254,16 +254,19 @@ def test_load_request_accepts_manual():
         gpu_memory_mode = "manual",
         gpu_layers = 20,
         n_cpu_moe = 8,
+        tensor_split = [2, 1],
     )
     assert req.gpu_memory_mode == "manual"
     assert req.gpu_layers == 20
     assert req.n_cpu_moe == 8
+    assert req.tensor_split == [2, 1]
 
 
 def test_load_request_manual_defaults():
     req = LoadRequest(model_path = "owner/repo")
     assert req.gpu_layers == -1
     assert req.n_cpu_moe == 0
+    assert req.tensor_split is None
 
 
 @pytest.mark.parametrize("model_cls", [LoadResponse, InferenceStatusResponse])
@@ -277,18 +280,20 @@ def test_response_models_emit_manual_fields(model_cls):
             gpu_memory_mode = "manual",
             gpu_layers = 20,
             n_cpu_moe = 8,
+            tensor_split = [2, 1],
             n_layers = 32,
             n_moe_layers = 32,
         )
     else:
         obj = model_cls(
             gpu_memory_mode = "manual", gpu_layers = 20, n_cpu_moe = 8,
-            n_layers = 32, n_moe_layers = 32,
+            tensor_split = [2, 1], n_layers = 32, n_moe_layers = 32,
         )
     dumped = obj.model_dump()
     assert dumped["gpu_memory_mode"] == "manual"
     assert dumped["gpu_layers"] == 20
     assert dumped["n_cpu_moe"] == 8
+    assert dumped["tensor_split"] == [2, 1]
     assert dumped["n_layers"] == 32
     assert dumped["n_moe_layers"] == 32
 
@@ -296,12 +301,16 @@ def test_response_models_emit_manual_fields(model_cls):
 def test_manual_properties_default_and_reflect_and_reset():
     backend = LlamaCppBackend()
     assert backend.gpu_layers == -1 and backend.n_cpu_moe == 0
+    assert backend.tensor_split is None
     backend._gpu_layers = 20
     backend._n_cpu_moe = 8
+    backend._tensor_split = [2, 1]
     assert backend.gpu_layers == 20 and backend.n_cpu_moe == 8
+    assert backend.tensor_split == [2, 1]
     backend._process = _FakeProcess()
     backend.unload_model()
     assert backend.gpu_layers == -1 and backend.n_cpu_moe == 0
+    assert backend.tensor_split is None
 
 
 def test_n_moe_layers_property():
@@ -320,7 +329,7 @@ def test_n_moe_layers_property():
     assert b.n_moe_layers == 46
 
 
-def _target_state_manual(backend, *, gpu_layers, n_cpu_moe):
+def _target_state_manual(backend, *, gpu_layers, n_cpu_moe, tensor_split = None):
     return backend._already_in_target_state(
         gguf_path = None,
         model_identifier = "owner/repo",
@@ -334,19 +343,32 @@ def _target_state_manual(backend, *, gpu_layers, n_cpu_moe):
         gpu_memory_mode = "manual",
         gpu_layers = gpu_layers,
         n_cpu_moe = n_cpu_moe,
+        tensor_split = tensor_split,
     )
 
 
-def test_manual_reloads_on_gpu_layers_or_n_cpu_moe_change():
+def test_manual_reloads_on_gpu_layers_or_n_cpu_moe_or_split_change():
     backend = _loaded_backend("manual")
     backend._gpu_layers = 20
     backend._n_cpu_moe = 0
+    backend._tensor_split = None
     # Same knobs -> no reload.
     assert _target_state_manual(backend, gpu_layers = 20, n_cpu_moe = 0) is True
     # Changed layer count -> reload.
     assert _target_state_manual(backend, gpu_layers = 16, n_cpu_moe = 0) is False
     # Changed MoE offload -> reload.
     assert _target_state_manual(backend, gpu_layers = 20, n_cpu_moe = 8) is False
+    # Added a GPU split -> reload.
+    assert (
+        _target_state_manual(backend, gpu_layers = 20, n_cpu_moe = 0, tensor_split = [2, 1])
+        is False
+    )
+    # Same GPU split -> no reload.
+    backend._tensor_split = [2, 1]
+    assert (
+        _target_state_manual(backend, gpu_layers = 20, n_cpu_moe = 0, tensor_split = [2, 1])
+        is True
+    )
 
 
 def test_manual_emits_gpu_layers_fit_off_and_n_cpu_moe():
@@ -367,6 +389,17 @@ def test_manual_emits_gpu_layers_fit_off_and_n_cpu_moe():
     # Manual forces use_fit False so --fit-ctx is never added under --fit off.
     emit = src.find('cmd.extend(["--gpu-layers", str(gpu_layers), "--fit", "off"])')
     assert "use_fit = False" in src[src.rfind("\n", 0, emit) - 200 : emit + 80]
+
+
+def test_manual_emits_tensor_split():
+    # Manual emits --tensor-split from the per-GPU shares, only when provided.
+    src = _load_model_source()
+    assert "if tensor_split:" in src
+    assert '"--tensor-split"' in src
+    # Joined as a comma list (e.g. "2,1") within the manual branch.
+    gate = src.find('elif gpu_memory_mode == "manual":')
+    nxt = src.find("elif use_fit:", gate)
+    assert '","' in src[gate:nxt] and "tensor_split" in src[gate:nxt]
 
 
 def test_resolve_cpu_moe_flag():

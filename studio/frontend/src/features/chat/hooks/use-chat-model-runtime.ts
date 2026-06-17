@@ -26,6 +26,7 @@ import { formatEta, formatRate } from "../utils/format-transfer";
 import {
   GPU_LAYERS_ALL,
   loadedGpuMemoryFields,
+  parseGpuSplit,
   readPersistedSpeculativeType,
   resolveToolsEnabledOnLoad,
   saveSpeculativeType,
@@ -546,6 +547,7 @@ export function useChatModelRuntime() {
                 selectedGpuIds: null,
                 gpuLayers: GPU_LAYERS_ALL,
                 nCpuMoe: 0,
+                gpuSplit: "",
               });
             }
 
@@ -560,6 +562,7 @@ export function useChatModelRuntime() {
               gpuMemoryMode,
               gpuLayers,
               nCpuMoe,
+              gpuSplit,
               selectedGpuIds,
               activePresetSource,
               activeGgufVariant,
@@ -603,6 +606,7 @@ export function useChatModelRuntime() {
               gpu_memory_mode: gpuMemoryMode,
               gpu_layers: gpuLayers,
               n_cpu_moe: nCpuMoe,
+              tensor_split: parseGpuSplit(gpuSplit) ?? undefined,
               gpu_ids: selectedGpuIds ?? undefined,
             });
 
@@ -777,6 +781,7 @@ export function useChatModelRuntime() {
                   gpu_memory_mode: stateBeforeUnload.loadedGpuMemoryMode ?? "auto",
                   gpu_layers: stateBeforeUnload.loadedGpuLayers ?? -1,
                   n_cpu_moe: stateBeforeUnload.loadedNCpuMoe ?? 0,
+                  tensor_split: stateBeforeUnload.loadedGpuSplit ?? undefined,
                   gpu_ids: stateBeforeUnload.loadedGpuIds ?? undefined,
                 });
                 useChatRuntimeStore.setState({

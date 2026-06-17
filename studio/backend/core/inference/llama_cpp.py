@@ -1192,6 +1192,8 @@ class LlamaCppBackend:
         self._gpu_layers: int = -1
         # MoE expert layers to keep on CPU (--n-cpu-moe); 0 = none.
         self._n_cpu_moe: int = 0
+        # Relative model share per GPU (--tensor-split), in GPU order; None = even.
+        self._tensor_split: Optional[List[float]] = None
         # User-picked physical GPU indices (None = automatic selection).
         self._gpu_ids: Optional[List[int]] = None
         self._reasoning_default: bool = True
@@ -1535,6 +1537,11 @@ class LlamaCppBackend:
     def n_cpu_moe(self) -> int:
         """MoE expert layers manual mode kept on CPU (--n-cpu-moe); 0 = none."""
         return self._n_cpu_moe
+
+    @property
+    def tensor_split(self) -> Optional[List[float]]:
+        """Manual-mode relative model share per GPU (--tensor-split); None = even."""
+        return self._tensor_split
 
     @property
     def gpu_ids(self) -> Optional[List[int]]:
@@ -4223,6 +4230,7 @@ class LlamaCppBackend:
         gpu_memory_mode: Literal["auto", "fit", "manual"] = "auto",
         gpu_layers: int = -1,
         n_cpu_moe: int = 0,
+        tensor_split: Optional[List[float]] = None,
         gpu_ids: Optional[List[int]] = None,
         n_threads: Optional[int] = None,
         n_gpu_layers: Optional[int] = None,  # caller compat, unused
@@ -4259,6 +4267,7 @@ class LlamaCppBackend:
                 gpu_memory_mode = gpu_memory_mode,
                 gpu_layers = gpu_layers,
                 n_cpu_moe = n_cpu_moe,
+                tensor_split = tensor_split,
                 gpu_ids = gpu_ids,
                 chat_template_override = chat_template_override,
                 extra_args = extra_args,
@@ -4455,6 +4464,7 @@ class LlamaCppBackend:
                 self._gpu_memory_mode = gpu_memory_mode
                 self._gpu_layers = gpu_layers
                 self._n_cpu_moe = n_cpu_moe
+                self._tensor_split = tensor_split
                 self._gpu_ids = sorted(gpu_ids) if gpu_ids else None
                 # Tensor mode aborts on a quantized KV cache, so drop it for the
                 # tensor attempt (and strip any inherited/explicit --cache-type
@@ -5223,6 +5233,13 @@ class LlamaCppBackend:
                     )
                     if moe_flag is not None:
                         cmd.extend(["--n-cpu-moe", str(moe_flag)])
+                    # Distribute the model across GPUs by the user's per-GPU shares
+                    # (--tensor-split). Works with the default layer split and with
+                    # tensor parallelism; --fit off means no fit/tensor abort.
+                    if tensor_split:
+                        cmd.extend(
+                            ["--tensor-split", ",".join(f"{x:g}" for x in tensor_split)]
+                        )
                 elif use_fit:
                     cmd.extend(["--fit", "on"])
                 elif gpu_indices is not None:
@@ -6113,6 +6130,7 @@ class LlamaCppBackend:
         gpu_memory_mode: Literal["auto", "fit", "manual"] = "auto",
         gpu_layers: int = -1,
         n_cpu_moe: int = 0,
+        tensor_split: Optional[List[float]] = None,
         gpu_ids: Optional[List[int]] = None,
         mtp_draft_path: Optional[str] = None,
     ) -> bool:
@@ -6161,9 +6179,11 @@ class LlamaCppBackend:
         # A GPU-memory-mode flip (Unsloth / --fit / manual) must always reload.
         if self._gpu_memory_mode != gpu_memory_mode:
             return False
-        # In manual mode a changed layer count or MoE-offload also reloads.
+        # In manual mode a changed layer count, MoE-offload, or GPU split reloads.
         if gpu_memory_mode == "manual" and (
-            self._gpu_layers != gpu_layers or self._n_cpu_moe != n_cpu_moe
+            self._gpu_layers != gpu_layers
+            or self._n_cpu_moe != n_cpu_moe
+            or (self._tensor_split or None) != (tensor_split or None)
         ):
             return False
         # A changed GPU pick must reload (compare order-insensitively; None/[]
@@ -6271,6 +6291,7 @@ class LlamaCppBackend:
             self._gpu_memory_mode = "auto"
             self._gpu_layers = -1
             self._n_cpu_moe = 0
+            self._tensor_split = None
             self._gpu_ids = None
             self._speculative_type = None
             self._requested_spec_mode = None

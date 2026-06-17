@@ -101,6 +101,7 @@ import {
 import {
   GPU_LAYERS_ALL,
   isPendingGguf,
+  parseGpuSplit,
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
 import { RetrievalSettingsSection } from "@/features/rag/components/retrieval-settings-section";
@@ -560,6 +561,9 @@ export function ChatSettingsPanel({
   const nCpuMoe = useChatRuntimeStore((s) => s.nCpuMoe);
   const setNCpuMoe = useChatRuntimeStore((s) => s.setNCpuMoe);
   const loadedNCpuMoe = useChatRuntimeStore((s) => s.loadedNCpuMoe);
+  const gpuSplit = useChatRuntimeStore((s) => s.gpuSplit);
+  const setGpuSplit = useChatRuntimeStore((s) => s.setGpuSplit);
+  const loadedGpuSplit = useChatRuntimeStore((s) => s.loadedGpuSplit);
   const ggufLayerCount = useChatRuntimeStore((s) => s.ggufLayerCount);
   const moeLayerCount = useChatRuntimeStore((s) => s.moeLayerCount);
   const selectedGpuIds = useChatRuntimeStore((s) => s.selectedGpuIds);
@@ -645,6 +649,26 @@ export function ChatSettingsPanel({
   };
   const gpuIdsKey = (ids: number[] | null) => (ids === null ? "auto" : ids.join(","));
   const gpuIdsDirty = gpuIdsKey(selectedGpuIds) !== gpuIdsKey(loadedGpuIds);
+  // GPU split (--tensor-split): manual + 2+ GPUs in use. The text is free-form,
+  // so warn (don't block) when it can't map to the GPUs in use.
+  const gpusInUse = selectedGpuIds ?? gpuDevices.map((d) => d.index);
+  const showGpuSplit = isManual && showGpuPicker && gpusInUse.length > 1;
+  const gpuSplitTokens = gpuSplit
+    .split(/[,/]+/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  const gpuSplitWarning =
+    gpuSplit.trim() === ""
+      ? null
+      : gpuSplitTokens.map(Number).some((n) => !Number.isFinite(n) || n < 0)
+        ? "Use numbers like 2,1."
+        : gpuSplitTokens.length !== gpusInUse.length
+          ? `Enter ${gpusInUse.length} values, one per GPU in use.`
+          : null;
+  const gpuSplitDirty =
+    isManual &&
+    JSON.stringify(parseGpuSplit(gpuSplit)) !==
+      JSON.stringify(loadedGpuSplit ?? null);
   // Auto-fit context: null / <= 0 means "Auto" (let --fit size it); a positive
   // value pins it (--fit optimizes gpu-layers around it). After a fit load,
   // surface the length --fit actually chose.
@@ -659,7 +683,8 @@ export function ChatSettingsPanel({
     tpDirty ||
     gpuDirty ||
     manualDirty ||
-    gpuIdsDirty;
+    gpuIdsDirty ||
+    gpuSplitDirty;
   const [presetNameInput, setPresetNameInput] = useState(activePreset);
   const [systemPromptEditorOpen, setSystemPromptEditorOpen] = useState(false);
   const [systemPromptDraft, setSystemPromptDraft] = useState("");
@@ -1324,6 +1349,39 @@ export function ChatSettingsPanel({
                         </div>
                       ))}
                     </div>
+                  </div>
+                )}
+                {showGpuSplit && (
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="flex min-w-0 items-center gap-1.5">
+                        <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+                          GPU split
+                        </span>
+                        <InfoHint>
+                          Relative share of the model per GPU (--tensor-split),
+                          in the order of the GPUs above. e.g. 2,1 puts twice as
+                          much on the first GPU. Leave blank for an even split.
+                        </InfoHint>
+                      </div>
+                      <input
+                        type="text"
+                        value={gpuSplit}
+                        placeholder={[
+                          "2",
+                          ...Array(gpusInUse.length - 1).fill("1"),
+                        ].join(",")}
+                        onChange={(e) => setGpuSplit(e.target.value)}
+                        data-test-id="gpu-split-input"
+                        aria-label="GPU split"
+                        className="h-7 w-[96px] rounded-full border-transparent bg-black/[0.04] dark:bg-white/[0.05] hover:bg-black/[0.06] dark:hover:bg-white/[0.1] pl-3 pr-2 py-0 text-right text-[13px] font-medium text-nav-fg outline-none focus-visible:ring-0"
+                      />
+                    </div>
+                    {gpuSplitWarning && (
+                      <p className="text-[11px] text-amber-500">
+                        {gpuSplitWarning}
+                      </p>
+                    )}
                   </div>
                 )}
                 <div className="flex items-center justify-between gap-3">
