@@ -102,7 +102,9 @@ export function HfTokenIndicator({ showLabel = false }: HfTokenIndicatorProps = 
           <HugeiconsIcon
             icon={AiSecurity03Icon}
             strokeWidth={1.75}
-            className="block size-[13px] shrink-0"
+            // The shield's ink leans slightly right, so nudge a hair left to
+            // optically centre it in the circle.
+            className="block size-[13px] shrink-0 -translate-x-[0.5px]"
           />
         </button>
       </TooltipTrigger>
