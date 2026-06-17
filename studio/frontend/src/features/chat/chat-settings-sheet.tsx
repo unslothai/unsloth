@@ -1305,8 +1305,8 @@ export function ChatSettingsPanel({
                             <InfoHint>
                               Relative share of the model per GPU
                               (--tensor-split), in GPU order. e.g. 2,1 puts
-                              twice as much on the first GPU. Leave blank for an
-                              even split.
+                              twice as much on the first GPU. Leave blank to
+                              split by free VRAM (llama.cpp's default).
                             </InfoHint>
                           </div>
                           <input

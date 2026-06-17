@@ -313,7 +313,7 @@ class LoadResponse(BaseModel):
     )
     tensor_split: Optional[List[float]] = Field(
         None,
-        description = "Manual mode: relative model share per GPU (--tensor-split); None = even.",
+        description = "Manual mode: relative model share per GPU (--tensor-split); None = default (split by free VRAM).",
     )
     n_layers: Optional[int] = Field(
         None,
@@ -463,7 +463,7 @@ class InferenceStatusResponse(BaseModel):
     )
     tensor_split: Optional[List[float]] = Field(
         None,
-        description = "Manual mode: relative model share per GPU (--tensor-split); None = even.",
+        description = "Manual mode: relative model share per GPU (--tensor-split); None = default (split by free VRAM).",
     )
     n_layers: Optional[int] = Field(
         None,

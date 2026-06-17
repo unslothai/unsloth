@@ -419,10 +419,12 @@ export function saveGpuMemoryMode(value: "auto" | "fit" | "manual"): void {
 export const GPU_LAYERS_ALL = 999;
 
 // Parse the "Split ratio" text field (e.g. "2,1" or "2/1") into per-GPU shares.
-// Returns null when blank, non-numeric/negative, fewer than 2 values, or all
-// values equal (an even split, which is llama.cpp's default and needs no flag).
-// Does NOT check the value count against the GPUs in use: the settings sheet
-// warns on a mismatch, and a forced wrong count surfaces llama.cpp's own error.
+// Returns null only when blank, non-numeric/negative, or fewer than 2 values.
+// An explicit even ratio (e.g. "1,1") is kept and sent: with no --tensor-split
+// llama.cpp splits by free VRAM, NOT evenly, so "1,1" must be passed to force an
+// even split. Does NOT check the value count against the GPUs in use: the
+// settings sheet warns on a mismatch, and a forced wrong count surfaces
+// llama.cpp's own error.
 export function parseSplitRatio(value: string): number[] | null {
   const parts = value
     .split(/[\s,/]+/)
@@ -431,7 +433,6 @@ export function parseSplitRatio(value: string): number[] | null {
   if (parts.length < 2) return null;
   const nums = parts.map(Number);
   if (nums.some((n) => !Number.isFinite(n) || n < 0)) return null;
-  if (nums.every((n) => n === nums[0])) return null;
   return nums;
 }
 
@@ -666,9 +667,10 @@ type ChatRuntimeStore = {
   /** Manual mode: MoE expert layers to keep on CPU (--n-cpu-moe); 0 = none. */
   nCpuMoe: number;
   loadedNCpuMoe: number | null;
-  /** Manual mode: per-GPU model split ratio as raw text (e.g. "2,1"); "" = even. */
+  /** Manual mode: per-GPU model split ratio as raw text (e.g. "2,1"); "" =
+   *  unset (llama.cpp splits by free VRAM). */
   splitRatio: string;
-  /** Backend-reported per-GPU split ratio (--tensor-split); null = even / unset. */
+  /** Backend-reported per-GPU split ratio (--tensor-split); null = unset. */
   loadedSplitRatio: number[] | null;
   /** Model layer count (GGUF block_count); the manual gpu-layers ceiling. */
   ggufLayerCount: number | null;

@@ -1192,7 +1192,8 @@ class LlamaCppBackend:
         self._gpu_layers: int = -1
         # MoE expert layers to keep on CPU (--n-cpu-moe); 0 = none.
         self._n_cpu_moe: int = 0
-        # Relative model share per GPU (--tensor-split), in GPU order; None = even.
+        # Relative model share per GPU (--tensor-split), in GPU order; None =
+        # default (llama.cpp splits by free VRAM).
         self._tensor_split: Optional[List[float]] = None
         # User-picked physical GPU indices (None = automatic selection).
         self._gpu_ids: Optional[List[int]] = None
@@ -1540,7 +1541,8 @@ class LlamaCppBackend:
 
     @property
     def tensor_split(self) -> Optional[List[float]]:
-        """Manual-mode relative model share per GPU (--tensor-split); None = even."""
+        """Manual-mode relative model share per GPU (--tensor-split); None =
+        default (split by free VRAM)."""
         return self._tensor_split
 
     @property
@@ -4621,7 +4623,8 @@ class LlamaCppBackend:
                         # count and context (slider value, native default).
                         # tensor_parallel is honored, but manual skips the
                         # memory-based TP planner below (gpus = []); the toggle
-                        # just emits --split-mode tensor for an even split. Strip
+                        # just emits --split-mode tensor (llama.cpp then splits by
+                        # free VRAM, or by the Split ratio if set). Strip
                         # any user --split-mode so the toggle owns it (unlike fit,
                         # this is compatible -- --fit off means no fit/tensor abort).
                         gpus = []
@@ -4825,7 +4828,8 @@ class LlamaCppBackend:
                     # honor it, cap only if it fits no combination. Auto (native):
                     # prefer fewer GPUs with reduced context (multi-GPU is slower).
                     gpu_indices, use_fit = None, True
-                    # Per-GPU weight proportions for tensor mode (None = even).
+                    # Per-GPU weight proportions for tensor mode (None lets
+                    # llama.cpp split by free VRAM).
                     tp_tensor_split: Optional[list[int]] = None
                     explicit_ctx = requested_ctx > 0
                     # Flat MTP reserve fraction: used only as the fallback when the
@@ -4854,7 +4858,8 @@ class LlamaCppBackend:
                     tp_gpus = gpus
                     # Manual mode owns the layer count and context, so it skips
                     # the memory-based planner; its toggle still emits
-                    # --split-mode tensor (even split) below. auto plans here.
+                    # --split-mode tensor below (split by free VRAM, or by the
+                    # Split ratio if set). auto plans here.
                     plan_tp = tensor_parallel and gpu_memory_mode != "manual"
                     if plan_tp:
                         # Deterministic per-device compute buffer (replicated on
