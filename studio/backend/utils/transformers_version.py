@@ -104,20 +104,19 @@ _TRANSFORMERS_550_MODEL_TYPES: set[str] = {
 }
 
 # Architecture classes / model_type values that require transformers 5.3.0.
-# Checked via config.json so local checkpoints with non-standard directory names
-# are still routed to the correct sidecar.
+# Checked via config.json (local or HuggingFace).
 _TRANSFORMERS_530_ARCHITECTURES: set[str] = {
-    "Qwen3_5ForCausalLM",               # Qwen3.5 text-only variant
-    "Qwen3_5ForConditionalGeneration",   # Qwen3.5 vision/conditional variant
-    "Qwen3MoeForCausalLM",              # Qwen3-30B-A3B, Qwen3 MoE variants
-    "Glm4MoeLiteForCausalLM",           # GLM-4.7-Flash
-    "Lfm2VlForConditionalGeneration",   # LiquidAI LFM2.5-VL
+    "Qwen3_5ForCausalLM",
+    "Qwen3_5ForConditionalGeneration",
+    "Qwen3MoeForCausalLM",
+    "Glm4MoeLiteForCausalLM",
+    "Lfm2VlForConditionalGeneration",
 }
 _TRANSFORMERS_530_MODEL_TYPES: set[str] = {
-    "qwen3_5",       # Qwen3.5 family
-    "qwen3_moe",     # Qwen3-30B-A3B and all Qwen3 MoE variants
-    "glm4_moe_lite", # GLM-4.7-Flash
-    "lfm2_vl",       # LiquidAI LFM2.5-VL-450M
+    "qwen3_5",
+    "qwen3_moe",
+    "glm4_moe_lite",
+    "lfm2_vl",
 }
 
 # Tokenizer classes that only exist in transformers>=5.x.
