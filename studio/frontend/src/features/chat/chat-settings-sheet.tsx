@@ -910,6 +910,8 @@ export function ChatSettingsPanel({
           <div className="flex flex-col gap-4 pt-1">
             {isGguf && (
               <>
+                <CollapsibleSection label="GPU" defaultOpen={true}>
+                <div className="flex flex-col gap-4">
                 <div className="flex items-center justify-between gap-3">
                   <div className="flex min-w-0 items-center gap-1.5">
                     <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
@@ -1025,6 +1027,8 @@ export function ChatSettingsPanel({
                     </div>
                   </>
                 )}
+                </div>
+                </CollapsibleSection>
                 {isAutoFit ? (
                   <div className="space-y-3.5">
                     <div className="flex items-center justify-between gap-3">
