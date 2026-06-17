@@ -41,7 +41,7 @@ def _provoke(
         lambda request, operation: ("org/repo", "org/repo", native),
     )
 
-    def _raise(**_kwargs):
+    def _raise(*_args, **_kwargs):
         raise exc
 
     monkeypatch.setattr(inf.ModelConfig, "from_identifier", staticmethod(_raise))
