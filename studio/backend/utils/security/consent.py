@@ -107,9 +107,7 @@ def _config_has_auto_map(model_name: str, hf_token: Optional[str] = None) -> Opt
     return any(bool((cfg or {}).get("auto_map")) for cfg in configs)
 
 
-def _load_remote_code_configs(
-    model_name: str, hf_token: Optional[str] = None
-) -> Optional[list]:
+def _load_remote_code_configs(model_name: str, hf_token: Optional[str] = None) -> Optional[list]:
     """Read every config that can declare ``auto_map`` (model + tokenizer) as raw
     dicts. Returns the configs that exist (possibly ``[]`` for a local dir with
     none), or ``None`` when nothing could be read at all (e.g. an unreachable

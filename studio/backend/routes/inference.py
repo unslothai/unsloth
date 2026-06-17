@@ -2525,7 +2525,6 @@ def _requires_trust_remote_code_for_model(
         pass
     try:
         from utils.security.consent import _config_has_auto_map
-
         return _config_has_auto_map(model_identifier, hf_token) is True
     except Exception:
         return False
@@ -2565,7 +2564,6 @@ async def validate_model(
         trc_target = config.identifier
         try:
             from utils.models.model_config import get_base_model_from_lora
-
             _base = get_base_model_from_lora(model_identifier)
             if _base:
                 trc_target = _base

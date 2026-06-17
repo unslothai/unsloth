@@ -1605,7 +1605,6 @@ async def scan_model_remote_code(
         # (its findings + fingerprint are what the worker gate requires).
         try:
             from utils.models.model_config import get_base_model_from_lora
-
             _base = get_base_model_from_lora(model_name)
             if _base:
                 model_name = _base

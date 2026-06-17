@@ -1465,7 +1465,6 @@ def _run_mlx_training(event_queue, stop_queue, config):
         consent_targets = [model_name]
         try:
             from utils.models.model_config import get_base_model_from_lora
-
             base_model = get_base_model_from_lora(model_name)
             if base_model:
                 consent_targets.append(base_model)
@@ -2168,7 +2167,6 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         consent_targets = [model_name]
         try:
             from utils.models.model_config import get_base_model_from_lora
-
             base_model = get_base_model_from_lora(model_name)
             if base_model:
                 consent_targets.append(base_model)

@@ -452,7 +452,9 @@ def repo_remote_code_files(model_name: str, hf_token: Optional[str] = None) -> d
                 # the caller treats the repo as unscannable.
                 logger.warning(
                     "repo_remote_code_files(%s): %s could not be fetched (%s); unscannable",
-                    model_name, fn, exc,
+                    model_name,
+                    fn,
+                    exc,
                 )
                 return {}
             files[fn] = Path(fp).read_text(errors = "replace")
@@ -512,7 +514,10 @@ def _add_external_refs(files: dict, refs, hf_token, model_name: str) -> bool:
         except Exception as exc:
             logger.warning(
                 "repo_remote_code_files(%s): external %s:%s unscannable (%s)",
-                model_name, repo, fn, exc,
+                model_name,
+                repo,
+                fn,
+                exc,
             )
             return False
         files[f"{repo}--{fn}"] = Path(fp).read_text(errors = "replace")

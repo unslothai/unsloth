@@ -215,7 +215,6 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
         consent_targets = [checkpoint_path]
         try:
             from utils.models.model_config import get_base_model_from_lora
-
             base_model = get_base_model_from_lora(checkpoint_path)
             if base_model:
                 consent_targets.append(base_model)

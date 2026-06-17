@@ -41,7 +41,11 @@ def _clear_vision_cache():
     _vision_detection_cache.clear()
 
 
-def _write_model_dir(tmp_path, cfg, with_evil_module = False):
+def _write_model_dir(
+    tmp_path,
+    cfg,
+    with_evil_module = False,
+):
     """Write a local model dir; optionally an auto_map module that writes a
     sentinel on import, so any accidental code execution during detection shows
     up as a file on disk."""
@@ -324,13 +328,34 @@ def test_no_code_execution_on_detection(tmp_path):
     "cfg, expected",
     [
         # repo-code VLMs (auto_map) detected via declarative vision_config
-        ({"model_type": "deepseek_vl_v2", "architectures": ["DeepseekOCRForCausalLM"],
-          "auto_map": {"AutoConfig": "x.Y"}, "vision_config": {}}, True),
-        ({"model_type": "kimi_k25", "architectures": ["KimiK25ForConditionalGeneration"],
-          "auto_map": {"AutoConfig": "x.Y"}, "vision_config": {}}, True),
+        (
+            {
+                "model_type": "deepseek_vl_v2",
+                "architectures": ["DeepseekOCRForCausalLM"],
+                "auto_map": {"AutoConfig": "x.Y"},
+                "vision_config": {},
+            },
+            True,
+        ),
+        (
+            {
+                "model_type": "kimi_k25",
+                "architectures": ["KimiK25ForConditionalGeneration"],
+                "auto_map": {"AutoConfig": "x.Y"},
+                "vision_config": {},
+            },
+            True,
+        ),
         # newer-native vision via vision_config
-        ({"model_type": "gemma4_unified", "architectures": ["Gemma4UnifiedForConditionalGeneration"],
-          "vision_config": {}, "image_token_id": 7}, True),
+        (
+            {
+                "model_type": "gemma4_unified",
+                "architectures": ["Gemma4UnifiedForConditionalGeneration"],
+                "vision_config": {},
+                "image_token_id": 7,
+            },
+            True,
+        ),
         # text / seq2seq / audio that share the ForConditionalGeneration suffix
         ({"model_type": "glm4_moe_lite", "architectures": ["Glm4MoeLiteForCausalLM"]}, False),
         ({"model_type": "t5", "architectures": ["T5ForConditionalGeneration"]}, False),
@@ -350,7 +375,9 @@ def test_is_vision_model_end_to_end(tmp_path, cfg, expected):
 def test_registry_derivation():
     # Registry-derived sets are large and include the curated repo-code VLMs.
     assert len(_VLM_MODEL_TYPES) >= 50, f"_VLM_MODEL_TYPES too small: {len(_VLM_MODEL_TYPES)}"
-    assert len(_AUDIO_ONLY_MODEL_TYPES) >= 20, f"_AUDIO_ONLY too small: {len(_AUDIO_ONLY_MODEL_TYPES)}"
+    assert (
+        len(_AUDIO_ONLY_MODEL_TYPES) >= 20
+    ), f"_AUDIO_ONLY too small: {len(_AUDIO_ONLY_MODEL_TYPES)}"
     for repo_vlm in ("deepseek_vl_v2", "kimi_k25", "phi3_v", "cogvlm2", "minicpmv"):
         assert repo_vlm in _VLM_MODEL_TYPES, f"curated repo-code VLM {repo_vlm} missing"
     for native in ("llava", "qwen2_vl"):

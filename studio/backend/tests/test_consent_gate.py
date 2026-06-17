@@ -576,7 +576,11 @@ class TestScannerCoversAllExecutableCode:
         # config.json fetches but a referenced .py 404s: returning the partial set
         # would fingerprint "clean" code while transformers later runs the missing
         # file. Fail closed so the caller treats the repo as unscannable.
-        def _dl(repo, fn, token = None):
+        def _dl(
+            repo,
+            fn,
+            token = None,
+        ):
             if fn == "config.json":
                 import json
                 import tempfile
@@ -597,7 +601,11 @@ class TestScannerCoversAllExecutableCode:
         # auto_map can point at code in ANOTHER repo (owner/name--module.Class);
         # transformers fetches + executes it, so the scanner must download it from
         # that repo, not look for the file in the model's own repo.
-        def _dl(repo, fn, token = None):
+        def _dl(
+            repo,
+            fn,
+            token = None,
+        ):
             import json
             import tempfile
 
@@ -623,7 +631,11 @@ class TestScannerCoversAllExecutableCode:
     def test_unreachable_external_ref_is_unscannable(self):
         # If the external repo's code can't be fetched, fail closed rather than
         # fingerprint a clean own-repo snapshot.
-        def _dl(repo, fn, token = None):
+        def _dl(
+            repo,
+            fn,
+            token = None,
+        ):
             import json
             import tempfile
 
