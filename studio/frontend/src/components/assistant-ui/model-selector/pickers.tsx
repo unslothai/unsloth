@@ -251,11 +251,13 @@ function useRovingModelList({
 function ListLabel({
   children,
   icon,
+  action,
   collapsed,
   onToggle,
 }: {
   children: ReactNode;
   icon?: ReactNode;
+  action?: ReactNode;
   collapsed?: boolean;
   onToggle?: () => void;
 }) {
@@ -265,17 +267,22 @@ function ListLabel({
         {icon}
         {children}
       </span>
-      {onToggle && (
-        <button
-          type="button"
-          onClick={onToggle}
-          aria-label={collapsed ? "Expand section" : "Collapse section"}
-          className="shrink-0 rounded p-1 text-muted-foreground/60 transition-colors hover:text-foreground"
-        >
-          {collapsed
-            ? <ChevronRightIcon className="size-3" />
-            : <ChevronDownIcon className="size-3" />}
-        </button>
+      {(action || onToggle) && (
+        <div className="flex items-center gap-0.5">
+          {action}
+          {onToggle && (
+            <button
+              type="button"
+              onClick={onToggle}
+              aria-label={collapsed ? "Expand section" : "Collapse section"}
+              className="shrink-0 rounded p-1 text-muted-foreground/60 transition-colors hover:text-foreground"
+            >
+              {collapsed
+                ? <ChevronRightIcon className="size-3" />
+                : <ChevronDownIcon className="size-3" />}
+            </button>
+          )}
+        </div>
       )}
     </div>
   );
@@ -809,13 +816,40 @@ const LOCAL_SORT_OPTIONS: HubOption<LocalSortKey>[] = [
   { value: "name", label: "Name" },
 ];
 
-// Format filter dropdown for the Unsloth listing.
-const FORMAT_FILTER_OPTIONS: HubOption<FormatFilter>[] = [
-  { value: "all", label: "All" },
-  { value: "gguf", label: "GGUF" },
-  { value: "mlx", label: "MLX" },
-  { value: "safetensors", label: "Safetensors" },
-];
+// Format filter dropdown for the Unsloth listing. Plain labels are reused in
+// the empty-state copy below.
+const FORMAT_FILTER_LABELS: Record<FormatFilter, string> = {
+  all: "All",
+  gguf: "GGUF",
+  mlx: "MLX",
+  safetensors: "Safetensors",
+};
+
+// Dot colors match the row format tags: gguf blue, mlx amber, safetensors pink.
+const FORMAT_FILTER_DOTS: Partial<Record<FormatFilter, string>> = {
+  gguf: "bg-format-gguf",
+  mlx: "bg-format-mlx",
+  safetensors: "bg-format-checkpoint",
+};
+
+const FORMAT_FILTER_OPTIONS: HubOption<FormatFilter>[] = (
+  Object.keys(FORMAT_FILTER_LABELS) as FormatFilter[]
+).map((value) => {
+  const dot = FORMAT_FILTER_DOTS[value];
+  return {
+    value,
+    label: dot ? (
+      <span className="flex items-center gap-2">
+        <span
+          className={cn("inline-block size-1.5 shrink-0 rounded-full", dot)}
+        />
+        {FORMAT_FILTER_LABELS[value]}
+      </span>
+    ) : (
+      FORMAT_FILTER_LABELS[value]
+    ),
+  };
+});
 
 /** Sort cached repos: by last-loaded, download date, size desc, or name. */
 function sortCachedRepos<
@@ -1402,6 +1436,15 @@ export function HubModelPicker({
       return keys;
     }
 
+    // Custom folders sit right below the downloaded models on On Device.
+    if (section === "downloaded" && !customFoldersCollapsed) {
+      keys.push(
+        ...sortedCustomFolderModels.map((model) =>
+          makeModelOptionKey("custom-folder", model.id),
+        ),
+      );
+    }
+
     if (section === "downloaded") {
       keys.push(
         ...sortedLmStudio.map((model) =>
@@ -1411,14 +1454,6 @@ export function HubModelPicker({
       keys.push(
         ...sortedLocalDir.map((model) =>
           makeModelOptionKey("local-dir", model.id),
-        ),
-      );
-    }
-
-    if (section === "custom" && !customFoldersCollapsed) {
-      keys.push(
-        ...sortedCustomFolderModels.map((model) =>
-          makeModelOptionKey("custom-folder", model.id),
         ),
       );
     }
@@ -1563,10 +1598,10 @@ export function HubModelPicker({
     [onSelect, isKnownGgufRepo],
   );
 
-  // Each section owns its own search: On Device / Custom filter their local
-  // models by the query; the Unsloth tab searches the HF listing (below).
+  // On Device owns the downloaded and custom-folder models; the Unsloth tab
+  // searches the HF listing (below). Both filter locally by the query.
   const showDownloaded = section === "downloaded";
-  const showCustom = section === "custom";
+  const showCustom = section === "downloaded";
   const showRecommendedSection = !showHfSection && section === "recommended";
   const downloadedEmpty =
     visibleCachedGguf.length === 0 &&
@@ -1648,8 +1683,8 @@ export function HubModelPicker({
         ) : null}
       </div>
 
-      {/* Section tabs, with the format and sort dropdowns inline to the right,
-          spaced the same gap-2 as the two dropdowns are from each other. */}
+      {/* Section tabs, then the format and sort dropdowns, all spaced by the
+          same gap so the row reads evenly. */}
       <div className="flex items-center gap-2">
         {sectionToggle}
         <div className="flex items-center gap-2">
@@ -1675,12 +1710,15 @@ export function HubModelPicker({
           setListScrolled((prev) => (prev === next ? prev : next));
         }}
         className={cn(
-          "model-list-scroll max-h-72 overflow-y-auto",
+          // Negative margin + matching padding nudges the scrollbar toward the
+          // box edge while keeping the rows in place.
+          "model-list-scroll -mr-1.5 max-h-72 overflow-y-auto pr-1.5",
           listScrolled && "is-scrolled",
         )}
         {...hubModelList.listboxProps}
       >
-        <div className="py-1">
+        {/* Slight right inset so the row hover stops short of the scrollbar. */}
+        <div className="py-1 pr-1">
           {/* First-load spinner only when nothing cached is shown yet. */}
           {showDownloaded &&
           !cachedReady &&
@@ -1694,17 +1732,18 @@ export function HubModelPicker({
             </div>
           ) : null}
 
-          {/* Empty On Device: a search miss vs nothing downloaded yet. */}
-          {showDownloaded && cachedReady && downloadedEmpty ? (
+          {/* Empty On Device: a search miss vs nothing downloaded yet. Hidden
+              when custom folders below still have matches. */}
+          {showDownloaded &&
+          cachedReady &&
+          downloadedEmpty &&
+          sortedCustomFolderModels.length === 0 ? (
             <div className="px-2.5 py-2 text-xs text-muted-foreground">
               {showHfSection
                 ? "No matching models on device."
                 : formatFilter === "all"
                   ? "No downloaded models yet. Search above or pick Recommended."
-                  : `No downloaded ${
-                      FORMAT_FILTER_OPTIONS.find((o) => o.value === formatFilter)
-                        ?.label ?? ""
-                    } models yet.`}
+                  : `No downloaded ${FORMAT_FILTER_LABELS[formatFilter]} models yet.`}
             </div>
           ) : null}
 
@@ -1715,6 +1754,17 @@ export function HubModelPicker({
               <ListLabel
                 collapsed={downloadedCollapsed}
                 onToggle={() => setDownloadedCollapsed((v) => !v)}
+                action={
+                  <button
+                    type="button"
+                    onClick={() => setShowFolderBrowser(true)}
+                    aria-label="Add a custom folder"
+                    title="Add a custom folder"
+                    className="shrink-0 rounded p-1 text-muted-foreground/60 transition-colors hover:text-foreground"
+                  >
+                    <HugeiconsIcon icon={Folder02Icon} className="size-3" />
+                  </button>
+                }
               >
                 {/* When other providers (LM Studio/Ollama) also show here, name
                     this group "Unsloth" so the two are easy to tell apart. */}
@@ -1818,133 +1868,11 @@ export function HubModelPicker({
             </>
           ) : null}
 
-          {section === "downloaded" && sortedLmStudio.length > 0 ? (
-            <>
-              <ListLabel>LM Studio</ListLabel>
-              {sortedLmStudio.map((m) => {
-                const isGguf = isGgufRepo(m.id) || isGgufRepo(m.display_name);
-                const optionKey = makeModelOptionKey("lm-studio", m.id);
-                return (
-                  <div key={m.id}>
-                    <ModelRow
-                      label={m.model_id ?? m.display_name}
-                      meta={
-                        isGguf || m.path.toLowerCase().endsWith(".gguf") ? "GGUF" : "Local"
-                      }
-                      selected={value === m.id}
-                      optionProps={hubModelList.getOptionProps(
-                        optionKey,
-                        value === m.id,
-                      )}
-                      onClick={() => {
-                        if (isGguf) {
-                          setExpandedGguf((prev) =>
-                            prev === m.id ? null : m.id,
-                          );
-                        } else {
-                          onSelect(m.id, {
-                            source: "local",
-                            isLora: false,
-                            isDownloaded: true,
-                          });
-                        }
-                      }}
-                      onArrowDownIntoChildren={
-                        expandedGguf === m.id
-                          ? () => {
-                              const focused = focusFirstChildOption(optionKey);
-                              return focused;
-                            }
-                          : undefined
-                      }
-                      vramStatus={null}
-                    />
-                    {expandedGguf === m.id && (
-                      <GgufVariantExpander
-                        repoId={m.id}
-                        onSelect={onSelect}
-                        parentOptionKey={optionKey}
-                        onNavigatePastStart={() =>
-                          hubModelList.focusOption(optionKey)
-                        }
-                        onNavigatePastEnd={() =>
-                          hubModelList.moveFocus(optionKey, "next")
-                        }
-                        gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
-                        systemRamGb={
-                          gpu.available ? gpu.systemRamAvailableGb : undefined
-                        }
-                      />
-                    )}
-                  </div>
-                );
-              })}
-            </>
-          ) : null}
-
-          {section === "downloaded" && sortedLocalDir.length > 0 ? (
-            <>
-              <ListLabel>Local models</ListLabel>
-              {sortedLocalDir.map((m) => {
-                const isGguf = localModelIsGguf(m);
-                const optionKey = makeModelOptionKey("local-dir", m.id);
-                return (
-                  <div key={m.id}>
-                    <ModelRow
-                      label={m.model_id ?? m.display_name}
-                      meta={isGguf ? "GGUF" : "Local"}
-                      selected={value === m.id}
-                      optionProps={hubModelList.getOptionProps(
-                        optionKey,
-                        value === m.id,
-                      )}
-                      onClick={() => {
-                        if (isGguf) {
-                          setExpandedGguf((prev) =>
-                            prev === m.id ? null : m.id,
-                          );
-                        } else {
-                          onSelect(m.id, {
-                            source: "local",
-                            isLora: false,
-                            isDownloaded: true,
-                          });
-                        }
-                      }}
-                      onArrowDownIntoChildren={
-                        expandedGguf === m.id
-                          ? () => focusFirstChildOption(optionKey)
-                          : undefined
-                      }
-                      vramStatus={null}
-                    />
-                    {expandedGguf === m.id && (
-                      <GgufVariantExpander
-                        repoId={m.id}
-                        onSelect={onSelect}
-                        parentOptionKey={optionKey}
-                        onNavigatePastStart={() =>
-                          hubModelList.focusOption(optionKey)
-                        }
-                        onNavigatePastEnd={() =>
-                          hubModelList.moveFocus(optionKey, "next")
-                        }
-                        gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
-                        systemRamGb={
-                          gpu.available ? gpu.systemRamAvailableGb : undefined
-                        }
-                      />
-                    )}
-                  </div>
-                );
-              })}
-            </>
-          ) : null}
-
           {showCustom ? (
             <>
               <div className="flex items-center gap-1 px-2.5 pb-1.5 pt-3">
                 <span className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  <HugeiconsIcon icon={Folder02Icon} className="size-3.5" />
                   Custom Folders
                 </span>
                 <div className="flex items-center gap-0.5">
@@ -2167,6 +2095,129 @@ export function HubModelPicker({
                   No matching models in custom folders.
                 </div>
               ) : null}
+            </>
+          ) : null}
+
+          {section === "downloaded" && sortedLmStudio.length > 0 ? (
+            <>
+              <ListLabel>LM Studio</ListLabel>
+              {sortedLmStudio.map((m) => {
+                const isGguf = isGgufRepo(m.id) || isGgufRepo(m.display_name);
+                const optionKey = makeModelOptionKey("lm-studio", m.id);
+                return (
+                  <div key={m.id}>
+                    <ModelRow
+                      label={m.model_id ?? m.display_name}
+                      meta={
+                        isGguf || m.path.toLowerCase().endsWith(".gguf") ? "GGUF" : "Local"
+                      }
+                      selected={value === m.id}
+                      optionProps={hubModelList.getOptionProps(
+                        optionKey,
+                        value === m.id,
+                      )}
+                      onClick={() => {
+                        if (isGguf) {
+                          setExpandedGguf((prev) =>
+                            prev === m.id ? null : m.id,
+                          );
+                        } else {
+                          onSelect(m.id, {
+                            source: "local",
+                            isLora: false,
+                            isDownloaded: true,
+                          });
+                        }
+                      }}
+                      onArrowDownIntoChildren={
+                        expandedGguf === m.id
+                          ? () => {
+                              const focused = focusFirstChildOption(optionKey);
+                              return focused;
+                            }
+                          : undefined
+                      }
+                      vramStatus={null}
+                    />
+                    {expandedGguf === m.id && (
+                      <GgufVariantExpander
+                        repoId={m.id}
+                        onSelect={onSelect}
+                        parentOptionKey={optionKey}
+                        onNavigatePastStart={() =>
+                          hubModelList.focusOption(optionKey)
+                        }
+                        onNavigatePastEnd={() =>
+                          hubModelList.moveFocus(optionKey, "next")
+                        }
+                        gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
+                        systemRamGb={
+                          gpu.available ? gpu.systemRamAvailableGb : undefined
+                        }
+                      />
+                    )}
+                  </div>
+                );
+              })}
+            </>
+          ) : null}
+
+          {section === "downloaded" && sortedLocalDir.length > 0 ? (
+            <>
+              <ListLabel>Local models</ListLabel>
+              {sortedLocalDir.map((m) => {
+                const isGguf = localModelIsGguf(m);
+                const optionKey = makeModelOptionKey("local-dir", m.id);
+                return (
+                  <div key={m.id}>
+                    <ModelRow
+                      label={m.model_id ?? m.display_name}
+                      meta={isGguf ? "GGUF" : "Local"}
+                      selected={value === m.id}
+                      optionProps={hubModelList.getOptionProps(
+                        optionKey,
+                        value === m.id,
+                      )}
+                      onClick={() => {
+                        if (isGguf) {
+                          setExpandedGguf((prev) =>
+                            prev === m.id ? null : m.id,
+                          );
+                        } else {
+                          onSelect(m.id, {
+                            source: "local",
+                            isLora: false,
+                            isDownloaded: true,
+                          });
+                        }
+                      }}
+                      onArrowDownIntoChildren={
+                        expandedGguf === m.id
+                          ? () => focusFirstChildOption(optionKey)
+                          : undefined
+                      }
+                      vramStatus={null}
+                    />
+                    {expandedGguf === m.id && (
+                      <GgufVariantExpander
+                        repoId={m.id}
+                        onSelect={onSelect}
+                        parentOptionKey={optionKey}
+                        onNavigatePastStart={() =>
+                          hubModelList.focusOption(optionKey)
+                        }
+                        onNavigatePastEnd={() =>
+                          hubModelList.moveFocus(optionKey, "next")
+                        }
+                        gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
+                        systemRamGb={
+                          gpu.available ? gpu.systemRamAvailableGb : undefined
+                        }
+                      />
+                    )}
+                  </div>
+                );
+              })}
             </>
           ) : null}
 

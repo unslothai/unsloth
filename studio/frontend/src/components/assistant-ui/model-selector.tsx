@@ -15,7 +15,6 @@ import {
   CloudIcon,
   DashboardSquare01Icon,
   Download01Icon,
-  Folder02Icon,
   FolderSearchIcon,
   RemoveCircleIcon,
   Search01Icon,
@@ -216,18 +215,13 @@ type HubSection = "downloaded" | "recommended" | "custom";
 const HUB_SECTION_TABS: { value: string; label: string; icon?: ReactNode }[] = [
   {
     value: "recommended",
-    label: "Unsloth",
+    label: "Recommended",
     icon: <HugeiconsIcon icon={StarIcon} className="size-3.5" />,
   },
   {
     value: "downloaded",
     label: "On Device",
     icon: <HugeiconsIcon icon={Download01Icon} className="size-3.5" />,
-  },
-  {
-    value: "custom",
-    label: "Custom",
-    icon: <HugeiconsIcon icon={Folder02Icon} className="size-3.5" />,
   },
 ];
 
@@ -366,7 +360,7 @@ function ModelSelectorContent({
       data-tour={dataTour}
       onKeyDown={handlePickerEntryKeyDown}
       className={cn(
-        "unsloth-model-selector-menu menu-soft-surface ring-0 w-[min(550px,calc(100vw-1rem))] max-w-[calc(100vw-1rem)] min-w-0 gap-0 p-4",
+        "unsloth-model-selector-menu menu-soft-surface ring-0 w-[min(500px,calc(100vw-1rem))] max-w-[calc(100vw-1rem)] min-w-0 gap-0 p-4",
         className,
       )}
     >

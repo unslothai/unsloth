@@ -190,7 +190,7 @@ export function HubOptionMenu<T extends string>({
         collisionPadding={12}
         onCloseAutoFocus={(event) => event.preventDefault()}
         className={cn(
-          "hub-menu-instant menu-soft-surface w-max min-w-[var(--radix-popover-trigger-width)] max-w-[min(var(--radix-popover-content-available-width),calc(100vw-1rem))] rounded-[18px] px-[9px] py-2 ring-0",
+          "hub-menu-instant menu-soft-surface w-max min-w-[var(--radix-popover-trigger-width)] max-w-[min(var(--radix-popover-content-available-width),calc(100vw-1rem))] rounded-[18px] pl-[7px] pr-[11px] py-2 ring-0",
           contentClassName,
         )}
       >
