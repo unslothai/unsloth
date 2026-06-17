@@ -1716,6 +1716,7 @@ class LlamaCppBackend:
                 [bin_path, "--help"],
                 capture_output = True,
                 text = True,
+                errors = "replace",
                 timeout = 10,
                 check = False,
                 env = probe_env,
@@ -4723,7 +4724,14 @@ class LlamaCppBackend:
                             "in the current llama.cpp build; using layer split."
                         )
                         tensor_parallel = False
-                        extra_args = strip_split_mode_only(extra_args)
+                        if _tensor_dropped_cache_type_kv is not None:
+                            cache_type_kv = _tensor_dropped_cache_type_kv
+                            _cache_type_from_env = False
+                        extra_args = strip_split_mode_only(
+                            _tensor_dropped_extra_args
+                            if _tensor_dropped_extra_args is not None
+                            else extra_args
+                        )
 
                     tp_gpus = gpus
                     if tensor_parallel:

@@ -319,11 +319,12 @@ class TestCudaDeviceOrder:
 
     def test_setdefault_respects_explicit_user_override(self):
         # Re-running the module's setdefault must not clobber a user value.
+        import importlib
         import os
         original = os.environ.get("CUDA_DEVICE_ORDER")
         try:
             os.environ["CUDA_DEVICE_ORDER"] = "FASTEST_FIRST"
-            os.environ.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
+            importlib.reload(_hw_module)
             assert os.environ["CUDA_DEVICE_ORDER"] == "FASTEST_FIRST"
         finally:
             if original is None:
