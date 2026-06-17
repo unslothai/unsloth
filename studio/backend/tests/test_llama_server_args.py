@@ -669,6 +669,49 @@ def test_strip_shadowing_flags_drops_model_draft_with_spec():
     assert out == ["--top-k", "20"]
 
 
+@pytest.mark.parametrize(
+    "selector",
+    [
+        ["--spec-draft-hf", "org/repo"],
+        ["-hfd", "org/repo"],
+        ["-hfrd", "org/repo"],
+        ["--hf-repo-draft", "org/repo"],
+        ["--spec-draft-hf=org/repo"],
+    ],
+)
+def test_strip_shadowing_flags_drops_hf_drafter_selectors_with_spec(selector):
+    # HF drafter selectors must reset on inherit like local --model-draft, or a
+    # stale inherited HF drafter last-wins over Studio's re-derived spec choice.
+    out = strip_shadowing_flags(
+        selector + ["--top-k", "20"],
+        strip_context = False,
+        strip_cache = False,
+        strip_spec = True,
+        strip_template = False,
+    )
+    assert out == ["--top-k", "20"]
+
+
+def test_strip_shadowing_flags_keeps_draft_tuning_with_spec():
+    # Per-drafter tuning knobs are deliberately preserved: the VRAM budget reads
+    # them via the same parsers the child honors (so they stay consistent on
+    # inherit), and stripping --spec-draft-ngl would move a CPU drafter to GPU.
+    keep = [
+        "--spec-draft-type-k", "q4_0",
+        "--spec-draft-type-v", "q4_0",
+        "--spec-draft-ngl", "0",
+        "--spec-draft-device", "cpu",
+    ]
+    out = strip_shadowing_flags(
+        list(keep),
+        strip_context = False,
+        strip_cache = False,
+        strip_spec = True,
+        strip_template = False,
+    )
+    assert out == keep
+
+
 def test_strip_shadowing_flags_keeps_split_mode_when_not_requested():
     # No tensor_parallel field supplied on the Apply -> an inherited
     # --split-mode survives (mirrors the chat-template keep behavior).

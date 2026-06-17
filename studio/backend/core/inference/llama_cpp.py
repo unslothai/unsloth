@@ -4299,11 +4299,16 @@ class LlamaCppBackend:
                 # support it, so remember the dropped type and restore it if we
                 # later fall back to layer split below.
                 _tensor_dropped_cache_type_kv: Optional[str] = None
-                if (
-                    tensor_parallel
-                    and cache_type_kv
-                    and cache_type_kv.strip().lower() not in self._TENSOR_PARALLEL_KV_TYPES
-                ):
+                # Tensor mode rejects any quantized axis. cache_type_kv is the
+                # heavier-by-bytes budget type, which can mask a quantized axis (an
+                # f16 budget hides a paired q4_0), so also test each explicit
+                # --cache-type-k/-v extra, not just the budget type.
+                _ck_extra, _cv_extra = parse_cache_override_per_axis(extra_args)
+                _cache_non_tensor_safe = any(
+                    c and c.strip().lower() not in self._TENSOR_PARALLEL_KV_TYPES
+                    for c in (cache_type_kv, _ck_extra, _cv_extra)
+                )
+                if tensor_parallel and _cache_non_tensor_safe:
                     logger.info(
                         "Tensor parallelism requires a non-quantized KV cache; "
                         "ignoring cache type %s for the tensor attempt.",

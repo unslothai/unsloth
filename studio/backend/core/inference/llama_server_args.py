@@ -136,13 +136,22 @@ _SPEC_FLAGS: frozenset[str] = frozenset(
         "--spec-ngram-size",
         "--draft-min",
         "--draft-max",
-        # MTP path (llama.cpp #22673). --model-draft and aliases are
-        # Studio-managed since the separate-drafter support (Gemma 4): an
-        # inherited copy must not last-wins-override the auto-detected
-        # drafter. Explicit extras for the current load are never stripped.
+        # MTP path (llama.cpp #22673). The drafter selectors (local --model-draft
+        # and HF --spec-draft-hf aliases) are Studio-managed since the separate-
+        # drafter support (Gemma 4): an inherited copy must not last-wins-override
+        # the auto-detected drafter. Explicit extras for the current load are never
+        # stripped. The per-drafter tuning knobs (--spec-draft-type-*, -ngld,
+        # --spec-draft-device) are deliberately NOT stripped: the VRAM budget reads
+        # them via the same parsers the child honors, so they stay consistent on
+        # inherit, and stripping them would silently move a CPU-offloaded drafter
+        # back onto the GPU.
         "--model-draft",
         "-md",
         "--spec-draft-model",
+        "--spec-draft-hf",
+        "-hfd",
+        "-hfrd",
+        "--hf-repo-draft",
         "--spec-draft-n-max",
         "--spec-draft-n-min",
         "--spec-draft-p-min",

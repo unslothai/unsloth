@@ -847,6 +847,16 @@ class TestExtraArgsMtpDetection:
         load = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
         assert "_extra_args_main_cache_type_for_budget(extra_args)" in load
 
+    def test_load_model_tensor_drops_any_quantized_cache_axis(self):
+        # The heavier-by-bytes budget type can mask a quantized axis (an f16
+        # budget hides a paired q4_0), so the tensor-safety drop must test each
+        # --cache-type-k/-v extra, not just cache_type_kv -- else the quantized
+        # axis survives into tensor mode and crashes the load (#6312).
+        load = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
+        assert "_ck_extra,_cv_extra=parse_cache_override_per_axis(extra_args)" in load
+        assert "forcin(cache_type_kv,_ck_extra,_cv_extra)" in load
+        assert "iftensor_paralleland_cache_non_tensor_safe:" in load
+
     def test_load_model_adopts_env_tensor_split_mode(self):
         # load_model delegates the tensor decision to _effective_tensor_parallel,
         # which flips to tensor only one-directionally: extras set no split mode,
