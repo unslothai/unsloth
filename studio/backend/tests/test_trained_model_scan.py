@@ -130,7 +130,11 @@ def test_lora_identifier_retries_transient_then_resolves(tmp_path: Path):
     cfg.write_text(json.dumps({"base_model_name_or_path": "unsloth/Llama-3.2-1B-Instruct"}))
     calls = {"n": 0}
 
-    def _dl(repo, fn, token = None):
+    def _dl(
+        repo,
+        fn,
+        token = None,
+    ):
         calls["n"] += 1
         if calls["n"] == 1:
             raise RuntimeError("transient network blip")

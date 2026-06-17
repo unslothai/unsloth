@@ -243,7 +243,10 @@ def test_unknown_future_level_fails_closed():
 def test_pending_or_scanning_level_does_not_block():
     # A not-yet-finished per-file scan state must not false-block.
     for lvl in ("pending", "scanning", "queued", "unscanned", "error"):
-        status = {"scansDone": False, "filesWithIssues": [{"path": "pytorch_model.bin", "level": lvl}]}
+        status = {
+            "scansDone": False,
+            "filesWithIssues": [{"path": "pytorch_model.bin", "level": lvl}],
+        }
         with _patch_status(status):
             d = evaluate_file_security("some/repo")
         assert d.blocked is False, lvl

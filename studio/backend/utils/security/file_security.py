@@ -117,6 +117,7 @@ def _is_load_rce_vector(path: str) -> bool:
     suffix = "." + p.rsplit(".", 1)[1].lower() if "." in p else ""
     return suffix not in _INERT_SUFFIXES
 
+
 # Two-timeout metadata fetch, mirroring hub.workers.hf_download._retry_metadata_fetch.
 _REQUEST_TIMEOUT = 10.0
 _RETRY_TIMEOUT = 20.0

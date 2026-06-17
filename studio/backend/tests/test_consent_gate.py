@@ -682,7 +682,11 @@ class TestScannerCoversAllExecutableCode:
         # while the repo ships processing_paddleocr_vl.py). The absent file cannot
         # execute, so it must be IGNORED and the PRESENT .py scanned -- not the whole
         # repo blocked as unscannable.
-        def _dl(repo, fn, token = None):
+        def _dl(
+            repo,
+            fn,
+            token = None,
+        ):
             import json
             import tempfile
 
@@ -715,7 +719,11 @@ class TestScannerCoversAllExecutableCode:
         # The stale-ref relaxation must NOT weaken the present-file guarantee: a .py
         # that IS in the repo listing but cannot be fetched (transient) still fails
         # closed, because transformers would later fetch and run it.
-        def _dl(repo, fn, token = None):
+        def _dl(
+            repo,
+            fn,
+            token = None,
+        ):
             import json
             import tempfile
 
@@ -725,7 +733,9 @@ class TestScannerCoversAllExecutableCode:
                 return str(p)
             if fn in REMOTE_CODE_CONFIG_FILES:
                 raise EntryNotFoundError(fn)
-            raise RuntimeError("transient fetch failure")  # modeling_x.py is present but unfetchable
+            raise RuntimeError(
+                "transient fetch failure"
+            )  # modeling_x.py is present but unfetchable
 
         with (
             patch("huggingface_hub.hf_hub_download", side_effect = _dl),
