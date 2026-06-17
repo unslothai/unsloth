@@ -12,6 +12,24 @@ from __future__ import annotations
 import pytest
 
 
+def _pdf_backend_available() -> bool:
+    """True only when the full PDF extraction backend (pymupdf + pymupdf4llm)
+    is importable. ``_extract_pdf`` raises DocumentExtractionUnavailable
+    otherwise; the CPU CI image ships pymupdf but not pymupdf4llm."""
+    try:
+        from core.chat.document_extractor import document_parser_support
+
+        return bool(document_parser_support().get("pdf"))
+    except Exception:
+        return False
+
+
+_REQUIRES_PDF_BACKEND = pytest.mark.skipif(
+    not _pdf_backend_available(),
+    reason="PDF extraction backend (pymupdf + pymupdf4llm) not installed",
+)
+
+
 def _make_pseudo_encrypted_pdf() -> bytes:
     """Mint a tiny PDF with an empty user password (Orimi-style)."""
     pymupdf = pytest.importorskip("pymupdf")
@@ -31,6 +49,7 @@ def _make_pseudo_encrypted_pdf() -> bytes:
     return out
 
 
+@_REQUIRES_PDF_BACKEND
 def test_extract_pdf_accepts_null_password(monkeypatch):
     """No DocumentExtractionEncrypted for an empty-password PDF. PyMuPDF's
     ``needs_pass`` is the canonical signal; ``is_encrypted`` is too
@@ -64,6 +83,7 @@ def test_preflight_pdf_page_count_accepts_null_password():
     assert n == 1
 
 
+@_REQUIRES_PDF_BACKEND
 def test_extract_pdf_still_rejects_password_required(monkeypatch):
     """A PDF that truly requires a password must still raise
     DocumentExtractionEncrypted."""
