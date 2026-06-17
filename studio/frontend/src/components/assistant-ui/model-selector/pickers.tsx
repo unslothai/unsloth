@@ -754,6 +754,7 @@ function isGgufRepo(id: string, hintedIsGguf?: boolean): boolean {
 let _cachedGgufCache: CachedGgufRepo[] = [];
 let _cachedModelsCache: CachedModelRepo[] = [];
 let _lmStudioCache: LocalModelInfo[] = [];
+let _localDirCache: LocalModelInfo[] = [];
 let _customFolderCache: LocalModelInfo[] = [];
 let _scanFoldersCache: ScanFolderInfo[] = [];
 
@@ -853,13 +854,22 @@ function sortLocalModels(
   });
 }
 
-/** Whether a local model matches the format toggle (GGUF detected by name/path). */
-function localModelMatchesFormat(m: LocalModelInfo, filter: FormatFilter): boolean {
-  const isGguf =
+/** GGUF detection for a local model by name or file path. */
+function localModelIsGguf(m: LocalModelInfo): boolean {
+  return (
     isGgufRepo(m.id) ||
     isGgufRepo(m.display_name) ||
-    m.path.toLowerCase().endsWith(".gguf");
-  return matchesFormatFilter(m.model_id ?? m.display_name ?? m.id, isGguf, filter);
+    m.path.toLowerCase().endsWith(".gguf")
+  );
+}
+
+/** Whether a local model matches the format toggle (GGUF detected by name/path). */
+function localModelMatchesFormat(m: LocalModelInfo, filter: FormatFilter): boolean {
+  return matchesFormatFilter(
+    m.model_id ?? m.display_name ?? m.id,
+    localModelIsGguf(m),
+    filter,
+  );
 }
 
 export function HubModelPicker({
@@ -944,6 +954,10 @@ export function HubModelPicker({
   // LM Studio local models -- module-level cache, same pattern as above.
   const [lmStudioModels, setLmStudioModels] =
     useState<LocalModelInfo[]>(_lmStudioCache);
+  // Models found under the local models directory (./models), so they stay
+  // selectable on the On Device tab after leaving the Fine-tuned tab.
+  const [localDirModels, setLocalDirModels] =
+    useState<LocalModelInfo[]>(_localDirCache);
   const [customFolderModels, setCustomFolderModels] =
     useState<LocalModelInfo[]>(_customFolderCache);
 
@@ -964,6 +978,9 @@ export function HubModelPicker({
         );
         _lmStudioCache = lm;
         setLmStudioModels(lm);
+        const ld = res.models.filter((m) => m.source === "models_dir");
+        _localDirCache = ld;
+        setLocalDirModels(ld);
         const cf = res.models.filter((m) => m.source === "custom");
         _customFolderCache = cf;
         setCustomFolderModels(cf);
@@ -1260,6 +1277,23 @@ export function HubModelPicker({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [lmStudioModels, downloadedSort, formatFilter, loadTimes, localQuery],
   );
+  // Local ./models entries. Chat-only Studio runs GGUF/MLX only, so raw
+  // checkpoints there are hidden (mirrors the cached non-GGUF rule).
+  const sortedLocalDir = useMemo(
+    () =>
+      sortLocalModels(
+        localDirModels.filter(
+          (m) =>
+            (!chatOnly || localModelIsGguf(m)) &&
+            localModelMatchesFormat(m, formatFilter) &&
+            matchesLocalQuery(m),
+        ),
+        downloadedSort,
+        loadTimes,
+      ),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [localDirModels, downloadedSort, formatFilter, loadTimes, localQuery, chatOnly],
+  );
   const sortedCustomFolderModels = useMemo(
     () =>
       sortLocalModels(
@@ -1368,6 +1402,11 @@ export function HubModelPicker({
           makeModelOptionKey("lm-studio", model.id),
         ),
       );
+      keys.push(
+        ...sortedLocalDir.map((model) =>
+          makeModelOptionKey("local-dir", model.id),
+        ),
+      );
     }
 
     if (section === "custom" && !customFoldersCollapsed) {
@@ -1399,6 +1438,7 @@ export function HubModelPicker({
     recommendedRows,
     section,
     showHfSection,
+    sortedLocalDir,
     visibleCachedGguf,
     visibleCachedModelRows,
   ]);
@@ -1525,7 +1565,8 @@ export function HubModelPicker({
   const downloadedEmpty =
     visibleCachedGguf.length === 0 &&
     visibleCachedModelRows.length === 0 &&
-    sortedLmStudio.length === 0;
+    sortedLmStudio.length === 0 &&
+    sortedLocalDir.length === 0;
 
   // Fixed-width sort dropdown, sized to the longest label with a little extra,
   // shown inline to the right of the section toggle. Options depend on the tab;
@@ -1795,6 +1836,65 @@ export function HubModelPicker({
                               const focused = focusFirstChildOption(optionKey);
                               return focused;
                             }
+                          : undefined
+                      }
+                      vramStatus={null}
+                    />
+                    {expandedGguf === m.id && (
+                      <GgufVariantExpander
+                        repoId={m.id}
+                        onSelect={onSelect}
+                        parentOptionKey={optionKey}
+                        onNavigatePastStart={() =>
+                          hubModelList.focusOption(optionKey)
+                        }
+                        onNavigatePastEnd={() =>
+                          hubModelList.moveFocus(optionKey, "next")
+                        }
+                        gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
+                        systemRamGb={
+                          gpu.available ? gpu.systemRamAvailableGb : undefined
+                        }
+                      />
+                    )}
+                  </div>
+                );
+              })}
+            </>
+          ) : null}
+
+          {section === "downloaded" && sortedLocalDir.length > 0 ? (
+            <>
+              <ListLabel>Local models</ListLabel>
+              {sortedLocalDir.map((m) => {
+                const isGguf = localModelIsGguf(m);
+                const optionKey = makeModelOptionKey("local-dir", m.id);
+                return (
+                  <div key={m.id}>
+                    <ModelRow
+                      label={m.model_id ?? m.display_name}
+                      meta={isGguf ? "GGUF" : "Local"}
+                      selected={value === m.id}
+                      optionProps={hubModelList.getOptionProps(
+                        optionKey,
+                        value === m.id,
+                      )}
+                      onClick={() => {
+                        if (isGguf) {
+                          setExpandedGguf((prev) =>
+                            prev === m.id ? null : m.id,
+                          );
+                        } else {
+                          onSelect(m.id, {
+                            source: "local",
+                            isLora: false,
+                            isDownloaded: true,
+                          });
+                        }
+                      }}
+                      onArrowDownIntoChildren={
+                        expandedGguf === m.id
+                          ? () => focusFirstChildOption(optionKey)
                           : undefined
                       }
                       vramStatus={null}
