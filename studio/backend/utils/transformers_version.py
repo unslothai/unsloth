@@ -538,8 +538,7 @@ def get_transformers_tier(model_name: str) -> str:
                 if result is not None:
                     tier, match = result
                     logger.info(
-                        "Transformers tier %s selected for %s "
-                        "(resolved base model match: %s)",
+                        "Transformers tier %s selected for %s (resolved base model match: %s)",
                         tier,
                         model_name,
                         match,

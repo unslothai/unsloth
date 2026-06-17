@@ -910,7 +910,9 @@ class TestLocalConfig530Tier:
         d = tmp_path / "my-liquid-model"
         d.mkdir()
         (d / "config.json").write_text(
-            json.dumps({"model_type": "lfm2_vl", "architectures": ["Lfm2VlForConditionalGeneration"]})
+            json.dumps(
+                {"model_type": "lfm2_vl", "architectures": ["Lfm2VlForConditionalGeneration"]}
+            )
         )
         assert get_transformers_tier(str(d)) == "530"
 
@@ -923,10 +925,12 @@ class TestLocalConfig530Tier:
         d.mkdir()
         # Simulate a future/unknown model_type; the HF ID carries the tier signal.
         (d / "config.json").write_text(
-            json.dumps({
-                "model_type": "future_unknown_type",
-                "_name_or_path": "Qwen/Qwen3.5-7B",
-            })
+            json.dumps(
+                {
+                    "model_type": "future_unknown_type",
+                    "_name_or_path": "Qwen/Qwen3.5-7B",
+                }
+            )
         )
         assert get_transformers_tier(str(d)) == "530"
 
@@ -935,10 +939,12 @@ class TestLocalConfig530Tier:
         d = tmp_path / "renamed-gemma"
         d.mkdir()
         (d / "config.json").write_text(
-            json.dumps({
-                "model_type": "future_unknown_type",
-                "_name_or_path": "google/gemma-4-E2B-it",
-            })
+            json.dumps(
+                {
+                    "model_type": "future_unknown_type",
+                    "_name_or_path": "google/gemma-4-E2B-it",
+                }
+            )
         )
         assert get_transformers_tier(str(d)) == "550"
 
@@ -949,12 +955,16 @@ class TestLocalConfig530Tier:
         d.mkdir()
         # _name_or_path is the local path itself (e.g. saved via save_pretrained)
         (d / "config.json").write_text(
-            json.dumps({
-                "model_type": "llama",
-                "_name_or_path": str(d),
-            })
+            json.dumps(
+                {
+                    "model_type": "llama",
+                    "_name_or_path": str(d),
+                }
+            )
         )
-        with patch("utils.transformers_version._check_tokenizer_config_needs_v5", return_value=False):
+        with patch(
+            "utils.transformers_version._check_tokenizer_config_needs_v5", return_value = False
+        ):
             # "qwen3.5" is in the path but config says llama and _name_or_path
             # is self-referencing — must not be promoted to 530.
             assert get_transformers_tier(str(d)) == "default"
