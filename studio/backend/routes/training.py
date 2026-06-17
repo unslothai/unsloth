@@ -263,7 +263,9 @@ async def start_training(
 
             model_defaults = load_model_defaults(request.model_name)
             yaml_trust = model_defaults.get("training", {}).get("trust_remote_code", False)
-            if yaml_trust and is_trusted_org_repo(request.model_name):
+            if yaml_trust and is_trusted_org_repo(
+                request.model_name, hf_token = request.hf_token or None
+            ):
                 logger.info(f"YAML config sets trust_remote_code=True for {request.model_name}")
                 training_kwargs["trust_remote_code"] = True
             elif yaml_trust:

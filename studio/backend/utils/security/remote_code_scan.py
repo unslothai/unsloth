@@ -413,21 +413,30 @@ def repo_remote_code_files(model_name: str, hf_token: Optional[str] = None) -> d
                     files[str(p.relative_to(root))] = p.read_text(errors = "replace")
             # A local config can still point auto_map at an EXTERNAL Hub repo
             # (owner/name--module.Class); that code executes on load, so fetch it.
-            cfg_path = root / "config.json"
-            if cfg_path.is_file():
-                try:
-                    ext_cfg = json.loads(cfg_path.read_text())
-                except Exception:
-                    ext_cfg = {}
-                if not _add_external_refs(files, _auto_map_refs(ext_cfg), hf_token, model_name):
-                    return {}
+            ext_refs = set()
+            for name in ("config.json", "tokenizer_config.json"):
+                p = root / name
+                if p.is_file():
+                    try:
+                        ext_refs |= _auto_map_refs(json.loads(p.read_text()))
+                    except Exception:
+                        pass
+            if not _add_external_refs(files, ext_refs, hf_token, model_name):
+                return {}
             return files
 
         from huggingface_hub import hf_hub_download, list_repo_files
 
         cfg_path = hf_hub_download(model_name, "config.json", token = hf_token)
         cfg = json.loads(Path(cfg_path).read_text())
-        refs = _auto_map_refs(cfg)
+        refs = set(_auto_map_refs(cfg))
+        # tokenizer_config.json can declare a custom tokenizer; collect its
+        # auto_map directly rather than relying only on list_repo_files.
+        try:
+            tok_path = hf_hub_download(model_name, "tokenizer_config.json", token = hf_token)
+            refs |= _auto_map_refs(json.loads(Path(tok_path).read_text()))
+        except Exception:
+            pass
         wanted = {fn for repo, fn in refs if repo is None}
         try:
             wanted |= {f for f in list_repo_files(model_name, token = hf_token) if f.endswith(".py")}

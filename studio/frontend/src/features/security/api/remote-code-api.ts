@@ -36,24 +36,22 @@ interface RemoteCodeScanResponse {
   model_name?: string;
 }
 
-/** Encode a repo id for a `{model_name:path}` route, preserving the org slash. */
-function encodeModelPath(modelName: string): string {
-  return modelName.split("/").map(encodeURIComponent).join("/");
-}
-
 /**
  * Statically scan a model's custom (`auto_map`) code so the consent dialog can
  * show findings before the user enables trust_remote_code. Code-free on the
  * backend: it reads config.json and scans the repo .py, never loading the model.
+ *
+ * POSTs the token in the body so it never lands in a URL or access log.
  */
 export async function getRemoteCodeScan(
   modelName: string,
   hfToken?: string | null,
 ): Promise<RemoteCodeScan> {
-  const qs = hfToken ? `?hf_token=${encodeURIComponent(hfToken)}` : "";
-  const response = await authFetch(
-    `/api/models/remote-code-scan/${encodeModelPath(modelName)}${qs}`,
-  );
+  const response = await authFetch(`/api/models/remote-code-scan`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ model_name: modelName, hf_token: hfToken ?? null }),
+  });
   if (!response.ok) {
     throw new Error(await readFastApiError(response));
   }

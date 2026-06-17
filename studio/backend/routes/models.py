@@ -1582,22 +1582,35 @@ async def get_model_config(
         )
 
 
-@router.get("/remote-code-scan/{model_name:path}")
+@router.post("/remote-code-scan")
 async def scan_model_remote_code(
-    model_name: str,
-    hf_token: Optional[str] = Query(None),
+    model_name: str = Body(..., embed = True),
+    hf_token: Optional[str] = Body(None, embed = True),
     current_subject: str = Depends(get_current_subject),
 ):
     """Scan a model's ``auto_map`` custom code so the UI can show findings before
     the user enables ``trust_remote_code``. Code-free: reads ``config.json`` and
     statically scans the repo ``.py`` (never loads the model). Returns
     ``has_remote_code`` plus the severity-tagged findings + a pinning fingerprint.
+
+    POST (not GET) so the ``hf_token`` for gated repos travels in the body and
+    never lands in a URL, browser history, or access log.
     """
     try:
         from utils.security import preflight_remote_code_consent
 
         if not is_local_path(model_name):
             model_name = resolve_cached_repo_id_case(model_name)
+        # For a LoRA adapter the base model's code is what runs, so scan the base
+        # (its findings + fingerprint are what the worker gate requires).
+        try:
+            from utils.models.model_config import get_base_model_from_lora
+
+            _base = get_base_model_from_lora(model_name)
+            if _base:
+                model_name = _base
+        except Exception:
+            pass
         decision = preflight_remote_code_consent(model_name, hf_token = hf_token)
         payload = decision.response_payload()
         payload["requires_trust_remote_code"] = decision.has_remote_code

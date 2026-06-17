@@ -2559,6 +2559,19 @@ async def validate_model(
                 detail = f"Invalid model identifier: {model_log_label}",
             )
 
+        # For a LoRA adapter the base model's code is what executes on load, so
+        # the consent flag (and scan target) must follow the base, matching the
+        # workers' gate.
+        trc_target = config.identifier
+        try:
+            from utils.models.model_config import get_base_model_from_lora
+
+            _base = get_base_model_from_lora(model_identifier)
+            if _base:
+                trc_target = _base
+        except Exception:
+            pass
+
         return ValidateModelResponse(
             valid = True,
             message = "Model identifier is valid.",
@@ -2570,7 +2583,7 @@ async def validate_model(
             is_lora = getattr(config, "is_lora", False),
             is_vision = getattr(config, "is_vision", False),
             requires_trust_remote_code = _requires_trust_remote_code_for_model(
-                config.identifier, request.hf_token
+                trc_target, request.hf_token
             ),
         )
 

@@ -61,6 +61,17 @@ type SelectedModelInput = {
   throwOnError?: boolean;
 };
 
+// Approved remote-code fingerprints by checkpoint, so a rollback after a failed
+// model switch can resend the pinned approval the worker requires for HIGH
+// third-party custom code instead of being blocked.
+const approvedRemoteCodeFingerprints = new Map<string, string>();
+function rememberApprovedRemoteCode(
+  checkpoint: string,
+  fingerprint: string | null,
+): void {
+  if (fingerprint) approvedRemoteCodeFingerprints.set(checkpoint, fingerprint);
+}
+
 const MODEL_LOAD_TOAST_CLASSNAMES = {
   toast: "chat-model-load-toast items-center gap-2.5",
   content: "gap-0.5 flex-1 min-w-0",
@@ -632,6 +643,7 @@ export function useChatModelRuntime() {
               : reloadingSameModel && supportsReasoning
                 ? stateBeforeUnload.reasoningEnabled
                 : reasoningDefault;
+            rememberApprovedRemoteCode(modelId, approvedRemoteCodeFingerprint);
             useChatRuntimeStore.setState({
               ggufContextLength: nativeCtx,
               ggufMaxContextLength,
@@ -732,6 +744,10 @@ export function useChatModelRuntime() {
                   gguf_variant: previousVariant,
                   trust_remote_code:
                     previousModelRequiresTrustRemoteCode || trustRemoteCode,
+                  // Resend the previous model's pinned approval so the gate does
+                  // not block restoring an already-approved custom-code model.
+                  approved_remote_code_fingerprint:
+                    approvedRemoteCodeFingerprints.get(previousCheckpoint) ?? null,
                   // Restore the previous model in the split mode it was running,
                   // not the default layer split.
                   tensor_parallel: stateBeforeUnload.loadedTensorParallel ?? false,
