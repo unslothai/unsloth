@@ -37,11 +37,8 @@ import {
   type LocalModelInfo,
   useTrainingConfigStore,
 } from "@/features/training";
-import {
-  useDebouncedValue,
-  useHfModelSearch,
-  useHfTokenValidation,
-} from "@/hooks";
+import { useDebouncedValue, useHfTokenValidation } from "@/hooks";
+import { useHubModelSearch } from "@/features/hub/hooks/use-hub-model-search";
 import {
   AlertCircleIcon,
   FolderSearchIcon,
@@ -249,9 +246,10 @@ export function ExportPage() {
     results: hfResults,
     isLoading: isLoadingHfModels,
     error: hfSearchError,
-  } = useHfModelSearch(debouncedModelQuery, {
+  } = useHubModelSearch(debouncedModelQuery, {
     accessToken: debouncedHfToken || undefined,
     excludeGguf: true,
+    ownerScope: "unsloth",
   });
   const { error: tokenValidationError, isChecking: isCheckingToken } =
     useHfTokenValidation(hfToken);

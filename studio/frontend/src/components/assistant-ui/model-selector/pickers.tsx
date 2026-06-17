@@ -28,11 +28,7 @@ import type {
   LocalModelInfo,
 } from "@/features/chat/api/chat-api";
 import type { GgufVariantDetail } from "@/features/chat/types/api";
-import {
-  useDebouncedValue,
-  useGpuInfo,
-  useRecommendedModelVram,
-} from "@/hooks";
+import { useDebouncedValue, useGpuInfo } from "@/hooks";
 import {
   type HfSortKey,
   useHubModelSearch,
@@ -1392,15 +1388,15 @@ export function HubModelPicker({
     return recommendedIds.filter((id) => normalizeForSearch(id).includes(q));
   }, [showHfSection, debouncedQuery, recommendedIds]);
 
-  // VRAM info for visible models plus any surfaced by a search query, so
-  // filtered recommended models also show VRAM badges. Skip GGUF repos:
-  // no safetensors metadata, and the render layer shows a "GGUF" badge.
-  const idsForVram = useMemo(() => {
-    if (!showHfSection) return [];
-    return filteredRecommendedIds.filter((id) => !isKnownGgufRepo(id));
-  }, [showHfSection, filteredRecommendedIds, isKnownGgufRepo]);
-  const { paramCountById: recommendedParamCountById } =
-    useRecommendedModelVram(idsForVram);
+  // Param counts come straight off the unsloth listings the picker already
+  // loaded, so no extra per-id fetch is needed for the VRAM badges.
+  const recommendedParamCountById = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const r of [...results, ...recommendedSearch.results]) {
+      if (r.totalParams) map.set(r.id, r.totalParams);
+    }
+    return map;
+  }, [results, recommendedSearch.results]);
 
   const recommendedSet = useMemo(
     () => new Set(filteredRecommendedIds),
@@ -1553,7 +1549,9 @@ export function HubModelPicker({
       { est: number; status: VramFitStatus | null; detail: string | null }
     >();
     for (const id of filteredRecommendedIds) {
-      const totalParams = recommendedParamCountById.get(id);
+      // GGUF fit is size-based and badged elsewhere; skip the qlora estimate.
+      if (isKnownGgufRepo(id)) continue;
+      const totalParams = recommendedParamCountById.get(id) ?? paramsFromId(id);
       if (totalParams) {
         const est = estimateLoadingVram(totalParams, "qlora");
         const status = gpu.available
@@ -1564,7 +1562,7 @@ export function HubModelPicker({
       }
     }
     return map;
-  }, [filteredRecommendedIds, recommendedParamCountById, gpu]);
+  }, [filteredRecommendedIds, recommendedParamCountById, isKnownGgufRepo, gpu]);
 
   const { scrollRef, sentinelRef } = useHubInfiniteScroll(
     fetchMore,
