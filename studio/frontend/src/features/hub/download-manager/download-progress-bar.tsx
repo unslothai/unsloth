@@ -29,7 +29,7 @@ export function DownloadProgressBar({
       ? formatEta(remainingBytes / bytesPerSec)
       : "";
   return (
-    <div className="flex flex-col gap-1.5 px-3 pb-1">
+    <div className="flex flex-col gap-1.5 pb-1">
       <div className="relative h-[3px] overflow-hidden rounded-full bg-foreground/[0.06] dark:bg-white/[0.06]">
         <div
           className="h-full rounded-full bg-status-warning/80 transition-[width] duration-500 ease-linear"

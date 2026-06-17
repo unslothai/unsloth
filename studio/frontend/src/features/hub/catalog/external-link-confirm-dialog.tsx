@@ -39,11 +39,11 @@ export function ExternalLinkConfirmDialog() {
     >
       <AlertDialogContent>
         <AlertDialogHeader>
-          <AlertDialogMedia className="size-12">
+          <AlertDialogMedia>
             <HugeiconsIcon
               icon={LinkSquare02Icon}
               strokeWidth={1.75}
-              className="size-5 text-muted-foreground"
+              className="text-muted-foreground"
             />
           </AlertDialogMedia>
           <AlertDialogTitle>Open external link</AlertDialogTitle>

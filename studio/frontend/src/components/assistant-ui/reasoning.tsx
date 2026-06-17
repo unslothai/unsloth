@@ -20,7 +20,9 @@ import {
 } from "@assistant-ui/react";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { type VariantProps, cva } from "class-variance-authority";
-import { CheckIcon, ChevronDownIcon, CopyIcon, LightbulbIcon } from "lucide-react";
+import { ChevronDownIcon, CopyIcon, LightbulbIcon } from "lucide-react";
+import { Tick02Icon } from "@/lib/tick-icon";
+import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type CSSProperties,
   type ComponentProps,
@@ -293,7 +295,7 @@ function ReasoningCopyButton({ startIndex, endIndex }: { startIndex: number; end
       aria-label="Copy reasoning"
     >
       {copied ? (
-        <CheckIcon className="size-3" />
+        <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="size-3" />
       ) : (
         <CopyIcon className="size-3" />
       )}
