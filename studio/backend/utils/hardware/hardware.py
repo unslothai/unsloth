@@ -1091,7 +1091,26 @@ def _load_config_for_gpu_estimate(model_name: str, hf_token: Optional[str] = Non
             trust_remote_code = trust_remote_code,
         )
     except Exception as e:
-        logger.warning("Could not load config for '%s': %s", model_name, e)
+        # A 5.x-only architecture (e.g. Qwen3.5 / model_type "qwen3_5") cannot be
+        # parsed by the default in-process transformers -- that is expected, the
+        # worker reloads the model under the matching transformers sidecar. Only
+        # warn loudly when no tier switch will rescue the load.
+        tier = "default"
+        try:
+            from utils.transformers_version import get_transformers_tier
+            tier = get_transformers_tier(model_name)
+        except Exception:
+            pass
+        if tier != "default":
+            _tier_version = {"510": "5.10.x", "530": "5.3.0", "550": "5.5.0"}.get(tier, "5.x")
+            logger.info(
+                "Config for '%s' not parseable by the default transformers; "
+                "needs transformers %s and will be loaded with that sidecar in the worker",
+                model_name,
+                _tier_version,
+            )
+        else:
+            logger.warning("Could not load config for '%s': %s", model_name, e)
         return None
 
 
