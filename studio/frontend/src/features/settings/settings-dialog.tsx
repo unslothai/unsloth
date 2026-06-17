@@ -114,7 +114,7 @@ export function SettingsDialog() {
     <Dialog open={open} onOpenChange={(o) => !o && closeDialog()}>
       <DialogContent
         showCloseButton={false}
-        overlayClassName="bg-background/40"
+        overlayClassName="bg-black/30 supports-backdrop-filter:backdrop-blur-[2px]"
         onCloseAutoFocus={(e) => {
           // Restore focus to the element that triggered openDialog(). Radix's
           // FocusScope races our rAF-scheduled tab focus and loses the

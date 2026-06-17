@@ -150,38 +150,50 @@ def run(args):
     # Save model
     if args.save_model:
         # If args.quantization is a list, save once per quantization method
-        if args.save_gguf:
+        # Enter the GGUF branch when saving *or* pushing GGUF, so --push_gguf
+        # works even when --save_gguf is omitted (the local save is guarded
+        # separately below).
+        if args.save_gguf or args.push_gguf:
+            # Push-only GGUF (no --save_gguf) skips the local save; warn so it is not silent.
+            if not args.save_gguf:
+                print("Warning: --save_gguf not set, pushing GGUF to hub without saving locally.")
             if isinstance(args.quantization, list):
                 for quantization_method in args.quantization:
-                    print(f"Saving model with quantization method: {quantization_method}")
+                    if args.save_gguf:
+                        print(f"Saving model with quantization method: {quantization_method}")
+                        model.save_pretrained_gguf(
+                            args.save_path,
+                            tokenizer,
+                            quantization_method = quantization_method,
+                        )
+                    if args.push_model or args.push_gguf:
+                        model.push_to_hub_gguf(
+                            args.hub_path,
+                            tokenizer,
+                            quantization_method = quantization_method,
+                            token = args.hub_token,
+                        )
+            else:
+                if args.save_gguf:
+                    print(f"Saving model with quantization method: {args.quantization}")
                     model.save_pretrained_gguf(
                         args.save_path,
                         tokenizer,
-                        quantization_method = quantization_method,
-                    )
-                    if args.push_model:
-                        model.push_to_hub_gguf(
-                            hub_path = args.hub_path,
-                            hub_token = args.hub_token,
-                            quantization_method = quantization_method,
-                        )
-            else:
-                print(f"Saving model with quantization method: {args.quantization}")
-                model.save_pretrained_gguf(
-                    args.save_path,
-                    tokenizer,
-                    quantization_method = args.quantization,
-                )
-                if args.push_model:
-                    model.push_to_hub_gguf(
-                        hub_path = args.hub_path,
-                        hub_token = args.hub_token,
                         quantization_method = args.quantization,
+                    )
+                if args.push_model or args.push_gguf:
+                    model.push_to_hub_gguf(
+                        args.hub_path,
+                        tokenizer,
+                        quantization_method = args.quantization,
+                        token = args.hub_token,
                     )
         else:
             model.save_pretrained_merged(args.save_path, tokenizer, args.save_method)
             if args.push_model:
-                model.push_to_hub_merged(args.save_path, tokenizer, args.hub_token)
+                model.push_to_hub_merged(
+                    args.hub_path, tokenizer, args.save_method, token = args.hub_token
+                )
     else:
         print("Warning: The model is not saved!")
 
