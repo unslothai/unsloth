@@ -84,6 +84,9 @@ export function PillTabs({
             "relative z-10 inline-flex items-center justify-center gap-1.5 rounded-full transition-colors",
             fit ? "shrink-0" : "min-w-0 flex-1",
             compact ? "h-7 px-2.5 text-[11px]" : "h-9 px-3 text-[12.5px]",
+            // Wider tab padding in fit mode keeps the end tabs off the
+            // rounded-full track edge without insetting the active pill.
+            fit && !compact && "px-4",
             value === tab.value
               ? "text-foreground"
               : "text-muted-foreground hover:text-foreground",
