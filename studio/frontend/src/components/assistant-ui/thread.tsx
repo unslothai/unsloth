@@ -1751,7 +1751,12 @@ const Composer: FC<{
     <PromptQueueContext.Provider value={queueContextValue}>
     <ComposerPrimitive.Root
       className="aui-composer-root relative flex w-full flex-col"
-      aria-disabled={disabled || !hasSendableContent}
+      // Only the genuine disabled state belongs on the composer root; gating it
+      // on empty content too marks the textarea aria-disabled whenever the
+      // composer is empty, so assistive tech (and Playwright) treat the input
+      // as unclickable before the first keystroke. The Send button carries the
+      // empty-content gate via its own disabled / aria-disabled.
+      aria-disabled={disabled}
       onSubmit={handleSubmit}
     >
       {isTauri ? (
