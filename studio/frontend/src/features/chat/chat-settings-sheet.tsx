@@ -1559,21 +1559,21 @@ export function ChatSettingsPanel({
                   : 64
               }
               max={
-                isExternalModel
+                // A staged GGUF caps to its own context even over an active
+                // external model (the staged model is what will load).
+                !pendingIsGguf && isExternalModel
                   ? getExternalMaxOutputTokens(
                       externalProviderType,
                       externalSelection?.modelId,
                     )
-                  : isGguf && ggufContextLength
-                    ? ggufContextLength
+                  : isGguf && baseContext
+                    ? baseContext
                     : 32768
               }
               step={64}
               onChange={set("maxTokens")}
               displayValue={
-                isGguf &&
-                ggufContextLength &&
-                params.maxTokens >= ggufContextLength
+                isGguf && baseContext && params.maxTokens >= baseContext
                   ? "Max"
                   : undefined
               }

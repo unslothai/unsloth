@@ -2469,21 +2469,24 @@ export function ChatPage(): ReactElement {
             throwOnError: true,
           }).catch(() => {
             // Recoverable failure (expired token, gated repo, OOM…): selectModel
-            // cleared the pick but left the edited knobs intact, so restore the
-            // selection (not re-stage, which would reset the knobs) to keep the
-            // Load button and settings for a retry. Only if the staged-load is
-            // still wanted: same chat context, sheet still open, page still
-            // mounted, and nothing else staged meanwhile -- otherwise the user
-            // abandoned it (closed the sheet / switched chats) and restoring
-            // would resurrect a pick into a context they already left.
+            // cleared the pick but left the edited knobs intact.
             const store = useChatRuntimeStore.getState();
-            if (
+            // A pick staged meanwhile owns the knobs now; leave it untouched.
+            if (store.pendingSelection) return;
+            // Restore (not re-stage, which would reset the knobs) only if the
+            // staged-load is still wanted: same chat context, sheet still open,
+            // page still mounted.
+            const stillWanted =
               mountedRef.current &&
               store.settingsPanelOpen &&
-              chatContextKeyRef.current === keyAtLoad &&
-              !store.pendingSelection
-            ) {
+              chatContextKeyRef.current === keyAtLoad;
+            if (stillWanted) {
               store.setPendingSelection(pending);
+            } else {
+              // Abandoned (closed the sheet / switched chats / left chat): drop
+              // the orphaned staged knob edits so they don't linger as dirty
+              // settings over the loaded model.
+              store.resetModelSettingsToLoaded();
             }
           });
         }}
