@@ -3229,7 +3229,6 @@ const AssistantMessage: FC = () => {
     return "";
   };
 
-  // --- NEW: Clear the shield when the active message changes ---
   useEffect(() => {
     setOverrideContent(null);
   }, [messageId]);
@@ -3416,6 +3415,7 @@ const AssistantMessage: FC = () => {
           </>
         )}
       </div>
+      
       <div key={refreshKey} className="aui-assistant-message-footer mt-1.5 -ml-[var(--icon-btn-inset)] flex min-h-8">
         <BranchPicker className="mr-0.5" />
         <AssistantActionBar />
