@@ -104,13 +104,20 @@ _TRANSFORMERS_550_MODEL_TYPES: set[str] = {
 }
 
 # Architecture classes / model_type values that require transformers 5.3.0.
-# Checked via config.json so a local checkpoint whose directory name does not
-# advertise the family (e.g. a renamed Qwen3.5 folder) is still routed correctly.
+# Checked via config.json so local checkpoints with non-standard directory names
+# are still routed to the correct sidecar.
 _TRANSFORMERS_530_ARCHITECTURES: set[str] = {
-    "Qwen3_5ForCausalLM",
+    "Qwen3_5ForCausalLM",               # Qwen3.5 text-only variant
+    "Qwen3_5ForConditionalGeneration",   # Qwen3.5 vision/conditional variant
+    "Qwen3MoeForCausalLM",              # Qwen3-30B-A3B, Qwen3 MoE variants
+    "Glm4MoeLiteForCausalLM",           # GLM-4.7-Flash
+    "Lfm2VlForConditionalGeneration",   # LiquidAI LFM2.5-VL
 }
 _TRANSFORMERS_530_MODEL_TYPES: set[str] = {
-    "qwen3_5",
+    "qwen3_5",       # Qwen3.5 family
+    "qwen3_moe",     # Qwen3-30B-A3B and all Qwen3 MoE variants
+    "glm4_moe_lite", # GLM-4.7-Flash
+    "lfm2_vl",       # LiquidAI LFM2.5-VL-450M
 }
 
 # Tokenizer classes that only exist in transformers>=5.x.
@@ -458,6 +465,31 @@ def _check_config_needs_510(model_name: str) -> bool:
     return result
 
 
+def _tier_from_name(name: str) -> tuple[str, str] | None:
+    """Return ``(tier, matched_reason)`` from name-based substring rules, or
+    ``None`` if nothing matches.
+
+    Applies the same detection order used by :func:`get_transformers_tier`:
+    510 before 550 before 530, with the Gemma-4 assistant special-case first.
+    Used both for direct model-name checks and as a fallback when a local
+    checkpoint's ``config.json`` architectures aren't yet enumerated in the
+    config sets.
+    """
+    lowered = name.lower()
+    if "assistant" in lowered and ("gemma-4" in lowered or "gemma4" in lowered):
+        return "510", "gemma-4 assistant variant"
+    for s in TRANSFORMERS_510_MODEL_SUBSTRINGS:
+        if s in lowered:
+            return "510", s
+    for s in TRANSFORMERS_550_MODEL_SUBSTRINGS:
+        if s in lowered:
+            return "550", s
+    for s in TRANSFORMERS_5_MODEL_SUBSTRINGS:
+        if s in lowered:
+            return "530", s
+    return None
+
+
 def get_transformers_tier(model_name: str) -> str:
     """Return the transformers tier required for *model_name*.
 
@@ -466,35 +498,63 @@ def get_transformers_tier(model_name: str) -> str:
     ``"530"`` for models needing transformers 5.3.0 (e.g. Ministral-3, Qwen3 MoE),
     or ``"default"`` for everything else (4.57.x).
 
-    Higher 5.x tiers run first.
-    """
-    lowered = model_name.lower()
+    Detection hierarchy (higher tiers checked first within each stage):
 
-    # Local checkpoint names can contain architecture substrings in their
-    # directory names (for example a pytest temp dir). If config.json exists,
-    # trust it before using name heuristics.
+    1. Local ``config.json`` architecture/model_type sets — highest confidence,
+       no I/O beyond reading the local file.
+    2. HF model ID from ``config.json`` (``_name_or_path`` / ``model_name``) run
+       through the same substring rules as stage 3.  Handles renamed local
+       checkpoints whose ``model_type`` isn't yet in the config sets, without
+       introducing false positives from parent directory name fragments.
+    3. Local ``tokenizer_config.json`` tokenizer-class check.
+    4. Fast name substring checks — no I/O, for remote HF IDs and local paths
+       without a ``config.json``.
+    5. Slow remote ``config.json`` fetches (network) — last resort for HF IDs
+       that don't match any substring.
+    """
+    # --- Local checkpoint path ---
+    # config.json acts as a positive-signal oracle: if it matches a known
+    # sidecar architecture, return immediately.  If it doesn't, we fall back
+    # to the HF ID embedded in the config rather than the filesystem path, so
+    # renamed folders are handled correctly and parent-dir false-positives are
+    # avoided.
     local_cfg = Path(model_name) / "config.json"
     if local_cfg.is_file():
         cfg = _load_config_json(model_name)
-        if cfg is not None and _config_needs_510(cfg):
-            logger.info(
-                "Transformers tier 510 selected for %s (local config.json check)",
-                model_name,
-            )
-            return "510"
-        if cfg is not None and _config_needs_550(cfg):
-            logger.info(
-                "Transformers tier 550 selected for %s (local config.json check)",
-                model_name,
-            )
-            return "550"
-        if cfg is not None and _config_needs_530(cfg):
-            logger.info(
-                "Transformers tier 530 selected for %s (local config.json check)",
-                model_name,
-            )
-            return "530"
         if cfg is not None:
+            if _config_needs_510(cfg):
+                logger.info(
+                    "Transformers tier 510 selected for %s (local config.json check)",
+                    model_name,
+                )
+                return "510"
+            if _config_needs_550(cfg):
+                logger.info(
+                    "Transformers tier 550 selected for %s (local config.json check)",
+                    model_name,
+                )
+                return "550"
+            if _config_needs_530(cfg):
+                logger.info(
+                    "Transformers tier 530 selected for %s (local config.json check)",
+                    model_name,
+                )
+                return "530"
+            # Architecture not in any config set — fall back to the HF model ID
+            # recorded in config.json rather than the filesystem path.
+            hf_id = cfg.get("model_name") or cfg.get("_name_or_path") or ""
+            if hf_id and hf_id != model_name:
+                result = _tier_from_name(hf_id)
+                if result is not None:
+                    tier, match = result
+                    logger.info(
+                        "Transformers tier %s selected for %s "
+                        "(config _name_or_path match: %s)",
+                        tier,
+                        model_name,
+                        match,
+                    )
+                    return tier
             local_tc = Path(model_name) / "tokenizer_config.json"
             if local_tc.is_file() and _check_tokenizer_config_needs_v5(model_name):
                 logger.info(
@@ -509,36 +569,16 @@ def get_transformers_tier(model_name: str) -> str:
             return "default"
 
     # --- Fast substring checks (no I/O) ------------------------------------
-    if "assistant" in lowered and ("gemma-4" in lowered or "gemma4" in lowered):
+    result = _tier_from_name(model_name)
+    if result is not None:
+        tier, match = result
         logger.info(
-            "Transformers tier 510 selected for %s (gemma-4 assistant variant)",
-            model_name,
-        )
-        return "510"
-    match = next((sub for sub in TRANSFORMERS_510_MODEL_SUBSTRINGS if sub in lowered), None)
-    if match is not None:
-        logger.info(
-            "Transformers tier 510 selected for %s (substring match: %s)",
+            "Transformers tier %s selected for %s (substring match: %s)",
+            tier,
             model_name,
             match,
         )
-        return "510"
-    match = next((sub for sub in TRANSFORMERS_550_MODEL_SUBSTRINGS if sub in lowered), None)
-    if match is not None:
-        logger.info(
-            "Transformers tier 550 selected for %s (substring match: %s)",
-            model_name,
-            match,
-        )
-        return "550"
-    match = next((sub for sub in TRANSFORMERS_5_MODEL_SUBSTRINGS if sub in lowered), None)
-    if match is not None:
-        logger.info(
-            "Transformers tier 530 selected for %s (substring match: %s)",
-            model_name,
-            match,
-        )
-        return "530"
+        return tier
 
     # --- Slow config fallbacks (network for HF IDs) ------------------------
     if _check_config_needs_510(model_name):

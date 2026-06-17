@@ -35,6 +35,7 @@ from utils.transformers_version import (
     _check_config_needs_510,
     _check_config_needs_550,
     _config_needs_530,
+    _tier_from_name,
     _config_json_cache,
     _tokenizer_class_cache,
     _config_needs_510_cache,
@@ -793,13 +794,63 @@ class TestEnsureVenvDirProgressLogging:
 
 
 # ---------------------------------------------------------------------------
-# Local-folder 5.3.0 tier detection via config.json (Qwen3.5 et al.)
+# _tier_from_name — shared name-based detection helper
+# ---------------------------------------------------------------------------
+
+
+class TestTierFromName:
+    """Unit tests for _tier_from_name(), which backs both the fast substring
+    path and the config _name_or_path fallback."""
+
+    def test_returns_none_for_unknown(self):
+        assert _tier_from_name("meta-llama/Llama-3-8B") is None
+
+    def test_gemma4_returns_550(self):
+        tier, _ = _tier_from_name("google/gemma-4-E2B-it")
+        assert tier == "550"
+
+    def test_gemma4_assistant_returns_510(self):
+        tier, match = _tier_from_name("google/gemma-4-E2B-it-assistant")
+        assert tier == "510"
+        assert "assistant" in match
+
+    def test_gemma4_12b_returns_510(self):
+        tier, _ = _tier_from_name("unsloth/gemma-4-12b-it")
+        assert tier == "510"
+
+    def test_qwen35_returns_530(self):
+        tier, match = _tier_from_name("Qwen/Qwen3.5-7B")
+        assert tier == "530"
+        assert "qwen3.5" in match
+
+    def test_ministral3_returns_530(self):
+        # The existing substring "ministral-3-" matches the 2512 naming style.
+        tier, _ = _tier_from_name("mistralai/Ministral-3-8B-Instruct-2512")
+        assert tier == "530"
+
+    def test_qwen3_moe_substring_returns_530(self):
+        tier, _ = _tier_from_name("Qwen/Qwen3-30B-A3B-Instruct-2507")
+        assert tier == "530"
+
+    def test_510_beats_550(self):
+        """gemma-4-12b matches 510 (checked first), not 550."""
+        tier, _ = _tier_from_name("google/gemma-4-12b-it")
+        assert tier == "510"
+
+    def test_550_beats_530(self):
+        """gemma-4 matches 550, not 530."""
+        tier, _ = _tier_from_name("gemma-4-model")
+        assert tier == "550"
+
+
+# ---------------------------------------------------------------------------
+# Local-folder tier detection via config.json
 #
-# A local checkpoint with a config.json whose architecture/tokenizer didn't match
-# the Gemma4 (510/550) signals short-circuited to "default", mis-routing a local
-# Qwen3.5 folder (model_type "qwen3_5", needs transformers >= 5.2.0) to
-# transformers 4.57.x, which fails to load it. Adding a config-based 530 check
-# fixes it without weakening the directory-name false-positive guard.
+# When a local checkpoint's config.json architecture/model_type matches a known
+# sidecar set, that's the authoritative answer.  When it doesn't match (unknown
+# or future family), the HF model ID from _name_or_path / model_name in the
+# config is run through the same name-based rules so renamed folders are still
+# routed correctly without introducing path false-positives.
 # ---------------------------------------------------------------------------
 
 
@@ -808,32 +859,118 @@ class TestLocalConfig530Tier:
         _config_json_cache.clear()
         _tokenizer_class_cache.clear()
 
-    def test_config_needs_530_model_type(self):
-        """config.json with model_type=qwen3_5 is the 5.3.0 tier."""
+    # --- config-set matches -------------------------------------------------
+
+    def test_config_needs_530_qwen3_5_model_type(self):
         assert _config_needs_530({"model_type": "qwen3_5"}) is True
 
+    def test_config_needs_530_qwen3_5_conditional_generation(self):
+        assert _config_needs_530({"architectures": ["Qwen3_5ForConditionalGeneration"]}) is True
+
+    def test_config_needs_530_qwen3_moe(self):
+        assert _config_needs_530({"model_type": "qwen3_moe"}) is True
+
+    def test_config_needs_530_glm4_moe_lite(self):
+        assert _config_needs_530({"model_type": "glm4_moe_lite"}) is True
+
+    def test_config_needs_530_lfm2_vl(self):
+        assert _config_needs_530({"model_type": "lfm2_vl"}) is True
+
     def test_config_needs_530_plain_qwen3_is_false(self):
-        """A regular Qwen3 checkpoint must not be promoted to 5.3.0."""
+        """Regular Qwen3 (non-MoE, non-3.5) must not be promoted to 5.3.0."""
         assert _config_needs_530({"model_type": "qwen3"}) is False
 
     def test_tier_local_qwen35_config_selects_530(self, tmp_path: Path):
-        """The reported case: a local Qwen3.5 folder with a qwen3_5 config
-        resolves to 530 instead of short-circuiting to default."""
-        named = tmp_path / "Qwen3.5-2B"
-        named.mkdir()
-        (named / "config.json").write_text(json.dumps({"model_type": "qwen3_5"}))
-        assert get_transformers_tier(str(named)) == "530"
+        """Reported case: a local Qwen3.5 folder routes to 530 via config.json."""
+        d = tmp_path / "Qwen3.5-2B"
+        d.mkdir()
+        (d / "config.json").write_text(json.dumps({"model_type": "qwen3_5"}))
+        assert get_transformers_tier(str(d)) == "530"
+
+    def test_tier_local_qwen3_moe_config_selects_530(self, tmp_path: Path):
+        """Local Qwen3 MoE checkpoint routes to 530 via config.json."""
+        d = tmp_path / "my-qwen3-moe"
+        d.mkdir()
+        (d / "config.json").write_text(
+            json.dumps({"model_type": "qwen3_moe", "architectures": ["Qwen3MoeForCausalLM"]})
+        )
+        assert get_transformers_tier(str(d)) == "530"
+
+    def test_tier_local_glm4_moe_lite_config_selects_530(self, tmp_path: Path):
+        """Local GLM-4.7-Flash checkpoint routes to 530 via config.json."""
+        d = tmp_path / "my-glm-model"
+        d.mkdir()
+        (d / "config.json").write_text(
+            json.dumps({"model_type": "glm4_moe_lite", "architectures": ["Glm4MoeLiteForCausalLM"]})
+        )
+        assert get_transformers_tier(str(d)) == "530"
+
+    def test_tier_local_lfm2_vl_config_selects_530(self, tmp_path: Path):
+        """Local LFM2.5-VL checkpoint routes to 530 via config.json."""
+        d = tmp_path / "my-liquid-model"
+        d.mkdir()
+        (d / "config.json").write_text(
+            json.dumps({"model_type": "lfm2_vl", "architectures": ["Lfm2VlForConditionalGeneration"]})
+        )
+        assert get_transformers_tier(str(d)) == "530"
+
+    # --- _name_or_path fallback ---------------------------------------------
+
+    def test_renamed_folder_falls_back_to_hf_id_in_config(self, tmp_path: Path):
+        """A renamed local folder with an unrecognised model_type but a known
+        HF ID in _name_or_path still routes to the correct tier."""
+        d = tmp_path / "my-custom-name"
+        d.mkdir()
+        # Simulate a future/unknown model_type; the HF ID carries the tier signal.
+        (d / "config.json").write_text(
+            json.dumps({
+                "model_type": "future_unknown_type",
+                "_name_or_path": "Qwen/Qwen3.5-7B",
+            })
+        )
+        assert get_transformers_tier(str(d)) == "530"
+
+    def test_hf_id_fallback_respects_550_tier(self, tmp_path: Path):
+        """_name_or_path pointing to a Gemma-4 HF ID routes to 550."""
+        d = tmp_path / "renamed-gemma"
+        d.mkdir()
+        (d / "config.json").write_text(
+            json.dumps({
+                "model_type": "future_unknown_type",
+                "_name_or_path": "google/gemma-4-E2B-it",
+            })
+        )
+        assert get_transformers_tier(str(d)) == "550"
+
+    def test_hf_id_fallback_skipped_when_same_as_path(self, tmp_path: Path):
+        """If _name_or_path equals the model path, skip the name fallback to
+        avoid false positives from self-referencing configs."""
+        d = tmp_path / "qwen3.5-experiment"
+        d.mkdir()
+        # _name_or_path is the local path itself (e.g. saved via save_pretrained)
+        (d / "config.json").write_text(
+            json.dumps({
+                "model_type": "llama",
+                "_name_or_path": str(d),
+            })
+        )
+        with patch("utils.transformers_version._check_tokenizer_config_needs_v5", return_value=False):
+            # "qwen3.5" is in the path but config says llama and _name_or_path
+            # is self-referencing — must not be promoted to 530.
+            assert get_transformers_tier(str(d)) == "default"
+
+    # --- false-positive guard -----------------------------------------------
 
     def test_tier_local_plain_model_still_default(self, tmp_path: Path):
-        """A local non-5.x checkpoint still resolves default, so the
-        directory-name false-positive guard is preserved."""
-        plain = tmp_path / "checkpoint-1000"
-        plain.mkdir()
-        (plain / "config.json").write_text(
+        """A local non-5.x checkpoint returns default; the directory-name
+        false-positive guard is preserved."""
+        d = tmp_path / "checkpoint-1000"
+        d.mkdir()
+        (d / "config.json").write_text(
             json.dumps({"architectures": ["LlamaForCausalLM"], "model_type": "llama"})
         )
         with patch(
             "utils.transformers_version._check_tokenizer_config_needs_v5",
             return_value = False,
         ):
-            assert get_transformers_tier(str(plain)) == "default"
+            assert get_transformers_tier(str(d)) == "default"
