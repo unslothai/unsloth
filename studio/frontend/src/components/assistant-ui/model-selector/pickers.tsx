@@ -40,7 +40,7 @@ import { extractParamLabel } from "@/lib/model-size";
 import { cn, formatCompact } from "@/lib/utils";
 import type { VramFitStatus } from "@/lib/vram";
 import { checkVramFit, estimateLoadingVram } from "@/lib/vram";
-import { Add01Icon, AudioWave01Icon, Cancel01Icon, DashboardCircleIcon, Download01Icon, Folder02Icon, Search01Icon, StarIcon } from "@hugeicons/core-free-icons";
+import { Add01Icon, AudioWave01Icon, Cancel01Icon, DashboardCircleIcon, Download01Icon, Folder02Icon, Search01Icon, StarIcon, ViewIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { DotTag } from "@/features/hub/catalog/dot-tag";
 import { HubOptionMenu, type HubOption } from "@/features/hub/catalog/hub-option-menu";
@@ -658,7 +658,10 @@ function GgufVariantExpander({
           Quantizations
         </span>
         {hasVision && (
-          <span className="text-[9px] font-medium text-blue-400">Vision</span>
+          <span className="flex items-center gap-0.5 text-[9px] font-medium text-blue-400">
+            <HugeiconsIcon icon={ViewIcon} className="size-3" strokeWidth={1.8} />
+            Vision
+          </span>
         )}
       </div>
       {sortedVariants.map((v) => {
@@ -1196,8 +1199,9 @@ export function HubModelPicker({
             .join(" · ")
         : [
             r.totalParams ? formatCompact(r.totalParams) : extractParamLabel(r.id),
-            // MLX repos get an MLX pill, mirroring the GGUF tag.
-            isMlxId(r.id) ? "MLX" : null,
+            // MLX and safetensors get a format pill like GGUF.
+            isMlxId(r.id) ? "MLX" : "Safetensors",
+            r.estimatedSizeBytes ? formatBytes(r.estimatedSizeBytes) : null,
           ]
             .filter(Boolean)
             .join(" · ") || null;
@@ -2345,7 +2349,12 @@ export function HubModelPicker({
                         meta={
                           isSearchGguf
                             ? "GGUF"
-                            : (metricsById.get(id) ?? extractParamLabel(id))
+                            : [
+                                metricsById.get(id) ?? extractParamLabel(id),
+                                isMlxId(id) ? "MLX" : "Safetensors",
+                              ]
+                                .filter(Boolean)
+                                .join(" · ")
                         }
                         selected={value === id}
                         optionProps={hubModelList.getOptionProps(

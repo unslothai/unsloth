@@ -53,6 +53,22 @@ const EMBEDDING_TAGS = new Set([
   "feature-extraction",
 ]);
 
+// Image/video/3D generation tasks. These are diffusion models that cannot run
+// in chat, so we drop them from the listing (matched by pipeline tag or tag).
+const EXCLUDED_TASKS = new Set([
+  "text-to-image",
+  "image-to-image",
+  "text-to-video",
+  "image-to-video",
+  "unconditional-image-generation",
+  "text-to-3d",
+  "image-to-3d",
+]);
+
+// Name fallback for well-known diffusion/video families with no task tag.
+const DIFFUSION_NAME_RE =
+  /(?:^|[-_/. ])(?:ltx(?:v|-video)?|flux|stable-diffusion|sdxl|sd3|wan2|hunyuan-?video|cogvideo|mochi|animatediff|qwen-image)(?=$|[-_/. ])/i;
+
 function withPopularitySort(
   input: Parameters<typeof fetch>[0],
   init?: Parameters<typeof fetch>[1],
@@ -136,6 +152,14 @@ function makeMapModel(excludeGguf: boolean, excludedTags: Set<string>) {
     };
     const isEmbedding = m.tags?.some((t) => EMBEDDING_TAGS.has(t));
     if (!isEmbedding && m.tags?.some((t) => excludedTags.has(t))) {
+      return null;
+    }
+    // Drop image/video diffusion models; they cannot run in chat.
+    const isDiffusion =
+      (m.pipeline_tag && EXCLUDED_TASKS.has(m.pipeline_tag.toLowerCase())) ||
+      m.tags?.some((t) => EXCLUDED_TASKS.has(t.toLowerCase())) ||
+      DIFFUSION_NAME_RE.test(m.name);
+    if (isDiffusion) {
       return null;
     }
     const isGguf =
