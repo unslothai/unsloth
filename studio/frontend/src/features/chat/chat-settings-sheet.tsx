@@ -905,13 +905,9 @@ export function ChatSettingsPanel({
         className="run-settings-scroll relative min-h-0 flex-1 overflow-y-auto"
       >
       <div className="px-[18px] pt-3">
-        {hasModelContent && (
-        <CollapsibleSection label="Model" defaultOpen={true} first>
+        {hasModelContent && isGguf && (
+        <CollapsibleSection label="GPU" defaultOpen={true} first>
           <div className="flex flex-col gap-4 pt-1">
-            {isGguf && (
-              <>
-                <CollapsibleSection label="GPU" defaultOpen={true}>
-                <div className="flex flex-col gap-4">
                 <div className="flex items-center justify-between gap-3">
                   <div className="flex min-w-0 items-center gap-1.5">
                     <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
@@ -1027,8 +1023,14 @@ export function ChatSettingsPanel({
                     </div>
                   </>
                 )}
-                </div>
-                </CollapsibleSection>
+          </div>
+        </CollapsibleSection>
+        )}
+        {hasModelContent && (
+        <CollapsibleSection label="Model" defaultOpen={true} first={!isGguf}>
+          <div className="flex flex-col gap-4 pt-1">
+            {isGguf && (
+              <>
                 {isAutoFit ? (
                   <div className="space-y-3.5">
                     <div className="flex items-center justify-between gap-3">
