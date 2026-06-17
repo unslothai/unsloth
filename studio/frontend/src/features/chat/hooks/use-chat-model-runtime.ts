@@ -523,6 +523,7 @@ export function useChatModelRuntime() {
               gpuMemoryMode,
               gpuLayers,
               cpuMoe,
+              selectedGpuIds,
               activePresetSource,
               activeGgufVariant,
             } = useChatRuntimeStore.getState();
@@ -564,6 +565,7 @@ export function useChatModelRuntime() {
               gpu_memory_mode: gpuMemoryMode,
               gpu_layers: gpuLayers,
               cpu_moe: cpuMoe,
+              gpu_ids: selectedGpuIds ?? undefined,
             });
 
             // If cancelled while loading, don't update UI to show
@@ -737,6 +739,7 @@ export function useChatModelRuntime() {
                   gpu_memory_mode: stateBeforeUnload.loadedGpuMemoryMode ?? "auto",
                   gpu_layers: stateBeforeUnload.loadedGpuLayers ?? -1,
                   cpu_moe: stateBeforeUnload.loadedCpuMoe ?? false,
+                  gpu_ids: stateBeforeUnload.loadedGpuIds ?? undefined,
                 });
                 useChatRuntimeStore.setState({
                   activeNativePathToken: previousActiveNativePathToken ?? null,

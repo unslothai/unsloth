@@ -972,6 +972,7 @@ export function SharedComposer({
           gpu_memory_mode: currentStore.gpuMemoryMode,
           gpu_layers: currentStore.gpuLayers,
           cpu_moe: currentStore.cpuMoe,
+          gpu_ids: currentStore.selectedGpuIds ?? undefined,
         });
         saveSpeculativeType(specSettings.speculativeType);
         const store = useChatRuntimeStore.getState();

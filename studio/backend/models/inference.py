@@ -283,6 +283,10 @@ class LoadResponse(BaseModel):
         None,
         description = "Model's layer count (GGUF block_count), for the manual gpu-layers ceiling.",
     )
+    gpu_ids: Optional[List[int]] = Field(
+        None,
+        description = "Physical GPU indices the model is pinned to, or None for automatic selection.",
+    )
 
 
 class UnloadResponse(BaseModel):
@@ -420,6 +424,10 @@ class InferenceStatusResponse(BaseModel):
     n_layers: Optional[int] = Field(
         None,
         description = "Model's layer count (GGUF block_count), for the manual gpu-layers ceiling.",
+    )
+    gpu_ids: Optional[List[int]] = Field(
+        None,
+        description = "Physical GPU indices the model is pinned to, or None for automatic selection.",
     )
     llama_cpp_supports_mtp: bool = Field(
         True,

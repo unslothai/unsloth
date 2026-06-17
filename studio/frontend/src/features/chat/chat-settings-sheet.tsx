@@ -59,6 +59,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { useGpuDevices } from "@/hooks/use-gpu-info";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useLlamaUpdateCheck } from "@/hooks/use-llama-update-check";
 import { cn } from "@/lib/utils";
@@ -559,6 +560,10 @@ export function ChatSettingsPanel({
   const setCpuMoe = useChatRuntimeStore((s) => s.setCpuMoe);
   const loadedCpuMoe = useChatRuntimeStore((s) => s.loadedCpuMoe);
   const ggufLayerCount = useChatRuntimeStore((s) => s.ggufLayerCount);
+  const selectedGpuIds = useChatRuntimeStore((s) => s.selectedGpuIds);
+  const setSelectedGpuIds = useChatRuntimeStore((s) => s.setSelectedGpuIds);
+  const loadedGpuIds = useChatRuntimeStore((s) => s.loadedGpuIds);
+  const gpuDevices = useGpuDevices();
   const customContextLength = useChatRuntimeStore((s) => s.customContextLength);
   const setCustomContextLength = useChatRuntimeStore(
     (s) => s.setCustomContextLength,
@@ -591,6 +596,21 @@ export function ChatSettingsPanel({
   const manualDirty =
     isManual &&
     (gpuLayers !== loadedGpuLayers || cpuMoe !== (loadedCpuMoe ?? false));
+  // GPU picker: only meaningful on multi-GPU. null = use all (auto).
+  const showGpuPicker = isGguf && gpuDevices.length > 1;
+  const isGpuChecked = (index: number) =>
+    selectedGpuIds === null || selectedGpuIds.includes(index);
+  const toggleGpu = (index: number) => {
+    const all = gpuDevices.map((d) => d.index);
+    const current = selectedGpuIds ?? all;
+    const next = current.includes(index)
+      ? current.filter((i) => i !== index)
+      : [...current, index].sort((a, b) => a - b);
+    if (next.length === 0) return; // keep at least one GPU selected
+    setSelectedGpuIds(next.length === all.length ? null : next);
+  };
+  const gpuIdsKey = (ids: number[] | null) => (ids === null ? "auto" : ids.join(","));
+  const gpuIdsDirty = gpuIdsKey(selectedGpuIds) !== gpuIdsKey(loadedGpuIds);
   // Auto-fit context: null / <= 0 means "Auto" (let --fit size it); a positive
   // value pins it (--fit optimizes gpu-layers around it). After a fit load,
   // surface the length --fit actually chose.
@@ -604,7 +624,8 @@ export function ChatSettingsPanel({
     specDraftDirty ||
     tpDirty ||
     gpuDirty ||
-    manualDirty;
+    manualDirty ||
+    gpuIdsDirty;
   const loadedChatTemplateOverride = useChatRuntimeStore(
     (s) => s.loadedChatTemplateOverride,
   );
@@ -926,6 +947,41 @@ export function ChatSettingsPanel({
                     </Select>
                   </div>
                 </div>
+                {showGpuPicker && (
+                  <div className="space-y-2">
+                    <div className="flex min-w-0 items-center gap-1.5">
+                      <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+                        GPUs
+                      </span>
+                      <InfoHint>
+                        Which GPUs this model may use. Unchecked GPUs are hidden
+                        from llama.cpp (CUDA_VISIBLE_DEVICES). Leave all checked
+                        to use every GPU.
+                      </InfoHint>
+                    </div>
+                    <div className="flex flex-col gap-2">
+                      {gpuDevices.map((d) => (
+                        <div
+                          key={d.index}
+                          className="flex items-center justify-between gap-3"
+                        >
+                          <span className="min-w-0 truncate text-[12px] text-nav-fg/80">
+                            GPU {d.index}: {d.name}
+                            {d.memoryTotalGb
+                              ? ` · ${Math.round(d.memoryTotalGb)} GB`
+                              : ""}
+                          </span>
+                          <Switch
+                            className="panel-switch shrink-0"
+                            checked={isGpuChecked(d.index)}
+                            onCheckedChange={() => toggleGpu(d.index)}
+                            data-test-id={`gpu-pick-${d.index}`}
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
                 {isManual && (
                   <>
                     <ParamSlider
@@ -1297,6 +1353,7 @@ export function ChatSettingsPanel({
                     setGpuMemoryMode(loadedGpuMemoryMode ?? "auto");
                     setGpuLayers(loadedGpuLayers ?? GPU_LAYERS_ALL);
                     setCpuMoe(loadedCpuMoe ?? false);
+                    setSelectedGpuIds(loadedGpuIds);
                     setChatTemplateOverride(loadedChatTemplateOverride);
                   }}
                   className="h-7 px-3 text-[12px] font-medium tracking-nav text-muted-foreground"

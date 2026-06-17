@@ -347,3 +347,71 @@ def test_manual_emits_gpu_layers_fit_off_and_cpu_moe():
 def test_fit_auto_floors_fit_ctx_at_8192():
     src = inspect.getsource(llama_cpp_module.LlamaCppBackend._ctx_integrity_flags)
     assert '"--fit-ctx", "8192"' in src, "fit-auto must floor --fit-ctx at 8192"
+
+
+# ── GPU picker (gpu_ids -> CUDA_VISIBLE_DEVICES) ─────────────────────
+
+
+def test_load_request_accepts_gpu_ids():
+    req = LoadRequest(model_path = "owner/repo", gpu_ids = [1, 0])
+    assert req.gpu_ids == [1, 0]
+    assert LoadRequest(model_path = "owner/repo").gpu_ids is None
+
+
+@pytest.mark.parametrize("model_cls", [LoadResponse, InferenceStatusResponse])
+def test_response_models_emit_gpu_ids(model_cls):
+    if model_cls is LoadResponse:
+        obj = model_cls(
+            status = "loaded", model = "m", display_name = "m", inference = {}, gpu_ids = [1]
+        )
+    else:
+        obj = model_cls(gpu_ids = [1])
+    assert obj.model_dump()["gpu_ids"] == [1]
+
+
+def test_gpu_ids_property_default_and_reset():
+    backend = LlamaCppBackend()
+    assert backend.gpu_ids is None
+    backend._gpu_ids = [0, 1]
+    assert backend.gpu_ids == [0, 1]
+    backend._process = _FakeProcess()
+    backend.unload_model()
+    assert backend.gpu_ids is None
+
+
+def _target_state_gpu_ids(backend, gpu_ids):
+    return backend._already_in_target_state(
+        gguf_path = None,
+        model_identifier = "owner/repo",
+        hf_variant = "Q4_K_M",
+        n_ctx = 8192,
+        cache_type_kv = None,
+        speculative_type = "auto",
+        chat_template_override = None,
+        extra_args = None,
+        is_vision = False,
+        gpu_ids = gpu_ids,
+    )
+
+
+def test_gpu_ids_reload_detection_is_order_insensitive():
+    backend = _loaded_backend("auto")
+    backend._gpu_ids = [0, 1]
+    # Same set, different order -> no reload.
+    assert _target_state_gpu_ids(backend, [1, 0]) is True
+    # Different set -> reload.
+    assert _target_state_gpu_ids(backend, [0]) is False
+    # Dropping the pick (auto) -> reload.
+    assert _target_state_gpu_ids(backend, None) is False
+
+
+def test_gpu_picker_filters_probe_and_masks():
+    src = _load_model_source()
+    # Auto selection only considers the picked devices.
+    assert "if gpu_ids:" in src
+    assert "g for g in gpus if g[0] in _picked" in src
+    # fit/manual (gpu_indices None) get pinned to the picked set.
+    assert "if gpu_ids and gpu_indices is None:" in src
+    assert "gpu_indices = sorted(gpu_ids)" in src
+    # Picked indices follow PCI-bus order so the UI index == llama.cpp's.
+    assert 'env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"' in src

@@ -1266,6 +1266,7 @@ async function autoLoadSmallestModel(): Promise<{
               gpu_memory_mode: rt.gpuMemoryMode,
               gpu_layers: rt.gpuLayers,
               cpu_moe: rt.cpuMoe,
+              gpu_ids: rt.selectedGpuIds ?? undefined,
             });
             saveSpeculativeType(specSettings.speculativeType);
             useChatRuntimeStore
@@ -1451,6 +1452,7 @@ async function autoLoadSmallestModel(): Promise<{
         gpu_memory_mode: rt.gpuMemoryMode,
         gpu_layers: rt.gpuLayers,
         cpu_moe: rt.cpuMoe,
+        gpu_ids: rt.selectedGpuIds ?? undefined,
       });
       saveSpeculativeType(specSettings.speculativeType);
       useChatRuntimeStore

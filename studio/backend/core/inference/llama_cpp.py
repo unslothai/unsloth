@@ -1191,6 +1191,8 @@ class LlamaCppBackend:
         # Manual-mode load options (echoed back so the UI round-trips them).
         self._gpu_layers: int = -1
         self._cpu_moe: bool = False
+        # User-picked physical GPU indices (None = automatic selection).
+        self._gpu_ids: Optional[List[int]] = None
         self._reasoning_default: bool = True
         self._speculative_type: Optional[str] = None
         # Canonical UI-facing mode the user requested
@@ -1527,6 +1529,11 @@ class LlamaCppBackend:
     def cpu_moe(self) -> bool:
         """Whether manual mode pinned MoE experts to CPU (--cpu-moe)."""
         return self._cpu_moe
+
+    @property
+    def gpu_ids(self) -> Optional[List[int]]:
+        """User-picked physical GPU indices, or None for automatic selection."""
+        return self._gpu_ids
 
     @property
     def n_layers(self) -> Optional[int]:
@@ -4181,6 +4188,7 @@ class LlamaCppBackend:
         gpu_memory_mode: Literal["auto", "fit", "manual"] = "auto",
         gpu_layers: int = -1,
         cpu_moe: bool = False,
+        gpu_ids: Optional[List[int]] = None,
         n_threads: Optional[int] = None,
         n_gpu_layers: Optional[int] = None,  # caller compat, unused
         n_parallel: int = 1,
@@ -4216,6 +4224,7 @@ class LlamaCppBackend:
                 gpu_memory_mode = gpu_memory_mode,
                 gpu_layers = gpu_layers,
                 cpu_moe = cpu_moe,
+                gpu_ids = gpu_ids,
                 chat_template_override = chat_template_override,
                 extra_args = extra_args,
                 is_vision = is_vision,
@@ -4411,6 +4420,7 @@ class LlamaCppBackend:
                 self._gpu_memory_mode = gpu_memory_mode
                 self._gpu_layers = gpu_layers
                 self._cpu_moe = cpu_moe
+                self._gpu_ids = sorted(gpu_ids) if gpu_ids else None
                 # Tensor mode aborts on a quantized KV cache, so drop it for the
                 # tensor attempt (and strip any inherited/explicit --cache-type
                 # that would re-impose it when appended last). Layer split does
@@ -4503,6 +4513,12 @@ class LlamaCppBackend:
                     _gpu_mem = self._get_gpu_memory()
                     gpus = [(idx, free) for idx, free, _t in _gpu_mem]
                     total_by_idx = {idx: total for idx, _f, total in _gpu_mem}
+                    # GPU picker: restrict every mode to the chosen devices, so
+                    # auto selection only considers them and fit/manual mask to
+                    # them (the env block below pins CUDA/HIP_VISIBLE_DEVICES).
+                    if gpu_ids:
+                        _picked = set(gpu_ids)
+                        gpus = [g for g in gpus if g[0] in _picked]
 
                     def _gpu_usable(g, frac = _CTX_FIT_VRAM_FRACTION):
                         # Per-GPU usable budget for ranking: free - (1-frac)*total.
@@ -5105,6 +5121,12 @@ class LlamaCppBackend:
                     tp_tensor_split = None
                     effective_ctx = requested_ctx  # fall back to original
 
+                # GPU picker: when no narrower subset was chosen (fit/manual, or
+                # a failed/file-size selection), pin the whole picked set so the
+                # model can't spill onto an unpicked GPU.
+                if gpu_ids and gpu_indices is None:
+                    gpu_indices = sorted(gpu_ids)
+
                 # Audio input straight from the mmproj (clip.has_audio_encoder),
                 # independent of token names.
                 self._mmproj_has_audio = False
@@ -5437,6 +5459,12 @@ class LlamaCppBackend:
                 if gpu_indices is not None:
                     pinned = ",".join(str(i) for i in gpu_indices)
                     env["CUDA_VISIBLE_DEVICES"] = pinned
+                    # When the user picked GPUs by index, align CUDA's ordering
+                    # with the PCI-bus order the picker enumerated (nvidia-smi),
+                    # so "GPU 1" in the UI is GPU 1 to llama.cpp -- not CUDA's
+                    # default FASTEST_FIRST order (#5025).
+                    if gpu_ids:
+                        env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
                     try:
                         import torch as _torch
                         if getattr(_torch.version, "hip", None) is not None:
@@ -6035,6 +6063,7 @@ class LlamaCppBackend:
         gpu_memory_mode: Literal["auto", "fit", "manual"] = "auto",
         gpu_layers: int = -1,
         cpu_moe: bool = False,
+        gpu_ids: Optional[List[int]] = None,
         mtp_draft_path: Optional[str] = None,
     ) -> bool:
         """True iff the live server already satisfies these load kwargs.
@@ -6086,6 +6115,10 @@ class LlamaCppBackend:
         if gpu_memory_mode == "manual" and (
             self._gpu_layers != gpu_layers or self._cpu_moe != cpu_moe
         ):
+            return False
+        # A changed GPU pick must reload (compare order-insensitively; None/[]
+        # both mean automatic).
+        if (self._gpu_ids or None) != (sorted(gpu_ids) if gpu_ids else None):
             return False
 
         # Compare on the canonical requested mode. With --spec-type in
@@ -6188,6 +6221,7 @@ class LlamaCppBackend:
             self._gpu_memory_mode = "auto"
             self._gpu_layers = -1
             self._cpu_moe = False
+            self._gpu_ids = None
             self._speculative_type = None
             self._requested_spec_mode = None
             self._spec_draft_n_max = None

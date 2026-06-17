@@ -72,6 +72,8 @@ export interface LoadModelRequest {
   gpu_layers?: number;
   /** Manual mode: move MoE experts to CPU (--cpu-moe). */
   cpu_moe?: boolean;
+  /** Picked physical GPU indices (omit/empty = automatic). */
+  gpu_ids?: number[];
 }
 
 export interface ValidateModelResponse {

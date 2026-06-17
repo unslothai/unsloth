@@ -1826,6 +1826,9 @@ def _request_matches_loaded_settings(
         or request.cpu_moe != llama_backend.cpu_moe
     ):
         return False
+    _req_gpu_ids = sorted(request.gpu_ids) if request.gpu_ids else None
+    if _req_gpu_ids != llama_backend.gpu_ids:
+        return False
     # Spec decoding works on vision models too (MTP is mmproj-compatible,
     # llama.cpp #22673; the old ``not is_vision`` gate is gone), so compare
     # the real requested mode -- coercing vision to ``off`` here used to
@@ -2049,6 +2052,7 @@ async def load_model(
                     gpu_layers = llama_backend.gpu_layers,
                     cpu_moe = llama_backend.cpu_moe,
                     n_layers = llama_backend.n_layers,
+                    gpu_ids = llama_backend.gpu_ids,
                 )
         else:
             if (
@@ -2116,12 +2120,6 @@ async def load_model(
 
         # ── GGUF path: load via llama-server ──────────────────────
         if config.is_gguf:
-            if effective_gpu_ids is not None:
-                raise HTTPException(
-                    status_code = 400,
-                    detail = "gpu_ids is not supported for GGUF models yet.",
-                )
-
             llama_backend = get_llama_cpp_backend()
             unsloth_backend = get_inference_backend()
 
@@ -2228,6 +2226,7 @@ async def load_model(
                 gpu_memory_mode = request.gpu_memory_mode,
                 gpu_layers = request.gpu_layers,
                 cpu_moe = request.cpu_moe,
+                gpu_ids = effective_gpu_ids,
                 n_parallel = _n_parallel,
                 extra_args = extra_llama_args,
             )
@@ -2343,6 +2342,7 @@ async def load_model(
                 gpu_layers = llama_backend.gpu_layers,
                 cpu_moe = llama_backend.cpu_moe,
                 n_layers = llama_backend.n_layers,
+                gpu_ids = llama_backend.gpu_ids,
             )
 
         # ── Standard path: load via Unsloth/transformers ──────────
@@ -2895,6 +2895,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 gpu_layers = llama_backend.gpu_layers,
                 cpu_moe = llama_backend.cpu_moe,
                 n_layers = llama_backend.n_layers,
+                gpu_ids = llama_backend.gpu_ids,
                 llama_cpp_supports_mtp = _supports_mtp,
                 spec_fallback_reason = llama_backend.spec_fallback_reason,
                 llama_cpp_prebuilt_stale = _stale,

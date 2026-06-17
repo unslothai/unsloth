@@ -72,3 +72,58 @@ export function useGpuInfo(): GpuInfo {
 
   return gpu;
 }
+
+export interface GpuDevice {
+  index: number;
+  name: string;
+  memoryTotalGb: number;
+}
+
+let cachedDevices: GpuDevice[] | null = null;
+let devicesPromise: Promise<GpuDevice[]> | null = null;
+
+async function fetchGpuDevicesOnce(): Promise<GpuDevice[]> {
+  if (cachedDevices) return cachedDevices;
+  if (devicesPromise) return devicesPromise;
+  devicesPromise = (async () => {
+    try {
+      const res = await authFetch("/api/system");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      const devices = (data?.gpu?.devices ?? []) as Array<{
+        index?: number;
+        name?: string;
+        memory_total_gb?: number;
+      }>;
+      const list = devices
+        .filter((d) => typeof d.index === "number")
+        .map((d) => ({
+          index: d.index as number,
+          name: d.name ?? `GPU ${d.index}`,
+          memoryTotalGb: d.memory_total_gb ?? 0,
+        }));
+      cachedDevices = list;
+      return list;
+    } catch {
+      devicesPromise = null;
+      return [];
+    }
+  })();
+  return devicesPromise;
+}
+
+/** All backend-visible GPUs (index, name, total VRAM). Cached module-wide. */
+export function useGpuDevices(): GpuDevice[] {
+  const [devices, setDevices] = useState<GpuDevice[]>(cachedDevices ?? []);
+  useEffect(() => {
+    if (cachedDevices) return;
+    let cancelled = false;
+    fetchGpuDevicesOnce().then((d) => {
+      if (!cancelled) setDevices(d);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  return devices;
+}

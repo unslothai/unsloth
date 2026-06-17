@@ -422,14 +422,19 @@ export function loadedGpuMemoryFields(resp: {
   gpu_layers?: number;
   cpu_moe?: boolean;
   n_layers?: number | null;
+  gpu_ids?: number[] | null;
 }) {
   const mode = resp.gpu_memory_mode ?? "auto";
+  const gpuIds = resp.gpu_ids ?? null;
   return {
     gpuMemoryMode: mode,
     loadedGpuMemoryMode: mode,
     loadedGpuLayers: resp.gpu_layers ?? null,
     loadedCpuMoe: resp.cpu_moe ?? null,
     ggufLayerCount: resp.n_layers ?? null,
+    // The picker reflects what loaded (the request sent the user's pick).
+    selectedGpuIds: gpuIds,
+    loadedGpuIds: gpuIds,
     // Sync the editable knobs only from a manual load; otherwise keep the
     // user's pending choice for when they switch to Manual.
     ...(mode === "manual" && {
@@ -595,6 +600,9 @@ type ChatRuntimeStore = {
   loadedCpuMoe: boolean | null;
   /** Model layer count (GGUF block_count); the manual gpu-layers ceiling. */
   ggufLayerCount: number | null;
+  /** Picked physical GPU indices (null = use all / automatic). */
+  selectedGpuIds: number[] | null;
+  loadedGpuIds: number[] | null;
   loadedIsMultimodal: boolean;
   /** Active model is a block-diffusion model (DiffusionGemma): drives the
    *  denoising-canvas artifact auto-render. */
@@ -699,6 +707,7 @@ type ChatRuntimeStore = {
   setGpuMemoryMode: (mode: "auto" | "fit" | "manual") => void;
   setGpuLayers: (value: number) => void;
   setCpuMoe: (value: boolean) => void;
+  setSelectedGpuIds: (ids: number[] | null) => void;
   setCustomContextLength: (v: number | null) => void;
   setChatTemplateOverride: (template: string | null) => void;
   setPendingAudio: (base64: string, name: string) => void;
@@ -991,6 +1000,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   cpuMoe: false,
   loadedCpuMoe: null,
   ggufLayerCount: null,
+  selectedGpuIds: null,
+  loadedGpuIds: null,
   loadedIsMultimodal: false,
   loadedIsDiffusion: false,
   customContextLength: null,
@@ -1218,6 +1229,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       cpuMoe: false,
       loadedCpuMoe: null,
       ggufLayerCount: null,
+      selectedGpuIds: null,
+      loadedGpuIds: null,
       loadedIsMultimodal: false,
       loadedIsDiffusion: false,
       customContextLength: null,
@@ -1420,6 +1433,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   },
   setGpuLayers: (gpuLayers) => set({ gpuLayers }),
   setCpuMoe: (cpuMoe) => set({ cpuMoe }),
+  setSelectedGpuIds: (selectedGpuIds) => set({ selectedGpuIds }),
   setCustomContextLength: (customContextLength) => set({ customContextLength }),
   setChatTemplateOverride: (chatTemplateOverride) =>
     set({ chatTemplateOverride }),
