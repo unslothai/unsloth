@@ -26,6 +26,7 @@ from hub.utils.hf_cache_state import (
 from hub.utils.gguf import (
     extract_quant_label,
     iter_hf_cache_snapshots,
+    is_big_endian_gguf_path,
     list_gguf_variants,
     list_gguf_variants_from_hf_cache,
     list_local_gguf_variants,
@@ -482,7 +483,10 @@ async def get_gguf_variants_response(
                     by_filename[key] = max(by_filename.get(key, 0), size)
                     if _is_mmproj_filename(f.name) or _is_mtp_drafter_path(rel):
                         continue
-                    q = extract_quant_label(rel).lower()
+                    q = extract_quant_label(rel)
+                    if is_big_endian_gguf_path(rel, q):
+                        continue
+                    q = q.lower()
                     by_quant[q] = by_quant.get(q, 0) + size
                 if by_filename:
                     cached_filenames_by_snapshot.append(by_filename)

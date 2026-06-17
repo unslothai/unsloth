@@ -179,6 +179,7 @@ from .import_fixes import (
     patch_trackio,
     patch_datasets,
     patch_enable_input_require_grads,
+    patch_unsafe_trainer_rng_load,
     fix_openenv_no_vllm,
     patch_openspiel_env_async,
     fix_executorch,
@@ -206,6 +207,7 @@ patch_ipykernel_hf_xet()
 patch_trackio()
 patch_datasets()
 patch_enable_input_require_grads()
+patch_unsafe_trainer_rng_load()
 fix_openenv_no_vllm()
 patch_openspiel_env_async()
 fix_executorch()
