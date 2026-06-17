@@ -1637,10 +1637,10 @@ export function HubModelPicker({
             type="button"
             onClick={onBrowseHub}
             aria-label="Search more models on the Hub"
-            className="hub-browse-trigger flex h-9 w-[90px] shrink-0 items-center justify-center gap-1.5 rounded-full border-0 text-xs text-muted-foreground transition-colors hover:text-foreground"
+            className="hub-browse-trigger flex h-9 w-[112px] shrink-0 items-center justify-center gap-[5px] rounded-full border-0 text-xs text-muted-foreground transition-colors hover:text-foreground"
           >
             <HugeiconsIcon icon={DashboardCircleIcon} className="size-4" />
-            Hub
+            Search Hub
           </button>
         ) : null}
       </div>
