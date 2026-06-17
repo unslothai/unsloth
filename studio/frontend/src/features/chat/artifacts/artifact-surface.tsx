@@ -31,6 +31,7 @@ import {
 } from "react";
 import { Streamdown } from "streamdown";
 import { ArtifactHtmlFrame, type ArtifactViewMode } from "./html-frame";
+import { useChatArtifactsStore } from "./store";
 import type { ChatArtifact } from "./types";
 import { getArtifactFilename } from "./types";
 
@@ -119,6 +120,8 @@ export function ArtifactSurface({
   onOpenFullscreen?: () => void;
 }) {
   const [viewMode, setViewMode] = useState<ArtifactViewMode>("preview");
+  // Follow the view the opener asked for (Preview vs Code button), per artifact.
+  const requestedView = useChatArtifactsStore((state) => state.requestedView);
   const [copied, setCopied] = useState(false);
   const copyResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const surfaceRef = useRef<HTMLElement>(null);
@@ -137,6 +140,10 @@ export function ArtifactSurface({
       if (copyResetRef.current) clearTimeout(copyResetRef.current);
     };
   }, []);
+
+  useEffect(() => {
+    setViewMode(requestedView);
+  }, [artifact.id, requestedView]);
 
   useEffect(() => {
     if (variant !== "overlay") return;

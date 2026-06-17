@@ -276,6 +276,10 @@ jobs:
         run: |
           kill "${STUDIO_IME_PID}" 2>/dev/null || true
           sleep 2
+          # Capture backend + llama-server logs (all three Studios share this
+          # dir) so a stray 500 has a server-side traceback.
+          mkdir -p logs/server-logs
+          cp -r ~/.unsloth/studio/logs/. logs/server-logs/ 2>/dev/null || true
 
       - name: Upload Playwright artifacts
         # Always upload so a green run's screenshots stay reviewable --
@@ -289,6 +293,7 @@ jobs:
             logs/studio_extra.log
             logs/studio_ime.log
             logs/install.log
+            logs/server-logs/
             logs/playwright
             logs/playwright_extra
             logs/playwright_ime
