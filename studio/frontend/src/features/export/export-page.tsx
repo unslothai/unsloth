@@ -24,7 +24,6 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
-import { Switch } from "@/components/ui/switch";
 import { Spinner } from "@/components/ui/spinner";
 import {
   Tooltip,
@@ -129,8 +128,6 @@ export function ExportPage() {
     "checkpoint",
   );
   const [modelSource, setModelSource] = useState<"hf" | "local">("hf");
-  const [hfExportTrustRemoteCode, setHfExportTrustRemoteCode] =
-    useState(true);
   const [modelInput, setModelInput] = useState("");
   const [selectedSourceModel, setSelectedSourceModel] = useState<string | null>(
     null,
@@ -495,9 +492,11 @@ export function ExportPage() {
           hf_token: hfToken || null,
         });
       } else {
-        // Consent gate: if the source model ships custom (auto_map) code, scan
-        // it and have the user review the findings before trust_remote_code.
-        let trustRemoteCode = modelSource === "hf" ? hfExportTrustRemoteCode : true;
+        // Consent gate: if the source model ships custom (auto_map) code, the
+        // dialog scans it and has the user review the findings before any code
+        // runs. It is the only way to enable trust_remote_code for an HF source;
+        // a local checkpoint the user exported is trusted by default.
+        let trustRemoteCode = modelSource !== "hf";
         let approvedRemoteCodeFingerprint: string | null = null;
         const remoteCodeOk = await confirmRemoteCodeIfNeeded({
           modelName: source,
@@ -597,7 +596,6 @@ export function ExportPage() {
     hfToken,
     privateRepo,
     modelSource,
-    hfExportTrustRemoteCode,
   ]);
 
   // ---- Render ----
@@ -887,43 +885,10 @@ export function ExportPage() {
                               </p>
                             )}
                           </div>
-                          <div className="flex items-center gap-2">
-                            <Switch
-                              id="hf-export-trust-remote-code"
-                              size="sm"
-                              checked={hfExportTrustRemoteCode}
-                              onCheckedChange={setHfExportTrustRemoteCode}
-                              disabled={exporting}
-                            />
-                            <label
-                              htmlFor="hf-export-trust-remote-code"
-                              className="cursor-pointer text-xs font-medium text-muted-foreground hover:text-foreground"
-                            >
-                              Trust remote code
-                            </label>
-                            <Tooltip>
-                              <TooltipTrigger asChild={true}>
-                                <button
-                                  type="button"
-                                  className="text-muted-foreground hover:text-foreground -m-1 inline-flex rounded p-1"
-                                  aria-label="About trust remote code"
-                                >
-                                  <HugeiconsIcon
-                                    icon={InformationCircleIcon}
-                                    className="size-3.5"
-                                  />
-                                </button>
-                              </TooltipTrigger>
-                              <TooltipContent
-                                side="top"
-                                className="max-w-[260px] text-xs"
-                              >
-                                Loads custom Python from the repo if the model
-                                needs it. Turn off if you do not trust the
-                                source.
-                              </TooltipContent>
-                            </Tooltip>
-                          </div>
+                          {/* Custom code is consented per model through the
+                              load-time review dialog (which scans the repo and
+                              pins approval to a fingerprint), so there is no
+                              persistent "trust remote code" toggle here. */}
                           <div className="flex flex-col gap-1.5">
                             <label className="text-xs font-medium text-muted-foreground">
                               Hugging Face Token (Optional)
