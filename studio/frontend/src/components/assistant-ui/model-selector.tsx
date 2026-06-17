@@ -23,6 +23,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { useNavigate } from "@tanstack/react-router";
 import { type KeyboardEvent, type ReactNode, useMemo, useState } from "react";
 import { Input } from "../ui/input";
 import { HubModelPicker, LoraModelPicker } from "./model-selector/pickers";
@@ -232,6 +233,7 @@ function ModelSelectorContent({
   onEject,
   onFoldersChange,
   onPickLocalModel,
+  onBrowseHub,
   onModelsChange,
   deleteDisabled,
   className,
@@ -245,6 +247,7 @@ function ModelSelectorContent({
   onEject?: () => void;
   onFoldersChange?: () => void;
   onPickLocalModel?: () => void;
+  onBrowseHub?: () => void;
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
   deleteDisabled?: boolean;
   className?: string;
@@ -364,6 +367,7 @@ function ModelSelectorContent({
           value={value}
           onSelect={onSelect}
           onFoldersChange={onFoldersChange}
+          onBrowseHub={onBrowseHub}
           section={hubSection}
           sectionToggle={
             <PillTabs
@@ -451,6 +455,7 @@ export function ModelSelector({
   const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
   const open = controlledOpen ?? uncontrolledOpen;
   const setOpen = onOpenChange ?? setUncontrolledOpen;
+  const navigate = useNavigate();
   const [uncontrolled, setUncontrolled] = useState(defaultValue ?? "");
 
   const selected = value ?? uncontrolled;
@@ -534,6 +539,11 @@ export function ModelSelector({
     void onPickLocalModel?.();
   }
 
+  function handleBrowseHub() {
+    setOpen(false);
+    void navigate({ to: "/hub", search: { tab: "discover" } });
+  }
+
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <ModelSelectorTrigger
@@ -554,6 +564,7 @@ export function ModelSelector({
         onEject={onEject ? handleEject : undefined}
         onFoldersChange={onFoldersChange}
         onPickLocalModel={onPickLocalModel ? handlePickLocalModel : undefined}
+        onBrowseHub={handleBrowseHub}
         onModelsChange={onModelsChange}
         deleteDisabled={deleteDisabled}
         className={contentClassName}

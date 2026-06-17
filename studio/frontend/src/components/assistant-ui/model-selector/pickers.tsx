@@ -40,7 +40,7 @@ import { extractParamLabel } from "@/lib/model-size";
 import { cn, formatCompact } from "@/lib/utils";
 import type { VramFitStatus } from "@/lib/vram";
 import { checkVramFit, estimateLoadingVram } from "@/lib/vram";
-import { AiBrain01Icon, Add01Icon, AudioWave01Icon, Cancel01Icon, Download01Icon, Folder02Icon, Search01Icon, StarIcon, ViewIcon } from "@hugeicons/core-free-icons";
+import { AiBrain01Icon, Add01Icon, AudioWave01Icon, Cancel01Icon, DashboardCircleIcon, Download01Icon, Folder02Icon, Search01Icon, StarIcon, ViewIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { DotTag } from "@/features/hub/catalog/dot-tag";
 import { HubOptionMenu, type HubOption } from "@/features/hub/catalog/hub-option-menu";
@@ -877,6 +877,7 @@ export function HubModelPicker({
   value,
   onSelect,
   onFoldersChange,
+  onBrowseHub,
   section = "downloaded",
   sectionToggle,
 }: {
@@ -884,6 +885,8 @@ export function HubModelPicker({
   value?: string;
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
   onFoldersChange?: () => void;
+  /** Open the full Hub page to browse more models. */
+  onBrowseHub?: () => void;
   /** Section shown when not searching. Search spans all sections. */
   section?: "downloaded" | "recommended" | "custom";
   /** Section toggle rendered under the search bar. */
@@ -1573,7 +1576,7 @@ export function HubModelPicker({
   // hidden while searching (sorting doesn't apply to search results).
   // Shared so the format and sort dropdowns are the same width.
   const sortTriggerClassName =
-    "w-[112px] shrink-0 justify-between pr-3 !border-0";
+    "w-[112px] shrink-0 justify-between pr-2.5 !border-0";
   // Tighter menu like the Projects activity Select: less padding on the
   // container (left/right/top) and rows. Scoped here, not the Hub default.
   const sortMenuContentClassName =
@@ -1612,21 +1615,34 @@ export function HubModelPicker({
 
   return (
     <div className="space-y-2">
-      <div className="relative pb-1">
-        <HugeiconsIcon
-          icon={Search01Icon}
-          className="pointer-events-none absolute left-2.5 top-2.5 size-4 text-muted-foreground"
-        />
-        <Input
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-          placeholder="Search models"
-          data-model-picker-search-input={true}
-          className="h-9 border-[#f2f2f2] dark:border-input pl-8 pr-8"
-        />
-        {isLoading && (
-          <Spinner className="pointer-events-none absolute right-2.5 top-2.5 size-4 text-muted-foreground" />
-        )}
+      <div className="flex items-center gap-2 pb-1">
+        <div className="relative flex-1">
+          <HugeiconsIcon
+            icon={Search01Icon}
+            className="pointer-events-none absolute left-2.5 top-2.5 size-4 text-muted-foreground"
+          />
+          <Input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Search models"
+            data-model-picker-search-input={true}
+            className="h-9 border-[#f2f2f2] dark:border-input pl-8 pr-8"
+          />
+          {isLoading && (
+            <Spinner className="pointer-events-none absolute right-2.5 top-2.5 size-4 text-muted-foreground" />
+          )}
+        </div>
+        {onBrowseHub ? (
+          <button
+            type="button"
+            onClick={onBrowseHub}
+            aria-label="Search more models on the Hub"
+            className="hub-browse-trigger flex h-9 shrink-0 items-center gap-1.5 rounded-full border-0 px-3 text-xs text-muted-foreground transition-colors hover:text-foreground"
+          >
+            <HugeiconsIcon icon={DashboardCircleIcon} className="size-4" />
+            Hub
+          </button>
+        ) : null}
       </div>
 
       {/* Section tabs, with the format and sort dropdowns inline to the right,
