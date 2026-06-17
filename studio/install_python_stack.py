@@ -129,7 +129,10 @@ def _select_torchao_spec(torch_version: str | None) -> str:
     release = str(torch_version).split("+", 1)[0]  # drop +cu130/+rocm6.4/+cpu
     parts = release.split(".")
     try:
-        major, minor = int(parts[0]), int(parts[1])
+        # Strip any pre-release/dev suffix from the minor (e.g. '10rc1' -> '10'),
+        # matching wheel_utils.probe_torch_wheel_env.
+        minor_str = re.sub(r"[^0-9].*", "", parts[1]) if len(parts) > 1 else ""
+        major, minor = int(parts[0]), int(minor_str)
     except (IndexError, ValueError):
         return _TORCHAO_DEFAULT_SPEC
     if major != 2:
@@ -155,6 +158,7 @@ def _probe_installed_torch_version() -> str | None:
             stderr = subprocess.DEVNULL,
             text = True,
             timeout = 90,
+            **_windows_hidden_subprocess_kwargs(),
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -2144,7 +2148,7 @@ def install_python_stack() -> int:
         _progress("dependency overrides")
         _torch_ver = _probe_installed_torch_version()
         _torchao_spec = _select_torchao_spec(_torch_ver)
-        print(f"   torch {_torch_ver or 'unknown'} detected -- installing {_torchao_spec}")
+        _safe_print(f"   torch {_torch_ver or 'unknown'} detected -- installing {_torchao_spec}")
         _override_extra_args: tuple[str, ...] = ()
         if _rocm_windows_torch_installed:
             # torchao declares torch as a dependency; without --no-deps uv would

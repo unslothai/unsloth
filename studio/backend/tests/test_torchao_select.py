@@ -38,6 +38,10 @@ def _load_module(monkeypatch):
         ("2.10.0+cpu", "torchao==0.16.0"),
         ("2.10.1", "torchao==0.16.0"),
         ("2.10.0", "torchao==0.16.0"),
+        # Pre-release / dev / rc builds: the minor is cleaned of non-digits.
+        ("2.10.0rc1", "torchao==0.16.0"),
+        ("2.10.0.dev20250804+cu130", "torchao==0.16.0"),
+        ("2.10rc1", "torchao==0.16.0"),
         # torch 2.11 (reachable via ROCm rocm7.2) and forward -> 0.17.0.
         ("2.11.0+cu130", "torchao==0.17.0"),
         ("2.11.0", "torchao==0.17.0"),
