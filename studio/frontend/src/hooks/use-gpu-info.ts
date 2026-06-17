@@ -11,6 +11,12 @@ export interface GpuInfo {
   systemRamAvailableGb: number;
 }
 
+export interface SystemGpuDevice {
+  index: number;
+  name: string;
+  memoryTotalGb: number;
+}
+
 const DEFAULT_GPU: GpuInfo = {
   available: false,
   name: "Unknown",
@@ -18,108 +24,89 @@ const DEFAULT_GPU: GpuInfo = {
   systemRamAvailableGb: 0,
 };
 
-// Module-level cache so multiple components share one fetch.
-let cachedGpu: GpuInfo | null = null;
-let fetchPromise: Promise<GpuInfo> | null = null;
+interface SystemPayload {
+  gpu?: {
+    available?: boolean;
+    devices?: Array<{ index?: number; name?: string; memory_total_gb?: number }>;
+  };
+  memory?: { available_gb?: number };
+}
 
-async function fetchGpuOnce(): Promise<GpuInfo> {
-  if (cachedGpu) return cachedGpu;
-  if (fetchPromise) return fetchPromise;
+// One module-level cache so every GPU hook shares a single /api/system fetch.
+let cachedSystem: SystemPayload | null = null;
+let systemPromise: Promise<SystemPayload | null> | null = null;
 
-  fetchPromise = (async () => {
+async function fetchSystemOnce(): Promise<SystemPayload | null> {
+  if (cachedSystem) return cachedSystem;
+  if (systemPromise) return systemPromise;
+  systemPromise = (async () => {
     try {
       const res = await authFetch("/api/system");
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      const gpuData = data?.gpu;
-      if (!gpuData?.available || !gpuData.devices?.length) return DEFAULT_GPU;
-      const devices = gpuData.devices as Array<{ name?: string; memory_total_gb?: number }>;
-      const totalGb = devices.reduce((sum, d) => sum + (d.memory_total_gb ?? 0), 0);
-      const info: GpuInfo = {
-        available: true,
-        name: devices[0]?.name ?? "Unknown",
-        memoryTotalGb: totalGb,
-        systemRamAvailableGb: data?.memory?.available_gb ?? 0,
-      };
-      cachedGpu = info;
-      return info;
+      cachedSystem = (await res.json()) as SystemPayload;
+      return cachedSystem;
     } catch {
-      // Reset promise so subsequent calls retry (e.g. backend wasn't ready)
-      fetchPromise = null;
-      return DEFAULT_GPU;
+      systemPromise = null; // reset so a later call retries (backend not ready)
+      return null;
     }
   })();
+  return systemPromise;
+}
 
-  return fetchPromise;
+function toGpuInfo(data: SystemPayload | null): GpuInfo {
+  const gpuData = data?.gpu;
+  if (!gpuData?.available || !gpuData.devices?.length) return DEFAULT_GPU;
+  const devices = gpuData.devices;
+  const totalGb = devices.reduce((sum, d) => sum + (d.memory_total_gb ?? 0), 0);
+  return {
+    available: true,
+    name: devices[0]?.name ?? "Unknown",
+    memoryTotalGb: totalGb,
+    systemRamAvailableGb: data?.memory?.available_gb ?? 0,
+  };
+}
+
+function toGpuDevices(data: SystemPayload | null): SystemGpuDevice[] {
+  return (data?.gpu?.devices ?? [])
+    .filter((d) => typeof d.index === "number")
+    .map((d) => ({
+      index: d.index as number,
+      name: d.name ?? `GPU ${d.index}`,
+      memoryTotalGb: d.memory_total_gb ?? 0,
+    }));
 }
 
 /**
- * Fetch GPU info from /api/system. Cached at module level, so only one request
- * is made no matter how many components call this hook.
+ * Aggregate GPU info from /api/system. Cached at module level, so only one
+ * request is made no matter how many GPU hooks are mounted.
  */
 export function useGpuInfo(): GpuInfo {
-  const [gpu, setGpu] = useState<GpuInfo>(cachedGpu ?? DEFAULT_GPU);
-
+  const [gpu, setGpu] = useState<GpuInfo>(
+    cachedSystem ? toGpuInfo(cachedSystem) : DEFAULT_GPU,
+  );
   useEffect(() => {
-    if (cachedGpu) return;
-
+    if (cachedSystem) return;
     let cancelled = false;
-    fetchGpuOnce().then((info) => {
-      if (!cancelled) setGpu(info);
+    fetchSystemOnce().then((d) => {
+      if (!cancelled) setGpu(toGpuInfo(d));
     });
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, []);
-
   return gpu;
 }
 
-export interface GpuDevice {
-  index: number;
-  name: string;
-  memoryTotalGb: number;
-}
-
-let cachedDevices: GpuDevice[] | null = null;
-let devicesPromise: Promise<GpuDevice[]> | null = null;
-
-async function fetchGpuDevicesOnce(): Promise<GpuDevice[]> {
-  if (cachedDevices) return cachedDevices;
-  if (devicesPromise) return devicesPromise;
-  devicesPromise = (async () => {
-    try {
-      const res = await authFetch("/api/system");
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      const devices = (data?.gpu?.devices ?? []) as Array<{
-        index?: number;
-        name?: string;
-        memory_total_gb?: number;
-      }>;
-      const list = devices
-        .filter((d) => typeof d.index === "number")
-        .map((d) => ({
-          index: d.index as number,
-          name: d.name ?? `GPU ${d.index}`,
-          memoryTotalGb: d.memory_total_gb ?? 0,
-        }));
-      cachedDevices = list;
-      return list;
-    } catch {
-      devicesPromise = null;
-      return [];
-    }
-  })();
-  return devicesPromise;
-}
-
-/** All backend-visible GPUs (index, name, total VRAM). Cached module-wide. */
-export function useGpuDevices(): GpuDevice[] {
-  const [devices, setDevices] = useState<GpuDevice[]>(cachedDevices ?? []);
+/** All backend-visible GPUs (index, name, total VRAM); shares the same fetch. */
+export function useGpuDevices(): SystemGpuDevice[] {
+  const [devices, setDevices] = useState<SystemGpuDevice[]>(
+    cachedSystem ? toGpuDevices(cachedSystem) : [],
+  );
   useEffect(() => {
-    if (cachedDevices) return;
+    if (cachedSystem) return;
     let cancelled = false;
-    fetchGpuDevicesOnce().then((d) => {
-      if (!cancelled) setDevices(d);
+    fetchSystemOnce().then((d) => {
+      if (!cancelled) setDevices(toGpuDevices(d));
     });
     return () => {
       cancelled = true;
