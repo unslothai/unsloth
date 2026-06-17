@@ -216,6 +216,7 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
     malware_targets = [checkpoint_path]
     try:
         from utils.models.model_config import get_base_model_from_lora_identifier
+
         # Resolve a LOCAL or REMOTE adapter's base so a remote LoRA base is gated too.
         _base = get_base_model_from_lora_identifier(checkpoint_path, cmd.get("hf_token"))
         if _base:
@@ -247,6 +248,7 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
         consent_targets = [checkpoint_path]
         try:
             from utils.models.model_config import get_base_model_from_lora_identifier
+
             # Resolve a LOCAL or REMOTE adapter's base so a remote LoRA base is gated too.
             base_model = get_base_model_from_lora_identifier(checkpoint_path, cmd.get("hf_token"))
             if base_model:

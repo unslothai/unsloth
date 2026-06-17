@@ -95,7 +95,11 @@ def test_lora_identifier_resolves_remote_adapter_base(tmp_path: Path):
     cfg = tmp_path / "adapter_config.json"
     cfg.write_text(json.dumps({"base_model_name_or_path": "unsloth/Llama-3.2-1B-Instruct"}))
 
-    def _dl(repo, fn, token = None):
+    def _dl(
+        repo,
+        fn,
+        token = None,
+    ):
         assert repo == "someone/my-remote-lora"
         assert fn == "adapter_config.json"
         return str(cfg)
@@ -111,7 +115,6 @@ def test_lora_identifier_returns_none_for_non_adapter_remote_repo():
     # EntryNotFoundError and the helper returns None (the caller still scans the
     # identifier itself).
     from huggingface_hub.utils import EntryNotFoundError
-
     with patch("huggingface_hub.hf_hub_download", side_effect = EntryNotFoundError("404")):
         assert get_base_model_from_lora_identifier("unsloth/Llama-3.2-1B-Instruct") is None
 

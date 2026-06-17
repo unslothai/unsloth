@@ -1609,6 +1609,7 @@ async def scan_model_remote_code(
         security_targets = [model_name]
         try:
             from utils.models.model_config import get_base_model_from_lora_identifier
+
             # Resolve the base for a LOCAL or a REMOTE adapter so a remote LoRA's
             # base (where the code/weights actually execute) is scanned too.
             _base = get_base_model_from_lora_identifier(model_name, hf_token)

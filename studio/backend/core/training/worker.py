@@ -1464,6 +1464,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
     malware_targets = [model_name]
     try:
         from utils.models.model_config import get_base_model_from_lora_identifier
+
         # Resolve a LOCAL or REMOTE adapter's base so a remote LoRA base is gated too.
         _base = get_base_model_from_lora_identifier(model_name, config.get("hf_token") or None)
         if _base:
@@ -1492,8 +1493,11 @@ def _run_mlx_training(event_queue, stop_queue, config):
         consent_targets = [model_name]
         try:
             from utils.models.model_config import get_base_model_from_lora_identifier
+
             # Resolve a LOCAL or REMOTE adapter's base so a remote LoRA base is gated too.
-            base_model = get_base_model_from_lora_identifier(model_name, config.get("hf_token") or None)
+            base_model = get_base_model_from_lora_identifier(
+                model_name, config.get("hf_token") or None
+            )
             if base_model:
                 consent_targets.append(base_model)
         except Exception as exc:
@@ -2193,6 +2197,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     malware_targets = [model_name]
     try:
         from utils.models.model_config import get_base_model_from_lora_identifier
+
         # Resolve a LOCAL or REMOTE adapter's base so a remote LoRA base is gated too.
         _base = get_base_model_from_lora_identifier(model_name, config.get("hf_token") or None)
         if _base:
@@ -2224,8 +2229,11 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         consent_targets = [model_name]
         try:
             from utils.models.model_config import get_base_model_from_lora_identifier
+
             # Resolve a LOCAL or REMOTE adapter's base so a remote LoRA base is gated too.
-            base_model = get_base_model_from_lora_identifier(model_name, config.get("hf_token") or None)
+            base_model = get_base_model_from_lora_identifier(
+                model_name, config.get("hf_token") or None
+            )
             if base_model:
                 consent_targets.append(base_model)
         except Exception as exc:
