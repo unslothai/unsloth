@@ -32,7 +32,9 @@ export function extractTaggedText(content: any): string {
       
       switch (part.type) {
         case 'reasoning': 
-          return `${open}THINK${close}\n${text}\n${open}/THINK${close}`;
+          // Trim the text first so we don't accumulate newlines 
+          // around the tags on every save.
+          return `${open}THINK${close}\n${text.trim()}\n${open}/THINK${close}`;
         case 'text':
         default:
           return text;
@@ -55,10 +57,12 @@ function parseTaggedTextToContent(text: string): ContentPart[] {
     const index = match.index;
 
     if (index > lastIndex) {
-      const content = text.substring(lastIndex, index);
-      if (content.trim()) parts.push({ type: currentType, text: content });
+      // Trim the extracted content to remove any leading/trailing 
+      // newlines created by the tag wrapping process.
+      const content = text.substring(lastIndex, index).trim();
+      if (content) parts.push({ type: currentType, text: content });
     }
-
+    
     currentType = fullTag.startsWith("</") ? "text" : (tagName === "THINK" ? "reasoning" : "tool");
     lastIndex = index + fullTag.length;
   }
@@ -76,8 +80,9 @@ export async function updateThreadMessage(args: {
   messageId: string;
   remoteId: string | undefined;
   newText: string;
+  isIncognito: boolean; // <--- ADD THIS
 }) {
-  const { thread, messageId, remoteId, newText } = args;
+  const { thread, messageId, remoteId, newText, isIncognito } = args;
   const parsedEditableContent = parseTaggedTextToContent(newText);
   const currentExport = thread.export();
 
@@ -89,8 +94,6 @@ export async function updateThreadMessage(args: {
   const { parentId: originalParentId } = targetMessageEntry; 
   const { createdAt: originalCreatedAt } = targetMessageEntry.message;
 
-  // MERGE STRATEGY:
-  // We want to preserve original tool_calls/responses but update the text/reasoning.
   const updatedMessages = currentExport.messages.map((m) => {
     if (m.message.id !== messageId) return m;
 
@@ -98,32 +101,23 @@ export async function updateThreadMessage(args: {
     let finalContent: any[] = [];
 
     if (Array.isArray(originalContent)) {
-      // 1. Find the index of the very first editable part (text or reasoning)
       const firstEditableIndex = originalContent.findIndex((part: any) => 
         part.type === 'text' || part.type === 'reasoning'
       );
 
       if (firstEditableIndex === -1) {
-        // If there was no text at all, just put the new text at the start 
-        // and keep the tools.
         const nonEditableParts = originalContent.filter((part: any) => 
           part.type !== 'text' && part.type !== 'reasoning'
         );
         finalContent = [...parsedEditableContent, ...nonEditableParts];
       } else {
-        // 2. PRESERVE ORDER: 
-        // - Keep everything that came BEFORE the first piece of text (e.g., early tool calls).
-        // - Inject the entire new edited block at that first slot.
-        // - Keep everything that came AFTER, but filter out the old editable text.
         const before = originalContent.slice(0, firstEditableIndex);
         const after = originalContent.slice(firstEditableIndex + 1).filter((part: any) => 
           part.type !== 'text' && part.type !== 'reasoning'
         );
-        
         finalContent = [...before, ...parsedEditableContent, ...after];
       }
     } else {
-      // If the original was just a string, we just use the parsed array.
       finalContent = parsedEditableContent;
     }
 
@@ -136,11 +130,11 @@ export async function updateThreadMessage(args: {
     };
   }) as typeof currentExport.messages;
 
-  // Snapshot for rollback
   const originalExport = currentExport;
   thread.import({ ...currentExport, messages: updatedMessages });
 
-  if (remoteId && !remoteId.startsWith("__LOCALID_")) {
+  // If it's NOT incognito, we attempt to save to the DB regardless of the ID.
+  if (remoteId && !isIncognito) {
     try {
       await saveChatMessage({
         id: messageId,
@@ -151,7 +145,6 @@ export async function updateThreadMessage(args: {
         createdAt: originalCreatedAt ? Number(originalCreatedAt) : Date.now(),
       });
     } catch (e) {
-      // ROLLBACK: If backend sync fails, revert the UI to the original state
       thread.import(originalExport);
       console.error("Backend sync failed for message update. Rolling back UI.", e);
       throw e;

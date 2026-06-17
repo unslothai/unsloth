@@ -3207,6 +3207,7 @@ const AssistantMessage: FC = () => {
   const aui = useAui();
   const messageId = useAuiState(({ message }) => message.id);
   const messageContent = useAuiState(({ message }) => message.content);
+  const incognito = useChatRuntimeStore((s) => s.incognito);
   
   // Use global store for editing state to ensure a single source of truth
   const editingId = useChatRuntimeStore((s) => s.editingMessageId);
@@ -3230,12 +3231,10 @@ const AssistantMessage: FC = () => {
 
   const handleSave = async () => {
     const finalText = textareaRef.current?.value || "";
-    let remoteId = aui.threadListItem().getState().remoteId;
     
-    if (!remoteId) {
-      const threadState = aui.thread();
-      remoteId = (threadState as any).remoteId || (threadState as any).id;
-    }
+    // Prioritize the specific thread item ID, then fallback to the global active thread ID
+    const remoteId = aui.threadListItem().getState().remoteId 
+                  || useChatRuntimeStore.getState().activeThreadId;
 
     if (!remoteId || remoteId === "" || remoteId === "/") {
       toast.error("Save failed: No thread ID found.");
@@ -3244,8 +3243,6 @@ const AssistantMessage: FC = () => {
     }
 
     try {
-      // updateThreadMessage handles the Merge Strategy and backend sync.
-      // It calls thread.import(), which automatically triggers a re-render.
       await updateThreadMessage({
         thread: { 
           export: () => aui.thread().export(), 
@@ -3254,6 +3251,7 @@ const AssistantMessage: FC = () => {
         messageId,
         remoteId,
         newText: finalText,
+        isIncognito: incognito,
       });
     } catch (error) {
       console.error("UI: Error during save:", error);
