@@ -17,6 +17,8 @@ export interface HfModelResult {
   isGguf: boolean;
   tags?: string[];
   pipelineTag?: string;
+  /** Param count from GGUF metadata, for repos with no safetensors weights. */
+  ggufParams?: number;
 }
 
 /** Tags to exclude on GPU (CUDA/ROCm) — MLX models won't load on GPU. */
@@ -128,6 +130,7 @@ function makeMapModel(excludeGguf: boolean, excludedTags: Set<string>) {
       downloads: number;
       likes: number;
       safetensors?: { total: number; parameters?: Record<string, number> };
+      gguf?: { total?: number };
       tags?: string[];
       pipeline_tag?: string;
     };
@@ -150,9 +153,15 @@ function makeMapModel(excludeGguf: boolean, excludedTags: Set<string>) {
       isGguf,
       tags: m.tags,
       pipelineTag: m.pipeline_tag,
+      ggufParams: m.gguf?.total,
     };
   };
 }
+
+// HF expand fields to request. "gguf" returns a repo's GGUF param count (so
+// repos with no safetensors weights can still be sized); it works at runtime
+// but is missing from the hub client's type union, so we widen it here.
+const MODEL_FIELDS = ["safetensors", "tags", "gguf"] as unknown as ("safetensors" | "tags")[];
 
 /** Number of unsloth results to pull up-front before yielding general results. */
 const UNSLOTH_PREFETCH = 20;
@@ -190,7 +199,7 @@ async function* mergedModelIterator(
   pinnedId?: string,
 ): AsyncGenerator<unknown> {
   const common = {
-    additionalFields: ["safetensors", "tags"] as ("safetensors" | "tags")[],
+    additionalFields: MODEL_FIELDS,
     fetch: withPopularitySort,
     ...(accessToken ? { credentials: { accessToken } } : {}),
   };
@@ -210,7 +219,7 @@ async function* mergedModelIterator(
   const pinnedPromise = pinnedId
     ? cachedModelInfo({
         name: pinnedId,
-        additionalFields: ["safetensors", "tags"],
+        additionalFields: MODEL_FIELDS,
         ...(accessToken ? { credentials: { accessToken } } : {}),
       }).catch(() => null)
     : null;
@@ -267,7 +276,7 @@ async function* priorityThenListingIterator(
   accessToken?: string,
 ): AsyncGenerator<unknown> {
   const common = {
-    additionalFields: ["safetensors", "tags"] as ("safetensors" | "tags")[],
+    additionalFields: MODEL_FIELDS,
     fetch: withPopularitySort,
     ...(accessToken ? { credentials: { accessToken } } : {}),
   };
@@ -278,7 +287,7 @@ async function* priorityThenListingIterator(
     priorityIds.map((id) =>
       cachedModelInfo({
         name: id,
-        additionalFields: ["safetensors", "tags"],
+        additionalFields: MODEL_FIELDS,
         ...(accessToken ? { credentials: { accessToken } } : {}),
       }),
     ),
@@ -349,7 +358,7 @@ export function useHfModelSearch(
         }
         return listModels({
           search: { owner: "unsloth", ...(task ? { task } : {}) },
-          additionalFields: ["safetensors", "tags"],
+          additionalFields: MODEL_FIELDS,
           fetch: makeSortFetch(sort),
           sort,
           ...(accessToken ? { credentials: { accessToken } } : {}),

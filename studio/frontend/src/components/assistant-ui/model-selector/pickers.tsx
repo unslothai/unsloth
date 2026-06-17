@@ -389,14 +389,7 @@ function ModelRow({
             <span className="shrink-0 text-muted-foreground/45">/</span>
           </span>
         ) : null}
-        <span
-          className={cn(
-            "min-w-0 flex-1 truncate font-medium",
-            exceeds && "!text-gray-500 dark:!text-gray-400",
-          )}
-        >
-          {name}
-        </span>
+        <span className="min-w-0 flex-1 truncate font-medium">{name}</span>
       </span>
       <span className="ml-auto flex shrink-0 items-center gap-1.5">
         {showCaps && <CapabilityIcons caps={caps} />}
@@ -798,7 +791,7 @@ const RECOMMENDED_SORT_OPTIONS: HubOption<RecommendedSortKey>[] = [
   { value: "trendingScore", label: "Trending" },
   { value: "likes", label: "Most likes" },
   { value: "downloads", label: "Downloads" },
-  { value: "lastModified", label: "Recently updated" },
+  { value: "lastModified", label: "Recent" },
 ];
 
 // Sort for the On Device / Custom (local) lists. "recent" = last loaded;
@@ -814,7 +807,7 @@ const LOCAL_SORT_OPTIONS: HubOption<LocalSortKey>[] = [
 
 // Format filter dropdown for the Unsloth listing.
 const FORMAT_FILTER_OPTIONS: HubOption<FormatFilter>[] = [
-  { value: "all", label: "All formats" },
+  { value: "all", label: "All" },
   { value: "gguf", label: "GGUF" },
   { value: "mlx", label: "MLX" },
   { value: "safetensors", label: "Safetensors" },
@@ -1139,10 +1132,10 @@ export function HubModelPicker({
         return false;
       if (!gpu.available) return true;
       // GGUF/MLX repos rarely expose safetensors metadata, so fall back to the
-      // param count in the repo name for a size estimate. Anything we still
-      // cannot size is hidden (requireKnown) so over-budget models like a 1T
-      // GGUF don't slip into Recommended.
-      const params = r.totalParams ?? paramsFromId(r.id);
+      // GGUF param count, then the repo name, for a size estimate. Anything we
+      // still cannot size is hidden (requireKnown) so over-budget models like a
+      // 1T GGUF don't slip into Recommended.
+      const params = r.totalParams ?? r.ggufParams ?? paramsFromId(r.id);
       const sizeBytes =
         r.estimatedSizeBytes ??
         (params ? estimateQuantBytes(params) : undefined);
@@ -1163,17 +1156,24 @@ export function HubModelPicker({
     >();
     for (const r of recommendedSearch.results) {
       const isG = isKnownGgufRepo(r.id);
+      // GGUF param count comes from the repo name or the GGUF metadata, so even
+      // repos with no "<n>B" token (Kimi, MiniMax) show a param chip.
+      const ggufParams = r.totalParams ?? r.ggufParams ?? paramsFromId(r.id);
       const meta = isG
-        ? r.estimatedSizeBytes
-          ? `GGUF · ${formatBytes(r.estimatedSizeBytes)}`
-          : "GGUF"
+        ? [
+            ggufParams ? formatCompact(ggufParams) : null,
+            "GGUF",
+            r.estimatedSizeBytes ? formatBytes(r.estimatedSizeBytes) : null,
+          ]
+            .filter(Boolean)
+            .join(" · ")
         : r.totalParams
           ? formatCompact(r.totalParams)
           : extractParamLabel(r.id);
       if (isG) {
         // GGUF fit is size-based: flag OOM when even the smallest quant we can
         // size exceeds the device budget. Repos we cannot size show no badge.
-        const params = r.totalParams ?? paramsFromId(r.id);
+        const params = ggufParams;
         const sizeBytes =
           r.estimatedSizeBytes ??
           (params ? estimateQuantBytes(params) : undefined);
@@ -1501,12 +1501,12 @@ export function HubModelPicker({
     visibleCachedModelRows.length === 0 &&
     sortedLmStudio.length === 0;
 
-  // Fixed-width sort dropdown, sized to "Recently updated" with a little extra,
+  // Fixed-width sort dropdown, sized to the longest label with a little extra,
   // shown inline to the right of the section toggle. Options depend on the tab;
   // hidden while searching (sorting doesn't apply to search results).
   // Shared so the format and sort dropdowns are the same width.
   const sortTriggerClassName =
-    "w-[124px] shrink-0 justify-between pr-3 !border-0";
+    "w-[112px] shrink-0 justify-between pr-3 !border-0";
   const sectionSortDropdown = showHfSection ? null : section === "recommended" ? (
     <HubOptionMenu
       value={recommendedSort}
