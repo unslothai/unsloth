@@ -394,7 +394,7 @@ function ModelRow({
       </span>
       <span className="ml-auto flex shrink-0 items-center gap-1.5">
         {showCaps && <CapabilityIcons caps={caps} />}
-        {selected && <DotTag tone="success" label="Loaded" className="h-[18px] gap-1 px-1" />}
+        {selected && <DotTag tone="success" label="Loaded" className="h-[18px] gap-1 px-1" dotClassName="size-[5px]" />}
         {downloaded && !selected && (
           <span
             title="Already downloaded"
@@ -416,7 +416,7 @@ function ModelRow({
           </span>
         ) : null}
         {parsed.formats.map((f) => (
-          <DotTag key={f.label} tone={f.tone} label={f.label} className="h-[18px] gap-1 px-1" />
+          <DotTag key={f.label} tone={f.tone} label={f.label} className="h-[18px] gap-[3px] px-1" dotClassName="size-[5px]" />
         ))}
         {parsed.texts.map((text) => (
           <span key={text} className="text-[10px] text-muted-foreground">
@@ -1637,7 +1637,7 @@ export function HubModelPicker({
             type="button"
             onClick={onBrowseHub}
             aria-label="Search more models on the Hub"
-            className="hub-browse-trigger flex h-9 shrink-0 items-center gap-1.5 rounded-full border-0 px-3 text-xs text-muted-foreground transition-colors hover:text-foreground"
+            className="hub-browse-trigger flex h-9 w-[90px] shrink-0 items-center justify-center gap-1.5 rounded-full border-0 text-xs text-muted-foreground transition-colors hover:text-foreground"
           >
             <HugeiconsIcon icon={DashboardCircleIcon} className="size-4" />
             Hub
@@ -1672,7 +1672,7 @@ export function HubModelPicker({
           setListScrolled((prev) => (prev === next ? prev : next));
         }}
         className={cn(
-          "model-list-scroll -mr-1.5 max-h-72 overflow-y-auto pr-1.5",
+          "model-list-scroll max-h-72 overflow-y-auto",
           listScrolled && "is-scrolled",
         )}
         {...hubModelList.listboxProps}

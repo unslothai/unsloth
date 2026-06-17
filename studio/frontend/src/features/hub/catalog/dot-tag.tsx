@@ -26,10 +26,12 @@ export function DotTag({
   tone,
   label,
   className,
+  dotClassName,
 }: {
   tone: DotTagTone;
   label: string;
   className?: string;
+  dotClassName?: string;
 }) {
   return (
     <span
@@ -40,7 +42,11 @@ export function DotTag({
     >
       <span
         aria-hidden="true"
-        className={cn("inline-block size-1.5 shrink-0 rounded-full", TONE_CLASS[tone])}
+        className={cn(
+          "inline-block size-1.5 shrink-0 rounded-full",
+          TONE_CLASS[tone],
+          dotClassName,
+        )}
       />
       {label}
     </span>
