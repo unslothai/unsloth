@@ -7,7 +7,7 @@ import { useLatestRef } from "@/features/hub/hooks/use-latest-ref";
 import { useRepoDownload } from "@/features/hub/download-manager/use-repo-download";
 import type { DownloadJob } from "@/features/hub/download-manager/use-repo-download";
 
-import { fetchGgufContextLength } from "../api/chat-api";
+import { fetchGgufStagedMetadata } from "../api/chat-api";
 import {
   isPendingGguf,
   useChatRuntimeStore,
@@ -47,7 +47,7 @@ export function useStagedModelPreparation(): DownloadJob {
     if (!current?.id || !isPendingGguf(current)) return;
     const { id, ggufVariant, nativePathToken } = current;
     try {
-      const contextLength = await fetchGgufContextLength({
+      const { contextLength, moeLayerCount } = await fetchGgufStagedMetadata({
         model_path: id,
         gguf_variant: ggufVariant,
         hf_token: useChatRuntimeStore.getState().hfToken || null,
@@ -62,13 +62,13 @@ export function useStagedModelPreparation(): DownloadJob {
         latest?.id === id &&
         (latest.ggufVariant ?? null) === (ggufVariant ?? null) &&
         (latest.nativePathToken ?? null) === (nativePathToken ?? null) &&
-        contextLength != null
+        (contextLength != null || moeLayerCount != null)
       ) {
-        setPendingSelection({ ...latest, contextLength });
+        setPendingSelection({ ...latest, contextLength, moeLayerCount });
       }
     } catch {
-      // Leave contextLength null: the context slider stays hidden and the user
-      // can still load (context fills in from the load response afterwards).
+      // Leave metadata null: the context/MoE sliders stay hidden and the user
+      // can still load (they fill in from the load response afterwards).
     }
   }, [setPendingSelection]);
 

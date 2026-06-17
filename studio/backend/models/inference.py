@@ -184,6 +184,11 @@ class ValidateModelResponse(BaseModel):
         description = "Native training context length, read from the GGUF header when the file "
         "is already downloaded locally; None for non-GGUF, gated, or not-yet-downloaded models.",
     )
+    moe_layer_count: Optional[int] = Field(
+        None,
+        description = "MoE expert-layer count (the manual --n-cpu-moe ceiling), read from the GGUF "
+        "header alongside context_length; 0 for dense models, None when not read.",
+    )
 
 
 class GenerateRequest(BaseModel):

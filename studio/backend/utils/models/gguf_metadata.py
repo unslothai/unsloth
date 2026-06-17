@@ -54,6 +54,10 @@ _BOOL_CACHE: Dict[Tuple[_CacheKey, str], Optional[bool]] = {}
 # unreadable. Lets the UI show the real context ceiling before a model loads.
 _CONTEXT_CACHE: Dict[_CacheKey, Optional[int]] = {}
 
+# MoE expert-layer count (block_count minus leading dense layers; 0 if not MoE).
+# Lets the UI size the manual MoE-offload slider before a model loads.
+_MOE_CACHE: Dict[_CacheKey, Optional[int]] = {}
+
 
 def _cache_key(path: str) -> Optional[_CacheKey]:
     try:
@@ -226,6 +230,118 @@ def _parse_gguf_context_length(path: str) -> Optional[int]:
         logger.debug(f"read_gguf_context_length: parse failure on {path}: {e}")
         return None
     return None
+
+
+def read_gguf_moe_layer_count(path: str) -> Optional[int]:
+    """Return the GGUF's MoE expert-layer count (``{arch}.block_count`` minus
+    ``{arch}.leading_dense_block_count``), 0 for a dense model, or ``None`` if
+    unreadable/not a GGUF. Cached by (path, mtime, size). Lets the UI size the
+    manual MoE-offload slider (and hide it for dense models) before the load."""
+    key = _cache_key(path)
+    if key is None:
+        return None
+    with _CACHE_LOCK:
+        if key in _MOE_CACHE:
+            return _MOE_CACHE[key]
+    result = _parse_gguf_moe_layer_count(path)
+    with _CACHE_LOCK:
+        while len(_MOE_CACHE) >= _CACHE_MAX_ENTRIES:
+            try:
+                _MOE_CACHE.pop(next(iter(_MOE_CACHE)))
+            except StopIteration:
+                break
+        _MOE_CACHE[key] = result
+    return result
+
+
+def _parse_gguf_moe_layer_count(path: str) -> Optional[int]:
+    # MoE layer count = block_count - leading_dense_block_count, but only when the
+    # model has experts (expert_count > 0); else 0. Keys are arch-namespaced, so
+    # learn the arch from general.architecture first, then collect all three
+    # (mirrors --n-cpu-moe's ceiling in core/inference/llama_cpp.py:n_moe_layers).
+    arch: Optional[str] = None
+    block_count: Optional[int] = None
+    expert_count: Optional[int] = None
+    leading_dense: Optional[int] = None
+    try:
+        with open(path, "rb") as f:
+            head = f.read(24)
+            if len(head) < 24:
+                return None
+            magic, _version, _tcount, kv_count = struct.unpack("<IIQQ", head)
+            if magic != _GGUF_MAGIC:
+                return None
+
+            for _ in range(kv_count):
+                try:
+                    klen_bytes = f.read(8)
+                    if len(klen_bytes) < 8:
+                        break
+                    klen = struct.unpack("<Q", klen_bytes)[0]
+                    if klen > 1 << 20:  # 1 MB sanity bound
+                        break
+                    kbytes = f.read(klen)
+                    if len(kbytes) < klen:
+                        break
+                    key = kbytes.decode("utf-8", "replace")
+                    vt_bytes = f.read(4)
+                    if len(vt_bytes) < 4:
+                        break
+                    vtype = struct.unpack("<I", vt_bytes)[0]
+
+                    if vtype == 8 and key == "general.architecture":
+                        slen_bytes = f.read(8)
+                        if len(slen_bytes) < 8:
+                            break
+                        slen = struct.unpack("<Q", slen_bytes)[0]
+                        if slen > 1 << 22:  # 4 MB sanity bound
+                            break
+                        sbytes = f.read(slen)
+                        if len(sbytes) < slen:
+                            break
+                        arch = sbytes.decode("utf-8", "replace")
+                    elif (
+                        arch is not None
+                        and vtype in (4, 10)
+                        and key
+                        in (
+                            f"{arch}.block_count",
+                            f"{arch}.expert_count",
+                            f"{arch}.leading_dense_block_count",
+                        )
+                    ):
+                        width = 4 if vtype == 4 else 8
+                        n_bytes = f.read(width)
+                        if len(n_bytes) < width:
+                            break
+                        value = struct.unpack("<I" if vtype == 4 else "<Q", n_bytes)[0]
+                        if key == f"{arch}.block_count":
+                            block_count = value
+                        elif key == f"{arch}.expert_count":
+                            expert_count = value
+                        else:
+                            leading_dense = value
+                        if (
+                            block_count is not None
+                            and expert_count is not None
+                            and leading_dense is not None
+                        ):
+                            break
+                    else:
+                        if not _skip_gguf_value(f, vtype):
+                            break
+                except (struct.error, UnicodeDecodeError):
+                    break
+    except OSError as e:
+        logger.debug(f"read_gguf_moe_layer_count: cannot open {path}: {e}")
+        return None
+    except Exception as e:
+        logger.debug(f"read_gguf_moe_layer_count: parse failure on {path}: {e}")
+        return None
+
+    if not expert_count or not block_count:
+        return 0
+    return max(0, block_count - (leading_dense or 0))
 
 
 # Strings (8) and arrays (9) are handled inline.

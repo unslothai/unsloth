@@ -2572,9 +2572,15 @@ async def validate_model(
         # Lets the staged ("Load on selection" off) flow populate the context
         # slider before the GPU load; None until the file is downloaded.
         context_length: Optional[int] = None
+        # MoE expert-layer count, read from the same header so the staged flow can
+        # size the manual --n-cpu-moe slider (and hide it for dense models).
+        moe_layer_count: Optional[int] = None
         if request.include_context_length and is_gguf:
             from hub.utils.gguf import resolve_local_gguf_path
-            from utils.models.gguf_metadata import read_gguf_context_length
+            from utils.models.gguf_metadata import (
+                read_gguf_context_length,
+                read_gguf_moe_layer_count,
+            )
 
             # Best-effort: a header-read failure must never fail validation of an
             # otherwise-valid model (the outer except turns it into a 400).
@@ -2591,8 +2597,9 @@ async def validate_model(
                     )
                 if local_gguf:
                     context_length = read_gguf_context_length(local_gguf)
+                    moe_layer_count = read_gguf_moe_layer_count(local_gguf)
             except Exception as e:
-                logger.debug("Context-length probe failed for %s: %s", model_log_label, e)
+                logger.debug("Header probe failed for %s: %s", model_log_label, e)
 
         return ValidateModelResponse(
             valid = True,
@@ -2608,6 +2615,7 @@ async def validate_model(
                 load_inference_config(config.identifier).get("trust_remote_code", False)
             ),
             context_length = context_length,
+            moe_layer_count = moe_layer_count,
         )
 
     except HTTPException:

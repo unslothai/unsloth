@@ -612,8 +612,13 @@ export function ChatSettingsPanel({
   const tpDisabled = isAutoFit;
   // Manual gpu-layers ceiling = model layer count (else a safe fallback).
   const gpuLayersMax = ggufLayerCount ?? 256;
-  // MoE-offload slider: shown only for MoE models, capped at their MoE-layer count.
-  const moeLayersMax = moeLayerCount ?? 0;
+  // MoE-offload slider: shown only for MoE models, capped at their MoE-layer
+  // count. While staging, use the staged model's count (read from its header);
+  // otherwise the loaded model's.
+  const stagedMoeLayerCount = pendingSelection?.moeLayerCount ?? null;
+  const moeLayersMax = pendingIsGguf
+    ? (stagedMoeLayerCount ?? 0)
+    : (moeLayerCount ?? 0);
   const showMoeSlider = isManual && moeLayersMax > 0;
   const manualDirty =
     isManual &&
