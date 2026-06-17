@@ -179,9 +179,12 @@ function CachedSizeChipLive({
               >
                 <span className="min-w-0 truncate">{row.label}</span>
                 <span className="ml-auto">
+                  {/* Brighten + size-match for the black pill: muted grey reads
+                      poorly on the dark tooltip in light mode. */}
                   <StatChip
                     icon={PackageIcon}
                     value={formatBytes(row.size_bytes)}
+                    className="text-[11px] text-white/70"
                   />
                 </span>
               </li>
@@ -209,12 +212,19 @@ function MetaDivider() {
 export function StatChip({
   icon,
   value,
+  className,
 }: {
   icon: IconSvgElement;
   value: string;
+  className?: string;
 }) {
   return (
-    <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap text-[10px] font-medium leading-none tabular-nums text-muted-foreground/75">
+    <span
+      className={cn(
+        "inline-flex shrink-0 items-center gap-1 whitespace-nowrap text-[10px] font-medium leading-none tabular-nums text-muted-foreground/75",
+        className,
+      )}
+    >
       <HugeiconsIcon
         icon={icon}
         strokeWidth={1.75}
@@ -639,27 +649,15 @@ export const InventoryRow = memo(function InventoryRow({
         : row.modelFormat === "safetensors" || row.modelFormat === "checkpoint"
           ? "Safetensors"
           : null;
-  const formatDotClass =
-    row.modelFormat === "gguf"
-      ? "bg-format-gguf"
-      : row.modelFormat === "adapter"
-        ? "bg-format-adapter"
-        : "bg-format-checkpoint";
   const paramLabel = useMemo(() => paramLabelFromId(title), [title]);
   const quantLabel = row.formatVariant?.trim() || null;
 
   const metaChips =
     !isDataset && (formatLabel || paramLabel || quantLabel) ? (
       <div className="hidden shrink-0 items-center gap-1.5 sm:flex">
-        {formatLabel && (
-          <span className="hub-chip">
-            <span
-              aria-hidden="true"
-              className={cn("size-[6px] rounded-full", formatDotClass)}
-            />
-            {formatLabel}
-          </span>
-        )}
+        {/* Format colour already shows as the status dot after the name, so the
+            pill stays neutral text to avoid doubling the signifier. */}
+        {formatLabel && <span className="hub-chip">{formatLabel}</span>}
         {paramLabel && <span className="hub-chip tabular-nums">{paramLabel}</span>}
         {quantLabel && (
           <span className="hub-chip font-mono text-[10.5px] uppercase">
