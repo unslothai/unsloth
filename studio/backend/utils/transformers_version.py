@@ -497,19 +497,8 @@ def get_transformers_tier(model_name: str) -> str:
     ``"530"`` for models needing transformers 5.3.0 (e.g. Ministral-3, Qwen3 MoE),
     or ``"default"`` for everything else (4.57.x).
 
-    Detection hierarchy (higher tiers checked first within each stage):
-
-    1. Local ``config.json`` architecture/model_type sets — highest confidence,
-       no I/O beyond reading the local file.
-    2. HF model ID from ``config.json`` (``_name_or_path`` / ``model_name``) run
-       through the same substring rules as stage 3.  Handles renamed local
-       checkpoints whose ``model_type`` isn't yet in the config sets, without
-       introducing false positives from parent directory name fragments.
-    3. Local ``tokenizer_config.json`` tokenizer-class check.
-    4. Fast name substring checks — no I/O, for remote HF IDs and local paths
-       without a ``config.json``.
-    5. Slow remote ``config.json`` fetches (network) — last resort for HF IDs
-       that don't match any substring.
+    Higher 5.x tiers run first.  For local paths, ``config.json`` is checked
+    before name heuristics to avoid false-positives from directory name fragments.
     """
     # --- Local checkpoint path ---
     # config.json acts as a positive-signal oracle: if it matches a known
@@ -539,16 +528,18 @@ def get_transformers_tier(model_name: str) -> str:
                     model_name,
                 )
                 return "530"
-            # Architecture not in any config set — fall back to the HF model ID
-            # recorded in config.json rather than the filesystem path.
-            hf_id = cfg.get("model_name") or cfg.get("_name_or_path") or ""
-            if hf_id and hf_id != model_name:
-                result = _tier_from_name(hf_id)
+            # Architecture not in any config set — resolve the base model name
+            # (reuses _resolve_base_model which reads _name_or_path/model_name)
+            # and run the same substring rules on that HF ID.  Handles renamed
+            # local folders without false-positives from filesystem path fragments.
+            resolved = _resolve_base_model(model_name)
+            if resolved != model_name:
+                result = _tier_from_name(resolved)
                 if result is not None:
                     tier, match = result
                     logger.info(
                         "Transformers tier %s selected for %s "
-                        "(config _name_or_path match: %s)",
+                        "(resolved base model match: %s)",
                         tier,
                         model_name,
                         match,
