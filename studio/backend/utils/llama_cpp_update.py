@@ -37,6 +37,7 @@ from utils.llama_cpp_freshness import (
     _INSTALL_MARKER_NAME,
     check_prebuilt_freshness,
     latest_published_release,
+    latest_release_assets,
     parse_base_build,
     read_install_marker,
     reset_caches,
@@ -292,6 +293,18 @@ def _source_build_status(binary: str, *, force_refresh: bool) -> Optional[dict]:
         update_available = False
     # Display the mix tag when that's what makes it newer; otherwise the base.
     latest = release_tag if latest_is_mix else base_tag
+    # Size of the resolved prebuilt, so source builds show it like the marker
+    # path. Fails open to None (offline / asset absent from the release).
+    update_size_bytes = None
+    if update_available:
+        asset_name = res.get("asset")
+        if isinstance(asset_name, str) and asset_name:
+            try:
+                assets = latest_release_assets(res.get("repo"), force_refresh = force_refresh)
+                if assets:
+                    update_size_bytes = assets.get(asset_name)
+            except Exception as exc:  # pragma: no cover - network defensive
+                logger.debug("llama update: source-build size lookup failed", error = str(exc))
     with _job_lock:
         job = dict(_job)
     return {
@@ -304,6 +317,7 @@ def _source_build_status(binary: str, *, force_refresh: bool) -> Optional[dict]:
         "installed_at_utc": None,
         "age_days": None,
         "source_build": True,
+        "update_size_bytes": update_size_bytes,
         "job": job,
     }
 

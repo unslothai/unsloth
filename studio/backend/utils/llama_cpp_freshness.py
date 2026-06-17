@@ -263,22 +263,29 @@ def update_download_size_bytes(
     installed_asset = marker.get("asset")
     if not isinstance(installed_asset, str):
         return None
-    # The platform suffix is tag-independent (e.g. "linux-x64-cuda13-newer.tar.gz"),
-    # so derive it from the first platform token rather than stripping the tag.
-    m = re.search(r"-((?:linux|windows|macos|darwin)-.*)$", installed_asset)
+    # Tag-independent platform suffix: accept the fork's "app-*" bundles and the
+    # upstream ggml-org "ubuntu-*"/"win-*" prebuilts ("windows" before "win").
+    m = re.search(r"-((?:linux|ubuntu|windows|win|macos|darwin)-.*)$", installed_asset)
     if not m:
         return None
     suffix = m.group(1)
-    assets = latest_release_assets(repo, force_refresh = force_refresh)
-    if not assets:
-        return None
+    # Upstream ubuntu/win assets live in the marker's binary_repo, not the fork
+    # publish repo; try the publish repo first, then it.
+    repos = [repo]
+    binary_repo = marker.get("binary_repo")
+    if isinstance(binary_repo, str) and binary_repo and binary_repo != repo:
+        repos.append(binary_repo)
     want = f"app-{latest_tag}-{suffix}"
-    if want in assets:
-        return assets[want]
-    # Tag formatting can vary (mix suffixes); fall back to the platform suffix.
-    for name, size in assets.items():
-        if name.endswith(suffix):
-            return size
+    for r in repos:
+        assets = latest_release_assets(r, force_refresh = force_refresh)
+        if not assets:
+            continue
+        if want in assets:
+            return assets[want]
+        # Tag formatting can vary (mix suffixes); fall back to the platform suffix.
+        for name, size in assets.items():
+            if name.endswith(suffix):
+                return size
     return None
 
 
