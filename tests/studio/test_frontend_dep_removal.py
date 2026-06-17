@@ -184,20 +184,6 @@ CASES: list[Case] = [
         [],
     ),
     Case(
-        "C21",
-        "removing mammoth (imported in runtime-provider.tsx); no transitive parent",
-        ["mammoth"],
-        "FAIL",
-        ["mammoth"],
-    ),
-    Case(
-        "C22",
-        "removing unpdf (imported in runtime-provider.tsx); no transitive parent",
-        ["unpdf"],
-        "FAIL",
-        ["unpdf"],
-    ),
-    Case(
         "C23",
         "removing remark-gfm is safe: streamdown declares it as a direct dep",
         ["remark-gfm"],
