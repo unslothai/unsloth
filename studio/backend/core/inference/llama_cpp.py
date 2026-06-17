@@ -678,9 +678,7 @@ def _env_main_cache_type_for_budget(env: Optional[Mapping[str, str]] = None) -> 
     return heaviest
 
 
-def _extra_args_main_cache_type_for_budget(
-    extra_args: Optional[Iterable[str]],
-) -> Optional[str]:
+def _extra_args_main_cache_type_for_budget(extra_args: Optional[Iterable[str]]) -> Optional[str]:
     """Heavier (max bytes/elem) of the explicit --cache-type-k/-v extras, or None.
 
     Extras are appended last and win per axis, so an asymmetric K=f32,V=f16 must be
