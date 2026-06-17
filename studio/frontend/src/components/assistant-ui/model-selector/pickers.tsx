@@ -50,6 +50,7 @@ import {
   type FormatFilter,
   estimateQuantBytes,
   fitsDevice,
+  isMlxId,
   isMobileVariant,
   isRunnableRecommendedFormat,
   matchesFormatFilter,
@@ -389,7 +390,7 @@ function ModelRow({
             <span className="shrink-0 text-muted-foreground/45">/</span>
           </span>
         ) : null}
-        <span className="min-w-0 flex-1 truncate font-medium">{name}</span>
+        <span className="min-w-0 flex-1 truncate">{name}</span>
       </span>
       <span className="ml-auto flex shrink-0 items-center gap-1.5">
         {showCaps && <CapabilityIcons caps={caps} />}
@@ -1174,9 +1175,13 @@ export function HubModelPicker({
           ]
             .filter(Boolean)
             .join(" · ")
-        : r.totalParams
-          ? formatCompact(r.totalParams)
-          : extractParamLabel(r.id);
+        : [
+            r.totalParams ? formatCompact(r.totalParams) : extractParamLabel(r.id),
+            // MLX repos get an MLX pill, mirroring the GGUF tag.
+            isMlxId(r.id) ? "MLX" : null,
+          ]
+            .filter(Boolean)
+            .join(" · ") || null;
       if (isG) {
         // GGUF fit is size-based: flag OOM when even the smallest quant we can
         // size exceeds the device budget. Repos we cannot size show no badge.
@@ -1236,23 +1241,36 @@ export function HubModelPicker({
     () => sortCachedRepos(cachedModels, downloadedSort, loadTimes),
     [cachedModels, downloadedSort, loadTimes],
   );
+  // Each local section's search is scoped to its own models (matched by name).
+  const localQuery = normalizeForSearch(debouncedQuery.trim());
+  const matchesLocalQuery = (m: LocalModelInfo) =>
+    !localQuery ||
+    normalizeForSearch(`${m.model_id ?? ""} ${m.display_name} ${m.id}`).includes(
+      localQuery,
+    );
   const sortedLmStudio = useMemo(
     () =>
       sortLocalModels(
-        lmStudioModels.filter((m) => localModelMatchesFormat(m, formatFilter)),
+        lmStudioModels.filter(
+          (m) => localModelMatchesFormat(m, formatFilter) && matchesLocalQuery(m),
+        ),
         downloadedSort,
         loadTimes,
       ),
-    [lmStudioModels, downloadedSort, formatFilter, loadTimes],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [lmStudioModels, downloadedSort, formatFilter, loadTimes, localQuery],
   );
   const sortedCustomFolderModels = useMemo(
     () =>
       sortLocalModels(
-        customFolderModels.filter((m) => localModelMatchesFormat(m, formatFilter)),
+        customFolderModels.filter(
+          (m) => localModelMatchesFormat(m, formatFilter) && matchesLocalQuery(m),
+        ),
         customSort,
         loadTimes,
       ),
-    [customFolderModels, customSort, formatFilter, loadTimes],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [customFolderModels, customSort, formatFilter, loadTimes, localQuery],
   );
 
   // While searching, filter Downloaded by the query instead of hiding it, so a
@@ -1301,22 +1319,22 @@ export function HubModelPicker({
   );
 
   const hfIds = useMemo(() => {
-    if (!showHfSection) return [];
+    // Only the Unsloth tab searches the HF listing, and only Unsloth models.
+    if (!showHfSection || section !== "recommended") return [];
     return results
       .map((result) => result.id)
+      .filter((id) => id.toLowerCase().startsWith("unsloth/"))
       .filter((id) => !recommendedSet.has(id))
-      // Shown under Downloaded (kept visible while searching); no duplicate.
-      .filter((id) => !downloadedSet.has(id.toLowerCase()))
       .filter((id) => !chatOnly || isKnownGgufRepo(id))
       .filter((id) => !/-FP8[-.]|FP8-Dynamic/i.test(id));
-  }, [recommendedSet, downloadedSet, results, showHfSection, chatOnly, isKnownGgufRepo]);
+  }, [recommendedSet, results, showHfSection, section, chatOnly, isKnownGgufRepo]);
 
   const hubOptionKeys = useMemo(() => {
     const keys: string[] = [];
 
-    // Downloaded is shown while searching, or when its section is selected.
+    // Downloaded rows (query-filtered) on the On Device tab only.
     if (
-      (showHfSection || section === "downloaded") &&
+      section === "downloaded" &&
       cachedReady &&
       !downloadedCollapsed &&
       (visibleCachedGguf.length > 0 || visibleCachedModelRows.length > 0)
@@ -1333,7 +1351,8 @@ export function HubModelPicker({
       );
     }
 
-    if (showHfSection) {
+    // Unsloth-tab search keys (curated matches + HF unsloth results).
+    if (showHfSection && section === "recommended") {
       keys.push(
         ...filteredRecommendedIds.map((id) =>
           makeModelOptionKey("search-recommended", id),
@@ -1498,10 +1517,10 @@ export function HubModelPicker({
     [onSelect, isKnownGgufRepo],
   );
 
-  // Section gating, ignored while searching. Downloaded stays visible while
-  // searching so a searched-for downloaded model doesn't disappear.
-  const showDownloaded = showHfSection || section === "downloaded";
-  const showCustom = !showHfSection && section === "custom";
+  // Each section owns its own search: On Device / Custom filter their local
+  // models by the query; the Unsloth tab searches the HF listing (below).
+  const showDownloaded = section === "downloaded";
+  const showCustom = section === "custom";
   const showRecommendedSection = !showHfSection && section === "recommended";
   const downloadedEmpty =
     visibleCachedGguf.length === 0 &&
@@ -1514,6 +1533,10 @@ export function HubModelPicker({
   // Shared so the format and sort dropdowns are the same width.
   const sortTriggerClassName =
     "w-[112px] shrink-0 justify-between pr-3 !border-0";
+  // Tighter menu like the Projects activity Select: less padding on the
+  // container (left/right/top) and rows. Scoped here, not the Hub default.
+  const sortMenuContentClassName =
+    "!p-1 !rounded-[14px] [&_[role=option]]:!px-2 [&_[role=option]]:!py-1.5";
   const sectionSortDropdown = showHfSection ? null : section === "recommended" ? (
     <HubOptionMenu
       value={recommendedSort}
@@ -1522,6 +1545,7 @@ export function HubModelPicker({
       ariaLabel="Sort Unsloth models"
       align="end"
       className={sortTriggerClassName}
+      contentClassName={sortMenuContentClassName}
     />
   ) : section === "downloaded" ? (
     <HubOptionMenu
@@ -1531,6 +1555,7 @@ export function HubModelPicker({
       ariaLabel="Sort downloaded models"
       align="end"
       className={sortTriggerClassName}
+      contentClassName={sortMenuContentClassName}
     />
   ) : (
     <HubOptionMenu
@@ -1540,6 +1565,7 @@ export function HubModelPicker({
       ariaLabel="Sort custom models"
       align="end"
       className={sortTriggerClassName}
+      contentClassName={sortMenuContentClassName}
     />
   );
 
@@ -1553,7 +1579,7 @@ export function HubModelPicker({
         <Input
           value={query}
           onChange={(event) => setQuery(event.target.value)}
-          placeholder="Search all models"
+          placeholder="Search models"
           data-model-picker-search-input={true}
           className="h-9 border-[#f2f2f2] dark:border-input pl-8 pr-8"
         />
@@ -1562,8 +1588,9 @@ export function HubModelPicker({
         )}
       </div>
 
-      {/* Section tabs, with the format and sort dropdowns inline on the right. */}
-      <div className="flex items-center justify-between gap-2">
+      {/* Section tabs, with the format and sort dropdowns inline to the right,
+          spaced the same gap-2 as the two dropdowns are from each other. */}
+      <div className="flex items-center gap-2">
         {sectionToggle}
         <div className="flex items-center gap-2">
           {!showHfSection ? (
@@ -1574,6 +1601,7 @@ export function HubModelPicker({
               ariaLabel="Filter by format"
               align="end"
               className={sortTriggerClassName}
+              contentClassName={sortMenuContentClassName}
             />
           ) : null}
           {sectionSortDropdown}
@@ -1606,13 +1634,17 @@ export function HubModelPicker({
             </div>
           ) : null}
 
-          {/* Downloaded selected but nothing cached yet. */}
-          {showDownloaded &&
-          !showHfSection &&
-          cachedReady &&
-          downloadedEmpty ? (
+          {/* Empty On Device: a search miss vs nothing downloaded yet. */}
+          {showDownloaded && cachedReady && downloadedEmpty ? (
             <div className="px-2.5 py-2 text-xs text-muted-foreground">
-              No downloaded models yet. Search above or pick Recommended.
+              {showHfSection
+                ? "No matching models on device."
+                : formatFilter === "all"
+                  ? "No downloaded models yet. Search above or pick Recommended."
+                  : `No downloaded ${
+                      FORMAT_FILTER_OPTIONS.find((o) => o.value === formatFilter)
+                        ?.label ?? ""
+                    } models yet.`}
             </div>
           ) : null}
 
@@ -1626,11 +1658,7 @@ export function HubModelPicker({
               >
                 {/* When other providers (LM Studio/Ollama) also show here, name
                     this group "Unsloth" so the two are easy to tell apart. */}
-                {!showHfSection &&
-                section === "downloaded" &&
-                sortedLmStudio.length > 0
-                  ? "Unsloth"
-                  : "Downloaded"}
+                {sortedLmStudio.length > 0 ? "Unsloth" : "Downloaded"}
               </ListLabel>
               {!downloadedCollapsed &&
                 visibleCachedGguf.map((c) => {
@@ -1730,9 +1758,7 @@ export function HubModelPicker({
             </>
           ) : null}
 
-          {!showHfSection &&
-          section === "downloaded" &&
-          sortedLmStudio.length > 0 ? (
+          {section === "downloaded" && sortedLmStudio.length > 0 ? (
             <>
               <ListLabel>LM Studio</ListLabel>
               {sortedLmStudio.map((m) => {
@@ -2015,6 +2041,13 @@ export function HubModelPicker({
                   </div>
                 );
               })}
+              {!customFoldersCollapsed &&
+              showHfSection &&
+              sortedCustomFolderModels.length === 0 ? (
+                <div className="px-2.5 py-2 text-xs text-muted-foreground">
+                  No matching models in custom folders.
+                </div>
+              ) : null}
             </>
           ) : null}
 
@@ -2081,6 +2114,10 @@ export function HubModelPicker({
                           systemRamGb={
                             gpu.available ? gpu.systemRamAvailableGb : undefined
                           }
+                          onDeleteVariant={async (quant) => {
+                            await deleteCachedModel(id, quant);
+                            refreshCachedLists();
+                          }}
                         />
                       )}
                     </div>
@@ -2098,7 +2135,9 @@ export function HubModelPicker({
             </>
           ) : null}
 
-          {showHfSection && filteredRecommendedIds.length > 0 ? (
+          {showHfSection &&
+          section === "recommended" &&
+          filteredRecommendedIds.length > 0 ? (
             <>
               <ListLabel icon={<HugeiconsIcon icon={StarIcon} className="size-3" />}>Recommended</ListLabel>
               {filteredRecommendedIds.map((id) => {
@@ -2155,6 +2194,10 @@ export function HubModelPicker({
                         systemRamGb={
                           gpu.available ? gpu.systemRamAvailableGb : undefined
                         }
+                        onDeleteVariant={async (quant) => {
+                          await deleteCachedModel(id, quant);
+                          refreshCachedLists();
+                        }}
                       />
                     )}
                   </div>
@@ -2163,17 +2206,15 @@ export function HubModelPicker({
             </>
           ) : null}
 
-          {showHfSection ? (
+          {showHfSection && section === "recommended" ? (
             <>
               {(hfIds.length > 0 || isLoading) && (
                 <ListLabel>Hugging Face</ListLabel>
               )}
               {hfIds.length === 0 && !isLoading ? (
-                filteredRecommendedIds.length === 0 &&
-                visibleCachedGguf.length === 0 &&
-                visibleCachedModelRows.length === 0 ? (
+                filteredRecommendedIds.length === 0 ? (
                   <div className="px-2.5 py-2 text-xs text-muted-foreground">
-                    No matching models.
+                    No matching Unsloth models.
                   </div>
                 ) : null
                 ) : (
@@ -2232,6 +2273,10 @@ export function HubModelPicker({
                           systemRamGb={
                             gpu.available ? gpu.systemRamAvailableGb : undefined
                           }
+                          onDeleteVariant={async (quant) => {
+                            await deleteCachedModel(id, quant);
+                            refreshCachedLists();
+                          }}
                         />
                       )}
                     </div>

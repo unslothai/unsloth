@@ -4,12 +4,13 @@
 // Pure helpers for model-row presentation: owner/name split, format pills,
 // param chip, tabular size. No React/DOM deps so they stay easy to test.
 
-export type FormatTone = "gguf" | "checkpoint" | "adapter";
+export type FormatTone = "gguf" | "mlx" | "checkpoint" | "adapter";
 
 // Format keyword to DotTag tone. Looked up by full token and by first word,
 // so "Full finetune" resolves via "full".
 export const FORMAT_TONE: Record<string, FormatTone> = {
   gguf: "gguf",
+  mlx: "mlx",
   local: "checkpoint",
   safetensors: "checkpoint",
   checkpoint: "checkpoint",

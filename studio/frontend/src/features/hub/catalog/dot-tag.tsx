@@ -8,6 +8,7 @@ type DotTagTone =
   | "warning"
   | "danger"
   | "gguf"
+  | "mlx"
   | "checkpoint"
   | "adapter";
 
@@ -16,6 +17,7 @@ const TONE_CLASS: Record<DotTagTone, string> = {
   warning: "bg-status-warning",
   danger: "bg-status-danger",
   gguf: "bg-format-gguf",
+  mlx: "bg-format-mlx",
   checkpoint: "bg-format-checkpoint",
   adapter: "bg-format-adapter",
 };
