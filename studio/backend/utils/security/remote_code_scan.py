@@ -470,7 +470,7 @@ def repo_remote_code_files(model_name: str, hf_token: Optional[str] = None) -> d
                 refs |= _auto_map_refs(json.loads(Path(cfg_path).read_text()))
             except Exception:
                 pass
-        wanted = {fn for repo, fn in refs if repo is None}
+        own_refs = {fn for repo, fn in refs if repo is None}
         # The full file list is needed to catch helper .py the auto_map code imports
         # but does not name. If we cannot list the repo, an imported module could be
         # missed and the fingerprint would cover less than transformers executes, so
@@ -484,15 +484,36 @@ def repo_remote_code_files(model_name: str, hf_token: Optional[str] = None) -> d
                 exc,
             )
             return {}
-        wanted |= {f for f in repo_files if f.endswith(".py")}
-        for fn in wanted:
+        repo_file_set = set(repo_files)
+        # Scan every present .py (the import closure the loader can execute) PLUS the
+        # own-repo auto_map targets that ACTUALLY EXIST in this revision. An auto_map
+        # target that is absent from the listing is a STALE ref -- an older config
+        # pointing at a file the repo no longer ships (e.g. unsloth/PaddleOCR-VL's
+        # tokenizer_config.json names processing_ppocrvl.py, but the repo ships
+        # processing_paddleocr_vl.py). transformers cannot execute a file that is not
+        # there, so ignore the stale ref rather than fail the whole repo closed; the
+        # present .py are still fully scanned, which is the stronger coverage. This
+        # also absorbs a mis-derived dotted-module filename (sub.mod.py vs sub/mod.py):
+        # the bad name is dropped as stale while the real present file is scanned.
+        present_py = {f for f in repo_files if f.endswith(".py")}
+        stale_refs = own_refs - repo_file_set
+        for fn in sorted(stale_refs):
+            logger.info(
+                "repo_remote_code_files(%s): ignoring stale own-repo auto_map target "
+                "%s (absent from the repo listing; it cannot execute)",
+                model_name,
+                fn,
+            )
+        wanted = present_py | (own_refs & repo_file_set)
+        for fn in sorted(wanted):
             try:
                 fp = hf_hub_download(model_name, fn, token = hf_token)
             except Exception as exc:
-                # A .py the loader could execute could not be fetched. Returning
-                # the partial set would fingerprint "clean" code while
-                # transformers later fetches and runs this file. Fail closed so
-                # the caller treats the repo as unscannable.
+                # A .py CONFIRMED PRESENT in the listing could not be fetched. Returning
+                # the partial set would fingerprint "clean" code while transformers
+                # later fetches and runs this file. Fail closed so the caller treats
+                # the repo as unscannable. (Stale/absent refs were dropped above and
+                # never reach here, so this only fires on a present-file fetch failure.)
                 logger.warning(
                     "repo_remote_code_files(%s): %s could not be fetched (%s); unscannable",
                     model_name,

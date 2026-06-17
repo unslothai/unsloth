@@ -2270,6 +2270,11 @@ def get_base_model_from_lora_identifier(
 
     Returns the base model id, or ``None`` when the identifier is not a LoRA adapter
     or the base cannot be determined (the caller still scans the identifier itself).
+
+    A genuine 404 (no ``adapter_config.json`` / repo absent) is distinguished from a
+    transient error: the latter is retried once, then logged as a WARNING (a missed
+    base would be scanned by neither gate), so a network blip does not silently and
+    invisibly skip the base.
     """
     # Local path: reuse the existing directory reader (identical behavior).
     try:
@@ -2279,24 +2284,45 @@ def get_base_model_from_lora_identifier(
         return get_base_model_from_lora(identifier)
 
     # Remote repo id: read base_model_name_or_path from adapter_config.json only.
-    # A missing adapter_config.json (not a LoRA) or an unreachable repo => None.
-    try:
-        from huggingface_hub import hf_hub_download
+    from huggingface_hub import hf_hub_download
+    from huggingface_hub.utils import EntryNotFoundError, RepositoryNotFoundError
 
-        cfg_path = hf_hub_download(
-            identifier, "adapter_config.json", token = hf_token if hf_token else None
-        )
-        with open(cfg_path, "r") as f:
-            base_model = json.load(f).get("base_model_name_or_path")
+    last_exc = None
+    for _attempt in range(2):  # one retry: a transient blip must not skip the base
+        try:
+            cfg_path = hf_hub_download(
+                identifier, "adapter_config.json", token = hf_token if hf_token else None
+            )
+        except (EntryNotFoundError, RepositoryNotFoundError):
+            # adapter_config.json / the repo genuinely does not exist -> not a LoRA
+            # whose base we can resolve. None is correct; the caller scans the
+            # identifier itself.
+            return None
+        except Exception as exc:  # transient / auth / network -> retry once
+            last_exc = exc
+            continue
+        try:
+            with open(cfg_path, "r") as f:
+                base_model = json.load(f).get("base_model_name_or_path")
+        except Exception as exc:
+            logger.warning("Could not parse adapter_config.json for '%s': %s", identifier, exc)
+            return None
         if base_model:
             logger.info(
                 "Detected base model from remote adapter_config.json (%s): %s",
                 identifier,
                 base_model,
             )
-            return base_model
-    except Exception as exc:
-        logger.debug("Could not resolve remote LoRA base for '%s': %s", identifier, exc)
+        return base_model  # may be None if the key is absent (still a valid answer)
+
+    # Both attempts hit a transient error: we could not confirm whether this is a
+    # LoRA or read its base. Log loudly -- a missed base is scanned by neither gate.
+    logger.warning(
+        "Could not resolve remote LoRA base for '%s' after retry (%s); its base, if "
+        "any, will not be added to the security scan targets.",
+        identifier,
+        type(last_exc).__name__ if last_exc else "unknown",
+    )
     return None
 
 

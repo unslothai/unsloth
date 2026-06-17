@@ -676,6 +676,64 @@ class TestScannerCoversAllExecutableCode:
         assert "evilorg/evilrepo--modeling_evil.py" in files
         assert not scan_remote_code_files(files).clean  # the external code is flagged
 
+    def test_stale_own_repo_auto_map_ref_is_ignored_not_failed_closed(self):
+        # A config names an own-repo .py that the repo no longer ships (a stale ref,
+        # e.g. unsloth/PaddleOCR-VL's tokenizer_config.json names processing_ppocrvl.py
+        # while the repo ships processing_paddleocr_vl.py). The absent file cannot
+        # execute, so it must be IGNORED and the PRESENT .py scanned -- not the whole
+        # repo blocked as unscannable.
+        def _dl(repo, fn, token = None):
+            import json
+            import tempfile
+
+            p = Path(tempfile.mkdtemp()) / fn
+            if fn == "config.json":
+                p.write_text(json.dumps({"model_type": "x"}))
+            elif fn == "tokenizer_config.json":
+                p.write_text(json.dumps({"auto_map": {"AutoProcessor": "processing_ppocrvl.Proc"}}))
+            elif fn == "processing_paddleocr_vl.py":
+                p.write_text("import torch\n")  # the real, present file
+            elif fn in REMOTE_CODE_CONFIG_FILES:
+                raise EntryNotFoundError(fn)
+            else:
+                raise RuntimeError(f"stale/absent file must not be fetched: {fn}")
+            return str(p)
+
+        with (
+            patch("huggingface_hub.hf_hub_download", side_effect = _dl),
+            patch(
+                "huggingface_hub.list_repo_files",
+                return_value = ["config.json", "tokenizer_config.json", "processing_paddleocr_vl.py"],
+            ),
+        ):
+            files = repo_remote_code_files("unsloth/PaddleOCR-VL")
+        assert files != {}, "must not fail closed: present .py are scannable"
+        assert "processing_paddleocr_vl.py" in files  # present file scanned
+        assert "processing_ppocrvl.py" not in files  # stale ref ignored, never fetched
+
+    def test_present_referenced_py_fetch_failure_still_fails_closed(self):
+        # The stale-ref relaxation must NOT weaken the present-file guarantee: a .py
+        # that IS in the repo listing but cannot be fetched (transient) still fails
+        # closed, because transformers would later fetch and run it.
+        def _dl(repo, fn, token = None):
+            import json
+            import tempfile
+
+            if fn == "config.json":
+                p = Path(tempfile.mkdtemp()) / fn
+                p.write_text(json.dumps({"auto_map": {"AutoModel": "modeling_x.M"}}))
+                return str(p)
+            if fn in REMOTE_CODE_CONFIG_FILES:
+                raise EntryNotFoundError(fn)
+            raise RuntimeError("transient fetch failure")  # modeling_x.py is present but unfetchable
+
+        with (
+            patch("huggingface_hub.hf_hub_download", side_effect = _dl),
+            patch("huggingface_hub.list_repo_files", return_value = ["config.json", "modeling_x.py"]),
+        ):
+            files = repo_remote_code_files("third/party")
+        assert files == {}  # present-but-unfetchable -> fail closed
+
     def test_external_tokenizer_auto_map_list_is_scanned(self):
         # transformers encodes a tokenizer auto_map as a [slow, fast] LIST, e.g.
         # {"AutoTokenizer": ["owner/repo--tokenization_x.Slow", null]}. The external
@@ -796,6 +854,20 @@ class TestScannerCoversAllExecutableCode:
             "transformers reads auto_map from config files the consent gate does not "
             f"scan: {sorted(missing)}. Add them to REMOTE_CODE_CONFIG_FILES."
         )
+
+    def test_load_configs_returns_empty_list_when_all_404(self):
+        # A remote repo that ships NONE of the auto_map configs (every fetch 404s)
+        # must return [] (definitively "no config-based auto_map"), NOT None
+        # ("unknown"). [] -> _config_has_auto_map False -> no-op; None would force an
+        # unnecessary scan and, for a repo with no code, a false unscannable block.
+        # "some/plain-repo" is a remote repo id (is_local_path is False for it).
+        with patch("huggingface_hub.hf_hub_download", side_effect = EntryNotFoundError("404")):
+            configs = consent._load_remote_code_configs("some/plain-repo")
+        assert configs == []
+        # And a transient error on a config -> None (unknown -> caller scans).
+        with patch("huggingface_hub.hf_hub_download", side_effect = RuntimeError("blip")):
+            configs = consent._load_remote_code_configs("some/gated-repo")
+        assert configs is None
 
 
 # ---------------------------------------------------------------------------

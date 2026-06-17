@@ -1702,7 +1702,17 @@ async def discard_remote_code_download(
     except Exception:
         pass
 
-    _WEIGHTS = (".safetensors", ".bin", ".pt", ".pth", ".h5", ".msgpack", ".gguf")
+    _WEIGHTS = (
+        ".safetensors",
+        ".bin",
+        ".pt",
+        ".pth",
+        ".h5",
+        ".msgpack",
+        ".gguf",
+        ".onnx",
+        ".ckpt",
+    )
     try:
         target_repo = None
         hf_cache = None

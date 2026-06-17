@@ -112,11 +112,43 @@ def test_lora_identifier_resolves_remote_adapter_base(tmp_path: Path):
 
 def test_lora_identifier_returns_none_for_non_adapter_remote_repo():
     # A normal (non-LoRA) remote repo has no adapter_config.json: the Hub raises
-    # EntryNotFoundError and the helper returns None (the caller still scans the
-    # identifier itself).
+    # EntryNotFoundError and the helper returns None WITHOUT retrying (a genuine 404
+    # is not a transient error).
     from huggingface_hub.utils import EntryNotFoundError
-    with patch("huggingface_hub.hf_hub_download", side_effect = EntryNotFoundError("404")):
+
+    mock = patch("huggingface_hub.hf_hub_download", side_effect = EntryNotFoundError("404"))
+    with mock as m:
         assert get_base_model_from_lora_identifier("unsloth/Llama-3.2-1B-Instruct") is None
+    assert m.call_count == 1  # 404 is definitive -> no retry
+
+
+def test_lora_identifier_retries_transient_then_resolves(tmp_path: Path):
+    # A transient fetch error must be retried, not treated as "not a LoRA": the
+    # second attempt succeeds and the base is resolved (so the base still gets
+    # scanned despite the blip).
+    cfg = tmp_path / "adapter_config.json"
+    cfg.write_text(json.dumps({"base_model_name_or_path": "unsloth/Llama-3.2-1B-Instruct"}))
+    calls = {"n": 0}
+
+    def _dl(repo, fn, token = None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("transient network blip")
+        return str(cfg)
+
+    with patch("huggingface_hub.hf_hub_download", side_effect = _dl):
+        base = get_base_model_from_lora_identifier("someone/remote-lora")
+    assert base == "unsloth/Llama-3.2-1B-Instruct"
+    assert calls["n"] == 2  # retried once
+
+
+def test_lora_identifier_persistent_transient_returns_none(capsys):
+    # Both attempts hit a transient error -> None, and it is logged at WARNING (a
+    # missed base would be scanned by neither gate) rather than silently at debug.
+    with patch("huggingface_hub.hf_hub_download", side_effect = RuntimeError("down")):
+        assert get_base_model_from_lora_identifier("someone/remote-lora") is None
+    out = capsys.readouterr()
+    assert "Could not resolve remote LoRA base" in (out.out + out.err)
 
 
 @patch("utils.models.model_config.is_audio_input_type", return_value = False)
