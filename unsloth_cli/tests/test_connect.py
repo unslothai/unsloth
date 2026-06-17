@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import urllib.error
 from pathlib import Path
@@ -305,6 +306,23 @@ def test_connect_codex_rejects_non_gguf_model(fake_studio, monkeypatch):
     assert result.exit_code == 0, result.output
 
 
+def test_connect_remote_token_rejected_points_at_api_key(fake_studio, monkeypatch):
+    # A self-issued token is invalid against a remote Studio (different secret);
+    # the auto-mint 401 should become actionable --api-key guidance.
+    inner = connect._http_json
+
+    def http_json(method, url, token, payload = None, timeout = 30, error = None):
+        if url.endswith("/api/auth/api-keys"):
+            raise urllib.error.HTTPError(url, 401, "Invalid or expired token", None, None)
+        return inner(method, url, token, payload, timeout, error)
+
+    monkeypatch.setattr(connect, "_http_json", http_json)
+    result = CliRunner().invoke(connect.connect_app, ["opencode", "--no-launch"])
+    assert result.exit_code == 1
+    assert "Settings → API" in result.output
+    assert "--api-key" in result.output
+
+
 def test_connect_no_studio_errors(fake_studio, monkeypatch):
     monkeypatch.setattr(connect, "find_studio_server", lambda: None)
     result = CliRunner().invoke(connect.connect_app, ["claude", "--no-launch"])
@@ -320,3 +338,180 @@ def test_connect_explicit_api_key_skips_mint(fake_studio):
     assert result.exit_code == 0, result.output
     assert "export ANTHROPIC_AUTH_TOKEN=sk-unsloth-deadbeefdeadbeef" in result.output
     assert not any(c[1].endswith("/api/auth/api-keys") for c in fake_studio)
+
+
+# ── OpenClaw (Anthropic /v1/messages) ────────────────────────────────
+
+
+def test_write_openclaw_config_fresh(tmp_path, monkeypatch):
+    path = tmp_path / "openclaw.json"
+    monkeypatch.setattr(connect, "openclaw_config_path", lambda: path)
+    connect.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL)
+    config = json.loads(path.read_text())
+    provider = config["models"]["providers"]["unsloth"]
+    assert provider["baseUrl"] == f"{BASE}/v1"
+    assert provider["apiKey"] == "sk-unsloth-abc"
+    assert provider["api"] == "openai-completions"
+    assert provider["models"] == [
+        {"id": MODEL["id"], "name": MODEL["id"], "contextWindow": MODEL["context_length"]}
+    ]
+    # The default model must be pinned or OpenClaw has nothing active.
+    assert config["agents"]["defaults"]["model"]["primary"] == f"unsloth/{MODEL['id']}"
+    assert config["gateway"]["mode"] == "local"
+    assert config["gateway"]["auth"]["mode"] == "none"  # unauth loopback gateway
+    if os.name != "nt":  # the file holds an API key
+        assert path.stat().st_mode & 0o777 == 0o600
+
+
+def test_write_openclaw_config_preserves_and_idempotent(tmp_path, monkeypatch):
+    path = tmp_path / "openclaw.json"
+    monkeypatch.setattr(connect, "openclaw_config_path", lambda: path)
+    path.write_text(
+        json.dumps(
+            {
+                "theme": "dark",
+                "agents": {"defaults": {"temperature": 0.5}},
+                "models": {"mode": "replace", "providers": {"openrouter": {"baseUrl": "x"}}},
+            }
+        )
+    )
+    connect.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL)
+    config = json.loads(path.read_text())
+    assert config["theme"] == "dark"
+    assert config["agents"]["defaults"]["temperature"] == 0.5  # other agent defaults kept
+    assert config["agents"]["defaults"]["model"]["primary"] == f"unsloth/{MODEL['id']}"
+    assert config["models"]["mode"] == "replace"  # user's mode is left as-is
+    assert config["models"]["providers"]["openrouter"]["baseUrl"] == "x"
+    assert config["models"]["providers"]["unsloth"]["baseUrl"] == f"{BASE}/v1"
+    before = path.read_text()
+    connect.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL)
+    assert path.read_text() == before
+
+
+def test_write_openclaw_config_corrupt_left_alone(tmp_path, monkeypatch, capsys):
+    path = tmp_path / "openclaw.json"
+    monkeypatch.setattr(connect, "openclaw_config_path", lambda: path)
+    path.write_text("{not json")
+    connect.write_openclaw_config(BASE, "sk-unsloth-abc", MODEL)
+    assert path.read_text() == "{not json"
+    assert "couldn't parse" in capsys.readouterr().err
+
+
+def test_connect_openclaw_no_launch(fake_studio, tmp_path, monkeypatch):
+    path = tmp_path / "openclaw.json"
+    monkeypatch.setattr(connect, "openclaw_config_path", lambda: path)
+    result = CliRunner().invoke(connect.connect_app, ["openclaw", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    assert "openclaw" in result.output
+    assert "export" not in result.output  # key lives in the config, not the env
+    config = json.loads(path.read_text())
+    assert config["models"]["providers"]["unsloth"]["apiKey"] == "sk-unsloth-feedfacefeedface"
+    assert config["agents"]["defaults"]["model"]["primary"] == f"unsloth/{MODEL['id']}"
+    # OpenAI /v1/chat/completions works on either backend — no GGUF gate.
+    assert not any(c[1].endswith("/api/inference/status") for c in fake_studio)
+
+
+# ── OpenCode (OpenAI /v1/chat/completions) ───────────────────────────
+
+
+def test_write_opencode_config_fresh(tmp_path, monkeypatch):
+    path = tmp_path / "opencode.json"
+    monkeypatch.setattr(connect, "opencode_config_path", lambda: path)
+    connect.write_opencode_config(BASE, "sk-unsloth-abc", MODEL)
+    config = json.loads(path.read_text())
+    provider = config["provider"]["unsloth"]
+    assert provider["npm"] == "@ai-sdk/openai-compatible"
+    assert provider["options"] == {"baseURL": f"{BASE}/v1", "apiKey": "sk-unsloth-abc"}
+    assert provider["models"] == {MODEL["id"]: {"name": MODEL["id"]}}
+    assert config["model"] == f"unsloth/{MODEL['id']}"
+
+
+def test_write_opencode_config_preserves_and_idempotent(tmp_path, monkeypatch):
+    path = tmp_path / "opencode.json"
+    monkeypatch.setattr(connect, "opencode_config_path", lambda: path)
+    path.write_text(
+        json.dumps({"theme": "tokyonight", "provider": {"anthropic": {"name": "Anthropic"}}})
+    )
+    connect.write_opencode_config(BASE, "sk-unsloth-abc", MODEL)
+    config = json.loads(path.read_text())
+    assert config["theme"] == "tokyonight"
+    assert config["provider"]["anthropic"]["name"] == "Anthropic"
+    assert config["provider"]["unsloth"]["options"]["baseURL"] == f"{BASE}/v1"
+    before = path.read_text()
+    connect.write_opencode_config(BASE, "sk-unsloth-abc", MODEL)
+    assert path.read_text() == before
+
+
+def test_connect_opencode_no_launch(fake_studio, tmp_path, monkeypatch):
+    path = tmp_path / "opencode.json"
+    monkeypatch.setattr(connect, "opencode_config_path", lambda: path)
+    result = CliRunner().invoke(connect.connect_app, ["opencode", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    assert "opencode" in result.output
+    config = json.loads(path.read_text())
+    assert config["provider"]["unsloth"]["options"]["apiKey"] == "sk-unsloth-feedfacefeedface"
+    assert config["model"] == f"unsloth/{MODEL['id']}"
+    assert not any(c[1].endswith("/api/inference/status") for c in fake_studio)
+
+
+# ── Hermes (OpenAI /v1/chat/completions, key via env) ────────────────
+
+
+@pytest.fixture()
+def hermes_config(tmp_path, monkeypatch):
+    path = tmp_path / "config.yaml"
+    monkeypatch.setattr(connect, "hermes_config_path", lambda: path)
+    return path
+
+
+def test_write_hermes_config_fresh(hermes_config):
+    yaml = pytest.importorskip("yaml")
+    connect.write_hermes_config(BASE, MODEL)
+    config = yaml.safe_load(hermes_config.read_text())
+    # Hermes only honors the key for a *named* custom provider, so the endpoint
+    # is registered under providers.* and model.provider points at it.
+    assert config["model"]["provider"] == "custom:unsloth"
+    assert config["model"]["default"] == MODEL["id"]
+    assert config["model"]["api_mode"] == "openai"
+    provider = config["providers"]["unsloth"]
+    assert provider["base_url"] == f"{BASE}/v1"
+    assert provider["api_mode"] == "openai"
+    assert provider["key_env"] == "UNSLOTH_API_KEY"
+    # The key is resolved from the launch env, never written to disk.
+    assert "sk-unsloth" not in hermes_config.read_text()
+
+
+def test_write_hermes_config_preserves_and_idempotent(hermes_config):
+    yaml = pytest.importorskip("yaml")
+    hermes_config.write_text(
+        yaml.safe_dump(
+            {
+                "terminal": {"backend": "local"},
+                "model": {"temperature": 0.7},
+                "providers": {"openrouter": {"base_url": "https://openrouter.ai/api/v1"}},
+            }
+        )
+    )
+    connect.write_hermes_config(BASE, MODEL)
+    config = yaml.safe_load(hermes_config.read_text())
+    assert config["terminal"] == {"backend": "local"}  # unrelated sections kept
+    assert config["model"]["temperature"] == 0.7  # unrelated model keys kept
+    assert config["model"]["provider"] == "custom:unsloth"
+    assert config["providers"]["openrouter"]["base_url"] == "https://openrouter.ai/api/v1"
+    assert config["providers"]["unsloth"]["base_url"] == f"{BASE}/v1"
+    before = hermes_config.read_text()
+    connect.write_hermes_config(BASE, MODEL)
+    assert hermes_config.read_text() == before
+
+
+def test_connect_hermes_no_launch(fake_studio, hermes_config):
+    yaml = pytest.importorskip("yaml")
+    result = CliRunner().invoke(connect.connect_app, ["hermes", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    assert "export UNSLOTH_API_KEY=sk-unsloth-feedfacefeedface" in result.output
+    assert "hermes" in result.output
+    config = yaml.safe_load(hermes_config.read_text())
+    assert config["model"]["provider"] == "custom:unsloth"
+    assert config["providers"]["unsloth"]["base_url"] == f"{BASE}/v1"
+    assert config["model"]["default"] == MODEL["id"]
+    assert not any(c[1].endswith("/api/inference/status") for c in fake_studio)

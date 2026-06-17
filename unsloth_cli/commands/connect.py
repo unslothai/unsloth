@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""`unsloth connect` — launch a coding agent (Claude Code, Codex) against a running Studio server."""
+"""`unsloth connect` — launch a coding agent against a running Studio server."""
 
 import json
 import os
@@ -18,6 +18,7 @@ from typing import NoReturn, Optional
 import typer
 
 from unsloth_cli._inference import (
+    _USER_AGENT,
     _studio_token,
     ensure_studio_backend_path,
     find_studio_server,
@@ -31,13 +32,39 @@ connect_app = typer.Typer(
 
 _CODEX_PROFILE = "unsloth_api"
 _CODEX_ENV_KEY = "UNSLOTH_STUDIO_AUTH_TOKEN"
+_HERMES_ENV_KEY = "UNSLOTH_API_KEY"
+_HERMES_PROVIDER = "unsloth"
 _PROVIDER_HEADER = f"[model_providers.{_CODEX_PROFILE}]"
 _PASSTHROUGH = {"allow_extra_args": True, "ignore_unknown_options": True}
+
+# Shared by every agent command; only the config/env/command differ.
+_MODEL_OPTION = typer.Option(
+    None, "--model", "-m", help = "Model for the agent; defaults to the one loaded in Studio."
+)
+_KEY_OPTION = typer.Option(
+    None,
+    "--api-key",
+    envvar = "UNSLOTH_API_KEY",
+    help = "Studio API key; minted automatically when omitted. Keys are remembered, so passing one once is enough.",
+)
+_LAUNCH_OPTION = typer.Option(
+    True,
+    "--launch/--no-launch",
+    help = "--no-launch prints the env and command instead (remote shells, WSL).",
+)
 
 
 def _fail(message: str) -> NoReturn:
     typer.echo(message, err = True)
     raise typer.Exit(code = 1)
+
+
+def _http_error_detail(exc: urllib.error.HTTPError) -> str:
+    try:
+        body = json.loads(exc.read().decode())
+        return body.get("detail") or body["error"]["message"]
+    except Exception:
+        return str(exc)
 
 
 def _http_json(
@@ -52,7 +79,11 @@ def _http_json(
     request = urllib.request.Request(
         url,
         data = None if payload is None else json.dumps(payload).encode(),
-        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "User-Agent": _USER_AGENT,
+        },
         method = method,
     )
     try:
@@ -61,12 +92,7 @@ def _http_json(
     except urllib.error.HTTPError as exc:
         if error is None:
             raise
-        try:
-            body = json.loads(exc.read().decode())
-            detail = body.get("detail") or body["error"]["message"]
-        except Exception:
-            detail = str(exc)
-        _fail(f"{error}: {detail}")
+        _fail(f"{error}: {_http_error_detail(exc)}")
     except (urllib.error.URLError, TimeoutError) as exc:
         if error is None:
             raise
@@ -102,17 +128,41 @@ def _cached_keys(cache: Path) -> list:
     return keys
 
 
+def _write_private_json(path: Path, data: dict) -> None:
+    # O_CREAT with 0o600 so a file holding an API key is never world-readable,
+    # even briefly (existing files keep whatever perms the user set).
+    path.parent.mkdir(parents = True, exist_ok = True, mode = 0o700)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as handle:
+        handle.write(json.dumps(data, indent = 2) + "\n")
+
+
+def _read_json_object(path: Path) -> Optional[dict]:
+    # {} when missing, None when it can't be parsed as an object (so the caller
+    # leaves a user-managed file untouched rather than clobbering it).
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding = "utf-8"))
+    except (ValueError, OSError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _subdict(parent: dict, key: str) -> dict:
+    child = parent.get(key)
+    if not isinstance(child, dict):
+        child = parent[key] = {}
+    return child
+
+
 def _remember_key(cache: Path, key: str) -> None:
     existing = _cached_keys(cache)
     keys = ([key] + [k for k in existing if k != key])[:8]
     if keys == existing:
         return
     try:
-        cache.parent.mkdir(parents = True, exist_ok = True, mode = 0o700)
-        # O_CREAT with 0o600 so the keys are never world-readable, even briefly.
-        fd = os.open(cache, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w") as handle:
-            handle.write(json.dumps({"keys": keys}) + "\n")
+        _write_private_json(cache, {"keys": keys})
     except OSError:
         pass  # worst case the next launch mints another key
 
@@ -134,20 +184,30 @@ def _agent_api_key(base: str, explicit: Optional[str]) -> str:
         return key
 
     token = _studio_token()
+    auth_help = (
+        "Couldn't authenticate with the Studio server automatically (it may be "
+        "remote, or running as a different OS user). Create an API key in "
+        "Studio → Settings → API and pass it once with --api-key; it is "
+        "remembered for next time."
+    )
     if token is None:
-        _fail(
-            "Couldn't authenticate with the Studio server automatically (it may be "
-            "remote, or running as a different OS user). Create an API key in "
-            "Studio → Settings → API and pass it once with --api-key; it is "
-            "remembered for next time."
-        )
-    key = _http_json(
-        "POST",
-        f"{base}/api/auth/api-keys",
-        token,
-        {"name": "Coding agents (unsloth connect)"},
-        error = "Couldn't create an API key",
-    )["key"]
+        _fail(auth_help)
+    try:
+        key = _http_json(
+            "POST",
+            f"{base}/api/auth/api-keys",
+            token,
+            {"name": "Coding agents (unsloth connect)"},
+        )["key"]
+    except urllib.error.HTTPError as exc:
+        # A self-issued token only validates against a local, same-OS-user
+        # server; a remote Studio signs with a different secret and rejects it
+        # (401/403). Point at --api-key instead of the raw "expired token".
+        if exc.code in (401, 403):
+            _fail(auth_help)
+        _fail(f"Couldn't create an API key: {_http_error_detail(exc)}")
+    except (urllib.error.URLError, TimeoutError) as exc:
+        _fail(f"Couldn't create an API key: {getattr(exc, 'reason', None) or exc}")
     _remember_key(cache, key)
     return key
 
@@ -340,31 +400,141 @@ def _launch(command: list, env: dict, install_hint: str) -> NoReturn:
     raise typer.Exit(code = code if code >= 0 else 128 - code)
 
 
+def _connect(api_key: Optional[str], model: Optional[str]) -> tuple:
+    base = _require_studio()
+    key = _agent_api_key(base, api_key)
+    return base, key, _resolve_model(base, key, model)
+
+
+def _run(base: str, entry: dict, env: dict, command: list, *, launch: bool, install_hint: str) -> None:
+    typer.echo(f"Studio {base} · model {entry['id']}")
+    if not launch:
+        _print_env(env, command)
+        return
+    _launch(command, env, install_hint = install_hint)
+
+
+def openclaw_config_path() -> Path:
+    return Path.home() / ".openclaw" / "openclaw.json"
+
+
+def write_openclaw_config(base: str, key: str, model: dict) -> None:
+    path = openclaw_config_path()
+    config = _read_json_object(path)
+    if config is None:
+        typer.echo(
+            f"Warning: couldn't parse {path} — add an 'unsloth' provider there "
+            "yourself, or move the file aside and re-run.",
+            err = True,
+        )
+        return
+    before = json.dumps(config, sort_keys = True)
+    # Studio is a generic OpenAI-compatible /v1 endpoint (the vLLM/LM Studio path).
+    provider_model = {"id": model["id"], "name": model["id"]}
+    window = model.get("context_length") or model.get("max_context_length")
+    if window:
+        provider_model["contextWindow"] = int(window)
+    models = _subdict(config, "models")
+    models.setdefault("mode", "merge")
+    _subdict(models, "providers")["unsloth"] = {
+        "baseUrl": f"{base}/v1",
+        "apiKey": key,
+        "api": "openai-completions",
+        "models": [provider_model],
+    }
+    # Pin a default model, else OpenClaw drops into its setup agent ("no models available").
+    defaults = _subdict(_subdict(config, "agents"), "defaults")
+    _subdict(defaults, "model")["primary"] = f"unsloth/{model['id']}"
+    # Unauthenticated loopback gateway: without auth.mode=none the client won't open
+    # the websocket. The daemon must still be started separately (`openclaw gateway`).
+    gateway = _subdict(config, "gateway")
+    gateway.setdefault("mode", "local")
+    _subdict(gateway, "auth").setdefault("mode", "none")
+    if json.dumps(config, sort_keys = True) != before:
+        _write_private_json(path, config)
+        typer.echo(f"Updated {path}")
+
+
+def opencode_config_path() -> Path:
+    config_home = os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config"
+    return Path(config_home) / "opencode" / "opencode.json"
+
+
+def write_opencode_config(base: str, key: str, model: dict) -> None:
+    path = opencode_config_path()
+    config = _read_json_object(path)
+    if config is None:
+        typer.echo(
+            f"Warning: couldn't parse {path} — add an 'unsloth' provider there "
+            "yourself, or move the file aside and re-run.",
+            err = True,
+        )
+        return
+    before = json.dumps(config, sort_keys = True)
+    config.setdefault("$schema", "https://opencode.ai/config.json")
+    _subdict(config, "provider")["unsloth"] = {
+        "npm": "@ai-sdk/openai-compatible",
+        "name": "Unsloth Studio",
+        "options": {"baseURL": f"{base}/v1", "apiKey": key},
+        "models": {model["id"]: {"name": model["id"]}},
+    }
+    # OpenCode selects a model by "<providerID>/<modelID>".
+    config["model"] = f"unsloth/{model['id']}"
+    if json.dumps(config, sort_keys = True) != before:
+        _write_private_json(path, config)
+        typer.echo(f"Updated {path}")
+
+
+def hermes_config_path() -> Path:
+    return Path.home() / ".hermes" / "config.yaml"
+
+
+def write_hermes_config(base: str, model: dict) -> None:
+    import yaml
+
+    path = hermes_config_path()
+    config: dict = {}
+    if path.exists():
+        try:
+            loaded = yaml.safe_load(path.read_text(encoding = "utf-8"))
+        except (yaml.YAMLError, OSError):
+            typer.echo(
+                f"Warning: couldn't parse {path} — configure the custom endpoint "
+                "there yourself, or move the file aside and re-run.",
+                err = True,
+            )
+            return
+        if isinstance(loaded, dict):
+            config = loaded
+    # Hermes only reads the key for a *named* custom provider (a bare
+    # `provider: custom` ignores it), so register it under providers.*.
+    _subdict(config, "model").update(
+        provider = f"custom:{_HERMES_PROVIDER}",
+        default = model["id"],
+        api_mode = "openai",
+    )
+    _subdict(config, "providers")[_HERMES_PROVIDER] = {
+        "base_url": f"{base}/v1",
+        "api_mode": "openai",
+        "key_env": _HERMES_ENV_KEY,
+    }
+    text = yaml.safe_dump(config, sort_keys = False)
+    if not path.exists() or path.read_text(encoding = "utf-8") != text:
+        path.parent.mkdir(parents = True, exist_ok = True)
+        path.write_text(text, encoding = "utf-8")
+        typer.echo(f"Updated {path}")
+
+
 @connect_app.command("claude", context_settings = _PASSTHROUGH)
 def claude(
     ctx: typer.Context,
-    model: Optional[str] = typer.Option(
-        None,
-        "--model",
-        "-m",
-        help = "Model for the agent; defaults to the one loaded in Studio.",
-    ),
-    api_key: Optional[str] = typer.Option(
-        None,
-        "--api-key",
-        envvar = "UNSLOTH_API_KEY",
-        help = "Studio API key; minted automatically when omitted. Keys are remembered, so passing one once is enough.",
-    ),
-    launch: bool = typer.Option(
-        True,
-        "--launch/--no-launch",
-        help = "--no-launch prints the env and command instead (remote shells, WSL).",
-    ),
+    model: Optional[str] = _MODEL_OPTION,
+    api_key: Optional[str] = _KEY_OPTION,
+    launch: bool = _LAUNCH_OPTION,
 ):
     """Point Claude Code at the running Studio server and start it."""
-    base = _require_studio()
-    key = _agent_api_key(base, api_key)
-    model_id = _resolve_model(base, key, model)["id"]
+    base, key, entry = _connect(api_key, model)
+    model_id = entry["id"]
     ensure_claude_attribution_header()
 
     env = {
@@ -378,50 +548,81 @@ def claude(
         "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1",
     }
     command = ["claude", "--model", model_id, *_claude_cache_flags(), *ctx.args]
-    typer.echo(f"Studio {base} · model {model_id}")
-    if not launch:
-        _print_env(env, command)
-        return
     install_hint = (
         "irm https://claude.ai/install.ps1 | iex"
         if os.name == "nt"
         else "curl -fsSL https://claude.ai/install.sh | bash"
     )
-    _launch(command, env, install_hint = install_hint)
+    _run(base, entry, env, command, launch = launch, install_hint = install_hint)
 
 
 @connect_app.command("codex", context_settings = _PASSTHROUGH)
 def codex(
     ctx: typer.Context,
-    model: Optional[str] = typer.Option(
-        None,
-        "--model",
-        "-m",
-        help = "Model for the agent; defaults to the one loaded in Studio.",
-    ),
-    api_key: Optional[str] = typer.Option(
-        None,
-        "--api-key",
-        envvar = "UNSLOTH_API_KEY",
-        help = "Studio API key; minted automatically when omitted. Keys are remembered, so passing one once is enough.",
-    ),
-    launch: bool = typer.Option(
-        True,
-        "--launch/--no-launch",
-        help = "--no-launch prints the env and command instead (remote shells, WSL).",
-    ),
+    model: Optional[str] = _MODEL_OPTION,
+    api_key: Optional[str] = _KEY_OPTION,
+    launch: bool = _LAUNCH_OPTION,
 ):
     """Point OpenAI Codex at the running Studio server and start it."""
-    base = _require_studio()
-    key = _agent_api_key(base, api_key)
-    entry = _resolve_model(base, key, model)
+    base, key, entry = _connect(api_key, model)
     _require_gguf_for_codex(base, key, entry["id"])
     write_codex_config(base, entry)
 
     env = {_CODEX_ENV_KEY: key}
     command = ["codex", "--oss", "--profile", _CODEX_PROFILE, *ctx.args]
-    typer.echo(f"Studio {base} · model {entry['id']}")
-    if not launch:
-        _print_env(env, command)
-        return
-    _launch(command, env, install_hint = "npm install -g @openai/codex")
+    _run(base, entry, env, command, launch = launch, install_hint = "npm install -g @openai/codex")
+
+
+@connect_app.command("openclaw", context_settings = _PASSTHROUGH)
+def openclaw(
+    ctx: typer.Context,
+    model: Optional[str] = _MODEL_OPTION,
+    api_key: Optional[str] = _KEY_OPTION,
+    launch: bool = _LAUNCH_OPTION,
+):
+    """Point OpenClaw at the running Studio server and start it."""
+    base, key, entry = _connect(api_key, model)
+    write_openclaw_config(base, key, entry)  # key lives in the config, not the env
+
+    command = ["openclaw", *ctx.args]
+    install_hint = (
+        "iwr -useb https://openclaw.ai/install.ps1 | iex"
+        if os.name == "nt"
+        else "curl -fsSL https://openclaw.ai/install.sh | bash"
+    )
+    _run(base, entry, {}, command, launch = launch, install_hint = install_hint)
+
+
+@connect_app.command("opencode", context_settings = _PASSTHROUGH)
+def opencode(
+    ctx: typer.Context,
+    model: Optional[str] = _MODEL_OPTION,
+    api_key: Optional[str] = _KEY_OPTION,
+    launch: bool = _LAUNCH_OPTION,
+):
+    """Point OpenCode at the running Studio server and start it."""
+    base, key, entry = _connect(api_key, model)
+    write_opencode_config(base, key, entry)  # key lives in the config, not the env
+
+    command = ["opencode", *ctx.args]
+    _run(base, entry, {}, command, launch = launch, install_hint = "npm install -g opencode-ai")
+
+
+@connect_app.command("hermes", context_settings = _PASSTHROUGH)
+def hermes(
+    ctx: typer.Context,
+    model: Optional[str] = _MODEL_OPTION,
+    api_key: Optional[str] = _KEY_OPTION,
+    launch: bool = _LAUNCH_OPTION,
+):
+    """Point Hermes (Nous Research) at the running Studio server and start it."""
+    base, key, entry = _connect(api_key, model)
+    write_hermes_config(base, entry)
+
+    env = {_HERMES_ENV_KEY: key}
+    command = ["hermes", *ctx.args]
+    install_hint = (
+        "curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent"
+        "/main/scripts/install.sh | bash"
+    )
+    _run(base, entry, env, command, launch = launch, install_hint = install_hint)
