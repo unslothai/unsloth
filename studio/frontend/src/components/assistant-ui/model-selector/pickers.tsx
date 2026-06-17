@@ -31,11 +31,15 @@ import type { GgufVariantDetail } from "@/features/chat/types/api";
 import {
   useDebouncedValue,
   useGpuInfo,
-  useHfModelSearch,
-  useInfiniteScroll,
   useRecommendedModelVram,
 } from "@/hooks";
-import type { HfModelSort } from "@/hooks/use-hf-model-search";
+import {
+  type HfSortKey,
+  useHubModelSearch,
+} from "@/features/hub/hooks/use-hub-model-search";
+import { useHubInfiniteScroll } from "@/features/hub/hooks/use-hub-infinite-scroll";
+import { useOnlineStatus } from "@/features/hub/hooks/use-online-status";
+import { useHfTokenStore } from "@/features/hub/stores/hf-token-store";
 import { extractParamLabel } from "@/lib/model-size";
 import { cn, formatCompact } from "@/lib/utils";
 import type { VramFitStatus } from "@/lib/vram";
@@ -935,16 +939,34 @@ export function HubModelPicker({
   const [listScrolled, setListScrolled] = useState(false);
   const [query, setQuery] = useState("");
   const debouncedQuery = useDebouncedValue(query);
-  const { results, isLoading, isLoadingMore, fetchMore } =
-    useHfModelSearch(debouncedQuery);
+  // Shared Hub search stack (the same hooks the Hub page uses) so the picker
+  // and Hub run one implementation. Scoped to unsloth like the old listing.
+  const online = useOnlineStatus();
+  const accessToken = useHfTokenStore((s) => s.token) || undefined;
+  const { results, isLoading, isLoadingMore, fetchMore, scannedCount, hasMore } =
+    useHubModelSearch(debouncedQuery, {
+      ownerScope: "unsloth",
+      pinUnslothFirst: true,
+      keepUnsupportedTags: true,
+      accessToken,
+      enabled: online,
+    });
   // Recommended section: a live unsloth listing sorted by the dropdown.
   // Declared here (not lower) so its GGUF hints feed the gguf-id set below.
   const [recommendedSort, setRecommendedSort] =
     useState<RecommendedSortKey>("trendingScore");
   // "recommended" surfaces the most recently created Unsloth repos.
-  const recommendedHfSort: HfModelSort =
+  const recommendedSortBy: HfSortKey =
     recommendedSort === "recommended" ? "createdAt" : recommendedSort;
-  const recommendedSearch = useHfModelSearch("", { sort: recommendedHfSort });
+  const recommendedSearch = useHubModelSearch("", {
+    ownerScope: "unsloth",
+    sortBy: recommendedSortBy,
+    sortDirection: "desc",
+    pinUnslothFirst: true,
+    keepUnsupportedTags: true,
+    accessToken,
+    enabled: online,
+  });
 
   // Lowercased repo ids confirmed GGUF by the store or HF search.
   // Absence means "no hint" -> hasGgufSuffix is the fallback (don't
@@ -1199,7 +1221,7 @@ export function HubModelPicker({
       // GGUF param count, then the repo name, for a size estimate. Anything we
       // still cannot size is hidden (requireKnown) so over-budget models like a
       // 1T GGUF don't slip into Recommended.
-      const params = r.totalParams ?? r.ggufParams ?? paramsFromId(r.id);
+      const params = r.totalParams ?? paramsFromId(r.id);
       const sizeBytes =
         r.estimatedSizeBytes ??
         (params ? estimateQuantBytes(params) : undefined);
@@ -1222,7 +1244,7 @@ export function HubModelPicker({
       const isG = isKnownGgufRepo(r.id);
       // GGUF param count comes from the repo name or the GGUF metadata, so even
       // repos with no "<n>B" token (Kimi, MiniMax) show a param chip.
-      const ggufParams = r.totalParams ?? r.ggufParams ?? paramsFromId(r.id);
+      const ggufParams = r.totalParams ?? paramsFromId(r.id);
       const meta = isG
         ? [
             ggufParams ? formatCompact(ggufParams) : null,
@@ -1551,9 +1573,15 @@ export function HubModelPicker({
     return map;
   }, [filteredRecommendedIds, recommendedParamCountById, gpu]);
 
-  const { scrollRef, sentinelRef } = useInfiniteScroll(
+  const { scrollRef, sentinelRef } = useHubInfiniteScroll(
     fetchMore,
-    results.length,
+    scannedCount,
+    {
+      enabled: online && hasMore,
+      isFetching: isLoading || isLoadingMore,
+      resultCount: results.length,
+      resetKey: debouncedQuery,
+    },
   );
 
   // Sentinel + IntersectionObserver for recommended infinite scroll. Re-running
