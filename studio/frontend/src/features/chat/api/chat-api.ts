@@ -10,7 +10,9 @@ import type {
   ThreadRecord,
 } from "../types";
 import type {
+  ApiMonitorEntry,
   AudioGenerationResponse,
+  ApiMonitorResponse,
   GgufVariantsResponse,
   InferenceStatusResponse,
   ListLorasResponse,
@@ -68,6 +70,18 @@ export async function listLoras(
 export async function getInferenceStatus(): Promise<InferenceStatusResponse> {
   const response = await authFetch("/api/inference/status");
   return parseJsonOrThrow<InferenceStatusResponse>(response);
+}
+
+export async function getApiMonitor(): Promise<ApiMonitorResponse> {
+  const response = await authFetch("/api/inference/monitor");
+  return parseJsonOrThrow<ApiMonitorResponse>(response);
+}
+
+export async function getApiMonitorEntry(id: string): Promise<ApiMonitorEntry> {
+  const response = await authFetch(
+    `/api/inference/monitor/${encodeURIComponent(id)}`,
+  );
+  return parseJsonOrThrow<ApiMonitorEntry>(response);
 }
 
 export async function loadModel(
