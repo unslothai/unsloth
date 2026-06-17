@@ -3,6 +3,7 @@
 
 """_model_json_response produces the same body as JSONResponse(model.model_dump())."""
 
+import asyncio
 import json
 from typing import Optional
 
@@ -10,6 +11,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 import routes.inference as inference_route
+from core.inference import llama_http
 
 
 class _Usage(BaseModel):
@@ -53,3 +55,29 @@ def test_media_type_and_status():
     assert resp.status_code == 200
     err = inference_route._model_json_response(_Resp(), status_code = 503)
     assert err.status_code == 503
+
+
+def test_pooled_client_reused_within_loop_and_recreated_after_close():
+    async def _scenario():
+        a = llama_http.nonstreaming_client()
+        b = llama_http.nonstreaming_client()
+        assert a is b  # reused within one loop
+        await llama_http.aclose()
+        assert a.is_closed
+        c = llama_http.nonstreaming_client()  # must not return the closed client
+        assert c is not a and not c.is_closed
+        await llama_http.aclose()
+
+    asyncio.run(_scenario())
+
+
+def test_pooled_client_is_per_event_loop():
+    clients = []
+    # Each asyncio.run uses a fresh loop; the pooled client must not leak across.
+    for _ in range(2):
+        async def _grab():
+            clients.append(llama_http.nonstreaming_client())
+            await llama_http.aclose()
+
+        asyncio.run(_grab())
+    assert clients[0] is not clients[1]
