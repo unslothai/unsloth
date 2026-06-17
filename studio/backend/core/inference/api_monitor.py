@@ -134,6 +134,15 @@ class ApiMonitor:
             entry = self._find_locked(entry_id)
             if entry is None:
                 return
+            # Preview is capped: once the "..." marker is present the head is
+            # frozen, so skip the per-chunk re-concat (avoids O(n^2) on long
+            # generations). A reply that landed exactly on the cap has no marker
+            # yet, so let one more append record the truncation before freezing.
+            if len(entry.reply) >= _MAX_REPLY_CHARS:
+                if not entry.reply.endswith("..."):
+                    entry.reply = _trim(entry.reply + text, _MAX_REPLY_CHARS)
+                entry.updated_at = time.time()
+                return
             entry.reply = _trim(entry.reply + text, _MAX_REPLY_CHARS)
             entry.updated_at = time.time()
 

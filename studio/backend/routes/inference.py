@@ -612,6 +612,7 @@ try:
         detect_reasoning_flags,
     )
     from core.inference.llama_server_args import (
+        _tensor_parallel_matches_loaded,
         resolve_tensor_parallel,
         strip_shadowing_flags,
         validate_extra_args,
@@ -646,6 +647,7 @@ except ImportError:
         detect_reasoning_flags,
     )
     from core.inference.llama_server_args import (
+        _tensor_parallel_matches_loaded,
         resolve_tensor_parallel,
         strip_shadowing_flags,
         validate_extra_args,
@@ -1813,9 +1815,8 @@ def _request_matches_loaded_settings(
             strip_split_mode = _should_strip_split_mode(request, backend_extra),
         )
     )
-    if (
-        resolve_tensor_parallel(effective_extra, request.tensor_parallel)
-        != llama_backend.tensor_parallel
+    if not _tensor_parallel_matches_loaded(
+        effective_extra, request.tensor_parallel, llama_backend.tensor_parallel
     ):
         return False
     # Spec decoding works on vision models too (MTP is mmproj-compatible,
@@ -2605,6 +2606,20 @@ async def validate_model(
             f"Error validating model identifier '{request.model_path}': {e}",
             exc_info = True,
         )
+        # RuntimeError / ValueError carry intentional, actionable messages here
+        # (e.g. "llama-server binary not found - cannot load GGUF models. Run
+        # setup.sh ..."), so surface them instead of a blank "Invalid model".
+        # Path-redact for safety and keep any other exception type generic so an
+        # unexpected internal error never leaks its details to the client.
+        if isinstance(e, (RuntimeError, ValueError)):
+            msg = redact_native_paths(str(e)).strip()
+            if msg:
+                if any(h.lower() in msg.lower() for h in not_supported_hints):
+                    msg = f"This model is not supported yet. Try a different model. (Original error: {msg})"
+                raise HTTPException(
+                    status_code = 400,
+                    detail = msg,
+                )
         raise HTTPException(
             status_code = 400,
             detail = "Invalid model",
