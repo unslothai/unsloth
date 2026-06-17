@@ -472,6 +472,9 @@ export function ModelsPage() {
       }
       setCapabilityFilter("all");
       setSortBrowseActive(false);
+      // Clear search: an active query outranks the section in `mode`, so the
+      // curated list would stay hidden behind global results otherwise.
+      setQuery("");
       void navigate({
         to: "/hub",
         search: (prev) => ({ ...prev, section, model: undefined }),
@@ -504,8 +507,11 @@ export function ModelsPage() {
     setSortBrowseActive(false);
     void navigate({
       to: "/hub",
+      // Assert the tab here too: this fires alongside setModelsTab's own
+      // navigation, and spreading prev could otherwise restore the old tab.
       search: (prev) => ({
         ...prev,
+        tab: "discover",
         section: undefined,
         model: undefined,
         kind: undefined,
