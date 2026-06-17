@@ -321,6 +321,7 @@ class TestCudaDeviceOrder:
         # Re-running the module's setdefault must not clobber a user value.
         import importlib
         import os
+
         original = os.environ.get("CUDA_DEVICE_ORDER")
         try:
             os.environ["CUDA_DEVICE_ORDER"] = "FASTEST_FIRST"
