@@ -190,7 +190,10 @@ def test_same_repo_same_variant_does_not_reload(monkeypatch):
 
 
 def test_streaming_responses_triggers_auto_switch(monkeypatch):
-    # Streaming /v1/responses must consult the hook before dispatching.
+    # Streaming /v1/responses must consult the hook before dispatching. Both
+    # dispatchers are stubbed and the request carries a state so the test is
+    # independent of collection order.
+    from types import SimpleNamespace
     from models.inference import ResponsesRequest
 
     called = []
@@ -198,16 +201,20 @@ def test_streaming_responses_triggers_auto_switch(monkeypatch):
     async def _fake_hook(model, request, current_subject):
         called.append(model)
 
-    async def _fake_stream(payload, messages, request):
-        return "STREAM"
+    async def _dispatched(*_args, **_kwargs):
+        return "DISPATCHED"
 
     monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _fake_hook)
-    monkeypatch.setattr(inference_route, "_responses_stream", _fake_stream)
+    monkeypatch.setattr(inference_route, "_responses_stream", _dispatched)
+    monkeypatch.setattr(inference_route, "_responses_non_streaming", _dispatched)
     monkeypatch.setattr(inference_route, "_normalise_responses_input", lambda _p: [object()])
 
     payload = ResponsesRequest(model = "unsloth/B-GGUF", stream = True)
-    result = asyncio.run(inference_route.openai_responses(payload, object(), current_subject = "t"))
-    assert result == "STREAM"
+    request = SimpleNamespace(state = SimpleNamespace())
+    result = asyncio.run(
+        inference_route.openai_responses(payload, request, current_subject = "t")
+    )
+    assert result == "DISPATCHED"
     assert called == ["unsloth/B-GGUF"]
 
 
