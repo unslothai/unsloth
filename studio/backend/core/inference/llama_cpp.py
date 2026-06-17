@@ -2782,7 +2782,7 @@ class LlamaCppBackend:
         if model_footprint + kv + _mtp_at(requested_ctx) <= budget_bytes:
             return requested_ctx
 
-        # Weights alone exceed budget -- reducing ctx can't help; --fit handles it.
+        # Weights + compute buffer alone exceed budget -- reducing ctx can't help.
         if model_footprint >= budget_bytes:
             logger.debug(
                 "Model footprint exceeds GPU budget before KV cache",
@@ -4705,6 +4705,15 @@ class LlamaCppBackend:
                     # Tensor mode replicates a compute buffer on every GPU, so drop
                     # GPUs below that reserve from the set up front (gpu_indices
                     # becomes the CUDA_VISIBLE_DEVICES mask, fully excluding them).
+                    if tensor_parallel and effective_is_vision:
+                        logger.info(
+                            "Tensor parallelism skipped for vision model: "
+                            "--split-mode tensor is incompatible with --mmproj "
+                            "in the current llama.cpp build; using layer split."
+                        )
+                        tensor_parallel = False
+                        extra_args = strip_split_mode_only(extra_args)
+
                     tp_gpus = gpus
                     if tensor_parallel:
                         # Deterministic per-device compute buffer (replicated on
