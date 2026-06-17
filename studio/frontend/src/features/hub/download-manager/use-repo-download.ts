@@ -52,8 +52,8 @@ export interface RepoDownloadConfig {
 
 /**
  * Binds a single download surface (one repo, optionally per GGUF variant) to the
- * global download manager. Job state and polling live in the store, so a download
- * keeps running and stays visible after the card unmounts.
+ * global download manager. Job state and polling live in the store, so a
+ * download keeps running and stays visible after the card unmounts.
  */
 export function useRepoDownload(config: RepoDownloadConfig): DownloadJob {
   const {

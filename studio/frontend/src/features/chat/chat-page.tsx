@@ -2152,16 +2152,6 @@ export function ChatPage(): ReactElement {
                 className="max-w-[62vw] !pr-3 sm:max-w-none !h-[34px]"
               />
             )}
-            {incognito && view.mode === "single" && (
-              <div className="flex h-[34px] shrink-0 items-center gap-1.5 self-center rounded-full bg-primary/10 px-2.5 font-medium text-[13px] text-primary">
-                <HugeiconsIcon
-                  icon={BubbleChatTemporaryIcon}
-                  strokeWidth={2}
-                  className="size-3.5"
-                />
-                <span>Temporary</span>
-              </div>
-            )}
             {view.mode !== "compare" && currentProjectId && (
               <nav
                 aria-label="Project location"
@@ -2244,7 +2234,7 @@ export function ChatPage(): ReactElement {
                     type="button"
                     onClick={toggleIncognito}
                     className={cn(
-                      "flex h-[34px] w-[34px] cursor-pointer items-center justify-center rounded-[12px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                      "flex h-[34px] w-[34px] cursor-pointer items-center justify-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                       incognito
                         ? "bg-primary/10 text-primary hover:bg-primary/15"
                         : "text-nav-fg hover:bg-nav-surface-hover hover:text-black dark:hover:text-white",
@@ -2274,7 +2264,7 @@ export function ChatPage(): ReactElement {
                   <button
                     type="button"
                     onClick={() => setSettingsOpen(true)}
-                    className="flex h-[34px] w-[34px] translate-x-[2px] cursor-pointer items-center justify-center rounded-[12px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    className="flex h-[34px] w-[34px] translate-x-[2px] cursor-pointer items-center justify-center rounded-full text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     aria-label="Open run settings"
                     data-tour="chat-settings"
                   >
