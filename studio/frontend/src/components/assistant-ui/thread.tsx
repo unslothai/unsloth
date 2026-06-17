@@ -3294,8 +3294,13 @@ const AssistantMessage: FC = () => {
         newText: finalText,
       });
       setOverrideContent(result);
-    } catch (error) {
-      toast.error("Failed to save changes to server.");
+    } catch (error: any) {
+      if (error.message === "THREAD_ID_LOCAL") {
+        toast.error("Cannot save: This is a temporary chat. Please save the chat to a project first to enable editing.");
+      } else {
+        toast.error("Failed to save changes to server.");
+      }
+      console.error("UI: Error during save:", error);
     } finally {
       setIsEditing(false);
     }
@@ -3415,7 +3420,7 @@ const AssistantMessage: FC = () => {
           </>
         )}
       </div>
-      
+
       <div key={refreshKey} className="aui-assistant-message-footer mt-1.5 -ml-[var(--icon-btn-inset)] flex min-h-8">
         <BranchPicker className="mr-0.5" />
         <AssistantActionBar />
