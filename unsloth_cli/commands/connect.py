@@ -417,7 +417,9 @@ def _connect(api_key: Optional[str], model: Optional[str]) -> tuple:
     return base, key, _resolve_model(base, key, model)
 
 
-def _run(base: str, entry: dict, env: dict, command: list, *, launch: bool, install_hint: str) -> None:
+def _run(
+    base: str, entry: dict, env: dict, command: list, *, launch: bool, install_hint: str
+) -> None:
     typer.echo(f"Studio {base} · model {entry['id']}")
     if not launch:
         _print_env(env, command)

@@ -260,6 +260,7 @@ def load_chat_backend(
 
 def find_studio_server(timeout: float = 3.0) -> Optional[str]:
     import urllib.request
+
     base = os.environ.get("UNSLOTH_STUDIO_URL", "http://127.0.0.1:8888").rstrip("/")
     request = urllib.request.Request(f"{base}/api/health", headers = {"User-Agent": _USER_AGENT})
     try:

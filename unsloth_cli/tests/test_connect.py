@@ -231,7 +231,14 @@ def test_connect_skips_cached_keys_the_server_rejects(fake_studio, tmp_path, mon
     cache.write_text(json.dumps({"keys": ["sk-unsloth-stale", "sk-unsloth-feedfacefeedface"]}))
     inner = connect._http_json
 
-    def http_json(method, url, token, payload = None, timeout = 30, error = None):
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
         if url.endswith("/v1/models") and token == "sk-unsloth-stale":
             raise urllib.error.HTTPError(url, 401, "Unauthorized", None, None)
         return inner(method, url, token, payload, timeout, error)
@@ -276,7 +283,14 @@ def test_connect_model_flag_matches_canonical_id(fake_studio, monkeypatch):
     canonical = "unsloth/Qwen3.5-35B-A3B"
     inner = connect._http_json
 
-    def http_json(method, url, token, payload = None, timeout = 30, error = None):
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
         if url.endswith("/api/inference/load"):
             return {"model": canonical, "display_name": canonical}
         if url.endswith("/v1/models"):
@@ -335,7 +349,14 @@ def test_connect_remote_token_rejected_points_at_api_key(fake_studio, monkeypatc
     # the auto-mint 401 should become actionable --api-key guidance.
     inner = connect._http_json
 
-    def http_json(method, url, token, payload = None, timeout = 30, error = None):
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
         if url.endswith("/api/auth/api-keys"):
             raise urllib.error.HTTPError(url, 401, "Invalid or expired token", None, None)
         return inner(method, url, token, payload, timeout, error)
