@@ -607,12 +607,12 @@ try:
         _DEFAULT_MAX_TOKENS_FLOOR,
         _DEFAULT_STREAM_STALL_TIMEOUT_S,
         _canonicalize_spec_mode,
-        _effective_tensor_parallel,
         _extra_args_set_spec_type,
         _hf_offline_if_dns_dead,
         detect_reasoning_flags,
     )
     from core.inference.llama_server_args import (
+        _tensor_parallel_matches_loaded,
         resolve_tensor_parallel,
         strip_shadowing_flags,
         validate_extra_args,
@@ -642,12 +642,12 @@ except ImportError:
         _DEFAULT_MAX_TOKENS_FLOOR,
         _DEFAULT_STREAM_STALL_TIMEOUT_S,
         _canonicalize_spec_mode,
-        _effective_tensor_parallel,
         _extra_args_set_spec_type,
         _hf_offline_if_dns_dead,
         detect_reasoning_flags,
     )
     from core.inference.llama_server_args import (
+        _tensor_parallel_matches_loaded,
         resolve_tensor_parallel,
         strip_shadowing_flags,
         validate_extra_args,
@@ -1397,9 +1397,8 @@ def _request_matches_loaded_settings(
             strip_split_mode = _should_strip_split_mode(request, backend_extra),
         )
     )
-    if (
-        _effective_tensor_parallel(effective_extra, request.tensor_parallel)
-        != llama_backend.tensor_parallel
+    if not _tensor_parallel_matches_loaded(
+        effective_extra, request.tensor_parallel, llama_backend.tensor_parallel
     ):
         return False
     # Spec decoding works on vision models too (MTP is mmproj-compatible,

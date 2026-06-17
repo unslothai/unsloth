@@ -63,7 +63,10 @@ sys.modules.setdefault("httpx", _httpx_stub)
 
 from core.inference import llama_cpp as llama_cpp_module
 from core.inference.llama_cpp import _CTX_FIT_VRAM_FRACTION, LlamaCppBackend
-from core.inference.llama_server_args import resolve_tensor_parallel
+from core.inference.llama_server_args import (
+    _effective_tensor_parallel,
+    resolve_tensor_parallel,
+)
 from core.inference.tensor_fallback import load_with_tensor_fallback
 from models.inference import (
     InferenceStatusResponse,
@@ -558,15 +561,46 @@ def test_tensor_fallback_skips_layer_retry_when_cancelled():
 )
 def test_tensor_fallback_strips_split_mode_from_extras_on_retry(extras):
     # Tensor engaged via extras (boolean False); the retry must drop every
-    # --split-mode form (long/short, space/=) but keep the user's other flags,
-    # else resolve_tensor_parallel re-enables tensor and relaunches the crash.
+    # --split-mode form (long/short, space/=) and force layer, keeping the user's
+    # other flags, else tensor is re-enabled and relaunches the crash.
     loader = _RecordingLoader()
     ok = asyncio.run(
         load_with_tensor_fallback(loader, requested_tensor = False, extra_args = extras, label = "m")
     )
     assert ok is True
     assert len(loader.calls) == 2
-    assert loader.calls[1][1] == ["-c", "4096"]  # split-mode stripped, -c kept
+    # User --split-mode replaced by an explicit layer override; -c kept.
+    assert loader.calls[1][1] == ["-c", "4096", "--split-mode", "layer"]
+
+
+def test_tensor_fallback_env_tensor_retry_forces_layer(monkeypatch):
+    # Env-only tensor (toggle off, no --split-mode extra): load_model engages
+    # tensor via LLAMA_ARG_SPLIT_MODE and a tensor-incompatible model crashes. The
+    # wrapper must (1) recognise the env tensor request and retry, and (2) force
+    # --split-mode layer so the retry doesn't re-engage tensor via the still-set
+    # env and crash again (#6312).
+    monkeypatch.setenv("LLAMA_ARG_SPLIT_MODE", "tensor")
+    calls: list = []
+
+    async def _crash_when_effectively_tensor(tensor_parallel, extra_args):
+        calls.append(list(extra_args) if extra_args else extra_args)
+        # Mirror real load_model: env-aware tensor engagement crashes.
+        if _effective_tensor_parallel(extra_args, tensor_parallel):
+            raise RuntimeError("llama-server failed to start (tensor)")
+        return True
+
+    ok = asyncio.run(
+        load_with_tensor_fallback(
+            _crash_when_effectively_tensor,
+            requested_tensor = False,
+            extra_args = None,
+            label = "m",
+        )
+    )
+    assert ok is True
+    assert len(calls) == 2
+    # The forced layer override neutralises the inherited tensor env on retry.
+    assert calls[1] == ["--split-mode", "layer"]
 
 
 def test_tensor_fallback_propagates_non_tensor_crash():

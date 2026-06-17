@@ -28,6 +28,9 @@ from typing import Callable, Collection, Generator, Iterable, List, Mapping, Opt
 import httpx
 
 from core.inference.llama_server_args import (
+    _effective_tensor_parallel,
+    _env_split_mode_is_tensor,
+    _tensor_parallel_matches_loaded,
     extra_args_disable_mmproj,
     parse_cache_override,
     parse_ctx_override,
@@ -672,36 +675,6 @@ def _env_main_cache_type_for_budget(env: Optional[Mapping[str, str]] = None) -> 
         if bpe > heaviest_bpe:
             heaviest, heaviest_bpe = raw, bpe
     return heaviest
-
-
-def _env_split_mode_is_tensor(env: Optional[Mapping[str, str]] = None) -> bool:
-    """True when the inherited LLAMA_ARG_SPLIT_MODE env selects tensor. Studio
-    emits --split-mode only on its tensor branch, so a tensor env on the layer
-    path would run the child tensor-parallel unbudgeted; this flips the budget
-    to tensor. Only tensor is heavier, so other modes are ignored."""
-    raw = (os.environ if env is None else env).get("LLAMA_ARG_SPLIT_MODE")
-    return bool(raw) and raw.strip().lower() == "tensor"
-
-
-def _effective_tensor_parallel(
-    extra_args: Optional[Iterable[str]],
-    tensor_parallel: bool,
-    env: Optional[Mapping[str, str]] = None,
-) -> bool:
-    """Tensor-parallel decision including the inherited LLAMA_ARG_SPLIT_MODE env.
-
-    resolve_tensor_parallel (extras + toggle), flipped on when extras set no split
-    mode but the child inherits a tensor split env. Shared by load_model (which
-    budgets and launches it) and the duplicate-load matchers (which must agree, or
-    a healthy env-driven tensor server is needlessly reloaded)."""
-    resolved = resolve_tensor_parallel(extra_args, tensor_parallel)
-    if (
-        not resolved
-        and parse_split_mode_override(extra_args) is None
-        and _env_split_mode_is_tensor(env)
-    ):
-        return True
-    return resolved
 
 
 def _auto_mode_drops_mtp(
@@ -5657,6 +5630,11 @@ class LlamaCppBackend:
                     "run `unsloth studio update`. Loading without "
                     "speculative decoding."
                 )
+                # Override an inherited LLAMA_ARG_SPEC_TYPE=draft-mtp (CLI wins
+                # over env) so the child matches the binary-capability gate and
+                # the no-MTP budget, like the sibling no-head/non-MTP fallbacks.
+                flags.append("--spec-default")
+                self._speculative_type = "default"
                 self._spec_fallback_reason = "binary_no_mtp"
                 return False
             draft_n_max = _resolved_draft_n_max()
@@ -5844,10 +5822,13 @@ class LlamaCppBackend:
             return False
 
         # Reconcile a user --split-mode in extras AND an inherited tensor
-        # LLAMA_ARG_SPLIT_MODE env (load_model uses the same helper), so an
-        # extras- or env-driven tensor load isn't seen as a mismatch that
-        # needlessly kills/reloads a healthy server.
-        if self._tensor_parallel != _effective_tensor_parallel(extra_args, tensor_parallel):
+        # LLAMA_ARG_SPLIT_MODE env, but only against a server that actually
+        # launched tensor: if load_model downgraded to layer split it scrubbed
+        # the child env, so the env must not force an endless reload of a healthy
+        # server. An identical request would downgrade the same way.
+        if not _tensor_parallel_matches_loaded(
+            extra_args, tensor_parallel, self._tensor_parallel
+        ):
             return False
 
         # Compare on the canonical requested mode. With --spec-type in

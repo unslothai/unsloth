@@ -78,6 +78,7 @@ from core.inference.llama_cpp import (  # noqa: E402
     _env_main_cache_type_for_budget,
     _env_split_mode_is_tensor,
     _kv_bytes_per_elem,
+    _tensor_parallel_matches_loaded,
 )
 
 MIB = 1024 * 1024
@@ -790,17 +791,41 @@ class TestExtraArgsMtpDetection:
             _effective_tensor_parallel(None, False, env = {"LLAMA_ARG_SPLIT_MODE": "layer"}) is False
         )
 
-    def test_route_matcher_uses_effective_tensor_parallel(self):
-        # Fix: the route duplicate-load matcher must compare the env-aware tensor
-        # decision, or an env-driven tensor server is needlessly reloaded (#6312).
-        # Read from disk (importing routes.inference drags in heavy deps).
+    def test_tensor_parallel_matches_loaded_env_downgrade(self):
+        # Env-only tensor matches a server that actually launched tensor, but a
+        # server load_model downgraded to layer (env scrubbed) must still match
+        # an identical request -- not reload forever (#6312).
+        tensor_env = {"LLAMA_ARG_SPLIT_MODE": "tensor"}
+        # Launched tensor: env-only request matches.
+        assert _tensor_parallel_matches_loaded(None, False, True, env = tensor_env) is True
+        # Downgraded to layer: same env-only request still matches (no reload loop).
+        assert _tensor_parallel_matches_loaded(None, False, False, env = tensor_env) is True
+        # No env: a plain request matches a layer server and mismatches a tensor one.
+        assert _tensor_parallel_matches_loaded(None, False, False, env = {}) is True
+        assert _tensor_parallel_matches_loaded(None, False, True, env = {}) is False
+        # Explicit tensor request stays strict: must have a tensor server.
+        assert _tensor_parallel_matches_loaded(None, True, False, env = {}) is False
+        assert _tensor_parallel_matches_loaded(None, True, True, env = {}) is True
+        # An explicit non-tensor --split-mode beats the env (no flip).
+        assert _tensor_parallel_matches_loaded(
+            ["--split-mode", "layer"], False, True, env = tensor_env
+        ) is False
+
+    def test_route_matcher_uses_tensor_parallel_matches_loaded(self):
+        # Fix: the route duplicate-load matcher must use the downgrade-aware
+        # helper, or an env-driven tensor server (or its layer downgrade) is
+        # needlessly reloaded (#6312). Read from disk (importing routes.inference
+        # drags in heavy deps).
         routes_src = (
             Path(__file__).resolve().parent.parent / "routes" / "inference.py"
         ).read_text()
         start = routes_src.index("def _request_matches_loaded_settings")
         end = routes_src.index("\ndef ", start + 1)
         body = "".join(routes_src[start:end].split())
-        assert "_effective_tensor_parallel(effective_extra,request.tensor_parallel)" in body
+        assert (
+            "_tensor_parallel_matches_loaded(effective_extra,"
+            "request.tensor_parallel,llama_backend.tensor_parallel)" in body
+        )
 
     def test_load_model_adopts_env_tensor_split_mode(self):
         # load_model delegates the tensor decision to _effective_tensor_parallel,
