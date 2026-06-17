@@ -893,6 +893,10 @@ def _backfill_usage_from_timings(usage, timings):
     return out
 
 
+class _GpuVisibilityError(ValueError):
+    pass
+
+
 class LlamaCppBackend:
     """Manages a llama-server subprocess for GGUF model inference.
 
@@ -926,6 +930,7 @@ class LlamaCppBackend:
         self._healthy = False
         # Set by _classify_gpu_offload after _wait_for_health.
         self._gpu_offload_active: Optional[bool] = None
+        self._gpu_ids: Optional[List[int]] = None
         self._context_length: Optional[int] = None
         self._effective_context_length: Optional[int] = None
         self._max_context_length: Optional[int] = None
@@ -1257,6 +1262,12 @@ class LlamaCppBackend:
     def tensor_parallel(self) -> bool:
         """Whether --split-mode tensor is active on the loaded server."""
         return self._tensor_parallel
+
+    @property
+    def gpu_ids(self) -> Optional[List[int]]:
+        """Physical GPU IDs the active GGUF child process is pinned to, if any."""
+        gpu_ids = getattr(self, "_gpu_ids", None)
+        return list(gpu_ids) if gpu_ids is not None else None
 
     @property
     def speculative_type(self) -> Optional[str]:
@@ -1709,6 +1720,15 @@ class LlamaCppBackend:
         return 0
 
     @staticmethod
+    def _torch_is_rocm(torch_module) -> bool:
+        try:
+            if getattr(torch_module.version, "hip", None) is not None:
+                return True
+            return "rocm" in str(getattr(torch_module, "__version__", "")).lower()
+        except Exception:
+            return False
+
+    @staticmethod
     def _apply_datacenter_env(env: dict, gpu_indices = None) -> bool:
         """Inject DC llama.cpp tuning into env in place via setdefault (user
         values win); return whether the box qualified. Opt out with
@@ -1726,6 +1746,62 @@ class LlamaCppBackend:
             env.setdefault("GGML_CUDA_P2P", "1")
             env.setdefault("CUDA_SCALE_LAUNCH_QUEUES", "4x")
         return True
+
+    @staticmethod
+    def _pin_child_gpu_env(
+        env: dict,
+        pinned: str,
+        *,
+        force_hip: bool = False,
+    ) -> None:
+        """Narrow a child process to physical GPU IDs.
+
+        On ROCm, HIP_VISIBLE_DEVICES and ROCR_VISIBLE_DEVICES both filter device
+        visibility at different layers. If both are set to the same physical
+        index, ROCr filters and reindexes first, then HIP indexes into that
+        already-filtered list. Clear inherited ROCR when setting HIP.
+        """
+        env["CUDA_VISIBLE_DEVICES"] = pinned
+        if force_hip:
+            env["HIP_VISIBLE_DEVICES"] = pinned
+            env.pop("ROCR_VISIBLE_DEVICES", None)
+            return
+        try:
+            import torch as _torch
+            if LlamaCppBackend._torch_is_rocm(_torch):
+                env["HIP_VISIBLE_DEVICES"] = pinned
+                env.pop("ROCR_VISIBLE_DEVICES", None)
+        except Exception as e:
+            logger.debug("Failed to set ROCm visibility env vars for child: %s", e)
+
+    @staticmethod
+    def _launch_gpu_indices(
+        gpu_ids: list[int] | None, gpu_indices: list[int] | None, *, tensor_parallel: bool
+    ) -> list[int] | None:
+        """Return physical GPU IDs in the order the child process should see them."""
+        if tensor_parallel and gpu_indices is not None:
+            return list(gpu_indices)
+        if gpu_ids is not None:
+            return list(gpu_ids)
+        if gpu_indices is not None:
+            return list(gpu_indices)
+        return None
+
+    @staticmethod
+    def _filter_requested_gpus(
+        gpus: list[tuple[int, int]], gpu_ids: list[int] | None
+    ) -> list[tuple[int, int]]:
+        if gpu_ids is None:
+            return list(gpus)
+        visible_ids = {idx for idx, _ in gpus}
+        missing_ids = [idx for idx in gpu_ids if idx not in visible_ids]
+        if missing_ids:
+            raise _GpuVisibilityError(
+                f"Requested GPU IDs {missing_ids} are not visible to llama-server "
+                f"(visible GPU IDs: {sorted(visible_ids)})"
+            )
+        requested_ids = set(gpu_ids)
+        return [gpu for gpu in gpus if gpu[0] in requested_ids]
 
     @staticmethod
     def _get_gpu_free_memory() -> list[tuple[int, int]]:
@@ -1800,7 +1876,7 @@ class LlamaCppBackend:
             # Match utils/hardware/hardware.py::_get_parent_visible_gpu_spec:
             # treat an empty mask (HIP_VISIBLE_DEVICES="") as "no GPUs" rather
             # than falling through. ``or`` would coerce "" to the wrong source.
-            if getattr(torch.version, "hip", None) is not None:
+            if LlamaCppBackend._torch_is_rocm(torch):
                 hip_v = os.environ.get("HIP_VISIBLE_DEVICES")
                 rocr_v = os.environ.get("ROCR_VISIBLE_DEVICES")
                 cvd = (
@@ -1819,6 +1895,8 @@ class LlamaCppBackend:
                     physical_ids = [int(x.strip()) for x in cvd.split(",") if x.strip()]
                 except ValueError:
                     physical_ids = None
+                if physical_ids == []:
+                    return []
             gpus = []
             for ordinal in range(torch.cuda.device_count()):
                 free_bytes, _total_bytes = torch.cuda.mem_get_info(ordinal)
@@ -2541,6 +2619,31 @@ class LlamaCppBackend:
             LlamaCppBackend._gguf_skip_value(f, atype)
         return None
 
+    @staticmethod
+    def _gguf_is_diffusion_model(gguf_path: str) -> bool:
+        try:
+            with open(gguf_path, "rb") as f:
+                magic = struct.unpack("<I", f.read(4))[0]
+                if magic != 0x46554747:
+                    return False
+                _version = struct.unpack("<I", f.read(4))[0]
+                _tensor_count, kv_count = struct.unpack("<QQ", f.read(16))
+                for _ in range(kv_count):
+                    key_len = struct.unpack("<Q", f.read(8))[0]
+                    key = f.read(key_len).decode("utf-8")
+                    vtype = struct.unpack("<I", f.read(4))[0]
+                    if key == "general.architecture" and vtype == 8:
+                        slen = struct.unpack("<Q", f.read(8))[0]
+                        if f.read(slen).decode("utf-8").lower().startswith("diffusion"):
+                            return True
+                        continue
+                    if key == "diffusion.canvas_length":
+                        return True
+                    LlamaCppBackend._gguf_skip_value(f, vtype)
+        except Exception:
+            return False
+        return False
+
     def _read_gguf_metadata(self, gguf_path: str) -> None:
         """Read context_length, architecture params, and chat_template from a GGUF header.
 
@@ -2838,12 +2941,15 @@ class LlamaCppBackend:
         model_identifier: str,
         n_ctx: int,
         extra_args: Optional[List[str]],
+        gpu_ids: Optional[List[int]] = None,
     ) -> bool:
         """Launch the OpenAI-compat diffusion shim (which drives the on-device
         visual decoder) and wait for health. Presents the same /v1 + /health
         interface as llama-server, so the rest of Studio is unchanged.
         """
         import os
+
+        self._validate_diffusion_gpu_ids(gpu_ids)
 
         assets = self._find_diffusion_assets()
         if assets is None:
@@ -2861,7 +2967,10 @@ class LlamaCppBackend:
         # Auto-size (0): the visual server probes the largest context that fits this GPU's VRAM
         # (capped at the training context). An explicit in-range n_ctx overrides it.
         maxtok = n_ctx if (n_ctx and 0 < n_ctx <= 65536) else 0
-        gpu = os.environ.get("DG_GPU", "0")
+        # The shim's visual_engine sets the child CUDA_VISIBLE_DEVICES to the --gpu
+        # ordinal it receives, so pass the requested physical GPU there directly. The
+        # visual server is single-GPU, so the first requested id is the one used.
+        gpu = str(gpu_ids[0]) if gpu_ids else os.environ.get("DG_GPU", "0")
 
         cmd = list(shim_cmd) + [
             "--gguf",
@@ -2883,6 +2992,11 @@ class LlamaCppBackend:
         env["UNSLOTH_IS_PRESENT"] = "1"
         env["DG_VISUAL_BIN"] = visual_bin
         env["DG_GPU"] = gpu
+        if gpu_ids:
+            # HIP builds key off HIP_VISIBLE_DEVICES (the shim only sets CVD); clear
+            # any inherited ROCR mask so it cannot reindex underneath HIP.
+            env["HIP_VISIBLE_DEVICES"] = gpu
+            env.pop("ROCR_VISIBLE_DEVICES", None)
         # The file-override shim imports its sibling visual_engine; put its dir on PYTHONPATH.
         # (The zoo-package shim is an installed module and needs no PYTHONPATH change.)
         if extra_pythonpath:
@@ -2939,6 +3053,8 @@ class LlamaCppBackend:
         self._is_audio = False  # clear any prior TTS/audio model's routing flag
         self._model_identifier = model_identifier
         self._cache_type_kv = None
+        self._tensor_parallel = False
+        self._gpu_ids = list(gpu_ids) if gpu_ids is not None else None
         self._gpu_offload_active = True
         if hf_variant:
             self._hf_variant = hf_variant
@@ -3667,6 +3783,7 @@ class LlamaCppBackend:
         n_gpu_layers: Optional[int] = None,  # caller compat, unused
         n_parallel: int = 1,
         extra_args: Optional[List[str]] = None,
+        gpu_ids: Optional[List[int]] = None,
     ) -> bool:
         """Start llama-server with a GGUF model.
 
@@ -3683,6 +3800,12 @@ class LlamaCppBackend:
             # so any in-flight load has drained) instead of using a half-swapped one.
             if getattr(self, "_llama_update_in_progress", False):
                 raise RuntimeError("llama.cpp is updating; try again in a moment.")
+            self._validate_diffusion_gpu_ids_before_reload(
+                gguf_path = gguf_path,
+                model_identifier = model_identifier,
+                hf_variant = hf_variant,
+                gpu_ids = gpu_ids,
+            )
             # Duplicate /load that raced past the route check: do nothing if the
             # live server already satisfies this request.
             if self._already_in_target_state(
@@ -3698,6 +3821,7 @@ class LlamaCppBackend:
                 chat_template_override = chat_template_override,
                 extra_args = extra_args,
                 is_vision = is_vision,
+                gpu_ids = gpu_ids,
             ):
                 logger.info(
                     f"load_model: backend already in target state for "
@@ -3823,6 +3947,7 @@ class LlamaCppBackend:
                         model_identifier = model_identifier,
                         n_ctx = n_ctx,
                         extra_args = extra_args,
+                        gpu_ids = gpu_ids,
                     )
 
             if not binary:
@@ -3926,7 +4051,10 @@ class LlamaCppBackend:
                         self._mmproj_vram_bytes(launch_mmproj_path) if effective_is_vision else 0
                     )
                     model_size = gguf_size + mmproj_size
-                    gpus = self._get_gpu_free_memory()
+                    gpus = self._filter_requested_gpus(
+                        self._get_gpu_free_memory(),
+                        gpu_ids,
+                    )
 
                     # Resolve effective context: 0 means let llama-server use
                     # the model's native length. Only expand to a known native
@@ -4175,6 +4303,8 @@ class LlamaCppBackend:
                         f"context: {effective_ctx}, "
                         f"GPUs free: {gpus}, selected: {gpu_indices}, fit: {use_fit}"
                     )
+                except _GpuVisibilityError:
+                    raise
                 except Exception as e:
                     logger.warning(f"GPU selection failed ({e}), using --fit on")
                     gpu_indices, use_fit = None, True
@@ -4449,10 +4579,16 @@ class LlamaCppBackend:
                     env.setdefault("GGML_CUDA_ENABLE_UNIFIED_MEMORY", "1")
                     logger.info("AMD unified-memory APU: set GGML_CUDA_ENABLE_UNIFIED_MEMORY=1")
 
+                launch_gpu_indices = self._launch_gpu_indices(
+                    gpu_ids,
+                    gpu_indices,
+                    tensor_parallel = tensor_parallel,
+                )
+
                 # DC NVIDIA GPUs: FP32 accum (+ P2P / launch queues for multi-GPU).
                 # See _apply_datacenter_env; opt out with UNSLOTH_DISABLE_DC_TUNING=1.
-                if self._apply_datacenter_env(env, gpu_indices):
-                    multi_gpu = self._effective_gpu_count(gpu_indices) > 1
+                if self._apply_datacenter_env(env, launch_gpu_indices):
+                    multi_gpu = self._effective_gpu_count(launch_gpu_indices) > 1
                     logger.info(
                         f"Data-center GPU detected: applied DC llama.cpp env tuning (multi_gpu={multi_gpu})"
                     )
@@ -4460,28 +4596,9 @@ class LlamaCppBackend:
                 # Pin to selected GPU(s). On ROCm, narrowing only
                 # CUDA_VISIBLE_DEVICES leaves an AMD child seeing the full
                 # set, so set HIP_VISIBLE_DEVICES too.
-                if gpu_indices is not None:
-                    pinned = ",".join(str(i) for i in gpu_indices)
-                    env["CUDA_VISIBLE_DEVICES"] = pinned
-                    try:
-                        import torch as _torch
-                        if getattr(_torch.version, "hip", None) is not None:
-                            env["HIP_VISIBLE_DEVICES"] = pinned
-                            # Do NOT also set ROCR_VISIBLE_DEVICES to the same
-                            # value. ROCR_VISIBLE_DEVICES filters at the HSA/ROCr
-                            # layer and HIP_VISIBLE_DEVICES at the HIP layer, so
-                            # setting both with the same physical indices applies
-                            # the mask twice: ROCR reduces the visible set and
-                            # re-indexes it from 0, then HIP indexes into the
-                            # already-reduced set. A single non-zero pin (e.g.
-                            # "1") then points out of range at the HIP layer, HIP
-                            # enumerates 0 devices, and llama.cpp falls back to
-                            # CPU ("ggml_cuda_init: no ROCm-capable device is
-                            # detected"). The HIP mask alone narrows correctly;
-                            # clear any inherited ROCR mask so it can't double up.
-                            env.pop("ROCR_VISIBLE_DEVICES", None)
-                    except Exception as e:
-                        logger.debug("Failed to set ROCm visibility env vars for child: %s", e)
+                if launch_gpu_indices is not None:
+                    pinned = ",".join(str(i) for i in launch_gpu_indices)
+                    self._pin_child_gpu_env(env, pinned)
 
                 # Captured before any text-only fallback strips it from cmd.
                 launched_with_mmproj = "--mmproj" in cmd
@@ -4708,6 +4825,7 @@ class LlamaCppBackend:
                     self._extra_args = list(extra_args)
                     self._extra_args_source = (model_identifier, hf_variant)
                 self._requested_n_ctx = int(n_ctx)
+                self._gpu_ids = list(gpu_ids) if gpu_ids is not None else None
 
                 # Catch silent CPU fallback when GPU was intended (#5106).
                 self._gpu_offload_active = self._classify_gpu_offload(
@@ -5036,6 +5154,7 @@ class LlamaCppBackend:
         spec_draft_n_max: Optional[int] = None,
         tensor_parallel: bool = False,
         mtp_draft_path: Optional[str] = None,
+        gpu_ids: Optional[List[int]] = None,
     ) -> bool:
         """True iff the live server already satisfies these load kwargs.
 
@@ -5043,21 +5162,17 @@ class LlamaCppBackend:
         compares raw kwargs so ``load_model`` can short-circuit a duplicate
         /load that raced past the route-level check (#5401).
         """
-        if not self.is_loaded:
-            return False
-        if (self._model_identifier or "").lower() != (model_identifier or "").lower():
-            return False
-        # Direct-file loads pass hf_variant=None while the backend stores an
-        # extracted filename label; compare paths to keep the guard symmetric.
-        if gguf_path is not None and self._gguf_path:
-            try:
-                if Path(self._gguf_path).resolve() != Path(gguf_path).resolve():
-                    return False
-            except OSError:
-                return False
-        elif (self._hf_variant or "").lower() != (hf_variant or "").lower():
+        if not self._loaded_model_source_matches(
+            model_identifier = model_identifier,
+            hf_variant = hf_variant,
+            gguf_path = gguf_path,
+        ):
             return False
         if self._requested_n_ctx != int(n_ctx):
+            return False
+        if (getattr(self, "_gpu_ids", None) or None) != (
+            list(gpu_ids) if gpu_ids is not None else None
+        ):
             return False
 
         def _norm(value):
@@ -5124,6 +5239,50 @@ class LlamaCppBackend:
                 return False
         return True
 
+    @staticmethod
+    def _validate_diffusion_gpu_ids(gpu_ids: Optional[List[int]]) -> None:
+        if gpu_ids is not None and len(gpu_ids) > 1:
+            raise ValueError(f"DiffusionGemma GGUF loads support one gpu_id, got {list(gpu_ids)}.")
+
+    def _loaded_model_source_matches(
+        self,
+        *,
+        model_identifier: str,
+        hf_variant: Optional[str],
+        gguf_path: Optional[str] = None,
+    ) -> bool:
+        if not self.is_loaded:
+            return False
+        if (self._model_identifier or "").lower() != (model_identifier or "").lower():
+            return False
+        # Direct-file loads pass hf_variant=None while the backend stores an
+        # extracted filename label; compare paths to keep the guard symmetric.
+        if gguf_path is not None and self._gguf_path:
+            try:
+                return Path(self._gguf_path).resolve() == Path(gguf_path).resolve()
+            except OSError:
+                return False
+        return (self._hf_variant or "").lower() == (hf_variant or "").lower()
+
+    def _validate_diffusion_gpu_ids_before_reload(
+        self,
+        *,
+        gguf_path: Optional[str],
+        model_identifier: str,
+        hf_variant: Optional[str],
+        gpu_ids: Optional[List[int]],
+    ) -> None:
+        if gpu_ids is None or len(gpu_ids) <= 1:
+            return
+        if gguf_path is not None and self._gguf_is_diffusion_model(gguf_path):
+            self._validate_diffusion_gpu_ids(gpu_ids)
+        if self._is_diffusion and self._loaded_model_source_matches(
+            model_identifier = model_identifier,
+            hf_variant = hf_variant,
+            gguf_path = gguf_path,
+        ):
+            self._validate_diffusion_gpu_ids(gpu_ids)
+
     def _classify_gpu_offload(
         self, expected_gpu: bool, detected_gpus: list[tuple[int, int]]
     ) -> Optional[bool]:
@@ -5174,6 +5333,7 @@ class LlamaCppBackend:
             self._supports_tools = False
             self._cache_type_kv = None
             self._tensor_parallel = False
+            self._gpu_ids = None
             self._speculative_type = None
             self._requested_spec_mode = None
             self._spec_draft_n_max = None

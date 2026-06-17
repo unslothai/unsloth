@@ -1,0 +1,286 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+from __future__ import annotations
+
+import importlib
+import struct
+import sys
+import threading
+import types as _types
+from pathlib import Path
+from unittest import mock
+
+import pytest
+
+
+@pytest.fixture()
+def llama_cpp_module(monkeypatch):
+    module_name = "core.inference.llama_cpp"
+    was_loaded = module_name in sys.modules
+    backend_dir = str(Path(__file__).resolve().parent.parent)
+    monkeypatch.syspath_prepend(backend_dir)
+
+    loggers_stub = _types.ModuleType("loggers")
+    loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
+    monkeypatch.setitem(sys.modules, "loggers", loggers_stub)
+    monkeypatch.setitem(sys.modules, "structlog", _types.ModuleType("structlog"))
+
+    module = importlib.import_module(module_name)
+    yield module
+
+    if not was_loaded:
+        sys.modules.pop(module_name, None)
+        parent = sys.modules.get("core.inference")
+        if parent is not None and getattr(parent, "llama_cpp", None) is module:
+            delattr(parent, "llama_cpp")
+
+
+@pytest.fixture()
+def backend_cls(llama_cpp_module):
+    return llama_cpp_module.LlamaCppBackend
+
+
+def _make_backend(backend_cls):
+    backend = backend_cls.__new__(backend_cls)
+    backend._context_length = 4096
+    backend._stdout_lines = []
+    backend._kill_process = mock.Mock()
+    backend._find_free_port = mock.Mock(return_value = 12345)
+    backend._find_diffusion_assets = mock.Mock(
+        return_value = (["python", "-m", "unsloth_zoo.diffusion_studio.shim"], "/tmp/visual", None)
+    )
+    backend._wait_for_health = mock.Mock(return_value = True)
+    backend._drain_stdout = mock.Mock()
+    return backend
+
+
+def _write_diffusion_gguf(path: Path) -> None:
+    key = b"general.architecture"
+    value = b"diffusion_gemma"
+    path.write_bytes(
+        struct.pack("<IIQQ", 0x46554747, 3, 0, 1)
+        + struct.pack("<Q", len(key))
+        + key
+        + struct.pack("<I", 8)
+        + struct.pack("<Q", len(value))
+        + value
+    )
+
+
+def test_diffusion_server_passes_requested_physical_gpu_as_ordinal(
+    monkeypatch, llama_cpp_module, backend_cls
+):
+    captured = {}
+
+    class DummyProcess:
+        stdout = None
+
+    def fake_popen(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["env"] = kwargs["env"]
+        return DummyProcess()
+
+    monkeypatch.setattr(llama_cpp_module.subprocess, "Popen", fake_popen)
+
+    backend = _make_backend(backend_cls)
+    assert backend._start_diffusion_server(
+        model_path = "/models/diffusiongemma.gguf",
+        gguf_path = "/models/diffusiongemma.gguf",
+        hf_repo = None,
+        hf_variant = None,
+        model_identifier = "local/diffusiongemma",
+        n_ctx = 0,
+        extra_args = None,
+        gpu_ids = [1],
+    )
+
+    # The shim's visual_engine sets the child CUDA_VISIBLE_DEVICES to the --gpu
+    # ordinal, so the requested physical GPU must be passed as the ordinal itself
+    # (a CUDA_VISIBLE_DEVICES remap + "--gpu 0" gets overwritten back to GPU 0).
+    assert captured["cmd"][captured["cmd"].index("--gpu") + 1] == "1"
+    assert captured["env"]["DG_GPU"] == "1"
+    assert captured["env"]["HIP_VISIBLE_DEVICES"] == "1"
+    assert "ROCR_VISIBLE_DEVICES" not in captured["env"]
+    assert backend.tensor_parallel is False
+
+
+def test_diffusion_server_rejects_multi_gpu_pins(backend_cls):
+    backend = _make_backend(backend_cls)
+
+    with pytest.raises(ValueError, match = "support one gpu_id"):
+        backend._start_diffusion_server(
+            model_path = "/models/diffusiongemma.gguf",
+            gguf_path = "/models/diffusiongemma.gguf",
+            hf_repo = None,
+            hf_variant = None,
+            model_identifier = "local/diffusiongemma",
+            n_ctx = 0,
+            extra_args = None,
+            gpu_ids = [0, 1],
+        )
+
+    backend._find_diffusion_assets.assert_not_called()
+
+
+def test_child_gpu_pin_clears_rocr_when_hip_is_forced(backend_cls):
+    env = {"ROCR_VISIBLE_DEVICES": "1"}
+
+    backend_cls._pin_child_gpu_env(env, "1", force_hip = True)
+
+    assert env["CUDA_VISIBLE_DEVICES"] == "1"
+    assert env["HIP_VISIBLE_DEVICES"] == "1"
+    assert "ROCR_VISIBLE_DEVICES" not in env
+
+
+def test_child_gpu_pin_detects_rocm_from_torch_version(monkeypatch, backend_cls):
+    fake_torch = _types.ModuleType("torch")
+    fake_torch.version = _types.SimpleNamespace(hip = None)
+    fake_torch.__version__ = "2.8.0+rocm6.4"
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    env = {"ROCR_VISIBLE_DEVICES": "1"}
+
+    backend_cls._pin_child_gpu_env(env, "1")
+
+    assert env["CUDA_VISIBLE_DEVICES"] == "1"
+    assert env["HIP_VISIBLE_DEVICES"] == "1"
+    assert "ROCR_VISIBLE_DEVICES" not in env
+
+
+def test_gpu_free_memory_detects_rocm_masks_from_torch_version(
+    monkeypatch, llama_cpp_module, backend_cls
+):
+    class FakeCuda:
+        @staticmethod
+        def is_available():
+            return True
+
+        @staticmethod
+        def device_count():
+            return 1
+
+        @staticmethod
+        def mem_get_info(ordinal):
+            assert ordinal == 0
+            return 123 * 1024 * 1024, 456 * 1024 * 1024
+
+    fake_torch = _types.ModuleType("torch")
+    fake_torch.version = _types.SimpleNamespace(hip = None)
+    fake_torch.__version__ = "2.8.0+rocm6.4"
+    fake_torch.cuda = FakeCuda()
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setenv("ROCR_VISIBLE_DEVICES", "1")
+    monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
+    monkeypatch.setattr(
+        llama_cpp_module.subprocess,
+        "run",
+        lambda *args, **kwargs: _types.SimpleNamespace(returncode = 1, stdout = ""),
+    )
+
+    assert backend_cls._get_gpu_free_memory() == [(1, 123)]
+
+
+def test_gpu_free_memory_torch_fallback_honors_empty_visibility_mask(
+    monkeypatch, llama_cpp_module, backend_cls
+):
+    class FakeCuda:
+        @staticmethod
+        def is_available():
+            return True
+
+        @staticmethod
+        def device_count():
+            return 1
+
+        @staticmethod
+        def mem_get_info(ordinal):
+            return 123 * 1024 * 1024, 456 * 1024 * 1024
+
+    fake_torch = _types.ModuleType("torch")
+    fake_torch.version = _types.SimpleNamespace(hip = None)
+    fake_torch.__version__ = "2.8.0"
+    fake_torch.cuda = FakeCuda()
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
+    monkeypatch.setattr(
+        llama_cpp_module.subprocess,
+        "run",
+        lambda *args, **kwargs: _types.SimpleNamespace(returncode = 1, stdout = ""),
+    )
+
+    assert backend_cls._get_gpu_free_memory() == []
+
+
+def test_load_model_rejects_diffusion_multi_gpu_before_kill(tmp_path, backend_cls):
+    gguf_path = tmp_path / "diffusion.gguf"
+    _write_diffusion_gguf(gguf_path)
+    backend = _make_backend(backend_cls)
+    backend._serial_load_lock = threading.Lock()
+    backend._process = object()
+    backend._healthy = True
+    backend._is_diffusion = True
+    backend._model_identifier = "local/diffusiongemma"
+    backend._gguf_path = str(gguf_path)
+    backend._hf_variant = None
+
+    with pytest.raises(ValueError, match = "support one gpu_id"):
+        backend.load_model(
+            gguf_path = str(gguf_path),
+            model_identifier = "local/diffusiongemma",
+            n_ctx = 0,
+            gpu_ids = [0, 1],
+        )
+
+    backend._kill_process.assert_not_called()
+
+
+def test_requested_gpu_filter_rejects_partial_visibility(backend_cls):
+    assert backend_cls._filter_requested_gpus([(0, 1024), (1, 2048)], [1]) == [(1, 2048)]
+
+    with pytest.raises(ValueError, match = r"Requested GPU IDs \[2\]"):
+        backend_cls._filter_requested_gpus([(0, 1024), (1, 2048)], [1, 2])
+
+
+def test_tensor_parallel_launch_uses_planned_gpu_order_for_tensor_split(backend_cls):
+    assert backend_cls._launch_gpu_indices(
+        gpu_ids = [1, 0],
+        gpu_indices = [0, 1],
+        tensor_parallel = True,
+    ) == [0, 1]
+
+    assert backend_cls._launch_gpu_indices(
+        gpu_ids = [1, 0],
+        gpu_indices = [0, 1],
+        tensor_parallel = False,
+    ) == [1, 0]
+
+
+def test_already_in_target_state_mismatches_changed_gpu_ids(backend_cls):
+    backend = _make_backend(backend_cls)
+    backend._process = object()
+    backend._healthy = True
+    backend._model_identifier = "local/model"
+    backend._gguf_path = "/models/model.gguf"
+    backend._hf_variant = None
+    backend._requested_n_ctx = 0
+    backend._gpu_ids = [0]
+    backend._cache_type_kv = None
+    backend._tensor_parallel = False
+    backend._requested_spec_mode = "auto"
+    backend._speculative_type = None
+    backend._chat_template_override = None
+    backend._mtp_draft_path = None
+
+    assert not backend._already_in_target_state(
+        model_identifier = "local/model",
+        gguf_path = "/models/model.gguf",
+        hf_variant = None,
+        n_ctx = 0,
+        cache_type_kv = None,
+        speculative_type = None,
+        chat_template_override = None,
+        extra_args = None,
+        is_vision = False,
+        gpu_ids = [1],
+    )

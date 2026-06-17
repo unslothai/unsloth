@@ -8,7 +8,7 @@ import re
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from fastapi import HTTPException
 
@@ -61,6 +61,20 @@ class TestResolveRequestedGpuIds(_GpuCacheResetMixin, unittest.TestCase):
         with patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "1,3"}, clear = True):
             self.assertEqual(get_parent_visible_gpu_ids(), [1, 3])
             self.assertEqual(resolve_requested_gpu_ids(None), [1, 3])
+
+    def test_parent_visibility_uses_rocm_masks_on_rocm(self):
+        with (
+            patch.dict(
+                os.environ,
+                {"CUDA_VISIBLE_DEVICES": "0", "ROCR_VISIBLE_DEVICES": "1"},
+                clear = True,
+            ),
+            patch.object(_hw_module, "IS_ROCM", True),
+            patch("utils.hardware.hardware.get_physical_gpu_count", return_value = 2),
+        ):
+            self.assertEqual(resolve_requested_gpu_ids([1]), [1])
+            with self.assertRaisesRegex(ValueError, r"outside the parent-visible set \[1\]"):
+                resolve_requested_gpu_ids([0])
 
     def test_parent_visibility_uses_empty_numeric_ids_for_uuid_masks(self):
         with (
@@ -688,7 +702,7 @@ class TestRouteErrors(unittest.TestCase):
 
         self.assertIn("only supported on CUDA devices", str(exc_info.exception))
 
-    def test_inference_route_rejects_gpu_ids_for_gguf(self):
+    def test_inference_route_passes_gpu_ids_for_gguf(self):
         inference_route = _load_route_module(
             "inference_route_module_for_gguf_gpu_ids_test",
             "routes/inference.py",
@@ -700,6 +714,7 @@ class TestRouteErrors(unittest.TestCase):
             gguf_hf_repo = None,
             gguf_file = "/tmp/test.gguf",
             gguf_mmproj_file = None,
+            gguf_mtp_file = None,
             gguf_variant = None,
             identifier = "unsloth/test.gguf",
             display_name = "unsloth/test.gguf",
@@ -708,27 +723,172 @@ class TestRouteErrors(unittest.TestCase):
             audio_type = None,
             has_audio_input = False,
         )
+        llama_backend = SimpleNamespace(
+            is_loaded = False,
+            load_cancelled = False,
+            load_model = Mock(return_value = True),
+            unload_model = Mock(),
+            is_vision = False,
+            is_diffusion = False,
+            is_audio = False,
+            _audio_type = None,
+            _is_audio = False,
+            _has_audio_input = False,
+            context_length = 4096,
+            max_context_length = 4096,
+            native_context_length = 4096,
+            supports_reasoning = False,
+            reasoning_style = "enable_thinking",
+            reasoning_always_on = False,
+            supports_preserve_thinking = False,
+            supports_tools = False,
+            cache_type_kv = None,
+            chat_template = None,
+            requested_spec_mode = None,
+            spec_draft_n_max = None,
+            tensor_parallel = False,
+            extra_args = None,
+            extra_args_source = None,
+        )
 
-        with patch.object(
-            inference_route.ModelConfig,
-            "from_identifier",
-            return_value = model_config,
+        with (
+            patch.object(
+                inference_route.ModelConfig,
+                "from_identifier",
+                return_value = model_config,
+            ),
+            patch.object(
+                inference_route.hardware_utils, "get_device", return_value = DeviceType.CUDA
+            ),
+            patch.object(inference_route, "resolve_requested_gpu_ids", return_value = [0, 1]),
+            patch.object(inference_route, "get_llama_cpp_backend", return_value = llama_backend),
+            patch.object(
+                inference_route,
+                "get_inference_backend",
+                return_value = SimpleNamespace(active_model_name = None),
+            ),
+            patch.object(inference_route, "load_inference_config", return_value = {}),
+        ):
+            response = asyncio.run(
+                inference_route.load_model(
+                    request,
+                    SimpleNamespace(
+                        app = SimpleNamespace(
+                            state = SimpleNamespace(llama_parallel_slots = 1),
+                        ),
+                    ),
+                    current_subject = "test-user",
+                )
+            )
+
+        self.assertEqual(response.status, "loaded")
+        self.assertEqual(llama_backend.load_model.call_args.kwargs["gpu_ids"], [0, 1])
+
+    def test_inference_route_dedupe_compares_resolved_gpu_ids_for_gguf(self):
+        inference_route = _load_route_module(
+            "inference_route_module_for_gguf_gpu_ids_dedupe_test",
+            "routes/inference.py",
+        )
+        request = LoadRequest(model_path = "unsloth/test.gguf", gpu_ids = [0])
+        llama_backend = SimpleNamespace(
+            is_loaded = True,
+            model_identifier = "unsloth/test.gguf",
+            hf_variant = None,
+            requested_n_ctx = 0,
+            gpu_ids = [1],
+            cache_type_kv = None,
+            extra_args = None,
+            tensor_parallel = False,
+            requested_spec_mode = None,
+            spec_draft_n_max = None,
+            chat_template_override = None,
+            gguf_path = None,
+            mtp_draft_path = None,
+            load_model = Mock(return_value = True),
+            _audio_type = None,
+            _is_audio = False,
+            _has_audio_input = False,
+            _is_vision = False,
+            is_diffusion = False,
+            context_length = 4096,
+            max_context_length = 4096,
+            native_context_length = 4096,
+            supports_reasoning = False,
+            reasoning_style = "enable_thinking",
+            reasoning_always_on = False,
+            supports_preserve_thinking = False,
+            supports_tools = False,
+            chat_template = None,
+        )
+
+        with (
+            patch.object(
+                inference_route.hardware_utils, "get_device", return_value = DeviceType.CUDA
+            ),
+            patch.object(
+                inference_route, "resolve_requested_gpu_ids", return_value = [1]
+            ) as mock_resolve,
+            patch.object(inference_route, "get_llama_cpp_backend", return_value = llama_backend),
+            patch.object(
+                inference_route,
+                "get_inference_backend",
+                return_value = SimpleNamespace(active_model_name = None),
+            ),
+            patch.object(inference_route, "load_inference_config", return_value = {}),
+            patch.object(inference_route.ModelConfig, "from_identifier") as mock_from_identifier,
+        ):
+            response = asyncio.run(
+                inference_route.load_model(
+                    request,
+                    SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace())),
+                    current_subject = "test-user",
+                )
+            )
+
+        self.assertEqual(response.status, "already_loaded")
+        mock_resolve.assert_called_once_with([0])
+        mock_from_identifier.assert_not_called()
+        llama_backend.load_model.assert_not_called()
+
+    def test_inference_route_rejects_gguf_gpu_ids_on_non_cuda_backend(self):
+        inference_route = _load_route_module(
+            "inference_route_module_for_gguf_non_cuda_gpu_ids_test",
+            "routes/inference.py",
+        )
+        request = LoadRequest(model_path = "unsloth/test.gguf", gpu_ids = [0])
+        model_config = SimpleNamespace(is_gguf = True)
+        llama_backend = SimpleNamespace(
+            is_loaded = False,
+            hf_variant = None,
+        )
+
+        with (
+            patch.object(
+                inference_route.ModelConfig,
+                "from_identifier",
+                return_value = model_config,
+            ),
+            patch.object(inference_route.hardware_utils, "get_device", return_value = DeviceType.MLX),
+            patch.object(inference_route, "resolve_requested_gpu_ids") as mock_resolve,
+            patch.object(inference_route, "get_llama_cpp_backend", return_value = llama_backend),
+            patch.object(
+                inference_route,
+                "get_inference_backend",
+                return_value = SimpleNamespace(active_model_name = None),
+            ),
         ):
             with self.assertRaises(HTTPException) as exc_info:
                 asyncio.run(
                     inference_route.load_model(
                         request,
-                        SimpleNamespace(
-                            app = SimpleNamespace(
-                                state = SimpleNamespace(llama_parallel_slots = 1),
-                            ),
-                        ),
+                        SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace())),
                         current_subject = "test-user",
                     )
                 )
 
         self.assertEqual(exc_info.exception.status_code, 400)
-        self.assertIn("GGUF", exc_info.exception.detail)
+        self.assertIn("CUDA/ROCm", exc_info.exception.detail)
+        mock_resolve.assert_not_called()
 
     def test_training_route_returns_400_for_invalid_gpu_ids(self):
         training_route = _load_route_module(

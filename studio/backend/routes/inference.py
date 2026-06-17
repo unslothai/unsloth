@@ -623,6 +623,8 @@ try:
         detect_mtp_file,
         load_model_defaults,
     )
+    import utils.hardware as hardware_utils
+    from utils.hardware import resolve_requested_gpu_ids
     from utils.native_path_leases import (
         NativePathLeaseError,
         display_label_for_native_path,
@@ -657,6 +659,8 @@ except ImportError:
         detect_mtp_file,
         load_model_defaults,
     )
+    import utils.hardware as hardware_utils
+    from utils.hardware import resolve_requested_gpu_ids
     from utils.native_path_leases import (
         NativePathLeaseError,
         display_label_for_native_path,
@@ -1783,6 +1787,7 @@ def _request_matches_loaded_settings(
     request: LoadRequest,
     llama_backend: LlamaCppBackend,
     effective_chat_template_override: Optional[str] = None,
+    effective_gpu_ids: Optional[list[int]] = None,
 ) -> bool:
     """True iff every runtime setting on the request matches the loaded server.
     Caller has already checked model+variant+is_loaded. See #5401.
@@ -1795,6 +1800,10 @@ def _request_matches_loaded_settings(
     # Compare requested n_ctx (not effective) so VRAM-cap doesn't mask an
     # Auto-vs-explicit slider flip.
     if request.max_seq_length != llama_backend.requested_n_ctx:
+        return False
+    if (getattr(llama_backend, "gpu_ids", None) or None) != (
+        list(effective_gpu_ids) if effective_gpu_ids is not None else None
+    ):
         return False
     if _normalise_settings_str(request.cache_type_kv) != _normalise_settings_str(
         llama_backend.cache_type_kv
@@ -1976,9 +1985,34 @@ async def load_model(
         # ── Already-loaded check: skip reload if the exact model is active ──
         backend = get_inference_backend()
         llama_backend = get_llama_cpp_backend()
+        # Normalize gpu_ids: empty list means auto-selection, same as None.
+        # This must happen before the GGUF already-loaded check so changing GPU
+        # selection forces a reload instead of returning the old process.
+        effective_gpu_ids = request.gpu_ids if request.gpu_ids else None
+        resolved_gguf_gpu_ids: Optional[list[int]] = None
+
+        def _resolve_gguf_gpu_ids() -> Optional[list[int]]:
+            nonlocal resolved_gguf_gpu_ids
+            if effective_gpu_ids is None:
+                return None
+            if resolved_gguf_gpu_ids is not None:
+                return resolved_gguf_gpu_ids
+            device = hardware_utils.get_device()
+            if device != hardware_utils.DeviceType.CUDA:
+                raise HTTPException(
+                    status_code = 400,
+                    detail = (
+                        f"gpu_ids {list(effective_gpu_ids)} is only supported for GGUF "
+                        "loads on CUDA/ROCm backends, but the current backend "
+                        f"is '{device.value}'."
+                    ),
+                )
+            resolved_gguf_gpu_ids = resolve_requested_gpu_ids(effective_gpu_ids)
+            return resolved_gguf_gpu_ids
 
         is_direct_gguf_request = model_identifier.lower().endswith(".gguf")
         if request.gguf_variant or is_direct_gguf_request:
+            resolved_gguf_gpu_ids = _resolve_gguf_gpu_ids()
             gguf_variant_matches = is_direct_gguf_request or bool(
                 llama_backend.hf_variant
                 and request.gguf_variant
@@ -1991,7 +2025,10 @@ async def load_model(
                 and llama_backend.model_identifier.lower() == model_identifier.lower()
                 # Match runtime settings so Apply isn't dropped (#5401).
                 and _request_matches_loaded_settings(
-                    request, llama_backend, effective_chat_template_override
+                    request,
+                    llama_backend,
+                    effective_chat_template_override,
+                    effective_gpu_ids = resolved_gguf_gpu_ids,
                 )
                 # Skip if a prior audio probe failed -- let load_model retry.
                 and getattr(llama_backend, "_audio_probed", True)
@@ -2099,17 +2136,9 @@ async def load_model(
                 detail = f"Invalid model identifier: {model_log_label}",
             )
 
-        # Normalize gpu_ids: empty list means auto-selection, same as None
-        effective_gpu_ids = request.gpu_ids if request.gpu_ids else None
-
         # ── GGUF path: load via llama-server ──────────────────────
         if config.is_gguf:
-            if effective_gpu_ids is not None:
-                raise HTTPException(
-                    status_code = 400,
-                    detail = "gpu_ids is not supported for GGUF models yet.",
-                )
-
+            resolved_gpu_ids = _resolve_gguf_gpu_ids()
             llama_backend = get_llama_cpp_backend()
             unsloth_backend = get_inference_backend()
 
@@ -2263,6 +2292,7 @@ async def load_model(
                     **_source_load_kwargs,
                     **attempt_kwargs,
                     tensor_parallel = tensor_parallel,
+                    gpu_ids = resolved_gpu_ids,
                 )
 
             # Tensor parallelism is arch-gated in llama.cpp and crashes some loads
