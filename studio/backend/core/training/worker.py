@@ -1061,6 +1061,27 @@ def _activate_transformers_version(model_name: str) -> None:
     activate_transformers_for_subprocess(model_name)
 
 
+def _activate_transformers_version_or_warn(model_name: str) -> None:
+    """Activate the required transformers version for the MLX fast-path.
+
+    Unlike the non-MLX path (which treats activation failure as fatal and
+    reports it via the event queue), the MLX path is intentionally non-fatal:
+    it falls through with whatever transformers version is installed. The
+    failure used to be swallowed by a bare ``except: pass``, leaving no trace
+    and only a confusing downstream crash. Log a warning instead so the cause
+    is visible, while keeping the fall-through behaviour.
+    """
+    try:
+        _activate_transformers_version(model_name)
+    except Exception as exc:
+        logger.warning(
+            "Failed to activate transformers version for '%s' (MLX); "
+            "training may fail if this model requires a specific version. Error: %s",
+            model_name,
+            exc,
+        )
+
+
 def _mlx_vlm_max_resized_size(width: int, height: int, target: int) -> tuple[int, int]:
     if width <= 0 or height <= 0 or target <= 0:
         return width, height
@@ -1966,6 +1987,19 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
     os.environ["PYTHONWARNINGS"] = "ignore"  # before imports
 
+    # HTTP-fallback respawn: disable Xet before any huggingface_hub import (the
+    # var is read at import time). Mirrors core/inference/worker.py.
+    from utils.hf_xet_fallback import child_should_disable_xet
+
+    if child_should_disable_xet(config):
+        os.environ["HF_HUB_DISABLE_XET"] = "1"
+        os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
+        print(
+            "Xet transport disabled for this training worker (HF_HUB_DISABLE_XET=1).",
+            file = sys.stderr,
+            flush = True,
+        )
+
     # Offline auto-detect: skip ~25s of HF retries per call when DNS is dead.
     if "HF_HUB_OFFLINE" not in os.environ:
         import socket as _socket
@@ -2031,11 +2065,10 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             )
             return
         # Activate correct transformers version (Gemma-4 needs a 5.x sidecar, etc.)
-        # before any transformers/mlx-lm imports in _run_mlx_training.
-        try:
-            _activate_transformers_version(model_name)
-        except Exception:
-            pass  # Non-fatal: fall through with whatever version is installed
+        # Must happen before any transformers/mlx-lm imports in _run_mlx_training.
+        # Non-fatal: fall through with whatever version is installed, but log
+        # the failure instead of swallowing it (issue #6103).
+        _activate_transformers_version_or_warn(model_name)
         try:
             _run_mlx_training(event_queue, stop_queue, config)
         except Exception as exc:
@@ -2686,18 +2719,33 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         cpt_trains_embeddings = False
 
         # ── 4c. Load training model (uses VRAM — dataset already formatted) ──
+        # Watchdog lets the parent recover a stalled Xet download via respawn.
         _send_status(event_queue, "Loading model...")
-        success = trainer.load_model(
-            model_name = model_name,
-            max_seq_length = config["max_seq_length"],
-            load_in_4bit = config["load_in_4bit"],
-            full_finetuning = not use_lora,
-            hf_token = hf_token,
-            is_dataset_image = config.get("is_dataset_image", False),
-            is_dataset_audio = config.get("is_dataset_audio", False),
-            trust_remote_code = config.get("trust_remote_code", False),
-            gpu_ids = config.get("resolved_gpu_ids"),
+        from utils.hf_xet_fallback import start_watchdog
+
+        event_queue.put({"type": "model_load_started", "ts": time.time()})
+        _load_watchdog_stop = start_watchdog(
+            repo_ids = [model_name],
+            on_stall = lambda msg: event_queue.put(
+                {"type": "stall", "message": msg, "ts": time.time()}
+            ),
+            xet_disabled = os.environ.get("HF_HUB_DISABLE_XET") == "1",
         )
+        try:
+            success = trainer.load_model(
+                model_name = model_name,
+                max_seq_length = config["max_seq_length"],
+                load_in_4bit = config["load_in_4bit"],
+                full_finetuning = not use_lora,
+                hf_token = hf_token,
+                is_dataset_image = config.get("is_dataset_image", False),
+                is_dataset_audio = config.get("is_dataset_audio", False),
+                trust_remote_code = config.get("trust_remote_code", False),
+                gpu_ids = config.get("resolved_gpu_ids"),
+            )
+        finally:
+            _load_watchdog_stop.set()
+            event_queue.put({"type": "model_load_completed", "ts": time.time()})
         if not success or trainer.should_stop:
             if trainer.should_stop:
                 event_queue.put({"type": "complete", "output_dir": None, "ts": time.time()})

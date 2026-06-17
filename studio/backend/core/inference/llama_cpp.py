@@ -51,6 +51,7 @@ from core.tool_healing import (
     strip_tool_call_markup,
 )
 from utils.native_path_leases import child_env_without_native_path_secret
+from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
 from utils.subprocess_compat import (
     windows_hidden_subprocess_kwargs as _windows_hidden_subprocess_kwargs,
 )
@@ -73,6 +74,99 @@ from state.tool_approvals import (
 )
 
 logger = get_logger(__name__)
+
+
+# llama-server can serve HTTP 200 while running a model entirely on CPU when a
+# GPU backend fails to init (#5807 / #5106 / #5830). Classify the startup log so
+# Studio can warn. Priority: explicit "offloaded N/M layers to GPU" counts
+# (authoritative), then GPU "model buffer size" lines (host-pinned _Host
+# excluded), then the "device_info:" device table (disconfirm only).
+_GPU_OFFLOAD_MARKERS = (
+    "CUDA",
+    "ROCm",
+    "ROCM",
+    "HIP",
+    "Metal",
+    "Vulkan",
+    "OpenCL",
+    "SYCL",
+    "MUSA",
+    "CANN",
+)
+_OFFLOADED_LAYERS_RE = re.compile(
+    r"offloaded\s+(\d+)\s*/\s*(\d+)\s+layers?\s+to\s+gpu", re.IGNORECASE
+)
+_DEVICE_ROW_RE = re.compile(
+    r"-\s*(CUDA|ROCm|ROCM|HIP|Metal|Vulkan|SYCL|OpenCL|MUSA|CANN|CPU)\w*\s*:",
+    re.IGNORECASE,
+)
+_GPU_DEVICE_PREFIXES = (
+    "cuda",
+    "rocm",
+    "hip",
+    "metal",
+    "vulkan",
+    "sycl",
+    "opencl",
+    "musa",
+    "cann",
+)
+
+
+def classify_gpu_offload_lines(lines: "list[str]") -> Optional[bool]:
+    """True if the model landed on a GPU, False if it stayed on CPU despite GPU
+    intent, None when the log has no usable signal."""
+    # Counted offload is authoritative, keyed on the model with the most layers.
+    # A separate MTP/draft model logs its own (much smaller) "offloaded N/M"
+    # line, so decide on the largest-M line: a drafter that fits on GPU must not
+    # mask a main model running on CPU. N>0 on that model is True, 0 is False.
+    max_total = -1
+    offloaded_at_max = 0
+    for line in lines:
+        match = _OFFLOADED_LAYERS_RE.search(line)
+        if not match:
+            continue
+        offloaded, total = int(match.group(1)), int(match.group(2))
+        if total > max_total or (total == max_total and offloaded > offloaded_at_max):
+            max_total, offloaded_at_max = total, offloaded
+    if max_total >= 0:
+        return offloaded_at_max > 0
+
+    # GPU marker on a *model* buffer; _Host buffers are CPU-pinned, not offload.
+    # Buffer lines are authoritative: present but none on a GPU means CPU-only,
+    # so do not let the device table below override that.
+    saw_model_buffer = False
+    for line in lines:
+        if "model buffer size" not in line:
+            continue
+        saw_model_buffer = True
+        if "_Host" not in line and any(m in line for m in _GPU_OFFLOAD_MARKERS):
+            return True
+    if saw_model_buffer:
+        return False
+
+    # device_info: lists *available* devices (printed whenever a GPU backend is
+    # visible), not where the model loaded, so it can only disconfirm: an
+    # all-CPU table means no usable GPU. A visible GPU device is not proof the
+    # model used it, so it does not return True. Rows after the header only.
+    after_header = False
+    saw_device_row = False
+    saw_gpu_device = False
+    for line in lines:
+        if "device_info:" in line:
+            after_header = True
+            continue
+        if not after_header:
+            continue
+        match = _DEVICE_ROW_RE.search(line)
+        if not match:
+            continue
+        saw_device_row = True
+        if match.group(1).lower().startswith(_GPU_DEVICE_PREFIXES):
+            saw_gpu_device = True
+    if saw_device_row and not saw_gpu_device:
+        return False
+    return None
 
 
 def _wsl_system_rocm_lib_dirs() -> "list[str]":
@@ -154,8 +248,8 @@ def _should_suppress_forced_no_tool_output(text: str) -> bool:
 
 
 # ── Pre-compiled patterns for GGUF shard detection ───────────
-_SHARD_FULL_RE = re.compile(r"^(.*)-(\d{5})-of-(\d{5})\.gguf$")
-_SHARD_RE = re.compile(r"^(.*)-\d{5}-of-\d{5}\.gguf$")
+_SHARD_FULL_RE = re.compile(r"^(.*)-(\d{5})-of-(\d{5})\.gguf$", re.IGNORECASE)
+_SHARD_RE = re.compile(r"^(.*)-\d{5}-of-\d{5}\.gguf$", re.IGNORECASE)
 
 
 # ── Sliding-window-pattern resolver ───────────────────────────
@@ -531,6 +625,99 @@ def _is_companion_gguf_path(path: str) -> bool:
         return True
     name = p.rsplit("/", 1)[-1]
     return name.startswith("mtp-") or "/mtp/" in f"/{p}"
+
+
+_BIG_ENDIAN_GGUF_FILENAME_RE = re.compile(r"(^|[-_])be(?:[._-]|$)", re.IGNORECASE)
+_GGUF_KNOWN_QUANT_RE = re.compile(
+    r"(UD-)?"
+    r"(MXFP[0-9]+(?:_[A-Z0-9]+)*"
+    r"|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?"
+    r"|TQ[0-9]+_[0-9]+"
+    r"|Q[0-9]+_K_[A-Z]+"
+    r"|Q[0-9]+_[0-9]+"
+    r"|Q[0-9]+_K"
+    r"|BF16|F16|F32)",
+    re.IGNORECASE,
+)
+
+
+def _is_big_endian_gguf_path(path: str, variant_key: str = "") -> bool:
+    normalized = path.replace("\\", "/")
+    name = normalized.rsplit("/", 1)[-1]
+    stem = name.rsplit(".", 1)[0].lower()
+    variant_key = variant_key.strip().lower()
+    variant_index = stem.find(variant_key) if variant_key else -1
+    parent = normalized.rsplit("/", 1)[0].lower() if "/" in normalized else ""
+    variant_in_parent_only = (
+        bool(parent)
+        and variant_index < 0
+        and (
+            (variant_key and variant_key in parent)
+            or (not variant_key and _GGUF_KNOWN_QUANT_RE.search(parent) is not None)
+        )
+    )
+    for match in _BIG_ENDIAN_GGUF_FILENAME_RE.finditer(stem):
+        if variant_index >= 0 and variant_index < match.start():
+            return True
+        tail = stem[match.end() :].lstrip("._-")
+        if not tail or _GGUF_KNOWN_QUANT_RE.search(tail) is None:
+            return not variant_in_parent_only
+    return False
+
+
+def _gguf_snapshot_files(snapshot: Path) -> list[str]:
+    return [
+        p.relative_to(snapshot).as_posix()
+        for p in snapshot.rglob("*")
+        if p.is_file() and p.name.lower().endswith(".gguf")
+    ]
+
+
+def _gguf_extra_shards(files: Iterable[str], first_shard: str) -> list[str]:
+    m = _SHARD_FULL_RE.match(first_shard)
+    if not m:
+        return []
+    prefix = m.group(1)
+    total = m.group(3)
+    sibling_pat = re.compile(
+        r"^" + re.escape(prefix) + r"-\d{5}-of-" + re.escape(total) + r"\.gguf$",
+        re.IGNORECASE,
+    )
+    return sorted(f for f in files if f != first_shard and sibling_pat.match(f))
+
+
+def _gguf_files_for_variant(files: Iterable[str], variant: str) -> list[str]:
+    """Return main GGUF files matching a requested variant.
+
+    Prefer exact quant-label matches over loose substring matches so a request
+    for ``stories260K`` does not resolve to ``stories260K-be.gguf``.
+    """
+    variant_key = variant.strip().lower()
+    main_files = [
+        f
+        for f in files
+        if f.lower().endswith(".gguf")
+        and not _is_companion_gguf_path(f)
+        and not _is_big_endian_gguf_path(f, variant_key)
+    ]
+    if not variant_key:
+        return sorted(main_files)
+
+    try:
+        from utils.models.model_config import _extract_quant_label
+    except Exception:
+        _extract_quant_label = None
+
+    if _extract_quant_label is not None:
+        try:
+            exact = sorted(f for f in main_files if _extract_quant_label(f).lower() == variant_key)
+            if exact:
+                return exact
+        except Exception as e:
+            logger.warning("Failed to extract GGUF quant labels: %s", e)
+
+    boundary = re.compile(r"(?<![a-zA-Z0-9])" + re.escape(variant_key) + r"(?![a-zA-Z0-9])")
+    return sorted(f for f in main_files if boundary.search(f.lower()))
 
 
 # Below this many B params, draft-mtp regresses vs spec-off (bench in
@@ -953,12 +1140,13 @@ class LlamaCppBackend:
                 m = _SHARD_RE.match(stem)
                 prefix = m.group(1) if m else None
                 if prefix and parent.is_dir():
+                    prefix_lower = prefix.lower()
                     for sibling in parent.iterdir():
                         if (
                             sibling.is_file()
-                            and sibling.name.startswith(prefix)
+                            and sibling.name.lower().startswith(prefix_lower)
                             and sibling.name != stem
-                            and sibling.suffix == ".gguf"
+                            and sibling.suffix.lower() == ".gguf"
                         ):
                             try:
                                 bytes_total += sibling.stat().st_size
@@ -1407,7 +1595,8 @@ class LlamaCppBackend:
         if m:
             prefix, _, num_total = m.group(1), m.group(2), m.group(3)
             sibling_pat = re.compile(
-                r"^" + re.escape(prefix) + r"-\d{5}-of-" + re.escape(num_total) + r"\.gguf$"
+                r"^" + re.escape(prefix) + r"-\d{5}-of-" + re.escape(num_total) + r"\.gguf$",
+                re.IGNORECASE,
             )
             for sibling in main.parent.iterdir():
                 if sibling != main and sibling_pat.match(sibling.name):
@@ -2226,7 +2415,11 @@ class LlamaCppBackend:
 
             files = list_repo_files(hf_repo, token = hf_token)
             gguf_files = [
-                f for f in files if f.endswith(".gguf") and not _is_companion_gguf_path(f)
+                f
+                for f in files
+                if f.lower().endswith(".gguf")
+                and not _is_companion_gguf_path(f)
+                and not _is_big_endian_gguf_path(f)
             ]
             if not gguf_files:
                 return None
@@ -2804,7 +2997,7 @@ class LlamaCppBackend:
         any time; checks it between each shard download.
         """
         try:
-            from huggingface_hub import hf_hub_download
+            import huggingface_hub  # noqa: F401 -- presence check only
         except ImportError:
             raise RuntimeError(
                 "huggingface_hub is required for HF model loading. "
@@ -2819,27 +3012,10 @@ class LlamaCppBackend:
                 from huggingface_hub import list_repo_files
 
                 files = list_repo_files(hf_repo, token = hf_token)
-                variant_lower = hf_variant.lower()
-                boundary = re.compile(
-                    r"(?<![a-zA-Z0-9])" + re.escape(variant_lower) + r"(?![a-zA-Z0-9])"
-                )
-                gguf_files = sorted(
-                    f
-                    for f in files
-                    if f.endswith(".gguf")
-                    and boundary.search(f.lower())
-                    and not _is_companion_gguf_path(f)
-                )
+                gguf_files = _gguf_files_for_variant(files, hf_variant)
                 if gguf_files:
                     gguf_filename = gguf_files[0]
-                    m = _SHARD_FULL_RE.match(gguf_filename)
-                    if m:
-                        prefix = m.group(1)
-                        total = m.group(3)
-                        sibling_pat = re.compile(
-                            r"^" + re.escape(prefix) + r"-\d{5}-of-" + re.escape(total) + r"\.gguf$"
-                        )
-                        gguf_extra_shards = [f for f in gguf_files[1:] if sibling_pat.match(f)]
+                    gguf_extra_shards = _gguf_extra_shards(gguf_files, gguf_filename)
             except Exception as e:
                 logger.warning(f"Could not list repo files: {e}")
 
@@ -2851,33 +3027,13 @@ class LlamaCppBackend:
             if not gguf_filename:
                 try:
                     from utils.models.model_config import _iter_hf_cache_snapshots
-                    boundary = re.compile(
-                        r"(?<![a-zA-Z0-9])" + re.escape(hf_variant.lower()) + r"(?![a-zA-Z0-9])"
-                    )
                     for snap in _iter_hf_cache_snapshots(hf_repo):
-                        matches = sorted(
-                            p.relative_to(snap).as_posix()
-                            for p in snap.rglob("*.gguf")
-                            if not _is_companion_gguf_path(p.relative_to(snap).as_posix())
-                            and boundary.search(p.relative_to(snap).as_posix().lower())
-                        )
+                        cached_files = _gguf_snapshot_files(snap)
+                        matches = _gguf_files_for_variant(cached_files, hf_variant)
                         if not matches:
                             continue
                         gguf_filename = matches[0]
-                        m = _SHARD_FULL_RE.match(Path(gguf_filename).name)
-                        if m:
-                            prefix = m.group(1)
-                            total = m.group(3)
-                            sibling_pat = re.compile(
-                                r"^"
-                                + re.escape(prefix)
-                                + r"-\d{5}-of-"
-                                + re.escape(total)
-                                + r"\.gguf$"
-                            )
-                            gguf_extra_shards = [
-                                f for f in matches[1:] if sibling_pat.match(Path(f).name)
-                            ]
+                        gguf_extra_shards = _gguf_extra_shards(matches, gguf_filename)
                         logger.info(
                             "Resolved variant %s -> %s from local HF cache",
                             hf_variant,
@@ -2957,10 +3113,11 @@ class LlamaCppBackend:
                         _m = _SHARD_RE.match(gguf_filename)
                         _prefix = _m.group(1) if _m else None
                         if _prefix:
+                            prefix_lower = _prefix.lower()
                             gguf_extra_shards = sorted(
                                 f
                                 for f in all_gguf_files
-                                if f.startswith(_prefix)
+                                if f.lower().startswith(prefix_lower)
                                 and f != gguf_filename
                                 and not _is_companion_gguf_path(f)
                             )
@@ -2984,19 +3141,23 @@ class LlamaCppBackend:
             if self._cancel_event.is_set():
                 raise RuntimeError("Cancelled")
             dl_start = time.monotonic()
-            local_path = hf_hub_download(
-                repo_id = hf_repo,
-                filename = gguf_filename,
-                token = hf_token,
+            # Xet primary, HTTP fallback on stall; per-file so finished shards stay cached.
+            local_path = hf_hub_download_with_xet_fallback(
+                hf_repo,
+                gguf_filename,
+                hf_token,
+                cancel_event = self._cancel_event,
+                on_status = lambda m: logger.info(m),
             )
             for shard in gguf_extra_shards:
                 if self._cancel_event.is_set():
                     raise RuntimeError("Cancelled")
                 logger.info(f"Resolving GGUF shard: {shard}")
-                hf_hub_download(
-                    repo_id = hf_repo,
-                    filename = shard,
-                    token = hf_token,
+                hf_hub_download_with_xet_fallback(
+                    hf_repo,
+                    shard,
+                    hf_token,
+                    cancel_event = self._cancel_event,
                 )
         except RuntimeError as e:
             if "Cancelled" in str(e):
@@ -3045,7 +3206,7 @@ class LlamaCppBackend:
             try:
                 from utils.models.model_config import _iter_hf_cache_snapshots
                 for snap in _iter_hf_cache_snapshots(hf_repo):
-                    rel_files = [p.relative_to(snap).as_posix() for p in snap.rglob("*.gguf")]
+                    rel_files = _gguf_snapshot_files(snap)
                     target = pick(rel_files)
                     if target is not None:
                         logger.info("Resolved %s %s from local HF cache", label, target)
@@ -3057,12 +3218,13 @@ class LlamaCppBackend:
             return None
 
         try:
-            from huggingface_hub import hf_hub_download
             logger.info(f"Downloading {label}: {hf_repo}/{target}")
-            return hf_hub_download(
-                repo_id = hf_repo,
-                filename = target,
-                token = hf_token,
+            # Same policy; companions are best-effort (caller below swallows failures to None).
+            return hf_hub_download_with_xet_fallback(
+                hf_repo,
+                target,
+                hf_token,
+                cancel_event = self._cancel_event,
             )
         except Exception as e:
             logger.warning(f"Could not download {label}: {e}")
@@ -4073,19 +4235,21 @@ class LlamaCppBackend:
                 threads_overridden = _extra_args_set_any_flag(extra_args, _THREAD_OVERRIDE_FLAGS)
                 full_offload_tuning_active = fully_gpu_offloaded and not offload_overridden
 
-                # Pass --threads explicitly so we do not inherit llama-server
-                # defaults. Windows + full offload caps at 2 to stop OpenMP
-                # spin-wait burning CPU during GPU decode. User pass-through
-                # offload/thread flags keep last-wins semantics. #5692.
+                # Thread count: an unset --threads makes llama.cpp pick physical
+                # cores (common_cpu_get_num_math), but an explicit --threads -1
+                # resolves to hardware_concurrency() (every hyperthread), which
+                # contends on the memory bus and slows CPU / hybrid decode. So
+                # omit the flag when unset and only pin it for an explicit
+                # override or the Windows full-offload OpenMP cap. Pass-through
+                # thread flags in extra_args still win (appended last). #5692
                 if (
                     sys.platform == "win32"
                     and full_offload_tuning_active
                     and not threads_overridden
                 ):
-                    threads_arg = 2
-                else:
-                    threads_arg = n_threads if n_threads is not None else -1
-                cmd.extend(["--threads", str(threads_arg)])
+                    cmd.extend(["--threads", "2"])
+                elif n_threads is not None and n_threads > 0:
+                    cmd.extend(["--threads", str(n_threads)])
 
                 # Enable Jinja chat template rendering
                 cmd.extend(["--jinja"])
@@ -4265,6 +4429,11 @@ class LlamaCppBackend:
 
                 # Library paths so llama-server finds its shared libs and CUDA DLLs.
                 env = self._llama_server_env_for_binary(binary)
+                # Omitting --threads relies on llama.cpp's physical-core default, so
+                # drop an inherited LLAMA_ARG_THREADS that would otherwise feed the
+                # arg handler and silently force hardware_concurrency(). #5692
+                if "--threads" not in cmd:
+                    env.pop("LLAMA_ARG_THREADS", None)
 
                 # Windows + full offload: PASSIVE OMP + 2 threads stop
                 # spin-wait burning CPU. CPU/partial offload keeps default
@@ -4958,26 +5127,13 @@ class LlamaCppBackend:
     def _classify_gpu_offload(
         self, expected_gpu: bool, detected_gpus: list[tuple[int, int]]
     ) -> Optional[bool]:
-        """True if a GPU model buffer was allocated, False if only CPU
-        buffers landed despite GPU intent, None when there's no signal (no
-        GPU detected, no buffer-size lines, etc.)."""
+        """True if the model landed on a GPU, False if only CPU buffers landed
+        despite GPU intent, None when there's no signal. Delegates to the shared
+        classifier so it tracks current llama.cpp logs (offloaded-layer counts /
+        device_info), not just the older "model buffer size" lines."""
         if not detected_gpus or not expected_gpu:
             return None
-        # llama-server logs one "model buffer size = N MiB" line per backend
-        # buffer; CUDA/ROCm/Metal/Vulkan/OpenCL/SYCL are GPU, CPU* are not.
-        gpu_markers = ("CUDA", "ROCm", "Metal", "Vulkan", "OpenCL", "SYCL")
-        saw_buffer_line = False
-        saw_gpu_buffer = False
-        for line in self._stdout_lines:
-            if "model buffer size" not in line:
-                continue
-            saw_buffer_line = True
-            if any(marker in line for marker in gpu_markers):
-                saw_gpu_buffer = True
-                break
-        if not saw_buffer_line:
-            return None
-        return saw_gpu_buffer
+        return classify_gpu_offload_lines(self._stdout_lines)
 
     def load_cancelled(self) -> bool:
         """True if a load was cancelled (e.g. via unload/_cancel_event) and not
