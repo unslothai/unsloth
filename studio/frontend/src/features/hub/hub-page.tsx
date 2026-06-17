@@ -1004,6 +1004,23 @@ export function ModelsPage() {
     (opts: ModelLoadOptions, isDownloaded: boolean) => {
       if (!selectedModel) return;
       const runId = selectedModel.resource.runId;
+      // "Load on selection" off: stage GGUF picks instead of loading, so the
+      // chat page's staging flow can read the header and show the load options.
+      // Non-GGUF models have nothing to configure pre-load, so they load now.
+      if (
+        !useChatRuntimeStore.getState().loadOnSelection &&
+        (opts.ggufVariant != null || selectedModel.isGguf)
+      ) {
+        useChatRuntimeStore.getState().stageModel({
+          id: runId,
+          ggufVariant: opts.ggufVariant,
+          isGguf: selectedModel.isGguf,
+          isDownloaded,
+          expectedBytes: opts.expectedBytes,
+        });
+        openNewChat();
+        return;
+      }
       void selectModel({
         id: runId,
         ggufVariant: opts.ggufVariant,
@@ -1012,6 +1029,7 @@ export function ModelsPage() {
         throwOnError: true,
       })
         .then(() => {
+          // Read fresh: the load is async, so the checkpoint may have changed.
           const store = useChatRuntimeStore.getState();
           if (!modelIdsMatch(store.params.checkpoint, runId)) {
             store.setCheckpoint(runId, opts.ggufVariant ?? null);
