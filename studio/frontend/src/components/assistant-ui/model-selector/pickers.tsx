@@ -2931,22 +2931,22 @@ export function HubModelPicker({
             </>
           ) : null}
         </div>
+        {/* Sticky footer pinned to the bottom of the list. Uses the menu
+            background so rows scroll under it, with no divider line. */}
+        {onEject ? (
+          <div className="sticky bottom-0 bg-popover pt-1 dark:bg-[var(--sidebar)]">
+            <button
+              type="button"
+              onClick={onEject}
+              className="flex w-full items-center justify-center gap-2 rounded-md px-2.5 py-2 text-[13px] text-destructive transition-colors hover:bg-destructive/10"
+              title="Eject model"
+            >
+              <HugeiconsIcon icon={RemoveCircleIcon} className="size-3.5" />
+              Eject loaded model
+            </button>
+          </div>
+        ) : null}
       </div>
-      {/* Eject sits below the scroll area as a fixed footer so it stays in view
-          no matter how far the list is scrolled. */}
-      {onEject ? (
-        <div className="mt-1.5 border-t border-border/70 pt-1.5">
-          <button
-            type="button"
-            onClick={onEject}
-            className="flex w-full items-center justify-center gap-2 rounded-md px-2.5 py-2 text-[13px] text-destructive transition-colors hover:bg-destructive/10"
-            title="Eject model"
-          >
-            <HugeiconsIcon icon={RemoveCircleIcon} className="size-3.5" />
-            Eject loaded model
-          </button>
-        </div>
-      ) : null}
     </div>
   );
 }
