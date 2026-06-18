@@ -2594,6 +2594,16 @@ def _is_main_gguf_filename(name: str) -> bool:
     return _is_gguf_filename(name) and not _is_mmproj_filename(name)
 
 
+def _repo_has_mmproj(repo_info) -> bool:
+    """True if the repo ships a GGUF vision adapter (mmproj), so it can
+    take image inputs. Cheap: scans already-listed file names only."""
+    return any(
+        _is_mmproj_filename(f.file_name)
+        for revision in repo_info.revisions
+        for f in revision.files
+    )
+
+
 def _iter_gguf_paths(root: Path):
     for path in root.rglob("*"):
         if path.is_file() and _is_gguf_filename(path.name):
@@ -2691,6 +2701,7 @@ async def list_cached_gguf(current_subject: str = Depends(get_current_subject)):
                             "repo_id": repo_id,
                             "size_bytes": total_size,
                             "cache_path": str(repo_info.repo_path),
+                            "has_vision": _repo_has_mmproj(repo_info),
                         }
                         # Keep the newest timestamp across duplicate caches;
                         # attach only when known so absent rows sort as oldest.

@@ -12,8 +12,8 @@ import type {
 } from "../types";
 import type {
   ApiMonitorEntry,
-  AudioGenerationResponse,
   ApiMonitorResponse,
+  AudioGenerationResponse,
   GgufVariantsResponse,
   InferenceStatusResponse,
   ListLorasResponse,
@@ -196,6 +196,9 @@ export interface CachedGgufRepo {
   /** Epoch seconds of the newest downloaded quant; sorts Downloaded
    * newest-first. Optional for older-backend compatibility. */
   last_modified?: number;
+  /** True when the repo ships an mmproj adapter (image inputs). Optional for
+   * older-backend compatibility. */
+  has_vision?: boolean;
 }
 
 export async function getGgufDownloadProgress(

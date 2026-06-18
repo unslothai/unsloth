@@ -429,18 +429,23 @@ function ModelRow({
       <span className="ml-auto flex shrink-0 items-center gap-1.5">
         {showCaps && <CapabilityIcons caps={caps} />}
         {showVision && (
-          <span
-            title="Vision"
-            aria-label="Vision"
-            className="flex items-center gap-0.5 text-[9px] font-medium text-blue-400"
-          >
-            <HugeiconsIcon
-              icon={ViewIcon}
-              className="size-3"
-              strokeWidth={1.8}
-            />
-            Vision
-          </span>
+          <Tooltip delayDuration={0}>
+            <TooltipTrigger asChild={true}>
+              <span
+                aria-label="Vision"
+                className="flex items-center text-blue-400"
+              >
+                <HugeiconsIcon
+                  icon={ViewIcon}
+                  className="size-3.5"
+                  strokeWidth={1.8}
+                />
+              </span>
+            </TooltipTrigger>
+            <TooltipContent side="top" className="tooltip-compact">
+              This model can process image inputs
+            </TooltipContent>
+          </Tooltip>
         )}
         {selected && (
           <DotTag
@@ -2138,7 +2143,7 @@ export function HubModelPicker({
                       <ModelRow
                         label={c.repo_id}
                         meta="GGUF"
-                        showVision={visionByRepo[c.repo_id]}
+                        showVision={c.has_vision ?? visionByRepo[c.repo_id]}
                         selected={value === c.repo_id}
                         optionProps={hubModelList.getOptionProps(
                           optionKey,
