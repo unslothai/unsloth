@@ -580,3 +580,25 @@ def test_v1_models_retrieve_eligible_only_when_enabled(monkeypatch):
     with pytest.raises(HTTPException) as unknown:
         asyncio.run(inference_route.openai_retrieve_model("totally/unknown", "tester"))
     assert unknown.value.status_code == 404
+
+
+def test_v1_models_retrieve_is_case_insensitive(monkeypatch):
+    # The resolver lowercases its index, so a retrieve that differs only in case
+    # from a listed id must still hit (200), not 404. Guards the .lower() compare
+    # in openai_retrieve_model against a silent revert.
+    monkeypatch.setattr(
+        inference_route,
+        "_openai_model_objects",
+        lambda: [{"id": "unsloth/B-GGUF", "object": "model", "created": 1, "owned_by": "local"}],
+    )
+    monkeypatch.setattr(
+        resolver, "list_switch_eligible_ids", lambda: ["unsloth/A-GGUF", "unsloth/B-GGUF"]
+    )
+    monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: True)
+
+    # An eligible id retrieved with different casing still resolves.
+    obj = asyncio.run(inference_route.openai_retrieve_model("unsloth/a-gguf", "tester"))
+    assert obj["id"] == "unsloth/A-GGUF"
+    # The loaded model is also case-insensitively retrievable.
+    loaded = asyncio.run(inference_route.openai_retrieve_model("UNSLOTH/B-GGUF", "tester"))
+    assert loaded["id"] == "unsloth/B-GGUF"

@@ -5881,7 +5881,8 @@ async def openai_retrieve_model(model_id: str, current_subject: str = Depends(ge
     shadow it; ``{model_id:path}`` keeps ids with slashes intact.
     """
     for model in await _all_openai_model_objects():
-        if model["id"] == model_id:
+        # Case-insensitive to match the resolver, which lowercases its index.
+        if model["id"].lower() == model_id.lower():
             return model
     raise HTTPException(
         status_code = 404,
