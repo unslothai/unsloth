@@ -340,9 +340,9 @@ binary_tag = str(payload.get("binary_release_tag") or "").strip()
 if not repo or not release_tag:
     raise SystemExit(0)
 
-# For non-upstream sources (e.g. lemonade) the published_repo/release_tag
-# refer to the unsloth source tree while the actual binaries came from a
-# different repo. Show both so the log is unambiguous.
+# For non-fork sources (e.g. ggml-org upstream prebuilts) the published_repo/
+# release_tag refer to the unsloth source tree while the actual binaries came
+# from a different repo. Show both so the log is unambiguous.
 if source and source != "upstream" and binary_repo and binary_tag and binary_repo != repo:
     message = f"installed release: {repo}@{release_tag} + {source}@{binary_tag}"
 else:
@@ -385,6 +385,84 @@ keynames=$'\n'$(printenv | cut -d= -f1)
 if [[ "$keynames" == *$'\nCOLAB_'* ]]; then
     IS_COLAB=true
 fi
+
+# Resolve studio home + ownership marker before the llama-only split: the
+# llama.cpp section needs STUDIO_HOME / _STUDIO_HOME_IS_CUSTOM, but
+# UNSLOTH_STUDIO_LLAMA_ONLY=1 ('unsloth studio update') skips the base install.
+# UNSLOTH_STUDIO_HOME (or STUDIO_HOME alias) overrides the install root
+# (mirrors install.sh). UNSLOTH_STUDIO_HOME wins when both are set.
+_studio_override_var=""
+_studio_override="${UNSLOTH_STUDIO_HOME:-}"
+if [ -n "$_studio_override" ]; then
+    _studio_override_var="UNSLOTH_STUDIO_HOME"
+else
+    _studio_override="${STUDIO_HOME:-}"
+    [ -n "$_studio_override" ] && _studio_override_var="STUDIO_HOME"
+fi
+# Strip whitespace so " " is treated as unset (matches Python .strip()).
+_studio_override=$(printf '%s' "$_studio_override" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+case "$_studio_override" in
+    "~") _studio_override="$HOME" ;;
+    "~/"*) _studio_override="$HOME/${_studio_override#'~/'}" ;;
+esac
+if [ -n "$_studio_override" ]; then
+    # setup.sh runs against an existing install (via 'unsloth studio update');
+    # a typo in the override must fail fast instead of materializing an
+    # empty workspace dir. Mirrors setup.ps1 behavior.
+    if [ ! -d "$_studio_override" ]; then
+        echo "ERROR: $_studio_override_var=$_studio_override does not exist." >&2
+        echo "       Run install.sh to create the install root before 'unsloth studio update'." >&2
+        exit 1
+    fi
+    [ -w "$_studio_override" ] || { echo "ERROR: $_studio_override_var=$_studio_override is not writable." >&2; exit 1; }
+    STUDIO_HOME="$(CDPATH= cd -P -- "$_studio_override" && pwd -P)" || exit 1
+else
+    STUDIO_HOME="$HOME/.unsloth/studio"
+fi
+VENV_DIR="$STUDIO_HOME/unsloth_studio"
+VENV_T5_530_DIR="$STUDIO_HOME/.venv_t5_530"
+VENV_T5_550_DIR="$STUDIO_HOME/.venv_t5_550"
+VENV_T5_510_DIR="$STUDIO_HOME/.venv_t5_510"
+
+_STUDIO_OWNED_MARKER=".unsloth-studio-owned"
+_LEGACY_STUDIO_HOME="$HOME/.unsloth/studio"
+_studio_home_canon="$STUDIO_HOME"
+if [ -d "$_studio_home_canon" ]; then
+    _studio_home_canon=$(CDPATH= cd -P -- "$_studio_home_canon" 2>/dev/null && pwd -P) \
+        || _studio_home_canon="$STUDIO_HOME"
+fi
+if [ -d "$_LEGACY_STUDIO_HOME" ]; then
+    _LEGACY_STUDIO_HOME=$(CDPATH= cd -P -- "$_LEGACY_STUDIO_HOME" 2>/dev/null && pwd -P) \
+        || _LEGACY_STUDIO_HOME="$HOME/.unsloth/studio"
+fi
+_STUDIO_HOME_IS_CUSTOM=false
+if [ "$_studio_home_canon" != "$_LEGACY_STUDIO_HOME" ]; then
+    _STUDIO_HOME_IS_CUSTOM=true
+fi
+# Directory-local evidence that Studio created "$1", used to adopt a custom-home
+# llama.cpp predating the .unsloth-studio-owned marker without weakening the guard.
+# Only UNSLOTH_PREBUILT_INFO.json counts (written exclusively by the prebuilt
+# installer). A top-level llama-quantize symlink is NOT trusted: a user may have
+# their own build with one, and this runs right before a destructive rm -rf, so we
+# match Windows and keep markerless source builds strict.
+_studio_owned_adoptable() {
+    [ -f "$1/UNSLOTH_PREBUILT_INFO.json" ] && return 0
+    return 1
+}
+_assert_studio_owned_or_absent() {
+    _aso_dir="$1"
+    _aso_label="$2"
+    [ -d "$_aso_dir" ] || return 0
+    if [ "$_STUDIO_HOME_IS_CUSTOM" = true ] && [ ! -f "$_aso_dir/$_STUDIO_OWNED_MARKER" ]; then
+        if _studio_owned_adoptable "$_aso_dir"; then
+            : > "$_aso_dir/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
+            return 0
+        fi
+        echo "ERROR: $_aso_dir already exists and is not marked as a Studio-owned $_aso_label." >&2
+        echo "       Move it aside or choose an empty UNSLOTH_STUDIO_HOME before re-running." >&2
+        exit 1
+    fi
+}
 
 if [ "$_LLAMA_ONLY" != "1" ]; then
 # ── Detect whether frontend needs building ──
@@ -605,40 +683,6 @@ if [ -d "$SCRIPT_DIR/backend/core/data_recipe/oxc-validator" ] && command -v npm
 fi
 
 # ── Python venv + deps ──
-# UNSLOTH_STUDIO_HOME (or STUDIO_HOME alias) overrides the install root
-# (mirrors install.sh). UNSLOTH_STUDIO_HOME wins when both are set.
-_studio_override_var=""
-_studio_override="${UNSLOTH_STUDIO_HOME:-}"
-if [ -n "$_studio_override" ]; then
-    _studio_override_var="UNSLOTH_STUDIO_HOME"
-else
-    _studio_override="${STUDIO_HOME:-}"
-    [ -n "$_studio_override" ] && _studio_override_var="STUDIO_HOME"
-fi
-# Strip whitespace so " " is treated as unset (matches Python .strip()).
-_studio_override=$(printf '%s' "$_studio_override" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
-case "$_studio_override" in
-    "~") _studio_override="$HOME" ;;
-    "~/"*) _studio_override="$HOME/${_studio_override#'~/'}" ;;
-esac
-if [ -n "$_studio_override" ]; then
-    # setup.sh runs against an existing install (via 'unsloth studio update');
-    # a typo in the override must fail fast instead of materializing an
-    # empty workspace dir. Mirrors setup.ps1 behavior.
-    if [ ! -d "$_studio_override" ]; then
-        echo "ERROR: $_studio_override_var=$_studio_override does not exist." >&2
-        echo "       Run install.sh to create the install root before 'unsloth studio update'." >&2
-        exit 1
-    fi
-    [ -w "$_studio_override" ] || { echo "ERROR: $_studio_override_var=$_studio_override is not writable." >&2; exit 1; }
-    STUDIO_HOME="$(CDPATH= cd -P -- "$_studio_override" && pwd -P)" || exit 1
-else
-    STUDIO_HOME="$HOME/.unsloth/studio"
-fi
-VENV_DIR="$STUDIO_HOME/unsloth_studio"
-VENV_T5_530_DIR="$STUDIO_HOME/.venv_t5_530"
-VENV_T5_550_DIR="$STUDIO_HOME/.venv_t5_550"
-VENV_T5_510_DIR="$STUDIO_HOME/.venv_t5_510"
 
 [ -d "$REPO_ROOT/.venv" ] && rm -rf "$REPO_ROOT/.venv"
 [ -d "$REPO_ROOT/.venv_overlay" ] && rm -rf "$REPO_ROOT/.venv_overlay"
@@ -757,38 +801,6 @@ fi
 # Gemma 4 models need transformers>=5.5.0; Gemma 4 Unified needs 5.10.x.
 # Pre-install into separate directories to avoid runtime pip overhead.
 # The training subprocess prepends the appropriate dir to sys.path.
-#
-# Runs outside the _SKIP_PYTHON_DEPS gate so that upgrades from legacy
-# single .venv_t5 are always migrated to the tiered layout.
-# why: in env-override mode $STUDIO_HOME is user-chosen; require the
-# ownership marker before rm -rf so unrelated dirs survive. Gated on the
-# canonical comparison so an override pointing at the legacy default still
-# behaves like a default install.
-_STUDIO_OWNED_MARKER=".unsloth-studio-owned"
-_LEGACY_STUDIO_HOME="$HOME/.unsloth/studio"
-_studio_home_canon="$STUDIO_HOME"
-if [ -d "$_studio_home_canon" ]; then
-    _studio_home_canon=$(CDPATH= cd -P -- "$_studio_home_canon" 2>/dev/null && pwd -P) \
-        || _studio_home_canon="$STUDIO_HOME"
-fi
-if [ -d "$_LEGACY_STUDIO_HOME" ]; then
-    _LEGACY_STUDIO_HOME=$(CDPATH= cd -P -- "$_LEGACY_STUDIO_HOME" 2>/dev/null && pwd -P) \
-        || _LEGACY_STUDIO_HOME="$HOME/.unsloth/studio"
-fi
-_STUDIO_HOME_IS_CUSTOM=false
-if [ "$_studio_home_canon" != "$_LEGACY_STUDIO_HOME" ]; then
-    _STUDIO_HOME_IS_CUSTOM=true
-fi
-_assert_studio_owned_or_absent() {
-    _aso_dir="$1"
-    _aso_label="$2"
-    [ -d "$_aso_dir" ] || return 0
-    if [ "$_STUDIO_HOME_IS_CUSTOM" = true ] && [ ! -f "$_aso_dir/$_STUDIO_OWNED_MARKER" ]; then
-        echo "ERROR: $_aso_dir already exists and is not marked as a Studio-owned $_aso_label." >&2
-        echo "       Move it aside or choose an empty UNSLOTH_STUDIO_HOME before re-running." >&2
-        exit 1
-    fi
-}
 _target_has_pkg_version() {
     _thpv_dir="$1"
     _thpv_pkg="$2"
@@ -1004,6 +1016,19 @@ else
         fi
     done
 fi
+# UNSLOTH_ROCM_GFX_ARCH may be set on a host where no probe fired, so the override
+# nested in the AMD-detected branch above never ran and _setup_gfx is still empty.
+# Honour it here so the routing guard below and the --rocm-gfx forwarding both see
+# it (install_llama_prebuilt.py reads the same env var as the --rocm-gfx default).
+if [ "$_setup_nvidia_usable" != true ] && [ -z "${_setup_gfx:-}" ] && [ -n "${UNSLOTH_ROCM_GFX_ARCH:-}" ]; then
+    _setup_gfx="${UNSLOTH_ROCM_GFX_ARCH}"
+fi
+# A resolved/forwarded gfx arch (UNSLOTH_ROCM_GFX_ARCH) means an AMD GPU even when
+# no ROCm tooling is on PATH; route it to the fork so the per-gfx prebuilt is
+# picked instead of ggml-org / a source build.
+if [ "$_LINUX_HAS_GPU" = false ] && [ -n "${_setup_gfx:-}" ]; then
+    _LINUX_HAS_GPU=true
+fi
 
 if [ "$_HOST_SYSTEM" = "Linux" ] \
         && [ "$_HOST_MACHINE" = "x86_64" ] \
@@ -1086,7 +1111,7 @@ else
     if [ -n "${UNSLOTH_LLAMA_RELEASE_TAG:-}" ]; then
         _PREBUILT_CMD+=(--published-release-tag "$UNSLOTH_LLAMA_RELEASE_TAG")
     fi
-    # Forward the gfx arch resolved above so the lemonade HIP prebuilt is picked
+    # Forward the gfx arch resolved above so the per-gfx ROCm prebuilt is picked
     # even when the installer's own probe cannot report it (amd-smi-only hosts,
     # name-inferred arch). Implies --has-rocm on the installer side.
     if [ -n "${_setup_gfx:-}" ]; then
@@ -1603,6 +1628,9 @@ else
 
         if [ "$BUILD_OK" = true ]; then
             run_quiet_no_exit "build llama-quantize" cmake --build "$_BUILD_TMP/build" --config Release --target llama-quantize -j"$NCPU" || true
+            # Best-effort: the DiffusionGemma visual server (an example target, present
+            # on llama.cpp PR #24423). No-op when the diffusion example is not configured.
+            run_quiet_no_exit "build diffusion visual server" cmake --build "$_BUILD_TMP/build" --config Release --target llama-diffusion-gemma-visual-server -j"$NCPU" || true
         fi
 
         # Swap only after build succeeds -- preserves existing install on failure
@@ -1615,6 +1643,11 @@ else
             QUANTIZE_BIN="$LLAMA_CPP_DIR/build/bin/llama-quantize"
             if [ -f "$QUANTIZE_BIN" ]; then
                 ln -sf build/bin/llama-quantize "$LLAMA_CPP_DIR/llama-quantize"
+            fi
+            # DiffusionGemma visual server, if it was built (PR #24423): link next to
+            # llama-server so Studio serves DiffusionGemma GGUFs without DG_VISUAL_BIN.
+            if [ -f "$LLAMA_CPP_DIR/build/bin/llama-diffusion-gemma-visual-server" ]; then
+                ln -sf build/bin/llama-diffusion-gemma-visual-server "$LLAMA_CPP_DIR/llama-diffusion-gemma-visual-server"
             fi
         else
             rm -rf "$_BUILD_TMP"

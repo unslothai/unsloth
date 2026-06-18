@@ -433,3 +433,201 @@ def test_fetch_latest_release_tag_uses_publish_time(monkeypatch):
     ]
     monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout = 5.0: _Resp(payload))
     assert fr._fetch_latest_release_tag("unslothai/llama.cpp") == "b9596-mix-e6f2453"
+
+
+# reset_caches(drop_disk=...) -- post-update stale same-base mix disk cache.
+
+
+def _seed_disk_cache(tmp_path: Path, latest_tag: str) -> Path:
+    # Matches _cache_path_for under the fixture's stubbed _cache_dir.
+    cache_dir = tmp_path / ".freshness"
+    cache_dir.mkdir(exist_ok = True)
+    cache_file = cache_dir / "unslothai__llama.cpp.json"
+    cache_file.write_text(json.dumps({"fetched_at": time.time(), "latest_tag": latest_tag}))
+    return cache_file
+
+
+def test_reset_caches_drop_disk_removes_disk_cache(tmp_path):
+    cache_file = _seed_disk_cache(tmp_path, "b9596-mix-aaa")
+    assert cache_file.exists()
+    fr.reset_caches(drop_disk = True)
+    assert not cache_file.exists()
+
+
+def test_reset_caches_default_keeps_disk_cache(tmp_path):
+    # The no-arg form is in-memory only (its existing test-only contract); it
+    # must not delete the on-disk cache.
+    cache_file = _seed_disk_cache(tmp_path, "b9596-mix-aaa")
+    fr.reset_caches()
+    assert cache_file.exists()
+
+
+def test_reset_caches_drop_disk_on_missing_dir_is_noop(tmp_path):
+    # Fresh machine, no cache dir yet: drop_disk must be a quiet no-op.
+    assert not (tmp_path / ".freshness").exists()
+    fr.reset_caches(drop_disk = True)  # must not raise
+
+
+def test_drop_disk_lets_banner_fail_open_after_same_base_mix_swap(monkeypatch, tmp_path):
+    # P2 #2: the disk cache holds a still-fresh same-base mix (b9596-mix-aaa)
+    # from before an update to a *different* same-base mix (b9596-mix-bbb).
+    # The post-install path drops the disk cache; if the forced refresh is then
+    # offline, latest reads as None and the banner fails open -- instead of
+    # replaying the stale b9596-mix-aaa and falsely reading "behind".
+    _seed_disk_cache(tmp_path, "b9596-mix-aaa")
+    install_dir = tmp_path / "llama.cpp"
+    _write_marker(
+        install_dir,
+        tag = "b9596",
+        release_tag = "b9596-mix-bbb",
+        installed_at_utc = (datetime.now(tz = timezone.utc) - timedelta(days = 5))
+        .isoformat()
+        .replace("+00:00", "Z"),
+    )
+    bin_path = _fake_binary(install_dir, layout = "root")
+    # GitHub unreachable for the rest of the test (the offline post-install
+    # refresh, and the later status check).
+    monkeypatch.setattr(fr, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: None)
+
+    fr.reset_caches(drop_disk = True)  # exactly what the apply path now does
+    info = fr.check_prebuilt_freshness(str(bin_path))
+    assert info["latest_tag"] is None
+    assert info["behind"] is False
+    assert info["stale"] is False
+
+
+def test_in_memory_only_reset_replays_stale_same_base_mix(monkeypatch, tmp_path):
+    # Contrast/guard for the case above: an in-memory-only reset leaves the
+    # stale same-base mix on disk, so an offline check replays it and falsely
+    # reads behind/stale. This is exactly the failure drop_disk removes; if a
+    # future change makes the no-arg reset also clear disk, the apply-path call
+    # and this guard should be revisited together.
+    _seed_disk_cache(tmp_path, "b9596-mix-aaa")
+    install_dir = tmp_path / "llama.cpp"
+    _write_marker(
+        install_dir,
+        tag = "b9596",
+        release_tag = "b9596-mix-bbb",
+        installed_at_utc = (datetime.now(tz = timezone.utc) - timedelta(days = 5))
+        .isoformat()
+        .replace("+00:00", "Z"),
+    )
+    bin_path = _fake_binary(install_dir, layout = "root")
+    monkeypatch.setattr(fr, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: None)
+
+    fr.reset_caches()  # in-memory only -> stale disk value survives
+    info = fr.check_prebuilt_freshness(str(bin_path))
+    assert info["latest_tag"] == "b9596-mix-aaa"
+    assert info["behind"] is True
+    assert info["stale"] is True
+
+
+# update_download_size_bytes (banner download-size lookup).
+
+
+def _patch_assets(monkeypatch, mapping):
+    """Stub latest_release_assets with a per-repo {asset_name: size} lookup."""
+    monkeypatch.setattr(
+        fr,
+        "latest_release_assets",
+        lambda repo, *, force_refresh = False: mapping.get(repo),
+    )
+
+
+def test_update_size_unsloth_prebuilt_exact_match(monkeypatch):
+    # The unsloth fork's own bundle (app-<tag>-<platform>): the want= exact match
+    # on app-<latest>-<suffix> wins.
+    marker = {
+        "asset": "app-b9190-linux-x64-cuda13-newer.tar.gz",
+        "published_repo": "unslothai/llama.cpp",
+    }
+    _patch_assets(
+        monkeypatch,
+        {
+            "unslothai/llama.cpp": {
+                "app-b9300-linux-x64-cuda13-newer.tar.gz": 123_456_789,
+                "app-b9300-windows-x64-cuda13-newer.zip": 999,
+            }
+        },
+    )
+    assert fr.update_download_size_bytes(marker, "b9300", "unslothai/llama.cpp") == 123_456_789
+
+
+def test_update_size_macos_fork_asset_suffix_fallback(monkeypatch):
+    # macOS bundles use the upstream-style llama-<tag>-bin-macos-*, matched via the
+    # endswith fallback in the publish repo.
+    marker = {
+        "asset": "llama-b9190-bin-macos-arm64.tar.gz",
+        "published_repo": "unslothai/llama.cpp",
+    }
+    _patch_assets(
+        monkeypatch,
+        {"unslothai/llama.cpp": {"llama-b9300-bin-macos-arm64.tar.gz": 55_000_000}},
+    )
+    assert fr.update_download_size_bytes(marker, "b9300", "unslothai/llama.cpp") == 55_000_000
+
+
+def test_update_size_upstream_ubuntu_uses_binary_repo(monkeypatch):
+    # #6338 P2: ggml-org ubuntu-* prebuilt lives in binary_repo, not the fork
+    # publish repo. The size must still resolve.
+    marker = {
+        "asset": "llama-b9190-bin-ubuntu-x64.tar.gz",
+        "published_repo": "unslothai/llama.cpp",
+        "binary_repo": "ggml-org/llama.cpp",
+    }
+    _patch_assets(
+        monkeypatch,
+        {
+            "unslothai/llama.cpp": {"app-b9300-linux-x64-cuda13-newer.tar.gz": 1},
+            "ggml-org/llama.cpp": {
+                "llama-b9673-bin-ubuntu-x64.tar.gz": 42_000_000,
+                "llama-b9673-bin-ubuntu-vulkan-x64.tar.gz": 7,
+            },
+        },
+    )
+    assert fr.update_download_size_bytes(marker, "b9300", "unslothai/llama.cpp") == 42_000_000
+
+
+def test_update_size_upstream_windows_uses_binary_repo(monkeypatch):
+    # Regression (#6338 P2): the Windows upstream CPU prebuilt uses a win-* token.
+    marker = {
+        "asset": "llama-b9190-bin-win-cpu-x64.zip",
+        "published_repo": "unslothai/llama.cpp",
+        "binary_repo": "ggml-org/llama.cpp",
+    }
+    _patch_assets(
+        monkeypatch,
+        {"ggml-org/llama.cpp": {"llama-b9673-bin-win-cpu-x64.zip": 33_000_000}},
+    )
+    assert fr.update_download_size_bytes(marker, "b9300", "unslothai/llama.cpp") == 33_000_000
+
+
+def test_update_size_no_matching_asset_fails_open(monkeypatch):
+    # A ROCm version drift (installed 6.4 vs latest 7.2) leaves no suffix match;
+    # the helper fails open to None rather than guessing a wrong artifact.
+    marker = {
+        "asset": "llama-b9190-bin-ubuntu-rocm-6.4-x64.tar.gz",
+        "published_repo": "unslothai/llama.cpp",
+        "binary_repo": "ggml-org/llama.cpp",
+    }
+    _patch_assets(
+        monkeypatch,
+        {"ggml-org/llama.cpp": {"llama-b9673-bin-ubuntu-rocm-7.2-x64.tar.gz": 9}},
+    )
+    assert fr.update_download_size_bytes(marker, "b9300", "unslothai/llama.cpp") is None
+
+
+def test_update_size_missing_inputs_fail_open(monkeypatch):
+    _patch_assets(
+        monkeypatch,
+        {"unslothai/llama.cpp": {"app-b9300-linux-x64-cpu.tar.gz": 5}},
+    )
+    # No marker, no latest tag, or no asset string -> None (never raise).
+    assert fr.update_download_size_bytes(None, "b9300", "unslothai/llama.cpp") is None
+    assert (
+        fr.update_download_size_bytes(
+            {"asset": "app-b9190-linux-x64-cpu.tar.gz"}, None, "unslothai/llama.cpp"
+        )
+        is None
+    )
+    assert fr.update_download_size_bytes({"asset": None}, "b9300", "unslothai/llama.cpp") is None

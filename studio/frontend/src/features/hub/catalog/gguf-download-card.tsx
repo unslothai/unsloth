@@ -28,13 +28,13 @@ import {
 import { cn } from "@/lib/utils";
 import { useHfTokenStore } from "../stores/hf-token-store";
 import {
-  ArrowDown01Icon,
   Delete02Icon,
   Download01Icon,
   InformationCircleIcon,
   PencilEdit02Icon,
   PlayIcon,
 } from "@hugeicons/core-free-icons";
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   memo,
@@ -110,7 +110,7 @@ const FIT_BADGE: Record<GgufFitClass, FitBadgeMeta> = {
 
 /** Chip styling matching the on-device list's StatChip, no icon. */
 const CHIP_BASE =
-  "inline-flex h-5 shrink-0 items-center justify-center whitespace-nowrap rounded-[7px] border px-1.5 text-[11.5px] font-medium tabular-nums leading-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]";
+  "inline-flex h-5 shrink-0 items-center justify-center whitespace-nowrap rounded-full border px-2 text-[11.5px] font-medium tabular-nums leading-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]";
 const CHIP_DEFAULT =
   "border-foreground/15 bg-muted text-foreground/85 dark:border-border/60 dark:bg-white/[0.04] dark:text-foreground/85";
 const CHIP_ACTIVE =
@@ -328,7 +328,7 @@ const GgufVariantMenuRow = memo(function GgufVariantMenuRow({
               onClick={handleDelete}
               aria-label={`Delete ${item.label}${item.partial && !item.downloaded ? " (partial)" : ""}`}
               className={cn(
-                "absolute inset-0 inline-flex cursor-pointer items-center justify-center rounded-[7px]",
+                "absolute inset-0 inline-flex cursor-pointer items-center justify-center rounded-full",
                 "bg-popover text-foreground/70 ring-1 ring-border transition-colors",
                 "opacity-0 group-hover:opacity-100 focus-visible:opacity-100",
                 "hover:text-destructive hover:ring-destructive/40",
@@ -588,7 +588,7 @@ export function GgufDownloadCard({
   const variantListUnavailable = !sortedVariants || sortedVariants.length === 0;
   const showVariantLoadingState = loading && variantListUnavailable;
 
-  // Keep showing download progress even when the variant list is unavailable, so a
+  // Keep showing download progress while the variant list is unavailable, so a
   // remount never hides an in-flight download behind the variant status card.
   if (progress && variantListUnavailable) {
     return (
@@ -666,7 +666,7 @@ export function GgufDownloadCard({
                 e.preventDefault();
                 setOpen((o) => !o);
               }}
-              className="hub-menu-trigger flex h-9 min-w-0 flex-1 cursor-pointer items-center gap-2.5 rounded-[12px] px-3 text-left transition-colors hover:bg-foreground/[0.04] data-[state=open]:bg-foreground/[0.06] dark:hover:bg-white/[0.1] dark:data-[state=open]:bg-white/[0.06]"
+              className="hub-menu-trigger flex h-9 min-w-0 flex-1 cursor-pointer items-center gap-2.5 rounded-full px-3 text-left transition-colors hover:bg-foreground/[0.04] data-[state=open]:bg-foreground/[0.06] dark:hover:bg-white/[0.04] dark:data-[state=open]:bg-white/[0.06]"
             >
               {selected ? (
                 <QuantBadge
@@ -713,8 +713,7 @@ export function GgufDownloadCard({
                     </span>
                   )}
                 <HugeiconsIcon
-                  icon={ArrowDown01Icon}
-                  strokeWidth={1.25}
+                  icon={ChevronDownStandardIcon}
                   className="ml-0.5 size-3.5 shrink-0"
                 />
               </span>
@@ -723,7 +722,7 @@ export function GgufDownloadCard({
           <PopoverContent
             align="start"
             side="bottom"
-            sideOffset={0}
+            sideOffset={8}
             avoidCollisions={false}
             className="hub-menu-instant menu-soft-surface w-[var(--radix-popover-trigger-width)] min-w-[200px] gap-0 overflow-hidden p-0 py-2 ring-0"
           >

@@ -13,7 +13,8 @@ Ref: https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md
 
 from __future__ import annotations
 
-from typing import Iterable, Optional
+import os
+from typing import Iterable, Mapping, Optional
 
 # Each group = every alias (short + long) of one hard-denied flag.
 # Extend the matching group when llama.cpp adds a new alias.
@@ -109,6 +110,7 @@ def validate_extra_args(args: Optional[Iterable[str]]) -> list[str]:
         out.append(token)
     parse_ctx_override(out)
     parse_cache_override(out)
+    parse_split_mode_override(out)
     return out
 
 
@@ -123,7 +125,9 @@ def is_managed_flag(flag: str) -> bool:
 # from inherited extras so they can't last-wins-override an Apply that
 # re-sets the same field.
 _CONTEXT_FLAGS: frozenset[str] = frozenset({"-c", "--ctx-size"})
-_CACHE_FLAGS: frozenset[str] = frozenset({"-ctk", "--cache-type-k", "-ctv", "--cache-type-v"})
+_CACHE_TYPE_K_FLAGS: frozenset[str] = frozenset({"-ctk", "--cache-type-k"})
+_CACHE_TYPE_V_FLAGS: frozenset[str] = frozenset({"-ctv", "--cache-type-v"})
+_CACHE_FLAGS: frozenset[str] = _CACHE_TYPE_K_FLAGS | _CACHE_TYPE_V_FLAGS
 _SPEC_FLAGS: frozenset[str] = frozenset(
     {
         "--spec-default",
@@ -132,13 +136,22 @@ _SPEC_FLAGS: frozenset[str] = frozenset(
         "--spec-ngram-size",
         "--draft-min",
         "--draft-max",
-        # MTP path (llama.cpp #22673). --model-draft and aliases are
-        # Studio-managed since the separate-drafter support (Gemma 4): an
-        # inherited copy must not last-wins-override the auto-detected
-        # drafter. Explicit extras for the current load are never stripped.
+        # MTP path (llama.cpp #22673). The drafter selectors (local --model-draft
+        # and HF --spec-draft-hf aliases) are Studio-managed since the separate-
+        # drafter support (Gemma 4): an inherited copy must not last-wins-override
+        # the auto-detected drafter. Explicit extras for the current load are never
+        # stripped. The per-drafter tuning knobs (--spec-draft-type-*, -ngld,
+        # --spec-draft-device) are deliberately NOT stripped: the VRAM budget reads
+        # them via the same parsers the child honors, so they stay consistent on
+        # inherit, and stripping them would silently move a CPU-offloaded drafter
+        # back onto the GPU.
         "--model-draft",
         "-md",
         "--spec-draft-model",
+        "--spec-draft-hf",
+        "-hfd",
+        "-hfrd",
+        "--hf-repo-draft",
         "--spec-draft-n-max",
         "--spec-draft-n-min",
         "--spec-draft-p-min",
@@ -157,8 +170,20 @@ _TEMPLATE_FLAGS: frozenset[str] = frozenset(
         "--no-jinja",
     }
 )
+# Multi-GPU split mode shadows the Tensor Parallelism toggle
+# (--split-mode tensor). Pass-through stays allowed so users keep the
+# row/none/layer modes the toggle doesn't expose, but it's stripped on
+# inherit and reconciled into the round-tripped tensor_parallel state.
+# --tensor-split is coupled to the split mode and is stripped with it: Studio
+# owns the tensor-mode split ratios, so an inherited/stale --tensor-split must
+# not last-wins-override Studio's computed asymmetric split.
+_SPLIT_MODE_FLAGS: frozenset[str] = frozenset({"-sm", "--split-mode"})
+_TENSOR_SPLIT_FLAGS: frozenset[str] = frozenset({"-ts", "--tensor-split"})
+_SPLIT_SHADOWING_FLAGS: frozenset[str] = _SPLIT_MODE_FLAGS | _TENSOR_SPLIT_FLAGS
 
-_SHADOWING_FLAGS: frozenset[str] = _CONTEXT_FLAGS | _CACHE_FLAGS | _SPEC_FLAGS | _TEMPLATE_FLAGS
+_SHADOWING_FLAGS: frozenset[str] = (
+    _CONTEXT_FLAGS | _CACHE_FLAGS | _SPEC_FLAGS | _TEMPLATE_FLAGS | _SPLIT_SHADOWING_FLAGS
+)
 
 # Shadowing flags that take no value -- strip the flag only, not the next token.
 _BOOLEAN_SHADOWING_FLAGS: frozenset[str] = frozenset({"--spec-default", "--jinja", "--no-jinja"})
@@ -213,11 +238,12 @@ def resolve_requested_ctx(args: Optional[Iterable[str]], fallback_n_ctx: int) ->
     return override if override is not None else fallback_n_ctx
 
 
-def parse_cache_override(args: Optional[Iterable[str]]) -> Optional[str]:
-    """Return the last-wins cache type if extras pass cache flags.
+def _last_flag_value(args: Optional[Iterable[str]], flags: frozenset[str]) -> Optional[str]:
+    """Return the last-wins string value among ``flags`` in extras, or None.
 
-    Recognises -ctk (key) and -ctv (value); treats both as one setting,
-    since Studio's KV estimate has a single cache_type_kv knob.
+    Handles both ``--flag=value`` and ``--flag value`` forms and raises if a
+    matched flag has no (or an empty) value. Shared by the single-knob
+    last-wins parsers (cache type, split mode).
     """
     if not args:
         return None
@@ -228,7 +254,7 @@ def parse_cache_override(args: Optional[Iterable[str]]) -> Optional[str]:
     while i < n:
         tok = tokens[i]
         flag = _flag_name(tok)
-        if flag is None or flag not in _CACHE_FLAGS:
+        if flag is None or flag not in flags:
             i += 1
             continue
 
@@ -249,6 +275,31 @@ def parse_cache_override(args: Optional[Iterable[str]]) -> Optional[str]:
     return override
 
 
+def parse_cache_override(args: Optional[Iterable[str]]) -> Optional[str]:
+    """Return the last-wins cache type if extras pass cache flags.
+
+    Mirrors parse_ctx_override but for cache type. Recognises both -ctk
+    (key) and -ctv (value). When both flags appear, returns the last-wins
+    value, treating key and value cache flags as the same setting because
+    Studio's KV estimate has a single cache_type_kv knob.
+    """
+    return _last_flag_value(args, _CACHE_FLAGS)
+
+
+def parse_cache_override_per_axis(
+    args: Optional[Iterable[str]],
+) -> tuple[Optional[str], Optional[str]]:
+    """Last-wins --cache-type-k / --cache-type-v values kept apart, as (k, v).
+
+    parse_cache_override collapses both axes to one last-wins value; this keeps
+    them separate so an asymmetric K/V can be budgeted by its heavier axis.
+    """
+    return (
+        _last_flag_value(args, _CACHE_TYPE_K_FLAGS),
+        _last_flag_value(args, _CACHE_TYPE_V_FLAGS),
+    )
+
+
 def resolve_cache_type_kv(
     args: Optional[Iterable[str]], fallback_cache_type_kv: Optional[str]
 ) -> Optional[str]:
@@ -260,6 +311,106 @@ def resolve_cache_type_kv(
     return override if override is not None else fallback_cache_type_kv
 
 
+def parse_split_mode_override(args: Optional[Iterable[str]]) -> Optional[str]:
+    """Return the last-wins ``--split-mode`` / ``-sm`` value from extras.
+
+    Mirrors parse_cache_override for the multi-GPU split mode. Returns the
+    raw mode string (e.g. ``tensor`` / ``row`` / ``none`` / ``layer``), or
+    None when extras don't set it.
+    """
+    return _last_flag_value(args, _SPLIT_MODE_FLAGS)
+
+
+def resolve_tensor_parallel(args: Optional[Iterable[str]], fallback_tensor_parallel: bool) -> bool:
+    """Return the tensor-parallel state load_model should treat as requested.
+
+    A user-supplied ``--split-mode`` in extras last-wins-overrides the
+    toggle, so reconcile it back into the boolean: any explicit split mode
+    means tensor-parallel is on iff that mode is ``tensor``. Falls back to
+    the toggle value when extras don't set it.
+    """
+    override = parse_split_mode_override(args)
+    if override is None:
+        return fallback_tensor_parallel
+    return override.strip().lower() == "tensor"
+
+
+def _env_split_mode_is_tensor(env: Optional[Mapping[str, str]] = None) -> bool:
+    """True when the inherited LLAMA_ARG_SPLIT_MODE env selects tensor. Studio
+    emits --split-mode only on its tensor branch, so a tensor env on the layer
+    path would run the child tensor-parallel unbudgeted; this flips the budget
+    to tensor. Only tensor is heavier, so other modes are ignored."""
+    raw = (os.environ if env is None else env).get("LLAMA_ARG_SPLIT_MODE")
+    return bool(raw) and raw.strip().lower() == "tensor"
+
+
+def _effective_tensor_parallel(
+    extra_args: Optional[Iterable[str]],
+    tensor_parallel: bool,
+    env: Optional[Mapping[str, str]] = None,
+) -> bool:
+    """Tensor-parallel decision including the inherited LLAMA_ARG_SPLIT_MODE env.
+
+    resolve_tensor_parallel (extras + toggle), flipped on when extras set no split
+    mode but the child inherits a tensor split env. Shared by load_model (which
+    budgets and launches it) and the tensor-fallback wrapper (so an env-only
+    tensor crash still retries layer split)."""
+    resolved = resolve_tensor_parallel(extra_args, tensor_parallel)
+    if (
+        not resolved
+        and parse_split_mode_override(extra_args) is None
+        and _env_split_mode_is_tensor(env)
+    ):
+        return True
+    return resolved
+
+
+def _tensor_parallel_matches_loaded(
+    extra_args: Optional[Iterable[str]],
+    requested_tensor_parallel: bool,
+    loaded_tensor_parallel: bool,
+    env: Optional[Mapping[str, str]] = None,
+) -> bool:
+    """Whether a duplicate load request matches a loaded server's tensor state.
+
+    Env-only tensor mode is a launch hint load_model may downgrade to layer split
+    (capacity/buffer), scrubbing the child env. So only let an inherited tensor env
+    raise a match against a server that *actually* launched tensor; on a downgraded
+    (layer) server the env is ignored, and an identical request would downgrade the
+    same way -- avoiding an endless reload of a healthy server."""
+    requested = resolve_tensor_parallel(extra_args, requested_tensor_parallel)
+    if (
+        loaded_tensor_parallel
+        and not requested
+        and parse_split_mode_override(extra_args) is None
+        and _env_split_mode_is_tensor(env)
+    ):
+        requested = True
+    return requested == loaded_tensor_parallel
+
+
+_MMPROJ_DISABLE_FLAGS: frozenset[str] = frozenset({"--no-mmproj", "--no-mmproj-auto"})
+_MMPROJ_ENABLE_FLAGS: frozenset[str] = frozenset({"--mmproj-auto"})
+
+
+def extra_args_disable_mmproj(args: Optional[Iterable[str]]) -> bool:
+    """True when pass-through args opt out of vision mmproj loading.
+
+    llama-server parses --mmproj-auto / --no-mmproj / --no-mmproj-auto as one
+    boolean with last-wins semantics; mirror that here.
+    """
+    if not args:
+        return False
+    disabled = False
+    for raw in args:
+        flag = _flag_name(str(raw))
+        if flag in _MMPROJ_DISABLE_FLAGS:
+            disabled = True
+        elif flag in _MMPROJ_ENABLE_FLAGS:
+            disabled = False
+    return disabled
+
+
 def strip_shadowing_flags(
     args: Iterable[str],
     *,
@@ -267,12 +418,15 @@ def strip_shadowing_flags(
     strip_cache: bool = True,
     strip_spec: bool = True,
     strip_template: bool = True,
+    strip_split_mode: bool = True,
 ) -> list[str]:
     """Strip flags that shadow first-class Studio settings.
 
     Used when inheriting a previous load's ``llama_extra_args`` so an
-    inherited `-c 4096` can't override the current `max_seq_length` (same for
-    cache / spec / template). Each ``strip_*`` toggle controls one group.
+    inherited `-c 4096` can't override the current `max_seq_length`
+    (same for cache / spec / template / split-mode). Each ``strip_*``
+    toggle controls one group; the route only strips groups whose
+    first-class field the caller actually supplied.
     """
     shadowing: set[str] = set()
     if strip_context:
@@ -283,6 +437,8 @@ def strip_shadowing_flags(
         shadowing |= _SPEC_FLAGS
     if strip_template:
         shadowing |= _TEMPLATE_FLAGS
+    if strip_split_mode:
+        shadowing |= _SPLIT_SHADOWING_FLAGS
 
     tokens = [str(a) for a in (args or [])]
     out: list[str] = []
@@ -303,3 +459,20 @@ def strip_shadowing_flags(
         else:
             i += 1
     return out
+
+
+def strip_split_mode_only(args: Optional[Iterable[str]]) -> Optional[list[str]]:
+    """Remove the split-mode group (``--split-mode`` / ``-sm`` and the coupled
+    ``--tensor-split`` / ``-ts``) from ``args``, keeping every other shadow flag.
+    Preserves a None/empty input so the inherit-vs-explicit-empty distinction
+    survives. Used where tensor mode is being forced off (downgrade / fallback)."""
+    if not args:
+        return args
+    return strip_shadowing_flags(
+        args,
+        strip_context = False,
+        strip_cache = False,
+        strip_spec = False,
+        strip_template = False,
+        strip_split_mode = True,
+    )

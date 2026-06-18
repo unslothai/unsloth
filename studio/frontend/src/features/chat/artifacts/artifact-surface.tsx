@@ -13,14 +13,9 @@ import { MascotImg } from "@/components/mascot-img";
 import { Button } from "@/components/ui/button";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { cn } from "@/lib/utils";
-import {
-  CheckIcon,
-  CopyIcon,
-  EyeIcon,
-  Maximize2Icon,
-  XIcon,
-} from "lucide-react";
+import { CopyIcon, EyeIcon, Maximize2Icon, XIcon } from "lucide-react";
 import { Download01Icon } from "@hugeicons/core-free-icons";
+import { Tick02Icon } from "@/lib/tick-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type KeyboardEvent,
@@ -31,6 +26,7 @@ import {
 } from "react";
 import { Streamdown } from "streamdown";
 import { ArtifactHtmlFrame, type ArtifactViewMode } from "./html-frame";
+import { useChatArtifactsStore } from "./store";
 import type { ChatArtifact } from "./types";
 import { getArtifactFilename } from "./types";
 
@@ -47,9 +43,9 @@ function buildHtmlFence(source: string): string {
   const fence = "`".repeat(longestBacktickRun + 1);
   return `${fence}html\n${source}\n${fence}`;
 }
-// Sandboxed artifact iframes are deliberately outside the overlay focus trap:
+// Sandboxed canvas iframes are deliberately outside the overlay focus trap:
 // granting same-origin sandbox privileges would weaken isolation, so reaching
-// interactive artifact content via keyboard is a known sandbox limitation.
+// interactive canvas content via keyboard is a known sandbox limitation.
 const FOCUSABLE_SELECTOR =
   'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
@@ -85,7 +81,7 @@ function ArtifactGeneratingPanel() {
           className="mx-auto mb-3 size-20 object-contain"
         />
         <p className="text-sm font-medium text-foreground">
-          Building artifact preview…
+          Building canvas preview…
         </p>
         <p className="text-xs leading-relaxed text-muted-foreground">
           The preview will appear here when the HTML is ready.
@@ -119,6 +115,8 @@ export function ArtifactSurface({
   onOpenFullscreen?: () => void;
 }) {
   const [viewMode, setViewMode] = useState<ArtifactViewMode>("preview");
+  // Follow the view the opener asked for (Preview vs Code button), per artifact.
+  const requestedView = useChatArtifactsStore((state) => state.requestedView);
   const [copied, setCopied] = useState(false);
   const copyResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const surfaceRef = useRef<HTMLElement>(null);
@@ -137,6 +135,10 @@ export function ArtifactSurface({
       if (copyResetRef.current) clearTimeout(copyResetRef.current);
     };
   }, []);
+
+  useEffect(() => {
+    setViewMode(requestedView);
+  }, [artifact.id, requestedView]);
 
   useEffect(() => {
     if (variant !== "overlay") return;
@@ -206,7 +208,7 @@ export function ArtifactSurface({
           ? "artifact-panel-shell mx-2 mt-[72px] mb-8 h-[calc(100%_-_104px)] overflow-visible rounded-[28px] border-t border-border/70 bg-card/95"
           : "h-[min(92vh,900px)] w-[min(96vw,1200px)] overflow-hidden rounded-2xl border border-border shadow-xl",
       )}
-      aria-label={`${artifact.title} artifact`}
+      aria-label={`${artifact.title} canvas`}
     >
       <header
         className={cn(
@@ -217,7 +219,7 @@ export function ArtifactSurface({
         <div
           className="flex items-center gap-1 rounded-full bg-muted/40 p-0.5"
           role="tablist"
-          aria-label="Artifact view"
+          aria-label="Canvas view"
         >
           {(["preview", "source"] as const).map((mode) => {
             const isPreview = mode === "preview";
@@ -239,7 +241,7 @@ export function ArtifactSurface({
                     "cursor-not-allowed opacity-50",
                 )}
                 aria-label={
-                  isPreview ? "Preview artifact" : "View artifact source"
+                  isPreview ? "Preview canvas" : "View canvas source"
                 }
                 aria-selected={effectiveViewMode === mode}
                 aria-pressed={effectiveViewMode === mode}
@@ -264,7 +266,7 @@ export function ArtifactSurface({
             className="size-8"
             disabled={isLoadingArtifact || !hasArtifactCode}
             onClick={() => downloadTextFile(filename, artifact.code)}
-            aria-label="Download artifact HTML"
+            aria-label="Download canvas HTML"
           >
             <HugeiconsIcon icon={Download01Icon} className="size-4" />
           </Button>
@@ -275,10 +277,10 @@ export function ArtifactSurface({
             className="size-8"
             disabled={isLoadingArtifact || !hasArtifactCode}
             onClick={handleCopy}
-            aria-label="Copy artifact HTML"
+            aria-label="Copy canvas HTML"
           >
             {copied ? (
-              <CheckIcon className="size-4" />
+              <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="size-4" />
             ) : (
               <CopyIcon className="size-4" />
             )}
@@ -290,7 +292,7 @@ export function ArtifactSurface({
               size="icon"
               className="size-8"
               onClick={onOpenFullscreen}
-              aria-label="Open artifact fullscreen"
+              aria-label="Open canvas fullscreen"
             >
               <Maximize2Icon className="size-4" />
             </Button>
@@ -301,7 +303,7 @@ export function ArtifactSurface({
             size="icon"
             className="size-8"
             onClick={onClose}
-            aria-label="Close artifact"
+            aria-label="Close canvas"
           >
             <XIcon className="size-4" />
           </Button>

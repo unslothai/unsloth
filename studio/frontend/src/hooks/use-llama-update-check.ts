@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch, getAuthToken } from "@/features/auth";
+import { refreshHardwareInfo } from "@/hooks/use-hardware-info";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 // First check shortly after load, then re-surface as an hourly reminder. The
@@ -11,8 +12,9 @@ const FIRST_CHECK_DELAY_MS = 1000;
 const REMINDER_INTERVAL_MS = 60 * 60 * 1000; // ~1 hour
 // "Remind me later" re-surfaces sooner than the hourly reminder.
 const SNOOZE_DELAY_MS = 15 * 60 * 1000; // ~15 minutes
-// While an update is applying, poll the job state at this cadence.
-const JOB_POLL_INTERVAL_MS = 1500;
+// Poll cadence while applying. Short so the installer's ~5% milestones are
+// observed instead of a fast download finishing between two slow polls.
+const JOB_POLL_INTERVAL_MS = 500;
 
 export interface LlamaUpdateJob {
   state: "idle" | "running" | "success" | "error";
@@ -29,6 +31,8 @@ export interface LlamaUpdateStatus {
   update_available: boolean;
   installed_tag: string | null;
   latest_tag: string | null;
+  // Download size of the prebuilt Update would fetch, in bytes (null if unknown).
+  update_size_bytes: number | null;
   job: LlamaUpdateJob;
 }
 
@@ -41,6 +45,8 @@ function parseStatus(value: unknown): LlamaUpdateStatus | null {
     update_available: s.update_available === true,
     installed_tag: typeof s.installed_tag === "string" ? s.installed_tag : null,
     latest_tag: typeof s.latest_tag === "string" ? s.latest_tag : null,
+    update_size_bytes:
+      typeof s.update_size_bytes === "number" ? s.update_size_bytes : null,
     job: {
       state: (job.state as LlamaUpdateJob["state"]) ?? "idle",
       message: typeof job.message === "string" ? job.message : "",
@@ -66,6 +72,11 @@ async function fetchStatus(
     return null;
   }
 }
+
+// Update probes force a refresh so a newly published build is not masked by the
+// backend's 24h release cache (the banner would otherwise lag up to a day). The
+// job-progress poll below stays cached; it only reads local job state.
+const recheckStatus = () => fetchStatus(true);
 
 interface UseLlamaUpdateCheckOptions {
   enabled?: boolean;
@@ -114,6 +125,7 @@ export function useLlamaUpdateCheck({
         setApplying(false);
         if (s.job.state === "success") {
           setVisible(false);
+          void refreshHardwareInfo();
           onDone?.({ ok: true, tag: s.job.to_tag });
         } else if (s.job.state === "error") {
           // Leave the banner up so the user can retry; clearing applying drops
@@ -149,17 +161,24 @@ export function useLlamaUpdateCheck({
   );
 
   useEffect(() => {
-    if (!enabled) return;
+    if (!enabled) {
+      // Disabled mid-update: stop showing and tracking, and clear `applying`
+      // so the banner's animation loop stops too. Re-enabling re-detects a
+      // still-running job below and resumes tracking via surfaceIfAvailable.
+      setVisible(false);
+      setApplying(false);
+      return;
+    }
     let canceled = false;
 
     const firstTimer = setTimeout(() => {
-      fetchStatus().then((s) => {
+      recheckStatus().then((s) => {
         if (!canceled) surfaceIfAvailable(s);
       });
     }, FIRST_CHECK_DELAY_MS);
 
     const reminder = setInterval(() => {
-      fetchStatus().then((s) => {
+      recheckStatus().then((s) => {
         if (!canceled) surfaceIfAvailable(s);
       });
     }, REMINDER_INTERVAL_MS);
@@ -186,7 +205,7 @@ export function useLlamaUpdateCheck({
     if (snoozeTimer.current) clearTimeout(snoozeTimer.current);
     snoozeTimer.current = setTimeout(() => {
       snoozeTimer.current = null;
-      fetchStatus().then(surfaceIfAvailable);
+      recheckStatus().then(surfaceIfAvailable);
     }, SNOOZE_DELAY_MS);
   }, [surfaceIfAvailable]);
 
