@@ -6158,7 +6158,6 @@ class LlamaCppBackend:
         isolated, mirroring the reaper's custom-root isolation)."""
         try:
             from utils.paths.storage_roots import studio_root  # noqa: WPS433
-
             return studio_root() / "llama-server.pid"
         except Exception:
             return None
@@ -6193,7 +6192,6 @@ class LlamaCppBackend:
         uncertainty so an unrelated process is never killed."""
         try:
             import psutil
-
             try:
                 proc = psutil.Process(pid)
                 if (proc.name() or "").lower().startswith("llama-server"):

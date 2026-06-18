@@ -482,7 +482,6 @@ async def lifespan(app: FastAPI):
         # Mirror run.py's _graceful_shutdown step 5 so a direct-uvicorn shutdown
         # (which bypasses the signal handler) also kills the GPU child.
         from routes.inference import _llama_cpp_backend
-
         if _llama_cpp_backend is not None:
             _llama_cpp_backend._kill_process()
 
