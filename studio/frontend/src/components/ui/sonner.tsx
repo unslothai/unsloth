@@ -19,8 +19,11 @@ import { Toaster as Sonner, type ToasterProps } from "sonner";
 const handleToastPointerDownCapture = (
   event: React.PointerEvent<HTMLDivElement>,
 ) => {
-  const target = event.target as HTMLElement | null;
-  if (!target?.closest("[data-sonner-toast]")) return;
+  // closest() lives on Element, so this also covers SVG icon targets; guard
+  // against non-Element targets defensively.
+  const target = event.target as Element | null;
+  if (typeof target?.closest !== "function") return;
+  if (!target.closest("[data-sonner-toast]")) return;
   if (
     target.closest("button,[data-button],[data-close-button],[data-cancel]")
   ) {
