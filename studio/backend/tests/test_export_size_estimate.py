@@ -132,6 +132,65 @@ class TestExportSizeEndpoint(unittest.TestCase):
         # The failed first call was re-attempted (not served from cache).
         self.assertEqual(mock_sizer.call_count, 2)
 
+    def test_token_is_forwarded_to_sizer(self):
+        # The X-HF-Token header value must reach the sizer for gated repos.
+        with (
+            patch.object(self.models_route, "is_local_path", return_value = False),
+            patch.object(
+                self.models_route, "resolve_cached_repo_id_case", side_effect = lambda m: m
+            ),
+            patch(
+                "utils.hardware.hardware.estimate_fp16_model_size_bytes",
+                return_value = (_QWEN35_FP16_BYTES, "safetensors"),
+            ) as mock_sizer,
+        ):
+            asyncio.run(
+                self.models_route.get_export_size(
+                    model = "unsloth/Private",
+                    hf_token = "secret-token",
+                    current_subject = "test-user",
+                )
+            )
+        self.assertEqual(mock_sizer.call_args.kwargs.get("hf_token"), "secret-token")
+
+    def test_arbitrary_local_path_is_not_scanned(self):
+        # An authenticated caller must not be able to make the sizer rglob an
+        # arbitrary directory; unsafe local paths return unavailable, unscanned.
+        with (
+            patch.object(self.models_route, "is_local_path", return_value = True),
+            patch.object(self.models_route, "_is_sizable_local_path", return_value = False),
+            patch(
+                "utils.hardware.hardware.estimate_fp16_model_size_bytes"
+            ) as mock_sizer,
+        ):
+            resp = asyncio.run(
+                self.models_route.get_export_size(
+                    model = "/etc", hf_token = None, current_subject = "test-user"
+                )
+            )
+        self.assertIsNone(resp.fp16_bytes)
+        self.assertEqual(resp.source, "unavailable")
+        mock_sizer.assert_not_called()
+
+    def test_sizable_local_path_is_sized(self):
+        # A local path under an allowed Studio root is sized normally.
+        with (
+            patch.object(self.models_route, "is_local_path", return_value = True),
+            patch.object(self.models_route, "_is_sizable_local_path", return_value = True),
+            patch(
+                "utils.hardware.hardware.estimate_fp16_model_size_bytes",
+                return_value = (_QWEN35_FP16_BYTES, "local"),
+            ),
+        ):
+            resp = asyncio.run(
+                self.models_route.get_export_size(
+                    model = "/root/.unsloth/studio/outputs/run", hf_token = None,
+                    current_subject = "test-user",
+                )
+            )
+        self.assertEqual(resp.fp16_bytes, _QWEN35_FP16_BYTES)
+        self.assertEqual(resp.source, "local")
+
 
 if __name__ == "__main__":
     unittest.main()

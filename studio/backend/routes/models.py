@@ -11,7 +11,7 @@ import shutil
 import sys
 import uuid
 from pathlib import Path
-from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query
 from typing import List, Optional
 import structlog
 from loggers import get_logger
@@ -2767,10 +2767,38 @@ async def list_checkpoints(
         )
 
 
-# Cache only successful estimates, keyed by (model, hf_token). Failures are NOT
-# cached so a transient HF/offline/gated error can recover once metadata (or a
-# token) becomes available, instead of being pinned until process restart.
-_EXPORT_SIZE_CACHE: dict[tuple[str, Optional[str]], tuple[int, int, str]] = {}
+# Cache only successful estimates, keyed by model id ONLY. The fp16 size does
+# not depend on which (valid) token fetched it, so the token is never part of
+# the key and never retained in memory. Failures are NOT cached, so a transient
+# HF/offline/gated error can recover once metadata (or a token) becomes
+# available, instead of being pinned until process restart.
+_EXPORT_SIZE_CACHE: dict[str, tuple[int, int, str]] = {}
+
+
+def _is_sizable_local_path(model: str) -> bool:
+    """True only for local paths under a known Studio data root.
+
+    The local sizing path rglob-scans the directory; restricting it to the
+    outputs / exports / cache / home roots prevents an authenticated caller
+    from triggering a scan of an arbitrary directory (e.g. ``/``).
+    """
+    from utils.paths import outputs_root, exports_root, studio_root
+    from utils.paths.storage_roots import cache_root
+
+    try:
+        target = Path(model).expanduser().resolve()
+    except (OSError, RuntimeError, ValueError):
+        return False
+    if not target.exists():
+        return False
+    for root in (studio_root(), outputs_root(), exports_root(), cache_root()):
+        try:
+            root_resolved = root.resolve()
+        except (OSError, RuntimeError, ValueError):
+            continue
+        if target == root_resolved or target.is_relative_to(root_resolved):
+            return True
+    return False
 
 
 def _export_size_cached(
@@ -2778,16 +2806,16 @@ def _export_size_cached(
 ) -> tuple[Optional[int], Optional[int], str]:
     """Estimate a model's FP16/BF16-equivalent size in bytes (+ total params).
 
-    Successful results are memoized so repeated Export-page selections of the
-    same model don't re-hit Hugging Face. Never raises: any failure (offline,
-    gated, bad id) returns ``(None, None, "unavailable")`` -- and is deliberately
-    NOT cached so it can recover later. The sizer is imported lazily from the
-    module path the tests patch (``utils.hardware.hardware``).
+    Successful results are memoized (by model id) so repeated Export-page
+    selections of the same model don't re-hit Hugging Face. Never raises: any
+    failure (offline, gated, bad id) returns ``(None, None, "unavailable")``
+    -- and is deliberately NOT cached so it can recover later. The sizer is
+    imported lazily from the module path the tests patch
+    (``utils.hardware.hardware``).
 
     Blocking (HF metadata / config / disk); call via a worker thread.
     """
-    key = (model, hf_token)
-    cached = _EXPORT_SIZE_CACHE.get(key)
+    cached = _EXPORT_SIZE_CACHE.get(model)
     if cached is not None:
         return cached
     try:
@@ -2797,7 +2825,7 @@ def _export_size_cached(
         if not fp16_bytes or fp16_bytes <= 0:
             return None, None, source or "unavailable"
         result = (int(fp16_bytes), int(fp16_bytes) // 2, source)
-        _EXPORT_SIZE_CACHE[key] = result
+        _EXPORT_SIZE_CACHE[model] = result
         return result
     except Exception as e:  # defensive: never break the Export page over a size hint
         logger.warning("Could not estimate export size for '%s': %s", model, e)
@@ -2807,7 +2835,7 @@ def _export_size_cached(
 @router.get("/export-size", response_model = ExportSizeResponse)
 async def get_export_size(
     model: str = Query(..., description = "Base model id or local model path to size"),
-    hf_token: Optional[str] = Query(None),
+    hf_token: Optional[str] = Header(None, alias = "X-HF-Token"),
     current_subject: str = Depends(get_current_subject),
 ):
     """Estimate a model's FP16/BF16-equivalent size for the Export page.
@@ -2817,9 +2845,19 @@ async def get_export_size(
     HTTP 200 when the size can't be determined, so the UI shows no estimate
     rather than a misleading fixed number. Reuses the MoE-aware sizer
     ``estimate_fp16_model_size_bytes`` (safetensors -> config -> local -> vllm).
+
+    The HF token (for private/gated repos) is taken from the ``X-HF-Token``
+    header rather than the query string, so it is never written to URLs/logs.
     """
-    resolved = model
-    if not is_local_path(model):
+    if is_local_path(model):
+        # Only size local paths under a known Studio root; never scan arbitrary
+        # directories supplied by the caller.
+        if not _is_sizable_local_path(model):
+            return ExportSizeResponse(
+                model = model, fp16_bytes = None, total_params = None, source = "unavailable"
+            )
+        resolved = model
+    else:
         resolved = resolve_cached_repo_id_case(model)
     # The sizer does blocking network/disk I/O; run it off the event loop so a
     # slow Hub request can't stall other API/SSE endpoints.

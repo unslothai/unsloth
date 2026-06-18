@@ -66,13 +66,15 @@ export async function fetchExportSize(
   signal?: AbortSignal,
 ): Promise<ExportSizeEstimate> {
   // The token lets the sizer read safetensors/config metadata for private or
-  // gated repos, which would otherwise return no estimate.
-  const tokenParam = hfToken
-    ? `&hf_token=${encodeURIComponent(hfToken)}`
-    : "";
+  // gated repos. Send it in a header (not the query string) so it never lands
+  // in URLs, logs, or browser history.
+  const headers: Record<string, string> = {};
+  if (hfToken) {
+    headers["X-HF-Token"] = hfToken;
+  }
   const response = await authFetch(
-    `/api/models/export-size?model=${encodeURIComponent(modelId)}${tokenParam}`,
-    { signal },
+    `/api/models/export-size?model=${encodeURIComponent(modelId)}`,
+    { signal, headers },
   );
   return parseJson<ExportSizeEstimate>(response);
 }
