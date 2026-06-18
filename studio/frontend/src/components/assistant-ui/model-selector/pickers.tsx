@@ -2958,14 +2958,14 @@ export function HubModelPicker({
             </>
           ) : null}
         </div>
-        {/* Eject sits inline at the end of the list, no background block, just a
-            centered button that scrolls with the rest of the models. */}
+        {/* Floating eject button: pinned to the bottom of the list so it stays
+            in view at any scroll position, with no background block behind it. */}
         {onEject ? (
-          <div className="flex justify-center py-1">
+          <div className="pointer-events-none sticky bottom-0 mt-auto flex justify-center py-1">
             <button
               type="button"
               onClick={onEject}
-              className="inline-flex items-center justify-center gap-2 rounded-md px-3 py-2 text-[13px] text-destructive transition-colors hover:bg-destructive/10"
+              className="pointer-events-auto inline-flex items-center justify-center gap-2 rounded-md px-3 py-2 text-[13px] text-destructive transition-colors hover:bg-destructive/10"
               title="Eject model"
             >
               <HugeiconsIcon icon={RemoveCircleIcon} className="size-3.5" />
