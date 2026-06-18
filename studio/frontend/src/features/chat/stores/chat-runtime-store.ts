@@ -168,7 +168,13 @@ function saveLastExternalCheckpoint(value: string | null): void {
   }
 }
 
-export type ReasoningStyle = "enable_thinking" | "reasoning_effort";
+// "enable_thinking_effort" is a hybrid: an on/off gate (enable_thinking) plus an
+// effort level among a discrete set (e.g. GLM-5.2's high|max). It reuses the
+// reasoning_effort dropdown UI but, unlike gpt-oss, can be fully disabled.
+export type ReasoningStyle =
+  | "enable_thinking"
+  | "reasoning_effort"
+  | "enable_thinking_effort";
 /** One live DiffusionGemma denoising snapshot: the current canvas text at a
  *  given step of a given block (block/step are 0-based; total = steps in block). */
 export type DiffusionCanvasFrame = {

@@ -616,7 +616,11 @@ export function SharedComposer({
   const reasoningDisabled = !modelLoaded || !effectiveSupportsReasoning;
   const showReasoningControl =
     effectiveSupportsReasoning || effectiveReasoningAlwaysOn;
-  const isEffort = effectiveReasoningStyle === "reasoning_effort";
+  // enable_thinking_effort (GLM-5.2: high|max + disable) reuses the effort
+  // dropdown; it just also carries an Off row via supportsReasoningOff.
+  const isEffort =
+    effectiveReasoningStyle === "reasoning_effort" ||
+    effectiveReasoningStyle === "enable_thinking_effort";
   const thinkingActiveLook = isEffort
     ? reasoningLockedOn || (effectiveReasoningVisualEnabled && !reasoningDisabled)
     : reasoningLockedOn || (effectiveReasoningEnabled && !reasoningDisabled);

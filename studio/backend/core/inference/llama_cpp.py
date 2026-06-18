@@ -552,6 +552,27 @@ _TOOL_TEMPLATE_MARKERS = (
 )
 
 
+# Canonical reasoning_effort levels, weakest -> strongest. Used to read the
+# discrete set a template branches on (e.g. GLM-5.2 uses 'high' | 'max') so we
+# only ever offer levels the template actually understands.
+_REASONING_EFFORT_SCALE = ("minimal", "low", "medium", "high", "max")
+
+
+def _extract_reasoning_effort_levels(chat_template: str) -> list:
+    """Return the reasoning_effort levels a template references, in canonical
+    (weakest -> strongest) order.
+
+    Looks for the quoted literals (e.g. ``'high'`` / ``"max"``) the template
+    compares ``reasoning_effort`` against, so we surface exactly the levels it
+    branches on and nothing else.
+    """
+    return [
+        level
+        for level in _REASONING_EFFORT_SCALE
+        if f"'{level}'" in chat_template or f'"{level}"' in chat_template
+    ]
+
+
 def detect_reasoning_flags(
     chat_template: Optional[str],
     model_identifier: Optional[str] = None,
@@ -571,6 +592,7 @@ def detect_reasoning_flags(
         "supports_reasoning": False,
         "reasoning_style": "enable_thinking",
         "reasoning_always_on": False,
+        "reasoning_effort_levels": [],
         "supports_preserve_thinking": False,
         "supports_tools": False,
     }
@@ -579,7 +601,25 @@ def detect_reasoning_flags(
     tpl = chat_template
     prefix = f"{log_source}: " if log_source else ""
 
-    if "enable_thinking" in tpl:
+    effort_levels = (
+        _extract_reasoning_effort_levels(tpl)
+        if ("reasoning_effort" in tpl and "enable_thinking" in tpl)
+        else []
+    )
+    if "enable_thinking" in tpl and "reasoning_effort" in tpl and effort_levels:
+        # GLM-5.2-style: an enable_thinking on/off gate PLUS a reasoning_effort
+        # level among a discrete set (e.g. 'high' | 'max'). Distinct from
+        # gpt-oss (reasoning_effort only, no on/off gate) and Qwen
+        # (enable_thinking only). Disabling is enable_thinking=false; the levels
+        # are the quoted effort literals the template actually branches on.
+        flags["supports_reasoning"] = True
+        flags["reasoning_style"] = "enable_thinking_effort"
+        flags["reasoning_effort_levels"] = effort_levels
+        logger.info(
+            f"{prefix}model supports reasoning "
+            f"(enable_thinking + reasoning_effort: {effort_levels})"
+        )
+    elif "enable_thinking" in tpl:
         flags["supports_reasoning"] = True
         flags["reasoning_style"] = "enable_thinking"
         logger.info(f"{prefix}model supports reasoning (enable_thinking)")
@@ -1185,6 +1225,7 @@ class LlamaCppBackend:
         self._supports_reasoning: bool = False
         self._reasoning_always_on: bool = False
         self._reasoning_style: str = "enable_thinking"
+        self._reasoning_effort_levels: list = []
         self._supports_preserve_thinking: bool = False
         self._supports_tools: bool = False
         self._cache_type_kv: Optional[str] = None
@@ -1466,6 +1507,12 @@ class LlamaCppBackend:
         return self._reasoning_style
 
     @property
+    def reasoning_effort_levels(self) -> list:
+        """Discrete reasoning_effort levels the template offers (e.g. GLM-5.2's
+        ['high', 'max']). Empty unless reasoning_style == 'enable_thinking_effort'."""
+        return self._reasoning_effort_levels
+
+    @property
     def supports_preserve_thinking(self) -> bool:
         return self._supports_preserve_thinking
 
@@ -1474,6 +1521,10 @@ class LlamaCppBackend:
         return self._reasoning_default
 
     def _reasoning_kwargs(self, enable_thinking: bool) -> dict:
+        if self._reasoning_style == "enable_thinking_effort":
+            # GLM-5.2-style: enable_thinking is the on/off gate; when on, leave
+            # the template's default effort (max) in place.
+            return {"enable_thinking": enable_thinking}
         if self._reasoning_style == "reasoning_effort":
             return {"reasoning_effort": "high" if enable_thinking else "low"}
         return {"enable_thinking": enable_thinking}
@@ -1494,7 +1545,17 @@ class LlamaCppBackend:
         # Always-on reasoning models hardcode <think> tags and don't consume
         # enable_thinking / reasoning_effort -- skip.
         if self._supports_reasoning and not self._reasoning_always_on:
-            if self._reasoning_style == "reasoning_effort":
+            if self._reasoning_style == "enable_thinking_effort":
+                # GLM-5.2-style: enable_thinking gates thinking on/off, and the
+                # reasoning_effort level (e.g. 'high' | 'max') is only meaningful
+                # while thinking is on. Disabling is enable_thinking=false; we
+                # never coerce off into a 'low' effort the way gpt-oss does
+                # (those models genuinely cannot disable).
+                if enable_thinking is not None:
+                    kwargs["enable_thinking"] = enable_thinking
+                if enable_thinking is not False and reasoning_effort in self._reasoning_effort_levels:
+                    kwargs["reasoning_effort"] = reasoning_effort
+            elif self._reasoning_style == "reasoning_effort":
                 if reasoning_effort in ("none", "low", "medium", "high"):
                     kwargs["reasoning_effort"] = reasoning_effort
                 elif reasoning_effort == "minimal":
@@ -2998,6 +3059,7 @@ class LlamaCppBackend:
         self._supports_reasoning = False
         self._reasoning_always_on = False
         self._reasoning_style = "enable_thinking"
+        self._reasoning_effort_levels = []
         self._reasoning_default = True
         self._supports_preserve_thinking = False
         self._supports_tools = False
@@ -3217,6 +3279,7 @@ class LlamaCppBackend:
                 )
                 self._supports_reasoning = flags["supports_reasoning"]
                 self._reasoning_style = flags["reasoning_style"]
+                self._reasoning_effort_levels = flags.get("reasoning_effort_levels", [])
                 self._reasoning_always_on = flags["reasoning_always_on"]
                 self._supports_preserve_thinking = flags["supports_preserve_thinking"]
                 self._supports_tools = flags["supports_tools"]
@@ -5228,6 +5291,7 @@ class LlamaCppBackend:
                     )
                     self._supports_reasoning = flags["supports_reasoning"]
                     self._reasoning_style = flags["reasoning_style"]
+                    self._reasoning_effort_levels = flags.get("reasoning_effort_levels", [])
                     self._reasoning_always_on = flags["reasoning_always_on"]
                     self._supports_preserve_thinking = flags["supports_preserve_thinking"]
                     self._supports_tools = flags["supports_tools"]
@@ -6153,6 +6217,7 @@ class LlamaCppBackend:
             self._supports_reasoning = False
             self._reasoning_always_on = False
             self._reasoning_style = "enable_thinking"
+            self._reasoning_effort_levels = []
             self._reasoning_default = True
             self._supports_preserve_thinking = False
             self._supports_tools = False

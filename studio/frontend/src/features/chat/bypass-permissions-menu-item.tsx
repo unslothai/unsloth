@@ -22,8 +22,9 @@ import { Tick02Icon } from "@/lib/tick-icon";
 // "Bypass Permissions" entry for the composer "+" -> More menu. Mirrors the
 // settings toggle: enabling demands the danger warning, disabling is immediate.
 // The menu closes normally on select (no preventDefault) -- the warning dialog
-// lives outside the menu (BypassPermissionsConfirmDialog, driven by the store),
-// so it survives the menu unmounting and the "+"/More popovers don't stay frozen.
+// lives outside the menu (BypassPermissionsConfirmDialog, mounted once at the
+// chat-page root and driven by the store), so it survives the menu unmounting
+// and the "+"/More popovers don't stay frozen.
 export function BypassPermissionsMenuItem() {
   const bypassPermissions = useChatRuntimeStore((s) => s.bypassPermissions);
   const setBypassPermissions = useChatRuntimeStore(
@@ -42,7 +43,10 @@ export function BypassPermissionsMenuItem() {
         if (bypassPermissions) {
           setBypassPermissions(false);
         } else {
-          setBypassConfirmOpen(true);
+          // Defer past Radix's menu-close focus restoration: opening the dialog
+          // synchronously here lets the dropdown grab focus back and breaks the
+          // dialog's focus trap.
+          setTimeout(() => setBypassConfirmOpen(true), 0);
         }
       }}
     >
@@ -55,9 +59,10 @@ export function BypassPermissionsMenuItem() {
   );
 }
 
-// The danger-confirmation dialog. Rendered at a stable spot in the composer
-// (not inside the menu) and driven by the store, so confirming or cancelling it
-// never leaves the composer "+"/More popovers frozen open.
+// The danger-confirmation dialog. Mounted once at the chat-page root (not inside
+// a Composer or the menu) and driven by global store state, so it works for both
+// the main and shared composers, never duplicates in Compare mode, and confirming
+// or cancelling never leaves the composer "+"/More popovers frozen open.
 export function BypassPermissionsConfirmDialog() {
   const open = useChatRuntimeStore((s) => s.bypassConfirmOpen);
   const setOpen = useChatRuntimeStore((s) => s.setBypassConfirmOpen);

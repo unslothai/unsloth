@@ -2254,7 +2254,8 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         const localReasoningEffort =
           reasoningEffort === "low" ||
           reasoningEffort === "medium" ||
-          reasoningEffort === "high"
+          reasoningEffort === "high" ||
+          reasoningEffort === "max"
             ? reasoningEffort
             : "low";
         const externalReasoningEnabled =
@@ -2499,11 +2500,25 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             ...(sandboxSessionId ? { session_id: sandboxSessionId } : {}),
             ...(useAdapter === undefined ? {} : { use_adapter: useAdapter }),
             ...(supportsReasoning
-              ? reasoningStyle === "reasoning_effort"
-                ? reasoningEnabled
-                  ? { reasoning_effort: localReasoningEffort }
-                  : {}
-                : { thinking: { type: reasoningEnabled ? "enabled" : "disabled" } }
+              ? reasoningStyle === "enable_thinking_effort"
+                ? // GLM-5.2-style: on/off gate plus an effort level. Disabling
+                  // sends enable_thinking=false (a real disable); enabling sends
+                  // the chosen level (e.g. high|max).
+                  reasoningEnabled
+                  ? {
+                      enable_thinking: true,
+                      reasoning_effort: localReasoningEffort,
+                    }
+                  : { enable_thinking: false }
+                : reasoningStyle === "reasoning_effort"
+                  ? reasoningEnabled
+                    ? { reasoning_effort: localReasoningEffort }
+                    : {}
+                  : {
+                      thinking: {
+                        type: reasoningEnabled ? "enabled" : "disabled",
+                      },
+                    }
               : {}),
             ...(supportsPreserveThinking
               ? { preserve_thinking: preserveThinking }

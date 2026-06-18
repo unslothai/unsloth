@@ -73,10 +73,7 @@ import { parseExternalModelId } from "@/features/chat/external-providers";
 import { McpComposerButton } from "@/features/chat/mcp-composer-button";
 import { getExternalReasoningCapabilities } from "@/features/chat/provider-capabilities";
 import { useRagToolDisabled } from "@/features/chat/hooks/use-rag-tool-disabled";
-import {
-  BypassPermissionsConfirmDialog,
-  BypassPermissionsMenuItem,
-} from "@/features/chat/bypass-permissions-menu-item";
+import { BypassPermissionsMenuItem } from "@/features/chat/bypass-permissions-menu-item";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { useExternalProvidersStore } from "@/features/chat/stores/external-providers-store";
 import { PROMPT_QUEUE_STOP_EVENT } from "@/features/chat/utils/prompt-queue-boundary";
@@ -1677,7 +1674,6 @@ const Composer: FC<{
           {/* Active-mode badge: always visible when bypass is on, even while
               the pill row is collapsed (returns null when off). */}
           <BypassPermissionsToggle />
-          <BypassPermissionsConfirmDialog />
           {composerExpanded ? (
             <>
               <WebSearchToggle />
@@ -2077,7 +2073,11 @@ const ReasoningToggle: FC<{ side?: "top" | "bottom" }> = ({
     return null;
   }
 
-  const isEffort = effectiveReasoningStyle === "reasoning_effort";
+  // enable_thinking_effort (GLM-5.2: high|max + disable) reuses the effort
+  // dropdown; it just also carries an Off row via supportsReasoningOff.
+  const isEffort =
+    effectiveReasoningStyle === "reasoning_effort" ||
+    effectiveReasoningStyle === "enable_thinking_effort";
   // Dropdown when there are effort levels or preserve-thinking; else a toggle.
   const useDropdown = isEffort || supportsPreserveThinking;
   const activeLook = isEffort

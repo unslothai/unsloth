@@ -29,7 +29,9 @@ import {
   resolveToolsEnabledOnLoad,
   saveSpeculativeType,
   useChatRuntimeStore,
+  type ReasoningEffort,
 } from "../stores/chat-runtime-store";
+import { clampReasoningEffortToLevels } from "../provider-capabilities";
 import {
   applyActiveModelStatusToStore,
   clampLocalReasoningEffort,
@@ -662,14 +664,21 @@ export function useChatModelRuntime() {
             const reasoningStyle = loadResponse.reasoning_style ?? "enable_thinking";
             const supportsReasoning = loadResponse.supports_reasoning ?? false;
             const supportsTools = loadResponse.supports_tools ?? false;
+            // GLM-5.2-style models report their own effort levels (e.g.
+            // high|max); everything else keeps the default low/medium/high.
             const reasoningEffortLevels =
-              reasoningStyle === "reasoning_effort"
-                ? (["low", "medium", "high"] as const)
+              loadResponse.reasoning_effort_levels &&
+              loadResponse.reasoning_effort_levels.length > 0
+                ? (loadResponse.reasoning_effort_levels as ReasoningEffort[])
                 : (["low", "medium", "high"] as const);
             const existingReasoningEffort = useChatRuntimeStore.getState().reasoningEffort;
-            const clampedReasoningEffort = clampLocalReasoningEffort(
-              existingReasoningEffort,
-            );
+            const clampedReasoningEffort =
+              reasoningStyle === "enable_thinking_effort"
+                ? clampReasoningEffortToLevels(
+                    existingReasoningEffort,
+                    reasoningEffortLevels,
+                  )
+                : clampLocalReasoningEffort(existingReasoningEffort);
             const ggufMaxContextLength = reportedMaxCtx;
             const nextReasoningEnabled = reasoningAlwaysOn
               ? true

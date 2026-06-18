@@ -277,7 +277,12 @@ function formatBytes(bytes: number): string {
   // file sizes -- e.g. 217 GB, not the 201.8 GiB a base-1024 divide would show.
   // (GPU-fit math below stays base-1024 since VRAM is binary.)
   const units = ["B", "KB", "MB", "GB", "TB"];
-  const i = Math.floor(Math.log(bytes) / Math.log(1000));
+  // Clamp the unit index: guards against units[i] being undefined past TB and
+  // against float error (Math.log(1000**n)/Math.log(1000) can fall just under n).
+  const i = Math.min(
+    Math.floor(Math.log(bytes) / Math.log(1000)),
+    units.length - 1,
+  );
   const value = bytes / 1000 ** i;
   return `${value.toFixed(value < 10 ? 1 : 0)} ${units[i]}`;
 }
