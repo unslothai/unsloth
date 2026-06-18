@@ -433,7 +433,7 @@ function ModelRow({
             <TooltipTrigger asChild={true}>
               <span
                 aria-label="Vision"
-                className="flex size-[18px] shrink-0 items-center justify-center rounded-md border border-border/60 text-purple-400"
+                className="flex size-[18px] shrink-0 items-center justify-center rounded-md border border-border/60 text-indigo-700 dark:text-indigo-300"
               >
                 <HugeiconsIcon
                   icon={ViewIcon}
@@ -758,7 +758,7 @@ function GgufVariantExpander({
             Quantizations
           </span>
           {hasVision && (
-            <span className="flex items-center gap-0.5 text-[9px] font-medium text-purple-400">
+            <span className="flex items-center gap-0.5 text-[9px] font-medium text-indigo-700 dark:text-indigo-300">
               <HugeiconsIcon
                 icon={ViewIcon}
                 className="size-3"
