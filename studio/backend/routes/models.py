@@ -1597,15 +1597,15 @@ async def scan_model_remote_code(
     never lands in a URL, browser history, or access log.
     """
     try:
-        from utils.security import preflight_remote_code_consent
+        from utils.security import preflight_remote_code_consent_for_targets
 
         if not is_local_path(model_name):
             model_name = resolve_cached_repo_id_case(model_name)
-        # For a LoRA adapter the base model's CODE is what runs, so the remote-code
-        # scan follows the base (its findings + fingerprint are what the worker gate
-        # requires). But a poisoned pickle can live in the ADAPTER repo itself, so
-        # the malware scan must cover both the adapter and the base (matching the
-        # workers, which gate both).
+        # A LoRA load runs BOTH the adapter's and the base's repo code, and a poisoned
+        # pickle can live in either repo. So both the remote-code consent scan and the
+        # malware scan must cover the adapter AND the base (matching the workers, which
+        # gate both). The remote-code scan pins ONE combined fingerprint over both, so
+        # an adapter that ships its own auto_map code is reviewed and approvable too.
         security_targets = [model_name]
         try:
             from utils.models.model_config import get_base_model_from_lora_identifier
@@ -1614,7 +1614,6 @@ async def scan_model_remote_code(
             # base (where the code/weights actually execute) is scanned too.
             _base = get_base_model_from_lora_identifier(model_name, hf_token)
             if _base:
-                model_name = _base
                 security_targets.append(_base)
         except Exception:
             pass
@@ -1631,7 +1630,9 @@ async def scan_model_remote_code(
             )
         except Exception:
             created_by_scan = False
-        decision = preflight_remote_code_consent(model_name, hf_token = hf_token)
+        decision = preflight_remote_code_consent_for_targets(
+            security_targets, hf_token = hf_token
+        )
         payload = decision.response_payload()
         payload["requires_trust_remote_code"] = decision.has_remote_code
         payload["created_by_scan"] = created_by_scan
@@ -1640,12 +1641,14 @@ async def scan_model_remote_code(
         # scan flagged as unsafe so the dialog can hard-block. This is orthogonal
         # to remote code (a poisoned pickle needs no auto_map), so it can block a
         # repo with no custom code at all.
-        from utils.security import evaluate_file_security
+        from utils.security import evaluate_file_security, security_load_subdirs
 
         unsafe_files: list = []
         security_blocked = False
         for _target in security_targets:
-            _sec = evaluate_file_security(_target, hf_token = hf_token)
+            _sec = evaluate_file_security(
+                _target, hf_token = hf_token, load_subdirs = security_load_subdirs(_target, hf_token)
+            )
             security_blocked = security_blocked or _sec.blocked
             unsafe_files.extend(_sec.unsafe_files)
         payload["unsafe_files"] = unsafe_files
