@@ -41,13 +41,17 @@ Policy (confirmed product decisions):
         cannot deserialize code. (Hub sometimes flags a repo's safetensors at
         ``unsafe`` when picklescan trips on a *sibling* pickle; that safetensors
         still cannot run code.)
-      - Files in SUBDIRECTORIES are not read by ``from_pretrained`` (e.g. NeMo
-        ``nemo/weights/*.distcp`` / ``common.pt``, ONNX/TF exports), so a flag
-        there is never loaded. This keeps real malware blocked (eicar ships its
-        ``*.pkl`` / ``*.dat`` / ``eicar_test_file`` at the repo root) while not
-        false-blocking legitimate first-party repos like
-        ``nvidia/Nemotron-H-8B-Base-8K`` (root safetensors + flagged NeMo pickle
-        checkpoints in ``nemo/`` that the loader never touches).
+      - Files in SUBDIRECTORIES are not read by ``from_pretrained`` UNLESS a root
+        weight index (``pytorch_model.bin.index.json`` etc.) references them: a
+        sharded ``.bin`` that the ``weight_map`` points at, e.g.
+        ``shards/pytorch_model-00001-of-00002.bin``, IS deserialized and so still
+        blocks. A flagged subdir pickle that no index lists (NeMo
+        ``nemo/weights/*.distcp`` / ``common.pt``, ONNX/TF exports) is never loaded.
+        This keeps real malware blocked (eicar ships its ``*.pkl`` / ``*.dat`` /
+        ``eicar_test_file`` at the repo root, and an indexed malicious shard blocks
+        wherever it lives) while not false-blocking legitimate first-party repos
+        like ``nvidia/Nemotron-H-8B-Base-8K`` (root safetensors + flagged NeMo
+        pickle checkpoints in ``nemo/`` that no index references).
   * No first-party exemption -- a poisoned pickle in a compromised trusted repo is
     exactly the CRITICAL-class threat we block even for first parties. (The scoping
     above is by load-path/format, not by org, so a root pickle in an
@@ -100,22 +104,74 @@ _INERT_SUFFIXES = frozenset(
 )
 
 
-def _is_load_rce_vector(path: str) -> bool:
-    """Whether a flagged repo file is one a model load could DESERIALIZE as a pickle.
+# Root weight-index files. ``from_pretrained`` reads these to find sharded weight
+# files, and a shard they reference IS deserialized even when it lives in a
+# subdirectory (e.g. ``weight_map`` -> ``shards/pytorch_model-00001-of-00002.bin``).
+# So a flagged subdirectory pickle is a load-path vector iff a root index lists it.
+_TRANSFORMERS_INDEX_FILES = (
+    "pytorch_model.bin.index.json",
+    "model.safetensors.index.json",
+    "tf_model.h5.index.json",
+    "flax_model.msgpack.index.json",
+)
 
-    ``from_pretrained`` reads weight files at the repo ROOT (root
-    ``pytorch_model*.bin`` / ``*.pkl`` / sharded bins). It does not read pickle
-    artifacts in SUBDIRECTORIES (NeMo ``nemo/weights/*.distcp``, ONNX/TF exports)
-    nor non-pickle formats (safetensors/gguf cannot execute). So a flag is a real
-    load-path RCE vector only when it lands on a root-level, non-inert file.
-    """
-    p = (path or "").strip()
+
+def _normalize_repo_path(path: str) -> str:
+    """Strip ``./`` prefixes and normalize separators for repo-relative comparison."""
+    p = (path or "").strip().replace("\\", "/")
     while p.startswith("./"):
         p = p[2:]
-    if not p or "/" in p:
-        return False  # subdirectory artifact (or empty): not read by from_pretrained
-    suffix = "." + p.rsplit(".", 1)[1].lower() if "." in p else ""
-    return suffix not in _INERT_SUFFIXES
+    return p
+
+
+def _file_suffix(path: str) -> str:
+    """Lowercase ``.ext`` of the basename, or ``""`` if none."""
+    base = _normalize_repo_path(path).rsplit("/", 1)[-1]
+    return "." + base.rsplit(".", 1)[1].lower() if "." in base else ""
+
+
+def _indexed_shard_paths(model_name: str, hf_token: Optional[str]):
+    """Repo-relative weight paths a load could fetch via root weight-index files.
+
+    Returns a ``set`` of normalized paths (possibly empty when the repo simply ships
+    no index files -- a definitive "nothing sharded", so a flagged subdir artifact
+    like ``nemo/*.distcp`` is NOT a load vector). Returns ``None`` only when the
+    lookup was inconclusive (a transient/network error fetching an index that might
+    exist), so the caller treats an already-flagged subdir pickle conservatively.
+    Reads only small JSON index files; never the weight bytes.
+    """
+    import json
+
+    try:
+        from huggingface_hub import hf_hub_download
+        from huggingface_hub.utils import EntryNotFoundError
+    except Exception:
+        return None
+
+    paths: set = set()
+    inconclusive = False
+    read_any = False
+    for filename in _TRANSFORMERS_INDEX_FILES:
+        try:
+            index_path = hf_hub_download(model_name, filename, token = hf_token or None)
+        except EntryNotFoundError:
+            continue  # this index does not exist in the repo -- definitive, not an error
+        except Exception:
+            inconclusive = True  # transient: an index that might exist could not be read
+            continue
+        try:
+            weight_map = (json.loads(open(index_path).read()) or {}).get("weight_map") or {}
+            for shard in weight_map.values():
+                paths.add(_normalize_repo_path(str(shard)))
+            read_any = True
+        except Exception:
+            inconclusive = True
+    # Only "inconclusive" when a transient error stopped us AND we read no index at
+    # all. If we read at least one index (or confirmed all are absent), the result
+    # is definitive.
+    if inconclusive and not read_any:
+        return None
+    return paths
 
 
 # Two-timeout metadata fetch, mirroring hub.workers.hf_download._retry_metadata_fetch.
@@ -205,7 +261,8 @@ def evaluate_file_security(model_name: str, hf_token: Optional[str] = None) -> F
     # format (safetensors/gguf) is not loaded by ``from_pretrained`` and does not
     # block. An unavailable status (above) is the sole fail-open path.
     unsafe = []
-    skipped = []  # flagged, but not a load-path RCE vector (subdir / inert format)
+    skipped = []  # flagged, but not a load-path RCE vector (subdir artifact / inert)
+    maybe_shard = []  # flagged subdir pickle: a load vector ONLY if a root index lists it
     for entry in status.get("filesWithIssues") or []:
         if not isinstance(entry, dict):
             continue
@@ -213,10 +270,27 @@ def evaluate_file_security(model_name: str, hf_token: Optional[str] = None) -> F
         if level in _NONBLOCKING_LEVELS:
             continue
         path = entry.get("path", "")
-        if _is_load_rce_vector(path):
-            unsafe.append({"path": path, "level": level})
-        else:
+        norm = _normalize_repo_path(path)
+        if not norm or _file_suffix(norm) in _INERT_SUFFIXES:
+            # Inert anywhere (safetensors/gguf/json/...) cannot execute code on load.
             skipped.append({"path": path, "level": level})
+        elif "/" not in norm:
+            unsafe.append({"path": path, "level": level})  # root pickle -> load vector
+        else:
+            # Subdir pickle: deserialized only if a root weight index references it.
+            maybe_shard.append({"path": path, "level": level, "norm": norm})
+
+    if maybe_shard:
+        indexed = _indexed_shard_paths(model_name, hf_token)
+        for m in maybe_shard:
+            # Block if a root index lists this shard, or if the index lookup was
+            # inconclusive (a transient error -- treat a flagged subdir pickle that
+            # COULD be a loadable shard conservatively). A definitive "no index /
+            # not listed" keeps it non-blocking (e.g. NeMo nemo/*.distcp).
+            if indexed is None or m["norm"] in indexed:
+                unsafe.append({"path": m["path"], "level": m["level"]})
+            else:
+                skipped.append({"path": m["path"], "level": m["level"]})
 
     if not unsafe:
         if skipped:

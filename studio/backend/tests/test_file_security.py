@@ -34,6 +34,43 @@ def _patch_raises(exc = RuntimeError("offline")):
     return patch("huggingface_hub.model_info", side_effect = exc)
 
 
+def _patch_no_index():
+    """Make the weight-index lookup find no index files (definitive: nothing sharded)."""
+    from huggingface_hub.utils import EntryNotFoundError
+
+    def _dl(repo_id = None, filename = None, token = None, **kw):
+        raise EntryNotFoundError(filename or "")
+
+    return patch("huggingface_hub.hf_hub_download", side_effect = _dl)
+
+
+def _patch_index(weight_map, index_filename = "pytorch_model.bin.index.json"):
+    """Serve a root weight index mapping tensor names -> shard paths; others 404."""
+    import json
+    import tempfile
+    from pathlib import Path
+
+    from huggingface_hub.utils import EntryNotFoundError
+
+    def _dl(repo_id = None, filename = None, token = None, **kw):
+        if filename == index_filename:
+            p = Path(tempfile.mkdtemp()) / filename
+            p.write_text(json.dumps({"weight_map": weight_map}))
+            return str(p)
+        raise EntryNotFoundError(filename or "")
+
+    return patch("huggingface_hub.hf_hub_download", side_effect = _dl)
+
+
+def _patch_index_unreadable():
+    """Make every index fetch fail transiently (inconclusive lookup -> fail closed)."""
+
+    def _dl(repo_id = None, filename = None, token = None, **kw):
+        raise RuntimeError("transient network error")
+
+    return patch("huggingface_hub.hf_hub_download", side_effect = _dl)
+
+
 @pytest.mark.parametrize("level", ["unsafe", "suspicious", "malicious"])
 def test_blocks_each_blocking_level(level):
     status = {"scansDone": True, "filesWithIssues": [{"path": "pytorch_model.bin", "level": level}]}
@@ -163,7 +200,8 @@ def test_flagged_safetensors_does_not_block():
 
 def test_flagged_subdirectory_pickle_does_not_block():
     # from_pretrained reads weight files at the repo ROOT; a flagged pickle in a
-    # subdirectory (e.g. a NeMo checkpoint) is never loaded, so it must not block.
+    # subdirectory that NO root index references (e.g. a NeMo checkpoint) is never
+    # loaded, so it must not block.
     status = {
         "scansDone": False,
         "filesWithIssues": [
@@ -171,7 +209,7 @@ def test_flagged_subdirectory_pickle_does_not_block():
             {"path": "nemo/weights/__0_0.distcp", "level": "unsafe"},
         ],
     }
-    with _patch_status(status):
+    with _patch_status(status), _patch_no_index():
         d = evaluate_file_security("nvidia/some-model")
     assert d.blocked is False
     assert d.unsafe_files == []
@@ -179,8 +217,8 @@ def test_flagged_subdirectory_pickle_does_not_block():
 
 def test_nemotron_h_shaped_status_loads():
     # Real shape of nvidia/Nemotron-H-8B-Base-8K: root safetensors flagged "unsafe"
-    # plus NeMo pickle checkpoints under nemo/. None are a load-path RCE vector, so a
-    # legitimate first-party model must LOAD, not hard-block.
+    # plus NeMo pickle checkpoints under nemo/ that no index references. None are a
+    # load-path RCE vector, so a legitimate first-party model must LOAD, not block.
     status = {
         "scansDone": False,
         "filesWithIssues": [
@@ -191,10 +229,58 @@ def test_nemotron_h_shaped_status_loads():
             {"path": "model-00002-of-00004.safetensors", "level": "unsafe"},
         ],
     }
-    with _patch_status(status):
+    with _patch_status(status), _patch_no_index():
         d = evaluate_file_security("nvidia/Nemotron-H-8B-Base-8K")
     assert d.blocked is False
     assert d.unsafe_files == []
+
+
+def test_indexed_subdir_shard_blocks():
+    # A flagged pickle shard in a SUBDIRECTORY that a root weight index references is
+    # deserialized by from_pretrained, so it IS a load-path vector and must block.
+    status = {
+        "scansDone": False,
+        "filesWithIssues": [
+            {"path": "shards/pytorch_model-00001-of-00002.bin", "level": "unsafe"},
+        ],
+    }
+    weight_map = {
+        "layer.0.weight": "shards/pytorch_model-00001-of-00002.bin",
+        "layer.1.weight": "shards/pytorch_model-00002-of-00002.bin",
+    }
+    with _patch_status(status), _patch_index(weight_map):
+        d = evaluate_file_security("evil/sharded")
+    assert d.blocked is True
+    assert d.unsafe_files == [
+        {"path": "shards/pytorch_model-00001-of-00002.bin", "level": "unsafe"}
+    ]
+
+
+def test_unindexed_subdir_pickle_does_not_block_when_index_present():
+    # An index exists, but the flagged subdir pickle is NOT listed in it -> not a
+    # load input -> must not block (the model still loads from the indexed shards).
+    status = {
+        "scansDone": False,
+        "filesWithIssues": [{"path": "extras/notes.bin", "level": "unsafe"}],
+    }
+    weight_map = {"layer.0.weight": "pytorch_model-00001-of-00001.bin"}
+    with _patch_status(status), _patch_index(weight_map):
+        d = evaluate_file_security("org/has-index")
+    assert d.blocked is False
+    assert d.unsafe_files == []
+
+
+def test_inconclusive_index_lookup_blocks_subdir_pickle():
+    # If the index lookup cannot complete (transient error) we cannot rule out that
+    # the flagged subdir pickle is a loadable shard, so fail closed (block).
+    status = {
+        "scansDone": False,
+        "filesWithIssues": [{"path": "weights/model_part.bin", "level": "unsafe"}],
+    }
+    with _patch_status(status), _patch_index_unreadable():
+        d = evaluate_file_security("org/transient")
+    assert d.blocked is True
+    assert d.unsafe_files == [{"path": "weights/model_part.bin", "level": "unsafe"}]
 
 
 def test_root_pickle_alongside_safetensors_still_blocks():
