@@ -4173,3 +4173,35 @@ class TestExactSourceAssetUrl:
             )
             is None
         )
+
+    def test_resolves_through_real_parser_chain(self):
+        # The cases above hand-build ApprovedReleaseChecksums; this exercises the
+        # production path they bypass: parse_approved_release_checksums ->
+        # preferred_source_archive -> exact_source_asset_url, so a regression in the
+        # parser/selection wiring can't pass while only the helper unit tests stay green.
+        payload = {
+            "schema_version": 1,
+            "component": "llama.cpp",
+            "release_tag": self.INSTALL_TAG,
+            "upstream_tag": "b9616",
+            "source_repo": "unslothai/llama.cpp",
+            "source_commit": self.COMMIT,
+            "artifacts": {
+                exact_source_archive_logical_name(self.COMMIT): {
+                    "sha256": "c" * 64,
+                    "kind": "exact-source",
+                },
+            },
+        }
+        checksums = INSTALL_LLAMA_PREBUILT.parse_approved_release_checksums(
+            "unslothai/llama.cpp", self.INSTALL_TAG, payload
+        )
+        source_repo, _source_ref, source_archive, exact_source = (
+            INSTALL_LLAMA_PREBUILT.preferred_source_archive(checksums, "b9616")
+        )
+        assert exact_source is True
+        assert source_archive is not None
+        url = INSTALL_LLAMA_PREBUILT.exact_source_asset_url(
+            checksums, source_repo, source_archive, exact_source, self.INSTALL_TAG
+        )
+        assert url == self._expected("unslothai/llama.cpp", self.INSTALL_TAG)
