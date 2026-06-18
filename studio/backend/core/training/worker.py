@@ -1471,8 +1471,11 @@ def _run_mlx_training(event_queue, stop_queue, config):
             malware_targets.append(_base)
     except Exception as exc:
         logger.debug("Could not resolve LoRA base for malware scan: %s", exc)
+    from utils.security import security_load_subdirs
     for target in dict.fromkeys(malware_targets):
-        _fs = evaluate_file_security(target, hf_token = hf_token)
+        _fs = evaluate_file_security(
+            target, hf_token = hf_token, load_subdirs = security_load_subdirs(target, hf_token)
+        )
         if _fs.blocked:
             _send(
                 "error",
@@ -1488,7 +1491,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
     # executes it. Block CRITICAL/HIGH unless pinned-approved; for a LoRA, gate
     # the base model whose custom code actually runs.
     if config.get("trust_remote_code", False):
-        from utils.security import evaluate_remote_code_consent
+        from utils.security import evaluate_remote_code_consent_for_targets
 
         consent_targets = [model_name]
         try:
@@ -1502,25 +1505,25 @@ def _run_mlx_training(event_queue, stop_queue, config):
                 consent_targets.append(base_model)
         except Exception as exc:
             logger.debug("Could not resolve LoRA base for consent scan: %s", exc)
-        for target in dict.fromkeys(consent_targets):
-            _rc = evaluate_remote_code_consent(
-                target,
-                hf_token = hf_token,
-                trust_remote_code = True,
-                approved_fingerprint = config.get("approved_remote_code_fingerprint"),
+        # Scan adapter + base as one combined unit, pinned by a single fingerprint.
+        _rc = evaluate_remote_code_consent_for_targets(
+            consent_targets,
+            hf_token = hf_token,
+            trust_remote_code = True,
+            approved_fingerprint = config.get("approved_remote_code_fingerprint"),
+        )
+        if _rc.blocked:
+            _send(
+                "error",
+                error = (
+                    f"Model '{_rc.model_name}' ships custom code flagged as "
+                    f"{_rc.max_severity} by the security scan. Review it and "
+                    f"re-run with approval to proceed.\n\n{_rc.findings_summary}"
+                ),
+                error_kind = "remote_code_blocked",
+                remote_code = _rc.response_payload(),
             )
-            if _rc.blocked:
-                _send(
-                    "error",
-                    error = (
-                        f"Model '{target}' ships custom code flagged as "
-                        f"{_rc.max_severity} by the security scan. Review it and "
-                        f"re-run with approval to proceed.\n\n{_rc.findings_summary}"
-                    ),
-                    error_kind = "remote_code_blocked",
-                    remote_code = _rc.response_payload(),
-                )
-                return
+            return
 
     model, tokenizer = FastMLXModel.from_pretrained(
         model_name,
@@ -2204,8 +2207,12 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             malware_targets.append(_base)
     except Exception as exc:
         logger.debug("Could not resolve LoRA base for malware scan: %s", exc)
+    from utils.security import security_load_subdirs
+    _ls_hf = config.get("hf_token") or None
     for target in dict.fromkeys(malware_targets):
-        _fs = evaluate_file_security(target, hf_token = config.get("hf_token") or None)
+        _fs = evaluate_file_security(
+            target, hf_token = _ls_hf, load_subdirs = security_load_subdirs(target, _ls_hf)
+        )
         if _fs.blocked:
             event_queue.put(
                 {
@@ -2222,7 +2229,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     # auto_map Python and refuse code flagged CRITICAL/HIGH unless the user
     # pinned approval of this exact code version.
     if config.get("trust_remote_code", False):
-        from utils.security import evaluate_remote_code_consent
+        from utils.security import evaluate_remote_code_consent_for_targets
 
         # model_name is normally the base, but if it points at a LoRA adapter the
         # base model's custom code is what runs, so gate that repo too.
@@ -2238,28 +2245,28 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 consent_targets.append(base_model)
         except Exception as exc:
             logger.debug("Could not resolve LoRA base for consent scan: %s", exc)
-        for target in dict.fromkeys(consent_targets):
-            _rc = evaluate_remote_code_consent(
-                target,
-                hf_token = config.get("hf_token") or None,
-                trust_remote_code = True,
-                approved_fingerprint = config.get("approved_remote_code_fingerprint"),
+        # Scan adapter + base as one combined unit, pinned by a single fingerprint.
+        _rc = evaluate_remote_code_consent_for_targets(
+            consent_targets,
+            hf_token = config.get("hf_token") or None,
+            trust_remote_code = True,
+            approved_fingerprint = config.get("approved_remote_code_fingerprint"),
+        )
+        if _rc.blocked:
+            event_queue.put(
+                {
+                    "type": "error",
+                    "error": (
+                        f"Model '{_rc.model_name}' ships custom code flagged as "
+                        f"{_rc.max_severity} by the security scan. Review it and "
+                        f"re-run with approval to proceed.\n\n{_rc.findings_summary}"
+                    ),
+                    "error_kind": "remote_code_blocked",
+                    "remote_code": _rc.response_payload(),
+                    "ts": time.time(),
+                }
             )
-            if _rc.blocked:
-                event_queue.put(
-                    {
-                        "type": "error",
-                        "error": (
-                            f"Model '{target}' ships custom code flagged as "
-                            f"{_rc.max_severity} by the security scan. Review it and "
-                            f"re-run with approval to proceed.\n\n{_rc.findings_summary}"
-                        ),
-                        "error_kind": "remote_code_blocked",
-                        "remote_code": _rc.response_payload(),
-                        "ts": time.time(),
-                    }
-                )
-                return
+            return
 
     # ── 1b. Install fast-path kernel libraries for the chosen model.
     # 1) causal-conv1d ALWAYS runs eagerly via the substring path: some SSM
@@ -3228,8 +3235,11 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
                 malware_targets.append(_base)
         except Exception as exc:
             logger.debug("Could not resolve LoRA base for malware scan: %s", exc)
+        from utils.security import security_load_subdirs
         for target in dict.fromkeys(malware_targets):
-            _fs = evaluate_file_security(target, hf_token = hf_token)
+            _fs = evaluate_file_security(
+                target, hf_token = hf_token, load_subdirs = security_load_subdirs(target, hf_token)
+            )
             if _fs.blocked:
                 event_queue.put(
                     {
@@ -3247,7 +3257,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
         # FastSentenceTransformer executes it; block CRITICAL/HIGH unless
         # pinned-approved. A no-op for models without auto_map.
         if config.get("trust_remote_code", False):
-            from utils.security import evaluate_remote_code_consent
+            from utils.security import evaluate_remote_code_consent_for_targets
 
             consent_targets = [model_name]
             try:
@@ -3257,28 +3267,28 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
                     consent_targets.append(_cbase)
             except Exception as exc:
                 logger.debug("Could not resolve LoRA base for consent scan: %s", exc)
-            for target in dict.fromkeys(consent_targets):
-                _rc = evaluate_remote_code_consent(
-                    target,
-                    hf_token = hf_token,
-                    trust_remote_code = True,
-                    approved_fingerprint = config.get("approved_remote_code_fingerprint"),
+            # Scan adapter + base as one combined unit, pinned by a single fingerprint.
+            _rc = evaluate_remote_code_consent_for_targets(
+                consent_targets,
+                hf_token = hf_token,
+                trust_remote_code = True,
+                approved_fingerprint = config.get("approved_remote_code_fingerprint"),
+            )
+            if _rc.blocked:
+                event_queue.put(
+                    {
+                        "type": "error",
+                        "error": (
+                            f"Model '{_rc.model_name}' ships custom code flagged as "
+                            f"{_rc.max_severity} by the security scan. Review it and "
+                            f"re-run with approval to proceed.\n\n{_rc.findings_summary}"
+                        ),
+                        "error_kind": "remote_code_blocked",
+                        "remote_code": _rc.response_payload(),
+                        "ts": time.time(),
+                    }
                 )
-                if _rc.blocked:
-                    event_queue.put(
-                        {
-                            "type": "error",
-                            "error": (
-                                f"Model '{target}' ships custom code flagged as "
-                                f"{_rc.max_severity} by the security scan. Review it and "
-                                f"re-run with approval to proceed.\n\n{_rc.findings_summary}"
-                            ),
-                            "error_kind": "remote_code_blocked",
-                            "remote_code": _rc.response_payload(),
-                            "ts": time.time(),
-                        }
-                    )
-                    return
+                return
 
         model = FastSentenceTransformer.from_pretrained(
             model_name = model_name,

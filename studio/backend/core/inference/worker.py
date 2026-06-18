@@ -286,13 +286,15 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
         # trust_remote_code is False, so check Hugging Face's own security scan
         # (metadata-only; never downloads the flagged files) for every load. For a
         # LoRA adapter the base weights are what deserialize, so gate that repo too.
-        from utils.security import evaluate_file_security
+        from utils.security import evaluate_file_security, security_load_subdirs
 
         malware_targets = [config["model_name"]]
         if mc.is_lora and getattr(mc, "base_model", None):
             malware_targets.append(str(mc.base_model))
         for target in dict.fromkeys(malware_targets):
-            _fs = evaluate_file_security(target, hf_token = hf_token)
+            _fs = evaluate_file_security(
+                target, hf_token = hf_token, load_subdirs = security_load_subdirs(target, hf_token)
+            )
             if _fs.blocked:
                 _send_response(
                     resp_queue,
@@ -311,35 +313,36 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
         # CRITICAL/HIGH findings unless pinned-approved. For a LoRA adapter the
         # base model's custom code is what runs, so gate that repo too.
         if trust_remote_code:
-            from utils.security import evaluate_remote_code_consent
+            from utils.security import evaluate_remote_code_consent_for_targets
 
             consent_targets = [config["model_name"]]
             if mc.is_lora and getattr(mc, "base_model", None):
                 consent_targets.append(str(mc.base_model))
-            for target in dict.fromkeys(consent_targets):
-                _rc = evaluate_remote_code_consent(
-                    target,
-                    hf_token = hf_token,
-                    trust_remote_code = True,
-                    approved_fingerprint = config.get("approved_remote_code_fingerprint"),
+            # Scan adapter + base as one combined unit, pinned by a single fingerprint,
+            # so an adapter's own auto_map code is reviewed and approvable too.
+            _rc = evaluate_remote_code_consent_for_targets(
+                consent_targets,
+                hf_token = hf_token,
+                trust_remote_code = True,
+                approved_fingerprint = config.get("approved_remote_code_fingerprint"),
+            )
+            if _rc.blocked:
+                _send_response(
+                    resp_queue,
+                    {
+                        "type": "loaded",
+                        "success": False,
+                        "message": (
+                            f"Model '{_rc.model_name}' ships custom code flagged as "
+                            f"{_rc.max_severity} by the security scan. Review "
+                            f"and approve it to proceed."
+                        ),
+                        "error_kind": "remote_code_blocked",
+                        "remote_code": _rc.response_payload(),
+                        "ts": time.time(),
+                    },
                 )
-                if _rc.blocked:
-                    _send_response(
-                        resp_queue,
-                        {
-                            "type": "loaded",
-                            "success": False,
-                            "message": (
-                                f"Model '{target}' ships custom code flagged as "
-                                f"{_rc.max_severity} by the security scan. Review "
-                                f"and approve it to proceed."
-                            ),
-                            "error_kind": "remote_code_blocked",
-                            "remote_code": _rc.response_payload(),
-                            "ts": time.time(),
-                        },
-                    )
-                    return
+                return
 
         # Heartbeat every 30s so the orchestrator knows we're alive during slow loads.
         xet_disabled = os.environ.get("HF_HUB_DISABLE_XET") == "1"

@@ -211,7 +211,7 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
     # check Hugging Face's security scan (metadata-only) for every load. Local
     # checkpoints (the common export case) have no Hub scan and are skipped inside
     # the helper; a LoRA merges its base weights, so gate that repo too.
-    from utils.security import evaluate_file_security
+    from utils.security import evaluate_file_security, security_load_subdirs
 
     malware_targets = [checkpoint_path]
     try:
@@ -223,8 +223,11 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
             malware_targets.append(_base)
     except Exception as exc:
         logger.debug("Could not resolve LoRA base for malware scan: %s", exc)
+    _hf_token = cmd.get("hf_token")
     for target in dict.fromkeys(malware_targets):
-        _fs = evaluate_file_security(target, hf_token = cmd.get("hf_token"))
+        _fs = evaluate_file_security(
+            target, hf_token = _hf_token, load_subdirs = security_load_subdirs(target, _hf_token)
+        )
         if _fs.blocked:
             _send_response(
                 resp_queue,
@@ -243,7 +246,7 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
     # CRITICAL/HIGH findings unless pinned-approved. A LoRA checkpoint merges its
     # base model, whose custom code runs, so gate that repo too.
     if trust_remote_code:
-        from utils.security import evaluate_remote_code_consent
+        from utils.security import evaluate_remote_code_consent_for_targets
 
         consent_targets = [checkpoint_path]
         try:
@@ -255,30 +258,30 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
                 consent_targets.append(base_model)
         except Exception as exc:
             logger.debug("Could not resolve LoRA base for consent scan: %s", exc)
-        for target in dict.fromkeys(consent_targets):
-            _rc = evaluate_remote_code_consent(
-                target,
-                hf_token = cmd.get("hf_token"),
-                trust_remote_code = True,
-                approved_fingerprint = cmd.get("approved_remote_code_fingerprint"),
+        # Scan adapter + base as one combined unit, pinned by a single fingerprint.
+        _rc = evaluate_remote_code_consent_for_targets(
+            consent_targets,
+            hf_token = cmd.get("hf_token"),
+            trust_remote_code = True,
+            approved_fingerprint = cmd.get("approved_remote_code_fingerprint"),
+        )
+        if _rc.blocked:
+            _send_response(
+                resp_queue,
+                {
+                    "type": "loaded",
+                    "success": False,
+                    "message": (
+                        f"Checkpoint '{_rc.model_name}' ships custom code flagged as "
+                        f"{_rc.max_severity} by the security scan. Review and "
+                        f"approve it to proceed."
+                    ),
+                    "error_kind": "remote_code_blocked",
+                    "remote_code": _rc.response_payload(),
+                    "ts": time.time(),
+                },
             )
-            if _rc.blocked:
-                _send_response(
-                    resp_queue,
-                    {
-                        "type": "loaded",
-                        "success": False,
-                        "message": (
-                            f"Checkpoint '{target}' ships custom code flagged as "
-                            f"{_rc.max_severity} by the security scan. Review and "
-                            f"approve it to proceed."
-                        ),
-                        "error_kind": "remote_code_blocked",
-                        "remote_code": _rc.response_payload(),
-                        "ts": time.time(),
-                    },
-                )
-                return
+            return
 
     try:
         _send_response(
