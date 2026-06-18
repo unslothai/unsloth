@@ -747,6 +747,29 @@ def test_strip_shadowing_flags_defaults_strip_split_mode_too():
     assert strip_shadowing_flags(["--split-mode", "tensor"]) == []
 
 
+def test_strip_offload_is_opt_in_and_covers_moe():
+    base = dict(
+        strip_context = False,
+        strip_cache = False,
+        strip_spec = False,
+        strip_template = False,
+        strip_split_mode = False,
+    )
+    # Default: offload (incl. MoE) flags are NOT stripped.
+    assert strip_shadowing_flags(["--n-cpu-moe", "8", "--top-k", "20"], **base) == [
+        "--n-cpu-moe", "8", "--top-k", "20",
+    ]
+    # Opt-in strips layer AND MoE offload flags (value-aware), keeps the rest.
+    assert strip_shadowing_flags(
+        ["--n-cpu-moe", "8", "--gpu-layers", "33", "--fit", "off", "--top-k", "20"],
+        **base, strip_offload = True,
+    ) == ["--top-k", "20"]
+    # Boolean --cpu-moe drops the flag only, not the following value.
+    assert strip_shadowing_flags(
+        ["--cpu-moe", "--seed", "-1"], **base, strip_offload = True
+    ) == ["--seed", "-1"]
+
+
 @pytest.mark.parametrize(
     "args",
     [

@@ -38,7 +38,7 @@ from typing import (
 import httpx
 
 from core.inference.llama_server_args import (
-    _OFFLOAD_SHADOWING_FLAGS,
+    _LAYER_OFFLOAD_FLAGS,
     _effective_tensor_parallel,
     _tensor_parallel_matches_loaded,
     extra_args_disable_mmproj,
@@ -814,9 +814,10 @@ def _extra_args_set_spec_type(extra_args: Optional[Iterable[str]]) -> bool:
     return _extra_args_set_any_flag(extra_args, {"--spec-type", "--spec-default"})
 
 
-# Same flags whether detecting a user override here or stripping an inherited
-# one in llama_server_args; single-source the set so they can't drift.
-_GPU_OFFLOAD_OVERRIDE_FLAGS = _OFFLOAD_SHADOWING_FLAGS
+# Layer-offload override detection. Single-sourced from llama_server_args, which
+# also strips these (plus the MoE flags) from inherited extras; sharing the layer
+# set keeps detection and stripping from drifting.
+_GPU_OFFLOAD_OVERRIDE_FLAGS = _LAYER_OFFLOAD_FLAGS
 _THREAD_OVERRIDE_FLAGS = frozenset({"-t", "--threads"})
 
 
@@ -4571,9 +4572,11 @@ class LlamaCppBackend:
                         "image input will be disabled for this session"
                     )
                 # Seed before the try: the except (GPU-selection failure ->
-                # --fit on) falls through to the launch which reads gpu_present,
-                # and the probe that assigns it may throw first.
-                gpu_present = False
+                # --fit on) falls through to the launch which reads this, and the
+                # probe that assigns it may throw first. Captured before fit/manual
+                # empty `gpus` so the speculative defaults stay GPU-aware and the
+                # CPU-fallback check still knows GPUs were present.
+                _detected_gpus: list[tuple[int, int]] = []
                 try:
                     gguf_size = self._get_gguf_size_bytes(model_path)
                     # Include GPU-loaded mmproj in the fit budget (#5825).
@@ -4593,10 +4596,11 @@ class LlamaCppBackend:
                         _picked = set(gpu_ids)
                         gpus = [g for g in gpus if g[0] in _picked]
 
-                    # Whether the model will run on GPU at all -- captured before
-                    # fit/manual empty `gpus` to bypass the planner, so the
-                    # speculative defaults below stay GPU-aware (not CPU-oriented).
-                    gpu_present = bool(gpus)
+                    # GPUs the model will run on -- captured before fit/manual
+                    # empty `gpus` to bypass the planner. bool() drives the
+                    # GPU-aware speculative defaults; the list feeds the
+                    # CPU-fallback check.
+                    _detected_gpus = list(gpus)
 
                     def _gpu_usable(g, frac = _CTX_FIT_VRAM_FRACTION):
                         # Per-GPU usable budget for ranking: free - (1-frac)*total.
@@ -4732,10 +4736,10 @@ class LlamaCppBackend:
                     _extra_n_max = _extra_args_spec_draft_n_max(extra_args)
                     _mtp_eff_n_max = _extra_n_max if _extra_n_max is not None else spec_draft_n_max
                     if _mtp_eff_n_max is None:
-                        # gpu_present (not gpus) so fit/manual -- which empty gpus
-                        # to bypass the planner -- keep the GPU draft depth that the
+                        # _detected_gpus (not gpus) so fit/manual -- which empty
+                        # gpus to bypass the planner -- keep the GPU draft depth the
                         # launch flags also use, instead of the CPU default.
-                        _mtp_eff_n_max = 2 if gpu_present else 3
+                        _mtp_eff_n_max = 2 if _detected_gpus else 3
                     # Separate-drafter weights live on GPU (an embedded head is
                     # already in model_size). Size the drafter the launch loads, by
                     # precedence: extras --model-draft (last-wins), else Studio's
@@ -5390,7 +5394,7 @@ class LlamaCppBackend:
                     extra_args = extra_args,
                     model_identifier = model_identifier,
                     model_path = model_path,
-                    gpus = gpu_present,
+                    gpus = bool(_detected_gpus),
                     binary = binary,
                     mtp_draft_path = launch_mtp_draft_path,
                 )
@@ -5824,9 +5828,15 @@ class LlamaCppBackend:
                     self._extra_args_source = (model_identifier, hf_variant)
                 self._requested_n_ctx = int(n_ctx)
 
-                # Catch silent CPU fallback when GPU was intended (#5106).
+                # Catch silent CPU fallback when GPU was intended (#5106). Manual
+                # mode (no picker) leaves gpu_indices None and use_fit False, so
+                # include its GPU-layer intent; use the preserved probe since
+                # fit/manual empty `gpus`.
                 self._gpu_offload_active = self._classify_gpu_offload(
-                    gpu_indices is not None or use_fit, gpus or []
+                    gpu_indices is not None
+                    or use_fit
+                    or (gpu_memory_mode == "manual" and gpu_layers != 0),
+                    _detected_gpus,
                 )
                 if self._gpu_offload_active is False:
                     logger.warning(

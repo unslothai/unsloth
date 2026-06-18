@@ -182,18 +182,26 @@ _TENSOR_SPLIT_FLAGS: frozenset[str] = frozenset({"-ts", "--tensor-split"})
 _SPLIT_SHADOWING_FLAGS: frozenset[str] = _SPLIT_MODE_FLAGS | _TENSOR_SPLIT_FLAGS
 
 # GPU-offload flags. Stripped only when the GPU Memory mode owns offload
-# (fit/manual emit --fit / --gpu-layers); in auto, a user's inherited -ngl is
-# respected (the offload_overridden path), so this group is opt-in, not default.
-_OFFLOAD_SHADOWING_FLAGS: frozenset[str] = frozenset(
+# (fit/manual emit --fit / --gpu-layers / --n-cpu-moe); in auto, a user's
+# inherited -ngl is respected (the offload_overridden path), so this group is
+# opt-in, not default. Layer flags are shared with llama_cpp's override
+# detection; the MoE flags are strip-only (manual's --n-cpu-moe slider owns them).
+_LAYER_OFFLOAD_FLAGS: frozenset[str] = frozenset(
     {"-ngl", "--gpu-layers", "--n-gpu-layers", "-fit", "--fit"}
 )
+_MOE_OFFLOAD_FLAGS: frozenset[str] = frozenset(
+    {"-ncmoe", "--n-cpu-moe", "-cmoe", "--cpu-moe"}
+)
+_OFFLOAD_SHADOWING_FLAGS: frozenset[str] = _LAYER_OFFLOAD_FLAGS | _MOE_OFFLOAD_FLAGS
 
 _SHADOWING_FLAGS: frozenset[str] = (
     _CONTEXT_FLAGS | _CACHE_FLAGS | _SPEC_FLAGS | _TEMPLATE_FLAGS | _SPLIT_SHADOWING_FLAGS
 )
 
 # Shadowing flags that take no value -- strip the flag only, not the next token.
-_BOOLEAN_SHADOWING_FLAGS: frozenset[str] = frozenset({"--spec-default", "--jinja", "--no-jinja"})
+_BOOLEAN_SHADOWING_FLAGS: frozenset[str] = frozenset(
+    {"--spec-default", "--jinja", "--no-jinja", "-cmoe", "--cpu-moe"}
+)
 
 
 def parse_ctx_override(args: Optional[Iterable[str]]) -> Optional[int]:
