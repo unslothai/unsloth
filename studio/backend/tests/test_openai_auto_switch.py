@@ -493,3 +493,88 @@ def test_override_route_rejects_managed_flag_and_removes(monkeypatch):
     empty = settings_route.ModelOverridePayload(model_id = "unsloth/B-GGUF")
     resp2 = settings_route.update_openai_auto_switch_override(empty, "tester")
     assert "unsloth/B-GGUF" not in resp2.overrides
+
+
+# ── /v1/models discovery ────────────────────────────────────────────
+
+
+def test_list_switch_eligible_ids(monkeypatch):
+    # Several index keys map to the same entry; the listing is the distinct,
+    # SORTED set of loader ids (insertion order B,A,C below differs from sorted).
+    eb = resolver._LocalGgufEntry("unsloth/B-GGUF", ("Q4_K_M",))
+    ea = resolver._LocalGgufEntry("unsloth/A-GGUF", ())
+    ec = resolver._LocalGgufEntry("unsloth/C-GGUF", ())
+    monkeypatch.setattr(
+        resolver,
+        "_build_index",
+        lambda: {"unsloth/b-gguf": eb, "b-gguf": eb, "unsloth/a-gguf": ea, "unsloth/c-gguf": ec},
+    )
+    resolver._scan = (0.0, {})
+    assert resolver.list_switch_eligible_ids() == [
+        "unsloth/A-GGUF",
+        "unsloth/B-GGUF",
+        "unsloth/C-GGUF",
+    ]
+
+
+def test_v1_models_lists_eligible_only_when_enabled(monkeypatch):
+    # Loaded model B (rich fields); eligible models A and B.
+    monkeypatch.setattr(
+        inference_route,
+        "_openai_model_objects",
+        lambda: [
+            {
+                "id": "unsloth/B-GGUF",
+                "object": "model",
+                "created": 1,
+                "owned_by": "local",
+                "context_length": 8192,
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        resolver, "list_switch_eligible_ids", lambda: ["unsloth/A-GGUF", "unsloth/B-GGUF"]
+    )
+
+    # Off: drop-in behavior unchanged — only the loaded model is listed.
+    monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: False)
+    data = asyncio.run(inference_route._all_openai_model_objects())
+    assert [m["id"] for m in data] == ["unsloth/B-GGUF"]
+
+    # On: loaded model first (keeps rich fields), then eligible extras with B
+    # deduped and listed minimally.
+    monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: True)
+    data = asyncio.run(inference_route._all_openai_model_objects())
+    assert [m["id"] for m in data] == ["unsloth/B-GGUF", "unsloth/A-GGUF"]
+    loaded = next(m for m in data if m["id"] == "unsloth/B-GGUF")
+    extra = next(m for m in data if m["id"] == "unsloth/A-GGUF")
+    assert loaded["context_length"] == 8192
+    assert "context_length" not in extra
+
+
+def test_v1_models_retrieve_eligible_only_when_enabled(monkeypatch):
+    from fastapi import HTTPException
+
+    monkeypatch.setattr(
+        inference_route,
+        "_openai_model_objects",
+        lambda: [{"id": "unsloth/B-GGUF", "object": "model", "created": 1, "owned_by": "local"}],
+    )
+    monkeypatch.setattr(
+        resolver, "list_switch_eligible_ids", lambda: ["unsloth/A-GGUF", "unsloth/B-GGUF"]
+    )
+
+    # Off: an eligible-but-unloaded id is not retrievable (unchanged drop-in behavior).
+    monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: False)
+    with pytest.raises(HTTPException) as off:
+        asyncio.run(inference_route.openai_retrieve_model("unsloth/A-GGUF", "tester"))
+    assert off.value.status_code == 404
+
+    # On: an eligible id returns a minimal object echoing the requested id...
+    monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: True)
+    obj = asyncio.run(inference_route.openai_retrieve_model("unsloth/A-GGUF", "tester"))
+    assert obj["id"] == "unsloth/A-GGUF" and obj["object"] == "model"
+    # ...but a truly unknown id still 404s.
+    with pytest.raises(HTTPException) as unknown:
+        asyncio.run(inference_route.openai_retrieve_model("totally/unknown", "tester"))
+    assert unknown.value.status_code == 404

@@ -127,3 +127,15 @@ def resolve_local_gguf(requested: str) -> Optional[tuple[str, Optional[str]]]:
         # Best-effort: any resolver failure falls through to the loaded model,
         # so a malformed name can never turn a servable request into a 500.
         return None
+
+
+def list_switch_eligible_ids() -> list[str]:
+    """Distinct loader ids for every downloaded GGUF auto-switch can serve.
+
+    Advertised in ``/v1/models`` so a client can discover what it can swap to,
+    mirroring llama-swap. Each is a name ``resolve_local_gguf`` accepts.
+    """
+    try:
+        return sorted({entry.loader_id for entry in _index().values()})
+    except Exception:
+        return []

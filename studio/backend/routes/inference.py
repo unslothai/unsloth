@@ -5826,15 +5826,48 @@ def _openai_model_objects() -> list[dict]:
     return models
 
 
+async def _auto_switch_extra_model_objects(existing: list[dict]) -> list[dict]:
+    """Minimal model objects for switch-eligible downloaded GGUFs not already
+    listed. Empty unless auto-switch is on, so default ``/v1/models`` (just the
+    loaded model) is unchanged.
+    """
+    from utils.openai_auto_switch_settings import get_openai_auto_switch_enabled
+
+    if not get_openai_auto_switch_enabled():
+        return []
+    from core.inference.local_model_resolver import list_switch_eligible_ids
+
+    try:
+        # Off the loop: a cold-cache rebuild walks the models dir + HF cache.
+        ids = await asyncio.to_thread(list_switch_eligible_ids)
+    except Exception:
+        return []
+    loaded = {obj["id"].lower() for obj in existing}
+    created = int(time.time())
+    return [
+        {"id": mid, "object": "model", "created": created, "owned_by": "local"}
+        for mid in ids
+        if mid.lower() not in loaded
+    ]
+
+
+async def _all_openai_model_objects() -> list[dict]:
+    """Loaded model(s) plus, when auto-switch is on, every switch-eligible GGUF."""
+    objects = _openai_model_objects()
+    objects += await _auto_switch_extra_model_objects(objects)
+    return objects
+
+
 @router.get("/models")
 async def openai_list_models(current_subject: str = Depends(get_current_subject)):
     """
     OpenAI-compatible model listing endpoint.
 
-    Returns the currently loaded model in the format expected by
-    OpenAI-compatible clients (``GET /v1/models``).
+    Returns the currently loaded model (and, when auto-switch is enabled, every
+    downloaded GGUF it can swap to) in the format OpenAI-compatible clients
+    expect (``GET /v1/models``).
     """
-    return {"object": "list", "data": _openai_model_objects()}
+    return {"object": "list", "data": await _all_openai_model_objects()}
 
 
 @router.get("/models/{model_id:path}")
@@ -5843,10 +5876,11 @@ async def openai_retrieve_model(model_id: str, current_subject: str = Depends(ge
     OpenAI-compatible single-model retrieval endpoint (``GET /v1/models/{id}``).
 
     Returns the bare model object when ``model_id`` matches a loaded local
-    model, or 404 model_not_found otherwise. Defined after the LIST route so
-    it does not shadow it; ``{model_id:path}`` keeps ids with slashes intact.
+    model (or a switch-eligible GGUF when auto-switch is on), or 404
+    model_not_found otherwise. Defined after the LIST route so it does not
+    shadow it; ``{model_id:path}`` keeps ids with slashes intact.
     """
-    for model in _openai_model_objects():
+    for model in await _all_openai_model_objects():
         if model["id"] == model_id:
             return model
     raise HTTPException(
