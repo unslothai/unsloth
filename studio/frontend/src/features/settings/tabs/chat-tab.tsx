@@ -304,9 +304,11 @@ export function ChatTab() {
             <span className="flex flex-col gap-1.5">
               <span>
                 On: Unsloth auto-picks the best settings and loads it.
+                <br />
+                Off: opens Run settings to customize, then load.
+                <br />
+                The gear always opens Run settings:
               </span>
-              <span>Off: opens Run settings to customize, then load.</span>
-              <span>The gear always opens Run settings:</span>
               <span className="flex items-center gap-2 rounded-md bg-black/[0.03] dark:bg-white/[0.04] px-2.5 py-1.5">
                 <span className="font-mono text-xs text-foreground">
                   Q4_K_M
@@ -336,11 +338,10 @@ export function ChatTab() {
         <SettingsRow
           label="Expand quantizations"
           description={
-            <span className="flex flex-col gap-1">
-              <span>
-                On: On Device GGUF models show their quantizations right away.
-              </span>
-              <span>Off: click a model to view its quantizations.</span>
+            <span>
+              On: On Device GGUF models show their quantizations right away.
+              <br />
+              Off: click a model to view its quantizations.
             </span>
           }
         >
@@ -352,12 +353,11 @@ export function ChatTab() {
         <SettingsRow
           label="Show all quantizations"
           description={
-            <span className="flex flex-col gap-1">
-              <span>
-                On: list every quantization, including ones you have not
-                downloaded.
-              </span>
-              <span>Off: show only downloaded quantizations.</span>
+            <span>
+              On: list every quantization, including ones you have not
+              downloaded.
+              <br />
+              Off: show only downloaded quantizations.
             </span>
           }
         >
