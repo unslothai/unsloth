@@ -84,3 +84,52 @@ def test_empty_runtime_error_falls_back_to_generic(monkeypatch):
     http = _provoke(monkeypatch, RuntimeError(""))
     assert http.status_code == 400
     assert http.detail == "Invalid model"
+
+
+def _drive_validate(monkeypatch, *, is_gguf: bool):
+    """Run validate_model with both security helpers forced True; return the response."""
+    from types import SimpleNamespace
+
+    import utils.models.model_config as mc
+
+    monkeypatch.setattr(
+        inf,
+        "_resolve_model_identifier_for_request",
+        lambda request, operation: ("org/mixed-repo", "org/mixed-repo", False),
+    )
+    config = SimpleNamespace(
+        identifier = "org/mixed-repo",
+        display_name = "org/mixed-repo",
+        is_gguf = is_gguf,
+        is_lora = False,
+        is_vision = False,
+        gguf_file = None,
+    )
+    monkeypatch.setattr(
+        inf.ModelConfig, "from_identifier", staticmethod(lambda **_kw: config)
+    )
+    # No LoRA base to resolve; keep it offline.
+    monkeypatch.setattr(mc, "get_base_model_from_lora_identifier", lambda *_a, **_k: None)
+    # Both gates WOULD flag this repo (mixed repo with auto_map + an unsafe pickle).
+    monkeypatch.setattr(inf, "_requires_trust_remote_code_for_model", lambda *_a, **_k: True)
+    monkeypatch.setattr(inf, "_requires_security_review_for_model", lambda *_a, **_k: True)
+
+    req = ValidateModelRequest(model_path = "org/mixed-repo")
+    return asyncio.run(inf.validate_model(req, current_subject = "tester"))
+
+
+def test_selected_gguf_variant_skips_trc_and_security_review(monkeypatch):
+    # A selected GGUF loads via llama.cpp: repo-level auto_map Python and root pickle
+    # weights are inert, so neither gate should fire even though both helpers say True.
+    resp = _drive_validate(monkeypatch, is_gguf = True)
+    assert resp.is_gguf is True
+    assert resp.requires_trust_remote_code is False
+    assert resp.requires_security_review is False
+
+
+def test_non_gguf_load_still_runs_trc_and_security_review(monkeypatch):
+    # Control: a Transformers (non-GGUF) load must still honor both gates.
+    resp = _drive_validate(monkeypatch, is_gguf = False)
+    assert resp.is_gguf is False
+    assert resp.requires_trust_remote_code is True
+    assert resp.requires_security_review is True

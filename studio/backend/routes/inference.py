@@ -2606,6 +2606,22 @@ async def validate_model(
         security_targets = list(dict.fromkeys(security_targets))
 
         is_gguf = getattr(config, "is_gguf", False)
+        # A selected GGUF artifact loads through llama.cpp, which never executes the
+        # repo's auto_map Python and never deserializes root pickle weights. So repo-level
+        # Transformers artifacts (a config.json with auto_map, or an unsafe pytorch_model.bin
+        # sitting next to the .gguf in a mixed repo) are inert for this load -- gating the
+        # GGUF on them is a false positive. Only run the remote-code/security preflight for
+        # non-GGUF loads.
+        requires_trust_remote_code = False
+        requires_security_review = False
+        if not is_gguf:
+            requires_trust_remote_code = _requires_trust_remote_code_for_model(
+                trc_target, request.hf_token
+            )
+            requires_security_review = any(
+                _requires_security_review_for_model(_t, request.hf_token)
+                for _t in security_targets
+            )
         # Native context length, read from the local GGUF header when present.
         # Lets the staged ("Load on selection" off) flow populate the context
         # slider before the GPU load; None until the file is downloaded.
@@ -2642,12 +2658,8 @@ async def validate_model(
             is_gguf = is_gguf,
             is_lora = getattr(config, "is_lora", False),
             is_vision = getattr(config, "is_vision", False),
-            requires_trust_remote_code = _requires_trust_remote_code_for_model(
-                trc_target, request.hf_token
-            ),
-            requires_security_review = any(
-                _requires_security_review_for_model(_t, request.hf_token) for _t in security_targets
-            ),
+            requires_trust_remote_code = requires_trust_remote_code,
+            requires_security_review = requires_security_review,
             context_length = context_length,
         )
 
