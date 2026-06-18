@@ -1061,8 +1061,10 @@ export function HubModelPicker({
   const gpu = useGpuInfo();
   // Last-loaded timestamps power the "Recent" sort (vs "Downloaded" = file date).
   const loadTimes = useModelLoadTimes(value);
-  // Fade the list's top edge once scrolled (under the search / tab bar).
+  // Fade the list's top edge once scrolled, and its bottom edge while more
+  // rows sit below the fold.
   const [listScrolled, setListScrolled] = useState(false);
+  const [listMoreBelow, setListMoreBelow] = useState(false);
   const [query, setQuery] = useState("");
   const debouncedQuery = useDebouncedValue(query);
   // Shared Hub search stack (the same hooks the Hub page uses) so the picker
@@ -1898,6 +1900,25 @@ export function HubModelPicker({
     },
   );
 
+  // Recompute the top/bottom edge fades from the scroll position.
+  const updateListFades = useCallback((el: HTMLDivElement) => {
+    const scrolled = el.scrollTop > 0;
+    setListScrolled((prev) => (prev === scrolled ? prev : scrolled));
+    const moreBelow = el.scrollHeight - el.scrollTop - el.clientHeight > 1;
+    setListMoreBelow((prev) => (prev === moreBelow ? prev : moreBelow));
+  }, []);
+
+  // Keep the fades in sync when rows are added, removed, or filtered.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    updateListFades(el);
+    const observer = new ResizeObserver(() => updateListFades(el));
+    observer.observe(el);
+    if (el.firstElementChild) observer.observe(el.firstElementChild);
+    return () => observer.disconnect();
+  }, [scrollRef, updateListFades]);
+
   // Sentinel + IntersectionObserver for recommended infinite scroll. Re-running
   // on each loaded page (results length) re-attaches the observer so a heavily
   // filtered list keeps paging until the viewport fills or the listing ends;
@@ -1997,7 +2018,7 @@ export function HubModelPicker({
     );
 
   return (
-    <div className="space-y-2">
+    <div className="relative space-y-2">
       <div className="flex items-center gap-2 pb-1">
         <div className="relative flex-1">
           <HugeiconsIcon
@@ -2048,20 +2069,18 @@ export function HubModelPicker({
 
       <div
         ref={scrollRef}
-        onScroll={(e) => {
-          const next = e.currentTarget.scrollTop > 0;
-          setListScrolled((prev) => (prev === next ? prev : next));
-        }}
+        onScroll={(e) => updateListFades(e.currentTarget)}
         className={cn(
           // Small negative margin pulls the scrollbar in (closer to the rows),
           // and a thin gutter lets the row pills widen toward it. Height tracks
           // the content up to the cap, so short lists do not leave white space.
-          "model-list-scroll -mr-1 flex max-h-[20rem] flex-col overflow-y-auto pr-0.5",
+          "model-list-scroll -mr-1 max-h-[20rem] overflow-y-auto pr-0.5",
           listScrolled && "is-scrolled",
+          listMoreBelow && "is-bottom-faded",
         )}
         {...hubModelList.listboxProps}
       >
-        <div className="shrink-0 py-1 pr-0">
+        <div className="py-1 pr-0">
           {/* First-load spinner only when nothing cached is shown yet. */}
           {showDownloaded &&
           !cachedReady &&
@@ -2957,23 +2976,22 @@ export function HubModelPicker({
             </>
           ) : null}
         </div>
-        {/* Floating eject pill: a filled button pinned to the bottom of the
-            list. The wrapper is transparent, so nothing sits behind or around
-            the pill; only the list rows show through. */}
-        {onEject ? (
-          <div className="pointer-events-none sticky bottom-0 mt-auto flex justify-center py-1">
-            <button
-              type="button"
-              onClick={onEject}
-              className="pointer-events-auto inline-flex items-center justify-center gap-2 rounded-md bg-popover px-3 py-2 text-[13px] text-destructive shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] transition-colors hover:bg-[color-mix(in_srgb,var(--destructive)_12%,var(--popover))] dark:bg-[color-mix(in_srgb,var(--foreground)_10%,var(--sidebar))] dark:shadow-none dark:hover:bg-[color-mix(in_srgb,var(--destructive)_22%,var(--sidebar))]"
-              title="Eject model"
-            >
-              <HugeiconsIcon icon={RemoveCircleIcon} className="size-3.5" />
-              Eject loaded model
-            </button>
-          </div>
-        ) : null}
       </div>
+      {/* Floating eject pill: overlaid on the list bottom, outside the scroll
+          so the edge fade never touches it. Only the pill catches clicks. */}
+      {onEject ? (
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-center pb-1">
+          <button
+            type="button"
+            onClick={onEject}
+            className="pointer-events-auto inline-flex items-center justify-center gap-2 rounded-md bg-popover px-3 py-2 text-[13px] text-destructive shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] transition-colors hover:bg-[color-mix(in_srgb,var(--destructive)_12%,var(--popover))] dark:bg-[color-mix(in_srgb,var(--foreground)_10%,var(--sidebar))] dark:shadow-none dark:hover:bg-[color-mix(in_srgb,var(--destructive)_22%,var(--sidebar))]"
+            title="Eject model"
+          >
+            <HugeiconsIcon icon={RemoveCircleIcon} className="size-3.5" />
+            Eject loaded model
+          </button>
+        </div>
+      ) : null}
     </div>
   );
 }

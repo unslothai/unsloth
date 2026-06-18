@@ -51,6 +51,32 @@
 		-webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 14px);
 		mask-image: linear-gradient(to bottom, transparent 0, #000 14px);
 	}
+	/* Bottom edge fades while more rows sit below the fold. */
+	.model-list-scroll.is-bottom-faded {
+		-webkit-mask-image: linear-gradient(
+			to bottom,
+			#000 calc(100% - 16px),
+			transparent
+		);
+		mask-image: linear-gradient(to bottom, #000 calc(100% - 16px), transparent);
+	}
+	/* Both edges fade when scrolled with rows above and below. */
+	.model-list-scroll.is-scrolled.is-bottom-faded {
+		-webkit-mask-image: linear-gradient(
+			to bottom,
+			transparent 0,
+			#000 14px,
+			#000 calc(100% - 16px),
+			transparent
+		);
+		mask-image: linear-gradient(
+			to bottom,
+			transparent 0,
+			#000 14px,
+			#000 calc(100% - 16px),
+			transparent
+		);
+	}
 	/* RAG chip strip: sidebar-style bottom fade while more chips sit below
 	   the scroll fold (JS-toggled). */
 	.rag-docs-bottom-fade {
