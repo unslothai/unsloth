@@ -3382,8 +3382,9 @@ class LlamaCppBackend:
         # (capped at the training context). An explicit in-range n_ctx overrides it.
         maxtok = n_ctx if (n_ctx and 0 < n_ctx <= 65536) else 0
         # Honor the GPU picker: the diffusion runner takes a single device, so
-        # use the first selected GPU. Falls back to DG_GPU / 0 when unset.
-        gpu = str(gpu_ids[0]) if gpu_ids else os.environ.get("DG_GPU", "0")
+        # use the lowest selected GPU (matches the sorted set recorded below, so
+        # the device used == the echoed gpu_ids[0]). Falls back to DG_GPU / 0.
+        gpu = str(sorted(gpu_ids)[0]) if gpu_ids else os.environ.get("DG_GPU", "0")
 
         cmd = list(shim_cmd) + [
             "--gguf",
@@ -3405,6 +3406,11 @@ class LlamaCppBackend:
         env["UNSLOTH_IS_PRESENT"] = "1"
         env["DG_VISUAL_BIN"] = visual_bin
         env["DG_GPU"] = gpu
+        if gpu_ids:
+            # The visual server remasks via CUDA_VISIBLE_DEVICES=<gpu>; pin PCI
+            # order (as the llama-server path does) so the picked physical id maps
+            # to the GPU the picker showed, not CUDA's default fastest-first order.
+            env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
         # The file-override shim imports its sibling visual_engine; put its dir on PYTHONPATH.
         # (The zoo-package shim is an installed module and needs no PYTHONPATH change.)
         if extra_pythonpath:
@@ -3462,6 +3468,13 @@ class LlamaCppBackend:
         self._model_identifier = model_identifier
         self._cache_type_kv = None
         self._gpu_offload_active = True
+        # Diffusion doesn't use the llama.cpp GPU-memory knobs; reset them to
+        # defaults (the picked device is still recorded below) so /load, /status
+        # and reload dedup don't report a previous GGUF's fit/manual settings.
+        self._gpu_memory_mode = "auto"
+        self._gpu_layers = -1
+        self._n_cpu_moe = 0
+        self._tensor_split = None
         # Record the picked device so the load response echoes it and a re-Apply
         # with the same pick dedups instead of forcing a needless reload.
         self._gpu_ids = sorted(gpu_ids) if gpu_ids else None
