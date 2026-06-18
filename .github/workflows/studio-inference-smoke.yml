@@ -91,7 +91,7 @@ jobs:
         continue-on-error: true
         with:
           path: hf-cache
-          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v1
+          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v2
 
       - name: Prime HF_HOME with the GGUF
         id: prime-hf
@@ -102,17 +102,19 @@ jobs:
           python -m pip install --upgrade huggingface_hub
           mkdir -p hf-cache
           bash .github/scripts/hf-download-with-retry.sh "$GGUF_REPO" "$GGUF_FILE"
+          bash .github/scripts/hf-download-with-retry.sh ggml-org/models tinyllamas/stories260K.gguf
 
       - name: Save HF_HOME for ${{ env.GGUF_REPO }}
         if: always() && steps.prime-hf.outcome == 'success'
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         with:
           path: hf-cache
-          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v1
+          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v2
 
       - name: Install Studio (--local, --no-torch)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           mkdir -p logs
           set -o pipefail
@@ -315,7 +317,7 @@ jobs:
     timeout-minutes: 25
     env:
       # Tool calling is the highest-volume GGUF in this workflow
-      # (Qwen3.5-2B at IQ3_XXS = ~890 MiB). Caching HF_HOME would
+      # (Qwen3.5-2B at Q4_K_XL = ~1.28 GiB). Caching HF_HOME would
       # store xet chunks + blobs + snapshots = ~4 GiB compressed --
       # 4-5x file-size inflation, dominated by xet chunks. Use main's
       # `--local-dir gguf-cache` pattern to cache the flat .gguf only.
@@ -324,8 +326,11 @@ jobs:
       # path keeps the test off HF_HOME entirely so the cache size
       # tracks the GGUF file 1:1. The OpenAI/Anth and JSON+images
       # jobs still cover the gguf_variant resolution path.
+      # Q4_K_XL, not IQ3_XXS: at IQ3_XXS this model emits malformed
+      # tool calls that llama-server's peg-native parser rejects with a
+      # 500. Mac/Windows already use Q4_K_XL for the same reason.
       GGUF_REPO: unsloth/Qwen3.5-2B-GGUF
-      GGUF_FILE: Qwen3.5-2B-UD-IQ3_XXS.gguf
+      GGUF_FILE: Qwen3.5-2B-UD-Q4_K_XL.gguf
       STUDIO_PORT: '18889'
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
@@ -375,6 +380,7 @@ jobs:
       - name: Install Studio (--local, --no-torch)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           mkdir -p logs
           set -o pipefail
@@ -769,6 +775,9 @@ jobs:
           kill "${STUDIO_PID}" 2>/dev/null || true
           sleep 2
           ss -tln | grep ":${STUDIO_PORT}" || true
+          # Capture backend + llama-server logs so a 500 has a server-side traceback.
+          mkdir -p logs/server-logs
+          cp -r ~/.unsloth/studio/logs/. logs/server-logs/ 2>/dev/null || true
 
       - name: Upload logs
         # Always upload so green runs are still reviewable.
@@ -781,6 +790,7 @@ jobs:
           path: |
             logs/studio.log
             logs/install.log
+            logs/server-logs/
           retention-days: 7
 
   # ─────────────────────────────────────────────────────────────────────
@@ -829,7 +839,7 @@ jobs:
         continue-on-error: true
         with:
           path: hf-cache
-          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-${{ env.MMPROJ_FILE }}-v1
+          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-${{ env.MMPROJ_FILE }}-v2
 
       - name: Prime HF_HOME with the GGUF + mmproj
         id: prime-hf
@@ -841,17 +851,19 @@ jobs:
           mkdir -p hf-cache
           bash .github/scripts/hf-download-with-retry.sh "$GGUF_REPO" "$GGUF_FILE"
           bash .github/scripts/hf-download-with-retry.sh "$GGUF_REPO" "$MMPROJ_FILE"
+          bash .github/scripts/hf-download-with-retry.sh ggml-org/models tinyllamas/stories260K.gguf
 
       - name: Save HF_HOME for ${{ env.GGUF_REPO }} (model + mmproj)
         if: always() && steps.prime-hf.outcome == 'success'
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         with:
           path: hf-cache
-          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-${{ env.MMPROJ_FILE }}-v1
+          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-${{ env.MMPROJ_FILE }}-v2
 
       - name: Install Studio (--local, --no-torch)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           mkdir -p logs
           set -o pipefail

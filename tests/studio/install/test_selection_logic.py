@@ -1248,6 +1248,136 @@ class TestLinuxCudaChoiceFromRelease:
         log_entries = result.selection_log
         assert any("unavailable_on_host" in entry for entry in log_entries)
 
+    def test_blackwell_prefers_cuda13_over_torch_cuda12(self, monkeypatch):
+        # Blackwell host with both lines sm_120-capable: cuda13 wins over torch's cuda12.
+        mock_linux_runtime(monkeypatch, ["cuda13", "cuda12"])
+        host = make_host(driver_cuda_version = (13, 0), compute_caps = ["120"])
+        art12 = make_artifact(
+            "bundle-cuda12-newer.tar.gz",
+            runtime_line = "cuda12",
+            supported_sms = ["86", "120"],
+            min_sm = 86,
+            max_sm = 120,
+        )
+        art13 = make_artifact(
+            "bundle-cuda13-newer.tar.gz",
+            runtime_line = "cuda13",
+            supported_sms = ["86", "120"],
+            min_sm = 86,
+            max_sm = 120,
+        )
+        release = make_release([art12, art13])
+        result = linux_cuda_choice_from_release(host, release, preferred_runtime_line = "cuda12")
+        assert result is not None
+        assert result.primary.runtime_line == "cuda13"
+        assert any("blackwell_runtime_override" in entry for entry in result.selection_log)
+
+    def test_blackwell_skips_incapable_cuda13_line(self, monkeypatch):
+        # cuda13 line cannot cover sm_120 (only an -older bundle): stay on native cuda12.
+        mock_linux_runtime(monkeypatch, ["cuda13", "cuda12"])
+        host = make_host(driver_cuda_version = (13, 0), compute_caps = ["120"])
+        art13_older = make_artifact(
+            "bundle-cuda13-older.tar.gz",
+            runtime_line = "cuda13",
+            supported_sms = ["75", "86", "89"],
+            min_sm = 75,
+            max_sm = 89,
+        )
+        art12_newer = make_artifact(
+            "bundle-cuda12-newer.tar.gz",
+            runtime_line = "cuda12",
+            supported_sms = ["86", "120"],
+            min_sm = 86,
+            max_sm = 120,
+        )
+        release = make_release([art13_older, art12_newer])
+        result = linux_cuda_choice_from_release(host, release, preferred_runtime_line = "cuda12")
+        assert result is not None
+        assert result.primary.runtime_line == "cuda12"
+        assert result.primary.name == "bundle-cuda12-newer.tar.gz"
+
+    def test_blackwell_cuda13_unavailable_uses_cuda12(self, monkeypatch):
+        # cuda13 runtime libs absent: override never forces an undetected line.
+        mock_linux_runtime(monkeypatch, ["cuda12"])
+        host = make_host(driver_cuda_version = (13, 0), compute_caps = ["120"])
+        art12 = make_artifact(
+            "bundle-cuda12-newer.tar.gz",
+            runtime_line = "cuda12",
+            supported_sms = ["86", "120"],
+            min_sm = 86,
+            max_sm = 120,
+        )
+        release = make_release([art12])
+        result = linux_cuda_choice_from_release(host, release, preferred_runtime_line = "cuda12")
+        assert result is not None
+        assert result.primary.runtime_line == "cuda12"
+
+    def test_non_blackwell_keeps_torch_preference(self, monkeypatch):
+        # Non-Blackwell host: torch preference is untouched, no override.
+        mock_linux_runtime(monkeypatch, ["cuda13", "cuda12"])
+        host = make_host(driver_cuda_version = (13, 0), compute_caps = ["86"])
+        art12 = make_artifact(
+            "bundle-cuda12.tar.gz",
+            runtime_line = "cuda12",
+            supported_sms = ["86"],
+            min_sm = 86,
+            max_sm = 86,
+        )
+        art13 = make_artifact(
+            "bundle-cuda13.tar.gz",
+            runtime_line = "cuda13",
+            supported_sms = ["86"],
+            min_sm = 86,
+            max_sm = 86,
+        )
+        release = make_release([art12, art13])
+        result = linux_cuda_choice_from_release(host, release, preferred_runtime_line = "cuda12")
+        assert result is not None
+        assert result.primary.runtime_line == "cuda12"
+        assert not any("blackwell_runtime_override" in entry for entry in result.selection_log)
+
+    def test_blackwell_ignores_malformed_runtime_line(self, monkeypatch):
+        # A malformed/future-format runtime_line must be skipped, never crash the major sort.
+        mock_linux_runtime(monkeypatch, ["cuda13", "cuda12"])
+        host = make_host(driver_cuda_version = (13, 0), compute_caps = ["120"])
+        bad = make_artifact(
+            "bundle-cudaX.tar.gz",
+            runtime_line = "cudaX",
+            supported_sms = ["86", "120"],
+            min_sm = 86,
+            max_sm = 120,
+        )
+        art13 = make_artifact(
+            "bundle-cuda13-newer.tar.gz",
+            runtime_line = "cuda13",
+            supported_sms = ["86", "120"],
+            min_sm = 86,
+            max_sm = 120,
+        )
+        release = make_release([bad, art13])
+        result = linux_cuda_choice_from_release(host, release, preferred_runtime_line = "cuda12")
+        assert result is not None
+        assert result.primary.runtime_line == "cuda13"
+
+    def test_blackwell_prefers_cuda14_over_lower_majors(self, monkeypatch):
+        # Forward-compat: the highest sm_120-capable CUDA major wins.
+        mock_linux_runtime(monkeypatch, ["cuda14", "cuda13", "cuda12"])
+        host = make_host(driver_cuda_version = (14, 0), compute_caps = ["120"])
+        arts = [
+            make_artifact(
+                f"bundle-{rtl}.tar.gz",
+                runtime_line = rtl,
+                supported_sms = ["86", "120"],
+                min_sm = 86,
+                max_sm = 120,
+            )
+            for rtl in ("cuda12", "cuda13", "cuda14")
+        ]
+        release = make_release(arts)
+        result = linux_cuda_choice_from_release(host, release, preferred_runtime_line = "cuda12")
+        assert result is not None
+        assert result.primary.runtime_line == "cuda14"
+
     def test_arm64_host_selects_linux_arm64_cuda_kind(self, monkeypatch):
         # An arm64 CUDA host (DGX Spark / Grace Hopper) selects the
         # linux-arm64-cuda bundle and ignores the x64 linux-cuda one.
@@ -2611,6 +2741,59 @@ class TestDirectLinuxNvidiaCpuGate:
         assert [a.install_kind for a in plan.attempts] == ["linux-cpu"]
 
 
+class TestLinuxPublishedAttemptsNvidiaCpuGate:
+    """Live fork-manifest path (_linux_published_attempts): an NVIDIA host whose
+    CUDA selection finds nothing must NOT be handed the manifest's CPU bundle --
+    the attempt list stays empty so the caller source-builds with CUDA instead of
+    silently installing a CPU-only binary on a GPU host. CPU-only hosts still get
+    the CPU bundle. Mirrors the ROCm policy and TestDirectLinuxNvidiaCpuGate (the
+    latter covers direct_linux_release_plan, which is off the live path, this the
+    live path)."""
+
+    def _cpu_only_bundle(self):
+        return make_release(
+            [
+                make_artifact(
+                    "app-b8508-linux-x64-cpu.tar.gz",
+                    install_kind = "linux-cpu",
+                    runtime_line = None,
+                    coverage_class = None,
+                    supported_sms = [],
+                    min_sm = None,
+                    max_sm = None,
+                    bundle_profile = None,
+                    rank = 1000,
+                ),
+            ]
+        )
+
+    def test_nvidia_host_without_cuda_line_gets_no_cpu_attempt(self, monkeypatch):
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "detect_torch_cuda_runtime_preference",
+            lambda host: CudaRuntimePreference(runtime_line = None, selection_log = []),
+        )
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "detected_linux_runtime_lines",
+            lambda: (["cuda13"], {"cuda13": ["/usr/local/cuda/lib64"]}),
+        )
+        host = make_host(driver_cuda_version = (13, 1), compute_caps = ["100"])
+        attempts = INSTALL_LLAMA_PREBUILT._linux_published_attempts(host, self._cpu_only_bundle())
+        assert attempts == []
+
+    def test_cpu_host_gets_cpu_attempt(self):
+        host = make_host(
+            nvidia_smi = None,
+            driver_cuda_version = None,
+            compute_caps = [],
+            has_physical_nvidia = False,
+            has_usable_nvidia = False,
+        )
+        attempts = INSTALL_LLAMA_PREBUILT._linux_published_attempts(host, self._cpu_only_bundle())
+        assert [a.install_kind for a in attempts] == ["linux-cpu"]
+
+
 # ===========================================================================
 # N.1d. published_windows_cuda_attempts -- version-dynamic ordering seed
 # ===========================================================================
@@ -2962,6 +3145,29 @@ class TestPublishedRocmGfxSelection:
                 )
                 is None
             ), unbuilt
+
+    def test_family_token_matches_family_bundle(self):
+        # The llama.cpp update path re-derives --rocm-gfx from the family-named
+        # marker asset, so it forwards a family token (gfx110X, lowercased to
+        # gfx110x by _normalize_forwarded_gfx), not a concrete arch. That must
+        # still select the family bundle instead of falling to a source build.
+        release = self._release("linux-rocm", "app-b9457-linux-x64-rocm")
+        for token in ("gfx110X", "gfx110x"):
+            choice = INSTALL_LLAMA_PREBUILT.published_rocm_choice_for_host(
+                release, self._host(token), "linux-rocm"
+            )
+            assert choice is not None, token
+            assert choice.name == "app-b9457-linux-x64-rocm-gfx110X.tar.gz", token
+
+    def test_windows_family_token_matches_family_bundle(self):
+        # The Windows update path forwards the same family token (gfx120X) for a
+        # windows-rocm bundle, so the family-label match must cover it too.
+        release = self._release("windows-rocm", "app-b9457-windows-x64-rocm")
+        choice = INSTALL_LLAMA_PREBUILT.published_rocm_choice_for_host(
+            release, self._host("gfx120x"), "windows-rocm"
+        )
+        assert choice is not None
+        assert choice.name == "app-b9457-windows-x64-rocm-gfx120X.zip"
 
 
 class TestPublishedMacosForkSelection:

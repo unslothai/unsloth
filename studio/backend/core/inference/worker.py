@@ -315,6 +315,18 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                 "audio_type": getattr(mc, "audio_type", None),
                 "has_audio_input": getattr(mc, "has_audio_input", False),
             }
+            try:
+                _bm = getattr(backend, "models", {}) or {}
+                _entry = (
+                    _bm.get(mc.identifier)
+                    or _bm.get(getattr(backend, "active_model_name", None))
+                    or {}
+                )
+                _context_length = _entry.get("context_length")
+                if _context_length is not None:
+                    model_info["context_length"] = int(_context_length)
+            except Exception as _ctx_exc:
+                logger.warning("context_length forward failed: %s", _ctx_exc)
             # Forward chat_template_info so the parent can classify capabilities.
             try:
                 _bm = getattr(backend, "models", {}) or {}
@@ -643,10 +655,17 @@ def run_inference_process(*, cmd_queue: Any, resp_queue: Any, cancel_event, conf
 
     _hw.detect_hardware()
     if _hw.DEVICE == _hw.DeviceType.MLX:
+        # Non-fatal: fall through with the installed version, but log the cause
+        # instead of swallowing it (issue #6103).
         try:
             _activate_transformers_version(model_name)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning(
+                "Failed to activate transformers version for '%s' (MLX inference); "
+                "inference may fail if this model requires a specific version. Error: %s",
+                model_name,
+                exc,
+            )
         try:
             from core.inference.mlx_inference import MLXInferenceBackend
 
@@ -881,6 +900,7 @@ def run_inference_process(*, cmd_queue: Any, resp_queue: Any, cancel_event, conf
                             name: {
                                 "is_vision": info.get("is_vision", False),
                                 "is_lora": info.get("is_lora", False),
+                                "context_length": info.get("context_length"),
                             }
                             for name, info in backend.models.items()
                         },

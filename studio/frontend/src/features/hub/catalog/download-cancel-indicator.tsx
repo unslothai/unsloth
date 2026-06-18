@@ -8,7 +8,8 @@ import { HugeiconsIcon } from "@hugeicons/react";
 /**
  * Inspector action-button affordance during a download: spinner that cross-fades
  * to a cancel glyph on `.hub-action-btn` hover, in the same 16x16 slot so the
- * percentage label never shifts. The swap is pure CSS; the component only carries
+ * percentage label never shifts. The swap is pure CSS
+ * (`.hub-action-btn:hover .hub-cta-indicator-*`); the component only carries
  * the marker classes.
  */
 export function DownloadCancelIndicator() {

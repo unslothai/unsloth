@@ -126,6 +126,48 @@ export function uploadThreadDocument(
   return ragUpload(`/threads/${encodeURIComponent(threadId)}/documents`, file);
 }
 
+export async function listProjectDocuments(
+  projectId: string,
+): Promise<RagDocument[]> {
+  const data = await ragRequest<{ documents: RagDocument[] }>(
+    `/projects/${encodeURIComponent(projectId)}/documents`,
+  );
+  return data.documents ?? [];
+}
+
+export function uploadProjectDocument(
+  projectId: string,
+  file: File,
+): Promise<DocumentUploadResult> {
+  return ragUpload(`/projects/${encodeURIComponent(projectId)}/documents`, file);
+}
+
+// Cached "does this project have indexed sources?" probe so the chat adapter can
+// auto-scope project chats without a round trip per message. The sources panel
+// invalidates on upload/delete.
+const projectSourcesCache = new Map<string, { has: boolean; at: number }>();
+const PROJECT_SOURCES_TTL_MS = 30_000;
+
+export async function projectHasSources(projectId: string): Promise<boolean> {
+  const cached = projectSourcesCache.get(projectId);
+  if (cached && Date.now() - cached.at < PROJECT_SOURCES_TTL_MS) {
+    return cached.has;
+  }
+  try {
+    const docs = await listProjectDocuments(projectId);
+    const has = docs.some((doc) => doc.status !== "failed");
+    projectSourcesCache.set(projectId, { has, at: Date.now() });
+    return has;
+  } catch {
+    // RAG unavailable or transient failure: don't cache, don't scope.
+    return false;
+  }
+}
+
+export function invalidateProjectSources(projectId: string): void {
+  projectSourcesCache.delete(projectId);
+}
+
 export function deleteDocument(documentId: string): Promise<{ ok: boolean }> {
   return ragRequest(`/documents/${encodeURIComponent(documentId)}`, {
     method: "DELETE",

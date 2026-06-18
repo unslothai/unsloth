@@ -270,7 +270,7 @@ export function OnDeviceFoldersDialog({
                       aria-label="Refresh locations"
                       onClick={refreshFolders}
                       disabled={loading}
-                      className="inline-flex size-7 items-center justify-center rounded-[8px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50"
+                      className="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-50"
                     >
                       <HugeiconsIcon
                         icon={RefreshIcon}
@@ -319,12 +319,19 @@ export function OnDeviceFoldersDialog({
                           <p className="truncate text-[12.5px] font-medium text-foreground">
                             {pathTail(folder.path)}
                           </p>
-                          <p
-                            title={folder.path}
-                            className="truncate font-mono text-[10.5px] text-muted-foreground"
-                          >
-                            {folder.path}
-                          </p>
+                          <Tooltip>
+                            <TooltipTrigger asChild={true}>
+                              <p className="truncate font-mono text-[10.5px] text-muted-foreground">
+                                {folder.path}
+                              </p>
+                            </TooltipTrigger>
+                            <TooltipContent
+                              side="bottom"
+                              className="tooltip-compact max-w-xs break-all"
+                            >
+                              {folder.path}
+                            </TooltipContent>
+                          </Tooltip>
                         </div>
                         <Tooltip>
                           <TooltipTrigger asChild={true}>
@@ -333,7 +340,7 @@ export function OnDeviceFoldersDialog({
                               aria-label={`Remove ${folder.path}`}
                               onClick={() => void handleRemove(folder)}
                               disabled={pending !== null}
-                              className="inline-flex size-8 shrink-0 items-center justify-center rounded-[9px] text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive disabled:opacity-50"
+                              className="inline-flex size-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive disabled:opacity-50"
                             >
                               {removing ? (
                                 <Spinner className="size-3.5" />

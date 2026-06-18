@@ -17,10 +17,10 @@ import {
   CopyIcon,
   ImageIcon,
   ImageOffIcon,
-  Loader2Icon,
   RefreshCwIcon,
   ShieldAlertIcon,
 } from "lucide-react";
+import { Spinner } from "@/components/ui/spinner";
 import { Download01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
@@ -348,7 +348,7 @@ function ImageGenerating({ className }: { className?: string }) {
         className,
       )}
     >
-      <Loader2Icon className="size-8 animate-spin text-muted-foreground" />
+      <Spinner className="size-8 text-muted-foreground" />
       <span className="sr-only">Generating image…</span>
     </div>
   );

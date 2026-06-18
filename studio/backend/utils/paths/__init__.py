@@ -41,15 +41,17 @@ from .storage_roots import (
     ensure_dir,
     ensure_studio_directories,
     resolve_under_root,
+    default_run_dir_name,
     resolve_output_dir,
     resolve_export_dir,
+    resolve_export_write_dir,
     resolve_tensorboard_dir,
     resolve_dataset_path,
 )
 
 # Re-export shim: mark project-path helpers as used so the import-hoist
 # safety net does not flag them as unused.
-_REEXPORTED = (documents_root, project_workspaces_root)
+_REEXPORTED = (documents_root, project_workspaces_root, resolve_export_write_dir)
 
 __all__ = [
     "normalize_path",
@@ -87,8 +89,10 @@ __all__ = [
     "ensure_dir",
     "ensure_studio_directories",
     "resolve_under_root",
+    "default_run_dir_name",
     "resolve_output_dir",
     "resolve_export_dir",
+    "resolve_export_write_dir",
     "resolve_tensorboard_dir",
     "resolve_dataset_path",
 ]

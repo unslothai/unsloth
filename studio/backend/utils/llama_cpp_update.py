@@ -37,8 +37,11 @@ from utils.llama_cpp_freshness import (
     _INSTALL_MARKER_NAME,
     check_prebuilt_freshness,
     latest_published_release,
+    latest_release_assets,
+    parse_base_build,
     read_install_marker,
     reset_caches,
+    update_download_size_bytes,
 )
 
 logger = structlog.get_logger(__name__)
@@ -59,9 +62,16 @@ _job: dict = {
     "from_tag": None,
     "to_tag": None,
     "error": None,
+    "progress": None,
     "started_at": None,
     "finished_at": None,
 }
+
+# Matches the installer's download progress lines, e.g.
+# "Downloading x.zip:  35.0% (12.3 MiB/35.1 MiB) at 8.2 MiB/s".
+_PROGRESS_LINE_RE = re.compile(r"(\d+(?:\.\d+)?)%\s*\(")
+# The download dominates the update; extract/validate fill the last slice.
+_DOWNLOAD_PROGRESS_CEILING = 0.95
 
 
 def _utcnow() -> str:
@@ -172,6 +182,40 @@ def _installed_build_number(binary: Optional[str]) -> Optional[int]:
     return n if n > 1 else None
 
 
+def get_installed_llama_version() -> Optional[str]:
+    """Display string for the active llama.cpp install (e.g. 'b9585' or
+    'b9601-mix-a0e2906'), or None.
+
+    Prefers the install marker's release_tag -- the full unsloth release
+    identity, the same field the update banner compares as installed (see
+    #6219) -- so a 'b9601-mix-a0e2906' build reads back in full rather than
+    collapsing to its base 'b9601'. The marker's bare ``tag`` is only the
+    upstream llama.cpp build (no '-mix-<commit>' suffix), so it's the fallback.
+    Last resort is ``b<build>`` parsed from ``llama-server --version`` for
+    source/custom builds that have no marker.
+
+    Lightweight: reads the local marker and at most runs ``--version``. Does no
+    network or release-freshness work (unlike get_update_status), so it is safe
+    to call from latency-sensitive paths like the About panel.
+    """
+    binary = _find_binary()
+    marker = read_install_marker(binary)
+    if marker:
+        tag = marker.get("release_tag") or marker.get("tag")
+        if tag:
+            return tag
+    # Markerless/source build: the fallback execs ``llama-server --version``.
+    # Skip it while an update is swapping the tree -- on Windows that exec can
+    # make the installer's os.replace fail (the same race get_update_status's
+    # source-build probe guards against). The panel just omits the row.
+    with _job_lock:
+        job_running = _job["state"] == _JOB_RUNNING
+    if job_running:
+        return None
+    n = _installed_build_number(binary)
+    return f"b{n}" if n is not None else None
+
+
 def _is_under(path: Path, root: Path) -> bool:
     try:
         p, r = path.resolve(), root.resolve()
@@ -213,23 +257,54 @@ def _source_build_status(binary: str, *, force_refresh: bool) -> Optional[dict]:
     res = _resolve_prebuilt_for_host(force_refresh = force_refresh)
     if not res or not res.get("prebuilt_available"):
         return None
-    # llama_tag is the upstream build (bNNNN, what --version reports); release_tag
-    # can be a fork wrapper tag, so compare/display against llama_tag.
-    latest = res.get("llama_tag") or res.get("release_tag")
-    if not latest:
+    # llama_tag is the upstream base (bNNNN, what --version reports); release_tag
+    # is the full tag, either a same-base mix (bNNNN-mix-<sha>) or a fork wrapper
+    # (e.g. v1.0). Compare the numeric base against llama_tag.
+    base_tag = res.get("llama_tag") or res.get("release_tag")
+    release_tag = res.get("release_tag")
+    if not base_tag:
         return None
     # No resolvable install root (e.g. a pinned LLAMA_SERVER_PATH we cannot
     # manage) means an apply would not take effect, so do not offer.
     if _llama_install_root(binary) is None:
         return None
     installed_build = _installed_build_number(binary)
-    m = re.search(r"(\d+)", latest)
-    latest_build = int(m.group(1)) if m else None
-    # Suppress only when the source build is reliably newer/equal; unknown
-    # version (the involuntary source-build case) is treated as behind.
-    update_available = (
-        installed_build is None or latest_build is None or installed_build < latest_build
+    latest_build = parse_base_build(base_tag)
+    # A same-base mix adds patches the bare base lacks, so it is newer even at an
+    # unchanged build number (the marker path's is_behind already does this). The
+    # bNNNN anchor keeps a fork wrapper tag from being read as a mix.
+    latest_is_mix = (
+        isinstance(release_tag, str)
+        and latest_build is not None
+        and parse_base_build(release_tag) == latest_build
+        and release_tag.strip() != f"b{latest_build}"
     )
+    if installed_build is None or latest_build is None:
+        # Unknown installed/latest version (the involuntary source-build case):
+        # treat as behind so we still offer the prebuilt.
+        update_available = True
+    elif installed_build < latest_build:
+        update_available = True
+    elif installed_build == latest_build:
+        # Same upstream base: offer the extra-patch mix, never a bare rebuild.
+        update_available = latest_is_mix
+    else:
+        # Source build newer than the latest prebuilt: downgrade guard.
+        update_available = False
+    # Display the mix tag when that's what makes it newer; otherwise the base.
+    latest = release_tag if latest_is_mix else base_tag
+    # Size of the resolved prebuilt, so source builds show it like the marker
+    # path. Fails open to None (offline / asset absent from the release).
+    update_size_bytes = None
+    if update_available:
+        asset_name = res.get("asset")
+        if isinstance(asset_name, str) and asset_name:
+            try:
+                assets = latest_release_assets(res.get("repo"), force_refresh = force_refresh)
+                if assets:
+                    update_size_bytes = assets.get(asset_name)
+            except Exception as exc:  # pragma: no cover - network defensive
+                logger.debug("llama update: source-build size lookup failed", error = str(exc))
     with _job_lock:
         job = dict(_job)
     return {
@@ -242,6 +317,7 @@ def _source_build_status(binary: str, *, force_refresh: bool) -> Optional[dict]:
         "installed_at_utc": None,
         "age_days": None,
         "source_build": True,
+        "update_size_bytes": update_size_bytes,
         "job": job,
     }
 
@@ -279,9 +355,24 @@ def get_update_status(*, force_refresh: bool = False) -> dict:
     freshness = check_prebuilt_freshness(binary)
     installed = freshness.get("installed_tag")
     latest = freshness.get("latest_tag")
-    update_available = bool(
-        freshness.get("has_marker") and installed and latest and installed != latest
-    )
+    # `behind` compares the full release identity with a base-build guard, so a
+    # lagging /releases/latest or a mix-tagged latest can't show a false update
+    # (see llama_cpp_freshness.is_behind).
+    update_available = bool(freshness.get("has_marker") and freshness.get("behind"))
+
+    # Size of the prebuilt that Update would download, for the banner. Only when
+    # an update is offered; fails open to None (offline / no matching asset).
+    update_size_bytes = None
+    if update_available:
+        try:
+            update_size_bytes = update_download_size_bytes(
+                marker,
+                latest,
+                freshness.get("published_repo") or repo,
+                force_refresh = force_refresh,
+            )
+        except Exception as exc:  # pragma: no cover - network defensive
+            logger.debug("llama update: size lookup failed", error = str(exc))
 
     with _job_lock:
         job = dict(_job)
@@ -296,14 +387,16 @@ def get_update_status(*, force_refresh: bool = False) -> dict:
         "installed_at_utc": freshness.get("installed_at_utc"),
         "age_days": freshness.get("age_days"),
         "source_build": False,
+        "update_size_bytes": update_size_bytes,
         "job": job,
     }
 
 
 def _rocm_install_args(asset: Optional[str]) -> list[str]:
     """Forward --rocm-gfx/--has-rocm from the marker asset, mirroring setup.sh.
-    The installer probe can miss the gfx arch on amd-smi-only hosts; lemonade
-    bundles carry the family in the name (rocm-gfx110X), fork bundles only rocm/hip."""
+    The installer probe can miss the gfx arch on amd-smi-only hosts; per-gfx
+    ROCm bundles carry the family in the name (rocm-gfx110X), version-tagged
+    bundles only rocm/hip."""
     if not asset:
         return []
     low = asset.lower()
@@ -357,19 +450,58 @@ def _run_update(install_dir: Path, repo: str, asset: Optional[str], script: Path
         ]
         cmd.extend(_rocm_install_args(asset))
         logger.info("llama update: installing", cmd = " ".join(cmd))
-        proc = subprocess.run(
+        # Stream the installer output so download percent lines feed
+        # job["progress"]; finer milestones via UNSLOTH_PROGRESS_PERCENT_STEP.
+        env = dict(os.environ, UNSLOTH_PROGRESS_PERCENT_STEP = "5")
+        proc = subprocess.Popen(
             cmd,
-            capture_output = True,
+            stdout = subprocess.PIPE,
+            stderr = subprocess.STDOUT,
             text = True,
-            timeout = _INSTALL_TIMEOUT_SECONDS,
+            env = env,
         )
-        if proc.returncode != 0:
-            tail = (proc.stderr or proc.stdout or "").strip()[-1500:]
-            raise RuntimeError(f"installer exited {proc.returncode}: {tail or 'no output'}")
+        timed_out = threading.Event()
 
-        # New UNSLOTH_PREBUILT_INFO.json is on disk; drop caches so the next
-        # status read reflects the freshly installed tag.
-        reset_caches()
+        def _kill_on_timeout() -> None:
+            timed_out.set()
+            proc.kill()
+
+        watchdog = threading.Timer(_INSTALL_TIMEOUT_SECONDS, _kill_on_timeout)
+        watchdog.daemon = True
+        watchdog.start()
+        tail_lines: list[str] = []
+        try:
+            assert proc.stdout is not None
+            for line in proc.stdout:
+                tail_lines.append(line)
+                if len(tail_lines) > 80:
+                    del tail_lines[0]
+                m = _PROGRESS_LINE_RE.search(line)
+                if m is None:
+                    continue
+                fraction = min(float(m.group(1)) / 100.0, 1.0) * _DOWNLOAD_PROGRESS_CEILING
+                with _job_lock:
+                    _job["progress"] = max(_job.get("progress") or 0.0, fraction)
+            returncode = proc.wait()
+        finally:
+            watchdog.cancel()
+        if timed_out.is_set():
+            raise RuntimeError(f"installer timed out after {_INSTALL_TIMEOUT_SECONDS}s")
+        if returncode != 0:
+            tail = "".join(tail_lines).strip()[-1500:]
+            raise RuntimeError(f"installer exited {returncode}: {tail or 'no output'}")
+
+        # New UNSLOTH_PREBUILT_INFO.json is on disk; drop the in-memory AND the
+        # on-disk freshness caches, then re-prime the 24h disk cache with the
+        # true newest, so the banner can't linger on a stale same-base value
+        # after the swap. drop_disk matters when the refresh below can't reach
+        # GitHub: without it, latest_published_release would replay the stale
+        # disk value; with it, latest reads as None and the banner fails open.
+        reset_caches(drop_disk = True)
+        try:
+            latest_published_release(repo, force_refresh = True)
+        except Exception as exc:  # pragma: no cover - network defensive
+            logger.debug("llama update: post-install freshness refresh failed", error = str(exc))
         new_marker = read_install_marker(_find_binary())
         new_tag = (new_marker or {}).get("tag") or (new_marker or {}).get("release_tag")
 
@@ -382,6 +514,7 @@ def _run_update(install_dir: Path, repo: str, asset: Optional[str], script: Path
                 ),
                 to_tag = new_tag,
                 error = None,
+                progress = 1.0,
                 finished_at = _utcnow(),
             )
         logger.info("llama update: success", to_tag = new_tag)
@@ -417,7 +550,24 @@ def start_update() -> dict:
             "job": get_update_status()["job"],
         }
 
+    # A job already in flight wins over any freshness re-check below (and skips
+    # its network call). The final lock block re-checks to close the TOCTOU.
+    with _job_lock:
+        if _job["state"] == _JOB_RUNNING:
+            return {"started": False, "reason": "already_running", "job": dict(_job)}
+
     if marker:
+        # Mirror the detection guard: a direct POST or a stale banner must not
+        # start an install when the latest is not actually newer (force a fresh
+        # check so a stale 24h cache can't wrongly block a real update either).
+        status = get_update_status(force_refresh = True)
+        if not status.get("update_available"):
+            return {
+                "started": False,
+                "reason": "up_to_date",
+                "message": "The installed llama.cpp build is already at the latest prebuilt.",
+                "job": status["job"],
+            }
         install_dir = _install_dir_for(binary)
         repo = marker.get("published_repo") or DEFAULT_PUBLISHED_REPO
         from_tag = marker.get("tag") or marker.get("release_tag")
@@ -467,6 +617,7 @@ def start_update() -> dict:
             from_tag = from_tag,
             to_tag = None,
             error = None,
+            progress = 0.0,
             started_at = _utcnow(),
             finished_at = None,
         )
@@ -491,6 +642,7 @@ def _reset_job_for_tests() -> None:
             from_tag = None,
             to_tag = None,
             error = None,
+            progress = None,
             started_at = None,
             finished_at = None,
         )
