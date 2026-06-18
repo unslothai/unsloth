@@ -1710,7 +1710,10 @@ def _requires_dist_names(meta: dict) -> list[str]:
 
 
 def _requires_dist_for(
-    name: str, version: str | None, project_meta: dict, errors: list[str] | None = None
+    name: str,
+    version: str | None,
+    project_meta: dict,
+    errors: list[str] | None = None,
 ) -> list[str]:
     """Declared deps for the pinned version, read from that release's metadata
     (its ``requires_dist`` can differ from latest). Unpinned uses the
