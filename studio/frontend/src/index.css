@@ -1059,7 +1059,7 @@
 		color: var(--bypass);
 	}
 	.composer-pill-btn[data-variant="danger"]:hover {
-		background-color: color-mix(in oklab, var(--bypass) 12%, transparent);
+		background-color: color-mix(in oklab, var(--bypass) 7%, transparent);
 	}
 	/* Match the hover-X circle to the yellow accent instead of the green primary. */
 	.composer-pill-btn[data-variant="danger"] .composer-pill-x {
