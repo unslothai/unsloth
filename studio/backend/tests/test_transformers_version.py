@@ -972,9 +972,7 @@ class TestLocalConfig530Tier:
             # is self-referencing — must not be promoted to 530.
             assert get_transformers_tier(str(d)) == "default"
 
-    def test_hf_id_fallback_not_triggered_when_name_or_path_is_absolute_self(
-        self, tmp_path: Path
-    ):
+    def test_hf_id_fallback_not_triggered_when_name_or_path_is_absolute_self(self, tmp_path: Path):
         """_name_or_path == absolute path of the same checkpoint while model_name
         is a relative path: the two strings differ, but both point to the same
         directory.  The absolute path must not be scanned for tier substrings."""
