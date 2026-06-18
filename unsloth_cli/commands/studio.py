@@ -24,6 +24,13 @@ import typer
 studio_app = typer.Typer(help = "Unsloth Studio commands.")
 
 
+def _enable_verbose_access_logs() -> None:
+    """Restore every per-request access log by disabling the burst dedup and the
+    quiet-poll heartbeat. Inherited by the spawned/re-exec'd server via the env."""
+    os.environ["UNSLOTH_STUDIO_ACCESS_LOG_DEDUP_MS"] = "0"
+    os.environ["UNSLOTH_STUDIO_ACCESS_LOG_POLL_DEDUP_MS"] = "0"
+
+
 # Resolve install root: UNSLOTH_STUDIO_HOME, then STUDIO_HOME alias, then
 # sys.prefix inference (so a direct call to <root>/bin/unsloth resolves after
 # the installer's env var has expired), then legacy ~/.unsloth/studio.
@@ -668,6 +675,13 @@ def studio_default(
         "if the tunnel can't start. Without it, --not-secure also serves the raw "
         "0.0.0.0 port, which is reachable from anywhere on the network.",
     ),
+    verbose: bool = typer.Option(
+        False,
+        "--verbose",
+        "-v",
+        help = "Log every API request, including the high-frequency polling that is "
+        "deduplicated by default.",
+    ),
 ):
     """Launch the Unsloth Studio server."""
     # Runs before every subcommand (run/setup/update/...).
@@ -705,6 +719,16 @@ def studio_default(
                 err = True,
             )
             raise typer.Exit(2)
+        # Same for --verbose: it would not reach the subcommand.
+        if verbose:
+            typer.echo(
+                f"Error: --verbose on `unsloth studio` applies to the "
+                f"plain-server path only. For `unsloth studio "
+                f"{ctx.invoked_subcommand}`, put it after the subcommand: "
+                f"`unsloth studio {ctx.invoked_subcommand} --verbose ...`",
+                err = True,
+            )
+            raise typer.Exit(2)
         return
 
     # --secure requires the tunnel; force a loopback bind.
@@ -717,6 +741,11 @@ def studio_default(
             )
             raise typer.Exit(2)
         host = "127.0.0.1"
+
+    # --verbose restores the per-request access logs that are suppressed by
+    # default (plain-server path; the `run` subcommand has its own --verbose).
+    if verbose:
+        _enable_verbose_access_logs()
 
     # Use the studio venv if it exists and we aren't already in it.
     studio_venv_dir = STUDIO_HOME / "unsloth_studio"
@@ -926,6 +955,13 @@ def run(
     gguf_variant: Optional[str] = typer.Option(
         None, "--gguf-variant", help = "GGUF quant variant (e.g. UD-Q4_K_XL)"
     ),
+    verbose: bool = typer.Option(
+        False,
+        "--verbose",
+        "-v",
+        help = "Log every API request, including the high-frequency polling that is "
+        "deduplicated by default.",
+    ),
     max_seq_length: int = typer.Option(
         0,
         "--max-seq-length",
@@ -1008,6 +1044,14 @@ def run(
         unsloth studio run --model unsloth/Qwen3-27B-GGUF --gguf-variant Q8_0 --tensor-parallel
     """
     extra_llama_args: List[str] = list(ctx.args) if ctx.args else []
+
+    # Set before any re-exec so the in-venv server inherits it via the env.
+    # `run --verbose` used to pass through to llama-server (its own -v); keep
+    # that by forwarding --log-verbose so we add Studio logs without dropping it.
+    if verbose:
+        _enable_verbose_access_logs()
+        if not any(a in ("--verbose", "-v", "--log-verbose") for a in extra_llama_args):
+            extra_llama_args.append("--log-verbose")
 
     # Promote legacy exact `-m`/`-hfr`/`-f` back into typer params;
     # clusters stay in extras.
@@ -1127,6 +1171,8 @@ def run(
         args.append("--cloudflare" if cloudflare else "--no-cloudflare")
         args.append("--secure" if secure else "--not-secure")
         args.append("--tensor-parallel" if tensor_parallel else "--no-tensor-parallel")
+        if verbose:
+            args.append("--verbose")
         # llama-server pass-through extras → child ctx.args → load payload.
         if extra_llama_args:
             args.extend(extra_llama_args)
