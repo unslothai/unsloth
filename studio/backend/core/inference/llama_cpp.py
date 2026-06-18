@@ -1895,8 +1895,10 @@ class LlamaCppBackend:
             hip_v = os.environ.get("HIP_VISIBLE_DEVICES")
             rocr_v = os.environ.get("ROCR_VISIBLE_DEVICES")
             cvd = (
-                hip_v if hip_v is not None
-                else rocr_v if rocr_v is not None
+                hip_v
+                if hip_v is not None
+                else rocr_v
+                if rocr_v is not None
                 else os.environ.get("CUDA_VISIBLE_DEVICES")
             )
             if cvd is not None:
@@ -5749,17 +5751,22 @@ class LlamaCppBackend:
                     _probe_rc = self._process.poll() if self._process is not None else None
                     _fa_cmd = (
                         self._with_flash_attn_off(_last_spawn_cmd)
-                        if self._is_signal_crash(_probe_rc) else None
+                        if self._is_signal_crash(_probe_rc)
+                        else None
                     )
                     healthy = False
                     if _fa_cmd is not None:
                         logger.warning(
                             "MTP first-decode hard-crashed (exit %s) with flash "
-                            "attention on; retrying with --flash-attn off.", _probe_rc
+                            "attention on; retrying with --flash-attn off.",
+                            _probe_rc,
                         )
                         self._kill_process()
                         cmd = _fa_cmd
-                        healthy = _spawn_and_wait(_fa_cmd, label = "-noflash-mtp") and self._probe_mtp_decode()
+                        healthy = (
+                            _spawn_and_wait(_fa_cmd, label = "-noflash-mtp")
+                            and self._probe_mtp_decode()
+                        )
                     if not healthy:
                         logger.warning(
                             "MTP speculative decoding crashed on the first decode "
