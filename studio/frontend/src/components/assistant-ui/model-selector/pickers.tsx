@@ -2019,7 +2019,8 @@ export function HubModelPicker({
 
   return (
     <div className="relative space-y-2">
-      <div className="flex items-center gap-2 pb-1">
+      {/* Inset the right so Search Hub lands on the Trending dropdown's edge. */}
+      <div className="flex items-center gap-2 pb-1 pr-2">
         <div className="relative flex-1">
           <HugeiconsIcon
             icon={Search01Icon}
