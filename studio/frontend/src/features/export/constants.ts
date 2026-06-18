@@ -51,12 +51,9 @@ export const QUANT_OPTIONS: {
 ];
 
 /**
- * Canonical llama.cpp effective bits-per-weight per quant type. GGUF sizes
- * scale from the model's real fp16/bf16 size: `bytes ~= fp16_bytes * bpw / 16`.
- * F16/BF16 = 16 (no quantization). The K-quant values are published average
- * effective bit-rates across the mixed-precision tensors; `Q2_K_L` is an
- * Unsloth preset (Q2_K with Q8_0 embeddings/output). These are intentionally
- * approximate ("~") estimates, not exact file sizes.
+ * llama.cpp effective bits-per-weight per quant; GGUF size ~= fp16_bytes * bpw / 16.
+ * K-quant values are published average bit-rates (Q2_K_L = Unsloth Q2_K + Q8_0
+ * embeddings). Approximate ("~"), not exact file sizes.
  */
 export const GGUF_BPW: Record<string, number> = {
   q2_k_l: 3.35,
@@ -69,21 +66,18 @@ export const GGUF_BPW: Record<string, number> = {
   f16: 16,
 };
 
-/** fp16/bf16 reference bit-rate (2 bytes per weight). */
 const FP16_BPW = 16;
 
 /**
- * Human-readable size in base-1024 units ("67 GB", "2.9 GB"), matching the
- * model-selector picker so an export estimate reads the same as the downloaded
- * model size. Do NOT swap in the base-1000 `hub/lib/format.ts::formatBytes`
- * here -- it would render the same model as "72 GB" and disagree with the picker.
+ * Human-readable base-1024 size ("67 GB"), matching the model-selector picker.
+ * Do NOT use the base-1000 hub formatBytes here -- it would disagree ("72 GB").
  */
 export function formatModelSize(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes <= 0) {
     return "";
   }
   const units = ["B", "KB", "MB", "GB", "TB"];
-  // Clamp to [0, len-1]: bytes < 1 would otherwise give a negative index.
+  // clamp: bytes < 1 would give a negative index
   const i = Math.max(
     0,
     Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1),
@@ -128,9 +122,8 @@ export function buildQuantSizeLabels(
 }
 
 /**
- * Estimated total export size for the summary line. Scales from the selected
- * model's real fp16 size (`fp16Bytes`); returns "" when unknown so the UI can
- * hide the estimate rather than show a misleading fixed number.
+ * Estimated total export size for the summary line; scales from the model's
+ * real fp16 size, returns "" when unknown so the UI can hide a wrong number.
  */
 export function getEstimatedSize(
   method: ExportMethod | null,
@@ -140,7 +133,7 @@ export function getEstimatedSize(
   if (method === "gguf" && quantLevels.length > 0) {
     const perQuant = quantLevels.map((q) => estimateQuantBytes(fp16Bytes, q));
     if (perQuant.some((b) => b == null)) {
-      return ""; // unknown size -> blank, never a wrong fixed number
+      return ""; // unknown -> blank
     }
     let total = 0;
     for (const b of perQuant) {

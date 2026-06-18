@@ -55,19 +55,13 @@ export async function fetchCheckpoints(): Promise<CheckpointListResponse> {
   return parseJson<CheckpointListResponse>(response);
 }
 
-/**
- * Estimate a model's FP16/BF16-equivalent size, used to scale the GGUF quant
- * size estimates in the Export picker. Returns nulls (not an error) when the
- * size can't be determined, so the UI shows no estimate rather than a wrong one.
- */
+/** Estimate a model's fp16-equivalent size to scale the GGUF quant labels; nulls (not error) when unknown. */
 export async function fetchExportSize(
   modelId: string,
   hfToken?: string | null,
   signal?: AbortSignal,
 ): Promise<ExportSizeEstimate> {
-  // The token lets the sizer read safetensors/config metadata for private or
-  // gated repos. Send it in a header (not the query string) so it never lands
-  // in URLs, logs, or browser history.
+  // Token in a header (not the query string) so it never lands in URLs/logs.
   const headers: Record<string, string> = {};
   if (hfToken) {
     headers["X-HF-Token"] = hfToken;

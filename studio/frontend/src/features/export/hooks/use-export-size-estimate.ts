@@ -13,22 +13,17 @@ export interface ExportSizeState {
 
 const EMPTY: ExportSizeState = { data: null, loading: false, fp16Bytes: null };
 
-// The "no selection" sentinel the Export page uses for the base model name
-// (an em dash, U+2014). Built from a char code so this source stays ASCII.
+// Export page's "no model" sentinel (em dash U+2014); char code keeps this file ASCII.
 const EMPTY_MODEL_SENTINEL = String.fromCharCode(0x2014);
 
-/** Dropdown sentinels / blanks mean "no model selected". */
 function normalizeModelId(modelId: string | null | undefined): string {
   const id = (modelId ?? "").trim();
   return id && id !== EMPTY_MODEL_SENTINEL ? id : "";
 }
 
 /**
- * Fetch the selected model's FP16/BF16-equivalent size so the Export GGUF
- * picker can scale its per-quant size estimates. On any failure (offline,
- * gated, unresolved id) returns a null size, so the picker shows no estimate
- * instead of a misleading fixed number. The token is forwarded so private or
- * gated repos can still be sized, and a token change triggers a refetch.
+ * Fetch the selected model's fp16-equivalent size so the GGUF picker can scale
+ * its per-quant estimates. Null size on any failure; refetches on token change.
  */
 export function useExportSizeEstimate(
   modelId: string | null | undefined,
@@ -36,8 +31,7 @@ export function useExportSizeEstimate(
 ): ExportSizeState {
   const modelKey = normalizeModelId(modelId);
   const token = hfToken?.trim() || "";
-  // Composite key so the effect refetches when either the model or the token
-  // changes. "|" cannot appear in an HF repo id or token. Never rendered.
+  // Refetch when model or token changes; "|" can't appear in an id/token.
   const key = modelKey ? `${modelKey}|${token}` : "";
   const [state, setState] = useState<{ key: string; value: ExportSizeState }>(
     () => ({ key: "", value: EMPTY }),

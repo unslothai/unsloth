@@ -2767,32 +2767,22 @@ async def list_checkpoints(
         )
 
 
-# Cache only successful estimates, keyed by model id ONLY. The fp16 size does
-# not depend on which (valid) token fetched it, so the token is never part of
-# the key and never retained in memory. Failures are NOT cached, so a transient
-# HF/offline/gated error can recover once metadata (or a token) becomes
-# available, instead of being pinned until process restart.
+# Successful estimates only, keyed by model id (token-independent, never stored).
+# Failures are not cached so a transient offline/gated error can recover later.
 _EXPORT_SIZE_CACHE: dict[str, tuple[int, int, str]] = {}
 
 
 def _is_sizable_local_path(model: str) -> bool:
-    """True only for local paths under a known Studio data root.
+    """True only for local paths under a Studio data root.
 
-    The local sizing path rglob-scans the directory; restricting it to the
-    outputs / exports / cache / home roots prevents an authenticated caller
-    from triggering a scan of an arbitrary directory (e.g. ``/``).
-
-    The candidate is first normalized lexically (pure string operations, no
-    filesystem access) and required to sit under a trusted root; only once
-    containment is proven is the filesystem touched. An unvalidated,
-    user-controlled value therefore never reaches a filesystem call.
+    Containment is decided by lexical normalization before any filesystem
+    access, so a user-controlled path can't trigger a scan of an arbitrary dir.
     """
     from utils.paths import outputs_root, exports_root, studio_root
     from utils.paths.storage_roots import cache_root
 
     def _lexical(p: str) -> str:
-        # normpath collapses '..' so containment cannot be escaped; abspath /
-        # expanduser are string/getcwd only -- none of these read the path.
+        # Lexical only (no filesystem read); normpath collapses '..'.
         return os.path.normpath(os.path.abspath(os.path.expanduser(p)))
 
     roots = []
@@ -2808,8 +2798,7 @@ def _is_sizable_local_path(model: str) -> bool:
         return False
     for root in roots:
         if candidate == root or candidate.startswith(root + os.sep):
-            # Containment against a trusted root is proven; only now is it safe
-            # to touch the filesystem.
+            # Contained in a trusted root; safe to touch the filesystem.
             return os.path.exists(candidate)
     return False
 
@@ -2817,16 +2806,10 @@ def _is_sizable_local_path(model: str) -> bool:
 def _export_size_cached(
     model: str, hf_token: Optional[str]
 ) -> tuple[Optional[int], Optional[int], str]:
-    """Estimate a model's FP16/BF16-equivalent size in bytes (+ total params).
+    """Estimate a model's fp16/bf16-equivalent size in bytes (+ total params).
 
-    Successful results are memoized (by model id) so repeated Export-page
-    selections of the same model don't re-hit Hugging Face. Never raises: any
-    failure (offline, gated, bad id) returns ``(None, None, "unavailable")``
-    -- and is deliberately NOT cached so it can recover later. The sizer is
-    imported lazily from the module path the tests patch
-    (``utils.hardware.hardware``).
-
-    Blocking (HF metadata / config / disk); call via a worker thread.
+    Memoizes successful results by model id; never raises (failures return
+    (None, None, "unavailable") and are not cached). Blocking I/O; call off-thread.
     """
     cached = _EXPORT_SIZE_CACHE.get(model)
     if cached is not None:
@@ -2840,7 +2823,7 @@ def _export_size_cached(
         result = (int(fp16_bytes), int(fp16_bytes) // 2, source)
         _EXPORT_SIZE_CACHE[model] = result
         return result
-    except Exception as e:  # defensive: never break the Export page over a size hint
+    except Exception as e:  # a size hint must never break export
         logger.warning("Could not estimate export size for '%s': %s", model, e)
         return None, None, "unavailable"
 
@@ -2851,20 +2834,12 @@ async def get_export_size(
     hf_token: Optional[str] = Header(None, alias = "X-HF-Token"),
     current_subject: str = Depends(get_current_subject),
 ):
-    """Estimate a model's FP16/BF16-equivalent size for the Export page.
+    """Estimate a model's fp16/bf16-equivalent size for the Export page.
 
-    The Export GGUF quant picker scales its per-quant size estimates from this
-    value (``bytes ~= fp16_bytes * bits_per_weight / 16``). Returns nulls with
-    HTTP 200 when the size can't be determined, so the UI shows no estimate
-    rather than a misleading fixed number. Reuses the MoE-aware sizer
-    ``estimate_fp16_model_size_bytes`` (safetensors -> config -> local -> vllm).
-
-    The HF token (for private/gated repos) is taken from the ``X-HF-Token``
-    header rather than the query string, so it is never written to URLs/logs.
+    Returns nulls with HTTP 200 when the size can't be determined. The HF token
+    (for gated repos) comes from the X-HF-Token header so it never hits URLs/logs.
     """
     if is_local_path(model):
-        # Only size local paths under a known Studio root; never scan arbitrary
-        # directories supplied by the caller.
         if not _is_sizable_local_path(model):
             return ExportSizeResponse(
                 model = model, fp16_bytes = None, total_params = None, source = "unavailable"
@@ -2872,8 +2847,7 @@ async def get_export_size(
         resolved = model
     else:
         resolved = resolve_cached_repo_id_case(model)
-    # The sizer does blocking network/disk I/O; run it off the event loop so a
-    # slow Hub request can't stall other API/SSE endpoints.
+    # Blocking network/disk I/O: run off the event loop.
     fp16_bytes, total_params, source = await asyncio.to_thread(
         _export_size_cached, resolved, hf_token
     )

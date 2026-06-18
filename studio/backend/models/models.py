@@ -54,13 +54,7 @@ class CheckpointListResponse(BaseModel):
 
 
 class ExportSizeResponse(BaseModel):
-    """Estimated FP16/BF16-equivalent size of a model, used to scale the
-    Export page's GGUF quantization size estimates.
-
-    All size fields are nullable: when the size cannot be determined (e.g.
-    offline, gated, or an unresolved id) the endpoint returns nulls so the
-    UI shows no estimate rather than a misleading fixed number.
-    """
+    """Model fp16/bf16-equivalent size; size fields are null when unknown."""
 
     model: str = Field(..., description = "Model id or path the estimate was computed for")
     fp16_bytes: Optional[int] = Field(

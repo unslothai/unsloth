@@ -1,12 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for the Export page model-size estimate endpoint (GET /api/models/export-size).
+"""Tests for GET /api/models/export-size (the Export page size estimate).
 
-The Export GGUF quant picker scales its per-quant size estimates from this
-endpoint's ``fp16_bytes`` instead of a hardcoded, model-independent constant.
-The endpoint must never raise (a size hint must not break the Export page) and
-must degrade to nulls when the size can't be determined.
+The endpoint must never raise and must degrade to nulls when size is unknown.
 """
 
 import asyncio
@@ -18,10 +15,9 @@ from unittest.mock import patch
 
 _BACKEND_ROOT = Path(__file__).resolve().parent.parent
 
-# Real Qwen3.6-35B-A3B counts (the model from the reported issue): 35.95B params
-# -> ~67 GiB bf16. The old UI wrongly showed Q8 ~8.2 GB for this model.
+# Real Qwen3.6-35B-A3B: 35.95B params -> ~67 GiB bf16 (UI wrongly showed Q8 ~8.2 GB).
 _QWEN35_PARAMS = 35_951_822_704
-_QWEN35_FP16_BYTES = _QWEN35_PARAMS * 2  # ~71.9e9 bytes (~67 GiB)
+_QWEN35_FP16_BYTES = _QWEN35_PARAMS * 2
 
 
 def _load_route_module(name: str, relative_path: str):
@@ -40,11 +36,9 @@ class TestExportSizeEndpoint(unittest.TestCase):
         )
 
     def setUp(self):
-        # Each test starts with a cold cache so memoization doesn't leak.
         self.models_route._EXPORT_SIZE_CACHE.clear()
 
     def _call(self, model: str = "unsloth/Qwen3.6-35B-A3B"):
-        # Keep id resolution deterministic and offline (no HF cache lookup).
         with (
             patch.object(self.models_route, "is_local_path", return_value = False),
             patch.object(self.models_route, "resolve_cached_repo_id_case", side_effect = lambda m: m),
@@ -67,8 +61,7 @@ class TestExportSizeEndpoint(unittest.TestCase):
         self.assertEqual(resp.model, "unsloth/Qwen3.6-35B-A3B")
 
     def test_moe_via_config_fallback(self):
-        # Local/uncached MoE: the sizer's config path counts experts and returns
-        # the same ~67 GiB; the endpoint surfaces it with source "config".
+        # MoE sized via the sizer's config path -> source "config".
         with patch(
             "utils.hardware.hardware.estimate_fp16_model_size_bytes",
             return_value = (67 * (1024**3), "config"),
@@ -79,7 +72,6 @@ class TestExportSizeEndpoint(unittest.TestCase):
         self.assertEqual(resp.source, "config")
 
     def test_unknown_size_returns_nulls_not_error(self):
-        # Offline / gated / unresolved: sizer returns (None, "unavailable").
         with patch(
             "utils.hardware.hardware.estimate_fp16_model_size_bytes",
             return_value = (None, "unavailable"),
@@ -99,7 +91,6 @@ class TestExportSizeEndpoint(unittest.TestCase):
         self.assertIsNone(resp.total_params)
 
     def test_sizer_exception_is_swallowed(self):
-        # A size hint must never break the Export page -> nulls, no raise.
         with patch(
             "utils.hardware.hardware.estimate_fp16_model_size_bytes",
             side_effect = RuntimeError("boom"),
@@ -116,12 +107,10 @@ class TestExportSizeEndpoint(unittest.TestCase):
             first = self._call()
             second = self._call()
         self.assertEqual(first.fp16_bytes, second.fp16_bytes)
-        # Second identical call is served from cache (sizer called once).
         self.assertEqual(mock_sizer.call_count, 1)
 
     def test_failures_are_not_cached(self):
-        # A transient failure must NOT poison the cache: once metadata (or a
-        # token) becomes available, a later call for the same model recovers.
+        # A transient failure must not poison the cache; a later call recovers.
         with patch(
             "utils.hardware.hardware.estimate_fp16_model_size_bytes",
             side_effect = [(None, "unavailable"), (_QWEN35_FP16_BYTES, "safetensors")],
@@ -130,11 +119,9 @@ class TestExportSizeEndpoint(unittest.TestCase):
             second = self._call()
         self.assertIsNone(first.fp16_bytes)
         self.assertEqual(second.fp16_bytes, _QWEN35_FP16_BYTES)
-        # The failed first call was re-attempted (not served from cache).
         self.assertEqual(mock_sizer.call_count, 2)
 
     def test_token_is_forwarded_to_sizer(self):
-        # The X-HF-Token header value must reach the sizer for gated repos.
         with (
             patch.object(self.models_route, "is_local_path", return_value = False),
             patch.object(self.models_route, "resolve_cached_repo_id_case", side_effect = lambda m: m),
@@ -153,8 +140,7 @@ class TestExportSizeEndpoint(unittest.TestCase):
         self.assertEqual(mock_sizer.call_args.kwargs.get("hf_token"), "secret-token")
 
     def test_arbitrary_local_path_is_not_scanned(self):
-        # An authenticated caller must not be able to make the sizer rglob an
-        # arbitrary directory; unsafe local paths return unavailable, unscanned.
+        # Unsafe local paths must not be scanned -> unavailable.
         with (
             patch.object(self.models_route, "is_local_path", return_value = True),
             patch.object(self.models_route, "_is_sizable_local_path", return_value = False),
@@ -170,7 +156,6 @@ class TestExportSizeEndpoint(unittest.TestCase):
         mock_sizer.assert_not_called()
 
     def test_sizable_local_path_is_sized(self):
-        # A local path under an allowed Studio root is sized normally.
         with (
             patch.object(self.models_route, "is_local_path", return_value = True),
             patch.object(self.models_route, "_is_sizable_local_path", return_value = True),
@@ -190,10 +175,7 @@ class TestExportSizeEndpoint(unittest.TestCase):
         self.assertEqual(resp.source, "local")
 
     def test_is_sizable_local_path_containment(self):
-        # The helper must size only paths under a trusted Studio root and must
-        # never let a user-controlled value escape it: containment is decided
-        # by lexical normalization (no filesystem access on an unvalidated path)
-        # before the path is ever touched.
+        # Only paths under a trusted root are sizable; '..' can't escape.
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "outputs"
             inside = root / "run-1"
@@ -205,15 +187,10 @@ class TestExportSizeEndpoint(unittest.TestCase):
                 patch("utils.paths.storage_roots.cache_root", return_value = root),
             ):
                 is_sizable = self.models_route._is_sizable_local_path
-                # Under a trusted root and present on disk -> sizable.
                 self.assertTrue(is_sizable(str(inside)))
-                # The trusted root itself -> sizable.
                 self.assertTrue(is_sizable(str(root)))
-                # Under a trusted root but missing -> not sizable.
                 self.assertFalse(is_sizable(str(root / "missing")))
-                # An arbitrary absolute path outside every root -> not sizable.
                 self.assertFalse(is_sizable("/etc"))
-                # '..' traversal is collapsed and cannot escape the root.
                 self.assertFalse(is_sizable(str(root / ".." / "etc")))
 
 
