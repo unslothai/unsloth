@@ -906,8 +906,9 @@
 		border: none;
 		/* Pin to the dark --radius so rounded-3xl corners stay consistent. */
 		--radius: 0.625rem;
-		/* Match the chat box: soft elevation. */
-		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
+		/* Prominent, wide ChatGPT-style elevation. */
+		box-shadow: 0 24px 70px -16px rgba(0, 0, 0, 0.28),
+			0 8px 24px -12px rgba(0, 0, 0, 0.18);
 	}
 
 	/* Dark: page-bg shadow so the dialog does not merge into same-color

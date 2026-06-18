@@ -525,33 +525,51 @@ async def get_gguf_variants_response(
             return False
 
         def _any_mmproj_cached(filenames: frozenset[str]) -> bool:
-            return any(
+            if any(
                 by_filename.get(name.lower()) is not None
                 for by_filename in cached_filenames_by_snapshot
                 for name in filenames
+            ):
+                return True
+            return any(
+                _is_mmproj_filename(name.rsplit("/", 1)[-1])
+                for by_filename in cached_filenames_by_snapshot
+                for name in by_filename
+            )
+
+        def _quant_bytes_present(quant: str, size_bytes: int) -> bool:
+            # Small rounding tolerance for symlinks vs real sizes.
+            if size_bytes <= 0:
+                return False
+            return any(
+                by_quant.get(quant, 0) >= size_bytes * 0.99
+                for by_quant in cached_quant_bytes_by_snapshot
             )
 
         def _is_fully_downloaded(variant) -> bool:
-            requirement = requirements_by_quant.get(variant.quant.lower())
-            if requirement is None:
-                if variant.size_bytes == 0:
-                    return False
-                quant = variant.quant.lower()
-                # Allow small rounding tolerance (symlinks vs real sizes).
-                return any(
-                    by_quant.get(quant, 0) >= variant.size_bytes * 0.99
-                    for by_quant in cached_quant_bytes_by_snapshot
+            quant = variant.quant.lower()
+            requirement = requirements_by_quant.get(quant)
+            # Vision repos ship an mmproj adapter; any precision on disk suffices.
+            if (
+                requirement is not None
+                and _filenames_cached(
+                    requirement.main_filenames,
+                    requirement.main_size_bytes,
                 )
-            if not _filenames_cached(
-                requirement.main_filenames,
-                requirement.main_size_bytes,
+                and (
+                    not requirement.mmproj_filenames
+                    or _any_mmproj_cached(requirement.mmproj_filenames)
+                )
             ):
+                return True
+            # Byte fallback so a present quant isn't demoted by a filename mismatch;
+            # vision repos still need an mmproj cached (any precision).
+            if not _quant_bytes_present(quant, variant.size_bytes):
                 return False
-            # Vision repos ship an mmproj adapter per variant. Any mmproj
-            # precision on disk suffices (the loader picks whichever is present);
-            # requiring the API-preferred one would falsely demote variants.
-            if requirement.mmproj_filenames and not _any_mmproj_cached(
-                requirement.mmproj_filenames,
+            if (
+                requirement is not None
+                and requirement.mmproj_filenames
+                and not _any_mmproj_cached(requirement.mmproj_filenames)
             ):
                 return False
             return True

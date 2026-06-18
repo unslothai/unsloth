@@ -1160,6 +1160,7 @@ class LlamaCppBackend:
         self._is_diffusion: bool = False
         self._diffusion_visual_bin: Optional[str] = None
         self._healthy = False
+        self._stats_logger = None  # vLLM-style engine-stats poller, set on load
         # Set by _classify_gpu_offload after _wait_for_health.
         self._gpu_offload_active: Optional[bool] = None
         self._context_length: Optional[int] = None
@@ -1689,6 +1690,7 @@ class LlamaCppBackend:
                 "supports_cache_ram": False,
                 "supports_ctx_checkpoints": False,
                 "supports_no_cache_prompt": False,
+                "supports_metrics": False,
             }
         try:
             mtime = int(Path(bin_path).stat().st_mtime)
@@ -1707,6 +1709,7 @@ class LlamaCppBackend:
         supports_cache_ram = False
         supports_ctx_checkpoints = False
         supports_no_cache_prompt = False
+        supports_metrics = False
         try:
             probe_env = cls._llama_server_env_for_binary(bin_path)
             result = subprocess.run(
@@ -1802,6 +1805,7 @@ class LlamaCppBackend:
             supports_cache_ram = _is_real("--cache-ram")
             supports_ctx_checkpoints = _is_real("--ctx-checkpoints")
             supports_no_cache_prompt = _is_real("--no-cache-prompt")
+            supports_metrics = _is_real("--metrics")
         except (OSError, subprocess.SubprocessError) as exc:
             logger.debug(f"llama-server --help probe failed: {exc}")
 
@@ -1817,6 +1821,7 @@ class LlamaCppBackend:
             "supports_cache_ram": supports_cache_ram,
             "supports_ctx_checkpoints": supports_ctx_checkpoints,
             "supports_no_cache_prompt": supports_no_cache_prompt,
+            "supports_metrics": supports_metrics,
         }
         cls._capability_cache[cache_key] = info
         return info
@@ -5059,6 +5064,10 @@ class LlamaCppBackend:
                     fully_gpu_offloaded = True
 
                 server_caps = self.probe_server_capabilities(binary)
+                # Expose Prometheus /metrics for the engine-stats logger, only
+                # when the binary advertises it (older/custom binaries may not).
+                if server_caps.get("supports_metrics"):
+                    cmd.append("--metrics")
                 cmd.extend(
                     self._ctx_integrity_flags(
                         n_parallel,
@@ -5597,6 +5606,18 @@ class LlamaCppBackend:
                 logger.info(
                     f"llama-server ready on port {self._port} for model '{model_identifier}'"
                 )
+                # Poll llama-server /metrics -> vLLM-style engine_stats logs
+                # (only when the binary exposes /metrics).
+                if server_caps.get("supports_metrics"):
+                    try:
+                        from core.inference.llama_stats import maybe_start_stats_logger
+                        if self._stats_logger is not None:
+                            self._stats_logger.stop()
+                        self._stats_logger = maybe_start_stats_logger(self.base_url, logger)
+                    except Exception as e:
+                        logger.debug(f"engine-stats logger not started: {e}")
+                else:
+                    self._stats_logger = None
 
             # Probe outside _lock (interruptible by /unload); init inside.
             self._is_audio = False
@@ -6104,6 +6125,9 @@ class LlamaCppBackend:
         except Exception as e:
             logger.warning(f"Error killing llama-server process: {e}")
         finally:
+            if self._stats_logger is not None:
+                self._stats_logger.stop()
+                self._stats_logger = None
             self._process = None
             # Clear healthy so a /load during the replacement's warm-up can't
             # short-circuit against the previous server's health (#5401).
