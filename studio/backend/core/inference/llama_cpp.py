@@ -1878,11 +1878,10 @@ class LlamaCppBackend:
     @staticmethod
     def _amd_apu_wants_unified_memory(gpu_indices = None) -> bool:
         """True only for AMD unified-memory APUs (gfx1150/gfx1151), where
-        GGML_CUDA_ENABLE_UNIFIED_MEMORY lets llama.cpp use shared system RAM.
-        False elsewhere (the env hurts discrete GPUs). ROCm reuses torch.cuda.*;
-        gcnArchName suffix is stripped. gpu_indices (PHYSICAL ids) scopes the
-        check to the selected GPUs so a dGPU load on a mixed APU+dGPU host is not
-        treated as unified-memory; None means every visible GPU."""
+        GGML_CUDA_ENABLE_UNIFIED_MEMORY lets llama.cpp use shared system RAM (it
+        hurts discrete GPUs). gpu_indices (PHYSICAL ids) scopes the check to the
+        selected GPUs, so a dGPU on a mixed host is not treated as unified-memory;
+        None means every visible GPU."""
         try:
             import torch
 
@@ -5223,10 +5222,9 @@ class LlamaCppBackend:
                     tp_tensor_split = None
                     effective_ctx = requested_ctx  # fall back to original
 
-                # Unified-memory APUs load weights into shared system RAM, so when
-                # the weights exceed available RAM (e.g. under WSL, where the VM's
-                # cap is the real ceiling, not the ROCm-reported APU budget) the OS
-                # kills the load mid-flight (a silent "Terminated"). Refuse first.
+                # Unified-memory APUs load weights into system RAM (under WSL the VM
+                # cap, not the ROCm-reported VRAM, is the real ceiling); refuse an
+                # oversize load the OS would otherwise kill mid-flight.
                 if model_size is not None and self._amd_apu_wants_unified_memory(gpu_indices):
                     _ram_msg = self._apu_ram_shortfall_message(
                         _apu_ram_size if _apu_ram_size is not None else model_size,
