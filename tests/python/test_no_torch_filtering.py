@@ -471,11 +471,16 @@ class TestInstallPythonStackSubprocessMock:
     # -- Normal Linux path (NO_TORCH=False, IS_MACOS=False, IS_WINDOWS=False) --
 
     def test_normal_linux_includes_overrides(self):
-        """Normal Linux: overrides.txt IS called."""
+        """Normal Linux: torchao override install IS called.
+
+        Since f5f9e217 the installer passes the torchao spec directly (selected
+        by _select_torchao_spec to match the installed torch) instead of
+        -r overrides.txt, so we check for the torchao package name.
+        """
         cmds = self._capture_install(no_torch = False, is_macos = False, is_windows = False)
-        assert self._cmds_contain_file(
-            cmds, "overrides.txt"
-        ), "overrides.txt should be called on normal Linux"
+        assert any(
+            "torchao" in cmd for cmd in cmds
+        ), "torchao override install should be called on normal Linux"
 
     def test_normal_linux_includes_triton(self):
         """Normal Linux: triton-kernels.txt IS called."""
