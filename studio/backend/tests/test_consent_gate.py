@@ -845,7 +845,11 @@ class TestScannerCoversAllExecutableCode:
         # nothing to execute, so the result is an EMPTY dict (no code) -- NOT a raise
         # (which would be "unscannable" -> a false block). This is the real shape of
         # unsloth/Llama-3_1-Nemotron-Ultra-253B-v1-GGUF.
-        def _dl(repo, fn, token = None):
+        def _dl(
+            repo,
+            fn,
+            token = None,
+        ):
             import json
             import tempfile
 
@@ -933,13 +937,20 @@ class TestScannerCoversAllExecutableCode:
         # A GGUF repo whose config.json carries a (vestigial) auto_map loads via
         # llama.cpp, which NEVER runs auto_map. _config_has_auto_map must return False
         # so the consent flow is never triggered, even though the config declares one.
-        def _dl(repo_id = None, filename = None, token = None, **kw):
+        def _dl(
+            repo_id = None,
+            filename = None,
+            token = None,
+            **kw,
+        ):
             import json
             import tempfile
 
             if filename == "config.json":
                 p = Path(tempfile.mkdtemp()) / "config.json"
-                p.write_text(json.dumps({"auto_map": {"AutoModelForCausalLM": "modeling_decilm.X"}}))
+                p.write_text(
+                    json.dumps({"auto_map": {"AutoModelForCausalLM": "modeling_decilm.X"}})
+                )
                 return str(p)
             raise EntryNotFoundError(filename)
 
@@ -955,16 +966,19 @@ class TestScannerCoversAllExecutableCode:
     def test_direct_gguf_file_reference_has_no_auto_map(self):
         # A direct .gguf FILE reference (repo id + filename, >=3 segments) is a GGUF
         # load -> no remote code, no Hub call.
-        with patch(
-            "huggingface_hub.hf_hub_download", side_effect = AssertionError("no Hub call")
-        ):
+        with patch("huggingface_hub.hf_hub_download", side_effect = AssertionError("no Hub call")):
             assert consent._config_has_auto_map("org/repo/model.gguf") is False
 
     def test_remote_repo_named_gguf_is_not_suffix_skipped(self):
         # A bare two-segment repo id whose NAME ends in ".gguf" is NOT a direct file
         # reference: it can still ship safetensors + auto_map Python that transformers
         # executes, so it must be scanned (not short-circuited to "no remote code").
-        def _dl(repo_id = None, filename = None, token = None, **kw):
+        def _dl(
+            repo_id = None,
+            filename = None,
+            token = None,
+            **kw,
+        ):
             import json
             import tempfile
 
@@ -988,7 +1002,12 @@ class TestScannerCoversAllExecutableCode:
         # A repo with BOTH .gguf and .safetensors is NOT treated as GGUF: the user
         # could load the safetensors via transformers, where auto_map WOULD run, so
         # the consent gate must still apply.
-        def _dl(repo_id = None, filename = None, token = None, **kw):
+        def _dl(
+            repo_id = None,
+            filename = None,
+            token = None,
+            **kw,
+        ):
             import json
             import tempfile
 

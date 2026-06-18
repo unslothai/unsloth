@@ -151,12 +151,11 @@ def _is_direct_gguf_file_ref(model_name: str) -> bool:
     ship ``safetensors`` + ``auto_map`` Python that transformers would execute, so it
     is NOT treated as a direct file reference and must fall through to the scan.
     """
-    name = (model_name or "")
+    name = model_name or ""
     if not name.lower().endswith(".gguf"):
         return False
     try:
         from utils.paths import is_local_path
-
         if is_local_path(name):
             return True
     except Exception:

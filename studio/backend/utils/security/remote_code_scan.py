@@ -71,6 +71,7 @@ class RemoteCodeUnscannable(Exception):
     vestigial auto_map) or fail open on code we could not see.
     """
 
+
 # --- Fallback patterns (only used if scripts/scan_packages.py is absent) -----
 # (regex, check-name, severity). A flat subset of the canonical scanner, kept so
 # a stripped packaged install without scripts/ still scans. The canonical
@@ -490,9 +491,7 @@ def repo_remote_code_files(model_name: str, hf_token: Optional[str] = None) -> d
         try:
             repo_files = list_repo_files(model_name, token = hf_token)
         except Exception as exc:
-            raise RemoteCodeUnscannable(
-                f"{model_name}: could not list repo files ({exc})"
-            ) from exc
+            raise RemoteCodeUnscannable(f"{model_name}: could not list repo files ({exc})") from exc
         repo_file_set = set(repo_files)
         # Scan every present .py (the import closure the loader can execute) PLUS the
         # own-repo auto_map targets that ACTUALLY EXIST in this revision. An auto_map
