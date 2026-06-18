@@ -1890,10 +1890,16 @@ class LlamaCppBackend:
                 return False
             if not (hasattr(torch, "cuda") and torch.cuda.is_available()):
                 return False
-            # Map visible ordinal -> physical id via CUDA_VISIBLE_DEVICES (ROCm
-            # respects it too); key archs by physical id like _is_datacenter_gpu.
+            # Map visible ordinal -> physical id via the active ROCm mask (HIP,
+            # then ROCR, then CUDA), mirroring _get_gpu_memory's ROCm branch.
             physical_ids: Optional[list[int]] = None
-            cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
+            hip_v = os.environ.get("HIP_VISIBLE_DEVICES")
+            rocr_v = os.environ.get("ROCR_VISIBLE_DEVICES")
+            cvd = (
+                hip_v if hip_v is not None
+                else rocr_v if rocr_v is not None
+                else os.environ.get("CUDA_VISIBLE_DEVICES")
+            )
             if cvd is not None:
                 try:
                     physical_ids = [int(x.strip()) for x in cvd.split(",") if x.strip()]
@@ -4193,12 +4199,11 @@ class LlamaCppBackend:
             if tok in ("--flash-attn", "-fa") and i + 1 < len(out) and out[i + 1] in ("on", "auto"):
                 out[i + 1] = "off"
                 changed = True
-            elif tok in ("--flash-attn=on", "--flash-attn=auto"):
-                out[i] = "--flash-attn=off"
-                changed = True
-            elif tok in ("-fa=on", "-fa=auto"):
-                out[i] = "-fa=off"
-                changed = True
+            elif tok.startswith(("--flash-attn=", "-fa=")):
+                flag, _, value = tok.partition("=")
+                if value in ("on", "auto"):
+                    out[i] = f"{flag}=off"
+                    changed = True
         return out if changed else None
 
     @staticmethod
@@ -4770,15 +4775,15 @@ class LlamaCppBackend:
                             _mtp_draft_weights = self._get_gguf_size_bytes(_mtp_draft_for_budget)
                         except Exception:
                             _mtp_draft_weights = 0
-                    # A unified-memory APU holds every weight in system RAM, even a
-                    # CPU-offloaded drafter the GPU budget drops; count it for the guard.
+                    # A unified-memory APU holds the drafter in system RAM too (even
+                    # CPU-offloaded), so add it when MTP engages; the GPU budget drops it.
                     _apu_draft_ram = _mtp_draft_weights
                     if _mtp_draft_for_ram and not _mtp_draft_weights:
                         try:
                             _apu_draft_ram = self._get_gguf_size_bytes(_mtp_draft_for_ram)
                         except Exception:
                             _apu_draft_ram = 0
-                    _apu_ram_size = model_size + _apu_draft_ram
+                    _apu_ram_size = model_size + (_apu_draft_ram if _mtp_will_engage else 0)
                     # Draft K/V types (f16 by default; independent extras overrides).
                     _mtp_draft_ck, _mtp_draft_cv = _extra_args_draft_cache_types(extra_args)
 
@@ -5741,11 +5746,27 @@ class LlamaCppBackend:
                     and not self._cancel_event.is_set()
                     and not self._probe_mtp_decode()
                 ):
-                    logger.warning(
-                        "MTP speculative decoding crashed on the first decode "
-                        "under tensor parallelism; retrying without it."
+                    # A first-decode hard fault is usually the FA kernel: retry
+                    # FA-off (keeps MTP) before dropping speculative decoding below.
+                    _probe_rc = self._process.poll() if self._process is not None else None
+                    _fa_cmd = (
+                        self._with_flash_attn_off(_last_spawn_cmd)
+                        if self._is_signal_crash(_probe_rc) else None
                     )
                     healthy = False
+                    if _fa_cmd is not None:
+                        logger.warning(
+                            "MTP first-decode hard-crashed (exit %s) with flash "
+                            "attention on; retrying with --flash-attn off.", _probe_rc
+                        )
+                        self._kill_process()
+                        cmd = _fa_cmd
+                        healthy = _spawn_and_wait(_fa_cmd, label = "-noflash-mtp") and self._probe_mtp_decode()
+                    if not healthy:
+                        logger.warning(
+                            "MTP speculative decoding crashed on the first decode "
+                            "under tensor parallelism; retrying without it."
+                        )
                 # Any MTP request can abort the server: a separate drafter
                 # (Gemma) on a binary that predates its arch, or an embedded
                 # head (Qwen) the binary cannot build. Retry once with the
