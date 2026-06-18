@@ -447,6 +447,19 @@ def test_hidden_payload_survives_visible_decoy():
     assert any("hidden network+exec payload" in f.check for f in findings)
 
 
+def test_comment_only_network_exec_not_flagged():
+    # Tokens only in comments are not executable by exec(); the hidden network+exec
+    # check inspects strings/docstrings (not comments), so this must stay clean.
+    src = (
+        "code = 'x = 1'\n"
+        "exec(code)\n"
+        "# urllib.request.urlopen('http://host/p').read()\n"
+        "# subprocess.run(['sh', '-c', 'id'])\n"
+    )
+    findings = sp.check_py_file(src, "pkg/ex.py", "pkg")
+    assert not any("hidden network+exec payload" in f.check for f in findings)
+
+
 def test_baseline_suppresses_listed_but_not_new_check(tmp_path):
     bl = tmp_path / "bl.json"
     listed = _mk(sp.CRITICAL, "fastapi", "fastapi/routing.py", "C2 polling/beaconing loop detected")
@@ -606,6 +619,16 @@ def test_requires_dist_for_uses_pinned_release(monkeypatch):
     specs = sp._requires_dist_for("oldpkg", "1.0.0", project)
     assert "payload==1.0.0" in specs
     assert "harmless>=1" not in specs
+
+
+def test_requires_dist_for_records_incomplete_scan_error(monkeypatch):
+    # Missing pinned metadata must surface an incomplete-scan error, not a silent
+    # [] that a caller cannot tell apart from a genuine no-deps release.
+    project = _meta([], requires = ["latestdep==9.9.9"])
+    monkeypatch.setattr(sp, "_pypi_json", lambda name, version = None: None if version else project)
+    errors: list[str] = []
+    assert sp._requires_dist_for("oldpkg", "1.0.0", project, errors) == []
+    assert errors and "incomplete" in errors[0]
 
 
 def test_release_files_pinned_missing_fails_closed():

@@ -534,12 +534,14 @@ def _is_fstring(tok_string: str) -> bool:
     return q > 0 and "f" in tok_string[:q].lower()
 
 
-def _strip_noncode(content: str) -> str:
+def _strip_noncode(content: str, blank_comments: bool = True) -> str:
     """Blank comments and bare docstrings so IOC patterns see code only.
 
     Removed regions become spaces (newlines kept) so line numbers stay exact for
     _extract_evidence. Fails open on tokenizer errors (the raw text is still
-    fully scanned, so a real detection is never lost).
+    fully scanned, so a real detection is never lost). ``blank_comments=False``
+    keeps comments (only strings/docstrings blanked) to isolate the span that
+    exec() could actually run.
     """
     try:
         toks = list(tokenize.generate_tokens(io.StringIO(content).readline))
@@ -552,8 +554,9 @@ def _strip_noncode(content: str) -> str:
     for i, tok in enumerate(toks):
         ttype = tok.type
         if ttype == tokenize.COMMENT:
-            spans.append((*tok.start, *tok.end))
-            continue  # do not advance prev_significant; comments are transparent
+            if blank_comments:
+                spans.append((*tok.start, *tok.end))
+            continue  # transparent; never advances prev_significant
         if (
             ttype == tokenize.STRING
             and prev_significant in _LINE_START_TOKENS
@@ -619,10 +622,11 @@ def _hidden_payload_findings(
     scanning yet ``exec(__doc__)`` / ``exec(<str>)`` could still run it."""
     if not RE_EXEC_EVAL.search(stripped):
         return []
-    # The text code-only scanning removed (docstrings/comments/strings), with real
-    # code spaced out. _strip_noncode blanks in place and preserves length, so a
-    # char was removed exactly where stripped differs from original.
-    removed = "".join(o if o != s else " " for o, s in zip(original, stripped))
+    # Only docstrings/strings run via exec(__doc__)/exec(<str>); comments cannot.
+    # Isolate that span: keep comments as real code, take what string-blanking
+    # removed (length-preserved, so offsets stay exact for _extract_evidence).
+    code = _strip_noncode(original, blank_comments = False)
+    removed = "".join(o if o != s else " " for o, s in zip(original, code))
     out = []
 
     def _hidden(pat):
@@ -1705,20 +1709,23 @@ def _requires_dist_names(meta: dict) -> list[str]:
     return specs
 
 
-def _requires_dist_for(name: str, version: str | None, project_meta: dict) -> list[str]:
+def _requires_dist_for(
+    name: str, version: str | None, project_meta: dict, errors: list[str] | None = None
+) -> list[str]:
     """Declared deps for the pinned version, read from that release's metadata
     (its ``requires_dist`` can differ from latest). Unpinned uses the
     project-level (latest) document. A pinned version whose own metadata cannot
-    be fetched returns [] rather than substituting latest's deps, which would
-    scan the wrong tree."""
+    be fetched returns [] (never latest's deps) and, when ``errors`` is given,
+    records an incomplete-scan error so a partial tree is not read as "no deps"."""
     if not version:
         return _requires_dist_names(project_meta)
     vmeta = _pypi_json(name, version)
     if vmeta is None:
-        print(
-            f"  [WARN] no metadata for pinned {name}=={version}; not substituting latest deps",
-            file = sys.stderr,
-        )
+        msg = f"metadata fetch failed for pinned {name}=={version}; dependency scan incomplete"
+        if errors is None:
+            print(f"  [WARN] {msg}", file = sys.stderr)
+        else:
+            errors.append(msg)
         return []
     return _requires_dist_names(vmeta)
 
@@ -1842,7 +1849,7 @@ def _resolve_per_spec_with_deps(
             if fpath is None:
                 download_errors.append(serr or f"sdist fetch failed for {name}")
                 continue
-            sdist_dep_followups.extend(_requires_dist_for(name, version, meta))
+            sdist_dep_followups.extend(_requires_dist_for(name, version, meta, download_errors))
             continue
         # Has a wheel but the full transitive tree won't co-resolve
         # (ResolutionImpossible) -- typically a package the requirement file
@@ -1876,7 +1883,7 @@ def _resolve_per_spec_with_deps(
             # which --no-deps skips. Recover the declared deps so that class is
             # still scanned (each is fetched as a wheel or direct sdist below).
             if meta is not None:
-                sdist_dep_followups.extend(_requires_dist_for(name, version, meta))
+                sdist_dep_followups.extend(_requires_dist_for(name, version, meta, download_errors))
             continue
         # --no-deps also failed: last-ditch sdist fetch at the pinned version.
         if meta is not None:
