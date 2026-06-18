@@ -470,7 +470,7 @@ export function ModelSection() {
                   )}
                   <div
                     ref={scrollRef}
-                    className="max-h-64 overflow-y-auto overscroll-contain [scrollbar-width:thin]"
+                    className="hover-scrollbar max-h-64 overflow-y-auto overscroll-contain [scrollbar-width:thin]"
                   >
                     <ComboboxList className="p-1 !max-h-none !overflow-visible">
                       {(id: string) => {

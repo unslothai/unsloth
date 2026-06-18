@@ -7,10 +7,7 @@ import { useShowLlamaUpdateBanner } from "@/hooks/use-llama-update-pref";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { Download } from "lucide-react";
-import { AnimatePresence, motion } from "motion/react";
 import { type ReactElement, useEffect, useRef, useState } from "react";
-
-const EASE_OUT_QUART: [number, number, number, number] = [0.165, 0.84, 0.44, 1];
 // Backend progress is coarse (5% steps, ~0.9 max) and the extract tail emits no
 // signal. Creep toward this cap so the bar keeps moving rather than freezing.
 const RUNNING_CAP = 0.95;
@@ -114,6 +111,12 @@ export function LlamaUpdateBanner({
 
   const show =
     visible && status != null && (status.update_available || applying);
+  const sizeBytes = status?.update_size_bytes ?? null;
+  // Round to whole MB; these prebuilts are hundreds of MB.
+  const sizeLabel =
+    sizeBytes && sizeBytes > 0
+      ? `${Math.round(sizeBytes / (1024 * 1024))} MB`
+      : null;
   const updateProgress = status?.job.progress ?? null;
   const jobSucceeded = status?.job.state === "success";
   // Drives the bar so it animates continuously; aria reports the real value.
@@ -123,113 +126,110 @@ export function LlamaUpdateBanner({
     jobSucceeded,
   );
 
-  return (
-    <AnimatePresence>
-      {show ? (
-        <motion.div
-          initial={{ opacity: 0, y: 12, scale: 0.96 }}
-          animate={{ opacity: 1, y: 0, scale: 1 }}
-          exit={{ opacity: 0, y: 8, scale: 0.97 }}
-          transition={{ duration: 0.35, ease: EASE_OUT_QUART }}
-          className={cn(
-            positioned
-              ? "fixed bottom-4 right-4 z-[9998] w-[calc(100vw-2rem)] max-w-[400px]"
-              : "pointer-events-auto w-full",
-          )}
-          data-testid="llama-update-banner"
-        >
-          <div className="relative overflow-hidden rounded-[24px] bg-white px-5 pb-4 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_rgba(0,0,0,0.28)]">
-            {applying ? null : (
-              <button
-                type="button"
-                onClick={dismiss}
-                className="absolute top-2.5 right-3 flex size-6 items-center justify-center rounded-full text-muted-foreground/60 transition-colors hover:bg-muted hover:text-foreground"
-                aria-label="Dismiss llama.cpp update notification"
-              >
-                <svg
-                  aria-hidden="true"
-                  width="12"
-                  height="12"
-                  viewBox="0 0 14 14"
-                  fill="none"
-                  xmlns="http://www.w3.org/2000/svg"
-                >
-                  <path
-                    d="M11 3L3 11M3 3l8 8"
-                    stroke="currentColor"
-                    strokeWidth="1.5"
-                    strokeLinecap="round"
-                  />
-                </svg>
-              </button>
-            )}
-
-            <div className="flex min-w-0 items-start gap-4 pr-6">
-              <Download
-                aria-hidden="true"
-                className="mt-1 size-5 shrink-0 text-foreground"
-                strokeWidth={1.75}
+  // Render with no enter/exit animation. An opacity/transform transition (in or
+  // out) promotes a GPU compositing layer whose creation or teardown can flash
+  // for a frame on real displays, which reads as a flicker on appear and on
+  // dismiss. A plain conditional mount appears and leaves cleanly.
+  return show ? (
+    <div
+      className={cn(
+        positioned
+          ? "fixed bottom-4 right-4 z-[9998] w-[calc(100vw-2rem)] max-w-[400px]"
+          : "pointer-events-auto w-full",
+      )}
+      data-testid="llama-update-banner"
+    >
+      <div className="relative overflow-hidden rounded-[24px] bg-white px-5 pb-4 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_rgba(0,0,0,0.28)]">
+        {applying ? null : (
+          <button
+            type="button"
+            onClick={dismiss}
+            className="absolute top-2.5 right-3 flex size-6 items-center justify-center rounded-full text-muted-foreground/60 transition-colors hover:bg-muted hover:text-foreground"
+            aria-label="Dismiss llama.cpp update notification"
+          >
+            <svg
+              aria-hidden="true"
+              width="12"
+              height="12"
+              viewBox="0 0 14 14"
+              fill="none"
+              xmlns="http://www.w3.org/2000/svg"
+            >
+              <path
+                d="M11 3L3 11M3 3l8 8"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
               />
-              <div className="min-w-0">
-                <p className="font-heading text-base font-medium text-foreground">
-                  {applying ? "Updating llama.cpp..." : "New llama.cpp update"}
-                </p>
-                <p className="mt-0.5 text-xs text-muted-foreground">
-                  {status?.installed_tag ?? "unknown"} &rarr;{" "}
-                  <span className="font-medium text-foreground">
-                    {status?.latest_tag ?? ""}
-                  </span>
-                </p>
-                <p className="mt-1 text-[11px] text-muted-foreground/70">
-                  No restart needed after update
-                </p>
-              </div>
-            </div>
+            </svg>
+          </button>
+        )}
 
-            {applying ? (
-              <div
-                className="mb-1.5 mt-4 h-1 overflow-hidden rounded-full bg-muted"
-                role="progressbar"
-                aria-label="Updating llama.cpp"
-                aria-valuemin={0}
-                aria-valuemax={100}
-                aria-valuenow={
-                  updateProgress != null
-                    ? Math.round(updateProgress * 100)
-                    : Math.round(displayProgress * 100)
-                }
-                data-testid="llama-update-progress"
-              >
-                <div
-                  className="h-full rounded-full bg-primary"
-                  style={{ width: `${Math.max(displayProgress * 100, 2)}%` }}
-                />
-              </div>
-            ) : (
-              <div className="mt-2 flex flex-wrap items-center justify-end gap-x-1 gap-y-2">
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  className="h-auto rounded-full px-3 py-2 text-[13px] font-medium text-foreground"
-                  onClick={snooze}
-                  data-testid="llama-update-snooze-button"
-                >
-                  Remind me later
-                </Button>
-                <Button
-                  size="sm"
-                  // -mr optically aligns the filled pill's edge with the card padding
-                  className="-mr-1 h-auto rounded-full px-3.5 py-2 text-[13px]"
-                  onClick={handleUpdate}
-                  data-testid="llama-update-button"
-                >
-                  Update
-                </Button>
-              </div>
-            )}
+        <div className="flex min-w-0 items-start gap-4 pr-6">
+          <Download
+            aria-hidden="true"
+            className="mt-1 size-5 shrink-0 text-foreground"
+            strokeWidth={1.75}
+          />
+          <div className="min-w-0">
+            <p className="font-heading text-base font-medium text-foreground">
+              {applying ? "Updating llama.cpp..." : "New llama.cpp update"}
+            </p>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              {status?.installed_tag ?? "unknown"} &rarr;{" "}
+              <span className="font-medium text-foreground">
+                {status?.latest_tag ?? ""}
+              </span>
+            </p>
+            <p className="mt-1 text-[11px] text-muted-foreground/70">
+              {sizeLabel ? `${sizeLabel} download · ` : ""}No restart needed
+              after update
+            </p>
           </div>
-        </motion.div>
-      ) : null}
-    </AnimatePresence>
-  );
+        </div>
+
+        {applying ? (
+          <div
+            className="mb-1.5 mt-4 h-1 overflow-hidden rounded-full bg-muted"
+            role="progressbar"
+            aria-label="Updating llama.cpp"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={
+              updateProgress != null
+                ? Math.round(updateProgress * 100)
+                : Math.round(displayProgress * 100)
+            }
+            data-testid="llama-update-progress"
+          >
+            <div
+              className="h-full rounded-full bg-primary"
+              style={{ width: `${Math.max(displayProgress * 100, 2)}%` }}
+            />
+          </div>
+        ) : (
+          <div className="mt-2 flex flex-wrap items-center justify-end gap-x-1 gap-y-2">
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-auto rounded-full px-3 py-2 text-[13px] font-medium text-foreground"
+              onClick={snooze}
+              data-testid="llama-update-snooze-button"
+            >
+              Remind me later
+            </Button>
+            <Button
+              size="sm"
+              // -mr optically aligns the filled pill's edge with the card padding
+              className="-mr-1 h-auto rounded-full px-3.5 py-2 text-[13px]"
+              onClick={handleUpdate}
+              data-testid="llama-update-button"
+            >
+              Update
+            </Button>
+          </div>
+        )}
+      </div>
+    </div>
+  ) : null;
 }

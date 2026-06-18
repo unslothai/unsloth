@@ -1835,9 +1835,9 @@ class TestApiMonitorProviderAndCompletionStreams:
             monitor = ApiMonitor(max_entries = 3)
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
             monkeypatch.setattr(
-                inf_mod.httpx,
-                "AsyncClient",
-                lambda *args, **kwargs: FailingAsyncClient(),
+                inf_mod,
+                "nonstreaming_client",
+                lambda: FailingAsyncClient(),
             )
             monkeypatch.setattr(
                 inf_mod,
@@ -1963,9 +1963,9 @@ class TestApiMonitorProviderAndCompletionStreams:
             monitor = ApiMonitor(max_entries = 3)
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
             monkeypatch.setattr(
-                inf_mod.httpx,
-                "AsyncClient",
-                lambda *args, **kwargs: FakeAsyncClient(),
+                inf_mod,
+                "nonstreaming_client",
+                lambda: FakeAsyncClient(),
             )
             monkeypatch.setattr(
                 inf_mod,
@@ -2079,9 +2079,9 @@ class TestApiMonitorProviderAndCompletionStreams:
             monitor = ApiMonitor(max_entries = 3)
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
             monkeypatch.setattr(
-                inf_mod.httpx,
-                "AsyncClient",
-                lambda *args, **kwargs: CancellingAsyncClient(),
+                inf_mod,
+                "nonstreaming_client",
+                lambda: CancellingAsyncClient(),
             )
             monitor_id = monitor.start(
                 endpoint = "/v1/chat/completions",

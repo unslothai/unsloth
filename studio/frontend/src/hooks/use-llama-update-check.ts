@@ -31,6 +31,8 @@ export interface LlamaUpdateStatus {
   update_available: boolean;
   installed_tag: string | null;
   latest_tag: string | null;
+  // Download size of the prebuilt Update would fetch, in bytes (null if unknown).
+  update_size_bytes: number | null;
   job: LlamaUpdateJob;
 }
 
@@ -43,6 +45,8 @@ function parseStatus(value: unknown): LlamaUpdateStatus | null {
     update_available: s.update_available === true,
     installed_tag: typeof s.installed_tag === "string" ? s.installed_tag : null,
     latest_tag: typeof s.latest_tag === "string" ? s.latest_tag : null,
+    update_size_bytes:
+      typeof s.update_size_bytes === "number" ? s.update_size_bytes : null,
     job: {
       state: (job.state as LlamaUpdateJob["state"]) ?? "idle",
       message: typeof job.message === "string" ? job.message : "",

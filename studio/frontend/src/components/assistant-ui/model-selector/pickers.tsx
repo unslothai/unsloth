@@ -1390,15 +1390,14 @@ export function HubModelPicker({
             <>
               <ListLabel>LM Studio</ListLabel>
               {visibleLmStudioModels.map((m) => {
+                const isGgufFile = m.path.toLowerCase().endsWith(".gguf");
                 const isGguf = isGgufRepo(m.id) || isGgufRepo(m.display_name);
                 const optionKey = makeModelOptionKey("lm-studio", m.id);
                 return (
                   <div key={m.id}>
                     <ModelRow
                       label={m.model_id ?? m.display_name}
-                      meta={
-                        isGguf || m.path.toLowerCase().endsWith(".gguf") ? "GGUF" : "Local"
-                      }
+                      meta={isGguf || isGgufFile ? "GGUF" : "Local"}
                       selected={value === m.id}
                       optionProps={hubModelList.getOptionProps(
                         optionKey,
@@ -1414,6 +1413,7 @@ export function HubModelPicker({
                             source: "local",
                             isLora: false,
                             isDownloaded: true,
+                            isGguf: isGgufFile,
                           });
                         }
                       }}
@@ -1627,6 +1627,7 @@ export function HubModelPicker({
                             source: "local",
                             isLora: false,
                             isDownloaded: true,
+                            isGguf: true,
                           });
                         } else if (isGguf) {
                           setExpandedGguf((prev) =>
