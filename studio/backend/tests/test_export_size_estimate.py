@@ -136,9 +136,7 @@ class TestExportSizeEndpoint(unittest.TestCase):
         # The X-HF-Token header value must reach the sizer for gated repos.
         with (
             patch.object(self.models_route, "is_local_path", return_value = False),
-            patch.object(
-                self.models_route, "resolve_cached_repo_id_case", side_effect = lambda m: m
-            ),
+            patch.object(self.models_route, "resolve_cached_repo_id_case", side_effect = lambda m: m),
             patch(
                 "utils.hardware.hardware.estimate_fp16_model_size_bytes",
                 return_value = (_QWEN35_FP16_BYTES, "safetensors"),
@@ -159,9 +157,7 @@ class TestExportSizeEndpoint(unittest.TestCase):
         with (
             patch.object(self.models_route, "is_local_path", return_value = True),
             patch.object(self.models_route, "_is_sizable_local_path", return_value = False),
-            patch(
-                "utils.hardware.hardware.estimate_fp16_model_size_bytes"
-            ) as mock_sizer,
+            patch("utils.hardware.hardware.estimate_fp16_model_size_bytes") as mock_sizer,
         ):
             resp = asyncio.run(
                 self.models_route.get_export_size(
@@ -184,7 +180,8 @@ class TestExportSizeEndpoint(unittest.TestCase):
         ):
             resp = asyncio.run(
                 self.models_route.get_export_size(
-                    model = "/root/.unsloth/studio/outputs/run", hf_token = None,
+                    model = "/root/.unsloth/studio/outputs/run",
+                    hf_token = None,
                     current_subject = "test-user",
                 )
             )
