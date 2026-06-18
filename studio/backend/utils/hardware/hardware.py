@@ -117,6 +117,7 @@ def _print_cuda_device_list(is_rocm: bool) -> None:
     """
     try:
         import torch
+
         count = torch.cuda.device_count()
         if count <= 1:
             return
