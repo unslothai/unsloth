@@ -2187,7 +2187,11 @@ async def get_lora_base_model(lora_path: str, current_subject: str = Depends(get
 
 
 @router.get("/check-vision/{model_name:path}", response_model = VisionCheckResponse)
-async def check_vision_model(model_name: str, current_subject: str = Depends(get_current_subject)):
+async def check_vision_model(
+    model_name: str,
+    hf_token: Optional[str] = Query(None),
+    current_subject: str = Depends(get_current_subject),
+):
     """
     Check if a model is a vision model.
 
@@ -2195,7 +2199,10 @@ async def check_vision_model(model_name: str, current_subject: str = Depends(get
     """
     try:
         logger.info(f"Checking if vision model: {model_name}")
-        is_vision = is_vision_model(model_name)
+        # Authenticate so a gated/private vision model is classified correctly,
+        # matching the sibling check-embedding endpoint (otherwise it 404s and
+        # reports is_vision=False).
+        is_vision = is_vision_model(model_name, hf_token = hf_token)
 
         logger.info(f"Vision check result for {model_name}: is_vision={is_vision}")
         return VisionCheckResponse(
