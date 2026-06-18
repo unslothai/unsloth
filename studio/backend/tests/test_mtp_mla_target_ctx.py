@@ -104,9 +104,7 @@ class TestMlaTargetCtxReserve:
         ctx = 262144
         f16 = _kv_bytes_per_elem("f16")
         expected_copy = b._estimate_kv_cache_bytes(ctx, "f16")
-        assert b._estimate_mtp_overhead_bytes(ctx) == (
-            b._mtp_draft_kv_bytes(ctx) + expected_copy
-        )
+        assert b._estimate_mtp_overhead_bytes(ctx) == (b._mtp_draft_kv_bytes(ctx) + expected_copy)
         assert f16 == 2.0  # sanity: f16 is 2 bytes/elem
 
     def test_target_copy_scales_linearly_with_context(self):

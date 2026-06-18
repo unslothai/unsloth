@@ -2782,9 +2782,7 @@ class LlamaCppBackend:
         # strictly on MLA (kv_lora_rank present) and leaves those models unchanged.
         target_ctx_copy = 0
         if self._kv_lora_rank is not None:
-            target_ctx_copy = self._estimate_kv_cache_bytes(
-                n_ctx, "f16", n_parallel = n_parallel
-            )
+            target_ctx_copy = self._estimate_kv_cache_bytes(n_ctx, "f16", n_parallel = n_parallel)
         if draft_kv is None:
             # KV unsized (exotic/remote drafter): still reserve known weights + any
             # MLA target copy so a large config can't launch over budget (the small
