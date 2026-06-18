@@ -210,6 +210,16 @@ def test_run_in_venv_passes_cloudflare_to_run_server(monkeypatch, user_flag, exp
     )
     fake_backend_run.run_server = fake_run_server
     fake_backend_run._resolve_external_ip = lambda: "127.0.0.1"
+    # run() loads the backend via _load_run_module() (by file path); inject the
+    # mock as the cached run module so the stubbed run_server is used.
+    monkeypatch.setattr(studio_mod, "_RUN_MODULE", fake_backend_run)
+
+    state_mod = types.ModuleType("state")
+    tp_mod = types.ModuleType("state.tool_policy")
+    tp_mod.set_tool_policy = lambda *a, **k: None
+    state_mod.tool_policy = tp_mod
+    monkeypatch.setitem(sys.modules, "state", state_mod)
+    monkeypatch.setitem(sys.modules, "state.tool_policy", tp_mod)
 
     import typer as _typer
 
@@ -270,6 +280,9 @@ def test_run_in_venv_shuts_down_on_startup_abort(monkeypatch):
     backend._server = object()
     backend._shutdown_event = None
     backend._graceful_shutdown = lambda server: shutdown_calls.append(server)
+    # run() loads the backend via _load_run_module() (by file path); inject the
+    # mock as the cached run module so the stubbed symbols are used.
+    monkeypatch.setattr(studio_mod, "_RUN_MODULE", backend)
 
     # set_tool_policy is imported as `from state.tool_policy import set_tool_policy`.
     state_mod = sys.modules.setdefault("state", types.ModuleType("state"))
@@ -290,3 +303,59 @@ def test_run_in_venv_shuts_down_on_startup_abort(monkeypatch):
 
     assert result.exit_code == 1, result.output
     assert len(shutdown_calls) == 1, "startup abort must call _graceful_shutdown"
+
+
+def test_run_in_venv_sets_tool_policy_before_server_start(monkeypatch):
+    import types
+
+    studio_mod = _studio()
+    fake_venv = Path("/fake/studio/venv/unsloth_studio")
+    monkeypatch.setattr(sys, "prefix", str(fake_venv))
+    monkeypatch.setattr(studio_mod, "STUDIO_HOME", fake_venv.parent)
+
+    from unsloth_cli import _tool_policy as _tp_mod
+
+    monkeypatch.setattr(
+        _tp_mod,
+        "resolve_tool_policy",
+        lambda host, flag, yes, silent: False,
+    )
+
+    calls = []
+
+    class _App:
+        class state:
+            server_port = 8888
+
+    def _run_server(**_kwargs):
+        calls.append(("run_server", None))
+        return _App()
+
+    backend = types.ModuleType("studio.backend.run")
+    backend.run_server = _run_server
+    backend._resolve_external_ip = lambda: "1.2.3.4"
+    backend._server = object()
+    backend._shutdown_event = None
+    backend._graceful_shutdown = lambda server: calls.append(("shutdown", server))
+    monkeypatch.setitem(sys.modules, "studio.backend.run", backend)
+    monkeypatch.setattr(studio_mod, "_RUN_MODULE", backend)
+
+    state_mod = types.ModuleType("state")
+    tp_mod = types.ModuleType("state.tool_policy")
+    tp_mod.set_tool_policy = lambda value: calls.append(("policy", value))
+    state_mod.tool_policy = tp_mod
+    monkeypatch.setitem(sys.modules, "state", state_mod)
+    monkeypatch.setitem(sys.modules, "state.tool_policy", tp_mod)
+
+    monkeypatch.setattr(studio_mod, "_wait_for_server", lambda *a, **k: False)
+
+    import typer as _typer
+
+    app = _typer.Typer()
+    app.command(
+        context_settings = {"allow_extra_args": True, "ignore_unknown_options": True},
+    )(studio_mod.run)
+    result = CliRunner().invoke(app, _BASE + ["--disable-tools"], catch_exceptions = True)
+
+    assert result.exit_code == 1, result.output
+    assert calls[:2] == [("policy", False), ("run_server", None)]

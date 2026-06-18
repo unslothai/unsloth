@@ -6,7 +6,7 @@ import { Navbar } from "@/components/navbar";
 import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { SettingsDialog, useSettingsDialogStore } from "@/features/settings";
-import { useChatRuntimeStore } from "@/features/chat";
+import { clearNewChatDraft, useChatRuntimeStore } from "@/features/chat";
 import { useTrainingUnloadGuard } from "@/features/training";
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
 import { useT, type TranslationKey } from "@/i18n";
@@ -15,6 +15,7 @@ import {
   createRootRoute,
   redirect,
   useMatches,
+  useNavigate,
   useRouterState,
 } from "@tanstack/react-router";
 import { AnimatePresence, motion } from "motion/react";
@@ -78,6 +79,7 @@ function RootLayout() {
   const hideNavbar = HIDDEN_NAVBAR_ROUTES.includes(pathname);
   const isChatRoute = pathname.startsWith("/chat");
   const { pinned, setPinned, togglePinned } = useSidebarPin();
+  const navigate = useNavigate();
 
   useTrainingUnloadGuard();
 
@@ -107,17 +109,34 @@ function RootLayout() {
       if ((e.metaKey || e.ctrlKey) && e.key === ",") {
         e.preventDefault();
         useSettingsDialogStore.getState().openDialog();
+        return;
+      }
+      // Cmd/Ctrl+Shift+O opens a new chat.
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.code === "KeyO") {
+        e.preventDefault();
+        clearNewChatDraft(); // fresh chat starts empty, no bleed from the last one
+        const chatRuntime = useChatRuntimeStore.getState();
+        chatRuntime.setActiveThreadId(null);
+        chatRuntime.setActiveProjectId(null);
+        chatRuntime.setIncognito(false);
+        if (chatRuntime.pendingSelection) chatRuntime.abandonStagedModel();
+        void navigate({
+          to: "/chat",
+          search: { new: crypto.randomUUID() },
+        });
       }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, []);
+  }, [navigate]);
 
   useEffect(() => {
     if (isChatRoute) return;
     const chatRuntime = useChatRuntimeStore.getState();
     chatRuntime.setActiveProjectId(null);
     chatRuntime.setActiveThreadId(null);
+    chatRuntime.setIncognito(false);
+    if (chatRuntime.pendingSelection) chatRuntime.abandonStagedModel();
   }, [isChatRoute]);
 
   return (

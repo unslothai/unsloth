@@ -26,7 +26,7 @@ export interface ChatArtifactInput {
   isStreaming?: boolean;
 }
 
-const DEFAULT_ARTIFACT_TITLE = "HTML artifact";
+const DEFAULT_ARTIFACT_TITLE = "HTML canvas";
 
 export function normalizeArtifactTitle(title?: string | null): string {
   const trimmed = title?.trim();
@@ -80,5 +80,5 @@ export function getArtifactFilename(
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 48);
-  return `${slug || "artifact"}.html`;
+  return `${slug || "canvas"}.html`;
 }

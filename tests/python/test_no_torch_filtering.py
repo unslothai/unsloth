@@ -471,11 +471,15 @@ class TestInstallPythonStackSubprocessMock:
     # -- Normal Linux path (NO_TORCH=False, IS_MACOS=False, IS_WINDOWS=False) --
 
     def test_normal_linux_includes_overrides(self):
-        """Normal Linux: overrides.txt IS called."""
+        """Normal Linux: the torchao override step IS called.
+
+        The override step installs a torch-matched torchao spec via
+        --force-reinstall (uv: --reinstall), not overrides.txt directly.
+        """
         cmds = self._capture_install(no_torch = False, is_macos = False, is_windows = False)
-        assert self._cmds_contain_file(
-            cmds, "overrides.txt"
-        ), "overrides.txt should be called on normal Linux"
+        assert any(
+            "--reinstall" in cmd for cmd in cmds
+        ), "torchao override step (--reinstall) should be called on normal Linux"
 
     def test_normal_linux_includes_triton(self):
         """Normal Linux: triton-kernels.txt IS called."""

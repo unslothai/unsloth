@@ -823,7 +823,9 @@ if (-not $HasNvidiaSmi) {
         $HipSdkInstalled = $true   # binary found → SDK is installed regardless of device state
         try {
             $hipOut = & $hipinfoExe.Source 2>&1 | Out-String
-            if ($LASTEXITCODE -eq 0 -and $hipOut -match "(?i)gcnArchName") {
+            if ($hipOut -match "(?i)gcnArchName") {
+                # hipinfo can crash after printing gcnArchName (#6043).
+                # Once the arch is printed, keep the ROCm wheel path.
                 $HasROCm = $true
                 $_hipAllArches = @([regex]::Matches($hipOut, "(?im)^\s*gcnArchName\s*:\s*(\S+)") | ForEach-Object { ($_.Groups[1].Value -split ':')[0].Trim().ToLower() })
                 $_hipVisIdx = if ($env:HIP_VISIBLE_DEVICES -match '^\d') { [int]($env:HIP_VISIBLE_DEVICES -split ',')[0] } elseif ($env:ROCR_VISIBLE_DEVICES -match '^\d') { [int]($env:ROCR_VISIBLE_DEVICES -split ',')[0] } else { 0 }
@@ -833,8 +835,13 @@ if (-not $HasNvidiaSmi) {
                 } else {
                     $ROCmGpuLabel = "AMD ROCm"
                 }
+                if ($LASTEXITCODE -ne 0) {
+                    substep "[INFO] hipinfo exited with code $LASTEXITCODE but reported gcnArchName -- treating as ROCm-capable (see #6043)" "Cyan"
+                }
             } elseif ($LASTEXITCODE -ne 0) {
-                # hipinfo ran but returned a HIP runtime error (e.g. "no ROCm-capable device detected")
+                # hipinfo ran but returned a HIP runtime error without any gcnArchName
+                # output (e.g. "no ROCm-capable device detected"), or crashed before
+                # printing device info.
                 $firstLine = ($hipOut -split '\r?\n' | Where-Object { $_.Trim() } | Select-Object -First 1)
                 substep "[WARN] hipinfo returned a HIP runtime error (exit $LASTEXITCODE)" "Yellow"
                 substep "       $firstLine" "Yellow"
@@ -850,7 +857,7 @@ if (-not $HasNvidiaSmi) {
     # popping a UAC/DiskPart prompt RunAsInvoker can't suppress (its manifest is
     # asInvoker; even 'amd-smi version' hangs). So only probe when a HIP SDK is present
     # (hipinfo found -> un-elevated) or the user opts in; else fall through to WMI name
-    # inference (enough to pick ROCm wheels + lemonade llama.cpp).
+    # inference (enough to pick ROCm wheels + the ROCm llama.cpp prebuilt).
     # An explicit opt-out (UNSLOTH_ENABLE_AMD_SMI=0/false/no/off) wins over the HIP-SDK
     # heuristic: a HIP SDK binary with a broken runtime can still pop the prompt, so
     # $HipSdkInstalled must NOT silently re-enable it.
@@ -923,7 +930,7 @@ if (-not $HasNvidiaSmi) {
     }
     # ── Arch resolution: env-var override → name inference ──────────────────
     # Runs after all probes, even when none confirmed a ROCm runtime ($HasROCm false):
-    # the Adrenalin driver alone runs the lemonade-sdk llama.cpp prebuilt (bundles its
+    # the Adrenalin driver alone runs the per-gfx ROCm llama.cpp prebuilt (bundles its
     # own runtime), and all it needs is the gfx arch, inferable from the WMI GPU name.
     # Resolving it here lets setup.ps1 forward --rocm-gfx so a GPU llama.cpp is pulled
     # instead of CPU. (PyTorch ROCm wheels still require a HIP SDK -- gated on $HasROCm
@@ -936,7 +943,7 @@ if (-not $HasNvidiaSmi) {
             substep "gfx arch from UNSLOTH_ROCM_GFX_ARCH env override: $script:ROCmGfxArch" "Cyan"
         }
         # 2. Best-effort name → arch lookup (amd-smi / WMI). Most-specific first,
-        #    first match wins. Covers only arches the lemonade-sdk prebuilts support
+        #    first match wins. Covers only arches the ROCm prebuilts support
         #    (gfx120X/110X/1151/1150/103X); unknown names fall back cleanly to CPU.
         elseif ($ROCmGpuLabel) {
             $nameArchTable = @(
@@ -947,9 +954,9 @@ if (-not $HasNvidiaSmi) {
                 @{ P = "RX 7900|RX 7800|RX 7700(?!S)|PRO W7900|PRO W7800|PRO W7700"; A = "gfx1100" }  # RDNA 3 desktop / workstation (Navi 31)
                 @{ P = "RX 7600|RX 7700S|RX 7650|PRO W7600|PRO W7500|PRO V710"; A = "gfx1102" }  # RDNA 3 (Navi 33)
                 @{ P = "780M|760M|740M|Phoenix|Hawk Point|Z1 Extreme|Z2 Extreme"; A = "gfx1103" }  # RDNA 3 iGPU (Phoenix / Hawk Point)
-                @{ P = "RX 6900|RX 6800|RX 6750|RX 6700|PRO W6800|PRO W6900";  A = "gfx1030" }  # RDNA 2 (Navi 21) -- lemonade gfx103X
-                @{ P = "RX 6650|RX 6600|PRO W6600|PRO W6650";                  A = "gfx1032" }  # RDNA 2 (Navi 23) -- lemonade gfx103X
-                @{ P = "RX 6500|RX 6400|RX 6300|PRO W6400|PRO W6500";          A = "gfx1034" }  # RDNA 2 (Navi 24) -- lemonade gfx103X
+                @{ P = "RX 6900|RX 6800|RX 6750|RX 6700|PRO W6800|PRO W6900";  A = "gfx1030" }  # RDNA 2 (Navi 21) -- gfx103X family
+                @{ P = "RX 6650|RX 6600|PRO W6600|PRO W6650";                  A = "gfx1032" }  # RDNA 2 (Navi 23) -- gfx103X family
+                @{ P = "RX 6500|RX 6400|RX 6300|PRO W6400|PRO W6500";          A = "gfx1034" }  # RDNA 2 (Navi 24) -- gfx103X family
             )
             foreach ($row in $nameArchTable) {
                 if ($ROCmGpuLabel -match $row.P) {
@@ -2073,6 +2080,15 @@ if (Test-Path -LiteralPath $LegacyStudioHome -PathType Container) {
     $LegacyStudioHome = (Resolve-Path -LiteralPath $LegacyStudioHome).Path
 }
 $StudioHomeIsCustom = ($_studioHomeCanon -ne $LegacyStudioHome)
+# Directory-local evidence that Studio created $Path, used to adopt a custom-home
+# llama.cpp predating the .unsloth-studio-owned marker (see setup.sh). Only the
+# prebuilt UNSLOTH_PREBUILT_INFO.json counts; source builds are indistinguishable
+# from a user clone on Windows and stay under the strict guard.
+function Test-StudioOwnedAdoptable {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    if (Test-Path -LiteralPath (Join-Path $Path "UNSLOTH_PREBUILT_INFO.json") -PathType Leaf) { return $true }
+    return $false
+}
 function Assert-StudioOwnedOrAbsent {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
@@ -2080,6 +2096,10 @@ function Assert-StudioOwnedOrAbsent {
     )
     if (-not (Test-Path -LiteralPath $Path -PathType Container)) { return }
     if ($StudioHomeIsCustom -and -not (Test-Path -LiteralPath (Join-Path $Path $StudioOwnedMarker) -PathType Leaf)) {
+        if (Test-StudioOwnedAdoptable $Path) {
+            Mark-StudioOwned $Path
+            return
+        }
         Write-Host "[ERROR] $Path already exists and is not marked as a Studio-owned $Label." -ForegroundColor Red
         Write-Host "        Move it aside or choose an empty UNSLOTH_STUDIO_HOME before re-running." -ForegroundColor Yellow
         exit 1
@@ -2689,7 +2709,10 @@ $SkipPrebuiltInstall = $false
 $RequestedLlamaTag = if ($env:UNSLOTH_LLAMA_TAG) { $env:UNSLOTH_LLAMA_TAG } else { $DefaultLlamaTag }
 # GPU Windows (CUDA / ROCm) installs the fork's app-* prebuilts; CPU-only stays
 # on ggml-org (the fork ships no windows-cpu bundle). Mirrors setup.sh's routing.
-$HelperReleaseRepo = if ($HasNvidiaSmi -or $HasROCm) { "unslothai/llama.cpp" } else { "ggml-org/llama.cpp" }
+# A resolved gfx arch counts as a GPU host even when $HasROCm is false (Adrenalin
+# driver only, no HIP runtime): the fork's per-gfx bundle ships its own runtime,
+# so route there instead of ggml-org / a CPU build.
+$HelperReleaseRepo = if ($HasNvidiaSmi -or $HasROCm -or $script:ROCmGfxArch) { "unslothai/llama.cpp" } else { "ggml-org/llama.cpp" }
 $LlamaPr = if ($env:UNSLOTH_LLAMA_PR) { $env:UNSLOTH_LLAMA_PR.Trim() } else { "" }
 
 $LlamaPrForce = if ($env:UNSLOTH_LLAMA_PR_FORCE) { $env:UNSLOTH_LLAMA_PR_FORCE.Trim() } else { $DefaultLlamaPrForce }
@@ -2799,7 +2822,7 @@ if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
                 # or the upstream windows-hip fallback, so accept either and never
                 # treat a valid ROCm install as mismatched. A name-inferred gfx
                 # arch (Adrenalin-only, no confirmed runtime) still counts as
-                # ROCm-capable -- the lemonade prebuilt bundles its own runtime,
+                # ROCm-capable -- the ROCm prebuilt bundles its own runtime,
                 # mirroring the --rocm-gfx forward below. NOTE: this block is
                 # currently inert -- write_prebuilt_metadata does not persist an
                 # install_kind key, so $existingKind is always null. If that changes,
@@ -2830,7 +2853,7 @@ if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
         if ($HasROCm) {
             $prebuiltArgs += "--has-rocm"
         }
-        # Forward the resolved gfx arch so the lemonade HIP prebuilt is picked even
+        # Forward the resolved gfx arch so the per-gfx ROCm prebuilt is picked even
         # when the installer's probe can't confirm the runtime (amd-smi-only /
         # Adrenalin-only, name-inferred arch). --rocm-gfx is authoritative and
         # implies ROCm in install_llama_prebuilt.py, so the GPU prebuilt is selected
@@ -3016,10 +3039,10 @@ if (-not $NeedLlamaSourceBuild) {
     } elseif ($HasROCm -or $script:ROCmGfxArch) {
         # AMD GPU present but in the CPU-only source-build fallback: a HIP source
         # build needs the full HIP SDK + ROCm clang toolchain. AMD GPU acceleration
-        # comes from the lemonade prebuilt (bundles the runtime, no SDK) -- reaching
+        # comes from the per-gfx ROCm prebuilt (bundles the runtime, no SDK) -- reaching
         # here means it couldn't be installed. Warn loudly, don't ship a slow CPU build.
         $_amdArch = if ($script:ROCmGfxArch) { $script:ROCmGfxArch } else { "ROCm" }
-        substep "[WARN] AMD GPU ($_amdArch) detected, but the GPU-accelerated lemonade" "Yellow"
+        substep "[WARN] AMD GPU ($_amdArch) detected, but the GPU-accelerated ROCm" "Yellow"
         substep "       llama.cpp prebuilt could not be installed -- falling back to a CPU build." "Yellow"
         substep "       The prebuilt is the AMD GPU path (no HIP SDK required). To restore GPU" "Yellow"
         substep "       acceleration: re-run the installer (check your network / proxy), or set" "Yellow"
@@ -3395,6 +3418,13 @@ if (-not $NeedLlamaSourceBuild) {
             substep "llama-quantize build failed (GGUF export may be unavailable)" "Yellow"
             Write-LlamaFailureLog -Output $output
         }
+    }
+
+    # -- Step E: Build the DiffusionGemma visual server (optional, best-effort) --
+    # An example target present on llama.cpp PR #24423; lets Studio serve
+    # DiffusionGemma GGUFs without DG_VISUAL_BIN. No-op when not configured.
+    if ($BuildOk) {
+        $null = cmake --build $BuildDir --config Release --target llama-diffusion-gemma-visual-server -j $NumCpu 2>&1 | Out-String
     }
 
     # Swap temp build dir into final location (only if we built in a temp dir)

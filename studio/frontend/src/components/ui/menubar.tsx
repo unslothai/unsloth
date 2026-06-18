@@ -6,8 +6,9 @@
 import { Menubar as MenubarPrimitive } from "radix-ui";
 import type * as React from "react";
 
+import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
-import { ArrowRight01Icon, Tick02Icon } from "@hugeicons/core-free-icons";
+import { ChevronRightStandardIcon } from "@/lib/chevron-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
 function Menubar({
@@ -240,9 +241,9 @@ function MenubarSubTrigger({
     >
       {children}
       <HugeiconsIcon
-        icon={ArrowRight01Icon}
-        strokeWidth={2}
-        className="ml-auto size-4"
+        icon={ChevronRightStandardIcon}
+        strokeWidth={1.5}
+        className="ml-auto size-[12px]"
       />
     </MenubarPrimitive.SubTrigger>
   );

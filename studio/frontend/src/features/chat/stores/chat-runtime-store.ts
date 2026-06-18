@@ -3,6 +3,7 @@
 
 import { toast } from "@/lib/toast";
 import { create } from "zustand";
+import { cancelStagedModelDownload } from "@/features/hub";
 import {
   type ChatPresetSource,
   type Preset,
@@ -34,6 +35,9 @@ export const CHAT_COLLAPSE_HTML_ARTIFACTS_KEY =
 export const CHAT_ALLOW_ARTIFACT_NETWORK_ACCESS_KEY =
   "unsloth_chat_allow_artifact_network_access";
 export const CHAT_MCP_ENABLED_KEY = "unsloth_chat_mcp_enabled";
+export const CHAT_CONFIRM_TOOL_CALLS_KEY = "unsloth_chat_confirm_tool_calls";
+export const CHAT_LOAD_ON_SELECTION_KEY = "unsloth_chat_load_on_selection";
+export const CHAT_BYPASS_PERMISSIONS_KEY = "unsloth_chat_bypass_permissions";
 export const CHAT_WEB_FETCH_TOOLS_ENABLED_KEY =
   "unsloth_chat_web_fetch_tools_enabled";
 export const CHAT_RAG_SOURCE_KEY = "unsloth_chat_rag_source";
@@ -42,6 +46,12 @@ export const CHAT_RAG_TOP_K_KEY = "unsloth_chat_rag_top_k";
 export const CHAT_RAG_AUTOINJECT_KEY = "unsloth_chat_rag_autoinject";
 export const CHAT_RAG_AUTOINJECT_MIN_SCORE_KEY =
   "unsloth_chat_rag_autoinject_min_score";
+export const CHAT_SPECULATIVE_TYPE_KEY = "unsloth_chat_speculative_type";
+
+// Persist only the model-agnostic intents (auto/ngram/off). MTP modes
+// (mtp/mtp+ngram) and spec_draft_n_max stay session-only: a persisted MTP
+// choice would silently no-op on models without an MTP head. Unknown -> auto.
+const PERSISTED_SPEC_MODES = new Set(["auto", "ngram", "off"]);
 
 export type RagSource =
   | { type: "thread" }
@@ -78,6 +88,7 @@ function saveRagSource(value: RagSource): void {
   try {
     window.localStorage.setItem(CHAT_RAG_SOURCE_KEY, JSON.stringify(value));
   } catch {
+    // Ignore storage failures; the default RAG source still works for this session.
   }
 }
 
@@ -158,6 +169,14 @@ function saveLastExternalCheckpoint(value: string | null): void {
 }
 
 export type ReasoningStyle = "enable_thinking" | "reasoning_effort";
+/** One live DiffusionGemma denoising snapshot: the current canvas text at a
+ *  given step of a given block (block/step are 0-based; total = steps in block). */
+export type DiffusionCanvasFrame = {
+  block: number;
+  step: number;
+  total: number;
+  text: string;
+};
 export type PendingImageEditReference = {
   threadId: string | null;
   openaiImageGenerationCallId: string;
@@ -318,6 +337,71 @@ function saveString(key: string, value: string): void {
   }
 }
 
+// Canonicalises any backend value onto the Speculative Decoding dropdown's
+// modes ("auto"/"mtp"/"ngram"/"mtp+ngram"/"off"/null). Backend-only
+// legacy aliases map to their closest UI mode.
+export function normalizeSpeculativeType(
+  v: string | null | undefined,
+): string | null {
+  if (v == null) return null;
+  const s = String(v).trim().toLowerCase();
+  if (!s) return null;
+  if (s === "auto" || s === "default") return "auto";
+  if (s === "off") return "off";
+  if (s === "mtp" || s === "draft-mtp") return "mtp";
+  if (s === "ngram" || s === "ngram-mod" || s === "ngram-simple") {
+    return "ngram";
+  }
+  if (s === "mtp+ngram") return "mtp+ngram";
+  // Comma-chained legacy values (e.g. from older backend echoes).
+  const parts = s.split(",").map((p) => p.trim()).filter(Boolean);
+  const hasMtp = parts.some((p) => p === "mtp" || p === "draft-mtp");
+  const hasNgram = parts.some(
+    (p) => p === "ngram" || p === "ngram-mod" || p === "ngram-simple",
+  );
+  if (hasMtp && hasNgram) return "mtp+ngram";
+  if (hasMtp) return "mtp";
+  if (hasNgram) return "ngram";
+  // Unknown -> safe fallback to Auto so the dropdown stays controlled.
+  return "auto";
+}
+
+export function resolveLoadedSpeculativeSettings(response: {
+  speculative_type?: string | null;
+  spec_draft_n_max?: number | null;
+}): {
+  speculativeType: string | null;
+  loadedSpeculativeType: string | null;
+  specDraftNMax: number | null;
+  loadedSpecDraftNMax: number | null;
+} {
+  const loadedSpeculativeType = normalizeSpeculativeType(
+    response.speculative_type,
+  );
+  const loadedSpecDraftNMax = response.spec_draft_n_max ?? null;
+  return {
+    speculativeType: loadedSpeculativeType,
+    loadedSpeculativeType,
+    specDraftNMax: loadedSpecDraftNMax,
+    loadedSpecDraftNMax,
+  };
+}
+
+// The user's standing preference, sanitized to the universal set.
+export function readPersistedSpeculativeType(): string {
+  const raw = loadString(CHAT_SPECULATIVE_TYPE_KEY, "auto");
+  return PERSISTED_SPEC_MODES.has(raw) ? raw : "auto";
+}
+
+// MTP / null / unknown values are left unwritten so they stay session-only.
+// Called from the load path so only an applied preference is persisted, not an
+// unapplied dropdown edit the user might Reset or abandon before Apply.
+export function saveSpeculativeType(value: string | null): void {
+  if (value && PERSISTED_SPEC_MODES.has(value)) {
+    saveString(CHAT_SPECULATIVE_TYPE_KEY, value);
+  }
+}
+
 function notifyHfTokenChanged(value: string): void {
   if (!canUseStorage()) return;
   try {
@@ -325,6 +409,42 @@ function notifyHfTokenChanged(value: string): void {
   } catch {
     // ignore
   }
+}
+
+/** A local model staged for a deferred load (see `pendingSelection`). Shape is
+ *  a subset of the load hook's `SelectedModelInput`, structurally assignable. */
+export type PendingModelSelection = {
+  id: string;
+  isLora?: boolean;
+  ggufVariant?: string;
+  isDownloaded?: boolean;
+  expectedBytes?: number;
+  /** Native (drag-drop / picked-from-disk) GGUF: the path token used to read
+   *  the header and to load. Absent for HF-repo models. */
+  nativePathToken?: string;
+  /** Direct local .gguf file (custom folder / LM Studio): a GGUF source even
+   *  though it carries neither an HF variant nor a native path token. */
+  isGguf?: boolean;
+  /** Native context length read from the GGUF header once the file is local.
+   *  Scoped here (not the shared `ggufContextLength`) so a staged model's
+   *  metadata never pollutes the currently-loaded model's context display. */
+  contextLength?: number | null;
+};
+
+/** A pick is a GGUF (HF variant, native file, or a direct local .gguf) and so
+ *  has pre-load options worth staging. Works on a selection or a staged pick. */
+export function hasGgufSource(x: {
+  ggufVariant?: string;
+  nativePathToken?: string;
+  isGguf?: boolean;
+}): boolean {
+  return (
+    x.ggufVariant != null || x.nativePathToken != null || x.isGguf === true
+  );
+}
+
+export function isPendingGguf(pending: PendingModelSelection | null): boolean {
+  return pending != null && hasGgufSource(pending);
 }
 
 type ChatRuntimeStore = {
@@ -403,6 +523,35 @@ type ChatRuntimeStore = {
   ragAutoInject: RagAutoInject;
   ragAutoInjectMinScore: number;
   /**
+   * When on, local Studio tool calls pause for an explicit allow/deny in the
+   * chat before they run.
+   */
+  confirmToolCalls: boolean;
+  /**
+   * Bypass Permissions: when on, tool calls run with no confirmation gate
+   * AND the python/terminal execution sandbox is disabled on the backend
+   * (secrets are still stripped). Takes precedence over confirmToolCalls.
+   */
+  bypassPermissions: boolean;
+  /**
+   * Per-chat set of tool names the user chose to auto-approve via "Always
+   * allow". Keyed by UI confirmation scope, not necessarily the backend
+   * sandbox session id. Not persisted across reloads.
+   */
+  alwaysAllowToolsBySession: Map<string, Set<string>>;
+  /**
+   * Tool calls currently paused awaiting the user's allow/deny decision,
+   * keyed by the scoped frontend tool-call id. Each entry carries the backend
+   * ``approvalId`` to echo back and the ``sessionId`` the generation runs
+   * under, so the confirmation always resolves the exact pending call. The
+   * ``autoAllowKey`` scopes the UI-only "Always allow" bucket per chat.
+   * Only backend-gated local tool calls are added here.
+   */
+  toolConfirmations: Record<
+    string,
+    { approvalId: string; sessionId: string; autoAllowKey: string }
+  >;
+  /**
    * Fetch pill state, independent of `toolsEnabled` (Search). Only
    * consulted when `providerSupportsBuiltinWebFetch` is true.
    */
@@ -424,14 +573,40 @@ type ChatRuntimeStore = {
   /** User --spec-draft-n-max override (null = platform default). */
   specDraftNMax: number | null;
   loadedSpecDraftNMax: number | null;
+  /** Tensor-parallel split (--split-mode tensor) toggle, GGUF multi-GPU only. */
+  tensorParallel: boolean;
+  /** Backend-reported tensor-parallel state; null until first hydrated. */
+  loadedTensorParallel: boolean | null;
+  /** Persisted: when false, picking a local model stages it as
+   *  `pendingSelection` (and opens settings) instead of loading immediately,
+   *  so load settings can be set before the single load. */
+  loadOnSelection: boolean;
+  /** A local model picked while `loadOnSelection` is off: staged, not loaded.
+   *  The settings sheet shows its load knobs and a Load button. */
+  pendingSelection: PendingModelSelection | null;
   loadedIsMultimodal: boolean;
+  /** Active model is a block-diffusion model (DiffusionGemma): drives the
+   *  denoising-canvas artifact auto-render. */
+  loadedIsDiffusion: boolean;
+  /** Live denoising frame for the in-progress diffusion message. Transient: set
+   *  per step, cleared when the run ends, never persisted into the transcript. */
+  activeDiffusionCanvas: DiffusionCanvasFrame | null;
   customContextLength: number | null;
   defaultChatTemplate: string | null;
   chatTemplateOverride: string | null;
   loadedChatTemplateOverride: string | null;
   activeThreadId: string | null;
   activeProjectId: string | null;
+  /**
+   * Temporary / incognito chat toggle. When on, the active conversation
+   * lives only in assistant-ui's in-memory repository and is never
+   * persisted to studio.db -- so it stays out of history and vanishes on
+   * reload. Deliberately ephemeral: NOT mirrored to localStorage or the
+   * backend settings, so a refresh always exits incognito.
+   */
+  incognito: boolean;
   settingsPanelOpen: boolean;
+  editingMessageId: string | null;
   pendingAudioBase64: string | null;
   pendingAudioName: string | null;
   pendingImageEditReference: PendingImageEditReference | null;
@@ -463,7 +638,9 @@ type ChatRuntimeStore = {
   setCheckpoint: (modelId: string, ggufVariant?: string | null) => void;
   setActiveThreadId: (threadId: string | null) => void;
   setActiveProjectId: (projectId: string | null) => void;
+  setIncognito: (incognito: boolean) => void;
   setSettingsPanelOpen: (open: boolean) => void;
+  setEditingMessageId: (id: string | null) => void;
   clearCheckpoint: () => void;
   setReasoningEnabled: (
     enabled: boolean,
@@ -483,6 +660,16 @@ type ChatRuntimeStore = {
   setCollapseHtmlArtifacts: (enabled: boolean) => void;
   setAllowArtifactNetworkAccess: (enabled: boolean) => void;
   setMcpEnabledForChat: (enabled: boolean) => void;
+  setConfirmToolCalls: (enabled: boolean) => void;
+  setBypassPermissions: (enabled: boolean) => void;
+  allowToolAlways: (sessionId: string, toolName: string) => void;
+  setToolConfirmation: (
+    toolCallId: string,
+    approvalId: string,
+    sessionId: string,
+    autoAllowKey: string,
+  ) => void;
+  clearToolConfirmation: (toolCallId: string) => void;
   setWebFetchToolsEnabled: (enabled: boolean) => void;
   setRagEnabled: (enabled: boolean) => void;
   setRagSource: (source: RagSource) => void;
@@ -492,12 +679,27 @@ type ChatRuntimeStore = {
   setRagAutoInjectMinScore: (score: number) => void;
   setToolStatus: (status: string | null) => void;
   setGeneratingStatus: (status: string | null) => void;
+  setActiveDiffusionCanvas: (canvas: DiffusionCanvasFrame | null) => void;
   setAutoHealToolCalls: (enabled: boolean) => void;
   setMaxToolCallsPerMessage: (value: number) => void;
   setToolCallTimeout: (value: number) => void;
   setKvCacheDtype: (dtype: string | null) => void;
   setSpeculativeType: (type: string | null) => void;
   setSpecDraftNMax: (value: number | null) => void;
+  /** Revert the editable load knobs to the loaded model's baseline (or defaults
+   *  when nothing is loaded). Used by the settings-sheet Reset button and to
+   *  start each deferred-staging session clean so one staged pick's settings
+   *  don't leak onto the next. */
+  resetModelSettingsToLoaded: () => void;
+  setTensorParallel: (value: boolean) => void;
+  setLoadOnSelection: (value: boolean) => void;
+  setPendingSelection: (selection: PendingModelSelection | null) => void;
+  /** Stage a pick for a deferred load: revert knobs to the loaded baseline,
+   *  record the selection, and open the settings sheet. */
+  stageModel: (selection: PendingModelSelection) => void;
+  /** Abandon a staged pick without loading: revert the knobs to the loaded
+   *  baseline and clear the pending selection. */
+  abandonStagedModel: () => void;
   setCustomContextLength: (v: number | null) => void;
   setChatTemplateOverride: (template: string | null) => void;
   setPendingAudio: (base64: string, name: string) => void;
@@ -698,6 +900,23 @@ function setScalarSettingVersion<K extends ScalarSettingKey>(
   saveSettingsPatch({ [key]: value });
 }
 
+/** The "revert to the loaded model" baseline for the editable load knobs.
+ *  Shared by resetModelSettingsToLoaded (full revert) and stageModel (which
+ *  overrides speculative to start a fresh pick from the standing default). */
+function loadedBaselineSettings(s: ChatRuntimeStore) {
+  const hasLoadedModel = Boolean(s.params.checkpoint);
+  return {
+    customContextLength: null,
+    kvCacheDtype: s.loadedKvCacheDtype,
+    tensorParallel: s.loadedTensorParallel ?? false,
+    speculativeType: hasLoadedModel
+      ? s.loadedSpeculativeType
+      : readPersistedSpeculativeType(),
+    specDraftNMax: hasLoadedModel ? s.loadedSpecDraftNMax : null,
+    chatTemplateOverride: s.loadedChatTemplateOverride,
+  };
+}
+
 export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   settingsHydrated: false,
   // Hydrate the last external checkpoint so the external picker survives a
@@ -749,6 +968,13 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     false,
   ),
   mcpEnabledForChat: loadBool(CHAT_MCP_ENABLED_KEY, false),
+  confirmToolCalls: loadBool(CHAT_CONFIRM_TOOL_CALLS_KEY, false),
+  // Never restore Bypass Permissions from storage: it disables the sandbox and
+  // the confirmation gate, so it must be re-enabled (through the warning
+  // dialog) each session rather than silently reactivating on reload.
+  bypassPermissions: false,
+  alwaysAllowToolsBySession: new Map<string, Set<string>>(),
+  toolConfirmations: {},
   webFetchToolsEnabled: loadBool(CHAT_WEB_FETCH_TOOLS_ENABLED_KEY, false),
   // RAG is opt-in per session: always starts off, never restored from storage.
   ragEnabled: false,
@@ -763,24 +989,32 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   ),
   toolStatus: null,
   generatingStatus: null,
+  activeDiffusionCanvas: null,
   autoHealToolCalls: true,
   maxToolCallsPerMessage: 25,
   toolCallTimeout: 5,
   kvCacheDtype: null,
   loadedKvCacheDtype: null,
-  speculativeType: "auto",
+  speculativeType: readPersistedSpeculativeType(),
   loadedSpeculativeType: null,
   specFallbackReason: null,
   specDraftNMax: null,
   loadedSpecDraftNMax: null,
+  tensorParallel: false,
+  loadedTensorParallel: null,
+  loadOnSelection: loadBool(CHAT_LOAD_ON_SELECTION_KEY, true),
+  pendingSelection: null,
   loadedIsMultimodal: false,
+  loadedIsDiffusion: false,
   customContextLength: null,
   defaultChatTemplate: null,
   chatTemplateOverride: null,
   loadedChatTemplateOverride: null,
   activeThreadId: null,
   activeProjectId: null,
+  incognito: false,
   settingsPanelOpen: false,
+  editingMessageId: null,
   pendingAudioBase64: null,
   pendingAudioName: null,
   pendingImageEditReference: null,
@@ -908,6 +1142,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       // Clear stale per-turn usage on model change; the relaxed external-provider
       // render gate would otherwise show old counters until the next completion.
       const checkpointChanged = state.params.checkpoint !== modelId;
+      const pendingToClear =
+        checkpointChanged && state.params.checkpoint ? state.pendingSelection : null;
+      if (pendingToClear) {
+        cancelStagedModelDownload(pendingToClear);
+      }
       // Clamp maxTokens to the new model's cap when switching into an external
       // model so a value carried over from a local session doesn't exceed the
       // slider's max.
@@ -935,17 +1174,28 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         },
         activeGgufVariant: ggufVariant ?? null,
         ...(checkpointChanged ? { contextUsage: null } : {}),
+        // Switching away from a loaded model (e.g. picking an external provider)
+        // abandons any staged pick, so its Load button and edited knobs don't
+        // linger over the newly active model. Same revert as abandonStagedModel.
+        // Guarded on a non-empty current checkpoint: an establishing set from a
+        // background status sync (empty -> active) must not wipe a fresh stage.
+        ...(pendingToClear
+          ? { ...loadedBaselineSettings(state), pendingSelection: null }
+          : {}),
       };
     }),
   setActiveThreadId: (activeThreadId) =>
     set({ activeThreadId, contextUsage: null }),
   setActiveProjectId: (activeProjectId) => set({ activeProjectId }),
+  setIncognito: (incognito) => set({ incognito }),
   setSettingsPanelOpen: (settingsPanelOpen) => set({ settingsPanelOpen }),
+  setEditingMessageId: (id) => set({ editingMessageId: id }),
   clearCheckpoint: () => {
     // Mirror setCheckpoint's persistence: dropping the checkpoint must also
     // clear any stored external selection so the next refresh doesn't snap
     // back to a model the user intentionally cleared.
     saveLastExternalCheckpoint(null);
+    cancelStagedModelDownload(get().pendingSelection);
     return set((state) => ({
       params: {
         ...state.params,
@@ -953,6 +1203,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       },
       activeGgufVariant: null,
       activeNativePathToken: null,
+      pendingSelection: null,
       ggufContextLength: null,
       ggufMaxContextLength: null,
       ggufNativeContextLength: null,
@@ -979,14 +1230,18 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       // Only the per-session enable pill resets; source/mode/top_k persist.
       ragEnabled: false,
       toolStatus: null,
+      activeDiffusionCanvas: null,
       kvCacheDtype: null,
       loadedKvCacheDtype: null,
-      speculativeType: "auto",
+      speculativeType: readPersistedSpeculativeType(),
       loadedSpeculativeType: null,
       specFallbackReason: null,
       specDraftNMax: null,
       loadedSpecDraftNMax: null,
+      tensorParallel: false,
+      loadedTensorParallel: null,
       loadedIsMultimodal: false,
+      loadedIsDiffusion: false,
       customContextLength: null,
       defaultChatTemplate: null,
       chatTemplateOverride: null,
@@ -1074,6 +1329,44 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       saveBool(CHAT_MCP_ENABLED_KEY, mcpEnabledForChat);
       return { mcpEnabledForChat };
     }),
+  setConfirmToolCalls: (confirmToolCalls) =>
+    set(() => {
+      saveBool(CHAT_CONFIRM_TOOL_CALLS_KEY, confirmToolCalls);
+      return { confirmToolCalls };
+    }),
+  setBypassPermissions: (bypassPermissions) =>
+    // Deliberately not persisted (see init): a reload must not silently keep
+    // the sandbox/confirmation bypass active without re-accepting the warning.
+    set(() => ({ bypassPermissions })),
+  allowToolAlways: (sessionId, toolName) =>
+    set((state) => {
+      const current = state.alwaysAllowToolsBySession.get(sessionId);
+      if (current?.has(toolName)) return state;
+      const next = new Map(state.alwaysAllowToolsBySession);
+      next.set(sessionId, new Set(current ?? []).add(toolName));
+      return { alwaysAllowToolsBySession: next };
+    }),
+  setToolConfirmation: (toolCallId, approvalId, sessionId, autoAllowKey) =>
+    set((state) => ({
+      toolConfirmations: {
+        ...state.toolConfirmations,
+        [toolCallId]: { approvalId, sessionId, autoAllowKey },
+      },
+    })),
+  clearToolConfirmation: (toolCallId) =>
+    set((state) => {
+      if (
+        !Object.prototype.hasOwnProperty.call(
+          state.toolConfirmations,
+          toolCallId,
+        )
+      ) {
+        return state;
+      }
+      const next = { ...state.toolConfirmations };
+      delete next[toolCallId];
+      return { toolConfirmations: next };
+    }),
   setWebFetchToolsEnabled: (webFetchToolsEnabled) =>
     set(() => {
       saveBool(CHAT_WEB_FETCH_TOOLS_ENABLED_KEY, webFetchToolsEnabled);
@@ -1109,6 +1402,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       return { ragAutoInjectMinScore };
     }),
   setToolStatus: (toolStatus) => set({ toolStatus }),
+  setActiveDiffusionCanvas: (activeDiffusionCanvas) =>
+    set({ activeDiffusionCanvas }),
   setGeneratingStatus: (generatingStatus) => set({ generatingStatus }),
   setAutoHealToolCalls: (autoHealToolCalls) =>
     set((state) => {
@@ -1140,6 +1435,44 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   setKvCacheDtype: (kvCacheDtype) => set({ kvCacheDtype }),
   setSpeculativeType: (speculativeType) => set({ speculativeType }),
   setSpecDraftNMax: (specDraftNMax) => set({ specDraftNMax }),
+  setTensorParallel: (tensorParallel) => set({ tensorParallel }),
+  resetModelSettingsToLoaded: () => set((s) => loadedBaselineSettings(s)),
+  setLoadOnSelection: (loadOnSelection) => {
+    saveBool(CHAT_LOAD_ON_SELECTION_KEY, loadOnSelection);
+    set({ loadOnSelection });
+  },
+  setPendingSelection: (pendingSelection) => set({ pendingSelection }),
+  stageModel: (selection) =>
+    set((s) => {
+      if (
+        s.pendingSelection &&
+        (s.pendingSelection.id !== selection.id ||
+          (s.pendingSelection.ggufVariant ?? null) !==
+            (selection.ggufVariant ?? null))
+      ) {
+        cancelStagedModelDownload(s.pendingSelection);
+      }
+      return {
+        ...loadedBaselineSettings(s),
+        pendingSelection: selection,
+        settingsPanelOpen: true,
+        // Speculative starts from the standing default, not the loaded model's
+        // mode, so a fresh pick doesn't inherit (and then carry, via the staged
+        // Load's keepSpeculative) a forced MTP mode onto a model that may lack it.
+        speculativeType: readPersistedSpeculativeType(),
+        specDraftNMax: null,
+      };
+    }),
+  abandonStagedModel: () => {
+    const { pendingSelection } = get();
+    if (!pendingSelection) return;
+    // Cancel the staged pick's in-flight download so it doesn't keep running
+    // after the staging UI is gone. Centralized here so every abandon path
+    // (sheet close, thread switch, route exit, new chat) cancels it, including
+    // root-level callers that have no access to the useRepoDownload hook.
+    cancelStagedModelDownload(pendingSelection);
+    set((s) => ({ ...loadedBaselineSettings(s), pendingSelection: null }));
+  },
   setCustomContextLength: (customContextLength) => set({ customContextLength }),
   setChatTemplateOverride: (chatTemplateOverride) =>
     set({ chatTemplateOverride }),
@@ -1153,3 +1486,25 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     set({ pendingImageEditReference: null }),
   setContextUsage: (contextUsage) => set({ contextUsage }),
 }));
+
+export function resolveSpeculativeSettingsForLoad({
+  usePersistedPreference = false,
+}: {
+  usePersistedPreference?: boolean;
+} = {}): {
+  speculativeType: string | null;
+  specDraftNMax: number | null;
+} {
+  const state = useChatRuntimeStore.getState();
+  const speculativeType = usePersistedPreference
+    ? readPersistedSpeculativeType()
+    : state.speculativeType ?? readPersistedSpeculativeType();
+  return {
+    speculativeType,
+    specDraftNMax:
+      !usePersistedPreference &&
+      (speculativeType === "mtp" || speculativeType === "mtp+ngram")
+        ? state.specDraftNMax
+        : null,
+  };
+}

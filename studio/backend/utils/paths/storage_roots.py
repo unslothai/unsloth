@@ -5,8 +5,9 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 import tempfile
 
 
@@ -317,6 +318,26 @@ def _clean_relative_path(path_value: str, *, strip_prefixes: tuple[str, ...] = (
     return Path(*parts) if parts else Path()
 
 
+def _has_parent_segment(raw: str, path: Path) -> bool:
+    """Return true when a user path contains a parent-directory segment.
+
+    On POSIX, ``Path("E:\\foo\\..\\bar")`` treats backslashes as normal
+    characters, so check both the host parser and Windows-style parsing.
+    """
+    if ".." in path.parts:
+        return True
+    if ".." in PureWindowsPath(raw).parts:
+        return True
+    return ".." in raw.replace("\\", "/").split("/")
+
+
+def _is_absolute_user_path(path: Path) -> bool:
+    expanded = str(path)
+    if os.name == "nt":
+        return path.is_absolute() and PureWindowsPath(expanded).is_absolute()
+    return path.is_absolute() and PurePosixPath(expanded).is_absolute()
+
+
 def _assert_contained(resolved: Path, root: Path) -> None:
     """Raise ValueError if ``resolved`` realpaths outside ``root``."""
     try:
@@ -351,10 +372,10 @@ def resolve_under_root(
         raise ValueError("path may not contain null bytes")
 
     path = Path(raw).expanduser()
-    if ".." in path.parts:
+    if _has_parent_segment(raw, path):
         raise ValueError(f"path may not contain '..' segments: {raw!r}")
 
-    if path.is_absolute():
+    if _is_absolute_user_path(path):
         _assert_contained(path, root)
         return path
 
@@ -362,6 +383,23 @@ def resolve_under_root(
     candidate = root / cleaned
     _assert_contained(candidate, root)
     return candidate
+
+
+def default_run_dir_name(model_name: str) -> str:
+    # Folder-safe run name for an auto-created output dir. Repo ids keep their
+    # namespace (org/model -> org_model); local paths (incl. G:\dir\model)
+    # collapse to their final component so an absolute source can't escape
+    # outputs_root. Length-capped to stay under the filesystem name limit.
+    raw = str(model_name or "").strip()
+    is_path = (
+        "\\" in raw
+        or raw.startswith(("/", "~", "."))
+        or os.path.isabs(raw)
+        or (len(raw) >= 2 and raw[1] == ":")
+    )
+    base = PureWindowsPath(raw).name if is_path else raw.replace("/", "_")
+    base = re.sub(r"[^A-Za-z0-9._-]+", "_", base)[:200].strip("._-")
+    return base or "model"
 
 
 def resolve_output_dir(path_value: str | None = None) -> Path:
@@ -373,6 +411,36 @@ def resolve_output_dir(path_value: str | None = None) -> Path:
 
 
 def resolve_export_dir(path_value: str | None = None) -> Path:
+    """Resolve an export directory — contained under exports_root().
+
+    Used by scan/read endpoints. Use :func:`resolve_export_write_dir`
+    for the export write path where absolute paths are accepted.
+    """
+    return resolve_under_root(
+        path_value,
+        root = exports_root(),
+        strip_prefixes = ("exports",),
+    )
+
+
+def resolve_export_write_dir(path_value: str | None = None) -> Path:
+    """Resolve an export save directory — accepts absolute paths.
+
+    Unlike :func:`resolve_export_dir`, this function passes absolute
+    paths through as-is so users can target a different drive when
+    their Studio install lives on a constrained system volume
+    (see :gh-issue:`6082`). Used only by the export write path.
+    """
+    if not path_value or not str(path_value).strip():
+        return exports_root()
+    raw = str(path_value).strip()
+    if "\x00" in raw:
+        raise ValueError("path may not contain null bytes")
+    path = Path(raw).expanduser()
+    if _has_parent_segment(raw, path):
+        raise ValueError(f"path may not contain '..' segments: {raw!r}")
+    if _is_absolute_user_path(path):
+        return path
     return resolve_under_root(
         path_value,
         root = exports_root(),

@@ -163,6 +163,40 @@ run_install_cmd() {
     return $_rc
 }
 
+# Retry run_install_cmd on transient uv download failures with backoff. Returns
+# the last exit code on permanent failure so the set -e rollback trap still fires.
+: "${UNSLOTH_INSTALL_RETRIES:=3}"
+: "${UNSLOTH_INSTALL_RETRY_DELAY:=3}"
+run_install_cmd_retry() {
+    _ricr_label="$1"
+    # Sanitize overrides to a default of 3 (a typo must not disable retries; =1 disables).
+    # Length guard precedes the numeric test so a huge value can't overflow `[ -ge ]`.
+    # 0?* rejects leading-zero delays ("08"/"09" break the later $((delay*2)) as octal);
+    # bare "0" stays valid. Bounds: 1..100 retries, 0..3600s base delay.
+    case "$UNSLOTH_INSTALL_RETRIES" in
+        ''|*[!0-9]*|0) _ricr_max=3 ;;
+        *) if [ "${#UNSLOTH_INSTALL_RETRIES}" -le 3 ] && [ "$UNSLOTH_INSTALL_RETRIES" -ge 1 ] 2>/dev/null && [ "$UNSLOTH_INSTALL_RETRIES" -le 100 ] 2>/dev/null; then _ricr_max=$UNSLOTH_INSTALL_RETRIES; else _ricr_max=3; fi ;;
+    esac
+    case "$UNSLOTH_INSTALL_RETRY_DELAY" in
+        ''|*[!0-9]*|0?*) _ricr_delay=3 ;;
+        *) if [ "${#UNSLOTH_INSTALL_RETRY_DELAY}" -le 4 ] && [ "$UNSLOTH_INSTALL_RETRY_DELAY" -ge 0 ] 2>/dev/null && [ "$UNSLOTH_INSTALL_RETRY_DELAY" -le 3600 ] 2>/dev/null; then _ricr_delay=$UNSLOTH_INSTALL_RETRY_DELAY; else _ricr_delay=3; fi ;;
+    esac
+    _ricr_attempt=1
+    while :; do
+        # AND-OR (not `if`) preserves the real failure code: $? after a non-taken
+        # `if` is 0 in sh/dash/bash, which would break the rollback path.
+        run_install_cmd "$@" && return 0
+        _ricr_rc=$?
+        if [ "$_ricr_attempt" -ge "$_ricr_max" ]; then
+            return "$_ricr_rc"
+        fi
+        substep "retrying \"$_ricr_label\" after transient failure (attempt $((_ricr_attempt + 1))/$_ricr_max, waiting ${_ricr_delay}s)..." "$C_WARN"
+        sleep "$_ricr_delay" || true
+        _ricr_attempt=$((_ricr_attempt + 1))
+        _ricr_delay=$((_ricr_delay * 2))
+    done
+}
+
 # Install bitsandbytes on AMD ROCm hosts. Uses the continuous-release_main
 # wheel for the ROCm 4-bit GEMV fix (bnb PR #1887, post-0.49.2); bnb <= 0.49.2
 # NaNs at decode shape on every AMD GPU. Falls back to PyPI >=0.49.1 if the
@@ -1227,6 +1261,10 @@ if (-not \$targetExe) { exit 1 }
 # native install if one exists) so the WSL shortcut shows the proper icon.
 \$iconDir = Join-Path \$env:LOCALAPPDATA 'Unsloth Studio'
 \$iconPath = Join-Path \$iconDir 'unsloth.ico'
+\$preIconHash = \$null
+if (Test-Path -LiteralPath \$iconPath) {
+    try { \$preIconHash = (Get-FileHash -LiteralPath \$iconPath -Algorithm SHA256).Hash } catch {}
+}
 if (-not (Test-Path -LiteralPath \$iconPath)) {
     try {
         New-Item -ItemType Directory -Force -Path \$iconDir | Out-Null
@@ -1242,9 +1280,11 @@ if (Test-Path -LiteralPath \$iconPath) {
     (Join-Path \$env:APPDATA 'Microsoft\Windows\Start Menu\Programs')
 )
 \$created = @()
+\$firstShortcut = \$false
 foreach (\$dir in \$locations) {
     if (-not \$dir -or -not (Test-Path \$dir)) { continue }
     \$linkPath = Join-Path \$dir '$_css_lnk_name_ps'
+    if (-not (Test-Path -LiteralPath \$linkPath)) { \$firstShortcut = \$true }
     \$shortcut = \$WshShell.CreateShortcut(\$linkPath)
     \$shortcut.TargetPath = \$targetExe
     \$shortcut.Arguments = '$_css_sc_args_ps'
@@ -1253,27 +1293,43 @@ foreach (\$dir in \$locations) {
     \$shortcut.Save()
     \$created += \$linkPath
 }
-# Force Explorer to re-read EACH new shortcut's icon so it renders immediately
-# instead of a stale/blank (generic) icon. The reliable, NON-disruptive fix
-# (no explorer restart) is a PER-ITEM SHChangeNotify(SHCNE_UPDATEITEM,
-# SHCNF_PATHW, <lnk>) -- the global SHCNE_ASSOCCHANGED alone does not recover a
-# stale item. Also clear the on-disk icon cache for heavier staleness.
-try { & "\$env:SystemRoot\System32\ie4uinit.exe" -ClearIconCache } catch {}
-try { & "\$env:SystemRoot\System32\ie4uinit.exe" -show } catch {}
+\$iconChanged = \$false
+if (\$hasIcon) {
+    if (-not \$preIconHash) {
+        \$iconChanged = \$true
+    } else {
+        try {
+            \$postIconHash = (Get-FileHash -LiteralPath \$iconPath -Algorithm SHA256).Hash
+            \$iconChanged = (\$postIconHash -ne \$preIconHash)
+        } catch { \$iconChanged = \$true }
+    }
+} elseif (\$preIconHash) {
+    \$iconChanged = \$true
+}
+# Per-item refresh always (cheap, non-disruptive) so the rewritten .lnk renders
+# immediately instead of a stale/blank (generic) icon. The reliable fix (no
+# explorer restart) is a PER-ITEM SHChangeNotify(SHCNE_UPDATEITEM, SHCNF_PATHW,
+# <lnk>) -- the global SHCNE_ASSOCCHANGED alone does not recover a stale item.
 try {
     Add-Type -Namespace UnslothShell -Name IconRefresh -MemberDefinition '[System.Runtime.InteropServices.DllImport("shell32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)] public static extern void SHChangeNotify(int e, uint f, string a, System.IntPtr b);' -ErrorAction SilentlyContinue
     foreach (\$p in \$created) { try { [UnslothShell.IconRefresh]::SHChangeNotify(0x00002000, 0x0005, \$p, [System.IntPtr]::Zero) } catch {} }
     [UnslothShell.IconRefresh]::SHChangeNotify(0x08000000, 0, \$null, [System.IntPtr]::Zero)
 } catch {}
-# Win11 Start Menu keeps its own tile-icon cache (preserve start2.bin).
-try {
-    \$smeh = Join-Path \$env:LOCALAPPDATA 'Packages\Microsoft.Windows.StartMenuExperienceHost_cw5n1h2txyewy\TempState'
-    if (Test-Path -LiteralPath \$smeh) {
-        Get-ChildItem -LiteralPath \$smeh -Filter 'TileCache_*' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
-        Remove-Item -LiteralPath (Join-Path \$smeh 'StartUnifiedTileModelCache.dat') -Force -ErrorAction SilentlyContinue
-        Stop-Process -Name StartMenuExperienceHost -Force -ErrorAction SilentlyContinue
-    }
-} catch {}
+# Heavier on-disk icon-cache clear + StartMenuExperienceHost tile rebuild
+# (preserve start2.bin) only on first install or a real icon change, so a no-op
+# WSL reinstall does not run a dropper-like clear-cache + kill cluster each time.
+if (\$created.Count -gt 0 -and (\$firstShortcut -or \$iconChanged)) {
+    try { & "\$env:SystemRoot\System32\ie4uinit.exe" -ClearIconCache } catch {}
+    try { & "\$env:SystemRoot\System32\ie4uinit.exe" -show } catch {}
+    try {
+        \$smeh = Join-Path \$env:LOCALAPPDATA 'Packages\Microsoft.Windows.StartMenuExperienceHost_cw5n1h2txyewy\TempState'
+        if (Test-Path -LiteralPath \$smeh) {
+            Get-ChildItem -LiteralPath \$smeh -Filter 'TileCache_*' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath (Join-Path \$smeh 'StartUnifiedTileModelCache.dat') -Force -ErrorAction SilentlyContinue
+            Stop-Process -Name StartMenuExperienceHost -Force -ErrorAction SilentlyContinue
+        }
+    } catch {}
+}
 WSLPS1_EOF
 
             # Convert WSL path to Windows path for powershell.exe
@@ -1456,7 +1512,18 @@ fi
 
 # ── Install uv ──
 tauri_log "STEP" "Installing uv package manager"
-UV_MIN_VERSION="0.7.14"
+UV_MIN_VERSION="0.8.16"
+
+# When bytecode compilation is enabled, large installs can exceed uv's 60s default on slow machines. Default to 180s, preserving overrides ("0" disables).
+: "${UV_COMPILE_BYTECODE_TIMEOUT:=180}"
+export UV_COMPILE_BYTECODE_TIMEOUT
+
+# uv >= 0.8.16 retries HTTP/2 streaming body errors; raise retries and read
+# timeout for large wheel downloads. ":=" preserves any user override.
+: "${UV_HTTP_RETRIES:=5}"
+export UV_HTTP_RETRIES
+: "${UV_HTTP_TIMEOUT:=180}"
+export UV_HTTP_TIMEOUT
 
 version_ge() {
     # returns 0 if $1 >= $2
@@ -2043,6 +2110,37 @@ _pick_radeon_wheel() {
 # CPU, non-Strix WSL) skips it and normal detection runs unchanged. NEVER aborts
 # the installer -- always returns 0. Runs the idempotent helper (ROCm 7.2 +
 # librocdxg), then sources the env it persisted so detection finds the GPU.
+# Export the ROCm-on-WSL env into this process and persist it to /etc/profile.d
+# so non-login Studio/llama launches inherit it. Idempotent (writes only when
+# the drop-in is missing); no-op without librocdxg, so never fires off WSL.
+# /etc/profile.d is root-owned -- sudo-tee when not root, else ROCm vanishes
+# after this shell on a non-root reinstall. Best-effort either way.
+_persist_rocm_wsl_dropin() {
+    [ -e /opt/rocm/lib/librocdxg.so ] || [ -e /opt/rocm/lib64/librocdxg.so ] || return 0
+    _rw_rocm=/opt/rocm
+    export HSA_ENABLE_DXG_DETECTION=1
+    export TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1
+    case ":${PATH}:" in
+        *":${_rw_rocm}/bin:"*) ;;
+        *) export PATH="${_rw_rocm}/bin:${PATH}" ;;
+    esac
+    export LD_LIBRARY_PATH="${_rw_rocm}/lib:${LD_LIBRARY_PATH:-}"
+    [ -r /etc/profile.d/unsloth-rocm-wsl.sh ] && return 0
+    _rw_dropin="$(
+        printf '# >>> Unsloth ROCm-on-WSL (gfx1151) >>>\n'
+        printf 'export HSA_ENABLE_DXG_DETECTION=1\n'
+        printf 'export TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1\n'
+        printf 'export PATH="%s/bin:${PATH}"\n' "${_rw_rocm}"
+        printf 'export LD_LIBRARY_PATH="%s/lib:${LD_LIBRARY_PATH:-}"\n' "${_rw_rocm}"
+        printf '# <<< Unsloth ROCm-on-WSL (gfx1151) <<<\n'
+    )"
+    if [ "$(id -u)" = "0" ]; then
+        printf '%s\n' "$_rw_dropin" > /etc/profile.d/unsloth-rocm-wsl.sh 2>/dev/null || true
+    elif command -v sudo >/dev/null 2>&1; then
+        printf '%s\n' "$_rw_dropin" | sudo tee /etc/profile.d/unsloth-rocm-wsl.sh >/dev/null 2>&1 || true
+    fi
+}
+
 _maybe_bootstrap_rocm_wsl() {
     [ "${OS:-}" = "wsl" ] || return 0
     [ "${SKIP_TORCH:-false}" = "false" ] || return 0
@@ -2056,6 +2154,11 @@ _maybe_bootstrap_rocm_wsl() {
     _ensure_rocm_probe_env
     if command -v rocminfo >/dev/null 2>&1 && \
        rocminfo 2>/dev/null | awk '/Name:[[:space:]]*gfx1151/{found=1} END{exit !found}'; then
+        # rocminfo may work only via the transient env _ensure_rocm_probe_env
+        # just set, which dies with the installer. Persist the drop-in so login
+        # shells (Studio, llama.cpp) inherit it -- else a reinstall over an
+        # existing /opt/rocm (uninstall keeps ROCm but drops it) loses the GPU.
+        _persist_rocm_wsl_dropin
         return 0
     fi
     # WSL GPU passthrough device must exist (present on any WSL2 GPU host).
@@ -2073,31 +2176,8 @@ _maybe_bootstrap_rocm_wsl() {
             . /etc/profile.d/unsloth-rocm-wsl.sh || true
         else
             # librocdxg present but the env drop-in is gone (e.g. a Studio
-            # uninstall removed it while keeping shared ROCm). Restore the FULL
-            # env inline (so rocminfo is on PATH) and recreate the drop-in.
-            _rw_rocm=/opt/rocm
-            export HSA_ENABLE_DXG_DETECTION=1
-            export TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1
-            export PATH="${_rw_rocm}/bin:${PATH}"
-            export LD_LIBRARY_PATH="${_rw_rocm}/lib:${LD_LIBRARY_PATH:-}"
-            # Persist the drop-in so later non-login Studio launches get the env
-            # too. /etc/profile.d is root-owned: a plain redirect fails for a
-            # non-root reinstall (ROCm would silently disappear after this shell),
-            # so tee through sudo when not root. Best-effort -- the current shell
-            # already has the env, so the install proceeds either way.
-            _rw_dropin="$(
-                printf '# >>> Unsloth ROCm-on-WSL (gfx1151) >>>\n'
-                printf 'export HSA_ENABLE_DXG_DETECTION=1\n'
-                printf 'export TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1\n'
-                printf 'export PATH="%s/bin:${PATH}"\n' "${_rw_rocm}"
-                printf 'export LD_LIBRARY_PATH="%s/lib:${LD_LIBRARY_PATH:-}"\n' "${_rw_rocm}"
-                printf '# <<< Unsloth ROCm-on-WSL (gfx1151) <<<\n'
-            )"
-            if [ "$(id -u)" = "0" ]; then
-                printf '%s\n' "$_rw_dropin" > /etc/profile.d/unsloth-rocm-wsl.sh 2>/dev/null || true
-            elif command -v sudo >/dev/null 2>&1; then
-                printf '%s\n' "$_rw_dropin" | sudo tee /etc/profile.d/unsloth-rocm-wsl.sh >/dev/null 2>&1 || true
-            fi
+            # uninstall removed it while keeping shared ROCm). Restore the env.
+            _persist_rocm_wsl_dropin
         fi
         return 0
     fi
@@ -2403,28 +2483,28 @@ if [ "$_MIGRATED" = true ]; then
         # PyPI metadata still declares torch as a hard dep), then install
         # runtime deps (typer, safetensors, transformers, etc.) with --no-deps
         # to prevent transitive torch resolution.
-        run_install_cmd "install unsloth (migrated no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
+        run_install_cmd_retry "install unsloth (migrated no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "unsloth>=2026.6.3" unsloth-zoo
+            "unsloth>=2026.6.7" unsloth-zoo
         # Resolve pydantic WITH deps so pip pins pydantic-core to the
         # matching version (no-torch-runtime.txt below is --no-deps).
         # All transitive deps are torch-free.
-        run_install_cmd "install pydantic (with deps for compatible core)" \
+        run_install_cmd_retry "install pydantic (with deps for compatible core)" \
             uv pip install --python "$_VENV_PY" pydantic
         _NO_TORCH_RT="$(_find_no_torch_runtime)"
         if [ -n "$_NO_TORCH_RT" ]; then
-            run_install_cmd "install no-torch runtime deps" uv pip install --python "$_VENV_PY" --no-deps -r "$_NO_TORCH_RT"
+            run_install_cmd_retry "install no-torch runtime deps" uv pip install --python "$_VENV_PY" --no-deps -r "$_NO_TORCH_RT"
         fi
     else
-        run_install_cmd "install unsloth (migrated)" uv pip install --python "$_VENV_PY" \
+        run_install_cmd_retry "install unsloth (migrated)" uv pip install --python "$_VENV_PY" \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "unsloth>=2026.6.3" unsloth-zoo
+            "unsloth>=2026.6.7" unsloth-zoo
     fi
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
         substep "overlaying unsloth-zoo from git main..."
-        run_install_cmd "overlay unsloth-zoo (git main)" uv pip install --python "$_VENV_PY" \
+        run_install_cmd_retry "overlay unsloth-zoo (git main)" uv pip install --python "$_VENV_PY" \
             --no-deps --reinstall-package unsloth-zoo \
             "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo"
     fi
@@ -2439,7 +2519,7 @@ if [ "$_MIGRATED" = true ]; then
                 _has_hip=$("$_VENV_PY" -c "import torch; print(getattr(torch.version,'hip','') or '')" 2>/dev/null || true)
                 if [ -z "$_has_hip" ]; then
                     substep "repairing ROCm torch (overwritten by dependency resolution)..."
-                    run_install_cmd "repair ROCm torch" uv pip install --python "$_VENV_PY" \
+                    run_install_cmd_retry "repair ROCm torch" uv pip install --python "$_VENV_PY" \
                         "$TORCH_CONSTRAINT" torchvision torchaudio \
                         --index-url "$TORCH_INDEX_URL" \
                         --force-reinstall
@@ -2565,7 +2645,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
                 if [ -z "$_torch_whl" ] || [ -z "$_tv_whl" ] || [ -z "$_ta_whl" ] || \
                    [ "$_radeon_versions_match" != true ]; then
                     substep "[WARN] Radeon repo lacks a compatible wheel set for this Python; falling back to ROCm index ($TORCH_INDEX_URL)" "$C_WARN"
-                    run_install_cmd "install PyTorch" uv pip install --python "$_VENV_PY" \
+                    run_install_cmd_retry "install PyTorch" uv pip install --python "$_VENV_PY" \
                         "$TORCH_CONSTRAINT" torchvision torchaudio \
                         --index-url "$TORCH_INDEX_URL"
                 else
@@ -2577,30 +2657,30 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
                     # filelock / sympy / networkx which are not in the
                     # Radeon listing.
                     if [ -n "$_tri_whl" ]; then
-                        run_install_cmd "install triton + PyTorch" uv pip install --python "$_VENV_PY" \
+                        run_install_cmd_retry "install triton + PyTorch" uv pip install --python "$_VENV_PY" \
                             --find-links "$_RADEON_BASE_URL" \
                             "$_tri_whl" "$_torch_whl" "$_tv_whl" "$_ta_whl"
                     else
-                        run_install_cmd "install PyTorch" uv pip install --python "$_VENV_PY" \
+                        run_install_cmd_retry "install PyTorch" uv pip install --python "$_VENV_PY" \
                             --find-links "$_RADEON_BASE_URL" \
                             "$_torch_whl" "$_tv_whl" "$_ta_whl"
                     fi
                 fi
             else
                 substep "[WARN] Radeon repo unavailable; falling back to ROCm index ($TORCH_INDEX_URL)" "$C_WARN"
-                run_install_cmd "install PyTorch" uv pip install --python "$_VENV_PY" \
+                run_install_cmd_retry "install PyTorch" uv pip install --python "$_VENV_PY" \
                     "$TORCH_CONSTRAINT" torchvision torchaudio \
                     --index-url "$TORCH_INDEX_URL"
             fi
         else
             substep "[WARN] Radeon GPU detected but could not detect full ROCm version; falling back to ROCm index" "$C_WARN"
-            run_install_cmd "install PyTorch" uv pip install --python "$_VENV_PY" \
+            run_install_cmd_retry "install PyTorch" uv pip install --python "$_VENV_PY" \
                 "$TORCH_CONSTRAINT" torchvision torchaudio \
                 --index-url "$TORCH_INDEX_URL"
         fi
     else
         substep "installing PyTorch ($TORCH_INDEX_URL)..."
-        run_install_cmd "install PyTorch" uv pip install --python "$_VENV_PY" "$TORCH_CONSTRAINT" torchvision torchaudio \
+        run_install_cmd_retry "install PyTorch" uv pip install --python "$_VENV_PY" "$TORCH_CONSTRAINT" torchvision torchaudio \
             --index-url "$TORCH_INDEX_URL"
     fi
     # AMD ROCm: install bitsandbytes (once, after torch, for all ROCm paths).
@@ -2620,35 +2700,35 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
     if [ "$SKIP_TORCH" = true ]; then
         # No-torch: install unsloth + unsloth-zoo with --no-deps, then
         # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-        run_install_cmd "install unsloth (no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
+        run_install_cmd_retry "install unsloth (no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --upgrade-package unsloth --upgrade-package unsloth-zoo \
-            "unsloth>=2026.6.3" unsloth-zoo
+            "unsloth>=2026.6.7" unsloth-zoo
         # Same pydantic-with-deps trick as the migrated branch.
-        run_install_cmd "install pydantic (with deps for compatible core)" \
+        run_install_cmd_retry "install pydantic (with deps for compatible core)" \
             uv pip install --python "$_VENV_PY" pydantic
         _NO_TORCH_RT="$(_find_no_torch_runtime)"
         if [ -n "$_NO_TORCH_RT" ]; then
-            run_install_cmd "install no-torch runtime deps" uv pip install --python "$_VENV_PY" --no-deps -r "$_NO_TORCH_RT"
+            run_install_cmd_retry "install no-torch runtime deps" uv pip install --python "$_VENV_PY" --no-deps -r "$_NO_TORCH_RT"
         fi
         if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
             substep "overlaying local repo (editable)..."
             run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
             substep "overlaying unsloth-zoo from git main..."
-            run_install_cmd "overlay unsloth-zoo (git main)" uv pip install --python "$_VENV_PY" \
+            run_install_cmd_retry "overlay unsloth-zoo (git main)" uv pip install --python "$_VENV_PY" \
                 --no-deps --reinstall-package unsloth-zoo \
                 "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo"
         fi
     elif [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-        run_install_cmd "install unsloth (local)" uv pip install --python "$_VENV_PY" \
-            --upgrade-package unsloth "unsloth>=2026.6.3" unsloth-zoo
+        run_install_cmd_retry "install unsloth (local)" uv pip install --python "$_VENV_PY" \
+            --upgrade-package unsloth "unsloth>=2026.6.7" unsloth-zoo
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
         substep "overlaying unsloth-zoo from git main..."
-        run_install_cmd "overlay unsloth-zoo (git main)" uv pip install --python "$_VENV_PY" \
+        run_install_cmd_retry "overlay unsloth-zoo (git main)" uv pip install --python "$_VENV_PY" \
             --no-deps --reinstall-package unsloth-zoo \
             "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo"
     else
-        run_install_cmd "install unsloth" uv pip install --python "$_VENV_PY" \
+        run_install_cmd_retry "install unsloth" uv pip install --python "$_VENV_PY" \
             --upgrade-package unsloth -- "$PACKAGE_NAME"
     fi
     # AMD ROCm: repair torch if the unsloth/unsloth-zoo install pulled in
@@ -2659,7 +2739,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
                 _has_hip=$("$_VENV_PY" -c "import torch; print(getattr(torch.version,'hip','') or '')" 2>/dev/null || true)
                 if [ -z "$_has_hip" ]; then
                     substep "repairing ROCm torch (overwritten by dependency resolution)..."
-                    run_install_cmd "repair ROCm torch" uv pip install --python "$_VENV_PY" \
+                    run_install_cmd_retry "repair ROCm torch" uv pip install --python "$_VENV_PY" \
                         "$TORCH_CONSTRAINT" torchvision torchaudio \
                         --index-url "$TORCH_INDEX_URL" \
                         --force-reinstall
@@ -2672,15 +2752,15 @@ else
     tauri_log "STEP" "Installing Unsloth"
     substep "installing unsloth (this may take a few minutes)..."
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-        run_install_cmd "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" unsloth-zoo "unsloth>=2026.6.3" --torch-backend=auto
+        run_install_cmd_retry "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" unsloth-zoo "unsloth>=2026.6.7" --torch-backend=auto
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
         substep "overlaying unsloth-zoo from git main..."
-        run_install_cmd "overlay unsloth-zoo (git main)" uv pip install --python "$_VENV_PY" \
+        run_install_cmd_retry "overlay unsloth-zoo (git main)" uv pip install --python "$_VENV_PY" \
             --no-deps --reinstall-package unsloth-zoo \
             "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo"
     else
-        run_install_cmd "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" --torch-backend=auto -- "$PACKAGE_NAME"
+        run_install_cmd_retry "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" --torch-backend=auto -- "$PACKAGE_NAME"
     fi
 fi
 
@@ -2883,7 +2963,10 @@ if [ -t 1 ]; then
     case "${_reply:-y}" in
         [Yy]*|"")
             step "launch" "starting Unsloth Studio..."
-            "$VENV_DIR/bin/unsloth" studio -p 8888
+            # Detach stdin from the `curl | sh` pipe: as a foreground server the
+            # studio would otherwise drain the rest of this piped script, leaving
+            # the shell to die parsing the now-truncated tail (`unexpected fi`).
+            "$VENV_DIR/bin/unsloth" studio -p 8888 </dev/null
             _LAUNCH_EXIT=$?
             if [ "$_LAUNCH_EXIT" -ne 0 ] && [ "$_MIGRATED" = true ]; then
                 echo ""
