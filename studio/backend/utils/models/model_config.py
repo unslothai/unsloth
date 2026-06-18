@@ -954,19 +954,26 @@ def detect_audio_type(model_name: str, hf_token: Optional[str] = None) -> Option
     if cache_key in _audio_detection_cache:
         return _audio_detection_cache[cache_key]
 
-    result = _detect_audio_from_tokenizer(model_name, hf_token)
-
-    _audio_detection_cache[cache_key] = result
+    result, definitive = _detect_audio_from_tokenizer(model_name, hf_token)
+    # Cache only definitive results; a transient read failure stays None and retries.
+    if definitive:
+        _audio_detection_cache[cache_key] = result
     if result:
         logger.info(f"Model {model_name} detected as audio model: audio_type={result}")
     return result
 
 
-def _detect_audio_from_tokenizer(model_name: str, hf_token: Optional[str] = None) -> Optional[str]:
+def _detect_audio_from_tokenizer(
+    model_name: str, hf_token: Optional[str] = None
+) -> Tuple[Optional[str], bool]:
     """Detect audio type from tokenizer special tokens.
 
     Checks local HF cache first, then fetches tokenizer_config.json from HF;
     examines added_tokens_decoder for distinctive patterns.
+
+    Returns (audio_type_or_None, definitive). definitive is False only on a
+    transient read failure (network/timeout/5xx) so the caller skips caching and
+    retries; a successful read with no audio tokens is a definitive None.
     """
 
     def _check_token_patterns(tok_config: dict) -> Optional[str]:
@@ -978,6 +985,8 @@ def _detect_audio_from_tokenizer(model_name: str, hf_token: Optional[str] = None
             if check_fn(token_contents):
                 return audio_type
         return None
+
+    read_any = False  # parsed at least one tokenizer_config -> a None is definitive
 
     # 1) Local HF cache first (works for gated/offline models)
     try:
@@ -993,9 +1002,10 @@ def _detect_audio_from_tokenizer(model_name: str, hf_token: Optional[str] = None
                         tok_file = snapshot / tok_path
                         if tok_file.exists():
                             tok_config = json.loads(tok_file.read_text())
+                            read_any = True
                             result = _check_token_patterns(tok_config)
                             if result:
-                                return result
+                                return result, True
     except Exception as e:
         logger.debug(f"Could not check local cache for {model_name}: {e}")
 
@@ -1003,28 +1013,40 @@ def _detect_audio_from_tokenizer(model_name: str, hf_token: Optional[str] = None
     try:
         import requests
         import os
+    except Exception:
+        return None, read_any
 
-        paths_to_try = ["tokenizer_config.json", "LLM/tokenizer_config.json"]
-        token = hf_token or os.environ.get("HF_TOKEN")
-        headers = {}
-        if token:
-            headers["Authorization"] = f"Bearer {token}"
+    paths_to_try = ["tokenizer_config.json", "LLM/tokenizer_config.json"]
+    token = hf_token or os.environ.get("HF_TOKEN")
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
 
-        for tok_path in paths_to_try:
-            url = f"https://huggingface.co/{model_name}/resolve/main/{tok_path}"
+    transient = False  # a fetch failed for a non-404 reason (network/5xx)
+    for tok_path in paths_to_try:
+        url = f"https://huggingface.co/{model_name}/resolve/main/{tok_path}"
+        try:
             resp = requests.get(url, headers = headers, timeout = 15)
-            if not resp.ok:
-                continue
-
+        except Exception as e:
+            logger.debug(f"Could not fetch {tok_path} for {model_name}: {e}")
+            transient = True
+            continue
+        if resp.status_code == 404:
+            continue  # genuinely absent on this path
+        if not resp.ok:
+            transient = True  # 5xx/403/etc -- can't tell, don't cache
+            continue
+        try:
             tok_config = resp.json()
-            result = _check_token_patterns(tok_config)
-            if result:
-                return result
+        except Exception as e:
+            logger.debug(f"Bad tokenizer_config for {model_name}/{tok_path}: {e}")
+            transient = True
+            continue
+        read_any = True
+        result = _check_token_patterns(tok_config)
+        if result:
+            return result, True
 
-        return None
-    except Exception as e:
-        logger.debug(f"Could not detect audio type from tokenizer for {model_name}: {e}")
-        return None
+    # No audio tokens: definitive unless every attempt failed transiently.
+    return None, (read_any or not transient)
 
 
 def is_audio_input_type(audio_type: Optional[str]) -> bool:

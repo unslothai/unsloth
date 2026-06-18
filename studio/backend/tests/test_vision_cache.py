@@ -561,7 +561,7 @@ class TestAudioDetectionCacheTokenAware:
         def _fake(name, hf_token = None):
             calls.append(hf_token)
             # Gated repo: only an authenticated probe can read the tokenizer.
-            return "bicodec" if hf_token else None
+            return ("bicodec", True) if hf_token else (None, True)
 
         monkeypatch.setattr(mc, "_detect_audio_from_tokenizer", _fake)
         monkeypatch.setattr(mc, "is_local_path", lambda *_a, **_k: False)
@@ -576,4 +576,38 @@ class TestAudioDetectionCacheTokenAware:
         # Same (model, token) is served from cache (no third probe).
         assert mc.detect_audio_type("private/spark", hf_token = "hf_x") == "bicodec"
         assert calls == [None, "hf_x"]
+        mc._audio_detection_cache.clear()
+
+    def test_transient_none_is_not_cached_but_definitive_none_is(self, monkeypatch):
+        """A transient probe failure (definitive=False) must retry; a clean
+        'not audio' read (definitive=True) caches so we don't re-probe."""
+        import utils.models.model_config as mc
+
+        mc._audio_detection_cache.clear()
+        monkeypatch.setattr(mc, "is_local_path", lambda *_a, **_k: False)
+        monkeypatch.setattr(mc, "resolve_cached_repo_id_case", lambda n, *_a, **_k: n)
+
+        transient_calls = []
+
+        def _transient(name, hf_token = None):
+            transient_calls.append(hf_token)
+            return (None, False)  # network/5xx -- not cacheable
+
+        monkeypatch.setattr(mc, "_detect_audio_from_tokenizer", _transient)
+        assert mc.detect_audio_type("flaky/model") is None
+        assert mc.detect_audio_type("flaky/model") is None
+        # Re-probed both times: the transient None was never cached.
+        assert transient_calls == [None, None]
+
+        definitive_calls = []
+
+        def _definitive(name, hf_token = None):
+            definitive_calls.append(hf_token)
+            return (None, True)  # read the config, no audio tokens
+
+        monkeypatch.setattr(mc, "_detect_audio_from_tokenizer", _definitive)
+        assert mc.detect_audio_type("plain/text-model") is None
+        assert mc.detect_audio_type("plain/text-model") is None
+        # Probed once: the definitive None was cached.
+        assert definitive_calls == [None]
         mc._audio_detection_cache.clear()
