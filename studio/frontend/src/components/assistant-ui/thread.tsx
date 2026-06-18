@@ -125,6 +125,7 @@ import {
   Image03Icon,
   McpServerIcon,
   PencilRulerIcon,
+  ShieldBanIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
@@ -1247,6 +1248,7 @@ const Composer: FC<{
   const artifactsEnabled = useChatRuntimeStore((s) => s.artifactsEnabled);
   const mcpEnabledForChat = useChatRuntimeStore((s) => s.mcpEnabledForChat);
   const ragEnabled = useChatRuntimeStore((s) => s.ragEnabled);
+  const bypassPermissions = useChatRuntimeStore((s) => s.bypassPermissions);
   // More than 4 pills: collapse to icons only. Search and Code always show;
   // Images, RAG, Canvas and MCP are conditional.
   const pillsCompact =
@@ -1368,6 +1370,8 @@ const Composer: FC<{
   }, [composerText, draftKey]);
   // Two-row layout shows once the input wraps or a tool is on. Tools can
   // pre-select before a model loads, so an active toggle expands it either way.
+  // Bypass permissions counts too: turning it on should drop the composer into
+  // the two-row layout immediately, same as Search/Code.
   const composerExpanded =
     isMultiline ||
     hasAttachments ||
@@ -1377,7 +1381,8 @@ const Composer: FC<{
     imageToolsEnabled ||
     ragEnabled ||
     artifactsEnabled ||
-    mcpEnabledForChat;
+    mcpEnabledForChat ||
+    bypassPermissions;
   // react-textarea-autosize re-measures only on value change or window resize,
   // not on the width swap from expanding, so it keeps the taller height and
   // leaves a stray blank row. Nudge a resize whenever input width changes.
@@ -2430,7 +2435,7 @@ const ArtifactsToggle: FC = () => {
   );
 };
 
-// Red pill shown while Bypass Permissions is on; click to turn it off.
+// Claude gold pill shown while Bypass permissions is on; click to turn it off.
 // Mirror of shared-composer's badge so both composers surface the state.
 const BypassPermissionsToggle: FC = () => {
   const bypassPermissions = useChatRuntimeStore((s) => s.bypassPermissions);
@@ -2445,11 +2450,17 @@ const BypassPermissionsToggle: FC = () => {
       className="composer-pill-btn"
       data-active="true"
       data-variant="danger"
-      aria-label="Disable Bypass Permissions"
-      title="Bypass Permissions is on (no confirmation, no sandbox). Click to turn off."
+      aria-label="Disable Bypass permissions"
+      title="Bypass permissions is on (no confirmation, no sandbox). Click to turn off."
     >
-      <XIcon className="size-3" />
-      <span>Bypass Permissions</span>
+      <PillGlyph>
+        <HugeiconsIcon
+          icon={ShieldBanIcon}
+          strokeWidth={2}
+          className="size-[15px]"
+        />
+      </PillGlyph>
+      <span>Bypass permissions</span>
     </button>
   );
 };
@@ -2959,7 +2970,7 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
               <MoreHorizontalIcon className="size-4" />
               More
             </DropdownMenuSubTrigger>
-            <DropdownMenuSubContent className="unsloth-plus-menu w-[232px]">
+            <DropdownMenuSubContent className="unsloth-plus-menu w-[248px]">
               {overflowPlusItems.map((id) => (
                 <Fragment key={id}>{plusMenuNodes[id]}</Fragment>
               ))}
