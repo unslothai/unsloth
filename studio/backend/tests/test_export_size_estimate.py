@@ -46,9 +46,7 @@ class TestExportSizeEndpoint(unittest.TestCase):
         # Keep id resolution deterministic and offline (no HF cache lookup).
         with (
             patch.object(self.models_route, "is_local_path", return_value = False),
-            patch.object(
-                self.models_route, "resolve_cached_repo_id_case", side_effect = lambda m: m
-            ),
+            patch.object(self.models_route, "resolve_cached_repo_id_case", side_effect = lambda m: m),
         ):
             return asyncio.run(
                 self.models_route.get_export_size(
