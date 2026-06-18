@@ -385,7 +385,7 @@ function ModelSelectorContent({
       data-tour={dataTour}
       onKeyDown={handlePickerEntryKeyDown}
       className={cn(
-        "unsloth-model-selector-menu menu-soft-surface ring-0 w-[min(512px,calc(100vw-1rem))] max-w-[calc(100vw-1rem)] min-w-0 gap-0 px-4 pt-4 pb-0",
+        "unsloth-model-selector-menu menu-soft-surface ring-0 w-[min(504px,calc(100vw-1rem))] max-w-[calc(100vw-1rem)] min-w-0 gap-0 pt-4 pr-2 pb-0 pl-4",
         className,
       )}
     >
