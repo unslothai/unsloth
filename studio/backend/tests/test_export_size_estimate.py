@@ -230,7 +230,6 @@ class TestExportSizeEndpoint(unittest.TestCase):
         # A run dir's intermediate checkpoint-*/global_step* snapshots must not
         # be counted; only the model files at the root are summed.
         from utils.hardware.hardware import _get_local_weight_size_bytes
-
         with tempfile.TemporaryDirectory() as tmp:
             run = Path(tmp)
             (run / "model.safetensors").write_bytes(b"\0" * 1000)
