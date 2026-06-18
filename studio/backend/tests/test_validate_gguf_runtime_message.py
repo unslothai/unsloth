@@ -109,15 +109,12 @@ class TestLoadPathPropagatesRuntimeError(unittest.TestCase):
 
     def test_tensor_fallback_propagates_missing_runtime(self):
         from core.inference.tensor_fallback import load_with_tensor_fallback
-
         async def _attempt(_tensor, _extra):
             raise LlamaServerNotFoundError(_GGUF_MSG)
 
         with self.assertRaises(LlamaServerNotFoundError):
             asyncio.run(
-                load_with_tensor_fallback(
-                    _attempt, requested_tensor = False, extra_args = None
-                )
+                load_with_tensor_fallback(_attempt, requested_tensor = False, extra_args = None)
             )
 
 
