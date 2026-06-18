@@ -75,7 +75,7 @@ export function QuantPicker({ value, onChange, sizes }: QuantPickerProps) {
               type="button"
               onClick={() => toggle(q.value)}
               className={cn(
-                "inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium ring-1 transition-all",
+                "inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium ring-1 transition-colors",
                 active
                   ? "ring-primary bg-primary/10 text-foreground"
                   : "ring-border text-muted-foreground hover:text-foreground hover:ring-foreground/20",
