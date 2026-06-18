@@ -3144,7 +3144,7 @@ export function HubModelPicker({
       {/* Floating eject pill: overlaid on the list bottom, outside the scroll
           so the edge fade never touches it. Only the pill catches clicks. */}
       {onEject ? (
-        <div className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-end pr-8 pb-7">
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-end pr-3.5 pb-5">
           <button
             type="button"
             onClick={onEject}
