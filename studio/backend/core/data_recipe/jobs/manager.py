@@ -177,6 +177,7 @@ class JobManager:
                 )
                 proc.start()
                 from utils.process_lifetime import adopt_pid
+
                 adopt_pid(proc.pid)  # bind to parent lifetime (Windows job / sweep)
 
             self._mp_q = mp_q

@@ -206,7 +206,7 @@ def _pid_identity(pid: int) -> Optional[str]:
     try:
         with open(f"/proc/{pid}/stat", encoding = "utf-8") as fh:
             stat = fh.read()
-        return stat[stat.rfind(")") + 2:].split()[19]  # after comm: starttime
+        return stat[stat.rfind(")") + 2 :].split()[19]  # after comm: starttime
     except Exception:
         return None
 
