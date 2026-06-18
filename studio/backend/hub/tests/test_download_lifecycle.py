@@ -5,7 +5,6 @@ from hub.services import download_lifecycle
 
 
 def _set_xet_reason(monkeypatch, reason):
-    # Drive resolve_effective_use_xet without needing hf_xet installed.
     monkeypatch.setattr(
         download_lifecycle.download_registry,
         "download_transport_unavailable_reason",
@@ -24,6 +23,5 @@ def test_resolve_effective_use_xet_keeps_xet_when_available(monkeypatch):
 
 
 def test_resolve_effective_use_xet_downgrades_when_xet_unavailable(monkeypatch):
-    # A defaulted/explicit Xet request must fall back to HTTP, not raise.
     _set_xet_reason(monkeypatch, "Xet transport is unavailable because hf_xet is not installed.")
     assert download_lifecycle.resolve_effective_use_xet(True) is False

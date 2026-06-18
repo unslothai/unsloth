@@ -29,13 +29,8 @@ def backend_dir() -> Path:
 
 
 def resolve_effective_use_xet(use_xet: bool) -> bool:
-    """Downgrade an Xet request to HTTP when hf_xet is unavailable.
-
-    The default transport is Xet; this keeps a defaulted (or explicit) Xet
-    request from hard-failing on installs without the Xet extra, mirroring the
-    frontend's own downgrade. Callers feed the result to both resolve_transport
-    and spawn_worker so the chosen transport and the worker env never disagree.
-    """
+    """Downgrade an Xet request to HTTP when hf_xet is unavailable, so a defaulted
+    or explicit Xet request never hard-fails on installs without the Xet extra."""
     if not use_xet:
         return False
     reason = download_registry.download_transport_unavailable_reason(
