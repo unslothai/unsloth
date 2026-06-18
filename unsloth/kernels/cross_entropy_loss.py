@@ -173,7 +173,8 @@ def _chunked_cross_entropy_forward(
     logsumexp = c + tl.log(tl.sum(tl.exp(logits - c), 0))
 
     if chunk_idx == 0:
-        # logsumexp(chunked_logsumexp) - x; do the -x separately
+        # logsumexp(chunked_logsumexp) - x
+        # Do the -x separately
         if label_idx != -100:
             x = tl.load(logits_ptr + label_idx).to(tl.float32)
             # Go logit scaling for Cohere: t * x
@@ -312,7 +313,7 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
         BLOCK_SIZE: int
         num_warps: int
         if n_chunks == 1:
-            # Small vocabs <= 65336 (Llama, Mistral)
+            # For small vocabs <= 65336 like Llama, Mistral
             BLOCK_SIZE, num_warps = calculate_settings(vocab_size)
             if is_cdna():
                 num_warps = num_warps // 2
@@ -334,7 +335,7 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
                     num_warps = num_warps,
                 )
         else:
-            # Large vocabs > 65336 (Gemma 256K)
+            # For large vocabs > 65336 like Gemma 256K
             logsumexp = torch.empty(
                 (
                     n_rows,
@@ -365,10 +366,11 @@ class Fast_CrossEntropyLoss(torch.autograd.Function):
                     LOGIT_SCALE = logit_scaling,
                     num_warps = 32 if not is_cdna() else 16,
                 )
-            # logsumexp(chunked_logsumexp) - x; do the -x separately
+            # logsumexp(chunked_logsumexp) - x
+            # Do the -x separately
             logsumexp = torch.logsumexp(logsumexp, dim = 1)  # Row sum
             losses += logsumexp
-            losses.masked_fill_(labels == -100, 0)  # Mask padding out
+            losses.masked_fill_(labels == -100, 0)  # Don't forget to mask padding out!
 
         ctx.save_for_backward(logits, logsumexp, labels)
         ctx.DO_SOFTCAPPING = DO_SOFTCAPPING
@@ -456,6 +458,7 @@ if (Version(torch.__version__) < Version("2.4.0")) and not hasattr(
     fast_cross_entropy_loss = torch._disable_dynamo(fast_cross_entropy_loss)
 
 
+# Patch CE Losses in transformers
 def patch_loss_functions(torch_compile = True):
     _patch_loss_functions(fast_cross_entropy_loss, torch_compile = torch_compile)
 

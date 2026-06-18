@@ -98,6 +98,7 @@ def _rms_layernorm_backward(
     X_row = tl.load(X + col_offsets, mask = mask, other = 0).to(tl.float32)
     W_row = tl.load(W + col_offsets, mask = mask, other = 0).to(tl.float32)
 
+    # Get saved row variance
     inv_var = tl.load(r).to(tl.float32)
     normed = X_row * inv_var
 

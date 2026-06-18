@@ -45,17 +45,17 @@ def layernorm_forward(
     r += row_idx
     mu += row_idx
 
-    # torchtune Fp32LayerNorm: all modules are float32
-    # https://pytorch.org/torchtune/stable/_modules/torchtune/modules/layer_norm.html#Fp32LayerNorm
+    # According to https://pytorch.org/torchtune/stable/_modules/torchtune/modules/layer_norm.html#Fp32LayerNorm, all modules
+    # are in float32!
     X_row = tl.load(X + col_offsets, mask = mask, other = 0).to(tl.float32)
     W_row = tl.load(W + col_offsets, mask = mask, other = 0).to(tl.float32)
     b_row = tl.load(b + col_offsets, mask = mask, other = 0).to(tl.float32)
 
     mean_X = tl.sum(X_row, axis = 0) / n_cols
-    # Mask out masked positions, where (X - mean) collapses to -mean
+    # (X[0] - mean) == -mean so we need to mask it out
     XX = tl.where(mask, X_row - mean_X, 0)
     row_var = tl.sum(XX * XX, axis = 0) / n_cols
-    # Explicit float32 scalar for correct type promotion on HIP/ROCm
+    # Explicit float32 scalar to ensure correct type promotion on HIP/ROCm
     eps_f32 = tl.full((), eps, tl.float32)
     inv_var = tl.math.rsqrt(row_var + eps_f32)
     tl.store(r, inv_var)
@@ -88,8 +88,8 @@ def layernorm_backward(
     r += row_idx
     mu += row_idx
 
-    # torchtune Fp32LayerNorm: all modules are float32
-    # https://pytorch.org/torchtune/stable/_modules/torchtune/modules/layer_norm.html#Fp32LayerNorm
+    # According to https://pytorch.org/torchtune/stable/_modules/torchtune/modules/layer_norm.html#Fp32LayerNorm, all modules
+    # are in float32!
     dY_row = tl.load(dY + col_offsets, mask = mask, other = 0).to(tl.float32)
     X_row = tl.load(X + col_offsets, mask = mask, other = 0).to(tl.float32)
     W_row = tl.load(W + col_offsets, mask = mask, other = 0).to(tl.float32)

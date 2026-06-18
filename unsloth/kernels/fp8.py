@@ -184,7 +184,10 @@ def _w8a8_block_fp8_matmul(
     BLOCK_SIZE_K: tl.constexpr,
     GROUP_SIZE_M: tl.constexpr,
 ):
-    """Triton block-wise quantized matmul: C = A @ B."""
+    """Triton-accelerated function used to perform linear operations (dot
+    product) on input tensors `A` and `B` with block-wise quantization, and
+    store the result in output tensor `C`.
+    """
 
     pid = tl.program_id(axis = 0)
     num_pid_m = tl.cdiv(M, BLOCK_SIZE_M)
@@ -329,7 +332,7 @@ class FP8BlockQuantLinear(torch.autograd.Function):
     def forward(ctx, X, weight, weight_scale):
         m, n = weight.shape
 
-        # Saved for backward before any transformation
+        # Original scale, saved for backward before any transformation
         original_weight_scale = weight_scale
 
         # Per-tensor quant: expand scalar to (ceil(m/128), ceil(n/128)) block shape
@@ -339,6 +342,7 @@ class FP8BlockQuantLinear(torch.autograd.Function):
             num_blocks_n = triton.cdiv(n, block_size[1])
             weight_scale = weight_scale.expand(num_blocks_m, num_blocks_n).contiguous()
         else:
+            # Block quantization path
             p, q = weight_scale.shape
             block_size = getattr(weight, "block_size", None) or getattr(
                 weight_scale, "block_size", [128, 128]
@@ -347,7 +351,7 @@ class FP8BlockQuantLinear(torch.autograd.Function):
             if triton.cdiv(m, block_size[0]) != p or triton.cdiv(n, block_size[1]) != q:
                 if triton.cdiv(m, block_size[0]) == q and triton.cdiv(n, block_size[1]) == p:
                     weight_scale = weight_scale.T
-                    original_weight_scale = weight_scale
+                    original_weight_scale = weight_scale  # Update for transposed case
                 else:
                     raise ValueError(
                         f"Weight shape {weight.shape} and scales shape {weight_scale.shape} is not compatible with block size {block_size}"
@@ -366,7 +370,7 @@ class FP8BlockQuantLinear(torch.autograd.Function):
             output_dtype = X.dtype,
         )
         ctx.weight = weight
-        ctx.weight_scale = original_weight_scale
+        ctx.weight_scale = original_weight_scale  # Save original for backward
         return output.to(X.dtype)
 
     @staticmethod

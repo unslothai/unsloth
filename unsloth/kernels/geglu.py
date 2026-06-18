@@ -49,6 +49,7 @@ def _exact_forward_kernel(
     f_row = f_row.to(g_row.dtype)  # Exact copy from HF
     h_row = f_row * g_row
 
+    # Store h
     tl.store(h + offsets, h_row, mask = mask)
 
 
@@ -96,13 +97,17 @@ def _exact_backward_kernel(
     e_row = tl.load(e + offsets, mask = mask, other = 0).to(tl.float32)
     g_row = tl.load(g + offsets, mask = mask, other = 0)  # .to(tl.float32)
 
-    # f = 1/2 * e * (1 + erf(1/sqrt(2) * e)); reuse f_partial_row below
+    # Break e_row away for re-use
+    # f = 1/2 * e * (1 + erf(1/sqrt(2) * e))
     f_partial_row = 0.5 * (tl.math.erf(tl.math.rsqrt(2.0) * e_row) + 1.0)
     f_row = f_partial_row * e_row
 
     f_row = f_row.to(DW_row.dtype)
+    # h = f * g
     h_row = f_row * g_row
+    # df = DW * f
     df_row = DW_row * f_row
+    # dg = DW * g
     dg_row = DW_row * g_row
 
     # df/de = 1/2 * (1 + erf(1/sqrt(2) * e)) + 1/sqrt(2*pi) * e * exp(-1/2 * e^2)
@@ -112,6 +117,7 @@ def _exact_backward_kernel(
     de_row = dg_row.to(tl.float32) * df_de
     de_row = de_row.to(DW_row.dtype)
 
+    # Store derivatives in buffers
     tl.store(DW + offsets, h_row, mask = mask)  # h  = f * g
     tl.store(e + offsets, df_row, mask = mask)  # df = DW * f
     tl.store(g + offsets, de_row, mask = mask)  # de
@@ -157,6 +163,7 @@ def _approx_forward_kernel(
     f_row = f_row.to(g_row.dtype)  # Exact copy from HF
     h_row = f_row * g_row
 
+    # Store h
     tl.store(h + offsets, h_row, mask = mask)
 
 
@@ -208,6 +215,7 @@ def _approx_backward_kernel(
     e_row = tl.load(e + offsets, mask = mask, other = 0).to(tl.float32)
     g_row = tl.load(g + offsets, mask = mask, other = 0)  # .to(tl.float32)
 
+    # See https://www.desmos.com/calculator/nqprfoni6x
     s = 0.7978845608028654  # math.sqrt(2 / math.pi)
     a = s * e_row  # a = sqrt(2 / pi) * x
     b = a * 0.044715 * e_row * e_row  # b = a * 0.044715 * x^2
@@ -220,13 +228,17 @@ def _approx_backward_kernel(
     # f = 1/2 * e * (1 + tanh( sqrt(2/pi) * (x + 0.044715 * x^3 ) ))
     f_row = T2 * e_row
     f_row = f_row.to(DW_row.dtype)
+    # h = f * g
     h_row = f_row * g_row
+    # df = DW * f
     df_row = DW_row * f_row
+    # dg = DW * g
     dg_row = DW_row * g_row
 
     de_row = dg_row.to(tl.float32) * df_de
     de_row = de_row.to(DW_row.dtype)
 
+    # Store derivatives in buffers
     tl.store(DW + offsets, h_row, mask = mask)  # h  = f * g
     tl.store(e + offsets, df_row, mask = mask)  # df = DW * f
     tl.store(g + offsets, de_row, mask = mask)  # de

@@ -17,7 +17,7 @@ import triton.language as tl
 import torch
 from .utils import calculate_settings, torch_gpu_device
 
-# signed int32 max is 2**31-1, so num_elements cannot exceed it
+# signed int32 max is 2**31-1 so num_elements cannot exceed 2**31
 NUM_INT32_ELEMENTS = 2**31
 SAFE_INT32_BUFFER_MULTIPLIER = 4
 BLOCK_SIZE = 1024
@@ -37,10 +37,13 @@ def _fg_kernel(e, g, h, n_elements, BLOCK_SIZE: tl.constexpr, LONG_INDEXING: tl.
     e_row = tl.load(e + offsets, mask = mask, other = 0).to(tl.float32)
     g_row = tl.load(g + offsets, mask = mask, other = 0)  # .to(tl.float32)
 
+    # f = e * sigmoid(e)
     f_row = e_row * tl.sigmoid(e_row)  # e_row / (1 + tl.exp(-e_row))
     f_row = f_row.to(g_row.dtype)  # Exact copy from HF
+    # h = f * g
     h_row = f_row * g_row
 
+    # Store h
     tl.store(h + offsets, h_row, mask = mask)
 
 
@@ -84,17 +87,23 @@ def _DWf_DW_dfg_kernel(DW, e, g, n_elements, BLOCK_SIZE: tl.constexpr, LONG_INDE
     e_row = tl.load(e + offsets, mask = mask, other = 0).to(tl.float32)
     g_row = tl.load(g + offsets, mask = mask, other = 0)  # .to(tl.float32)
 
+    # e = e.float()
+    # se = 1.0 / (1.0 + torch.exp(-e))
     se_row = tl.sigmoid(e_row)  # 1.0 / (1.0 + tl.exp(-e_row))
+    # f = (se * e).to(dtype)
     f_row = se_row * e_row
     f_row = f_row.to(DW_row.dtype)
+    # h = f * g
     h_row = f_row * g_row
+    # df = DW * f
     df_row = DW_row * f_row
+    # dg = DW * g
     dg_row = DW_row * g_row
     # de = (dg.float() * se * (1.0 + e * (1.0 - se))).to(dtype)
     de_row = dg_row.to(tl.float32) * se_row * (1.0 + e_row * (1.0 - se_row))
     de_row = de_row.to(DW_row.dtype)
 
-    # Reuse input buffers to store outputs h, df, de
+    # Store derivatives in buffers
     tl.store(DW + offsets, h_row, mask = mask)  # h  = f * g
     tl.store(e + offsets, df_row, mask = mask)  # df = DW * f
     tl.store(g + offsets, de_row, mask = mask)  # de
