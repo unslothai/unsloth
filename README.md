@@ -21,21 +21,27 @@ Unsloth Studio lets you run and train models locally.
 
 ## Fork Notes
 
+*Only tested with a CUDA build on an NVIDIA Blackwell GPU (sm_120) using CUDA Toolkit 13.3 on Windows 11. ROCm/HIP, Metal, and CPU builds are untested, as are other NVIDIA architectures (Ampere/Ada/Hopper).*
+
 ### Setup
 
-- You **must** follow the Advanced Installation. 
-- You will also need to build the [llama-cpp turboquant](https://github.com/TheTom/llama-cpp-turboquant) fork.
-  - Without it, turbo4 will not work and there will likely be other consequenses I have not tested for.
-- After building both, delete Unsloth's llama-cpp binaries and replace them with the turboquant llama-cpp binaries in the default directory: `C:\Users\<user>\.unsloth\llama.cpp\build\bin\Release`.
-- In the future, I'll add TheTom's llamacpp fork into the install scripts.
+Follow the setup from Advanced Installation. Beellama.cpp will automatically build for your machine.
+A few notes:
+- **CUDA:** Run as is
+- **ROCm/HIP:** You may need to enable `UNSLOTH_BEELLAMA_HIP_ROCWMMA_FATTN=1` before running installation
+- **Metal/CPU:** TurboQuant not supported but beellama still works. Recommended to use upstream repo.
 
+Unsloth uses precompiled llamacpp binaries while this fork does not. Expect installation and build times to be ~10-30 minutes.
+
+If beellama.cpp fails to build, you should manually build it. Follow [these](https://github.com/Anbeeld/beellama.cpp/tree/v0.3.2#installation) instructions. For windows, move binaries to `<instal-dir>/llama.cpp/build/bin/Release`. For Linux/mac, move binaries to `<install-dir>/llama.cpp/build/bin`
 ### Additional Notes
 
-TheTom's llama-cpp fork automatically reverts k-cache to q8 if both k and v caches are set to turbo and GQA >= 6. I disabled that by setting `TURBO_AUTO_ASYMMETRIC` to 0. That way, you can make your own determination. Depending on the model, you may run into higher perplexity. In that case, I suggest reverting k cache to q8 manually.
+For CUDA, `GGML_CUDA_FA_HALF_QUANTS` only allows K >= V and V <= 2 tiers below K. For instance, `K=turbo4, V=q8_0/f16` is not supported.
+If you would like to do that, set `UNSLOTH_BEELLAMA_FA_QUANTS=all`. This will likely increase build time significantly.
 
-If you want it to automatically revert when GQA >= 6, navigate to `./studio/backend/core/inference/llama_cpp.py` and remove lines 5319-5329.
+For HIP, setting `UNSLOTH_BEELLAMA_FA_QUANTS=all` may work, but it's untested.
 
-Additionally, memory estimates for turboquant kv-cache are not accurate and default to f16. This means memory estimates will (most likely) be more than what is used.
+Memory estimates for turboquant kv-cache are not accurate and default to f16. This means memory estimates will (most likely) be more than what is used.
 
 *Note: This fork is purposefully minimal to avoid upstream merge conflicts*
 
