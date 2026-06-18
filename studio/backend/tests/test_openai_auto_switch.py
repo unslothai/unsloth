@@ -279,6 +279,7 @@ def test_resolver_failsafe_on_internal_error(monkeypatch):
     # calls resolve_local_gguf without its own guard, so the guard lives here.
     def boom():
         raise RuntimeError("scan blew up")
+
     monkeypatch.setattr(resolver, "_build_index", boom)
     resolver._scan = (0.0, {})
     assert resolver.resolve_local_gguf("unsloth/B-GGUF") is None
