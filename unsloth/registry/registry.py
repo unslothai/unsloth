@@ -11,7 +11,6 @@ class QuantType(Enum):
     BF16 = "bf16"  # only for Deepseek V3
 
 
-# Tags for Hugging Face model paths
 BNB_QUANTIZED_TAG = "bnb-4bit"
 UNSLOTH_DYNAMIC_QUANT_TAG = "unsloth" + "-" + BNB_QUANTIZED_TAG
 GGUF_TAG = "GGUF"
@@ -159,13 +158,12 @@ def _register_models(model_meta: ModelMeta, include_original_model: bool = False
 
     for size in model_sizes:
         for instruct_tag in instruct_tags:
-            # Handle quant types per model size
+            # quant types may vary per model size
             if isinstance(quant_types, dict):
                 _quant_types = quant_types[size]
             else:
                 _quant_types = quant_types
             for quant_type in _quant_types:
-                # NOTE: models registered with org="unsloth" and QUANT_TYPE.NONE are aliases of QUANT_TYPE.UNSLOTH
                 _org = "unsloth"  # quantized versions of the original model
                 register_model(
                     model_info_cls = model_info_cls,
@@ -177,7 +175,7 @@ def _register_models(model_meta: ModelMeta, include_original_model: bool = False
                     quant_type = quant_type,
                     is_multimodal = is_multimodal,
                 )
-            # include original model from releasing organization
+            # original model from the releasing organization
             if include_original_model:
                 register_model(
                     model_info_cls = model_info_cls,

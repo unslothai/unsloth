@@ -100,7 +100,6 @@ def GemmaDecoderLayer_fast_forward(
             device = f"{DEVICE_TYPE_TORCH}:0",
         )
 
-        # Self Attention
         residual = hidden_states
         hidden_states = fast_rms_layernorm_inference_gemma(
             self.input_layernorm, hidden_states, out_weight
@@ -118,7 +117,6 @@ def GemmaDecoderLayer_fast_forward(
         )
         hidden_states += residual
 
-        # Fully Connected
         residual = hidden_states
         hidden_states = fast_rms_layernorm_inference_gemma(
             self.post_attention_layernorm, hidden_states, out_weight
@@ -141,7 +139,6 @@ def GemmaDecoderLayer_fast_forward(
         )
         hidden_states = residual + hidden_states
 
-        # Fully Connected
         residual = hidden_states
         hidden_states = fast_rms_layernorm(self.post_attention_layernorm, hidden_states, gemma = True)
         hidden_states = self.mlp(hidden_states)
@@ -458,7 +455,6 @@ class FastGemmaModel(FastLlamaModel):
             else:
                 param.requires_grad_(False)
 
-        # Patch RMS Layernorm
         for name, module in model.named_modules():
             if isinstance(module, GemmaRMSNorm):
                 # Must be in float32

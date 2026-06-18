@@ -36,13 +36,11 @@ except Exception:
 _XFORMERS_MASK_CACHE_MAXSIZE = 32
 _XFORMERS_MASK_CACHE: OrderedDict[Tuple[Tuple[int, ...], int], Any] = OrderedDict()
 
-# Cache per device for get_packed_info_from_kwargs to avoid repeated D2H sync across layers
+# Per-device caches avoid repeated D2H sync across layers
 _PACKED_INFO_CACHE: dict = {}
 
-# Cache per device for build_sdpa_packed_attention_mask to avoid repeated D2H sync across layers
 _SDPA_MASK_CACHE: dict = {}
 
-# Cache per device for build_xformers_block_causal_mask to avoid repeated D2H sync across layers
 _XFORMERS_BLOCK_MASK_CACHE: dict = {}
 
 
@@ -159,7 +157,7 @@ def enable_sample_packing(
                 lengths = example.get(sequence_lengths_key)
                 if isinstance(lengths, Iterable):
                     seq_lengths.extend(int(length) for length in lengths)
-            # Fallback: infer lengths from tokenized inputs when metadata is absent
+            # fallback: infer lengths from tokenized inputs when metadata absent
             if not seq_lengths:
                 for example in examples:
                     ids = example.get("input_ids")

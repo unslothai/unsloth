@@ -57,11 +57,10 @@ logger = logging.getLogger(__name__)
 
 
 class UnslothVisionDataCollator(_UnslothVisionDataCollatorBase):
-    """
-    Drop-in zoo collator that validates local video paths on every batch
-    (deduped across batches), applying formatting_func first so formatter-made
-    paths are checked too. Raises FileNotFoundError on missing files instead
-    of silently training on empty video tensors (issue #5085).
+    """Drop-in zoo collator that validates local video paths per batch (deduped
+    across batches), applying formatting_func first so formatter-made paths are
+    checked too. Raises FileNotFoundError on missing files instead of silently
+    training on empty video tensors (issue #5085).
     """
 
     __slots__ = ("_checked_video_paths",)
@@ -372,8 +371,7 @@ class UnslothTrainer(SFTTrainer):
         return self.optimizer
 
 
-# From `trl>=0.13.0`, they changed how to pass several params to the trainer
-# We need to patch to make the transition smooth
+# trl>=0.13.0 changed how several params are passed to the trainer; patch for it
 def _resolve_trainer_params(trainer_class, init_fn):
     """Resolve the real named parameters for a trainer __init__.
 
@@ -473,7 +471,6 @@ def _backwards_compatible_trainer(trainer_class, config_class):
             else:
                 config = training_args
 
-            # Reconstruct kwargs for Trainer
             kwargs = trainer_kwargs
             kwargs["args"] = config
         original_init(self, *args, **kwargs)

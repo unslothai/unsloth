@@ -112,7 +112,7 @@ def GraniteAttention_fast_forward(
     cos, sin = position_embeddings
     rope_position_ids = position_ids if position_ids is not None else kwargs.get("position_ids")
     if rope_position_ids is not None:
-        # Useful for LongRoPE
+        # Needed for LongRoPE
         Q, K = fast_rope_embedding(Q, K, cos, sin, rope_position_ids)
     else:
         Q, K = fast_rope_embedding(Q, K, cos, sin)
@@ -122,7 +122,6 @@ def GraniteAttention_fast_forward(
         V = torch.cat([past_key_value[1], V], dim = 2)
     past_key_value = (K, V) if use_cache else None
 
-    # Attention module
     use_varlen = attention_mask is None and seq_info is not None and past_key_value is None
 
     backend = SDPA if attention_mask is not None else select_attention_backend(use_varlen)
@@ -255,7 +254,7 @@ def GraniteDecoderLayer_fast_forward(
 
 from math import sqrt as math_sqrt
 
-KV_CACHE_INCREMENT = 256  # KV Cache update size
+KV_CACHE_INCREMENT = 256
 torch_nn_functional_softmax = torch.nn.functional.softmax
 torch_matmul = torch.matmul
 torch_tanh = torch.tanh
@@ -493,8 +492,7 @@ class GraniteRotaryEmbedding(LlamaRotaryEmbedding):
 
 def patched_init(original_init):
     def new_init(self, *args, **kwargs):
-        # GraniteModel_fast_forward_inference can't reach residual_multiplier/config,
-        # so stash the whole config here to pass it around. See:
+        # Stash config so GraniteModel_fast_forward_inference can reach residual_multiplier. See:
         # https://github.com/huggingface/transformers/blob/e5fd865ebae062b7cf03a81b8c6affeb39f30bec/src/transformers/models/granite/modeling_granite.py#L243
         config = kwargs.get("config", args[0] if args else None)
         if config is not None:
@@ -538,14 +536,13 @@ class FastGraniteModel(FastLlamaModel):
         tokenizer,
         correct_dtype = None,
     ):
-        # Torch.compile fails on embedding matrix??
-        # Workaround randomnly fixes it for torch versions < 2.2
+        # Workaround for torch.compile failing on the embedding matrix (torch < 2.2)
         model.model.embed_tokens = torch.nn.Embedding.from_pretrained(
             model.model.embed_tokens.weight
         )
         model.config.update({"unsloth_version": __version__})
 
-        # We also do this for the lm_head
+        # Same for lm_head
         lm_head = torch.nn.Linear(1, 1, bias = None)
         del lm_head.weight
         lm_head.weight = model.lm_head.weight
@@ -562,8 +559,7 @@ class FastGraniteModel(FastLlamaModel):
             lm_head.out_features = lm_head.weight.shape[0]
             model.lm_head = lm_head
 
-        # Also patch all dtypes - BnB seems to not allocate the correct type?
-        # BnB default dtype seems to be float16!
+        # Patch all dtypes - BnB defaults to float16 instead of the correct type
         correct_dtype = lm_head.weight.dtype
 
         for name, module in model.named_modules():
@@ -572,12 +568,11 @@ class FastGraniteModel(FastLlamaModel):
                 quant_state = weight.quant_state
 
                 if type(quant_state) is list:
-                    # BnB seems to have float16 as default!
-                    module.weight.quant_state[2] = correct_dtype  # Cast to correct dtype
+                    module.weight.quant_state[2] = correct_dtype  # BnB defaults to float16
                 else:
                     # https://github.com/TimDettmers/bitsandbytes/pull/763/files
                     quant_state.dtype = correct_dtype
-            # Downcast RoPE embedding to correct data type
+            # Downcast RoPE embedding to correct dtype
             if name.endswith("rotary_emb") or hasattr(module, "cos_cached"):
                 if hasattr(module, "cos_cached") and (module.cos_cached.dtype != correct_dtype):
                     module.cos_cached = module.cos_cached.to(correct_dtype)
@@ -589,7 +584,6 @@ class FastGraniteModel(FastLlamaModel):
                     module.short_cos_cached = module.short_cos_cached.to(correct_dtype)
                     module.short_sin_cached = module.short_sin_cached.to(correct_dtype)
 
-        # Clear deleted GPU items
         import gc
 
         for _ in range(3):

@@ -6,21 +6,13 @@ import torch.nn.functional as F
 
 
 def permute(X: torch.Tensor, gather_indices: torch.Tensor, topk: int):
-    """
-    Scatters X to a new tensor with shape [total_tokens, hidden_dim] where total_tokens is num_tokens * topk,
-    permuting the tokens according to sorted_token_idx.
+    """Reorder tokens by expert for grouped gemm.
 
-    Helper for grouped gemm where hidden states need be ordered by expert.
-    X: [num_tokens, hidden_dim]
-    sorted_token_idx: [num_tokens * topk]
-    topk: int
-
-    Returns:
-        [total_tokens, hidden_dim]
+    X: [num_tokens, hidden_dim], gather_indices: [num_tokens * topk].
+    Returns [total_tokens, hidden_dim] where total_tokens = num_tokens * topk.
     """
     assert gather_indices.ndim == 1
     X = X.view(-1, X.shape[-1])
-    # Shortcut for topk == 1
     if topk == 1:
         return X[gather_indices]
 
@@ -42,12 +34,8 @@ def calculate_topk(
     pre_act: bool = True,
     post_act: bool = False,
 ):
-    """
-    If post_act is True, then activation function is run AFTER topk
-    If post_act is False, then activation function is run BEFORE topk
-
-    This is to align with triton_bench implementation (post_act) whereas most models use pre_act (e.g. llama4, deepseek)
-    """
+    """Run activation before topk (pre_act, e.g. llama4/deepseek) or after
+    (post_act, aligns with triton_bench)."""
     assert pre_act ^ post_act, "only one of pre_act or post_act can be True"
 
     def _activation(gating_output: torch.Tensor):
@@ -80,21 +68,16 @@ def get_routing_indices(
     num_experts,
     return_scatter_indices: bool = False,
 ):
+    """Returns token_counts_by_expert [num_experts], gather_indices [num_tokens],
+    and optionally scatter_indices [bs*seqlen*top_k] to unpermute back to token order.
     """
-    Returns:
-        token_counts_by_expert: [num_experts]
-        gather_indices: [num_tokens]
-        scatter_indices [Optional] (torch.Tensor):
-            Indices for unpermuting gathered inputs back to token order, shape ``(bs * seqlen * top_k,)``.
-    """
-    # group tokens together by expert indices from 0 to num_experts and pass that to experts forward
     token_counts_by_expert = torch.histc(
         selected_experts.view(-1),
         bins = num_experts,
         min = 0,
         max = num_experts,
     )
-    # token_indices_experts_sorted shape (bs*slen*top_k,)
+    # Sort tokens by expert so each expert gets a contiguous slice. Stable keeps token order within an expert.
     gather_indices = torch.argsort(selected_experts.view(-1), stable = True)
     if return_scatter_indices:
         scatter_indices = gather_indices.argsort()
@@ -109,14 +92,8 @@ def torch_grouped_gemm(
     m_sizes,
     transpose = True,
 ):
-    """
-    X: [M, K] if forward, else [M, N]
-    W: [E, N, K]
-    m_sizes: [E]
-
-    Returns:
-        Y: [M, N] if forward, else [M, K]
-    """
+    """X: [M, K] (fwd) else [M, N]; W: [E, N, K]; m_sizes: [E].
+    Returns Y: [M, N] (fwd) else [M, K]."""
     X = X.view(-1, X.shape[-1])
     M, K = X.shape
 
@@ -136,11 +113,8 @@ def torch_grouped_gemm(
         if m_size > 0:
             m_end = m_start + m_size
 
-            # Extract group input
-            # m_size x K
-            X_g = X[m_start:m_end]
-            # N x K
-            W_g = W[g]
+            X_g = X[m_start:m_end]  # [m_size, K]
+            W_g = W[g]              # [N, K]
 
             # Y_g = X_g @ W_g.T -> [m_size, N]
             W_g = W_g.T if transpose else W_g

@@ -104,12 +104,11 @@ except Exception:
 
 @contextlib.contextmanager
 def suppress_cuda_printf():
-    """Suppress CUDA device-side printf by redirecting stdout/stderr fds to /dev/null.
+    """Suppress CUDA device-side printf by redirecting fds 1/2 to /dev/null.
 
-    CUDA device printf (e.g. CUTLASS "Arch conditional MMA" errors on Blackwell)
-    writes to fd 1 at the C level, bypassing Python's sys.stdout, so the
-    HidePrintMessage filter can't catch it. Redirect fd 1 and 2 at the OS level,
-    sync CUDA, then restore.
+    CUDA device printf (e.g. CUTLASS "Arch conditional MMA" on Blackwell) writes
+    to fd 1 at the C level, bypassing sys.stdout, so HidePrintMessage can't catch
+    it. Redirect fds 1/2 at the OS level, sync CUDA, then restore.
     """
     sys.stdout.flush()
     sys.stderr.flush()
@@ -598,7 +597,7 @@ def patch_ipykernel_hf_xet():
 
 
 def patch_trackio():
-    # Set some environment variables to customize the Trackio dashboard for experiment tracking
+    # Customize the Trackio dashboard via environment variables
     # See https://github.com/unslothai/notebooks/pull/110
     os.environ["TRACKIO_LOGO_LIGHT_URL"] = (
         "https://raw.githubusercontent.com/unslothai/unsloth/main/images/unsloth%20logo%20black%20text.png"
@@ -643,8 +642,8 @@ def check_fbgemm_gpu_version():
 
 
 def patch_enable_input_require_grads():
-    """Patch PreTrainedModel.enable_input_require_grads to tolerate vision models
-    that raise NotImplementedError from get_input_embeddings()."""
+    """Patch enable_input_require_grads to tolerate vision models that raise
+    NotImplementedError from get_input_embeddings()."""
     import inspect
     from transformers import PreTrainedModel
 
@@ -699,11 +698,10 @@ def patch_enable_input_require_grads():
 
 def patch_unsafe_trainer_rng_load():
     """Harden Trainer._load_rng_state against CVE-2026-1839 (RCE from a malicious
-    rng_state.pth on resume). Hardens only the rng torch.load, via a thread-local
-    flag, so it forces weights_only=True (defeats TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD)
-    and refuses torch < 2.6 (CVE-2025-32434), while rng-less resumes and unrelated
-    torch.load calls are untouched. No-op if transformers is absent or already
-    guards the load (>= 5.0.0rc3)."""
+    rng_state.pth on resume). Via a thread-local flag, hardens only the rng
+    torch.load: forces weights_only=True (defeats TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD)
+    and refuses torch < 2.6 (CVE-2025-32434); other torch.load calls untouched.
+    No-op if transformers is absent or already guards the load (>= 5.0.0rc3)."""
     if importlib.util.find_spec("transformers") is None:
         return
     try:
@@ -767,11 +765,10 @@ def patch_unsafe_trainer_rng_load():
 
 
 def _is_custom_torch_build(raw_version_str):
-    """Check if a raw version string indicates a custom or source build.
+    """True if a raw version string indicates a custom/source build.
 
-    Operates on the raw importlib_version() string (our Version() strips local
-    identifiers). Standard releases use +cu124/+rocm6.3/+cpu/+xpu; custom builds
-    use +gitXXXX or other suffixes.
+    Operates on the raw importlib_version() string. Standard releases use
+    +cu124/+rocm6.3/+cpu/+xpu; custom builds use +gitXXXX or other suffixes.
     """
     if "+" not in raw_version_str:
         return False
@@ -785,13 +782,11 @@ def _is_custom_torch_build(raw_version_str):
 
 
 def _infer_required_torchvision(torch_major, torch_minor):
-    """Infer the minimum required torchvision minor version from torch version.
+    """Min required torchvision (tv_major, tv_minor) from torch version, or None.
 
-    The torch -> torchvision minor version mapping follows a consistent formula:
-      torch 1.x  ->  torchvision 0.(x + 1)   (verified: torch 1.7 through 1.13)
-      torch 2.x  ->  torchvision 0.(x + 15)  (verified: torch 2.0 through 2.9)
-
-    Returns (tv_major, tv_minor) or None if the major version is unrecognized.
+    Mapping formula:
+      torch 1.x -> torchvision 0.(x + 1)   (verified: torch 1.7 - 1.13)
+      torch 2.x -> torchvision 0.(x + 15)  (verified: torch 2.0 - 2.9)
     """
     if torch_major == 1 and torch_minor >= 7:
         return (0, torch_minor + 1)
@@ -1010,19 +1005,13 @@ def fix_huggingface_hub():
 
 
 def fix_triton_compiled_kernel_missing_attrs():
-    """
-    Triton 3.6.0+ removed direct `num_ctas` and `cluster_dims` attributes from
-    CompiledKernel, but torch 2.9.x Inductor still expects them in
-    torch/_inductor/runtime/triton_heuristics.py make_launcher() (line ~1757).
+    """Re-add num_ctas/cluster_dims to triton CompiledKernel for torch.compile.
 
-    The scope dict eagerly evaluates:
-        binary.metadata.num_ctas, *binary.metadata.cluster_dims
-    when hasattr(binary, "metadata") is True, but metadata lacks cluster_dims.
-    This crashes before reaching the new launch path that doesn't need cta_args.
-
-    Upstream fix: pytorch/pytorch@97bd4db added hasattr guards.
-    We monkey-patch CompiledKernel.__init__ to inject the missing attributes
-    so the older hasattr(binary, "num_ctas") branch succeeds instead.
+    Triton 3.6.0+ dropped the direct `num_ctas`/`cluster_dims` attrs, but torch
+    2.9.x Inductor's make_launcher() still eagerly reads
+    binary.metadata.num_ctas/*cluster_dims (metadata lacks cluster_dims), crashing
+    before the new launch path. Upstream fix pytorch/pytorch@97bd4db added hasattr
+    guards; we instead patch CompiledKernel.__init__ to inject the missing attrs.
     """
     try:
         import torch
@@ -1058,16 +1047,11 @@ def fix_triton_compiled_kernel_missing_attrs():
 
 
 def patch_trunc_normal_precision_issue():
-    """
-    Patch torch.nn.init.trunc_normal_ for low precision tensors to run init in fp32.
+    """Patch torch.nn.init.trunc_normal_ to run fp16/bf16 init in fp32.
 
-    torch.nn.init.trunc_normal_ can saturate at truncation bounds in fp16/bf16 on
-    some versions/backends. This was observed in TorchTitan investigations where
-    low-precision truncation produced boundary-heavy initialization behavior:
-    https://github.com/pytorch/torchtitan/pull/2342
-
-    To avoid that failure mode, initialize into a temporary fp32 tensor, then copy
-    back to the original dtype.
+    trunc_normal_ can saturate at truncation bounds in fp16/bf16 on some
+    versions/backends (https://github.com/pytorch/torchtitan/pull/2342). Avoid
+    it by initializing into a temporary fp32 tensor, then copying back.
     """
     try:
         import torch
@@ -1138,16 +1122,11 @@ def patch_trunc_normal_precision_issue():
 
 
 def check_vllm_torch_sm100_compatibility():
-    """
-    Check for incompatible vLLM + torch < 2.9.0 + SM100 (Blackwell) combination.
+    """Raise a helpful error for the vLLM + torch < 2.9.0 + SM100 combination.
 
-    vLLM's distributed module (device_communicators) crashes with std::bad_alloc
-    when imported on SM100 GPUs (B200/B100) with torch < 2.9.0. This is due to
-    C++ code in vLLM's NCCL/distributed layer being incompatible with older
-    torch versions on the newer Blackwell architecture.
-
-    This check runs early (before vLLM import) to provide a helpful error message
-    instead of a cryptic std::bad_alloc crash.
+    vLLM's distributed module crashes with std::bad_alloc when imported on SM100
+    GPUs (B200/B100) with torch < 2.9.0. Runs early (before vLLM import) to give a
+    clear message instead of the cryptic crash.
     """
     # vLLM installed? (without importing it)
     if importlib.util.find_spec("vllm") is None:
@@ -1202,14 +1181,11 @@ def check_vllm_torch_sm100_compatibility():
 
 
 def fix_vllm_pdl_blackwell():
-    """
-    Fix vLLM PDL (Programmatic Dependent Launch) bug on Blackwell GPUs (SM100).
+    """Fix vLLM PDL (Programmatic Dependent Launch) bug on SM100 (Blackwell).
 
-    The issue: vLLM's LoRA Triton kernels use tl.extra.cuda.gdc_wait() for PDL
-    optimization on SM90+ GPUs. This fails on SM100 (B200/B100) during CUDA graph
-    capture because Triton's pipeliner can't handle gdc_wait in complex kernels.
-
-    See: https://github.com/vllm-project/vllm/issues/30872
+    vLLM's LoRA Triton kernels use tl.extra.cuda.gdc_wait() for PDL on SM90+, but
+    it fails on SM100 (B200/B100) during CUDA graph capture (Triton's pipeliner
+    can't handle gdc_wait). See https://github.com/vllm-project/vllm/issues/30872
     """
     if importlib.util.find_spec("vllm") is None:
         return
@@ -1327,12 +1303,9 @@ def fix_vllm_pdl_blackwell():
 def patch_openspiel_env_async():
     """Apply nest_asyncio for OpenEnv EnvClient async compatibility.
 
-    OpenEnv's EnvClient uses async methods (reset/step). In Jupyter notebooks
-    these work via top-level await, but converted scripts need
-    asyncio.get_event_loop().run_until_complete() wrappers. Applying nest_asyncio
-    ensures nested event loop calls work in all contexts without replacing the
-    original async methods (which would break scripts that already have their own
-    sync wrappers).
+    OpenEnv's EnvClient uses async reset/step. nest_asyncio makes nested event
+    loop calls work in both notebooks and converted scripts without replacing the
+    original async methods (which would break existing sync wrappers).
     """
     try:
         import inspect
@@ -1365,10 +1338,9 @@ def patch_torchcodec_audio_decoder():
 def disable_torchcodec_if_broken():
     """Make broken torchcodec behave as if uninstalled (#5446).
 
-    transformers and datasets both detect torchcodec via find_spec, which
-    returns True even when the native libs cannot dlopen. We flip their
-    flags and seat a sys.modules sentinel so downstream imports fall through
-    their existing except ImportError handlers cleanly.
+    transformers and datasets detect torchcodec via find_spec, which returns True
+    even when the native libs can't dlopen. We flip their flags and seat a
+    sys.modules sentinel so downstream imports hit their except ImportError paths.
     """
     try:
         import importlib.util
@@ -1421,18 +1393,11 @@ def disable_torchcodec_if_broken():
 def disable_broken_wandb():
     """Disable wandb if it's installed but cannot actually import.
 
-    wandb can fail to import when there's a protobuf version mismatch
-    (e.g., wandb < 0.19.11 with protobuf >= 6.0). This causes cascading
-    import failures through trl -> transformers/accelerate -> wandb that
-    crash unsloth's import chain.
-
-    There are two separate is_wandb_available() functions used by trl:
-      - transformers.integrations.integration_utils.is_wandb_available
-        (used by most trl trainers)
-      - accelerate.utils.imports.is_wandb_available
-        (used by trl/trainer/callbacks.py)
-
-    Both must be patched to fully prevent broken wandb imports.
+    wandb can fail to import on a protobuf mismatch (e.g. wandb < 0.19.11 with
+    protobuf >= 6.0), cascading through trl -> transformers/accelerate -> wandb.
+    trl uses two separate is_wandb_available() functions
+    (transformers.integrations.integration_utils and accelerate.utils.imports);
+    both must be patched.
     """
     if importlib.util.find_spec("wandb") is None:
         return  # wandb not installed, nothing to do
@@ -1545,9 +1510,9 @@ def _install_transformers_conversion_mapping_stub():
 def _install_transformers_core_model_loading_stub():
     """Stub the 8 symbols peft 0.19.x imports from this module at top level.
 
-    ``Concatenate`` and ``ConversionOps`` MUST be real classes (peft
-    subclasses them at module top); the rest only appear in runtime
-    ``isinstance`` / construction calls gated behind ``is_transformers_ge_v5``."""
+    ``Concatenate``/``ConversionOps`` MUST be real classes (peft subclasses them
+    at module top); the rest only appear in runtime calls gated behind
+    ``is_transformers_ge_v5``."""
     name = "transformers.core_model_loading"
     existing = sys.modules.get(name)
     if existing is not None and getattr(existing, _UNSLOTH_STUB_SENTINEL, False):
@@ -1636,15 +1601,11 @@ def _install_transformers_core_model_loading_stub():
 def fix_peft_transformers_weight_conversion_import():
     """Make ``from peft.utils import transformers_weight_conversion`` import
     cleanly on (peft 0.19.x, transformers 4.x) by stubbing the two missing
-    transformers-v5 submodules. See header block above for details.
+    transformers-v5 submodules (see header block above).
 
-    Must run BEFORE ``patch_peft_weight_converter_compatibility`` -- that
-    function's bare ``except (ImportError, AttributeError): return`` would
-    otherwise silently no-op.
-
-    No-op if peft / transformers missing, or if the peft module already
-    imports cleanly. Idempotent and strictly additive (never overwrites a
-    real ``transformers.conversion_mapping`` / ``core_model_loading``).
+    Must run BEFORE ``patch_peft_weight_converter_compatibility``, whose bare
+    ``except (ImportError, AttributeError): return`` would otherwise silently
+    no-op. Idempotent and strictly additive (never overwrites real submodules).
 
     Returns True if patched, False if no action needed, None if peft absent."""
     if importlib.util.find_spec("peft") is None:
@@ -2601,11 +2562,10 @@ def _disable_transformers_causal_conv1d():
 
 
 def disable_broken_causal_conv1d():
-    """Disable causal_conv1d dynamically when its shared library is ABI-broken.
+    """Disable causal_conv1d when its shared library is ABI-broken.
 
-    This mirrors Unsloth's FlashAttention fallback behavior: if importing causal_conv1d
-    fails with a known binary symbol error, we disable it at startup so model imports do
-    not hard-fail.
+    Mirrors the FlashAttention fallback: if import fails with a known binary
+    symbol error, disable it at startup so model imports don't hard-fail.
     """
     global CAUSAL_CONV1D_BROKEN
     if CAUSAL_CONV1D_BROKEN:
@@ -2684,16 +2644,13 @@ def _detect_installed_bnb_rocm_version():
 def maybe_set_windows_rocm_bnb_version():
     """Pin ``BNB_ROCM_VERSION`` from the installed wheel on Windows + ROCm torch.
 
-    AMD's Windows wheel ships one ``libbitsandbytes_rocm<NN>.dll`` whose
-    suffix can disagree with ``torch.version.hip`` (HIP 7.13 vs rocm72.dll),
-    breaking the native 4-bit/8-bit paths. Pin the installed suffix before
-    bitsandbytes is first imported.
+    AMD's Windows wheel ships one ``libbitsandbytes_rocm<NN>.dll`` whose suffix
+    can disagree with ``torch.version.hip`` (HIP 7.13 vs rocm72.dll), breaking the
+    native 4/8-bit paths; pin the installed suffix before bitsandbytes is imported.
 
-    No-op unless ALL of: Windows, a real HIP torch build (env hints like
-    HIP_PATH do not count), a ROCm DLL installed, and no explicit user value.
-    Linux is untouched. Values seeded by Studio's venv sitecustomize.py
-    (marked ``UNSLOTH_BNB_ROCM_VERSION_SOURCE=sitecustomize``) are
-    redetectable defaults, not overrides; ``UNSLOTH_SKIP_BNB_ROCM_VERSION=1``
+    No-op unless ALL of: Windows, a real HIP torch build (env hints don't count),
+    a ROCm DLL installed, and no explicit user value. sitecustomize-seeded values
+    are redetectable defaults, not overrides; ``UNSLOTH_SKIP_BNB_ROCM_VERSION=1``
     opts out and drops a seeded default. Returns the value set, else None.
     """
     if sys.platform != "win32":
@@ -2725,13 +2682,11 @@ def maybe_set_windows_rocm_bnb_version():
 
 
 def patch_accelerate_recursively_apply():
-    """
-    Make Accelerate's recursive utilities tolerate Unsloth's EmptyLogits
-    sentinel. recursively_apply returns the sentinel unchanged instead of
-    raising TypeError, and find_device skips it while still finding real
-    tensors, falling back to PartialState().device only for sentinel-only
-    payloads. Both wrappers are idempotent and are propagated to every
-    already imported accelerate namespace.
+    """Make Accelerate's recursive utilities tolerate Unsloth's EmptyLogits
+    sentinel: recursively_apply returns it unchanged (no TypeError), and
+    find_device skips it while still finding real tensors, falling back to
+    PartialState().device only for sentinel-only payloads. Both wrappers are
+    idempotent and propagated to every already-imported accelerate namespace.
     """
     try:
         import accelerate.utils.operations as acc_ops

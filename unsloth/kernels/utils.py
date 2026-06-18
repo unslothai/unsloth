@@ -164,8 +164,7 @@ elif DEVICE_TYPE == "mlx":
 elif hasattr(torch._C, "_cuda_getCurrentRawStream"):
     _gpu_getCurrentRawStream = torch._C._cuda_getCurrentRawStream
 else:
-    # CPU-only torch wheel (no compiled CUDA backend). _get_tensor_stream
-    # is only invoked during real GPU work, so a no-op binding is safe.
+    # CPU-only torch wheel: _get_tensor_stream only runs during real GPU work, so no-op is safe.
     def _gpu_getCurrentRawStream(_index = 0):
         return 0
 
@@ -177,16 +176,13 @@ def _get_tensor_stream(tensor: torch_Tensor) -> c_void_p:
     return c_void_p(_gpu_getCurrentRawStream(tensor.device.index))
 
 
-# Get array of CUDA streams and other buffers
 global CUDA_STREAMS
 global XPU_STREAMS
 global WEIGHT_BUFFERS
 global ABSMAX_BUFFERS
 
-# DEVICE_COUNT == 0 = no visible accelerator (e.g. CPU-only CI runner).
-# The consumer functions below only index these arrays during real GPU
-# work, so empty containers are safe -- they just need to be defined so
-# the module imports cleanly.
+# DEVICE_COUNT == 0 (CPU-only): empty containers, only indexed during real GPU
+# work, so they just need to exist for the module to import cleanly.
 if DEVICE_TYPE == "xpu":
     if DEVICE_COUNT > 0:
         _XPU_STREAMS = {
@@ -240,8 +236,8 @@ cdequantize_blockwise_fp16_nf4 = bnb.functional.lib.cdequantize_blockwise_fp16_n
 cdequantize_blockwise_bf16_nf4 = bnb.functional.lib.cdequantize_blockwise_bf16_nf4
 
 if DEVICE_TYPE == "xpu":
+    # xpu inference gemv, see:
     # https://github.com/bitsandbytes-foundation/bitsandbytes/blob/c3b8de268fdb55a88f92feada23fc811a1e6877a/bitsandbytes/backends/xpu/ops.py#L115
-    # for xpu, inference gemv using above link
     cgemm_4bit_inference_naive_fp16 = bnb.functional.lib.cgemv_4bit_inference_fp16
     cgemm_4bit_inference_naive_bf16 = bnb.functional.lib.cgemv_4bit_inference_bf16
 else:
@@ -263,7 +259,7 @@ torch_float16 = torch.float16
 torch_bfloat16 = torch.bfloat16
 
 
-# Check whether torchao can be imported to get Float8Tensor
+# Float8Tensor from torchao if available
 if importlib.util.find_spec("torchao") is not None:
     try:
         from torchao.quantization import Float8Tensor
@@ -292,7 +288,7 @@ def get_lora_parameters(proj):
     )  # (proj.base_layer if hasattr(proj, "base_layer") else proj)
     W = base_layer.weight
 
-    # Optionally apply fake quantization to base layer weights for QAT
+    # QAT: fake-quantize base layer weights
     if hasattr(base_layer, "weight_fake_quantizer"):
         weight_fake_quantizer = getattr(base_layer, "weight_fake_quantizer", None)
         if weight_fake_quantizer is not None:
@@ -306,7 +302,7 @@ def get_lora_parameters(proj):
             W_quant = getattr(base_layer, "weight_scale", None)
 
     if getattr(base_layer, "quant_method", None) == "fp8":
-        # we need to somehow store and pass this information :)
+        # Stash fp8 block_size on W/W_quant to pass downstream
         W.block_size = getattr(base_layer, "block_size", [128, 128])
         W_quant.block_size = W.block_size
 
@@ -319,7 +315,7 @@ def get_lora_parameters(proj):
         adapter = getattr(proj, "active_adapter", ("default"))
     adapter = adapter[0]
 
-    # Optionally apply fake quantization to lora weights for QAT
+    # QAT: fake-quantize lora weights
     lora_A_linear = proj.lora_A[adapter]
     lora_B_linear = proj.lora_B[adapter]
     A = lora_A_linear.weight
@@ -361,7 +357,7 @@ def get_lora_parameters_bias(proj):
         return W, W_quant, None, None, None, base_layer.bias
 
     if getattr(base_layer, "quant_method", None) == "fp8":
-        # we need to somehow store and pass this information :)
+        # Stash fp8 block_size on W/W_quant to pass downstream
         W.block_size = getattr(base_layer, "block_size", [128, 128])
         W_quant.block_size = W.block_size
 
@@ -431,9 +427,8 @@ if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
         XPU_STREAM = XPU_STREAMS[device_index]
 
         n_elements_absmax = absmax.numel()
-        # Create weight matrix
         if use_global_buffer:
-            # Use same buffers for faster inference
+            # Reuse buffers for faster inference
             size = shape[0] * shape[1]
             global WEIGHT_BUFFERS
             global ABSMAX_BUFFERS
@@ -484,7 +479,6 @@ if DEVICE_TYPE == "xpu" and HAS_XPU_STREAM:
             )
             out_absmax += offset
 
-            # Dequantize W
             fx = (
                 cdequantize_blockwise_fp16_nf4
                 if dtype == torch_float16
@@ -544,9 +538,8 @@ elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
 
         n_elements_absmax = absmax.numel()
 
-        # Create weight matrix
         if use_global_buffer:
-            # Use same buffers for faster inference
+            # Reuse buffers for faster inference
             size = shape[0] * shape[1]
             global WEIGHT_BUFFERS
             global ABSMAX_BUFFERS
@@ -598,7 +591,6 @@ elif DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM:
             )
             out_absmax += offset
 
-            # Dequantize W
             fx = (
                 cdequantize_blockwise_fp16_nf4
                 if dtype == torch_float16
@@ -656,7 +648,6 @@ else:
         n_elements_absmax = absmax.numel()
         device = W.device
 
-        # Create weight matrix
         if out is None:
             out = torch_empty(shape, dtype = dtype, device = device, requires_grad = False)
         else:
@@ -666,7 +657,6 @@ else:
             n_elements_absmax, dtype = torch_float32, device = device, requires_grad = False
         )
 
-        # Do dequantization
         ptr_out_absmax = get_ptr(out_absmax)
         cdequantize_blockwise_fp32(
             get_ptr(code2),
@@ -1040,7 +1030,6 @@ def fast_linear_forward(
         W = fast_dequantize(W.t(), W_quant, use_global_buffer = True)
         out = torch_matmul(X, W, out = out)
 
-    # Add in LoRA weights
     if lora_A is not None:
         out_dim = out.shape[2]
         dtype = X.dtype
@@ -1101,7 +1090,6 @@ def matmul_lora(
         del W
 
     if A is not None:
-        # LoRA is enabled
         A, B = A.t(), B.t()
         XA = torch_matmul(X, A.to(dtype))
         out.addmm_(XA, B.to(dtype), alpha = s)

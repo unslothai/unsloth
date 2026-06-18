@@ -120,7 +120,6 @@ os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
 from importlib.metadata import version as importlib_version
 from importlib.metadata import PackageNotFoundError
 
-# Check for unsloth_zoo
 try:
     unsloth_zoo_version = importlib_version("unsloth_zoo")
     if Version(unsloth_zoo_version) < Version("2026.5.2"):
@@ -145,7 +144,7 @@ except:
     raise
 del PackageNotFoundError, importlib_version
 
-# Try importing PyTorch and check version
+# Try importing PyTorch
 try:
     import torch
 except ModuleNotFoundError:

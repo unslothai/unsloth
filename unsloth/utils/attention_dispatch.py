@@ -53,12 +53,10 @@ XFORMERS_BLOCK_DIAG_CLS = xformers.attn_bias.BlockDiagonalCausalMask if HAS_XFOR
 
 @dataclass
 class AttentionConfig:
-    """
-    Per-layer attention metadata.
+    """Per-layer attention metadata.
 
-    NOTE(djsaunde): Constructed on every forward pass (not once per layer) since
-        it can be invalid across passes (e.g. switching training/inference). Kept
-        separate from AttentionContext to group params.
+    NOTE(djsaunde): Rebuilt every forward pass (not once per layer) since it can
+    go stale across passes (e.g. switching training/inference).
     """
 
     backend: str
@@ -102,13 +100,11 @@ def select_attention_backend(use_varlen: bool = False) -> str:
 def run_attention(
     *, config: AttentionConfig, context: AttentionContext, Q: Tensor, K: Tensor, V: Tensor
 ) -> Tensor:
-    """
-    Run attention using config / context info.
+    """Run attention using config / context info.
 
-    Backend priority (speed): FlashAttention if installed (varlen for packed
-    inputs with `seq_info`, else dense), then xFormers, then SDPA as fallback.
-    Varlen flash is preferred for packed batches as it avoids padding; xFormers
-    and SDPA handle packing via a block-diagonal mask.
+    Backend priority (speed): FlashAttention (varlen for packed inputs with
+    `seq_info`, else dense), then xFormers, then SDPA. Varlen flash avoids
+    padding for packed batches; xFormers and SDPA pack via a block-diagonal mask.
     """
 
     backend = config.backend
@@ -240,7 +236,6 @@ def run_attention(
                     if local_mask.dtype == torch.bool:
                         key_keep = local_mask
                     else:
-                        # tokenizer attention_mask is typically int 0/1
                         key_keep = local_mask != 0
 
                     past_len = k_len_local - q_len_local  # works for prefill (0) and decode
@@ -260,7 +255,7 @@ def run_attention(
 
                 elif local_mask.dim() == 4:
                     if local_mask.dtype != torch.bool:
-                        # Use boolean keep masks for better SDPA stability.
+                        # boolean keep masks are more stable in SDPA
                         local_mask = local_mask.eq(0)
                 else:
                     raise ValueError(f"Unsupported SDPA attention_mask rank: {local_mask.dim()}")

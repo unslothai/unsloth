@@ -24,7 +24,6 @@ class DeepseekR1ModelInfo(ModelInfo):
         return super().construct_model_name(base_name, version, size, quant_type, instruct_tag, key)
 
 
-# Deepseek V3 Model Meta
 DeepseekV3Meta = ModelMeta(
     org = "deepseek-ai",
     base_name = "DeepSeek",
@@ -80,7 +79,6 @@ DeepseekR1DistillLlamaMeta = ModelMeta(
     quant_types = {"8": [QuantType.UNSLOTH, QuantType.GGUF], "70": [QuantType.GGUF]},
 )
 
-# Deepseek R1 Distill Qwen Model Meta
 DeepseekR1DistillQwenMeta = ModelMeta(
     org = "deepseek-ai",
     base_name = "DeepSeek-R1-Distill",
@@ -164,7 +162,6 @@ def _list_deepseek_r1_distill_models():
     for model in models:
         model_id = model.id
         model_name = model_id.split("/")[-1]
-        # parse out only the version
         version = model_name.removeprefix("DeepSeek-R1-Distill-")
         distill_models.append(version)
 

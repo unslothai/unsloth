@@ -11,15 +11,10 @@ from .autotuning import (
 )
 
 
-#
-# PERMUTE_X -> permute tokens so that they are ordered by expert
-# PERMUTE_Y -> permute output so that they are ordered by token
-# These are effectively the same thing: the former loads in permuted order, the latter stores in permuted order => we only need to define the permutation indices once
-# In the former, we use these row indices when loading X
-# For the latter, we use these row indices when storing Y
-# FUSE_MUL -> multiply routed outputs by their respective weights
-# topk_weights are in token order
-# Only account for the case when X is in expert order and we are permuting Y when fusing mul -- this precondition is checked in the interface
+# PERMUTE_X -> permute X to expert order on load; PERMUTE_Y -> permute Y to token
+# order on store. Same permutation indices either way (load vs store).
+# FUSE_MUL -> multiply routed outputs by topk_weights (token order).
+# Fusing mul assumes X in expert order while permuting Y -- checked in the interface.
 @triton.jit
 def _grouped_gemm_forward_kernel(
     x_ptr,
@@ -61,10 +56,8 @@ def _grouped_gemm_forward_kernel(
     tidx = tl.program_id(0)
     output_dtype: tl.dtype = y_ptr.dtype.element_ty
 
-    # Create TMA descriptors for loading sorted tokens
-    # When using TMA load, we don't permute_x, so shape should be [TOTAL_TOKENS, K]
-    # Also, we are defining a single global descriptor with single block shape
-    # Need to check that this does not result in errors when crossing expert boundaries
+    # TMA load implies no permute_x, so descriptor shape is [TOTAL_TOKENS, K].
+    # Single global descriptor; may need checking across expert boundaries.
     if USE_TMA_LOAD_X:
         x_desc = tl.make_tensor_descriptor(
             x_ptr,
@@ -98,7 +91,7 @@ def _grouped_gemm_forward_kernel(
             num_n_tiles = tl.cdiv(N, BLOCK_SIZE_N)
             num_tiles_per_expert = num_m_tiles * num_n_tiles
 
-            # Need to create tma_store within loop since we need to predicate stores based on m_size
+            # tma_store must be created in-loop to predicate stores on m_size.
             if USE_TMA_STORE:
                 y_desc = tl.make_tensor_descriptor(
                     y_ptr,  # + m_start * N,
@@ -107,16 +100,14 @@ def _grouped_gemm_forward_kernel(
                     block_shape = [BLOCK_SIZE_M, BLOCK_SIZE_N],
                 )
 
-            # Process tiles for this expert
             while tidx >= processed_tiles and tidx < processed_tiles + num_tiles_per_expert:
                 tile_idx = tidx - processed_tiles
 
-                # Check if L2 cache re-use for this order is optimal
+                # [TODO] Check if this tile order gives optimal L2 reuse.
                 tile_m_idx = tile_idx % num_m_tiles
                 tile_n_idx = tile_idx // num_m_tiles
 
                 if SHOULD_PERMUTE_OR_FUSE:
-                    # These will be used for loading and storing in permuted order
                     gather_offsets = tile_m_idx * BLOCK_SIZE_M + m_block_range
                     indices_to_gather = m_start + tl.max_contiguous(
                         tl.multiple_of(gather_offsets % m_size, BLOCK_SIZE_M),
@@ -128,26 +119,23 @@ def _grouped_gemm_forward_kernel(
                     )
                     expert_token_offsets = expert_token_idx[:, None]
 
-                    # Masks for permuted load and store
-
                     row_mask = gather_offsets < m_size
                     row_mask = row_mask[:, None]
 
                     # row_mask = indices_to_gather < m_end
                     # row_mask = row_mask[:, None]
 
-                # We only take into account the following two cases: (PERMUTE_X and NOT PERMUTE_Y) and (NOT PERMUTE_X and PERMUTE_Y)
-                # Hence, we can make the following simplifying assumptions when loading and storing
-                # Note the different strides between the two cases: the offsets for loading and storing are flipped and the strides must also be adjusted
+                # Only two cases supported: (PERMUTE_X, not PERMUTE_Y) and (not PERMUTE_X, PERMUTE_Y).
+                # Between them the load/store offsets and strides are flipped.
                 if PERMUTE_X:
                     load_idx = (
                         (expert_token_offsets // TOPK) * K
-                    )  # Permute on load from token -> expert order, divide by TOPK to index from original number of tokens
-                    store_idx = indices_to_gather[:, None] * N  # Store in contiguous order
+                    )  # token -> expert order; //TOPK indexes the original tokens
+                    store_idx = indices_to_gather[:, None] * N  # contiguous store
                 else:
                     off_am = tile_m_idx * BLOCK_SIZE_M
                     if not PERMUTE_Y:
-                        # These will already be computed if permuting y
+                        # Already computed above when permuting y.
                         offs_am = off_am + m_block_range
                         row_mask = offs_am[:, None] < m_size
                         row_idx = m_start + offs_am[:, None]
@@ -166,10 +154,8 @@ def _grouped_gemm_forward_kernel(
                         expert_token_offsets * N
                     )  # Permute on store from expert -> token order
 
-                # We always load topk weights in expert order
-                # In the pre-multiplication case, we multiply permuted hidden states by weights before the first gemm
-                # In the post-multiplication case, we multiply permuted hidden states by weights after the second gemm
-                # In either case, the hidden states are grouped by expert, so we always permute on load of topk weights
+                # Hidden states are grouped by expert, so topk weights are always loaded in expert order
+                # (pre-mul: before first gemm; post-mul: after second gemm).
                 if SHOULD_FUSE_MUL:
                     topk_load_idx = expert_token_offsets
 
@@ -194,7 +180,6 @@ def _grouped_gemm_forward_kernel(
                         x = x_desc.load([m_start + off_am, k_offset])
 
                     if FUSE_MUL_PRE:
-                        # Check for correct broadcasting
                         topk_weights = tl.load(topk_weights_ptr + topk_load_idx, mask = row_mask)
                         x *= topk_weights.to(x.dtype)
 
@@ -218,7 +203,6 @@ def _grouped_gemm_forward_kernel(
                 # NOTE: order of fusing multiplication is important
                 # Fusing before accumulator dtype conversion results in numerical diffs
                 if FUSE_MUL_POST:
-                    # Check for correct broadcasting
                     topk_weights = tl.load(topk_weights_ptr + topk_load_idx, mask = row_mask)
                     y *= topk_weights.to(output_dtype)
 

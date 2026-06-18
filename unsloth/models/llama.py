@@ -158,9 +158,8 @@ def _offload_frozen_module_for_training(
 ) -> None:
     """Move the trainable copy to ``device_type`` and offload the frozen original.
 
-    float16 is promoted to float32 for GPU compatibility (e.g. Tesla T4).
-    ``offload_device`` currently only supports "cpu"; None leaves the frozen
-    module in place. Modifies ``module`` in-place.
+    float16 is promoted to float32 (Tesla T4). ``offload_device`` only supports
+    "cpu"; None leaves the frozen module in place. Modifies ``module`` in-place.
     See https://github.com/unslothai/unsloth/pull/1200 (Tesla T4 float32).
     """
     if not hasattr(module, "modules_to_save"):
@@ -168,8 +167,7 @@ def _offload_frozen_module_for_training(
 
     new_dtype = module.modules_to_save.default.weight.dtype
     if new_dtype == torch.float16:
-        # See https://github.com/unslothai/unsloth/pull/1200
-        # Tesla T4 must use float32 and not float16
+        # Tesla T4 must use float32 not float16. See unslothai/unsloth#1200
         new_dtype = torch.float32
 
     module.modules_to_save.default.to(device = device_type, dtype = new_dtype, non_blocking = True)
@@ -333,7 +331,6 @@ def _fast_prepare_inputs_for_generation(
 
 
 def fix_prepare_inputs_for_generation(module):
-    # Fix prepare_inputs_for_generation
     if hasattr(module, "prepare_inputs_for_generation"):
         module.prepare_inputs_for_generation = _fast_prepare_inputs_for_generation
 
@@ -350,33 +347,12 @@ def LlamaAttention_fast_forward_inference(
     attention_mask = None,
     rotary_seq_len = None,
 ):
-    """
+    """Fast inference using KV cache.
     https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L406
-    Fast inference using KV cache.
-    QK^T can be computed in 4 chunks
 
-    [Q, q] @ [K, k].T where q, k are the new tokens.
-    [QK^T, Qk^T]
-    [qK^T, qk^T]
-
-    Since the attention mask wipes Qk^T, we just get
-    [QK^T,    0]
-    [qK^T, qk^T]
-
-    Since softmax is row-wise, we get
-    softmax([QK^T,    0])
-    softmax([qK^T, qk^T])
-
-    We then multiply by   [V]
-                          [v]
-    softmax([QK^T,    0]) [softmax(QK^T)V] *
-    softmax([qK^T, qk^T]) [softmax([qK^T, qk^T]) @ [V, v]]
-
-    But notice * [softmax(QK^T)V] is just the last attention.
-    We just need to compute the last final row.
-
-    This means we can pass in a row of Q, but we need to
-    remember K and V, which are called the KV cache.
+    [Q, q] @ [K, k].T splits into 4 chunks; the mask wipes Qk^T so only the new
+    row [qK^T, qk^T] needs computing (the rest is the prior attention). Hence we
+    pass one row of Q but must remember K and V (the KV cache).
     """
     Xn = hidden_states
     bsz, _, hd = hidden_states.size()
@@ -772,19 +748,7 @@ def LlamaDecoderLayer_fast_forward(
     *args,
     **kwargs,
 ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
-    """
-    Args:
-        hidden_states (`torch.FloatTensor`): input to the layer of shape `(batch, seq_len, embed_dim)`
-        attention_mask (`torch.FloatTensor`, *optional*): attention mask of size
-            `(batch, 1, tgt_len, src_len)` where padding elements are indicated by very large negative values.
-        output_attentions (`bool`, *optional*):
-            Whether or not to return the attentions tensors of all attention layers. See `attentions` under
-            returned tensors for more detail.
-        use_cache (`bool`, *optional*):
-            If set to `True`, `past_key_values` key value states are returned and can be used to speed up decoding
-            (see `past_key_values`).
-        past_key_value (`Tuple(torch.FloatTensor)`, *optional*): cached past key and value projection states
-    """
+    """Fast decoder-layer forward; hidden_states is `(batch, seq_len, embed_dim)`."""
     if use_cache and hasattr(self, "_flag_for_generation"):
         residual = hidden_states
         hidden_states = fast_rms_layernorm_inference(self.input_layernorm, hidden_states)
@@ -936,7 +900,6 @@ def LlamaModel_fast_forward(
         if position_ids.shape[0] != batch_size:
             position_ids = position_ids.repeat((batch_size, 1))
 
-    # Embed positions
     if inputs_embeds is None:
         inputs_embeds = self.embed_tokens(input_ids)
 
@@ -973,8 +936,7 @@ def LlamaModel_fast_forward(
             if inputs_requires_grad:
                 inputs_embeds.requires_grad_(True)
 
-    # Fix up attention mask by setting elements to 0
-    # Specifically for DPO
+    # Zero out attention mask elements, specifically for DPO
     if (
         getattr(self, "_has_no_labels", False) is True
         and (attention_mask is not None)
@@ -1031,7 +993,6 @@ def LlamaModel_fast_forward(
         #     )
         #     use_cache = False
 
-    # decoder layers
     all_hidden_states = () if output_hidden_states else None
     all_self_attns = () if output_attentions else None
     next_decoder_cache = () if use_cache else None
@@ -1042,7 +1003,6 @@ def LlamaModel_fast_forward(
     else:
         boundaries = None
 
-    # Check checkpointing method
     gradient_checkpointing = False
 
     if self.gradient_checkpointing and self.training and not use_cache:
@@ -1138,7 +1098,6 @@ def LlamaModel_fast_forward(
     else:
         position_embeddings = None
 
-    # Go through every layer!
     for idx, decoder_layer in enumerate(self.layers):
         if output_hidden_states:
             all_hidden_states += (hidden_states,)
@@ -1350,7 +1309,7 @@ def _LlamaModel_fast_forward_inference(
     return LlamaModel_fast_forward_inference_custom
 
 
-# For ensuring backwards compatibility, we create LlamaModel_fast_forward_inference that is consumed by other models
+# Backwards-compat alias consumed by other models
 LlamaModel_fast_forward_inference = _LlamaModel_fast_forward_inference()
 
 
@@ -2463,10 +2422,8 @@ class FastLlamaModel:
         from .loader_utils import check_and_disable_bitsandbytes_loading
         from unsloth_zoo.utils import get_quant_type
 
-        # Extract load_in_8bit from kwargs if provided
         load_in_8bit = kwargs.get("load_in_8bit", False)
 
-        # Check and disable bitsandbytes loading if model has non-bitsandbytes quantization
         load_in_4bit, load_in_8bit, _ckpt_quant_method = check_and_disable_bitsandbytes_loading(
             model_config, load_in_4bit = load_in_4bit, load_in_8bit = load_in_8bit
         )
@@ -2982,12 +2939,10 @@ class FastLlamaModel:
             modules_to_save = list(modules_to_save)
             old_target_modules += modules_to_save
 
-            # Combine all
             new_target_modules = list(target_modules) + list(
                 modules_to_save if modules_to_save is not None else []
             )
 
-            # Now check!
             new_target_modules = set(new_target_modules)
             check_all = check_all and (len(set(old_target_modules) ^ new_target_modules) == 0)
 
@@ -2997,10 +2952,8 @@ class FastLlamaModel:
             )
 
             if check_all:
-                # Simply pass through!
                 logger.warning("Unsloth: Already have LoRA adapters! We shall skip this step.")
 
-                # Offload!
                 # [TODO] First offload lm_head and embed_tokens to CPU (should be disk!!)
                 if "embed_tokens" in new_target_modules:
                     print("Unsloth: Training embed_tokens in mixed precision to save VRAM")

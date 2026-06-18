@@ -217,12 +217,11 @@ class SyntheticDataKit:
             elif dtype_val == torch.float32:
                 dtype_val = "float32"
             engine_args["dtype"] = dtype_val
-            # Convert torch dtype to valid CLI string
+            # torch dtype -> CLI string
             if hasattr(dtype_val, "name"):
                 engine_args["dtype"] = dtype_val.name
             elif isinstance(dtype_val, str) and dtype_val.startswith("torch."):
                 engine_args["dtype"] = dtype_val.split(".")[-1]
-            # Only allow valid vLLM choices
             valid_dtypes = {"auto", "bfloat16", "float", "float16", "float32", "half"}
             if engine_args["dtype"] not in valid_dtypes:
                 engine_args["dtype"] = "auto"
@@ -250,10 +249,8 @@ class SyntheticDataKit:
                     "--" + flag,
                 ]
             elif which == "False":
-                # Ignore flag
                 pass
             elif which == "None":
-                # Ignore flag
                 pass
             else:
                 subprocess_commands += [
@@ -285,7 +282,7 @@ class SyntheticDataKit:
             ready_regex = None,
             text = False,
         )
-        # we don't print stderr to console but self.stderr_capture.tail(200) will print the last 200 lines
+        # stderr not echoed; self.stderr_capture.tail(200) retrieves it
 
         ready = self.stdout_capture.wait_for_ready(timeout = timeout)
         if not ready:
@@ -372,7 +369,6 @@ class SyntheticDataKit:
             torch.cuda.empty_cache()
             gc.collect()
 
-        # Delete vLLM module as well
         if hasattr(self, "_delete_vllm"):
             self._delete_vllm(llm = None)
 
@@ -386,7 +382,6 @@ class SyntheticDataKit:
         self.cleanup()
 
     def chunk_data(self, filename = None):
-        # Chunks data by max tokens and generation length
         assert filename is not None
         assert os.path.exists(filename)
         assert hasattr(self, "tokenizer")
@@ -405,7 +400,6 @@ class SyntheticDataKit:
             raise RuntimeError("Generation length is way too long!")
         input_ids = self.tokenizer(text, add_special_tokens = False).input_ids
 
-        # Get left and right boundaries
         length = len(input_ids)
         n_chunks = int(np.ceil(length / (max_tokens - self.overlap)))
         boundaries = np.ceil(np.linspace(0, length - self.overlap, n_chunks)).astype(int)

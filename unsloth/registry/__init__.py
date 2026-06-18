@@ -32,11 +32,8 @@ def search_models(
     quant_types: list[QuantType] = None,
     search_pattern: str = None,
 ) -> list[ModelInfo]:
-    """
-    Get model info from the registry. See registry.ModelInfo for more fields.
-
-    search_pattern is matched against the full model path (the HF hub model_id).
-    """
+    """Query the registry for ModelInfo. search_pattern matches the full HF
+    hub model_id (model_path)."""
     if not _ARE_MODELS_REGISTERED:
         register_models()
 

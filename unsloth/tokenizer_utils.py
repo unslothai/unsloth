@@ -65,7 +65,6 @@ IGNORED_TOKENIZER_NAMES = frozenset(
 )
 os.environ["UNSLOTH_IGNORED_TOKENIZER_NAMES"] = "\n".join(IGNORED_TOKENIZER_NAMES)
 
-# Check environments
 keynames = "\n" + "\n".join(os.environ.keys())
 IS_COLAB_ENVIRONMENT = "\nCOLAB_" in keynames
 IS_KAGGLE_ENVIRONMENT = "\nKAGGLE_" in keynames
@@ -159,7 +158,7 @@ def convert_to_fast_tokenizer(slow_tokenizer, temporary_location = "_unsloth_sen
     args = re.findall(r"\n[\s]+([^\s]{1,}) \(", docs, flags = re.MULTILINE)
     args = [x for x in args if not x.endswith("_file")]
 
-    # Also some missing maybe!
+    # Also pull args from the base class in case some are missing
     docs = PreTrainedTokenizerFast.__doc__
     docs = docs[docs.find("Args:") :]
     args2 = re.findall(r"\n[\s]+([^\s]{1,}) \(", docs, flags = re.MULTILINE)
@@ -179,17 +178,14 @@ def convert_to_fast_tokenizer(slow_tokenizer, temporary_location = "_unsloth_sen
     check_vocab = sorted_slow_tokenizer == sorted_fast_tokenizer
     check_special = slow_tokenizer.all_special_tokens == fast_tokenizer.all_special_tokens
 
-    # Failure so return slow_tokenizer
     if not check_vocab or not check_special:
         return slow_tokenizer
 
-    # Now confirm if they match
     if not assert_same_tokenization(slow_tokenizer, fast_tokenizer):
         # Maybe remove prepending of __apple?
         kwargs["tokenizer_object"] = try_fix_tokenizer(slow_tokenizer, prepend = False)
         fast_tokenizer = FastTokenizer(**kwargs)
         if not assert_same_tokenization(slow_tokenizer, fast_tokenizer):
-            # Failure :(
             return slow_tokenizer
 
     # Also tokenizer.model is missing!
@@ -200,7 +196,6 @@ def convert_to_fast_tokenizer(slow_tokenizer, temporary_location = "_unsloth_sen
     slow_tokenizer.save_pretrained(new_location)
     fast_tokenizer.save_pretrained(new_location)
 
-    # Now load it!
     fast_tokenizer = AutoTokenizer.from_pretrained(new_location)
     if assert_same_tokenization(slow_tokenizer, fast_tokenizer):
         return fast_tokenizer
@@ -277,7 +272,6 @@ def assert_same_tokenization(slow_tokenizer, fast_tokenizer):
     replacement_char = b"\xc3\xaf\xc2\xbf\xc2\xbd".decode("utf-8")
     all_special_tokens = [x for x in all_special_tokens if x != replacement_char]
 
-    # Check if chat template is enabled!
     check_chat_template1 = True
     check_chat_template2 = True
     check_chat_template3 = True
@@ -370,25 +364,21 @@ def fix_sentencepiece_tokenizer(
     if not os.path.exists(temporary_location):
         os.makedirs(temporary_location)
 
-    # Check if tokenizer.model exists
     if not os.path.isfile(f"{temporary_location}/tokenizer.model"):
         return new_tokenizer
 
-    # First save the old tokenizer
     old_tokenizer.save_pretrained(temporary_location)
 
     tokenizer_file = sentencepiece_model_pb2.ModelProto()
     tokenizer_file.ParseFromString(open(f"{temporary_location}/tokenizer.model", "rb").read())
 
-    # Now save the new tokenizer
     new_tokenizer.save_pretrained(temporary_location)
 
-    # Now correct the old tokenizer's .model file
+    # Correct the old tokenizer's .model file
     for old_token, new_token in token_mapping.items():
         ids = old_tokenizer([old_token], add_special_tokens = False).input_ids
         ids = ids[0]
         if len(ids) != 1:
-            # Skip this token!
             print(
                 f"Skip mapping {old_token} to {new_token} since {new_token} is already in the tokenizer!"
             )
@@ -402,11 +392,9 @@ def fix_sentencepiece_tokenizer(
         assert tokenizer_piece.piece == old_token
         tokenizer_piece.piece = new_token
 
-    # And now write it
     with open(f"{temporary_location}/tokenizer.model", "wb") as file:
         file.write(tokenizer_file.SerializeToString())
 
-    # And load it!
     from transformers import AutoTokenizer
 
     tokenizer = AutoTokenizer.from_pretrained(
@@ -418,14 +406,12 @@ def fix_sentencepiece_tokenizer(
 
 
 def fix_sentencepiece_gguf(saved_location):
-    """
-    Fix sentencepiece tokenizers that didn't extend the vocab with user-defined
-    tokens. Inspired by llama.cpp's convert_hf_to_gguf.py.
+    """Fix sentencepiece tokenizers that didn't extend the vocab with user-defined tokens (inspired
+    by llama.cpp's convert_hf_to_gguf.py).
 
-    Also retypes special tokens (e.g. Gemma 3's <start_of_turn>/<end_of_turn>)
-    that exist in the sentencepiece model but are typed NORMAL instead of CONTROL.
-    NORMAL writes token_type=1 to GGUF, breaking llama.cpp chat inference since
-    parse_special only matches CONTROL (type=3).
+    Also retypes special tokens (e.g. Gemma 3's <start_of_turn>/<end_of_turn>) typed NORMAL instead of
+    CONTROL. NORMAL writes token_type=1 to GGUF, breaking llama.cpp chat inference since parse_special
+    only matches CONTROL (type=3).
     """
     from copy import deepcopy
     import sys
@@ -450,7 +436,6 @@ def fix_sentencepiece_gguf(saved_location):
         UNUSED = 5
         BYTE = 6
 
-    # Load tokenizer.model
     tokenizer_file = sentencepiece_model_pb2.ModelProto()
     if not os.path.isfile(f"{saved_location}/tokenizer.model"):
         return
@@ -484,7 +469,6 @@ def fix_sentencepiece_gguf(saved_location):
             f"from NORMAL to CONTROL type so llama.cpp / GGUF chat inference works correctly."
         )
 
-    # Load added_tokens_json
     if not os.path.isfile(f"{saved_location}/added_tokens.json"):
         if patched > 0:
             with open(f"{saved_location}/tokenizer.model", "wb") as file:
@@ -560,14 +544,12 @@ def _load_correct_tokenizer(
     if IS_COLAB_ENVIRONMENT:
         cache_dir = cache_dir
     elif IS_KAGGLE_ENVIRONMENT:
-        # /tmp of Kaggle seems has a 80GB limit!
-        # Let's utilize them
+        # /tmp on Kaggle has a ~80GB limit, so use it
         cache_dir = os.path.join(KAGGLE_TMP, cache_dir)
     else:
         cache_dir = None
 
-    # Try loading the slow tokenizer. If it fails, then try Fast only
-    # Mainly to solve Deepseek models with no tokenizer.model file
+    # Try slow tokenizer, fall back to Fast (e.g. Deepseek has no tokenizer.model)
     slow_tokenizer = None
     try:
         slow_tokenizer = AutoTokenizer.from_pretrained(
@@ -603,7 +585,7 @@ def _load_correct_tokenizer(
 
     if not fix_tokenizer or tokenizer_name in IGNORED_TOKENIZER_NAMES:
         return fast_tokenizer
-    # Ignore Mistral ones - they're a bit weird to handle!
+    # Mistral tokenizers are weird to handle, so skip them
     elif "mistral" in tokenizer_name.lower():
         return fast_tokenizer
     # Ignore Phi-4 ones as well
@@ -688,9 +670,9 @@ def _find_end_position(
     endfor = None,
     endif = None,
 ):
-    """Rightmost {% endfor %}/{% endif %} (any dash variant), as a dict
-    with start/end/text/dash_left/dash_right. Tokens inside Jinja comments
-    are ignored. `endfor`/`endif` kwargs kept for back-compat, ignored."""
+    """Rightmost {% endfor %}/{% endif %} (any dash variant) as a dict with
+    start/end/text/dash_left/dash_right. Tokens inside Jinja comments are ignored.
+    `endfor`/`endif` kwargs kept for back-compat, ignored."""
     # Space-pad comments so positions still map 1:1 to the original.
     scrubbed = _RE_JINJA_COMMENT.sub(lambda m: " " * len(m.group(0)), template)
     endfor_matches = list(_RE_ENDFOR.finditer(scrubbed))
@@ -1307,7 +1289,6 @@ def check_tokenizer(
     # See https://huggingface.co/berkeley-nest/Starling-LM-7B-alpha/discussions/25
     # Seems like the Fast tokenizer in Rust breaks things!
 
-    # We ignore some of them!
     if tokenizer.__repr__().split("(", 1)[0] in IGNORED_TOKENIZER_CHECKING:
         return tokenizer
 
@@ -1322,7 +1303,6 @@ def check_tokenizer(
             bad_indices = list(added_tokens_fast.keys())[j:]
             bad_tokens = list(added_tokens_fast.values())[j:]
             if not _reload:
-                # Try removing the token
                 added_tokens = [str(x) for x in tokenizer.added_tokens_decoder.values()]
                 special_tokens = tokenizer.special_tokens_map
                 import itertools
@@ -1337,7 +1317,6 @@ def check_tokenizer(
                     x for x in can_be_removed1 if x in tokenizer._added_tokens_encoder.keys()
                 ]
 
-                # Check of extra tokens can in fact we removed!
                 can_be_removed = (len(can_be_removed1) == len(bad_tokens)) and (
                     len(can_be_removed2) == len(bad_tokens)
                 )
@@ -1357,14 +1336,12 @@ def check_tokenizer(
                                 try_removal.append(token)
                                 try_mapper.append(name_token)
 
-                    # Recheck!
                     can_be_removed = len(try_removal) == len(bad_tokens)
                     if can_be_removed:
                         remove_generic = True
                     can_be_removed1 = bad_tokens
 
                 if can_be_removed:
-                    # Yes it can be fixed!
                     for j, bad_token in enumerate(can_be_removed1):
                         remove_id = tokenizer._added_tokens_encoder[bad_token]
                         del tokenizer._added_tokens_decoder[remove_id]
@@ -1374,7 +1351,6 @@ def check_tokenizer(
                             # Remove sep token for example
                             setattr(tokenizer, try_mapper[j], None)
                             setattr(tokenizer, try_mapper[j] + "_id", None)
-                    # Confirm 1 more time!
                     if max(tokenizer.added_tokens_decoder.keys()) < max_embedding_size:
                         logger.warning_once(
                             f"Unsloth loaded a broken tokenizer `{model_name}`, but managed to repair it!\n"
@@ -1383,7 +1359,6 @@ def check_tokenizer(
                         )
                         return convert_to_fast_tokenizer(tokenizer)
 
-                # :( Failure
                 raise RuntimeError(
                     f"Unsloth tried to load `{model_name}`, but cannot succeed.\n"
                     f"Tokens {bad_tokens} with ids {bad_indices} exceeds the max vocab size of {max_embedding_size}.\n"
@@ -1397,7 +1372,6 @@ def check_tokenizer(
 
             # Sometimes slow tokenizer does not work like Deepseek
             try:
-                # Try slow tokenizer which can fix things!
                 tokenizer = AutoTokenizer.from_pretrained(
                     model_name,
                     model_max_length = model_max_length,
@@ -1420,8 +1394,7 @@ def check_tokenizer(
                 )
                 break
             except:
-                # Tokenizer has out of bounds issues and we can't
-                # load the slow tokenizer version :(
+                # Out-of-bounds tokenizer and the slow version won't load either
                 logger.warning_once(
                     "Unsloth: Tokenizer is most likely buggy, and Unsloth failed to repair it.\n"
                     "It will still work, but beware of out of bounds memory accesses.\n"
@@ -1432,35 +1405,8 @@ def check_tokenizer(
 
 
 def get_tokenizer_info(tokenizer) -> dict:
-    """Return a concise diagnostic summary of a tokenizer instance.
-
-    Collects key properties into a JSON-safe dict for logging, debugging, or the
-    Studio UI. Missing attributes fall back to ``None`` rather than raising.
-
-    Example output::
-
-        {
-            "name_or_path": "unsloth/Llama-3.2-1B-Instruct",
-            "tokenizer_class": "PreTrainedTokenizerFast",
-            "is_fast": True,
-            "vocab_size": 128000,
-            "added_tokens_count": 256,
-            "model_max_length": 131072,
-            "padding_side": "right",
-            "bos_token": "<|begin_of_text|>",
-            "eos_token": "<|eot_id|>",
-            "pad_token": "<|finetune_right_pad_id|>",
-            "unk_token": None,
-            "has_chat_template": True,
-            "special_tokens_count": 3,
-        }
-
-    Args:
-        tokenizer: Any HuggingFace ``PreTrainedTokenizer(Fast)`` instance.
-
-    Returns:
-        A ``dict`` of tokenizer properties.
-    """
+    """Return a concise JSON-safe diagnostic summary of a tokenizer for logging/debugging/Studio UI.
+    Missing attributes fall back to ``None`` rather than raising."""
     return {
         "name_or_path": getattr(tokenizer, "name_or_path", None),
         "tokenizer_class": type(tokenizer).__name__,
@@ -1490,26 +1436,12 @@ try:
 except:
 
     def neftune_post_forward_hook(module, input, output):
-        """
-        Implements the NEFTune forward pass for the model using forward hooks. Note this works only for
-        torch.nn.Embedding layers. This method is slightly adapted from the original source code
-        that can be found here: https://github.com/neelsjain/NEFTune
-
-        Simply add it to your model as follows:
+        """NEFTune forward hook for torch.nn.Embedding layers (adapted from
+        https://github.com/neelsjain/NEFTune). Set `module.neftune_noise_alpha`, then register:
         ```python
-        model = ...
         model.embed_tokens.neftune_noise_alpha = 0.1
         model.embed_tokens.register_forward_hook(neftune_post_forward_hook)
         ```
-
-        Args:
-            module (`torch.nn.Module`):
-                The embedding module where the hook is attached. Note that you need to set
-                `module.neftune_noise_alpha` to the desired noise alpha value.
-            input (`torch.Tensor`):
-                The input tensor to the model.
-            output (`torch.Tensor`):
-                The output tensor of the model (i.e. the embeddings).
         """
         if module.training:
             dims = torch.tensor(output.size(1) * output.size(2))
@@ -1519,9 +1451,7 @@ except:
 
 
 def patch_sft_trainer_tokenizer():
-    """
-    Patches the trainer with changes
-    """
+    """Patches the SFT trainer with Unsloth changes."""
     try:
         sft_trainer = eval(f"trl.trainer.sft_trainer.SFTTrainer")
     except:

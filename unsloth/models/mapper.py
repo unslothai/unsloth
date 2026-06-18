@@ -1315,7 +1315,6 @@ __INT_TO_FLOAT_MAPPER = \
         "google/functiongemma-270m-it",
         "unsloth/functiongemma-270m-it-unsloth-bnb-4bit",
     ),
-    # Ministral 3 models
     "unsloth/Ministral-3-3B-Instruct-2512-unsloth-bnb-4bit" : {
         "8" : (
             "mistralai/Ministral-3-3B-Instruct-2512",
@@ -1455,7 +1454,6 @@ for key, values in __INT_TO_FLOAT_MAPPER.items():
             _add_with_lower(MAP_TO_UNSLOTH_16bit, row, values[0])
         pass
 
-    # Get lowercased
     lowered_key = key.lower()
     INT_TO_FLOAT_MAPPER[lowered_key] = values[0].lower()
 

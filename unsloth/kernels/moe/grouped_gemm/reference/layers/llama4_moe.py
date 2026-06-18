@@ -189,17 +189,14 @@ class Llama4GroupedGemmTextMoe(Llama4TextMoe):
             hidden_states = hidden_states.sum(dim = 1)
         hidden_states_after_weight_merge = hidden_states.view(-1, hidden_dim)
 
-        # Token counts per expert + gather indices (token->expert order).
-        # Auxiliary structs; not recorded in the autograd graph.
+        # Auxiliary structs (token->expert order); not in the autograd graph.
         token_counts_by_expert, gather_indices = self.get_token_counts_and_gather_indices(
             selected_experts
         )
 
-        # Permute tokens into expert order
         hidden_states = permute(hidden_states_after_weight_merge, gather_indices, self.top_k)
         assert hidden_states.shape == (total_tokens, hidden_dim)
 
-        # Start expert computation
         first_gemm = torch_grouped_gemm(
             X = hidden_states, W = self.experts.gate_up_proj, m_sizes = token_counts_by_expert
         )
@@ -208,13 +205,11 @@ class Llama4GroupedGemmTextMoe(Llama4TextMoe):
         intermediate = self.act_and_mul(first_gemm)
         assert intermediate.shape == (total_tokens, self.experts.expert_dim)
 
-        # See comment above
         second_gemm = torch_grouped_gemm(
             X = intermediate, W = self.experts.down_proj, m_sizes = token_counts_by_expert
         )
         assert second_gemm.shape == (total_tokens, hidden_dim)
 
-        # Post-processing
         hidden_states_unpermute = unpermute(second_gemm, gather_indices)
         assert hidden_states_unpermute.shape == (total_tokens, hidden_dim)
         # grouped_gemm_out = hidden_states.view(batch_size, sequence_length, hidden_dim)
@@ -365,17 +360,14 @@ class Llama4TritonTextMoe(Llama4GroupedGemmTextMoe):
             hidden_states = hidden_states.sum(dim = 1)
         hidden_states = hidden_states.view(-1, hidden_dim)
 
-        # Token counts per expert + gather indices (token->expert order).
-        # Auxiliary structs; not recorded in the autograd graph.
+        # Auxiliary structs (token->expert order); not in the autograd graph.
         token_counts_by_expert, gather_indices = self.get_token_counts_and_gather_indices(
             selected_experts
         )
 
-        # Permute tokens into expert order
         hidden_states = permute(hidden_states, gather_indices, self.top_k)
         assert hidden_states.shape == (total_tokens, hidden_dim)
 
-        # Start expert computation
         hidden_states = grouped_gemm(
             X = hidden_states,
             W = self.experts.gate_up_proj,
@@ -410,7 +402,6 @@ class Llama4TritonTextMoe(Llama4GroupedGemmTextMoe):
             dX_only = self.dX_only,
         )
 
-        # Unpermute from expert order back to token order
         if not self.permute_y:
             hidden_states = unpermute(hidden_states, gather_indices)
         hidden_states += shared_expert_out

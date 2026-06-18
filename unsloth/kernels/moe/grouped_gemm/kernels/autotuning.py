@@ -14,9 +14,7 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-"""
-Autotuning utils
-"""
+"""Autotuning utils."""
 
 import logging
 from itertools import product
@@ -53,7 +51,7 @@ def _triton_supports_tma():
     """Check if current Triton version supports TMA API."""
     import triton.language as tl
 
-    # Check for both old experimental and new stable API names
+    # Old experimental and new stable API names
     return hasattr(tl, "make_tensor_descriptor") or hasattr(
         tl, "_experimental_make_tensor_descriptor"
     )
@@ -68,14 +66,13 @@ def get_forward_configs(
     BLOCK_M = DEFAULT_M_BLOCK_SIZES,
     BLOCK_N = DEFAULT_N_BLOCK_SIZES,
     BLOCK_K = DEFAULT_K_BLOCK_SIZES,
-    TMA_LOAD_X = None,  # Auto-detect if not specified
-    TMA_LOAD_W = None,  # Auto-detect if not specified
-    TMA_STORE = False,  # NOTE: TMA_STORE is disabled for now
+    TMA_LOAD_X = None,  # Auto-detect if None
+    TMA_LOAD_W = None,  # Auto-detect if None
+    TMA_STORE = False,  # disabled for now
     num_warps = DEFAULT_NUM_WARPS,
     num_stages = DEFAULT_NUM_STAGES,
     num_ctas = DEFAULT_NUM_CTAS,
 ):
-    # Auto-detect TMA support
     if TMA_LOAD_X is None:
         TMA_LOAD_X = _TRITON_HAS_TMA
     if TMA_LOAD_W is None:
@@ -149,14 +146,13 @@ def get_dX_kernel_configs(
     BLOCK_M = DEFAULT_M_BLOCK_SIZES,
     BLOCK_N = DEFAULT_N_BLOCK_SIZES,
     BLOCK_K = DEFAULT_K_BLOCK_SIZES,
-    TMA_LOAD_dY = None,  # Auto-detect if not specified
-    TMA_LOAD_W = None,  # Auto-detect if not specified
-    TMA_STORE = False,  # NOTE: TMA_STORE is disabled for now
+    TMA_LOAD_dY = None,  # Auto-detect if None
+    TMA_LOAD_W = None,  # Auto-detect if None
+    TMA_STORE = False,  # disabled for now
     num_warps = DEFAULT_NUM_WARPS,
     num_stages = DEFAULT_NUM_STAGES,
     num_ctas = DEFAULT_NUM_CTAS,
 ):
-    # Auto-detect TMA support
     if TMA_LOAD_dY is None:
         TMA_LOAD_dY = _TRITON_HAS_TMA
     if TMA_LOAD_W is None:
@@ -232,11 +228,10 @@ def get_dW_kernel_configs(
     num_warps = DEFAULT_NUM_WARPS,
     num_stages = DEFAULT_NUM_STAGES,
     num_ctas = DEFAULT_NUM_CTAS,
-    TMA_LOAD_dY = None,  # Auto-detect if not specified
-    TMA_LOAD_X = None,  # Auto-detect if not specified
+    TMA_LOAD_dY = None,  # Auto-detect if None
+    TMA_LOAD_X = None,  # Auto-detect if None
     TMA_STORE = False,
 ):
-    # Auto-detect TMA support
     if TMA_LOAD_dY is None:
         TMA_LOAD_dY = _TRITON_HAS_TMA
     if TMA_LOAD_X is None:
@@ -376,13 +371,12 @@ def prune_kernel_configs_fwd(configs: list[triton.Config], args, **kwargs):
 
     pruned_configs = []
     for config in configs:
-        # disable TMA if gpu does not support it
         maybe_disable_tma(config)
 
         if common_prune_criteria(config, kwargs, dtype):
             continue
         if config.kwargs["USE_TMA_LOAD_X"] and kwargs["PERMUTE_X"]:
-            # Dynamically disable TMA_LOAD_X for permuted X
+            # TMA load incompatible with permuted X
             config.kwargs["USE_TMA_LOAD_X"] = False
         if config.kwargs["USE_TMA_STORE"] and kwargs["PERMUTE_Y"]:
             continue
@@ -403,7 +397,7 @@ def prune_dX_configs(configs: List[triton.Config], args, **kwargs):
         if common_prune_criteria(config, kwargs, dtype):
             continue
         if config.kwargs["USE_TMA_LOAD_dY"] and kwargs["PERMUTE_Y"]:
-            # dynamically disable TMA_LOAD_dY for permuted Y
+            # TMA load incompatible with permuted Y
             config.kwargs["USE_TMA_LOAD_dY"] = False
         if config.kwargs["USE_TMA_STORE"] and kwargs["PERMUTE_X"]:
             continue

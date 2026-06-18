@@ -72,13 +72,13 @@ except Exception:
     except Exception:
         trl_version = Version("0.0.0")
 
-# Get PyTorch version for feature detection
+# PyTorch version for feature detection
 try:
     torch_version = Version(torch.__version__.split("+")[0].split("a")[0].split("b")[0])
 except Exception:
     torch_version = Version("0.0.0")
 
-# Get transformers version for feature detection
+# transformers version for feature detection
 try:
     from transformers import __version__ as _transformers_version_raw
     transformers_version = Version(_transformers_version_raw)
@@ -186,10 +186,8 @@ def PatchRL(FastLanguageModel):
 
     @contextmanager
     def unsloth_unwrap_model_for_generation(model, *args, **kwargs):
-        # why: snapshot before TRL's unwrap context manager, which calls
-        # gradient_checkpointing_disable() before yielding; preserve the actual
-        # mode value (e.g. "unsloth") rather than collapsing it to a bool, so
-        # the finally restore matches the caller's configured GC mode.
+        # Snapshot the GC mode before TRL's unwrap CM calls gradient_checkpointing_disable();
+        # keep the real value (e.g. "unsloth") not a bool so the finally restore matches.
         use_gradient_checkpointing = next(
             (
                 v
@@ -199,7 +197,6 @@ def PatchRL(FastLanguageModel):
             False,
         )
         with unwrap_model_for_generation(model, *args, **kwargs) as unwrapped_model:
-            # Put the model in inference mode.
             FastLanguageModel.for_inference(model)
 
             # We must use .clone for Unsloth since we force inference_mode
@@ -217,7 +214,6 @@ def PatchRL(FastLanguageModel):
             try:
                 yield unwrapped_model
             finally:
-                # Restore generate and return
                 unwrapped_model.generate = original_generate
                 FastLanguageModel.for_training(
                     model,
@@ -229,24 +225,8 @@ def PatchRL(FastLanguageModel):
 
     @torch.no_grad()
     def unsloth_prediction_step(self, model, inputs, prediction_loss_only, ignore_keys):
-        """
-        Perform an evaluation step on `model` using `inputs`.
-        Subclass and override to inject custom behavior.
-        Args:
-            model (`nn.Module`):
-                The model to evaluate.
-            inputs (`Dict[str, Union[torch.Tensor, Any]]`):
-                The inputs and targets of the model.
-                The dictionary will be unpacked before being fed to the model. Most models expect the targets under the
-                argument `labels`. Check your model's documentation for all accepted arguments.
-            prediction_loss_only (`bool`):
-                Whether or not to return the loss only.
-            ignore_keys (`List[str]`, *optional*):
-                A list of keys in the output of your model (if it is a dictionary) that should be ignored when
-                gathering predictions.
-        Return:
-            Tuple[Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor]]: A tuple with the loss,
-            logits and labels (each being optional).
+        """Evaluation step on `model` using `inputs`.
+        Returns (loss, logits, labels), each optional.
         """
         has_labels = (
             False
@@ -2251,11 +2231,8 @@ def PatchFastRL(algorithm = None, FastLanguageModel = None):
     # pristine upstream class, not the compiled Unsloth* wrappers.
     if os.environ.get("UNSLOTH_ALLOW_CPU", "0") == "1":
         return
-    # Install the disable_gradient_checkpointing noop BEFORE
-    # patch_trl_rl_trainers, which imports extra trl.* submodules; any module
-    # imported after the sys.modules walk would keep the original broken
-    # binding. Installing first ensures the canonical symbol is replaced before
-    # those submodules bind it.
+    # Must run before patch_trl_rl_trainers: it imports more trl.* submodules, and any
+    # imported after the sys.modules walk would keep the original broken binding.
     patch_trl_disable_gradient_checkpointing()
     patch_trl_rl_trainers()
     patch_trl_openenv()

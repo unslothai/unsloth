@@ -28,10 +28,8 @@ def get_model_info(
     model_id: str, properties: list[str] = ["safetensors", "lastModified"]
 ) -> ModelInfo:
     """
-    Get the model info for a specific model.
-
+    Get info for a model. Defaults to minimal info; pass None for full info.
     properties: see https://huggingface.co/docs/huggingface_hub/api-ref/hf_hub/hf_api/model_info
-    Defaults to minimal info; set to None for the full model information.
     """
     global _HFAPI
     if _HFAPI is None:
@@ -53,11 +51,8 @@ def list_models(
     limit: int = 10,
 ) -> list[ModelInfo]:
     """
-    Retrieve model information from the Hugging Face Hub.
-
+    List models from the Hugging Face Hub. If full is True, properties is ignored.
     properties: see https://huggingface.co/docs/huggingface_hub/api-ref/hf_hub/hf_api/list_models
-    full: retrieve full model info; if True, properties is ignored.
-    sort/author/search: sort order, model author, and search filter.
     """
     global _HFAPI
     if _HFAPI is None:

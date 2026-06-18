@@ -46,29 +46,19 @@ def _require_bnb():
 
 
 class QGaLoreAdamW8bit(Optimizer2State):
-    """AdamW optimizer with 8-bit states, GaLore low-rank gradient projection,
-    and optional INT8 weight quantization.
+    """AdamW with 8-bit states, GaLore low-rank gradient projection, and optional
+    INT8 weight quantization. Three memory-saving techniques:
 
-    This optimizer combines three memory-saving techniques:
+    1. **8-bit optimizer states** (bitsandbytes): Adam moments in 8-bit (~4x less).
+    2. **GaLore low-rank projection**: gradients projected to a low-rank subspace
+       for the step, then back; the projection matrix can be INT4-quantized.
+    3. **INT8 weight quantization**: weights stored in INT8 with stochastic
+       rounding (~2x less) for eligible layers.
 
-    1. **8-bit optimizer states** (via bitsandbytes) — Adam's first and second
-       moments are stored in 8-bit, reducing optimizer state memory by ~4×.
-
-    2. **GaLore low-rank gradient projection** — gradients are projected into a
-       low-rank subspace before the optimizer step, then projected back.  The
-       projection matrix itself can be quantized to INT4.
-
-    3. **INT8 weight quantization** — model weights are stored in INT8 during
-       training with stochastic rounding, reducing weight memory by ~2× for
-       eligible layers.
-
-    Param group keys consumed by GaLore projection:
-        ``rank``, ``update_proj_gap``, ``scale``, ``proj_type``,
-        ``quant`` (projection quantization), ``quant_group_size``,
-        ``quant_n_bit``, ``cos_threshold``, ``gamma_proj``, ``queue_size``
-
-    Param group keys for weight quantization:
-        ``weight_quant``, ``stochastic_round``, ``weight_group_size``
+    Param group keys: GaLore uses ``rank``, ``update_proj_gap``, ``scale``,
+    ``proj_type``, ``quant``, ``quant_group_size``, ``quant_n_bit``,
+    ``cos_threshold``, ``gamma_proj``, ``queue_size``; weight quantization uses
+    ``weight_quant``, ``stochastic_round``, ``weight_group_size``.
     """
 
     def __init__(
@@ -101,17 +91,10 @@ class QGaLoreAdamW8bit(Optimizer2State):
 
     @torch.no_grad()
     def step(self, closure = None):
-        """Perform a single optimization step.
-
-        For each parameter that has a ``rank`` key in its param group, the
-        following sequence is executed:
-
-        1. If ``weight_quant`` is set, dequantize the INT8 weight to float.
-        2. Project the gradient to low-rank via the cached ``GaLoreProjector``.
-        3. Perform the 8-bit Adam update in the low-rank space.
-        4. Project the update back to full rank and add to saved weight.
-        5. If ``weight_quant`` is set, re-quantize the weight to INT8.
-        """
+        """Single optimization step. For each ``rank``-group parameter: (1)
+        dequantize INT8 weight if ``weight_quant``; (2) project gradient to
+        low-rank; (3) 8-bit Adam update in low-rank space; (4) project back and
+        add to the saved weight; (5) re-quantize to INT8 if ``weight_quant``."""
         loss = None
         if closure is not None:
             with torch.enable_grad():
@@ -133,7 +116,6 @@ class QGaLoreAdamW8bit(Optimizer2State):
 
                 has_weight_quant = self._has_weight_quant(p, group)
 
-                # --- Dequantize weight if INT8 ---
                 if has_weight_quant:
                     if p._q_scales is not None:
                         float_weight = _dequantize(
@@ -145,7 +127,6 @@ class QGaLoreAdamW8bit(Optimizer2State):
                         p.data = float_weight
                     # else: first step, weights are still float — skip dequantize
 
-                # --- GaLore projection ---
                 if "rank" in group:
                     if "projector" not in state:
                         state["projector"] = GaLoreProjector(
@@ -161,8 +142,7 @@ class QGaLoreAdamW8bit(Optimizer2State):
                             queue_size = group.get("queue_size", 5),
                         )
 
-                    # Temporarily disable weight decay for GaLore params
-                    # (we apply it manually after project-back)
+                    # Disable weight decay here; reapplied manually after project-back.
                     if "weight_decay" in group and group["weight_decay"] > 0:
                         group["_wd_saved"] = group["weight_decay"]
                         group["weight_decay"] = 0
@@ -174,16 +154,14 @@ class QGaLoreAdamW8bit(Optimizer2State):
                     p.data = torch.zeros_like(grad, dtype = p.data.dtype, device = p.data.device)
                     p.grad = grad
 
-                # --- 8-bit Adam update ---
                 if "state1" not in state:
                     self.init_state(group, p, gindex, pindex)
 
                 self.prefetch_state(p)
                 self.update_step(group, p, gindex, pindex)
 
-                # --- GaLore project-back ---
                 if "rank" in group:
-                    # p.data now holds the weight update in low-rank space
+                    # p.data holds the update in low-rank space; project back and add.
                     p.data = p._saved_data.add_(state["projector"].project_back(p.data))
 
                     # Re-apply decoupled weight decay using pre-update weights
@@ -197,7 +175,6 @@ class QGaLoreAdamW8bit(Optimizer2State):
 
                     del p._saved_data
 
-                # --- Re-quantize weight to INT8 ---
                 if has_weight_quant:
                     float_data = p.data
                     stochastic = group.get("stochastic_round", True)
@@ -208,9 +185,8 @@ class QGaLoreAdamW8bit(Optimizer2State):
                     p._q_scales = scales
                     p._q_zeros = zeros
                     p._q_shape = shape
-                    # Scalar placeholder to free float memory; the forward
-                    # pre-hook (install_weight_quant_hooks) dequantizes before
-                    # the next forward pass.
+                    # Scalar placeholder frees float memory; install_weight_quant_hooks
+                    # forward pre-hook dequantizes before the next forward pass.
                     p.data = torch.empty(1, dtype = p.data.dtype, device = p.data.device)
 
                 state["step"] += 1
@@ -235,13 +211,11 @@ class QGaLoreAdamW8bit(Optimizer2State):
         group_size: int = 128,
         stochastic: bool = True,
     ) -> None:
-        """Tag parameters for INT8 weight quantization.
+        """Tag eligible parameters with INT8 quantization metadata for ``step()``.
 
-        This marks eligible weights with quantization metadata so that
-        the optimizer knows to quantize/dequantize them during ``step()``.
-        **Weights are NOT converted to uint8 here** — they remain in float
-        so that the first forward/backward pass runs correctly.  The actual
-        quantization happens at the end of the first ``step()`` call.
+        **Weights are NOT converted to uint8 here** — they stay float so the first
+        forward/backward runs correctly; actual quantization happens at the end of
+        the first ``step()``.
         """
         weight_quant_params = set()
         for group in param_groups:
@@ -251,9 +225,8 @@ class QGaLoreAdamW8bit(Optimizer2State):
 
         for name, p in model.named_parameters():
             if id(p) in weight_quant_params:
-                # Store metadata without converting weights to uint8; the first
-                # step() quantizes after the update. Dummy scales/zeros keep
-                # _has_weight_quant() True on the first step.
+                # Tag only; first step() quantizes after the update. Dummy
+                # scales/zeros keep _has_weight_quant() True on the first step.
                 p._q_scales = None
                 p._q_zeros = None
                 p._q_shape = p.data.shape
@@ -288,7 +261,7 @@ def install_weight_quant_hooks(model: torch.nn.Module) -> list:
     return handles
 
 
-# Default linear layer names in transformer blocks that should use GaLore.
+# Default transformer layers that use GaLore.
 _DEFAULT_GALORE_TARGETS = {
     "q_proj",
     "k_proj",
@@ -318,33 +291,12 @@ def make_q_galore_param_groups(
     queue_size: int = 5,
     target_modules: Optional[List[str]] = None,
 ) -> list:
-    """Build param groups suitable for :class:`QGaLoreAdamW8bit`.
+    """Build param groups for :class:`QGaLoreAdamW8bit`, returning
+    ``[galore_group, non_galore_group]``.
 
-    Parameters matching ``target_modules`` (or the default set of attention
-    and MLP projection names) are placed in the GaLore group.  All other
-    trainable parameters go into the non-GaLore group.
-
-    Args:
-        model: The model whose parameters to partition.
-        lr: Learning rate for all parameter groups.
-        weight_decay: Weight decay coefficient.
-        rank: GaLore projection rank.
-        update_proj_gap: Steps between SVD recomputations.
-        scale: Scaling factor for project-back.
-        proj_quant: Quantize projection matrices.
-        proj_quant_group_size: Group size for projection quantization.
-        proj_quant_n_bit: Bit-width for projection quantization.
-        weight_quant: Enable INT8 weight quantization for GaLore params.
-        stochastic_round: Use stochastic rounding for weight quantization.
-        weight_group_size: Group size for weight quantization.
-        cos_threshold: Cosine similarity threshold for adaptive scheduling.
-        gamma_proj: Multiplier for update_proj_gap when subspace is stable.
-        queue_size: Rolling window size for stability tracking.
-        target_modules: Module name substrings to match for GaLore.  If None,
-            uses the default set of attention/MLP projection names.
-
-    Returns:
-        List of two param group dicts: ``[galore_group, non_galore_group]``.
+    Parameters matching ``target_modules`` (or the default attention/MLP
+    projection names) go in the GaLore group; all other trainable params go in
+    the non-GaLore group.
     """
     targets = set(target_modules) if target_modules is not None else _DEFAULT_GALORE_TARGETS
 
@@ -355,8 +307,7 @@ def make_q_galore_param_groups(
         if not param.requires_grad:
             continue
 
-        # Match target module names; exclude 1-D params (biases, norms) since
-        # GaLoreProjector.project requires 2-D gradients.
+        # Exclude 1-D params (biases, norms): GaLoreProjector.project needs 2-D grads.
         name_parts = name.split(".")
         is_galore = param.dim() >= 2 and any(t in name_parts for t in targets)
 

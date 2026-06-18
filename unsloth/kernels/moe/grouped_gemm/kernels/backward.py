@@ -77,10 +77,9 @@ def _grouped_gemm_dX_kernel(
     tl.static_assert(N % BLOCK_SIZE_N == 0, "N must be divisible by BLOCK_SIZE_N")
     tl.static_assert(K % BLOCK_SIZE_K == 0, "K must be divisible by BLOCK_SIZE_K")
 
-    # Create TMA descriptors for loading sorted tokens
-    # When using TMA load, we don't permute_x, so shape should be [TOTAL_TOKENS, K]
-    # Also, we are defining a single global descriptor with single block shape
-    # Need to check that this does not result in errors when crossing expert boundaries
+    # TMA descriptors for loading sorted tokens. With TMA load we don't permute_x, so shape is
+    # [TOTAL_TOKENS, K]. Single global descriptor with one block shape -- verify this doesn't error
+    # when crossing expert boundaries.
     if USE_TMA_LOAD_dY:
         dY_desc = tl.make_tensor_descriptor(
             dY_ptr,
@@ -110,10 +109,9 @@ def _grouped_gemm_dX_kernel(
         m_end = m_start + m_size
 
         if m_size > 0:
-            # Advance n offset to the weights for that respective expert
+            # Advance n offset to this expert's weights
             n_start = expert_idx * N
             # N_start_offset = g.to(tl.int64) * N
-            # tiles for this group's GEMM
             num_m_tiles = tl.cdiv(m_size, BLOCK_SIZE_M)
             num_k_tiles = tl.cdiv(K, BLOCK_SIZE_K)
             num_tiles_per_expert = num_m_tiles * num_k_tiles
@@ -133,7 +131,6 @@ def _grouped_gemm_dX_kernel(
             while tidx >= processed_tiles and tidx < (processed_tiles + num_tiles_per_expert):
                 group_index = tidx - processed_tiles
 
-                # Output tile for this thread block for this expert group
                 tile_m_idx = group_index % num_m_tiles
                 tile_k_idx = group_index // num_m_tiles
 
@@ -246,10 +243,8 @@ def _grouped_gemm_dX_kernel(
                         mask = store_mask,
                     )
 
-                # Move to the next tile within this expert group
                 tidx += NUM_SMS
 
-            # Update the total tiles count for the next expert group
             processed_tiles += num_tiles_per_expert
 
 
@@ -348,15 +343,12 @@ def _grouped_gemm_dW_kernel(
         )
 
     for tile_idx in range(tidx, output_tiles_per_expert, NUM_SMS):  # , flatten=FLATTEN):
-        # Output tile index
         tile_n_idx = tile_idx % num_n_tiles
         tile_k_idx = tile_idx // num_n_tiles
 
-        # Output tile offsets
         n_offset = tile_n_idx * BLOCK_SIZE_N
         k_offset = tile_k_idx * BLOCK_SIZE_K
 
-        # For storing
         # TODO: Check whether the k mask is needed since we statically check that K is divisible by BLOCK_SIZE_K in the forward kernel
         # ditto for n_mask
         n_mask = block_range_n + n_offset < N
@@ -397,7 +389,6 @@ def _grouped_gemm_dW_kernel(
                     m_block_size = tl.minimum(BLOCK_SIZE_M, m_size - tile_m_idx)
 
                     if m_block_size > 0:
-                        # Global offset for this chunk
                         m_global_offset = m_start + tile_m_idx
                         m_offsets = m_global_offset + block_range_m
 

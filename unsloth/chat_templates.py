@@ -95,7 +95,7 @@ zephyr_ollama = _ollama_template("zephyr")
 
 zephyr_eos_token = "eos_token"
 CHAT_TEMPLATES["zephyr"] = (zephyr_template, zephyr_eos_token, False, zephyr_ollama,)
-DEFAULT_SYSTEM_MESSAGE["zephyr"] = None # No system message in Zephyr
+DEFAULT_SYSTEM_MESSAGE["zephyr"] = None
 
 # =========================================== ChatML
 # ChatML has no BOS and not EOS! Rather <|im_start|> and <|im_end|> acts as BOS / EOS.
@@ -117,7 +117,7 @@ chatml_ollama = _ollama_template("chatml")
 
 chatml_eos_token = "<|im_end|>"
 CHAT_TEMPLATES["chatml"] = (chatml_template, chatml_eos_token, True, chatml_ollama,)
-DEFAULT_SYSTEM_MESSAGE["chatml"] = None # No system message in ChatML
+DEFAULT_SYSTEM_MESSAGE["chatml"] = None
 
 # =========================================== Mistral-1
 # Mistral Instruct doesn't allow system prompts, so we append it to the user message.
@@ -149,7 +149,7 @@ mistral_ollama = _ollama_template("mistral")
 
 mistral_eos_token = "eos_token"
 CHAT_TEMPLATES["mistral"] = (mistral_template, mistral_eos_token, False, mistral_ollama,)
-DEFAULT_SYSTEM_MESSAGE["mistral"] = None # No system message in Mistral
+DEFAULT_SYSTEM_MESSAGE["mistral"] = None
 
 # =========================================== Llama-2
 # Adds BOS to every convo! And weird <<SYS>> system messages.
@@ -180,7 +180,7 @@ llama_ollama = _ollama_template("llama")
 
 llama_eos_token = "eos_token"
 CHAT_TEMPLATES["llama"] = (llama_template, llama_eos_token, False, llama_ollama,)
-DEFAULT_SYSTEM_MESSAGE["llama"] = None # No system message in Llama
+DEFAULT_SYSTEM_MESSAGE["llama"] = None
 
 # ===========================================  Vicuna
 # https://github.com/lm-sys/FastChat/blob/main/docs/vicuna_weights_version.md#prompt-template
@@ -304,7 +304,7 @@ gemma_ollama = _ollama_template("gemma")
 
 gemma_eos_token = "<end_of_turn>"
 CHAT_TEMPLATES["gemma"] = (gemma_template, gemma_eos_token, True, gemma_ollama,)
-DEFAULT_SYSTEM_MESSAGE["gemma"] = None # No system message in Gemma
+DEFAULT_SYSTEM_MESSAGE["gemma"] = None
 
 # =========================================== Gemma with ChatML instead
 # We find using <eos> is still more appropriate!
@@ -317,7 +317,7 @@ gemma_chatml_eos_token = (
     "<|im_end|>",
 )
 CHAT_TEMPLATES["gemma_chatml"] = (gemma_chatml_template, gemma_chatml_eos_token, True, gemma_chatml_ollama,)
-DEFAULT_SYSTEM_MESSAGE["gemma_chatml"] = None # No system message in Gemma
+DEFAULT_SYSTEM_MESSAGE["gemma_chatml"] = None
 
 # =========================================== Gemma 2
 # Same as Gemma 1, but with sliding window attention!
@@ -326,14 +326,14 @@ gemma2_template = gemma_template
 gemma2_ollama = _ollama_template("gemma2")
 gemma2_eos_token = "<end_of_turn>"
 CHAT_TEMPLATES["gemma2"] = (gemma2_template, gemma2_eos_token, True, gemma2_ollama,)
-DEFAULT_SYSTEM_MESSAGE["gemma2"] = None # No system message in Gemma 2
+DEFAULT_SYSTEM_MESSAGE["gemma2"] = None
 
 # =========================================== Gemma 2 with ChatML instead
 gemma2_chatml_template = gemma_chatml_template
 gemma2_chatml_ollama = _ollama_template("gemma2_chatml")
 gemma2_chatml_eos_token = gemma_chatml_eos_token
 CHAT_TEMPLATES["gemma2_chatml"] = (gemma2_chatml_template, gemma2_chatml_eos_token, True, gemma2_chatml_ollama,)
-DEFAULT_SYSTEM_MESSAGE["gemma2_chatml"] = None # No system message in Gemma 2
+DEFAULT_SYSTEM_MESSAGE["gemma2_chatml"] = None
 
 # =========================================== Llama-3
 # Weirdly \n\n is needed?
@@ -358,10 +358,10 @@ llama3_ollama = _ollama_template("llama-3")
 llama3_template_eos_token = "eos_token"
 
 CHAT_TEMPLATES["llama-3"] = (llama3_template, llama3_template_eos_token, False, llama3_ollama,)
-DEFAULT_SYSTEM_MESSAGE["llama-3"] = None # No system message in Llama-3
+DEFAULT_SYSTEM_MESSAGE["llama-3"] = None
 
 CHAT_TEMPLATES["llama3"] = (llama3_template, llama3_template_eos_token, False, llama3_ollama,)
-DEFAULT_SYSTEM_MESSAGE["llama3"] = None # No system message in Llama-3
+DEFAULT_SYSTEM_MESSAGE["llama3"] = None
 
 
 # =========================================== Phi-3
@@ -385,13 +385,13 @@ phi3_ollama = _ollama_template("phi-3")
 
 phi3_template_eos_token = "<|end|>"
 CHAT_TEMPLATES["phi-3"]   = (phi3_template, phi3_template_eos_token, False, phi3_ollama,)
-DEFAULT_SYSTEM_MESSAGE["phi-3"] = None # No system message in Phi-3
+DEFAULT_SYSTEM_MESSAGE["phi-3"] = None
 
 CHAT_TEMPLATES["phi-35"]  = CHAT_TEMPLATES["phi-3"]
-DEFAULT_SYSTEM_MESSAGE["phi-35"] = None # No system message in Phi-3.5
+DEFAULT_SYSTEM_MESSAGE["phi-35"] = None
 
 CHAT_TEMPLATES["phi-3.5"] = CHAT_TEMPLATES["phi-3"]
-DEFAULT_SYSTEM_MESSAGE["phi-3.5"] = None # No system message in Phi-3.5
+DEFAULT_SYSTEM_MESSAGE["phi-3.5"] = None
 
 # =========================================== Llama-3.1
 """
@@ -596,16 +596,16 @@ qwen25_ollama = _ollama_template("qwen-2.5")
 qwen25_template_eos_token = "eos_token"
 qwen25_default_system_message = "You are Qwen, created by Alibaba Cloud. You are a helpful assistant."
 CHAT_TEMPLATES["qwen-2.5"] = (qwen25_template, qwen25_template_eos_token, False, qwen25_ollama,)
-DEFAULT_SYSTEM_MESSAGE["qwen-2.5"] = qwen25_default_system_message # No system message in Qwen 2.5
+DEFAULT_SYSTEM_MESSAGE["qwen-2.5"] = qwen25_default_system_message
 
 CHAT_TEMPLATES["qwen-25"]  = (qwen25_template, qwen25_template_eos_token, False, qwen25_ollama,)
-DEFAULT_SYSTEM_MESSAGE["qwen-25"] = qwen25_default_system_message # No system message in Qwen 2.5
+DEFAULT_SYSTEM_MESSAGE["qwen-25"] = qwen25_default_system_message
 
 CHAT_TEMPLATES["qwen25"]   = (qwen25_template, qwen25_template_eos_token, False, qwen25_ollama,)
-DEFAULT_SYSTEM_MESSAGE["qwen25"] = qwen25_default_system_message # No system message in Qwen 2.5
+DEFAULT_SYSTEM_MESSAGE["qwen25"] = qwen25_default_system_message
 
 CHAT_TEMPLATES["qwen2.5"]  = (qwen25_template, qwen25_template_eos_token, False, qwen25_ollama,)
-DEFAULT_SYSTEM_MESSAGE["qwen2.5"] = qwen25_default_system_message # No system message in Qwen 2.5
+DEFAULT_SYSTEM_MESSAGE["qwen2.5"] = qwen25_default_system_message
 
 # =========================================== Phi-4
 # "{{ bos_token }}"\ # Phi-4 removes BOS?
@@ -633,7 +633,7 @@ phi4_ollama = _ollama_template("phi-4")
 
 phi4_template_eos_token = "<|im_end|>"
 CHAT_TEMPLATES["phi-4"] = (phi4_template, phi4_template_eos_token, False, phi4_ollama,)
-DEFAULT_SYSTEM_MESSAGE["phi-4"] = None # No system message in Phi-4
+DEFAULT_SYSTEM_MESSAGE["phi-4"] = None
 
 
 # =========================================== Gemma-3
@@ -687,10 +687,10 @@ gemma3_ollama = _ollama_template("gemma-3")
 
 gemma3_template_eos_token = "<end_of_turn>"
 CHAT_TEMPLATES["gemma-3"] = (gemma3_template, gemma3_template_eos_token, False, gemma3_ollama,)
-DEFAULT_SYSTEM_MESSAGE["gemma-3"] = None # No system message in Gemma-3
+DEFAULT_SYSTEM_MESSAGE["gemma-3"] = None
 
 CHAT_TEMPLATES["gemma3"] = (gemma3_template, gemma3_template_eos_token, False, gemma3_ollama,)
-DEFAULT_SYSTEM_MESSAGE["gemma3"] = None # No system message in Gemma-3
+DEFAULT_SYSTEM_MESSAGE["gemma3"] = None
 
 # =========================================== Qwen-3
 # Official Qwen-3 chat template (see https://ollama.com/library/qwen3/blobs/eb4402837c78)
@@ -799,10 +799,10 @@ qwen3_template = \
 qwen3_ollama = _ollama_template("qwen-3")
 qwen3_template_eos_token = "<|im_end|>"
 CHAT_TEMPLATES["qwen-3"] = (qwen3_template, qwen3_template_eos_token, False, qwen3_ollama,)
-DEFAULT_SYSTEM_MESSAGE["qwen-3"] = None # No default system message for Qwen-3
+DEFAULT_SYSTEM_MESSAGE["qwen-3"] = None
 
 CHAT_TEMPLATES["qwen3"] = (qwen3_template, qwen3_template_eos_token, False, qwen3_ollama,)
-DEFAULT_SYSTEM_MESSAGE["qwen3"] = None # No default system message for Qwen-3
+DEFAULT_SYSTEM_MESSAGE["qwen3"] = None
 
 # =========================================== Gemma-3n
 # Obtained via
@@ -856,10 +856,10 @@ gemma3n_template = \
 gemma3n_ollama = _ollama_template("gemma-3n")
 gemma3n_template_eos_token = "<end_of_turn>"
 CHAT_TEMPLATES["gemma-3n"] = (gemma3n_template, gemma3n_template_eos_token, False, gemma3n_ollama,)
-DEFAULT_SYSTEM_MESSAGE["gemma-3n"] = None # No system message in Gemma-3n
+DEFAULT_SYSTEM_MESSAGE["gemma-3n"] = None
 
 CHAT_TEMPLATES["gemma3n"] = (gemma3n_template, gemma3n_template_eos_token, False, gemma3n_ollama,)
-DEFAULT_SYSTEM_MESSAGE["gemma3n"] = None # No system message in Gemma-3n
+DEFAULT_SYSTEM_MESSAGE["gemma3n"] = None
 
 # =========================================== Gemma-4
 # Gemma-4 uses <|turn>role\n...<turn|>\n format
@@ -1555,10 +1555,10 @@ PARAMETER top_p 1.0
 
 gptoss_template_template_eos_token = "<|return|>"
 CHAT_TEMPLATES["gpt-oss"] = (gptoss_template, gptoss_template_template_eos_token, False, gptoss_ollama,)
-DEFAULT_SYSTEM_MESSAGE["gpt-oss"] = None # No system message in GPT-oss
+DEFAULT_SYSTEM_MESSAGE["gpt-oss"] = None
 
 CHAT_TEMPLATES["gptoss"] = (gptoss_template, gptoss_template_template_eos_token, False, gptoss_ollama,)
-DEFAULT_SYSTEM_MESSAGE["gptoss"] = None # No system message in GPT-oss
+DEFAULT_SYSTEM_MESSAGE["gptoss"] = None
 
 # =========================================== Qwen3-Instruct
 qwen3_instruct_template = \
@@ -1651,7 +1651,7 @@ qwen3_instruct_template = \
 
 qwen3_template_eos_token = "<|im_end|>"
 CHAT_TEMPLATES["qwen3-instruct"] = (qwen3_instruct_template, qwen3_template_eos_token, False, _ollama_template("qwen3-instruct"),)
-DEFAULT_SYSTEM_MESSAGE["qwen3-instruct"] = None # No system message in Qwen3
+DEFAULT_SYSTEM_MESSAGE["qwen3-instruct"] = None
 
 
 # =========================================== Qwen3-Thinking
@@ -1749,7 +1749,7 @@ CHAT_TEMPLATES["qwen3-thinking"] = (
     False,
     _ollama_template("qwen3-thinking"),
 )
-DEFAULT_SYSTEM_MESSAGE["qwen3-thinking"] = None # No system message in Qwen3
+DEFAULT_SYSTEM_MESSAGE["qwen3-thinking"] = None
 
 
 # =========================================== Liquid-LFM2
@@ -1762,7 +1762,7 @@ liquid_lfm2_template = \
 
 liquid_lfm2_template_eos_token = "<|im_end|>"
 CHAT_TEMPLATES["lfm-2"] = (liquid_lfm2_template, liquid_lfm2_template_eos_token, False, None)
-DEFAULT_SYSTEM_MESSAGE["lfm-2"] = None # No system message in Phi-3
+DEFAULT_SYSTEM_MESSAGE["lfm-2"] = None
 CHAT_TEMPLATES["lfm-2.5"] = (liquid_lfm2_template, liquid_lfm2_template_eos_token, False, None)
 DEFAULT_SYSTEM_MESSAGE["lfm-2.5"] = None
 
@@ -1864,7 +1864,7 @@ def get_chat_template(
     #     pass
     # pass
 
-    # We first check if the tokenizer is a fast one. If not, we cannot convert this!
+    # Non-fast tokenizers cannot be converted
     is_fast_tokenizer = getattr(tokenizer, "is_fast", False)
     old_padding_side = tokenizer.padding_side
 
@@ -1872,8 +1872,7 @@ def get_chat_template(
     type_chat_template = None
 
     if type(chat_template) in (list, tuple,):
-        # For changing system message later
-        # Since it's not supported yet, we will raise an error first!
+        # type_chat_template lets us swap the system message later
         type_chat_template = chat_template[0].lower()
         chat_template, stop_word = chat_template
         assert(type(chat_template) is str)
@@ -1881,12 +1880,10 @@ def get_chat_template(
         ollama_modelfile = None
 
     elif type(chat_template) is str:
-        # For changing system message later
         type_chat_template = chat_template.lower()
 
         chat_template, stop_word, yes_map_eos_token, ollama_modelfile = CHAT_TEMPLATES[chat_template]
 
-        # Check mapping to eos_token
         if not map_eos_token and yes_map_eos_token: map_eos_token = True
         if not yes_map_eos_token and map_eos_token: map_eos_token = False
 
@@ -1974,9 +1971,8 @@ def get_chat_template(
             old_unk_token = getattr(tokenizer, "unk_token", None)
 
             string_vocab = tokenizer._tokenizer.to_str()
-            # First check if new stop_word is in the tokenizer
             if stop_word in string_vocab:
-                # We shall swap them around
+                # swap stop_word and the old EOS around
                 temporary_stop_token = "<|:__TEMP//STOP//TOKEN__:|>"
                 string_vocab = string_vocab.replace(old_eos_token, temporary_stop_token)
                 string_vocab = string_vocab.replace(stop_word, old_eos_token)
@@ -2047,7 +2043,7 @@ def get_chat_template(
 
     tokenizer.chat_template = chat_template
 
-    # Also fix up other tokens
+    # Restore the original special tokens
     old_pad_token = getattr(old_tokenizer, "pad_token", None)
     old_bos_token = getattr(old_tokenizer, "bos_token", None)
     old_unk_token = getattr(old_tokenizer, "unk_token", None)
@@ -2061,19 +2057,16 @@ def get_chat_template(
 
     # stopping_criteria = create_stopping_criteria(tokenizer, stop_word)
 
-    # Patch saving functions
     if patch_saving:
         from .save import patch_saving_functions
         tokenizer = patch_saving_functions(tokenizer)
 
-    # Add Ollama
     tokenizer._ollama_modelfile = ollama_modelfile
     tokenizer._system_message   = system_message
     return tokenizer#, stopping_criteria
 
 
 def remove_special_tokens(tokenizer, prompt):
-    # Removes double BOS token
     if prompt.startswith(tokenizer.bos_token):
         prompt = prompt[len(tokenizer.bos_token):]
     return prompt
@@ -2096,24 +2089,20 @@ def _parse_combined_prompt(combined_prompt, dataset):
 
     final_optional_prompts = []
     if len(optional_prompts) != 0:
-        # Add left
         left = optional_prompts[0]
         l = left[0][0]
         if l != 0: final_optional_prompts.append(combined_prompt[:l])
 
-        # Add in between
         for left, right in zip(optional_prompts[:-1], optional_prompts[1:]):
             l, r = left[0][-1], right[0][0]
             final_optional_prompts.append(left)
             if l != r: final_optional_prompts.append(combined_prompt[l : r])
         final_optional_prompts.append(optional_prompts[-1])
 
-        # Add right
         right = optional_prompts[-1]
         r = right[0][1]
         if r != len(combined_prompt): final_optional_prompts.append(combined_prompt[r:])
     else:
-        # Just add in the entire string
         final_optional_prompts.append(combined_prompt)
 
     check_combined = "".join(x if type(x) is str else x[1] for x in final_optional_prompts)
@@ -2189,15 +2178,9 @@ def to_sharegpt(
     conversation_extension = 1,
     random_state = 3407,
 ):
-    """
-    Converts a dataset to ShareGPT style (1 input + 1 output field).
-    Merge multiple columns into 1 input via `merged_prompt`; use
-    `conversation_extension` to pack several convos into one.
-
-    merged_prompt = "",                 Prompt to merge columns into 1 input
-    merged_column_name = "instruction", Final column name for the input  field
-    output_column_name = "output",      Final column name for the output field
-    conversation_extension = 1,         Combines this many convos into 1
+    """Convert a dataset to ShareGPT style (1 input + 1 output field).
+    `merged_prompt` merges multiple columns into the input;
+    `conversation_extension` packs that many convos into one.
     """
     if "conversations" in dataset.column_names:
         convo = dataset[0]["conversations"]
@@ -2229,11 +2212,10 @@ def to_sharegpt(
         __convert_to_sharegpt__,
         batched = True,
         desc = "Converting to ShareGPT",
-        # Remove unused columns!
         remove_columns = dataset.column_names if remove_unused_columns else None,
     )
 
-    # Randomnly concat conversations to create a long stream!
+    # Randomly concat conversations to create a long stream!
     from datasets import concatenate_datasets
     n_extensions = max(conversation_extension-1, 0)
     if n_extensions == 0: return dataset
@@ -2245,7 +2227,6 @@ def to_sharegpt(
         all_shuffled.append(shuffled)
     dataset = concatenate_datasets(all_shuffled, axis = 1)
 
-    # Combine them into 1
     n_extensions += 1
     conversation_columns = [f"conversations{j}" for j in range(n_extensions)]
     def __combine_conversations__(examples):
@@ -2262,7 +2243,6 @@ def to_sharegpt(
         __combine_conversations__,
         batched = True,
         desc = "Extending conversations",
-        # Remove unused columns!
         remove_columns = dataset.column_names if remove_unused_columns else None,
     )
     return dataset
@@ -2272,15 +2252,12 @@ def get_ollama_eos_tokens(tokenizer, extra_eos_tokens = []):
     added_tokens_decoder = tokenizer.added_tokens_decoder.values()
     added_tokens_decoder = [str(x) for x in added_tokens_decoder]
 
-    # Remove added_tokens_decoder duplicates
     added_tokens_decoder = list(set(added_tokens_decoder) - set(extra_eos_tokens))
 
-    # Remove BOS
     if getattr(tokenizer, "bos_token", None) is not None:
         added_tokens_decoder = [x for x in added_tokens_decoder if x != tokenizer.bos_token]
 
     repeatted_tokens = []
-    # Join all vocab
     joined_text = "\x01\x00".join(added_tokens_decoder)
     for token in added_tokens_decoder:
         n = len(token)
@@ -2296,13 +2273,12 @@ def get_ollama_eos_tokens(tokenizer, extra_eos_tokens = []):
                     repeatted_tokens.append(token[:j])
                     break
 
-    # Remove duplicates
     splitted = joined_text.split("\x01\x00")
     final_eos_tokens = [old for old, new in zip(added_tokens_decoder, splitted) if old == new]
     final_eos_tokens += extra_eos_tokens
     final_eos_tokens += repeatted_tokens
 
-    # Remove new lines, spaces and HTML tags
+    # Drop newline / space / short HTML-tag tokens
     filtered_eos_tokens = []
     for token in final_eos_tokens:
         if   token.count("\n") == len(token): continue
@@ -2334,12 +2310,8 @@ default_system_message = \
 
 extra_eos_tokens = None,
 ):
-    """
-    Creates an Ollama modelfile and a HF Jinja template from a custom
-    template. You must provide 2x examples of an input & output.
-    There is an optional system message as well.
-
-    You must use {INPUT}, {OUTPUT} twice, and {SYSTEM} is optional.
+    """Build an Ollama modelfile and HF Jinja template from a custom template.
+    Use {INPUT} and {OUTPUT} twice each; {SYSTEM} is optional.
     """
     # Strip only the left: trailing whitespace can be part of the repeated example
     # (e.g. "{OUTPUT}\n"). Accidental trailing whitespace (#992) is retried on failure.
@@ -2374,14 +2346,11 @@ extra_eos_tokens = None,
             "Unsloth: Your tokenizer does not have an EOS token? Please provide one via extra_eos_tokens!"
         )
 
-    # Check tokenizer types
     tokenizer_name = tokenizer.name_or_path.lower()
     if tokenizer_name.startswith(("unsloth/llama-3-8b-instruct", "unsloth/llama-3-70b-instruct")):
-        # Add <|eot_id|>
         extra_eos_tokens.append("<|eot_id|>")
     elif ("<|eot_id|>" in extra_eos_tokens or "<|eot_id|>" in chat_template) and \
         tokenizer_name.startswith(("unsloth/llama-3-8b", "unsloth/llama-3-70b")):
-        # Warn
         logger.warning(
             "Unsloth: Base llama-3 models did not train <|eot_id|>.\n"\
             "Please use the instruct version or use <|end_of_text|>"
@@ -2412,7 +2381,6 @@ extra_eos_tokens = None,
         # Must be equivalent to left
         final_combined_check = True
 
-        # Repeatted text
         instruction_response = chat_template[j:]
         if instruction_response.count("{INPUT}") != 1 or instruction_response.count("{OUTPUT}") != 1:
             raise RuntimeError(error_msg)
@@ -2522,8 +2490,6 @@ extra_eos_tokens = None,
         eos = extra_eos_tokens[0]
         output_part = output_part + eos
 
-    # Ollama modelfile parts
-
     # Check bos_token is in system prompt
     ollama_system = system_part
     has_bos_token = False
@@ -2541,14 +2507,12 @@ extra_eos_tokens = None,
     input_modelfile  = "{{ if .Prompt }}" + input_part .replace("{INPUT}",  "{{ .Prompt }}") + "{{ end }}"
     output_modelfile = output_part.replace("{OUTPUT}", "{{ .Response }}")
 
-    # Ollama EOS
     ollama_eos = get_ollama_eos_tokens(tokenizer, extra_eos_tokens)
     ollama_eos = '\n'.join(f'PARAMETER stop "{eos}"' for eos in ollama_eos)
 
     # Add temperature and min_p to counteract gibberish
     ollama_eos += "\nPARAMETER temperature 1.5\nPARAMETER min_p 0.1"
 
-    # Ollama modelfile
     part = '"""'
     modelfile = 'FROM {__FILE_LOCATION__}\n\n'\
     'TEMPLATE ' + part + system_modelfile + input_modelfile + output_modelfile + \
@@ -2722,12 +2686,8 @@ default_system_message = \
 extra_eos_tokens = None,
 
 ):
-    """
-    Creates an Ollama modelfile and a HF Jinja template from a custom
-    template. You must provide 2x examples of an input & output.
-    There is an optional system message as well.
-
-    You must use {INPUT}, {OUTPUT} twice, and {SYSTEM} is optional.
+    """Apply a custom chat template to a dataset (builds the Ollama modelfile
+    and HF Jinja template). Use {INPUT} and {OUTPUT} twice each; {SYSTEM} is optional.
     """
     modelfile, jinja_template, input_part, output_part = construct_chat_template(
         tokenizer = tokenizer,
@@ -2884,10 +2844,7 @@ def test_chat_templates():
 
 
 def test_hf_gguf_equivalence(tokenizer, gguf_model = "./model-unsloth.F16.gguf"):
-    """
-        Carefully checks the output of GGUF's tokenization and HF.
-        Can catch all tokenization bugs.
-    """
+    """Check GGUF vs HF tokenization to catch tokenization bugs."""
     import subprocess
     import re
     messages = [

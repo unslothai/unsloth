@@ -55,7 +55,6 @@ def run_benchmark_forward(
 
     X = torch.randn(bs, seqlen, hidden_size, dtype = dtype, device = device, requires_grad = True)
 
-    # Forward
     bench_forward_ref = lambda: ref_model(X)  # noqa: E731
     bench_forward_fused = lambda: tt_model(X)  # noqa: E731
 
@@ -104,7 +103,6 @@ def run_benchmark_backward(
     ]
     test_output, _ = tt_model(X_test)
 
-    # Bench
     grad_output = torch.randn_like(output)
     bench_backward_ref = lambda: output.backward(grad_output, retain_graph = True)  # noqa: E731
     bench_backward_fused = lambda: test_output.backward(grad_output, retain_graph = True)  # noqa: E731
@@ -136,7 +134,7 @@ def setup_model(
     if isinstance(config, Qwen3MoeConfig):
         ref_model = Qwen3MoeSparseMoeBlock(config).to(device, dtype)
 
-        # Triton kernel grouped gemm version of MoE Block -- this is what we're testing
+        # Triton grouped-gemm MoE block under test.
         tt_model = Qwen3MoeFusedGroupedGEMMBlock.from_hf(
             ref_model,
             permute_x = permute_x,
@@ -275,13 +273,13 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--use_tma_load_w", action = "store_true"
-    )  # Auto-parametrized per kernel config; no need to specify
+    )  # Auto-parametrized per kernel config
     parser.add_argument(
         "--use_tma_load_x", action = "store_true"
-    )  # Auto-parametrized per kernel config; no need to specify
+    )  # Auto-parametrized per kernel config
     parser.add_argument(
         "--use_tma_load_dy", action = "store_true"
-    )  # Auto-parametrized per kernel config; no need to specify
+    )  # Auto-parametrized per kernel config
     parser.add_argument(
         "--mode",
         type = str,

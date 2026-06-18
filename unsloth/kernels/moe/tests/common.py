@@ -120,19 +120,17 @@ def assert_close(
     Compare reference values against obtained values.
     """
 
-    # cast to float32:
     ref = ref.to(torch.float32).detach()
     tri = tri.to(torch.float32).detach()
     assert ref.shape == tri.shape, f"Tensors must have same size {ref.shape = } {tri.shape = }"
 
-    # deal with infinite elements:
     inf_mask_ref = torch.isinf(ref)
     inf_mask_tri = torch.isinf(tri)
     assert torch.equal(inf_mask_ref, inf_mask_tri), "Tensor must have same infinite elements"
     refn = torch.where(inf_mask_ref, 0, ref)
     trin = torch.where(inf_mask_tri, 0, tri)
 
-    # normalise so that RMS calculation doesn't overflow:
+    # normalise so RMS calculation doesn't overflow
     eps = 1.0e-30
     multiplier = 1.0 / (torch.max(torch.abs(refn)) + eps)
     refn *= multiplier
@@ -243,7 +241,6 @@ def remove_feature_flags(
 ):
     pruned_configs = []
     for config in kernel_configs:
-        # Remove permute flags first:
         if permute_x and config.permute_x:
             continue
         if permute_y and config.permute_y:

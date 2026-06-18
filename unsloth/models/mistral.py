@@ -65,7 +65,6 @@ def MistralAttention_fast_forward(
     *args,
     **kwargs,
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
-    # Clear inference
     if hasattr(self, "paged_attention"):
         del self.paged_attention_K
         del self.paged_attention_V
@@ -98,7 +97,7 @@ def MistralAttention_fast_forward(
     cos, sin = self.rotary_emb.get_cached(kv_seq_len, Q.device.index)
 
     rope_position_ids = position_ids if position_ids is not None else kwargs.get("position_ids")
-    # Useful for LongRoPE
+    # rope_position_ids enables LongRoPE
     Q, K = fast_rope_embedding(Q, K, cos, sin, rope_position_ids)
 
     if past_key_value is not None:
@@ -106,7 +105,6 @@ def MistralAttention_fast_forward(
         V = torch.cat([past_key_value[1], V], dim = 2)
     past_key_value = (K, V) if use_cache else None
 
-    # Attention module
     sw_cfg = getattr(self.config, "sliding_window", None)
     sw = kv_seq_len if (sw_cfg is None or sw_cfg == "null") else sw_cfg
     window_size = (-1, -1) if (kv_seq_len <= sw) else (sw, sw)
@@ -176,23 +174,18 @@ def MistralForCausalLM_fast_forward(
                     [q_len] * bsz
                 ).make_local_attention(window_size = sliding_window)
 
-            # If attention_mask exists, it will be handled in the attention forward
-
         elif self.training:
-            # LlamaModel_fast_forward's DPO embed-masking block needs the 2D
-            # attention_mask; it nulls the mask before attention anyway, so
-            # leaving it 2D is safe and avoids a 4D conversion that crashes DPO.
+            # Keep 2D attention_mask: DPO embed-masking nulls it before attention,
+            # and a 4D conversion would crash DPO.
             pass
 
         else:
-            # Not using xformers - need to create attention masks
             if (
                 sliding_window is None
                 or sliding_window == "null"
                 or sliding_window <= 0
                 or q_len <= sliding_window
             ):
-                # Fully causal mask
                 causal_mask_values = torch.triu(
                     torch.full((q_len, q_len), -torch.inf, device = input_ids.device),
                     diagonal = 1,
@@ -209,7 +202,6 @@ def MistralForCausalLM_fast_forward(
                     causal_bool_mask & window_bool_mask, 0.0, -torch.inf
                 )
 
-            # Combine with existing attention_mask if present
             if attention_mask is None:
                 attention_mask = causal_mask_values[None, None, :, :].expand(bsz, 1, q_len, q_len)
             else:
@@ -236,7 +228,6 @@ def MistralForCausalLM_fast_forward(
     )
     return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
-    # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
     self.model._has_no_labels = labels is None
 
     if past_key_values is not None:
@@ -268,14 +259,12 @@ def MistralForCausalLM_fast_forward(
     lm_head = self.lm_head.weight
     lm_head_device = lm_head.device
 
-    # Move items to same device as lm_head
+    # Move to lm_head device
     hidden_states = hidden_states.to(lm_head_device)
     if labels is not None:
         labels = labels.to(lm_head_device)
 
-    # Merge legacy / new spellings before branching so the decode-time
-    # last-token slice fires on the normal path too. Skip int max() if
-    # either is a tensor (HF selective-decode form).
+    # Merge legacy/new spellings; skip int max() if either is a tensor (HF selective-decode form)
     if isinstance(num_logits_to_keep, torch.Tensor) or isinstance(logits_to_keep, torch.Tensor):
         num_logits_to_keep = 0
     else:
@@ -300,9 +289,8 @@ def MistralForCausalLM_fast_forward(
         logits = self.lm_head(hidden_states[:, -num_logits_to_keep:, :].to(lm_head.dtype))
     else:
         RETURN_LOGITS = os.environ.get("UNSLOTH_RETURN_LOGITS", "0") == "1"
-        # < 1024 Normal Unsloth uses less VRAM!
+        # Small batches: fused CE loss uses less VRAM
         if bsz * q_len <= 1024 and not RETURN_LOGITS:
-            # Use unsloth_fused_ce_loss which actually calculates the best chunk size to reduce VRAM usage
             RETURN_LOGITS = False
 
         if not RETURN_LOGITS and labels is not None:
@@ -410,7 +398,7 @@ class FastMistralModel(FastLlamaModel):
             scaled_rope_module = LlamaLinearScalingRotaryEmbedding,
             attention_module = MistralAttention,
         )
-        # Just for Mistral Nemo models!
+        # Mistral Nemo only
         if function is not None and init_name is not None:
             function = patch_mistral_nemo_attention(function)
             # if True:#init_name is not None:
@@ -425,9 +413,8 @@ class FastMistralModel(FastLlamaModel):
         PeftModelForCausalLM.forward = PeftModel_fast_forward
         fix_prepare_inputs_for_generation(MistralForCausalLM)
 
-        # Solves https://github.com/unslothai/unsloth/issues/168
-        # Static KV Cache was introduced in 4.38.0, causing training to be much slower.
-        # Inference can now be CUDAGraphed, but we shall retain the old rotary embeddings.
+        # Retain old rotary embeddings: static KV Cache (4.38.0) made training much slower.
+        # https://github.com/unslothai/unsloth/issues/168
         # https://github.com/huggingface/transformers/pull/27931
         # https://github.com/huggingface/transformers/blob/v4.37.2/src/transformers/models/llama/modeling_llama.py
         import transformers.models.mistral.modeling_mistral

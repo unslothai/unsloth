@@ -348,7 +348,6 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
 
     kwargs["pad_token_id"] = kwargs.pop("pad_token_id", model_eos_token_id)
 
-    # Get pixel values for VLMs
     try:
         kwargs["pixel_values"] = kwargs["pixel_values"].to(dtype)
     except:
@@ -358,16 +357,14 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
     except:
         pass
 
-    # Mixed precision autocast
     if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1":
         autocaster = torch.autocast(device_type = DEVICE_TYPE_TORCH, dtype = torch.float16)
         dtype = torch.float16
     else:
         autocaster = torch.autocast(device_type = DEVICE_TYPE_TORCH, dtype = dtype)
-    # Prepare LoRA
     # state_dict = convert_lora_modules(self, dtype = dtype)
 
-    # Set compile dynamic shapes
+    # compile dynamic shapes
     torch._dynamo.mark_static(input_ids, 0)
     torch._dynamo.mark_dynamic(input_ids, 1)
     if "attention_mask" in kwargs:
@@ -377,8 +374,7 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
         torch._dynamo.mark_static(kwargs["token_type_ids"], 0)
         torch._dynamo.mark_dynamic(kwargs["token_type_ids"], 1)
 
-    # Fix generation_config
-    # Use hybrid if sliding window seen, otherwise try static
+    # use hybrid cache if sliding window seen, otherwise try static
     cache_implementation = getattr(self.config, "cache_implementation", None)
     if getattr(self, "_supports_static_cache", getattr(self, "_can_compile_fullgraph", True)):
         if os.environ.get("UNSLOTH_DISABLE_STATIC_GENERATION", "0") == "0":
@@ -386,7 +382,6 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
         elif Version(transformers_version) < Version("4.56.0.dev0"):
             cache_implementation = None
         else:
-            # Should work in latest transformers!
             cache_implementation = "static"
     else:
         cache_implementation = None
@@ -450,18 +445,16 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
 
 
 def _construct_vlm_processor_fallback(tokenizer_name, model_type, token, trust_remote_code):
-    """Construct a VLM processor manually when AutoProcessor.from_pretrained fails.
+    """Build a VLM processor manually when AutoProcessor.from_pretrained fails.
 
-    Some VLMs (e.g., LFM2.5-VL) have tokenizer_class entries that AutoTokenizer
-    cannot resolve. This function loads the image processor and tokenizer separately,
-    sets required special token attributes, and constructs the processor.
+    Some VLMs (e.g. LFM2.5-VL) have tokenizer_class entries AutoTokenizer cannot
+    resolve; load the image processor and tokenizer separately and assemble them.
     """
     try:
         from transformers import AutoImageProcessor, PreTrainedTokenizerFast, AutoConfig
         from transformers.models.auto.processing_auto import PROCESSOR_MAPPING_NAMES
         import json
 
-        # Load image processor
         image_processor = AutoImageProcessor.from_pretrained(
             tokenizer_name,
             token = token,
@@ -481,7 +474,6 @@ def _construct_vlm_processor_fallback(tokenizer_name, model_type, token, trust_r
             config_path = hf_hub_download(tokenizer_name, "tokenizer_config.json", token = token)
             with open(config_path, "r", encoding = "utf-8") as f:
                 tok_config = json.load(f)
-            # Set model-specific special tokens and their IDs
             for key in (
                 "image_token",
                 "image_start_token",
@@ -501,8 +493,7 @@ def _construct_vlm_processor_fallback(tokenizer_name, model_type, token, trust_r
         # Find the processor class - try model_type first, then top-level config model_type
         proc_class_name = PROCESSOR_MAPPING_NAMES.get(model_type)
         if proc_class_name is None:
-            # model_type might be a sub-model type (e.g. "lfm2" instead of "lfm2_vl").
-            # Try the top-level config.model_type which often has the processor mapping.
+            # model_type may be a sub-type (e.g. "lfm2" vs "lfm2_vl"); top-level config often maps
             try:
                 config = AutoConfig.from_pretrained(
                     tokenizer_name,
@@ -609,8 +600,8 @@ class FastBaseModel:
         if os.environ.get("UNSLOTH_MODEL_NAME", "") == "":
             os.environ["UNSLOTH_MODEL_NAME"] = model_name.lower()
 
-        # Resolve text-only before the is_vlm / vLLM checks so is_vlm stays consistent;
-        # skip the vision tower only for families with their own text decoder (Gemma 3). #5816
+        # Resolve text-only before is_vlm/vLLM checks; skip vision tower only for
+        # families with their own text decoder (Gemma 3). #5816
         if text_only and auto_config is None:
             auto_config = AutoConfig.from_pretrained(
                 model_name,
@@ -731,7 +722,7 @@ class FastBaseModel:
         if old_hf_transfer != "0":
             os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
 
-        # For debugging - we use a download counter to see if environments are not breaking or if HF is down
+        # download counter: detects broken environments or HF outages
         get_statistics(kwargs.get("local_files_only", False))
 
         if dtype is None:
@@ -775,7 +766,6 @@ class FastBaseModel:
                     bnb_compute_dtype = eval(_bnb_compute_dtype)
                 correct_dtype = bnb_compute_dtype
                 custom_datatype = _custom_datatype
-                # Execute code as well
                 if len(execute_code.strip()) != 0:
                     exec(execute_code)
             else:
@@ -796,8 +786,7 @@ class FastBaseModel:
             supports_sdpa = supports_sdpa,
         )
 
-        # Handle FP8 models: get_model_name has already redirected this to BF16 sibling if the model ships with
-        # FP8 weights. We just need to update it here for sanity.
+        # FP8 models were already redirected to a BF16 sibling; sync model_name here
         auto_config.model_name = model_name
         kwargs["attn_implementation"] = attn_impl
 
@@ -824,9 +813,8 @@ class FastBaseModel:
                 "Unsloth: Can only load in 4bit or 8bit or 16bit, not a combination!"
             )
         _skip_modules = SKIP_QUANTIZATION_MODULES.copy()
-        # Nemotron-H uses 'mixer' (not 'mamba') for Mamba layers.
-        # Mamba fused kernels pass out_proj.weight directly to F.linear,
-        # which fails with quantized Params4bit. Skip out_proj from quantization.
+        # Nemotron-H Mamba fused kernels pass out_proj.weight to F.linear,
+        # which fails on quantized Params4bit; skip out_proj from quantization.
         if any(mt == "nemotron_h" for mt in (model_types or [])):
             _skip_modules.append("out_proj")
 
@@ -910,7 +898,6 @@ class FastBaseModel:
                     quantizer = AUTO_QUANTIZATION_CONFIG_MAPPING[quant_method]
                 quantizer_kwargs = {}
                 if quant_method == "compressed-tensors":
-                    # Ignore these
                     pass
                 else:
                     # We cannot dequantize since gpt-oss-20b MXFP4 will now be gpt-oss-20b-BF16
@@ -951,8 +938,7 @@ class FastBaseModel:
         if not fast_inference:
             # Prevent load_in_fp8 from being forwarded into HF internal model loading
             load_in_fp8 = kwargs.pop("load_in_fp8", None)
-            # Transformers 5.x @strict config classes reject unexpected kwargs.
-            # Move config-level attributes onto the config object directly.
+            # Transformers 5.x @strict config classes reject unexpected kwargs; set them on config
             _num_labels = kwargs.pop("num_labels", None)
             if _num_labels is not None:
                 set_task_config_attr(model_config, "num_labels", _num_labels)
@@ -1067,10 +1053,9 @@ class FastBaseModel:
                 if allowed_arg not in load_vllm_kwargs and allowed_arg in kwargs:
                     load_vllm_kwargs[allowed_arg] = kwargs[allowed_arg]
 
-            # Load vLLM first
             llm = load_vllm(**load_vllm_kwargs)
 
-            # Convert to HF format
+            # convert to HF format
             _, quant_state_dict = get_vllm_state_dict(
                 llm,
                 config = model_config,
@@ -1091,10 +1076,9 @@ class FastBaseModel:
 
         raise_handler.remove()
 
-        # Return old flag
         os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = old_hf_transfer
 
-        # Check float32 norm weights
+        # Force float32 norm weights when requested
         if os.environ.get("UNSLOTH_HIGH_PRECISION_LAYERNORM", "0") == "1":
             for jj, (name, module) in enumerate(model.named_modules()):
                 if (
@@ -1103,12 +1087,10 @@ class FastBaseModel:
                     or "layer_norm" in name
                 ) and hasattr(module, "weight"):
                     module._pre_set_compute_dtype = torch.float32
-        # Edit data-types
         if custom_datatype is not None:
             with torch.no_grad():
                 for jj, (name, module) in enumerate(model.named_modules()):
                     exec(custom_datatype)
-        # Clear deleted GPU items
         for _ in range(3):
             gc.collect()
             if DEVICE_TYPE in ("cuda", "hip"):
@@ -1116,7 +1098,6 @@ class FastBaseModel:
             elif DEVICE_TYPE == "xpu":
                 torch.xpu.empty_cache()
 
-        # Counteract saved tokenizers
         tokenizer_name = model_name if tokenizer_name is None else tokenizer_name
 
         # Fix _Unsloth_Patched_ prefix in local config files from old saves (issue #4085)
@@ -1171,10 +1152,8 @@ class FastBaseModel:
                     trust_remote_code = trust_remote_code,
                 )
 
-        # If processor loading failed (e.g., tokenizer class not found),
-        # or if AutoProcessor silently degraded to a text-only tokenizer
-        # instead of returning a full VLM processor (issue #4085),
-        # try constructing the processor manually from separate components.
+        # If processor loading failed or AutoProcessor degraded to a text-only
+        # tokenizer instead of a full VLM processor (#4085), build it manually.
         _processor_is_degraded = (
             is_vlm and tokenizer is not None and not hasattr(tokenizer, "image_processor")
         )
@@ -1193,8 +1172,7 @@ class FastBaseModel:
                     f"Unsloth: Warning - VLM processor fallback returned None for model_type={model_type_arch}",
                     file = sys.stderr,
                 )
-        # Backwards compat: if processor has no chat_template (e.g. old saves without
-        # chat_template.jinja) but the inner tokenizer does, copy it to the processor.
+        # Backwards compat: copy chat_template from inner tokenizer when processor lacks one
         if (
             hasattr(tokenizer, "tokenizer")
             and getattr(tokenizer, "chat_template", None) is None
@@ -1204,9 +1182,7 @@ class FastBaseModel:
 
         if hasattr(tokenizer, "tokenizer"):
             __tokenizer = tokenizer.tokenizer
-            # Add padding side as well
             __tokenizer.padding_side = "left"
-            # Check bos, eos, pad tokens
             if hasattr(__tokenizer, "bos_token"):
                 tokenizer.bos_token = __tokenizer.bos_token
                 tokenizer.bos_token_id = __tokenizer.bos_token_id
@@ -1216,7 +1192,6 @@ class FastBaseModel:
             if hasattr(__tokenizer, "pad_token"):
                 tokenizer.pad_token = __tokenizer.pad_token
                 tokenizer.pad_token_id = __tokenizer.pad_token_id
-        # Fix other stuff like BnB compute data types
         model, tokenizer = patch_model_and_tokenizer(
             model,
             tokenizer,
@@ -1229,8 +1204,7 @@ class FastBaseModel:
         try:
             model, tokenizer = patch_tokenizer(model, tokenizer)
         except Exception as _patch_err:
-            # Some VLM processors (e.g., ERNIE VL) may fail during tokenizer patching.
-            # Try loading tokenizer separately via AutoTokenizer as fallback.
+            # Some VLM processors (e.g. ERNIE VL) fail patching; retry via AutoTokenizer
             try:
                 from transformers import AutoTokenizer as _AutoTokenizer
 
@@ -1287,13 +1261,12 @@ class FastBaseModel:
         apply_accepts_loss_kwargs_fix(model)
         patch_gradient_accumulation_fix(Trainer)
 
-        # Save tokenizer for inference purposes
         tokenizer.padding_side = "left"  # Force inference
         if hasattr(tokenizer, "tokenizer"):
             tokenizer.tokenizer.padding_side = "left"  # Force inference
-        # Audio feature extractors must stay right padded: left (a text setting,
-        # forwarded by from_pretrained) shifts Whisper mels and desyncs Gemma 4
-        # audio token counts (crash on transformers < 5.10).
+        # Audio feature extractors must stay right padded: left padding (a text
+        # setting forwarded by from_pretrained) shifts Whisper mels and desyncs
+        # Gemma 4 audio token counts (crash on transformers < 5.10).
         feature_extractor = getattr(tokenizer, "feature_extractor", None)
         if (
             feature_extractor is not None
@@ -1308,14 +1281,12 @@ class FastBaseModel:
             m.is_loaded_in_8bit = True if not full_finetuning else False
             m = m.model
         m.max_seq_length = max_seq_length
-        # Save to modules as well
         for module in model.modules():
             module.max_seq_length = max_seq_length
         m._saved_temp_tokenizer = tokenizer
         # Also set is_loaded_in_8bit to disable incorrect DDP
         m.is_loaded_in_8bit = True if not full_finetuning else False
 
-        # Patch generate
         if os.environ.get("UNSLOTH_DISABLE_FAST_GENERATION", "0") == "0" and hasattr(
             model, "generate"
         ):
@@ -1324,7 +1295,6 @@ class FastBaseModel:
                 unsloth_base_fast_generate.__doc__ = model._old_generate.__doc__
                 model.generate = types.MethodType(unsloth_base_fast_generate, model)
         model._unsloth_trust_remote_code = trust_remote_code
-        # Post patches
         model = FastBaseModel.post_patch_model(
             model,
             use_gradient_checkpointing = use_gradient_checkpointing,
@@ -1333,7 +1303,6 @@ class FastBaseModel:
             tokenizer = tokenizer,
             float32_mixed_precision = float32_mixed_precision,
         )
-        # Clear deleted GPU items
         for _ in range(3):
             gc.collect()
             if DEVICE_TYPE in ("cuda", "hip"):
@@ -1425,7 +1394,7 @@ class FastBaseModel:
                 and hasattr(model.vllm_engine.llm_engine, "vllm_config")
                 and getattr(model.vllm_engine.llm_engine.vllm_config, "lora_config", None) is None
             ):
-                # If vLLM is being used but lora is not enabled, throw an error
+                # vLLM in use but LoRA not enabled
                 # Ref https://github.com/vllm-project/vllm/blob/51ba839555a5d122eadd91e9c16463ac288f5fa1/vllm/v1/engine/processor.py#L148-L151
                 raise RuntimeError("Unsloth: LoRA is not enabled for this model!")
             if finetune_vision_layers:
@@ -1444,7 +1413,6 @@ class FastBaseModel:
                     "Unsloth: LoRA finetuning for Llama 3.2 aka mllama models is not supported with fast_inference!"
                 )
 
-        # Clear deleted GPU items
         for _ in range(3):
             gc.collect()
             if DEVICE_TYPE in ("cuda", "hip"):
@@ -1481,8 +1449,8 @@ class FastBaseModel:
             model,
             use_gradient_checkpointing = use_gradient_checkpointing,
         )
-        # Gemma4 ClippableLinear wraps nn.Linear -- PEFT can't inject LoRA on it directly.
-        # Monkey-patch PEFT to target the inner .linear child instead.
+        # Gemma4 ClippableLinear wraps nn.Linear; PEFT can't inject LoRA directly,
+        # so patch it to target the inner .linear child instead.
         _clippable_linear_cls = None
         try:
             from transformers.models.gemma4.modeling_gemma4 import (
@@ -1549,10 +1517,8 @@ class FastBaseModel:
             trust_remote_code = trust_remote_code,
         )
         model.max_seq_length = max_seq_length
-        # Save to modules as well
         for module in model.modules():
             module.max_seq_length = max_seq_length
-        # Clear deleted GPU items
         for _ in range(3):
             gc.collect()
             if DEVICE_TYPE in ("cuda", "hip"):
@@ -1562,7 +1528,6 @@ class FastBaseModel:
         patch_saving_functions(model, vision = True)
         patch_peft_fast_inference(model)
 
-        # Add for_inference and for_training
         model.for_training = functools.partial(FastBaseModel.for_training, model)
         model.for_inference = functools.partial(FastBaseModel.for_inference, model)
         m = model
@@ -1621,11 +1586,9 @@ class FastBaseModel:
             patch_modules_to_save = True,
         )
 
-        # Gemma3N audio conformer processes variable-length audio tensors
-        # that cause stride mismatches in AOT autograd compiled backward
-        # when non-reentrant checkpointing is used. The notebook or TRL
-        # may override gradient_checkpointing_kwargs with use_reentrant=False
-        # after this point, so we intercept gradient_checkpointing_enable
+        # Gemma3N audio conformer's variable-length tensors cause stride mismatches
+        # in AOT autograd compiled backward under non-reentrant checkpointing. TRL/notebook
+        # may later set use_reentrant=False, so intercept gradient_checkpointing_enable
         # to always force use_reentrant=True for Gemma3N.
         _model_type = getattr(getattr(model, "config", None), "model_type", "") or ""
         if "gemma3n" in _model_type.lower() or "gemma4" in _model_type.lower():
@@ -1663,14 +1626,12 @@ class FastBaseModel:
         # Also set is_loaded_in_8bit to disable incorrect DDP
         m.is_loaded_in_8bit = True if not full_finetuning else False
 
-        # Clear deleted GPU items
         for _ in range(3):
             gc.collect()
             if DEVICE_TYPE in ("cuda", "hip"):
                 torch.cuda.empty_cache()
             elif DEVICE_TYPE == "xpu":
                 torch.xpu.empty_cache()
-        # Add for_inference and for_training
         model.for_training = functools.partial(FastBaseModel.for_training, model)
         model.for_inference = functools.partial(FastBaseModel.for_inference, model)
         m = model
@@ -1745,8 +1706,7 @@ class FastBaseModel:
             embeddings = model.get_output_embeddings()
             if hasattr(embeddings, "training"):
                 embeddings.training = False
-        # Restore use_cache values that prepare_model_for_training disabled
-        # for gradient checkpointing (older unsloth_zoo has no restore helper)
+        # Restore use_cache that prepare_model_for_training disabled for gradient checkpointing
         try:
             from unsloth_zoo.training_utils import restore_use_cache
             restore_use_cache(model)
@@ -1811,8 +1771,7 @@ class FastBaseModel:
             embeddings = model.get_output_embeddings()
             if hasattr(embeddings, "training"):
                 embeddings.training = True
-        # Re-disable use_cache if prepare_model_for_training had disabled it
-        # and for_inference restored it (record only exists after a disable)
+        # Re-disable use_cache if for_inference restored it (record exists only after a disable)
         if (
             use_gradient_checkpointing
             and getattr(model, "_unsloth_use_cache_originals", None) is not None
@@ -1877,21 +1836,17 @@ def check_dataset_for_missing_videos(
     checked = None,
 ):
     """
-    Validate that local video paths referenced in a dataset exist, catching
-    missing files before training (torchvision otherwise returns an empty
-    tensor and the model silently receives no video signal).
+    Validate local video paths in a dataset exist, catching missing files before
+    training (torchvision otherwise silently yields an empty tensor). Returns the
+    list of missing paths (empty when all exist).
 
     Args:
-        dataset:     Map-style Dataset, list of dicts, or iterable of examples
-                     (not a streaming IterableDataset - iterating consumes it).
-        column:      Chat-messages column, default "messages"; "conversations",
-                     "prompt" and "completion" are also scanned.
-        raise_error: True (default) raises FileNotFoundError listing missing
-                     files; False warns and returns them.
+        dataset:     Map-style Dataset / list / iterable (not a streaming
+                     IterableDataset - iterating consumes it).
+        column:      Chat-messages column ("messages"); "conversations", "prompt"
+                     and "completion" are also scanned.
+        raise_error: True raises FileNotFoundError on missing files; False warns.
         checked:     Optional set of known-good paths for cross-call dedup.
-
-    Returns:
-        List[str]: Missing file paths (empty when all exist).
     """
     try:
         from datasets import IterableDataset as _IterableDataset
@@ -1908,8 +1863,8 @@ def check_dataset_for_missing_videos(
         pass
 
     missing = []
-    # Report each missing path once; only confirmed-existing paths enter
-    # `checked`, so retries after an error re-check previously missing files.
+    # Report each missing path once; only existing paths enter `checked`, so
+    # retries after an error re-check previously missing files.
     seen_missing = set()
     if checked is None:
         checked = set()

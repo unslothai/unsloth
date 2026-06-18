@@ -68,7 +68,6 @@ if HAS_FLASH_ATTENTION_SOFTCAPPING:
     from flash_attn import flash_attn_func
 
 
-# Logit softcapping
 def Gemma2Attention_fast_forward(
     self,
     hidden_states: torch.Tensor,
@@ -82,7 +81,7 @@ def Gemma2Attention_fast_forward(
     *args,
     **kwargs,
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
-    # Clear inference
+    # Clear cached inference buffers
     if hasattr(self, "paged_attention"):
         del self.paged_attention_K
         del self.paged_attention_V
@@ -127,7 +126,6 @@ def Gemma2Attention_fast_forward(
         V = torch.cat([past_key_value[1], V], dim = 2)
     past_key_value = (K, V) if use_cache else None
 
-    # Only enable if the attention_mask is True
     use_sliding_window = kwargs.get("use_sliding_window")
     has_sliding_window = (
         use_sliding_window
@@ -215,7 +213,6 @@ def Gemma2DecoderLayer_fast_forward(
             device = f"{DEVICE_TYPE_TORCH}:0",
         )
 
-        # Self Attention
         residual = hidden_states
         hidden_states = fast_rms_layernorm_inference_gemma(
             self.input_layernorm, hidden_states, out_weight
@@ -237,7 +234,6 @@ def Gemma2DecoderLayer_fast_forward(
         )
         hidden_states += residual
 
-        # Fully Connected
         residual = hidden_states
         hidden_states = fast_rms_layernorm_inference_gemma(
             self.pre_feedforward_layernorm, hidden_states, out_weight
@@ -264,7 +260,6 @@ def Gemma2DecoderLayer_fast_forward(
         hidden_states = fast_rms_layernorm(self.post_attention_layernorm, hidden_states, gemma = True)
         hidden_states = residual + hidden_states
 
-        # Fully Connected
         residual = hidden_states
         hidden_states = fast_rms_layernorm(
             self.pre_feedforward_layernorm, hidden_states, gemma = True
@@ -403,7 +398,6 @@ def Gemma2Attention_fast_forward_inference(
     Kn = self.paged_attention_K[:kv_seq_len].permute(1, 2, 0, 3)
     Vn = self.paged_attention_V[:kv_seq_len].permute(1, 2, 0, 3)
 
-    # Handle sliding windows
     sliding_window = self.config.sliding_window
     if use_sliding_window and kv_seq_len > sliding_window:
         start = kv_seq_len - sliding_window
@@ -420,7 +414,6 @@ def Gemma2Attention_fast_forward_inference(
         Knn = Knn.reshape(bsz, n_heads, cached_len, head_dim)
         Vnn = Vnn.reshape(bsz, n_heads, cached_len, head_dim)
 
-    # Attention
     # [TODO] Gemma2 uses manual matmul for all batch sizes since SDPA lacks
     # softcapping (tanh logit scaling). If PyTorch adds a softcap param to
     # SDPA, consider SDPA for bsz > 1 to match the llama/qwen3 pattern.
@@ -500,8 +493,7 @@ def Gemma2Model_fast_forward_inference(
         GA = attention_mask
     next_decoder_cache = []
     for idx, decoder_layer in enumerate(self.model.layers):
-        # For pipeline parallelism, we need to move all tensors to the same device
-        # note that this movement is once per GPU in PP
+        # Pipeline parallelism: move tensors to this layer's device (once per GPU)
         device_index = getattr(decoder_layer, "_per_layer_device_index", 0)
         hidden_states, position_ids = move_to_device(device_index, hidden_states, position_ids)
 
@@ -609,7 +601,6 @@ class FastGemma2Model(FastLlamaModel):
             else:
                 param.requires_grad_(False)
 
-        # Patch RMS Layernorm
         for name, module in model.named_modules():
             if isinstance(module, Gemma2RMSNorm):
                 # Must be in float32

@@ -106,7 +106,7 @@ def FalconH1Attention_fast_forward(
     V = V.view(bsz, q_len, n_kv_heads, head_dim).transpose(1, 2)
     seq_info = get_packed_info_from_kwargs(kwargs, hidden_states.device)
 
-    # Falcon H1 multiplies key states by a multiplier
+    # Falcon H1 scales key states by key_multiplier
     K = K * self.config.key_multiplier
 
     Q = Q.transpose(1, 2)
@@ -125,7 +125,7 @@ def FalconH1Attention_fast_forward(
         cos, sin = rotary_emb.get_cached(kv_seq_len, Q.device.index)
 
     rope_position_ids = position_ids if position_ids is not None else kwargs.get("position_ids")
-    # Useful for LongRoPE
+    # Needed for LongRoPE
     Q, K = fast_rope_embedding(Q, K, cos, sin, rope_position_ids)
 
     if past_key_value is not None:
@@ -133,7 +133,6 @@ def FalconH1Attention_fast_forward(
         V = torch.cat([past_key_value[1], V], dim = 2)
     past_key_value = (K, V) if use_cache else None
 
-    # Attention module
     window = (-1, -1)
     use_varlen = (
         attention_mask is None
@@ -190,33 +189,12 @@ def FalconH1Attention_fast_forward_inference(
     attention_mask = None,
     **kwargs,
 ):
-    """
-    https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L406
-    Fast inference using KV cache.
-    QK^T can be computed in 4 chunks
+    """Fast inference using the KV cache.
 
-    [Q, q] @ [K, k].T where q, k are the new tokens.
-    [QK^T, Qk^T]
-    [qK^T, qk^T]
-
-    Since the attention mask wipes Qk^T, we just get
-    [QK^T,    0]
-    [qK^T, qk^T]
-
-    Since softmax is row-wise, we get
-    softmax([QK^T,    0])
-    softmax([qK^T, qk^T])
-
-    We then multiply by   [V]
-                          [v]
-    softmax([QK^T,    0]) [softmax(QK^T)V] *
-    softmax([qK^T, qk^T]) [softmax([qK^T, qk^T]) @ [V, v]]
-
-    But notice * [softmax(QK^T)V] is just the last attention.
-    We just need to compute the last final row.
-
-    This means we can pass in a row of Q, but we need to
-    remember K and V, which are called the KV cache.
+    QK^T splits into 4 chunks; the mask zeroes Qk^T and softmax is row-wise, so
+    softmax(QK^T)V is just the prior step's attention. We therefore only compute
+    the final row: pass one row of Q while remembering K and V (the KV cache).
+    Ref: https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L406
     """
     Xn = hidden_states
     bsz, _, hd = hidden_states.size()
@@ -294,8 +272,7 @@ def FalconH1Attention_fast_forward_inference(
     # cos, sin = self.rotary_emb(Vn, seq_len = kv_seq_len)
     # Qn, Kn = inplace_rope_embedding(Qn, Kn, cos, sin, position_ids)
 
-    # Need to do it prior 2 steps before hitting full on short KV cache
-    # or else error
+    # Extend 2 steps ahead to avoid errors on short KV cache
     self.rotary_emb.extend_rope_embedding(Vn, seq_len + 2)
     cos, sin = self.rotary_emb.get_cached(kv_seq_len, Qn.device.index)
     # Transformers 5.x: position_ids may be [batch, full_seq_len]; slice to last
@@ -348,7 +325,6 @@ def FalconH1Attention_fast_forward_inference(
         Knn = Knn.reshape(bsz, n_heads, cached_len, head_dim)
         Vnn = Vnn.reshape(bsz, n_heads, cached_len, head_dim)
 
-    # Attention
     if bsz == 1:
         Qn *= (
             self.scalar
@@ -389,19 +365,7 @@ def FalconH1DecoderLayer_fast_forward(
     *args,
     **kwargs,
 ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
-    """
-    Args:
-        hidden_states (`torch.FloatTensor`): input to the layer of shape `(batch, seq_len, embed_dim)`
-        attention_mask (`torch.FloatTensor`, *optional*): attention mask of size
-            `(batch, 1, tgt_len, src_len)` where padding elements are indicated by very large negative values.
-        output_attentions (`bool`, *optional*):
-            Whether or not to return the attentions tensors of all attention layers. See `attentions` under
-            returned tensors for more detail.
-        use_cache (`bool`, *optional*):
-            If set to `True`, `past_key_values` key value states are returned and can be used to speed up decoding
-            (see `past_key_values`).
-        past_key_value (`Tuple(torch.FloatTensor)`, *optional*): cached past key and value projection states
-    """
+    """FalconH1 decoder layer: mamba + attention mixer, then SwiGLU MLP, with residuals."""
     if use_cache and hasattr(self, "_flag_for_generation"):
         residual = hidden_states
         hidden_states = fast_rms_layernorm_inference(self.input_layernorm, hidden_states)
@@ -464,7 +428,6 @@ def FalconH1DecoderLayer_fast_forward(
 
         hidden_states = mamba_hidden_states + attention_hidden_states
 
-        # residual connection after attention + Mamba
         hidden_states = residual + hidden_states
 
         # Fully Connected
@@ -535,7 +498,7 @@ def _FalconH1_fast_forward_inference(
         next_decoder_cache = []
 
         for idx, decoder_layer in enumerate(self.model.layers):
-            residual.copy_(X)  # residual = X
+            residual.copy_(X)
             X = fast_rms_layernorm_inference(
                 decoder_layer.input_layernorm,
                 X,
@@ -563,7 +526,7 @@ def _FalconH1_fast_forward_inference(
 
             X += residual
 
-            residual.copy_(X)  # residual = X
+            residual.copy_(X)
             X = fast_rms_layernorm_inference(
                 decoder_layer.pre_ff_layernorm,
                 X,
@@ -672,7 +635,6 @@ def _fast_prepare_inputs_for_generation(
 
 
 def fix_prepare_inputs_for_generation(module):
-    # Fix prepare_inputs_for_generation
     if hasattr(module, "prepare_inputs_for_generation"):
         module.prepare_inputs_for_generation = _fast_prepare_inputs_for_generation
 

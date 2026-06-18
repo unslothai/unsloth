@@ -11,25 +11,23 @@ class PhiModelInfo(ModelInfo):
         return super().construct_model_name(base_name, version, size, quant_type, instruct_tag, key)
 
 
-# Phi Model Meta
 PhiMeta4 = ModelMeta(
     org = "microsoft",
     base_name = "phi",
     instruct_tags = [None],
     model_version = "4",
-    model_sizes = ["1"],  # Assuming only one size
+    model_sizes = ["1"],
     model_info_cls = PhiModelInfo,
     is_multimodal = False,
     quant_types = [QuantType.NONE, QuantType.BNB, QuantType.UNSLOTH],
 )
 
-# Phi Instruct Model Meta
 PhiInstructMeta4 = ModelMeta(
     org = "microsoft",
     base_name = "phi",
     instruct_tags = ["mini-instruct"],
     model_version = "4",
-    model_sizes = ["1"],  # Assuming only one size
+    model_sizes = ["1"],
     model_info_cls = PhiModelInfo,
     is_multimodal = False,
     quant_types = [QuantType.NONE, QuantType.BNB, QuantType.UNSLOTH, QuantType.GGUF],

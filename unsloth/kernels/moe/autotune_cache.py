@@ -14,9 +14,7 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-"""
-Auto-tuning cache system for MoE kernels to ensure tuning runs only once at training start.
-"""
+"""Auto-tuning cache for MoE kernels so tuning runs only once at training start."""
 
 import hashlib
 import json
@@ -42,7 +40,7 @@ def _get_cache_key(
     device_capability: Tuple[int, int],
     seq_len: int = 8192,  # Default sequence length for tuning
 ) -> str:
-    """Generate a unique cache key based on model configuration."""
+    """Unique cache key from model configuration."""
     key_data = {
         "num_experts": num_experts,
         "hidden_dim": hidden_dim,
@@ -57,7 +55,7 @@ def _get_cache_key(
 
 
 def _get_cache_file_path(cache_key: str) -> str:
-    """Get the file path for the cache file."""
+    """Path to the cache file for this key."""
     cache_dir = os.path.expanduser("~/.cache/unsloth/moe_autotune")
     os.makedirs(cache_dir, exist_ok = True)
     return os.path.join(cache_dir, f"{cache_key}.json")
@@ -131,21 +129,8 @@ def get_or_autotune_moe_kernels(
     force_autotune: bool = False,
     seq_len: int = 8192,
 ) -> Tuple[Any, Any, Any]:
-    """
-    Get cached kernel configurations or run auto-tuning.
-
-    Args:
-        num_experts: Number of experts in the MoE layer
-        hidden_dim: Hidden dimension of the model
-        intermediate_dim: Intermediate dimension for MoE MLP
-        top_k: Number of experts to route to
-        dtype: Data type for computation
-        force_autotune: Force re-running autotuning even if cache exists
-        seq_len: Sequence length to use for tuning benchmarks
-
-    Returns:
-        Tuple of (config_fwd, config_bwd_dx, config_bwd_dw)
-    """
+    """Return cached MoE kernel configs (config_fwd, config_bwd_dx, config_bwd_dw),
+    running auto-tuning if needed. force_autotune ignores existing caches."""
     device_capability = torch.cuda.get_device_capability()
     cache_key = _get_cache_key(
         num_experts,
@@ -167,7 +152,6 @@ def get_or_autotune_moe_kernels(
         logger.info(f"Using in-memory cached MoE kernel configs: {cache_key}")
         return _kernel_config_cache[cache_key]
 
-    # Try to load from disk
     if not force_autotune:
         cached_data = load_cached_config(cache_key)
         if cached_data is not None:
@@ -206,7 +190,6 @@ def get_or_autotune_moe_kernels(
         _kernel_config_cache[cache_key] = configs
         _autotune_completed[cache_key] = True
 
-        # Save to disk
         config_fwd, config_bwd_dx, config_bwd_dw = configs
         save_cached_config(
             cache_key,
@@ -242,9 +225,8 @@ def _run_moe_autotuning(
     seq_len: int,
 ) -> Tuple[Any, Any, Any]:
     """Run the actual auto-tuning for MoE kernels."""
-
     device = "cuda"
-    # Fixed token count avoids OOMs and seq_len dependency; we ignore the passed seq_len here
+    # Fixed token count avoids OOMs and seq_len dependency; passed seq_len is ignored
     num_tokens = 4096
     total_tokens = num_tokens * top_k
 
@@ -260,7 +242,6 @@ def _run_moe_autotuning(
     # Dummy routing data
     m_sizes = torch.randint(1, total_tokens // num_experts + 1, (num_experts,), device = device)
     m_sizes = m_sizes * (total_tokens // m_sizes.sum().item())
-    # Adjust to exact total
     diff = total_tokens - m_sizes.sum().item()
     if diff != 0:
         m_sizes[0] += diff
@@ -268,7 +249,7 @@ def _run_moe_autotuning(
     gather_indices = torch.arange(total_tokens, device = device)
     torch.randperm(total_tokens, out = gather_indices)
 
-    # Autotune via the interface function with autotune=True (lets triton tune)
+    # autotune=True lets triton tune the kernels
     from .grouped_gemm.interface import (
         grouped_gemm_forward,
         grouped_gemm_dX,
@@ -309,7 +290,6 @@ def _run_moe_autotuning(
         use_tma_store = triton_config_fwd.kwargs.get("USE_TMA_STORE", False),
     )
 
-    # Autotune backward dX kernel
     logger.info("Autotuning backward dX kernel...")
     dummy_grad = torch.randn(total_tokens, 2 * intermediate_dim, device = device, dtype = dtype)
     _ = grouped_gemm_dX(
@@ -335,7 +315,6 @@ def _run_moe_autotuning(
         use_tma_store = triton_config_bwd_dx.kwargs.get("USE_TMA_STORE", False),
     )
 
-    # Autotune backward dW kernel
     logger.info("Autotuning backward dW kernel...")
     _ = grouped_gemm_dW(
         X = hidden_states,
@@ -366,10 +345,7 @@ def _run_moe_autotuning(
 
 
 def _get_heuristic_configs() -> Tuple[Any, Any, Any]:
-    """
-    Get 'Safe Heuristic' kernel configurations.
-    These are verified to be safe on A100 (SM80) and provide ~9x speedup on H100/B200.
-    """
+    """'Safe Heuristic' kernel configs: safe on A100 (SM80), ~9x speedup on H100/B200."""
     from .grouped_gemm.kernels.tuning import (
         KernelConfigForward,
         KernelConfigBackward_dX,
@@ -386,7 +362,7 @@ def _get_heuristic_configs() -> Tuple[Any, Any, Any]:
         permute_x = True,
         permute_y = True,
         use_tma_load_x = False,
-        use_tma_load_w = False,  # TMA loads might need alignment checks, safer to disable for heuristic
+        use_tma_load_w = False,  # TMA loads may need alignment checks; disabled for heuristic
         use_tma_store = False,
     )
 
@@ -421,7 +397,7 @@ def _get_heuristic_configs() -> Tuple[Any, Any, Any]:
 
 
 def _get_default_configs() -> Tuple[Any, Any, Any]:
-    """Get default kernel configurations as fallback."""
+    """Default fallback kernel configurations."""
     from .grouped_gemm.kernels.tuning import (
         KernelConfigForward,
         KernelConfigBackward_dX,

@@ -16,11 +16,8 @@ import os, importlib.util, platform
 
 os.environ["UNSLOTH_IS_PRESENT"] = "1"
 
-# ── Windows console UTF-8 safety ─────────────────────────────────────────────
-# Legacy Windows consoles (cp1252) can't encode Unsloth's emoji/box-drawing
-# glyphs and crash with UnicodeEncodeError. Force stdout/stderr to UTF-8 only on
-# Windows and only when not already UTF-8; no-op elsewhere. errors="replace"
-# guarantees we never crash on an unencodable glyph.
+# Force stdout/stderr to UTF-8 on Windows: legacy cp1252 consoles crash on
+# Unsloth's emoji/box-drawing glyphs. errors="replace" avoids unencodable-glyph crashes.
 if platform.system() == "Windows":
     import sys as _sys
     for _name in ("stdout", "stderr"):
@@ -34,9 +31,8 @@ if platform.system() == "Windows":
 
 
 def _is_mlx_available():
-    # Transitional import barrier: keep non-Apple-Silicon imports from touching
-    # unsloth_zoo until unsloth_zoo.mlx is import-safe on GPU hosts. Then this
-    # can collapse back to the centralized zoo runtime call below.
+    # Transitional barrier: avoid importing unsloth_zoo on GPU hosts until
+    # unsloth_zoo.mlx is import-safe there.
     if (
         os.environ.get("UNSLOTH_FORCE_GPU_PATH", "0") == "1"
         or platform.system() != "Darwin"
@@ -62,9 +58,8 @@ if _IS_MLX:
             "Unsloth: MLX support requires `unsloth-zoo` with MLX modules. "
             "Reinstall with `pip install unsloth-zoo` or rerun install.sh."
         ) from _e
-    # An older unsloth-zoo satisfies `import unsloth_zoo` but lacks the
-    # mlx.trainer / mlx.loader submodules. Surface a friendly install hint
-    # instead of a raw ImportError on the submodule path.
+    # Older unsloth-zoo imports fine but lacks mlx.trainer/mlx.loader; give a
+    # friendly install hint instead of a raw submodule ImportError.
     try:
         from unsloth_zoo.mlx.trainer import MLXTrainer, MLXTrainingConfig
         from unsloth_zoo.mlx.loader import FastMLXModel
@@ -75,8 +70,8 @@ if _IS_MLX:
             "`pip install -U unsloth-zoo` or rerun install.sh."
         ) from _e
 
-    # Load raw_text helpers without executing dataprep/__init__.py, which
-    # imports synthetic.py -> torch and would defeat the torch-free MLX path.
+    # Load raw_text helpers directly: dataprep/__init__.py imports torch via
+    # synthetic.py, which would break the torch-free MLX path.
     from pathlib import Path as _Path
 
     _raw_text_path = _Path(__file__).resolve().parent / "dataprep" / "raw_text.py"

@@ -196,17 +196,9 @@ from unsloth_zoo.temporary_patches import (
 
 def apply_unsloth_gradient_checkpointing(use_gradient_checkpointing, max_seq_length, dtype):
     """
-    Apply gradient checkpointing with smart heuristics.
-
-    For seq < 512, gc="unsloth" offloading overhead isn't worth it; standard gc is faster.
-
-    Args:
-        use_gradient_checkpointing: "unsloth", True, False, or None
-        max_seq_length: The maximum sequence length
-        dtype: The model dtype for patching
-
-    Returns:
-        The effective use_gradient_checkpointing value (may change from "unsloth" to True)
+    Apply gradient checkpointing with smart heuristics, returning the effective
+    setting (may downgrade "unsloth" to True). For seq < 512, "unsloth" offloading
+    overhead isn't worth it, so standard gc is used instead.
     """
     if use_gradient_checkpointing == "unsloth":
         # Offloading not worth it below ~512; standard gc is faster (crossover ~384-512).
@@ -733,8 +725,8 @@ class HideLoggingMessage(logging.Filter):
 # Replace warning messages (analogous to HideLoggingMessage but for warnings.warn)
 class ReplaceWarningMessage:
     """
-    Intercepts warnings.warn calls and replaces matching messages with Unsloth branded ones.
-    Uses a list of registered (match_text, replacement, category) rules checked in order.
+    Intercept warnings.warn and replace matching messages with Unsloth ones, via
+    registered (match_text, replacement, category) rules checked in order.
     """
 
     _rules = []
@@ -1077,9 +1069,7 @@ from transformers.trainer_pt_utils import is_deepspeed_zero3_enabled
 
 
 def extract_quant_model_param_count(model):
-    """
-    Calculate quant model param count based on difference in param class. Returns int for param count.
-    """
+    """Param count of a quantized model (Params4bit counted as 2x numel)."""
     count: int = 0
     for name, p in model.named_parameters():
         if p.__class__.__name__ == "Params4bit":
@@ -1090,9 +1080,7 @@ def extract_quant_model_param_count(model):
 
 
 def get_model_param_count(model, trainable_only = False):
-    """
-    Calculate model's total param count. If trainable_only is True then count only those requiring grads
-    """
+    """Total model param count; if trainable_only, count only params requiring grads."""
     if is_deepspeed_zero3_enabled():
 
         def numel(p):
@@ -1145,8 +1133,7 @@ def patch_mistral_nemo_config(config):
 
 
 try:
-    # Some Config files use layer_type_validation
-    # for eg Gemma-2, so we must import it to stop errors.
+    # Needed for configs that use layer_type_validation (e.g. Gemma-2).
     from transformers.configuration_utils import layer_type_validation
 except:
     pass
@@ -1175,11 +1162,9 @@ model_architectures = [
     "falcon_h1",
 ]
 
-# Transformers 5.x uses class-level annotations with @strict, @auto_docstring,
-# and interval() in config classes. exec(inspect.getsource(...)) fails because
-# those symbols are not in scope. Skip the exec-based config patching for 5.x
-# since those configs already use rope_parameters (the v5 replacement for
-# rope_scaling).
+# Skip exec-based config patching on transformers 5.x: its @strict/@auto_docstring/
+# interval() config symbols aren't in scope for exec(getsource(...)), and v5 configs
+# already use rope_parameters (the rope_scaling replacement).
 _skip_config_exec_patch = Version(transformers_version) >= Version("5.0.0")
 
 for model_name in model_architectures:
@@ -1187,7 +1172,7 @@ for model_name in model_architectures:
         break
     config_filepath = f"transformers.models.{model_name}.configuration_{model_name}"
     model_filepath = f"transformers.models.{model_name}.modeling_{model_name}"
-    config_filename = f"{model_name.title().replace('_','')}Config"  # qwen3 arch folder is qwen3_moe but config is Qwen3Config. Need to remove underscore(_) for now
+    config_filename = f"{model_name.title().replace('_','')}Config"  # e.g. qwen3_moe folder but Qwen3Config class; strip underscores
     try:
         exec(f"from {config_filepath} import {config_filename}", globals())
     except:
@@ -1728,10 +1713,8 @@ import psutil
 
 
 def _get_statistics(statistics = None, force_download = True):
-    # We log some basic stats about which environment is being used.
-    # We simply download a README.md file from HF - all data is made public.
-    # This is simply so we can check if some envs are broken or not.
-    # You can disable this by commenting the below out
+    # Log basic env stats by downloading a public README.md from HF (checks for broken/down envs).
+    # Disable by commenting the below out.
     n_cpus = psutil.cpu_count(logical = False)
     keynames = "\n" + "\n".join(os.environ.keys())
     # Check modelscope for down detection
@@ -1834,11 +1817,8 @@ def _get_statistics(statistics = None, force_download = True):
 
 
 def get_statistics(local_files_only = False):
-    # We log some basic stats about which environment is being used.
-    # This is also to check if HuggingFace is down or not!
-    # We simply download a README.md file from HF - all data is made public.
-    # This is simply so we can check if some envs are broken or not.
-    # You can disable this by setting UNSLOTH_DISABLE_STATISTICS
+    # Log basic env stats by downloading a public README.md from HF (also detects if HF is down).
+    # Disable via UNSLOTH_DISABLE_STATISTICS.
     import os
 
     if (
@@ -2194,7 +2174,6 @@ def patch_llama_rope_scaling(
 
 
 def create_boolean_mask(n = 4096, sliding_window = 2048):
-    # Creates a boolean mask for attention
     mask = torch.ones(n, n, dtype = torch.bool)
     if sliding_window == 0:
         return torch.triu(mask, diagonal = 1, out = mask)
@@ -2251,12 +2230,10 @@ def _unsloth_pre_compute_loss(self, model, inputs, *args, **kwargs):
     if "num_items_in_batch" in kwargs:
         num_items_in_batch = kwargs["num_items_in_batch"]
         if num_items_in_batch is None:
-            # Remove it since the model does not support it!
             kwargs.pop("num_items_in_batch")
         elif "num_items_in_batch" not in inputs:
             inputs["num_items_in_batch"] = num_items_in_batch
 
-    # Get gradient accumulation steps if possible
     if (
         num_items_in_batch is None
         and getattr(getattr(self, "args", self), "gradient_accumulation_steps", 1) != 1
@@ -2865,9 +2842,7 @@ class TorchAOConfig:
 
 def _untie_input_output_embeddings(model: torch.nn.Module) -> None:
     """
-    Utility to untie input/output embeddings in a HuggingFace model.
-    This is useful if we want to quantize the input/ouput embeddings differently.
-    Model is modified in-place.
+    Untie input/output embeddings in-place (so they can be quantized differently).
     """
 
     # 1) Persist setting in config
@@ -2904,10 +2879,7 @@ def _untie_input_output_embeddings(model: torch.nn.Module) -> None:
 def _filter_fn_to_fqns(
     model: torch.nn.Module, filter_fn: Callable[[torch.nn.Module, str], bool]
 ) -> Iterator[str]:
-    """
-    Given a model and a filter function (m, fqn) -> bool,
-    yield fully qualified names (FQNs) of modules that match.
-    """
+    """Yield FQNs of modules matching filter_fn(module, fqn) -> bool."""
     for fqn, module in model.named_modules():
         if filter_fn(module, fqn):
             yield fqn
@@ -2952,14 +2924,10 @@ def _prepare_model_for_qat(
     model: torch.nn.Module, qat_scheme: Union[str, TorchAOConfig]
 ) -> torch.nn.Module:
     """
-    Transform a model for Quantization-Aware Training (QAT) during fine-tuning.
-
-    On a high level, this means fake quantizing the base (frozen) model during training.
-    Fake quantization refers to simulating quantization numerics in high precision (e.g. bf16).
-    This helps mitigate quantization degradations when the model is quantized after training.
-
-    QAT can be optionally combined with LoRA fine-tuning to for additional throughput improvement.
-    For more details: https://dev-discuss.pytorch.org/t/speeding-up-qat-by-1-89x-with-lora/2700
+    Transform a model for Quantization-Aware Training (QAT) during fine-tuning, i.e.
+    fake-quantize the frozen base model (simulate quant numerics in high precision)
+    to reduce post-training quantization degradation. Combinable with LoRA.
+    See https://dev-discuss.pytorch.org/t/speeding-up-qat-by-1-89x-with-lora/2700
     """
     try:
         from torchao.quantization import PerRow, quantize_
@@ -3183,15 +3151,10 @@ def verify_fp8_support_if_applicable(model_config):
 
 def _get_inference_mode_context_manager(model: torch.nn.Module):
     """
-    If the state dict was quantized using torchao, we will run into
-    the following error when calling ops like aten.t() in inference mode.
-    This is a bug in PyTorch that affects all tensor subclasses.
-
-        Cannot set version_counter for inference tensor
-
-    For now, we work around this issue by using `torch.no_grad()` in this case.
-    See https://github.com/pytorch/pytorch/issues/164872 for more details.
-    Otherwise, just return `torch.inference_mode()`.
+    For torchao-quantized models, return torch.no_grad() instead of
+    torch.inference_mode(), since ops like aten.t() on tensor subclasses hit a
+    PyTorch bug ("Cannot set version_counter for inference tensor").
+    See https://github.com/pytorch/pytorch/issues/164872
     """
     torchao_config = getattr(model, "torchao_config", None)
     if torchao_config is not None and torchao_config.qat_scheme is None:
@@ -3223,15 +3186,7 @@ def hf_login(token: Optional[str] = None) -> Optional[str]:
 
 
 def is_moe_model(model) -> bool:
-    """
-    Detect if a model is a Mixture of Experts (MoE) model.
-
-    Args:
-        model: The model to check (can be HF model or config)
-
-    Returns:
-        True if the model is an MoE model, False otherwise
-    """
+    """Detect if a model (or config) is a Mixture of Experts (MoE) model."""
     config = getattr(model, "config", model)
 
     # Different MoE models use different config attribute names:
@@ -3256,11 +3211,9 @@ def is_moe_model(model) -> bool:
 
 def _resolve_moe_parameter_name(model, default_name: str, alternate_name: str) -> str:
     """
-    Resolve the actual parameter path for MoE expert weights.
-
-    Most current Unsloth MoE models expose expert weights under
-    ``mlp.experts.*``. Gemma4 stores them directly under ``experts.*``.
-    Prefer the path that exists on the loaded module when possible.
+    Resolve the parameter path for MoE expert weights. Most models use
+    ``mlp.experts.*``; Gemma4 uses ``experts.*``. Prefer whichever exists on the
+    loaded module.
     """
     if hasattr(model, "named_parameters"):
         try:
@@ -3304,24 +3257,12 @@ def _moe_target_set_from_string(target_modules: str) -> set[str]:
 
 def get_moe_target_parameters(model, target_modules = None) -> Optional[List[str]]:
     """
-    Get the target_parameters for MoE expert layers if applicable.
-
-    For MoE models, returns the parameter paths for expert weights
-    (gate_up_proj, down_proj) that should be targeted by PEFT's
-    target_parameters for LoRA on nn.Parameter. The exact parameter path
-    depends on the model layout, for example ``mlp.experts.*`` or
-    ``experts.*``.
-
-    Only includes MoE parameters that match what's in target_modules:
-    - If "down_proj" is in target_modules -> includes "mlp.experts.down_proj"
-    - If "gate_proj" or "up_proj" is in target_modules -> includes "mlp.experts.gate_up_proj"
-
-    Args:
-        model: The model to get target parameters for
-        target_modules: List/tuple of target module names to match against
-
-    Returns:
-        List of parameter paths for MoE experts, or None if not an MoE model
+    Return the MoE expert parameter paths to pass to PEFT's target_parameters for
+    LoRA on nn.Parameter, or None if not an MoE model. Only paths matching
+    target_modules are included:
+    - "down_proj" -> "<prefix>.experts.down_proj"
+    - "gate_proj"/"up_proj"/"gate_up_proj" -> "<prefix>.experts.gate_up_proj"
+    The prefix depends on layout (``mlp.experts.*`` or ``experts.*``).
     """
     if not is_moe_model(model):
         return None
@@ -3383,14 +3324,10 @@ def get_moe_target_parameters(model, target_modules = None) -> Optional[List[str
 
 
 def make_fast_generate_wrapper(original_generate):
-    """
-    Creates a wrapper around model.generate that checks for incorrect
-    vLLM-style usage when fast_inference=False.
-    """
+    """Wrap model.generate to reject vLLM-style usage when fast_inference=False."""
 
     @functools.wraps(original_generate)
     def _fast_generate_wrapper(*args, **kwargs):
-        # Check for vLLM-specific arguments
         if "sampling_params" in kwargs:
             raise ValueError(
                 "Unsloth: `sampling_params` is only supported when `fast_inference=True` (vLLM). "
@@ -3432,7 +3369,6 @@ def make_fast_generate_wrapper(original_generate):
                     "  )"
                 )
 
-        # Call original generate
         return original_generate(*args, **kwargs)
 
     return _fast_generate_wrapper

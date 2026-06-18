@@ -24,8 +24,7 @@ from unsloth_zoo.llama_cpp import (
     _download_convert_hf_to_gguf,
 )
 
-# H4: Defensive imports -- these were added in unsloth-zoo PR #526
-# and may not exist on older versions
+# Added in unsloth-zoo PR #526; may not exist on older versions
 try:
     from unsloth_zoo.llama_cpp import LLAMA_CPP_DEFAULT_DIR, IS_WINDOWS
 except ImportError:
@@ -82,14 +81,12 @@ LLAMA_CPP_TARGETS = [
     "llama-server",
 ]
 
-# Check environments
 keynames = "\n" + "\n".join(os.environ.keys())
 IS_COLAB_ENVIRONMENT = "\nCOLAB_" in keynames
 IS_KAGGLE_ENVIRONMENT = "\nKAGGLE_" in keynames
 KAGGLE_TMP = "/tmp"
 del keynames
 
-# Weights
 LLAMA_WEIGHTS = (
     "self_attn.q_proj",
     "self_attn.k_proj",
@@ -347,8 +344,7 @@ def _free_cached_model(model):
     from huggingface_hub import scan_cache_dir
     cached_repos = list(scan_cache_dir().repos)
 
-    # Go through every cached repo, and delete the one that matches the model we want to save.
-    # Can save 4GB of disk space - useful for Kaggle systems.
+    # Delete the cached repo matching this model; saves ~4GB on Kaggle.
     for cached_repo in cached_repos:
         if cached_repo.repo_id == model.config._name_or_path:
             remove_cache_commit = list(cached_repo.revisions)[0].commit_hash
@@ -367,7 +363,7 @@ def _free_cached_model(model):
 def _merge_lora(layer, name):
     bias = getattr(layer, "bias", None)
     if isinstance(layer, (Bnb_Linear4bit, Peft_Linear4bit, Peft_Linear)):
-        # Is LoRA so we need to merge!
+        # LoRA layer: merge adapters into W
         W, quant_state, A, B, s, bias = get_lora_parameters_bias(layer)
         if quant_state is not None:
             dtype = quant_state.dtype if type(quant_state) is not list else quant_state[2]
@@ -412,17 +408,12 @@ def _preserve_tokenizer_eos_token(
 ):
     """Restore tokenizer_config.json eos_token from the tokenizer passed to save.
 
-    Some merge paths may re-save or mutate tokenizer metadata after the tokenizer
-    is written. Gemma 4 instruct models use `<turn|>` as their chat EOS token;
-    if tokenizer_config.json is reset to the raw base `<eos>` token, runtimes such
-    as vLLM will not stop generation correctly. Keep the serialized metadata in
-    sync with the source tokenizer without failing the save if the config is not
-    present or cannot be edited.
+    Merge paths may mutate tokenizer metadata after writing. E.g. Gemma 4 instruct
+    uses `<turn|>` as chat EOS; if the config is reset to the base `<eos>`, vLLM
+    won't stop generation correctly. Best-effort, never fails the save.
 
-    `filename_prefix` mirrors the same argument on Transformers'
-    `PreTrainedTokenizerBase.save_pretrained`: when provided, the tokenizer
-    config is written as `{filename_prefix}-tokenizer_config.json` instead of
-    `tokenizer_config.json`.
+    `filename_prefix` mirrors Transformers' save_pretrained: when set, writes
+    `{filename_prefix}-tokenizer_config.json` instead of `tokenizer_config.json`.
     """
     if tokenizer is None or save_directory is None:
         return
@@ -567,7 +558,6 @@ def unsloth_save_model(
 
     assert maximum_memory_usage > 0 and maximum_memory_usage <= 0.95
 
-    # Clean memory up first
     for _ in range(3):
         torch.cuda.empty_cache()
         gc.collect()
@@ -585,7 +575,7 @@ def unsloth_save_model(
         print("Unsloth: Merging 4bit and LoRA weights to 4bit...")
         print("This might take 5 minutes...")
 
-        # Counteract no LoRA adapters!
+        # Guard against models without LoRA adapters
         if hasattr(model, "merge_and_unload"):
             model = model.merge_and_unload()
         print("Done.")
@@ -613,7 +603,6 @@ def unsloth_save_model(
         elif save_method == "merged_4bit":
             print("Unsloth: Saving 4bit Bitsandbytes model. Please wait...")
 
-        # Update model tag
         _ = upload_to_huggingface(
             model,
             save_directory,
@@ -659,7 +648,6 @@ def unsloth_save_model(
                 tags = tags,
             )
 
-            # Revert back padding side
             _tokenizer.padding_side = old_padding_side
 
         if hasattr(model, "config"):
@@ -684,14 +672,12 @@ def unsloth_save_model(
     else:
         internal_model = model
 
-    # Cannot be converted properly!
+    # LoRA / merged_4bit / non-layered models: save directly without merging
     if (
         (save_method == "merged_4bit")
         or (save_method == "lora")
         or (not hasattr(model, "model") or not hasattr(internal_model.model, "layers"))
     ):
-        # Do general saving
-        # Edit save_pretrained_settings
         # [TODO] _create_repo has errors due to **kwargs getting accepted
         # commit_description does not seem to work?
         what_to_delete = (
@@ -721,7 +707,6 @@ def unsloth_save_model(
                 ]
             )
 
-        # Update model tag
         if push_to_hub:
             _ = upload_to_huggingface(
                 model,
@@ -745,7 +730,6 @@ def unsloth_save_model(
 
             tokenizer.save_pretrained(**tokenizer_save_settings)
 
-            # Revert back padding side
             _tokenizer.padding_side = old_padding_side
 
             print(" Done.")
@@ -795,7 +779,7 @@ def unsloth_save_model(
 
     print("Unsloth: Merging 4bit and LoRA weights to 16bit...")
 
-    # Determine max RAM usage minus sharding
+    # Max RAM for saving, minus per-shard headroom
     max_ram = psutil.virtual_memory().available
     sharded_ram_usage = 5 * 1024 * 1024 * 1024
     if type(max_shard_size) is str:
@@ -808,7 +792,6 @@ def unsloth_save_model(
     elif type(max_shard_size) is int:
         sharded_ram_usage = max_shard_size
 
-    # Switch to our fast saving modules if it's a slow PC!
     n_cpus = psutil.cpu_count(logical = False)
     if n_cpus is None:
         n_cpus = psutil.cpu_count()
@@ -834,7 +817,7 @@ def unsloth_save_model(
     if safe_serialization:
         max_ram -= sharded_ram_usage
     else:
-        max_ram -= sharded_ram_usage * 0.25  # Uses much less
+        max_ram -= sharded_ram_usage * 0.25
 
     max_ram = int(max(0, max_ram) * maximum_memory_usage)
     print(
@@ -847,20 +830,18 @@ def unsloth_save_model(
     if IS_KAGGLE_ENVIRONMENT:
         temporary_location = os.path.join(KAGGLE_TMP, temporary_location)
 
-    # Max directory for disk saving
     if not os.path.exists(temporary_location):
         os.makedirs(temporary_location)
 
-    # Check if Kaggle or Colab, since only 20GB of Disk space allowed.
+    # Kaggle/Colab only allow ~20GB disk, so free up the downloaded model
     if IS_KAGGLE_ENVIRONMENT or IS_COLAB_ENVIRONMENT:
-        # We free up 4GB of space
         logger.warning_once(
             "Unsloth: Kaggle/Colab has limited disk space. We need to delete the downloaded\n"
             "model which will save 4-16GB of disk space, allowing you to save on Kaggle/Colab."
         )
         _free_cached_model(internal_model)
 
-    # HF also uses a OrderedDict
+    # HF also uses an OrderedDict
     from collections import OrderedDict
 
     state_dict = OrderedDict()
@@ -872,7 +853,6 @@ def unsloth_save_model(
         elif torch_dtype == "bfloat16":
             torch_dtype = torch.bfloat16
 
-    # Check modules to save float32 dtype
     state_dict["model.embed_tokens.weight"] = internal_model.model.embed_tokens.weight.data.to(
         torch_dtype
     )
@@ -889,12 +869,10 @@ def unsloth_save_model(
             name = f"model.layers.{j}.{item}.weight"
             W, bias = _merge_lora(proj, name)
 
-            # Bias term
             if bias is not None:
                 state_dict[f"model.layers.{j}.{item}.bias"] = bias
 
             if (torch.cuda.memory_allocated() + W.nbytes) < max_vram:
-                # Save to GPU memory
                 state_dict[name] = W
             # [TODO] Saving to RAM seems to leak memory???
             # elif (max_ram - W.nbytes) > 0:
@@ -903,7 +881,6 @@ def unsloth_save_model(
             #     state_dict[name] = W.to("cpu", non_blocking = True, copy = True)
             #     max_ram = max(max_ram - W.nbytes, 0)
             else:
-                # Save to Disk
                 logger.warning_once("\nWe will save to Disk and not RAM now.")
                 filename = os.path.join(temporary_location, f"{name}.pt")
                 torch.save(
@@ -940,7 +917,6 @@ def unsloth_save_model(
         if type(value) is not torch.Tensor:
             logger.warning_once(f"Unsloth: {key} is not a Tensor but a {type(value)}.")
 
-    # Edit save_pretrained_settings
     # [TODO] _create_repo has errors due to **kwargs getting accepted
     save_pretrained_settings["state_dict"] = state_dict
 
@@ -972,7 +948,6 @@ def unsloth_save_model(
             ]
         )
 
-    # Update model tag
     if push_to_hub:
         _ = upload_to_huggingface(
             model,
@@ -986,7 +961,6 @@ def unsloth_save_model(
             datasets = datasets,
         )
 
-    # First check if we're pushing to an organization!
     save_directory = save_pretrained_settings["save_directory"]
 
     if save_pretrained_settings["push_to_hub"]:
@@ -998,14 +972,12 @@ def unsloth_save_model(
         else:
             actual_username = username
 
-    # Check if pushing to an organization
+    # Pushing to an organization: upload everything at the end
     if save_pretrained_settings["push_to_hub"] and (username != actual_username):
         print(f"Unsloth: Saving to organization with address {new_save_directory}")
-        # We upload everything at the end!
         tokenizer_save_settings["push_to_hub"] = False
         tokenizer_save_settings["save_directory"] = new_save_directory
 
-    # Save tokenizer
     if tokenizer is not None:
         print("Unsloth: Saving tokenizer...", end = "")
 
@@ -1021,14 +993,13 @@ def unsloth_save_model(
             filename_prefix = tokenizer_save_settings.get("filename_prefix"),
         )
 
-        # Revert back padding side
         _tokenizer.padding_side = old_padding_side
 
         print(" Done.")
     else:
         print()
 
-    # Since merged, edit quantization_config
+    # Merged model is no longer quantized: drop quantization_config
     old_config = model.config
     new_config = model.config.to_dict()
     if "quantization_config" in new_config:
@@ -1040,20 +1011,16 @@ def unsloth_save_model(
         original_model.config = new_config
     model.config = new_config
 
-    # Save!
     # [TODO] --> is this correct?
     # save_pretrained_settings["selected_adapters"] = None
 
-    # Check if pushing to an organization
     if save_pretrained_settings["push_to_hub"] and (username != actual_username):
         print(f"Unsloth: Saving to organization with address {new_save_directory}")
-        # Pushing to organization: .save_pretrained doesn't work, so save
-        # locally first then upload manually.
+        # Org push: .save_pretrained doesn't work, so save locally then upload
         save_pretrained_settings["save_directory"] = new_save_directory
         save_pretrained_settings["push_to_hub"] = False
         internal_model.save_pretrained(**save_pretrained_settings)
 
-        # Now manually go through each file and upload them manually!
         filenames = os.listdir(new_save_directory)
 
         hf_api = HfApi(token = save_pretrained_settings["token"])
@@ -1070,7 +1037,7 @@ def unsloth_save_model(
     else:
         internal_model.save_pretrained(**save_pretrained_settings)
 
-    # Revert config back
+    # Restore the original config
     original_model = model
     while hasattr(original_model, "model"):
         original_model = original_model.model
@@ -1094,8 +1061,6 @@ def unsloth_save_model(
     del state_dict
     torch.cuda.empty_cache()
     gc.collect()
-
-    # Remove temporary location
 
     shutil.rmtree(temporary_location, ignore_errors = True)
 
@@ -1122,16 +1087,15 @@ def install_llama_cpp_make_non_blocking():
     # https://github.com/ggerganov/llama.cpp/issues/7062
     # Weirdly GPU conversion for GGUF breaks??
     # env = { **os.environ, "LLAMA_CUDA": "1", }
-    # Force make clean
     check = os.system("make clean -C llama.cpp")
     IS_CMAKE = False
     if check == 0:
-        # Uses old MAKE
+        # Old MAKE build
         n_jobs = max(int((psutil.cpu_count() or 1) * 1.5), 1)
         full_command = ["make", "all", "-j" + str(n_jobs), "-C", "llama.cpp"]
         IS_CMAKE = False
     else:
-        # Uses new CMAKE
+        # New CMAKE build
         n_jobs = max(int(psutil.cpu_count() or 1), 1)  # Use less CPUs since 1.5x faster
         check = os.system(
             f"cmake llama.cpp -B llama.cpp/build -DBUILD_SHARED_LIBS=OFF -DGGML_CUDA=OFF {CURL_FLAG}"
@@ -1202,8 +1166,7 @@ def try_execute(commands, force_complete = False):
 
 
 def install_llama_cpp_old(version = -10):
-    # Download the 10th latest release since the latest might be broken!
-    # FALLBACK mechanism
+    # Download the 10th latest release since the latest might be broken (fallback)
     releases = subprocess.check_output(
         ["git", "ls-remote", "--tags", "https://github.com/ggerganov/llama.cpp.git"]
     )
@@ -1215,7 +1178,6 @@ def install_llama_cpp_old(version = -10):
     latest = releases[-1]
     version = releases[version].split(" ")[0]
 
-    # Check if the llama.cpp exists
     if os.path.exists("llama.cpp"):
         print(
             "**[WARNING]** You have a llama.cpp directory which is broken.\n"
@@ -1230,8 +1192,7 @@ def install_llama_cpp_old(version = -10):
 
         shutil.rmtree("llama.cpp", ignore_errors = True)
 
-    # Clone a specific commit
-    # Also don't use the GPU!
+    # Clone a specific commit; don't use the GPU
     commands = [
         "git clone --recursive https://github.com/ggerganov/llama.cpp",
         f"cd llama.cpp && git reset --hard {version} && git clean -df",
@@ -1254,7 +1215,6 @@ def install_llama_cpp_old(version = -10):
 
         try_execute(commands)
 
-    # Check if successful
     if not (
         os.path.exists("llama.cpp/llama-quantize.exe")
         or os.path.exists("llama.cpp/llama-quantize")
@@ -1302,13 +1262,11 @@ def install_llama_cpp_blocking(use_cuda = False):
 
 
 def get_executable(executables):
-    # Get system locations (System Path).split(system separator)
     system_directories = os.environ.get("PATH").split(os.pathsep)
 
     for directory in system_directories:
         for executable in executables:
             path = os.path.join(directory, executable)
-            # Check if the executable exists and is executable
             if os.path.exists(path) and os.access(path, os.X_OK):
                 return path
     return None
@@ -1325,17 +1283,12 @@ def save_to_gguf(
     is_vlm: bool = False,
     is_gpt_oss: bool = False,
 ):
-    """
-    Orchestrates the complete GGUF conversion process.
-    Handles installation, conversion, and quantization.
-    """
-    # print_output True only if UNSLOTH_ENABLE_LOGGING=1
+    """Orchestrate GGUF conversion: install, convert, and quantize."""
     if os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") == "1":
         print_output = True
     else:
         print_output = False
 
-    # Validate model dtype
     assert model_dtype == "float16" or model_dtype == "bfloat16"
     model_dtype = "f16" if model_dtype == "float16" else "bf16"
 
@@ -1359,11 +1312,10 @@ def save_to_gguf(
         )
         model_dtype = "f16"
 
-    # Check first_conversion as well
     if first_conversion is None:
         first_conversion = model_dtype
 
-    # Check I quants
+    # Reject I-quants (not yet supported)
     for quant_method in quantization_method:
         if quant_method.startswith("iq2"):
             raise RuntimeError(
@@ -1382,7 +1334,6 @@ def save_to_gguf(
         elif quant_method is None:
             quant_method = "q8_0"
 
-        # Check if wrong method
         if quant_method not in ALLOWED_QUANTS.keys():
             error = f"Unsloth: Quant method = [{quant_method}] not supported. Choose from below:\n"
             for key, value in ALLOWED_QUANTS.items():
@@ -1395,12 +1346,10 @@ def save_to_gguf(
     # Determine optimal first_conversion
     if is_gpt_oss:
         print("Unsloth: GPT-OSS model detected - using special conversion settings")
-        first_conversion = "None"  # No quantization for GPT-OSS
-        # Only keep one conversion method since GPT-OSS doesn't quantize
+        first_conversion = "None"  # GPT-OSS isn't quantized
         quantization_method = ["None"]
     else:
         if first_conversion is None:
-            # Check if q8_0 is the ONLY quantization method requested
             if len(quantization_method) == 1 and quantization_method[0] == "q8_0":
                 first_conversion = "None"  # Let llama-quantize do the direct conversion
             else:
@@ -1431,7 +1380,6 @@ def save_to_gguf(
         first_conversion = "f16"
 
     first_conversion_dtype = "" if first_conversion == "None" else first_conversion
-    # Print conversion info
     print_info = (
         f"==((====))==  Unsloth: Conversion from HF to GGUF information\n"
         f"   {chr(92)}{chr(92)}   /|    [0] Installing llama.cpp might take 3 minutes.\n"
@@ -1482,9 +1430,7 @@ def save_to_gguf(
             max_shard_size = "50GB",
             print_output = print_output,
         )
-    # update is_vlm switch
     is_vlm = is_vlm_update
-    # Check conversion success
     for file in initial_files:
         if not os.path.exists(file):
             if IS_KAGGLE_ENVIRONMENT:
@@ -1515,7 +1461,6 @@ def save_to_gguf(
     # Step 4: Additional quantizations using llama-quantize
     all_saved_locations = initial_files.copy()
 
-    # Get CPU count for quantization
     n_cpus = psutil.cpu_count()
     if n_cpus is None:
         n_cpus = 1
@@ -1639,10 +1584,8 @@ def unsloth_save_pretrained_merged(
     datasets: Optional[List[str]] = None,
 ):
     """
-    Same as .save_pretrained(...) except 4bit weights are auto
-    converted to float16 with as few overhead as possible.
-
-    Choose for `save_method` to be either:
+    Like .save_pretrained(...) but auto-converts 4bit weights to float16.
+    `save_method`:
     1. `16bit`: Merge LoRA into float16 weights. Useful for GGUF / llama.cpp.
     2.  `4bit`: Merge LoRA into int4 weights. Useful for DPO / HF inference.
     3.  `lora`: Save LoRA adapters with no merging. Useful for HF inference.
@@ -1681,10 +1624,8 @@ def unsloth_push_to_hub_merged(
     datasets: Optional[List[str]] = None,
 ):
     """
-    Same as .push_to_hub(...) except 4bit weights are auto
-    converted to float16 with as few overhead as possible.
-
-    Choose for `save_method` to be either:
+    Like .push_to_hub(...) but auto-converts 4bit weights to float16.
+    `save_method`:
     1. `16bit`: Merge LoRA into float16 weights. Useful for GGUF / llama.cpp.
     2.  `4bit`: Merge LoRA into int4 weights. Useful for DPO / HF inference.
     3.  `lora`: Save LoRA adapters with no merging. Useful for HF inference.
@@ -1770,7 +1711,6 @@ def create_huggingface_repo(
             private = private,
         )
 
-        # Create model card
         from huggingface_hub import ModelCard
 
         content = MODEL_CARD.format(
@@ -1823,7 +1763,6 @@ def upload_to_huggingface(
             private = private,
         )
 
-        # Create model card
         from huggingface_hub import ModelCard
 
         content = MODEL_CARD.format(
@@ -1849,7 +1788,6 @@ def upload_to_huggingface(
                 )
 
     if file_location is not None:
-        # Now upload file
         hf_api = HfApi(token = token)
 
         if "/" in file_location:
@@ -1901,7 +1839,7 @@ def upload_to_huggingface(
 
 
 def fix_tokenizer_bos_token(tokenizer):
-    # Check if BOS added already, then warn
+    # Warn + strip if the model auto-adds a BOS and the template also has one
     fix_bos_token = False
     chat_template = getattr(tokenizer, "chat_template", None)
 
@@ -1950,7 +1888,7 @@ def create_ollama_modelfile(tokenizer, base_model_name, model_location):
             f"Unsloth: No Ollama template mapping found for model '{base_model_name}'. Skipping Ollama Modelfile"
         )
         return None
-    tokenizer._ollama_modelfile = ollama_modelfile  # This comes from the unpacking above
+    tokenizer._ollama_modelfile = ollama_modelfile
     modelfile = ollama_modelfile
 
     FILE_LOCATION_REPLACER = "⚫@✅#🦥__FILE_LOCATION__⚡@🦥#⛵"
@@ -2113,10 +2051,8 @@ def unsloth_save_pretrained_gguf(
     maximum_memory_usage: float = 0.85,
 ):
     """
-    Same as .save_pretrained(...) except 4bit weights are auto
-    converted to float16 then converted to GGUF / llama.cpp format.
-
-    Choose for `quantization_method` to be:
+    Like .save_pretrained(...) but auto-converts 4bit weights to float16, then to
+    GGUF / llama.cpp format. `quantization_method`:
     "not_quantized"  : "Recommended. Fast conversion. Slow inference, big files.",
     "fast_quantized" : "Recommended. Fast conversion. OK inference, OK file size.",
     "quantized"      : "Recommended. Slow conversion. Fast inference, small files.",
@@ -2227,7 +2163,6 @@ def unsloth_save_pretrained_gguf(
     if is_peft_model:
         print(f'Unsloth: Merging model weights to {"mxfp4" if is_gpt_oss else "16-bit"} format...')
         try:
-            # Call unsloth_generic_save directly (it's in the same file)
             unsloth_generic_save(**arguments)
 
         except Exception as e:
@@ -2290,11 +2225,9 @@ def unsloth_save_pretrained_gguf(
     # Step 8: Convert to GGUF format
     print("Unsloth: Converting to GGUF format...")
 
-    # Convert quantization_method to list if string
-    # Use old style quantization_method
+    # Normalize quantization_method (old-style) to a list
     quantization_methods = []
     if quantization_method is not None:
-        # Convert quantization_method to list
         if isinstance(quantization_method, list):
             pass
         elif isinstance(quantization_method, str):
@@ -2334,8 +2267,8 @@ def unsloth_save_pretrained_gguf(
             model_directory = save_directory,
             quantization_method = quantization_methods,
             first_conversion = first_conversion,
-            is_vlm = is_vlm,  # Pass VLM flag
-            is_gpt_oss = is_gpt_oss,  # Pass gpt_oss Flag
+            is_vlm = is_vlm,
+            is_gpt_oss = is_gpt_oss,
         )
     except Exception as e:
         if IS_KAGGLE_ENVIRONMENT:
@@ -2434,10 +2367,8 @@ def unsloth_push_to_hub_gguf(
     datasets: Optional[List[str]] = None,
 ):
     """
-    Same as .push_to_hub(...) except 4bit weights are auto
-    converted to float16 then converted to GGUF / llama.cpp format.
-
-    Choose for `quantization_method` to be:
+    Like .push_to_hub(...) but auto-converts 4bit weights to float16, then to
+    GGUF / llama.cpp format. `quantization_method`:
     "not_quantized"  : "Recommended. Fast conversion. Slow inference, big files.",
     "fast_quantized" : "Recommended. Fast conversion. OK inference, OK file size.",
     "quantized"      : "Recommended. Slow conversion. Fast inference, small files.",
@@ -2519,14 +2450,12 @@ def unsloth_push_to_hub_gguf(
 
         api = HfApi(token = token)
 
-        # Get full repo id
         if "/" not in repo_id:
             username = api.whoami()["name"]
             full_repo_id = f"{username}/{repo_id}"
         else:
             full_repo_id = repo_id
 
-        # Create repo
         api.create_repo(
             repo_id = full_repo_id,
             repo_type = "model",
@@ -2658,7 +2587,6 @@ This model was finetuned and converted to GGUF format using [Unsloth](https://gi
 
         print(f"Unsloth: Successfully uploaded GGUF to https://huggingface.co/{full_repo_id}")
 
-        # Add tags
         if tags is None:
             tags = []
         tags.extend(["gguf", "llama-cpp", "unsloth"])
@@ -2687,7 +2615,6 @@ This model was finetuned and converted to GGUF format using [Unsloth](https://gi
         raise RuntimeError(f"Failed to upload to Hugging Face Hub: {e}")
 
     finally:
-        # Clean up temporary directory
         if cleanup_temp:
             print("Unsloth: Cleaning up temporary files...")
             for d in [save_directory, f"{save_directory}_gguf"]:
@@ -2700,12 +2627,9 @@ This model was finetuned and converted to GGUF format using [Unsloth](https://gi
     return full_repo_id
 
 
-# Corrected function to save LoRA to a custom directory
 def save_lora_to_custom_dir(model, tokenizer, save_directory):
-    # Create the custom directory if it doesn't exist
     os.makedirs(save_directory, exist_ok = True)
 
-    # Call the unsloth_save_model function with the custom directory
     unsloth_save_model(
         model,
         tokenizer,
@@ -2715,7 +2639,6 @@ def save_lora_to_custom_dir(model, tokenizer, save_directory):
     )
 
 
-# Corrected method within the model class to convert LoRA to GGML and push to Hugging Face Hub
 def unsloth_convert_lora_to_ggml_and_push_to_hub(
     self,
     tokenizer,
@@ -2830,7 +2753,6 @@ def unsloth_convert_lora_to_ggml_and_save_locally(
     for _ in range(3):
         gc.collect()
 
-    # Use the provided save_directory for local saving
     save_lora_to_custom_dir(self, tokenizer, save_directory)
 
     model_type = self.config.model_type
@@ -2901,10 +2823,9 @@ def save_to_gguf_generic(
     if not os.path.exists(os.path.join("llama.cpp", "unsloth_convert_hf_to_gguf.py")):
         install_llama_cpp(just_clone_repo = True)
 
-    # Use old style quantization_method
+    # Normalize quantization_method (old-style) to a list
     new_quantization_methods = []
     if quantization_method is not None:
-        # Convert quantization_method to list
         if isinstance(quantization_method, list):
             pass
         elif isinstance(quantization_method, str):
@@ -2930,7 +2851,6 @@ def save_to_gguf_generic(
             new_quantization_methods.append(quant_method.lower())
     else:
         new_quantization_methods.append(quantization_type.lower())
-    # Check if wrong method
     for quant_method in new_quantization_methods:
         if quant_method not in ALLOWED_QUANTS.keys():
             error = f"Unsloth: Quant method = [{quant_method}] not supported. Choose from below:\n"
@@ -2938,8 +2858,7 @@ def save_to_gguf_generic(
                 error += f"[{key}] => {value}\n"
             raise RuntimeError(error)
 
-    # Go through all types and save individually - somewhat inefficient
-    # since we save F16 / BF16 multiple times
+    # Save each type individually (inefficient: F16/BF16 saved repeatedly)
     for quantization_type in new_quantization_methods:
         metadata = _convert_to_gguf(
             save_directory,
@@ -3123,10 +3042,8 @@ def unsloth_generic_save_pretrained_merged(
     datasets: Optional[List[str]] = None,
 ):
     """
-    Same as .push_to_hub(...) except 4bit weights are auto
-    converted to float16 with as few overhead as possible.
-
-    Choose for `save_method` to be either:
+    Like .push_to_hub(...) but auto-converts 4bit weights to float16.
+    `save_method`:
     1. `16bit`: Merge LoRA into float16 weights. Useful for GGUF / llama.cpp.
     2.  `4bit`: Merge LoRA into int4 weights. Useful for DPO / HF inference.
     3.  `lora`: Save LoRA adapters with no merging. Useful for HF inference.
@@ -3165,10 +3082,8 @@ def unsloth_generic_push_to_hub_merged(
     datasets: Optional[List[str]] = None,
 ):
     """
-    Same as .push_to_hub(...) except 4bit weights are auto
-    converted to float16 with as few overhead as possible.
-
-    Choose for `save_method` to be either:
+    Like .push_to_hub(...) but auto-converts 4bit weights to float16.
+    `save_method`:
     1. `16bit`: Merge LoRA into float16 weights. Useful for GGUF / llama.cpp.
     2.  `4bit`: Merge LoRA into int4 weights. Useful for DPO / HF inference.
     3.  `lora`: Save LoRA adapters with no merging. Useful for HF inference.
@@ -3198,9 +3113,8 @@ def _unsloth_save_torchao_with_attached_config(
     token: Optional[Union[str, bool]] = None,
 ):
     """Save a QAT-trained model by converting fake-quantized weights to real quantized weights."""
-    # Convert QAT fake-quantized weights to real quantized weights
     _convert_torchao_model(model)
-    # PEFT models also might come here, so parse it
+    # PEFT models can also reach here, so parse it
     if isinstance(model, PeftModelForCausalLM):
         _unsloth_save_torchao_with_given_config(
             model = model,
@@ -3231,12 +3145,11 @@ def _unsloth_save_torchao_with_given_config(
     push_to_hub: bool = False,
     token: Optional[Union[str, bool]] = None,
 ):
-    """Quantizes the model with torchao and saves a torchao quantized checkpoint
+    """Quantize the model with torchao and save the quantized checkpoint.
 
-    Args
-      `save_directory`: local folder path or huggingface hub ID when `push_to_hub` is set to True, e.g. `my_model`
-      `torchao_config` (TorchAOBaseConfig): configuration for torchao quantization, full list: https://docs.pytorch.org/ao/main/api_ref_quantization.html#inference-apis-for-quantize
-      `push_to_hub` (bool): whether to push the checkpoint to huggingface hub or save locally
+    `save_directory`: local path, or hub repo ID when `push_to_hub` is True.
+    `torchao_config` (TorchAOBaseConfig): torchao quant config, full list:
+        https://docs.pytorch.org/ao/main/api_ref_quantization.html#inference-apis-for-quantize
     """
 
     if push_to_hub:
@@ -3337,26 +3250,15 @@ def unsloth_save_pretrained_torchao(
     push_to_hub: bool = False,
     token: Optional[Union[str, bool]] = None,
 ):
-    """Saves a torchao quantized model checkpoint.
+    """Save a torchao quantized model checkpoint. Two exclusive workflows:
 
-    This function handles two mutually exclusive workflows:
+    1. QAT: model trained with `qat_scheme` -> do NOT pass `torchao_config`;
+       fake-quantized weights are converted to real quantized weights and saved.
+    2. PTQ: model NOT trained with `qat_scheme` -> pass a `torchao_config` to quantize.
 
-    1. **QAT (Quantization-Aware Training)**: If the model was trained with `qat_scheme`
-       parameter, do NOT pass `torchao_config`. The function will convert the QAT
-       fake-quantized weights to real quantized weights and save directly.
-
-    2. **PTQ (Post-Training Quantization)**: If you want to apply quantization to a
-       regular model, pass a `torchao_config`. The model must NOT have been trained
-       with `qat_scheme`.
-
-    Args:
-      `save_directory`: local folder path or huggingface hub ID when `push_to_hub` is True
-      `tokenizer`: the tokenizer to save alongside the model
-      `torchao_config` (TorchAOBaseConfig): configuration for torchao quantization.
-          Required for PTQ, must be None for QAT models.
-          Options: https://docs.pytorch.org/ao/main/api_ref_quantization.html#inference-apis-for-quantize
-      `push_to_hub` (bool): whether to push to huggingface hub or save locally
-      `token`: HuggingFace token for pushing to hub
+    `save_directory`: local path, or hub repo ID when `push_to_hub` is True.
+    `torchao_config` (TorchAOBaseConfig): required for PTQ, must be None for QAT.
+        Options: https://docs.pytorch.org/ao/main/api_ref_quantization.html#inference-apis-for-quantize
     """
     if isinstance(tokenizer, (PreTrainedTokenizerBase, ProcessorMixin)):
         tokenizer = patch_saving_functions(tokenizer)
@@ -3409,7 +3311,7 @@ def patch_saving_functions(model, vision = False):
     import types
     from typing import Callable, Optional, Union, List
 
-    # And now re add our saving methods!
+    # Re-add our saving methods
     if model.push_to_hub.__name__ == "unsloth_push_to_hub":
         original_push_to_hub = model.original_push_to_hub
     else:

@@ -52,7 +52,7 @@ class RawTextDataLoader:
         self.return_tokenized = return_tokenized
 
     def detect_format(self, file_path):
-        """Auto-detect file format and parse accordingly"""
+        """Auto-detect file format from extension."""
         extension = Path(file_path).suffix.lower()
         return SUPPORTED_FORMATS.get(extension, "plain_text")
 
@@ -102,11 +102,9 @@ class RawTextDataLoader:
     def create_causal_dataset(self, chunks):
         """Create dataset for causal language modeling"""
         if chunks and isinstance(chunks[0], dict):
-            # Already-tokenized chunks: reshape for Dataset.from_dict
             input_ids = [chunk["input_ids"] for chunk in chunks]
             attention_mask = [chunk["attention_mask"] for chunk in chunks]
-            # Labels == input_ids for causal LM
-            labels = [list(ids) for ids in input_ids]
+            labels = [list(ids) for ids in input_ids]  # labels == input_ids for causal LM
             return Dataset.from_dict(
                 {
                     "input_ids": input_ids,
@@ -125,13 +123,7 @@ class RawTextDataLoader:
         stride,
         return_tokenized = True,
     ):
-        """
-        Intelligent chunking that:
-        1. Respects sentence/paragraph boundaries
-        2. Handles various text formats (.txt, .md, .json, etc.)
-        3. Maintains context with stride overlap
-        4. Returns tokenized chunks directly (more efficient) or text chunks
-        """
+        """Chunk text with stride overlap; return tokenized chunks or text."""
         # Tokenize the whole text once for accurate token counts
         tokenized = self.tokenizer(text, return_tensors = "pt", add_special_tokens = False)
         tokens = tokenized["input_ids"]
@@ -141,11 +133,9 @@ class RawTextDataLoader:
             if hasattr(tokens[0], "__len__"):
                 tokens = tokens[0]
         elif isinstance(tokens, int):
-            # Tokenizer returned a count; build a range
-            tokens = list(range(tokens))
+            tokens = list(range(tokens))  # tokenizer returned a count
 
         if len(tokens) <= chunk_size:
-            # Fits in a single chunk
             if return_tokenized:
                 eos_token_id = getattr(self.tokenizer, "eos_token_id", None)
                 if eos_token_id is not None:
@@ -190,7 +180,6 @@ class RawTextDataLoader:
 
                 chunks.append(chunk_text)
 
-            # Advance with stride overlap
             if end_idx == len(tokens):
                 break
             start_idx += chunk_size - stride
@@ -268,13 +257,7 @@ class TextPreprocessor:
         return text
 
     def validate_dataset(self, dataset):
-        """
-        Check for:
-        - Minimum/maximum sequence lengths
-        - Character encoding issues
-        - Repeated content
-        - Empty chunks
-        """
+        """Compute dataset stats: lengths, encoding issues, repeats, empties."""
         stats = {
             "total_samples": len(dataset),
             "empty_samples": 0,
@@ -295,31 +278,26 @@ class TextPreprocessor:
                 stats["empty_samples"] += 1
                 continue
 
-            # Check for encoding issues
             try:
                 text.encode("utf-8")
             except UnicodeEncodeError:
                 stats["encoding_issues"] += 1
 
-            # Calculate lengths
             length = len(text)
             text_lengths.append(length)
             stats["min_length"] = min(stats["min_length"], length)
             stats["max_length"] = max(stats["max_length"], length)
 
-            # Check for repeated content
             text_hash = hash(text.strip())
             if text_hash in seen_texts:
                 stats["repeated_content"] += 1
             else:
                 seen_texts.add(text_hash)
 
-        # Calculate average length
         if text_lengths:
             stats["avg_length"] = sum(text_lengths) / len(text_lengths)
             stats["min_length"] = stats["min_length"] if stats["min_length"] != float("inf") else 0
 
-        # Generate warnings
         if stats["empty_samples"] > 0:
             stats["warnings"].append(f"Found {stats['empty_samples']} empty samples")
 

@@ -89,7 +89,6 @@ def CohereAttention_fast_forward(
     *args,
     **kwargs,
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
-    # Clear inference
     if hasattr(self, "paged_attention"):
         del self.paged_attention_K
         del self.paged_attention_V
@@ -129,7 +128,6 @@ def CohereAttention_fast_forward(
         cos, sin = self.rotary_emb.get_cached(kv_seq_len, Q.device.index)
 
     rope_position_ids = position_ids if position_ids is not None else kwargs.get("position_ids")
-    # Useful for LongRoPE
     Q, K = fast_rope_embedding(Q, K, cos, sin, rope_position_ids)
 
     if past_key_value is not None:
@@ -137,7 +135,6 @@ def CohereAttention_fast_forward(
         V = torch.cat([past_key_value[1], V], dim = 2)
     past_key_value = (K, V) if use_cache else None
 
-    # Attention module
     use_varlen = seq_info is not None and past_key_value is None
     backend = select_attention_backend(use_varlen)
     attention_config = AttentionConfig(
@@ -193,7 +190,6 @@ def CohereDecoderLayer_fast_forward(
             device = f"{DEVICE_TYPE_TORCH}:0",
         )
 
-        # Self Attention
         residual = hidden_states
         hidden_states = fast_layernorm_inference(self.input_layernorm, hidden_states, out_weight)
         hidden_states_attention, self_attn_weights, present_key_value = self.self_attn(
@@ -208,7 +204,6 @@ def CohereDecoderLayer_fast_forward(
             **kwargs,
         )
 
-        # Fully Connected
         hidden_states_mlp = fast_swiglu_inference(self.mlp, hidden_states)
         residual += hidden_states_attention
         residual += hidden_states_mlp
@@ -228,7 +223,6 @@ def CohereDecoderLayer_fast_forward(
             **kwargs,
         )
 
-        # Fully Connected
         hidden_states_mlp = self.mlp(hidden_states)
         hidden_states = residual + hidden_states_attention + hidden_states_mlp
 
@@ -242,7 +236,7 @@ def CohereDecoderLayer_fast_forward(
 
 from math import sqrt as math_sqrt
 
-KV_CACHE_INCREMENT = 256  # KV Cache update size
+KV_CACHE_INCREMENT = 256
 torch_nn_functional_softmax = torch.nn.functional.softmax
 torch_matmul = torch.matmul
 
@@ -403,7 +397,6 @@ def CohereAttention_fast_forward_inference(
         Knn = Knn.reshape(bsz, n_heads, cached_len, head_dim)
         Vnn = Vnn.reshape(bsz, n_heads, cached_len, head_dim)
 
-    # Attention
     if bsz == 1:
         Qn *= (
             self.scalar

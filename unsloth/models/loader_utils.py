@@ -49,7 +49,7 @@ BAD_MAPPINGS = {
 
 
 def _get_torchao_fp8_config(fp8_mode):
-    # Lazy import so a broken optional vLLM install doesn't break `import unsloth`.
+    # Lazy import: a broken optional vLLM install must not break `import unsloth`
     from unsloth_zoo.vllm_utils import _get_torchao_fp8_config as _impl
     return _impl(fp8_mode)
 
@@ -118,10 +118,10 @@ def __get_model_name(
     if load_in_fp8 != False:
         if load_in_fp8 == True and (os.environ.get("UNSLOTH_HAS_FBGEMM", "0") == "1"):
             if lower_model_name in FLOAT_TO_FP8_ROW_MAPPER:
-                # Faster row scaling only works if FBGEMM works!
+                # Faster row scaling needs FBGEMM
                 return FLOAT_TO_FP8_ROW_MAPPER[lower_model_name]
             elif lower_model_name in FLOAT_TO_FP8_BLOCK_MAPPER:
-                # Otherwise we use the slower blockwise type
+                # Fall back to slower blockwise scaling
                 return FLOAT_TO_FP8_BLOCK_MAPPER[lower_model_name]
         else:
             if lower_model_name in FLOAT_TO_FP8_BLOCK_MAPPER:
@@ -238,7 +238,7 @@ def get_model_name(
         new_model_name = BAD_MAPPINGS[new_model_name.lower()]
 
     if new_model_name is None and model_name.count("/") == 1 and model_name[0].isalnum():
-        # Try checking if a new Unsloth version allows it!
+        # Maybe a newer Unsloth version supports it
         NEW_INT_TO_FLOAT_MAPPER, NEW_FLOAT_TO_INT_MAPPER, NEW_MAP_TO_UNSLOTH_16bit = (
             _get_new_mapper()
         )
@@ -361,28 +361,16 @@ def check_and_disable_bitsandbytes_loading(
     verbose = True,
 ):
     """
-    Check if we should disable bitsandbytes loading (load_in_4bit/load_in_8bit)
-    because the model already has a non-bitsandbytes quantization config.
-    If so, disable BOTH 4bit and 8bit loading and print a warning message.
-
-    Args:
-        model_config: The AutoConfig object from the model
-        load_in_4bit: Whether load_in_4bit is currently enabled
-        load_in_8bit: Whether load_in_8bit is currently enabled
-        verbose: Whether to print warning messages
-
-    Returns:
-        tuple: (load_in_4bit, load_in_8bit, quant_method)
-            load_in_4bit/load_in_8bit will be False if they were disabled
-            quant_method is the detected quantization method or None
+    Disable bnb 4bit/8bit loading if the model already has a non-bnb quant config,
+    to avoid config conflicts. Returns (load_in_4bit, load_in_8bit, quant_method),
+    where the flags are False if disabled and quant_method is the detected method or None.
     """
     quant_method = get_quant_type(model_config)
 
     if quant_method is None or quant_method == "bitsandbytes":
         return load_in_4bit, load_in_8bit, quant_method
 
-    # Model has a non-bitsandbytes quantization config (e.g., compressed-tensors, gptq, awq)
-    # We should disable BOTH bitsandbytes loading to avoid config conflicts
+    # Non-bnb quant config (compressed-tensors/gptq/awq): disable bnb to avoid config conflicts
     if load_in_4bit or load_in_8bit:
         if verbose:
             print(
@@ -413,7 +401,6 @@ def _get_fp8_mode_and_check_settings(
     else:
         fp8_mode = load_in_fp8
 
-    # Check user settings
     if fp8_mode not in ["row", "block"]:
         raise ValueError(f"Unsloth: `load_in_fp8` can only be 'row' or 'block', got '{fp8_mode}'")
     if full_finetuning:
@@ -423,7 +410,7 @@ def _get_fp8_mode_and_check_settings(
             "Unsloth: `load_in_fp8` is not compatible with `load_in_4bit`, `load_in_8bit` or `load_in_16bit`",
         )
 
-    # Check if this is Hopper or above
+    # Require Hopper or above
     if not (
         torch.cuda.is_available()
         and torch.version.cuda
@@ -433,7 +420,6 @@ def _get_fp8_mode_and_check_settings(
             "Unsloth: On the fly `load_in_fp8` requires H100 GPUs or after. Try `unsloth/Qwen3-8B` instead."
         )
 
-    # Check if torch >= 2.9.0
     if Version(torch.__version__) < Version("2.9.0"):
         raise ValueError(
             "Unsloth: On the fly `load_in_fp8` requires torch 2.9.0+. Try `unsloth/Qwen3-8B` instead."
@@ -455,14 +441,13 @@ def _get_fp8_mode_and_check_settings(
     if Version(torchao.__version__) < Version("0.15.0"):
         raise ValueError(error_message)
 
-    # If fbgemm_gpu_genai is installed and old, disable FBGEMM and use Triton instead
+    # Old fbgemm_gpu_genai: disable FBGEMM, use Triton instead
     if (
         importlib.util.find_spec("fbgemm_gpu") is not None
         and importlib.util.find_spec("fbgemm_gpu.experimental") is not None
     ):
         import fbgemm_gpu.experimental.gen_ai
         if Version(fbgemm_gpu.__version__) < Version("1.4.1"):
-            # Old FBGEMM version - disable and use Triton kernels instead
             os.environ["UNSLOTH_HAS_FBGEMM"] = "0"
             from unsloth_zoo.log import logger
             logger.info(

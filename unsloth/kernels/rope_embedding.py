@@ -114,11 +114,7 @@ def _rope_embedding(
     BACKWARD_PASS: tl.constexpr,
     BLOCK_SIZE: tl.constexpr,
 ):
-    """
-    Calculates the RoPE Embedding quickly
-    RoPE is Q * cos + rotate_half(Q) * sin
-    See our blog post for more info
-    """
+    """RoPE embedding: Q * cos + rotate_half(Q) * sin."""
     ROPE_GROUP_SIZE = 4
     row_position = tl.program_id(0)
     group_head_position = tl.program_id(1)
@@ -138,7 +134,7 @@ def _rope_embedding(
     )
 
     if BACKWARD_PASS:
-        # See our blog post for more info.
+        # Backward negates sin (rotation transpose).
         sin1 = -sin1
 
     # [TODO] Autotune ROPE_GROUP_SIZE to be 1, 2, 4, 8
@@ -181,8 +177,7 @@ class Fast_RoPE_Embedding(torch.autograd.Function):
         n_rows, n_cols = Q.shape
         assert seq_len <= cos.shape[0]
 
-        # [TODO] Changing blocksize to head_dim//2 seems to have
-        # some concurrency / un-deterministic issues.
+        # [TODO] head_dim//2 blocksize causes concurrency / nondeterminism issues.
         BLOCK_SIZE, num_warps = calculate_settings(head_dim // 2)  # (head_dim//2)
 
         # group_size = 4 # 4 or 8, too large group_size can hurt performance.

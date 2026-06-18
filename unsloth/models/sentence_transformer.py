@@ -152,10 +152,7 @@ def _save_pretrained_gguf(
     maximum_memory_usage = 0.85,
     **kwargs,
 ):
-    """
-    Saves the SentenceTransformer model to GGUF format by saving the inner transformer model,
-    converting it, and placing the resulting GGUF files in the save directory.
-    """
+    """Save the SentenceTransformer to GGUF: convert the inner transformer and place the GGUF files in save_directory."""
     # 1. Save standard SentenceTransformer structure (configs, modules.json, etc.)
     self.save_pretrained(save_directory)
 
@@ -296,52 +293,20 @@ def _push_to_hub_gguf(
     tags = None,
     **kwargs,
 ):
-    """
-    Converts the SentenceTransformer model to GGUF format and pushes to the Hugging Face Hub.
+    """Convert the SentenceTransformer to GGUF and push it to the Hugging Face Hub, returning the full repo ID.
 
-    This method:
-    1. Saves the model locally to a temporary directory in GGUF format.
-    2. Uploads the GGUF files, config, Ollama Modelfile, and README to the Hub.
-    3. Cleans up the temporary directory.
-
-    Args:
-        repo_id (str): The Hugging Face Hub repo ID (e.g., "username/model-name").
-        tokenizer: The tokenizer to save. Defaults to `self.tokenizer`.
-        quantization_method (str or list): GGUF quantization method(s). Can be a string or list of strings.
-            Choose from the following options:
-            * "not_quantized"  : Recommended. Fast conversion. Slow inference, big files.
-            * "fast_quantized" : Recommended. Fast conversion. OK inference, OK file size.
-            * "quantized"      : Recommended. Slow conversion. Fast inference, small files.
-            * "f32"     : Not recommended. Retains 100% accuracy, but super slow and memory hungry.
-            * "f16"     : Fastest conversion + retains 100% accuracy. Slow and memory hungry.
-            * "q8_0"    : Fast conversion. High resource use, but generally acceptable.
-            * "q4_k_m"  : Recommended. Uses Q6_K for half of the attention.wv and feed_forward.w2 tensors, else Q4_K
-            * "q5_k_m"  : Recommended. Uses Q6_K for half of the attention.wv and feed_forward.w2 tensors, else Q5_K
-            * "q2_k"    : Uses Q4_K for the attention.vw and feed_forward.w2 tensors, Q2_K for the other tensors.
-            * "q3_k_l"  : Uses Q5_K for the attention.wv, attention.wo, and feed_forward.w2 tensors, else Q3_K
-            * "q3_k_m"  : Uses Q4_K for the attention.wv, attention.wo, and feed_forward.w2 tensors, else Q3_K
-            * "q3_k_s"  : Uses Q3_K for all tensors
-            * "q4_0"    : Original quant method, 4-bit.
-            * "q4_1"    : Higher accuracy than q4_0 but not as high as q5_0. However has quicker inference than q5 models.
-            * "q4_k_s"  : Uses Q4_K for all tensors
-            * "q5_0"    : Higher accuracy, higher resource usage and slower inference.
-            * "q5_1"    : Even higher accuracy, resource usage and slower inference.
-            * "q5_k_s"  : Uses Q5_K for all tensors
-            * "q6_k"    : Uses Q8_K for all tensors
-        first_conversion (str, optional): The initial conversion format before quantization.
-        token (str, optional): Hugging Face token. Uses cached token if not provided.
-        private (bool, optional): Whether the repo should be private.
-        commit_message (str): Commit message for the upload.
-        commit_description (str): Commit description for the upload.
-        max_shard_size (str): Maximum shard size for saving.
-        temporary_location (str): Temp directory for intermediate files.
-        maximum_memory_usage (float): Max fraction of memory to use.
-        create_pr (bool): Whether to create a pull request instead of pushing directly.
-        revision (str, optional): Branch/revision to push to.
-        tags (list, optional): Additional tags for the repo.
-
-    Returns:
-        str: The full repo ID on Hugging Face Hub.
+    quantization_method (str or list) selects the GGUF method(s):
+        * "not_quantized"  : Fast conversion, slow inference, big files.
+        * "fast_quantized" : Fast conversion, OK inference, OK file size.
+        * "quantized"      : Slow conversion, fast inference, small files.
+        * "f32" / "f16"    : Full accuracy, slow and memory hungry.
+        * "q8_0"           : Fast conversion, high resource use.
+        * "q4_k_m" / "q5_k_m" : Q6_K for half the attention.wv/feed_forward.w2 tensors, else Q4_K/Q5_K.
+        * "q2_k"           : Q4_K for attention.vw/feed_forward.w2, Q2_K elsewhere.
+        * "q3_k_l" / "q3_k_m" : Q5_K/Q4_K for attention.wv/wo/feed_forward.w2, else Q3_K.
+        * "q3_k_s" / "q4_k_s" / "q5_k_s" : Q3_K/Q4_K/Q5_K for all tensors.
+        * "q4_0" / "q4_1" / "q5_0" / "q5_1" : 4/5-bit, increasing accuracy and cost.
+        * "q6_k"           : Q8_K for all tensors.
     """
     if token is None:
         token = get_token()
@@ -486,7 +451,6 @@ This sentence-transformers model was finetuned and converted to GGUF format usin
             revision = revision,
         )
 
-    # Add tags
     all_tags = ["gguf", "llama-cpp", "unsloth", "sentence-transformers"]
     if is_vlm:
         all_tags.append("vision-language-model")
@@ -507,10 +471,9 @@ This sentence-transformers model was finetuned and converted to GGUF format usin
 class FastSentenceTransformer(FastModel):
     @staticmethod
     def _save_base_config_for_processor_resume(config, output_path):
-        """sentence-transformers >= 5.4 reloads Transformer modules via
-        AutoProcessor, which falls back to AutoConfig for tokenizer-only
-        roots -- so PEFT adapter checkpoints still need base config.json
-        next to adapter_config.json."""
+        """Write base config.json next to adapter_config.json so PEFT adapter
+        checkpoints reload: sentence-transformers >= 5.4 reloads Transformer
+        modules via AutoProcessor, which falls back to AutoConfig."""
         if config is None or not getattr(config, "model_type", None):
             return
         if hasattr(config, "save_pretrained"):
@@ -926,7 +889,6 @@ class FastSentenceTransformer(FastModel):
         with open(readme_path, "r", encoding = "utf-8") as f:
             content = f.read()
 
-        # add unsloth tag to frontmatter
         if "---\ntags:\n" in content:
             content = content.replace("---\ntags:\n", "---\ntags:\n- unsloth\n")
         else:
@@ -1078,7 +1040,6 @@ class FastSentenceTransformer(FastModel):
         }
         transformer_module.model_forward_params |= preinit_model_forward_params
 
-        # determine max_seq_length if not provided
         if max_seq_length is None:
             if hasattr(model, "config") and hasattr(model.config, "max_position_embeddings"):
                 max_seq_length = model.config.max_position_embeddings
@@ -1137,10 +1098,7 @@ class FastSentenceTransformer(FastModel):
         trust_remote_code = False,
     ) -> tuple[OrderedDict, bool]:
         """Load modules from modules.json, else fall back to hard-coded modules.
-
-        Returns:
-            tuple[OrderedDict, bool]: (modules, no_modules_json)
-        """
+        Returns ``(modules, no_modules_json)``."""
         from sentence_transformers.util import import_from_string, load_dir_path
         from sentence_transformers.models import Pooling, Normalize
 
@@ -1225,11 +1183,8 @@ class FastSentenceTransformer(FastModel):
         max_seq_length = None,
     ):
         """Estimate the minimum training steps for torch.compile to pay off
-        (with a 1.2x safety margin), from empirical benchmarks.
-
-        Optional batch_size / grad_accum / max_seq_length give a coarse,
-        conservative pre-run adjustment with no runtime measurements.
-        """
+        (1.2x safety margin) from empirical benchmarks. Optional batch_size /
+        grad_accum / max_seq_length give a coarse pre-run adjustment."""
         if hasattr(model, "__getitem__"):
             try:
                 inner = model[0].auto_model
@@ -1474,14 +1429,12 @@ class FastSentenceTransformer(FastModel):
                 print("Unsloth: Device does not support bfloat16. Using float16 instead.")
                 dtype = torch.float16
 
-            # Determine device
             st_device = device_map
             if isinstance(st_device, dict) or (
                 isinstance(st_device, str) and st_device in ["auto", "sequential"]
             ):
                 st_device = "cuda"
 
-            # Build model_kwargs for SentenceTransformer
             model_kwargs = {"torch_dtype": dtype}
 
             encoder_attn_impl = resolve_encoder_attention_implementation(
@@ -1494,7 +1447,6 @@ class FastSentenceTransformer(FastModel):
             if encoder_attn_impl is not None:
                 model_kwargs["attn_implementation"] = encoder_attn_impl
 
-            # Print optimization status
             sdpa_str = " + SDPA" if supports_sdpa else ""
             if load_in_4bit:
                 print(
@@ -1505,7 +1457,6 @@ class FastSentenceTransformer(FastModel):
                     f"Unsloth: Using fast encoder path for {model_type} (torch.compile{sdpa_str})"
                 )
 
-            # Handle 4-bit quantization via BitsAndBytesConfig
             if load_in_4bit:
                 from transformers import BitsAndBytesConfig
 
@@ -1519,12 +1470,12 @@ class FastSentenceTransformer(FastModel):
                 # When using quantization, device must be handled by accelerate
                 st_device = None
 
-            # Handle gradient checkpointing - warn user it conflicts with torch.compile
+            # Gradient checkpointing conflicts with torch.compile
             _use_gc = use_gradient_checkpointing
             if _use_gc and _use_gc != False:
                 print("Unsloth Warning: Gradient checkpointing is incompatible with torch.compile.")
                 print("Disabling torch.compile to enable gradient checkpointing.")
-                compile_mode = None  # Disable compilation
+                compile_mode = None
 
                 is_mpnet = "mpnet" == model_type.lower()
 
@@ -1553,7 +1504,6 @@ class FastSentenceTransformer(FastModel):
                 st_model[0], getattr(st_model[0].auto_model, "config", None)
             )
 
-            # Add save methods
             def _save_pretrained_merged(self, save_directory, **save_kwargs):
                 self.save_pretrained(save_directory)
                 tokenizer = save_kwargs.pop("tokenizer", self.tokenizer)
@@ -1612,7 +1562,6 @@ class FastSentenceTransformer(FastModel):
             print("Unsloth Warning: 4-bit quantization adds ~2.3x overhead for encoder models.")
             print("Consider using load_in_16bit=True for better performance.")
 
-        # check if the model supports add_pooling_layer
         if "add_pooling_layer" not in kwargs:
             supported = FastSentenceTransformer._has_add_pooling_layer(
                 config, kwargs.get("auto_model", AutoModel)
@@ -1749,7 +1698,6 @@ class FastSentenceTransformer(FastModel):
                     save_directory, tokenizer = tokenizer, **kwargs
                 )
 
-            # add Unsloth branding to the generated README
             try:
                 FastSentenceTransformer._add_unsloth_branding(save_directory)
             except Exception as e:
@@ -1840,7 +1788,6 @@ class FastSentenceTransformer(FastModel):
                 transformer_module = model[0]
                 inner_model = transformer_module.auto_model
 
-                # Check if model is quantized (4-bit/8-bit)
                 is_quantized = (
                     getattr(inner_model, "is_quantized", False)
                     or getattr(inner_model.config, "quantization_config", None) is not None
@@ -1863,7 +1810,6 @@ class FastSentenceTransformer(FastModel):
                     elif model_type == "mpnet":
                         FastSentenceTransformer._patch_mpnet_v5()
 
-                # Prepare for k-bit training if quantized
                 if is_quantized:
                     from ._utils import prepare_model_for_kbit_training
                     _gc_for_kbit = (
@@ -1878,7 +1824,6 @@ class FastSentenceTransformer(FastModel):
                         gc_enabled = bool(_gc_for_kbit)
                     except ValueError as e:
                         if "does not support gradient checkpointing" in str(e):
-                            # Model doesn't support gradient checkpointing, disable it
                             print(
                                 f"Unsloth Warning: {inner_model.__class__.__name__} does not support gradient checkpointing. Skipping."
                             )
@@ -1905,7 +1850,6 @@ class FastSentenceTransformer(FastModel):
                                     f"Unsloth Warning: {inner_model.__class__.__name__} does not support gradient checkpointing. Skipping."
                                 )
 
-                # Create LoRA config
                 lora_config = LoraConfig(
                     r = r,
                     lora_alpha = lora_alpha,
@@ -1918,7 +1862,6 @@ class FastSentenceTransformer(FastModel):
                 # Apply PEFT directly (not through FastModel)
                 peft_model = peft_get_peft_model(inner_model, lora_config)
 
-                # Apply QAT if specified
                 qat_scheme = kwargs.get("qat_scheme", None)
                 if qat_scheme is not None:
                     from ._utils import _prepare_model_for_qat
@@ -1951,7 +1894,6 @@ class FastSentenceTransformer(FastModel):
                     model._compile_threshold = FastSentenceTransformer._estimate_compile_threshold(
                         model
                     )
-                    # Flag to indicate compile has not been applied yet
                     model._compile_pending = True
                     print(
                         f"Unsloth: torch.compile will be applied automatically if max_steps > {model._compile_threshold}"
@@ -2019,12 +1961,8 @@ class FastSentenceTransformer(FastModel):
 
 
 def _patch_sentence_transformer_trainer():
-    """
-    Patch SentenceTransformerTrainer to automatically apply torch.compile
-    when training steps exceed the breakeven threshold.
-
-    This is called automatically when this module is imported.
-    """
+    """Patch SentenceTransformerTrainer to auto-apply torch.compile when training
+    steps exceed the breakeven threshold. Called on module import."""
     try:
         from sentence_transformers import SentenceTransformerTrainer
     except ImportError:
@@ -2043,7 +1981,6 @@ def _patch_sentence_transformer_trainer():
         model = kwargs.get("model") or (args[0] if args else None)
         training_args = kwargs.get("args") or (args[1] if len(args) > 1 else None)
 
-        # Check if model has pending compile
         if (
             model is not None
             and training_args is not None
@@ -2085,7 +2022,6 @@ def _patch_sentence_transformer_trainer():
                 )
                 model._compile_pending = False
 
-        # Call original __init__
         _original_init(self, *args, **kwargs)
 
         # Disable mixed precision when FORCE_FLOAT32 is active (matches rl.py behavior)

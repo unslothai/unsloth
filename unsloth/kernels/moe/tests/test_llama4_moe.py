@@ -32,7 +32,7 @@ LLAMA4_SCOUT_ID = "meta-llama/Llama-4-Scout-17B-16E"
 SEED = 42
 SEQ_LENS = [1024]
 DTYPES = [torch.bfloat16]
-# Reduce the number of autotuning configs to prevent excessive runtime
+# Cap autotuning configs to keep runtime reasonable
 NUM_AUTOTUNE_CONFIGS = 50
 
 
@@ -162,7 +162,7 @@ def test_llama4_ref(
     permute_x: bool,
     permute_y: bool,
     overlap_router_shared: bool,
-    model_config: Llama4TextConfig,  # test fixture
+    model_config: Llama4TextConfig,
     bs: int = 1,
     device = "cuda",
     precision = ".6f",
@@ -180,7 +180,6 @@ def test_llama4_ref(
     # Reference op -- HF
     llama4_ref = Llama4TextMoe(model_config).to(dtype = dtype, device = device)
 
-    # Torch grouped gemm impl
     llama4_gg_ref = Llama4GroupedGemmTextMoe(
         model_config, overlap_router_shared = overlap_router_shared
     ).to(dtype = dtype, device = device)

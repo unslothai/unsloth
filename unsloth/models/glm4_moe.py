@@ -12,15 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""
-GLM-4.7 Flash (GLM4 MoE Lite) optimized implementation using grouped GEMM.
+"""GLM-4.7 Flash (GLM4 MoE Lite) optimized implementation using grouped GEMM.
 
-Key architecture differences from Qwen3 MoE:
-- Router uses sigmoid activation (not softmax)
-- Has routed_scaling_factor of 1.8
-- Has 1 shared expert that processes all tokens
-- Uses group-based selection before topk
-- Uses MLA (Multi-head Latent Attention)
+Differences from Qwen3 MoE: sigmoid router (not softmax), routed_scaling_factor 1.8, 1 shared expert
+processing all tokens, group-based selection before topk, and MLA (Multi-head Latent Attention).
 """
 
 from .llama import *
@@ -54,8 +49,7 @@ try:
     if _moe_path not in sys.path:
         sys.path.insert(0, _moe_path)
 
-    # Import first to apply the TMA compatibility shim (patches triton.language
-    # for both old and new TMA API names)
+    # Import first to apply the TMA compatibility shim (old + new TMA API names)
     import grouped_gemm  # noqa: F401 - triggers TMA compatibility shim
 
     from grouped_gemm.interface import grouped_gemm
@@ -88,7 +82,7 @@ try:
 except ImportError:
     HAS_GLM4_MOE = False
 
-    # Create dummy classes for type checking
+    # Dummy classes for type checking
     class Glm4MoeLiteAttention:
         pass
 
@@ -118,15 +112,7 @@ torch_nn_functional_silu = torch.nn.functional.silu
 
 
 def Glm4MoeLiteMoE_fast_forward(self, hidden_states):
-    """
-    Optimized MoE forward pass using grouped GEMM.
-
-    GLM4 MoE specifics:
-    - Uses sigmoid router activation (not softmax)
-    - Has routed_scaling_factor of 1.8
-    - Has 1 shared expert that always processes all tokens
-    - Uses group-based selection with topk_group
-    """
+    """Optimized MoE forward pass using grouped GEMM (sigmoid router + 1 shared expert)."""
     residuals = hidden_states
     orig_shape = hidden_states.shape
     batch_size, seq_len, hidden_dim = orig_shape
@@ -185,7 +171,7 @@ def Glm4MoeLiteMoE_fast_forward(self, hidden_states):
     else:
         hidden_states = self.experts(hidden_states, topk_indices, topk_weights)
 
-    # Add shared expert output
+    # Add shared expert (processes all tokens)
     hidden_states = hidden_states + self.shared_experts(residuals.view(-1, hidden_dim))
 
     return hidden_states.view(*orig_shape)
@@ -194,17 +180,8 @@ def Glm4MoeLiteMoE_fast_forward(self, hidden_states):
 def Glm4MoeLiteNaiveMoe_fast_forward(
     self, hidden_states: torch.Tensor, top_k_index: torch.Tensor, top_k_weights: torch.Tensor
 ) -> torch.Tensor:
-    """
-    Optimized expert forward using grouped GEMM.
-
-    Args:
-        hidden_states: [num_tokens, hidden_dim]
-        top_k_index: [num_tokens, top_k] indices of selected experts
-        top_k_weights: [num_tokens, top_k] weights for selected experts
-
-    Returns:
-        [num_tokens, hidden_dim] output after weighted sum of expert outputs
-    """
+    """Optimized expert forward using grouped GEMM. hidden_states [num_tokens, hidden_dim],
+    top_k_index/top_k_weights [num_tokens, top_k] -> [num_tokens, hidden_dim]."""
     num_tokens, hidden_dim = hidden_states.shape
     top_k = top_k_index.shape[1]
     top_k_weights = top_k_weights.to(hidden_states.dtype)
@@ -244,7 +221,6 @@ def Glm4MoeLiteNaiveMoe_fast_forward(
     # Under autocast hidden_states may be fp32 while weights are bf16
     hidden_states = hidden_states.to(self.gate_up_proj.dtype)
 
-    # First grouped GEMM: gate_up_proj
     intermediate = grouped_gemm(
         X = hidden_states,
         W = self.gate_up_proj,
@@ -261,7 +237,6 @@ def Glm4MoeLiteNaiveMoe_fast_forward(
     gate, up = intermediate.chunk(2, dim = -1)
     intermediate = self.act_fn(gate) * up
 
-    # Second grouped GEMM: down_proj
     expert_output = grouped_gemm(
         X = intermediate,
         W = self.down_proj,
@@ -293,13 +268,10 @@ def Glm4MoeLiteDecoderLayer_fast_forward(
     position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
     **kwargs,
 ) -> torch.Tensor:
-    """
-    Optimized decoder layer forward with fast RMS layernorm.
-    """
+    """Optimized decoder layer forward with fast RMS layernorm."""
     is_inference = use_cache and hasattr(self, "_flag_for_generation")
 
     if is_inference:
-        # Self-attention with fast inference path
         residual = hidden_states
         hidden_states = fast_rms_layernorm_inference(self.input_layernorm, hidden_states)
         hidden_states, _ = self.self_attn(
@@ -345,21 +317,13 @@ def Glm4MoeLiteDecoderLayer_fast_forward(
 
 
 def Glm4MoeLiteMLP_fast_forward(self, x):
-    """
-    Optimized MLP forward using fused SwiGLU.
-    """
+    """Optimized MLP forward using fused SwiGLU."""
     return fast_swiglu_inference(self, x)
 
 
 class FastGLM47Model(FastLlamaModel):
-    """
-    Fast GLM-4.7 Flash (GLM4 MoE Lite) model with grouped GEMM optimization.
-
-    This provides 2-3x throughput improvement for MoE layers by:
-    - Replacing sequential expert loops with grouped GEMM operations
-    - Fusing permutation operations into the GEMM kernels
-    - Using optimized RMS LayerNorm and SwiGLU implementations
-    """
+    """Fast GLM-4.7 Flash (GLM4 MoE Lite) model with grouped GEMM optimization (2-3x MoE throughput
+    via grouped GEMM, fused permutation, and optimized RMS LayerNorm / SwiGLU)."""
 
     @staticmethod
     def pre_patch():
@@ -369,8 +333,7 @@ class FastGLM47Model(FastLlamaModel):
                 "Please upgrade with: pip install --upgrade transformers"
             )
 
-        # Patch MoE forward with grouped GEMM (TMA compat handled by
-        # grouped_gemm/__init__.py)
+        # Patch MoE forward with grouped GEMM (TMA compat in grouped_gemm/__init__.py)
         if HAS_GROUPED_GEMM:
             Glm4MoeLiteNaiveMoe.forward = Glm4MoeLiteNaiveMoe_fast_forward
             Glm4MoeLiteMoE.forward = Glm4MoeLiteMoE_fast_forward

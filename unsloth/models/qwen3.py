@@ -39,7 +39,7 @@ try:
     )
 except:
     transformers_version = Version(transformers_version)
-    if not transformers_version >= Version("4.50.3"):  # TODO: Update when transformers is updated
+    if not transformers_version >= Version("4.50.3"):
         raise ImportError(
             f"Unsloth: Your transformers version of {transformers_version} does not support Qwen3 and Qwen3Moe.\n"
             f"The minimum required version is 4.50.3.\n"
@@ -75,7 +75,6 @@ def Qwen3Attention_fast_forward(
     *args,
     **kwargs,
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
-    # Clear inference
     if hasattr(self, "paged_attention"):
         del self.paged_attention_K
         del self.paged_attention_V
@@ -132,7 +131,6 @@ def Qwen3Attention_fast_forward(
         V = torch.cat([past_key_value[1], V], dim = 2)
     past_key_value = (K, V) if use_cache else None
 
-    # Attention module
     use_varlen = seq_info is not None and past_key_value is None
     backend = SDPA if attention_mask is not None else select_attention_backend(use_varlen)
     attention_config = AttentionConfig(
@@ -201,7 +199,6 @@ def Qwen3Attention_fast_forward_inference(
     seq_len = K1.shape[-2]
     kv_seq_len = seq_len + 1
 
-    # Prefill phase
     # if not hasattr(self, "paged_attention"):
     device = hidden_states.device
     if do_prefill:
@@ -263,8 +260,7 @@ def Qwen3Attention_fast_forward_inference(
     # cos, sin = self.rotary_emb(Vn, seq_len = kv_seq_len)
     # Qn, Kn = inplace_rope_embedding(Qn, Kn, cos, sin, position_ids)
 
-    # Need to do it prior 2 steps before hitting full on short KV cache
-    # or else error
+    # extend 2 steps ahead before the short KV cache fills, else error
     self.rotary_emb.extend_rope_embedding(Vn, seq_len + 2)
     cos, sin = self.rotary_emb.get_cached(kv_seq_len, Qn.device.index)
     # Transformers 5.x: position_ids may be [batch, full_seq_len]; slice to last
@@ -342,7 +338,6 @@ def Qwen3Attention_fast_forward_inference(
         Knn = Knn.reshape(bsz, n_heads, cached_len, head_dim)
         Vnn = Vnn.reshape(bsz, n_heads, cached_len, head_dim)
 
-    # Attention
     if bsz == 1:
         Qn *= (
             self.scalar
@@ -402,7 +397,7 @@ class FastQwen3Model(FastLlamaModel):
         return
 
     @staticmethod
-    def from_pretrained(  # TODO: Change after release
+    def from_pretrained(
         model_name = "Qwen/Qwen3-7B",
         max_seq_length = 4096,
         dtype = None,

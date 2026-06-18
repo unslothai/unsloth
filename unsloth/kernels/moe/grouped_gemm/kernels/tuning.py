@@ -272,5 +272,5 @@ class TritonTuningContext:
                 f"Error running Triton grouped GEMM for kernel config: {self.kernel_config}: {exc_value}"
             )
             self.success = False
-        # Return False to propagate exceptions, True to suppress them
+        # True suppresses the exception, False propagates it
         return True

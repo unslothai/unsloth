@@ -33,17 +33,14 @@ ch.setFormatter(formatter)
 logger.addHandler(ch)
 
 
-# Precompute TMA support to avoid graph breaks
-# TMA requires both:
-# 1. NVIDIA GPU with capability >= 9 (Hopper+)
-# 2. Triton version with TMA API (make_tensor_descriptor or _experimental_make_tensor_descriptor)
+# Precomputed to avoid graph breaks. TMA needs GPU capability >= 9 (Hopper+) and a Triton TMA API.
 def _check_tma_support():
     if DEVICE_TYPE in ("xpu", "hip"):
         return False
     import triton.language as tl
 
     gpu_supports_tma = torch.cuda.get_device_capability()[0] >= 9
-    # Support both old experimental and new stable API names
+    # Old experimental and new stable API names
     triton_has_tma_api = hasattr(tl, "make_tensor_descriptor") or hasattr(
         tl, "_experimental_make_tensor_descriptor"
     )
@@ -52,7 +49,7 @@ def _check_tma_support():
 
 _SUPPORTS_TMA = _check_tma_support()
 
-# Check if triton.set_allocator is available (Triton 3.0+)
+# triton.set_allocator exists on Triton 3.0+
 _HAS_SET_ALLOCATOR = hasattr(triton, "set_allocator")
 
 
@@ -68,10 +65,9 @@ except ImportError:
 
 def _is_tracing(*tensors):
     """
-    True if tensors are fake tensors used during torch.compile tracing (Triton can't run).
-
-    NOTE: We do NOT use torch.compiler.is_compiling() because it returns True during both
-    tracing AND execution; we only want to skip kernels during tracing on fake tensors.
+    True if tensors are fake tensors from torch.compile tracing (Triton can't run).
+    We avoid torch.compiler.is_compiling() since it's True during tracing AND
+    execution; we only want to skip kernels during tracing on fake tensors.
     """
     for t in tensors:
         name = type(t).__name__
@@ -118,13 +114,12 @@ def grouped_gemm_forward(
     m_sizes: torch.Tensor,
     gather_indices: torch.Tensor = None,
     topk_weights: torch.Tensor = None,
-    # Fusions
     permute_x: bool = False,
     permute_y: bool = False,
     fuse_mul_post: bool = False,
-    # Autotuning -- overrides manual kernel params when True
+    # overrides manual kernel params when True
     autotune: bool = False,
-    # Kernel tuning params (must be tuned, else poor performance)
+    # must be tuned, else poor performance
     BLOCK_SIZE_M: int = 32,
     BLOCK_SIZE_N: int = 32,
     BLOCK_SIZE_K: int = 32,
@@ -135,32 +130,28 @@ def grouped_gemm_forward(
     use_tma_store: bool = False,
     # software pipelining; no effect until loop is re-written
     flatten: bool = True,
-    # debugging
     debug: bool = False,
 ) -> torch.Tensor:
     """
-    Grouped GEMM forward pass for MoE MLPs.
+    Grouped GEMM forward for MoE MLPs. Returns y: (total_tokens, N).
 
-    The implementation offers a number of fusions specific to MoE:
-    - `permute_x`: fuse the permutation of hidden states from token order (original order) to grouped expert order, typically only needed for the first grouped GEMM in an MoE MLP.
-        - When `permute_x` is True, `X` is expected to be of shape (num_tokens, K).
-        - When `permute_x` is False, `X` is expected to be of shape (total_tokens, K) where `total_tokens = num_tokens * topk` AND already permuted to grouped expert order, i.e., hidden states are sorted such that tokens assigned to each expert are contiguous.
-    - `permute_y`: fused the permutation of the output from expert grouped order back to original token order, typically only needed for the second grouped GEMM in an MoE MLP.
-    - `fuse_mul_pre`: fuse the multiplication of the routed input with topk_weights, only done in the first grouped GEMM in an MoE MLP as for Llama4.  Do not use, since results in performance regression as it interrupts the GEMM mainloop.
-    - `fuse_mul_post`: fuse the multiplication of the routed output with topk_weights, used only when `permute_y` is True. NOTE: this should only be used when using this kernel for inference, not for training.
+    MoE-specific fusions:
+    - permute_x: fuse the token->grouped-expert-order permute of X (first GEMM).
+        True: X is (num_tokens, K). False: X is (total_tokens, K), total_tokens =
+        num_tokens * topk, already sorted so each expert's tokens are contiguous.
+    - permute_y: fuse the grouped-expert-order->token-order permute of the output
+        (second GEMM).
+    - fuse_mul_post: fuse multiply of routed output by topk_weights; only with
+        permute_y, and inference only (not training).
 
-    X: (M, K) hidden states where M is the num_tokens if `permute_x` is True, otherwise `total_tokens` where `total_tokens = num_tokens * topk`.
-    W: (E, N, K) expert weights, where E is number of experts, N in the intermediate (output) dim, and K is the reduction dim
-    m_sizes: tokens assigned to each expert which correspond to the size of M in the respective GEMMs in the grouped GEMM.
-    gather_indices: (total_tokens,) indices of tokens assigned to each expert.  E.g., slicing gather_indices by cumsum of m_sizes gives the indices of tokens assigned to each expert.
-    topk_weights: (total_tokens,) weights to multiply routed output by in expert MLP calculation, used only when `fuse_mul_post` is True (see note on `fuse_mul_post`).
-    use_fast_accum: currently unused; trade off faster accumulation dtype in GEMM for less precision.
-    use_tma_load_x: use TMA for loading activations, incompatible with permute_x.  TODO: add TMA gather / scatter support for Blackwell+.
-    use_tma_load_w: use TMA for loading weights.  If TMA supported, this should always be enabled as it is faster than global memory load.
-    use_tma_store: use TMA for storing output, incompatible with permute_y.  TODO: add TMA scatter support for Blackwell+.
-
-    Returns:
-        y: (total_tokens, N) output of grouped GEMM
+    X: (M, K) hidden states; M = num_tokens if permute_x else total_tokens.
+    W: (E, N, K) expert weights (E experts, N output dim, K reduction dim).
+    m_sizes: tokens per expert = the M of each per-expert GEMM.
+    gather_indices: (total_tokens,) token indices per expert; slice by cumsum(m_sizes).
+    topk_weights: (total_tokens,) routed-output weights, used only if fuse_mul_post.
+    use_tma_load_x: TMA load of activations, incompatible with permute_x.
+    use_tma_load_w: TMA load of weights; prefer when TMA is supported (faster).
+    use_tma_store: TMA store of output, incompatible with permute_y.
     """
 
     assert X.device.type == "cuda", "X and W must be on CUDA"
@@ -170,12 +161,11 @@ def grouped_gemm_forward(
     W = W.contiguous()
     m_sizes = m_sizes.contiguous()
 
-    # Preconditions
     assert not (permute_x and permute_y), "Cannot permute both X and Y"
     assert not (permute_y and use_tma_store), "Cannot use both TMA store and permute_y"
 
     if use_tma_load_x:
-        # TMA load for activations, TMA gather only supported on Blackwell+
+        # TMA gather only supported on Blackwell+
         assert not permute_x, "Cannot use both use_tma_load_x and permute_x"
 
     use_tma = use_tma_load_w or use_tma_load_x or use_tma_store
@@ -264,27 +254,21 @@ def grouped_gemm_forward(
         print(f"DEBUG::GROUPED_GEMM {m_sizes.tolist()} {(gather_indices // topk).tolist()}")
 
     kernel_args = {
-        # Inputs
         "x_ptr": X,
         "w_ptr": W,
         "m_sizes_ptr": m_sizes,
         "gather_indices_ptr": gather_indices,
         "topk_weights_ptr": topk_weights,
-        # Output
         "y_ptr": y,
-        # Problem shapes
         "NUM_TOKENS": num_tokens,
         "NUM_EXPERTS": num_experts,
         "TOPK": topk,
         "N": N,
         "K": K,
         "NUM_SMS": NUM_SMS,
-        # Gather / Scatter
         "PERMUTE_X": permute_x,
         "PERMUTE_Y": permute_y,
-        # TopK weight merging
         "FUSE_MUL_POST": fuse_mul_post,
-        # Loop pipelining
         "FLATTEN": flatten,
     }
     if not autotune:
@@ -338,24 +322,21 @@ def grouped_gemm_dX(
     autotune: bool = False,
 ) -> torch.Tensor:
     """
-    dX backward kernel
-    grad_output: (M, N)
-    gather_indices: (total_tokens,), indices of tokens assigned to each expert.  E.g., slicing gather_indices by cumsum of m_sizes gives the indices of tokens assigned to each expert.
-    m_sizes: tokens assigned to each expert which correspond to the size of M in the respective GEMMs in the grouped GEMM.
-    topk: number of experts chosen per token.
-    `permute_x`: whether X was permuted on load in the forward pass, typically only used for the first grouped GEMM in an MoE MLP to group tokens by expert.
-    - In the forward pass, if we permuted X on load, we need to permute store in the backward pass
-    - Shapes
-        - the forward pass input X shape is [NUM_TOKENS, K], reduce across K, output y is [NUM_TOKENS * TOPK, K]
-        - the backward pass input dy shape is [NUM_TOKENS * TOPK, N], reduce across N, output dX is [NUM_TOKENS * TOPK, K]
-    - Note that in the backward pass, the output size is still [NUM_TOKENS * TOPK, K] since we still need to accumulate gradients for each expert chosen by the token in a post-processing step.
-    `permute_y`: whether the output was permuted on store in the forward pass, typically only used for the second grouped GEMM in an MoE MLP to restore to the original token order.
-    - In the forward pass, if we permuted output on store (e.g., in the second grouped GEMM in fused MoE MLP), we need to permute on load to get from token order to expert grouped order
-    - We still store in contiguous order since we are writing out dX which will be the input to the backwards pass of the first grouped GEMM
-    `fuse_mul_{pre,post}`: always set to False since this should only be used for inference.
-    use_tma_load_dy: use TMA for loading dy. use_tma_load_dy is incompatible with permute_y.  TODO: add TMA gather / scatter support for Blackwell+ which will enable permute_y and use_tma_load_dy.
-    use_tma_load_w: use TMA for loading weights.  If TMA supported, this should always be enabled as it is faster than global memory load.
-    use_tma_store: use TMA for storing dX.  Incompatible with permute_x.  TODO: add TMA gather / scatter support for Blackwell+ which will enable permute_x and use_tma_store.
+    dX backward kernel. Shapes: dy is (NUM_TOKENS*TOPK, N) reduced over N,
+    output dX is (NUM_TOKENS*TOPK, K) (per-expert grads are accumulated in a
+    post-processing step).
+
+    gather_indices: (total_tokens,) token indices per expert; slice by cumsum(m_sizes).
+    m_sizes: tokens per expert = the M of each per-expert GEMM.
+    topk: experts chosen per token.
+    permute_x: whether X was permuted on load in the forward (first GEMM); if so we
+        permute on store here.
+    permute_y: whether output was permuted on store in the forward (second GEMM); if
+        so we permute on load here. dX is always stored contiguous.
+    fuse_mul_{pre,post}: must be False (inference only).
+    use_tma_load_dy: TMA load of dy, incompatible with permute_y.
+    use_tma_load_w: TMA load of weights; prefer when TMA is supported (faster).
+    use_tma_store: TMA store of dX, incompatible with permute_x.
     """
     assert not fuse_mul_pre, "fuse_mul_pre should only be used for inference, not for training"
     assert not fuse_mul_post, "fuse_mul_post should only be used for inference, not for training"
@@ -364,10 +345,8 @@ def grouped_gemm_dX(
     assert m_sizes.is_contiguous()
     assert m_sizes.ndim == 1
 
-    # Preconditions
     assert not (permute_x and permute_y), "Cannot permute both X and Y"
-    # Note that this is flipped from the forward pass
-    # If we permuted y in the forward, we need to permute on load in the backward
+    # Flipped from the forward: permuting y on store means permuting on load here
     assert not (permute_y and use_tma_load_dy), "Cannot use both TMA load and permute_y"
     assert not (permute_x and use_tma_store), "Cannot use both TMA store and permute_x"
 
@@ -409,8 +388,7 @@ def grouped_gemm_dX(
     total_tokens = gather_indices.shape[0]
     assert total_tokens == M_total, f"Total tokens ({total_tokens}) must match M_total ({M_total})"
 
-    # Note that the output shape is [NUM_TOKENS * TOPK, K] even when `permute_x` is True since we need to accumulate gradients across all experts chosen by the token.
-    # This will be done in a post-processing step reduction step.
+    # Output stays [NUM_TOKENS * TOPK, K] even when permute_x: per-expert grads are reduced in a later step.
     output_shape = (total_tokens, K)
     dX = torch.zeros(output_shape, device = dY.device, dtype = dY.dtype)
 
@@ -431,21 +409,17 @@ def grouped_gemm_dX(
         print(f"DEBUG::GROUPED_GEMM {m_sizes.tolist()}")
 
     kernel_args = {
-        # Inputs
         "dY_ptr": dY,
         "w_ptr": W,
         "gather_indices_ptr": gather_indices,
         "m_sizes_ptr": m_sizes,
-        # Output
         "dX_ptr": dX,
-        # Problem sizes
         "NUM_EXPERTS": num_experts,
         "NUM_TOKENS": num_tokens,
         "TOPK": topk,
         "N": N,
         "K": K,
         "NUM_SMS": NUM_SMS,
-        # Gather / Scatter
         "PERMUTE_X": permute_x,
         "PERMUTE_Y": permute_y,
         "FLATTEN": flatten,
@@ -500,22 +474,20 @@ def grouped_gemm_dW(
     debug: bool = False,
 ) -> torch.Tensor:
     """
-    X: (M, K) hidden states where M is the num_tokens if `permute_x` is True, otherwise `total_tokens` where `total_tokens = num_tokens * topk`.
-    dY: (M, N)
-    topk: number of experts to choose per token.
-    m_sizes: tokens assigned to each expert which correspond to the size of M in the respective GEMMs in the grouped GEMM.
-    gather_indices: (total_tokens,) indices of tokens assigned to each expert.  E.g., slicing gather_indices by cumsum of m_sizes gives the indices of tokens assigned to each expert.
-    permute_x: whether X was permuted on load in the forward pass, typically only used for the first grouped GEMM in an MoE MLP to group tokens by expert.
-    - for the first grouped GEMM, we permuted on load -> X was [num_tokens, K] and stored y in expert grouped order [num_tokens * topk, K]
-    - in the backwards pass, we need to permute on load of X while loading dy in contiguous (expert grouped) order
-    - since we are writing out dW, there is no need to permute on store
-    permute_y: whether the output was permuted on store in the forward pass, typically only used for the second grouped GEMM in an MoE MLP to restore to the original token order.
-    - for the second grouped GEMM, we permuted on store -> y was permuted from expert grouped order to token order while X was loaded in expert grouped order since it was the output of the first grouped GEMM
-    - in the backwards pass, we need to permute on load of dy to get from token order to expert grouped order to match the order of X
-    - since we are writing out dW, there is no need to permute on store
-    use_tma_load_dy: use TMA for loading dy. use_tma_load_dy is incompatible with permute_y.  TODO: add TMA gather / scatter support for Blackwell+ which will enable permute_y and use_tma_load_dy.
-    use_tma_load_x: use TMA for loading x. use_tma_load_x is incompatible with permute_x.  TODO: add TMA gather / scatter support for Blackwell+ which will enable permute_x and use_tma_load_x.
-    use_tma_store: use TMA for storing dW.  If TMA supported, this should always be enabled as it is faster than global memory store.
+    dW backward kernel.
+
+    X: (M, K) hidden states; M = num_tokens if permute_x else total_tokens.
+    dY: (M, N).
+    topk: experts chosen per token.
+    m_sizes: tokens per expert = the M of each per-expert GEMM.
+    gather_indices: (total_tokens,) token indices per expert; slice by cumsum(m_sizes).
+    permute_x: whether X was permuted on load in the forward (first GEMM); if so we
+        permute X on load here. dW never needs permute on store.
+    permute_y: whether output was permuted on store in the forward (second GEMM); if
+        so we permute dy on load here to match X's order.
+    use_tma_load_dy: TMA load of dy, incompatible with permute_y.
+    use_tma_load_x: TMA load of x, incompatible with permute_x.
+    use_tma_store: TMA store of dW; prefer when TMA is supported (faster).
     """
     assert not fuse_mul_pre, "fuse_mul_pre not supported"
     assert not fuse_mul_post, "fuse_mul_post not supported"
@@ -524,7 +496,6 @@ def grouped_gemm_dW(
     dY = dY.contiguous()
     m_sizes = m_sizes.contiguous()
 
-    # Preconditions
     assert not (permute_x and permute_y), "Cannot permute both X and Y"
     assert not (permute_y and use_tma_load_dy), "Cannot use both TMA load and permute_y"
     assert not (permute_x and use_tma_load_x), "Cannot use both TMA load and permute_x"
@@ -561,7 +532,6 @@ def grouped_gemm_dW(
         num_tokens = total_tokens // topk
 
     num_experts = m_sizes.shape[0]
-    # Get dimensions
     _, K = X.shape
     M_grad, N = dY.shape
 
@@ -598,24 +568,19 @@ def grouped_gemm_dW(
             m_start += m_sizes[i]
 
     kernel_args = {
-        # Inputs
         "x_ptr": X,
         "dY_ptr": dY,
         "m_sizes_ptr": m_sizes,
         "gather_indices_ptr": gather_indices,
-        # Output
         "dW_ptr": dW,
-        # Problem sizes
         "NUM_TOKENS": num_tokens,
         "TOPK": topk,
         "NUM_EXPERTS": num_experts,
         "N": N,
         "K": K,
         "NUM_SMS": NUM_SMS,
-        # Gather / Scatter
         "PERMUTE_X": permute_x,
         "PERMUTE_Y": permute_y,
-        # Loop pipelining
         "FLATTEN": flatten,
     }
 
@@ -678,7 +643,7 @@ class GroupedGemm(torch.autograd.Function):
         ctx.dX_only = dX_only
         ctx.dW_only = dW_only
 
-        # NOTE: we don't save topk_weights for backward since we do not support training with fused_mul
+        # topk_weights not saved: training with fused_mul is unsupported
         ctx.save_for_backward(X, W, m_sizes, gather_indices)
 
         fwd_config = {}
@@ -702,9 +667,8 @@ class GroupedGemm(torch.autograd.Function):
             permute_x = permute_x,
             permute_y = permute_y,
             fuse_mul_post = fuse_mul_post,
-            # Autotune -- this will override the manual kernel config if true
+            # overrides the manual kernel config when True
             autotune = autotune,
-            # Manual kernel config
             **fwd_config,
         )
 
@@ -755,9 +719,8 @@ class GroupedGemm(torch.autograd.Function):
                 topk = topk,
                 permute_x = permute_x,
                 permute_y = permute_y,
-                # Autotune -- this will override the manual kernel config if true
+                # overrides the manual kernel config when True
                 autotune = autotune,
-                # Manual kernel config
                 **bwd_dW_config,
             )
         else:
@@ -783,9 +746,8 @@ class GroupedGemm(torch.autograd.Function):
                 topk = topk,
                 permute_x = permute_x,
                 permute_y = permute_y,
-                # Autotune -- this will override the manual kernel config if true
+                # overrides the manual kernel config when True
                 autotune = autotune,
-                # Manual kernel config
                 **bwd_dX_config,
             )
 
@@ -865,7 +827,7 @@ def check_valid_config_bwd_dX(
     fuse_mul_post,
     is_first_gemm,
 ):
-    """Check if the configuration is valid for the backward pass of dW."""
+    """Check if the configuration is valid for the backward pass of dX."""
     is_second_gemm = not is_first_gemm
     if fuse_mul_post:
         assert False, "Cannot fuse_mul is not supported for backward pass"
@@ -895,27 +857,26 @@ def grouped_gemm(
     dW_only: bool = False,
 ):
     """
-    Grouped GEMM for MoE MLPs.
+    Grouped GEMM for MoE MLPs (autograd-aware wrapper over the fwd/bwd kernels).
 
-    The implementation offers a number of fusions specific to MoE:
-    - `permute_x`: fuse the permutation of hidden states from token order (original order) to grouped expert order, typically only needed for the first grouped GEMM in an MoE MLP.
-        - When `permute_x` is True, `X` is expected to be of shape (num_tokens, K).
-        - When `permute_x` is False, `X` is expected to be of shape (total_tokens, K) where `total_tokens = num_tokens * topk` AND already permuted to grouped expert order, i.e., hidden states are sorted such that tokens assigned to each expert are contiguous.
-    - `permute_y`: fused the permutation of the output from expert grouped order back to original token order, typically only needed for the second grouped GEMM in an MoE MLP.
-    - `fuse_mul`: fuse the multiplication of the routed output with topk_weights, used only when `permute_y` is True. NOTE: this should only be used when using this kernel for inference, not for training.
+    MoE-specific fusions:
+    - permute_x: fuse the token->grouped-expert-order permute of X (first GEMM).
+        True: X is (num_tokens, K). False: X is (total_tokens, K), total_tokens =
+        num_tokens * topk, already sorted by expert.
+    - permute_y: fuse the grouped-expert-order->token-order permute of the output
+        (second GEMM).
+    - fuse_mul_post: fuse multiply of routed output by topk_weights; only with
+        permute_y, and inference only (not training).
 
-    X: (M, K) hidden states where M is the num_tokens if `permute_x` is True, otherwise `total_tokens` where `total_tokens = num_tokens * topk`.
-    W: (E, N, K) expert weights, where E is number of experts, N in the intermediate (output) dim, and K is the reduction dim
-    m_sizes: tokens assigned to each expert which correspond to the size of M in the respective GEMMs in the grouped GEMM.
-    gather_indices: (total_tokens,) indices of tokens assigned to each expert.  E.g., slicing gather_indices by cumsum of m_sizes gives the indices of tokens assigned to each expert. Needed when either `permute_x` or `permute_y` is True.
-    topk_weights: (total_tokens,) weights to multiply routed output by in expert MLP calculation, used only when `fuse_mul` is True (see note on `fuse_mul`).
-    kernel_config_fwd: KernelConfigForward for forward pass.
-    kernel_config_bwd_dX: KernelConfigBackward_dX for backward pass of dX.
-    kernel_config_bwd_dW: KernelConfigBackward_dW for backward pass of dW.
-    autotune: whether to autotune the kernel, if yes, kernel_config_fwd, kernel_config_bwd_dX, and kernel_config_bwd_dW will be ignored.
-    is_first_gemm: whether this is the first grouped GEMM in an MoE MLP.  This is needed to check whether kernel configs are valid.  `permute_x` should only be used for first gemm; `permute_y` should only be used for second gemm.
-    This will impact whether TMA can be used for loading and storing.
-
+    X: (M, K) hidden states; M = num_tokens if permute_x else total_tokens.
+    W: (E, N, K) expert weights (E experts, N output dim, K reduction dim).
+    m_sizes: tokens per expert = the M of each per-expert GEMM.
+    gather_indices: (total_tokens,) token indices per expert (needed if permute_x/y).
+    topk_weights: (total_tokens,) routed-output weights, used only if fuse_mul_post.
+    kernel_config_fwd/bwd_dX/bwd_dW: per-pass kernel configs.
+    autotune: if True, the kernel_config_* args are ignored.
+    is_first_gemm: validates configs; permute_x is first-GEMM only, permute_y
+        second-GEMM only, and this gates whether TMA can be used.
     """
     if not autotune:
         assert (

@@ -541,7 +541,7 @@ PARAMETER min_p 0.1
 OLLAMA_TEMPLATES["gemma_chatml"] = gemma_chatml_ollama
 
 # =========================================== Gemma 2
-# Same as Gemma 1, but with sliding window attention!
+# Gemma 1 plus sliding window attention
 # https://ollama.com/library/gemma2/blobs/6522ca797f47
 gemma2_ollama = gemma_ollama + "PARAMETER num_ctx 4096\n"
 OLLAMA_TEMPLATES["gemma2"] = gemma2_ollama
@@ -2219,7 +2219,6 @@ for key, values in OLLAMA_TEMPLATE_TO_MODEL_MAPPER.items():
     for value in values:
         MODEL_TO_OLLAMA_TEMPLATE_MAPPER[value] = key
 
-    # Get lowercased
     lowered_key = key.lower()
     for value in values:
         MODEL_TO_OLLAMA_TEMPLATE_MAPPER[value.lower()] = lowered_key

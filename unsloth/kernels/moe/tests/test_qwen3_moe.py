@@ -115,7 +115,7 @@ def test_qwen3_moe(
 ):
     torch.manual_seed(
         SEED
-    )  # Should not be needed when running using pytest -- autouse fixture in conftest.py
+    )  # Redundant under pytest -- conftest.py has an autouse fixture
     device = "cuda"
     hidden_size = config.hidden_size
     bs = 1
@@ -123,7 +123,7 @@ def test_qwen3_moe(
     # Reference op -- HF
     moe_block = Qwen3MoeSparseMoeBlock(config).to(device, dtype)
 
-    # Torch-native grouped gemm version of MoE Block -- for sanity checking
+    # Torch-native grouped gemm version -- for sanity checking
     grouped_gemm_block = Qwen3MoeGroupedGEMMBlock.from_hf(moe_block).to(device, dtype)
     grouped_gemm_block.check_weights(moe_block)
 
@@ -153,7 +153,7 @@ def test_qwen3_moe(
         kernel_config_bwd_dW = None
         kernel_config_bwd_dX = None
 
-    # Triton kernel grouped gemm version of MoE Block -- this is what we're testing
+    # Triton kernel grouped gemm version -- this is what we're testing
     fused_gemm_block = Qwen3MoeFusedGroupedGEMMBlock.from_hf(
         moe_block,
         permute_x = permute_x,
@@ -186,7 +186,7 @@ def test_qwen3_moe(
         with annotated_context(
             "Checking torch grouped gemm MoE vs fused grouped gemm MoE forward outputs..."
         ):
-            # We implement a custom check for grouped gemm results to test each of the intermediate results for easier debugging
+            # Custom check so each intermediate result is compared for easier debugging
             check_grouped_gemm_results(
                 grouped_result.grouped_gemm_result,
                 fused_result.grouped_gemm_result,

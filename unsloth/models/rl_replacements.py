@@ -420,7 +420,6 @@ def sft_trainer_prepare_dataset(function_name, function):
             flags = re.MULTILINE | re.DOTALL,
         )
         if matched:
-            # Use fast version!
             function = inspect.getsource(fast_sft_prepare_dataset)
             function = function.split("\n")
             function = "\n".join(" " * 4 + x for x in function)
@@ -598,7 +597,6 @@ def grpo_trainer__prepare_inputs(function_name, function):
     if function_name != "_prepare_inputs":
         return function
 
-    # Add mixed precision training
     function = function.replace(
         "with torch.inference_mode():",
         "with torch.inference_mode(), "
@@ -728,7 +726,6 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
     # Left pad prompt before calculation old and ref hidden states
     line_to_replace = 'batch_size = self.args.per_device_train_batch_size if mode == "train" else self.args.per_device_eval_batch_size'
 
-    # The new multi-line string that will replace the line above
     replacement_lines = """
         max_left_pad = None
         batch_size = self.args.per_device_train_batch_size if mode == "train" else self.args.per_device_eval_batch_size
@@ -759,7 +756,6 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
             if self.args.gradient_accumulation_steps % generate_every != 0 or (
                 self.use_vllm
             ):"""
-    # Use re.sub() to perform the replacement
     function, num_replacements = pattern_to_find.subn(replacement_text, function)
 
     pattern_to_find = re.compile(
@@ -1455,12 +1451,9 @@ RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__get_per_token_logps_and_entrop
 
 
 def _unsloth_get_final_logit_softcapping(config):
-    """Return final_logit_softcapping for a model config, falling back to the
-    nested text sub-config for composite models. Handles both:
-      - Gemma-4-style configs where the attribute lives on ``config.text_config``
-      - T5Gemma-style composite configs where the text sub-config is only
-        reachable via ``config.get_text_config()``
-    Returns 0 if unset, matching the previous behaviour.
+    """Return final_logit_softcapping for a config, falling back to the nested text sub-config for
+    composite models (Gemma-4 ``config.text_config`` or T5Gemma ``config.get_text_config()``).
+    Returns 0 if unset, matching previous behaviour.
     """
     softcap = getattr(config, "final_logit_softcapping", None)
     if softcap is None:

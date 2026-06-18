@@ -40,8 +40,6 @@ class LoRA_MLP(torch.autograd.Function):
     i = h @ W
 
     ### Backpropagation chain rule
-    See our blog post for more details
-
     df = sigmoid(e) * (1 - f) + f
     dC/dW = h.T @ dY
     dC/dU = X.T @ (D @ W.T * f)
@@ -60,8 +58,6 @@ class LoRA_MLP(torch.autograd.Function):
     ### Gate projection LoRA weights
     dC/dAg =       X.T @ (D @ W.T * df * g) @ B.T
     dC/dBg = A.T @ X.T @ (D @ W.T * df * g)
-
-    Don't forget to see our blog post for more details!
     """
 
     @staticmethod
@@ -343,8 +339,6 @@ class LoRA_QKV(torch.autograd.Function):
     V = X @ Wv = X @ Wv + X @ Av @ Bv
 
     ### Backpropagation chain rule
-    See our blogpost for more details.
-
     dC/dWq = X.T @ D(Wq)
     dC/dWk = X.T @ D(Wk)
     dC/dWv = X.T @ D(Wv)
@@ -387,9 +381,8 @@ class LoRA_QKV(torch.autograd.Function):
     ):
         dtype = X.dtype
 
-        # bitsandbytes 8-bit matmul expects 2D inputs.
-        # TorchInductor/AOTAutograd fails on 3D tensors during backward,
-        # so we explicitly flatten the sequence dimension.
+        # bitsandbytes 8-bit matmul expects 2D; TorchInductor/AOTAutograd fails on
+        # 3D during backward, so flatten the sequence dim.
         orig_shape = X.shape
         X_for_matmul = X
         if X.dim() == 3:
@@ -398,7 +391,6 @@ class LoRA_QKV(torch.autograd.Function):
         K = matmul_lora(X_for_matmul, KW, KW_quant, KA, KB, KS)
         V = matmul_lora(X_for_matmul, VW, VW_quant, VA, VB, VS)
 
-        # Restore original shape after matmul
         if len(orig_shape) == 3:
             Q = Q.view(orig_shape[0], orig_shape[1], -1)
             K = K.view(orig_shape[0], orig_shape[1], -1)
@@ -460,7 +452,6 @@ class LoRA_QKV(torch.autograd.Function):
         QA, QB, KA, KB, VA, VB = QA.t(), QB.t(), KA.t(), KB.t(), VA.t(), VB.t()
 
         ### Weight projection LoRA weights
-        # See our blogpost for more details.
         d_QA = torch.empty_like(QA)
         d_QB = torch.empty_like(QB)
         d_KA = torch.empty_like(KA)
@@ -631,7 +622,6 @@ class LoRA_W(torch.autograd.Function):
         d_B = torch.empty_like(B)
 
         ### Weight projection LoRA weights
-        # Weight projection
         # d_A = X.t() @ (dY @ B.t())
         # d_B = (A.t() @ X.t()) @ dY
         # d_A *= S
@@ -639,7 +629,6 @@ class LoRA_W(torch.autograd.Function):
         d_A.addmm_(X.t(), dY @ B.t(), alpha = S, beta = 0)
         d_B.addmm_(A.t() @ X.t(), dY, alpha = S, beta = 0)
 
-        # Get derivative for dX
         W = fast_dequantize(W.t(), W_quant)
         dX = dY @ W.t()
         del W

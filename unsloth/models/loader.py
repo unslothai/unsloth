@@ -104,10 +104,8 @@ from ._utils import (
     set_task_config_attr,
 )
 
-# Single source of truth is unsloth_zoo.model_lists. Re-exported so callers
-# doing `from unsloth.models.loader import FORCE_FLOAT32` keep working.
-# Fallback list mirrors zoo for users who upgrade unsloth without upgrading
-# unsloth_zoo (so this module never fails at import).
+# Re-export FORCE_FLOAT32 from unsloth_zoo (single source of truth); fallback list
+# below keeps import working when unsloth_zoo is older than unsloth.
 try:
     from unsloth_zoo import FORCE_FLOAT32  # noqa: F401
 except ImportError:
@@ -332,8 +330,7 @@ class FastLanguageModel(FastLlamaModel):
                 load_in_8bit = True
                 load_in_4bit = False
 
-        # Login to allow private models
-        token = hf_login(token)
+        token = hf_login(token)  # Login to allow private models
         # Align dtype with bnb_4bit_compute_dtype if provided and dtype is unset.
         if dtype is None and quantization_config is not None:
             bnb_compute_dtype = None
@@ -430,7 +427,7 @@ class FastLanguageModel(FastLlamaModel):
                         fast_inference = False
                         break
 
-        # Check if 4bit is allowed specifically for AMD
+        # AMD is unstable with 4bit bitsandbytes
         if not ALLOW_BITSANDBYTES and not use_exact_model_name:
             if load_in_4bit or load_in_8bit or model_name.lower().endswith("-bnb-4bit"):
                 print(
@@ -467,13 +464,12 @@ class FastLanguageModel(FastLlamaModel):
                 if load_in_fp8 != False and new_model_name != old_model_name:
                     load_in_fp8 = False
 
-        # Check if pre-quantized models are allowed
-        # AMD Instinct GPUs need blocksize = 128 on bitsandbytes < 0.49.2 (our pre-quants use blocksize = 64)
+        # AMD Instinct GPUs need blocksize 128 on bitsandbytes < 0.49.2 (our pre-quants use 64)
         if not ALLOW_PREQUANTIZED_MODELS and model_name.lower().endswith(
             ("-unsloth-bnb-4bit", "-bnb-4bit")
         ):
             model_name = _strip_unsloth_bnb_4bit_suffix(model_name)
-        # Change -BF16 to all False for 4bit, 8bit etc
+        # -BF16 means 16bit only
         if model_name.lower().endswith("-bf16"):
             load_in_4bit = False
             load_in_8bit = False
@@ -484,7 +480,6 @@ class FastLanguageModel(FastLlamaModel):
             from modelscope import snapshot_download
             model_name = snapshot_download(model_name)
 
-        # First check if it's a normal model via AutoConfig
         from huggingface_hub.utils import (
             disable_progress_bars,
             enable_progress_bars,
@@ -549,7 +544,6 @@ class FastLanguageModel(FastLlamaModel):
         # Old transformers versions check
         both_exist = (is_model and is_peft) and not SUPPORTS_LLAMA32
 
-        # Error out if both LoRA and normal model config exists.
         if both_exist:
             raise RuntimeError(
                 "Unsloth: Your repo has a LoRA adapter and a base model.\n"
@@ -569,7 +563,6 @@ class FastLanguageModel(FastLlamaModel):
 
         # New transformers need to check manually.
         if SUPPORTS_LLAMA32 and is_model and is_peft:
-            # Check if folder exists locally
             if os.path.isdir(model_name):
                 exist_adapter_config = os.path.exists(
                     os.path.join(model_name, "adapter_config.json")
@@ -592,7 +585,6 @@ class FastLanguageModel(FastLlamaModel):
                     f'Try `pip install --upgrade "transformers>=4.43.2"`\n'
                     f"to obtain the latest transformers build, then restart this session."
                 )
-            # Create a combined error message showing both failures
             combined_error = (
                 "Unsloth: Failed to load model. Both AutoConfig and PeftConfig loading failed.\n\n"
                 f"AutoConfig error: {autoconfig_error}\n\n"
@@ -600,9 +592,8 @@ class FastLanguageModel(FastLlamaModel):
             )
             raise RuntimeError(combined_error)
 
-        # Get base model for PEFT:
+        # Get base model for PEFT
         if is_peft:
-            # Check base model again for PEFT
             model_name = peft_config.base_model_name_or_path
             if not use_exact_model_name:
                 model_name = get_model_name(
@@ -612,13 +603,12 @@ class FastLanguageModel(FastLlamaModel):
                     token = token,
                     trust_remote_code = trust_remote_code,
                 )
-            # Check if pre-quantized models are allowed
-            # AMD Instinct GPUs need blocksize = 128 on bitsandbytes < 0.49.2 (our pre-quants use blocksize = 64)
+            # AMD Instinct GPUs need blocksize 128 on bitsandbytes < 0.49.2 (our pre-quants use 64)
             if not ALLOW_PREQUANTIZED_MODELS and model_name.lower().endswith(
                 ("-unsloth-bnb-4bit", "-bnb-4bit")
             ):
                 model_name = _strip_unsloth_bnb_4bit_suffix(model_name)
-            # Change -BF16 to all False for 4bit, 8bit etc
+            # -BF16 means 16bit only
             if model_name.lower().endswith("-bf16"):
                 load_in_4bit = False
                 load_in_8bit = False
@@ -750,7 +740,6 @@ class FastLanguageModel(FastLlamaModel):
                 **kwargs,
             )
 
-        # Apply gradient checkpointing with smart heuristics
         use_gradient_checkpointing = apply_unsloth_gradient_checkpointing(
             use_gradient_checkpointing, max_seq_length, dtype
         )
@@ -809,7 +798,6 @@ class FastLanguageModel(FastLlamaModel):
         if resize_model_vocab is not None:
             model.resize_token_embeddings(resize_model_vocab)
 
-        # In case the model supports tagging, add the unsloth tag.
         if hasattr(model, "add_model_tags"):
             model.add_model_tags(
                 [
@@ -852,7 +840,6 @@ class FastLanguageModel(FastLlamaModel):
 
         if is_peft:
             # From https://github.com/huggingface/peft/issues/184
-            # Now add PEFT adapters
             model = PeftModel.from_pretrained(
                 model,
                 old_model_name,
@@ -861,11 +848,9 @@ class FastLanguageModel(FastLlamaModel):
                 is_trainable = True,
                 trust_remote_code = trust_remote_code,
             )
-            # Patch it as well!
             model = dispatch_model.patch_peft_model(model, use_gradient_checkpointing)
 
-        # Patch Tiled MLP
-        # to turn on set UNSLOTH_TILED_MLP to "arctic", "target", or "target:{GB}""
+        # Tiled MLP: set UNSLOTH_TILED_MLP to "arctic", "target", or "target:{GB}"
         patch_tiled_mlp_choice = os.environ.get(
             "UNSLOTH_TILED_MLP", "arctic" if unsloth_tiled_mlp else "0"
         )
@@ -944,7 +929,6 @@ class FastModel(FastBaseModel):
         unsloth_force_compile = False,
         offload_embedding = False,
         float32_mixed_precision = None,  # Forces float32 mixed precision
-        # Add the missing vLLM/inference parameters
         fast_inference = False,  # uses vLLM
         gpu_memory_utilization = 0.5,
         float8_kv_cache = False,
@@ -976,8 +960,7 @@ class FastModel(FastBaseModel):
                 load_in_8bit = True
                 load_in_4bit = False
 
-        # Login to allow private models
-        token = hf_login(token)
+        token = hf_login(token)  # Login to allow private models
         if whisper_language is not None:
             assert type(whisper_language) is str
         if whisper_task is not None:
@@ -1045,7 +1028,7 @@ class FastModel(FastBaseModel):
             if is_dist:
                 device_map = distributed_device_map
 
-        # Check if 4bit is allowed specifically for AMD
+        # AMD is unstable with 4bit bitsandbytes
         if not ALLOW_BITSANDBYTES and not use_exact_model_name:
             if load_in_4bit or load_in_8bit or model_name.lower().endswith("-bnb-4bit"):
                 print(
@@ -1095,25 +1078,22 @@ class FastModel(FastBaseModel):
                 if load_in_fp8 != False and new_model_name != old_model_name:
                     load_in_fp8 = False
 
-        # Check if pre-quantized models are allowed
-        # AMD Instinct GPUs need blocksize = 128 on bitsandbytes < 0.49.2 (our pre-quants use blocksize = 64)
+        # AMD Instinct GPUs need blocksize 128 on bitsandbytes < 0.49.2 (our pre-quants use 64)
         if not ALLOW_PREQUANTIZED_MODELS and model_name.lower().endswith(
             ("-unsloth-bnb-4bit", "-bnb-4bit")
         ):
             model_name = _strip_unsloth_bnb_4bit_suffix(model_name)
-        # Change -BF16 to all False for 4bit, 8bit etc
+        # -BF16 means 16bit only
         if model_name.lower().endswith("-bf16"):
             load_in_4bit = False
             load_in_8bit = False
             load_in_fp8 = False
             load_in_16bit = True
 
-        # Check modelscope
         if USE_MODELSCOPE and not os.path.exists(model_name):
             from modelscope import snapshot_download
             model_name = snapshot_download(model_name)
 
-        # First check if it's a normal model via AutoConfig
         from huggingface_hub.utils import (
             disable_progress_bars,
             enable_progress_bars,
@@ -1211,7 +1191,6 @@ class FastModel(FastBaseModel):
             is_peft = False
         # Old transformers versions check
         both_exist = (is_model and is_peft) and not SUPPORTS_LLAMA32
-        # Error out if both LoRA and normal model config exists.
         if both_exist:
             raise RuntimeError(
                 "Unsloth: Your repo has a LoRA adapter and a base model.\n"
@@ -1389,7 +1368,6 @@ class FastModel(FastBaseModel):
 
         # New transformers need to check manually.
         if SUPPORTS_LLAMA32 and is_model and is_peft:
-            # Check if folder exists locally
             if os.path.isdir(model_name):
                 exist_adapter_config = os.path.exists(
                     os.path.join(model_name, "adapter_config.json")
@@ -1412,7 +1390,6 @@ class FastModel(FastBaseModel):
                     f'Try `pip install --upgrade "transformers>=4.43.2"`\n'
                     f"to obtain the latest transformers build, then restart this session."
                 )
-            # Create a combined error message showing both failures
             combined_error = (
                 "Unsloth: Failed to load model. Both AutoConfig and PeftConfig loading failed.\n\n"
                 f"AutoConfig error: {autoconfig_error}\n\n"
@@ -1420,19 +1397,17 @@ class FastModel(FastBaseModel):
             )
             raise RuntimeError(combined_error)
 
-        # Get base model for PEFT:
+        # Get base model for PEFT
         if is_peft:
-            # Check base model again for PEFT
             model_name = peft_config.base_model_name_or_path
             if not use_exact_model_name:
                 model_name = get_model_name(model_name, load_in_4bit)
-            # Check if pre-quantized models are allowed
-            # AMD Instinct GPUs need blocksize = 128 on bitsandbytes < 0.49.2 (our pre-quants use blocksize = 64)
+            # AMD Instinct GPUs need blocksize 128 on bitsandbytes < 0.49.2 (our pre-quants use 64)
             if not ALLOW_PREQUANTIZED_MODELS and model_name.lower().endswith(
                 ("-unsloth-bnb-4bit", "-bnb-4bit")
             ):
                 model_name = _strip_unsloth_bnb_4bit_suffix(model_name)
-            # Change -BF16 to all False for 4bit, 8bit etc
+            # -BF16 means 16bit only
             if model_name.lower().endswith("-bf16"):
                 load_in_4bit = False
                 load_in_8bit = False
@@ -1459,14 +1434,13 @@ class FastModel(FastBaseModel):
             redirector = contextlib.redirect_stdout(open(os.devnull, "w"))
 
         model_types = ["siglip"] + model_types
-        # Set forced float32 env flag
         os.environ["UNSLOTH_FORCE_FLOAT32"] = "0"
         do_forced_float32 = False
         for model_type_arch in model_types:
             if model_type_arch != "siglip":
                 break
         for disable_name in FORCE_FLOAT32:
-            # add comma to model_types_all matching in case of exact match for end
+            # model_types_all has a trailing comma so suffixes match exactly
             if (
                 disable_name.lower() == model_type_arch.lower().replace("-", "").replace("_", "")
                 or disable_name.lower() in model_types_all
@@ -1474,7 +1448,6 @@ class FastModel(FastBaseModel):
                 os.environ["UNSLOTH_FORCE_FLOAT32"] = "1"
                 dtype = torch.bfloat16  # Change to bfloat16 loading
                 break
-        # Apply gradient checkpointing with smart heuristics
         use_gradient_checkpointing = apply_unsloth_gradient_checkpointing(
             use_gradient_checkpointing, max_seq_length, dtype
         )
@@ -1538,7 +1511,6 @@ class FastModel(FastBaseModel):
         for _cfg_key, _cfg_val in task_config_attrs.items():
             set_task_config_attr(model_config, _cfg_key, _cfg_val)
 
-        # Check if VLM
         architectures = getattr(model_config, "architectures", None)
         if architectures is None:
             architectures = []
@@ -1631,7 +1603,6 @@ class FastModel(FastBaseModel):
         if resize_model_vocab is not None:
             model.resize_token_embeddings(resize_model_vocab)
 
-        # In case the model supports tagging, add the unsloth tag.
         if hasattr(model, "add_model_tags"):
             model.add_model_tags(
                 [
@@ -1674,7 +1645,6 @@ class FastModel(FastBaseModel):
 
         if is_peft:
             # From https://github.com/huggingface/peft/issues/184
-            # Now add PEFT adapters
 
             # Gemma4 ClippableLinear wraps nn.Linear -- PEFT can't inject LoRA
             # on it directly.  Monkey-patch PEFT to target the inner .linear
@@ -1741,18 +1711,15 @@ class FastModel(FastBaseModel):
                 if _clippable_linear_cls is not None:
                     _LoraModel._create_and_replace = _original_car
 
-            # Patch it as well!
             model = FastBaseModel.post_patch_model(
                 model, use_gradient_checkpointing, trust_remote_code = trust_remote_code
             )
 
-        # Apply QAT if specified
         if qat_scheme is not None:
             print("Unsloth: Applying QAT to mitigate quantization degradation")
             model = FastModel._prepare_for_qat(model, qat_scheme)
 
-        # Patch Tiled MLP
-        # to turn on set UNSLOTH_TILED_MLP to "arctic", "target", or "target:{GB}""
+        # Tiled MLP: set UNSLOTH_TILED_MLP to "arctic", "target", or "target:{GB}"
         patch_tiled_mlp_choice = os.environ.get(
             "UNSLOTH_TILED_MLP", "arctic" if unsloth_tiled_mlp else "0"
         )
