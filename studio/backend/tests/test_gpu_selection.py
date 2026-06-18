@@ -754,8 +754,8 @@ class TestRouteErrors(unittest.TestCase):
         with (
             patch.object(training_route, "get_training_backend", return_value = DummyBackend()),
             patch(
-                "core.inference.get_inference_backend",
-                return_value = SimpleNamespace(active_model_name = None),
+                "routes.training_vram.summarize_resident_chat",
+                return_value = {"any": False, "hf": None, "gguf": None},
             ),
             patch(
                 "core.export.get_export_backend",
@@ -794,8 +794,8 @@ class TestRouteErrors(unittest.TestCase):
         with (
             patch.object(training_route, "get_training_backend", return_value = DummyBackend()),
             patch(
-                "core.inference.get_inference_backend",
-                return_value = SimpleNamespace(active_model_name = None),
+                "routes.training_vram.summarize_resident_chat",
+                return_value = {"any": False, "hf": None, "gguf": None},
             ),
             patch(
                 "core.export.get_export_backend",

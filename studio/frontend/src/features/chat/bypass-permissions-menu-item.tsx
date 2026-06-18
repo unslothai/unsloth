@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { ShieldOffIcon } from "lucide-react";
 import { useState } from "react";
 
+import { ShieldBanIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
 import {
@@ -35,7 +35,7 @@ export function BypassPermissionsMenuItem() {
     <>
       <DropdownMenuItem
         className={
-          bypassPermissions ? "text-destructive font-medium" : undefined
+          bypassPermissions ? "text-bypass font-medium" : undefined
         }
         onSelect={(e) => {
           if (bypassPermissions) {
@@ -46,8 +46,8 @@ export function BypassPermissionsMenuItem() {
           }
         }}
       >
-        <ShieldOffIcon />
-        Bypass Permissions
+        <HugeiconsIcon icon={ShieldBanIcon} strokeWidth={2} />
+        Bypass permissions
         {bypassPermissions ? (
           <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="ml-auto" />
         ) : null}
@@ -55,9 +55,9 @@ export function BypassPermissionsMenuItem() {
       <AlertDialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <AlertDialogContent size="sm">
           <AlertDialogHeader>
-            <AlertDialogTitle>Enable Bypass Permissions?</AlertDialogTitle>
+            <AlertDialogTitle>Enable Bypass permissions?</AlertDialogTitle>
             <AlertDialogDescription>
-              Bypass Permissions is dangerous since the AI model might delete,
+              Bypass permissions is dangerous since the AI model might delete,
               corrupt your machine, and or cause real world damage to you or the
               world - only accept if you are certain
             </AlertDialogDescription>

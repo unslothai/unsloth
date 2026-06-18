@@ -1903,6 +1903,64 @@ exit 0
         substep "could not determine CUDA version from nvidia-smi, defaulting to cu126" "Yellow"
         return "$baseUrl/cu126"
     }
+
+    # ── Torch flavor helpers (to repair a stale CPU / wrong-CUDA wheel) ──
+    # torch.__version__ -> flavor tag (cuXXX / rocm / cpu); untagged wheel = cpu,
+    # matching setup.ps1's stale-venv parse.
+    function ConvertTo-TorchFlavorTag {
+        param([string]$TorchVersion)
+        if (-not $TorchVersion) { return $null }
+        if ($TorchVersion -match '\+(cu\d+)') { return $Matches[1] }
+        if ($TorchVersion -match '\+rocm')    { return 'rocm' }
+        if ($TorchVersion -match '\+cpu')     { return 'cpu' }
+        return 'cpu'
+    }
+
+    # Expected tag from the index leaf: cuXXX / cpu / rocm ($ROCmIndexUrl or a
+    # gfx* leaf -> rocm). $null on an unknown leaf (odd mirror) so repair no-ops.
+    function Get-ExpectedTorchFlavorTag {
+        param([string]$TorchIndexUrl, [string]$ROCmIndexUrl)
+        if (-not [string]::IsNullOrWhiteSpace($ROCmIndexUrl)) { return 'rocm' }
+        if ([string]::IsNullOrWhiteSpace($TorchIndexUrl)) { return $null }
+        $leaf = ($TorchIndexUrl.TrimEnd('/') -split '/')[-1].ToLowerInvariant()
+        if ($leaf -match '^cu\d+$') { return $leaf }
+        if ($leaf -eq 'cpu')        { return 'cpu' }
+        if ($leaf -match '^rocm')   { return 'rocm' }
+        if ($leaf -match '^gfx')    { return 'rocm' }
+        return $null
+    }
+
+    # Installed torch flavor tag in $PythonExe's venv, or $null if absent. Uses
+    # ProcessStartInfo (not &) so stderr doesn't trip $ErrorActionPreference.
+    function Get-InstalledTorchTag {
+        param([string]$PythonExe)
+        if (-not $PythonExe -or -not (Test-Path -LiteralPath $PythonExe)) { return $null }
+        try {
+            $psi = New-Object System.Diagnostics.ProcessStartInfo
+            $psi.FileName = $PythonExe
+            $psi.Arguments = '-c "import torch; print(torch.__version__)"'
+            $psi.RedirectStandardOutput = $true
+            $psi.RedirectStandardError = $true
+            $psi.UseShellExecute = $false
+            $psi.CreateNoWindow = $true
+            $proc = [System.Diagnostics.Process]::Start($psi)
+            # Drain BOTH streams async, then WaitForExit. A synchronous ReadToEnd()
+            # before the wait would block forever if a wedged "import torch" never
+            # closes stdout; leaving the redirected stderr undrained would deadlock a
+            # child that floods it past the pipe buffer. Async reads let a noisy-but-
+            # exiting probe finish, while a truly hung one still hits the 30s timeout
+            # and is killed -- bounded either way.
+            $outTask = $proc.StandardOutput.ReadToEndAsync()
+            $errTask = $proc.StandardError.ReadToEndAsync()
+            $finished = $proc.WaitForExit(30000)
+            if (-not $finished) { try { $proc.Kill() } catch {}; return $null }
+            $torchVer = $outTask.GetAwaiter().GetResult().Trim()
+            [void]$errTask.GetAwaiter().GetResult()
+            if ($proc.ExitCode -ne 0 -or -not $torchVer) { return $null }
+            return ConvertTo-TorchFlavorTag $torchVer
+        } catch { return $null }
+    }
+
     $TorchIndexUrl = Get-TorchIndexUrl
 
     # ── GPU arch → newest compatible Windows ROCm wheel release ──
@@ -2022,7 +2080,7 @@ exit 0
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated no-torch)" { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.6.7" unsloth-zoo }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated no-torch)" { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.6.7" "unsloth-zoo>=2026.6.5" }
             if ($baseInstallExit -eq 0) {
                 # Resolve pydantic WITH deps so pip pins pydantic-core
                 # to the matching version (no-torch-runtime.txt below
@@ -2036,7 +2094,7 @@ exit 0
                 }
             }
         } else {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { uv pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.6.7" unsloth-zoo }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { uv pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.6.7" "unsloth-zoo>=2026.6.5" }
         }
         if ($baseInstallExit -ne 0) {
             Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
@@ -2083,7 +2141,7 @@ exit 0
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (no-torch)" { uv pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "unsloth>=2026.6.7" unsloth-zoo }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (no-torch)" { uv pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "unsloth>=2026.6.7" "unsloth-zoo>=2026.6.5" }
             if ($baseInstallExit -eq 0) {
                 # Same pydantic-with-deps trick as the migrated branch.
                 $baseInstallExit = Invoke-InstallCommandRetry -Label "install pydantic" { uv pip install --python $VenvPython pydantic }
@@ -2095,7 +2153,7 @@ exit 0
                 }
             }
         } elseif ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { uv pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.6.7" unsloth-zoo }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { uv pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.6.7" "unsloth-zoo>=2026.6.5" }
         } else {
             $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth" { uv pip install --python $VenvPython --upgrade-package unsloth -- "$PackageName" }
         }
@@ -2123,7 +2181,7 @@ exit 0
         Write-TauriLog "STEP" "Installing unsloth"
         substep "installing unsloth (this may take a few minutes)..."
         if ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { uv pip install --python $VenvPython unsloth-zoo "unsloth>=2026.6.7" --torch-backend=auto }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { uv pip install --python $VenvPython "unsloth-zoo>=2026.6.5" "unsloth>=2026.6.7" --torch-backend=auto }
             if ($baseInstallExit -ne 0) {
                 Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install unsloth (exit code $baseInstallExit)" $baseInstallExit)
@@ -2145,6 +2203,50 @@ exit 0
             if ($baseInstallExit -ne 0) {
                 Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install unsloth (exit code $baseInstallExit)" $baseInstallExit)
+            }
+        }
+    }
+
+    # ── Enforce the installed torch flavor matches the detected GPU build ──
+    # PEP 440 ignores the +cpu/+cuXXX/+rocm local label in a version range, so uv
+    # keeps a stale torch==X+cpu against a CUDA index and setup.ps1 then loops on
+    # "torch cpu != required cuXXX". Reinstall the right triplet when a GPU build is
+    # expected: CUDA from $TorchIndexUrl, ROCm from $ROCmIndexUrl (repo.amd.com gfx*
+    # is a PEP 503 index uv resolves via --index-url, same URL the fresh ROCm install
+    # above uses). --no-torch / CPU-only hosts (expected cpu) are no-ops.
+    if (-not $SkipTorch) {
+        $expectedTorchTag = Get-ExpectedTorchFlavorTag -TorchIndexUrl $TorchIndexUrl -ROCmIndexUrl $ROCmIndexUrl
+        if ($expectedTorchTag -and $expectedTorchTag -ne 'cpu') {
+            $installedTorchTag = Get-InstalledTorchTag -PythonExe $VenvPython
+            if ($installedTorchTag -and $installedTorchTag -ne $expectedTorchTag) {
+                if ($expectedTorchTag -eq 'rocm' -and $ROCmIndexUrl) {
+                    # AMD: a migrated venv can keep a stale CPU torch the fresh ROCm path
+                    # would have force-reinstalled. Repair from the same repo.amd.com index.
+                    $rocmSpec = if ($ROCmTorchFloor) { $ROCmTorchFloor } else { "torch" }
+                    substep "PyTorch flavor mismatch (installed $installedTorchTag, need ROCm) -- reinstalling correct build..." "Yellow"
+                    $torchFixExit = Invoke-InstallCommand { uv pip install --python $VenvPython --force-reinstall --index-url $ROCmIndexUrl $rocmSpec torchvision torchaudio }
+                    if ($torchFixExit -ne 0) {
+                        Write-Host "[ERROR] Failed to reinstall PyTorch with the correct ROCm build (exit code $torchFixExit)" -ForegroundColor Red
+                        return (Exit-InstallFailure "Failed to reinstall PyTorch (ROCm) (exit code $torchFixExit)" $torchFixExit)
+                    }
+                    $installedTorchTag = Get-InstalledTorchTag -PythonExe $VenvPython
+                } elseif ($expectedTorchTag -ne 'rocm') {
+                    # CUDA: stale +cpu (or wrong cuXXX) against a CUDA index -> reinstall triplet.
+                    substep "PyTorch flavor mismatch (installed $installedTorchTag, need $expectedTorchTag) -- reinstalling correct build..." "Yellow"
+                    $torchFixExit = Invoke-InstallCommand { uv pip install --python $VenvPython "torch>=2.4,<2.11.0" torchvision torchaudio --index-url $TorchIndexUrl --reinstall-package torch --reinstall-package torchvision --reinstall-package torchaudio }
+                    if ($torchFixExit -ne 0) {
+                        Write-Host "[ERROR] Failed to reinstall PyTorch with the correct CUDA build (exit code $torchFixExit)" -ForegroundColor Red
+                        return (Exit-InstallFailure "Failed to reinstall PyTorch ($expectedTorchTag) (exit code $torchFixExit)" $torchFixExit)
+                    }
+                    $installedTorchTag = Get-InstalledTorchTag -PythonExe $VenvPython
+                }
+            }
+            # Safety net (incl. AMD): GPU build expected but still CPU -> warn loudly.
+            if ($installedTorchTag -eq 'cpu') {
+                Write-Host ""
+                Write-Host "  [WARN] PyTorch is CPU-only but a $expectedTorchTag GPU build was expected for this machine." -ForegroundColor Yellow
+                Write-Host "  [WARN] Training and GPU inference will run on CPU until this is fixed." -ForegroundColor Yellow
+                Write-Host "  [WARN] Re-run this installer, or reinstall the GPU build manually for your GPU." -ForegroundColor Yellow
             }
         }
     }
