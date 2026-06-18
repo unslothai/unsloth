@@ -2057,7 +2057,7 @@ export function HubModelPicker({
           // and a thin gutter lets the row pills widen toward it. A flex column
           // with a min height keeps the box tall and pins the eject footer to
           // the bottom even when only a few models are listed.
-          "model-list-scroll -mr-1 flex min-h-[22rem] max-h-[30rem] flex-col overflow-y-auto pr-0.5",
+          "model-list-scroll -mr-1 flex min-h-[18rem] max-h-[24rem] flex-col overflow-y-auto pr-0.5",
           listScrolled && "is-scrolled",
         )}
         {...hubModelList.listboxProps}
