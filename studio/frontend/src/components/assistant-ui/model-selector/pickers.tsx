@@ -9,7 +9,6 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { usePlatformStore } from "@/config/env";
-import { classifyUnslothSupport } from "@/features/hub/lib/unsloth-support";
 import {
   type ScanFolderInfo,
   addScanFolder,
@@ -29,26 +28,63 @@ import type {
   LocalModelInfo,
 } from "@/features/chat/api/chat-api";
 import type { GgufVariantDetail } from "@/features/chat/types/api";
-import { useDebouncedValue, useGpuInfo } from "@/hooks";
+import { DotTag } from "@/features/hub/catalog/dot-tag";
+import {
+  type HubOption,
+  HubOptionMenu,
+} from "@/features/hub/catalog/hub-option-menu";
+import { TrainIcon } from "@/features/hub/components/train-icon";
+import { useHubInfiniteScroll } from "@/features/hub/hooks/use-hub-infinite-scroll";
 import {
   type HfModelResult,
   type HfSortKey,
   useHubModelSearch,
 } from "@/features/hub/hooks/use-hub-model-search";
-import { useHubInfiniteScroll } from "@/features/hub/hooks/use-hub-infinite-scroll";
 import { useOnlineStatus } from "@/features/hub/hooks/use-online-status";
+import { classifyUnslothSupport } from "@/features/hub/lib/unsloth-support";
 import { useHfTokenStore } from "@/features/hub/stores/hf-token-store";
+import { useDebouncedValue, useGpuInfo } from "@/hooks";
 import { extractParamLabel } from "@/lib/model-size";
+import { toast } from "@/lib/toast";
 import { cn, formatCompact } from "@/lib/utils";
 import type { VramFitStatus } from "@/lib/vram";
 import { checkVramFit, estimateLoadingVram } from "@/lib/vram";
-import { Add01Icon, AudioWave01Icon, Cancel01Icon, DashboardCircleIcon, Download01Icon, Folder02Icon, Search01Icon, ViewIcon } from "@hugeicons/core-free-icons";
+import {
+  Add01Icon,
+  AudioWave01Icon,
+  Cancel01Icon,
+  DashboardCircleIcon,
+  Download01Icon,
+  Folder02Icon,
+  Search01Icon,
+  ViewIcon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { DotTag } from "@/features/hub/catalog/dot-tag";
-import { HubOptionMenu, type HubOption } from "@/features/hub/catalog/hub-option-menu";
+import { ChevronDownIcon, ChevronRightIcon } from "lucide-react";
+import {
+  type Dispatch,
+  type KeyboardEvent,
+  type ReactNode,
+  type SetStateAction,
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useState,
+} from "react";
 import { FolderBrowser } from "./folder-browser";
+import {
+  type ModelCapabilities,
+  detectCapabilities,
+  hasAnyCapability,
+} from "./model-capabilities";
 import { ModelDeleteAction } from "./model-delete-action";
 import { ModelLoadSettingsAction } from "./model-load-settings-action";
+import {
+  type ModelLoadTimes,
+  loadedAt,
+  useModelLoadTimes,
+} from "./model-usage";
 import {
   type FormatFilter,
   estimateQuantBytes,
@@ -59,28 +95,7 @@ import {
   matchesFormatFilter,
   paramsFromId,
 } from "./recommended-fit";
-import {
-  type ModelCapabilities,
-  detectCapabilities,
-  hasAnyCapability,
-} from "./model-capabilities";
-import {
-  type ModelLoadTimes,
-  loadedAt,
-  useModelLoadTimes,
-} from "./model-usage";
 import { parseMetaTokens, splitRepoLabel } from "./row-meta";
-import { ChevronDownIcon, ChevronRightIcon } from "lucide-react";
-import {
-  type KeyboardEvent,
-  type ReactNode,
-  useCallback,
-  useEffect,
-  useId,
-  useMemo,
-  useState,
-} from "react";
-import { toast } from "@/lib/toast";
 import type {
   DeletedModelRef,
   LoraModelOption,
@@ -106,7 +121,9 @@ function makeModelOptionChildrenId(optionKey: string): string {
 }
 
 function focusFirstChildOption(optionKey: string): boolean {
-  const childList = document.getElementById(makeModelOptionChildrenId(optionKey));
+  const childList = document.getElementById(
+    makeModelOptionChildrenId(optionKey),
+  );
   const option = childList?.querySelector<HTMLElement>(
     "[data-model-picker-option]",
   );
@@ -280,9 +297,11 @@ function ListLabel({
               aria-label={collapsed ? "Expand section" : "Collapse section"}
               className="shrink-0 rounded p-1 text-muted-foreground/60 transition-colors hover:text-foreground"
             >
-              {collapsed
-                ? <ChevronRightIcon className="size-3" />
-                : <ChevronDownIcon className="size-3" />}
+              {collapsed ? (
+                <ChevronRightIcon className="size-3" />
+              ) : (
+                <ChevronDownIcon className="size-3" />
+              )}
             </button>
           )}
         </div>
@@ -403,18 +422,31 @@ function ModelRow({
       </span>
       <span className="ml-auto flex shrink-0 items-center gap-1.5">
         {showCaps && <CapabilityIcons caps={caps} />}
-        {selected && <DotTag tone="success" label="Loaded" className="h-[18px] gap-1 px-1" dotClassName="size-[5px]" />}
+        {selected && (
+          <DotTag
+            tone="success"
+            label="Loaded"
+            className="h-[18px] gap-1 px-1"
+            dotClassName="size-[5px]"
+          />
+        )}
         {downloaded && !selected && (
           <span
             title="Already downloaded"
             aria-label="Already downloaded"
             className="flex size-[18px] shrink-0 items-center justify-center rounded-md border border-border/60 text-muted-foreground"
           >
-            <HugeiconsIcon icon={Download01Icon} className="size-3" strokeWidth={1.8} />
+            <HugeiconsIcon
+              icon={Download01Icon}
+              className="size-3"
+              strokeWidth={1.8}
+            />
           </span>
         )}
         {vramStatus === "exceeds" && (
-          <span className="text-[9px] font-medium !text-red-700 !bg-red-50 dark:!text-red-300 dark:!bg-red-500/15 px-1.5 py-0.5 rounded">OOM</span>
+          <span className="text-[9px] font-medium !text-red-700 !bg-red-50 dark:!text-red-300 dark:!bg-red-500/15 px-1.5 py-0.5 rounded">
+            OOM
+          </span>
         )}
         {vramStatus === "tight" && (
           <span className="text-[9px] font-medium !text-amber-400">TIGHT</span>
@@ -425,7 +457,13 @@ function ModelRow({
           </span>
         ) : null}
         {parsed.formats.map((f) => (
-          <DotTag key={f.label} tone={f.tone} label={f.label} className="h-[18px] gap-[3px] px-1" dotClassName="size-[5px]" />
+          <DotTag
+            key={f.label}
+            tone={f.tone}
+            label={f.label}
+            className="h-[18px] gap-[3px] px-1"
+            dotClassName="size-[5px]"
+          />
         ))}
         {parsed.texts.map((text) => (
           <span key={text} className="text-[10px] text-muted-foreground">
@@ -672,7 +710,11 @@ function GgufVariantExpander({
         </span>
         {hasVision && (
           <span className="flex items-center gap-0.5 text-[9px] font-medium text-blue-400">
-            <HugeiconsIcon icon={ViewIcon} className="size-3" strokeWidth={1.8} />
+            <HugeiconsIcon
+              icon={ViewIcon}
+              className="size-3"
+              strokeWidth={1.8}
+            />
             Vision
           </span>
         )}
@@ -696,7 +738,11 @@ function GgufVariantExpander({
               )}
             >
               <span className="min-w-0 flex-1 truncate font-mono text-xs">
-                <span className={cn(oom && "!text-gray-500 dark:!text-gray-400")}>{v.quant}</span>
+                <span
+                  className={cn(oom && "!text-gray-500 dark:!text-gray-400")}
+                >
+                  {v.quant}
+                </span>
                 {v.downloaded ? (
                   <span className="ml-1.5 text-[9px] font-sans font-medium text-green-400">
                     downloaded
@@ -889,7 +935,8 @@ function sortLocalModels(
 ): LocalModelInfo[] {
   const name = (m: LocalModelInfo) => m.model_id ?? m.display_name ?? m.id;
   const byDate = (a: LocalModelInfo, b: LocalModelInfo) =>
-    (b.updated_at ?? -1) - (a.updated_at ?? -1) || name(a).localeCompare(name(b));
+    (b.updated_at ?? -1) - (a.updated_at ?? -1) ||
+    name(a).localeCompare(name(b));
   return [...rows].sort((a, b) => {
     if (key === "recent") {
       const d = loadedAt(loadTimes, a.id) - loadedAt(loadTimes, b.id);
@@ -910,7 +957,10 @@ function localModelIsGguf(m: LocalModelInfo): boolean {
 }
 
 /** Whether a local model matches the format toggle (GGUF detected by name/path). */
-function localModelMatchesFormat(m: LocalModelInfo, filter: FormatFilter): boolean {
+function localModelMatchesFormat(
+  m: LocalModelInfo,
+  filter: FormatFilter,
+): boolean {
   return matchesFormatFilter(
     m.model_id ?? m.display_name ?? m.id,
     localModelIsGguf(m),
@@ -920,19 +970,26 @@ function localModelMatchesFormat(m: LocalModelInfo, filter: FormatFilter): boole
 
 export function HubModelPicker({
   models,
+  loraModels = [],
   value,
   onSelect,
   onFoldersChange,
   onBrowseHub,
+  onModelsChange,
+  deleteDisabled = false,
   section = "downloaded",
   sectionToggle,
 }: {
   models: ModelOption[];
+  /** Fine-tuned models, shown as a section in the On Device view. */
+  loraModels?: LoraModelOption[];
   value?: string;
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
   onFoldersChange?: () => void;
   /** Open the full Hub page to browse more models. */
   onBrowseHub?: () => void;
+  onModelsChange?: (deletedModel?: DeletedModelRef) => void;
+  deleteDisabled?: boolean;
   /** Section shown when not searching. Search spans all sections. */
   section?: "downloaded" | "recommended" | "custom";
   /** Section toggle rendered under the search bar. */
@@ -956,16 +1013,22 @@ export function HubModelPicker({
   // "recommended" surfaces the most recently created Unsloth repos.
   const recommendedSortBy: HfSortKey =
     recommendedSort === "recommended" ? "createdAt" : recommendedSort;
-  const { results, isLoading, isLoadingMore, fetchMore, scannedCount, hasMore } =
-    useHubModelSearch(debouncedQuery, {
-      ownerScope: "unsloth",
-      sortBy: recommendedSortBy,
-      sortDirection: "desc",
-      pinUnslothFirst: true,
-      keepUnsupportedTags: true,
-      accessToken,
-      enabled: online,
-    });
+  const {
+    results,
+    isLoading,
+    isLoadingMore,
+    fetchMore,
+    scannedCount,
+    hasMore,
+  } = useHubModelSearch(debouncedQuery, {
+    ownerScope: "unsloth",
+    sortBy: recommendedSortBy,
+    sortDirection: "desc",
+    pinUnslothFirst: true,
+    keepUnsupportedTags: true,
+    accessToken,
+    enabled: online,
+  });
   const recommendedSearch = useHubModelSearch("", {
     ownerScope: "unsloth",
     sortBy: recommendedSortBy,
@@ -1009,6 +1072,7 @@ export function HubModelPicker({
 
   const [downloadedCollapsed, setDownloadedCollapsed] = useState(false);
   const [customFoldersCollapsed, setCustomFoldersCollapsed] = useState(false);
+  const [fineTunedCollapsed, setFineTunedCollapsed] = useState(false);
 
   // Cached (downloaded) repos -- module-level cache avoids flashing an
   // empty "Downloaded" section when the popover re-mounts.
@@ -1031,7 +1095,8 @@ export function HubModelPicker({
     useState<LocalModelInfo[]>(_customFolderCache);
 
   // Custom scan folders management
-  const [scanFolders, setScanFolders] = useState<ScanFolderInfo[]>(_scanFoldersCache);
+  const [scanFolders, setScanFolders] =
+    useState<ScanFolderInfo[]>(_scanFoldersCache);
   const [folderInput, setFolderInput] = useState("");
   const [folderError, setFolderError] = useState<string | null>(null);
   const [showFolderInput, setShowFolderInput] = useState(false);
@@ -1066,58 +1131,72 @@ export function HubModelPicker({
       .catch(() => {});
   }, []);
 
-  const handleAddFolder = useCallback(async (overridePath?: string) => {
-    // Explicit path lets the folder browser submit in the same tick it
-    // calls `setFolderInput`; reading `folderInput` would race the update.
-    const raw = overridePath !== undefined ? overridePath : folderInput;
-    const trimmed = raw.trim();
-    if (!trimmed || folderLoading) return;
-    setFolderError(null);
-    setFolderLoading(true);
-    // From the folder browser's one-click "Use this folder": the typed-
-    // input panel is closed, so the inline folderError is invisible.
-    // Surface failures (denylisted path, sandbox 403, etc.) via toast.
-    const fromBrowser = overridePath !== undefined;
-    try {
-      const created = await addScanFolder(trimmed);
-      // Backend returns the existing row for duplicates, so dedupe.
-      const next = _scanFoldersCache.some((f) => f.id === created.id || f.path === created.path)
-        ? _scanFoldersCache
-        : [..._scanFoldersCache, created];
-      _scanFoldersCache = next;
-      setScanFolders(next);
-      setFolderInput("");
-      setShowFolderInput(false);
-      refreshLocalModelsList();
-      onFoldersChange?.();
-      // Background reconciliation with the server
-      void refreshScanFolders();
-    } catch (e) {
-      const message = e instanceof Error ? e.message : "Failed to add folder";
-      setFolderError(message);
-      if (fromBrowser) {
-        toast.error("Couldn't add folder", { description: message });
+  const handleAddFolder = useCallback(
+    async (overridePath?: string) => {
+      // Explicit path lets the folder browser submit in the same tick it
+      // calls `setFolderInput`; reading `folderInput` would race the update.
+      const raw = overridePath !== undefined ? overridePath : folderInput;
+      const trimmed = raw.trim();
+      if (!trimmed || folderLoading) return;
+      setFolderError(null);
+      setFolderLoading(true);
+      // From the folder browser's one-click "Use this folder": the typed-
+      // input panel is closed, so the inline folderError is invisible.
+      // Surface failures (denylisted path, sandbox 403, etc.) via toast.
+      const fromBrowser = overridePath !== undefined;
+      try {
+        const created = await addScanFolder(trimmed);
+        // Backend returns the existing row for duplicates, so dedupe.
+        const next = _scanFoldersCache.some(
+          (f) => f.id === created.id || f.path === created.path,
+        )
+          ? _scanFoldersCache
+          : [..._scanFoldersCache, created];
+        _scanFoldersCache = next;
+        setScanFolders(next);
+        setFolderInput("");
+        setShowFolderInput(false);
+        refreshLocalModelsList();
+        onFoldersChange?.();
+        // Background reconciliation with the server
+        void refreshScanFolders();
+      } catch (e) {
+        const message = e instanceof Error ? e.message : "Failed to add folder";
+        setFolderError(message);
+        if (fromBrowser) {
+          toast.error("Couldn't add folder", { description: message });
+        }
+      } finally {
+        setFolderLoading(false);
       }
-    } finally {
-      setFolderLoading(false);
-    }
-  }, [folderInput, folderLoading, refreshScanFolders, refreshLocalModelsList, onFoldersChange]);
+    },
+    [
+      folderInput,
+      folderLoading,
+      refreshScanFolders,
+      refreshLocalModelsList,
+      onFoldersChange,
+    ],
+  );
 
-  const handleRemoveFolder = useCallback(async (id: number) => {
-    try {
-      await removeScanFolder(id);
-      // Optimistic: drop it immediately.
-      const next = _scanFoldersCache.filter((f) => f.id !== id);
-      _scanFoldersCache = next;
-      setScanFolders(next);
-      refreshScanFolders();
-      refreshLocalModelsList();
-      onFoldersChange?.();
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Failed to remove folder");
-      refreshScanFolders();
-    }
-  }, [refreshScanFolders, refreshLocalModelsList, onFoldersChange]);
+  const handleRemoveFolder = useCallback(
+    async (id: number) => {
+      try {
+        await removeScanFolder(id);
+        // Optimistic: drop it immediately.
+        const next = _scanFoldersCache.filter((f) => f.id !== id);
+        _scanFoldersCache = next;
+        setScanFolders(next);
+        refreshScanFolders();
+        refreshLocalModelsList();
+        onFoldersChange?.();
+      } catch (e) {
+        toast.error(e instanceof Error ? e.message : "Failed to remove folder");
+        refreshScanFolders();
+      }
+    },
+    [refreshScanFolders, refreshLocalModelsList, onFoldersChange],
+  );
 
   const refreshCachedLists = useCallback(() => {
     listCachedGguf()
@@ -1254,7 +1333,15 @@ export function HubModelPicker({
         requireKnown: true,
       });
     });
-  }, [recommendedSearch.results, downloadedSet, recommendedSort, formatFilter, isMac, gpu, isChatSupported]);
+  }, [
+    recommendedSearch.results,
+    downloadedSet,
+    recommendedSort,
+    formatFilter,
+    isMac,
+    gpu,
+    isChatSupported,
+  ]);
 
   // Per-row meta + VRAM badge from the recommended listing's own metadata.
   const recommendedMeta = useMemo(() => {
@@ -1276,7 +1363,9 @@ export function HubModelPicker({
             .filter(Boolean)
             .join(" · ")
         : [
-            r.totalParams ? formatCompact(r.totalParams) : extractParamLabel(r.id),
+            r.totalParams
+              ? formatCompact(r.totalParams)
+              : extractParamLabel(r.id),
             // MLX and safetensors get a format pill like GGUF.
             isMlxId(r.id) ? "MLX" : "Safetensors",
             r.estimatedSizeBytes ? formatBytes(r.estimatedSizeBytes) : null,
@@ -1346,14 +1435,15 @@ export function HubModelPicker({
   const localQuery = normalizeForSearch(debouncedQuery.trim());
   const matchesLocalQuery = (m: LocalModelInfo) =>
     !localQuery ||
-    normalizeForSearch(`${m.model_id ?? ""} ${m.display_name} ${m.id}`).includes(
-      localQuery,
-    );
+    normalizeForSearch(
+      `${m.model_id ?? ""} ${m.display_name} ${m.id}`,
+    ).includes(localQuery);
   const sortedLmStudio = useMemo(
     () =>
       sortLocalModels(
         lmStudioModels.filter(
-          (m) => localModelMatchesFormat(m, formatFilter) && matchesLocalQuery(m),
+          (m) =>
+            localModelMatchesFormat(m, formatFilter) && matchesLocalQuery(m),
         ),
         downloadedSort,
         loadTimes,
@@ -1376,13 +1466,21 @@ export function HubModelPicker({
         loadTimes,
       ),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [localDirModels, downloadedSort, formatFilter, loadTimes, localQuery, chatOnly],
+    [
+      localDirModels,
+      downloadedSort,
+      formatFilter,
+      loadTimes,
+      localQuery,
+      chatOnly,
+    ],
   );
   const sortedCustomFolderModels = useMemo(
     () =>
       sortLocalModels(
         customFolderModels.filter(
-          (m) => localModelMatchesFormat(m, formatFilter) && matchesLocalQuery(m),
+          (m) =>
+            localModelMatchesFormat(m, formatFilter) && matchesLocalQuery(m),
         ),
         customSort,
         loadTimes,
@@ -1390,6 +1488,26 @@ export function HubModelPicker({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [customFolderModels, customSort, formatFilter, loadTimes, localQuery],
   );
+
+  // Fine-tuned models for the On Device "Fine-tuned" section: flat, query-
+  // filtered, newest first.
+  const fineTunedRows = useMemo(() => {
+    const needle = normalizeForSearch(debouncedQuery.trim());
+    return loraModels
+      .filter((m) => {
+        const text = normalizeForSearch(
+          `${m.name} ${m.baseModel ?? ""} ${m.id}`,
+        );
+        return !needle || text.includes(needle);
+      })
+      .slice()
+      .sort((a, b) => {
+        const aTime = a.updatedAt ?? -1;
+        const bTime = b.updatedAt ?? -1;
+        if (aTime !== bTime) return bTime - aTime;
+        return a.name.localeCompare(b.name);
+      });
+  }, [loraModels, debouncedQuery]);
 
   // While searching, filter Downloaded by the query instead of hiding it, so a
   // downloaded model the user is searching for stays visible.
@@ -1399,7 +1517,9 @@ export function HubModelPicker({
         matchesFormatFilter(c.repo_id, true, formatFilter),
       );
     const q = normalizeForSearch(debouncedQuery.trim());
-    return sortedCachedGguf.filter((c) => normalizeForSearch(c.repo_id).includes(q));
+    return sortedCachedGguf.filter((c) =>
+      normalizeForSearch(c.repo_id).includes(q),
+    );
   }, [sortedCachedGguf, showHfSection, debouncedQuery, formatFilter]);
   const visibleCachedModels = useMemo(() => {
     if (!showHfSection)
@@ -1407,7 +1527,9 @@ export function HubModelPicker({
         matchesFormatFilter(c.repo_id, false, formatFilter),
       );
     const q = normalizeForSearch(debouncedQuery.trim());
-    return sortedCachedModels.filter((c) => normalizeForSearch(c.repo_id).includes(q));
+    return sortedCachedModels.filter((c) =>
+      normalizeForSearch(c.repo_id).includes(q),
+    );
   }, [sortedCachedModels, showHfSection, debouncedQuery, formatFilter]);
 
   // Non-GGUF cached rows are not shown in chat-only mode, so the empty-state
@@ -1420,8 +1542,16 @@ export function HubModelPicker({
     const q = normalizeForSearch(debouncedQuery.trim());
     return recommendedIds
       .filter((id) => normalizeForSearch(id).includes(q))
-      .filter((id) => matchesFormatFilter(id, isKnownGgufRepo(id), formatFilter));
-  }, [showHfSection, debouncedQuery, recommendedIds, formatFilter, isKnownGgufRepo]);
+      .filter((id) =>
+        matchesFormatFilter(id, isKnownGgufRepo(id), formatFilter),
+      );
+  }, [
+    showHfSection,
+    debouncedQuery,
+    recommendedIds,
+    formatFilter,
+    isKnownGgufRepo,
+  ]);
 
   // Param counts come straight off the unsloth listings the picker already
   // loaded, so no extra per-id fetch is needed for the VRAM badges.
@@ -1448,8 +1578,19 @@ export function HubModelPicker({
       .filter((id) => !recommendedSet.has(id))
       .filter((id) => !chatOnly || isKnownGgufRepo(id))
       .filter((id) => !/-FP8[-.]|FP8-Dynamic/i.test(id))
-      .filter((id) => matchesFormatFilter(id, isKnownGgufRepo(id), formatFilter));
-  }, [recommendedSet, results, showHfSection, section, chatOnly, isKnownGgufRepo, isChatSupported, formatFilter]);
+      .filter((id) =>
+        matchesFormatFilter(id, isKnownGgufRepo(id), formatFilter),
+      );
+  }, [
+    recommendedSet,
+    results,
+    showHfSection,
+    section,
+    chatOnly,
+    isKnownGgufRepo,
+    isChatSupported,
+    formatFilter,
+  ]);
 
   const hubOptionKeys = useMemo(() => {
     const keys: string[] = [];
@@ -1484,6 +1625,11 @@ export function HubModelPicker({
       return keys;
     }
 
+    // Fine-tuned models sit below downloaded, above custom folders.
+    if (section === "downloaded" && !fineTunedCollapsed) {
+      keys.push(...fineTunedRows.map((m) => makeModelOptionKey("lora", m.id)));
+    }
+
     // Custom folders sit right below the downloaded models on On Device.
     if (section === "downloaded" && !customFoldersCollapsed) {
       keys.push(
@@ -1508,9 +1654,7 @@ export function HubModelPicker({
 
     if (section === "recommended") {
       keys.push(
-        ...recommendedRows.map((r) =>
-          makeModelOptionKey("recommended", r.id),
-        ),
+        ...recommendedRows.map((r) => makeModelOptionKey("recommended", r.id)),
       );
     }
 
@@ -1521,6 +1665,8 @@ export function HubModelPicker({
     sortedCustomFolderModels,
     customFoldersCollapsed,
     downloadedCollapsed,
+    fineTunedRows,
+    fineTunedCollapsed,
     filteredRecommendedIds,
     hfIds,
     sortedLmStudio,
@@ -1677,37 +1823,38 @@ export function HubModelPicker({
   // selected-item checkmark never overlaps the label.
   const sortMenuContentClassName =
     "!p-1 !rounded-[14px] [&_[role=option]]:!pl-2 [&_[role=option]]:!py-1.5 [&_[role=option]]:!text-xs [&_[role=option]]:!rounded-[14px]";
-  const sectionSortDropdown = section === "recommended" ? (
-    <HubOptionMenu
-      value={recommendedSort}
-      options={RECOMMENDED_SORT_OPTIONS}
-      onValueChange={setRecommendedSort}
-      ariaLabel="Sort Unsloth models"
-      align="end"
-      className={sortTriggerClassName}
-      contentClassName={sortMenuContentClassName}
-    />
-  ) : section === "downloaded" ? (
-    <HubOptionMenu
-      value={downloadedSort}
-      options={LOCAL_SORT_OPTIONS}
-      onValueChange={setDownloadedSort}
-      ariaLabel="Sort downloaded models"
-      align="end"
-      className={sortTriggerClassName}
-      contentClassName={sortMenuContentClassName}
-    />
-  ) : (
-    <HubOptionMenu
-      value={customSort}
-      options={LOCAL_SORT_OPTIONS}
-      onValueChange={setCustomSort}
-      ariaLabel="Sort custom models"
-      align="end"
-      className={sortTriggerClassName}
-      contentClassName={sortMenuContentClassName}
-    />
-  );
+  const sectionSortDropdown =
+    section === "recommended" ? (
+      <HubOptionMenu
+        value={recommendedSort}
+        options={RECOMMENDED_SORT_OPTIONS}
+        onValueChange={setRecommendedSort}
+        ariaLabel="Sort Unsloth models"
+        align="end"
+        className={sortTriggerClassName}
+        contentClassName={sortMenuContentClassName}
+      />
+    ) : section === "downloaded" ? (
+      <HubOptionMenu
+        value={downloadedSort}
+        options={LOCAL_SORT_OPTIONS}
+        onValueChange={setDownloadedSort}
+        ariaLabel="Sort downloaded models"
+        align="end"
+        className={sortTriggerClassName}
+        contentClassName={sortMenuContentClassName}
+      />
+    ) : (
+      <HubOptionMenu
+        value={customSort}
+        options={LOCAL_SORT_OPTIONS}
+        onValueChange={setCustomSort}
+        ariaLabel="Sort custom models"
+        align="end"
+        className={sortTriggerClassName}
+        contentClassName={sortMenuContentClassName}
+      />
+    );
 
   return (
     <div className="space-y-2">
@@ -1805,7 +1952,8 @@ export function HubModelPicker({
 
           {/* Downloaded stays visible (filtered) while searching. */}
           {showDownloaded &&
-          (visibleCachedGguf.length > 0 || visibleCachedModelRows.length > 0) ? (
+          (visibleCachedGguf.length > 0 ||
+            visibleCachedModelRows.length > 0) ? (
             <>
               <ListLabel
                 collapsed={downloadedCollapsed}
@@ -1828,7 +1976,10 @@ export function HubModelPicker({
               </ListLabel>
               {!downloadedCollapsed &&
                 visibleCachedGguf.map((c) => {
-                  const optionKey = makeModelOptionKey("downloaded-gguf", c.repo_id);
+                  const optionKey = makeModelOptionKey(
+                    "downloaded-gguf",
+                    c.repo_id,
+                  );
                   return (
                     <div key={c.repo_id}>
                       <ModelRow
@@ -1847,7 +1998,8 @@ export function HubModelPicker({
                         onArrowDownIntoChildren={
                           expandedGguf === c.repo_id
                             ? () => {
-                                const focused = focusFirstChildOption(optionKey);
+                                const focused =
+                                  focusFirstChildOption(optionKey);
                                 return focused;
                               }
                             : undefined
@@ -1880,7 +2032,10 @@ export function HubModelPicker({
                 })}
               {!downloadedCollapsed &&
                 visibleCachedModelRows.map((c) => {
-                  const optionKey = makeModelOptionKey("downloaded-model", c.repo_id);
+                  const optionKey = makeModelOptionKey(
+                    "downloaded-model",
+                    c.repo_id,
+                  );
                   return (
                     <div key={c.repo_id} className="flex items-center gap-0.5">
                       <div className="min-w-0 flex-1">
@@ -1924,6 +2079,51 @@ export function HubModelPicker({
             </>
           ) : null}
 
+          {/* Fine-tuned models: a section above Custom Folders, only when any
+              exist (after query filtering). */}
+          {section === "downloaded" && fineTunedRows.length > 0 ? (
+            <>
+              <div className="flex items-center gap-1 px-2.5 pb-1.5 pt-3">
+                <span className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  <HugeiconsIcon icon={TrainIcon} className="size-3.5" />
+                  Fine-tuned
+                </span>
+                <div className="ml-auto">
+                  <button
+                    type="button"
+                    aria-label={
+                      fineTunedCollapsed
+                        ? "Expand fine-tuned models"
+                        : "Collapse fine-tuned models"
+                    }
+                    title={fineTunedCollapsed ? "Expand" : "Collapse"}
+                    onClick={() => setFineTunedCollapsed((v) => !v)}
+                    className="shrink-0 rounded p-1 text-muted-foreground/60 transition-colors hover:text-foreground"
+                  >
+                    {fineTunedCollapsed ? (
+                      <ChevronRightIcon className="size-3" />
+                    ) : (
+                      <ChevronDownIcon className="size-3" />
+                    )}
+                  </button>
+                </div>
+              </div>
+              {!fineTunedCollapsed && (
+                <FineTunedRows
+                  adapters={fineTunedRows}
+                  value={value}
+                  onSelect={onSelect}
+                  onModelsChange={onModelsChange}
+                  deleteDisabled={deleteDisabled}
+                  loraModelList={hubModelList}
+                  expandedGguf={expandedGguf}
+                  setExpandedGguf={setExpandedGguf}
+                  gpu={gpu}
+                />
+              )}
+            </>
+          ) : null}
+
           {showCustom ? (
             <>
               <div className="flex items-center gap-1 px-2.5 pb-1.5 pt-3">
@@ -1939,17 +2139,27 @@ export function HubModelPicker({
                 <div className="flex items-center gap-0.5">
                   <button
                     type="button"
-                    aria-label={showFolderInput ? "Cancel adding folder" : "Add scan folder by path"}
+                    aria-label={
+                      showFolderInput
+                        ? "Cancel adding folder"
+                        : "Add scan folder by path"
+                    }
                     title={showFolderInput ? "Cancel" : "Add by typing a path"}
                     onClick={() => {
                       setShowFolderInput((open) => {
-                        if (open) { setFolderInput(""); setFolderError(null); }
+                        if (open) {
+                          setFolderInput("");
+                          setFolderError(null);
+                        }
                         return !open;
                       });
                     }}
                     className="shrink-0 rounded p-1 text-muted-foreground/60 transition-colors hover:text-foreground"
                   >
-                    <HugeiconsIcon icon={showFolderInput ? Cancel01Icon : Add01Icon} className="size-3" />
+                    <HugeiconsIcon
+                      icon={showFolderInput ? Cancel01Icon : Add01Icon}
+                      className="size-3"
+                    />
                   </button>
                   <button
                     type="button"
@@ -1964,76 +2174,105 @@ export function HubModelPicker({
                 <div className="ml-auto">
                   <button
                     type="button"
-                    aria-label={customFoldersCollapsed ? "Expand custom folders" : "Collapse custom folders"}
+                    aria-label={
+                      customFoldersCollapsed
+                        ? "Expand custom folders"
+                        : "Collapse custom folders"
+                    }
                     title={customFoldersCollapsed ? "Expand" : "Collapse"}
                     onClick={() => setCustomFoldersCollapsed((v) => !v)}
                     className="shrink-0 rounded p-1 text-muted-foreground/60 transition-colors hover:text-foreground"
                   >
-                    {customFoldersCollapsed
-                      ? <ChevronRightIcon className="size-3" />
-                      : <ChevronDownIcon className="size-3" />}
+                    {customFoldersCollapsed ? (
+                      <ChevronRightIcon className="size-3" />
+                    ) : (
+                      <ChevronDownIcon className="size-3" />
+                    )}
                   </button>
                 </div>
               </div>
 
               {/* Folder paths */}
-              {!customFoldersCollapsed && scanFolders.map((f) => (
-                <div
-                  key={f.id}
-                  className="group flex items-center gap-1.5 px-2.5 py-0.5"
-                >
-                  <HugeiconsIcon icon={Folder02Icon} className="size-3 shrink-0 text-muted-foreground/40" />
-                  <span
-                    className="min-w-0 flex-1 truncate font-mono text-[10px] text-muted-foreground/70"
-                    title={f.path}
+              {!customFoldersCollapsed &&
+                scanFolders.map((f) => (
+                  <div
+                    key={f.id}
+                    className="group flex items-center gap-1.5 px-2.5 py-0.5"
                   >
-                    {f.path}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => handleRemoveFolder(f.id)}
-                    aria-label={`Remove folder ${f.path}`}
-                    className="shrink-0 rounded p-1 text-foreground/70 transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:bg-destructive/10 focus-visible:text-destructive"
-                  >
-                    <HugeiconsIcon icon={Cancel01Icon} className="size-3" />
-                  </button>
-                </div>
-              ))}
+                    <HugeiconsIcon
+                      icon={Folder02Icon}
+                      className="size-3 shrink-0 text-muted-foreground/40"
+                    />
+                    <span
+                      className="min-w-0 flex-1 truncate font-mono text-[10px] text-muted-foreground/70"
+                      title={f.path}
+                    >
+                      {f.path}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => handleRemoveFolder(f.id)}
+                      aria-label={`Remove folder ${f.path}`}
+                      className="shrink-0 rounded p-1 text-foreground/70 transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:bg-destructive/10 focus-visible:text-destructive"
+                    >
+                      <HugeiconsIcon icon={Cancel01Icon} className="size-3" />
+                    </button>
+                  </div>
+                ))}
 
               {/* Recommended folders */}
-              {!customFoldersCollapsed && (() => {
-                const registered = new Set(scanFolders.map((f) => f.path));
-                const unregistered = recommendedFolders.filter((p) => !registered.has(p));
-                if (unregistered.length === 0) return null;
-                return (
-                  <div className="flex flex-wrap gap-1 px-2.5 pb-0.5">
-                    {unregistered.map((p) => (
-                      <button
-                        key={p}
-                        type="button"
-                        onClick={() => void handleAddFolder(p)}
-                        disabled={folderLoading}
-                        title={`Add ${p}`}
-                        className="rounded-full border border-dashed border-border/50 px-2 py-0.5 font-mono text-[10px] text-muted-foreground/70 transition-colors hover:border-foreground/30 hover:bg-accent hover:text-foreground disabled:opacity-40"
-                      >
-                        <span className="text-[11px] font-semibold">+</span> {p.length > 30 ? `...${p.slice(-27)}` : p}
-                      </button>
-                    ))}
-                  </div>
-                );
-              })()}
+              {!customFoldersCollapsed &&
+                (() => {
+                  const registered = new Set(scanFolders.map((f) => f.path));
+                  const unregistered = recommendedFolders.filter(
+                    (p) => !registered.has(p),
+                  );
+                  if (unregistered.length === 0) return null;
+                  return (
+                    <div className="flex flex-wrap gap-1 px-2.5 pb-0.5">
+                      {unregistered.map((p) => (
+                        <button
+                          key={p}
+                          type="button"
+                          onClick={() => void handleAddFolder(p)}
+                          disabled={folderLoading}
+                          title={`Add ${p}`}
+                          className="rounded-full border border-dashed border-border/50 px-2 py-0.5 font-mono text-[10px] text-muted-foreground/70 transition-colors hover:border-foreground/30 hover:bg-accent hover:text-foreground disabled:opacity-40"
+                        >
+                          <span className="text-[11px] font-semibold">+</span>{" "}
+                          {p.length > 30 ? `...${p.slice(-27)}` : p}
+                        </button>
+                      ))}
+                    </div>
+                  );
+                })()}
 
               {/* Add folder input */}
               {!customFoldersCollapsed && showFolderInput && (
                 <div className="px-2.5 pb-1 pt-0.5">
                   <div className="flex items-center gap-1">
-                    <HugeiconsIcon icon={Folder02Icon} className="size-3 shrink-0 text-muted-foreground/40" />
+                    <HugeiconsIcon
+                      icon={Folder02Icon}
+                      className="size-3 shrink-0 text-muted-foreground/40"
+                    />
                     <input
                       value={folderInput}
-                      onChange={(e) => { setFolderInput(e.target.value); setFolderError(null); }}
+                      onChange={(e) => {
+                        setFolderInput(e.target.value);
+                        setFolderError(null);
+                      }}
                       onKeyDown={(e) => {
-                        if (e.key === "Enter") { e.preventDefault(); handleAddFolder(); }
-                        if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); setShowFolderInput(false); setFolderInput(""); setFolderError(null); }
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          handleAddFolder();
+                        }
+                        if (e.key === "Escape") {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setShowFolderInput(false);
+                          setFolderInput("");
+                          setFolderError(null);
+                        }
                       }}
                       placeholder="/path/to/models"
                       className="h-6 min-w-0 flex-1 rounded border border-border/50 bg-transparent px-1.5 font-mono text-[10px] text-foreground outline-none placeholder:text-muted-foreground/40 focus:border-foreground/20"
@@ -2052,7 +2291,9 @@ export function HubModelPicker({
                     </button>
                     <button
                       type="button"
-                      onClick={() => { void handleAddFolder(); }}
+                      onClick={() => {
+                        void handleAddFolder();
+                      }}
                       disabled={folderLoading || !folderInput.trim()}
                       className="h-6 shrink-0 rounded border border-border/50 px-1.5 text-[10px] text-muted-foreground transition-colors hover:bg-accent disabled:opacity-40"
                     >
@@ -2060,7 +2301,9 @@ export function HubModelPicker({
                     </button>
                   </div>
                   {folderError && (
-                    <p className="px-0.5 pt-0.5 text-[10px] text-destructive">{folderError}</p>
+                    <p className="px-0.5 pt-0.5 text-[10px] text-destructive">
+                      {folderError}
+                    </p>
                   )}
                 </div>
               )}
@@ -2078,77 +2321,78 @@ export function HubModelPicker({
                 }}
               />
 
-
               {/* Models from custom folders */}
-              {!customFoldersCollapsed && sortedCustomFolderModels.map((m) => {
-                const isGgufFile = m.path.toLowerCase().endsWith(".gguf");
-                const isGguf =
-                  isGgufFile ||
-                  isGgufRepo(m.id) ||
-                  isGgufRepo(m.display_name);
-                // Single .gguf files (e.g. Ollama blobs) load directly;
-                // GGUF repos/directories expand to pick a variant.
-                const isDirectGguf = isGgufFile;
-                const optionKey = makeModelOptionKey("custom-folder", m.id);
-                return (
-                  <div key={m.id}>
-                    <ModelRow
-                      label={m.model_id ?? m.display_name}
-                      meta={isGguf ? "GGUF" : "Local"}
-                      selected={value === m.id}
-                      optionProps={hubModelList.getOptionProps(
-                        optionKey,
-                        value === m.id,
-                      )}
-                      onClick={() => {
-                        if (isDirectGguf) {
-                          onSelect(m.id, {
-                            source: "local",
-                            isLora: false,
-                            isDownloaded: true,
-                          });
-                        } else if (isGguf) {
-                          setExpandedGguf((prev) =>
-                            prev === m.id ? null : m.id,
-                          );
-                        } else {
-                          onSelect(m.id, {
-                            source: "local",
-                            isLora: false,
-                            isDownloaded: true,
-                          });
+              {!customFoldersCollapsed &&
+                sortedCustomFolderModels.map((m) => {
+                  const isGgufFile = m.path.toLowerCase().endsWith(".gguf");
+                  const isGguf =
+                    isGgufFile ||
+                    isGgufRepo(m.id) ||
+                    isGgufRepo(m.display_name);
+                  // Single .gguf files (e.g. Ollama blobs) load directly;
+                  // GGUF repos/directories expand to pick a variant.
+                  const isDirectGguf = isGgufFile;
+                  const optionKey = makeModelOptionKey("custom-folder", m.id);
+                  return (
+                    <div key={m.id}>
+                      <ModelRow
+                        label={m.model_id ?? m.display_name}
+                        meta={isGguf ? "GGUF" : "Local"}
+                        selected={value === m.id}
+                        optionProps={hubModelList.getOptionProps(
+                          optionKey,
+                          value === m.id,
+                        )}
+                        onClick={() => {
+                          if (isDirectGguf) {
+                            onSelect(m.id, {
+                              source: "local",
+                              isLora: false,
+                              isDownloaded: true,
+                            });
+                          } else if (isGguf) {
+                            setExpandedGguf((prev) =>
+                              prev === m.id ? null : m.id,
+                            );
+                          } else {
+                            onSelect(m.id, {
+                              source: "local",
+                              isLora: false,
+                              isDownloaded: true,
+                            });
+                          }
+                        }}
+                        onArrowDownIntoChildren={
+                          expandedGguf === m.id
+                            ? () => {
+                                const focused =
+                                  focusFirstChildOption(optionKey);
+                                return focused;
+                              }
+                            : undefined
                         }
-                      }}
-                      onArrowDownIntoChildren={
-                        expandedGguf === m.id
-                          ? () => {
-                              const focused = focusFirstChildOption(optionKey);
-                              return focused;
-                            }
-                          : undefined
-                      }
-                      vramStatus={null}
-                    />
-                    {expandedGguf === m.id && (
-                      <GgufVariantExpander
-                        repoId={m.id}
-                        onSelect={onSelect}
-                        parentOptionKey={optionKey}
-                        onNavigatePastStart={() =>
-                          hubModelList.focusOption(optionKey)
-                        }
-                        onNavigatePastEnd={() =>
-                          hubModelList.moveFocus(optionKey, "next")
-                        }
-                        gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
-                        systemRamGb={
-                          gpu.available ? gpu.systemRamAvailableGb : undefined
-                        }
+                        vramStatus={null}
                       />
-                    )}
-                  </div>
-                );
-              })}
+                      {expandedGguf === m.id && (
+                        <GgufVariantExpander
+                          repoId={m.id}
+                          onSelect={onSelect}
+                          parentOptionKey={optionKey}
+                          onNavigatePastStart={() =>
+                            hubModelList.focusOption(optionKey)
+                          }
+                          onNavigatePastEnd={() =>
+                            hubModelList.moveFocus(optionKey, "next")
+                          }
+                          gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
+                          systemRamGb={
+                            gpu.available ? gpu.systemRamAvailableGb : undefined
+                          }
+                        />
+                      )}
+                    </div>
+                  );
+                })}
               {!customFoldersCollapsed &&
               showHfSection &&
               sortedCustomFolderModels.length === 0 ? (
@@ -2170,7 +2414,9 @@ export function HubModelPicker({
                     <ModelRow
                       label={m.model_id ?? m.display_name}
                       meta={
-                        isGguf || m.path.toLowerCase().endsWith(".gguf") ? "GGUF" : "Local"
+                        isGguf || m.path.toLowerCase().endsWith(".gguf")
+                          ? "GGUF"
+                          : "Local"
                       }
                       selected={value === m.id}
                       optionProps={hubModelList.getOptionProps(
@@ -2305,10 +2551,12 @@ export function HubModelPicker({
                     <div key={id}>
                       <ModelRow
                         label={id}
-                        hideOwner
+                        hideOwner={true}
                         downloaded={downloadedSet.has(id.toLowerCase())}
                         capabilities={capsById.get(id)}
-                        meta={info?.meta ?? (isG ? "GGUF" : extractParamLabel(id))}
+                        meta={
+                          info?.meta ?? (isG ? "GGUF" : extractParamLabel(id))
+                        }
                         selected={value === id}
                         optionProps={hubModelList.getOptionProps(
                           optionKey,
@@ -2316,7 +2564,9 @@ export function HubModelPicker({
                         )}
                         onClick={() => {
                           if (isG) {
-                            setExpandedGguf((prev) => (prev === id ? null : id));
+                            setExpandedGguf((prev) =>
+                              prev === id ? null : id,
+                            );
                           } else {
                             handleModelClick(id);
                           }
@@ -2444,7 +2694,7 @@ export function HubModelPicker({
                     No matching Unsloth models.
                   </div>
                 ) : null
-                ) : (
+              ) : (
                 hfIds.map((id) => {
                   const vram = vramMap.get(id);
                   const isSearchGguf = isKnownGgufRepo(id);
@@ -2471,7 +2721,9 @@ export function HubModelPicker({
                         )}
                         onClick={() => {
                           if (isSearchGguf) {
-                            setExpandedGguf((prev) => (prev === id ? null : id));
+                            setExpandedGguf((prev) =>
+                              prev === id ? null : id,
+                            );
                           } else {
                             handleModelClick(id);
                           }
@@ -2484,7 +2736,8 @@ export function HubModelPicker({
                         onArrowDownIntoChildren={
                           expandedGguf === id
                             ? () => {
-                                const focused = focusFirstChildOption(optionKey);
+                                const focused =
+                                  focusFirstChildOption(optionKey);
                                 return focused;
                               }
                             : undefined
@@ -2525,293 +2778,195 @@ export function HubModelPicker({
           ) : null}
         </div>
       </div>
-
     </div>
   );
 }
 
-export function LoraModelPicker({
-  loraModels,
+/** Fine-tuned model rows for the On Device tab's Fine-tuned section. Plugs into
+ * that section's roving list and shared GGUF-expand state. */
+function FineTunedRows({
+  adapters,
   value,
   onSelect,
   onModelsChange,
   deleteDisabled = false,
+  loraModelList,
+  expandedGguf,
+  setExpandedGguf,
+  gpu,
 }: {
-  loraModels: LoraModelOption[];
+  adapters: LoraModelOption[];
   value?: string;
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
   deleteDisabled?: boolean;
+  loraModelList: ReturnType<typeof useRovingModelList>;
+  expandedGguf: string | null;
+  setExpandedGguf: Dispatch<SetStateAction<string | null>>;
+  gpu: {
+    available: boolean;
+    memoryTotalGb: number;
+    systemRamAvailableGb: number;
+  };
 }) {
-  const [query, setQuery] = useState("");
-  const [expandedGguf, setExpandedGguf] = useState<string | null>(null);
-  const gpu = useGpuInfo();
-
-  const normalized = useMemo(
-    () =>
-      loraModels
-        .map((model) => ({
-          ...model,
-          baseModel:
-            model.baseModel || model.description || "Unknown base model",
-        }))
-        .sort((a, b) => {
-          const baseCmp = a.baseModel.localeCompare(b.baseModel);
-          if (baseCmp !== 0) return baseCmp;
-          // Prioritize unsloth publisher within LM Studio group
-          if (a.baseModel === "LM Studio" && b.baseModel === "LM Studio") {
-            const aUnsloth = a.name.startsWith("unsloth/") ? 0 : 1;
-            const bUnsloth = b.name.startsWith("unsloth/") ? 0 : 1;
-            if (aUnsloth !== bUnsloth) return aUnsloth - bUnsloth;
-          }
-          const aTime = a.updatedAt ?? -1;
-          const bTime = b.updatedAt ?? -1;
-          if (aTime !== bTime) return bTime - aTime;
-          return a.name.localeCompare(b.name);
-        }),
-    [loraModels],
-  );
-
-  const grouped = useMemo(() => {
-    const needle = normalizeForSearch(query.trim());
-    const out = new Map<string, LoraModelOption[]>();
-
-    for (const model of normalized) {
-      const searchText = normalizeForSearch(
-        `${model.name} ${model.baseModel} ${model.id}`,
-      );
-      if (needle && !searchText.includes(needle)) continue;
-
-      const key = model.baseModel || "Unknown base model";
-      const prev = out.get(key) ?? [];
-      prev.push(model);
-      out.set(key, prev);
-    }
-
-    return [...out.entries()].sort((a, b) => {
-      const aLatest = Math.max(...a[1].map((model) => model.updatedAt ?? -1));
-      const bLatest = Math.max(...b[1].map((model) => model.updatedAt ?? -1));
-      if (aLatest !== bLatest) return bLatest - aLatest;
-      return a[0].localeCompare(b[0]);
-    });
-  }, [normalized, query]);
-
-  const loraOptionKeys = useMemo(
-    () =>
-      grouped.flatMap(([, adapters]) =>
-        adapters.map((adapter) => makeModelOptionKey("lora", adapter.id)),
-      ),
-    [grouped],
-  );
-  const selectedLoraOptionKey = useMemo(
-    () =>
-      value
-        ? loraOptionKeys.find((optionKey) => optionKey.endsWith(`::${value}`))
-        : undefined,
-    [loraOptionKeys, value],
-  );
-  const loraModelList = useRovingModelList({
-    label: "Fine-tuned models",
-    optionKeys: loraOptionKeys,
-    selectedOptionKey: selectedLoraOptionKey,
-  });
-
   return (
-    <div className="space-y-2">
-      <div className="relative">
-        <HugeiconsIcon
-          icon={Search01Icon}
-          className="pointer-events-none absolute left-2.5 top-2.5 size-4 text-muted-foreground"
-        />
-        <Input
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-          placeholder="Search trained models"
-          data-model-picker-search-input={true}
-          className="h-9 border-[#f2f2f2] dark:border-input pl-8"
-        />
-      </div>
-
-      <div className="-mr-1.5 max-h-72 overflow-y-auto pr-1.5" {...loraModelList.listboxProps}>
-        <div className="py-1">
-          {grouped.length === 0 ? (
-            <div className="px-2.5 py-2 text-xs text-muted-foreground">
-              No trained models found.
-            </div>
-          ) : (
-            grouped.map(([baseModel, adapters], index) => (
-              <div key={baseModel}>
-                {index > 0 ? <div className="my-1" /> : null}
-                <ListLabel>{baseModel}</ListLabel>
-                {adapters.map((adapter) => {
-                  const isLocal = adapter.source === "local";
-                  const isTraining = adapter.source === "training";
-                  const isExported = adapter.source === "exported";
-                  const isMerged = adapter.exportType === "merged";
-                  const isGguf = adapter.exportType === "gguf";
-                  const isExportedGguf = isExported && isGguf;
-                  const canDelete = canDeleteLoraModel(adapter);
-                  const isTrainingFull = isTraining && isMerged;
-                  const isLocalGgufDir =
-                    isLocal &&
-                    (isGgufRepo(adapter.id) || isGgufRepo(adapter.name));
-                  const optionKey = makeModelOptionKey("lora", adapter.id);
-                  const tag = isLocal
-                    ? isLocalGgufDir
-                      ? "GGUF"
-                      : "Local"
-                    : isGguf
-                      ? "GGUF"
-                      : isTrainingFull
-                        ? "Full"
-                      : isExported
-                        ? isMerged
-                          ? "Merged"
-                          : "LoRA"
-                        : "LoRA";
-                  const meta = isLocal
-                    ? isLocalGgufDir
-                      ? "GGUF"
-                      : "Local"
-                    : isTrainingFull
-                      ? "Full finetune"
-                    : isExported
-                      ? `${tag} · Exported`
-                      : tag;
-                  return (
-                    <div key={adapter.id}>
-                      <div className="flex items-center gap-0.5">
-                        <div className="min-w-0 flex-1">
-                          <ModelRow
-                            label={adapter.name}
-                            meta={meta}
-                            selected={value === adapter.id}
-                            optionProps={loraModelList.getOptionProps(
-                              optionKey,
-                              value === adapter.id,
-                            )}
-                            onClick={() => {
-                              if (isLocalGgufDir || isExportedGguf) {
-                                setExpandedGguf((prev) =>
-                                  prev === adapter.id ? null : adapter.id,
-                                );
-                              } else {
-                                onSelect(adapter.id, {
-                                  source: isLocal
-                                    ? "local"
-                                    : isExported
-                                      ? "exported"
-                                      : "lora",
-                                  isLora: !isLocal && !isMerged && !isGguf,
-                                  isDownloaded: true,
-                                });
-                              }
-                            }}
-                            tooltipText={
-                              <>
-                                <span className="block break-words">
-                                  {adapter.name}
-                                </span>
-                                <span className="block mt-1 text-[10px] text-muted-foreground break-all">
-                                  {adapter.id}
-                                </span>
-                              </>
-                            }
-                            onArrowDownIntoChildren={
-                              expandedGguf === adapter.id
-                                ? () => {
-                                    const focused = focusFirstChildOption(optionKey);
-                                    return focused;
-                                  }
-                                : undefined
-                            }
-                          />
-                        </div>
-                        {canDelete && (
-                          <ModelDeleteAction
-                            ariaLabel={`Delete ${adapter.name}`}
-                            title="Delete fine-tuned model?"
-                            description={
-                              <>
-                                This will remove{" "}
-                                <span className="font-medium text-foreground">
-                                  {adapter.name}
-                                </span>{" "}
-                                from disk. This cannot be undone.
-                              </>
-                            }
-                            successMessage={`Deleted ${adapter.name}`}
-                            disabled={deleteDisabled}
-                            onConfirm={() =>
-                              deleteFineTunedModel({
-                                modelPath: adapter.id,
-                                source: isExported ? "exported" : "training",
-                                exportType: adapter.exportType,
-                              })
-                            }
-                            onDeleted={() =>
-                              onModelsChange?.({ id: adapter.id })
-                            }
-                          />
-                        )}
-                      </div>
-                      {expandedGguf === adapter.id && (
-                        <GgufVariantExpander
-                          repoId={adapter.id}
-                          onSelect={onSelect}
-                          parentOptionKey={optionKey}
-                          onNavigatePastStart={() =>
-                            loraModelList.focusOption(optionKey)
-                          }
-                          onNavigatePastEnd={() =>
-                            loraModelList.moveFocus(optionKey, "next")
-                          }
-                          gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
-                          systemRamGb={
-                            gpu.available ? gpu.systemRamAvailableGb : undefined
-                          }
-                          sourceOverride={isExportedGguf ? "exported" : undefined}
-                          deleteVariantTitle="Delete exported GGUF variant?"
-                          renderDeleteVariantDescription={(quant) => (
-                            <>
-                              This will remove{" "}
-                              <span className="font-medium text-foreground">
-                                {adapter.name} ({quant})
-                              </span>{" "}
-                              from disk. This cannot be undone.
-                            </>
-                          )}
-                          getDeleteVariantSuccessMessage={(quant) =>
-                            `Deleted ${adapter.name} ${quant}`
-                          }
-                          deleteDisabled={deleteDisabled}
-                          onDeleteVariant={
-                            isExportedGguf
-                              ? async (quant) => {
-                                  await deleteFineTunedModel({
-                                    modelPath: adapter.id,
-                                    source: "exported",
-                                    exportType: "gguf",
-                                    ggufVariant: quant,
-                                  });
-                                  onModelsChange?.({
-                                    id: adapter.id,
-                                    ggufVariant: quant,
-                                  });
-                                }
-                              : undefined
-                          }
-                        />
-                      )}
-                    </div>
-                  );
-                })}
+    <>
+      {adapters.map((adapter) => {
+        const isLocal = adapter.source === "local";
+        const isTraining = adapter.source === "training";
+        const isExported = adapter.source === "exported";
+        const isMerged = adapter.exportType === "merged";
+        const isGguf = adapter.exportType === "gguf";
+        const isExportedGguf = isExported && isGguf;
+        const canDelete = canDeleteLoraModel(adapter);
+        const isTrainingFull = isTraining && isMerged;
+        const isLocalGgufDir =
+          isLocal && (isGgufRepo(adapter.id) || isGgufRepo(adapter.name));
+        const optionKey = makeModelOptionKey("lora", adapter.id);
+        const tag = isLocal
+          ? isLocalGgufDir
+            ? "GGUF"
+            : "Local"
+          : isGguf
+            ? "GGUF"
+            : isTrainingFull
+              ? "Full"
+              : isExported
+                ? isMerged
+                  ? "Merged"
+                  : "LoRA"
+                : "LoRA";
+        const meta = isLocal
+          ? isLocalGgufDir
+            ? "GGUF"
+            : "Local"
+          : isTrainingFull
+            ? "Full finetune"
+            : isExported
+              ? `${tag} · Exported`
+              : tag;
+        return (
+          <div key={adapter.id}>
+            <div className="flex items-center gap-0.5">
+              <div className="min-w-0 flex-1">
+                <ModelRow
+                  label={adapter.name}
+                  meta={meta}
+                  selected={value === adapter.id}
+                  optionProps={loraModelList.getOptionProps(
+                    optionKey,
+                    value === adapter.id,
+                  )}
+                  onClick={() => {
+                    if (isLocalGgufDir || isExportedGguf) {
+                      setExpandedGguf((prev) =>
+                        prev === adapter.id ? null : adapter.id,
+                      );
+                    } else {
+                      onSelect(adapter.id, {
+                        source: isLocal
+                          ? "local"
+                          : isExported
+                            ? "exported"
+                            : "lora",
+                        isLora: !isLocal && !isMerged && !isGguf,
+                        isDownloaded: true,
+                      });
+                    }
+                  }}
+                  tooltipText={
+                    <>
+                      <span className="block break-words">{adapter.name}</span>
+                      <span className="block mt-1 text-[10px] text-muted-foreground break-all">
+                        {adapter.id}
+                      </span>
+                    </>
+                  }
+                  onArrowDownIntoChildren={
+                    expandedGguf === adapter.id
+                      ? () => {
+                          const focused = focusFirstChildOption(optionKey);
+                          return focused;
+                        }
+                      : undefined
+                  }
+                />
               </div>
-            ))
-          )}
-        </div>
-      </div>
-
-    </div>
+              {canDelete && (
+                <ModelDeleteAction
+                  ariaLabel={`Delete ${adapter.name}`}
+                  title="Delete fine-tuned model?"
+                  description={
+                    <>
+                      This will remove{" "}
+                      <span className="font-medium text-foreground">
+                        {adapter.name}
+                      </span>{" "}
+                      from disk. This cannot be undone.
+                    </>
+                  }
+                  successMessage={`Deleted ${adapter.name}`}
+                  disabled={deleteDisabled}
+                  onConfirm={() =>
+                    deleteFineTunedModel({
+                      modelPath: adapter.id,
+                      source: isExported ? "exported" : "training",
+                      exportType: adapter.exportType,
+                    })
+                  }
+                  onDeleted={() => onModelsChange?.({ id: adapter.id })}
+                />
+              )}
+            </div>
+            {expandedGguf === adapter.id && (
+              <GgufVariantExpander
+                repoId={adapter.id}
+                onSelect={onSelect}
+                parentOptionKey={optionKey}
+                onNavigatePastStart={() => loraModelList.focusOption(optionKey)}
+                onNavigatePastEnd={() =>
+                  loraModelList.moveFocus(optionKey, "next")
+                }
+                gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
+                systemRamGb={
+                  gpu.available ? gpu.systemRamAvailableGb : undefined
+                }
+                sourceOverride={isExportedGguf ? "exported" : undefined}
+                deleteVariantTitle="Delete exported GGUF variant?"
+                renderDeleteVariantDescription={(quant) => (
+                  <>
+                    This will remove{" "}
+                    <span className="font-medium text-foreground">
+                      {adapter.name} ({quant})
+                    </span>{" "}
+                    from disk. This cannot be undone.
+                  </>
+                )}
+                getDeleteVariantSuccessMessage={(quant) =>
+                  `Deleted ${adapter.name} ${quant}`
+                }
+                deleteDisabled={deleteDisabled}
+                onDeleteVariant={
+                  isExportedGguf
+                    ? async (quant) => {
+                        await deleteFineTunedModel({
+                          modelPath: adapter.id,
+                          source: "exported",
+                          exportType: "gguf",
+                          ggufVariant: quant,
+                        });
+                        onModelsChange?.({
+                          id: adapter.id,
+                          ggufVariant: quant,
+                        });
+                      }
+                    : undefined
+                }
+              />
+            )}
+          </div>
+        );
+      })}
+    </>
   );
 }

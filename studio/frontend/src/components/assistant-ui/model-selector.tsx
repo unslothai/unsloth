@@ -10,6 +10,7 @@ import {
 } from "@/components/ui/popover";
 import { usePlatformStore } from "@/config/env";
 import { isCustomProviderType } from "@/features/chat/external-providers";
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
 import {
   CloudIcon,
@@ -20,7 +21,6 @@ import {
   Search01Icon,
   StarIcon,
 } from "@hugeicons/core-free-icons";
-import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import {
@@ -32,9 +32,12 @@ import {
   useState,
 } from "react";
 import { Input } from "../ui/input";
-import { HubModelPicker, LoraModelPicker } from "./model-selector/pickers";
+import { HubModelPicker } from "./model-selector/pickers";
 import { PillTabs } from "./model-selector/pill-tabs";
-import { buildSourceTabs, isFineTunedSource } from "./model-selector/source-tabs";
+import {
+  buildSourceTabs,
+  isFineTunedSource,
+} from "./model-selector/source-tabs";
 import type {
   DeletedModelRef,
   ExternalModelOption,
@@ -159,8 +162,9 @@ function ModelSelectorTrigger({
         className={cn(
           "unsloth-model-selector-trigger flex min-w-0 items-center gap-2 transition-colors",
           variant === "outline" &&
-          "rounded-full border border-border/60 hover:bg-[#ececec] dark:hover:bg-[#2d2e32]",
-          variant === "ghost" && "rounded-full hover:bg-[#ececec] dark:hover:bg-[#2d2e32]",
+            "rounded-full border border-border/60 hover:bg-[#ececec] dark:hover:bg-[#2d2e32]",
+          variant === "ghost" &&
+            "rounded-full hover:bg-[#ececec] dark:hover:bg-[#2d2e32]",
           variant === "muted" && "rounded-full bg-muted hover:bg-muted/80",
           // More left padding than right; the chevron is pulled close to the
           // label (below) so the trigger reads balanced around the text.
@@ -174,7 +178,9 @@ function ModelSelectorTrigger({
           <span className="size-2 shrink-0 rounded-full bg-emerald-500" />
         )}
         {currentModel?.icon ? (
-          <span className="flex shrink-0 items-center">{currentModel.icon}</span>
+          <span className="flex shrink-0 items-center">
+            {currentModel.icon}
+          </span>
         ) : null}
         <span className="flex min-w-0 flex-1 items-baseline">
           <span className="min-w-0 flex flex-1 items-baseline truncate font-heading text-[16px] font-medium leading-tight text-black dark:text-white">
@@ -267,28 +273,20 @@ function ModelSelectorContent({
     [loraModels],
   );
   const chatOnlyTabsDefault = useMemo(
-    () => (value && externalModels.some((model) => model.id === value) ? "external" : "hub"),
+    () =>
+      value && externalModels.some((model) => model.id === value)
+        ? "external"
+        : "hub",
     [externalModels, value],
   );
-  const studioTabsDefault = useMemo((): "hub" | "lora" | "external" => {
+  const studioTabsDefault = useMemo((): "hub" | "external" => {
     if (value && externalModels.some((model) => model.id === value)) {
       return "external";
     }
-    if (value && fineTunedModels.some((model) => model.id === value)) {
-      return "lora";
-    }
     return "hub";
-  }, [externalModels, fineTunedModels, value]);
+  }, [externalModels, value]);
 
-  const tabs = useMemo(
-    () =>
-      buildSourceTabs({
-        chatOnly,
-        fineTunedCount: fineTunedModels.length,
-        hasExternal,
-      }),
-    [chatOnly, hasExternal, fineTunedModels.length],
-  );
+  const tabs = useMemo(() => buildSourceTabs({ hasExternal }), [hasExternal]);
 
   const [activeTab, setActiveTab] = useState<string>(() =>
     chatOnly ? chatOnlyTabsDefault : studioTabsDefault,
@@ -321,9 +319,7 @@ function ModelSelectorContent({
       root.querySelector<HTMLElement>(
         '[role="tabpanel"]:not([hidden]) [data-model-picker-option]',
       ) ??
-      root.querySelector<HTMLElement>(
-        "[data-model-picker-option]",
-      );
+      root.querySelector<HTMLElement>("[data-model-picker-option]");
     if (!option) {
       return false;
     }
@@ -378,10 +374,13 @@ function ModelSelectorContent({
       {effectiveTab === "hub" ? (
         <HubModelPicker
           models={models}
+          loraModels={fineTunedModels}
           value={value}
           onSelect={onSelect}
           onFoldersChange={onFoldersChange}
           onBrowseHub={onBrowseHub}
+          onModelsChange={onModelsChange}
+          deleteDisabled={deleteDisabled}
           section={hubSection}
           sectionToggle={
             <PillTabs
@@ -392,16 +391,6 @@ function ModelSelectorContent({
               fit={true}
             />
           }
-        />
-      ) : null}
-
-      {effectiveTab === "lora" ? (
-        <LoraModelPicker
-          loraModels={fineTunedModels}
-          value={value}
-          onSelect={onSelect}
-          onModelsChange={onModelsChange}
-          deleteDisabled={deleteDisabled}
         />
       ) : null}
 
@@ -427,7 +416,7 @@ function ModelSelectorContent({
         </div>
       ) : null}
       {hasSelection && onEject ? (
-        <div className="mt-1.5 border-t border-border/70 pt-1.5">
+        <div className="mt-1.5 pt-1.5">
           <button
             type="button"
             onClick={onEject}
@@ -529,7 +518,9 @@ export function ModelSelector({
     const found = optionById.get(selected);
     if (activeGgufVariant) {
       const desc = `GGUF · ${activeGgufVariant}`;
-      return found ? { ...found, description: desc } : { id: selected, name: selected, description: desc };
+      return found
+        ? { ...found, description: desc }
+        : { id: selected, name: selected, description: desc };
     }
     return found ?? { id: selected, name: selected };
   }, [selected, optionById, activeGgufVariant]);

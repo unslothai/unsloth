@@ -285,6 +285,7 @@ export function FolderBrowser({
           >
             <Checkbox
               id="folder-browser-show-hidden"
+              className="rounded-full"
               checked={showHidden}
               onCheckedChange={(checked) => {
                 const next = checked === true;

@@ -11,17 +11,11 @@ export function isFineTunedSource(source?: string): boolean {
   return source !== "local";
 }
 
-/** Build the source tabs. Fine-tuned only appears when the user has fine-tuned
- * (non-local) models. Connected only appears with external providers. */
-export function buildSourceTabs(opts: {
-  chatOnly: boolean;
-  fineTunedCount: number;
-  hasExternal: boolean;
-}): SourceTab[] {
+/** Build the source tabs. Fine-tuned models live as a section in the Hub tab's
+ * On Device view, so there is no Fine-tuned tab. Connected only appears with
+ * external providers; with none, the lone Hub tab hides its own toggle. */
+export function buildSourceTabs(opts: { hasExternal: boolean }): SourceTab[] {
   const list: SourceTab[] = [{ value: "hub", label: "Hub models" }];
-  if (!opts.chatOnly && opts.fineTunedCount > 0) {
-    list.push({ value: "lora", label: "Fine-tuned" });
-  }
   if (opts.hasExternal) {
     list.push({ value: "external", label: "Connected" });
   }
