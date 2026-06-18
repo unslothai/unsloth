@@ -414,6 +414,17 @@ export function saveGpuMemoryMode(value: "auto" | "fit" | "manual"): void {
   saveString(CHAT_GPU_MEMORY_MODE_KEY, value);
 }
 
+/** Persist the GPU Memory mode after a load, but only for a non-diffusion GGUF:
+ *  non-GGUF has no such mode, and diffusion runs mode-agnostic (the backend
+ *  reports "auto"), so neither must clobber the standing fit/manual preference.
+ *  Gates on the authoritative response flags so every load path stays in sync. */
+export function persistGpuMemoryModeOnLoad(
+  resp: { is_gguf?: boolean; is_diffusion?: boolean },
+  mode: "auto" | "fit" | "manual",
+): void {
+  if (resp.is_gguf && !resp.is_diffusion) saveGpuMemoryMode(mode);
+}
+
 // Manual-mode gpu_layers sentinel: offload every layer (llama.cpp caps it to
 // the model's actual layer count).
 export const GPU_LAYERS_ALL = 999;

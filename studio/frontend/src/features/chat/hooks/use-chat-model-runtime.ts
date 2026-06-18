@@ -27,9 +27,9 @@ import {
   GPU_LAYERS_ALL,
   loadedGpuMemoryFields,
   parseSplitRatio,
+  persistGpuMemoryModeOnLoad,
   readPersistedSpeculativeType,
   resolveToolsEnabledOnLoad,
-  saveGpuMemoryMode,
   saveSpeculativeType,
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
@@ -627,9 +627,10 @@ export function useChatModelRuntime() {
             // preference now (the requested intent, not the resolved echo;
             // saveSpeculativeType keeps only the universal auto/ngram/off).
             saveSpeculativeType(speculativeType);
-            // Persist the GPU Memory mode only on a successful GGUF load (not on
-            // dropdown change), so an abandoned/unapplied selection doesn't stick.
-            if (isGguf) saveGpuMemoryMode(gpuMemoryMode);
+            // Persist the GPU Memory mode only on a successful non-diffusion
+            // GGUF load (not on dropdown change), so an abandoned selection
+            // doesn't stick and a mode-agnostic diffusion load doesn't clobber it.
+            persistGpuMemoryModeOnLoad(loadResponse, gpuMemoryMode);
 
             const currentParams = useChatRuntimeStore.getState().params;
             setParams(

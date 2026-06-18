@@ -80,8 +80,8 @@ import {
   parseSplitRatio,
   type ReasoningEffort,
   resolveLoadedSpeculativeSettings,
+  persistGpuMemoryModeOnLoad,
   resolveSpeculativeSettingsForLoad,
-  saveGpuMemoryMode,
   saveSpeculativeType,
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
@@ -982,11 +982,9 @@ export function SharedComposer({
           gpu_ids: currentStore.selectedGpuIds ?? undefined,
         });
         saveSpeculativeType(specSettings.speculativeType);
-        // Persist the GPU Memory mode on a GGUF compare-load too (mirrors the
-        // primary load), so an applied fit/manual choice survives a restart.
-        if (sel.id.toLowerCase().endsWith(".gguf") || sel.ggufVariant != null) {
-          saveGpuMemoryMode(currentStore.gpuMemoryMode);
-        }
+        // Persist the GPU Memory mode on a non-diffusion GGUF compare-load too,
+        // so an applied fit/manual choice survives a restart.
+        persistGpuMemoryModeOnLoad(resp, currentStore.gpuMemoryMode);
         const store = useChatRuntimeStore.getState();
         store.setCheckpoint(
           resp.model,
