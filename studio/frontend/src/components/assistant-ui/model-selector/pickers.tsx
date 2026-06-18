@@ -56,6 +56,7 @@ import {
   AudioWave01Icon,
   Cancel01Icon,
   DashboardCircleIcon,
+  Directions01Icon,
   Download01Icon,
   Folder02Icon,
   RemoveCircleIcon,
@@ -1201,6 +1202,20 @@ export function HubModelPicker({
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
         fineTunedSectionRef.current?.scrollIntoView({
+          behavior: "smooth",
+          block: "start",
+        });
+      });
+    });
+  }, []);
+  // The Other models header; the directions icon on the Unsloth header scrolls
+  // here.
+  const otherModelsSectionRef = useRef<HTMLDivElement>(null);
+  const scrollToOtherModels = useCallback(() => {
+    setOtherModelsCollapsed(false);
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        otherModelsSectionRef.current?.scrollIntoView({
           behavior: "smooth",
           block: "start",
         });
@@ -2356,6 +2371,27 @@ export function HubModelPicker({
                           <TooltipTrigger asChild={true}>
                             <button
                               type="button"
+                              onClick={scrollToOtherModels}
+                              aria-label="Go to other models"
+                              className="shrink-0 rounded p-1 text-muted-foreground/60 transition-colors hover:text-foreground"
+                            >
+                              <HugeiconsIcon
+                                icon={Directions01Icon}
+                                className="size-3"
+                              />
+                            </button>
+                          </TooltipTrigger>
+                          <TooltipContent
+                            side="bottom"
+                            className="tooltip-compact"
+                          >
+                            Other non-Unsloth models
+                          </TooltipContent>
+                        </Tooltip>
+                        <Tooltip delayDuration={0}>
+                          <TooltipTrigger asChild={true}>
+                            <button
+                              type="button"
                               onClick={scrollToFineTuned}
                               aria-label="Go to fine-tuned models"
                               className="shrink-0 rounded p-1 text-muted-foreground/60 transition-colors hover:text-foreground"
@@ -2413,8 +2449,14 @@ export function HubModelPicker({
               {showDownloaded &&
               (otherCachedGguf.length > 0 ||
                 otherCachedModelRows.length > 0) ? (
-                <>
+                <div ref={otherModelsSectionRef}>
                   <ListLabel
+                    icon={
+                      <HugeiconsIcon
+                        icon={Directions01Icon}
+                        className="size-3.5"
+                      />
+                    }
                     collapsed={otherModelsCollapsed}
                     onToggle={() => setOtherModelsCollapsed((v) => !v)}
                   >
@@ -2424,7 +2466,7 @@ export function HubModelPicker({
                     otherCachedGguf.map(renderDownloadedGgufRow)}
                   {!otherModelsCollapsed &&
                     otherCachedModelRows.map(renderDownloadedModelRow)}
-                </>
+                </div>
               ) : null}
 
               {/* Fine-tuned models: a section above Custom Folders. Always shown on
