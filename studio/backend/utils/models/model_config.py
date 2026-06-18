@@ -926,8 +926,11 @@ def _is_vision_model_uncached(model_name: str, hf_token: Optional[str] = None) -
 
 VALID_AUDIO_TYPES = ("snac", "csm", "bicodec", "dac", "whisper", "audio_vlm")
 
-# Cache detection per session to avoid repeated API calls
-_audio_detection_cache: Dict[str, Optional[str]] = {}
+# Cache detection per session to avoid repeated API calls. Keyed by
+# (normalized_model_name, token_fingerprint) like the vision cache: an
+# unauthenticated probe of a gated/private repo returns None, so caching it under
+# the bare name would poison a later authenticated call with a stale None.
+_audio_detection_cache: Dict[Tuple[str, Optional[str]], Optional[str]] = {}
 
 # Tokenizer token patterns → audio_type (all 6 types from tokenizer_config.json)
 _AUDIO_TOKEN_PATTERNS = {
@@ -953,12 +956,23 @@ def detect_audio_type(model_name: str, hf_token: Optional[str] = None) -> Option
     Returns an audio_type string ('snac', 'csm', 'bicodec', 'dac', 'whisper',
     'audio_vlm') or None.
     """
-    if model_name in _audio_detection_cache:
-        return _audio_detection_cache[model_name]
+    # Normalize the name so different casings of the same repo share a key, and
+    # include the token fingerprint so an unauthenticated miss cannot poison a later
+    # authenticated lookup (mirrors is_vision_model).
+    try:
+        if is_local_path(model_name):
+            resolved_name = normalize_path(model_name)
+        else:
+            resolved_name = resolve_cached_repo_id_case(model_name)
+    except Exception:
+        resolved_name = model_name
+    cache_key = (resolved_name, _token_fingerprint(hf_token))
+    if cache_key in _audio_detection_cache:
+        return _audio_detection_cache[cache_key]
 
     result = _detect_audio_from_tokenizer(model_name, hf_token)
 
-    _audio_detection_cache[model_name] = result
+    _audio_detection_cache[cache_key] = result
     if result:
         logger.info(f"Model {model_name} detected as audio model: audio_type={result}")
     return result

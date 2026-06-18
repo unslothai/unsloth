@@ -390,8 +390,9 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
               visionImageSize: DEFAULT_HYPERPARAMS.visionImageSize,
             });
 
-            // Fallback vision check if config endpoint fails.
-            void checkVisionModel(modelName)
+            // Fallback vision check if config endpoint fails. Pass the token so a
+            // gated/private VLM is classified correctly (matches getModelConfig above).
+            void checkVisionModel(modelName, get().hfToken || undefined)
               .then((isVision) => {
                 if (get().selectedModel !== modelName) return;
                 set({

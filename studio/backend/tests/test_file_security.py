@@ -530,6 +530,19 @@ def test_non_llm_alias_is_not_rewritten():
     assert d.model_name == "org/model"
 
 
+def test_generic_slash_llm_repo_is_scanned_as_itself():
+    # A real third-party repo that merely ends in "/LLM" is NOT a registry bicodec
+    # alias, so it must be scanned AS ITSELF -- not rewritten to unsloth/<parent>,
+    # which would scan the wrong repo and fail open on a flagged file in the real one.
+    status = {"filesWithIssues": [{"path": "pytorch_model.bin", "level": "unsafe"}]}
+    cap, seen = _patch_status_capture(status)
+    with cap, patch("utils.paths.is_local_path", return_value = False):
+        d = evaluate_file_security("evil/LLM")
+    assert seen["repo"] == "evil/LLM"  # scanned the real repo, not unsloth/evil
+    assert d.model_name == "evil/LLM"
+    assert d.blocked is True
+
+
 def test_security_load_subdirs_yaml_fallback(monkeypatch):
     # When tokenizer detection fails (network/gated/unresolved alias) but the Studio
     # YAML default pins audio_type=bicodec, the LLM load root must still be returned.

@@ -549,3 +549,34 @@ class TestVlmAudioExclusion:
             },
         )
         assert is_vision_model(str(tmp_path)) is False
+
+
+class TestAudioDetectionCacheTokenAware:
+    """The audio cache mirrors the vision cache: keyed by (model, token_fingerprint)
+    so an unauthenticated miss cannot poison a later authenticated lookup."""
+
+    def test_audio_cache_is_token_aware(self, monkeypatch):
+        import utils.models.model_config as mc
+
+        mc._audio_detection_cache.clear()
+        calls = []
+
+        def _fake(name, hf_token = None):
+            calls.append(hf_token)
+            # Gated repo: only an authenticated probe can read the tokenizer.
+            return "bicodec" if hf_token else None
+
+        monkeypatch.setattr(mc, "_detect_audio_from_tokenizer", _fake)
+        monkeypatch.setattr(mc, "is_local_path", lambda *_a, **_k: False)
+        monkeypatch.setattr(mc, "resolve_cached_repo_id_case", lambda n, *_a, **_k: n)
+
+        # Unauthenticated miss caches None under (name, None)...
+        assert mc.detect_audio_type("private/spark") is None
+        # ...but the authenticated call uses a different key and is NOT poisoned.
+        assert mc.detect_audio_type("private/spark", hf_token = "hf_x") == "bicodec"
+        assert calls == [None, "hf_x"]
+
+        # Same (model, token) is served from cache (no third probe).
+        assert mc.detect_audio_type("private/spark", hf_token = "hf_x") == "bicodec"
+        assert calls == [None, "hf_x"]
+        mc._audio_detection_cache.clear()

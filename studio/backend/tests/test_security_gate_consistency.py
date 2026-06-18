@@ -79,6 +79,25 @@ def test_gguf_trust_remote_code_reported_inert_not_from_yaml():
     )
 
 
+def test_capability_detection_caches_are_token_aware():
+    """Every per-model capability cache (vision / audio / embedding) is keyed by a
+    tuple that includes the token, so an unauthenticated miss on a gated/private repo
+    cannot poison a later authenticated lookup with a stale result. A cache re-declared
+    as Dict[str, ...] (keyed by model name only) fails here -- the round-final audio
+    cache regression."""
+    src = (_BACKEND / "utils" / "models" / "model_config.py").read_text()
+    offenders = []
+    for line in src.splitlines():
+        stripped = line.strip()
+        if "_detection_cache:" in stripped and stripped.endswith("= {}"):
+            if "Dict[Tuple" not in stripped and "Dict[tuple" not in stripped:
+                offenders.append(stripped)
+    assert not offenders, (
+        "A capability cache must be keyed by (model, token_fingerprint), not the bare "
+        "model name:\n  " + "\n  ".join(offenders)
+    )
+
+
 def test_malware_and_consent_gates_cover_the_lora_base():
     """Every worker that runs the malware or consent gate resolves the LoRA base too, so
     a poisoned base or a base that ships its own auto_map code is never skipped. Each

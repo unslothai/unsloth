@@ -286,9 +286,18 @@ def _load_scan_target(model_name: str, load_subdirs: tuple) -> tuple:
     except Exception:
         return model_name, load_subdirs
     name = (model_name or "").strip().strip("/")
+    # Rewrite ONLY a registry-known bicodec alias -- never a generic third-party repo
+    # that merely ends in "/LLM" (e.g. "evil/LLM"), which would scan unsloth/evil and
+    # fail open on the real repo.
     if name.endswith("/LLM") and name.count("/") == 1:
-        parent = name[: -len("/LLM")]
-        return f"unsloth/{parent}", tuple(dict.fromkeys((*load_subdirs, "LLM")))
+        try:
+            from utils.models.model_config import load_model_defaults
+
+            if (load_model_defaults(name) or {}).get("audio_type") == "bicodec":
+                parent = name[: -len("/LLM")]
+                return f"unsloth/{parent}", tuple(dict.fromkeys((*load_subdirs, "LLM")))
+        except Exception:
+            pass
     return model_name, load_subdirs
 
 
