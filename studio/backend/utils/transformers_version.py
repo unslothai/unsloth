@@ -131,6 +131,7 @@ _tokenizer_class_cache: dict[str, bool] = {}
 _config_json_cache: dict[tuple[str, str | None], dict | None] = {}
 _config_needs_510_cache: dict[str, bool] = {}
 _config_needs_550_cache: dict[str, bool] = {}
+_config_needs_530_cache: dict[str, bool] = {}
 
 # Versions
 TRANSFORMERS_510_VERSION = "5.10.2"
@@ -453,6 +454,33 @@ def _check_config_needs_550(model_name: str) -> bool:
     return result
 
 
+def _check_config_needs_530(model_name: str) -> bool:
+    """Check ``config.json`` for 5.3.0-only architectures (Qwen3.5, Qwen3 MoE, GLM-4.7, LFM2.5-VL).
+
+    Used in the slow HF-ID path for private/renamed repos where name substrings
+    aren't reliable.
+    """
+    if model_name in _config_needs_530_cache:
+        return _config_needs_530_cache[model_name]
+
+    cfg = _load_config_json(model_name)
+    if cfg is None:
+        _config_needs_530_cache[model_name] = False
+        return False
+
+    result = _config_needs_530(cfg)
+    if result:
+        logger.info(
+            "config.json check: %s needs transformers %s (architectures=%s, model_type=%s)",
+            model_name,
+            TRANSFORMERS_530_VERSION,
+            cfg.get("architectures", []),
+            cfg.get("model_type"),
+        )
+    _config_needs_530_cache[model_name] = result
+    return result
+
+
 def _check_config_needs_510(model_name: str) -> bool:
     """Check ``config.json`` for Gemma 4 Unified / 12B architectures."""
     if model_name in _config_needs_510_cache:
@@ -590,6 +618,9 @@ def get_transformers_tier(model_name: str) -> str:
     if _check_config_needs_550(model_name):
         logger.info("Transformers tier 550 selected for %s (config.json check)", model_name)
         return "550"
+    if _check_config_needs_530(model_name):
+        logger.info("Transformers tier 530 selected for %s (config.json check)", model_name)
+        return "530"
     if _check_tokenizer_config_needs_v5(model_name):
         logger.info(
             "Transformers tier 530 selected for %s (tokenizer_config.json check)",

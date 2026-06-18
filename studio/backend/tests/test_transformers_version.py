@@ -33,12 +33,14 @@ from utils.transformers_version import (
     _resolve_base_model,
     _check_tokenizer_config_needs_v5,
     _check_config_needs_510,
+    _check_config_needs_530,
     _check_config_needs_550,
     _config_needs_530,
     _tier_from_name,
     _config_json_cache,
     _tokenizer_class_cache,
     _config_needs_510_cache,
+    _config_needs_530_cache,
     _config_needs_550_cache,
     needs_transformers_5,
     get_transformers_tier,
@@ -858,6 +860,7 @@ class TestLocalConfig530Tier:
     def setup_method(self):
         _config_json_cache.clear()
         _tokenizer_class_cache.clear()
+        _config_needs_530_cache.clear()
 
     # --- config-set matches -------------------------------------------------
 
@@ -984,3 +987,51 @@ class TestLocalConfig530Tier:
             return_value = False,
         ):
             assert get_transformers_tier(str(d)) == "default"
+
+
+# ---------------------------------------------------------------------------
+# _check_config_needs_530 — slow HF-ID path (network stub)
+# ---------------------------------------------------------------------------
+
+
+class TestCheckConfigNeeds530:
+    """_check_config_needs_530 is used in the slow HF-ID fallback path for
+    private or renamed repos whose names don't contain a 5.3 substring."""
+
+    def setup_method(self):
+        _config_json_cache.clear()
+        _config_needs_530_cache.clear()
+
+    def test_returns_true_for_qwen3_5_model_type(self):
+        with patch(
+            "utils.transformers_version._load_config_json",
+            return_value = {"model_type": "qwen3_5"},
+        ):
+            assert _check_config_needs_530("some-private/qwen3.5-variant") is True
+
+    def test_returns_true_for_qwen3_moe_architecture(self):
+        with patch(
+            "utils.transformers_version._load_config_json",
+            return_value = {"architectures": ["Qwen3MoeForCausalLM"]},
+        ):
+            assert _check_config_needs_530("org/private-moe-model") is True
+
+    def test_returns_false_for_llama(self):
+        with patch(
+            "utils.transformers_version._load_config_json",
+            return_value = {"model_type": "llama", "architectures": ["LlamaForCausalLM"]},
+        ):
+            assert _check_config_needs_530("meta-llama/Llama-3-8B") is False
+
+    def test_returns_false_when_config_unavailable(self):
+        with patch("utils.transformers_version._load_config_json", return_value = None):
+            assert _check_config_needs_530("org/unreachable-model") is False
+
+    def test_result_is_cached(self):
+        with patch(
+            "utils.transformers_version._load_config_json",
+            return_value = {"model_type": "qwen3_5"},
+        ) as mock_load:
+            _check_config_needs_530("cached-model")
+            _check_config_needs_530("cached-model")
+            assert mock_load.call_count == 1
