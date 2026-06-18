@@ -1,22 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team.
-"""
-Golden-fixture tests for scripts/notebook_validator.py.
+"""Golden-fixture tests for scripts/notebook_validator.py: each reconstructs a broken install cell from an unslothai/notebooks PR and asserts the matching rule fires (and falls silent after the fix).
 
-Each test reconstructs the broken-state install cell that one of the
-referenced unslothai/notebooks PRs fixed, and asserts the matching rule
-fires. The fixed-state tests prove the rule falls silent after the fix.
-
-Cross-references:
-  PR #258  -> R-INST-003  (peft/torchao floor)
-  PR #260  -> R-EXC-001   (DONT_UPDATE_EXCEPTIONS coverage; covered by
-                            an integration test pointing at a real
-                            notebooks checkout)
-  PR #261a -> R-INST-004  (torch/torchcodec ABI)
-  PR #261b -> R-INST-005  (transformers --no-deps + tokenizers window)
-  PR #264  -> R-INST-005  (same class as #261b)
-  PR #221  -> R-INST-001  (forbid git+ HEAD installs)
-  51b1462  -> R-DRIFT-001 (drift; integration-tested separately)
+Cross-references: PR #258->R-INST-003, #260->R-EXC-001, #261a->R-INST-004,
+#261b/#264->R-INST-005, #221->R-INST-001, 51b1462->R-DRIFT-001.
 """
 
 from __future__ import annotations
@@ -32,9 +19,7 @@ sys.path.insert(0, str(SCRIPTS_DIR))
 
 import notebook_validator as nv  # noqa: E402
 
-# Snapshot of Colab GPU pip-freeze that recreates the bug environments
-# below. Real CI uses scripts/data/colab_pip_freeze.gpu.txt; tests use a
-# small inline subset so the unit cases are hermetic.
+# Inline subset of Colab GPU pip-freeze recreating the bug environments (CI uses scripts/data/colab_pip_freeze.gpu.txt).
 COLAB_2026_05 = {
     "torch": "2.10.0+cu128",
     "torchao": "0.10.0",
@@ -129,13 +114,11 @@ def test_r_inst_004_silent_when_torch_2_7_with_torchcodec_0_5():
 
 
 def test_r_inst_005_fires_no_deps_transformers_55_without_tokenizers_pin(monkeypatch):
-    """PR #264: --no-deps transformers==5.5.0 leaves Colab tokenizers in
-    place; if Colab ever ships tokenizers > 0.23.0 this breaks."""
+    """PR #264: --no-deps transformers==5.5.0 leaves Colab tokenizers in place; breaks if Colab ships tokenizers > 0.23.0."""
     cell = """%%capture
 !pip install --no-deps transformers==5.5.0
 """
-    # Fake a Colab snapshot where tokenizers has just bumped past the window
-    # transformers 5.5.0 supports.
+    # Colab snapshot where tokenizers bumped past transformers 5.5.0's window.
     colab = dict(COLAB_2026_05, tokenizers = "0.23.5")
 
     def fake_meta(name, version):
@@ -168,9 +151,7 @@ def test_r_inst_005_silent_when_no_deps_pins_tokenizers(monkeypatch):
 
 
 def test_r_inst_005_silent_without_no_deps(monkeypatch):
-    """If --no-deps is absent, pip resolves tokenizers transitively; the
-    rule must NOT fire (this is the false-positive case from notebooks like
-    Whisper.ipynb that pin transformers but rely on pip's resolver)."""
+    """Without --no-deps, pip resolves tokenizers transitively; rule must NOT fire (false-positive case from e.g. Whisper.ipynb)."""
     cell = """%%capture
 !pip install transformers==4.51.3
 """
@@ -259,9 +240,7 @@ def _live_notebooks_dir() -> Path | None:
     reason = "unslothai/notebooks not cloned at sibling path",
 )
 def test_exceptions_passes_on_head():
-    """L1.2 must be silent on the live HEAD of unslothai/notebooks. If this
-    test fires, either DONT_UPDATE_EXCEPTIONS gained a notebook missing a
-    policy clause (real bug) or the policy clause set is stale."""
+    """L1.2 must be silent on live unslothai/notebooks HEAD; a fire means a DONT_UPDATE_EXCEPTIONS notebook lost its policy clause or the clause set is stale."""
     findings = nv.rule_l12_exceptions_coverage(_live_notebooks_dir())
     assert findings == [], findings
 
@@ -271,8 +250,7 @@ def test_exceptions_passes_on_head():
     reason = "unslothai/notebooks not cloned at sibling path",
 )
 def test_lint_smoke_no_module_errors():
-    """The lint subcommand should walk every nb/kaggle without crashing.
-    (We accept findings -- those are the validator doing its job.)"""
+    """The lint subcommand walks every nb/kaggle without crashing (findings are fine)."""
     import subprocess
 
     rc = subprocess.run(
