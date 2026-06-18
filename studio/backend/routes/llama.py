@@ -55,6 +55,9 @@ class LlamaUpdateStatusResponse(BaseModel):
     source_build: bool = Field(
         False, description = "True when there is no marker (source build) but a prebuilt is offered."
     )
+    update_size_bytes: Optional[int] = Field(
+        None, description = "Download size of the prebuilt Update would fetch, in bytes."
+    )
     job: LlamaUpdateJob = Field(default_factory = LlamaUpdateJob)
 
 
