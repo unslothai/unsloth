@@ -2760,9 +2760,10 @@ class LlamaCppBackend:
         n_parallel: int = 1,
     ) -> Optional[int]:
         """MTP draft reserve at ``n_ctx`` = draft KV (grows with ctx) + separate-
-        drafter weights. The verify buffer rides in the ctx-fit headroom (no tuned
-        constant). None when the draft KV can't be sized (caller keeps the flat
-        fallback). ``draft_weights_bytes`` is the drafter file size (0 for embedded)."""
+        drafter weights + (MLA only) a duplicated target KV context. The verify
+        buffer rides in the ctx-fit headroom (no tuned constant). None when the
+        draft KV can't be sized (caller keeps the flat fallback).
+        ``draft_weights_bytes`` is the drafter file size (0 for embedded)."""
         draft_kv = self._mtp_draft_kv_bytes(
             n_ctx,
             drafter_path = drafter_path,
@@ -2771,13 +2772,27 @@ class LlamaCppBackend:
             n_parallel = n_parallel,
         )
         weights = max(0, draft_weights_bytes)
+        # MLA models (GLM-5.x, DeepSeek, Kimi-K2) keep a *second* full copy of the
+        # target model's KV context for MTP draft verification -- llama.cpp's
+        # `ctx_tgt=yes` -- allocated at f16 regardless of the main cache type. It is
+        # ~the main KV again and dwarfs the embedded draft head (GLM-5.2 @ 1M ctx:
+        # a ~2 GiB head next to a ~89 GiB target copy), so omitting it lets auto-fit
+        # pick a context that fits on paper but OOMs cublasCreate at the first
+        # decode. Non-MLA MTP (Qwen/Gemma) keeps no such copy, so this is gated
+        # strictly on MLA (kv_lora_rank present) and leaves those models unchanged.
+        target_ctx_copy = 0
+        if self._kv_lora_rank is not None:
+            target_ctx_copy = self._estimate_kv_cache_bytes(
+                n_ctx, "f16", n_parallel = n_parallel
+            )
         if draft_kv is None:
-            # KV unsized (exotic/remote drafter): still reserve known weights so a
-            # large drafter can't launch over budget (the small unsized KV rides in
-            # the cushion). Nothing known -> None, so the caller keeps the flat
-            # fallback.
-            return weights if weights > 0 else None
-        return draft_kv + weights
+            # KV unsized (exotic/remote drafter): still reserve known weights + any
+            # MLA target copy so a large config can't launch over budget (the small
+            # unsized draft KV rides in the cushion). Nothing known -> None, so the
+            # caller keeps the flat fallback.
+            total = weights + target_ctx_copy
+            return total if total > 0 else None
+        return draft_kv + weights + target_ctx_copy
 
     _DEFAULT_N_UBATCH = 512  # llama.cpp --ubatch default; Studio does not override it
     _COMPUTE_BUFFER_SAFETY = 1.15  # upper-bound margin on the compute-buffer estimate
