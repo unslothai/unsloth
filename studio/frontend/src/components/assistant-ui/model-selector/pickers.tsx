@@ -1962,7 +1962,7 @@ export function HubModelPicker({
   // text-xs to match the trigger. Keep the option's right padding so the
   // selected-item checkmark never overlaps the label.
   const sortMenuContentClassName =
-    "!p-1 !rounded-[14px] [&_[role=option]]:!pl-2 [&_[role=option]]:!py-1.5 [&_[role=option]]:!text-xs [&_[role=option]]:!rounded-[14px]";
+    "!p-1 !rounded-[14px] [&_[role=option]]:!pl-2 [&_[role=option]]:!py-1.5 [&_[role=option]]:!text-xs [&_[role=option]]:!rounded-[10px]";
   const sectionSortDropdown =
     section === "recommended" ? (
       <HubOptionMenu
@@ -2056,12 +2056,12 @@ export function HubModelPicker({
           // Small negative margin pulls the scrollbar in (closer to the rows),
           // and a thin gutter lets the row pills widen toward it. Height tracks
           // the content up to the cap, so short lists do not leave white space.
-          "model-list-scroll -mr-1 max-h-[20rem] overflow-y-auto pr-0.5",
+          "model-list-scroll -mr-1 flex max-h-[20rem] flex-col overflow-y-auto pr-0.5",
           listScrolled && "is-scrolled",
         )}
         {...hubModelList.listboxProps}
       >
-        <div className="py-1 pr-0">
+        <div className="shrink-0 py-1 pr-0">
           {/* First-load spinner only when nothing cached is shown yet. */}
           {showDownloaded &&
           !cachedReady &&
@@ -2957,22 +2957,23 @@ export function HubModelPicker({
             </>
           ) : null}
         </div>
+        {/* Floating eject pill: a filled button pinned to the bottom of the
+            list. The wrapper is transparent, so nothing sits behind or around
+            the pill; only the list rows show through. */}
+        {onEject ? (
+          <div className="pointer-events-none sticky bottom-0 mt-auto flex justify-center py-1">
+            <button
+              type="button"
+              onClick={onEject}
+              className="pointer-events-auto inline-flex items-center justify-center gap-2 rounded-md bg-popover px-3 py-2 text-[13px] text-destructive shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] transition-colors hover:bg-destructive/10 dark:bg-[color-mix(in_srgb,var(--foreground)_10%,transparent)] dark:shadow-none dark:hover:bg-[color-mix(in_srgb,var(--foreground)_18%,transparent)]"
+              title="Eject model"
+            >
+              <HugeiconsIcon icon={RemoveCircleIcon} className="size-3.5" />
+              Eject loaded model
+            </button>
+          </div>
+        ) : null}
       </div>
-      {/* Eject button sits below the scroll area so rows never scroll behind it.
-          No fill, so it never covers the list; just a centered text button. */}
-      {onEject ? (
-        <div className="flex justify-center">
-          <button
-            type="button"
-            onClick={onEject}
-            className="inline-flex items-center justify-center gap-2 rounded-md px-3 py-2 text-[13px] text-destructive transition-colors hover:bg-destructive/10"
-            title="Eject model"
-          >
-            <HugeiconsIcon icon={RemoveCircleIcon} className="size-3.5" />
-            Eject loaded model
-          </button>
-        </div>
-      ) : null}
     </div>
   );
 }
