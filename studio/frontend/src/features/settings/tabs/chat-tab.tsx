@@ -177,6 +177,18 @@ export function ChatTab() {
   const setLoadOnSelection = useChatRuntimeStore(
     (state) => state.setLoadOnSelection,
   );
+  const expandQuantizations = useChatRuntimeStore(
+    (state) => state.expandQuantizations,
+  );
+  const setExpandQuantizations = useChatRuntimeStore(
+    (state) => state.setExpandQuantizations,
+  );
+  const showAllQuantizations = useChatRuntimeStore(
+    (state) => state.showAllQuantizations,
+  );
+  const setShowAllQuantizations = useChatRuntimeStore(
+    (state) => state.setShowAllQuantizations,
+  );
   const confirmDeleteChats = useChatPreferencesStore(
     (state) => state.confirmDeleteChats,
   );
@@ -322,7 +334,9 @@ export function ChatTab() {
                 The gear next to a downloaded model always opens Run settings:
               </span>
               <span className="flex items-center gap-2 rounded-md bg-black/[0.03] dark:bg-white/[0.04] px-2.5 py-1.5">
-                <span className="font-mono text-xs text-foreground">Q4_K_M</span>
+                <span className="font-mono text-xs text-foreground">
+                  Q4_K_M
+                </span>
                 <span className="text-[9px] font-medium text-green-400">
                   downloaded
                 </span>
@@ -343,6 +357,24 @@ export function ChatTab() {
           <Switch
             checked={loadOnSelection}
             onCheckedChange={setLoadOnSelection}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label="Expand quantizations"
+          description="On: On Device GGUF models show their quantizations right away. Off: click a model to view its quantizations."
+        >
+          <Switch
+            checked={expandQuantizations}
+            onCheckedChange={setExpandQuantizations}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label="Show all quantizations"
+          description="On: list every quantization, including ones you have not downloaded. Off: show only downloaded quantizations."
+        >
+          <Switch
+            checked={showAllQuantizations}
+            onCheckedChange={setShowAllQuantizations}
           />
         </SettingsRow>
       </SettingsSection>

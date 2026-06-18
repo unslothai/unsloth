@@ -27,6 +27,7 @@ import type {
   CachedModelRepo,
   LocalModelInfo,
 } from "@/features/chat/api/chat-api";
+import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import type { GgufVariantDetail } from "@/features/chat/types/api";
 import { DotTag } from "@/features/hub/catalog/dot-tag";
 import {
@@ -662,12 +663,23 @@ function GgufVariantExpander({
     });
   }, [variants, effectiveRecommended, getGgufFit]);
 
+  // When showAllQuantizations is off, only list quants already on disk.
+  const showAllQuantizations = useChatRuntimeStore(
+    (s) => s.showAllQuantizations,
+  );
+  const displayVariants = useMemo(() => {
+    if (!sortedVariants) return sortedVariants;
+    return showAllQuantizations
+      ? sortedVariants
+      : sortedVariants.filter((v) => v.downloaded);
+  }, [sortedVariants, showAllQuantizations]);
+
   const variantOptionKeys = useMemo(
     () =>
-      (sortedVariants ?? []).map((variant) =>
+      (displayVariants ?? []).map((variant) =>
         makeModelOptionKey("gguf-variant", `${repoId}:${variant.filename}`),
       ),
-    [repoId, sortedVariants],
+    [repoId, displayVariants],
   );
   const variantList = useRovingModelList({
     label: `${repoId} quantizations`,
@@ -689,7 +701,7 @@ function GgufVariantExpander({
     return <div className="px-5 py-2 text-xs text-destructive">{error}</div>;
   }
 
-  if (!sortedVariants || sortedVariants.length === 0) {
+  if (!displayVariants || displayVariants.length === 0) {
     return (
       <div className="px-5 py-2 text-xs text-muted-foreground">
         No GGUF variants found.
@@ -722,7 +734,7 @@ function GgufVariantExpander({
           </span>
         )}
       </div>
-      {sortedVariants.map((v) => {
+      {displayVariants.map((v) => {
         const fit = getGgufFit(v.size_bytes);
         const oom = fit === "oom";
         const tight = fit === "tight";
@@ -1085,6 +1097,12 @@ export function HubModelPicker({
 
   // Track which GGUF repo is expanded for variant selection
   const [expandedGguf, setExpandedGguf] = useState<string | null>(null);
+  // When on, On Device GGUF repos show their quantizations without a click.
+  const expandQuantizations = useChatRuntimeStore((s) => s.expandQuantizations);
+  const isGgufExpanded = useCallback(
+    (id: string) => expandQuantizations || expandedGguf === id,
+    [expandQuantizations, expandedGguf],
+  );
 
   const [downloadedCollapsed, setDownloadedCollapsed] = useState(false);
   const [customFoldersCollapsed, setCustomFoldersCollapsed] = useState(false);
@@ -2067,7 +2085,7 @@ export function HubModelPicker({
                           )
                         }
                         onArrowDownIntoChildren={
-                          expandedGguf === c.repo_id
+                          isGgufExpanded(c.repo_id)
                             ? () => {
                                 const focused =
                                   focusFirstChildOption(optionKey);
@@ -2077,7 +2095,7 @@ export function HubModelPicker({
                         }
                         vramStatus={null}
                       />
-                      {expandedGguf === c.repo_id && (
+                      {isGgufExpanded(c.repo_id) && (
                         <GgufVariantExpander
                           repoId={c.repo_id}
                           onSelect={onSelect}
@@ -2183,26 +2201,19 @@ export function HubModelPicker({
                   </button>
                 </div>
               </div>
-              {!fineTunedCollapsed &&
-                (fineTunedRows.length > 0 ? (
-                  <FineTunedRows
-                    adapters={fineTunedRows}
-                    value={value}
-                    onSelect={onSelect}
-                    onModelsChange={onModelsChange}
-                    deleteDisabled={deleteDisabled}
-                    loraModelList={hubModelList}
-                    expandedGguf={expandedGguf}
-                    setExpandedGguf={setExpandedGguf}
-                    gpu={gpu}
-                  />
-                ) : (
-                  <div className="px-2.5 pb-1 pt-0.5 text-[11px] text-muted-foreground/60">
-                    {localQuery
-                      ? "No fine-tuned models match your search."
-                      : "No fine-tuned models yet. Train a model to see it here."}
-                  </div>
-                ))}
+              {!fineTunedCollapsed && fineTunedRows.length > 0 && (
+                <FineTunedRows
+                  adapters={fineTunedRows}
+                  value={value}
+                  onSelect={onSelect}
+                  onModelsChange={onModelsChange}
+                  deleteDisabled={deleteDisabled}
+                  loraModelList={hubModelList}
+                  expandedGguf={expandedGguf}
+                  setExpandedGguf={setExpandedGguf}
+                  gpu={gpu}
+                />
+              )}
             </>
           ) : null}
 
@@ -2448,7 +2459,7 @@ export function HubModelPicker({
                           }
                         }}
                         onArrowDownIntoChildren={
-                          expandedGguf === m.id
+                          isGgufExpanded(m.id)
                             ? () => {
                                 const focused =
                                   focusFirstChildOption(optionKey);
@@ -2458,7 +2469,7 @@ export function HubModelPicker({
                         }
                         vramStatus={null}
                       />
-                      {expandedGguf === m.id && (
+                      {isGgufExpanded(m.id) && (
                         <GgufVariantExpander
                           repoId={m.id}
                           onSelect={onSelect}
@@ -2520,7 +2531,7 @@ export function HubModelPicker({
                         }
                       }}
                       onArrowDownIntoChildren={
-                        expandedGguf === m.id
+                        isGgufExpanded(m.id)
                           ? () => {
                               const focused = focusFirstChildOption(optionKey);
                               return focused;
@@ -2529,7 +2540,7 @@ export function HubModelPicker({
                       }
                       vramStatus={null}
                     />
-                    {expandedGguf === m.id && (
+                    {isGgufExpanded(m.id) && (
                       <GgufVariantExpander
                         repoId={m.id}
                         onSelect={onSelect}
@@ -2582,13 +2593,13 @@ export function HubModelPicker({
                         }
                       }}
                       onArrowDownIntoChildren={
-                        expandedGguf === m.id
+                        isGgufExpanded(m.id)
                           ? () => focusFirstChildOption(optionKey)
                           : undefined
                       }
                       vramStatus={null}
                     />
-                    {expandedGguf === m.id && (
+                    {isGgufExpanded(m.id) && (
                       <GgufVariantExpander
                         repoId={m.id}
                         onSelect={onSelect}
