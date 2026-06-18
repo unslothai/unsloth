@@ -2051,9 +2051,9 @@ export function HubModelPicker({
 
       {/* Section tabs, then the format and sort dropdowns sitting just to the
           right of the toggle. */}
-      <div className="flex items-center gap-1.5">
+      <div className="flex items-center gap-2">
         {sectionToggle}
-        <div className="flex items-center gap-1.5">
+        <div className="flex items-center gap-2">
           <HubOptionMenu
             value={formatFilter}
             options={FORMAT_FILTER_OPTIONS}
