@@ -189,7 +189,8 @@ def _drive_validate_lora(monkeypatch, *, adapter_needs_trc, base_needs_trc):
     monkeypatch.setattr(mc, "get_base_model_from_lora_identifier", lambda *_a, **_k: base)
     trc = {adapter: adapter_needs_trc, base: base_needs_trc}
     monkeypatch.setattr(
-        inf, "_requires_trust_remote_code_for_model",
+        inf,
+        "_requires_trust_remote_code_for_model",
         lambda target, *_a, **_k: trc.get(target, False),
     )
     monkeypatch.setattr(inf, "_requires_security_review_for_model", lambda *_a, **_k: False)

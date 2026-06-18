@@ -523,15 +523,11 @@ class TestStructuredFindingsForDialog:
         import utils.security as security
 
         monkeypatch.setattr(models_route, "is_local_path", lambda *_a, **_k: False)
-        monkeypatch.setattr(
-            models_route, "resolve_cached_repo_id_case", lambda n, *a, **k: n
-        )
+        monkeypatch.setattr(models_route, "resolve_cached_repo_id_case", lambda n, *a, **k: n)
         monkeypatch.setattr(
             model_config, "get_base_model_from_lora_identifier", lambda *_a, **_k: base
         )
-        monkeypatch.setattr(
-            models_route, "_repo_in_any_hf_cache", lambda n, *a, **k: in_cache(n)
-        )
+        monkeypatch.setattr(models_route, "_repo_in_any_hf_cache", lambda n, *a, **k: in_cache(n))
         monkeypatch.setattr(
             security,
             "preflight_remote_code_consent_for_targets",
