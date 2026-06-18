@@ -2049,9 +2049,9 @@ export function HubModelPicker({
         ) : null}
       </div>
 
-      {/* Section tabs on the left, format and sort dropdowns pushed to the right
-          so the sort trigger lines up with the Search Hub button above. */}
-      <div className="flex items-center justify-between gap-1.5">
+      {/* Section tabs, then the format and sort dropdowns sitting just to the
+          right of the toggle. */}
+      <div className="flex items-center gap-1.5">
         {sectionToggle}
         <div className="flex items-center gap-1.5">
           <HubOptionMenu
