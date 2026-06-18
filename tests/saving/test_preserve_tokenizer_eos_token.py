@@ -84,7 +84,7 @@ def test_preserve_tokenizer_eos_token_supports_filename_prefix(tmp_path):
     saved_config = json.loads(prefixed_config.read_text(encoding = "utf-8"))
     assert saved_config["eos_token"] == "<turn|>"
     assert saved_config["other"] is True
-    # Unprefixed file must not be created as a side effect.
+    # Unprefixed file must not be created as a side effect (regression).
     assert not (tmp_path / "tokenizer_config.json").exists()
 
 

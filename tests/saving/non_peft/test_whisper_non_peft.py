@@ -52,7 +52,7 @@ print(f"{'='*80}")
 
 try:
     with warnings.catch_warnings():
-        warnings.simplefilter("error")  # Treat warnings as errors here
+        warnings.simplefilter("error")  # any warning -> failure
         model.save_pretrained("test_output")
         print("✅ Standard save_pretrained completed successfully!")
 except Exception as e:

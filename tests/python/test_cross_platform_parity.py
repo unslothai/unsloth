@@ -13,11 +13,7 @@ INSTALL_PS1 = REPO_ROOT / "install.ps1"
 
 
 class TestNoTorchBackendAutoInInstallSh:
-    """install.sh primary install paths must not use --torch-backend=auto.
-
-    The fallback else-branch (when TORCH_INDEX_URL is empty) is allowed to
-    use --torch-backend=auto since that is the last-resort recovery path.
-    """
+    """install.sh primary paths must not use --torch-backend=auto (only the fallback else-branch may)."""
 
     def test_no_torch_backend_auto_outside_fallback(self):
         lines = INSTALL_SH.read_text(encoding = "utf-8").splitlines()
