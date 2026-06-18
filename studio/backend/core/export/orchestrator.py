@@ -147,6 +147,9 @@ class ExportOrchestrator:
                 daemon = True,
             )
             self._proc.start()
+        from utils.process_lifetime import adopt_pid
+
+        adopt_pid(self._proc.pid)  # bind to parent lifetime (Windows job / sweep)
         logger.info("Export subprocess started (pid=%s)", self._proc.pid)
 
     def _shutdown_subprocess(self, timeout: float = 10.0) -> None:
@@ -301,6 +304,7 @@ class ExportOrchestrator:
         max_seq_length: int = 2048,
         load_in_4bit: bool = True,
         trust_remote_code: bool = False,
+        approved_remote_code_fingerprint: Optional[str] = None,
         hf_token: Optional[str] = None,
     ) -> Tuple[bool, str]:
         """Load a checkpoint for export.
@@ -312,6 +316,7 @@ class ExportOrchestrator:
             "max_seq_length": max_seq_length,
             "load_in_4bit": load_in_4bit,
             "trust_remote_code": trust_remote_code,
+            "approved_remote_code_fingerprint": approved_remote_code_fingerprint,
             "hf_token": hf_token,
         }
 

@@ -53,6 +53,24 @@ class CheckpointListResponse(BaseModel):
     )
 
 
+class ExportSizeResponse(BaseModel):
+    """Model fp16/bf16-equivalent size; size fields are null when unknown."""
+
+    model: str = Field(..., description = "Model id or path the estimate was computed for")
+    fp16_bytes: Optional[int] = Field(
+        None,
+        description = "Estimated FP16/BF16-equivalent on-disk size in bytes, or null if unknown",
+    )
+    total_params: Optional[int] = Field(
+        None,
+        description = "Estimated total parameter count (fp16_bytes // 2), or null if unknown",
+    )
+    source: str = Field(
+        "unavailable",
+        description = "How the estimate was derived (e.g. safetensors, config, local, vllm, unavailable)",
+    )
+
+
 class ModelDetails(BaseModel):
     """Model configuration and metadata; used for both list and detail views"""
 
