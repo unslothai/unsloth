@@ -474,6 +474,10 @@ async def lifespan(app: FastAPI):
     if _idle_task is not None:
         _idle_task.cancel()
 
+    from core.inference.llama_http import aclose as _close_llama_http
+
+    await _close_llama_http()
+
     await run_lifespan_shutdown(
         terminate_hub_downloads,
         clear_unsloth_compiled_cache,
@@ -501,8 +505,7 @@ app.add_middleware(LoggingMiddleware)
 
 # img/media-src allow any https origin so HF model-card assets render (mirrors
 # tauri.conf.json); scripts/frames/connect-src stay same-origin + HF.
-from starlette.middleware.base import BaseHTTPMiddleware  # noqa: E402
-from starlette.requests import Request as _StarletteRequest  # noqa: E402
+from starlette.datastructures import MutableHeaders  # noqa: E402
 
 
 _CSP_SCRIPT_NONCE_HEADER = "x-internal-script-nonce"
@@ -558,28 +561,51 @@ def _build_csp(script_nonce: "str | None" = None) -> str:
     )
 
 
-class SecurityHeadersMiddleware(BaseHTTPMiddleware):
-    """Set baseline security headers; splice per-response inline-script nonces into CSP."""
+class SecurityHeadersMiddleware:
+    """Set baseline security headers; splice per-response inline-script nonces into CSP.
 
-    async def dispatch(self, request: _StarletteRequest, call_next):
-        response = await call_next(request)
-        # Strip the internal nonce hand-off header so it never reaches the client
-        nonce = response.headers.get(_CSP_SCRIPT_NONCE_HEADER)
-        if nonce is not None:
-            del response.headers[_CSP_SCRIPT_NONCE_HEADER]
-        response.headers.setdefault("Content-Security-Policy", _build_csp(nonce))
-        # Omit X-Frame-Options in Colab — CSP frame-ancestors handles it, and
-        # DENY would block serve_kernel_port_as_iframe regardless of CSP.
-        if not _IS_COLAB and request.url.path != _ARTIFACT_PREVIEW_FRAME_PATH:
-            response.headers.setdefault("X-Frame-Options", "DENY")
-        response.headers.setdefault("X-Content-Type-Options", "nosniff")
-        response.headers.setdefault("Referrer-Policy", "no-referrer")
-        response.headers.setdefault(
-            "Permissions-Policy",
-            "camera=(), microphone=(self), geolocation=()",
-        )
-        response.headers["server"] = "unsloth-studio"
-        return response
+    Pure ASGI (not BaseHTTPMiddleware) so streaming responses are not wrapped in
+    an anyio stream. Header logic mirrors the prior version exactly via
+    MutableHeaders on the response-start message.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        path = scope.get("path", "")
+
+        async def send_wrapper(message):
+            if message["type"] == "http.response.start":
+                # ASGI headers are an iterable; coerce to a list so MutableHeaders
+                # can mutate in place even if a server sends a tuple or omits it.
+                raw = message.setdefault("headers", [])
+                if not isinstance(raw, list):
+                    raw = list(raw)
+                    message["headers"] = raw
+                headers = MutableHeaders(raw = raw)
+                # Strip the internal nonce hand-off header so it never reaches the client
+                nonce = headers.get(_CSP_SCRIPT_NONCE_HEADER)
+                if nonce is not None:
+                    del headers[_CSP_SCRIPT_NONCE_HEADER]
+                headers.setdefault("Content-Security-Policy", _build_csp(nonce))
+                # Omit X-Frame-Options in Colab: CSP frame-ancestors handles it, and
+                # DENY would block serve_kernel_port_as_iframe regardless of CSP.
+                if not _IS_COLAB and path != _ARTIFACT_PREVIEW_FRAME_PATH:
+                    headers.setdefault("X-Frame-Options", "DENY")
+                headers.setdefault("X-Content-Type-Options", "nosniff")
+                headers.setdefault("Referrer-Policy", "no-referrer")
+                headers.setdefault(
+                    "Permissions-Policy",
+                    "camera=(), microphone=(self), geolocation=()",
+                )
+                headers["server"] = "unsloth-studio"
+            await send(message)
+
+        await self.app(scope, receive, send_wrapper)
 
 
 app.add_middleware(SecurityHeadersMiddleware)

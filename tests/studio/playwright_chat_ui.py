@@ -1430,7 +1430,16 @@ with sync_playwright() as p:
     # Re-login through the UI with NEW2 so the browser has a valid
     # access token for the /api/shutdown call (the previous one
     # was invalidated by the CLI rotation above).
-    page.goto(f"{BASE}/login")
+    # The CLI rotation left a stale token, so the SPA auth guard can
+    # client-side-redirect mid-navigation and abort this goto with
+    # net::ERR_ABORTED. Resolve on domcontentloaded and tolerate the
+    # abort; the password-field wait below confirms we reached /login.
+    try:
+        page.goto(f"{BASE}/login", wait_until = "domcontentloaded", timeout = 60_000)
+    except Exception as exc:
+        if "ERR_ABORTED" not in str(exc):
+            raise
+        info(f"goto /login aborted ({exc!r}); password-field wait will confirm /login")
     pw_field = page.locator("#password")
     pw_field.wait_for(state = "visible", timeout = 60_000)
     pw_field.fill(NEW2)
