@@ -416,10 +416,10 @@ function ModelSelectorContent({
       onKeyDown={handlePickerEntryKeyDown}
       className={cn(
         "unsloth-model-selector-menu menu-soft-surface ring-0 max-w-[calc(100vw-1rem)] min-w-0 gap-0 pt-4 pb-0 pl-4",
-        // Widen to fit the three toggle pills plus both dropdowns without
-        // overflow, so the dropdowns right-align with Search Hub above.
+        // Sized so the left-packed row keeps uniform gaps and the last dropdown's
+        // right gap matches the pill's left gap (pl-4 vs pr-4).
         hasExternal
-          ? "w-[min(656px,calc(100vw-1rem))] pr-4"
+          ? "w-[min(614px,calc(100vw-1rem))] pr-4"
           : "w-[min(504px,calc(100vw-1rem))] pr-2",
         className,
       )}

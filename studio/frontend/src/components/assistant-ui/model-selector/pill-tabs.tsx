@@ -88,7 +88,11 @@ export function PillTabs({
             value === tab.value
               ? "text-foreground"
               : "text-muted-foreground hover:text-foreground",
-            fit && value === tab.value && "hub-tab-toggle-pill",
+            // The active tab carries the pill; pin its hover bg so an
+            // already-selected tab shows no hover change.
+            fit &&
+              value === tab.value &&
+              "hub-tab-toggle-pill hover:!bg-[var(--background)] dark:hover:!bg-[color-mix(in_srgb,var(--foreground)_10%,transparent)]",
           )}
         >
           {tab.icon}

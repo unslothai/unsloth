@@ -144,7 +144,8 @@ function QuantBadge({
       <span
         className={cn(
           CHIP_BASE,
-          "gap-1.5 cursor-help",
+          // Allow shrinking so a long file-path quant label truncates.
+          "min-w-0 max-w-full gap-1.5 cursor-help",
           active ? CHIP_ACTIVE : CHIP_DEFAULT,
         )}
       >
@@ -155,12 +156,12 @@ function QuantBadge({
             className={cn("size-3.5 shrink-0", meta.iconClassName)}
           />
         )}
-        <span>{quant}</span>
+        <span className="truncate">{quant}</span>
       </span>
     ) : (
       <span
         className={cn(
-          "inline-flex cursor-help items-center gap-1.5 text-[12.5px] font-medium tracking-tight tabular-nums",
+          "inline-flex min-w-0 max-w-full cursor-help items-center gap-1.5 text-[12.5px] font-medium tracking-tight tabular-nums",
           active ? "text-emerald-600 dark:text-emerald-400" : "text-foreground",
         )}
       >
@@ -171,7 +172,7 @@ function QuantBadge({
             className={cn("size-3.5 shrink-0", meta.iconClassName)}
           />
         )}
-        <span>{quant}</span>
+        <span className="truncate">{quant}</span>
       </span>
     );
   if (!showFit || tooltipMode === "none") return inner;
