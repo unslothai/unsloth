@@ -1027,6 +1027,10 @@ class _RaiseUninitialized(logging.Handler):
             and ("classifier.weight" not in record_lower)
             and ("cls.predictions" not in record_lower)
             and ("predictions.decoder" not in record_lower)
+            # position_ids is a deterministic arange buffer (transformers lists it in
+            # _keys_to_ignore_on_load_missing); re-initialising it is correct, not a
+            # corrupt checkpoint. Some VLMs (e.g. DeepSeek-OCR) ship it non-persistently.
+            and ("position_ids" not in record_lower)
             and (os.environ.get("UNSLOTH_WARN_UNINITIALIZED", "1") == "1")
         ):
             raise Exception(
