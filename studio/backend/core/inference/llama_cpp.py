@@ -4529,6 +4529,7 @@ class LlamaCppBackend:
                         or bool(mtp_draft_path)
                     )
                     _mtp_binary_ok = True
+                    _mtp_probe_raised = False
                     if not _user_mtp_via_extras:
                         try:
                             _mtp_binary_ok = bool(
@@ -4536,6 +4537,7 @@ class LlamaCppBackend:
                             )
                         except Exception:
                             _mtp_binary_ok = False
+                            _mtp_probe_raised = True
                     _mtp_will_engage = bool(
                         _user_mtp_via_extras
                         or _user_draft_via_extras
@@ -4548,15 +4550,11 @@ class LlamaCppBackend:
                             )
                             and (
                                 _mtp_binary_ok
-                                # probe_server_capabilities can throw an uncaught
-                                # exception on the first call (Windows encoding,
-                                # startup timing), leaving _mtp_binary_ok=False
-                                # while the result is not cached.  _build_speculative_flags
-                                # then calls the probe again, succeeds, and launches
-                                # --spec-type draft-mtp --model-draft regardless.
-                                # Reserve drafter VRAM whenever a drafter file exists:
-                                # it will be loaded whether the probe succeeded or not.
-                                or bool(mtp_draft_path)
+                                # A raised (uncached) probe re-probes in
+                                # _build_speculative_flags and may still launch the
+                                # drafter, so reserve for it; a clean negative probe
+                                # means no MTP support, so don't.
+                                or (_mtp_probe_raised and bool(mtp_draft_path))
                             )
                         )
                     )
