@@ -174,7 +174,13 @@ function saveLastExternalCheckpoint(value: string | null): void {
   }
 }
 
-export type ReasoningStyle = "enable_thinking" | "reasoning_effort";
+// "enable_thinking_effort" is a hybrid: an on/off gate (enable_thinking) plus an
+// effort level among a discrete set (e.g. GLM-5.2's high|max). It reuses the
+// reasoning_effort dropdown UI but, unlike gpt-oss, can be fully disabled.
+export type ReasoningStyle =
+  | "enable_thinking"
+  | "reasoning_effort"
+  | "enable_thinking_effort";
 /** One live DiffusionGemma denoising snapshot: the current canvas text at a
  *  given step of a given block (block/step are 0-based; total = steps in block). */
 export type DiffusionCanvasFrame = {
@@ -577,6 +583,9 @@ type ChatRuntimeStore = {
    * (secrets are still stripped). Takes precedence over confirmToolCalls.
    */
   bypassPermissions: boolean;
+  /** Whether the "Enable Bypass Permissions?" warning dialog is open. Lifted out
+   *  of the composer menu so confirming/cancelling it doesn't leave the menu frozen. */
+  bypassConfirmOpen: boolean;
   /**
    * Per-chat set of tool names the user chose to auto-approve via "Always
    * allow". Keyed by UI confirmation scope, not necessarily the backend
@@ -711,6 +720,7 @@ type ChatRuntimeStore = {
   setMcpEnabledForChat: (enabled: boolean) => void;
   setConfirmToolCalls: (enabled: boolean) => void;
   setBypassPermissions: (enabled: boolean) => void;
+  setBypassConfirmOpen: (open: boolean) => void;
   allowToolAlways: (sessionId: string, toolName: string) => void;
   setToolConfirmation: (
     toolCallId: string,
@@ -1024,6 +1034,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   // the confirmation gate, so it must be re-enabled (through the warning
   // dialog) each session rather than silently reactivating on reload.
   bypassPermissions: false,
+  bypassConfirmOpen: false,
   alwaysAllowToolsBySession: new Map<string, Set<string>>(),
   toolConfirmations: {},
   webFetchToolsEnabled: loadBool(CHAT_WEB_FETCH_TOOLS_ENABLED_KEY, false),
@@ -1393,6 +1404,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     // Deliberately not persisted (see init): a reload must not silently keep
     // the sandbox/confirmation bypass active without re-accepting the warning.
     set(() => ({ bypassPermissions })),
+  setBypassConfirmOpen: (bypassConfirmOpen) =>
+    set(() => ({ bypassConfirmOpen })),
   allowToolAlways: (sessionId, toolName) =>
     set((state) => {
       const current = state.alwaysAllowToolsBySession.get(sessionId);

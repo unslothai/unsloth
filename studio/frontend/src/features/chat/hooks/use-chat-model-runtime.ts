@@ -30,7 +30,9 @@ import {
   resolveToolsEnabledOnLoad,
   saveSpeculativeType,
   useChatRuntimeStore,
+  type ReasoningEffort,
 } from "../stores/chat-runtime-store";
+import { clampReasoningEffortToLevels } from "../provider-capabilities";
 import {
   applyActiveModelStatusToStore,
   clampLocalReasoningEffort,
@@ -682,14 +684,21 @@ export function useChatModelRuntime() {
             const reasoningStyle = loadResponse.reasoning_style ?? "enable_thinking";
             const supportsReasoning = loadResponse.supports_reasoning ?? false;
             const supportsTools = loadResponse.supports_tools ?? false;
+            // GLM-5.2-style models report their own effort levels (e.g.
+            // high|max); everything else keeps the default low/medium/high.
             const reasoningEffortLevels =
-              reasoningStyle === "reasoning_effort"
-                ? (["low", "medium", "high"] as const)
+              loadResponse.reasoning_effort_levels &&
+              loadResponse.reasoning_effort_levels.length > 0
+                ? (loadResponse.reasoning_effort_levels as ReasoningEffort[])
                 : (["low", "medium", "high"] as const);
             const existingReasoningEffort = useChatRuntimeStore.getState().reasoningEffort;
-            const clampedReasoningEffort = clampLocalReasoningEffort(
-              existingReasoningEffort,
-            );
+            const clampedReasoningEffort =
+              reasoningStyle === "enable_thinking_effort"
+                ? clampReasoningEffortToLevels(
+                    existingReasoningEffort,
+                    reasoningEffortLevels,
+                  )
+                : clampLocalReasoningEffort(existingReasoningEffort);
             const ggufMaxContextLength = reportedMaxCtx;
             const nextReasoningEnabled = reasoningAlwaysOn
               ? true
@@ -932,8 +941,8 @@ export function useChatModelRuntime() {
 
             if (prog.progress > 0 && prog.progress < 1) {
               hasShownProgress = true;
-              const dlGb = prog.downloaded_bytes / (1024 ** 3);
-              const totalGb = prog.expected_bytes / (1024 ** 3);
+              const dlGb = prog.downloaded_bytes / 1e9;
+              const totalGb = prog.expected_bytes / 1e9;
               const pct = Math.round(prog.progress * 100);
               const progressLabel = composeProgressLabel(
                 dlGb,
@@ -965,7 +974,7 @@ export function useChatModelRuntime() {
               prog.progress === 0
             ) {
               hasShownProgress = true;
-              const dlGb = prog.downloaded_bytes / (1024 ** 3);
+              const dlGb = prog.downloaded_bytes / 1e9;
               const est = estimate(dlSamples, prog.downloaded_bytes, 0);
               const rateSuffix =
                 est.stable ? ` • ${formatRate(est.rate)}` : "";
@@ -1023,8 +1032,10 @@ export function useChatModelRuntime() {
               return;
             }
             if (prog.bytes_total <= 0) return; // nothing useful to render
-            const loadedGb = prog.bytes_loaded / (1024 ** 3);
-            const totalGb = prog.bytes_total / (1024 ** 3);
+            // Decimal GB (1e9) so the total matches the file size Hugging Face
+            // reports and the model-picker shows, not the smaller base-1024 GiB.
+            const loadedGb = prog.bytes_loaded / 1e9;
+            const totalGb = prog.bytes_total / 1e9;
             const pct = Math.min(99, Math.round(prog.fraction * 100));
             const est = estimate(mmapSamples, prog.bytes_loaded, prog.bytes_total);
             const base = `${loadedGb.toFixed(1)} of ${totalGb.toFixed(1)} GB in memory`;
