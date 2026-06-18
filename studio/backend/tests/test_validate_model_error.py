@@ -131,3 +131,24 @@ def test_non_gguf_load_still_runs_trc_and_security_review(monkeypatch):
     assert resp.is_gguf is False
     assert resp.requires_trust_remote_code is True
     assert resp.requires_security_review is True
+
+
+def test_resolve_loaded_trc_prefers_stored_value():
+    # A value stored at load time wins, so a status refresh does not re-derive it.
+    assert inf._resolve_loaded_trust_remote_code("org/m", {"requires_trust_remote_code": True}, {}) is True
+    assert inf._resolve_loaded_trust_remote_code("org/m", {"requires_trust_remote_code": False}, {"trust_remote_code": True}) is False
+
+
+def test_resolve_loaded_trc_uses_runtime_and_yaml():
+    # No stored value: the trust_remote_code the load used, then the YAML default.
+    assert inf._resolve_loaded_trust_remote_code("org/m", {}, {}, trust_remote_code_used=True) is True
+    assert inf._resolve_loaded_trust_remote_code("org/m", {}, {"trust_remote_code": True}) is True
+
+
+def test_resolve_loaded_trc_falls_back_to_raw_auto_map(monkeypatch):
+    # No stored value, no runtime/YAML signal: fall back to the raw auto_map check,
+    # matching validate_model so an approved custom-code model is not reported false.
+    monkeypatch.setattr(inf, "_requires_trust_remote_code_for_model", lambda *_a, **_k: True)
+    assert inf._resolve_loaded_trust_remote_code("org/custom", {}, {}) is True
+    monkeypatch.setattr(inf, "_requires_trust_remote_code_for_model", lambda *_a, **_k: False)
+    assert inf._resolve_loaded_trust_remote_code("org/plain", {}, {}) is False
