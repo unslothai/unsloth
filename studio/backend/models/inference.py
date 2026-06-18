@@ -125,6 +125,11 @@ class ValidateModelRequest(BaseModel):
     gguf_variant: Optional[str] = Field(
         None, description = "GGUF quantization variant (e.g. 'Q4_K_M')"
     )
+    # Intended load settings so validate's coexistence check matches the follow-up
+    # /load; defaults preserve old behavior for callers that omit them.
+    max_seq_length: int = Field(0, ge = 0, le = 1048576)
+    load_in_4bit: bool = Field(True)
+    gpu_ids: Optional[List[int]] = Field(None)
 
 
 class ValidateModelResponse(BaseModel):

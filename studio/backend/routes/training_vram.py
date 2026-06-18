@@ -25,6 +25,18 @@ KEEP_FLOOR_GB = 4.0
 _MULTI_GPU_OVERHEAD = 0.85
 
 
+def _free_vram_by_index(devices: List[Dict[str, Any]]) -> Dict[int, float]:
+    """Map GPU index -> free VRAM (GB) from a get_visible_gpu_utilization() device list."""
+    free_by_index: Dict[int, float] = {}
+    for device in devices:
+        total_gb = device.get("vram_total_gb")
+        used_gb = device.get("vram_used_gb")
+        if total_gb is None or used_gb is None:
+            continue
+        free_by_index[device["index"]] = max(total_gb - used_gb, 0.0)
+    return free_by_index
+
+
 def summarize_resident_chat() -> Dict[str, Any]:
     """Report which chat models hold GPU memory (resident even while loading). Never raises."""
     hf_name: Optional[str] = None
@@ -125,14 +137,7 @@ def can_keep_chat_during_training(
             if required_gb is None:
                 return False, {"mode": "explicit", "reason": "estimate_unavailable"}
 
-            devices = get_visible_gpu_utilization().get("devices", [])
-            free_by_index: Dict[int, float] = {}
-            for device in devices:
-                total_gb = device.get("vram_total_gb")
-                used_gb = device.get("vram_used_gb")
-                if total_gb is None or used_gb is None:
-                    continue
-                free_by_index[device["index"]] = max(total_gb - used_gb, 0.0)
+            free_by_index = _free_vram_by_index(get_visible_gpu_utilization().get("devices", []))
 
             # A requested GPU missing from the device list contributes 0.
             free_vals = [free_by_index.get(i, 0.0) for i in resolved]
@@ -180,6 +185,118 @@ def can_keep_chat_during_training(
     except Exception as e:
         # Never let a sizing failure keep a chat model loaded into a training OOM.
         logger.warning("Chat-coexistence probe failed; will unload: %s", e)
+        return False, {"reason": "probe_error", "error": str(e)}
+
+
+def can_load_chat_during_training(
+    *,
+    model_name: str,
+    hf_token: Optional[str],
+    load_in_4bit: bool,
+    max_seq_length: int,
+    requested_gpu_ids: Optional[List[int]],
+    is_gguf: bool = False,
+    required_override_gb: Optional[float] = None,
+) -> Tuple[bool, Dict[str, Any]]:
+    """Decide if a NEW chat model can load without OOMing active training (inverse
+    of can_keep_chat_during_training: training is already resident, so size the
+    chat model against the free VRAM that remains). Sizes/places it the same way
+    the loader will: HF auto reuses auto_select_gpu_ids; HF explicit requires an
+    even-share per-GPU floor for device_map="balanced"; GGUF sizes from
+    required_override_gb over the visible pool. `load_in_4bit` must be effective
+    (LoRA can flip 4-bit -> 16-bit). Non-CUDA allows the load; default-deny on any
+    CUDA case it can't size, so a load never OOMs training."""
+    try:
+        from utils.hardware import (
+            DeviceType,
+            auto_select_gpu_ids,
+            estimate_required_model_memory_gb,
+            get_device,
+            get_visible_gpu_utilization,
+            resolve_requested_gpu_ids,
+        )
+
+        if get_device() != DeviceType.CUDA:
+            return True, {"mode": "non_cuda", "reason": "non_cuda"}
+
+        est_kwargs = dict(
+            hf_token = hf_token or None,
+            training_type = None,  # inference sizing of the chat model itself
+            load_in_4bit = load_in_4bit,
+            max_seq_length = max_seq_length or 2048,
+        )
+
+        # HF auto: reuse the loader's selector; fits iff its pick clears the margin.
+        if not requested_gpu_ids and not is_gguf:
+            _selected, meta = auto_select_gpu_ids(model_name, **est_kwargs)
+            mode = meta.get("selection_mode")
+            required_gb = meta.get("required_gb")
+            usable_gb = meta.get("usable_gb")
+            needed_gb = (
+                round(required_gb * SAFETY_MARGIN + KEEP_FLOOR_GB, 3)
+                if required_gb is not None
+                else None
+            )
+            fits = (
+                mode == "auto"
+                and required_gb is not None
+                and usable_gb is not None
+                and usable_gb >= needed_gb
+            )
+            return fits, {
+                "mode": mode,
+                "required_gb": required_gb,
+                "usable_gb": usable_gb,
+                "needed_gb": needed_gb,
+            }
+
+        # Explicit GPUs, or GGUF: size directly and check live free VRAM.
+        required_gb = required_override_gb
+        if required_gb is None:
+            required_gb, _meta = estimate_required_model_memory_gb(model_name, **est_kwargs)
+        if required_gb is None:
+            mode = "explicit" if requested_gpu_ids else "gguf"
+            return False, {"mode": mode, "reason": "estimate_unavailable"}
+
+        free_by_index = _free_vram_by_index(get_visible_gpu_utilization().get("devices", []))
+        if requested_gpu_ids:
+            # Invalid ids -> load_model 400s first, so don't block; missing id = 0.
+            try:
+                resolved = resolve_requested_gpu_ids(requested_gpu_ids)
+            except ValueError:
+                return True, {"mode": "explicit", "reason": "invalid_gpu_ids"}
+            free_vals = [free_by_index.get(i, 0.0) for i in resolved]
+            mode = "explicit"
+        else:
+            # GGUF: llama.cpp picks the GPU(s); any visible GPU is a candidate.
+            free_vals = list(free_by_index.values())
+            mode = "gguf"
+
+        if not free_vals:
+            return False, {"mode": mode, "reason": "no_visible_gpus"}
+
+        ranked = sorted(free_vals, reverse = True)
+        usable_gb = ranked[0] + sum(f * _MULTI_GPU_OVERHEAD for f in ranked[1:])
+        needed_gb = required_gb * SAFETY_MARGIN + KEEP_FLOOR_GB
+        aggregate_fits = usable_gb >= needed_gb
+
+        # device_map="balanced" shards across GPUs: an even-share floor stops one
+        # near-full GPU hiding behind aggregate capacity. GGUF self-places, no floor.
+        min_free_gb = min(free_vals)
+        per_gpu_fits = True
+        if mode == "explicit" and len(free_vals) > 1:
+            per_gpu_fits = min_free_gb >= needed_gb / len(free_vals)
+
+        return aggregate_fits and per_gpu_fits, {
+            "mode": mode,
+            "required_gb": round(required_gb, 3),
+            "usable_gb": round(usable_gb, 3),
+            "needed_gb": round(needed_gb, 3),
+            "min_free_gb": round(min_free_gb, 3),
+        }
+    except Exception as e:
+        # Never let a sizing failure load a chat model into a training OOM.
+        logger.warning("Chat-load coexistence probe failed; will refuse: %s", e)
         return False, {"reason": "probe_error", "error": str(e)}
 
 

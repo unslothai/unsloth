@@ -41,6 +41,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { useAnimatedThemeToggle } from "@/components/ui/animated-theme-toggler";
 import { cn } from "@/lib/utils";
@@ -116,10 +117,12 @@ import {
   emitTrainingRunUpdated,
   removeTrainingUnloadGuard,
   renameTrainingRun,
+  useTrainingCompletionWatch,
   useTrainingHistorySidebarItems,
   useTrainingRuntimeStore,
 } from "@/features/training";
 import type { TrainingRunSummary } from "@/features/training";
+import { useExportRuntimeStore } from "@/features/export";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { toast } from "@/lib/toast";
 import { ShutdownDialog } from "@/components/shutdown-dialog";
@@ -207,6 +210,7 @@ function NavItem({
   children,
   dataTour,
   className,
+  spinner,
 }: {
   icon: typeof ZapIcon;
   label: string;
@@ -216,6 +220,7 @@ function NavItem({
   children?: ReactNode;
   dataTour?: string;
   className?: string;
+  spinner?: boolean;
 }) {
   return (
     <SidebarMenuItem className={className}>
@@ -230,7 +235,14 @@ function NavItem({
         >
           <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-icon! shrink-0 group-hover/menu-button:animate-icon-pop" />
           <span className="text-[14.5px] leading-[19px] tracking-nav">{label}</span>
+          {spinner && (
+            <Spinner className="ml-auto size-3.5 shrink-0 text-muted-foreground group-data-[collapsible=icon]:hidden" />
+          )}
         </SidebarMenuButton>
+        {spinner && (
+          // Collapsed (icon-only) rail: small spinner badge over the icon corner.
+          <Spinner className="pointer-events-none absolute right-1 top-1 hidden size-2.5 text-muted-foreground group-data-[collapsible=icon]:block" />
+        )}
       </div>
       {children}
     </SidebarMenuItem>
@@ -254,7 +266,6 @@ export function AppSidebar() {
     if (isMobile) setOpenMobile(false);
   };
 
-  const isTrainingRunning = useTrainingRuntimeStore((s) => s.isTrainingRunning);
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
   const [shutdownOpen, setShutdownOpen] = useState(false);
 
@@ -327,6 +338,15 @@ export function AppSidebar() {
   const [pinnedOpen, setPinnedOpen] = useState(true);
   const storeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const setActiveThreadId = useChatRuntimeStore((s) => s.setActiveThreadId);
+  const anyChatRunning = useChatRuntimeStore((s) =>
+    Object.values(s.runningByThreadId).some(Boolean),
+  );
+  // The thread currently generating (if any), so "Return to Chat" lands on the
+  // live chat rather than an empty new-chat draft left active after New Chat.
+  const runningThreadId = useChatRuntimeStore((s) => {
+    const entry = Object.entries(s.runningByThreadId).find(([, on]) => on);
+    return entry ? entry[0] : null;
+  });
   const activeThreadId = isChatRoute
     ? (search.thread as string | undefined) ??
       (search.compare as string | undefined) ??
@@ -342,6 +362,20 @@ export function AppSidebar() {
   const currentRunViewActive = useTrainingRuntimeStore((s) => s.currentRunViewActive);
   const selectedHistoryRunId = useTrainingRuntimeStore((s) => s.selectedHistoryRunId);
   const setSelectedHistoryRunId = useTrainingRuntimeStore((s) => s.setSelectedHistoryRunId);
+  // Running or starting up. Drives the Train spinner + New Chat / Return to Chat swap.
+  const trainingInProgress = useTrainingRuntimeStore((s) => s.isTrainingRunning || s.isStarting);
+  // Export runs in the background (parallel with training/inference); reflect it
+  // on the Export nav item so it is visible from any tab.
+  const exportInProgress = useExportRuntimeStore((s) => s.isExporting);
+  // On any non-chat tab (Train, Export, Recipes, Projects, Hub, ...) offer a way
+  // back to the live chat instead of starting a new one, whenever a chat is
+  // running or its thread is still active, or a training / export is in progress.
+  const showReturnToChat =
+    !isChatRoute &&
+    (trainingInProgress || exportInProgress || anyChatRunning || storeThreadId != null);
+  // The Train-page status poll doesn't run off-route; keep state fresh so the spinner
+  // clears even if a run finishes while the user is on another tab.
+  useTrainingCompletionWatch();
 
   // Recompute bottom-fade on mount and whenever list height can change
   // (items load, sections toggle, route switch) - onScroll never fires for
@@ -361,8 +395,6 @@ export function AppSidebar() {
     isStudioRoute,
   ]);
 
-  const chatDisabled = isTrainingRunning;
-
   function chatSearchForProject(projectId: string | null) {
     if (projectId) {
       return { project: projectId };
@@ -373,7 +405,6 @@ export function AppSidebar() {
   }
 
   function openNewChat(projectId = activeProjectId) {
-    if (chatDisabled) return;
     clearNewChatDraft();
     setActiveThreadId(null);
     useChatRuntimeStore.getState().setActiveProjectId(projectId);
@@ -382,7 +413,6 @@ export function AppSidebar() {
   }
 
   function openProject(projectId: string) {
-    if (chatDisabled) return;
     setActiveThreadId(null);
     useChatRuntimeStore.getState().setActiveProjectId(projectId);
     navigate({ to: "/chat", search: { project: projectId } });
@@ -892,7 +922,6 @@ export function AppSidebar() {
             to="/chat"
             onClick={(event) => {
               event.preventDefault();
-              if (chatDisabled) return;
               openNewChat(null);
             }}
             className="flex items-center gap-[6px] select-none"
@@ -964,23 +993,37 @@ export function AppSidebar() {
           <SidebarMenu>
             <NavItem
               icon={PencilEdit02Icon}
-              label={t("shell.navigation.newChat")}
+              label={
+                showReturnToChat
+                  ? t("shell.navigation.returnToChat")
+                  : t("shell.navigation.newChat")
+              }
               active={
                 isChatRoute &&
                 !search.thread &&
                 !search.compare &&
                 !search.project
               }
-              disabled={chatDisabled}
-              onClick={() => openNewChat(null)}
+              onClick={() => {
+                if (showReturnToChat) {
+                  // Prefer the running thread so we return to the live generation,
+                  // not the empty new chat that became active after New Chat.
+                  if (runningThreadId && runningThreadId !== storeThreadId) {
+                    navigate({ to: "/chat", search: { thread: runningThreadId } });
+                  } else {
+                    navigate({ to: "/chat" });
+                  }
+                  closeMobileIfOpen();
+                  return;
+                }
+                openNewChat(null);
+              }}
             />
             <NavItem
               icon={Search01Icon}
               label={t("shell.navigation.search")}
               active={false}
               onClick={() => {
-                // Search is read-only and never runs inference, so it stays
-                // available while training (unlike New chat, gated on chatDisabled).
                 useChatSearchStore.getState().open();
                 closeMobileIfOpen();
               }}
@@ -1051,6 +1094,7 @@ export function AppSidebar() {
                   pathname === "/studio" || pathname.startsWith("/studio/")
                 }
                 disabled={chatOnly}
+                spinner={trainingInProgress}
                 onClick={() => {
                   if (chatOnly) return;
                   navigate({ to: "/studio" });
@@ -1078,6 +1122,7 @@ export function AppSidebar() {
                     label={t("shell.navigation.train")}
                     active={pathname === "/studio" || pathname.startsWith("/studio/")}
                     disabled={chatOnly}
+                    spinner={trainingInProgress}
                     onClick={() => {
                       if (chatOnly) return;
                       navigate({ to: "/studio" });
@@ -1098,6 +1143,7 @@ export function AppSidebar() {
                     label={t("shell.navigation.export")}
                     active={pathname === "/export" || pathname.startsWith("/export/")}
                     disabled={chatOnly}
+                    spinner={exportInProgress}
                     onClick={() => {
                       if (chatOnly) return;
                       navigate({ to: "/export" });

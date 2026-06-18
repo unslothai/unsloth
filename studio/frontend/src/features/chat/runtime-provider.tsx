@@ -26,7 +26,9 @@ import mammoth from "mammoth";
 import {
   type ReactElement,
   type ReactNode,
+  createContext,
   useCallback,
+  useContext,
   useEffect,
   useMemo,
   useRef,
@@ -1229,6 +1231,15 @@ function ThreadBackendAutosave({
   return null;
 }
 
+// True when the chat tab is visible. While false, ChatPage stays mounted (runtime +
+// autosave alive, so the stream survives) but its views/composers unmount, so no
+// body-portaled surface bleeds over the active tab. Defaults true for use elsewhere.
+export const ChatActiveContext = createContext(true);
+
+export function useChatActive(): boolean {
+  return useContext(ChatActiveContext);
+}
+
 export function ChatRuntimeProvider({
   children,
   modelType = "base",
@@ -1277,6 +1288,9 @@ export function ChatRuntimeProvider({
       {!initialThreadId && newThreadNonce && (
         <ThreadNewChatSwitch nonce={newThreadNonce} />
       )}
+      {/* The view stays mounted (only CSS-hidden by RootLayout) while off-route
+          so assistant-ui keeps the run attached and the stream alive. Unmounting
+          it here aborts the in-flight generation. */}
       {children}
     </AssistantRuntimeProvider>
   );

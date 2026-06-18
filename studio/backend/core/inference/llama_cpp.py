@@ -775,6 +775,12 @@ class LlamaCppBackend:
         # Wraps load_model() end-to-end so concurrent loads serialise and never
         # coexist as two llama-server processes (#5401).
         self._serial_load_lock = threading.Lock()
+        # Serialises mid-session respawns so many generations hitting a killed
+        # server trigger at most one reload (see _respawn_if_dead).
+        self._respawn_lock = threading.Lock()
+        # Last load_model() kwargs, replayed by _respawn_if_dead to bring back a
+        # llama-server killed out from under us.
+        self._last_load_kwargs: Optional[dict] = None
         # Set by the in-app updater while it swaps prebuilt binaries; load_model()
         # rejects fast so no server starts from a half-swapped binary.
         self._llama_update_in_progress = False
@@ -3389,6 +3395,28 @@ class LlamaCppBackend:
 
         Returns True if the server started and the health check passed.
         """
+        # Record the request so _respawn_if_dead can transparently restart a server
+        # killed mid-session (e.g. by GPU pressure from a concurrent training run).
+        self._last_load_kwargs = dict(
+            gguf_path = gguf_path,
+            mmproj_path = mmproj_path,
+            mtp_draft_path = mtp_draft_path,
+            hf_repo = hf_repo,
+            hf_variant = hf_variant,
+            hf_token = hf_token,
+            model_identifier = model_identifier,
+            is_vision = is_vision,
+            n_ctx = n_ctx,
+            chat_template_override = chat_template_override,
+            cache_type_kv = cache_type_kv,
+            speculative_type = speculative_type,
+            spec_draft_n_max = spec_draft_n_max,
+            tensor_parallel = tensor_parallel,
+            n_threads = n_threads,
+            n_gpu_layers = n_gpu_layers,
+            n_parallel = n_parallel,
+            extra_args = list(extra_args) if extra_args is not None else None,
+        )
         # Serialise the whole load so concurrent /load calls never leave two
         # llama-server processes alive (#5401 / #5161). Doesn't block /unload.
         with self._serial_load_lock:
@@ -5495,6 +5523,38 @@ class LlamaCppBackend:
         finally:
             _cancel_closed.set()
 
+    def _respawn_if_dead(self) -> bool:
+        """Relaunch the llama-server if its process has exited.
+
+        A loaded chat model can be SIGKILL'd mid-session (usually GPU/RAM pressure
+        from a training run on the same box), leaving a defunct process while
+        ``is_loaded`` still reads True. Replay the last ``load_model`` call to
+        recover, returning True once healthy. Serialised on ``_respawn_lock`` so
+        many generations hitting the dead server trigger at most one reload.
+        """
+        with self._respawn_lock:
+            proc = self._process
+            if proc is None:
+                return False
+            if proc.poll() is None:
+                # Process is alive: either a concurrent caller already respawned
+                # it (healthy), or this connection error wasn't a dead server.
+                return self._healthy
+            kwargs = self._last_load_kwargs
+            if not kwargs:
+                return False
+            logger.warning(
+                f"llama-server for '{self._model_identifier}' exited "
+                f"(code {proc.returncode}); respawning to recover the session"
+            )
+            with self._lock:
+                self._healthy = False
+            try:
+                return bool(self.load_model(**kwargs))
+            except Exception as exc:
+                logger.error(f"Failed to respawn llama-server: {exc}")
+                return False
+
     def generate_chat_completion(
         self,
         messages: list[dict],
@@ -5512,6 +5572,7 @@ class LlamaCppBackend:
         reasoning_effort: Optional[str] = None,
         preserve_thinking: Optional[bool] = None,
         seed: Optional[int] = None,
+        _allow_respawn_retry: bool = True,
     ) -> Generator[str | dict, None, None]:
         """
         Send a chat completion to llama-server and stream tokens back.
@@ -5678,6 +5739,32 @@ class LlamaCppBackend:
                         }
 
         except httpx.ConnectError:
+            # Connect-time failure, before any token (cumulative == ""): if the server
+            # was killed we can respawn and retry once, with no duplicate output. The
+            # private flag bounds this to a single retry.
+            if _allow_respawn_retry and not cumulative and self._respawn_if_dead():
+                logger.warning(
+                    "llama-server was unreachable; respawned it and retrying the generation"
+                )
+                yield from self.generate_chat_completion(
+                    messages,
+                    image_b64 = image_b64,
+                    temperature = temperature,
+                    top_p = top_p,
+                    top_k = top_k,
+                    min_p = min_p,
+                    max_tokens = max_tokens,
+                    repetition_penalty = repetition_penalty,
+                    presence_penalty = presence_penalty,
+                    stop = stop,
+                    cancel_event = cancel_event,
+                    enable_thinking = enable_thinking,
+                    reasoning_effort = reasoning_effort,
+                    preserve_thinking = preserve_thinking,
+                    seed = seed,
+                    _allow_respawn_retry = False,
+                )
+                return
             raise RuntimeError("Lost connection to llama-server")
         except Exception as e:
             if cancel_event is not None and cancel_event.is_set():
