@@ -139,7 +139,6 @@ except ImportError:
 from models import (
     CheckpointInfo,
     CheckpointListResponse,
-    ExportSizeResponse,
     LocalModelInfo,
     LocalModelListResponse,
     ModelCheckpoints,
@@ -151,6 +150,7 @@ from models import (
 from models.models import (
     BrowseEntry,
     BrowseFoldersResponse,
+    ExportSizeResponse,
     GgufVariantDetail,
     GgufVariantsResponse,
     ModelType,
