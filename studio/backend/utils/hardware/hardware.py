@@ -1111,10 +1111,18 @@ def _get_local_weight_size_bytes(model_name: str) -> Optional[int]:
         return None
 
     weight_exts = (".safetensors", ".bin", ".pt", ".pth")
+    # Skip intermediate training checkpoints: a run dir can hold several
+    # checkpoint-*/global_step* snapshots, but export loads only the model at
+    # the root, so counting them would multiply the estimate.
+    skip_prefixes = ("checkpoint-", "global_step")
     total = 0
     for file in model_path.rglob("*"):
-        if file.is_file() and file.suffix in weight_exts:
-            total += file.stat().st_size
+        if not file.is_file() or file.suffix not in weight_exts:
+            continue
+        rel = file.relative_to(model_path)
+        if any(part.startswith(skip_prefixes) for part in rel.parts):
+            continue
+        total += file.stat().st_size
     return total if total > 0 else None
 
 
@@ -1136,14 +1144,22 @@ def _get_hf_safetensors_total_params(
 
 
 def _load_config_for_gpu_estimate(model_name: str, hf_token: Optional[str] = None):
+    # Estimation needs only declarative config.json fields, and this probe runs
+    # on model selection, so read raw config.json (never run auto_map Python) and
+    # expose it as an attribute namespace for downstream getattr access.
     try:
-        from transformers import AutoConfig
-        trust_remote_code = model_name.lower().startswith("unsloth/")
-        return AutoConfig.from_pretrained(
-            model_name,
-            token = hf_token,
-            trust_remote_code = trust_remote_code,
-        )
+        from utils.transformers_version import _load_config_json
+
+        cfg = _load_config_json(model_name, hf_token = hf_token)
+        if cfg is None:
+            return None
+
+        def _to_ns(d):
+            if isinstance(d, dict):
+                return types.SimpleNamespace(**{k: _to_ns(v) for k, v in d.items()})
+            return d
+
+        return _to_ns(cfg)
     except Exception as e:
         logger.warning("Could not load config for '%s': %s", model_name, e)
         return None

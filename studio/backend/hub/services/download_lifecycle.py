@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import signal
 import subprocess
@@ -20,9 +21,25 @@ from hub.utils import inventory_scan as hf_cache_scan
 from hub.utils.hf_cache_state import EXIT_CANCELLED
 from hub.utils.state_dir import RepoType
 
+logger = logging.getLogger(__name__)
+
 
 def backend_dir() -> Path:
     return Path(__file__).resolve().parent.parent.parent
+
+
+def resolve_effective_use_xet(use_xet: bool) -> bool:
+    """Downgrade an Xet request to HTTP when hf_xet is unavailable, so a defaulted
+    or explicit Xet request never hard-fails on installs without the Xet extra."""
+    if not use_xet:
+        return False
+    reason = download_registry.download_transport_unavailable_reason(
+        download_registry.TRANSPORT_XET
+    )
+    if reason is None:
+        return True
+    logger.warning("Xet transport unavailable, falling back to HTTP: %s", reason)
+    return False
 
 
 def resolve_transport(use_xet: bool) -> str:
