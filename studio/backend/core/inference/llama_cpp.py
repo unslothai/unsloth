@@ -4104,6 +4104,9 @@ class LlamaCppBackend:
             **_windows_hidden_subprocess_kwargs(),
             **_child_popen_kwargs(),
         )
+        # Cross-session backstop: record the PID so a later startup can reap this
+        # server if parent-death cleanup did not run (macOS / best-effort failure).
+        self._record_server_pid(self._process.pid)
 
         # Start background thread to drain stdout and prevent pipe deadlock
         self._stdout_thread = threading.Thread(
@@ -5415,6 +5418,7 @@ class LlamaCppBackend:
                             **_windows_hidden_subprocess_kwargs(),
                             **_child_popen_kwargs(),
                         )
+                        self._record_server_pid(self._process.pid)
 
                         # Background thread to drain stdout (prevents pipe deadlock)
                         self._stdout_thread = threading.Thread(
@@ -6122,6 +6126,7 @@ class LlamaCppBackend:
                 self._stats_logger.stop()
                 self._stats_logger = None
             self._process = None
+            self._clear_server_pid()
             # Clear healthy so a /load during the replacement's warm-up can't
             # short-circuit against the previous server's health (#5401).
             self._healthy = False
@@ -6141,6 +6146,105 @@ class LlamaCppBackend:
                 self._llama_log_fh = None
 
     @staticmethod
+    def _server_pidfile_path() -> Optional[Path]:
+        """Pidfile recording the live llama-server PID, under the active studio root
+        (per-root, so concurrent Studios with distinct UNSLOTH_STUDIO_HOME stay
+        isolated, mirroring the reaper's custom-root isolation)."""
+        try:
+            from utils.paths.storage_roots import studio_root  # noqa: WPS433
+
+            return studio_root() / "llama-server.pid"
+        except Exception:
+            return None
+
+    @classmethod
+    def _record_server_pid(cls, pid: int) -> None:
+        """Best-effort record of the spawned llama-server PID for orphan reaping."""
+        path = cls._server_pidfile_path()
+        if path is None:
+            return
+        try:
+            path.parent.mkdir(parents = True, exist_ok = True)
+            path.write_text(str(pid))
+        except Exception as e:
+            logger.debug(f"Could not write llama-server pidfile: {e}")
+
+    @classmethod
+    def _clear_server_pid(cls) -> None:
+        """Best-effort removal of the llama-server pidfile."""
+        path = cls._server_pidfile_path()
+        if path is None:
+            return
+        try:
+            path.unlink(missing_ok = True)
+        except Exception as e:
+            logger.debug(f"Could not remove llama-server pidfile: {e}")
+
+    @staticmethod
+    def _pid_is_llama_server(pid: int) -> bool:
+        """True only if pid is a live process whose binary is a llama-server. Guards
+        against PID reuse before killing a recorded orphan; returns False on any
+        uncertainty so an unrelated process is never killed."""
+        try:
+            import psutil
+
+            try:
+                proc = psutil.Process(pid)
+                if (proc.name() or "").lower().startswith("llama-server"):
+                    return True
+                return Path(proc.exe() or "").name.lower().startswith("llama-server")
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                return False
+        except ImportError:
+            pass
+        if sys.platform != "linux":
+            return False
+        try:
+            if Path(os.readlink(f"/proc/{pid}/exe")).name.lower().startswith("llama-server"):
+                return True
+        except OSError:
+            pass
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as fh:
+                tokens = fh.read().split(b"\x00")
+            first = tokens[0].decode("utf-8", "replace") if tokens else ""
+            return Path(first).name.lower().startswith("llama-server")
+        except OSError:
+            return False
+
+    @classmethod
+    def _reap_recorded_pid(cls) -> int:
+        """Kill the exact llama-server PID recorded at spawn if it is still alive and
+        still a llama-server, then clear the pidfile. This is the cross-session
+        backstop the parent-death reaper (Job Object / PR_SET_PDEATHSIG) cannot cover:
+        an orphan left by an already-dead Studio (macOS, a best-effort failure, or a
+        pre-existing orphan). Path-independent, so it also catches an orphan the
+        install-root match would miss; the pidfile only ever names a Studio-spawned
+        server, so unrelated user processes (vllm, games) are never candidates."""
+        path = cls._server_pidfile_path()
+        if path is None or not path.exists():
+            return 0
+        killed = 0
+        try:
+            pid = int(path.read_text().strip())
+        except Exception:
+            pid = -1
+        if pid > 0 and pid != os.getpid() and cls._pid_is_llama_server(pid):
+            try:
+                os.kill(pid, signal.SIGKILL)
+                killed = 1
+                logger.info(f"Killed orphaned llama-server from pidfile (pid={pid})")
+            except (ProcessLookupError, PermissionError):
+                pass
+            except Exception as e:
+                logger.debug(f"Could not kill recorded llama-server pid {pid}: {e}")
+        try:
+            path.unlink(missing_ok = True)
+        except Exception:
+            pass
+        return killed
+
+    @staticmethod
     def _kill_orphaned_servers() -> int:
         """Kill orphaned llama-server processes started by studio.
 
@@ -6157,7 +6261,9 @@ class LlamaCppBackend:
         Returns the count of processes killed; callers arm the VRAM-settle
         wait on a positive count.
         """
-        killed = 0
+        # Cross-session backstop first: reap the exact PID we recorded at spawn
+        # (path-independent). The root-gated enumeration below stays as a fallback.
+        killed = LlamaCppBackend._reap_recorded_pid()
         try:
             # -- Build the ownership allowlist --------------------------------
             # exact_binaries -- env var overrides (exact path match).

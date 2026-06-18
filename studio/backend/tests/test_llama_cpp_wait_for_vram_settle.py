@@ -406,3 +406,99 @@ def test_startup_reaper_arms_settle_timestamp():
     assert (
         backend_cold._last_kill_monotonic == 0.0
     ), "no reap must leave the cold-start sentinel so the wait is skipped"
+
+
+# ---------------------------------------------------------------------------
+# Cross-session backstop: a server PID recorded at spawn is reaped on the next
+# startup even when parent-death cleanup did not run (macOS, a best-effort
+# PR_SET_PDEATHSIG / Job Object failure, or a pre-existing orphan), but only if
+# it is still a llama-server (PID-reuse guard).
+# ---------------------------------------------------------------------------
+
+
+class _FakeKillProc:
+    def terminate(self):
+        pass
+
+    def wait(self, timeout = None):
+        return 0
+
+    def kill(self):
+        pass
+
+    def poll(self):
+        return 0
+
+
+def test_kill_process_clears_pidfile(tmp_path):
+    """A real kill removes the recorded pidfile so a clean eject leaves no orphan marker."""
+    pidfile = tmp_path / "llama-server.pid"
+    pidfile.write_text("12345")
+    backend = LlamaCppBackend.__new__(LlamaCppBackend)
+    backend._process = _FakeKillProc()
+    backend._healthy = False
+    backend._stdout_thread = None
+    backend._llama_log_fh = None
+    backend._last_kill_monotonic = 0.0
+    backend._stats_logger = None
+    with patch.object(LlamaCppBackend, "_server_pidfile_path", staticmethod(lambda: pidfile)):
+        backend._kill_process()
+    assert not pidfile.exists()
+
+
+def test_reap_recorded_pid_kills_recorded_server(tmp_path):
+    """The recorded PID is killed and the pidfile cleared when it is still a llama-server."""
+    import subprocess
+
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    pidfile = tmp_path / "llama-server.pid"
+    pidfile.write_text(str(proc.pid))
+    try:
+        with (
+            patch.object(LlamaCppBackend, "_server_pidfile_path", staticmethod(lambda: pidfile)),
+            patch.object(
+                LlamaCppBackend,
+                "_pid_is_llama_server",
+                staticmethod(lambda pid: pid == proc.pid),
+            ),
+        ):
+            n = LlamaCppBackend._reap_recorded_pid()
+        assert n == 1
+        assert not pidfile.exists()
+        proc.wait(timeout = 5)
+        assert proc.poll() is not None
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout = 5)
+
+
+def test_reap_recorded_pid_skips_pid_reuse(tmp_path):
+    """A recorded PID recycled to a non-llama-server must NOT be killed (only the
+    stale pidfile is cleaned), so the user's vllm/games are never touched."""
+    import subprocess
+
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    pidfile = tmp_path / "llama-server.pid"
+    pidfile.write_text(str(proc.pid))
+    try:
+        with (
+            patch.object(LlamaCppBackend, "_server_pidfile_path", staticmethod(lambda: pidfile)),
+            patch.object(
+                LlamaCppBackend, "_pid_is_llama_server", staticmethod(lambda pid: False)
+            ),
+        ):
+            n = LlamaCppBackend._reap_recorded_pid()
+        assert n == 0
+        assert proc.poll() is None, "an unrelated reused PID must not be killed"
+        assert not pidfile.exists(), "stale pidfile is cleaned up"
+    finally:
+        proc.kill()
+        proc.wait(timeout = 5)
+
+
+def test_reap_recorded_pid_no_pidfile(tmp_path):
+    """No pidfile -> nothing reaped, no error."""
+    pidfile = tmp_path / "llama-server.pid"  # never created
+    with patch.object(LlamaCppBackend, "_server_pidfile_path", staticmethod(lambda: pidfile)):
+        assert LlamaCppBackend._reap_recorded_pid() == 0
