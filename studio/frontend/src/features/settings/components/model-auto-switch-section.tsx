@@ -144,13 +144,13 @@ export function ModelAutoSwitchSection() {
               {isSaving ? t("common.saving") : t("common.save")}
             </Button>
           </div>
-          {settings && !settings.enabled ? (
-            <span className="max-w-[260px] text-right text-xs text-muted-foreground">
-              {t("settings.general.modelAutoSwitch.idleNeedsEnable")}
-            </span>
-          ) : error ? (
+          {error ? (
             <span className="max-w-[260px] text-right text-xs text-destructive">
               {error}
+            </span>
+          ) : settings && !settings.enabled ? (
+            <span className="max-w-[260px] text-right text-xs text-muted-foreground">
+              {t("settings.general.modelAutoSwitch.idleNeedsEnable")}
             </span>
           ) : null}
         </div>
