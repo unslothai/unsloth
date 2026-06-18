@@ -295,6 +295,7 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
             max_seq_length = max_seq_length,
             load_in_4bit = load_in_4bit,
             trust_remote_code = trust_remote_code,
+            hf_token = cmd.get("hf_token"),
         )
 
         _send_response(
