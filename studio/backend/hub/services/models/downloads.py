@@ -64,7 +64,7 @@ def _spawn_download_worker(
     repo_id: str,
     variant: Optional[str],
     hf_token: Optional[str],
-    use_xet: bool = False,
+    use_xet: bool = True,
     protected_blob_hashes: Optional[frozenset[str]] = None,
 ) -> subprocess.Popen:
     args = ["--repo-id", repo_id]
