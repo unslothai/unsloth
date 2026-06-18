@@ -57,7 +57,7 @@ def format_data(sample):
 
 
 system_message = "You are an expert french ocr system."
-# List comprehension (not .map) to keep PIL.Image type; .map converts images to bytes.
+# List comprehension (not .map): .map would convert PIL images to bytes.
 train_dataset = [format_data(sample) for sample in train_dataset]
 eval_dataset = [format_data(sample) for sample in eval_dataset]
 
@@ -128,7 +128,7 @@ trainer = SFTTrainer(
         per_device_train_batch_size = 2,
         gradient_accumulation_steps = 4,
         gradient_checkpointing = True,
-        gradient_checkpointing_kwargs = {"use_reentrant": False},  # use reentrant checkpointing
+        gradient_checkpointing_kwargs = {"use_reentrant": False},
         max_grad_norm = 0.3,  # max gradient norm based on QLoRA paper
         warmup_ratio = 0.03,
         # num_train_epochs = 2, # Set this instead of max_steps for full training runs

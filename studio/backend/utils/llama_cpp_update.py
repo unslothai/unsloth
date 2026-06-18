@@ -37,9 +37,11 @@ from utils.llama_cpp_freshness import (
     _INSTALL_MARKER_NAME,
     check_prebuilt_freshness,
     latest_published_release,
+    latest_release_assets,
     parse_base_build,
     read_install_marker,
     reset_caches,
+    update_download_size_bytes,
 )
 
 logger = structlog.get_logger(__name__)
@@ -291,6 +293,18 @@ def _source_build_status(binary: str, *, force_refresh: bool) -> Optional[dict]:
         update_available = False
     # Display the mix tag when that's what makes it newer; otherwise the base.
     latest = release_tag if latest_is_mix else base_tag
+    # Size of the resolved prebuilt, so source builds show it like the marker
+    # path. Fails open to None (offline / asset absent from the release).
+    update_size_bytes = None
+    if update_available:
+        asset_name = res.get("asset")
+        if isinstance(asset_name, str) and asset_name:
+            try:
+                assets = latest_release_assets(res.get("repo"), force_refresh = force_refresh)
+                if assets:
+                    update_size_bytes = assets.get(asset_name)
+            except Exception as exc:  # pragma: no cover - network defensive
+                logger.debug("llama update: source-build size lookup failed", error = str(exc))
     with _job_lock:
         job = dict(_job)
     return {
@@ -303,6 +317,7 @@ def _source_build_status(binary: str, *, force_refresh: bool) -> Optional[dict]:
         "installed_at_utc": None,
         "age_days": None,
         "source_build": True,
+        "update_size_bytes": update_size_bytes,
         "job": job,
     }
 
@@ -345,6 +360,20 @@ def get_update_status(*, force_refresh: bool = False) -> dict:
     # (see llama_cpp_freshness.is_behind).
     update_available = bool(freshness.get("has_marker") and freshness.get("behind"))
 
+    # Size of the prebuilt that Update would download, for the banner. Only when
+    # an update is offered; fails open to None (offline / no matching asset).
+    update_size_bytes = None
+    if update_available:
+        try:
+            update_size_bytes = update_download_size_bytes(
+                marker,
+                latest,
+                freshness.get("published_repo") or repo,
+                force_refresh = force_refresh,
+            )
+        except Exception as exc:  # pragma: no cover - network defensive
+            logger.debug("llama update: size lookup failed", error = str(exc))
+
     with _job_lock:
         job = dict(_job)
 
@@ -358,6 +387,7 @@ def get_update_status(*, force_refresh: bool = False) -> dict:
         "installed_at_utc": freshness.get("installed_at_utc"),
         "age_days": freshness.get("age_days"),
         "source_build": False,
+        "update_size_bytes": update_size_bytes,
         "job": job,
     }
 

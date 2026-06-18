@@ -281,6 +281,7 @@ def test_kill_process_records_timestamp_on_actual_kill():
     backend = LlamaCppBackend.__new__(LlamaCppBackend)
     backend._process = None
     backend._healthy = False
+    backend._stats_logger = None  # _kill_process stops it in finally
     backend._stdout_thread = None
     backend._llama_log_fh = None
     backend._last_kill_monotonic = 0.0
@@ -306,6 +307,26 @@ def test_kill_process_records_timestamp_on_actual_kill():
     backend._kill_process()
     after = time.monotonic()
     assert before <= backend._last_kill_monotonic <= after
+
+
+def test_kill_process_tolerates_partially_constructed_backend():
+    # Teardown must not AttributeError on a __new__-built backend that never ran
+    # __init__: _stats_logger / _stdout_thread / _llama_log_fh are left unset.
+    backend = LlamaCppBackend.__new__(LlamaCppBackend)
+
+    class _FakeProcess:
+        def terminate(self):
+            pass
+
+        def wait(self, timeout = None):
+            return 0
+
+        def kill(self):
+            pass
+
+    backend._process = _FakeProcess()
+    backend._kill_process()
+    assert backend._process is None
 
 
 def test_helper_is_static_method_callable_off_class():

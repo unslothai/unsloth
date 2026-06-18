@@ -95,7 +95,6 @@ def load_and_compute_8bit_ppl(
     #     chat_template="llama-3.1",
     # )
 
-    # Load dataset fresh in subprocess
     dataset_ppl = load_dataset("allenai/openassistant-guanaco-reformatted", split = "eval")
 
     alpaca_prompt = """Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request.
@@ -144,7 +143,7 @@ def load_and_compute_8bit_ppl(
 
     ppl_value = ppl_model(merged_model, merged_tokenizer, dataset_ppl)
 
-    # Coerce to a Python float regardless of source type.
+    # Coerce to a Python float.
     if torch.is_tensor(ppl_value):
         ppl_value = ppl_value.cpu().item()
     elif hasattr(ppl_value, "item"):
@@ -243,7 +242,6 @@ if __name__ == "__main__":
 
     add_to_comparison("Qlora model", ppl_model(model, tokenizer, dataset_ppl))
 
-    # Merge and save to local disk.
     print("merge and save to local disk")
     model.save_pretrained_merged(
         save_directory = "./unsloth_out/merged_qwen_text_model", tokenizer = tokenizer
