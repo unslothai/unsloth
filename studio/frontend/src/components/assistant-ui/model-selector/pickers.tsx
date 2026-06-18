@@ -1176,6 +1176,8 @@ export function HubModelPicker({
   const [downloadedCollapsed, setDownloadedCollapsed] = useState(false);
   const [customFoldersCollapsed, setCustomFoldersCollapsed] = useState(false);
   const [fineTunedCollapsed, setFineTunedCollapsed] = useState(false);
+  const [lmStudioCollapsed, setLmStudioCollapsed] = useState(false);
+  const [localDirCollapsed, setLocalDirCollapsed] = useState(false);
   // The Fine-tuned section header; the train icon on the Unsloth header scrolls
   // here so users can jump to their trained models.
   const fineTunedSectionRef = useRef<HTMLDivElement>(null);
@@ -1772,12 +1774,15 @@ export function HubModelPicker({
       );
     }
 
-    if (section === "downloaded") {
+    if (section === "downloaded" && !lmStudioCollapsed) {
       keys.push(
         ...sortedLmStudio.map((model) =>
           makeModelOptionKey("lm-studio", model.id),
         ),
       );
+    }
+
+    if (section === "downloaded" && !localDirCollapsed) {
       keys.push(
         ...sortedLocalDir.map((model) =>
           makeModelOptionKey("local-dir", model.id),
@@ -1803,10 +1808,12 @@ export function HubModelPicker({
     filteredRecommendedIds,
     hfIds,
     sortedLmStudio,
+    lmStudioCollapsed,
     recommendedRows,
     section,
     showHfSection,
     sortedLocalDir,
+    localDirCollapsed,
     visibleCachedGguf,
     visibleCachedModelRows,
   ]);
@@ -2568,122 +2575,135 @@ export function HubModelPicker({
 
           {section === "downloaded" && sortedLmStudio.length > 0 ? (
             <>
-              <ListLabel>LM Studio</ListLabel>
-              {sortedLmStudio.map((m) => {
-                const isGgufFile = m.path.toLowerCase().endsWith(".gguf");
-                const isGguf = isGgufRepo(m.id) || isGgufRepo(m.display_name);
-                const optionKey = makeModelOptionKey("lm-studio", m.id);
-                return (
-                  <div key={m.id}>
-                    <ModelRow
-                      label={m.model_id ?? m.display_name}
-                      meta={isGguf || isGgufFile ? "GGUF" : "Local"}
-                      selected={value === m.id}
-                      optionProps={hubModelList.getOptionProps(
-                        optionKey,
-                        value === m.id,
-                      )}
-                      onClick={() => {
-                        if (isGguf) {
-                          toggleGgufExpanded(m.id);
-                        } else {
-                          onSelect(m.id, {
-                            source: "local",
-                            isLora: false,
-                            isDownloaded: true,
-                            isGguf: isGgufFile,
-                          });
+              <ListLabel
+                collapsed={lmStudioCollapsed}
+                onToggle={() => setLmStudioCollapsed((v) => !v)}
+              >
+                LM Studio
+              </ListLabel>
+              {!lmStudioCollapsed &&
+                sortedLmStudio.map((m) => {
+                  const isGgufFile = m.path.toLowerCase().endsWith(".gguf");
+                  const isGguf = isGgufRepo(m.id) || isGgufRepo(m.display_name);
+                  const optionKey = makeModelOptionKey("lm-studio", m.id);
+                  return (
+                    <div key={m.id}>
+                      <ModelRow
+                        label={m.model_id ?? m.display_name}
+                        meta={isGguf || isGgufFile ? "GGUF" : "Local"}
+                        selected={value === m.id}
+                        optionProps={hubModelList.getOptionProps(
+                          optionKey,
+                          value === m.id,
+                        )}
+                        onClick={() => {
+                          if (isGguf) {
+                            toggleGgufExpanded(m.id);
+                          } else {
+                            onSelect(m.id, {
+                              source: "local",
+                              isLora: false,
+                              isDownloaded: true,
+                              isGguf: isGgufFile,
+                            });
+                          }
+                        }}
+                        onArrowDownIntoChildren={
+                          isGgufExpanded(m.id)
+                            ? () => {
+                                const focused =
+                                  focusFirstChildOption(optionKey);
+                                return focused;
+                              }
+                            : undefined
                         }
-                      }}
-                      onArrowDownIntoChildren={
-                        isGgufExpanded(m.id)
-                          ? () => {
-                              const focused = focusFirstChildOption(optionKey);
-                              return focused;
-                            }
-                          : undefined
-                      }
-                      vramStatus={null}
-                    />
-                    {isGgufExpanded(m.id) && (
-                      <GgufVariantExpander
-                        repoId={m.id}
-                        onDevice={true}
-                        onSelect={onSelect}
-                        parentOptionKey={optionKey}
-                        onNavigatePastStart={() =>
-                          hubModelList.focusOption(optionKey)
-                        }
-                        onNavigatePastEnd={() =>
-                          hubModelList.moveFocus(optionKey, "next")
-                        }
-                        gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
-                        systemRamGb={
-                          gpu.available ? gpu.systemRamAvailableGb : undefined
-                        }
+                        vramStatus={null}
                       />
-                    )}
-                  </div>
-                );
-              })}
+                      {isGgufExpanded(m.id) && (
+                        <GgufVariantExpander
+                          repoId={m.id}
+                          onDevice={true}
+                          onSelect={onSelect}
+                          parentOptionKey={optionKey}
+                          onNavigatePastStart={() =>
+                            hubModelList.focusOption(optionKey)
+                          }
+                          onNavigatePastEnd={() =>
+                            hubModelList.moveFocus(optionKey, "next")
+                          }
+                          gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
+                          systemRamGb={
+                            gpu.available ? gpu.systemRamAvailableGb : undefined
+                          }
+                        />
+                      )}
+                    </div>
+                  );
+                })}
             </>
           ) : null}
 
           {section === "downloaded" && sortedLocalDir.length > 0 ? (
             <>
-              <ListLabel>Local models</ListLabel>
-              {sortedLocalDir.map((m) => {
-                const isGguf = localModelIsGguf(m);
-                const optionKey = makeModelOptionKey("local-dir", m.id);
-                return (
-                  <div key={m.id}>
-                    <ModelRow
-                      label={m.model_id ?? m.display_name}
-                      meta={isGguf ? "GGUF" : "Local"}
-                      selected={value === m.id}
-                      optionProps={hubModelList.getOptionProps(
-                        optionKey,
-                        value === m.id,
-                      )}
-                      onClick={() => {
-                        if (isGguf) {
-                          toggleGgufExpanded(m.id);
-                        } else {
-                          onSelect(m.id, {
-                            source: "local",
-                            isLora: false,
-                            isDownloaded: true,
-                          });
+              <ListLabel
+                collapsed={localDirCollapsed}
+                onToggle={() => setLocalDirCollapsed((v) => !v)}
+              >
+                Local models
+              </ListLabel>
+              {!localDirCollapsed &&
+                sortedLocalDir.map((m) => {
+                  const isGguf = localModelIsGguf(m);
+                  const optionKey = makeModelOptionKey("local-dir", m.id);
+                  return (
+                    <div key={m.id}>
+                      <ModelRow
+                        label={m.model_id ?? m.display_name}
+                        meta={isGguf ? "GGUF" : "Local"}
+                        selected={value === m.id}
+                        optionProps={hubModelList.getOptionProps(
+                          optionKey,
+                          value === m.id,
+                        )}
+                        onClick={() => {
+                          if (isGguf) {
+                            toggleGgufExpanded(m.id);
+                          } else {
+                            onSelect(m.id, {
+                              source: "local",
+                              isLora: false,
+                              isDownloaded: true,
+                            });
+                          }
+                        }}
+                        onArrowDownIntoChildren={
+                          isGgufExpanded(m.id)
+                            ? () => focusFirstChildOption(optionKey)
+                            : undefined
                         }
-                      }}
-                      onArrowDownIntoChildren={
-                        isGgufExpanded(m.id)
-                          ? () => focusFirstChildOption(optionKey)
-                          : undefined
-                      }
-                      vramStatus={null}
-                    />
-                    {isGgufExpanded(m.id) && (
-                      <GgufVariantExpander
-                        repoId={m.id}
-                        onDevice={true}
-                        onSelect={onSelect}
-                        parentOptionKey={optionKey}
-                        onNavigatePastStart={() =>
-                          hubModelList.focusOption(optionKey)
-                        }
-                        onNavigatePastEnd={() =>
-                          hubModelList.moveFocus(optionKey, "next")
-                        }
-                        gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
-                        systemRamGb={
-                          gpu.available ? gpu.systemRamAvailableGb : undefined
-                        }
+                        vramStatus={null}
                       />
-                    )}
-                  </div>
-                );
-              })}
+                      {isGgufExpanded(m.id) && (
+                        <GgufVariantExpander
+                          repoId={m.id}
+                          onDevice={true}
+                          onSelect={onSelect}
+                          parentOptionKey={optionKey}
+                          onNavigatePastStart={() =>
+                            hubModelList.focusOption(optionKey)
+                          }
+                          onNavigatePastEnd={() =>
+                            hubModelList.moveFocus(optionKey, "next")
+                          }
+                          gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
+                          systemRamGb={
+                            gpu.available ? gpu.systemRamAvailableGb : undefined
+                          }
+                        />
+                      )}
+                    </div>
+                  );
+                })}
             </>
           ) : null}
 
