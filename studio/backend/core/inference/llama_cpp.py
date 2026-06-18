@@ -4550,10 +4550,8 @@ class LlamaCppBackend:
                             )
                             and (
                                 _mtp_binary_ok
-                                # A raised (uncached) probe re-probes in
-                                # _build_speculative_flags and may still launch the
-                                # drafter, so reserve for it; a clean negative probe
-                                # means no MTP support, so don't.
+                                # Reserve on a raised (uncached) probe too: it re-probes
+                                # in _build_speculative_flags and may still load the drafter.
                                 or (_mtp_probe_raised and bool(mtp_draft_path))
                             )
                         )
