@@ -451,7 +451,7 @@ function ModelRow({
           <DotTag
             tone="success"
             label="Loaded"
-            className="h-[18px] gap-1 px-1"
+            className="h-[18px] gap-1 rounded-md px-1"
             dotClassName="size-[5px]"
           />
         )}
@@ -486,7 +486,7 @@ function ModelRow({
             key={f.label}
             tone={f.tone}
             label={f.label}
-            className="h-[18px] gap-[3px] px-1"
+            className="h-[18px] gap-[3px] rounded-md px-1"
             dotClassName="size-[5px]"
           />
         ))}
@@ -2057,7 +2057,7 @@ export function HubModelPicker({
           // and a thin gutter lets the row pills widen toward it. A flex column
           // with a min height keeps the box tall and pins the eject footer to
           // the bottom even when only a few models are listed.
-          "model-list-scroll -mr-1 flex min-h-[18rem] max-h-[24rem] flex-col overflow-y-auto pr-0.5",
+          "model-list-scroll -mr-1 flex min-h-[15rem] max-h-[21rem] flex-col overflow-y-auto pr-0.5",
           listScrolled && "is-scrolled",
         )}
         {...hubModelList.listboxProps}
