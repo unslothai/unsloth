@@ -8,6 +8,7 @@ The endpoint must never raise and must degrade to nulls when size is unknown.
 
 import asyncio
 import importlib.util
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -160,6 +161,10 @@ class TestExportSizeEndpoint(unittest.TestCase):
             patch.object(self.models_route, "is_local_path", return_value = True),
             patch.object(self.models_route, "_is_sizable_local_path", return_value = True),
             patch(
+                "utils.hardware.hardware._resolve_model_identifier_for_gpu_estimate",
+                side_effect = lambda m, **_kw: m,
+            ),
+            patch(
                 "utils.hardware.hardware.estimate_fp16_model_size_bytes",
                 return_value = (_QWEN35_FP16_BYTES, "local"),
             ),
@@ -173,6 +178,30 @@ class TestExportSizeEndpoint(unittest.TestCase):
             )
         self.assertEqual(resp.fp16_bytes, _QWEN35_FP16_BYTES)
         self.assertEqual(resp.source, "local")
+
+    def test_local_adapter_base_escaping_roots_is_rejected(self):
+        # A local adapter under a root whose resolved base points outside the
+        # roots (e.g. "/") must not be sized: the resolved base is re-validated.
+        adapter = "/root/.unsloth/studio/outputs/adapter"
+        with (
+            patch.object(self.models_route, "is_local_path", return_value = True),
+            patch.object(
+                self.models_route, "_is_sizable_local_path", side_effect = lambda p: p == adapter
+            ),
+            patch(
+                "utils.hardware.hardware._resolve_model_identifier_for_gpu_estimate",
+                return_value = "/",
+            ),
+            patch("utils.hardware.hardware.estimate_fp16_model_size_bytes") as mock_sizer,
+        ):
+            resp = asyncio.run(
+                self.models_route.get_export_size(
+                    model = adapter, hf_token = None, current_subject = "test-user"
+                )
+            )
+        self.assertIsNone(resp.fp16_bytes)
+        self.assertEqual(resp.source, "unavailable")
+        mock_sizer.assert_not_called()
 
     def test_is_sizable_local_path_containment(self):
         # Only paths under a trusted root are sizable; '..' can't escape.
@@ -192,6 +221,24 @@ class TestExportSizeEndpoint(unittest.TestCase):
                 self.assertFalse(is_sizable(str(root / "missing")))
                 self.assertFalse(is_sizable("/etc"))
                 self.assertFalse(is_sizable(str(root / ".." / "etc")))
+                # A symlink inside a root pointing outside it cannot escape.
+                escape = root / "escape"
+                os.symlink(tmp, escape)
+                self.assertFalse(is_sizable(str(escape)))
+
+    def test_local_weight_size_skips_nested_checkpoints(self):
+        # A run dir's intermediate checkpoint-*/global_step* snapshots must not
+        # be counted; only the model files at the root are summed.
+        from utils.hardware.hardware import _get_local_weight_size_bytes
+
+        with tempfile.TemporaryDirectory() as tmp:
+            run = Path(tmp)
+            (run / "model.safetensors").write_bytes(b"\0" * 1000)
+            for sub, size in (("checkpoint-60", 5000), ("global_step10", 7000)):
+                d = run / sub
+                d.mkdir()
+                (d / "model.safetensors").write_bytes(b"\0" * size)
+            self.assertEqual(_get_local_weight_size_bytes(str(run)), 1000)
 
 
 if __name__ == "__main__":

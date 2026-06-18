@@ -1057,10 +1057,18 @@ def _get_local_weight_size_bytes(model_name: str) -> Optional[int]:
         return None
 
     weight_exts = (".safetensors", ".bin", ".pt", ".pth")
+    # Skip intermediate training checkpoints: a run dir can hold several
+    # checkpoint-*/global_step* snapshots, but export loads only the model at
+    # the root, so counting them would multiply the estimate.
+    skip_prefixes = ("checkpoint-", "global_step")
     total = 0
     for file in model_path.rglob("*"):
-        if file.is_file() and file.suffix in weight_exts:
-            total += file.stat().st_size
+        if not file.is_file() or file.suffix not in weight_exts:
+            continue
+        rel = file.relative_to(model_path)
+        if any(part.startswith(skip_prefixes) for part in rel.parts):
+            continue
+        total += file.stat().st_size
     return total if total > 0 else None
 
 

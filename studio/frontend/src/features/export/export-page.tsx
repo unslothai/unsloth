@@ -247,11 +247,21 @@ export function ExportPage() {
     ? selectedSourceModel ?? "—"
     : baseModelName;
 
+  // For a full fine-tune checkpoint the weights live in the checkpoint dir
+  // itself (its base_model may be a local/custom path that can't be sized), so
+  // size that dir; for LoRA adapters the export merges into the base model.
+  const sizeTargetModel = useMemo(() => {
+    if (sourceMode === "checkpoint" && !isAdapter) {
+      const cp = checkpointsForModel.find((c) => c.display_name === checkpoint);
+      if (cp?.path) {
+        return cp.path;
+      }
+    }
+    return sourceBaseModelName;
+  }, [sourceMode, isAdapter, checkpointsForModel, checkpoint, sourceBaseModelName]);
+
   // Real (MoE-aware) fp16 size, used to scale the GGUF quant estimates.
-  const { fp16Bytes } = useExportSizeEstimate(
-    sourceBaseModelName,
-    debouncedHfToken,
-  );
+  const { fp16Bytes } = useExportSizeEstimate(sizeTargetModel, debouncedHfToken);
   const quantSizeLabels = useMemo(
     () => buildQuantSizeLabels(fp16Bytes),
     [fp16Bytes],

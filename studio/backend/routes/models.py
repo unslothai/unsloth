@@ -2775,8 +2775,10 @@ _EXPORT_SIZE_CACHE: dict[str, tuple[int, int, str]] = {}
 def _is_sizable_local_path(model: str) -> bool:
     """True only for local paths under a Studio data root.
 
-    Containment is decided by lexical normalization before any filesystem
-    access, so a user-controlled path can't trigger a scan of an arbitrary dir.
+    Containment is decided lexically (no filesystem access) before the path is
+    touched, then the path is symlink-resolved and re-checked so a symlink
+    inside a root can't point the sizer outside it. A user-controlled path thus
+    can't trigger a scan of an arbitrary dir.
     """
     from utils.paths import outputs_root, exports_root, studio_root
     from utils.paths.storage_roots import cache_root
@@ -2785,8 +2787,9 @@ def _is_sizable_local_path(model: str) -> bool:
         # Lexical only (no filesystem read); normpath collapses '..'.
         return os.path.normpath(os.path.abspath(os.path.expanduser(p)))
 
+    raw_roots = [studio_root(), outputs_root(), exports_root(), cache_root()]
     roots = []
-    for root in (studio_root(), outputs_root(), exports_root(), cache_root()):
+    for root in raw_roots:
         try:
             roots.append(_lexical(str(root)))
         except (OSError, RuntimeError, ValueError):
@@ -2798,8 +2801,20 @@ def _is_sizable_local_path(model: str) -> bool:
         return False
     for root in roots:
         if candidate == root or candidate.startswith(root + os.sep):
-            # Contained in a trusted root; safe to touch the filesystem.
-            return os.path.exists(candidate)
+            # Contained lexically; resolve symlinks and re-verify the real path
+            # is still under a root before touching the filesystem.
+            try:
+                real = os.path.realpath(candidate)
+            except (OSError, RuntimeError, ValueError):
+                return False
+            for raw in raw_roots:
+                try:
+                    real_root = os.path.realpath(str(raw))
+                except (OSError, RuntimeError, ValueError):
+                    continue
+                if real == real_root or real.startswith(real_root + os.sep):
+                    return os.path.exists(real)
+            return False
     return False
 
 
@@ -2815,7 +2830,18 @@ def _export_size_cached(
     if cached is not None:
         return cached
     try:
-        from utils.hardware.hardware import estimate_fp16_model_size_bytes
+        from utils.hardware.hardware import (
+            _resolve_model_identifier_for_gpu_estimate,
+            estimate_fp16_model_size_bytes,
+        )
+
+        # A local LoRA adapter is sized via its base model, which the sizer
+        # reads from the adapter config; re-validate that resolved base so a
+        # crafted adapter can't redirect the local scan outside the roots.
+        if is_local_path(model):
+            base = _resolve_model_identifier_for_gpu_estimate(model, hf_token = hf_token)
+            if is_local_path(base) and not _is_sizable_local_path(base):
+                return None, None, "unavailable"
 
         fp16_bytes, source = estimate_fp16_model_size_bytes(model, hf_token = hf_token)
         if not fp16_bytes or fp16_bytes <= 0:
