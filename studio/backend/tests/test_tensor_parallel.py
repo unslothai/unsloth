@@ -323,6 +323,7 @@ def _recovery_backend() -> LlamaCppBackend:
     b = LlamaCppBackend()
     b._tensor_parallel = True
     b._speculative_type = "draft-mtp"
+    b._mtp_runtime_fallback_active = True
     b._process = _FakeProcess()
     b._last_load_kwargs = {
         "model_identifier": "owner/repo",
@@ -369,21 +370,133 @@ def test_runtime_recovery_reloads_without_mtp(monkeypatch):
 @pytest.mark.parametrize(
     "mutate",
     [
-        lambda b: setattr(b, "_tensor_parallel", False),
-        lambda b: setattr(b, "_speculative_type", "ngram-mod"),
+        lambda b: setattr(b, "_mtp_runtime_fallback_active", False),
         lambda b: setattr(b, "_last_load_kwargs", None),
         lambda b: setattr(b, "_process", None),
         lambda b: b._cancel_event.set(),
     ],
 )
 def test_runtime_recovery_skips_when_not_applicable(monkeypatch, mutate):
-    # No reload when tensor is off, the resolved spec was not MTP, there is no
-    # snapshot, the process handle is gone, or the request was cancelled.
+    # No reload when this launch is not running MTP+tensor, there is no snapshot,
+    # the process handle is gone, or the request was cancelled.
     b = _recovery_backend()
     mutate(b)
     calls = []
     monkeypatch.setattr(b, "load_model", lambda **k: calls.append(k))
     assert b._maybe_recover_from_mtp_crash(RuntimeError()) is False
+    assert calls == []
+
+
+class _BlockingDeadProc:
+    # Reports alive until released, then dead -- lets a test mutate backend state
+    # while the recovery thread is still in its death-confirm poll.
+    def __init__(self):
+        self._dead = threading.Event()
+
+    def poll(self):
+        return 0 if self._dead.is_set() else None
+
+    def terminate(self):
+        self._dead.set()
+
+    def kill(self):
+        self._dead.set()
+
+    def wait(self, timeout = None):
+        self._dead.set()
+        return 0
+
+    def release(self):
+        self._dead.set()
+
+
+def test_runtime_recovery_fires_for_user_env_mtp(monkeypatch):
+    # MTP driven by user extra_args / LLAMA_ARG_SPEC_TYPE leaves _speculative_type
+    # unset, but the launch flag still gates recovery on (pass-through MTP).
+    b = _recovery_backend()
+    b._speculative_type = None  # Studio stepped back; user/env owns the spec
+    done = threading.Event()
+    captured = {}
+
+    def _fake_load_model(**kwargs):
+        captured.update(kwargs)
+        done.set()
+        return True
+
+    monkeypatch.setattr(b, "load_model", _fake_load_model)
+    assert b._maybe_recover_from_mtp_crash(RuntimeError()) is True
+    assert done.wait(timeout = 5)
+    assert captured["speculative_type"] == "off"
+
+
+def test_runtime_recovery_strips_user_mtp_extra_args(monkeypatch):
+    # A user --spec-type draft-mtp in extra_args must be neutralised on the reload
+    # (append a last-wins --spec-default) so MTP can't re-engage and loop.
+    b = _recovery_backend()
+    b._last_load_kwargs = dict(b._last_load_kwargs, extra_args = ["--spec-type", "draft-mtp"])
+    done = threading.Event()
+    captured = {}
+
+    def _fake_load_model(**kwargs):
+        captured.update(kwargs)
+        done.set()
+        return True
+
+    monkeypatch.setattr(b, "load_model", _fake_load_model)
+    assert b._maybe_recover_from_mtp_crash(RuntimeError()) is True
+    assert done.wait(timeout = 5)
+    assert captured["speculative_type"] == "off"
+    assert captured["extra_args"][-1] == "--spec-default"
+
+
+def test_runtime_recovery_restores_requested_mode(monkeypatch):
+    # After the off-reload, /status must show the user's requested mode + the
+    # runtime-error note, not a bare "off" (matches the startup MTP fallback).
+    b = _recovery_backend()
+    b._last_load_kwargs = dict(b._last_load_kwargs, speculative_type = "mtp")
+    done = threading.Event()
+
+    def _fake_load_model(**kwargs):
+        b._requested_spec_mode = "off"  # what a real off-reload would leave behind
+        done.set()
+        return True
+
+    monkeypatch.setattr(b, "load_model", _fake_load_model)
+    assert b._maybe_recover_from_mtp_crash(RuntimeError()) is True
+    assert done.wait(timeout = 5)
+    deadline = time.monotonic() + 2
+    while b._requested_spec_mode != "mtp" and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert b._requested_spec_mode == "mtp"
+    assert b._spec_fallback_reason == "runtime_error"
+
+
+def test_runtime_recovery_skips_when_process_replaced(monkeypatch):
+    # A newer user load that replaces the process during the death-confirm poll
+    # must not be clobbered by the stale recovery replay.
+    b = _recovery_backend()
+    p1 = _BlockingDeadProc()
+    b._process = p1
+    calls = []
+    monkeypatch.setattr(b, "load_model", lambda **k: calls.append(k))
+    assert b._maybe_recover_from_mtp_crash(RuntimeError()) is True  # captures p1
+    b._process = _FakeProcess()  # a newer load swapped the live process
+    p1.release()  # p1 now reports dead -> recovery runs its staleness check
+    time.sleep(0.6)
+    assert calls == [], "stale recovery replayed over a newer load"
+
+
+def test_runtime_recovery_skips_when_snapshot_changed(monkeypatch):
+    # If the recorded load changed during the poll, the stale snapshot is dropped.
+    b = _recovery_backend()
+    p1 = _BlockingDeadProc()
+    b._process = p1
+    calls = []
+    monkeypatch.setattr(b, "load_model", lambda **k: calls.append(k))
+    assert b._maybe_recover_from_mtp_crash(RuntimeError()) is True
+    b._last_load_kwargs = dict(b._last_load_kwargs, model_identifier = "other/model")
+    p1.release()
+    time.sleep(0.6)
     assert calls == []
 
 
@@ -497,13 +610,12 @@ def test_crash_watchdog_ignores_intentional_termination(monkeypatch):
 @pytest.mark.parametrize(
     "mutate",
     [
-        lambda b: setattr(b, "_tensor_parallel", False),
-        lambda b: setattr(b, "_speculative_type", "ngram-mod"),
+        lambda b: setattr(b, "_mtp_runtime_fallback_active", False),
         lambda b: setattr(b, "_process", None),
     ],
 )
 def test_crash_watchdog_not_armed_when_inapplicable(mutate):
-    # Only a Studio-managed MTP + tensor load with a live process arms it.
+    # Only a launch actually running MTP+tensor with a live process arms it.
     b = _recovery_backend()
     b._process = _ToggleProcess()
     mutate(b)
