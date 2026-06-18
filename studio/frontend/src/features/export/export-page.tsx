@@ -43,6 +43,7 @@ import {
 } from "@/hooks";
 import {
   AlertCircleIcon,
+  ArrowDown01Icon,
   FolderSearchIcon,
   InformationCircleIcon,
   Key01Icon,
@@ -547,6 +548,32 @@ export function ExportPage() {
 
   const showPanel = panelOpen || panelActive;
 
+  // Bring the panel into view when it opens and offer a scroll-down affordance
+  // (like Chat) when its end is below the fold.
+  const panelEndRef = useRef<HTMLDivElement>(null);
+  const [panelEndVisible, setPanelEndVisible] = useState(true);
+
+  useEffect(() => {
+    if (!showPanel) return;
+    const id = window.setTimeout(() => {
+      panelEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    }, 60);
+    return () => window.clearTimeout(id);
+  }, [showPanel]);
+
+  useEffect(() => {
+    const el = panelEndRef.current;
+    if (!showPanel || !el) return;
+    // The scroll-down button is also gated on showPanel, so there is no need to
+    // reset visibility when the panel closes; the observer self-corrects on open.
+    const obs = new IntersectionObserver(
+      ([entry]) => setPanelEndVisible(entry.isIntersecting),
+      { rootMargin: "0px 0px -40px 0px" },
+    );
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, [showPanel]);
+
   // ---- Render ----
   return (
     <div className="min-h-[calc(100dvh-var(--studio-titlebar-height,0px))] bg-background">
@@ -627,16 +654,8 @@ export function ExportPage() {
                     </button>
                   </div>
 
-                  <AnimatePresence mode="wait" initial={false}>
                   {sourceMode === "checkpoint" ? (
-                    <motion.div
-                      key="checkpoint"
-                      initial={{ height: 0, opacity: 0 }}
-                      animate={{ height: "auto", opacity: 1 }}
-                      exit={{ height: 0, opacity: 0 }}
-                      transition={{ duration: 0.25, ease: [0.25, 0.1, 0.25, 1] }}
-                      className="flex flex-col gap-2 overflow-visible"
-                    >
+                    <div className="flex flex-col gap-2 overflow-visible">
                       <div data-tour="export-training-run" className="flex flex-col gap-2">
                         <Select
                           value={selectedModelIdx ?? ""}
@@ -748,16 +767,9 @@ export function ExportPage() {
                           </SelectContent>
                         </Select>
                       </div>
-                    </motion.div>
+                    </div>
                   ) : (
-                    <motion.div
-                      key="model"
-                      initial={{ height: 0, opacity: 0 }}
-                      animate={{ height: "auto", opacity: 1 }}
-                      exit={{ height: 0, opacity: 0 }}
-                      transition={{ duration: 0.25, ease: [0.25, 0.1, 0.25, 1] }}
-                      className="flex flex-col gap-2 overflow-visible"
-                    >
+                    <div className="flex flex-col gap-2 overflow-visible">
                       <div className="flex gap-2">
                         <Button
                           variant={modelSource === "hf" ? "dark" : "outline"}
@@ -989,9 +1001,8 @@ export function ExportPage() {
                           Direct model exports currently support GGUF only.
                         </p>
                       </div>
-                    </motion.div>
+                    </div>
                   )}
-                  </AnimatePresence>
 
                   {sourceMode === "checkpoint" && (
                     <div className="rounded-xl bg-foreground/[0.04] p-3 flex flex-col gap-2">
@@ -1078,11 +1089,7 @@ export function ExportPage() {
               <Separator />
               <AnimatePresence initial={false}>
                 {showPanel && (
-                  <motion.div
-                    key="export-run-panel"
-                    {...collapseAnim}
-                    className="overflow-hidden"
-                  >
+                  <motion.div key="export-run-panel" {...collapseAnim}>
                     <ExportRunPanel
                       exportMethod={exportMethod}
                       quantLevels={quantLevels}
@@ -1109,6 +1116,24 @@ export function ExportPage() {
                   </motion.div>
                 )}
               </AnimatePresence>
+              {showPanel && (
+                <div ref={panelEndRef} aria-hidden="true" className="h-px w-full" />
+              )}
+              {showPanel && !panelEndVisible && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    panelEndRef.current?.scrollIntoView({
+                      behavior: "smooth",
+                      block: "end",
+                    })
+                  }
+                  aria-label="Scroll to export output"
+                  className="fixed bottom-6 right-6 z-30 flex size-10 items-center justify-center rounded-full border border-border/60 bg-background/90 text-foreground shadow-md backdrop-blur transition-colors hover:bg-muted"
+                >
+                  <HugeiconsIcon icon={ArrowDown01Icon} className="size-5" />
+                </button>
+              )}
               {!showPanel && (
                 <div className="flex items-center justify-end">
                   <Button

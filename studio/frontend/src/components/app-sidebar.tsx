@@ -373,7 +373,7 @@ export function AppSidebar() {
   // thread is still active, or training is in progress.
   const showReturnToChat =
     (isStudioRoute || isExportRoute) &&
-    (trainingInProgress || anyChatRunning || storeThreadId != null);
+    (trainingInProgress || exportInProgress || anyChatRunning || storeThreadId != null);
   // The Train-page status poll doesn't run off-route; keep state fresh so the spinner
   // clears even if a run finishes while the user is on another tab.
   useTrainingCompletionWatch();

@@ -80,6 +80,16 @@ const PHASE_LABELS: Record<string, string> = {
   canceled: "Canceled",
 };
 
+// Shown in the terminal before the first worker line arrives (it can lag a few
+// seconds behind, especially over a tunnel). Reflects the phase so the panel
+// never looks stuck while the progress bar is already advancing.
+function waitingMessage(phase: string, stage: string | null): string {
+  if (stage) return stage;
+  if (phase === "loading") return "Loading model into the export worker...";
+  if (phase === "exporting") return "Preparing export...";
+  return "Starting...";
+}
+
 export interface ExportRunPanelProps {
   exportMethod: ExportMethod | null;
   quantLevels: string[];
@@ -503,7 +513,7 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
                   <div className="flex h-full items-center justify-center text-muted-foreground/70">
                     <span className="flex items-center gap-2">
                       <Spinner className="size-3" />
-                      Waiting for worker output...
+                      {waitingMessage(run.phase, run.stage)}
                     </span>
                   </div>
                 ) : (
