@@ -225,9 +225,9 @@ const HUB_SECTION_KEY = "unsloth_model_selector_section";
 function loadLastHubSection(): HubSection {
   try {
     const raw = localStorage.getItem(HUB_SECTION_KEY);
-    return raw === "downloaded" || raw === "recommended" || raw === "custom"
-      ? raw
-      : "recommended";
+    // Only restore sections that still have a tab; a stale "custom" (removed)
+    // would otherwise open to an empty view.
+    return raw === "downloaded" || raw === "recommended" ? raw : "recommended";
   } catch {
     return "recommended";
   }
