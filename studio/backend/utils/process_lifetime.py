@@ -47,6 +47,7 @@ def _is_windows() -> bool:
 
 # ── Parent setup ──
 
+
 def initialize_parent_lifetime() -> None:
     """Install the parent-death reaper once, as early as possible at startup.
 
@@ -84,10 +85,17 @@ def _install_windows_job() -> None:
             ]
 
         class _IO(ctypes.Structure):
-            _fields_ = [(n, ctypes.c_uint64) for n in (
-                "ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
-                "ReadTransferCount", "WriteTransferCount", "OtherTransferCount",
-            )]
+            _fields_ = [
+                (n, ctypes.c_uint64)
+                for n in (
+                    "ReadOperationCount",
+                    "WriteOperationCount",
+                    "OtherOperationCount",
+                    "ReadTransferCount",
+                    "WriteTransferCount",
+                    "OtherTransferCount",
+                )
+            ]
 
         class _EXT(ctypes.Structure):
             _fields_ = [
@@ -125,6 +133,7 @@ def _install_windows_job() -> None:
 
 
 # ── Child binding ──
+
 
 def _pdeathsig_preexec() -> None:
     # Runs in the forked child before exec. prctl is Linux-only; the getppid

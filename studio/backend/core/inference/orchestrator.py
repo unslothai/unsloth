@@ -178,6 +178,7 @@ class InferenceOrchestrator:
             )
             self._proc.start()
         from utils.process_lifetime import adopt_pid
+
         adopt_pid(self._proc.pid)  # bind to parent lifetime (Windows job / sweep)
         logger.info("Inference subprocess started (pid=%s)", self._proc.pid)
 

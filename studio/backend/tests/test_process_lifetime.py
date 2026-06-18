@@ -58,6 +58,7 @@ def _wait_dead(pid: int, timeout: float) -> bool:
 
 # ── No-op safety / composition ──
 
+
 def test_initialize_idempotent_and_noop_on_posix():
     pl.initialize_parent_lifetime()
     pl.initialize_parent_lifetime()  # second call short-circuits
@@ -67,7 +68,7 @@ def test_initialize_idempotent_and_noop_on_posix():
 
 def test_adopt_pid_tolerates_none_and_dead_pid():
     pl.adopt_pid(None)  # ignored
-    pl.adopt_pid(2 ** 31 - 1)  # almost-certainly-dead pid: recorded, never raises
+    pl.adopt_pid(2**31 - 1)  # almost-certainly-dead pid: recorded, never raises
     assert None not in pl._tracked_pids
 
 
@@ -95,6 +96,7 @@ def test_compose_preexec_passthrough_off_linux(monkeypatch):
 
 # ── Real Linux PDEATHSIG: child dies when the parent dies abnormally ──
 
+
 @pytest.mark.skipif(not IS_LINUX, reason = "PR_SET_PDEATHSIG is Linux-only")
 def test_pdeathsig_child_dies_when_parent_sigkilled(tmp_path):
     mid = tmp_path / "mid.py"
@@ -119,6 +121,7 @@ def test_pdeathsig_child_dies_when_parent_sigkilled(tmp_path):
 
 # ── terminate_all backstop sweep ──
 
+
 @pytest.mark.skipif(not IS_POSIX, reason = "POSIX process sweep")
 def test_terminate_all_signals_tracked_and_is_idempotent():
     p = subprocess.Popen(["sleep", "300"])
@@ -132,8 +135,11 @@ def test_terminate_all_signals_tracked_and_is_idempotent():
 def test_terminate_all_escalates_to_sigkill():
     # A child that ignores SIGTERM must still be reaped via SIGKILL.
     p = subprocess.Popen(
-        [sys.executable, "-c",
-         "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(300)"]
+        [
+            sys.executable,
+            "-c",
+            "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(300)",
+        ]
     )
     time.sleep(0.5)  # let the handler install
     pl.adopt_pid(p.pid)
@@ -142,6 +148,7 @@ def test_terminate_all_escalates_to_sigkill():
 
 
 # ── Windows Job Object path (mocked kernel32, runs on Linux CI) ──
+
 
 class _Call:
     def __init__(self, name, log, ret):
@@ -154,7 +161,13 @@ class _Call:
 
 
 class _FakeKernel32:
-    def __init__(self, log, create_ret = 4321, set_ret = 1, assign_ret = 1):
+    def __init__(
+        self,
+        log,
+        create_ret = 4321,
+        set_ret = 1,
+        assign_ret = 1,
+    ):
         self.CreateJobObjectW = _Call("create", log, create_ret)
         self.SetInformationJobObject = _Call("set", log, set_ret)
         self.AssignProcessToJobObject = _Call("assign", log, assign_ret)

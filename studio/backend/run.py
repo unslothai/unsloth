@@ -886,6 +886,7 @@ def run_server(
     # Reap every child if the parent dies abnormally (terminal close, Task
     # Manager kill, SIGKILL); must run before any child can spawn.
     from utils.process_lifetime import initialize_parent_lifetime
+
     initialize_parent_lifetime()
 
     # --secure exposes only the Cloudflare link: force a loopback bind so the raw
@@ -1096,6 +1097,7 @@ def run_server(
 
     atexit.register(_remove_pid_file)
     from utils.process_lifetime import terminate_all
+
     atexit.register(terminate_all)
 
     # Output port for Tauri (api-only), only after sockets bind and startup done.

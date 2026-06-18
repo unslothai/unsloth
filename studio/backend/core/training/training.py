@@ -367,6 +367,7 @@ class TrainingBackend:
                 )
                 proc.start()
                 from utils.process_lifetime import adopt_pid
+
                 adopt_pid(proc.pid)  # bind to parent lifetime (Windows job / sweep)
         except Exception:
             logger.error("Failed to start training subprocess", exc_info = True)
@@ -531,6 +532,7 @@ class TrainingBackend:
                 )
                 new_proc.start()
                 from utils.process_lifetime import adopt_pid
+
                 adopt_pid(new_proc.pid)  # bind to parent lifetime (Windows job / sweep)
         except Exception:
             logger.error("Failed to respawn training subprocess", exc_info = True)
