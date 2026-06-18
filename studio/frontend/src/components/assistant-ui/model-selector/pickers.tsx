@@ -2054,9 +2054,9 @@ export function HubModelPicker({
         }}
         className={cn(
           // Small negative margin pulls the scrollbar in (closer to the rows),
-          // and a thin gutter lets the row pills widen toward it. A min height
-          // keeps the box tall even when only a few models are listed.
-          "model-list-scroll -mr-1 min-h-[15rem] max-h-[20rem] overflow-y-auto pr-0.5",
+          // and a thin gutter lets the row pills widen toward it. Height tracks
+          // the content up to the cap, so short lists do not leave white space.
+          "model-list-scroll -mr-1 max-h-[20rem] overflow-y-auto pr-0.5",
           listScrolled && "is-scrolled",
         )}
         {...hubModelList.listboxProps}
