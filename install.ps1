@@ -1496,9 +1496,18 @@ shell.Run cmd, 0, False
             $psi.UseShellExecute = $false
             $psi.CreateNoWindow = $true
             $proc = [System.Diagnostics.Process]::Start($psi)
-            $torchVer = $proc.StandardOutput.ReadToEnd().Trim()
+            # Drain BOTH streams async, then WaitForExit. A synchronous ReadToEnd()
+            # before the wait would block forever if a wedged "import torch" never
+            # closes stdout; leaving the redirected stderr undrained would deadlock a
+            # child that floods it past the pipe buffer. Async reads let a noisy-but-
+            # exiting probe finish, while a truly hung one still hits the 30s timeout
+            # and is killed -- bounded either way.
+            $outTask = $proc.StandardOutput.ReadToEndAsync()
+            $errTask = $proc.StandardError.ReadToEndAsync()
             $finished = $proc.WaitForExit(30000)
             if (-not $finished) { try { $proc.Kill() } catch {}; return $null }
+            $torchVer = $outTask.GetAwaiter().GetResult().Trim()
+            [void]$errTask.GetAwaiter().GetResult()
             if ($proc.ExitCode -ne 0 -or -not $torchVer) { return $null }
             return ConvertTo-TorchFlavorTag $torchVer
         } catch { return $null }
@@ -1745,22 +1754,36 @@ shell.Run cmd, 0, False
     # ── Enforce the installed torch flavor matches the detected GPU build ──
     # PEP 440 ignores the +cpu/+cuXXX/+rocm local label in a version range, so uv
     # keeps a stale torch==X+cpu against a CUDA index and setup.ps1 then loops on
-    # "torch cpu != required cuXXX". Reinstall the right CUDA triplet when a GPU
-    # build is expected; ROCm (already --force-reinstalled) or a migrated AMD venv
-    # just warns. --no-torch / CPU-only hosts (expected cpu) are no-ops.
+    # "torch cpu != required cuXXX". Reinstall the right triplet when a GPU build is
+    # expected: CUDA from $TorchIndexUrl, ROCm from $ROCmIndexUrl (repo.amd.com gfx*
+    # is a PEP 503 index uv resolves via --index-url, same URL the fresh ROCm install
+    # above uses). --no-torch / CPU-only hosts (expected cpu) are no-ops.
     if (-not $SkipTorch) {
         $expectedTorchTag = Get-ExpectedTorchFlavorTag -TorchIndexUrl $TorchIndexUrl -ROCmIndexUrl $ROCmIndexUrl
         if ($expectedTorchTag -and $expectedTorchTag -ne 'cpu') {
             $installedTorchTag = Get-InstalledTorchTag -PythonExe $VenvPython
-            # Auto-repair CUDA only; ROCm is force-reinstalled above, migrated AMD warns below.
-            if ($expectedTorchTag -ne 'rocm' -and $installedTorchTag -and $installedTorchTag -ne $expectedTorchTag) {
-                substep "PyTorch flavor mismatch (installed $installedTorchTag, need $expectedTorchTag) -- reinstalling correct build..." "Yellow"
-                $torchFixExit = Invoke-InstallCommand { uv pip install --python $VenvPython "torch>=2.4,<2.11.0" torchvision torchaudio --index-url $TorchIndexUrl --reinstall-package torch --reinstall-package torchvision --reinstall-package torchaudio }
-                if ($torchFixExit -ne 0) {
-                    Write-Host "[ERROR] Failed to reinstall PyTorch with the correct CUDA build (exit code $torchFixExit)" -ForegroundColor Red
-                    return (Exit-InstallFailure "Failed to reinstall PyTorch ($expectedTorchTag) (exit code $torchFixExit)" $torchFixExit)
+            if ($installedTorchTag -and $installedTorchTag -ne $expectedTorchTag) {
+                if ($expectedTorchTag -eq 'rocm' -and $ROCmIndexUrl) {
+                    # AMD: a migrated venv can keep a stale CPU torch the fresh ROCm path
+                    # would have force-reinstalled. Repair from the same repo.amd.com index.
+                    $rocmSpec = if ($ROCmTorchFloor) { $ROCmTorchFloor } else { "torch" }
+                    substep "PyTorch flavor mismatch (installed $installedTorchTag, need ROCm) -- reinstalling correct build..." "Yellow"
+                    $torchFixExit = Invoke-InstallCommand { uv pip install --python $VenvPython --force-reinstall --index-url $ROCmIndexUrl $rocmSpec torchvision torchaudio }
+                    if ($torchFixExit -ne 0) {
+                        Write-Host "[ERROR] Failed to reinstall PyTorch with the correct ROCm build (exit code $torchFixExit)" -ForegroundColor Red
+                        return (Exit-InstallFailure "Failed to reinstall PyTorch (ROCm) (exit code $torchFixExit)" $torchFixExit)
+                    }
+                    $installedTorchTag = Get-InstalledTorchTag -PythonExe $VenvPython
+                } elseif ($expectedTorchTag -ne 'rocm') {
+                    # CUDA: stale +cpu (or wrong cuXXX) against a CUDA index -> reinstall triplet.
+                    substep "PyTorch flavor mismatch (installed $installedTorchTag, need $expectedTorchTag) -- reinstalling correct build..." "Yellow"
+                    $torchFixExit = Invoke-InstallCommand { uv pip install --python $VenvPython "torch>=2.4,<2.11.0" torchvision torchaudio --index-url $TorchIndexUrl --reinstall-package torch --reinstall-package torchvision --reinstall-package torchaudio }
+                    if ($torchFixExit -ne 0) {
+                        Write-Host "[ERROR] Failed to reinstall PyTorch with the correct CUDA build (exit code $torchFixExit)" -ForegroundColor Red
+                        return (Exit-InstallFailure "Failed to reinstall PyTorch ($expectedTorchTag) (exit code $torchFixExit)" $torchFixExit)
+                    }
+                    $installedTorchTag = Get-InstalledTorchTag -PythonExe $VenvPython
                 }
-                $installedTorchTag = Get-InstalledTorchTag -PythonExe $VenvPython
             }
             # Safety net (incl. AMD): GPU build expected but still CPU -> warn loudly.
             if ($installedTorchTag -eq 'cpu') {

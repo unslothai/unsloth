@@ -1791,14 +1791,17 @@ _expected_torch_flavor_tag() {
     esac
 }
 
-# Whether index ($1) supports a plain --index-url reinstall. repo.amd.com gfx*
-# indexes do not (partial listing, need --find-links) -> warned, not reinstalled.
+# Whether index ($1) supports a plain --index-url reinstall. pytorch.org cuXXX /
+# rocmX.Y AND the repo.amd.com gfx* indexes are all PEP 503 simple indexes that uv
+# resolves (torch + every transitive dep) via --index-url -- the same URLs the
+# fresh-install paths above already use -- so a stale wheel is auto-repairable.
+# Unknown/odd-mirror leaves -> no, so we warn rather than risk a wrong reinstall.
 _torch_index_repairable() {
     _u="${1%/}"
     _leaf="${_u##*/}"
     case "$_leaf" in
-        cu[0-9]*|rocm[0-9]*) echo "yes" ;;
-        *)                   echo "no" ;;
+        cu[0-9]*|rocm[0-9]*|gfx*) echo "yes" ;;
+        *)                        echo "no" ;;
     esac
 }
 
@@ -2147,7 +2150,7 @@ if [ "$_MIGRATED" = true ]; then
     # fresh reinstall.
     if [ "$SKIP_TORCH" = false ]; then
         case "$TORCH_INDEX_URL" in
-            */rocm*)
+            */rocm*|*/gfx*)
                 _install_bnb_rocm "install bitsandbytes (AMD)" "$_VENV_PY"
                 # Repair ROCm torch if overwritten during migrated install
                 _has_hip=$("$_VENV_PY" -c "import torch; print(getattr(torch.version,'hip','') or '')" 2>/dev/null || true)
@@ -2323,7 +2326,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
     # which is only useful once torch is present for training.
     if [ "$SKIP_TORCH" = false ]; then
         case "$TORCH_INDEX_URL" in
-            */rocm*)
+            */rocm*|*/gfx*)
                 _install_bnb_rocm "install bitsandbytes (AMD)" "$_VENV_PY"
                 ;;
         esac
@@ -2369,7 +2372,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
     # CUDA torch from PyPI, overwriting the ROCm wheels installed in Step 1.
     if [ "$SKIP_TORCH" = false ]; then
         case "$TORCH_INDEX_URL" in
-            */rocm*)
+            */rocm*|*/gfx*)
                 _has_hip=$("$_VENV_PY" -c "import torch; print(getattr(torch.version,'hip','') or '')" 2>/dev/null || true)
                 if [ -z "$_has_hip" ]; then
                     substep "repairing ROCm torch (overwritten by dependency resolution)..."
@@ -2410,7 +2413,8 @@ if [ "$SKIP_TORCH" = false ] && [ -n "${TORCH_INDEX_URL:-}" ]; then
         _installed_torch_ver=$("$_VENV_PY" -c "import torch; print(torch.__version__)" 2>/dev/null || true)
         _installed_torch_tag=""
         [ -n "$_installed_torch_ver" ] && _installed_torch_tag=$(_torch_flavor_tag "$_installed_torch_ver")
-        # Repair when flavor is wrong AND index is plain-reinstallable (gfx* -> warn).
+        # Repair when flavor is wrong AND the index is plain --index-url reinstallable
+        # (cuXXX / rocmX.Y / repo.amd.com gfx*); an unknown mirror leaf -> warn only.
         if [ -n "$_installed_torch_tag" ] && [ "$_installed_torch_tag" != "$_expected_torch_tag" ] \
            && [ "$(_torch_index_repairable "$TORCH_INDEX_URL")" = "yes" ]; then
             substep "PyTorch flavor mismatch (installed $_installed_torch_tag, need $_expected_torch_tag) -- reinstalling correct build..."
