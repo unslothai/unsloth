@@ -2958,15 +2958,14 @@ export function HubModelPicker({
           ) : null}
         </div>
       </div>
-      {/* Eject button sits below the scroll area so rows never scroll behind it
-          and get clipped. Light uses the menu surface with the composer shadow;
-          dark matches the Search Hub button background. */}
+      {/* Eject button sits below the scroll area so rows never scroll behind it.
+          No fill, so it never covers the list; just a centered text button. */}
       {onEject ? (
         <div className="flex justify-center">
           <button
             type="button"
             onClick={onEject}
-            className="inline-flex items-center justify-center gap-2 rounded-md bg-popover px-3 py-2 text-[13px] text-destructive shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] transition-colors hover:bg-destructive/10 dark:bg-[color-mix(in_srgb,var(--foreground)_10%,transparent)] dark:shadow-none dark:hover:bg-[color-mix(in_srgb,var(--foreground)_18%,transparent)]"
+            className="inline-flex items-center justify-center gap-2 rounded-md px-3 py-2 text-[13px] text-destructive transition-colors hover:bg-destructive/10"
             title="Eject model"
           >
             <HugeiconsIcon icon={RemoveCircleIcon} className="size-3.5" />
