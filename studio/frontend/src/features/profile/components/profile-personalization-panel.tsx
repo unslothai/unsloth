@@ -229,7 +229,7 @@ export function ProfilePersonalizationPanel() {
         <Label className="text-xs font-medium text-muted-foreground">
           {t("settings.profile.avatarShape")}
         </Label>
-        <div className="inline-flex w-fit items-center gap-1 rounded-full border border-border/70 bg-muted/40 p-1">
+        <div className="hub-tab-toggle inline-flex h-8 w-fit items-center rounded-full">
           {(["circle", "rounded"] as const).map((shape) => (
             <button
               key={shape}
@@ -237,9 +237,9 @@ export function ProfilePersonalizationPanel() {
               onClick={() => setAvatarShape(shape)}
               aria-pressed={avatarShape === shape}
               className={cn(
-                "rounded-full px-4 py-1.5 text-xs font-medium transition-colors",
+                "inline-flex h-8 items-center rounded-full px-4 text-[13px] font-medium transition-colors",
                 avatarShape === shape
-                  ? "bg-background text-foreground shadow-sm"
+                  ? "hub-tab-toggle-pill text-foreground"
                   : "text-muted-foreground hover:text-foreground",
               )}
             >
