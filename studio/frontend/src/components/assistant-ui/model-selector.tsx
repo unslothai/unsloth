@@ -597,28 +597,15 @@ export function ModelSelector({
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
-      <div className="flex min-w-0 items-center gap-1">
-        <ModelSelectorTrigger
-          currentModel={currentModel}
-          isLoaded={isLoaded}
-          showCloudIndicator={showCloudIndicator}
-          variant={variant}
-          size={size}
-          className={className}
-          dataTour={triggerDataTour}
-        />
-        {isLoaded && onEject ? (
-          <button
-            type="button"
-            onClick={handleEject}
-            aria-label="Eject loaded model"
-            title="Eject model"
-            className="flex shrink-0 items-center text-destructive transition-colors hover:text-destructive/70"
-          >
-            <HugeiconsIcon icon={RemoveCircleIcon} className="size-4" />
-          </button>
-        ) : null}
-      </div>
+      <ModelSelectorTrigger
+        currentModel={currentModel}
+        isLoaded={isLoaded}
+        showCloudIndicator={showCloudIndicator}
+        variant={variant}
+        size={size}
+        className={className}
+        dataTour={triggerDataTour}
+      />
       <ModelSelectorContent
         open={open}
         models={models}
