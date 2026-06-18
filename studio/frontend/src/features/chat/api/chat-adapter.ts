@@ -1228,7 +1228,12 @@ async function autoLoadSmallestModel(): Promise<{
       load_in_4bit: true,
       trust_remote_code: trustRemoteCode,
     });
-    if (validation.requires_trust_remote_code && !trustRemoteCode) {
+    // Background auto-load never runs a repo's custom code or loads Hub-flagged unsafe
+    // files on its own; both are deferred to the explicit consent dialog instead.
+    if (
+      validation.requires_trust_remote_code ||
+      validation.requires_security_review
+    ) {
       blockedByTrustRemoteCode = true;
       return false;
     }
@@ -1580,11 +1585,11 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         if (!loaded) {
           toast.error(
             blockedByTrustRemoteCode
-              ? "Enable custom code to auto-load this model"
+              ? "This model needs custom code approval"
               : "No model loaded",
             {
               description: blockedByTrustRemoteCode
-                ? 'Turn on "Enable custom code" in Chat Settings, or pick another model in the top bar.'
+                ? "Select it from the top bar to review and approve its custom code, or pick another model."
                 : "Pick a model in the top bar, then retry.",
             },
           );

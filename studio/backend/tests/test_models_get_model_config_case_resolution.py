@@ -219,3 +219,29 @@ def test_unsloth_ocr_preset_defaults_resolve():
         assert defaults["model"]["is_vision"] is True, ident
         assert defaults["model"]["identifier"].startswith("unsloth/"), ident
         assert defaults["inference"].get("trust_remote_code", False) is trc, ident
+
+
+def test_repo_in_any_hf_cache_matches_case_variant_in_legacy_cache(tmp_path, monkeypatch):
+    # A case-variant in a legacy/default cache must read as present (case resolution only
+    # covers the active cache; discard deletes case-insensitively, so detection must too,
+    # else a decline deletes a pre-existing user repo).
+    import utils.paths as paths_pkg
+    import huggingface_hub.constants as hf_constants
+
+    active = tmp_path / "active"
+    legacy = tmp_path / "legacy"
+    default = tmp_path / "default"
+    for d in (active, legacy, default):
+        d.mkdir()
+    # Differently-cased entry in the legacy cache only.
+    (legacy / "models--Unsloth--Foo").mkdir()
+
+    # No active-cache variant; case resolution is a no-op here.
+    monkeypatch.setattr(paths_pkg, "resolve_cached_repo_id_case", lambda name: name)
+    monkeypatch.setattr(paths_pkg, "legacy_hf_cache_dir", lambda: legacy)
+    monkeypatch.setattr(paths_pkg, "hf_default_cache_dir", lambda: default)
+    monkeypatch.setattr(hf_constants, "HF_HUB_CACHE", str(active))
+
+    assert models_route._repo_in_any_hf_cache("unsloth/foo") is True
+    # Absent from every cache -> reported absent.
+    assert models_route._repo_in_any_hf_cache("unsloth/not-cached") is False

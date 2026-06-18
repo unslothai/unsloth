@@ -2044,9 +2044,8 @@ async def load_model(
                     audio_type = _gguf_audio,
                     has_audio_input = getattr(llama_backend, "_has_audio_input", False),
                     inference = inference_config,
-                    requires_trust_remote_code = bool(
-                        inference_config.get("trust_remote_code", False)
-                    ),
+                    # GGUF loads via llama.cpp: auto_map never executes, so inert (matches validate_model).
+                    requires_trust_remote_code = False,
                     context_length = llama_backend.context_length,
                     max_context_length = llama_backend.max_context_length,
                     native_context_length = llama_backend.native_context_length,
@@ -2094,8 +2093,8 @@ async def load_model(
                     audio_type = _model_info.get("audio_type"),
                     has_audio_input = _model_info.get("has_audio_input", False),
                     inference = inference_config,
-                    requires_trust_remote_code = bool(
-                        inference_config.get("trust_remote_code", False)
+                    requires_trust_remote_code = _resolve_loaded_trust_remote_code(
+                        backend.active_model_name, _model_info, inference_config
                     ),
                     supports_reasoning = _sf_supports_reasoning,
                     reasoning_style = _sf_reasoning_style,
@@ -2350,7 +2349,8 @@ async def load_model(
                 audio_type = _gguf_audio,
                 has_audio_input = llama_backend._has_audio_input,
                 inference = inference_config,
-                requires_trust_remote_code = bool(inference_config.get("trust_remote_code", False)),
+                # GGUF loads via llama.cpp: auto_map never executes, so inert (matches validate_model).
+                requires_trust_remote_code = False,
                 context_length = llama_backend.context_length,
                 max_context_length = llama_backend.max_context_length,
                 native_context_length = llama_backend.native_context_length,
@@ -2443,6 +2443,7 @@ async def load_model(
             load_in_4bit = load_in_4bit,
             hf_token = request.hf_token,
             trust_remote_code = request.trust_remote_code,
+            approved_remote_code_fingerprint = request.approved_remote_code_fingerprint,
             gpu_ids = effective_gpu_ids,
         )
 
@@ -2483,6 +2484,23 @@ async def load_model(
         # Classify reasoning/tool flags via the GGUF sniffer.
         _sf_flags = _detect_safetensors_features(backend, _chat_template)
 
+        # Report validate_model's requirement (raw auto_map OR YAML) plus the value the
+        # load used, and persist it, so a later retry/rollback doesn't send
+        # trust_remote_code=false for a custom-code model (and status reports it too).
+        _requires_rc = _resolve_loaded_trust_remote_code(
+            config.identifier,
+            None,
+            inference_config,
+            request.hf_token,
+            trust_remote_code_used = bool(getattr(request, "trust_remote_code", False)),
+        )
+        try:
+            backend.models.setdefault(config.identifier, {})["requires_trust_remote_code"] = (
+                _requires_rc
+            )
+        except Exception:
+            pass
+
         return LoadResponse(
             status = "loaded",
             model = model_log_label if native_grant_backed else config.identifier,
@@ -2494,7 +2512,7 @@ async def load_model(
             audio_type = config.audio_type,
             has_audio_input = config.has_audio_input,
             inference = inference_config,
-            requires_trust_remote_code = bool(inference_config.get("trust_remote_code", False)),
+            requires_trust_remote_code = _requires_rc,
             supports_reasoning = _sf_flags["supports_reasoning"],
             reasoning_style = _sf_flags["reasoning_style"],
             reasoning_always_on = _sf_flags["reasoning_always_on"],
@@ -2545,6 +2563,76 @@ async def load_model(
         if any(h.lower() in msg.lower() for h in not_supported_hints):
             msg = f"This model is not supported yet. Try a different model. (Original error: {msg})"
         raise HTTPException(status_code = 500, detail = f"Failed to load model: {msg}")
+
+
+def _requires_trust_remote_code_for_model(
+    model_identifier: str, hf_token: Optional[str] = None
+) -> bool:
+    """Whether loading this model would execute custom repo code, so the consent
+    dialog must run first. True if the Studio YAML default enables
+    ``trust_remote_code`` OR the raw config declares an ``auto_map`` (Hub/local,
+    config.json or tokenizer_config.json). Reads raw JSON only; never imports
+    model code."""
+    from utils.inference import load_inference_config
+
+    try:
+        if bool(load_inference_config(model_identifier).get("trust_remote_code", False)):
+            return True
+    except Exception:
+        pass
+    try:
+        from utils.security.consent import _config_has_auto_map
+        return _config_has_auto_map(model_identifier, hf_token) is True
+    except Exception:
+        return False
+
+
+def _resolve_loaded_trust_remote_code(
+    model_id,
+    model_info,
+    inference_config,
+    hf_token = None,
+    trust_remote_code_used = False,
+) -> bool:
+    """TRC requirement to report for an ALREADY-LOADED model, consistent with
+    ``validate_model``.
+
+    ``validate_model`` reports ``requires_trust_remote_code`` from
+    ``_requires_trust_remote_code_for_model`` (YAML default OR raw ``auto_map``), but
+    the load / already-loaded / status responses historically reported only the YAML
+    default. That dropped raw-``auto_map`` models: after approving and loading one, the
+    response said ``false``, so the frontend stored ``false`` and a later retry/rollback
+    sent ``trust_remote_code=false`` and failed.
+
+    Resolution order: a value stored on the model at load time (so a status refresh does
+    not re-derive it) -> the trust_remote_code the load actually used -> the YAML default
+    -> the raw ``auto_map`` check (reads the loaded model's cached config; no network)."""
+    stored = (model_info or {}).get("requires_trust_remote_code")
+    if stored is not None:
+        return bool(stored)
+    if trust_remote_code_used or bool((inference_config or {}).get("trust_remote_code", False)):
+        return True
+    try:
+        return bool(_requires_trust_remote_code_for_model(model_id, hf_token))
+    except Exception:
+        return False
+
+
+def _requires_security_review_for_model(
+    model_identifier: str, hf_token: Optional[str] = None
+) -> bool:
+    """Whether Hugging Face's security scan flagged unsafe files for this repo, so
+    the consent dialog must open as a hard block before loading. Metadata-only;
+    never downloads the flagged files. Fails open (False) on any error."""
+    try:
+        from utils.security import evaluate_file_security, security_load_subdirs
+        return evaluate_file_security(
+            model_identifier,
+            hf_token,
+            load_subdirs = security_load_subdirs(model_identifier, hf_token),
+        ).blocked
+    except Exception:
+        return False
 
 
 @router.post("/validate", response_model = ValidateModelResponse)
@@ -2600,7 +2688,34 @@ async def validate_model(
                 detail = f"Invalid model identifier: {model_log_label}",
             )
 
+        # Both checks cover the [adapter, base] set (matching the scan route and workers):
+        # either repo can ship auto_map code or a poisoned pickle.
+        security_targets = [config.identifier]
+        try:
+            from utils.models.model_config import get_base_model_from_lora_identifier
+
+            # Resolve a LOCAL or REMOTE adapter's base so its code/weights are reviewed too.
+            _base = get_base_model_from_lora_identifier(model_identifier, request.hf_token)
+            if _base:
+                security_targets.append(_base)
+        except Exception:
+            pass
+        security_targets = list(dict.fromkeys(security_targets))
+
         is_gguf = getattr(config, "is_gguf", False)
+        # A selected GGUF loads via llama.cpp: auto_map Python and root pickle weights in a
+        # mixed repo are inert for this load, so gating on them is a false positive. Only
+        # run the remote-code/security preflight for non-GGUF loads.
+        requires_trust_remote_code = False
+        requires_security_review = False
+        if not is_gguf:
+            requires_trust_remote_code = any(
+                _requires_trust_remote_code_for_model(_t, request.hf_token)
+                for _t in security_targets
+            )
+            requires_security_review = any(
+                _requires_security_review_for_model(_t, request.hf_token) for _t in security_targets
+            )
         # Native context length, read from the local GGUF header when present.
         # Lets the staged ("Load on selection" off) flow populate the context
         # slider before the GPU load; None until the file is downloaded.
@@ -2637,9 +2752,8 @@ async def validate_model(
             is_gguf = is_gguf,
             is_lora = getattr(config, "is_lora", False),
             is_vision = getattr(config, "is_vision", False),
-            requires_trust_remote_code = bool(
-                load_inference_config(config.identifier).get("trust_remote_code", False)
-            ),
+            requires_trust_remote_code = requires_trust_remote_code,
+            requires_security_review = requires_security_review,
             context_length = context_length,
         )
 
@@ -2981,9 +3095,8 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 loading = [],
                 loaded = [_display_model_id] if _display_model_id else [],
                 inference = _inference_cfg,
-                requires_trust_remote_code = bool(
-                    (_inference_cfg or {}).get("trust_remote_code", False)
-                ),
+                # GGUF status: auto_map never executes, so inert (matches validate_model).
+                requires_trust_remote_code = False,
                 supports_reasoning = llama_backend.supports_reasoning,
                 reasoning_style = llama_backend.reasoning_style,
                 reasoning_always_on = llama_backend.reasoning_always_on,
@@ -3041,8 +3154,8 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
             loading = list(getattr(backend, "loading_models", set())),
             loaded = list(backend.models.keys()),
             inference = inference_config,
-            requires_trust_remote_code = bool(
-                (inference_config or {}).get("trust_remote_code", False)
+            requires_trust_remote_code = _resolve_loaded_trust_remote_code(
+                backend.active_model_name, model_info, inference_config
             ),
             supports_reasoning = _sf_flags["supports_reasoning"],
             reasoning_style = _sf_flags["reasoning_style"],
@@ -4960,6 +5073,8 @@ async def _openai_chat_completions_impl(
                     tb = traceback.format_exc()
                     logger.error(f"Error during GGUF tool streaming: {e}\n{tb}")
                     api_monitor.fail(monitor_id, _friendly_error(e))
+                    # Recover if an MTP+tensor crash killed the server mid-stream.
+                    get_llama_cpp_backend()._maybe_recover_from_mtp_crash(e)
                     error_chunk = _openai_stream_error_chunk(e)
                     yield f"data: {json.dumps(error_chunk)}\n\n"
                 finally:
@@ -5206,6 +5321,8 @@ async def _openai_chat_completions_impl(
             except Exception as e:
                 logger.error(f"Error during GGUF completion: {e}", exc_info = True)
                 api_monitor.fail(monitor_id, _friendly_error(e))
+                # Recover if an MTP+tensor crash killed the server.
+                get_llama_cpp_backend()._maybe_recover_from_mtp_crash(e)
                 # An over-context prompt makes llama-server return 400; map any
                 # upstream 4xx to a 400 client error rather than leaking a 500.
                 _cls = _classify_llama_generation_error(e)
@@ -8701,6 +8818,7 @@ async def _anthropic_passthrough_stream(
         except (httpx.RemoteProtocolError, httpx.ReadError, httpx.CloseError) as e:
             if not cancel_event.is_set():
                 logger.error("anthropic_messages passthrough stream error: %s", e)
+                get_llama_cpp_backend()._maybe_recover_from_mtp_crash(e)
                 event = _anthropic_stream_error_event(
                     e,
                     force = True,
@@ -8711,6 +8829,7 @@ async def _anthropic_passthrough_stream(
         except Exception as e:
             if not cancel_event.is_set():
                 logger.error("anthropic_messages passthrough stream error: %s", e)
+                get_llama_cpp_backend()._maybe_recover_from_mtp_crash(e)
                 event = _anthropic_stream_error_event(
                     e,
                     force = True,
@@ -9330,11 +9449,12 @@ async def _openai_passthrough_stream(
             except asyncio.CancelledError:
                 api_monitor.finish(monitor_id, "cancelled")
                 raise
-            except (httpx.RemoteProtocolError, httpx.ReadError, httpx.CloseError):
+            except (httpx.RemoteProtocolError, httpx.ReadError, httpx.CloseError) as e:
                 # Watcher closed resp on cancel. Emit nothing extra; the client
                 # initiated the cancel or already disconnected.
                 if not cancel_event.is_set():
                     api_monitor.fail(monitor_id, "Stream interrupted")
+                    get_llama_cpp_backend()._maybe_recover_from_mtp_crash(e)
                     raise
                 api_monitor.finish(monitor_id, "cancelled")
             except Exception as e:
@@ -9344,6 +9464,7 @@ async def _openai_passthrough_stream(
                 # 200 headers already flushed; errors must go in the SSE body.
                 logger.error("openai passthrough stream error: %s", e)
                 api_monitor.fail(monitor_id, _friendly_error(e))
+                get_llama_cpp_backend()._maybe_recover_from_mtp_crash(e)
                 err = _openai_stream_error_chunk(e)
                 yield f"data: {json.dumps(err)}\n\n"
             finally:
@@ -9425,6 +9546,7 @@ async def _openai_passthrough_non_streaming(
             # a bare 500 with no diagnostic.
             logger.error("openai passthrough non-streaming: upstream unreachable: %s", e)
             api_monitor.fail(monitor_id, _friendly_error(e))
+            get_llama_cpp_backend()._maybe_recover_from_mtp_crash(e)
             raise HTTPException(
                 status_code = 502,
                 detail = _friendly_error(e),

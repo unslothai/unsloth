@@ -65,6 +65,7 @@ import { BypassPermissionsMenuItem } from "./bypass-permissions-menu-item";
 import { KnowledgeBaseComposerButton } from "@/features/rag/components/knowledge-base-composer-button";
 import { NewProjectDialog } from "./components/new-project-dialog";
 import { useChatProjects } from "./hooks/use-chat-projects";
+import { confirmRemoteCodeIfNeeded } from "@/features/security";
 import {
   parseExternalModelId,
   providerTypeSupportsVision,
@@ -1278,24 +1279,43 @@ export function SharedComposer({
         sel: CompareModelSelection,
       ): Promise<string> {
         const currentStore = useChatRuntimeStore.getState();
+        let loadTrustRemoteCode = trustRemoteCode;
+        let approvedRemoteCodeFingerprint: string | null = null;
         const isAlreadyActive =
           currentStore.params.checkpoint === sel.id &&
           (currentStore.activeGgufVariant ?? null) ===
             (sel.ggufVariant ?? null);
-        if (!isAlreadyActive) {
-          const validation = await validateModel({
-            model_path: sel.id,
-            hf_token: currentStore.hfToken || null,
-            max_seq_length: maxSeqLength,
-            load_in_4bit: true,
-            is_lora: sel.isLora,
-            gguf_variant: sel.ggufVariant ?? null,
-            trust_remote_code: trustRemoteCode,
-            chat_template_override: effectiveChatTemplateOverride,
+        // Already loaded (gate passed at first load): skip a redundant reload that would
+        // re-trigger the gate without the approval fingerprint and fail for HIGH custom code.
+        if (isAlreadyActive) {
+          return "ready";
+        }
+        const validation = await validateModel({
+          model_path: sel.id,
+          hf_token: currentStore.hfToken || null,
+          max_seq_length: maxSeqLength,
+          load_in_4bit: true,
+          is_lora: sel.isLora,
+          gguf_variant: sel.ggufVariant ?? null,
+          trust_remote_code: loadTrustRemoteCode,
+          chat_template_override: effectiveChatTemplateOverride,
+        });
+        if (
+          validation.requires_trust_remote_code ||
+          validation.requires_security_review
+        ) {
+          const approved = await confirmRemoteCodeIfNeeded({
+            modelName: sel.id,
+            hfToken: currentStore.hfToken || null,
+            requiresTrustRemoteCode: true,
+            onApprove: (fp) => {
+              loadTrustRemoteCode = true;
+              approvedRemoteCodeFingerprint = fp;
+            },
           });
-          if (validation.requires_trust_remote_code && !trustRemoteCode) {
+          if (!approved) {
             throw new Error(
-              `${modelDisplayName(sel.id)} needs custom code enabled to load. Turn on "Enable custom code" in Chat Settings, then try again.`,
+              `${modelDisplayName(sel.id)} needs custom code approval to load.`,
             );
           }
         }
@@ -1306,7 +1326,8 @@ export function SharedComposer({
           load_in_4bit: true,
           is_lora: sel.isLora,
           gguf_variant: sel.ggufVariant ?? null,
-          trust_remote_code: trustRemoteCode,
+          trust_remote_code: loadTrustRemoteCode,
+          approved_remote_code_fingerprint: approvedRemoteCodeFingerprint,
           chat_template_override: effectiveChatTemplateOverride,
           speculative_type: specSettings.speculativeType,
           spec_draft_n_max: specSettings.specDraftNMax,
