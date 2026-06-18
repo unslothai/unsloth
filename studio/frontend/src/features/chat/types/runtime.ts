@@ -33,7 +33,7 @@ export const DEFAULT_INFERENCE_PARAMS: InferenceParams = {
   maxSeqLength: 4096,
   maxTokens: 8192,
   systemPrompt: "",
-  systemVariables: "{}",
+  systemVariables: "",
   checkpoint: "",
   trustRemoteCode: false,
   fastMode: false,

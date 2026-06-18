@@ -1852,7 +1852,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
               params.systemPrompt,
               typeof params.systemVariables === "string"
                 ? params.systemVariables
-                : "{}",
+                : "",
             )
           : "";
       const projectInstructions =
