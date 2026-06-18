@@ -1,15 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""
-Tests for the Anthropic Messages API schemas and translation layer.
-No running server or GPU required.
-"""
+"""Tests for Anthropic Messages API schemas and translation layer (no server/GPU)."""
 
 import sys
 import os
 import json
+import threading
 
+import httpx
 import pytest
 
 _backend = os.path.join(os.path.dirname(__file__), "..")
@@ -34,11 +33,15 @@ from core.inference.anthropic_compat import (
     AnthropicStreamEmitter,
     AnthropicPassthroughEmitter,
 )
+from core.inference.api_monitor import ApiMonitor
 from routes.inference import (
+    _build_tool_action_nudge,
     _normalize_anthropic_openai_images,
     _select_anthropic_server_tools,
     _anthropic_requested_studio_tools,
+    _anthropic_passthrough_stream,
     _anthropic_tool_non_streaming,
+    _monitor_anthropic_sse_line,
     anthropic_messages,
 )
 from state.tool_policy import reset_tool_policy, set_tool_policy
@@ -47,6 +50,91 @@ import asyncio
 import base64 as _b64
 from io import BytesIO as _BytesIO
 from types import SimpleNamespace
+
+
+def test_streamed_anthropic_tool_use_records_api_monitor_reply(monkeypatch):
+    import routes.inference as inf_mod
+
+    monitor = ApiMonitor(max_entries = 3)
+    monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+    monitor_id = monitor.start(
+        endpoint = "/v1/messages",
+        method = "POST",
+        model = "m",
+        prompt = "hi",
+    )
+
+    for payload in (
+        {
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {
+                "type": "tool_use",
+                "id": "toolu_1",
+                "name": "lookup",
+                "input": {},
+            },
+        },
+        {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {
+                "type": "input_json_delta",
+                "partial_json": '{"query":"weather"}',
+            },
+        },
+        {"type": "content_block_stop", "index": 0},
+    ):
+        _monitor_anthropic_sse_line(monitor_id, f"data: {json.dumps(payload)}")
+
+    entry = monitor.get(monitor_id)
+    assert entry is not None
+    assert entry["reply"] == 'Tool call: lookup\nInput: {"query":"weather"}'
+
+
+# =====================================================================
+# Tool nudge tests
+# =====================================================================
+
+
+class TestToolActionNudge:
+    def test_balanced_nudge_uses_expanded_web_and_code_tips(self):
+        nudge = _build_tool_action_nudge(
+            tools = [
+                {"type": "function", "function": {"name": "web_search"}},
+                {"type": "function", "function": {"name": "python"}},
+            ],
+            model_name = "Llama-3.1-70B-Instruct",
+        )
+
+        assert nudge.startswith("The current date is ")
+        assert "Tools are available when they materially improve" in nudge
+        assert "prefer using tools rather than answering from memory" not in nudge
+        assert "fetch its full content by calling web_search with the url parameter" in nudge
+        assert "Use code execution for math" in nudge
+        assert "render_html" not in nudge
+
+    def test_balanced_nudge_preserves_compact_web_tip_and_canvas_gate(self):
+        nudge = _build_tool_action_nudge(
+            tools = [
+                {"type": "function", "function": {"name": "web_search"}},
+                {"type": "function", "function": {"name": "render_html"}},
+            ],
+            model_name = "Llama-3.1-8B-Instruct",
+        )
+
+        assert "When using web_search, do not repeat the same search query." in nudge
+        assert "fetch its full content" not in nudge
+        assert "call render_html once" in nudge
+
+    def test_balanced_nudge_empty_without_known_tool_categories(self):
+        assert (
+            _build_tool_action_nudge(
+                tools = [],
+                model_name = "Llama-3.1-8B-Instruct",
+            )
+            == ""
+        )
 
 
 # =====================================================================
@@ -77,6 +165,51 @@ class TestAnthropicModels:
             system = "You are helpful.",
         )
         assert req.system == "You are helpful."
+
+    def test_system_role_message_normalized_to_system_field(self):
+        req = AnthropicMessagesRequest(
+            max_tokens = 50,
+            messages = [
+                {"role": "system", "content": "You are helpful."},
+                {"role": "user", "content": "Hi"},
+            ],
+        )
+        assert req.system == "You are helpful."
+        assert len(req.messages) == 1
+        assert req.messages[0].role == "user"
+
+    def test_system_role_message_merges_with_existing_system_field(self):
+        req = AnthropicMessagesRequest(
+            max_tokens = 50,
+            system = "Base instructions.",
+            messages = [
+                {"role": "user", "content": "Hi"},
+                {"role": "system", "content": "Additional instructions."},
+                {"role": "assistant", "content": "Hello."},
+            ],
+        )
+        assert req.system == "Base instructions.\n\nAdditional instructions."
+        assert [msg.role for msg in req.messages] == ["user", "assistant"]
+
+    def test_system_role_message_with_null_content_ignored(self):
+        req = AnthropicMessagesRequest(
+            max_tokens = 50,
+            system = "Base.",
+            messages = [
+                {"role": "system", "content": None},
+                {
+                    "role": "system",
+                    "content": [
+                        None,
+                        {"type": "text", "text": "Use short answers."},
+                    ],
+                },
+                {"role": "user", "content": "Hi"},
+            ],
+        )
+        assert req.system == "Base.\n\nUse short answers."
+        assert "None" not in str(req.system)
+        assert [msg.role for msg in req.messages] == ["user"]
 
     def test_tools_field_parses(self):
         req = AnthropicMessagesRequest(
@@ -157,6 +290,20 @@ class TestAnthropicMessagesToOpenAI:
         result = anthropic_messages_to_openai(msgs, system = "Be brief.")
         assert result[0] == {"role": "system", "content": "Be brief."}
         assert result[1] == {"role": "user", "content": "Hello"}
+
+    def test_top_level_system_request_translates_unchanged(self):
+        req = AnthropicMessagesRequest(
+            messages = [{"role": "user", "content": "Hello"}],
+            system = "Be brief.",
+        )
+        result = anthropic_messages_to_openai(
+            [m.model_dump() for m in req.messages],
+            req.system,
+        )
+        assert result == [
+            {"role": "system", "content": "Be brief."},
+            {"role": "user", "content": "Hello"},
+        ]
 
     def test_system_as_block_list(self):
         system = [
@@ -313,10 +460,7 @@ class TestAnthropicMessagesToOpenAI:
         ]
         result = anthropic_messages_to_openai(msgs)
         parts = result[0]["content"]
-        assert parts[1] == {
-            "type": "image_url",
-            "image_url": {"url": "https://x/y.png"},
-        }
+        assert parts[1] == {"type": "image_url", "image_url": {"url": "https://x/y.png"}}
 
     def test_image_only_user_message_emits_no_text_part(self):
         msgs = [
@@ -381,12 +525,7 @@ class TestAnthropicMessagesToOpenAI:
         ]
         result = anthropic_messages_to_openai(msgs)
         parts = result[0]["content"]
-        assert [p["type"] for p in parts] == [
-            "text",
-            "image_url",
-            "text",
-            "image_url",
-        ]
+        assert [p["type"] for p in parts] == ["text", "image_url", "text", "image_url"]
         assert parts[0]["text"] == "before"
         assert parts[2]["text"] == "after"
         assert parts[1]["image_url"]["url"] == "data:image/png;base64,AA"
@@ -464,15 +603,10 @@ class TestAnthropicToolsToOpenAI:
             enabled_tools = ["python"],
         )
 
-        assert [tool["function"]["name"] for tool in result] == [
-            "web_search",
-            "python",
-        ]
+        assert [tool["function"]["name"] for tool in result] == ["web_search", "python"]
 
     def test_pydantic_model_input(self):
-        tool = AnthropicTool(
-            name = "test", description = "desc", input_schema = {"type": "object"}
-        )
+        tool = AnthropicTool(name = "test", description = "desc", input_schema = {"type": "object"})
         result = anthropic_tools_to_openai([tool])
         assert result[0]["function"]["name"] == "test"
 
@@ -572,12 +706,8 @@ class TestAnthropicStreamEmitter:
             }
         )
 
-        first_payloads = [
-            json.loads(event.split("data: ")[1]) for event in first_events
-        ]
-        second_payloads = [
-            json.loads(event.split("data: ")[1]) for event in second_events
-        ]
+        first_payloads = [json.loads(event.split("data: ")[1]) for event in first_events]
+        second_payloads = [json.loads(event.split("data: ")[1]) for event in second_events]
 
         tool_starts = [
             payload
@@ -586,16 +716,14 @@ class TestAnthropicStreamEmitter:
             and payload["content_block"]["type"] == "tool_use"
         ]
         assert len(tool_starts) == 1
-        assert tool_starts[0]["content_block"]["id"] == "call_0"
+        assert tool_starts[0]["content_block"]["id"].startswith("toolu_")
         assert second_payloads == [
             {
                 "type": "content_block_delta",
                 "index": tool_starts[0]["index"],
                 "delta": {
                     "type": "input_json_delta",
-                    "partial_json": json.dumps(
-                        {"code": "<!doctype html><html></html>"}
-                    ),
+                    "partial_json": json.dumps({"code": "<!doctype html><html></html>"}),
                 },
             }
         ]
@@ -603,7 +731,7 @@ class TestAnthropicStreamEmitter:
     def test_tool_end_closes_tool_opens_new_text_block(self):
         e = AnthropicStreamEmitter()
         e.start("msg_1", "m")
-        e.feed(
+        start_events = e.feed(
             {
                 "type": "tool_start",
                 "tool_name": "t",
@@ -611,6 +739,13 @@ class TestAnthropicStreamEmitter:
                 "arguments": {},
             }
         )
+        start_payload = next(
+            json.loads(event.split("data: ")[1])
+            for event in start_events
+            if "content_block_start" in event
+        )
+        tool_use_id = start_payload["content_block"]["id"]
+        assert tool_use_id.startswith("toolu_")
         events = e.feed(
             {
                 "type": "tool_end",
@@ -625,7 +760,7 @@ class TestAnthropicStreamEmitter:
         assert "tool_result" in events[1]
         parsed = json.loads(events[1].split("data: ")[1])
         assert parsed["content"] == "done"
-        assert parsed["tool_use_id"] == "tc_1"
+        assert parsed["tool_use_id"] == tool_use_id
         assert "content_block_start" in events[2]
         assert '"type": "text"' in events[2]
 
@@ -747,23 +882,18 @@ class TestAnthropicToolNonStreaming:
                 "type": "tool_end",
                 "tool_name": "render_html",
                 "tool_call_id": "call_0",
-                "result": "Rendered HTML artifact.",
+                "result": "Rendered HTML canvas.",
             }
 
         response = asyncio.run(_anthropic_tool_non_streaming(_run_gen, "msg_1", "m"))
         body = json.loads(response.body)
-        tool_blocks = [
-            block for block in body["content"] if block["type"] == "tool_use"
-        ]
+        tool_blocks = [block for block in body["content"] if block["type"] == "tool_use"]
 
-        assert tool_blocks == [
-            {
-                "type": "tool_use",
-                "id": "call_0",
-                "name": "render_html",
-                "input": {"code": "<!doctype html><html></html>"},
-            }
-        ]
+        assert len(tool_blocks) == 1
+        assert tool_blocks[0]["type"] == "tool_use"
+        assert tool_blocks[0]["id"].startswith("toolu_")
+        assert tool_blocks[0]["name"] == "render_html"
+        assert tool_blocks[0]["input"] == {"code": "<!doctype html><html></html>"}
 
 
 # =====================================================================
@@ -831,7 +961,7 @@ class TestAnthropicPassthroughEmitter:
         parsed = self._parse(events[0])
         assert parsed["type"] == "content_block_start"
         assert parsed["content_block"]["type"] == "tool_use"
-        assert parsed["content_block"]["id"] == "call_1"
+        assert parsed["content_block"]["id"].startswith("toolu_")
         assert parsed["content_block"]["name"] == "Bash"
 
     def test_tool_call_arguments_streamed_as_input_json_delta(self):
@@ -860,26 +990,14 @@ class TestAnthropicPassthroughEmitter:
         events1 = e.feed_chunk(
             {
                 "choices": [
-                    {
-                        "delta": {
-                            "tool_calls": [
-                                {"index": 0, "function": {"arguments": '{"cmd'}}
-                            ]
-                        }
-                    }
+                    {"delta": {"tool_calls": [{"index": 0, "function": {"arguments": '{"cmd'}}]}}
                 ]
             }
         )
         events2 = e.feed_chunk(
             {
                 "choices": [
-                    {
-                        "delta": {
-                            "tool_calls": [
-                                {"index": 0, "function": {"arguments": '": "ls"}'}}
-                            ]
-                        }
-                    }
+                    {"delta": {"tool_calls": [{"index": 0, "function": {"arguments": '": "ls"}'}}]}}
                 ]
             }
         )
@@ -1048,7 +1166,102 @@ class TestAnthropicPassthroughEmitter:
         assert "content_block_start" in events[1]
         parsed = self._parse(events[1])
         assert parsed["content_block"]["name"] == "Read"
-        assert parsed["content_block"]["id"] == "c2"
+        assert parsed["content_block"]["id"].startswith("toolu_")
+
+
+class TestAnthropicPassthroughStreamAdapter:
+    class _Request:
+        async def is_disconnected(self):
+            return False
+
+    @staticmethod
+    async def _collect(response):
+        chunks = []
+        async for chunk in response.body_iterator:
+            chunks.append(chunk.decode() if isinstance(chunk, bytes) else chunk)
+        return chunks
+
+    @staticmethod
+    def _payloads(lines, event_name):
+        prefix = f"event: {event_name}\n"
+        return [
+            json.loads(line.split("data: ", 1)[1].strip())
+            for line in lines
+            if line.startswith(prefix)
+        ]
+
+    def test_stream_requests_usage_for_final_message_delta(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        captured = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured["body"] = json.loads(request.content.decode())
+            chunks = [
+                {"choices": [{"delta": {"content": "hi"}}]},
+                {
+                    "choices": [],
+                    "usage": {
+                        "prompt_tokens": 2,
+                        "completion_tokens": 4,
+                        "total_tokens": 6,
+                    },
+                },
+            ]
+            content = "".join(f"data: {json.dumps(chunk)}\n\n" for chunk in chunks)
+            content += "data: [DONE]\n\n"
+            return httpx.Response(
+                200,
+                content = content.encode(),
+                headers = {"content-type": "text/event-stream"},
+            )
+
+        transport = httpx.MockTransport(handler)
+        real_async_client = httpx.AsyncClient
+
+        def _client(*args, **kwargs):
+            return real_async_client(
+                transport = transport,
+                timeout = kwargs.get("timeout", 600),
+            )
+
+        monkeypatch.setattr(inf_mod.httpx, "AsyncClient", _client)
+        backend = SimpleNamespace(
+            base_url = "http://llama.test",
+            context_length = 4096,
+            count_chat_tokens = lambda *args, **kwargs: 2,
+        )
+
+        async def run():
+            response = await _anthropic_passthrough_stream(
+                self._Request(),
+                threading.Event(),
+                backend,
+                [{"role": "user", "content": "hi"}],
+                [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "lookup",
+                            "parameters": {"type": "object"},
+                        },
+                    }
+                ],
+                0.7,
+                0.95,
+                20,
+                16,
+                "msg_1",
+                "test-model",
+            )
+            return await self._collect(response)
+
+        lines = asyncio.run(run())
+
+        assert captured["body"]["stream_options"] == {"include_usage": True}
+        message_delta = self._payloads(lines, "message_delta")[0]
+        assert message_delta["usage"]["input_tokens"] == 2
+        assert message_delta["usage"]["output_tokens"] == 4
 
 
 # =====================================================================
@@ -1161,14 +1374,14 @@ class TestAnthropicRequestedStudioTools:
 
     def test_bare_name_without_type_is_not_treated_as_server_tool(self):
         # Anthropic dispatches server tools by `type`; bare-name matching
-        # would let a malformed client tool (e.g. user forgot input_schema)
-        # silently flip the request into server-execution mode.
+        # would let a malformed client tool (missing input_schema) silently
+        # flip the request into server-execution mode.
         tools = [{"name": "python"}]
         assert _anthropic_requested_studio_tools(tools) == set()
 
     def test_client_tool_named_python_is_not_misclassified(self):
-        # input_schema is the client-tool discriminator; presence of it
-        # must prevent the name from being treated as a Studio alias.
+        # input_schema is the client-tool discriminator; its presence must
+        # prevent the name from being treated as a Studio alias.
         tools = [
             {
                 "name": "python",
@@ -1202,35 +1415,34 @@ class TestAnthropicRequestedStudioTools:
 # =====================================================================
 
 
-class _PlainPathCalled(Exception):
-    pass
-
-
-class _ToolPathCalled(Exception):
-    pass
-
-
 def _mock_backend(monkeypatch, **overrides):
     """Install a minimal stub backend on routes.inference.
 
-    Generation methods raise sentinel exceptions so the caller can assert
-    which path the route entered.
+    Generation methods record which path the route entered, then yield one
+    content event so the route can complete normally.
     """
     import routes.inference as inf_mod
 
+    calls = []
+
     def _gen_plain(**kwargs):
-        raise _PlainPathCalled()
+        calls.append(("plain", kwargs))
+        yield "ok"
 
     def _gen_tools(**kwargs):
-        raise _ToolPathCalled()
+        calls.append(("tools", kwargs))
+        yield {"type": "content", "text": "ok"}
 
     backend = SimpleNamespace(
         is_loaded = True,
         is_vision = False,
         supports_tools = True,
         model_identifier = "test-model",
+        context_length = 4096,
+        count_chat_tokens = lambda *args, **kwargs: 2,
         generate_chat_completion = _gen_plain,
         generate_chat_completion_with_tools = _gen_tools,
+        calls = calls,
     )
     backend.__dict__.update(overrides)
     monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
@@ -1258,6 +1470,112 @@ def _reset_policy():
 
 
 class TestAnthropicMessagesToolRouting:
+    class _Request:
+        state = SimpleNamespace()
+        url = SimpleNamespace(path = "/v1/messages")
+        method = "POST"
+
+        async def is_disconnected(self):
+            return False
+
+    @staticmethod
+    def _consume_response(response):
+        async def _consume():
+            chunks = []
+            async for chunk in response.body_iterator:
+                chunks.append(chunk)
+            return chunks
+
+        return _drive(_consume())
+
+    def test_plain_non_streaming_records_api_monitor_entry(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        _mock_backend(monkeypatch, context_length = 2048)
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        payload = _basic_payload()
+
+        response = _drive(anthropic_messages(payload, request = self._Request(), current_subject = "t"))
+
+        assert response.status_code == 200
+        [entry] = monitor.snapshot()
+        assert entry["endpoint"] == "/v1/messages"
+        assert entry["status"] == "completed"
+        assert entry["model"] == "test-model"
+        assert entry["prompt_preview"] == "user: hi"
+        assert entry["reply_preview"] == "ok"
+        assert entry["context_length"] == 2048
+        assert monitor.active_count() == 0
+
+    def test_tool_use_non_streaming_records_api_monitor_reply(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        def _gen_tools(**_kwargs):
+            yield {
+                "type": "tool_start",
+                "tool_call_id": "call_1",
+                "tool_name": "lookup",
+                "arguments": {"query": "weather"},
+            }
+
+        _mock_backend(
+            monkeypatch,
+            context_length = 2048,
+            generate_chat_completion_with_tools = _gen_tools,
+        )
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        payload = _basic_payload(
+            enable_tools = True,
+            tools = [{"type": "web_search_20250305", "name": "web_search"}],
+        )
+
+        response = _drive(anthropic_messages(payload, request = self._Request(), current_subject = "t"))
+
+        assert response.status_code == 200
+        [entry] = monitor.snapshot()
+        assert entry["status"] == "completed"
+        assert entry["reply_preview"] == 'Tool call: lookup({"query": "weather"})'
+
+    def test_plain_streaming_records_active_and_completed_monitor_entry(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        _mock_backend(monkeypatch, context_length = 2048)
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        payload = _basic_payload(stream = True)
+
+        response = _drive(anthropic_messages(payload, request = self._Request(), current_subject = "t"))
+
+        assert monitor.active_count() == 1
+        self._consume_response(response)
+        [entry] = monitor.snapshot()
+        assert entry["status"] == "completed"
+        assert entry["reply_preview"] == "ok"
+        assert entry["prompt_tokens"] == 2
+        assert entry["context_length"] == 2048
+        assert monitor.active_count() == 0
+
+    def test_plain_streaming_pre_response_cancel_finalizes_monitor(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        async def _cancelled_before_response(*_args, **_kwargs):
+            raise asyncio.CancelledError()
+
+        _mock_backend(monkeypatch, context_length = 2048)
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monkeypatch.setattr(inf_mod, "_anthropic_plain_stream", _cancelled_before_response)
+        payload = _basic_payload(stream = True)
+
+        with pytest.raises(asyncio.CancelledError):
+            _drive(anthropic_messages(payload, request = self._Request(), current_subject = "t"))
+
+        [entry] = monitor.snapshot()
+        assert entry["status"] == "cancelled"
+        assert monitor.active_count() == 0
+
     def test_mixed_server_and_client_tools_rejected_with_400(self, monkeypatch):
         _mock_backend(monkeypatch)
         payload = _basic_payload(
@@ -1272,13 +1590,11 @@ class TestAnthropicMessagesToolRouting:
         assert exc.value.status_code == 400
         assert "Mixing Anthropic server tools" in exc.value.detail
 
-    def test_mixed_rejected_when_client_tool_name_collides_with_server_alias(
-        self, monkeypatch
-    ):
-        # Regression: a client tool sharing a name with a mapped server
-        # tool (e.g. user defines their own "web_search") must still
-        # trigger the mixed-mode 400 — the post-name filter would
-        # otherwise drop the client tool and silently route to server-only.
+    def test_mixed_rejected_when_client_tool_name_collides_with_server_alias(self, monkeypatch):
+        # Regression: a client tool sharing a name with a mapped server tool
+        # (e.g. a custom "web_search") must still trigger the mixed-mode 400;
+        # otherwise the post-name filter drops the client tool and silently
+        # routes to server-only.
         _mock_backend(monkeypatch)
         payload = _basic_payload(
             tools = [
@@ -1305,10 +1621,10 @@ class TestAnthropicMessagesToolRouting:
 
     def test_client_tool_missing_name_rejected_with_400(self, monkeypatch):
         # Regression: AnthropicTool.name was relaxed to Optional for server
-        # tools, so a client-tool payload that has input_schema but omits
-        # `name` (e.g. typo) now parses successfully but would be silently
-        # dropped by anthropic_tools_to_openai, leaving the request with
-        # tool calling disabled. Reject at the boundary instead.
+        # tools, so a client-tool payload with input_schema but no `name`
+        # (typo) now parses but would be silently dropped by
+        # anthropic_tools_to_openai, leaving tool calling disabled. Reject at
+        # the boundary instead.
         _mock_backend(monkeypatch)
         payload = _basic_payload(
             tools = [{"input_schema": {"type": "object"}}],
@@ -1322,7 +1638,7 @@ class TestAnthropicMessagesToolRouting:
     def test_client_tool_empty_name_rejected_with_400(self, monkeypatch):
         # Same silent-disable class as missing-name: `name: ""` passes the
         # isinstance check but is dropped by anthropic_tools_to_openai's
-        # `if not name` guard. Reject at the boundary so the typo surfaces.
+        # `if not name` guard. Reject at the boundary so the typo shows.
         _mock_backend(monkeypatch)
         payload = _basic_payload(
             tools = [{"name": "", "input_schema": {"type": "object"}}],
@@ -1333,13 +1649,11 @@ class TestAnthropicMessagesToolRouting:
         assert exc.value.status_code == 400
         assert "name" in exc.value.detail
 
-    def test_alias_named_client_tool_without_schema_rejected_with_400(
-        self, monkeypatch
-    ):
-        # Regression: a typo'd client tool whose name happens to collide
-        # with a Studio alias (e.g. user meant a custom "python" tool but
-        # forgot input_schema) must surface a 400, not silently switch
-        # the request into Studio's built-in python execution.
+    def test_alias_named_client_tool_without_schema_rejected_with_400(self, monkeypatch):
+        # Regression: a typo'd client tool whose name collides with a Studio
+        # alias (e.g. a custom "python" tool missing input_schema) must
+        # surface a 400, not silently switch into Studio's built-in python
+        # execution.
         _mock_backend(monkeypatch)
         payload = _basic_payload(tools = [{"name": "python"}])
 
@@ -1349,43 +1663,55 @@ class TestAnthropicMessagesToolRouting:
         assert "input_schema" in exc.value.detail
 
     def test_unrecognized_server_tool_accepted_as_noop(self, monkeypatch):
-        _mock_backend(monkeypatch)
+        backend = _mock_backend(monkeypatch)
         payload = _basic_payload(
             tools = [{"type": "code_execution_20250825", "name": "code_execution"}],
         )
 
-        with pytest.raises(_PlainPathCalled):
-            _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+        _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+        assert backend.calls[0][0] == "plain"
 
     def test_disable_tools_policy_overrides_server_tool_alias(self, monkeypatch):
-        # CLI `unsloth run --disable-tools` sets policy=False. A request
-        # carrying a Studio server-tool alias must NOT enter the agentic
-        # loop in that configuration.
-        _mock_backend(monkeypatch)
+        # CLI `unsloth run --disable-tools` sets policy=False. A request with
+        # a Studio server-tool alias must NOT enter the agentic loop then.
+        backend = _mock_backend(monkeypatch)
         set_tool_policy(False)
         payload = _basic_payload(
             tools = [{"type": "web_search_20250305", "name": "web_search"}],
         )
 
-        with pytest.raises(_PlainPathCalled):
-            _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+        _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+        assert backend.calls[0][0] == "plain"
 
     def test_server_tool_alias_enters_tool_path_when_policy_unset(self, monkeypatch):
         # Mirror of the previous test for the default (None) policy.
-        _mock_backend(monkeypatch)
+        backend = _mock_backend(monkeypatch)
         payload = _basic_payload(
             tools = [{"type": "web_search_20250305", "name": "web_search"}],
         )
 
-        with pytest.raises(_ToolPathCalled):
+        _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+        assert backend.calls[0][0] == "tools"
+
+    def test_confirm_tool_calls_rejected_for_server_tools(self, monkeypatch):
+        backend = _mock_backend(monkeypatch)
+        payload = _basic_payload(
+            confirm_tool_calls = True,
+            tools = [{"type": "web_search_20250305", "name": "web_search"}],
+        )
+
+        with pytest.raises(HTTPException) as exc:
             _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+        assert exc.value.status_code == 400
+        assert "confirm_tool_calls is not supported" in exc.value.detail["error"]["message"]
+        assert backend.calls == []
 
     def test_per_request_enable_tools_false_blocks_server_tool_alias(self, monkeypatch):
-        _mock_backend(monkeypatch)
+        backend = _mock_backend(monkeypatch)
         payload = _basic_payload(
             enable_tools = False,
             tools = [{"type": "web_search_20250305", "name": "web_search"}],
         )
 
-        with pytest.raises(_PlainPathCalled):
-            _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+        _drive(anthropic_messages(payload, request = None, current_subject = "t"))
+        assert backend.calls[0][0] == "plain"

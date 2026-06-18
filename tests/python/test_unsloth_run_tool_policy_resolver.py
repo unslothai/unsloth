@@ -1,15 +1,6 @@
 # Copyright 2025-present the Unsloth AI Inc. team. All rights reserved.
 
-"""
-Truth-table tests for `resolve_tool_policy` -- the pure resolver behind
-`unsloth run --enable-tools/--disable-tools`.
-
-Covers:
-  - 127.0.0.1 default-on, explicit on, explicit off
-  - 0.0.0.0 default-off, explicit off
-  - 0.0.0.0 + explicit on: confirm prompt unless --silent or --yes,
-    abort on negative answer.
-"""
+"""Truth-table tests for `resolve_tool_policy` behind `unsloth run --enable-tools/--disable-tools`."""
 
 import pytest
 import typer
@@ -141,14 +132,12 @@ class TestZeroHost:
 
 
 class TestIsExternalHost:
-    @pytest.mark.parametrize(
-        "host", ["127.0.0.1", "localhost", "::1", "LOCALHOST", "Localhost"]
-    )
+    @pytest.mark.parametrize("host", ["127.0.0.1", "localhost", "::1", "LOCALHOST", "Localhost"])
     def test_loopback_aliases_are_local(self, host):
         assert is_external_host(host) is False
 
     @pytest.mark.parametrize(
-        "host", ["0.0.0.0", "::", "192.168.1.5", "10.0.0.1", "example.com"]
+        "host", ["0.0.0.0", "::", "127.0.0.2", "192.168.1.5", "10.0.0.1", "example.com"]
     )
     def test_non_loopback_is_external(self, host):
         assert is_external_host(host) is True

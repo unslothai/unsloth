@@ -8,13 +8,37 @@ import {
   CommandGroup,
   CommandList,
 } from "@/components/ui/command";
-import { Cancel01Icon, Message01Icon, SearchIcon } from "@hugeicons/core-free-icons";
+import { Cancel01Icon, Message01Icon, Search01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import { Command as CommandPrimitive } from "cmdk";
-import { useEffect } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useChatSearchIndex } from "../hooks/use-chat-search-index";
 import { useChatSearchStore } from "../stores/chat-search-store";
+
+// Lowercased whitespace tokens of the query (haystacks are lowercased in the index).
+function queryTokens(search: string): string[] {
+  return search.trim().toLowerCase().split(/\s+/).filter(Boolean);
+}
+
+function haystackMatches(haystack: string, tokens: string[]): boolean {
+  return tokens.every((token) => haystack.includes(token));
+}
+
+// We filter rows here (cmdk runs with shouldFilter=false) so we control the
+// two-tier behavior and avoid cmdk's fuzzy scorer keeping non-matches visible
+// (issue #5572): every whitespace token must be a substring. User messages are
+// searched first; expand to the full conversation only when user text alone
+// matches nothing anywhere (user messages are short, assistant replies can be huge).
+export function selectVisibleChats<
+  T extends { userSearchText: string; searchText: string },
+>(items: T[], search: string): T[] {
+  const tokens = queryTokens(search);
+  if (tokens.length === 0) return items;
+  const userHits = items.filter((it) => haystackMatches(it.userSearchText, tokens));
+  if (userHits.length > 0) return userHits;
+  return items.filter((it) => haystackMatches(it.searchText, tokens));
+}
 
 function formatRelative(createdAt: number): string {
   const diff = Date.now() - createdAt;
@@ -31,6 +55,16 @@ export function ChatSearchDialog() {
   const close = useChatSearchStore((s) => s.close);
   const navigate = useNavigate();
   const { items, loading } = useChatSearchIndex(isOpen);
+  const [query, setQuery] = useState("");
+
+  const visibleItems = useMemo(
+    () => selectVisibleChats(items, query),
+    [items, query],
+  );
+
+  useEffect(() => {
+    if (!isOpen) setQuery("");
+  }, [isOpen]);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -49,18 +83,19 @@ export function ChatSearchDialog() {
     <CommandDialog
       open={isOpen}
       onOpenChange={setOpen}
-      className="corner-squircle top-[25%] w-[635px] max-w-[calc(100%-2rem)] gap-0 p-0 sm:max-w-[635px] border-0 ring-0 shadow-[0_10px_34px_rgba(0,0,0,0.12)] dark:border dark:border-border dark:ring-0 dark:shadow-none"
-      overlayClassName="bg-transparent"
+      className="chat-search-surface rounded-3xl! top-1/2 -translate-y-1/2 w-[635px] max-w-[calc(100%-2rem)] gap-0 p-0 ring-0 sm:max-w-[635px]"
+      overlayClassName="bg-transparent supports-backdrop-filter:backdrop-blur-none"
     >
-      <Command className="rounded-4xl p-0">
+      <Command className="rounded-3xl p-0" shouldFilter={false}>
         <div className="flex items-center gap-3 border-b border-border/40 px-4 py-3">
           <HugeiconsIcon
-            icon={SearchIcon}
+            icon={Search01Icon}
             strokeWidth={2}
             className="size-4 shrink-0 text-muted-foreground"
           />
           <CommandPrimitive.Input
             placeholder="Search chats..."
+            onValueChange={setQuery}
             className="flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
           />
           <button
@@ -72,7 +107,7 @@ export function ChatSearchDialog() {
             <HugeiconsIcon icon={Cancel01Icon} strokeWidth={2} className="size-4" />
           </button>
         </div>
-        <CommandList className="cmd-native-scrollbar max-h-[420px] p-1">
+        <CommandList className="cmd-native-scrollbar hover-scrollbar max-h-[420px] p-1">
           <CommandEmpty className="py-6 text-center text-xs text-muted-foreground">
             {loading
               ? "Loading…"
@@ -81,10 +116,10 @@ export function ChatSearchDialog() {
                 : "No chats match."}
           </CommandEmpty>
           <CommandGroup className="p-0">
-            {items.map((item) => (
+            {visibleItems.map((item) => (
               <CommandPrimitive.Item
                 key={item.id}
-                value={`${item.title} ${item.preview}`}
+                value={item.id}
                 onSelect={() => {
                   navigate({
                     to: "/chat",
@@ -101,7 +136,7 @@ export function ChatSearchDialog() {
                   });
                   close();
                 }}
-                className="relative flex cursor-pointer select-none items-center gap-3 rounded-lg px-3 py-2.5 text-sm outline-hidden data-selected:bg-muted data-selected:text-foreground"
+                className="relative flex cursor-pointer select-none items-center gap-3 rounded-full px-3 py-2.5 text-sm outline-hidden data-selected:bg-muted data-selected:text-foreground"
               >
                 <HugeiconsIcon
                   icon={Message01Icon}

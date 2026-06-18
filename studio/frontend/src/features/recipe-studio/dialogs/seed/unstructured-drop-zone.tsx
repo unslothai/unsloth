@@ -2,10 +2,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   CloudUploadIcon,
   Cancel01Icon,
-  Loading03Icon,
   CheckmarkCircle02Icon,
   Alert02Icon,
 } from "@hugeicons/core-free-icons";
+import { Spinner } from "@/components/ui/spinner";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { uploadUnstructuredFile, removeUnstructuredFile } from "../../api";
 import {
@@ -226,10 +226,7 @@ export function UnstructuredDropZone({
               className="flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm"
             >
               {entry.status === "uploading" && (
-                <HugeiconsIcon
-                  icon={Loading03Icon}
-                  className="text-muted-foreground size-4 animate-spin"
-                />
+                <Spinner className="text-muted-foreground size-4" />
               )}
               {entry.status === "ok" && (
                 <HugeiconsIcon

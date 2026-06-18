@@ -11,16 +11,8 @@
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 # GNU Lesser General Public License for more details.
 
-"""Public-API surface drift detectors for unsloth itself.
-
-Companion to tests/test_import_fixes_drift.py: that file catches drift
-in THIRD-PARTY libraries (transformers / trl / triton / peft / etc.)
-that unsloth's import_fixes patches around. This file catches drift in
-unsloth's OWN public-surface API -- the top-10 symbols and classmethods
-that the unslothai/notebooks tree (and therefore every user on Colab)
-calls. If a refactor on this repo renames FastLanguageModel.from_pretrained
-or drops one of the documented kwargs, the test fires DRIFT DETECTED
-here BEFORE the breakage reaches users.
+"""Drift detectors for unsloth's OWN public surface (top symbols/classmethods the
+unslothai/notebooks tree calls), so a rename or dropped kwarg fires DRIFT DETECTED here.
 
 Call-site counts measured against unslothai/notebooks @ main:
   FastLanguageModel.from_pretrained   506
@@ -32,11 +24,6 @@ Call-site counts measured against unslothai/notebooks @ main:
   FastVisionModel.for_training         60
   FastModel.from_pretrained           103
   FastModel.get_peft_model             67
-
-Mirrors the unsloth-zoo / unsloth drift-detector skeleton:
-``pytest.importorskip("unsloth")`` to gate, assert the healthy upstream
-shape, ``pytest.fail("DRIFT DETECTED: ...")`` (never ``pytest.skip``) on
-regression so the matrix cell goes red.
 """
 
 from __future__ import annotations
@@ -55,9 +42,7 @@ def _signature_param_names(callable_obj) -> set[str]:
 
 
 def _accepts(callable_obj, kwargs: set[str]) -> tuple[bool, set[str]]:
-    """True if every name in ``kwargs`` is either a named parameter on
-    ``callable_obj`` OR the callable's signature has a ``**kwargs``
-    catch-all. Returns (ok, missing_set)."""
+    """(ok, missing): True if every kwarg is a named param or the signature has **kwargs."""
     try:
         sig = inspect.signature(callable_obj)
     except (TypeError, ValueError):
@@ -70,10 +55,7 @@ def _accepts(callable_obj, kwargs: set[str]) -> tuple[bool, set[str]]:
     return (not missing), missing
 
 
-# ===========================================================================
-# FastLanguageModel: the headline class. 506 from_pretrained + 370
-# for_inference + 304 get_peft_model call sites across the notebooks.
-# ===========================================================================
+# FastLanguageModel: headline class.
 
 
 def test_fast_language_model_class_present():
@@ -126,9 +108,7 @@ def test_fast_language_model_for_inference_callable():
         )
 
 
-# ===========================================================================
-# FastVisionModel: 183 + 176 + 99 + 60 call sites across vision notebooks.
-# ===========================================================================
+# FastVisionModel.
 
 
 def test_fast_vision_model_class_and_methods():
@@ -165,9 +145,7 @@ def test_fast_vision_model_get_peft_model_vision_kwargs():
         )
 
 
-# ===========================================================================
-# FastModel: the modern unified entry point. 103 + 67 call sites.
-# ===========================================================================
+# FastModel: modern unified entry point.
 
 
 def test_fast_model_class_and_methods():
@@ -197,14 +175,11 @@ def test_fast_model_from_pretrained_kwargs():
         )
 
 
-# ===========================================================================
 # Bf16 helper alias (renamed once already; keep both accepted).
-# ===========================================================================
 
 
 def test_is_bf16_supported_or_alias_callable():
-    """48 notebook import sites for is_bf16_supported plus 8 for the
-    legacy is_bfloat16_supported alias. Either must remain importable."""
+    """is_bf16_supported or the legacy is_bfloat16_supported alias must remain importable."""
     unsloth = pytest.importorskip("unsloth")
     has_new = callable(getattr(unsloth, "is_bf16_supported", None))
     has_old = callable(getattr(unsloth, "is_bfloat16_supported", None))

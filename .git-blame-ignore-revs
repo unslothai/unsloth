@@ -1,0 +1,8 @@
+# Commits listed here are skipped by `git blame` so that bulk, whitespace-only
+# changes don't obscure the real authorship of a line.
+#
+# GitHub honors this file automatically. To use it locally, run once:
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+
+# chore(studio/frontend): normalize line endings to LF
+c50b8ab910f5aa56dd7ae0022d2c7b96bfe3384a

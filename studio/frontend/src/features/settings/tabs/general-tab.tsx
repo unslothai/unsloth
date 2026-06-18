@@ -16,6 +16,15 @@ import { usePlatformStore } from "@/config/env";
 import { resetOnboardingDone } from "@/features/auth";
 import { useChatRuntimeStore } from "@/features/chat";
 import {
+  setShowLlamaUpdateBanner,
+  useShowLlamaUpdateBanner,
+} from "@/hooks/use-llama-update-pref";
+import {
+  loadHelperPrecacheSettings,
+  updateHelperPrecacheSettings,
+  type HelperPrecacheSettings,
+} from "../api/helper-precache";
+import {
   DEFAULT_UPLOAD_LIMIT_MB,
   loadUploadLimitSettings,
   updateUploadLimitSettings,
@@ -28,17 +37,13 @@ import { useEffect, useRef, useState } from "react";
 import { Eye, EyeOff } from "lucide-react";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
+import { StudioVersionSection } from "../components/studio-version-section";
 
 // Keys cleared by "Reset all local preferences".
-//
-// NEVER include auth / session keys here — resetting them would log the user
-// out, which is not what users expect from a "reset preferences" button.
-//
-// Explicitly EXCLUDED:
-//   - "unsloth_auth_token"                 (auth: access token)
-//   - "unsloth_auth_refresh_token"         (auth: refresh token)
-//   - "unsloth_auth_must_change_password"  (auth: forced password change flag)
-//   - "unsloth_onboarding_done"            (session: would force re-onboarding)
+// NEVER include auth/session keys here — clearing them would log the user out
+// or force re-onboarding. Explicitly excluded: unsloth_auth_token,
+// unsloth_auth_refresh_token, unsloth_auth_must_change_password,
+// unsloth_onboarding_done.
 const PREFS_KEYS: string[] = [
   // Appearance
   "theme",
@@ -55,6 +60,7 @@ const PREFS_KEYS: string[] = [
   "unsloth_tool_call_timeout",
   "unsloth_chat_inference_params",
   "unsloth_chat_collapsible_state",
+  "unsloth_chat_preferences",
   // Chat presets
   "unsloth_chat_custom_presets",
   "unsloth_chat_active_preset",
@@ -68,12 +74,12 @@ const PREFS_KEYS: string[] = [
   "unsloth_user_profile",
   // Guided tour flags
   "tour:studio:v1",
+  // Update notifications
+  "unsloth_show_llama_update_banner",
 ];
 
-// Set to true from resetAllPrefs so the unmount-commit effect skips writing
-// back the in-memory draft — otherwise the cleanup would re-persist the old
-// HF token into localStorage after it was just cleared, and the subsequent
-// reload would read the re-written value.
+// Set by resetAllPrefs so the unmount-commit effect skips writing back the
+// in-memory draft, else cleanup would re-persist the just-cleared HF token.
 let resetInProgress = false;
 
 function resetAllPrefs() {
@@ -108,6 +114,7 @@ export function GeneralTab() {
   const autoTitle = useChatRuntimeStore((s) => s.autoTitle);
   const setAutoTitle = useChatRuntimeStore((s) => s.setAutoTitle);
   const chatOnly = usePlatformStore((s) => s.chatOnly);
+  const showLlamaUpdates = useShowLlamaUpdateBanner();
   const redirectTo = `${pathname}${search}`;
 
   const [draftToken, setDraftToken] = useState(hfToken ?? "");
@@ -121,6 +128,12 @@ export function GeneralTab() {
   );
   const [uploadLimitError, setUploadLimitError] = useState<string | null>(null);
   const [isSavingUploadLimit, setIsSavingUploadLimit] = useState(false);
+  const [helperPrecache, setHelperPrecache] =
+    useState<HelperPrecacheSettings | null>(null);
+  const [helperPrecacheError, setHelperPrecacheError] = useState<string | null>(
+    null,
+  );
+  const [isSavingHelperPrecache, setIsSavingHelperPrecache] = useState(false);
 
   const draftRef = useRef(draftToken);
   useEffect(() => {
@@ -165,6 +178,44 @@ export function GeneralTab() {
     };
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    void loadHelperPrecacheSettings()
+      .then((settings) => {
+        if (cancelled) return;
+        setHelperPrecache(settings);
+        setHelperPrecacheError(null);
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setHelperPrecacheError(
+          error instanceof Error
+            ? error.message
+            : t("settings.general.helperLlm.loadError"),
+        );
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [t]);
+
+  const saveHelperPrecache = async (enabled: boolean) => {
+    setIsSavingHelperPrecache(true);
+    setHelperPrecacheError(null);
+    try {
+      const settings = await updateHelperPrecacheSettings(enabled);
+      setHelperPrecache(settings);
+    } catch (error) {
+      setHelperPrecacheError(
+        error instanceof Error
+          ? error.message
+          : t("settings.general.helperLlm.saveError"),
+      );
+    } finally {
+      setIsSavingHelperPrecache(false);
+    }
+  };
+
   const saveUploadLimit = async () => {
     const parsed = Number(draftUploadLimit);
     if (!Number.isInteger(parsed)) {
@@ -195,13 +246,15 @@ export function GeneralTab() {
   return (
     <div className="flex flex-col gap-6">
       <header className="flex flex-col gap-1">
-        <h1 className="text-lg font-semibold font-heading">
+        <h1 className="text-xl font-semibold font-heading">
           {t("settings.general.title")}
         </h1>
         <p className="text-xs text-muted-foreground">
           {t("settings.general.description")}
         </p>
       </header>
+
+      <StudioVersionSection />
 
       <SettingsSection title={t("settings.general.account")}>
         <SettingsRow
@@ -240,6 +293,52 @@ export function GeneralTab() {
           description={t("settings.general.autoTitleNewChatsDescription")}
         >
           <Switch checked={autoTitle} onCheckedChange={setAutoTitle} />
+        </SettingsRow>
+      </SettingsSection>
+
+      <StudioVersionSection />
+
+      <SettingsSection title={t("settings.general.helperLlm.sectionTitle")}>
+        <SettingsRow
+          label={t("settings.general.helperLlm.preloadOnStartup")}
+          description={t(
+            "settings.general.helperLlm.preloadOnStartupDescription",
+          )}
+        >
+          <div className="flex flex-col items-end gap-1">
+            <Switch
+              checked={helperPrecache?.enabled ?? false}
+              disabled={
+                !helperPrecache ||
+                isSavingHelperPrecache ||
+                helperPrecache.disabledByEnv
+              }
+              onCheckedChange={(enabled) => void saveHelperPrecache(enabled)}
+            />
+            {helperPrecache?.disabledByEnv ? (
+              <span className="max-w-[260px] text-right text-xs text-muted-foreground">
+                {t("settings.general.helperLlm.disabledByEnv")}
+              </span>
+            ) : helperPrecacheError ? (
+              <span className="max-w-[260px] text-right text-xs text-destructive">
+                {helperPrecacheError}
+              </span>
+            ) : null}
+          </div>
+        </SettingsRow>
+      </SettingsSection>
+
+      <SettingsSection title={t("settings.general.notifications.sectionTitle")}>
+        <SettingsRow
+          label={t("settings.general.notifications.showLlamaUpdates")}
+          description={t(
+            "settings.general.notifications.showLlamaUpdatesDescription",
+          )}
+        >
+          <Switch
+            checked={showLlamaUpdates}
+            onCheckedChange={setShowLlamaUpdateBanner}
+          />
         </SettingsRow>
       </SettingsSection>
 
