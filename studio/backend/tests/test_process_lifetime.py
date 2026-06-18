@@ -1,0 +1,192 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Tests for the parent-lifetime reaper (utils/process_lifetime).
+
+The Linux PDEATHSIG cases spawn real processes and assert actual liveness; the
+Windows Job Object path is exercised with a mocked kernel32 so it runs on CI.
+"""
+
+from __future__ import annotations
+
+import os
+import signal
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+import pytest
+
+_BACKEND = Path(__file__).resolve().parent.parent
+if str(_BACKEND) not in sys.path:
+    sys.path.insert(0, str(_BACKEND))
+
+import utils.process_lifetime as pl  # noqa: E402
+
+IS_POSIX = os.name == "posix"
+IS_LINUX = sys.platform.startswith("linux")
+
+
+@pytest.fixture(autouse = True)
+def _reset_module_state():
+    pl._tracked_pids.clear()
+    pl._win_job_handle = None
+    pl._initialized = False
+    yield
+    pl._tracked_pids.clear()
+    pl._win_job_handle = None
+    pl._initialized = False
+
+
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def _wait_dead(pid: int, timeout: float) -> bool:
+    end = time.time() + timeout
+    while time.time() < end:
+        if not _alive(pid):
+            return True
+        time.sleep(0.05)
+    return not _alive(pid)
+
+
+# ── No-op safety / composition ──
+
+def test_initialize_idempotent_and_noop_on_posix():
+    pl.initialize_parent_lifetime()
+    pl.initialize_parent_lifetime()  # second call short-circuits
+    if IS_POSIX:
+        assert pl._win_job_handle is None  # POSIX installs no job
+
+
+def test_adopt_pid_tolerates_none_and_dead_pid():
+    pl.adopt_pid(None)  # ignored
+    pl.adopt_pid(2 ** 31 - 1)  # almost-certainly-dead pid: recorded, never raises
+    assert None not in pl._tracked_pids
+
+
+def test_child_popen_kwargs_linux_vs_other(monkeypatch):
+    monkeypatch.setattr(pl, "_is_linux", lambda: True)
+    assert "preexec_fn" in pl.child_popen_kwargs()
+    monkeypatch.setattr(pl, "_is_linux", lambda: False)
+    assert pl.child_popen_kwargs() == {}  # Windows/macOS add nothing here
+
+
+def test_compose_preexec_runs_pdeathsig_then_existing(monkeypatch):
+    calls = []
+    monkeypatch.setattr(pl, "_is_linux", lambda: True)
+    monkeypatch.setattr(pl, "_pdeathsig_preexec", lambda: calls.append("death"))
+    pl.compose_preexec(lambda: calls.append("existing"))()
+    assert calls == ["death", "existing"]  # ordering matters for sandbox hooks
+
+
+def test_compose_preexec_passthrough_off_linux(monkeypatch):
+    monkeypatch.setattr(pl, "_is_linux", lambda: False)
+    sentinel = lambda: None  # noqa: E731
+    assert pl.compose_preexec(sentinel) is sentinel
+    assert pl.compose_preexec(None) is None
+
+
+# ── Real Linux PDEATHSIG: child dies when the parent dies abnormally ──
+
+@pytest.mark.skipif(not IS_LINUX, reason = "PR_SET_PDEATHSIG is Linux-only")
+def test_pdeathsig_child_dies_when_parent_sigkilled(tmp_path):
+    mid = tmp_path / "mid.py"
+    mid.write_text(
+        "import sys, subprocess, time\n"
+        f"sys.path.insert(0, {str(_BACKEND)!r})\n"
+        "from utils.process_lifetime import child_popen_kwargs\n"
+        "p = subprocess.Popen(['sleep', '300'], **child_popen_kwargs())\n"
+        "print(p.pid, flush = True)\n"
+        "time.sleep(300)\n"
+    )
+    proc = subprocess.Popen([sys.executable, str(mid)], stdout = subprocess.PIPE, text = True)
+    try:
+        sleeper_pid = int(proc.stdout.readline().strip())
+        assert _alive(sleeper_pid)
+        proc.kill()  # hard-kill the parent (no graceful shutdown runs)
+        proc.wait(timeout = 5)
+        assert _wait_dead(sleeper_pid, 5.0), "child orphaned after parent SIGKILL"
+    finally:
+        proc.kill()
+
+
+# ── terminate_all backstop sweep ──
+
+@pytest.mark.skipif(not IS_POSIX, reason = "POSIX process sweep")
+def test_terminate_all_signals_tracked_and_is_idempotent():
+    p = subprocess.Popen(["sleep", "300"])
+    pl.adopt_pid(p.pid)
+    pl.terminate_all()
+    assert p.wait(timeout = 5) is not None  # reap + confirm it died
+    pl.terminate_all()  # registry now empty; must not raise
+
+
+@pytest.mark.skipif(not IS_POSIX, reason = "POSIX process sweep")
+def test_terminate_all_escalates_to_sigkill():
+    # A child that ignores SIGTERM must still be reaped via SIGKILL.
+    p = subprocess.Popen(
+        [sys.executable, "-c",
+         "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(300)"]
+    )
+    time.sleep(0.5)  # let the handler install
+    pl.adopt_pid(p.pid)
+    pl.terminate_all()
+    assert p.wait(timeout = 6) == -signal.SIGKILL  # SIGTERM ignored, SIGKILL wins
+
+
+# ── Windows Job Object path (mocked kernel32, runs on Linux CI) ──
+
+class _Call:
+    def __init__(self, name, log, ret):
+        self.name, self.log, self.ret = name, log, ret
+        self.restype = self.argtypes = None
+
+    def __call__(self, *a, **k):
+        self.log.append(self.name)
+        return self.ret
+
+
+class _FakeKernel32:
+    def __init__(self, log, create_ret = 4321, set_ret = 1, assign_ret = 1):
+        self.CreateJobObjectW = _Call("create", log, create_ret)
+        self.SetInformationJobObject = _Call("set", log, set_ret)
+        self.AssignProcessToJobObject = _Call("assign", log, assign_ret)
+        self.GetCurrentProcess = _Call("getcur", log, -1)
+        self.CloseHandle = _Call("close", log, 1)
+
+
+def _patch_windows(monkeypatch, fake):
+    import ctypes
+    monkeypatch.setattr(pl, "_is_windows", lambda: True)
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *a, **k: fake, raising = False)
+
+
+def test_windows_job_install_order(monkeypatch):
+    log: list[str] = []
+    _patch_windows(monkeypatch, _FakeKernel32(log))
+    pl._install_windows_job()
+    assert log.index("create") < log.index("set") < log.index("assign")
+    assert pl._win_job_handle == 4321  # handle retained
+
+
+def test_windows_job_install_degrades_on_create_failure(monkeypatch):
+    log: list[str] = []
+    _patch_windows(monkeypatch, _FakeKernel32(log, create_ret = 0))
+    pl._install_windows_job()  # must not raise
+    assert pl._win_job_handle is None
+    assert "set" not in log  # short-circuited after the failed create
+
+
+def test_windows_job_install_degrades_on_assign_failure(monkeypatch):
+    log: list[str] = []
+    _patch_windows(monkeypatch, _FakeKernel32(log, assign_ret = 0))
+    pl._install_windows_job()
+    assert pl._win_job_handle is None  # not retained when assignment fails
+    assert "close" in log  # the orphaned job handle is closed

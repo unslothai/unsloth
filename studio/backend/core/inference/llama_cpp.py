@@ -56,6 +56,7 @@ from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
 from utils.subprocess_compat import (
     windows_hidden_subprocess_kwargs as _windows_hidden_subprocess_kwargs,
 )
+from utils.process_lifetime import child_popen_kwargs as _child_popen_kwargs
 from core.inference.tool_call_parser import (
     RAG_MAX_SEARCHES_PER_TURN,
     RAG_SEARCH_CAP_NUDGE,
@@ -3329,28 +3330,16 @@ class LlamaCppBackend:
         except OSError as e:
             logger.debug(f"Could not open diffusion runner log file: {e}")
 
-        # PR_SET_PDEATHSIG: the shim (and its visual server) die with this backend
-        # process, so a Studio crash/restart never orphans a GPU process.
-        popen_kwargs = dict(_windows_hidden_subprocess_kwargs())
-        if sys.platform.startswith("linux"):  # prctl/libc.so.6 are Linux-only
-
-            def _pdeathsig():
-                try:
-                    import ctypes
-                    import signal as _signal
-                    ctypes.CDLL("libc.so.6", use_errno = True).prctl(1, _signal.SIGTERM)
-                except Exception:
-                    pass
-
-            popen_kwargs["preexec_fn"] = _pdeathsig
-
+        # The shim (and its visual server) die with this backend process, so a
+        # Studio crash/restart never orphans a GPU process.
         self._process = subprocess.Popen(
             cmd,
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
             text = True,
             env = env,
-            **popen_kwargs,
+            **_windows_hidden_subprocess_kwargs(),
+            **_child_popen_kwargs(),
         )
         self._stdout_thread = threading.Thread(
             target = self._drain_stdout, daemon = True, name = "diffusion-stdout"
@@ -4113,6 +4102,7 @@ class LlamaCppBackend:
             text = True,
             env = env,
             **_windows_hidden_subprocess_kwargs(),
+            **_child_popen_kwargs(),
         )
 
         # Start background thread to drain stdout and prevent pipe deadlock
@@ -5423,6 +5413,7 @@ class LlamaCppBackend:
                             text = True,
                             env = env,
                             **_windows_hidden_subprocess_kwargs(),
+                            **_child_popen_kwargs(),
                         )
 
                         # Background thread to drain stdout (prevents pipe deadlock)

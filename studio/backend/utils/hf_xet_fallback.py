@@ -277,6 +277,8 @@ def _run_download_attempt(
         daemon = True,
     )
     proc.start()
+    from utils.process_lifetime import adopt_pid
+    adopt_pid(proc.pid)  # bind to parent lifetime (Windows job / sweep)
 
     stalled = threading.Event()
     stop_watchdog = start_watchdog(
