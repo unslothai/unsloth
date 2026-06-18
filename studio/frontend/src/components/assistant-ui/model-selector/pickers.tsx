@@ -2054,15 +2054,14 @@ export function HubModelPicker({
         }}
         className={cn(
           // Small negative margin pulls the scrollbar in (closer to the rows),
-          // and a thin gutter lets the row pills widen toward it. A flex column
-          // with a min height keeps the box tall and pins the eject footer to
-          // the bottom even when only a few models are listed.
-          "model-list-scroll -mr-1 flex min-h-[15rem] max-h-[20rem] flex-col overflow-y-auto pr-0.5",
+          // and a thin gutter lets the row pills widen toward it. A min height
+          // keeps the box tall even when only a few models are listed.
+          "model-list-scroll -mr-1 min-h-[15rem] max-h-[20rem] overflow-y-auto pr-0.5",
           listScrolled && "is-scrolled",
         )}
         {...hubModelList.listboxProps}
       >
-        <div className="shrink-0 py-1 pr-0">
+        <div className="py-1 pr-0">
           {/* First-load spinner only when nothing cached is shown yet. */}
           {showDownloaded &&
           !cachedReady &&
@@ -2958,22 +2957,23 @@ export function HubModelPicker({
             </>
           ) : null}
         </div>
-        {/* Floating eject button: pinned to the bottom of the list so it stays
-            in view at any scroll position, with no background block behind it. */}
-        {onEject ? (
-          <div className="pointer-events-none sticky bottom-0 mt-auto flex justify-center py-1">
-            <button
-              type="button"
-              onClick={onEject}
-              className="pointer-events-auto inline-flex items-center justify-center gap-2 rounded-md bg-popover px-3 py-2 text-[13px] text-destructive shadow-sm transition-colors hover:bg-destructive/10 dark:bg-[var(--sidebar)]"
-              title="Eject model"
-            >
-              <HugeiconsIcon icon={RemoveCircleIcon} className="size-3.5" />
-              Eject loaded model
-            </button>
-          </div>
-        ) : null}
       </div>
+      {/* Eject button sits below the scroll area so rows never scroll behind it
+          and get clipped. Light uses the menu surface with the composer shadow;
+          dark matches the Search Hub button background. */}
+      {onEject ? (
+        <div className="flex justify-center">
+          <button
+            type="button"
+            onClick={onEject}
+            className="inline-flex items-center justify-center gap-2 rounded-md bg-popover px-3 py-2 text-[13px] text-destructive shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] transition-colors hover:bg-destructive/10 dark:bg-[color-mix(in_srgb,var(--foreground)_10%,transparent)] dark:shadow-none dark:hover:bg-[color-mix(in_srgb,var(--foreground)_18%,transparent)]"
+            title="Eject model"
+          >
+            <HugeiconsIcon icon={RemoveCircleIcon} className="size-3.5" />
+            Eject loaded model
+          </button>
+        </div>
+      ) : null}
     </div>
   );
 }
