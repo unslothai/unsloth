@@ -659,9 +659,11 @@ export function ChatSettingsPanel({
     [activePreset, hasUnsavedPresetChanges, presetNameInput, presets],
   );
   const systemVariablesError = getPromptVariablesError(systemVariablesDraft);
+  const currentSystemPrompt = params.systemPrompt ?? "";
+  const currentSystemVariables = params.systemVariables ?? "";
   const systemPromptEditorDirty =
-    systemPromptDraft !== params.systemPrompt ||
-    systemVariablesDraft !== params.systemVariables;
+    systemPromptDraft !== currentSystemPrompt ||
+    systemVariablesDraft !== currentSystemVariables;
   const trustRemoteCodeMissing =
     Boolean(currentCheckpoint) &&
     modelRequiresTrustRemoteCode &&
@@ -776,11 +778,11 @@ export function ChatSettingsPanel({
   }
 
   function openSystemPromptEditor() {
-    setSystemPromptDraft(params.systemPrompt);
-    setSystemVariablesDraft(params.systemVariables);
+    setSystemPromptDraft(currentSystemPrompt);
+    setSystemVariablesDraft(currentSystemVariables);
     setSystemVariablesOpen(
-      params.systemVariables.trim().length > 0 ||
-        hasPromptVariableSyntax(params.systemPrompt),
+      currentSystemVariables.trim().length > 0 ||
+        hasPromptVariableSyntax(currentSystemPrompt),
     );
     setSystemPromptEditorOpen(true);
   }
@@ -849,12 +851,12 @@ export function ChatSettingsPanel({
   useEffect(() => {
     const el = systemPromptBoxRef.current;
     setSystemPromptOverflows(
-      params.systemPrompt.length > 0 &&
+      currentSystemPrompt.length > 0 &&
         el != null &&
         el.clientHeight > 0 &&
         el.scrollHeight > el.clientHeight + 1,
     );
-  }, [params.systemPrompt, open]);
+  }, [currentSystemPrompt, open]);
 
   const settingsScrollRef = useRef<HTMLDivElement>(null);
 
@@ -1498,7 +1500,7 @@ export function ChatSettingsPanel({
           >
             <textarea
               ref={systemPromptBoxRef}
-              value={params.systemPrompt}
+              value={currentSystemPrompt}
               onChange={(e) => set("systemPrompt")(e.target.value)}
               onMouseDown={(e) => {
                 // Overflowing prompt: click opens the popup editor instead.
@@ -1773,8 +1775,8 @@ export function ChatSettingsPanel({
                 type="button"
                 variant="ghost"
                 onClick={() => {
-                  setSystemPromptDraft(params.systemPrompt);
-                  setSystemVariablesDraft(params.systemVariables);
+                  setSystemPromptDraft(currentSystemPrompt);
+                  setSystemVariablesDraft(currentSystemVariables);
                   setSystemPromptEditorOpen(false);
                 }}
               >

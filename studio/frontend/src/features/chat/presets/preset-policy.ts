@@ -105,8 +105,8 @@ export function getPresetOwnedParams(
     repetitionPenalty: params.repetitionPenalty,
     presencePenalty: params.presencePenalty,
     maxTokens: params.maxTokens,
-    systemPrompt: params.systemPrompt,
-    systemVariables: params.systemVariables,
+    systemPrompt: params.systemPrompt ?? "",
+    systemVariables: params.systemVariables ?? "",
   };
 }
 
