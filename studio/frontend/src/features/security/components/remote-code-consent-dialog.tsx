@@ -131,7 +131,7 @@ function FindingCard({ finding }: { finding: RemoteCodeFinding }) {
   const fileLabel = finding.line ? `${finding.file}:${finding.line}` : finding.file;
   const snippet = finding.snippet ?? [];
   return (
-    <div className="overflow-hidden rounded-lg border">
+    <div className="min-w-0 overflow-hidden rounded-lg border">
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b bg-muted/40 px-3 py-2">
         <Badge
           variant="outline"
@@ -149,7 +149,7 @@ function FindingCard({ finding }: { finding: RemoteCodeFinding }) {
         </span>
       </div>
       {snippet.length > 0 ? (
-        <div className="overflow-x-auto bg-background py-2 font-mono text-xs leading-relaxed">
+        <div className="min-w-0 overflow-x-auto bg-background py-2 font-mono text-xs leading-relaxed">
           {snippet.map((row) => (
             <SnippetLine key={row.number} row={row} severity={finding.severity} />
           ))}
@@ -190,8 +190,11 @@ export function RemoteCodeConsentDialog() {
       }}
     >
       <AlertDialogContent className="max-w-2xl">
-        <AlertDialogHeader>
-          <div className="flex items-start gap-3">
+        <AlertDialogHeader className="min-w-0">
+          {/* w-full: AlertDialogHeader is a grid with place-items-center, which
+              otherwise sizes this row to its content and lets a wide code snippet
+              push past the dialog. Filling the track keeps everything inside. */}
+          <div className="flex w-full min-w-0 items-start gap-3">
             <div
               className={cn(
                 "flex size-9 shrink-0 items-center justify-center rounded-full",
@@ -205,75 +208,80 @@ export function RemoteCodeConsentDialog() {
                 className="size-5"
               />
             </div>
-            <div className="min-w-0 space-y-1">
-              <AlertDialogTitle>
-                {malware
-                  ? "Unsafe files detected"
-                  : blocked
-                    ? "Custom code blocked"
-                    : "Enable custom code for this model?"}
-              </AlertDialogTitle>
-              <AlertDialogDescription>
-                {malware ? (
-                  <>
-                    <span className="font-medium text-foreground">
-                      {displayName}
-                    </span>{" "}
-                    contains files that Hugging Face's security scan flagged as
-                    unsafe (for example, a malicious pickle that would run code
-                    when the model loads). It cannot be loaded. The flagged files
-                    were never downloaded.
-                  </>
-                ) : (
-                  <>
-                    <span className="font-medium text-foreground">
-                      {displayName}
-                    </span>{" "}
-                    declares custom Python code in its repository.{" "}
-                    {blocked
-                      ? "A security scan flagged CRITICAL issues, so it cannot be enabled."
-                      : findings.length > 0
-                        ? "Review the security scan below. Continue only if you trust the model source."
-                        : "Continue only if you trust the model source."}
-                  </>
-                )}
-              </AlertDialogDescription>
+            {/* Title, description and scan results share one column to the right
+                of the icon, so the body aligns under the title instead of jumping
+                back to the dialog's left padding. */}
+            <div className="min-w-0 flex-1 space-y-3">
+              <div className="space-y-1">
+                <AlertDialogTitle>
+                  {malware
+                    ? "Unsafe files detected"
+                    : blocked
+                      ? "Custom code blocked"
+                      : "Enable custom code for this model?"}
+                </AlertDialogTitle>
+                <AlertDialogDescription>
+                  {malware ? (
+                    <>
+                      <span className="font-medium text-foreground">
+                        {displayName}
+                      </span>{" "}
+                      contains files that Hugging Face's security scan flagged as
+                      unsafe (for example, a malicious pickle that would run code
+                      when the model loads). It cannot be loaded. The flagged
+                      files were never downloaded.
+                    </>
+                  ) : (
+                    <>
+                      <span className="font-medium text-foreground">
+                        {displayName}
+                      </span>{" "}
+                      declares custom Python code in its repository.{" "}
+                      {blocked
+                        ? "A security scan flagged CRITICAL issues, so it cannot be enabled."
+                        : findings.length > 0
+                          ? "Review the security scan below. Continue only if you trust the model source."
+                          : "Continue only if you trust the model source."}
+                    </>
+                  )}
+                </AlertDialogDescription>
+              </div>
+
+              {malware ? (
+                <div className="min-w-0 space-y-2">
+                  <p className="text-xs font-medium text-muted-foreground">
+                    Our automatic scanner flagged issues including:
+                  </p>
+                  <div className="max-h-[14rem] min-w-0 space-y-2 overflow-y-auto pr-1">
+                    {unsafeFiles.map((f, i) => (
+                      <UnsafeFileCard key={`${f.path}-${i}`} file={f} />
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
+              {findings.length > 0 ? (
+                <div className="min-w-0 space-y-2">
+                  <p className="text-xs font-medium text-muted-foreground">
+                    Our automatic scanner flagged issues including:
+                  </p>
+                  <div className="max-h-[22rem] min-w-0 space-y-3 overflow-y-auto pr-1">
+                    {findings.map((f, i) => (
+                      <FindingCard key={i} finding={f} />
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
+              {!malware && !blocked && findings.length === 0 ? (
+                <p className="text-xs text-muted-foreground">
+                  Our automatic scanner did not flag any worrying files, but
+                  please double check.
+                </p>
+              ) : null}
             </div>
           </div>
         </AlertDialogHeader>
-
-        {malware ? (
-          <div className="space-y-2">
-            <p className="text-xs font-medium text-muted-foreground">
-              Our automatic scanner flagged issues including:
-            </p>
-            <div className="max-h-[14rem] space-y-2 overflow-y-auto pr-1">
-              {unsafeFiles.map((f, i) => (
-                <UnsafeFileCard key={`${f.path}-${i}`} file={f} />
-              ))}
-            </div>
-          </div>
-        ) : null}
-
-        {findings.length > 0 ? (
-          <div className="space-y-2">
-            <p className="text-xs font-medium text-muted-foreground">
-              Our automatic scanner flagged issues including:
-            </p>
-            <div className="max-h-[22rem] space-y-3 overflow-y-auto pr-1">
-              {findings.map((f, i) => (
-                <FindingCard key={i} finding={f} />
-              ))}
-            </div>
-          </div>
-        ) : null}
-
-        {!malware && !blocked && findings.length === 0 ? (
-          <p className="text-xs text-muted-foreground">
-            Our automatic scanner did not flag any worrying files, but please
-            double check.
-          </p>
-        ) : null}
 
         <AlertDialogFooter>
           <AlertDialogCancel>Cancel</AlertDialogCancel>
