@@ -27,7 +27,6 @@ train_dataset = dataset.select(range(2000))
 eval_dataset = dataset.select(range(2000, 2200))
 
 
-# Convert dataset to OAI messages.
 def format_data(sample):
     return {
         "messages": [
@@ -79,7 +78,7 @@ model, tokenizer = FastVisionModel.from_pretrained(
     full_finetuning = False,  # [NEW!] We have full finetuning now!
 )
 
-# Benchmark base model performance.
+# Benchmark base model.
 model_name = "Unsloth Base model"
 FastVisionModel.for_inference(model)
 avg_wer, avg_cer = ocr_evaluator.evaluate_model(
@@ -124,8 +123,8 @@ trainer = SFTTrainer(
         per_device_train_batch_size = 2,
         gradient_accumulation_steps = 4,
         gradient_checkpointing = True,
-        gradient_checkpointing_kwargs = {"use_reentrant": False},  # use reentrant checkpointing
-        max_grad_norm = 0.3,  # max gradient norm based on QLoRA paper
+        gradient_checkpointing_kwargs = {"use_reentrant": False},
+        max_grad_norm = 0.3,  # QLoRA paper
         warmup_ratio = 0.03,
         # num_train_epochs = 2, # Set this instead of max_steps for full training runs
         max_steps = 60,
@@ -154,7 +153,7 @@ trainer_stats = trainer.train()
 model.save_pretrained("unsloth-qwen2-7vl-french-ocr-adapter", tokenizer)
 tokenizer.save_pretrained("unsloth-qwen2-7vl-french-ocr-adapter")
 
-# Benchmark lora adapter model performance.
+# Benchmark lora adapter model.
 model_name = "Unsloth lora adapter model"
 FastVisionModel.for_inference(model)
 avg_wer, avg_cer = ocr_evaluator.evaluate_model(
@@ -176,7 +175,7 @@ base = find_lora_base_model(model)
 
 print((base.__class__.__name__))
 
-# Merge at default 16 bits.
+# Merge at 16 bits.
 model.save_pretrained_merged(
     save_directory = "qwen2-ocr-merged-finetune-merge-16bit", tokenizer = tokenizer
 )

@@ -20,6 +20,8 @@ from __future__ import annotations
 import asyncio
 import inspect
 import sys
+import threading
+import time
 import types as _types
 from pathlib import Path
 
@@ -263,6 +265,398 @@ def test_proportional_tensor_split_is_emitted_in_tensor_mode():
     ts = src.find('"--tensor-split"')
     nxt_else = src.find("self._tensor_parallel = False")
     assert 0 <= gate < ts < nxt_else, "--tensor-split must be emitted under `if tensor_parallel:`"
+
+
+def test_mtp_decode_probe_wired_under_tensor_parallel():
+    # MTP-draft can pass /health and crash the CUDA FA kernel only on the first
+    # decode under --split-mode tensor. Rather than statically banning MTP+TP
+    # (which a future llama.cpp may support), load_model probes a decode and
+    # routes a failure into the existing MTP-drop fallback.
+    src = _load_model_source()
+    probe = src.find("_probe_mtp_decode()")
+    assert probe != -1, "load_model must decode-probe MTP under tensor parallelism"
+    # Gated on tensor mode AND an MTP request (ordinary MTP loads stay unprobed).
+    guard = src[max(0, probe - 400) : probe]
+    assert "self._tensor_parallel" in guard and "_spec_requested_mtp" in guard
+    # A failed probe flips healthy so the shared MTP-drop fallback fires.
+    assert "healthy = False" in src[probe : probe + 400]
+    fallback = src.find("if not healthy and _spec_requested_mtp")
+    assert 0 <= probe < fallback, "the probe must precede the MTP-drop fallback"
+
+
+def test_probe_mtp_decode_returns_false_on_crash(monkeypatch):
+    # The probe is the decode-time health gate: True only on a clean 200 from a
+    # live server; any error (dropped connection, non-200, dead process) is a
+    # failed probe so the caller drops MTP and retries.
+    backend = LlamaCppBackend()
+    backend._port = 0
+
+    class _Resp:
+        def __init__(self, code):
+            self.status_code = code
+
+    backend._process = None  # liveness check skipped; exercise the HTTP result
+    monkeypatch.setattr(llama_cpp_module.httpx, "post", lambda *a, **k: _Resp(200), raising = False)
+    assert backend._probe_mtp_decode(timeout = 1.0) is True
+
+    def _drop(*a, **k):
+        raise llama_cpp_module.httpx.RemoteProtocolError("peer closed connection")
+
+    monkeypatch.setattr(llama_cpp_module.httpx, "post", _drop, raising = False)
+    assert backend._probe_mtp_decode(timeout = 1.0) is False
+
+    monkeypatch.setattr(llama_cpp_module.httpx, "post", lambda *a, **k: _Resp(500), raising = False)
+    assert backend._probe_mtp_decode(timeout = 1.0) is False
+
+    # 200 but the server aborted right after (poll() returns an exit code).
+    backend._process = _FakeProcess()
+    monkeypatch.setattr(llama_cpp_module.httpx, "post", lambda *a, **k: _Resp(200), raising = False)
+    assert backend._probe_mtp_decode(timeout = 1.0) is False
+
+
+# ── generation-time MTP recovery (mid-stream crash) ──────────────────
+
+
+def _recovery_backend() -> LlamaCppBackend:
+    # A backend that loaded MTP under tensor parallelism and whose server has
+    # since exited (the _FakeProcess poll() returns 0 -> a dead subprocess).
+    b = LlamaCppBackend()
+    b._tensor_parallel = True
+    b._speculative_type = "draft-mtp"
+    b._mtp_runtime_fallback_active = True
+    b._process = _FakeProcess()
+    b._last_load_kwargs = {
+        "model_identifier": "owner/repo",
+        "tensor_parallel": True,
+        "speculative_type": "auto",
+        "n_parallel": 4,
+    }
+    return b
+
+
+def test_generate_chat_completion_wires_runtime_recovery():
+    # The non-tool generation path must route a mid-stream server death into the
+    # recovery helper (the tool + passthrough paths do so from the routes).
+    src = inspect.getsource(LlamaCppBackend.generate_chat_completion)
+    assert "_maybe_recover_from_mtp_crash" in src
+
+
+def test_runtime_recovery_reloads_without_mtp(monkeypatch):
+    # One background reload with speculative_type="off" (rest of snapshot kept),
+    # then spec_fallback_reason="runtime_error" and single-flight released.
+    b = _recovery_backend()
+    done = threading.Event()
+    captured = {}
+
+    def _fake_load_model(**kwargs):
+        captured.update(kwargs)
+        done.set()
+        return True
+
+    monkeypatch.setattr(b, "load_model", _fake_load_model)
+    assert b._maybe_recover_from_mtp_crash(RuntimeError("peer closed")) is True
+    assert done.wait(timeout = 5)
+    assert captured["speculative_type"] == "off"
+    assert captured["model_identifier"] == "owner/repo"
+    assert captured["n_parallel"] == 4  # snapshot replayed faithfully
+    deadline = time.monotonic() + 2
+    while b._spec_fallback_reason != "runtime_error" and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert b._spec_fallback_reason == "runtime_error"
+    assert b._mtp_runtime_fallback_in_progress is False
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda b: setattr(b, "_mtp_runtime_fallback_active", False),
+        lambda b: setattr(b, "_last_load_kwargs", None),
+        lambda b: setattr(b, "_process", None),
+        lambda b: b._cancel_event.set(),
+    ],
+)
+def test_runtime_recovery_skips_when_not_applicable(monkeypatch, mutate):
+    # No reload when this launch is not running MTP+tensor, there is no snapshot,
+    # the process handle is gone, or the request was cancelled.
+    b = _recovery_backend()
+    mutate(b)
+    calls = []
+    monkeypatch.setattr(b, "load_model", lambda **k: calls.append(k))
+    assert b._maybe_recover_from_mtp_crash(RuntimeError()) is False
+    assert calls == []
+
+
+class _BlockingDeadProc:
+    # Reports alive until released, then dead -- lets a test mutate backend state
+    # while the recovery thread is still in its death-confirm poll.
+    def __init__(self):
+        self._dead = threading.Event()
+
+    def poll(self):
+        return 0 if self._dead.is_set() else None
+
+    def terminate(self):
+        self._dead.set()
+
+    def kill(self):
+        self._dead.set()
+
+    def wait(self, timeout = None):
+        self._dead.set()
+        return 0
+
+    def release(self):
+        self._dead.set()
+
+
+def test_runtime_recovery_fires_for_user_env_mtp(monkeypatch):
+    # MTP driven by user extra_args / LLAMA_ARG_SPEC_TYPE leaves _speculative_type
+    # unset, but the launch flag still gates recovery on (pass-through MTP).
+    b = _recovery_backend()
+    b._speculative_type = None  # Studio stepped back; user/env owns the spec
+    done = threading.Event()
+    captured = {}
+
+    def _fake_load_model(**kwargs):
+        captured.update(kwargs)
+        done.set()
+        return True
+
+    monkeypatch.setattr(b, "load_model", _fake_load_model)
+    assert b._maybe_recover_from_mtp_crash(RuntimeError()) is True
+    assert done.wait(timeout = 5)
+    assert captured["speculative_type"] == "off"
+
+
+def test_runtime_recovery_strips_user_mtp_extra_args(monkeypatch):
+    # A user --spec-type draft-mtp in extra_args must be neutralised on the reload
+    # (append a last-wins --spec-default) so MTP can't re-engage and loop.
+    b = _recovery_backend()
+    b._last_load_kwargs = dict(b._last_load_kwargs, extra_args = ["--spec-type", "draft-mtp"])
+    done = threading.Event()
+    captured = {}
+
+    def _fake_load_model(**kwargs):
+        captured.update(kwargs)
+        done.set()
+        return True
+
+    monkeypatch.setattr(b, "load_model", _fake_load_model)
+    assert b._maybe_recover_from_mtp_crash(RuntimeError()) is True
+    assert done.wait(timeout = 5)
+    assert captured["speculative_type"] == "off"
+    assert captured["extra_args"][-1] == "--spec-default"
+
+
+def test_runtime_recovery_restores_requested_mode(monkeypatch):
+    # After the off-reload, /status must show the user's requested mode + the
+    # runtime-error note, not a bare "off" (matches the startup MTP fallback).
+    b = _recovery_backend()
+    b._last_load_kwargs = dict(b._last_load_kwargs, speculative_type = "mtp")
+    done = threading.Event()
+
+    def _fake_load_model(**kwargs):
+        b._requested_spec_mode = "off"  # what a real off-reload would leave behind
+        done.set()
+        return True
+
+    monkeypatch.setattr(b, "load_model", _fake_load_model)
+    assert b._maybe_recover_from_mtp_crash(RuntimeError()) is True
+    assert done.wait(timeout = 5)
+    deadline = time.monotonic() + 2
+    while b._requested_spec_mode != "mtp" and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert b._requested_spec_mode == "mtp"
+    assert b._spec_fallback_reason == "runtime_error"
+
+
+def test_runtime_recovery_skips_when_process_replaced(monkeypatch):
+    # A newer user load that replaces the process during the death-confirm poll
+    # must not be clobbered by the stale recovery replay.
+    b = _recovery_backend()
+    p1 = _BlockingDeadProc()
+    b._process = p1
+    calls = []
+    monkeypatch.setattr(b, "load_model", lambda **k: calls.append(k))
+    assert b._maybe_recover_from_mtp_crash(RuntimeError()) is True  # captures p1
+    b._process = _FakeProcess()  # a newer load swapped the live process
+    p1.release()  # p1 now reports dead -> recovery runs its staleness check
+    time.sleep(0.6)
+    assert calls == [], "stale recovery replayed over a newer load"
+
+
+def test_runtime_recovery_skips_when_snapshot_changed(monkeypatch):
+    # If the recorded load changed during the poll, the stale snapshot is dropped.
+    b = _recovery_backend()
+    p1 = _BlockingDeadProc()
+    b._process = p1
+    calls = []
+    monkeypatch.setattr(b, "load_model", lambda **k: calls.append(k))
+    assert b._maybe_recover_from_mtp_crash(RuntimeError()) is True
+    b._last_load_kwargs = dict(b._last_load_kwargs, model_identifier = "other/model")
+    p1.release()
+    time.sleep(0.6)
+    assert calls == []
+
+
+def test_runtime_recovery_is_single_flight(monkeypatch):
+    # Concurrent failures schedule only one reload.
+    b = _recovery_backend()
+    started = threading.Event()
+    release = threading.Event()
+
+    def _slow_load(**kwargs):
+        started.set()
+        release.wait(timeout = 5)
+        return True
+
+    monkeypatch.setattr(b, "load_model", _slow_load)
+    assert b._maybe_recover_from_mtp_crash(RuntimeError()) is True
+    assert started.wait(timeout = 5)
+    # Second failure while the first reload is in flight is a no-op.
+    assert b._maybe_recover_from_mtp_crash(RuntimeError()) is False
+    release.set()
+
+
+def test_runtime_recovery_rechecks_cancel_before_reload():
+    # recover() must re-check the cancel flag after the death poll (load_model
+    # clears it), so a reload scheduled just before /unload can't resurrect it.
+    src = inspect.getsource(LlamaCppBackend._maybe_recover_from_mtp_crash)
+    cancel = src.rfind("self._cancel_event.is_set()")
+    load = src.find("self.load_model(")
+    assert 0 <= cancel < load, "recovery must re-check cancel before reloading"
+
+
+def test_probe_mtp_decode_uses_api_key_auth(monkeypatch):
+    # Direct-stream mode runs llama-server with --api-key; the probe must send
+    # the same bearer auth or it gets a spurious 401 and falsely drops MTP.
+    backend = LlamaCppBackend()
+    backend._port = 0
+    backend._process = None
+    captured = {}
+
+    class _Resp:
+        status_code = 200
+
+    def _capture(*a, **k):
+        captured.clear()
+        captured.update(k)
+        return _Resp()
+
+    monkeypatch.setattr(llama_cpp_module.httpx, "post", _capture, raising = False)
+    backend._api_key = "secret"
+    backend._probe_mtp_decode(timeout = 1.0)
+    assert captured["headers"] == {"Authorization": "Bearer secret"}
+    backend._api_key = None
+    backend._probe_mtp_decode(timeout = 1.0)
+    assert captured["headers"] is None
+
+
+class _ToggleProcess:
+    """A subprocess stand-in whose liveness can be flipped at runtime."""
+
+    def __init__(self):
+        self._alive = True
+
+    def poll(self):
+        return None if self._alive else 0
+
+    def terminate(self):
+        self._alive = False
+
+    def kill(self):
+        self._alive = False
+
+    def wait(self, timeout = None):
+        self._alive = False
+        return 0
+
+    def die(self):
+        self._alive = False
+
+
+def test_crash_watchdog_triggers_recovery_on_death(monkeypatch):
+    # The watchdog must notice the process exit and recover even when no request
+    # handler observed it (e.g. the direct proxy endpoints).
+    b = _recovery_backend()
+    proc = _ToggleProcess()
+    b._process = proc
+    fired = threading.Event()
+    monkeypatch.setattr(b, "_maybe_recover_from_mtp_crash", lambda *a, **k: fired.set())
+    b._start_mtp_crash_watchdog()
+    assert b._mtp_watchdog_thread is not None
+    proc.die()
+    assert fired.wait(timeout = 3)
+
+
+def test_crash_watchdog_ignores_intentional_termination(monkeypatch):
+    # A planned reload/unload stops the watchdog before killing the process, so
+    # the resulting death must not be mistaken for a crash.
+    b = _recovery_backend()
+    proc = _ToggleProcess()
+    b._process = proc
+    fired = threading.Event()
+    monkeypatch.setattr(b, "_maybe_recover_from_mtp_crash", lambda *a, **k: fired.set())
+    b._start_mtp_crash_watchdog()
+    b._stop_mtp_crash_watchdog()  # what _kill_process does first
+    proc.die()
+    assert not fired.wait(timeout = 2)
+    assert b._mtp_watchdog_thread is None
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda b: setattr(b, "_mtp_runtime_fallback_active", False),
+        lambda b: setattr(b, "_process", None),
+    ],
+)
+def test_crash_watchdog_not_armed_when_inapplicable(mutate):
+    # Only a launch actually running MTP+tensor with a live process arms it.
+    b = _recovery_backend()
+    b._process = _ToggleProcess()
+    mutate(b)
+    b._start_mtp_crash_watchdog()
+    assert b._mtp_watchdog_thread is None
+
+
+def test_kill_process_stops_crash_watchdog(monkeypatch):
+    # _kill_process is the single deliberate-termination chokepoint; it must
+    # stop the watchdog so the planned kill isn't seen as a crash.
+    b = _recovery_backend()
+    proc = _ToggleProcess()
+    b._process = proc
+    fired = threading.Event()
+    monkeypatch.setattr(b, "_maybe_recover_from_mtp_crash", lambda *a, **k: fired.set())
+    b._start_mtp_crash_watchdog()
+    b._kill_process()
+    assert b._mtp_watchdog_thread is None
+    assert b._process is None
+    assert not fired.wait(timeout = 2)
+
+
+def test_kill_process_stops_watchdog_before_terminate():
+    # Ordering matters: stop the watchdog before terminating so the watchdog's
+    # post-death stop re-check reliably sees a planned kill.
+    src = inspect.getsource(LlamaCppBackend._kill_process)
+    stop = src.find("_stop_mtp_crash_watchdog()")
+    term = src.find(".terminate(")
+    assert 0 <= stop < term, "must stop the watchdog before terminating"
+
+
+def test_crash_watchdog_rechecks_stop_before_recovery():
+    # After a detected exit the watchdog re-checks the stop flag so a kill that
+    # raced in between the poll-wait and the poll-read can't fire recovery.
+    src = inspect.getsource(LlamaCppBackend._start_mtp_crash_watchdog)
+    check = src.find("stop.is_set()")
+    recover = src.find("_maybe_recover_from_mtp_crash")
+    assert 0 <= check < recover, "must re-check stop before recovering"
+
+
+def test_load_model_arms_crash_watchdog():
+    # The healthy-load commit arms the watchdog for this load.
+    src = inspect.getsource(LlamaCppBackend.load_model)
+    assert "_start_mtp_crash_watchdog" in src
 
 
 # ── tensor-mode allocation: conservative VRAM budget ─────────────────
