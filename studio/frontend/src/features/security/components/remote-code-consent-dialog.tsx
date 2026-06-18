@@ -245,7 +245,7 @@ export function RemoteCodeConsentDialog() {
         {malware ? (
           <div className="space-y-2">
             <p className="text-xs font-medium text-muted-foreground">
-              Flagged by Hugging Face's security scan:
+              Our automatic scanner flagged issues including:
             </p>
             <div className="max-h-[14rem] space-y-2 overflow-y-auto pr-1">
               {unsafeFiles.map((f, i) => (
@@ -256,11 +256,23 @@ export function RemoteCodeConsentDialog() {
         ) : null}
 
         {findings.length > 0 ? (
-          <div className="max-h-[22rem] space-y-3 overflow-y-auto pr-1">
-            {findings.map((f, i) => (
-              <FindingCard key={i} finding={f} />
-            ))}
+          <div className="space-y-2">
+            <p className="text-xs font-medium text-muted-foreground">
+              Our automatic scanner flagged issues including:
+            </p>
+            <div className="max-h-[22rem] space-y-3 overflow-y-auto pr-1">
+              {findings.map((f, i) => (
+                <FindingCard key={i} finding={f} />
+              ))}
+            </div>
           </div>
+        ) : null}
+
+        {!malware && !blocked && findings.length === 0 ? (
+          <p className="text-xs text-muted-foreground">
+            Our automatic scanner did not flag any worrying files, but please
+            double check.
+          </p>
         ) : null}
 
         <AlertDialogFooter>
