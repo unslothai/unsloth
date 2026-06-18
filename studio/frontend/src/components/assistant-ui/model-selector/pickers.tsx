@@ -529,6 +529,7 @@ function GgufVariantExpander({
   renderDeleteVariantDescription,
   getDeleteVariantSuccessMessage,
   deleteDisabled = false,
+  onDevice = false,
 }: {
   repoId: string;
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
@@ -543,6 +544,9 @@ function GgufVariantExpander({
   renderDeleteVariantDescription?: (quant: string) => ReactNode;
   getDeleteVariantSuccessMessage?: (quant: string) => string;
   deleteDisabled?: boolean;
+  /** On Device rows honor the Show all quantizations setting; Recommended and
+   *  other browse lists always show every quant. */
+  onDevice?: boolean;
 }) {
   const [variants, setVariants] = useState<GgufVariantDetail[] | null>(null);
   const [defaultVariant, setDefaultVariant] = useState<string | null>(null);
@@ -663,16 +667,17 @@ function GgufVariantExpander({
     });
   }, [variants, effectiveRecommended, getGgufFit]);
 
-  // When showAllQuantizations is off, only list quants already on disk.
+  // On Device only: when Show all quantizations is off, list quants already on
+  // disk. Recommended and other browse lists always show every quant.
   const showAllQuantizations = useChatRuntimeStore(
     (s) => s.showAllQuantizations,
   );
   const displayVariants = useMemo(() => {
     if (!sortedVariants) return sortedVariants;
-    return showAllQuantizations
+    return showAllQuantizations || !onDevice
       ? sortedVariants
       : sortedVariants.filter((v) => v.downloaded);
-  }, [sortedVariants, showAllQuantizations]);
+  }, [sortedVariants, showAllQuantizations, onDevice]);
 
   const variantOptionKeys = useMemo(
     () =>
@@ -2120,6 +2125,7 @@ export function HubModelPicker({
                       {isGgufExpanded(c.repo_id) && (
                         <GgufVariantExpander
                           repoId={c.repo_id}
+                          onDevice={true}
                           onSelect={onSelect}
                           parentOptionKey={optionKey}
                           onNavigatePastStart={() =>
@@ -2492,6 +2498,7 @@ export function HubModelPicker({
                       {isGgufExpanded(m.id) && (
                         <GgufVariantExpander
                           repoId={m.id}
+                          onDevice={true}
                           onSelect={onSelect}
                           parentOptionKey={optionKey}
                           onNavigatePastStart={() =>
@@ -2561,6 +2568,7 @@ export function HubModelPicker({
                     {isGgufExpanded(m.id) && (
                       <GgufVariantExpander
                         repoId={m.id}
+                        onDevice={true}
                         onSelect={onSelect}
                         parentOptionKey={optionKey}
                         onNavigatePastStart={() =>
@@ -2618,6 +2626,7 @@ export function HubModelPicker({
                     {isGgufExpanded(m.id) && (
                       <GgufVariantExpander
                         repoId={m.id}
+                        onDevice={true}
                         onSelect={onSelect}
                         parentOptionKey={optionKey}
                         onNavigatePastStart={() =>
