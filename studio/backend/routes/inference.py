@@ -878,6 +878,7 @@ from state.tool_approvals import resolve_tool_decision
 
 from core.inference.key_exchange import decrypt_api_key
 from core.inference.api_monitor import api_monitor
+from core.inference.llama_http import nonstreaming_client
 from core.inference.providers import get_provider_info, get_base_url
 from core.inference.external_provider import ExternalProviderClient
 from core.inference.chat_templates import resolve_effective_chat_template_override
@@ -1922,6 +1923,19 @@ def get_llama_cpp_backend() -> LlamaCppBackend:
     return _llama_cpp_backend
 
 
+def _model_json_response(model, status_code: int = 200) -> Response:
+    """Serialize a pydantic response once via pydantic-core.
+
+    Equivalent body to ``JSONResponse(content = model.model_dump())`` but
+    avoids the dict round-trip plus Starlette's second ``json.dumps``.
+    """
+    return Response(
+        content = model.model_dump_json(),
+        media_type = "application/json",
+        status_code = status_code,
+    )
+
+
 @router.post("/load", response_model = LoadResponse)
 async def load_model(
     request: LoadRequest,
@@ -2536,6 +2550,33 @@ async def validate_model(
                 detail = f"Invalid model identifier: {model_log_label}",
             )
 
+        is_gguf = getattr(config, "is_gguf", False)
+        # Native context length, read from the local GGUF header when present.
+        # Lets the staged ("Load on selection" off) flow populate the context
+        # slider before the GPU load; None until the file is downloaded.
+        context_length: Optional[int] = None
+        if request.include_context_length and is_gguf:
+            from hub.utils.gguf import resolve_local_gguf_path
+            from utils.models.gguf_metadata import read_gguf_context_length
+
+            # Best-effort: a header-read failure must never fail validation of an
+            # otherwise-valid model (the outer except turns it into a 400).
+            try:
+                if native_grant_backed:
+                    # model_identifier is the resolved canonical .gguf path.
+                    local_gguf = model_identifier
+                else:
+                    # Local folder / exported GGUFs already have their file
+                    # resolved on the config (gguf_file is None for HF repos, so
+                    # those fall back to the HF-cache lookup).
+                    local_gguf = config.gguf_file or resolve_local_gguf_path(
+                        model_identifier, request.gguf_variant
+                    )
+                if local_gguf:
+                    context_length = read_gguf_context_length(local_gguf)
+            except Exception as e:
+                logger.debug("Context-length probe failed for %s: %s", model_log_label, e)
+
         return ValidateModelResponse(
             valid = True,
             message = "Model identifier is valid.",
@@ -2543,12 +2584,13 @@ async def validate_model(
             display_name = model_log_label
             if native_grant_backed
             else getattr(config, "display_name", config.identifier),
-            is_gguf = getattr(config, "is_gguf", False),
+            is_gguf = is_gguf,
             is_lora = getattr(config, "is_lora", False),
             is_vision = getattr(config, "is_vision", False),
             requires_trust_remote_code = bool(
                 load_inference_config(config.identifier).get("trust_remote_code", False)
             ),
+            context_length = context_length,
         )
 
     except HTTPException:
@@ -2578,6 +2620,20 @@ async def validate_model(
             f"Error validating model identifier '{request.model_path}': {e}",
             exc_info = True,
         )
+        # RuntimeError / ValueError carry intentional, actionable messages here
+        # (e.g. "llama-server binary not found - cannot load GGUF models. Run
+        # setup.sh ..."), so surface them instead of a blank "Invalid model".
+        # Path-redact for safety and keep any other exception type generic so an
+        # unexpected internal error never leaks its details to the client.
+        if isinstance(e, (RuntimeError, ValueError)):
+            msg = redact_native_paths(str(e)).strip()
+            if msg:
+                if any(h.lower() in msg.lower() for h in not_supported_hints):
+                    msg = f"This model is not supported yet. Try a different model. (Original error: {msg})"
+                raise HTTPException(
+                    status_code = 400,
+                    detail = msg,
+                )
         raise HTTPException(
             status_code = 400,
             detail = "Invalid model",
@@ -4276,7 +4332,7 @@ async def openai_chat_completions(
                         )
                     ],
                 )
-                return JSONResponse(content = response.model_dump())
+                return _model_json_response(response)
 
     if monitor_id is None and not getattr(request.state, "skip_api_monitor", False):
         monitor_id = api_monitor.start(
@@ -4941,7 +4997,7 @@ async def openai_chat_completions(
                     _monitor_context_length(),
                 )
                 api_monitor.finish(monitor_id)
-                return JSONResponse(content = response.model_dump())
+                return _model_json_response(response)
 
             except Exception as e:
                 logger.error(f"Error during GGUF completion: {e}", exc_info = True)
@@ -5341,7 +5397,7 @@ async def openai_chat_completions(
                     )
                 ],
             )
-            return JSONResponse(content = response.model_dump())
+            return _model_json_response(response)
         except asyncio.CancelledError:
             cancel_event.set()
             backend.reset_generation_state()
@@ -5551,7 +5607,7 @@ async def openai_chat_completions(
             if _stats:
                 _monitor_usage(monitor_id, _stats.get("usage"))
             api_monitor.finish(monitor_id)
-            return JSONResponse(content = response.model_dump())
+            return _model_json_response(response)
 
         except Exception as e:
             backend.reset_generation_state()
@@ -5899,12 +5955,11 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
         return StreamingResponse(_stream(), media_type = "text/event-stream")
     else:
         try:
-            async with httpx.AsyncClient() as client:
-                resp = await client.post(
-                    target_url,
-                    json = body,
-                    timeout = _llama_non_streaming_generation_timeout(),
-                )
+            resp = await nonstreaming_client().post(
+                target_url,
+                json = body,
+                timeout = _llama_non_streaming_generation_timeout(),
+            )
         except asyncio.CancelledError:
             api_monitor.finish(monitor_id, "cancelled")
             raise
@@ -5969,12 +6024,11 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
         )
 
     try:
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(
-                target_url,
-                json = body,
-                timeout = _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
-            )
+        resp = await nonstreaming_client().post(
+            target_url,
+            json = body,
+            timeout = _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
+        )
     except asyncio.CancelledError:
         api_monitor.finish(monitor_id, "cancelled")
         raise
@@ -6607,7 +6661,7 @@ async def _responses_non_streaming(
         api_monitor.set_reply(monitor_id, text or _monitor_tool_calls_text(tool_calls))
         _monitor_usage(monitor_id, usage_data, _monitor_context_length())
         api_monitor.finish(monitor_id)
-        return JSONResponse(content = response.model_dump())
+        return _model_json_response(response)
     except asyncio.CancelledError:
         api_monitor.finish(monitor_id, "cancelled")
         raise
@@ -8211,7 +8265,7 @@ async def _anthropic_tool_non_streaming(
             output_tokens = usage.get("completion_tokens", 0),
         ),
     )
-    return JSONResponse(content = resp.model_dump())
+    return _model_json_response(resp)
 
 
 async def _anthropic_plain_non_streaming(run_gen, message_id, model_name):
@@ -8253,7 +8307,7 @@ async def _anthropic_plain_non_streaming(run_gen, message_id, model_name):
             output_tokens = usage.get("completion_tokens", 0),
         ),
     )
-    return JSONResponse(content = resp.model_dump())
+    return _model_json_response(resp)
 
 
 # =====================================================================
@@ -8569,12 +8623,11 @@ async def _anthropic_passthrough_non_streaming(
         backend_ctx = llama_backend.context_length,
     )
 
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            target_url,
-            json = body,
-            timeout = _llama_non_streaming_generation_timeout(),
-        )
+    resp = await nonstreaming_client().post(
+        target_url,
+        json = body,
+        timeout = _llama_non_streaming_generation_timeout(),
+    )
 
     if resp.status_code != 200:
         raise HTTPException(
@@ -8625,7 +8678,7 @@ async def _anthropic_passthrough_non_streaming(
             output_tokens = usage.get("completion_tokens", 0),
         ),
     )
-    return JSONResponse(content = resp_obj.model_dump())
+    return _model_json_response(resp_obj)
 
 
 # =====================================================================
@@ -9194,12 +9247,11 @@ async def _openai_passthrough_non_streaming(
     )
     while True:
         try:
-            async with httpx.AsyncClient() as client:
-                resp = await client.post(
-                    target_url,
-                    json = body,
-                    timeout = _llama_non_streaming_generation_timeout(),
-                )
+            resp = await nonstreaming_client().post(
+                target_url,
+                json = body,
+                timeout = _llama_non_streaming_generation_timeout(),
+            )
         except asyncio.CancelledError:
             api_monitor.finish(monitor_id, "cancelled")
             raise

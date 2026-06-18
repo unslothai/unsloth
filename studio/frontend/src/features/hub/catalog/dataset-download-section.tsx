@@ -160,7 +160,7 @@ export function DatasetDownloadSection({
           )}
         </div>
       </div>
-      {/* Train CTA hidden until Hub->train picker ships; divider pairs with it. */}
+      {/* Train CTA hidden until Hub→train picker ships; divider pairs with it. */}
       {(!isDownloaded || downloading || HUB_POST_DOWNLOAD_ACTIONS_VISIBLE) && (
         <CardDivider />
       )}
