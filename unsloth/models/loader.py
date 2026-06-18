@@ -1576,12 +1576,23 @@ class FastModel(FastBaseModel):
                 auto_model = AutoModelForSequenceClassification
             elif is_vlm:
                 # Check if the model's auto_map supports the VLM auto class.
-                # Some VL models (e.g. Nemotron-VL) only register AutoModelForCausalLM
-                # in their auto_map, not AutoModelForImageTextToText/AutoModelForVision2Seq.
+                # Some repo-code VL models register only a generic auto class and not
+                # AutoModelForImageTextToText/AutoModelForVision2Seq: Nemotron-VL uses
+                # AutoModelForCausalLM, DeepSeek-OCR uses AutoModel. Calling the VLM auto
+                # class on those raises "Unrecognized configuration class ... for
+                # AutoModelForImageTextToText", so fall back to whatever generic class the
+                # repo actually registered. Match the CONCRETE class name we would pass
+                # (AutoModelForVision2Seq aliases to AutoModelForImageTextToText on tf>=5),
+                # since transformers resolves remote code by that exact name -- a config
+                # that only registers the legacy key must still take the generic fallback.
                 _auto_map = getattr(model_config, "auto_map", {}) or {}
                 _vlm_class_name = AutoModelForVision2Seq.__name__
-                if "AutoModelForCausalLM" in _auto_map and _vlm_class_name not in _auto_map:
+                _has_vlm_class = _vlm_class_name in _auto_map
+                if not _has_vlm_class and "AutoModelForCausalLM" in _auto_map:
                     auto_model = AutoModelForCausalLM
+                elif not _has_vlm_class and "AutoModel" in _auto_map:
+                    from transformers import AutoModel
+                    auto_model = AutoModel
                 else:
                     auto_model = AutoModelForVision2Seq
             else:
