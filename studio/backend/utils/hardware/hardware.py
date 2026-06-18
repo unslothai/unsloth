@@ -107,31 +107,37 @@ def _has_mlx() -> bool:
 
 
 def _print_cuda_device_list(is_rocm: bool) -> None:
-    """Print every visible CUDA/ROCm GPU with its index.
+    """List every visible CUDA/ROCm GPU with its index at startup.
 
     The "Hardware detected" banner names only device 0, which hides the other
-    cards on a multi-GPU host and obscures which physical GPU each index maps to.
-    Listing all devices in the pinned PCI_BUS_ID order (see CUDA_DEVICE_ORDER at
-    module top) makes the available set explicit and matches `nvidia-smi -L`.
+    cards on a multi-GPU host. This lists the full visible set in CUDA-ordinal
+    order, matching `nvidia-smi -L` when no CUDA_VISIBLE_DEVICES mask is set
+    (under a mask the indices are visible ordinals, not physical PCI ids).
+    CUDA_DEVICE_ORDER governs only CUDA, so it is shown for CUDA but not ROCm.
     No-ops on single-GPU hosts and never raises -- it is purely informational.
     """
     try:
         import torch
+
         count = torch.cuda.device_count()
+        if count <= 1:
+            return
+        if is_rocm:
+            header = f"ROCm devices ({count}):"
+        else:
+            order = os.environ.get("CUDA_DEVICE_ORDER", "default")
+            header = f"CUDA devices ({count}, CUDA_DEVICE_ORDER={order}):"
+        lines = [header]
+        for i in range(count):
+            try:
+                name = torch.cuda.get_device_properties(i).name
+            except Exception as e:
+                logger.debug("CUDA device %d property probe failed: %s", i, e)
+                name = "<unavailable>"
+            lines.append(f"  [{i}] {name}")
+        print("\n".join(lines))
     except Exception:
-        return
-    if count <= 1:
-        return
-    label = "ROCm" if is_rocm else "CUDA"
-    order = os.environ.get("CUDA_DEVICE_ORDER", "default")
-    lines = [f"{label} devices ({count}, CUDA_DEVICE_ORDER={order}):"]
-    for i in range(count):
-        try:
-            name = torch.cuda.get_device_properties(i).name
-        except Exception:
-            name = "<unavailable>"
-        lines.append(f"  [{i}] {name}")
-    print("\n".join(lines))
+        return  # purely informational; never disrupt startup
 
 
 def detect_hardware() -> DeviceType:
@@ -155,7 +161,11 @@ def detect_hardware() -> DeviceType:
         if torch.cuda.is_available():
             DEVICE = DeviceType.CUDA
             CHAT_ONLY = False
-            device_name = torch.cuda.get_device_properties(0).name
+            try:
+                device_name = torch.cuda.get_device_properties(0).name
+            except Exception as e:
+                logger.debug("CUDA device 0 property probe failed: %s", e)
+                device_name = "<unavailable>"
 
             # Distinguish ROCm from CUDA for display only (DeviceType stays CUDA).
             # AMD SDK wheels don't set torch.version.hip, so fall back to __version__.

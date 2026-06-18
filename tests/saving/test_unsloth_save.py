@@ -8,7 +8,7 @@ import importlib
 from unsloth import FastLanguageModel, FastModel
 
 model_to_test = [
-    # Text Models
+    # Text models
     "unsloth/tinyllama",
     "unsloth/tinyllama-bnb-4bit",
     "unsloth/Qwen2.5-0.5B-Instruct",
@@ -16,7 +16,7 @@ model_to_test = [
     "unsloth/Phi-4-mini-instruct",
     "unsloth/Phi-4-mini-instruct-bnb-4bit",
     "unsloth/Qwen2.5-0.5B",
-    # Vision Models
+    # Vision models
     "unsloth/gemma-3-4b-it",
     "unsloth/Llama-3.2-11B-Vision-Instruct-bnb-4bit",
     "unsloth/Qwen2.5-VL-3B-Instruct-bnb-4bit",
@@ -67,7 +67,7 @@ def loaded_model_tokenizer(request):
 
 @pytest.fixture(scope = "session", params = torchao_models)
 def fp16_model_tokenizer(request):
-    """Load model in FP16 for TorchAO quantization"""
+    """Load model in FP16 for TorchAO quantization."""
     model_name = request.param
     print(f"Loading model in FP16 for TorchAO: {model_name}")
 
@@ -75,7 +75,7 @@ def fp16_model_tokenizer(request):
         model_name,
         max_seq_length = 128,
         dtype = None,
-        load_in_4bit = False,  # No BnB quantization
+        load_in_4bit = False,  # no BnB quantization
     )
 
     model = FastModel.get_peft_model(
@@ -143,7 +143,7 @@ def test_save_merged_16bit(model, tokenizer, temp_save_dir: str):
             os.path.join(save_path, file)
         ), f"{file} not found in the save directory."
 
-    # 16bit if there's no quantization config
+    # 16bit means no quantization config.
     config_path = os.path.join(save_path, "config.json")
     with open(config_path, "r") as f:
         config = json.load(f)
@@ -154,7 +154,6 @@ def test_save_merged_16bit(model, tokenizer, temp_save_dir: str):
     save_file_sizes["merged_16bit"][model.config._name_or_path] = total_size
     print(f"Total size of merged_16bit files: {total_size} bytes")
 
-    # Verify the saved model loads
     loaded_model, loaded_tokenizer = FastLanguageModel.from_pretrained(
         save_path,
         max_seq_length = 128,
@@ -194,14 +193,13 @@ def test_save_merged_4bit(model, tokenizer, temp_save_dir: str):
         total_size < save_file_sizes["merged_16bit"][model.config._name_or_path]
     ), "Merged 4bit files are larger than merged 16bit files."
 
-    # 4bit if there's a quantization config
+    # 4bit means there's a quantization config.
     config_path = os.path.join(save_path, "config.json")
     with open(config_path, "r") as f:
         config = json.load(f)
 
     assert "quantization_config" in config, "Quantization config not found in the model config."
 
-    # Verify the saved model loads
     loaded_model, loaded_tokenizer = FastModel.from_pretrained(
         save_path,
         max_seq_length = 128,
