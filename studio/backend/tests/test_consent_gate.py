@@ -21,6 +21,7 @@ import utils.security.consent as consent
 from utils.security import (
     RemoteCodeDecision,
     evaluate_remote_code_consent,
+    evaluate_remote_code_consent_for_targets,
     is_trusted_org_repo,
     remote_code_fingerprint,
     scan_remote_code_files,
@@ -240,6 +241,97 @@ class TestConsentGate:
             )
         assert d.blocked is True
 
+    def test_combined_targets_one_fingerprint_approves_adapter_and_base(self):
+        # A LoRA adapter that ships its OWN auto_map code plus a base that also ships
+        # code: both are scanned as one unit and pinned by a single fingerprint over
+        # the union, so one approval unblocks the load. Previously the dialog only saw
+        # the base, so the adapter's code was either unreviewed or unapprovable.
+        adapter_files = {"tokenization_adapter.py": "import subprocess\nsubprocess.Popen(['id'])\n"}
+        base_files = {"modeling_base.py": "import subprocess\nsubprocess.Popen(['id'])\n"}
+
+        def _files(name, hf_token = None):
+            return adapter_files if name == "org/adapter" else base_files
+
+        targets = ["org/adapter", "org/base"]
+        with (
+            patch.object(consent, "_config_has_auto_map", return_value = True),
+            patch.object(consent, "repo_remote_code_files", side_effect = _files),
+        ):
+            d1 = evaluate_remote_code_consent_for_targets(targets, trust_remote_code = True)
+            d2 = evaluate_remote_code_consent_for_targets(
+                targets, trust_remote_code = True, approved_fingerprint = d1.fingerprint
+            )
+            base_only = evaluate_remote_code_consent_for_targets(
+                ["org/base"], trust_remote_code = True
+            )
+        assert d1.blocked is True
+        assert d1.max_severity == "HIGH"
+        # The single combined fingerprint approves the whole load (adapter + base).
+        assert d2.blocked is False
+        assert d2.reason == "approved by fingerprint"
+        # A fingerprint over the base alone does NOT match (so it cannot silently
+        # approve an adapter that ships its own code).
+        assert base_only.fingerprint != d1.fingerprint
+
+    def test_unscannable_target_fails_closed_for_whole_load(self):
+        # If ANY target's code is present but unscannable, the combined load fails
+        # closed (non-approvable), not just that one repo.
+        def _raise_for_base(name, hf_token = None):
+            if name == "org/base":
+                raise RemoteCodeUnscannable("gated")
+            return {"modeling_adapter.py": "import torch\n"}
+
+        with (
+            patch.object(consent, "_config_has_auto_map", return_value = True),
+            patch.object(consent, "repo_remote_code_files", side_effect = _raise_for_base),
+        ):
+            d = evaluate_remote_code_consent_for_targets(
+                ["org/adapter", "org/base"], trust_remote_code = True
+            )
+        assert d.blocked is True
+        assert d.approvable is False
+
+    def test_medium_severity_blocks_pending_approval(self):
+        # A MEDIUM finding is approvable but must block until the user pins the
+        # fingerprint, so a direct API caller cannot run flagged code by merely
+        # setting trust_remote_code=True. A matching fingerprint then unblocks it;
+        # a clean scan (no findings) loads without one. MEDIUM is rarely emitted by
+        # the canonical scanner, so the scan result is mocked to exercise the policy.
+        from utils.security.remote_code_scan import MEDIUM
+
+        class _MediumResult:
+            max_severity = MEDIUM
+
+            def summary(self):
+                return "MEDIUM: large-base64-blob"
+
+            def findings_payload(self):
+                return [
+                    {"severity": "MEDIUM", "file": "modeling.py", "check": "large-base64-blob"}
+                ]
+
+        with (
+            patch.object(consent, "_config_has_auto_map", return_value = True),
+            patch.object(consent, "repo_remote_code_files", return_value = {"m.py": "BLOB = 1\n"}),
+            patch.object(consent, "scan_remote_code_files", return_value = _MediumResult()),
+        ):
+            d1 = evaluate_remote_code_consent(
+                "third/medium", trust_remote_code = True, trusted_org = False
+            )
+            d2 = evaluate_remote_code_consent(
+                "third/medium",
+                trust_remote_code = True,
+                trusted_org = False,
+                approved_fingerprint = d1.fingerprint,
+            )
+        assert d1.blocked is True
+        assert d1.approvable is True
+        assert d1.max_severity == "MEDIUM"
+        assert d1.fingerprint
+        assert "MEDIUM" in d1.reason
+        assert d2.blocked is False
+        assert d2.reason == "approved by fingerprint"
+
     def test_fingerprint_changes_when_code_changes(self):
         ((fn, body),) = _HIGH.items()
         a1, b1 = _with_auto_map(_HIGH)
@@ -416,7 +508,9 @@ class TestStructuredFindingsForDialog:
     def test_scan_route_uses_preflight(self):
         src = (Path(__file__).resolve().parent.parent / "routes/models.py").read_text()
         assert "remote-code-scan" in src
-        assert "preflight_remote_code_consent" in src
+        # The scan route pins a single combined fingerprint over the adapter + base, so
+        # an adapter's own auto_map code is reviewed and approvable too.
+        assert "preflight_remote_code_consent_for_targets" in src
 
     @pytest.mark.parametrize(
         "rel",

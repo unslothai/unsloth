@@ -34,10 +34,12 @@ Detection (is-vision / version / size) never enters this flow -- it reads raw
 from utils.security.consent import (  # noqa: F401
     RemoteCodeDecision,
     evaluate_remote_code_consent,
+    evaluate_remote_code_consent_for_targets,
 )
 from utils.security.file_security import (  # noqa: F401
     FileSecurityDecision,
     evaluate_file_security,
+    security_load_subdirs,
 )
 from utils.security.remote_code_scan import (  # noqa: F401
     CRITICAL,
@@ -60,8 +62,11 @@ __all__ = [
     "remote_code_fingerprint",
     "should_block_remote_code",
     "evaluate_remote_code_consent",
+    "evaluate_remote_code_consent_for_targets",
     "preflight_remote_code_consent",
+    "preflight_remote_code_consent_for_targets",
     "evaluate_file_security",
+    "security_load_subdirs",
     "FileSecurityDecision",
     "RemoteCodeDecision",
     "ScanResult",
@@ -94,6 +99,28 @@ def preflight_remote_code_consent(
         trust_remote_code = trust_remote_code,
         approved_fingerprint = approved_fingerprint,
         trusted_org = trusted_org,
+    )
+
+
+def preflight_remote_code_consent_for_targets(
+    targets,
+    hf_token = None,
+    *,
+    trust_remote_code: bool = True,
+    approved_fingerprint = None,
+) -> "RemoteCodeDecision":
+    """Preflight consent over MULTIPLE repos (e.g. a LoRA adapter plus its base),
+    scanned as one combined unit with a single pinning fingerprint.
+
+    A thin wrapper over ``evaluate_remote_code_consent_for_targets`` that defaults
+    ``trust_remote_code=True`` so the dialog scan always runs when any target declares
+    custom code. The actual load passes the user's real value + approved fingerprint.
+    """
+    return evaluate_remote_code_consent_for_targets(
+        targets,
+        hf_token,
+        trust_remote_code = trust_remote_code,
+        approved_fingerprint = approved_fingerprint,
     )
 
 

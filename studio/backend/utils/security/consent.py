@@ -46,6 +46,7 @@ from loggers import get_logger
 from utils.security.remote_code_scan import (
     CRITICAL,
     HIGH,
+    MEDIUM,
     REMOTE_CODE_CONFIG_FILES,
     RemoteCodeUnscannable,
     remote_code_fingerprint,
@@ -264,74 +265,96 @@ def evaluate_remote_code_consent(
     approved_fingerprint: Optional[str] = None,
     trusted_org: Optional[bool] = None,
 ) -> RemoteCodeDecision:
-    """Decide whether a ``trust_remote_code=True`` load may proceed.
+    """Decide whether a ``trust_remote_code=True`` load of a single repo may proceed.
 
-    Call this immediately before a load that would execute repo code. When the
-    returned decision is ``blocked``, the caller must refuse the load and surface
-    ``response_payload()`` so the user can review the findings and, if they
+    Thin wrapper over ``evaluate_remote_code_consent_for_targets`` for the common
+    single-repo case. ``trusted_org`` is accepted for backward compatibility but no
+    longer changes the decision (first-party is not a blanket bypass).
+    """
+    return evaluate_remote_code_consent_for_targets(
+        [model_name],
+        hf_token,
+        trust_remote_code = trust_remote_code,
+        approved_fingerprint = approved_fingerprint,
+    )
+
+
+def evaluate_remote_code_consent_for_targets(
+    targets,
+    hf_token: Optional[str] = None,
+    *,
+    trust_remote_code: bool,
+    approved_fingerprint: Optional[str] = None,
+) -> RemoteCodeDecision:
+    """Decide whether a ``trust_remote_code=True`` load may proceed, over EVERY repo
+    whose code that one load would execute.
+
+    A LoRA load runs the adapter's AND the base's repo code, so all targets are
+    scanned here as a SINGLE combined unit and pinned by ONE fingerprint over the
+    union of their ``.py``. Approving the load therefore approves every repo's code
+    together: a base-only approval can no longer leave an adapter's own ``auto_map``
+    code unreviewed, nor make it impossible to approve with the base's fingerprint.
+
+    When the returned decision is ``blocked``, the caller must refuse the load and
+    surface ``response_payload()`` so the user can review the findings and, if they
     accept, re-issue the load with ``approved_fingerprint`` set to
     ``decision.fingerprint``.
-
-    ``trusted_org`` is accepted for backward compatibility but no longer changes
-    the decision: first-party is not a blanket bypass, so a HIGH-severity result
-    requires per-version approval for EVERY repo and CRITICAL is a hard block for
-    every repo. The parameter is retained so existing call sites keep working.
     """
+    targets = [t for t in dict.fromkeys(targets) if t]
+    primary = targets[0] if targets else ""
+
     if not trust_remote_code:
         return RemoteCodeDecision(
-            model_name, False, False, None, None, "", "trust_remote_code disabled"
+            primary, False, False, None, None, "", "trust_remote_code disabled"
         )
 
-    # ``trust_remote_code`` only executes code when the repo defines an auto_map.
-    # Only skip when the config is readable and definitively has no auto_map; an
-    # unreadable config (private/gated/offline) is "unknown" and still scanned.
-    if _config_has_auto_map(model_name, hf_token) is False:
+    # ``trust_remote_code`` only executes code when a repo defines an auto_map. Gather
+    # the executable .py from every target that ships auto_map code. A target whose
+    # config is readable and definitively has no auto_map contributes nothing; an
+    # unreadable config (private/gated/offline) is "unknown" and still scanned. If ANY
+    # target's code is present but unscannable, fail closed for the whole load: we
+    # cannot verify -- or fingerprint -- code we cannot see.
+    combined: dict = {}
+    has_remote_code = False
+    for target in targets:
+        if _config_has_auto_map(target, hf_token) is False:
+            continue
+        has_remote_code = True
+        try:
+            files = repo_remote_code_files(target, hf_token = hf_token)
+        except RemoteCodeUnscannable:
+            logger.warning(
+                "Blocking trust_remote_code load of '%s': remote code present (auto_map) "
+                "but could not be downloaded and scanned.",
+                target,
+            )
+            return RemoteCodeDecision(
+                target,
+                True,
+                True,
+                None,
+                None,
+                "Remote code is present (auto_map) but could not be downloaded and "
+                "scanned. Retry when the repo is reachable and the correct Hugging Face "
+                "token is set.",
+                "blocked: remote code could not be scanned",
+                approvable = False,
+            )
+        # Namespace filenames by target so two repos' same-named files stay distinct
+        # in the combined scan + fingerprint.
+        for filename, body in files.items():
+            combined[f"{target}\0{filename}"] = body
+
+    if not has_remote_code:
         return RemoteCodeDecision(
-            model_name,
-            False,
-            False,
-            None,
-            None,
-            "",
-            "no auto_map; trust_remote_code is a no-op",
+            primary, False, False, None, None, "", "no auto_map; trust_remote_code is a no-op"
         )
 
-    try:
-        files = repo_remote_code_files(model_name, hf_token = hf_token)
-    except RemoteCodeUnscannable:
-        # auto_map present and code IS shipped, but it could NOT be fully fetched/
-        # listed to scan (gated/offline/transient, a present .py that 404s, or a
-        # repo-listing failure that could hide an imported helper). We cannot verify
-        # -- or fingerprint -- code we can't see, so fail closed: block with no
-        # approval path. Retry once the repo is reachable with the right token.
-        logger.warning(
-            "Blocking trust_remote_code load of '%s': remote code present (auto_map) "
-            "but could not be downloaded and scanned.",
-            model_name,
-        )
+    if not combined:
+        # auto_map declared but the repos ship NO executable .py (and no fetchable
+        # external code): nothing to run (e.g. a GGUF repo's vestigial auto_map) -> allow.
         return RemoteCodeDecision(
-            model_name,
-            True,
-            True,
-            None,
-            None,
-            "Remote code is present (auto_map) but could not be downloaded and "
-            "scanned. Retry when the repo is reachable and the correct Hugging Face "
-            "token is set.",
-            "blocked: remote code could not be scanned",
-            approvable = False,
-        )
-
-    if not files:
-        # An auto_map is declared in a config, but the repo ships NO executable .py
-        # (and no fetchable external code): the listing succeeded and there is simply
-        # nothing to run. This is the common case for a GGUF repo whose config.json
-        # carries a vestigial auto_map copied from the original model, or an auto_map
-        # that points only at files absent from this revision. transformers cannot
-        # execute code that is not there, and a GGUF load (llama.cpp) ignores auto_map
-        # entirely, so trust_remote_code is a no-op -> allow.
-        return RemoteCodeDecision(
-            model_name,
+            primary,
             False,
             False,
             None,
@@ -340,8 +363,8 @@ def evaluate_remote_code_consent(
             "auto_map declared but no executable code present; trust_remote_code is a no-op",
         )
 
-    result = scan_remote_code_files(files)
-    fingerprint = remote_code_fingerprint(files)
+    result = scan_remote_code_files(combined)
+    fingerprint = remote_code_fingerprint(combined)
     sev = result.max_severity
 
     # CRITICAL is never user-approvable; a supplied fingerprint only pins
@@ -364,19 +387,26 @@ def evaluate_remote_code_consent(
         # blanket bypass: a compromised first-party repo with HIGH code still
         # requires explicit, per-version review. CRITICAL stays a hard block above.
         blocked, reason = True, "blocked: scan found HIGH patterns; approval required"
+    elif sev == MEDIUM:
+        # MEDIUM (e.g. a large embedded base64 blob) is a weaker but real signal of
+        # hidden code/data. It is also user-approvable, but must pin per-version
+        # approval like HIGH so a direct API caller cannot run flagged code by simply
+        # setting trust_remote_code=True without consenting. Only a CLEAN scan
+        # (no findings) loads without a pinned fingerprint.
+        blocked, reason = True, "blocked: scan found MEDIUM patterns; approval required"
     else:
         blocked, reason = False, "allowed: no high-risk patterns"
 
     if blocked:
         logger.warning(
             "Blocking trust_remote_code load of '%s': scan severity %s (fingerprint %s)",
-            model_name,
+            primary,
             sev,
             fingerprint[:12],
         )
 
     return RemoteCodeDecision(
-        model_name,
+        primary,
         True,
         blocked,
         fingerprint,
