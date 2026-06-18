@@ -926,7 +926,7 @@ export function AppSidebar() {
                 <button
                   type="button"
                   onClick={togglePinned}
-                  className="inline-flex h-[33px] w-[33px] cursor-pointer items-center justify-center rounded-full text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  className="inline-flex h-[33px] w-[33px] cursor-pointer items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   aria-label={t("shell.aria.closeSidebar")}
                 >
                   <HugeiconsIcon icon={LayoutAlignLeftIcon} strokeWidth={1.75} className="size-icon" />
@@ -951,7 +951,7 @@ export function AppSidebar() {
                 <button
                   type="button"
                   onClick={togglePinned}
-                  className="inline-flex h-[33px] w-[33px] cursor-pointer items-center justify-center rounded-full text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  className="inline-flex h-[33px] w-[33px] cursor-pointer items-center justify-center rounded-[10px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   aria-label={t("shell.aria.openSidebar")}
                 >
                   <HugeiconsIcon icon={LayoutAlignLeftIcon} strokeWidth={1.75} className="size-icon" />
@@ -1194,7 +1194,7 @@ export function AppSidebar() {
                       >
                         <SidebarMenuButton
                           isActive={isActiveRun}
-                          className="sidebar-nav-btn h-auto flex-col items-start gap-0.5 py-[5px] rounded-[14px] pl-3 pr-7 text-[14.5px] tracking-nav font-medium"
+                          className="sidebar-nav-btn h-auto flex-col items-start gap-0.5 py-[5px] rounded-full pl-3 pr-7 text-[14.5px] tracking-nav font-medium"
                           onClick={() => {
                             setSelectedHistoryRunId(run.id);
                             // From Recipes/Export, jump to Train so the run's
@@ -1286,7 +1286,7 @@ export function AppSidebar() {
                 <SidebarMenuButton
                   size="lg"
                   aria-label={t("shell.accountMenu", { name: displayTitle })}
-                  className="sidebar-nav-btn !h-[44px] -my-[3px] gap-[9px] px-2 py-[3px] rounded-[5px] group-data-[collapsible=icon]:!size-[34px] group-data-[collapsible=icon]:!rounded-full group-data-[collapsible=icon]:!p-0 group-data-[collapsible=icon]:mx-auto group-data-[collapsible=icon]:justify-center"
+                  className="sidebar-nav-btn !h-[44px] -my-[3px] gap-[9px] px-2 py-[3px] rounded-[14px] group-data-[collapsible=icon]:!size-[34px] group-data-[collapsible=icon]:!rounded-full group-data-[collapsible=icon]:!p-0 group-data-[collapsible=icon]:mx-auto group-data-[collapsible=icon]:justify-center"
                 >
                   <div className="flex shrink-0 items-center">
                     <UserAvatar
