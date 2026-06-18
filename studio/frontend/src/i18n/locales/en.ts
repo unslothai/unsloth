@@ -118,6 +118,20 @@ export const en = {
         loadError: "Failed to load Helper LLM settings.",
         saveError: "Failed to save Helper LLM settings.",
       },
+      modelAutoSwitch: {
+        sectionTitle: "Model auto-switch (OpenAI API)",
+        enable: "Switch model by request",
+        enableDescription:
+          "When an OpenAI-compatible request names a different downloaded GGUF, load it before serving. Off by default; unknown names keep serving the loaded model.",
+        idleUnload: "Idle auto-unload",
+        idleUnloadDescription:
+          "Unload the model after this many idle seconds to free VRAM; the next request reloads it. 0 keeps it loaded.",
+        idleNeedsEnable:
+          "Turn on Switch model by request so an unloaded model reloads on next use.",
+        loadError: "Failed to load model auto-switch settings.",
+        saveError: "Failed to save model auto-switch settings.",
+        idleError: "Enter a whole number of seconds (0 or more).",
+      },
       notifications: {
         sectionTitle: "Notifications",
         showLlamaUpdates: "llama.cpp update notifications",
