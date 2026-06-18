@@ -2706,10 +2706,10 @@ async def validate_model(
         # A selected GGUF loads via llama.cpp: auto_map Python and root pickle weights in a
         # mixed repo are inert for this load, so gating on them is a false positive. Only
         # run the remote-code/security preflight for non-GGUF loads.
-        requires_trust_remote_code = False
+        model_requires_trc = False
         requires_security_review = False
         if not is_gguf:
-            requires_trust_remote_code = any(
+            model_requires_trc = any(
                 _requires_trust_remote_code_for_model(_t, request.hf_token)
                 for _t in security_targets
             )
@@ -2752,7 +2752,7 @@ async def validate_model(
             is_gguf = is_gguf,
             is_lora = getattr(config, "is_lora", False),
             is_vision = getattr(config, "is_vision", False),
-            requires_trust_remote_code = requires_trust_remote_code,
+            requires_trust_remote_code = model_requires_trc,
             requires_security_review = requires_security_review,
             context_length = context_length,
         )
