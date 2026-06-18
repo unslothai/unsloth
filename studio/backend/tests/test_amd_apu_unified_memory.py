@@ -47,6 +47,17 @@ def test_apu_unified_memory_gating(monkeypatch, hip, archs, expected):
     assert LlamaCppBackend._amd_apu_wants_unified_memory() is expected
 
 
+def test_apu_guard_scopes_to_selected_gpu(monkeypatch):
+    # Mixed host: physical id 0 = discrete gfx1100, 1 = gfx1151 APU.
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch("6.2.0", ["gfx1100", "gfx1151"]))
+    # Selecting only the dGPU must not be treated as unified-memory.
+    assert LlamaCppBackend._amd_apu_wants_unified_memory([0]) is False
+    # Selecting the APU, or no selection, does.
+    assert LlamaCppBackend._amd_apu_wants_unified_memory([1]) is True
+    assert LlamaCppBackend._amd_apu_wants_unified_memory() is True
+
+
 def test_cpu_no_cuda_returns_false(monkeypatch):
     monkeypatch.setitem(sys.modules, "torch", _fake_torch("6.2.0", [], cuda_ok = False))
     assert LlamaCppBackend._amd_apu_wants_unified_memory() is False

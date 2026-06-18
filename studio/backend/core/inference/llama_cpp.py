@@ -1876,11 +1876,13 @@ class LlamaCppBackend:
         return total
 
     @staticmethod
-    def _amd_apu_wants_unified_memory() -> bool:
+    def _amd_apu_wants_unified_memory(gpu_indices = None) -> bool:
         """True only for AMD unified-memory APUs (gfx1150/gfx1151), where
         GGML_CUDA_ENABLE_UNIFIED_MEMORY lets llama.cpp use shared system RAM.
         False elsewhere (the env hurts discrete GPUs). ROCm reuses torch.cuda.*;
-        gcnArchName suffix is stripped."""
+        gcnArchName suffix is stripped. gpu_indices (PHYSICAL ids) scopes the
+        check to the selected GPUs so a dGPU load on a mixed APU+dGPU host is not
+        treated as unified-memory; None means every visible GPU."""
         try:
             import torch
 
@@ -1888,12 +1890,29 @@ class LlamaCppBackend:
                 return False
             if not (hasattr(torch, "cuda") and torch.cuda.is_available()):
                 return False
-            for _i in range(torch.cuda.device_count()):
+            # Map visible ordinal -> physical id via CUDA_VISIBLE_DEVICES (ROCm
+            # respects it too); key archs by physical id like _is_datacenter_gpu.
+            physical_ids: Optional[list[int]] = None
+            cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
+            if cvd is not None:
                 try:
-                    _arch = getattr(torch.cuda.get_device_properties(_i), "gcnArchName", "") or ""
+                    physical_ids = [int(x.strip()) for x in cvd.split(",") if x.strip()]
+                except ValueError:
+                    physical_ids = None
+            arch_by_id: dict[int, str] = {}
+            for ordinal in range(torch.cuda.device_count()):
+                try:
+                    _arch = getattr(torch.cuda.get_device_properties(ordinal), "gcnArchName", "") or ""
                 except Exception:
                     continue
-                if _arch.split(":")[0].strip().lower() in {"gfx1150", "gfx1151"}:
+                pid = (
+                    physical_ids[ordinal]
+                    if physical_ids is not None and ordinal < len(physical_ids)
+                    else ordinal
+                )
+                arch_by_id[pid] = _arch.split(":")[0].strip().lower()
+            for _i in list(gpu_indices) if gpu_indices else list(arch_by_id):
+                if arch_by_id.get(_i) in {"gfx1150", "gfx1151"}:
                     return True
         except Exception:
             return False
@@ -3928,14 +3947,22 @@ class LlamaCppBackend:
                     "Ollama instead."
                 )
 
-        # SIGKILL/SIGTERM with no diagnostic output: the OS stopped the server,
-        # almost always OOM (e.g. a model too large for the WSL VM's RAM cap).
-        if returncode in (-9, -15):
+        # SIGKILL with no diagnostic output is the OOM killer (e.g. a model too
+        # large for the WSL VM's RAM cap); name it actionably.
+        if returncode == -9:
             return (
-                f"llama-server was stopped by the operating system (signal "
-                f"{-returncode}), most likely out of memory. Try a smaller or "
-                "more quantized GGUF, lower the context length, or free memory "
-                "(on WSL, raise the memory limit in .wslconfig)."
+                "llama-server was stopped by the operating system (signal 9), "
+                "most likely out of memory. Try a smaller or more quantized "
+                "GGUF, lower the context length, or free memory (on WSL, raise "
+                "the memory limit in .wslconfig)."
+            )
+        # SIGTERM is also how an unload/cancel or a supervisor stops the server,
+        # so report it neutrally rather than blaming memory.
+        if returncode == -15:
+            return (
+                "llama-server was terminated (signal 15) before it became "
+                "healthy. If you cancelled or unloaded the model this is "
+                "expected; otherwise check the llama-server log for the cause."
             )
 
         # Fallback: genuinely unknown failure (OOM, missing binary ...).
@@ -4597,6 +4624,7 @@ class LlamaCppBackend:
                         "image input will be disabled for this session"
                     )
                 model_size = None  # set in the fit try; used by the APU RAM guard
+                _apu_ram_size = None  # main+mmproj(+drafter) resident in unified RAM
                 try:
                     gguf_size = self._get_gguf_size_bytes(model_path)
                     # Include GPU-loaded mmproj in the fit budget (#5825).
@@ -4730,6 +4758,7 @@ class LlamaCppBackend:
                     # Drafter offloaded to CPU keeps its weights+KV off the GPU, so
                     # drop it from the budget (an embedded head stays in the model).
                     # Consult the env too: the child honors LLAMA_ARG_N_GPU_LAYERS_DRAFT.
+                    _mtp_draft_for_ram = _mtp_draft_for_budget  # pre-offload path
                     _draft_on_cpu = _extra_args_draft_offloaded_to_cpu(extra_args, env = os.environ)
                     if _draft_on_cpu:
                         _mtp_draft_for_budget = None
@@ -4739,6 +4768,15 @@ class LlamaCppBackend:
                             _mtp_draft_weights = self._get_gguf_size_bytes(_mtp_draft_for_budget)
                         except Exception:
                             _mtp_draft_weights = 0
+                    # A unified-memory APU holds every weight in system RAM, even a
+                    # CPU-offloaded drafter the GPU budget drops; count it for the guard.
+                    _apu_draft_ram = _mtp_draft_weights
+                    if _mtp_draft_for_ram and not _mtp_draft_weights:
+                        try:
+                            _apu_draft_ram = self._get_gguf_size_bytes(_mtp_draft_for_ram)
+                        except Exception:
+                            _apu_draft_ram = 0
+                    _apu_ram_size = model_size + _apu_draft_ram
                     # Draft K/V types (f16 by default; independent extras overrides).
                     _mtp_draft_ck, _mtp_draft_cv = _extra_args_draft_cache_types(extra_args)
 
@@ -5182,9 +5220,10 @@ class LlamaCppBackend:
                 # the weights exceed available RAM (e.g. under WSL, where the VM's
                 # cap is the real ceiling, not the ROCm-reported APU budget) the OS
                 # kills the load mid-flight (a silent "Terminated"). Refuse first.
-                if model_size is not None and self._amd_apu_wants_unified_memory():
+                if model_size is not None and self._amd_apu_wants_unified_memory(gpu_indices):
                     _ram_msg = self._apu_ram_shortfall_message(
-                        model_size, self._available_system_memory_mib()
+                        _apu_ram_size if _apu_ram_size is not None else model_size,
+                        self._available_system_memory_mib(),
                     )
                     if _ram_msg:
                         raise RuntimeError(_ram_msg)
@@ -5488,7 +5527,7 @@ class LlamaCppBackend:
 
                 # AMD unified-memory APUs (gfx1150/gfx1151): let llama.cpp use
                 # shared system RAM. setdefault so a user value wins.
-                if self._amd_apu_wants_unified_memory():
+                if self._amd_apu_wants_unified_memory(gpu_indices):
                     env.setdefault("GGML_CUDA_ENABLE_UNIFIED_MEMORY", "1")
                     logger.info("AMD unified-memory APU: set GGML_CUDA_ENABLE_UNIFIED_MEMORY=1")
 

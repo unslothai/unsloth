@@ -142,17 +142,23 @@ class TestOllamaAndFallback:
 
 
 class TestOsKillReturncode:
-    """A SIGKILL/SIGTERM with no diagnostic output (the OOM killer, e.g. a model
-    too large for the WSL VM's RAM) gets a named, actionable message; a recognized
-    output still wins, and a hard fault (-11) keeps the generic fallback."""
+    """SIGKILL (-9) with no diagnostic output is the OOM killer and gets a named,
+    actionable message; SIGTERM (-15) is also unload/cancel/supervisor stop, so it
+    stays neutral; a recognized output still wins; a hard fault (-11) keeps the
+    generic fallback."""
 
-    @pytest.mark.parametrize("rc,sig", [(-9, "9"), (-15, "15")])
-    def test_os_kill_with_no_output_names_oom(self, rc, sig):
-        msg = _classify("", "/models/big-bf16.gguf", "local/big", rc)
-        assert f"signal {sig}" in msg
+    def test_sigkill_with_no_output_names_oom(self):
+        msg = _classify("", "/models/big-bf16.gguf", "local/big", -9)
+        assert "signal 9" in msg
         assert "out of memory" in msg.lower()
         assert ".wslconfig" in msg
         assert "GGUF file is valid" not in msg
+
+    def test_sigterm_is_neutral_not_oom(self):
+        msg = _classify("", "/models/big-bf16.gguf", "local/big", -15)
+        assert "signal 15" in msg
+        assert "terminated" in msg.lower()
+        assert "out of memory" not in msg.lower()
 
     def test_specific_output_wins_over_os_kill_code(self):
         msg = _classify(_QWEN_IMAGE_OUT, "/models/qwen-image.gguf", "local/qwen-image", -9)
