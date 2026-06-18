@@ -1951,6 +1951,8 @@ async def load_model(
 
     GGUF models load via llama-server (llama.cpp) instead of Unsloth.
     """
+    from core.inference.llama_cpp import LlamaServerNotFoundError
+
     native_grant_backed = False
     model_log_label = request.model_path
     try:
@@ -2511,6 +2513,10 @@ async def load_model(
         logger.warning("Rejected inference GPU selection: %s", e)
         # User-facing validation (e.g. "Invalid gpu_ids [99]"): redact paths, keep detail.
         raise HTTPException(status_code = 400, detail = redact_native_paths(str(e)))
+    except LlamaServerNotFoundError as e:
+        # Missing GGUF runtime: 400 with the install message, not a generic 500.
+        logger.warning("GGUF runtime missing while loading '%s': %s", model_log_label, e)
+        raise HTTPException(status_code = 400, detail = str(e))
     except Exception as e:
         # Friendlier message for models Unsloth cannot load.
         not_supported_hints = [
@@ -2620,6 +2626,8 @@ async def validate_model(
     Checks that ModelConfig.from_identifier() can resolve model_path, but does
     NOT load model weights into GPU memory.
     """
+    from core.inference.llama_cpp import LlamaServerNotFoundError
+
     native_grant_backed = False
     model_log_label = request.model_path
     try:
@@ -2709,6 +2717,10 @@ async def validate_model(
 
     except HTTPException:
         raise
+    except LlamaServerNotFoundError as e:
+        # Missing GGUF runtime: 400 with the install message, not a generic "Invalid model".
+        logger.warning("GGUF runtime missing while validating '%s': %s", request.model_path, e)
+        raise HTTPException(status_code = 400, detail = str(e))
     except Exception as e:
         not_supported_hints = [
             "No config file found",
