@@ -75,16 +75,12 @@ def test_prefers_the_complete_snapshot(tmp_path, monkeypatch):
     # Partial older snapshot: one small shard.
     _write(snaps / "aaaa" / "model-Q4_K_M.gguf", 10)
     # Complete newer snapshot: two larger shards.
-    complete_first = _write(
-        snaps / "bbbb" / "model-00001-of-00002-Q4_K_M.gguf", 30
-    )
+    complete_first = _write(snaps / "bbbb" / "model-00001-of-00002-Q4_K_M.gguf", 30)
     _write(snaps / "bbbb" / "model-00002-of-00002-Q4_K_M.gguf", 40)
 
     monkeypatch.setattr(hf_constants, "HF_HUB_CACHE", str(cache))
 
-    path, total = models_route._resolve_quant_gguf(
-        "org/repo", "Q4_K_M", is_local = False
-    )
+    path, total = models_route._resolve_quant_gguf("org/repo", "Q4_K_M", is_local = False)
 
     # The most complete snapshot (70 bytes) wins over the partial one (10).
     assert total == 70
