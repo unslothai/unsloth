@@ -254,13 +254,10 @@ def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[Loca
             if not child.is_dir():
                 continue
             has_gguf = any(child.glob("*.gguf"))
-            has_non_gguf_weights = (
-                any(child.glob("*.safetensors")) or any(child.glob("*.bin"))
-            )
-            has_config = (
-                (child / "config.json").exists()
-                or (child / "adapter_config.json").exists()
-            )
+            has_non_gguf_weights = any(child.glob("*.safetensors")) or any(child.glob("*.bin"))
+            has_config = (child / "config.json").exists() or (
+                child / "adapter_config.json"
+            ).exists()
             has_model_files = has_gguf or has_non_gguf_weights or has_config
         except OSError:
             # Skip unreadable children rather than failing the scan.
@@ -351,9 +348,7 @@ def _dir_model_format(path: Path) -> Optional[str]:
     try:
         if not any(path.glob("*.gguf")):
             return None
-        has_non_gguf = (
-            any(path.glob("*.safetensors")) or any(path.glob("*.bin"))
-        )
+        has_non_gguf = any(path.glob("*.safetensors")) or any(path.glob("*.bin"))
         return None if has_non_gguf else "gguf"
     except OSError:
         return None
