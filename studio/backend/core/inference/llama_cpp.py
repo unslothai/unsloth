@@ -6125,7 +6125,11 @@ class LlamaCppBackend:
         except Exception as e:
             logger.warning(f"Error killing llama-server process: {e}")
         finally:
-            if self._stats_logger is not None:
+            # getattr guard: _kill_process runs on the cleanup/teardown path, which
+            # must tolerate a partially-constructed backend (e.g. __init__ raising
+            # before `self._stats_logger = None`, or a __new__-built instance). Mirrors
+            # the `hasattr(self, "_chat_template_file")` guard used elsewhere here.
+            if getattr(self, "_stats_logger", None) is not None:
                 self._stats_logger.stop()
                 self._stats_logger = None
             self._process = None
