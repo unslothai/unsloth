@@ -177,7 +177,7 @@ def test_terminate_all_signals_tracked_and_is_idempotent():
 
 @pytest.mark.skipif(not IS_POSIX, reason = "POSIX process sweep")
 def test_terminate_all_escalates_to_sigkill():
-    # A child that ignores SIGTERM must still be reaped via SIGKILL.
+    # A child that ignores SIGTERM must still be reaped via SIGKILL after timeout.
     p = subprocess.Popen(
         [
             sys.executable,
@@ -187,8 +187,78 @@ def test_terminate_all_escalates_to_sigkill():
     )
     time.sleep(0.5)  # let the handler install
     pl.adopt_pid(p.pid)
+    pl.terminate_all(timeout = 0.3)
+    assert p.wait(timeout = 5) == -signal.SIGKILL  # SIGTERM ignored, SIGKILL wins
+
+
+@pytest.mark.skipif(not IS_POSIX, reason = "POSIX process sweep")
+def test_terminate_all_lets_cooperative_child_exit_cleanly(tmp_path):
+    # A child that handles SIGTERM gets `timeout` to exit cleanly (not -SIGKILL).
+    marker = tmp_path / "clean.txt"
+    p = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import signal, sys, time\n"
+            f"def h(*a): open({str(marker)!r}, 'w').write('clean'); sys.exit(0)\n"
+            "signal.signal(signal.SIGTERM, h)\n"
+            "time.sleep(300)\n",
+        ]
+    )
+    time.sleep(0.5)
+    pl.adopt_pid(p.pid)
+    pl.terminate_all(timeout = 3.0)
+    assert p.wait(timeout = 3) == 0  # exited via its own handler, not SIGKILL
+    assert marker.read_text() == "clean"
+
+
+def test_forget_pid_unregisters():
+    pl.adopt_pid(4242)
+    assert 4242 in pl._tracked_pids
+    pl.forget_pid(4242)
+    assert 4242 not in pl._tracked_pids
+
+
+@pytest.mark.skipif(not IS_POSIX, reason = "POSIX process sweep")
+def test_terminate_all_skips_recycled_pid(monkeypatch):
+    # A tracked pid whose identity changed (recycled) must not be signalled.
+    p = subprocess.Popen(["sleep", "300"])
+    pl.adopt_pid(p.pid)  # records the real identity
+    monkeypatch.setattr(pl, "_pid_identity", lambda _pid: "DIFFERENT")
     pl.terminate_all()
-    assert p.wait(timeout = 6) == -signal.SIGKILL  # SIGTERM ignored, SIGKILL wins
+    assert _alive(p.pid)  # left untouched: identity mismatch
+    p.kill()
+    p.wait(timeout = 5)
+
+
+@pytest.mark.skipif(not IS_LINUX, reason = "PR_SET_PDEATHSIG is Linux-only")
+def test_bind_kills_multiprocessing_child_on_parent_death(tmp_path):
+    # multiprocessing workers can't take a preexec_fn, so the child binds itself
+    # via bind_current_process_to_parent_lifetime(). Killing the parent must reap
+    # it (the gap reviewers found in adopt_pid alone).
+    mid = tmp_path / "mid_mp.py"
+    mid.write_text(
+        "import sys, time, multiprocessing as mp\n"
+        f"sys.path.insert(0, {str(_BACKEND)!r})\n"
+        "from utils.process_lifetime import bind_current_process_to_parent_lifetime\n"
+        "def _child():\n"
+        "    bind_current_process_to_parent_lifetime()\n"
+        "    time.sleep(300)\n"
+        "if __name__ == '__main__':\n"
+        "    p = mp.get_context('spawn').Process(target = _child, daemon = True)\n"
+        "    p.start()\n"
+        "    print(p.pid, flush = True)\n"
+        "    time.sleep(300)\n"
+    )
+    proc = subprocess.Popen([sys.executable, str(mid)], stdout = subprocess.PIPE, text = True)
+    try:
+        child_pid = int(proc.stdout.readline().strip())
+        assert _alive(child_pid)
+        proc.kill()
+        proc.wait(timeout = 5)
+        assert _wait_dead(child_pid, 5.0), "mp child orphaned after parent SIGKILL"
+    finally:
+        proc.kill()
 
 
 # ── Windows Job Object path (mocked kernel32, runs on Linux CI) ──

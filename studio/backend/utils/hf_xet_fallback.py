@@ -168,6 +168,13 @@ def _download_child_entry(
     forms its own process group so the parent can kill the whole transfer, and
     never logs the token or signed URLs.
     """
+    # Die with Studio on Linux (this mp child gets no parent-set preexec_fn).
+    try:
+        from utils.process_lifetime import bind_current_process_to_parent_lifetime
+        bind_current_process_to_parent_lifetime()
+    except Exception:
+        pass
+
     if hasattr(os, "setsid"):
         try:
             os.setsid()

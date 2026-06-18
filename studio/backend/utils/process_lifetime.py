@@ -34,7 +34,7 @@ _JobObjectExtendedLimitInformation = 9
 _lock = threading.Lock()
 _initialized = False
 _win_job_handle: Optional[int] = None  # retained for the interpreter's lifetime
-_tracked_pids: set[int] = set()  # adopted children, reaped by terminate_all
+_tracked_pids: "dict[int, Optional[str]]" = {}  # pid -> identity, reaped by terminate_all
 
 
 def _is_linux() -> bool:
@@ -164,6 +164,14 @@ def _pdeathsig_preexec() -> None:
         pass
 
 
+def bind_current_process_to_parent_lifetime() -> None:
+    """Bind the CURRENT process to its parent's death (Linux). For multiprocessing
+    children, which cannot take a preexec_fn, so the parent cannot set
+    PR_SET_PDEATHSIG for them -- the child must do it itself at startup."""
+    if _is_linux():
+        _pdeathsig_preexec()
+
+
 def compose_preexec(existing: Optional[Callable[[], None]]) -> Optional[Callable[[], None]]:
     """Run the PDEATHSIG hook then any caller-supplied preexec (Linux only)."""
     if not _is_linux():
@@ -190,13 +198,33 @@ def child_popen_kwargs(preexec_fn: Optional[Callable[[], None]] = None) -> dict:
     return {}
 
 
+def _pid_identity(pid: int) -> Optional[str]:
+    # Linux /proc starttime (stat field 22); pins identity so a reused pid is not
+    # signalled later. None (other platforms / unreadable) disables the check.
+    if not _is_linux():
+        return None
+    try:
+        with open(f"/proc/{pid}/stat", encoding = "utf-8") as fh:
+            stat = fh.read()
+        return stat[stat.rfind(")") + 2:].split()[19]  # after comm: starttime
+    except Exception:
+        return None
+
+
+def forget_pid(pid: Optional[int]) -> None:
+    """Stop tracking a child the owner has reaped, so terminate_all never
+    signals a recycled pid."""
+    if pid:
+        _tracked_pids.pop(pid, None)
+
+
 def adopt_pid(pid: Optional[int]) -> None:
     """Track a child (e.g. a multiprocessing worker started after the parent job
     was set up) and, on Windows, assign it to the job as belt-and-suspenders.
     Tolerates a None or already-exited pid."""
     if not pid:
         return
-    _tracked_pids.add(pid)
+    _tracked_pids[pid] = _pid_identity(pid)
     if _is_windows() and _win_job_handle:
         try:
             import ctypes
@@ -216,33 +244,50 @@ def adopt_pid(pid: Optional[int]) -> None:
 
 
 def terminate_all(timeout: float = 5.0) -> None:
-    """Backstop sweep over adopted pids, after per-subsystem cleanup. POSIX
-    signals the process group when the child leads one. Idempotent and
-    teardown-safe (snapshots the registry, swallows everything)."""
-    for pid in list(_tracked_pids):
-        _tracked_pids.discard(pid)
+    """Backstop sweep over adopted pids, after per-subsystem cleanup. SIGTERM,
+    then SIGKILL the survivors after `timeout`. Skips a pid whose identity no
+    longer matches (recycled). Idempotent and teardown-safe."""
+    for pid, identity in list(_tracked_pids.items()):
+        _tracked_pids.pop(pid, None)
+        if identity is not None and _pid_identity(pid) != identity:
+            continue  # pid was reused by an unrelated process
         try:
             if _is_windows():
                 os.kill(pid, signal.SIGTERM)
                 continue
-            _posix_terminate(pid)
+            _posix_terminate(pid, timeout)
         except Exception:
             pass
 
 
-def _posix_terminate(pid: int) -> None:
-    # Signal only; reaping belongs to the child's owner (or init for orphans).
-    # Prefer the group (covers grandchildren) when pid leads its own group.
+def _posix_terminate(pid: int, timeout: float = 5.0) -> None:
+    # SIGTERM, give the child up to `timeout` to exit, then SIGKILL. Reaping
+    # belongs to the child's owner (or init for orphans). Prefer the group
+    # (covers grandchildren) when pid leads its own group.
+    import time
+
     killer = os.kill
     try:
         if os.getpgid(pid) == pid:
             killer = os.killpg
     except Exception:
         pass
-    for sig in (signal.SIGTERM, signal.SIGKILL):
+    try:
+        killer(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    except Exception:
+        return
+    deadline = time.monotonic() + max(0.0, timeout)
+    while time.monotonic() < deadline:
         try:
-            killer(pid, sig)
+            killer(pid, 0)  # still alive?
         except ProcessLookupError:
             return
         except Exception:
-            return
+            break
+        time.sleep(0.05)
+    try:
+        killer(pid, signal.SIGKILL)
+    except Exception:
+        pass
