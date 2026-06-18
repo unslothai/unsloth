@@ -422,9 +422,11 @@ class TestStudioLocalhostIpv6Warning:
 
         run_module._emit_startup_output("127.0.0.1", 8888, "127.0.0.1")
 
-        assert calls["banner"][0]["include_stop_hint"] is True
+        # The stop hint no longer rides inside the banner: it is printed once at the
+        # end so it stays the final line after the tool-policy notice.
+        assert calls["banner"][0]["include_stop_hint"] is False
         assert calls["warning"] == []
-        assert calls["stop_hint"] == 0
+        assert calls["stop_hint"] == 1
         assert calls["reachability"] == []
 
     @pytest.mark.parametrize("host", ["0.0.0.0", "::"])
