@@ -419,6 +419,75 @@ def fix_vllm_aimv2_issue():
             logger.info(f"Unsloth: Failed patching vLLM with error = {str(e)}")
 
 
+# vLLM >= 0.22 (PR #35024) deleted `vllm.transformers_utils.tokenizer`, but an
+# older unsloth_zoo still imports it unguarded and crashes (issue #6385). Supply
+# a stub via a meta path finder appended AFTER the real finders, so it only
+# activates when vLLM no longer ships the module.
+_VLLM_LORA_TOKENIZER_MODULE = "vllm.transformers_utils.tokenizer"
+_VLLM_TOKENIZER_STUB_SENTINEL = "__unsloth_vllm_tokenizer_stub__"
+
+
+def _unsloth_return_no_lora_tokenizer(*args, **kwargs):
+    # None -> vLLM uses the base tokenizer for LoRA (matches unsloth_zoo).
+    return None
+
+
+class _VllmLoraTokenizerStubLoader(importlib.abc.Loader):
+    __slots__ = ("module_name",)
+
+    def __init__(self, module_name):
+        self.module_name = module_name
+
+    def create_module(self, spec):
+        import types
+
+        module = types.ModuleType(self.module_name)
+        module.__file__ = f"<unsloth stub: {self.module_name}>"
+        module.__package__ = self.module_name.rpartition(".")[0]
+        setattr(module, _VLLM_TOKENIZER_STUB_SENTINEL, True)
+        module.get_lora_tokenizer = _unsloth_return_no_lora_tokenizer
+        module.get_lora_tokenizer_async = _unsloth_return_no_lora_tokenizer
+        return module
+
+    def exec_module(self, module):
+        return None
+
+
+class _VllmLoraTokenizerStubFinder(importlib.abc.MetaPathFinder):
+    __slots__ = (_VLLM_TOKENIZER_STUB_SENTINEL,)
+
+    def __init__(self):
+        setattr(self, _VLLM_TOKENIZER_STUB_SENTINEL, True)
+
+    def find_spec(
+        self,
+        fullname,
+        path = None,
+        target = None,
+    ):
+        if fullname != _VLLM_LORA_TOKENIZER_MODULE:
+            return None
+        return importlib.machinery.ModuleSpec(
+            name = fullname,
+            loader = _VllmLoraTokenizerStubLoader(fullname),
+            is_package = False,
+        )
+
+
+def fix_vllm_lora_tokenizer_module():
+    if importlib.util.find_spec("vllm") is None:
+        return
+    for finder in sys.meta_path:
+        if getattr(finder, _VLLM_TOKENIZER_STUB_SENTINEL, False):
+            return
+    # Appended, not inserted at 0, so a real module on older vLLM always wins.
+    sys.meta_path.append(_VllmLoraTokenizerStubFinder())
+    logger.info(
+        "Unsloth: Installed `vllm.transformers_utils.tokenizer` compatibility "
+        "stub for newer vLLM versions"
+    )
+
+
 def fix_vllm_guided_decoding_params():
     def _maybe_raise_vllm_transformers_mismatch(error):
         error_text = str(error)
