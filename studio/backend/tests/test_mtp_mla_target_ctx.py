@@ -13,12 +13,57 @@ generation). Non-MLA MTP (Qwen/Gemma) keeps no such copy and must stay exactly
 as #6312 tuned it.
 """
 
-import os
 import sys
+import types as _types
+from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+# ---------------------------------------------------------------------------
+# Stub heavy/unavailable deps before importing the module under test, so this
+# file is order-independent (importing core.inference pulls in orchestrator ->
+# structlog, absent in the lightweight test env). Mirrors test_mtp_vram_budget.
+# ---------------------------------------------------------------------------
+
+_BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
+if _BACKEND_DIR not in sys.path:
+    sys.path.insert(0, _BACKEND_DIR)
+
+_loggers_stub = _types.ModuleType("loggers")
+_loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
+sys.modules.setdefault("loggers", _loggers_stub)
+
+sys.modules.setdefault("structlog", _types.ModuleType("structlog"))
+
+# httpx -- only stub when the real library is missing. Unconditional stubbing
+# shadows HTTPError/Response that huggingface_hub.errors imports at load time.
+try:
+    import httpx as _httpx_real  # noqa: F401
+except ImportError:
+    _httpx_stub = _types.ModuleType("httpx")
+    for _exc_name in (
+        "ConnectError",
+        "TimeoutException",
+        "ReadTimeout",
+        "ReadError",
+        "RemoteProtocolError",
+        "CloseError",
+        "HTTPError",
+        "RequestError",
+    ):
+        setattr(_httpx_stub, _exc_name, type(_exc_name, (Exception,), {}))
+    _httpx_stub.Timeout = type("Timeout", (), {"__init__": lambda self, *a, **kw: None})
+    _httpx_stub.Response = type("Response", (), {})
+    _httpx_stub.Client = type(
+        "Client",
+        (),
+        {
+            "__init__": lambda self, **kw: None,
+            "__enter__": lambda self: self,
+            "__exit__": lambda self, *a: None,
+        },
+    )
+    sys.modules["httpx"] = _httpx_stub
 
 from core.inference.llama_cpp import (  # noqa: E402
     LlamaCppBackend,
