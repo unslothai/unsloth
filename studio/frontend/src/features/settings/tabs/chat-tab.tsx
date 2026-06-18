@@ -361,7 +361,14 @@ export function ChatTab() {
         </SettingsRow>
         <SettingsRow
           label="Expand quantizations"
-          description="On: On Device GGUF models show their quantizations right away. Off: click a model to view its quantizations."
+          description={
+            <span className="flex flex-col gap-1">
+              <span>
+                On: On Device GGUF models show their quantizations right away.
+              </span>
+              <span>Off: click a model to view its quantizations.</span>
+            </span>
+          }
         >
           <Switch
             checked={expandQuantizations}
@@ -370,7 +377,15 @@ export function ChatTab() {
         </SettingsRow>
         <SettingsRow
           label="Show all quantizations"
-          description="On: list every quantization, including ones you have not downloaded. Off: show only downloaded quantizations."
+          description={
+            <span className="flex flex-col gap-1">
+              <span>
+                On: list every quantization, including ones you have not
+                downloaded.
+              </span>
+              <span>Off: show only downloaded quantizations.</span>
+            </span>
+          }
         >
           <Switch
             checked={showAllQuantizations}

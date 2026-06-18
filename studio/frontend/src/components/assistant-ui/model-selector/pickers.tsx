@@ -1099,9 +1099,35 @@ export function HubModelPicker({
   const [expandedGguf, setExpandedGguf] = useState<string | null>(null);
   // When on, On Device GGUF repos show their quantizations without a click.
   const expandQuantizations = useChatRuntimeStore((s) => s.expandQuantizations);
+  // Repos the user clicked to collapse while expand-by-default is on. Kept in
+  // memory only, so it resets on reload (and when the setting is toggled).
+  const [collapsedGguf, setCollapsedGguf] = useState<Set<string>>(
+    () => new Set(),
+  );
+  useEffect(() => {
+    setCollapsedGguf(new Set());
+  }, [expandQuantizations]);
   const isGgufExpanded = useCallback(
-    (id: string) => expandQuantizations || expandedGguf === id,
-    [expandQuantizations, expandedGguf],
+    (id: string) =>
+      expandQuantizations ? !collapsedGguf.has(id) : expandedGguf === id,
+    [expandQuantizations, collapsedGguf, expandedGguf],
+  );
+  // Toggle a repo's quantizations: flip the collapse set when expand-by-default
+  // is on, otherwise drive the single-open expandedGguf state.
+  const toggleGgufExpanded = useCallback(
+    (id: string) => {
+      if (expandQuantizations) {
+        setCollapsedGguf((prev) => {
+          const next = new Set(prev);
+          if (next.has(id)) next.delete(id);
+          else next.add(id);
+          return next;
+        });
+      } else {
+        setExpandedGguf((prev) => (prev === id ? null : id));
+      }
+    },
+    [expandQuantizations],
   );
 
   const [downloadedCollapsed, setDownloadedCollapsed] = useState(false);
@@ -2079,11 +2105,7 @@ export function HubModelPicker({
                           optionKey,
                           value === c.repo_id,
                         )}
-                        onClick={() =>
-                          setExpandedGguf((prev) =>
-                            prev === c.repo_id ? null : c.repo_id,
-                          )
-                        }
+                        onClick={() => toggleGgufExpanded(c.repo_id)}
                         onArrowDownIntoChildren={
                           isGgufExpanded(c.repo_id)
                             ? () => {
@@ -2447,9 +2469,7 @@ export function HubModelPicker({
                               isDownloaded: true,
                             });
                           } else if (isGguf) {
-                            setExpandedGguf((prev) =>
-                              prev === m.id ? null : m.id,
-                            );
+                            toggleGgufExpanded(m.id);
                           } else {
                             onSelect(m.id, {
                               source: "local",
@@ -2518,9 +2538,7 @@ export function HubModelPicker({
                       )}
                       onClick={() => {
                         if (isGguf) {
-                          setExpandedGguf((prev) =>
-                            prev === m.id ? null : m.id,
-                          );
+                          toggleGgufExpanded(m.id);
                         } else {
                           onSelect(m.id, {
                             source: "local",
@@ -2581,9 +2599,7 @@ export function HubModelPicker({
                       )}
                       onClick={() => {
                         if (isGguf) {
-                          setExpandedGguf((prev) =>
-                            prev === m.id ? null : m.id,
-                          );
+                          toggleGgufExpanded(m.id);
                         } else {
                           onSelect(m.id, {
                             source: "local",
