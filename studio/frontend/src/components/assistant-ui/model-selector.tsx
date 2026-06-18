@@ -217,7 +217,7 @@ function ModelSelectorTrigger({
   );
 }
 
-type HubSection = "downloaded" | "recommended" | "custom";
+type HubSection = "downloaded" | "recommended" | "custom" | "connected";
 
 // The user's most recently clicked Hub section, remembered across opens so the
 // selector can fall back to it when there are no downloaded models.
@@ -313,7 +313,22 @@ function ModelSelectorContent({
     return "hub";
   }, [externalModels, value]);
 
-  const tabs = useMemo(() => buildSourceTabs({ hasExternal }), [hasExternal]);
+  const tabs = useMemo(() => buildSourceTabs(), []);
+  // Connected sits in the section toggle, shown only with external providers.
+  const hubSectionTabs = useMemo(
+    () =>
+      hasExternal
+        ? [
+            ...HUB_SECTION_TABS,
+            {
+              value: "connected",
+              label: "Connected",
+              icon: <HugeiconsIcon icon={CloudIcon} className="size-3.5" />,
+            },
+          ]
+        : HUB_SECTION_TABS,
+    [hasExternal],
+  );
 
   const [activeTab, setActiveTab] = useState<string>(() =>
     chatOnly ? chatOnlyTabsDefault : studioTabsDefault,
@@ -322,7 +337,15 @@ function ModelSelectorContent({
   const effectiveTab = tabs.some((tab) => tab.value === activeTab)
     ? activeTab
     : tabs[0].value;
-  const [hubSection, setHubSection] = useState<HubSection>(defaultHubSection);
+  // Open on Connected when the active model comes from a connected provider.
+  const wantsConnectedDefault =
+    (chatOnly ? chatOnlyTabsDefault : studioTabsDefault) === "external";
+  const [hubSection, setHubSection] = useState<HubSection>(() =>
+    wantsConnectedDefault ? "connected" : defaultHubSection(),
+  );
+  // Connected is only valid while external providers exist; fall back otherwise.
+  const effectiveHubSection: HubSection =
+    hubSection === "connected" && !hasExternal ? "recommended" : hubSection;
 
   // The picker below remounts on each open, but this tab state does not, so a
   // persisted selection that lands in lora/external after async load would
@@ -331,11 +354,18 @@ function ModelSelectorContent({
   useEffect(() => {
     if (open && !wasOpen.current) {
       setActiveTab(chatOnly ? chatOnlyTabsDefault : studioTabsDefault);
-      // On Device when the user has downloaded models, else their last section.
-      setHubSection(defaultHubSection());
+      // Connected when an external model is active, else On Device when the
+      // user has downloads, else their last section.
+      setHubSection(wantsConnectedDefault ? "connected" : defaultHubSection());
     }
     wasOpen.current = open;
-  }, [open, chatOnly, chatOnlyTabsDefault, studioTabsDefault]);
+  }, [
+    open,
+    chatOnly,
+    chatOnlyTabsDefault,
+    studioTabsDefault,
+    wantsConnectedDefault,
+  ]);
 
   function focusActiveModelOption(root: HTMLElement): boolean {
     const option =
@@ -385,7 +415,11 @@ function ModelSelectorContent({
       data-tour={dataTour}
       onKeyDown={handlePickerEntryKeyDown}
       className={cn(
-        "unsloth-model-selector-menu menu-soft-surface ring-0 w-[min(504px,calc(100vw-1rem))] max-w-[calc(100vw-1rem)] min-w-0 gap-0 pt-4 pr-2 pb-0 pl-4",
+        "unsloth-model-selector-menu menu-soft-surface ring-0 max-w-[calc(100vw-1rem)] min-w-0 gap-0 pt-4 pr-2 pb-0 pl-4",
+        // Widen to fit the extra Connected pill alongside the dropdowns.
+        hasExternal
+          ? "w-[min(600px,calc(100vw-1rem))]"
+          : "w-[min(504px,calc(100vw-1rem))]",
         className,
       )}
     >
@@ -413,19 +447,20 @@ function ModelSelectorContent({
           <HubModelPicker
             models={models}
             loraModels={fineTunedModels}
+            externalModels={externalModels}
             value={value}
             onSelect={onSelect}
             onFoldersChange={onFoldersChange}
             onBrowseHub={onBrowseHub}
             onModelsChange={onModelsChange}
             deleteDisabled={deleteDisabled}
-            section={hubSection}
+            section={effectiveHubSection}
             onEject={hasSelection && onEject ? onEject : undefined}
             sectionToggle={
               <PillTabs
                 ariaLabel="Hub section"
-                tabs={HUB_SECTION_TABS}
-                value={hubSection}
+                tabs={hubSectionTabs}
+                value={effectiveHubSection}
                 onValueChange={(next) => {
                   const section = next as HubSection;
                   setHubSection(section);
