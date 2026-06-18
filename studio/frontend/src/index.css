@@ -129,6 +129,8 @@
 	--accent: oklch(0.9596 0.0275 167.8295);
 	--accent-foreground: oklch(0.2868 0.0649 159.9823);
 	--destructive: oklch(0.6368 0.2078 25.3313);
+	/* Bypass permissions accent: bright, saturated yellow (not dark gold). */
+	--bypass: #d9a900;
 	--border: oklch(0.9208 0.0101 164.8536);
 	--input: oklch(0.9208 0.0101 164.8536);
 	--ring: #17b88b;
@@ -251,6 +253,8 @@
 	--accent: #3a3d43;
 	--accent-foreground: #ececee;
 	--destructive: oklch(0.6368 0.2078 25.3313);
+	/* Bypass permissions accent: bright, saturated neon yellow on dark. */
+	--bypass: #ffd60a;
 	/* --border / --input one step lighter than --muted so outlines and form
 	   borders stay visible on muted surfaces (right config panel, export
 	   tiles, quant chips) and keep subtle contrast on card. */
@@ -344,6 +348,7 @@
 	--color-input: var(--input);
 	--color-border: var(--border);
 	--color-destructive: var(--destructive);
+	--color-bypass: var(--bypass);
 	--color-accent-foreground: var(--accent-foreground);
 	--color-accent: var(--accent);
 	--color-muted-foreground: var(--muted-foreground);
@@ -1047,10 +1052,17 @@
 	.composer-pill-btn[data-active="true"] {
 		color: var(--primary);
 	}
-	/* Bypass Permissions badge: red, always-visible active warning. */
+	/* Bypass permissions badge: bright saturated yellow, always-visible state. */
 	.composer-pill-btn[data-variant="danger"] {
-		@apply bg-destructive/10 hover:bg-destructive/15;
-		color: var(--destructive);
+		background-color: color-mix(in oklab, var(--bypass) 18%, transparent);
+		color: var(--bypass);
+	}
+	.composer-pill-btn[data-variant="danger"]:hover {
+		background-color: color-mix(in oklab, var(--bypass) 26%, transparent);
+	}
+	/* Match the hover-X circle to the yellow accent instead of the green primary. */
+	.composer-pill-btn[data-variant="danger"] .composer-pill-x {
+		background-color: color-mix(in oklab, var(--bypass) 30%, transparent);
 	}
 
 	/* With more than 4 tools on, drop pill labels to icons only to cut clutter.

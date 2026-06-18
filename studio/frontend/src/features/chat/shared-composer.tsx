@@ -33,6 +33,7 @@ import {
   HeadphonesIcon,
   MoreHorizontalIcon,
   PlusIcon,
+  ShieldOffIcon,
   SquareIcon,
   XIcon,
 } from "lucide-react";
@@ -1593,7 +1594,7 @@ export function SharedComposer({
                     <MoreHorizontalIcon className="size-4" />
                     More
                   </DropdownMenuSubTrigger>
-                  <DropdownMenuSubContent className="unsloth-plus-menu w-[232px]">
+                  <DropdownMenuSubContent className="unsloth-plus-menu w-[248px]">
                     {overflowPlusItems.map((id) => (
                       <Fragment key={id}>{plusMenuNodes[id]}</Fragment>
                     ))}
@@ -1616,6 +1617,25 @@ export function SharedComposer({
             </PillGlyph>
             <span>Compare</span>
           </button>
+          {/* Bypass sits immediately after Compare and ahead of every other
+              tool pill (Search, Code, ...) so the active danger state reads
+              first; only Compare outranks it. */}
+          {bypassPermissions && (
+            <button
+              type="button"
+              onClick={() => setBypassPermissions(false)}
+              className="composer-pill-btn"
+              data-active="true"
+              data-variant="danger"
+              aria-label="Disable Bypass permissions"
+              title="Bypass permissions is on (no confirmation, no sandbox). Click to turn off."
+            >
+              <PillGlyph>
+                <ShieldOffIcon className="size-[14px]" />
+              </PillGlyph>
+              <span>Bypass permissions</span>
+            </button>
+          )}
           <button
             type="button"
             disabled={searchDisabled}
@@ -1731,20 +1751,6 @@ export function SharedComposer({
             </button>
           ) : null}
           {mcpEnabledForChat ? <McpComposerButton side="top" /> : null}
-          {bypassPermissions && (
-            <button
-              type="button"
-              onClick={() => setBypassPermissions(false)}
-              className="composer-pill-btn"
-              data-active="true"
-              data-variant="danger"
-              aria-label="Disable Bypass Permissions"
-              title="Bypass Permissions is on (no confirmation, no sandbox). Click to turn off."
-            >
-              <XIcon className="size-3" />
-              <span>Bypass Permissions</span>
-            </button>
-          )}
         </div>
         {/* mr-0.5 matches the send button inset from the edge in normal chat;
             gap-1.5 matches its control spacing. */}
