@@ -420,7 +420,7 @@ function ModelSelectorContent({
         // right gap matches the pill's left gap (pl-4 vs pr-4).
         hasExternal
           ? "w-[min(614px,calc(100vw-1rem))] pr-4"
-          : "w-[min(504px,calc(100vw-1rem))] pr-2",
+          : "w-[min(506px,calc(100vw-1rem))] pr-2",
         className,
       )}
     >
