@@ -2259,6 +2259,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             externalReasoningCaps.reasoningEffortLevels,
           ) as RequestReasoningEffort;
         const localReasoningEffort =
+          reasoningEffort === "minimal" ||
           reasoningEffort === "low" ||
           reasoningEffort === "medium" ||
           reasoningEffort === "high" ||

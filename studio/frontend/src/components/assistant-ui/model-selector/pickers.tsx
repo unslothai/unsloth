@@ -272,16 +272,19 @@ function ListLabel({
 
 /** Format bytes to a human-readable size string. */
 function formatBytes(bytes: number): string {
-  if (bytes === 0) return "0 B";
+  // Guard non-positive / non-finite sizes (0, missing -> NaN, Infinity) so we
+  // never render "NaN undefined" or a negative unit index.
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
   // Decimal (base-1000) units to match what Hugging Face reports for a repo's
   // file sizes -- e.g. 217 GB, not the 201.8 GiB a base-1024 divide would show.
   // (GPU-fit math below stays base-1024 since VRAM is binary.)
   const units = ["B", "KB", "MB", "GB", "TB"];
-  // Clamp the unit index: guards against units[i] being undefined past TB and
-  // against float error (Math.log(1000**n)/Math.log(1000) can fall just under n).
-  const i = Math.min(
-    Math.floor(Math.log(bytes) / Math.log(1000)),
-    units.length - 1,
+  // Clamp the unit index into [0, TB]: lower bound covers sub-1-byte values
+  // (negative index), upper bound covers >= 1 PB and Math.log float error
+  // (Math.log(1000**n)/Math.log(1000) can fall just under n).
+  const i = Math.max(
+    0,
+    Math.min(Math.floor(Math.log(bytes) / Math.log(1000)), units.length - 1),
   );
   const value = bytes / 1000 ** i;
   return `${value.toFixed(value < 10 ? 1 : 0)} ${units[i]}`;
