@@ -82,6 +82,14 @@ class LlamaServerNotFoundError(RuntimeError):
     Subclasses RuntimeError so existing handlers still catch it."""
 
 
+# Shared so the from_identifier preflight and the load-time raise stay in sync.
+LLAMA_SERVER_NOT_FOUND_DETAIL = (
+    "This is a GGUF model, but the llama.cpp runtime (llama-server) is not "
+    "installed. Run `unsloth studio setup` to download the prebuilt runtime, "
+    "then try again. (Advanced: set LLAMA_SERVER_PATH to an existing binary.)"
+)
+
+
 # llama-server can serve HTTP 200 while running a model entirely on CPU when a
 # GPU backend fails to init (#5807 / #5106 / #5830). Classify the startup log so
 # Studio can warn. Priority: explicit "offloaded N/M layers to GPU" counts
@@ -4320,11 +4328,11 @@ class LlamaCppBackend:
                         "(access-denied; antivirus or an in-flight install). "
                         "Retry the load once it is released."
                     )
-                raise RuntimeError(
-                    "llama-server binary not found. "
-                    "Run setup.sh to build it, install llama.cpp, "
-                    "or set LLAMA_SERVER_PATH environment variable."
-                )
+                # Reached only after the diffusion early-return above, so this is a
+                # genuine llama-server-backed GGUF with no runtime. Raise the typed
+                # error so /load returns the actionable 400 (not a generic 500), the
+                # same message remote validation already shows.
+                raise LlamaServerNotFoundError(LLAMA_SERVER_NOT_FOUND_DETAIL)
 
             # Outside ``self._lock`` so /unload, /cancel, /status aren't
             # blocked. ``unload_model`` also records the kill, so the

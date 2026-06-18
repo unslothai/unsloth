@@ -2431,17 +2431,13 @@ class ModelConfig:
                 # exists (the lock clears long before the download finishes; the
                 # load itself reports a still-locked binary distinctly).
                 from core.inference.llama_cpp import (
+                    LLAMA_SERVER_NOT_FOUND_DETAIL,
                     LlamaCppBackend,
                     LlamaServerNotFoundError,
                 )
 
                 if not LlamaCppBackend._find_llama_server_binary(include_denied = True):
-                    raise LlamaServerNotFoundError(
-                        "This is a GGUF model, but the llama.cpp runtime "
-                        "(llama-server) is not installed. Run `unsloth studio setup` "
-                        "to download the prebuilt runtime, then try again. "
-                        "(Advanced: set LLAMA_SERVER_PATH to an existing binary.)"
-                    )
+                    raise LlamaServerNotFoundError(LLAMA_SERVER_NOT_FOUND_DETAIL)
 
                 # list_gguf_variants() detects vision & resolves the variant
                 variants, has_vision = list_gguf_variants(identifier, hf_token = hf_token)

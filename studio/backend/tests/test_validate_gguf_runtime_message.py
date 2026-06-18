@@ -56,11 +56,16 @@ class TestValidateGgufRuntimeMessage(unittest.TestCase):
         self.assertIn("llama.cpp runtime", err.detail)
         self.assertNotEqual(err.detail, "Invalid model")
 
-    def test_other_errors_still_generic_invalid_model(self):
+    def test_other_runtime_errors_do_not_get_gguf_message(self):
+        # LlamaServerNotFoundError subclasses RuntimeError, so a plain RuntimeError must not be
+        # routed to the GGUF "install the runtime" message. validate_model surfaces a RuntimeError's
+        # own message (#6398), so assert the GGUF install text is absent and the message is intact.
         route = _load_route_module("inf_route_runtime_msg_2", "routes/inference.py")
         err = self._validate(route, "not/a-real-model", RuntimeError("totally different failure"))
         self.assertEqual(err.status_code, 400)
-        self.assertEqual(err.detail, "Invalid model")
+        self.assertNotIn("unsloth studio setup", err.detail)
+        self.assertNotIn("llama.cpp runtime", err.detail)
+        self.assertEqual(err.detail, "totally different failure")
 
 
 class TestLoadGgufRuntimeMessage(unittest.TestCase):
@@ -95,6 +100,25 @@ class TestLoadGgufRuntimeMessage(unittest.TestCase):
         route = _load_route_module("inf_route_load_runtime_msg_2", "routes/inference.py")
         err = self._load(route, "unsloth/some-model", RuntimeError("totally different failure"))
         self.assertEqual(err.status_code, 500)
+
+
+class TestLoadPathPropagatesRuntimeError(unittest.TestCase):
+    """The backend GGUF load now raises LlamaServerNotFoundError when the runtime is
+    missing (after diffusion routing). The default (non-tensor) load must propagate it
+    to load_model's 400 arm, not swallow it into a generic 500."""
+
+    def test_tensor_fallback_propagates_missing_runtime(self):
+        from core.inference.tensor_fallback import load_with_tensor_fallback
+
+        async def _attempt(_tensor, _extra):
+            raise LlamaServerNotFoundError(_GGUF_MSG)
+
+        with self.assertRaises(LlamaServerNotFoundError):
+            asyncio.run(
+                load_with_tensor_fallback(
+                    _attempt, requested_tensor = False, extra_args = None
+                )
+            )
 
 
 if __name__ == "__main__":
