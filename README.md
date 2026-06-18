@@ -23,7 +23,7 @@ Unsloth Studio lets you run and train models locally.
 
 *Only tested with a CUDA build on an NVIDIA Blackwell GPU (sm_120) using CUDA Toolkit 13.0 on Windows 11. ROCm/HIP, Metal, and CPU builds are untested, as are other NVIDIA architectures (Ampere/Ada/Hopper).*
 
-This fork uses experimental features; everything may not work perfectly.
+This fork uses experimental features; some things may break.
 
 ### Setup
 
@@ -35,7 +35,7 @@ A few notes:
 
 Unsloth uses precompiled llamacpp binaries while this fork does not. Expect installation and build times to be ~10-30 minutes.
 
-If beellama.cpp fails to build, you should manually build it. Follow [these](https://github.com/Anbeeld/beellama.cpp/tree/v0.3.2#installation) instructions. For windows, move binaries to `<instal-dir>/llama.cpp/build/bin/Release`. For Linux/mac, move binaries to `<install-dir>/llama.cpp/build/bin`
+If beellama.cpp fails to build, unsloth will still be installed. You will need to manually build beellama.cpp by following [these](https://github.com/Anbeeld/beellama.cpp/tree/v0.3.2#installation) instructions. For windows, move binaries to `<instal-dir>/llama.cpp/build/bin/Release`. For Linux/mac, move binaries to `<install-dir>/llama.cpp/build/bin`
 ### Additional Notes
 
 For CUDA, `GGML_CUDA_FA_HALF_QUANTS` only allows K >= V and V <= 2 tiers below K. For instance, `K=turbo4, V=q8_0/f16` is not supported.
