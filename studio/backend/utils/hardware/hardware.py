@@ -35,6 +35,21 @@ from typing import Optional, Dict, Any
 logger = get_logger(__name__)
 
 
+# ── GPU index ordering ──────────────────────────────────────────────────────
+# CUDA defaults to CUDA_DEVICE_ORDER=FASTEST_FIRST, numbering GPUs by compute
+# performance. nvidia-smi -- and every free-VRAM probe in Studio -- numbers GPUs
+# by PCI bus id instead. On a mixed-GPU host (e.g. an RTX 5090 alongside an RTX
+# PRO 6000) the two orderings disagree, so an index picked from nvidia-smi data
+# ("the emptiest card is GPU 1") gets written into CUDA_VISIBLE_DEVICES and then
+# reinterpreted by CUDA against FASTEST_FIRST -- landing the model on a different
+# physical GPU than the one selected. Pinning PCI_BUS_ID makes torch, nvidia-smi,
+# and CUDA_VISIBLE_DEVICES share a single index space, matching what users see in
+# `nvidia-smi -L`. Set at import (before any torch.cuda call latches the order
+# at context creation) and inherited by child processes, since the llama-server
+# and spawn workers copy os.environ. setdefault so an explicit user override wins.
+os.environ.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
+
+
 # ========== Device Enum ==========
 
 
@@ -91,6 +106,35 @@ def _has_mlx() -> bool:
         return False
 
 
+def _print_cuda_device_list(is_rocm: bool) -> None:
+    """Print every visible CUDA/ROCm GPU with its index.
+
+    The "Hardware detected" banner names only device 0, which hides the other
+    cards on a multi-GPU host and obscures which physical GPU each index maps to.
+    Listing all devices in the pinned PCI_BUS_ID order (see CUDA_DEVICE_ORDER at
+    module top) makes the available set explicit and matches `nvidia-smi -L`.
+    No-ops on single-GPU hosts and never raises -- it is purely informational.
+    """
+    try:
+        import torch
+
+        count = torch.cuda.device_count()
+        if count <= 1:
+            return
+        label = "ROCm" if is_rocm else "CUDA"
+        order = os.environ.get("CUDA_DEVICE_ORDER", "default")
+        lines = [f"{label} devices ({count}, CUDA_DEVICE_ORDER={order}):"]
+        for i in range(count):
+            try:
+                name = torch.cuda.get_device_properties(i).name
+            except Exception:
+                name = "<unavailable>"
+            lines.append(f"  [{i}] {name}")
+        print("\n".join(lines))
+    except Exception:
+        return  # purely informational; never disrupt startup
+
+
 def detect_hardware() -> DeviceType:
     """
     Detect the best compute device and set the module-level DEVICE global.
@@ -123,6 +167,7 @@ def detect_hardware() -> DeviceType:
                 print(f"Hardware detected: ROCm (HIP {_hip_label}) -- {device_name}")
             else:
                 print(f"Hardware detected: CUDA -- {device_name}")
+            _print_cuda_device_list(IS_ROCM)
             return DEVICE
 
     # --- XPU: Intel GPU ---

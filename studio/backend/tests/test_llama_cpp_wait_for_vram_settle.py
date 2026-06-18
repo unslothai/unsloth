@@ -281,6 +281,7 @@ def test_kill_process_records_timestamp_on_actual_kill():
     backend = LlamaCppBackend.__new__(LlamaCppBackend)
     backend._process = None
     backend._healthy = False
+    backend._stats_logger = None  # _kill_process stops it in finally
     backend._stdout_thread = None
     backend._llama_log_fh = None
     backend._last_kill_monotonic = 0.0

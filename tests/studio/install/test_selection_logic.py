@@ -1248,6 +1248,136 @@ class TestLinuxCudaChoiceFromRelease:
         log_entries = result.selection_log
         assert any("unavailable_on_host" in entry for entry in log_entries)
 
+    def test_blackwell_prefers_cuda13_over_torch_cuda12(self, monkeypatch):
+        # Blackwell host with both lines sm_120-capable: cuda13 wins over torch's cuda12.
+        mock_linux_runtime(monkeypatch, ["cuda13", "cuda12"])
+        host = make_host(driver_cuda_version = (13, 0), compute_caps = ["120"])
+        art12 = make_artifact(
+            "bundle-cuda12-newer.tar.gz",
+            runtime_line = "cuda12",
+            supported_sms = ["86", "120"],
+            min_sm = 86,
+            max_sm = 120,
+        )
+        art13 = make_artifact(
+            "bundle-cuda13-newer.tar.gz",
+            runtime_line = "cuda13",
+            supported_sms = ["86", "120"],
+            min_sm = 86,
+            max_sm = 120,
+        )
+        release = make_release([art12, art13])
+        result = linux_cuda_choice_from_release(host, release, preferred_runtime_line = "cuda12")
+        assert result is not None
+        assert result.primary.runtime_line == "cuda13"
+        assert any("blackwell_runtime_override" in entry for entry in result.selection_log)
+
+    def test_blackwell_skips_incapable_cuda13_line(self, monkeypatch):
+        # cuda13 line cannot cover sm_120 (only an -older bundle): stay on native cuda12.
+        mock_linux_runtime(monkeypatch, ["cuda13", "cuda12"])
+        host = make_host(driver_cuda_version = (13, 0), compute_caps = ["120"])
+        art13_older = make_artifact(
+            "bundle-cuda13-older.tar.gz",
+            runtime_line = "cuda13",
+            supported_sms = ["75", "86", "89"],
+            min_sm = 75,
+            max_sm = 89,
+        )
+        art12_newer = make_artifact(
+            "bundle-cuda12-newer.tar.gz",
+            runtime_line = "cuda12",
+            supported_sms = ["86", "120"],
+            min_sm = 86,
+            max_sm = 120,
+        )
+        release = make_release([art13_older, art12_newer])
+        result = linux_cuda_choice_from_release(host, release, preferred_runtime_line = "cuda12")
+        assert result is not None
+        assert result.primary.runtime_line == "cuda12"
+        assert result.primary.name == "bundle-cuda12-newer.tar.gz"
+
+    def test_blackwell_cuda13_unavailable_uses_cuda12(self, monkeypatch):
+        # cuda13 runtime libs absent: override never forces an undetected line.
+        mock_linux_runtime(monkeypatch, ["cuda12"])
+        host = make_host(driver_cuda_version = (13, 0), compute_caps = ["120"])
+        art12 = make_artifact(
+            "bundle-cuda12-newer.tar.gz",
+            runtime_line = "cuda12",
+            supported_sms = ["86", "120"],
+            min_sm = 86,
+            max_sm = 120,
+        )
+        release = make_release([art12])
+        result = linux_cuda_choice_from_release(host, release, preferred_runtime_line = "cuda12")
+        assert result is not None
+        assert result.primary.runtime_line == "cuda12"
+
+    def test_non_blackwell_keeps_torch_preference(self, monkeypatch):
+        # Non-Blackwell host: torch preference is untouched, no override.
+        mock_linux_runtime(monkeypatch, ["cuda13", "cuda12"])
+        host = make_host(driver_cuda_version = (13, 0), compute_caps = ["86"])
+        art12 = make_artifact(
+            "bundle-cuda12.tar.gz",
+            runtime_line = "cuda12",
+            supported_sms = ["86"],
+            min_sm = 86,
+            max_sm = 86,
+        )
+        art13 = make_artifact(
+            "bundle-cuda13.tar.gz",
+            runtime_line = "cuda13",
+            supported_sms = ["86"],
+            min_sm = 86,
+            max_sm = 86,
+        )
+        release = make_release([art12, art13])
+        result = linux_cuda_choice_from_release(host, release, preferred_runtime_line = "cuda12")
+        assert result is not None
+        assert result.primary.runtime_line == "cuda12"
+        assert not any("blackwell_runtime_override" in entry for entry in result.selection_log)
+
+    def test_blackwell_ignores_malformed_runtime_line(self, monkeypatch):
+        # A malformed/future-format runtime_line must be skipped, never crash the major sort.
+        mock_linux_runtime(monkeypatch, ["cuda13", "cuda12"])
+        host = make_host(driver_cuda_version = (13, 0), compute_caps = ["120"])
+        bad = make_artifact(
+            "bundle-cudaX.tar.gz",
+            runtime_line = "cudaX",
+            supported_sms = ["86", "120"],
+            min_sm = 86,
+            max_sm = 120,
+        )
+        art13 = make_artifact(
+            "bundle-cuda13-newer.tar.gz",
+            runtime_line = "cuda13",
+            supported_sms = ["86", "120"],
+            min_sm = 86,
+            max_sm = 120,
+        )
+        release = make_release([bad, art13])
+        result = linux_cuda_choice_from_release(host, release, preferred_runtime_line = "cuda12")
+        assert result is not None
+        assert result.primary.runtime_line == "cuda13"
+
+    def test_blackwell_prefers_cuda14_over_lower_majors(self, monkeypatch):
+        # Forward-compat: the highest sm_120-capable CUDA major wins.
+        mock_linux_runtime(monkeypatch, ["cuda14", "cuda13", "cuda12"])
+        host = make_host(driver_cuda_version = (14, 0), compute_caps = ["120"])
+        arts = [
+            make_artifact(
+                f"bundle-{rtl}.tar.gz",
+                runtime_line = rtl,
+                supported_sms = ["86", "120"],
+                min_sm = 86,
+                max_sm = 120,
+            )
+            for rtl in ("cuda12", "cuda13", "cuda14")
+        ]
+        release = make_release(arts)
+        result = linux_cuda_choice_from_release(host, release, preferred_runtime_line = "cuda12")
+        assert result is not None
+        assert result.primary.runtime_line == "cuda14"
+
     def test_arm64_host_selects_linux_arm64_cuda_kind(self, monkeypatch):
         # An arm64 CUDA host (DGX Spark / Grace Hopper) selects the
         # linux-arm64-cuda bundle and ignores the x64 linux-cuda one.
