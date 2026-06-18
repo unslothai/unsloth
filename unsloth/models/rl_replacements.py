@@ -1611,9 +1611,7 @@ def grpo_trainer_compute_loss(function_name, function):
         logit_scale_multiply = getattr(_unsloth_get_model_config(model), "logit_scale", 0)  # Cohere
         if logit_scale_multiply is None:
             logit_scale_multiply = 0
-        logit_scale_divide = getattr(
-            _unsloth_get_model_config(model), "logits_scaling", 0
-        )  # Granite
+        logit_scale_divide = getattr(_unsloth_get_model_config(model), "logits_scaling", 0)  # Granite
         if logit_scale_divide is None:
             logit_scale_divide = 0
 
