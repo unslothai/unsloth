@@ -181,6 +181,18 @@ def test_browse_folders_hides_sensitive_dirs(monkeypatch, tmp_path):
     assert ".ssh" not in names
 
 
+def test_get_models_folder_response_creates_and_returns_dir(monkeypatch, tmp_path):
+    # The endpoint creates the cache dir on demand so the desktop "Open folder"
+    # action works even before the first download.
+    target = tmp_path / "hub"
+    monkeypatch.setattr(local_inventory, "_resolve_hf_cache_dir", lambda: target)
+
+    response = local_inventory.get_models_folder_response()
+
+    assert response == {"path": str(target)}
+    assert target.is_dir()
+
+
 def test_contained_link_path_confines_to_link_dir(tmp_path):
     link_dir = tmp_path / "ollama" / ".studio_links" / "abc123"
 
