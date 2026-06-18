@@ -13,14 +13,9 @@ import { MascotImg } from "@/components/mascot-img";
 import { Button } from "@/components/ui/button";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { cn } from "@/lib/utils";
-import {
-  CheckIcon,
-  CopyIcon,
-  EyeIcon,
-  Maximize2Icon,
-  XIcon,
-} from "lucide-react";
+import { CopyIcon, EyeIcon, Maximize2Icon, XIcon } from "lucide-react";
 import { Download01Icon } from "@hugeicons/core-free-icons";
+import { Tick02Icon } from "@/lib/tick-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type KeyboardEvent,
@@ -285,7 +280,7 @@ export function ArtifactSurface({
             aria-label="Copy canvas HTML"
           >
             {copied ? (
-              <CheckIcon className="size-4" />
+              <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="size-4" />
             ) : (
               <CopyIcon className="size-4" />
             )}

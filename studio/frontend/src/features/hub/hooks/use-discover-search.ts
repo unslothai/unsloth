@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { toast } from "@/lib/toast";
 import {
   type HfModelResult,
+  type HfModelSearchChannel,
   type HfSortDirection,
   type HfSortKey,
   useHubModelSearch,
@@ -13,7 +14,6 @@ import {
   type HfDatasetResult,
   useHubDatasetSearch,
 } from "./use-hub-dataset-search";
-import type { ChannelPreset } from "../lib/channels";
 
 export interface DiscoverSearch {
   results: HfModelResult[];
@@ -86,7 +86,8 @@ export function useDiscoverSearch({
   isDatasetMode,
   sortBy,
   direction,
-  activeChannel,
+  channel,
+  ownerScope,
   online,
 }: {
   debouncedQuery: string;
@@ -95,31 +96,19 @@ export function useDiscoverSearch({
   isDatasetMode: boolean;
   sortBy: HfSortKey;
   direction: HfSortDirection;
-  activeChannel: ChannelPreset | null;
+  channel: HfModelSearchChannel | null;
+  ownerScope: "unsloth" | "all";
   online: boolean;
 }): DiscoverSearch {
-  const channelOption = useMemo(
-    () =>
-      activeChannel
-        ? {
-            owner: activeChannel.owner,
-            tags: activeChannel.tags,
-            query: activeChannel.query,
-            idSuffix: activeChannel.idSuffix,
-          }
-        : null,
-    [activeChannel],
-  );
-
   const modelSearch = useHubModelSearch(debouncedQuery, {
     accessToken,
     sortBy,
     sortDirection: direction,
-    pinUnslothFirst:
-      sortBy === "trendingScore" && direction === "desc" && !activeChannel,
+    pinUnslothFirst: true,
+    ownerScope,
     enabled: online && isDiscoverTab && !isDatasetMode,
     keepUnsupportedTags: true,
-    channel: channelOption,
+    channel,
   });
   const datasetSearch = useHubDatasetSearch(debouncedQuery, {
     accessToken,

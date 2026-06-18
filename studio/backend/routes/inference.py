@@ -612,6 +612,7 @@ try:
         detect_reasoning_flags,
     )
     from core.inference.llama_server_args import (
+        _tensor_parallel_matches_loaded,
         resolve_tensor_parallel,
         strip_shadowing_flags,
         validate_extra_args,
@@ -646,6 +647,7 @@ except ImportError:
         detect_reasoning_flags,
     )
     from core.inference.llama_server_args import (
+        _tensor_parallel_matches_loaded,
         resolve_tensor_parallel,
         strip_shadowing_flags,
         validate_extra_args,
@@ -1813,9 +1815,8 @@ def _request_matches_loaded_settings(
             strip_split_mode = _should_strip_split_mode(request, backend_extra),
         )
     )
-    if (
-        resolve_tensor_parallel(effective_extra, request.tensor_parallel)
-        != llama_backend.tensor_parallel
+    if not _tensor_parallel_matches_loaded(
+        effective_extra, request.tensor_parallel, llama_backend.tensor_parallel
     ):
         return False
     # Spec decoding works on vision models too (MTP is mmproj-compatible,
@@ -2535,6 +2536,33 @@ async def validate_model(
                 detail = f"Invalid model identifier: {model_log_label}",
             )
 
+        is_gguf = getattr(config, "is_gguf", False)
+        # Native context length, read from the local GGUF header when present.
+        # Lets the staged ("Load on selection" off) flow populate the context
+        # slider before the GPU load; None until the file is downloaded.
+        context_length: Optional[int] = None
+        if request.include_context_length and is_gguf:
+            from hub.utils.gguf import resolve_local_gguf_path
+            from utils.models.gguf_metadata import read_gguf_context_length
+
+            # Best-effort: a header-read failure must never fail validation of an
+            # otherwise-valid model (the outer except turns it into a 400).
+            try:
+                if native_grant_backed:
+                    # model_identifier is the resolved canonical .gguf path.
+                    local_gguf = model_identifier
+                else:
+                    # Local folder / exported GGUFs already have their file
+                    # resolved on the config (gguf_file is None for HF repos, so
+                    # those fall back to the HF-cache lookup).
+                    local_gguf = config.gguf_file or resolve_local_gguf_path(
+                        model_identifier, request.gguf_variant
+                    )
+                if local_gguf:
+                    context_length = read_gguf_context_length(local_gguf)
+            except Exception as e:
+                logger.debug("Context-length probe failed for %s: %s", model_log_label, e)
+
         return ValidateModelResponse(
             valid = True,
             message = "Model identifier is valid.",
@@ -2542,12 +2570,13 @@ async def validate_model(
             display_name = model_log_label
             if native_grant_backed
             else getattr(config, "display_name", config.identifier),
-            is_gguf = getattr(config, "is_gguf", False),
+            is_gguf = is_gguf,
             is_lora = getattr(config, "is_lora", False),
             is_vision = getattr(config, "is_vision", False),
             requires_trust_remote_code = bool(
                 load_inference_config(config.identifier).get("trust_remote_code", False)
             ),
+            context_length = context_length,
         )
 
     except HTTPException:
@@ -2577,6 +2606,20 @@ async def validate_model(
             f"Error validating model identifier '{request.model_path}': {e}",
             exc_info = True,
         )
+        # RuntimeError / ValueError carry intentional, actionable messages here
+        # (e.g. "llama-server binary not found - cannot load GGUF models. Run
+        # setup.sh ..."), so surface them instead of a blank "Invalid model".
+        # Path-redact for safety and keep any other exception type generic so an
+        # unexpected internal error never leaks its details to the client.
+        if isinstance(e, (RuntimeError, ValueError)):
+            msg = redact_native_paths(str(e)).strip()
+            if msg:
+                if any(h.lower() in msg.lower() for h in not_supported_hints):
+                    msg = f"This model is not supported yet. Try a different model. (Original error: {msg})"
+                raise HTTPException(
+                    status_code = 400,
+                    detail = msg,
+                )
         raise HTTPException(
             status_code = 400,
             detail = "Invalid model",

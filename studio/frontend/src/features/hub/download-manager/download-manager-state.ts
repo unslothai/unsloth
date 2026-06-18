@@ -1,25 +1,22 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { create } from "zustand";
+import { createJSONStorage, persist } from "zustand/middleware";
 import { INVENTORY_HINT_KIND } from "../inventory/constants";
 import { inventoryHintKey } from "../inventory/inventory-hints";
 import type { InventoryHint } from "../inventory/types";
-import { create } from "zustand";
-import {
-  type StateStorage,
-  createJSONStorage,
-  persist,
-} from "zustand/middleware";
+import { createThrottledStorage, noopStorage } from "../stores/persist-storage";
 import type { DownloadJobState } from "./api";
-import {
-  ACTIVE_STATES,
-  MAX_PROGRESS_FRACTION,
-} from "./download-manager-config";
 import {
   DOWNLOAD_KIND,
   type DownloadKind,
   isDownloadKind,
 } from "./constants";
+import {
+  ACTIVE_STATES,
+  MAX_PROGRESS_FRACTION,
+} from "./download-manager-config";
 import {
   type DownloadManagerState,
   type JobListeners,
@@ -35,48 +32,6 @@ import {
 const PERSIST_KEY = "unsloth.studio.downloads";
 const PERSIST_VERSION = 1;
 const PERSIST_THROTTLE_MS = 1_000;
-
-const noopStorage: StateStorage = {
-  getItem: () => null,
-  setItem: () => undefined,
-  removeItem: () => undefined,
-};
-
-function createThrottledStorage(
-  base: StateStorage,
-  delayMs: number,
-): StateStorage {
-  let timer: ReturnType<typeof setTimeout> | null = null;
-  let pending: { name: string; value: string } | null = null;
-  const flush = (): void => {
-    if (timer !== null) {
-      clearTimeout(timer);
-      timer = null;
-    }
-    if (pending) {
-      base.setItem(pending.name, pending.value);
-      pending = null;
-    }
-  };
-  if (typeof window !== "undefined") {
-    window.addEventListener("pagehide", flush);
-  }
-  return {
-    getItem: (name) => base.getItem(name),
-    setItem: (name, value) => {
-      pending = { name, value };
-      if (timer === null) timer = setTimeout(flush, delayMs);
-    },
-    removeItem: (name) => {
-      pending = null;
-      if (timer !== null) {
-        clearTimeout(timer);
-        timer = null;
-      }
-      base.removeItem(name);
-    },
-  };
-}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -158,7 +113,7 @@ function toPersistedJob(
 }
 
 // Mirrors the backend's normalize_repo_key (strip().lower()) so two casings of
-// one repo share a key (else duplicate jobs / mismatched listeners). Keys only —
+// one repo share a key (else duplicate jobs / mismatched listeners). Keys only;
 // `repoId` keeps original casing for display and API calls.
 function normalizeRepoIdentity(repoId: string): string {
   return repoId.trim().toLowerCase();
@@ -330,8 +285,8 @@ function hasRuntimePeerForRepo(
 }
 
 // Shared rule for what blocks a fresh GGUF variant start. Peer guard passes
-// includeOwnRuntime:false (runs after this start made its own runtime); requestStart
-// passes both true (runs before any runtime or job exists).
+// includeOwnRuntime:false (runs after this start made its own runtime);
+// requestStart passes both true (runs before any runtime or job exists).
 export function hasVariantRepoActivity(
   kind: DownloadKind,
   repoId: string,
