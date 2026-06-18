@@ -254,13 +254,14 @@ def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[Loca
             if not child.is_dir():
                 continue
             has_gguf = any(child.glob("*.gguf"))
-            has_weights = (
+            has_non_gguf_weights = (
+                any(child.glob("*.safetensors")) or any(child.glob("*.bin"))
+            )
+            has_config = (
                 (child / "config.json").exists()
                 or (child / "adapter_config.json").exists()
-                or any(child.glob("*.safetensors"))
-                or any(child.glob("*.bin"))
             )
-            has_model_files = has_weights or has_gguf
+            has_model_files = has_gguf or has_non_gguf_weights or has_config
         except OSError:
             # Skip unreadable children rather than failing the scan.
             continue
@@ -270,9 +271,10 @@ def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[Loca
             updated_at = child.stat().st_mtime
         except OSError:
             updated_at = None
-        # A GGUF-only folder (no safetensors/config) has no -GGUF suffix to read,
-        # so surface the format explicitly for the UI's GGUF classification.
-        model_format = "gguf" if has_gguf and not has_weights else None
+        # A folder whose only weights are .gguf is GGUF-format even when it also
+        # ships a config.json (common for HF GGUF repos); such folders often lack
+        # a -GGUF suffix, so surface the format for the UI's GGUF classification.
+        model_format = "gguf" if has_gguf and not has_non_gguf_weights else None
         found.append(
             LocalModelInfo(
                 id = str(child),
@@ -339,6 +341,24 @@ def _scan_hf_cache(cache_dir: Path) -> List[LocalModelInfo]:
     return found
 
 
+def _dir_model_format(path: Path) -> Optional[str]:
+    """Return ``"gguf"`` for a directory whose only weights are ``.gguf`` files.
+
+    LM Studio and custom GGUF folders frequently lack a ``-GGUF`` name suffix,
+    so the UI relies on this hint to route them through the GGUF load path
+    rather than treating them as plain local checkpoints.
+    """
+    try:
+        if not any(path.glob("*.gguf")):
+            return None
+        has_non_gguf = (
+            any(path.glob("*.safetensors")) or any(path.glob("*.bin"))
+        )
+        return None if has_non_gguf else "gguf"
+    except OSError:
+        return None
+
+
 def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
     """Scan an LM Studio models directory for model files.
 
@@ -361,6 +381,7 @@ def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
                 display_name = lm_dir.name,
                 path = str(lm_dir),
                 source = "lmstudio",
+                model_format = _dir_model_format(lm_dir),
                 updated_at = updated_at,
             ),
         ]
@@ -380,6 +401,7 @@ def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
                             display_name = child.stem,
                             path = str(child),
                             source = "lmstudio",
+                            model_format = "gguf",
                             updated_at = updated_at,
                         ),
                     )
@@ -398,6 +420,7 @@ def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
                         display_name = child.name,
                         path = str(child),
                         source = "lmstudio",
+                        model_format = _dir_model_format(child),
                         updated_at = updated_at,
                     ),
                 )
@@ -426,6 +449,7 @@ def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
                                 display_name = model_dir.name,
                                 path = str(model_dir),
                                 source = "lmstudio",
+                                model_format = _dir_model_format(model_dir),
                                 updated_at = updated_at,
                             ),
                         )
@@ -441,6 +465,7 @@ def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
                                 display_name = model_dir.stem,
                                 path = str(model_dir),
                                 source = "lmstudio",
+                                model_format = "gguf",
                                 updated_at = updated_at,
                             ),
                         )

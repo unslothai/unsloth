@@ -2771,10 +2771,10 @@ export function HubModelPicker({
                   {!customFoldersCollapsed &&
                     sortedCustomFolderModels.map((m) => {
                       const isGgufFile = m.path.toLowerCase().endsWith(".gguf");
-                      const isGguf =
-                        isGgufFile ||
-                        isGgufRepo(m.id) ||
-                        isGgufRepo(m.display_name);
+                      // Honor the backend model_format hint (suffixless GGUF
+                      // folders) in addition to name/path so the row classifies
+                      // and loads through the same GGUF path as the filter.
+                      const isGguf = localModelIsGguf(m);
                       // Single .gguf files (e.g. Ollama blobs) load directly;
                       // GGUF repos/directories expand to pick a variant.
                       const isDirectGguf = isGgufFile;
@@ -2870,33 +2870,41 @@ export function HubModelPicker({
                   {!lmStudioCollapsed &&
                     sortedLmStudio.map((m) => {
                       const isGgufFile = m.path.toLowerCase().endsWith(".gguf");
-                      const isGguf =
-                        isGgufRepo(m.id) || isGgufRepo(m.display_name);
+                      // LM Studio dirs are GGUF but rarely carry a -GGUF suffix;
+                      // use the shared helper (model_format hint) so the row,
+                      // filter, and load path agree.
+                      const isGguf = localModelIsGguf(m);
                       const optionKey = makeModelOptionKey("lm-studio", m.id);
                       return (
                         <div key={m.id}>
                           <ModelRow
                             label={m.model_id ?? m.display_name}
-                            meta={isGguf || isGgufFile ? "GGUF" : "Local"}
+                            meta={isGguf ? "GGUF" : "Local"}
                             selected={value === m.id}
                             optionProps={hubModelList.getOptionProps(
                               optionKey,
                               value === m.id,
                             )}
                             onClick={() => {
-                              if (isGguf) {
+                              if (isGgufFile) {
+                                onSelect(m.id, {
+                                  source: "local",
+                                  isLora: false,
+                                  isDownloaded: true,
+                                  isGguf: true,
+                                });
+                              } else if (isGguf) {
                                 toggleGgufExpanded(m.id);
                               } else {
                                 onSelect(m.id, {
                                   source: "local",
                                   isLora: false,
                                   isDownloaded: true,
-                                  isGguf: isGgufFile,
                                 });
                               }
                             }}
                             onArrowDownIntoChildren={
-                              isGgufExpanded(m.id)
+                              !isGgufFile && isGgufExpanded(m.id)
                                 ? () => {
                                     const focused =
                                       focusFirstChildOption(optionKey);
@@ -2906,7 +2914,7 @@ export function HubModelPicker({
                             }
                             vramStatus={null}
                           />
-                          {isGgufExpanded(m.id) && (
+                          {!isGgufFile && isGgufExpanded(m.id) && (
                             <GgufVariantExpander
                               repoId={m.id}
                               onDevice={true}
