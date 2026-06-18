@@ -1810,6 +1810,7 @@ class LlamaCppBackend:
                 [bin_path, "--help"],
                 capture_output = True,
                 text = True,
+                errors = "replace",
                 timeout = 10,
                 check = False,
                 env = probe_env,
@@ -2959,7 +2960,7 @@ class LlamaCppBackend:
         if model_footprint + kv + _mtp_at(requested_ctx) <= budget_bytes:
             return requested_ctx
 
-        # Weights alone exceed budget -- reducing ctx can't help; --fit handles it.
+        # Weights + compute buffer alone exceed budget -- reducing ctx can't help.
         if model_footprint >= budget_bytes:
             logger.debug(
                 "Model footprint exceeds GPU budget before KV cache",
@@ -4808,6 +4809,7 @@ class LlamaCppBackend:
                         or bool(mtp_draft_path)
                     )
                     _mtp_binary_ok = True
+                    _mtp_probe_raised = False
                     if not _user_mtp_via_extras:
                         try:
                             _mtp_binary_ok = bool(
@@ -4815,16 +4817,23 @@ class LlamaCppBackend:
                             )
                         except Exception:
                             _mtp_binary_ok = False
+                            _mtp_probe_raised = True
                     _mtp_will_engage = bool(
                         _user_mtp_via_extras
                         or _user_draft_via_extras
                         or (
                             not _extra_args_set_spec_type(extra_args)
-                            and _mtp_binary_ok
                             and _mtp_model_for_fit
                             and (
                                 _mtp_effective in ("mtp", "mtp+ngram")
                                 or (_mtp_effective == "auto" and not _mtp_sub_3b_for_fit)
+                            )
+                            and (
+                                _mtp_binary_ok
+                                # Reserve on a raised (uncached) probe too: it re-probes in
+                                # _build_speculative_flags and may still engage MTP (embedded
+                                # head or separate drafter -- _mtp_model_for_fit covers both).
+                                or _mtp_probe_raised
                             )
                         )
                     )
@@ -4981,6 +4990,22 @@ class LlamaCppBackend:
                         else 0.0
                     )
                     _pin_fraction = self._GPU_PIN_VRAM_FRACTION - _flat_mtp_reserve
+
+                    if tensor_parallel and effective_is_vision:
+                        logger.info(
+                            "Tensor parallelism skipped for vision model: "
+                            "--split-mode tensor is incompatible with --mmproj "
+                            "in the current llama.cpp build; using layer split."
+                        )
+                        tensor_parallel = False
+                        if _tensor_dropped_cache_type_kv is not None:
+                            cache_type_kv = _tensor_dropped_cache_type_kv
+                            _cache_type_from_env = False
+                        extra_args = strip_split_mode_only(
+                            _tensor_dropped_extra_args
+                            if _tensor_dropped_extra_args is not None
+                            else extra_args
+                        )
 
                     # Tensor mode replicates a compute buffer on every GPU, so drop
                     # GPUs below that reserve from the set up front (gpu_indices
