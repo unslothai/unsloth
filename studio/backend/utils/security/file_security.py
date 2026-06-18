@@ -292,7 +292,6 @@ def _load_scan_target(model_name: str, load_subdirs: tuple) -> tuple:
     if name.endswith("/LLM") and name.count("/") == 1:
         try:
             from utils.models.model_config import load_model_defaults
-
             if (load_model_defaults(name) or {}).get("audio_type") == "bicodec":
                 parent = name[: -len("/LLM")]
                 return f"unsloth/{parent}", tuple(dict.fromkeys((*load_subdirs, "LLM")))
