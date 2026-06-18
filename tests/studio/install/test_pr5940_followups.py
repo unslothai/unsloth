@@ -386,20 +386,61 @@ def test_ps_installers_gate_amd_smi_on_windows():
         ), f"{ps.name} venv-internal check must seed the venv root from UNSLOTH_STUDIO_HOME"
 
 
-def test_setup_ps1_expands_tilde_for_custom_studio_home_in_venv_probe():
-    # The early venv-internal hipInfo probe seeds the venv root from a custom
-    # Studio home; a tilde form (~\studio) must be expanded to USERPROFILE like
-    # the canonical resolver, else [IO.Path]::GetFullPath keeps the literal ~
-    # (relative to cwd) and the custom-home hipInfo escapes the filter.
-    text = _SETUP_PS1.read_text(encoding = "utf-8")
+@pytest.mark.parametrize("ps", [_INSTALL_PS1, _SETUP_PS1], ids = ["install.ps1", "setup.ps1"])
+def test_ps_venv_probe_expands_tilde_for_custom_studio_home(ps):
+    # Both installers' venv-internal hipInfo probe seed the venv root from a
+    # custom Studio home; a tilde form (~\studio) must be expanded to USERPROFILE
+    # like the canonical resolver, else [IO.Path]::GetFullPath keeps the literal
+    # ~ (relative to cwd) and the custom-home hipInfo escapes the filter.
+    text = ps.read_text(encoding = "utf-8")
     i = text.find("$studioHomeEnv = ")
     j = text.find('Join-Path $studioHomeEnv "unsloth_studio"', i)
-    assert i != -1 and j != -1, "studioHomeEnv venv-root seed not found in setup.ps1"
+    assert i != -1 and j != -1, f"{ps.name}: studioHomeEnv venv-root seed not found"
     block = text[i:j]
     assert "USERPROFILE" in block and ".Substring(1)" in block, (
-        "the venv-internal probe must expand a leading ~ in the custom Studio "
-        "home before seeding the venv root (mirroring the canonical resolver)"
+        f"{ps.name}: the venv-internal probe must expand a leading ~ in the custom "
+        "Studio home before seeding the venv root (mirroring the canonical resolver)"
     )
+
+
+def _ps_floor_map(text, prefix):
+    # {gfx -> spec} for entries like "gfx1151" = "torchvision>=0.26.0,<0.27.0".
+    return dict(re.findall(r'"(gfx[0-9a-z]+)"\s*=\s*"(' + re.escape(prefix) + r'[^"]*)"', text))
+
+
+def test_install_setup_ps_rocm_torch_floors_in_sync():
+    # install.ps1 and setup.ps1 pull from AMD's per-arch index; their torch and
+    # companion (torchvision/torchaudio) floor maps must match so both resolve
+    # the same ABI-consistent trio. install.ps1 once left the companions bare,
+    # which can resolve an incompatible set and fall back to CPU.
+    it = _INSTALL_PS1.read_text(encoding = "utf-8")
+    st = _SETUP_PS1.read_text(encoding = "utf-8")
+    for prefix in ("torch>=", "torchvision>=", "torchaudio>="):
+        i_map = _ps_floor_map(it, prefix)
+        s_map = _ps_floor_map(st, prefix)
+        assert i_map, f"install.ps1 has no {prefix!r} floor map"
+        assert (
+            i_map == s_map
+        ), f"{prefix!r} floor map drift:\ninstall.ps1={i_map}\nsetup.ps1={s_map}"
+    # Strix Halo (the field case) must be pinned, not bare.
+    assert _ps_floor_map(it, "torchvision>=").get("gfx1151") == "torchvision>=0.26.0,<0.27.0"
+    # The ROCm install must pass the pinned companion specs, not bare names.
+    assert (
+        "$torchSpec $visionSpec $audioSpec" in it
+    ), "install.ps1 ROCm install must use the pinned companion specs"
+
+
+def test_install_ps1_rocm_cpu_fallback_uses_retry():
+    # The ROCm->CPU fallback is the recovery path most likely to hit a transient
+    # index issue, yet it once used the non-retrying helper. It must retry like
+    # every other torch install in the file.
+    text = _INSTALL_PS1.read_text(encoding = "utf-8")
+    i = text.find("ROCm PyTorch install failed")
+    assert i != -1, "ROCm->CPU fallback block not found in install.ps1"
+    window = text[i : i + 600]
+    assert (
+        "Invoke-InstallCommandRetry" in window
+    ), "the ROCm->CPU fallback torch install must use Invoke-InstallCommandRetry"
 
 
 def test_install_python_stack_gates_every_amd_smi_spawn():
