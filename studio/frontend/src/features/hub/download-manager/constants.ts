@@ -8,7 +8,8 @@ export const TRANSPORT = {
 
 export const TRANSPORT_MODES = [TRANSPORT.HTTP, TRANSPORT.XET] as const;
 export type TransportMode = (typeof TRANSPORT_MODES)[number];
-export const DEFAULT_TRANSPORT_MODE: TransportMode = TRANSPORT.HTTP;
+// Xet by default; effectiveTransportMode() downgrades to HTTP if hf_xet is missing.
+export const DEFAULT_TRANSPORT_MODE: TransportMode = TRANSPORT.XET;
 
 export function isTransportMode(value: unknown): value is TransportMode {
   return (

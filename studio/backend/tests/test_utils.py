@@ -88,6 +88,19 @@ class TestGetDevice:
         ):
             assert _reset_and_detect() == DeviceType.CUDA
 
+    @needs_torch
+    def test_detect_survives_device0_probe_failure(self, capsys):
+        # is_available() True but the device-0 name probe raises: startup must
+        # still resolve CUDA rather than crash.
+        with (
+            patch("utils.hardware.hardware._has_torch", return_value = True),
+            patch("torch.cuda.is_available", return_value = True),
+            patch("torch.cuda.device_count", return_value = 1),
+            patch("torch.cuda.get_device_properties", side_effect = RuntimeError("probe")),
+        ):
+            assert _reset_and_detect() == DeviceType.CUDA
+        assert "<unavailable>" in capsys.readouterr().out
+
     @needs_mlx
     def test_returns_mlx_when_on_apple_silicon_with_mlx(self):
         with (
@@ -382,6 +395,22 @@ class TestPrintCudaDeviceList:
         with patch("torch.cuda.device_count", side_effect = RuntimeError("no cuda")):
             _hw_module._print_cuda_device_list(is_rocm = False)
         assert capsys.readouterr().out == ""
+
+    @needs_torch
+    def test_rocm_label_omits_cuda_device_order(self, capsys):
+        # CUDA_DEVICE_ORDER governs CUDA only, so the ROCm listing must not claim it.
+        props = [MagicMock(), MagicMock()]
+        props[0].name = "AMD Instinct MI300X"
+        props[1].name = "AMD Instinct MI300X"
+        with (
+            patch("torch.cuda.device_count", return_value = 2),
+            patch("torch.cuda.get_device_properties", side_effect = lambda i: props[i]),
+        ):
+            _hw_module._print_cuda_device_list(is_rocm = True)
+        out = capsys.readouterr().out
+        assert "ROCm devices (2):" in out
+        assert "CUDA_DEVICE_ORDER" not in out
+        assert "[0] AMD Instinct MI300X" in out
 
 
 # ========== format_error_message() ==========

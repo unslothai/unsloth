@@ -1532,16 +1532,22 @@ async def get_model_config(
         except Exception:
             pass
 
-        # Fallback: try AutoConfig directly.
+        # Fallback: read raw config.json (declarative fields only) -- a selection-time
+        # metadata probe that must never execute a repo's auto_map Python.
         if max_position_embeddings is None:
             try:
-                from transformers import AutoConfig as _AutoConfig
+                from utils.transformers_version import _load_config_json
+                from types import SimpleNamespace
 
-                _trust = model_name.lower().startswith("unsloth/")
-                _ac = _AutoConfig.from_pretrained(
-                    model_name, trust_remote_code = _trust, token = hf_token
-                )
-                max_position_embeddings = _get_max_position_embeddings(_ac)
+                _cfg = _load_config_json(model_name, hf_token = hf_token)
+                if _cfg is not None:
+
+                    def _to_ns(d):
+                        if isinstance(d, dict):
+                            return SimpleNamespace(**{k: _to_ns(v) for k, v in d.items()})
+                        return d
+
+                    max_position_embeddings = _get_max_position_embeddings(_to_ns(_cfg))
             except Exception:
                 pass
 
@@ -1572,6 +1578,195 @@ async def get_model_config(
             event = "models.get_model_config_failed",
             log = logger,
         )
+
+
+@router.post("/remote-code-scan")
+async def scan_model_remote_code(
+    model_name: str = Body(..., embed = True),
+    hf_token: Optional[str] = Body(None, embed = True),
+    current_subject: str = Depends(get_current_subject),
+):
+    """Scan a model's ``auto_map`` custom code so the UI can show findings before
+    the user enables ``trust_remote_code``. Code-free: reads ``config.json`` and
+    statically scans the repo ``.py`` (never loads the model). Returns
+    ``has_remote_code`` plus the severity-tagged findings + a pinning fingerprint.
+
+    POST (not GET) so the ``hf_token`` for gated repos travels in the body and
+    never lands in a URL, browser history, or access log.
+    """
+    try:
+        from utils.security import preflight_remote_code_consent_for_targets
+
+        if not is_local_path(model_name):
+            model_name = resolve_cached_repo_id_case(model_name)
+        # Scan the adapter AND the base together (a LoRA runs both repos' code; a pickle
+        # can live in either), pinned by one combined fingerprint. Snapshot the primary's
+        # cache state BEFORE resolving the base: for a remote adapter that resolve
+        # downloads adapter_config.json, which would otherwise hide the adapter from
+        # cleanup on decline. On error treat as pre-existing so a decline never deletes it.
+        try:
+            _primary_preexisting = is_local_path(model_name) or _repo_in_any_hf_cache(model_name)
+        except Exception:
+            _primary_preexisting = True
+        security_targets = [model_name]
+        try:
+            from utils.models.model_config import get_base_model_from_lora_identifier
+
+            # Resolve a LOCAL or REMOTE adapter's base so its code/weights are scanned too.
+            _base = get_base_model_from_lora_identifier(model_name, hf_token)
+            if _base:
+                security_targets.append(_base)
+        except Exception:
+            pass
+        security_targets = list(dict.fromkeys(security_targets))
+        # Record every repo OUR scan is first to pull into the cache (adapter, base, and
+        # external auto_map repos like owner/name--module.Class), so a decline purges
+        # exactly what was downloaded. Computed BEFORE the preflight downloads, against
+        # every cache the discard searches, so a repo the user already had is not deleted.
+        from utils.security.remote_code_scan import external_auto_map_repos
+
+        scan_created_repos: list = []
+        _seen_created: set = set()
+
+        def _mark_scan_created(repo: str, *, preexisting: Optional[bool] = None) -> None:
+            if not repo or repo in _seen_created:
+                return
+            _seen_created.add(repo)
+            try:
+                already = (
+                    preexisting
+                    if preexisting is not None
+                    else (is_local_path(repo) or _repo_in_any_hf_cache(repo))
+                )
+                if not already:
+                    scan_created_repos.append(repo)
+            except Exception:
+                pass
+
+        for _target in security_targets:
+            # Use the pre-base-resolution snapshot for the primary (see above).
+            _mark_scan_created(
+                _target, preexisting = _primary_preexisting if _target == model_name else None
+            )
+            for _ext in external_auto_map_repos(_target, hf_token):
+                _mark_scan_created(_ext)
+        decision = preflight_remote_code_consent_for_targets(security_targets, hf_token = hf_token)
+        payload = decision.response_payload()
+        payload["requires_trust_remote_code"] = decision.has_remote_code
+        # created_by_scan = primary flag (older clients); scan_created_repos drives cleanup.
+        payload["created_by_scan"] = model_name in scan_created_repos
+        payload["scan_created_repos"] = scan_created_repos
+
+        # Malware gate (metadata-only): surface HF-flagged unsafe files so the dialog can
+        # hard-block. Orthogonal to remote code -- a poisoned pickle needs no auto_map.
+        from utils.security import evaluate_file_security, security_load_subdirs
+
+        unsafe_files: list = []
+        security_blocked = False
+        for _target in security_targets:
+            _sec = evaluate_file_security(
+                _target, hf_token = hf_token, load_subdirs = security_load_subdirs(_target, hf_token)
+            )
+            security_blocked = security_blocked or _sec.blocked
+            unsafe_files.extend(_sec.unsafe_files)
+        payload["unsafe_files"] = unsafe_files
+        payload["security_blocked"] = security_blocked
+        if security_blocked:
+            # Non-approvable hard block: approvable False hides "Enable and continue", and
+            # requires_trust_remote_code forces the dialog open even with no custom code.
+            payload["approvable"] = False
+            payload["requires_trust_remote_code"] = True
+            payload["error_kind"] = "malware_blocked"
+        return payload
+    except Exception as e:
+        raise log_and_http_error(
+            e,
+            500,
+            "Failed to scan model remote code",
+            event = "models.remote_code_scan_failed",
+            log = logger,
+        )
+
+
+@router.post("/discard-remote-code")
+async def discard_remote_code_download(
+    model_name: str = Body(..., embed = True), current_subject: str = Depends(get_current_subject)
+):
+    """Purge a repo the consent scan downloaded after the user DECLINED its custom
+    code, so untrusted code is not left on disk.
+
+    Safety: only ever deletes a metadata-only cache entry the scan created. It
+    refuses a local path (never touches user files), a currently-loaded model, and
+    any repo that has weight files cached (``*.safetensors`` / ``*.bin`` /
+    ``*.gguf``) -- i.e. a model the user actually downloaded. The frontend only
+    calls this when the scan reported ``created_by_scan``.
+    """
+    if is_local_path(model_name):
+        return {"deleted": False, "reason": "local"}
+    if not _is_valid_repo_id(model_name):
+        return {"deleted": False, "reason": "invalid"}
+
+    # Never delete a model that is loaded for inference.
+    try:
+        from routes.inference import get_llama_cpp_backend
+        llama_backend = get_llama_cpp_backend()
+        if llama_backend.is_loaded and llama_backend.model_identifier:
+            loaded = llama_backend.model_identifier.lower()
+            if loaded == model_name.lower() or loaded.startswith(model_name.lower()):
+                return {"deleted": False, "reason": "loaded"}
+    except Exception:
+        pass
+    try:
+        inference_backend = get_inference_backend()
+        if inference_backend.active_model_name:
+            active = inference_backend.active_model_name.lower()
+            if active == model_name.lower() or active.startswith(model_name.lower()):
+                return {"deleted": False, "reason": "loaded"}
+    except Exception:
+        pass
+
+    _WEIGHTS = (
+        ".safetensors",
+        ".bin",
+        ".pt",
+        ".pth",
+        ".h5",
+        ".msgpack",
+        ".gguf",
+        ".onnx",
+        ".ckpt",
+    )
+    try:
+        target_repo = None
+        hf_cache = None
+        for cache in _all_hf_cache_scans():
+            for repo_info in cache.repos:
+                if repo_info.repo_type != "model":
+                    continue
+                if repo_info.repo_id.lower() == model_name.lower():
+                    target_repo, hf_cache = repo_info, cache
+                    break
+            if target_repo is not None:
+                break
+
+        if target_repo is None:
+            return {"deleted": False, "reason": "not_cached"}
+
+        # Hard guard: a repo with weights is a real model the user has -- leave it.
+        for rev in target_repo.revisions:
+            for f in rev.files:
+                if f.file_name.lower().endswith(_WEIGHTS):
+                    return {"deleted": False, "reason": "has_weights"}
+
+        revision_hashes = [rev.commit_hash for rev in target_repo.revisions]
+        if not revision_hashes:
+            return {"deleted": False, "reason": "not_cached"}
+        hf_cache.delete_revisions(*revision_hashes).execute()
+        logger.info("Discarded declined remote-code download: %s", model_name)
+        return {"deleted": True}
+    except Exception as e:
+        logger.warning("Could not discard remote-code download for %s: %s", model_name, e)
+        return {"deleted": False, "reason": "error"}
 
 
 @router.get("/loras")
@@ -1990,7 +2185,11 @@ async def get_lora_base_model(lora_path: str, current_subject: str = Depends(get
 
 
 @router.get("/check-vision/{model_name:path}", response_model = VisionCheckResponse)
-async def check_vision_model(model_name: str, current_subject: str = Depends(get_current_subject)):
+async def check_vision_model(
+    model_name: str,
+    hf_token: Optional[str] = Query(None),
+    current_subject: str = Depends(get_current_subject),
+):
     """
     Check if a model is a vision model.
 
@@ -1998,7 +2197,8 @@ async def check_vision_model(model_name: str, current_subject: str = Depends(get
     """
     try:
         logger.info(f"Checking if vision model: {model_name}")
-        is_vision = is_vision_model(model_name)
+        # Authenticate so a gated/private VLM classifies correctly (else 404 -> non-vision).
+        is_vision = is_vision_model(model_name, hf_token = hf_token)
 
         logger.info(f"Vision check result for {model_name}: is_vision={is_vision}")
         return VisionCheckResponse(
@@ -2346,6 +2546,51 @@ def _get_repo_size_cached(repo_id: str) -> int:
     except Exception as e:
         logger.warning(f"Failed to get repo size for {repo_id}: {e}")
         return 0
+
+
+def _repo_in_any_hf_cache(model_name: str) -> bool:
+    """Whether ``model_name`` already exists in ANY HF cache the discard searches
+    (active, legacy, default).
+
+    ``created_by_scan`` must be True only when the scan itself first pulled the repo;
+    checking just the active cache (``get_cache_path``) would mark a repo the user
+    already had in a legacy/default cache as scan-created, so declining the consent
+    would delete a model they did not download via the scan. Mirrors the cache set in
+    ``_all_hf_cache_scans`` but only probes for the one repo dir (cheap, no full scan).
+    """
+    from utils.paths import (
+        hf_default_cache_dir,
+        legacy_hf_cache_dir,
+        resolve_cached_repo_id_case,
+    )
+
+    dirname = f"models--{resolve_cached_repo_id_case(model_name).replace('/', '--')}"
+    dirname_lower = dirname.lower()
+    candidates = []
+    try:
+        from huggingface_hub.constants import HF_HUB_CACHE
+        candidates.append(Path(HF_HUB_CACHE))
+    except Exception:
+        pass
+    for fn in (legacy_hf_cache_dir, hf_default_cache_dir):
+        try:
+            candidates.append(fn())
+        except Exception:
+            continue
+    # resolve_cached_repo_id_case only normalizes the ACTIVE cache, but discard deletes
+    # case-insensitively across all caches, so detect case-insensitively too -- else a
+    # pre-existing case-variant repo is misreported as scan-created and deleted on decline.
+    for cache in candidates:
+        try:
+            if (cache / dirname).exists():
+                return True
+            if cache.is_dir():
+                for entry in cache.iterdir():
+                    if entry.name.lower() == dirname_lower and entry.is_dir():
+                        return True
+        except Exception:
+            continue
+    return False
 
 
 def _all_hf_cache_scans():

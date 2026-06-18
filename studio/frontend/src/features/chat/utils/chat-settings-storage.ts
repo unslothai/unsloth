@@ -148,6 +148,7 @@ function sanitizeInferenceParams(
   }
   // Mirror trustRemoteCode handling so the toggle survives reload
   // and the /api/chat/settings round-trip.
+  // trustRemoteCode is no longer persisted: custom code is consented per model via the dialog.
   if (typeof value.fastMode === "boolean") {
     params.fastMode = value.fastMode;
   }

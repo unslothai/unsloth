@@ -42,6 +42,10 @@ class LoadRequest(BaseModel):
         False,
         description = "Allow loading models with custom code (e.g. NVIDIA Nemotron). Only enable for repos you trust.",
     )
+    approved_remote_code_fingerprint: Optional[str] = Field(
+        None,
+        description = "sha256 fingerprint from the remote-code scan, pinning user approval of this exact custom-code version.",
+    )
     chat_template_override: Optional[str] = Field(
         None,
         description = "Custom Jinja2 chat template to use instead of the model's default",
@@ -148,6 +152,11 @@ class ValidateModelResponse(BaseModel):
     requires_trust_remote_code: bool = Field(
         False,
         description = "Whether the model defaults require trust_remote_code to be enabled for loading.",
+    )
+    requires_security_review: bool = Field(
+        False,
+        description = "Whether Hugging Face's security scan flagged unsafe files (e.g. a "
+        "malicious pickle), so the load is hard-blocked pending review.",
     )
     context_length: Optional[int] = Field(
         None,

@@ -54,6 +54,10 @@ export async function loadCheckpoint(params: {
   load_in_4bit?: boolean;
   /** Allow loading models with custom code. Only enable for checkpoints you trust. */
   trust_remote_code?: boolean;
+  /** sha256 fingerprint pinning user approval of this exact custom-code version. */
+  approved_remote_code_fingerprint?: string | null;
+  /** HF token so the worker scans/loads gated checkpoints and base models with the same auth as preflight. */
+  hf_token?: string | null;
 }): Promise<ExportOperationResponse> {
   const response = await authFetch("/api/export/load-checkpoint", {
     method: "POST",
