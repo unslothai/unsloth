@@ -254,6 +254,7 @@ export function useChatModelRuntime() {
     displayName: string;
     isDownloaded?: boolean;
     isCachedLora?: boolean;
+    ggufVariant?: string | null;
     nativePathToken?: string | null;
   } | null>(null);
   const [loadToastDismissed, setLoadToastDismissed] = useState(false);
@@ -480,6 +481,7 @@ export function useChatModelRuntime() {
         displayName,
         isDownloaded,
         isCachedLora,
+        ggufVariant: ggufVariant ?? null,
         nativePathToken: nativePathToken ?? null,
       };
       setLoadingModel(loadInfo);
@@ -514,6 +516,21 @@ export function useChatModelRuntime() {
             stateBeforeUnload.modelRequiresTrustRemoteCode;
           const previousActiveNativePathToken =
             stateBeforeUnload.activeNativePathToken;
+          // Snapshot the load settings at click time, before the awaits below
+          // (validation, the trust dialog, unload). For a staged Load these knobs
+          // stay editable and a sheet-close revert (abandonStagedModel) can fire
+          // mid-load; reading them live just before loadModel would let the load
+          // use post-click values. The model-switch speculative reset below
+          // updates this snapshot in lock-step so non-staged loads are unchanged.
+          const loadChatTemplateOverride = stateBeforeUnload.chatTemplateOverride;
+          const loadKvCacheDtype = stateBeforeUnload.kvCacheDtype;
+          const loadCustomContextLength = stateBeforeUnload.customContextLength;
+          const loadGgufContextLength = stateBeforeUnload.ggufContextLength;
+          const loadTensorParallel = stateBeforeUnload.tensorParallel;
+          const loadActivePresetSource = stateBeforeUnload.activePresetSource;
+          const loadActiveGgufVariant = stateBeforeUnload.activeGgufVariant;
+          let loadSpeculativeType = stateBeforeUnload.speculativeType;
+          let loadSpecDraftNMax = stateBeforeUnload.specDraftNMax;
           try {
             // Lightweight pre-flight validation: avoid unloading a working model
             // if the new identifier is clearly invalid (e.g. bad HF id / path).
@@ -522,18 +539,17 @@ export function useChatModelRuntime() {
               : undefined;
             // Validate with the same effective context /load uses: a GGUF native
             // context can exceed maxSeqLength, so sizing on raw maxSeqLength could
-            // pass, unload, then have /load refuse it. Read pre-unload state; load
-            // recomputes its own value, so this leaves loading untouched.
-            const preUnloadState = useChatRuntimeStore.getState();
+            // pass, unload, then have /load refuse it. Uses the click-time
+            // snapshot (same values loadModel uses below), so the two agree.
             const validateMaxSeqLength = resolveLoadMaxSeqLength({
               modelId,
               ggufVariant,
-              customContextLength: preUnloadState.customContextLength,
-              ggufContextLength: preUnloadState.ggufContextLength,
+              customContextLength: loadCustomContextLength,
+              ggufContextLength: loadGgufContextLength,
               currentCheckpoint,
-              activeGgufVariant: preUnloadState.activeGgufVariant,
+              activeGgufVariant: loadActiveGgufVariant,
               maxSeqLength,
-              presetSource: preUnloadState.activePresetSource,
+              presetSource: loadActivePresetSource,
             });
             const validation = await validateModel({
               model_path: modelId,
@@ -591,32 +607,23 @@ export function useChatModelRuntime() {
                 specDraftNMax: null,
                 loadedSpecDraftNMax: null,
               });
+              loadSpeculativeType = persistedSpeculativeType;
+              loadSpecDraftNMax = null;
             }
 
-            const {
-              chatTemplateOverride,
-              kvCacheDtype,
-              customContextLength,
-              ggufContextLength,
-              speculativeType,
-              specDraftNMax,
-              tensorParallel,
-              activePresetSource,
-              activeGgufVariant,
-            } = useChatRuntimeStore.getState();
             const effectiveMaxSeqLength = resolveLoadMaxSeqLength({
               modelId,
               ggufVariant,
               isGguf,
-              customContextLength,
-              ggufContextLength,
+              customContextLength: loadCustomContextLength,
+              ggufContextLength: loadGgufContextLength,
               currentCheckpoint,
-              activeGgufVariant,
+              activeGgufVariant: loadActiveGgufVariant,
               maxSeqLength,
-              presetSource: activePresetSource,
+              presetSource: loadActivePresetSource,
             });
             const effectiveChatTemplateOverride =
-              chatTemplateOverride?.trim() ? chatTemplateOverride : null;
+              loadChatTemplateOverride?.trim() ? loadChatTemplateOverride : null;
             const loadResponse = await loadModel({
               model_path: modelId,
               nativePathLease: loadNativePathLease,
@@ -628,10 +635,10 @@ export function useChatModelRuntime() {
               trust_remote_code: trustRemoteCode,
               approved_remote_code_fingerprint: approvedRemoteCodeFingerprint,
               chat_template_override: effectiveChatTemplateOverride,
-              cache_type_kv: kvCacheDtype,
-              speculative_type: speculativeType,
-              spec_draft_n_max: specDraftNMax,
-              tensor_parallel: tensorParallel,
+              cache_type_kv: loadKvCacheDtype,
+              speculative_type: loadSpeculativeType,
+              spec_draft_n_max: loadSpecDraftNMax,
+              tensor_parallel: loadTensorParallel,
             });
 
             // If cancelled while loading, don't update UI to show
@@ -641,7 +648,7 @@ export function useChatModelRuntime() {
             // The load applied this spec mode, so persist the user's standing
             // preference now (the requested intent, not the resolved echo;
             // saveSpeculativeType keeps only the universal auto/ngram/off).
-            saveSpeculativeType(speculativeType);
+            saveSpeculativeType(loadSpeculativeType);
 
             const currentParams = useChatRuntimeStore.getState().params;
             setParams(

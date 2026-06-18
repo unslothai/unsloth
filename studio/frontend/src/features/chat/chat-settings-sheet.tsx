@@ -100,6 +100,7 @@ import {
 } from "./provider-capabilities";
 import {
   isPendingGguf,
+  pendingSelectionMatches,
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
 import { RetrievalSettingsSection } from "@/features/rag/components/retrieval-settings-section";
@@ -439,10 +440,14 @@ interface ChatSettingsPanelProps {
    */
   externalProviderType?: string | null;
   onReloadModel?: () => void;
-  /** The in-flight load (id + native path token), or null when idle. Used to
-   *  show a loading state for the staged pick only — not for an unrelated load
-   *  or a cancel's background unload. */
-  loadingModel?: { id: string; nativePathToken?: string | null } | null;
+  /** The in-flight load (id + GGUF variant + native path token), or null when
+   *  idle. Used to show a loading state for the staged pick only — not for an
+   *  unrelated load or a cancel's background unload. */
+  loadingModel?: {
+    id: string;
+    ggufVariant?: string | null;
+    nativePathToken?: string | null;
+  } | null;
   /** Loads the staged `pendingSelection` (deferred "Load on selection" flow). */
   onLoadPendingModel?: () => void;
   /** Download progress (0–1) for a staged GGUF being fetched, or null when idle. */
@@ -481,17 +486,17 @@ export function ChatSettingsPanel({
     !isExternalModel || Boolean(providerCapabilities?.presencePenalty);
   const isMobile = useIsMobile();
   const pendingSelection = useChatRuntimeStore((s) => s.pendingSelection);
-  // "Loading" only when the in-flight load IS this pick (not an unrelated load
-  // or a cancel's background unload). Matched on id + native token only:
-  // loadingModel carries no ggufVariant, but a variant mismatch would have
-  // abandoned the stage before load, so a surviving pendingSelection here always
-  // shares the loading pick's variant.
+  // "Loading" only when the in-flight load IS this staged pick (full id + GGUF
+  // variant + native token match), not an unrelated load or a cancel's
+  // background unload. The variant matters: a different quant of the same repo
+  // staged mid-load must not read as this one loading.
   const stagedLoading =
-    pendingSelection != null &&
     loadingModel != null &&
-    loadingModel.id === pendingSelection.id &&
-    (loadingModel.nativePathToken ?? null) ===
-      (pendingSelection.nativePathToken ?? null);
+    pendingSelectionMatches(pendingSelection, {
+      id: loadingModel.id,
+      ggufVariant: loadingModel.ggufVariant,
+      nativePathToken: loadingModel.nativePathToken,
+    });
   const abandonStagedModel = useChatRuntimeStore((s) => s.abandonStagedModel);
   const resetModelSettingsToLoaded = useChatRuntimeStore(
     (s) => s.resetModelSettingsToLoaded,
