@@ -285,15 +285,23 @@ function ListLabel({
   action,
   collapsed,
   onToggle,
+  spacious,
 }: {
   children: ReactNode;
   icon?: ReactNode;
   action?: ReactNode;
   collapsed?: boolean;
   onToggle?: () => void;
+  /** Extra top padding to separate this section from the one above. */
+  spacious?: boolean;
 }) {
   return (
-    <div className="flex items-center justify-between gap-1 px-2.5 pb-1.5 pt-3">
+    <div
+      className={cn(
+        "flex items-center justify-between gap-1 px-2.5 pb-1.5",
+        spacious ? "pt-6" : "pt-3",
+      )}
+    >
       <span className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
         {icon}
         {children}
@@ -2124,6 +2132,9 @@ export function HubModelPicker({
   // With a Connected tab present the box is wider, so right-align the dropdowns
   // and drop the search inset to keep Search Hub on the last dropdown's edge.
   const hasConnected = externalModels.length > 0;
+  // The Other models section and its shortcut only show with non-Unsloth downloads.
+  const hasOtherModels =
+    otherCachedGguf.length > 0 || otherCachedModelRows.length > 0;
 
   // Shared row renderers so Downloaded (Unsloth) and Other models render alike.
   const renderDownloadedGgufRow = (c: (typeof visibleCachedGguf)[number]) => {
@@ -2367,27 +2378,29 @@ export function HubModelPicker({
                     onToggle={() => setDownloadedCollapsed((v) => !v)}
                     action={
                       <>
-                        <Tooltip delayDuration={0}>
-                          <TooltipTrigger asChild={true}>
-                            <button
-                              type="button"
-                              onClick={scrollToOtherModels}
-                              aria-label="Go to other models"
-                              className="shrink-0 rounded p-1 text-muted-foreground/60 transition-colors hover:text-foreground"
+                        {hasOtherModels ? (
+                          <Tooltip delayDuration={0}>
+                            <TooltipTrigger asChild={true}>
+                              <button
+                                type="button"
+                                onClick={scrollToOtherModels}
+                                aria-label="Go to other models"
+                                className="shrink-0 rounded p-1 text-muted-foreground/60 transition-colors hover:text-foreground"
+                              >
+                                <HugeiconsIcon
+                                  icon={Directions01Icon}
+                                  className="size-3"
+                                />
+                              </button>
+                            </TooltipTrigger>
+                            <TooltipContent
+                              side="bottom"
+                              className="tooltip-compact"
                             >
-                              <HugeiconsIcon
-                                icon={Directions01Icon}
-                                className="size-3"
-                              />
-                            </button>
-                          </TooltipTrigger>
-                          <TooltipContent
-                            side="bottom"
-                            className="tooltip-compact"
-                          >
-                            Other non-Unsloth models
-                          </TooltipContent>
-                        </Tooltip>
+                              Other non-Unsloth models
+                            </TooltipContent>
+                          </Tooltip>
+                        ) : null}
                         <Tooltip delayDuration={0}>
                           <TooltipTrigger asChild={true}>
                             <button
@@ -2445,12 +2458,11 @@ export function HubModelPicker({
               ) : null}
 
               {/* Other models: non-Unsloth downloads, grouped just above
-              Fine-tuned. */}
-              {showDownloaded &&
-              (otherCachedGguf.length > 0 ||
-                otherCachedModelRows.length > 0) ? (
+              Fine-tuned. Shown only when such models exist. */}
+              {showDownloaded && hasOtherModels ? (
                 <div ref={otherModelsSectionRef}>
                   <ListLabel
+                    spacious={true}
                     icon={
                       <HugeiconsIcon
                         icon={Directions01Icon}
@@ -2476,7 +2488,7 @@ export function HubModelPicker({
                 <>
                   <div
                     ref={fineTunedSectionRef}
-                    className="flex items-center gap-1 px-2.5 pb-1.5 pt-3"
+                    className="flex items-center gap-1 px-2.5 pb-1.5 pt-6"
                   >
                     <span className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
                       <HugeiconsIcon icon={TrainIcon} className="size-3.5" />
@@ -2522,7 +2534,7 @@ export function HubModelPicker({
                 <>
                   <div
                     ref={customFolderSectionRef}
-                    className="flex items-center gap-1 px-2.5 pb-1.5 pt-3"
+                    className="flex items-center gap-1 px-2.5 pb-1.5 pt-6"
                   >
                     <button
                       type="button"
@@ -2824,6 +2836,7 @@ export function HubModelPicker({
               {section === "downloaded" && sortedLmStudio.length > 0 ? (
                 <>
                   <ListLabel
+                    spacious={true}
                     collapsed={lmStudioCollapsed}
                     onToggle={() => setLmStudioCollapsed((v) => !v)}
                   >
@@ -2899,6 +2912,7 @@ export function HubModelPicker({
               {section === "downloaded" && sortedLocalDir.length > 0 ? (
                 <>
                   <ListLabel
+                    spacious={true}
                     collapsed={localDirCollapsed}
                     onToggle={() => setLocalDirCollapsed((v) => !v)}
                   >
