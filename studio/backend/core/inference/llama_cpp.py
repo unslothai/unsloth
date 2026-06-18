@@ -1902,7 +1902,9 @@ class LlamaCppBackend:
             arch_by_id: dict[int, str] = {}
             for ordinal in range(torch.cuda.device_count()):
                 try:
-                    _arch = getattr(torch.cuda.get_device_properties(ordinal), "gcnArchName", "") or ""
+                    _arch = (
+                        getattr(torch.cuda.get_device_properties(ordinal), "gcnArchName", "") or ""
+                    )
                 except Exception:
                     continue
                 pid = (
