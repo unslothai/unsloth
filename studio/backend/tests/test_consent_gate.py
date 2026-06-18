@@ -703,7 +703,11 @@ class TestScannerCoversAllExecutableCode:
         # scanner must download the external repo's whole .py closure. A benign-looking
         # entry that imports a dangerous helper.py must still be flagged (the helper is
         # inside the approved fingerprint, not missed).
-        def _dl(repo, fn, token = None):
+        def _dl(
+            repo,
+            fn,
+            token = None,
+        ):
             import json
             import tempfile
 

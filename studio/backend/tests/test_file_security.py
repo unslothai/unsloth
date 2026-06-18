@@ -38,7 +38,12 @@ def _patch_no_index():
     """Make the weight-index lookup find no index files (definitive: nothing sharded)."""
     from huggingface_hub.utils import EntryNotFoundError
 
-    def _dl(repo_id = None, filename = None, token = None, **kw):
+    def _dl(
+        repo_id = None,
+        filename = None,
+        token = None,
+        **kw,
+    ):
         raise EntryNotFoundError(filename or "")
 
     return patch("huggingface_hub.hf_hub_download", side_effect = _dl)
@@ -52,7 +57,12 @@ def _patch_index(weight_map, index_filename = "pytorch_model.bin.index.json"):
 
     from huggingface_hub.utils import EntryNotFoundError
 
-    def _dl(repo_id = None, filename = None, token = None, **kw):
+    def _dl(
+        repo_id = None,
+        filename = None,
+        token = None,
+        **kw,
+    ):
         if filename == index_filename:
             p = Path(tempfile.mkdtemp()) / filename
             p.write_text(json.dumps({"weight_map": weight_map}))
@@ -65,7 +75,12 @@ def _patch_index(weight_map, index_filename = "pytorch_model.bin.index.json"):
 def _patch_index_unreadable():
     """Make every index fetch fail transiently (inconclusive lookup -> fail closed)."""
 
-    def _dl(repo_id = None, filename = None, token = None, **kw):
+    def _dl(
+        repo_id = None,
+        filename = None,
+        token = None,
+        **kw,
+    ):
         raise RuntimeError("transient network error")
 
     return patch("huggingface_hub.hf_hub_download", side_effect = _dl)
