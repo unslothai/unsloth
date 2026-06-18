@@ -2022,7 +2022,7 @@ export function HubModelPicker({
       {/* Search row and tab/dropdown row share a width via the grid, so Search
           Hub lines up with the last dropdown above. */}
       <div className="grid w-fit gap-2">
-        <div className="flex items-center gap-2">
+        <div className="flex w-full items-center gap-2">
           <div className="relative flex-1">
             <HugeiconsIcon
               icon={Search01Icon}
