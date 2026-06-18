@@ -121,8 +121,11 @@ def _config_has_auto_map(model_name: str, hf_token: Optional[str] = None) -> Opt
     ``requires_trust_remote_code``, the scan endpoint, and the worker consent gate
     all go through here, so a GGUF model never triggers the consent flow.
     """
-    # A direct .gguf reference loads via llama.cpp -> config/auto_map is inert.
-    if (model_name or "").lower().endswith(".gguf"):
+    # A direct .gguf FILE reference loads via llama.cpp -> config/auto_map is inert.
+    # Only an actual file reference (local path, or a remote repo_id + filename)
+    # qualifies; a bare repo id whose name merely ends in ".gguf" can still ship
+    # safetensors + auto_map and is scanned via _is_gguf_repo below.
+    if _is_direct_gguf_file_ref(model_name):
         return False
     configs = _load_remote_code_configs(model_name, hf_token)
     if configs is None:
@@ -138,6 +141,30 @@ def _config_has_auto_map(model_name: str, hf_token: Optional[str] = None) -> Opt
     return True
 
 
+def _is_direct_gguf_file_ref(model_name: str) -> bool:
+    """Whether ``model_name`` names a specific ``.gguf`` FILE (a llama.cpp load),
+    not a transformers repo.
+
+    True for a local ``.gguf`` path, or a remote ``org/repo/.../file.gguf`` (repo id
+    plus filename, i.e. three or more ``/``-separated segments). A bare two-segment
+    ``org/name.gguf`` is a REPO id whose name merely ends in ``.gguf`` -- it can still
+    ship ``safetensors`` + ``auto_map`` Python that transformers would execute, so it
+    is NOT treated as a direct file reference and must fall through to the scan.
+    """
+    name = (model_name or "")
+    if not name.lower().endswith(".gguf"):
+        return False
+    try:
+        from utils.paths import is_local_path
+
+        if is_local_path(name):
+            return True
+    except Exception:
+        pass
+    # Remote: a file reference is repo_id ("org/name") + filename => >= 2 slashes.
+    return name.count("/") >= 2
+
+
 def _is_gguf_repo(model_name: str, hf_token: Optional[str] = None) -> bool:
     """Whether a remote repo loads through llama.cpp (GGUF), making its config inert.
 
@@ -145,8 +172,9 @@ def _is_gguf_repo(model_name: str, hf_token: Optional[str] = None) -> bool:
     no transformers weight set to load with ``trust_remote_code``). A mixed repo
     that has both is NOT treated as GGUF here: the user could load the safetensors
     variant through transformers, where ``auto_map`` WOULD run, so the consent gate
-    must still apply. Local paths are handled by the ``.gguf`` suffix check in the
-    caller; a listing failure is treated as "not known-GGUF" (fall through to scan).
+    must still apply. Direct ``.gguf`` file references are handled by
+    ``_is_direct_gguf_file_ref`` in the caller; a listing failure here is treated as
+    "not known-GGUF" (fall through to scan).
     """
     try:
         from utils.paths import is_local_path

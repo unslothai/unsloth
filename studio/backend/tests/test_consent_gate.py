@@ -953,11 +953,36 @@ class TestScannerCoversAllExecutableCode:
             assert consent._config_has_auto_map("unsloth/Some-Model-GGUF") is False
 
     def test_direct_gguf_file_reference_has_no_auto_map(self):
-        # A direct .gguf reference is a GGUF load -> no remote code, no Hub call.
+        # A direct .gguf FILE reference (repo id + filename, >=3 segments) is a GGUF
+        # load -> no remote code, no Hub call.
         with patch(
             "huggingface_hub.hf_hub_download", side_effect = AssertionError("no Hub call")
         ):
             assert consent._config_has_auto_map("org/repo/model.gguf") is False
+
+    def test_remote_repo_named_gguf_is_not_suffix_skipped(self):
+        # A bare two-segment repo id whose NAME ends in ".gguf" is NOT a direct file
+        # reference: it can still ship safetensors + auto_map Python that transformers
+        # executes, so it must be scanned (not short-circuited to "no remote code").
+        def _dl(repo_id = None, filename = None, token = None, **kw):
+            import json
+            import tempfile
+
+            if filename == "config.json":
+                p = Path(tempfile.mkdtemp()) / "config.json"
+                p.write_text(json.dumps({"auto_map": {"AutoModel": "modeling_x.X"}}))
+                return str(p)
+            raise EntryNotFoundError(filename)
+
+        with (
+            patch("huggingface_hub.hf_hub_download", side_effect = _dl),
+            patch(
+                "huggingface_hub.list_repo_files",
+                return_value = ["config.json", "model.safetensors", "model.gguf", "modeling_x.py"],
+            ),
+        ):
+            # Ships safetensors -> not a GGUF-only repo -> the auto_map gates.
+            assert consent._config_has_auto_map("evil/model.gguf") is True
 
     def test_mixed_gguf_and_safetensors_repo_is_still_gated(self):
         # A repo with BOTH .gguf and .safetensors is NOT treated as GGUF: the user
