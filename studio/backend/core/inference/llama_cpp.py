@@ -1559,10 +1559,7 @@ class LlamaCppBackend:
                 thinking_off = enable_thinking is False or reasoning_effort == "none"
                 if enable_thinking is not None or reasoning_effort == "none":
                     kwargs["enable_thinking"] = not thinking_off
-                if (
-                    not thinking_off
-                    and reasoning_effort in self._reasoning_effort_levels
-                ):
+                if not thinking_off and reasoning_effort in self._reasoning_effort_levels:
                     kwargs["reasoning_effort"] = reasoning_effort
             elif self._reasoning_style == "reasoning_effort":
                 if reasoning_effort in ("none", "low", "medium", "high"):
