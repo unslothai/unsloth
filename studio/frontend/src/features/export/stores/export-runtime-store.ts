@@ -131,6 +131,8 @@ export interface RunExportParams {
   source: string;
   modelSource: "hf" | "local";
   trustRemoteCode: boolean;
+  /** Consent fingerprint from the load-time remote-code review dialog (HF custom code). */
+  approvedRemoteCodeFingerprint?: string | null;
   exportMethod: ExportMethod;
   isAdapter: boolean;
   quantLevels: string[];
@@ -410,6 +412,8 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
             load_in_4bit: false,
             trust_remote_code:
               params.modelSource === "hf" ? params.trustRemoteCode : true,
+            approved_remote_code_fingerprint:
+              params.approvedRemoteCodeFingerprint ?? null,
           }),
         );
       }

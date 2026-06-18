@@ -51,6 +51,14 @@ class LoadCheckpointRequest(BaseModel):
         False,
         description = "Allow loading models with custom code. Only enable for checkpoints/base models you trust.",
     )
+    approved_remote_code_fingerprint: Optional[str] = Field(
+        None,
+        description = "sha256 fingerprint from the remote-code scan, pinning user approval of this exact custom-code version.",
+    )
+    hf_token: Optional[str] = Field(
+        None,
+        description = "Hugging Face token used to scan/load gated checkpoints and their base models.",
+    )
 
 
 class ExportStatusResponse(BaseModel):

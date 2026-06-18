@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { SectionCard } from "@/components/section-card";
+import { RecentTrainingsSection } from "@/features/studio/recent-trainings-section";
 import { Button } from "@/components/ui/button";
 import {
   Combobox,
@@ -24,7 +25,6 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
-import { Switch } from "@/components/ui/switch";
 import { Spinner } from "@/components/ui/spinner";
 import {
   Tooltip,
@@ -36,6 +36,7 @@ import {
   type LocalModelInfo,
   useTrainingConfigStore,
 } from "@/features/training";
+import { confirmRemoteCodeIfNeeded } from "@/features/security";
 import {
   useDebouncedValue,
   useHfModelSearch,
@@ -62,11 +63,14 @@ import {
   EXPORT_METHODS,
   type ExportMethod,
   GUIDE_STEPS,
+  buildQuantSizeLabels,
+  getEstimatedSize,
 } from "./constants";
 import {
   isExportPanelActive,
   useExportRuntimeStore,
 } from "./stores/export-runtime-store";
+import { useExportSizeEstimate } from "./hooks/use-export-size-estimate";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { exportTourSteps } from "./tour";
 
@@ -123,8 +127,6 @@ export function ExportPage() {
     "checkpoint",
   );
   const [modelSource, setModelSource] = useState<"hf" | "local">("hf");
-  const [hfExportTrustRemoteCode, setHfExportTrustRemoteCode] =
-    useState(true);
   const [modelInput, setModelInput] = useState("");
   const [selectedSourceModel, setSelectedSourceModel] = useState<string | null>(
     null,
@@ -254,6 +256,26 @@ export function ExportPage() {
     ? selectedSourceModel ?? "—"
     : baseModelName;
 
+  // For a full fine-tune checkpoint the weights live in the checkpoint dir
+  // itself (its base_model may be a local/custom path that can't be sized), so
+  // size that dir; for LoRA adapters the export merges into the base model.
+  const sizeTargetModel = useMemo(() => {
+    if (sourceMode === "checkpoint" && !isAdapter) {
+      const cp = checkpointsForModel.find((c) => c.display_name === checkpoint);
+      if (cp?.path) {
+        return cp.path;
+      }
+    }
+    return sourceBaseModelName;
+  }, [sourceMode, isAdapter, checkpointsForModel, checkpoint, sourceBaseModelName]);
+
+  // Real (MoE-aware) fp16 size, used to scale the GGUF quant estimates.
+  const { fp16Bytes } = useExportSizeEstimate(sizeTargetModel, debouncedHfToken);
+  const quantSizeLabels = useMemo(
+    () => buildQuantSizeLabels(fp16Bytes),
+    [fp16Bytes],
+  );
+
   const {
     results: hfResults,
     isLoading: isLoadingHfModels,
@@ -378,6 +400,7 @@ export function ExportPage() {
     }
   };
 
+  const estimatedSize = getEstimatedSize(exportMethod, quantLevels, fp16Bytes);
   const selectedExportSource =
     sourceMode === "checkpoint" ? checkpoint : selectedSourceModel;
   const defaultSaveDirectory = useMemo(() => {
@@ -475,7 +498,7 @@ export function ExportPage() {
   // ---- Export handlers ----
   // Assemble the run params from the current form and hand off to the global
   // runtime store, which drives load -> export -> cleanup in the background.
-  const handleStart = useCallback(() => {
+  const handleStart = useCallback(async () => {
     const source = sourceMode === "checkpoint" ? checkpoint : selectedSourceModel;
     if (!source || !exportMethod) return;
 
@@ -494,12 +517,34 @@ export function ExportPage() {
       EXPORT_METHODS.find((m) => m.value === exportMethod)?.title ?? exportMethod;
     const adapterExport = sourceMode === "checkpoint" && isAdapter;
 
+    // Consent gate for an HF source's custom (auto_map) code, run before we hand
+    // off to runExport (which performs the load in the background). A local
+    // checkpoint/model the user exported is trusted by default.
+    let trustRemoteCode = modelSource !== "hf";
+    let approvedRemoteCodeFingerprint: string | null = null;
+    if (sourceMode !== "checkpoint") {
+      const remoteCodeOk = await confirmRemoteCodeIfNeeded({
+        modelName: source,
+        hfToken: hfToken || null,
+        // An HF source can need trust_remote_code via its YAML default with no
+        // auto_map to review; signal it so a YAML-only model does not export
+        // with it false.
+        requiresTrustRemoteCode: modelSource === "hf",
+        onApprove: (fingerprint) => {
+          trustRemoteCode = true;
+          approvedRemoteCodeFingerprint = fingerprint;
+        },
+      });
+      if (!remoteCodeOk) return;
+    }
+
     void runExport({
       sourceMode,
       checkpointPath,
       source,
       modelSource,
-      trustRemoteCode: hfExportTrustRemoteCode,
+      trustRemoteCode,
+      approvedRemoteCodeFingerprint,
       exportMethod,
       isAdapter: adapterExport,
       quantLevels,
@@ -536,7 +581,6 @@ export function ExportPage() {
     hfToken,
     privateRepo,
     modelSource,
-    hfExportTrustRemoteCode,
     runExport,
   ]);
 
@@ -856,43 +900,8 @@ export function ExportPage() {
                               </p>
                             )}
                           </div>
-                          <div className="flex items-center gap-2">
-                            <Switch
-                              id="hf-export-trust-remote-code"
-                              size="sm"
-                              checked={hfExportTrustRemoteCode}
-                              onCheckedChange={setHfExportTrustRemoteCode}
-                              disabled={isExporting}
-                            />
-                            <label
-                              htmlFor="hf-export-trust-remote-code"
-                              className="cursor-pointer text-xs font-medium text-muted-foreground hover:text-foreground"
-                            >
-                              Trust remote code
-                            </label>
-                            <Tooltip>
-                              <TooltipTrigger asChild={true}>
-                                <button
-                                  type="button"
-                                  className="text-muted-foreground hover:text-foreground -m-1 inline-flex rounded p-1"
-                                  aria-label="About trust remote code"
-                                >
-                                  <HugeiconsIcon
-                                    icon={InformationCircleIcon}
-                                    className="size-3.5"
-                                  />
-                                </button>
-                              </TooltipTrigger>
-                              <TooltipContent
-                                side="top"
-                                className="max-w-[260px] text-xs"
-                              >
-                                Loads custom Python from the repo if the model
-                                needs it. Turn off if you do not trust the
-                                source.
-                              </TooltipContent>
-                            </Tooltip>
-                          </div>
+                          {/* No persistent "trust remote code" toggle: custom code is
+                              consented per model via the load-time review dialog. */}
                           <div className="flex flex-col gap-1.5">
                             <label className="text-xs font-medium text-muted-foreground">
                               Hugging Face Token (Optional)
@@ -1089,7 +1098,20 @@ export function ExportPage() {
               />
 
               {exportMethod === "gguf" && (
-                <QuantPicker value={quantLevels} onChange={setQuantLevels} />
+                <QuantPicker
+                  value={quantLevels}
+                  onChange={setQuantLevels}
+                  sizes={quantSizeLabels}
+                />
+              )}
+              {estimatedSize && (
+                <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                  <HugeiconsIcon
+                    icon={InformationCircleIcon}
+                    className="size-3.5"
+                  />
+                  <span>Est. size: {estimatedSize}</span>
+                </div>
               )}
 
               <Separator />
@@ -1150,6 +1172,8 @@ export function ExportPage() {
             </>
           )}
         </SectionCard>
+
+        <RecentTrainingsSection />
       </main>
     </div>
   );

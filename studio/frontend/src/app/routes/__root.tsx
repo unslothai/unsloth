@@ -12,6 +12,7 @@ import {
   useChatRuntimeStore,
   type ChatSearch,
 } from "@/features/chat";
+import { RemoteCodeConsentDialog } from "@/features/security";
 import { useTrainingUnloadGuard } from "@/features/training";
 import { useExportRuntimeLifecycle } from "@/features/export";
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
@@ -170,6 +171,8 @@ function RootLayout() {
         const chatRuntime = useChatRuntimeStore.getState();
         chatRuntime.setActiveThreadId(null);
         chatRuntime.setActiveProjectId(null);
+        chatRuntime.setIncognito(false);
+        if (chatRuntime.pendingSelection) chatRuntime.abandonStagedModel();
         void navigate({
           to: "/chat",
           search: { new: crypto.randomUUID() },
@@ -191,11 +194,14 @@ function RootLayout() {
     if (anyRunning) return;
     chatRuntime.setActiveProjectId(null);
     chatRuntime.setActiveThreadId(null);
+    chatRuntime.setIncognito(false);
+    if (chatRuntime.pendingSelection) chatRuntime.abandonStagedModel();
   }, [isChatRoute]);
 
   return (
     <AppProvider>
       <SettingsDialog />
+      <RemoteCodeConsentDialog />
       {hideNavbar ? (
         <main className="flex-1">
           <Suspense fallback={<RouteFallback />}>

@@ -1,15 +1,10 @@
 """Negative-path validation tests for unsloth.chat_templates.construct_chat_template.
 
-Regression coverage for the str.find() / regex no-match guards added in
-PR #5763 follow-up: missing placeholders or unrecoverable two-example
-structures must raise RuntimeError with a clear message, not IndexError
-or AttributeError, and must never silently drop the last character via
-s[:-1].
-
-Uses a minimal fake tokenizer so the cases run on CPU-only CI without
-HF_TOKEN and without downloading a gated model. The validation paths
-exercised here fail before construct_chat_template reaches any heavy
-tokenizer interaction, so the stub stays small.
+Regression coverage for the no-match guards added in the PR #5763 follow-up:
+missing placeholders or unrecoverable two-example structures must raise
+RuntimeError with a clear message (not IndexError/AttributeError) and must
+not silently drop the last char via s[:-1]. A minimal fake tokenizer keeps
+the cases CPU-only (no HF_TOKEN, no gated download).
 """
 
 import pytest
@@ -18,8 +13,7 @@ from unsloth.chat_templates import construct_chat_template
 
 
 class _FakeTokenizer:
-    """Minimum surface construct_chat_template touches before the
-    validation guards fire."""
+    """Minimal surface construct_chat_template touches before the guards fire."""
 
     name_or_path = "fake/tokenizer"
     eos_token = "</s>"
@@ -48,9 +42,8 @@ def test_missing_placeholder_in_chat_template_raises(template, expected_in_messa
 
 
 def test_single_pair_template_raises_clear_error_not_attribute_error():
-    """One {INPUT}/{OUTPUT} pair (rather than the required two) used to
-    crash with AttributeError on `found.group(1)` after the for-loop
-    broke without setting `found`. Must raise RuntimeError now."""
+    """A single {INPUT}/{OUTPUT} pair must raise RuntimeError, not the old
+    AttributeError on `found.group(1)` when the loop broke without setting `found`."""
     template = "user: {INPUT}\nassistant: {OUTPUT}\n"
     with pytest.raises(RuntimeError):
         construct_chat_template(
@@ -71,7 +64,6 @@ def test_error_message_excerpt_is_bounded():
             extra_eos_tokens = ["</s>"],
         )
     msg = str(exc_info.value)
-    # Excerpt is repr-quoted and capped; total message should stay well
-    # under the template length.
+    # Excerpt is capped well under the template length.
     assert len(msg) < 1000
     assert "{OUTPUT}" in msg

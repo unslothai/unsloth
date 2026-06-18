@@ -3,12 +3,15 @@
 
 /**
  * Provider-logo registry for Unsloth re-uploads. Unsloth re-uploads upstream
- * models (e.g. unsloth/Qwen2.5-7B is Alibaba's Qwen); we render the upstream
- * provider's logo in place of the Unsloth profile picture.
+ * models (e.g. unsloth/Qwen2.5-7B is Alibaba's Qwen); we show the upstream
+ * provider's logo in place of the Unsloth picture (username stays "unsloth").
  *
- * Providers are evaluated in declaration order; a provider matches if any of its
- * `prefixes` is a prefix of the repo name (the part after "owner/"). Repo names
- * are case-sensitive — match the publisher's exact casing.
+ * Matching: providers are evaluated in declaration order; a provider matches if
+ * any of its `prefixes` is a prefix of the repo name (the part after "owner/").
+ * Most-specific providers MUST be declared first (first match wins): e.g.
+ * NVIDIA's Nemotron/Minitron/Mistral-NeMo before meta-llama/mistralai, and
+ * DeepSeek-R1-Distill- before Qwen/meta-llama. Repo names are case-sensitive -
+ * match the publisher's exact casing (e.g. `phi-` for v1/v2 vs `Phi-` for v3+).
  */
 
 /**
@@ -27,18 +30,27 @@ export type LogoBackground = "white" | "transparent";
 export type LogoFit = "contain" | "cover";
 
 export interface ProviderLogo {
+	/** Stable kebab-case identifier (debug/telemetry only). */
 	id: string;
+	/** Display name used as the avatar's accessible label. */
 	name: string;
+	/** Path to the logo under /public. */
 	logoPath: string;
 	treatment: LogoTreatment;
 	background: LogoBackground;
+	/** Only consulted when treatment is "original". Defaults to "contain". */
 	fit?: LogoFit;
 	/**
-	 * Repo-name prefixes (after `owner/`) mapping to this provider. A prefix
-	 * match suffices — variants (-Instruct, -bnb-4bit, -GGUF) ride along. Match
+	 * Repo-name prefixes (after `owner/`) that map to this provider. A prefix
+	 * match suffices - variants (-Instruct, -bnb-4bit, -GGUF) ride along. Match
 	 * on the family stem so future minor versions are picked up automatically.
 	 */
 	prefixes: readonly string[];
+	/**
+	 * Case-insensitive fallback after all prefixes miss; matched at a word boundary
+	 * (`gemma` -> `diffusiongemma-`, `gemma-3n`, not `gemmafy`). Use stems unique to one provider.
+	 */
+	stems?: readonly string[];
 }
 
 export const PROVIDER_LOGOS: readonly ProviderLogo[] = [
@@ -210,6 +222,7 @@ export const PROVIDER_LOGOS: readonly ProviderLogo[] = [
 			"metricx-",
 			"bert-",
 		],
+		stems: ["gemma"],
 	},
 
 	// After NVIDIA so `Mistral-NeMo-` wins; generic Mistral-/Mixtral- fall through here.
@@ -241,14 +254,29 @@ export const PROVIDER_LOGOS: readonly ProviderLogo[] = [
 	},
 ];
 
+function stemMatchesAtBoundary(haystack: string, stem: string): boolean {
+	for (let at = haystack.indexOf(stem); at !== -1; at = haystack.indexOf(stem, at + 1)) {
+		const next = haystack[at + stem.length];
+		if (next === undefined || next < "a" || next > "z") return true;
+	}
+	return false;
+}
+
 /**
- * Resolve a repo name (after `owner/`) to its upstream provider, or null.
- * Iterates PROVIDER_LOGOS in declaration order; first prefix match wins.
+ * Resolve a repo name (after `owner/`) to its provider, or null. Pass 1: prefix
+ * match in declaration order (first wins). Pass 2: case-insensitive `stems`
+ * boundary fallback; prefixes always win.
  */
 export function matchProviderLogo(repoName: string): ProviderLogo | null {
 	if (!repoName) return null;
 	for (const provider of PROVIDER_LOGOS) {
 		if (provider.prefixes.some((prefix) => repoName.startsWith(prefix))) {
+			return provider;
+		}
+	}
+	const lower = repoName.toLowerCase();
+	for (const provider of PROVIDER_LOGOS) {
+		if (provider.stems?.some((stem) => stemMatchesAtBoundary(lower, stem))) {
 			return provider;
 		}
 	}
@@ -258,6 +286,7 @@ export function matchProviderLogo(repoName: string): ProviderLogo | null {
 // Owners whose avatars get swapped for the matched provider's logo.
 const RELABELED_OWNERS: ReadonlySet<string> = new Set(["unsloth"]);
 
+/** True if the owner's avatars get replaced with the upstream provider's logo. */
 export function isProviderRelabeledOwner(
 	owner: string | null | undefined,
 ): boolean {

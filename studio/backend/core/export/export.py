@@ -145,13 +145,19 @@ class ExportBackend:
         max_seq_length: int = 2048,
         load_in_4bit: bool = True,
         trust_remote_code: bool = False,
+        hf_token: Optional[str] = None,
     ) -> Tuple[bool, str]:
         """
         Load a checkpoint for export.
 
+        ``hf_token`` authenticates the actual weight load for gated/private
+        checkpoints, matching the token the worker used for the security preflight
+        (otherwise a gated repo passes scanning then 401s at from_pretrained).
+
         Returns:
             Tuple of (success: bool, message: str)
         """
+        token = hf_token if hf_token and hf_token.strip() else None
         try:
             logger.info(f"Loading checkpoint: {checkpoint_path}")
 
@@ -169,8 +175,10 @@ class ExportBackend:
 
             model_id = base_model or checkpoint_path
 
-            self._audio_type = detect_audio_type(model_id)
-            self.is_vision = not self._audio_type and is_vision_model(model_id)
+            # Token the type-detection probes too, else a gated multimodal base
+            # 404s here and falls through to the text loader.
+            self._audio_type = detect_audio_type(model_id, hf_token = token)
+            self.is_vision = not self._audio_type and is_vision_model(model_id, hf_token = token)
 
             if self._audio_type == "csm":
                 from unsloth import FastModel
@@ -184,6 +192,7 @@ class ExportBackend:
                     auto_model = CsmForConditionalGeneration,
                     load_in_4bit = False,
                     trust_remote_code = trust_remote_code,
+                    token = token,
                 )
 
             elif self._audio_type == "whisper":
@@ -197,6 +206,7 @@ class ExportBackend:
                     load_in_4bit = False,
                     auto_model = WhisperForConditionalGeneration,
                     trust_remote_code = trust_remote_code,
+                    token = token,
                 )
 
             elif self._audio_type == "snac":
@@ -207,6 +217,7 @@ class ExportBackend:
                     dtype = None,
                     load_in_4bit = load_in_4bit,
                     trust_remote_code = trust_remote_code,
+                    token = token,
                 )
 
             elif self._audio_type == "bicodec":
@@ -218,6 +229,7 @@ class ExportBackend:
                     dtype = None if _IS_MLX else torch.float32,
                     load_in_4bit = False,
                     trust_remote_code = trust_remote_code,
+                    token = token,
                 )
 
             elif self._audio_type == "dac":
@@ -228,6 +240,7 @@ class ExportBackend:
                     max_seq_length = max_seq_length,
                     load_in_4bit = False,
                     trust_remote_code = trust_remote_code,
+                    token = token,
                 )
 
             elif self.is_vision:
@@ -238,6 +251,7 @@ class ExportBackend:
                     dtype = None,
                     load_in_4bit = load_in_4bit,
                     trust_remote_code = trust_remote_code,
+                    token = token,
                 )
                 tokenizer = processor  # vision: processor acts as tokenizer
 
@@ -249,6 +263,7 @@ class ExportBackend:
                     dtype = None,
                     load_in_4bit = load_in_4bit,
                     trust_remote_code = trust_remote_code,
+                    token = token,
                 )
 
             if _IS_MLX:

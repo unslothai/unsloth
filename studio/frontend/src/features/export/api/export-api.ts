@@ -65,6 +65,13 @@ export interface CheckpointListResponse {
   models: ModelCheckpoints[];
 }
 
+export interface ExportSizeEstimate {
+  /** Estimated FP16/BF16-equivalent on-disk size, or null when unknown. */
+  fp16_bytes: number | null;
+  total_params: number | null;
+  source: string;
+}
+
 export interface ExportOperationResponse {
   success: boolean;
   message: string;
@@ -80,12 +87,34 @@ export async function fetchCheckpoints(): Promise<CheckpointListResponse> {
   return parseJson<CheckpointListResponse>(response);
 }
 
+/** Estimate a model's fp16-equivalent size to scale the GGUF quant labels; nulls (not error) when unknown. */
+export async function fetchExportSize(
+  modelId: string,
+  hfToken?: string | null,
+  signal?: AbortSignal,
+): Promise<ExportSizeEstimate> {
+  // Token in a header (not the query string) so it never lands in URLs/logs.
+  const headers: Record<string, string> = {};
+  if (hfToken) {
+    headers["X-HF-Token"] = hfToken;
+  }
+  const response = await authFetch(
+    `/api/models/export-size?model=${encodeURIComponent(modelId)}`,
+    { signal, headers },
+  );
+  return parseJson<ExportSizeEstimate>(response);
+}
+
 export async function loadCheckpoint(params: {
   checkpoint_path: string;
   max_seq_length?: number;
   load_in_4bit?: boolean;
   /** Allow loading models with custom code. Only enable for checkpoints you trust. */
   trust_remote_code?: boolean;
+  /** sha256 fingerprint pinning user approval of this exact custom-code version. */
+  approved_remote_code_fingerprint?: string | null;
+  /** HF token so the worker scans/loads gated checkpoints and base models with the same auth as preflight. */
+  hf_token?: string | null;
 }): Promise<ExportOperationResponse> {
   const response = await authFetch("/api/export/load-checkpoint", {
     method: "POST",

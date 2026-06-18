@@ -1,11 +1,8 @@
-"""Tests that NVIDIA probes in the installers are bounded by a timeout.
+"""NVIDIA installer probes must be timeout-bounded (audit findings 5 and 6): a wedged nvidia-smi
+must not hang the installer, and the Windows probe must require a real GPU listing (not exit code 0).
 
-Covers audit findings 5 and 6: a wedged nvidia-smi must not hang the installer,
-and the Windows probe must require a real GPU listing (not just exit code 0).
-
-Source-level assertions verify the guards are present in install.sh / install.ps1
-/ setup.ps1; one behavioral shell test confirms the bash helper actually returns
-within the timeout when nvidia-smi hangs.
+Source-level asserts check the guards in install.sh / install.ps1 / setup.ps1; one behavioral
+shell test confirms the bash helper returns within the timeout when nvidia-smi hangs.
 """
 
 import os
@@ -60,8 +57,7 @@ class TestInstallShBoundedProbe:
             "command -v timeout" in body
         ), "_run_bounded must check for the `timeout` binary before using it"
         assert "timeout 10" in body, "_run_bounded must apply a 10s timeout"
-        # Must fall back to running unbounded when `timeout` is unavailable
-        # (e.g. macOS) so semantics are unchanged there.
+        # Falls back to unbounded when `timeout` is absent (e.g. macOS), keeping semantics there.
         assert (
             "else" in body and '"$@"' in body
         ), "_run_bounded must run the command unbounded when `timeout` is absent"
@@ -69,11 +65,11 @@ class TestInstallShBoundedProbe:
     def test_nvidia_smi_dash_l_probe_is_bounded(self):
         body = _extract_sh_function_body(self._src(), "_has_usable_nvidia_gpu")
         assert body, "install.sh must define _has_usable_nvidia_gpu"
-        # The -L probe must go through the bounded runner, not call nvidia-smi raw.
+        # The -L probe must go through the bounded runner.
         assert (
             '_run_bounded "$_nvsmi" -L' in body
         ), "_has_usable_nvidia_gpu must run nvidia-smi -L through _run_bounded"
-        # The /proc fallback from PR 6174 must still be present.
+        # The /proc fallback from PR 6174 must remain.
         assert "/proc/driver/nvidia" in body
 
     def test_cuda_version_parse_is_bounded(self):
@@ -82,25 +78,20 @@ class TestInstallShBoundedProbe:
         assert (
             "_run_bounded" in body
         ), "get_torch_index_url CUDA-version parse must run nvidia-smi through _run_bounded"
-        # The locale must be forced without depending on `env` being on PATH.
+        # Locale forced without depending on `env` being on PATH.
         assert "LC_ALL=C" in body
         # _nvidia_detected gating from PR 6174 must remain.
         assert "_nvidia_detected" in body
 
     def test_no_unbounded_nvidia_smi_invocation_remains(self):
-        """Every nvidia-smi *execution* in install.sh goes through _run_bounded.
-
-        `command -v nvidia-smi` and `-x /usr/bin/nvidia-smi` are resolution
-        checks, not executions, and are allowed. An execution looks like
-        `"$_nvsmi" ...` / `$_smi ...` / `nvidia-smi -L`.
-        """
+        """Every nvidia-smi execution goes through _run_bounded (resolution checks are allowed)."""
         body_nvidia = _extract_sh_function_body(self._src(), "_has_usable_nvidia_gpu")
         body_torch = _extract_sh_function_body(self._src(), "get_torch_index_url")
-        # In _has_usable_nvidia_gpu the only execution of $_nvsmi must be bounded.
+        # The only $_nvsmi execution in _has_usable_nvidia_gpu must be bounded.
         assert '"$_nvsmi" -L' not in body_nvidia.replace(
             '_run_bounded "$_nvsmi" -L', ""
         ), "found an unbounded nvidia-smi -L execution in _has_usable_nvidia_gpu"
-        # In get_torch_index_url the $_smi execution must be bounded.
+        # The $_smi execution in get_torch_index_url must be bounded.
         assert (
             "LC_ALL=C $_smi" not in body_torch
         ), "found an unbounded LC_ALL=C $_smi execution in get_torch_index_url"
@@ -119,7 +110,7 @@ class TestPowerShellBoundedProbe:
         assert (
             "WaitForExit($TimeoutSec * 1000)" in src
         ), f"{path.name} bounded probe must use WaitForExit with a timeout"
-        # Kill + sentinel on timeout, mirroring Invoke-AmdSmiNoElevate.
+        # Kill + sentinel on timeout (mirrors Invoke-AmdSmiNoElevate).
         assert (
             "$proc.Kill()" in src and "124" in src
         ), f"{path.name} must kill nvidia-smi and signal a timeout exit code"
@@ -138,7 +129,7 @@ class TestPowerShellBoundedProbe:
     @pytest.mark.parametrize("path", [INSTALL_PS1, SETUP_PS1])
     def test_detection_uses_validated_probe(self, path):
         src = path.read_text(encoding = "utf-8")
-        # The exit-code-only pattern must be gone from the detection block.
+        # The exit-code-only probe must be gone from the detection block.
         assert (
             "& $nvSmiCmd.Source *> $null" not in src
         ), f"{path.name} must not use the exit-code-only nvidia-smi probe"
@@ -159,9 +150,7 @@ def _have_timeout() -> bool:
 
 @pytest.mark.skipif(not _have_timeout(), reason = "`timeout` binary not available")
 def test_has_usable_nvidia_gpu_returns_under_timeout():
-    """Extract _run_bounded + _has_usable_nvidia_gpu, point them at a fake
-    nvidia-smi that sleeps 30s, and assert the probe returns well under that.
-    """
+    """Point _has_usable_nvidia_gpu at a fake nvidia-smi that sleeps 30s; the probe must return early."""
     src = INSTALL_SH.read_text(encoding = "utf-8")
     helper = _extract_sh_function_body(src, "_run_bounded")
     fn = _extract_sh_function_body(src, "_has_usable_nvidia_gpu")
@@ -175,13 +164,11 @@ def test_has_usable_nvidia_gpu_returns_under_timeout():
         fake_smi.write_text("#!/bin/sh\nsleep 30\n")
         fake_smi.chmod(fake_smi.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
 
-        # Build a minimal PATH that includes the fake nvidia-smi plus the real
-        # `timeout`/`awk`/`ls` it needs. Use the fake dir first so it wins.
+        # PATH with the fake nvidia-smi first plus the real timeout/awk/ls it needs.
         real_bins = {Path(shutil.which(c)).parent for c in ("timeout", "awk", "ls", "sh")}
         path_env = os.pathsep.join([str(fake_dir)] + [str(p) for p in real_bins])
 
-        # Force the /proc fallback off so the result depends only on the probe,
-        # and so a host with real NVIDIA does not mask the timeout behaviour.
+        # Force /proc fallback off so the result depends only on the probe (real NVIDIA host won't mask it).
         script = (
             f"{helper}\n{fn}\n"
             "if _has_usable_nvidia_gpu; then echo DETECTED; else echo NONE; fi\n"
@@ -194,9 +181,7 @@ def test_has_usable_nvidia_gpu_returns_under_timeout():
             text = True,
             timeout = 20,  # generous: the internal timeout is 10s, sleep is 30s
         )
-        # The probe must have returned (not hung). On this CI host /proc/driver/
-        # nvidia/gpus is absent, so a timed-out smi yields NONE; on a real NVIDIA
-        # host the /proc fallback yields DETECTED. Either way it must not hang.
+        # The probe must have returned (not hung): NONE without /proc, DETECTED via /proc fallback.
         assert proc.stdout.strip() in {"NONE", "DETECTED"}
     finally:
         shutil.rmtree(workdir, ignore_errors = True)

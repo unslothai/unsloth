@@ -46,6 +46,7 @@ import {
 import { useExternalProvidersStore } from "../stores/external-providers-store";
 import { isMultimodalResponse } from "../types/api";
 import type {
+  GgufVariantDetail,
   OpenAIChatCompletionsRequest,
   OpenAIChatMessage,
   OpenAIMessageContent,
@@ -1141,6 +1142,45 @@ function waitForModelReady(abortSignal?: AbortSignal): Promise<void> {
  */
 // Cap cascade so broken cached repos can't spam /api/inference/load.
 const MAX_AUTO_LOAD_ATTEMPTS = 3;
+const BIG_ENDIAN_GGUF_FILENAME_RE = /(^|[-_])be(?:[._-]|$)/gi;
+const GGUF_KNOWN_QUANT_RE =
+  /(UD-)?(MXFP[0-9]+(?:_[A-Z0-9]+)*|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?|TQ[0-9]+_[0-9]+|Q[0-9]+_K_[A-Z]+|Q[0-9]+_[0-9]+|Q[0-9]+_K|BF16|F16|F32)/i;
+
+function hasBigEndianGgufMarker(filename: string, quant?: string | null): boolean {
+  const normalized = filename.replace(/\\/g, "/").toLowerCase();
+  const separatorIndex = normalized.lastIndexOf("/");
+  const basename = separatorIndex >= 0 ? normalized.slice(separatorIndex + 1) : normalized;
+  const parent = separatorIndex >= 0 ? normalized.slice(0, separatorIndex) : "";
+  const stem = basename.replace(/\.[^.]*$/, "");
+  const quantKey = quant?.trim().toLowerCase() || "";
+  const quantIndex = quantKey ? stem.indexOf(quantKey) : -1;
+  const quantInParentOnly =
+    !!parent &&
+    quantIndex < 0 &&
+    ((!!quantKey && parent.includes(quantKey)) ||
+      (!quantKey && GGUF_KNOWN_QUANT_RE.test(parent)));
+  for (const match of stem.matchAll(BIG_ENDIAN_GGUF_FILENAME_RE)) {
+    if (quantIndex >= 0 && quantIndex < (match.index ?? 0)) {
+      return true;
+    }
+    const tail = stem.slice((match.index ?? 0) + match[0].length).replace(/^[._-]+/, "");
+    if (!tail || !GGUF_KNOWN_QUANT_RE.test(tail)) {
+      return !quantInParentOnly;
+    }
+  }
+  return false;
+}
+
+function isAutoLoadableGgufVariant(variant: GgufVariantDetail | null): boolean {
+  if (!variant?.filename) {
+    return false;
+  }
+  const filename = variant.filename.trim().toLowerCase();
+  if (!filename) {
+    return false;
+  }
+  return !hasBigEndianGgufMarker(filename, variant.quant);
+}
 
 async function autoLoadSmallestModel(): Promise<{
   loaded: boolean;
@@ -1175,7 +1215,12 @@ async function autoLoadSmallestModel(): Promise<{
       load_in_4bit: true,
       trust_remote_code: trustRemoteCode,
     });
-    if (validation.requires_trust_remote_code && !trustRemoteCode) {
+    // Background auto-load never runs a repo's custom code or loads Hub-flagged unsafe
+    // files on its own; both are deferred to the explicit consent dialog instead.
+    if (
+      validation.requires_trust_remote_code ||
+      validation.requires_security_review
+    ) {
       blockedByTrustRemoteCode = true;
       return false;
     }
@@ -1195,7 +1240,7 @@ async function autoLoadSmallestModel(): Promise<{
         try {
           const variants = await listGgufVariants(repo.repo_id);
           const downloaded = variants.variants
-            .filter((v) => v.downloaded)
+            .filter((v) => v.downloaded && isAutoLoadableGgufVariant(v))
             .sort((a, b) => a.size_bytes - b.size_bytes);
           if (downloaded.length > 0) {
             const variant = downloaded[0];
@@ -1527,11 +1572,11 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         if (!loaded) {
           toast.error(
             blockedByTrustRemoteCode
-              ? "Enable custom code to auto-load this model"
+              ? "This model needs custom code approval"
               : "No model loaded",
             {
               description: blockedByTrustRemoteCode
-                ? 'Turn on "Enable custom code" in Chat Settings, or pick another model in the top bar.'
+                ? "Select it from the top bar to review and approve its custom code, or pick another model."
                 : "Pick a model in the top bar, then retry.",
             },
           );
@@ -1551,6 +1596,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         artifactsEnabled,
         mcpEnabledForChat,
         confirmToolCalls,
+        bypassPermissions,
         webFetchToolsEnabled,
         ragEnabled,
         ragSource,
@@ -1840,8 +1886,8 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       const hasOutboundImage = Boolean(imageBase64);
 
       // Keep render_html local-only and mirror the backend image-turn gate.
-      // Artifacts are independent of Search/Code: a local tool-capable model
-      // with Artifacts on exposes render_html even with no other pills active.
+      // Canvas is independent of Search/Code: a local tool-capable model
+      // with Canvas on exposes render_html even with no other pills active.
       const renderHtmlToolEnabledForThisTurn = Boolean(
         !isExternalRequest &&
           supportsTools &&
@@ -1850,12 +1896,12 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       );
       const artifactInstruction = artifactsEnabled
         ? renderHtmlToolEnabledForThisTurn
-          ? "When the user asks for an HTML, CSS, or JavaScript artifact, call render_html once with one complete self-contained HTML document in the code argument. Embed CSS and JavaScript inside the document. After render_html succeeds, do not call it again in the same response unless the user asks for changes. Future user requests for new artifacts may call render_html once."
-          : "When the user asks for an HTML, CSS, or JavaScript artifact, return one complete self-contained fenced html code block. Embed CSS and JavaScript inside the document. Do not emit tool-call syntax."
+          ? "When the user asks for an HTML, CSS, or JavaScript canvas, call render_html once with one complete self-contained HTML document in the code argument. Embed CSS and JavaScript inside the document. After render_html succeeds, do not call it again in the same response unless the user asks for changes. Future user requests for new canvases may call render_html once."
+          : "When the user asks for an HTML, CSS, or JavaScript canvas, return one complete self-contained fenced html code block. Embed CSS and JavaScript inside the document. Do not emit tool-call syntax."
         : null;
       const effectiveDisabledToolGuard =
         disabledToolGuard && artifactsEnabled
-          ? `${disabledToolGuard} HTML, CSS, or JavaScript artifact requests can still be answered by following the artifact fallback instruction.`
+          ? `${disabledToolGuard} HTML, CSS, or JavaScript canvas requests can still be answered by following the canvas fallback instruction.`
           : disabledToolGuard;
       addSystemInstruction(outboundMessages, effectiveDisabledToolGuard);
       addSystemInstruction(outboundMessages, artifactInstruction);
@@ -2435,7 +2481,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                       : {
                           reasoning_effort: fallbackExternalEffort,
                         }
-                  : { enable_thinking: reasoningEnabled }
+                  : { thinking: { type: reasoningEnabled ? "enabled" : "disabled" } }
                 : {}),
             };
           }
@@ -2464,7 +2510,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                 ? reasoningEnabled
                   ? { reasoning_effort: localReasoningEffort }
                   : {}
-                : { enable_thinking: reasoningEnabled }
+                : { thinking: { type: reasoningEnabled ? "enabled" : "disabled" } }
               : {}),
             ...(supportsPreserveThinking
               ? { preserve_thinking: preserveThinking }
@@ -2490,7 +2536,10 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                       : []),
                   ],
                   mcp_enabled: mcpEnabledForChat,
-                  confirm_tool_calls: confirmToolCalls,
+                  // Bypass Permissions wins: never request the confirm gate
+                  // while bypassing, and tell the backend to drop the sandbox.
+                  confirm_tool_calls: confirmToolCalls && !bypassPermissions,
+                  bypass_permissions: bypassPermissions,
                   // Scope: thread_id = this thread's docs, kb_id = a KB,
                   // project_id = the thread's project sources (auto-on whenever
                   // the project has indexed sources, no Docs pill needed).
@@ -3094,7 +3143,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
                 closeReasoningContent();
                 cumulativeText += delta;
               }
-              // Strip a trailing ${...} template-literal artifact from
+              // Strip a trailing ${...} template-literal fragment from
               // external streams (mistral magistral occasionally emits one).
               if (isExternalRequest) {
                 cumulativeText = cumulativeText.replace(

@@ -42,6 +42,10 @@ class LoadRequest(BaseModel):
         False,
         description = "Allow loading models with custom code (e.g. NVIDIA Nemotron). Only enable for repos you trust.",
     )
+    approved_remote_code_fingerprint: Optional[str] = Field(
+        None,
+        description = "sha256 fingerprint from the remote-code scan, pinning user approval of this exact custom-code version.",
+    )
     chat_template_override: Optional[str] = Field(
         None,
         description = "Custom Jinja2 chat template to use instead of the model's default",
@@ -130,6 +134,11 @@ class ValidateModelRequest(BaseModel):
     max_seq_length: int = Field(0, ge = 0, le = 1048576)
     load_in_4bit: bool = Field(True)
     gpu_ids: Optional[List[int]] = Field(None)
+    include_context_length: bool = Field(
+        False,
+        description = "Also read the native context length from the local GGUF header. "
+        "Opt-in so the normal load preflight doesn't pay for a cache scan it doesn't need.",
+    )
 
 
 class ValidateModelResponse(BaseModel):
@@ -148,6 +157,16 @@ class ValidateModelResponse(BaseModel):
     requires_trust_remote_code: bool = Field(
         False,
         description = "Whether the model defaults require trust_remote_code to be enabled for loading.",
+    )
+    requires_security_review: bool = Field(
+        False,
+        description = "Whether Hugging Face's security scan flagged unsafe files (e.g. a "
+        "malicious pickle), so the load is hard-blocked pending review.",
+    )
+    context_length: Optional[int] = Field(
+        None,
+        description = "Native training context length, read from the GGUF header when the file "
+        "is already downloaded locally; None for non-GGUF, gated, or not-yet-downloaded models.",
     )
 
 
@@ -586,6 +605,16 @@ class ChatMessage(BaseModel):
         return self
 
 
+class ThinkingConfig(BaseModel):
+    """Anthropic-compatible thinking/reasoning configuration.
+    Use type='disabled' to turn off thinking, or type='enabled' to turn it on.
+    Only type is read; extra fields (e.g. budget_tokens) are ignored, since
+    Studio sets provider thinking budgets itself.
+    """
+
+    type: Literal["disabled", "enabled"] = "disabled"
+
+
 class ChatCompletionRequest(BaseModel):
     """OpenAI-compatible chat completion request.
 
@@ -699,6 +728,11 @@ class ChatCompletionRequest(BaseModel):
         None,
         description = "[x-unsloth] When true, keep historical <think> blocks from past assistant turns in the prompt (Qwen3.6 templates). Independent of enable_thinking / reasoning_effort.",
     )
+    thinking: Optional[ThinkingConfig] = Field(
+        None,
+        description = "[Anthropic-compatible] Thinking configuration. "
+        "Use {type: 'disabled'} to disable thinking, {type: 'enabled'} to enable.",
+    )
     enable_tools: Optional[bool] = Field(
         None,
         description = "[x-unsloth] Enable tool calling for supported models",
@@ -721,6 +755,10 @@ class ChatCompletionRequest(BaseModel):
     confirm_tool_calls: Optional[bool] = Field(
         None,
         description = "[x-unsloth] When true, pause before each tool call and wait for the user to allow/deny it via POST /api/inference/tool-confirm.",
+    )
+    bypass_permissions: Optional[bool] = Field(
+        False,
+        description = "[x-unsloth] Bypass Permissions: when true, skip the tool-call confirmation gate AND disable the python/terminal execution sandbox (safety checks, command blocklist, resource limits). Secret env vars are still stripped. Takes precedence over confirm_tool_calls.",
     )
     auto_heal_tool_calls: Optional[bool] = Field(
         True,
@@ -955,6 +993,20 @@ class ChatCompletionRequest(BaseModel):
                 import secrets as _secrets
                 picked = f"call_{_secrets.token_hex(8)}"
             msg.tool_call_id = picked
+        return self
+
+    @model_validator(mode = "after")
+    def _map_thinking_to_enable_thinking(self) -> "ChatCompletionRequest":
+        """Map Anthropic-style ``thinking`` parameter to internal ``enable_thinking``.
+
+        ``thinking: {type: 'enabled'}`` sets ``enable_thinking = True`` and
+        ``thinking: {type: 'disabled'}`` sets ``enable_thinking = False``.
+        ``enable_thinking`` takes precedence when both are provided so that
+        callers who already use the internal field are unaffected. Invalid
+        ``thinking`` shapes are rejected at validation time (422).
+        """
+        if self.thinking is not None and self.enable_thinking is None:
+            self.enable_thinking = self.thinking.type == "enabled"
         return self
 
 
@@ -1536,6 +1588,10 @@ class AnthropicMessagesRequest(BaseModel):
     enabled_tools: Optional[list[str]] = None
     session_id: Optional[str] = None
     cancel_id: Optional[str] = None
+    bypass_permissions: Optional[bool] = Field(
+        False,
+        description = "[x-unsloth] Bypass Permissions: when true, disable the python/terminal execution sandbox (safety checks, command blocklist, resource limits) for server-side tool calls. Secret env vars are still stripped. Declared explicitly (not relied on via extra='allow') so omitted requests default to False instead of raising AttributeError.",
+    )
     model_config = {"extra": "allow"}
 
     @model_validator(mode = "before")

@@ -85,7 +85,7 @@ import {
 } from "@/components/ui/tooltip";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { ChevronDown, MoreHorizontalIcon, Moon } from "lucide-react";
+import { ChevronDown, Moon } from "lucide-react";
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import {
   archiveChatItem,
@@ -231,7 +231,7 @@ function NavItem({
           onClick={onClick}
           isActive={active}
           data-tour={dataTour}
-          className="sidebar-nav-btn h-[33px] rounded-full gap-[8.5px] pl-3 pr-2.5 font-medium group-data-[collapsible=icon]:px-2.5 group-data-[collapsible=icon]:!w-[32px] group-data-[collapsible=icon]:!rounded-full group-data-[collapsible=icon]:mx-auto"
+          className="sidebar-nav-btn h-[33px] rounded-full gap-[8.5px] pl-3 pr-2.5 font-medium group-data-[collapsible=icon]:px-2.5 group-data-[collapsible=icon]:!w-[32px] group-data-[collapsible=icon]:mx-auto"
         >
           <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-icon! shrink-0 group-hover/menu-button:animate-icon-pop" />
           <span className="text-[14.5px] leading-[19px] tracking-nav">{label}</span>
@@ -304,6 +304,7 @@ export function AppSidebar() {
   };
 
   const isRecipesRoute = pathname.startsWith("/data-recipes");
+  const isExportRoute = pathname === "/export" || pathname.startsWith("/export/");
   const { displayTitle, avatarDataUrl } = useEffectiveProfile();
 
   const { projects } = useChatProjects();
@@ -354,10 +355,14 @@ export function AppSidebar() {
       undefined
     : undefined;
 
-  // Training runs
+  // Training runs: surfaced as sidebar "Recents" on Train, Recipes, and Export,
+  // falling back to chat recents when there are no runs yet.
+  const trainingRecentsRoute = isStudioRoute || isRecipesRoute || isExportRoute;
   const { items: runItems } = useTrainingHistorySidebarItems(
-    !chatOnly && isStudioRoute,
+    !chatOnly && trainingRecentsRoute,
   );
+  const showTrainingRecents =
+    !chatOnly && trainingRecentsRoute && runItems.length > 0;
   const activeJobId = useTrainingRuntimeStore((s) => s.jobId);
   const currentRunViewActive = useTrainingRuntimeStore((s) => s.currentRunViewActive);
   const selectedHistoryRunId = useTrainingRuntimeStore((s) => s.selectedHistoryRunId);
@@ -408,6 +413,9 @@ export function AppSidebar() {
     clearNewChatDraft();
     setActiveThreadId(null);
     useChatRuntimeStore.getState().setActiveProjectId(projectId);
+    // The normal new-chat affordance is always a regular, saved chat --
+    // only the toolbar toggle starts a temporary one.
+    useChatRuntimeStore.getState().setIncognito(false);
     navigate({ to: "/chat", search: chatSearchForProject(projectId) });
     closeMobileIfOpen();
   }
@@ -695,15 +703,17 @@ export function AppSidebar() {
         : "sidebar-row-action group-hover/recent-item:opacity-100 group-hover/recent-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto";
     const buttonClass = cn(
       "sidebar-nav-btn h-[33px] cursor-pointer rounded-full pr-4 text-[14.5px] leading-[19px] tracking-nav font-medium",
-      // pl-3 (12px) plus the content's pl-1 (4px) lines the title up with the
-      // Recents label text at 16px.
+      // pl-3 (12px) over the content's pl-1.5 (6px) = 18px, aligning the
+      // title with the nav items above.
       variant === "project" ? "pl-[39px]" : "pl-3",
       variant === "project"
-        ? "group-hover/project-chat-item:pr-8 group-has-[.sidebar-row-action[data-state=open]]/project-chat-item:pr-8"
+        ? "group-hover/project-chat-item:pr-6 group-has-[.sidebar-row-action[data-state=open]]/project-chat-item:pr-6"
         : isPinned
-          ? // Pinned rows show an extra unpin button on hover, so reserve more room.
+          ? // Pinned rows show an extra unpin button on hover, so reserve more room
+            // (pr-8 when the menu is open keeps the unpin button clear of the title).
             "group-hover/recent-item:pr-16 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-8"
-          : "group-hover/recent-item:pr-8 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-8",
+          : // Hover room for the kebab only; title keeps one more character.
+            "group-hover/recent-item:pr-6 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-6",
     );
 
     const isRenamingThis =
@@ -945,7 +955,7 @@ export function AppSidebar() {
                 <button
                   type="button"
                   onClick={togglePinned}
-                  className="inline-flex h-[33px] w-[32px] cursor-pointer items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  className="inline-flex h-[33px] w-[33px] cursor-pointer items-center justify-center rounded-full text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   aria-label={t("shell.aria.closeSidebar")}
                 >
                   <HugeiconsIcon icon={LayoutAlignLeftIcon} strokeWidth={1.75} className="size-icon" />
@@ -970,7 +980,7 @@ export function AppSidebar() {
                 <button
                   type="button"
                   onClick={togglePinned}
-                  className="inline-flex h-[33px] w-[32px] cursor-pointer items-center justify-center rounded-[10px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  className="inline-flex h-[33px] w-[33px] cursor-pointer items-center justify-center rounded-full text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   aria-label={t("shell.aria.openSidebar")}
                 >
                   <HugeiconsIcon icon={LayoutAlignLeftIcon} strokeWidth={1.75} className="size-icon" />
@@ -988,7 +998,8 @@ export function AppSidebar() {
         )}
       </SidebarHeader>
 
-      <SidebarGroup className="group-data-[collapsible=icon]:px-0 px-1.5 pt-[9px] pb-px shrink-0">
+      {/* Uniform pl-1.5 pr-2 keeps every hover pill the same width, inset from the edge. */}
+      <SidebarGroup className="group-data-[collapsible=icon]:px-0 pl-1.5 pr-2 pt-[9px] pb-px shrink-0">
         <SidebarGroupContent>
           <SidebarMenu>
             <NavItem
@@ -1042,7 +1053,7 @@ export function AppSidebar() {
           scrolled && "is-scrolled",
         )}
       >
-        <SidebarGroup className="group-data-[collapsible=icon]:px-0 px-1.5 py-0 shrink-0">
+        <SidebarGroup className="group-data-[collapsible=icon]:px-0 pl-1.5 pr-2 py-0 shrink-0">
           <SidebarGroupContent>
             <SidebarMenu>
               <NavItem
@@ -1115,7 +1126,7 @@ export function AppSidebar() {
               </CollapsibleTrigger>
             </SidebarGroupLabel>
             <CollapsibleContent>
-              <SidebarGroupContent className="px-1.5">
+              <SidebarGroupContent className="pl-1.5 pr-2">
                 <SidebarMenu>
                   <NavItem
                     icon={TestTubeOutlineIcon}
@@ -1157,7 +1168,7 @@ export function AppSidebar() {
         </Collapsible>
 
         {/* Pinned chats: own section above Recents */}
-        {!isStudioRoute && pinnedChatItems.length > 0 && (
+        {!isStudioRoute && !showTrainingRecents && pinnedChatItems.length > 0 && (
           <Collapsible open={pinnedOpen} onOpenChange={setPinnedOpen} asChild>
             <SidebarGroup className="group-data-[collapsible=icon]:hidden px-0 py-0">
               <SidebarGroupLabel className={cn("sidebar-sticky-label sidebar-sticky-label-following", scrolled && "is-scrolled")} asChild>
@@ -1167,7 +1178,7 @@ export function AppSidebar() {
                 </CollapsibleTrigger>
               </SidebarGroupLabel>
               <CollapsibleContent>
-                <SidebarGroupContent className="pl-1 pr-1.5">
+                <SidebarGroupContent className="pl-1.5 pr-2">
                   <SidebarMenu>
                     {pinnedChatItems.map((item) =>
                       renderChatSidebarItem(item, "recent"),
@@ -1179,7 +1190,7 @@ export function AppSidebar() {
           </Collapsible>
         )}
 
-        {!isStudioRoute && (
+        {!isStudioRoute && !showTrainingRecents && (
           <Collapsible open={chatOpen} onOpenChange={setChatOpen} asChild>
             <SidebarGroup className="group-data-[collapsible=icon]:hidden px-0 py-0">
               <SidebarGroupLabel className={cn("sidebar-sticky-label sidebar-sticky-label-following", scrolled && "is-scrolled")} asChild>
@@ -1189,7 +1200,7 @@ export function AppSidebar() {
                 </CollapsibleTrigger>
               </SidebarGroupLabel>
               <CollapsibleContent>
-                <SidebarGroupContent className="pl-1 pr-1.5">
+                <SidebarGroupContent className="pl-1.5 pr-2">
                   <SidebarMenu>
                     {recentChatItems.map((item) =>
                       renderChatSidebarItem(item, "recent"),
@@ -1201,7 +1212,7 @@ export function AppSidebar() {
           </Collapsible>
         )}
 
-        {isStudioRoute && runItems.length > 0 && !chatOnly && (
+        {showTrainingRecents && (
           <Collapsible open={runsOpen} onOpenChange={setRunsOpen} asChild>
           <SidebarGroup className="group-data-[collapsible=icon]:hidden px-0 py-0">
             <SidebarGroupLabel className={cn("sidebar-sticky-label sidebar-sticky-label-following", scrolled && "is-scrolled")} asChild>
@@ -1229,9 +1240,12 @@ export function AppSidebar() {
                       >
                         <SidebarMenuButton
                           isActive={isActiveRun}
-                          className="sidebar-nav-btn h-auto flex-col items-start gap-0.5 py-[5px] rounded-full pl-3 pr-7 text-[14.5px] tracking-nav font-medium"
+                          className="sidebar-nav-btn h-auto flex-col items-start gap-0.5 py-[5px] rounded-[14px] pl-3 pr-7 text-[14.5px] tracking-nav font-medium"
                           onClick={() => {
                             setSelectedHistoryRunId(run.id);
+                            // From Recipes/Export, jump to Train so the run's
+                            // history opens (studio reacts to selectedHistoryRunId).
+                            if (!isStudioRoute) navigate({ to: "/studio" });
                             closeMobileIfOpen();
                           }}
                         >
@@ -1246,7 +1260,7 @@ export function AppSidebar() {
                             <span className="truncate">
                               {run.display_name ?? run.model_name}
                             </span>
-                            <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">
+                            <span className="ml-auto mr-0.5 shrink-0 text-[10px] text-muted-foreground">
                               {formatRelativeShort(run.started_at)}
                             </span>
                           </div>
@@ -1263,7 +1277,7 @@ export function AppSidebar() {
                               className="sidebar-row-action group-hover/run-item:opacity-100 group-hover/run-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto"
                             >
                               <span className="sidebar-row-action-glyph">
-                                <MoreHorizontalIcon strokeWidth={1.75} className="size-icon" />
+                                <HugeiconsIcon icon={MoreVerticalIcon} strokeWidth={1.75} className="size-icon" />
                               </span>
                             </button>
                           </DropdownMenuTrigger>
@@ -1318,14 +1332,14 @@ export function AppSidebar() {
                 <SidebarMenuButton
                   size="lg"
                   aria-label={t("shell.accountMenu", { name: displayTitle })}
-                  className="sidebar-nav-btn !h-[44px] -my-[3px] gap-[9px] px-2 py-[3px] rounded-[14px]"
+                  className="sidebar-nav-btn !h-[44px] -my-[3px] gap-[9px] px-2 py-[3px] rounded-full group-data-[collapsible=icon]:!size-[34px] group-data-[collapsible=icon]:!p-0 group-data-[collapsible=icon]:mx-auto group-data-[collapsible=icon]:justify-center"
                 >
                   <div className="flex shrink-0 items-center">
                     <UserAvatar
                       name={displayTitle}
                       imageUrl={avatarDataUrl}
                       size="sm"
-                      className="!size-[32px]"
+                      className="!size-[32px] group-data-[collapsible=icon]:!rounded-full"
                     />
                   </div>
                   <div className="flex flex-col gap-px leading-tight group-data-[collapsible=icon]:hidden">
