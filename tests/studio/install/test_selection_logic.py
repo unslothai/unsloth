@@ -1183,7 +1183,6 @@ class TestValidatedChecksumsForBundle:
 
 
 class TestLinuxCudaChoiceFromRelease:
-
     def test_no_runtime_lines_detected(self, monkeypatch):
         mock_linux_runtime(monkeypatch, [])
         host = make_host(driver_cuda_version = (12, 8))

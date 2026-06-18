@@ -586,9 +586,7 @@ for method, path in EXPECTED_AUTH_ENDPOINTS:
         fail(f"{method} {path} unauthenticated returned {code} (expected 401/403)")
 for method, path in PUBLIC:
     code, _ = http(method, path)
-    if (
-        200 <= code < 500
-    ):  # public endpoints: 200 or 4xx, never connection-refused
+    if 200 <= code < 500:  # public endpoints: 200 or 4xx, never connection-refused
         ok(f"{method} {path} public -> {code}")
     else:
         fail(f"{method} {path} public returned unexpected {code}")

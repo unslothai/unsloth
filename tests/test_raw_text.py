@@ -69,6 +69,7 @@ def test_raw_text_loader():
             token_ids = list(range(len(words)))
 
             if return_tensors == "pt":
+
                 class MockTensor:
                     def __init__(self, data):
                         self.data = data
