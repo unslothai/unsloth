@@ -106,7 +106,7 @@ function DownloadRow({ jobKey }: { jobKey: string }) {
     job.state === "cancelled" ||
     job.state === "error";
   return (
-    <li className="flex flex-col gap-1.5 px-3 py-2.5">
+    <li className="flex flex-col gap-1.5 py-2.5 pl-4 pr-3">
       <div className="flex items-center gap-2">
         <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-foreground">
           {job.repoId}
@@ -230,7 +230,7 @@ export function DownloadManagerPanel({
         </Tooltip>
       ) : (
         <div className="hub-download-panel pointer-events-auto w-[min(400px,calc(100vw-2rem))] overflow-hidden">
-          <div className="flex items-center gap-2 border-b border-foreground/[0.07] px-3 py-2">
+          <div className="flex items-center gap-2 border-b border-foreground/[0.07] py-2 pl-4 pr-3">
             <span className="min-w-0 flex-1 truncate text-[12.5px] font-semibold text-foreground">
               {headerLabel}
             </span>
