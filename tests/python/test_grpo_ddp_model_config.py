@@ -4,9 +4,7 @@ from __future__ import annotations
 
 import os
 
-REPO_ROOT = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), os.pardir, os.pardir)
-)
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, os.pardir))
 SOURCE_PATH = os.path.join(REPO_ROOT, "unsloth", "models", "rl_replacements.py")
 
 
@@ -23,7 +21,5 @@ def test_grpo_logit_scaling_uses_model_config_helper():
     assert 'getattr(_unsloth_get_model_config(model), "logits_scaling", 0)' in src
     assert src.count("_unsloth_get_model_config(model)") >= 5
     assert "inspect.getsource(_unsloth_get_model_config)" in src
-    assert (
-        "if config is None:" in src.split("def _unsloth_get_final_logit_softcapping")[1]
-    )
+    assert "if config is None:" in src.split("def _unsloth_get_final_logit_softcapping")[1]
     assert "model.config" not in src
