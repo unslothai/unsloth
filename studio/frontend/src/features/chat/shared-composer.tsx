@@ -1021,6 +1021,7 @@ export function SharedComposer({
             ggufRequestedContextLength: null,
             ggufLaunchContextLength: null,
             activeNativePathToken: null,
+            loadedIsDiffusion: false,
             supportsReasoning: reasoningCaps.supportsReasoning,
             reasoningAlwaysOn: reasoningCaps.reasoningAlwaysOn,
             reasoningStyle: reasoningCaps.reasoningStyle,
@@ -1111,6 +1112,7 @@ export function SharedComposer({
           ggufContextLength: resp.context_length ?? null,
           ggufMaxContextLength:
             resp.max_context_length ?? resp.context_length ?? null,
+          ggufNativeContextLength: resp.native_context_length ?? null,
           ggufRequestedContextLength: resp.requested_context_length ?? null,
           ggufLaunchContextLength: resp.launch_context_length ?? null,
           supportsReasoning: resp.supports_reasoning ?? false,
