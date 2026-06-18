@@ -103,6 +103,14 @@ _INERT_SUFFIXES = frozenset(
     }
 )
 
+# Source files are not deserialized by ``from_pretrained`` -- a root ``.py`` is never
+# imported by a weight load. Executable repo code runs only through ``auto_map`` under
+# ``trust_remote_code``, which the remote-code CONSENT gate (consent.py) statically
+# scans and gates. So a Hub flag on a Python file is the consent gate's domain, not a
+# serialized-weight RCE vector for this gate; treating it as an unsafe load artifact
+# would false-block repos that merely ship a flagged helper script (build/train .py).
+_SOURCE_SUFFIXES = frozenset({".py", ".pyc", ".pyx", ".pyi"})
+
 
 # Root weight-index files. ``from_pretrained`` reads these to find sharded weight
 # files, and a shard they reference IS deserialized even when it lives in a
@@ -130,8 +138,36 @@ def _file_suffix(path: str) -> str:
     return "." + base.rsplit(".", 1)[1].lower() if "." in base else ""
 
 
-def _indexed_shard_paths(model_name: str, hf_token: Optional[str]):
-    """Repo-relative weight paths a load could fetch via root weight-index files.
+def _load_relative_path(norm: str, load_subdirs) -> str:
+    """``norm`` relative to a known ``from_pretrained`` load root.
+
+    Most loads read weights from the repo root, but some call ``from_pretrained``
+    on a SUBDIRECTORY of the snapshot (e.g. Spark-TTS / BiCodec load
+    ``<snapshot>/LLM``). For those, a file directly under that subdir is a
+    root-level load artifact, not a nested one, so classification must be done
+    relative to the load root. Returns the path with the matching load-subdir
+    prefix stripped, or ``norm`` unchanged when it is not under one.
+    """
+    for subdir in load_subdirs or ():
+        prefix = _normalize_repo_path(subdir).strip("/")
+        if prefix and norm.startswith(prefix + "/"):
+            return norm[len(prefix) + 1 :]
+    return norm
+
+
+def _index_prefixes(load_subdirs) -> tuple:
+    """Directory prefixes to look for weight-index files under: the repo root plus
+    each ``from_pretrained`` load subdir (``""`` and e.g. ``"LLM/"``)."""
+    prefixes = [""]
+    for subdir in load_subdirs or ():
+        p = _normalize_repo_path(subdir).strip("/")
+        if p:
+            prefixes.append(p + "/")
+    return tuple(prefixes)
+
+
+def _indexed_shard_paths(model_name: str, hf_token: Optional[str], load_subdirs = ()):
+    """Repo-relative weight paths a load could fetch via weight-index files.
 
     Returns a ``set`` of normalized paths (possibly empty when the repo simply ships
     no index files -- a definitive "nothing sharded", so a flagged subdir artifact
@@ -139,6 +175,10 @@ def _indexed_shard_paths(model_name: str, hf_token: Optional[str]):
     lookup was inconclusive (a transient/network error fetching an index that might
     exist), so the caller treats an already-flagged subdir pickle conservatively.
     Reads only small JSON index files; never the weight bytes.
+
+    Index files are looked up at the repo root and under each ``load_subdirs`` load
+    root, and ``weight_map`` entries (relative to their index's directory) are
+    re-prefixed so they compare against repo-relative flagged paths.
     """
     import json
 
@@ -150,20 +190,25 @@ def _indexed_shard_paths(model_name: str, hf_token: Optional[str]):
 
     paths: set = set()
     inconclusive = False
-    for filename in _TRANSFORMERS_INDEX_FILES:
-        try:
-            index_path = hf_hub_download(model_name, filename, token = hf_token or None)
-        except EntryNotFoundError:
-            continue  # this index does not exist in the repo -- definitive, not an error
-        except Exception:
-            inconclusive = True  # transient: an index that might exist could not be read
-            continue
-        try:
-            weight_map = (json.loads(open(index_path).read()) or {}).get("weight_map") or {}
-            for shard in weight_map.values():
-                paths.add(_normalize_repo_path(str(shard)))
-        except Exception:
-            inconclusive = True
+    for prefix in _index_prefixes(load_subdirs):
+        for filename in _TRANSFORMERS_INDEX_FILES:
+            try:
+                index_path = hf_hub_download(model_name, prefix + filename, token = hf_token or None)
+            except EntryNotFoundError:
+                continue  # this index does not exist in the repo -- definitive, not an error
+            except Exception:
+                inconclusive = True  # transient: an index that might exist could not be read
+                continue
+            try:
+                weight_map = (json.loads(open(index_path).read()) or {}).get("weight_map") or {}
+                for shard in weight_map.values():
+                    shard_norm = _normalize_repo_path(str(shard))
+                    # weight_map paths are relative to the index file's directory.
+                    if prefix and not shard_norm.startswith(prefix):
+                        shard_norm = prefix + shard_norm
+                    paths.add(shard_norm)
+            except Exception:
+                inconclusive = True
     # Any transient failure makes the result inconclusive, even if another index read
     # cleanly: the flagged shard could be listed only by the index we could not read,
     # so a partial path set is not safe to treat as definitive. Fail closed (None) and
@@ -198,6 +243,24 @@ class FileSecurityDecision:
         }
 
 
+def security_load_subdirs(model_name: str, hf_token: Optional[str] = None) -> tuple:
+    """Snapshot subdirectories a load calls ``from_pretrained`` on, for scoping the
+    file-security scan.
+
+    Most models load from the repo root (``()``). Spark-TTS / BiCodec load
+    ``<snapshot>/LLM`` (see ``core/training/trainer.py``), so a flagged pickle under
+    ``LLM/`` IS a load-path vector for them and the gate must treat ``LLM`` as a load
+    root. Detection is metadata-only (tokenizer special tokens) and cached.
+    """
+    try:
+        from utils.models.model_config import detect_audio_type
+        if detect_audio_type(model_name, hf_token = hf_token) == "bicodec":
+            return ("LLM",)
+    except Exception:
+        pass
+    return ()
+
+
 def _fetch_security_status(model_name: str, hf_token: Optional[str]):
     """Return ``security_repo_status`` (a dict) or ``None`` if unavailable.
 
@@ -229,13 +292,20 @@ def _fetch_security_status(model_name: str, hf_token: Optional[str]):
     return None
 
 
-def evaluate_file_security(model_name: str, hf_token: Optional[str] = None) -> FileSecurityDecision:
+def evaluate_file_security(
+    model_name: str, hf_token: Optional[str] = None, *, load_subdirs = ()
+) -> FileSecurityDecision:
     """Block a load when Hugging Face's security scan flags unsafe serialized files.
 
     Call this UNCONDITIONALLY before any load (independent of trust_remote_code),
     because a malicious pickle deserializes during ``from_pretrained`` regardless.
     Metadata-only: never touches the flagged file bytes. Fails open when the scan
     cannot be obtained.
+
+    ``load_subdirs`` names snapshot subdirectories the load calls ``from_pretrained``
+    on (e.g. ``("LLM",)`` for Spark-TTS / BiCodec, which loads ``<snapshot>/LLM``). A
+    flagged file directly under such a subdir is a root-level load artifact there and
+    blocks, and an index inside that subdir is honored when scoping flagged shards.
     """
     # Local folders/files (including a local .gguf) have no Hub security scan;
     # nothing to check. A REMOTE reference is scanned even if it ends in .gguf, so a
@@ -272,17 +342,22 @@ def evaluate_file_security(model_name: str, hf_token: Optional[str] = None) -> F
             continue
         path = entry.get("path", "")
         norm = _normalize_repo_path(path)
-        if not norm or _file_suffix(norm) in _INERT_SUFFIXES:
-            # Inert anywhere (safetensors/gguf/json/...) cannot execute code on load.
+        suffix = _file_suffix(norm)
+        # Classify relative to the load root: a file under a from_pretrained load
+        # subdir (e.g. LLM/) is root-level there, not a nested artifact.
+        load_rel = _load_relative_path(norm, load_subdirs)
+        if not norm or suffix in _INERT_SUFFIXES or suffix in _SOURCE_SUFFIXES:
+            # Inert formats cannot execute on load; source code is the consent gate's
+            # domain (auto_map under trust_remote_code), not a deserialization vector.
             skipped.append({"path": path, "level": level})
-        elif "/" not in norm:
+        elif "/" not in load_rel:
             unsafe.append({"path": path, "level": level})  # root pickle -> load vector
         else:
-            # Subdir pickle: deserialized only if a root weight index references it.
+            # Subdir pickle: deserialized only if a weight index references it.
             maybe_shard.append({"path": path, "level": level, "norm": norm})
 
     if maybe_shard:
-        indexed = _indexed_shard_paths(model_name, hf_token)
+        indexed = _indexed_shard_paths(model_name, hf_token, load_subdirs)
         for m in maybe_shard:
             # Block if a root index lists this shard, or if the index lookup was
             # inconclusive (a transient error -- treat a flagged subdir pickle that

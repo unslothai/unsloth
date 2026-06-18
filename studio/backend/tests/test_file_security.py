@@ -409,3 +409,84 @@ def test_pending_or_scanning_level_does_not_block():
         with _patch_status(status):
             d = evaluate_file_security("some/repo")
         assert d.blocked is False, lvl
+
+
+# -- Subdir load roots: Spark-TTS / BiCodec load from_pretrained(<snapshot>/LLM) --
+
+
+def test_flagged_pickle_under_load_subdir_blocks():
+    # A flagged pickle directly under a declared load subdir is a root-level load
+    # artifact there and must block.
+    status = {
+        "scansDone": False,
+        "filesWithIssues": [{"path": "LLM/pytorch_model.bin", "level": "unsafe"}],
+    }
+    with _patch_status(status), _patch_no_index():
+        d = evaluate_file_security("org/spark-tts", load_subdirs = ("LLM",))
+    assert d.blocked is True
+    assert d.unsafe_files == [{"path": "LLM/pytorch_model.bin", "level": "unsafe"}]
+
+
+def test_flagged_pickle_under_subdir_without_load_root_does_not_block():
+    # Same file, but NOT declared a load root and not indexed -> not deserialized.
+    status = {
+        "scansDone": False,
+        "filesWithIssues": [{"path": "LLM/pytorch_model.bin", "level": "unsafe"}],
+    }
+    with _patch_status(status), _patch_no_index():
+        d = evaluate_file_security("org/not-a-load-root")
+    assert d.blocked is False
+    assert d.unsafe_files == []
+
+
+def test_indexed_shard_under_load_subdir_blocks():
+    # An index inside the load subdir referencing a flagged shard makes it a vector.
+    status = {
+        "scansDone": False,
+        "filesWithIssues": [
+            {"path": "LLM/shards/pytorch_model-00001-of-00002.bin", "level": "unsafe"}
+        ],
+    }
+    weight_map = {
+        "layer.0.weight": "shards/pytorch_model-00001-of-00002.bin",
+        "layer.1.weight": "shards/pytorch_model-00002-of-00002.bin",
+    }
+    with _patch_status(status), _patch_index(
+        weight_map, index_filename = "LLM/pytorch_model.bin.index.json"
+    ):
+        d = evaluate_file_security("org/spark-tts", load_subdirs = ("LLM",))
+    assert d.blocked is True
+
+
+# -- Source files are the consent gate's domain, not a deserialization vector --
+
+
+def test_flagged_root_python_helper_does_not_block():
+    # A root .py is never deserialized by from_pretrained; executable repo code runs
+    # only via auto_map under the consent gate. Flagging it here would false-block.
+    status = {
+        "scansDone": True,
+        "filesWithIssues": [
+            {"path": "build_pickles.py", "level": "unsafe"},
+            {"path": "train.py", "level": "suspicious"},
+        ],
+    }
+    with _patch_status(status):
+        d = evaluate_file_security("org/has-helper-scripts")
+    assert d.blocked is False
+    assert d.unsafe_files == []
+
+
+def test_root_pickle_still_blocks_with_flagged_python_sibling():
+    # The .py exemption must not mask a genuine root pickle in the same repo.
+    status = {
+        "scansDone": True,
+        "filesWithIssues": [
+            {"path": "convert.py", "level": "unsafe"},
+            {"path": "pytorch_model.bin", "level": "unsafe"},
+        ],
+    }
+    with _patch_status(status):
+        d = evaluate_file_security("evil/mixed")
+    assert d.blocked is True
+    assert d.unsafe_files == [{"path": "pytorch_model.bin", "level": "unsafe"}]
