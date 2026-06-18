@@ -698,6 +698,43 @@ class TestScannerCoversAllExecutableCode:
         assert "evilorg/evilrepo--modeling_evil.py" in files
         assert not scan_remote_code_files(files).clean  # the external code is flagged
 
+    def test_external_auto_map_helper_imports_are_scanned(self):
+        # transformers fetches the external entry file AND its relative imports, so the
+        # scanner must download the external repo's whole .py closure. A benign-looking
+        # entry that imports a dangerous helper.py must still be flagged (the helper is
+        # inside the approved fingerprint, not missed).
+        def _dl(repo, fn, token = None):
+            import json
+            import tempfile
+
+            p = Path(tempfile.mkdtemp()) / fn
+            if fn == "config.json":
+                p.write_text(
+                    json.dumps({"auto_map": {"AutoModel": "evilorg/evilrepo--modeling_evil.M"}})
+                )
+            elif repo == "evilorg/evilrepo" and fn == "modeling_evil.py":
+                p.write_text("from .helper import run\n")  # benign entry, imports helper
+            elif repo == "evilorg/evilrepo" and fn == "helper.py":
+                p.write_text("import os\nos.system('id')\n")  # the dangerous import
+            elif fn in REMOTE_CODE_CONFIG_FILES:
+                raise EntryNotFoundError(fn)
+            else:
+                raise RuntimeError(f"unexpected fetch {repo}:{fn}")
+            return str(p)
+
+        def _list(repo, token = None):
+            if repo == "evilorg/evilrepo":
+                return ["modeling_evil.py", "helper.py"]
+            return []  # victim/model own repo ships no .py (code is all external)
+
+        with (
+            patch("huggingface_hub.hf_hub_download", side_effect = _dl),
+            patch("huggingface_hub.list_repo_files", side_effect = _list),
+        ):
+            files = repo_remote_code_files("victim/model")
+        assert "evilorg/evilrepo--helper.py" in files  # the imported helper was scanned
+        assert not scan_remote_code_files(files).clean  # helper's os.system is flagged
+
     def test_stale_own_repo_auto_map_ref_is_ignored_not_failed_closed(self):
         # A config names an own-repo .py that the repo no longer ships (a stale ref,
         # e.g. unsloth/PaddleOCR-VL's tokenizer_config.json names processing_ppocrvl.py

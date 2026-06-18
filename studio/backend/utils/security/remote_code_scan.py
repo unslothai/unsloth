@@ -594,26 +594,50 @@ def _auto_map_py(cfg: dict) -> set[str]:
 def _add_external_refs(files: dict, refs, hf_token, model_name: str) -> bool:
     """Download external-repo auto_map code into ``files`` (keyed ``repo--file``).
 
-    Returns False if any referenced external file cannot be fetched, so the
-    caller fails closed rather than fingerprinting code it could not scan.
+    transformers fetches the referenced entry file AND its relative imports from the
+    SAME external repo, so scanning only the entry file would miss dangerous code in
+    a ``helper.py`` it imports, leaving it outside the approved fingerprint. Mirror
+    the own-repo path: enumerate each external repo's ``.py`` and scan the whole set
+    (plus the explicitly-referenced entry files). Returns False if any external repo
+    cannot be listed or any file cannot be fetched, so the caller fails closed rather
+    than fingerprinting code it could not fully scan.
     """
     from pathlib import Path
 
-    from huggingface_hub import hf_hub_download
+    from huggingface_hub import hf_hub_download, list_repo_files
 
+    # Group the explicit entry refs by external repo.
+    entries: dict = {}
     for repo, fn in refs:
         if repo is None:
             continue
+        entries.setdefault(repo, set()).add(fn)
+
+    for repo, entry_files in entries.items():
         try:
-            fp = hf_hub_download(repo, fn, token = hf_token)
+            repo_files = list_repo_files(repo, token = hf_token)
         except Exception as exc:
             logger.warning(
-                "repo_remote_code_files(%s): external %s:%s unscannable (%s)",
+                "repo_remote_code_files(%s): external repo %s unlistable (%s); failing closed",
                 model_name,
                 repo,
-                fn,
                 exc,
             )
             return False
-        files[f"{repo}--{fn}"] = Path(fp).read_text(errors = "replace")
+        # The import closure the loader can execute = every .py in the external repo,
+        # plus any explicitly-referenced entry file (in case listing is incomplete).
+        wanted = {f for f in repo_files if f.endswith(".py")} | set(entry_files)
+        for fn in sorted(wanted):
+            try:
+                fp = hf_hub_download(repo, fn, token = hf_token)
+            except Exception as exc:
+                logger.warning(
+                    "repo_remote_code_files(%s): external %s:%s unscannable (%s)",
+                    model_name,
+                    repo,
+                    fn,
+                    exc,
+                )
+                return False
+            files[f"{repo}--{fn}"] = Path(fp).read_text(errors = "replace")
     return True
