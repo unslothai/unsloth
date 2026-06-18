@@ -2931,14 +2931,14 @@ export function HubModelPicker({
             </>
           ) : null}
         </div>
-        {/* Sticky button pinned to the bottom of the list. No background, so it
-            coexists with the rows that scroll behind it. */}
+        {/* Sticky footer with the menu background so rows scroll under it. The
+            button stays compact and centered, so hover only covers the button. */}
         {onEject ? (
-          <div className="pointer-events-none sticky bottom-0 flex justify-center pt-1">
+          <div className="sticky bottom-0 flex justify-center bg-popover pt-1 dark:bg-[var(--sidebar)]">
             <button
               type="button"
               onClick={onEject}
-              className="pointer-events-auto inline-flex items-center justify-center gap-2 rounded-md border border-border/60 bg-popover px-3 py-2 text-[13px] text-destructive shadow-sm transition-colors hover:bg-destructive/10 dark:bg-[var(--sidebar)]"
+              className="inline-flex items-center justify-center gap-2 rounded-md px-3 py-2 text-[13px] text-destructive transition-colors hover:bg-destructive/10"
               title="Eject model"
             >
               <HugeiconsIcon icon={RemoveCircleIcon} className="size-3.5" />
