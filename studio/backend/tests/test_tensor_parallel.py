@@ -342,9 +342,8 @@ def test_generate_chat_completion_wires_runtime_recovery():
 
 
 def test_runtime_recovery_reloads_without_mtp(monkeypatch):
-    # A dead server + tensor + resolved-MTP + snapshot -> one background reload
-    # with speculative_type="off" (rest of the snapshot preserved), then
-    # spec_fallback_reason="runtime_error" and the single-flight flag released.
+    # One background reload with speculative_type="off" (rest of snapshot kept),
+    # then spec_fallback_reason="runtime_error" and single-flight released.
     b = _recovery_backend()
     done = threading.Event()
     captured = {}
@@ -520,9 +519,8 @@ def test_runtime_recovery_is_single_flight(monkeypatch):
 
 
 def test_runtime_recovery_rechecks_cancel_before_reload():
-    # A reload scheduled just before an /unload must not resurrect the model:
-    # the background recover() re-checks the cancel flag after the death poll
-    # (load_model would otherwise clear the cancel and reload).
+    # recover() must re-check the cancel flag after the death poll (load_model
+    # clears it), so a reload scheduled just before /unload can't resurrect it.
     src = inspect.getsource(LlamaCppBackend._maybe_recover_from_mtp_crash)
     cancel = src.rfind("self._cancel_event.is_set()")
     load = src.find("self.load_model(")
@@ -578,9 +576,8 @@ class _ToggleProcess:
 
 
 def test_crash_watchdog_triggers_recovery_on_death(monkeypatch):
-    # With MTP + tensor active, the watchdog must notice the server process exit
-    # and route it into recovery even when no request handler observed it (the
-    # direct llama-server proxy endpoints never call the helper themselves).
+    # The watchdog must notice the process exit and recover even when no request
+    # handler observed it (e.g. the direct proxy endpoints).
     b = _recovery_backend()
     proc = _ToggleProcess()
     b._process = proc

@@ -4742,8 +4742,7 @@ async def openai_chat_completions(
                     tb = traceback.format_exc()
                     logger.error(f"Error during GGUF tool streaming: {e}\n{tb}")
                     api_monitor.fail(monitor_id, _friendly_error(e))
-                    # If llama-server died mid-stream from a tensor-parallel + MTP
-                    # crash, quietly reload without MTP so the next request works.
+                    # Recover if an MTP+tensor crash killed the server mid-stream.
                     get_llama_cpp_backend()._maybe_recover_from_mtp_crash(e)
                     error_chunk = _openai_stream_error_chunk(e)
                     yield f"data: {json.dumps(error_chunk)}\n\n"
@@ -4991,8 +4990,7 @@ async def openai_chat_completions(
             except Exception as e:
                 logger.error(f"Error during GGUF completion: {e}", exc_info = True)
                 api_monitor.fail(monitor_id, _friendly_error(e))
-                # Reload without MTP if llama-server died from a tensor-parallel
-                # + MTP crash, so the next request works.
+                # Recover if an MTP+tensor crash killed the server.
                 get_llama_cpp_backend()._maybe_recover_from_mtp_crash(e)
                 # An over-context prompt makes llama-server return 400; map any
                 # upstream 4xx to a 400 client error rather than leaking a 500.
