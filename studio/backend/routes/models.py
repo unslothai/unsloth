@@ -2097,7 +2097,6 @@ def _read_native_context_length(repo_id: str, is_local: bool) -> Optional[int]:
     """
     try:
         from utils.models.gguf_metadata import read_gguf_context_length
-
         if is_local:
             roots = [Path(repo_id)]
         else:
@@ -2121,9 +2120,7 @@ def _read_native_context_length(repo_id: str, is_local: bool) -> Optional[int]:
     return None
 
 
-def _resolve_quant_gguf(
-    repo_id: str, quant: str, is_local: bool
-) -> tuple[Optional[str], int]:
+def _resolve_quant_gguf(repo_id: str, quant: str, is_local: bool) -> tuple[Optional[str], int]:
     """Primary shard path and total weight bytes for a downloaded quant, or
     (None, 0). Metadata lives in shard 1, so the lexicographically first file of
     the matching quant is returned. Scoped to one snapshot to avoid summing the
@@ -2203,12 +2200,24 @@ async def get_kv_cache_estimate(
 
         be = LlamaCppBackend.__new__(LlamaCppBackend)
         for attr in (
-            "_context_length", "_n_layers", "_n_kv_heads", "_n_heads",
-            "_embedding_length", "_kv_key_length", "_kv_value_length",
-            "_kv_lora_rank", "_sliding_window", "_sliding_window_pattern",
-            "_ssm_inner_size", "_full_attention_interval", "_key_length_mla",
-            "_n_kv_heads_by_layer", "_kv_key_length_swa", "_kv_value_length_swa",
-            "_shared_kv_layers", "_nextn_predict_layers",
+            "_context_length",
+            "_n_layers",
+            "_n_kv_heads",
+            "_n_heads",
+            "_embedding_length",
+            "_kv_key_length",
+            "_kv_value_length",
+            "_kv_lora_rank",
+            "_sliding_window",
+            "_sliding_window_pattern",
+            "_ssm_inner_size",
+            "_full_attention_interval",
+            "_key_length_mla",
+            "_n_kv_heads_by_layer",
+            "_kv_key_length_swa",
+            "_kv_value_length_swa",
+            "_shared_kv_layers",
+            "_nextn_predict_layers",
         ):
             setattr(be, attr, None)
         be._model_identifier = "kv-estimate"
