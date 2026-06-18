@@ -17,6 +17,22 @@ function parseSliceValue(value: string | null): number | null {
   return num;
 }
 
+function buildS3PayloadConfig(config: TrainingConfigState) {
+  const s3 = config.datasetSource === "s3" ? config.s3Config : null;
+  if (!s3) {
+    return null;
+  }
+  if (s3.useIamRole) {
+    return {
+      bucket: s3.bucket,
+      region: s3.region,
+      prefix: s3.prefix,
+      useIamRole: s3.useIamRole,
+    };
+  }
+  return s3;
+}
+
 export function buildTrainingStartPayload(
   config: TrainingConfigState,
 ): TrainingStartRequest {
@@ -36,6 +52,7 @@ export function buildTrainingStartPayload(
     config.datasetSource === "upload" && config.uploadedFile
       ? [config.uploadedFile]
       : [];
+  const s3Config = buildS3PayloadConfig(config);
   let customFormatMapping: Record<string, unknown> | undefined =
     Object.keys(config.datasetManualMapping).length > 0
       ? { ...config.datasetManualMapping }
@@ -65,6 +82,7 @@ export function buildTrainingStartPayload(
         ? config.visionImageSize
         : null,
     trust_remote_code: config.trustRemoteCode ?? false,
+    approved_remote_code_fingerprint: config.approvedRemoteCodeFingerprint ?? null,
     hf_dataset: hfDataset,
     subset: hfDataset ? config.datasetSubset : null,
     train_split: hfDataset ? config.datasetSplit : null,
@@ -76,6 +94,7 @@ export function buildTrainingStartPayload(
       config.datasetSource === "upload" && config.uploadedEvalFile
         ? [config.uploadedEvalFile]
         : [],
+    s3_config: s3Config,
     format_type: config.datasetFormat,
     custom_format_mapping: customFormatMapping,
     num_epochs: config.epochs,
@@ -93,6 +112,7 @@ export function buildTrainingStartPayload(
     eval_steps: config.evalSteps,
     weight_decay: config.weightDecay,
     max_grad_norm: 0.0,
+    max_grad_value: null,
     random_seed: config.randomSeed,
     packing: isEmbedding ? false : config.packing,
     optim: config.optimizerType,

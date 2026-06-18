@@ -3,22 +3,30 @@
 
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { useT } from "@/i18n";
+import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
-import { Copy01Icon, Tick02Icon } from "@hugeicons/core-free-icons";
+import {
+  ArrowUpRight01Icon,
+  Copy01Icon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import type { ReactElement } from "react";
 import { useEffect, useRef, useState } from "react";
 
-const STUDIO_UPDATE_CMD = "unsloth studio update";
-const STUDIO_UPDATE_FALLBACK_UNIX_CMD =
+const STUDIO_INSTALL_UNIX_CMD =
   "curl -fsSL https://unsloth.ai/install.sh | sh";
-const STUDIO_UPDATE_FALLBACK_WINDOWS_CMD =
-  "irm https://unsloth.ai/install.ps1 | iex";
+const STUDIO_INSTALL_WINDOWS_CMD = "irm https://unsloth.ai/install.ps1 | iex";
 const STUDIO_LOCAL_PULL_CMD = "git pull --ff-only";
-const STUDIO_LOCAL_UPDATE_CMD = "unsloth studio update --local";
-const STUDIO_LOCAL_FALLBACK_UNIX_CMD = "./install.sh --local";
-const STUDIO_LOCAL_FALLBACK_WINDOWS_CMD = ".\\install.ps1 --local";
+const STUDIO_LOCAL_INSTALL_UNIX_CMD = "./install.sh --local";
+const STUDIO_LOCAL_INSTALL_WINDOWS_CMD = ".\\install.ps1 --local";
+
+const DOCS_INSTALL_URL = "https://unsloth.ai/docs/get-started/install";
+const DOCS_UPDATING_URL =
+  "https://unsloth.ai/docs/get-started/install/updating";
+const DOCS_MAC_URL = "https://unsloth.ai/docs/get-started/install/mac";
+const DOCS_WINDOWS_URL =
+  "https://unsloth.ai/docs/get-started/install/windows-installation";
 
 export type UpdateShell = "windows" | "unix";
 export type UpdateInstallSource =
@@ -29,15 +37,6 @@ export type UpdateInstallSource =
   | "local_repo"
   | "unknown";
 type UpdateInstallSourceState = UpdateInstallSource | "loading";
-
-function getStudioUpdateInstructionLine(
-  shell: UpdateShell,
-  t: ReturnType<typeof useT>,
-): string {
-  return shell === "windows"
-    ? t("settings.about.update.openPowerShell")
-    : t("settings.about.update.openTerminal");
-}
 
 function isLocalInstallSource(
   installSource?: UpdateInstallSourceState | null,
@@ -128,6 +127,77 @@ function CopyableCommand({
   );
 }
 
+function DocsLink({
+  href,
+  label,
+}: {
+  href: string;
+  label: string;
+}): ReactElement {
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="inline-flex items-center gap-0.5 font-medium text-muted-foreground hover:text-foreground"
+    >
+      {label}
+      <HugeiconsIcon icon={ArrowUpRight01Icon} className="size-3" />
+    </a>
+  );
+}
+
+function UpdateDocsLinks(): ReactElement {
+  const t = useT();
+  return (
+    <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground leading-relaxed">
+      {t("settings.about.update.docs")}
+      <DocsLink
+        href={DOCS_INSTALL_URL}
+        label={t("settings.about.update.docsInstall")}
+      />
+      <DocsLink
+        href={DOCS_UPDATING_URL}
+        label={t("settings.about.update.docsUpdating")}
+      />
+      <DocsLink
+        href={DOCS_MAC_URL}
+        label={t("settings.about.update.docsMac")}
+      />
+      <DocsLink
+        href={DOCS_WINDOWS_URL}
+        label={t("settings.about.update.docsWindows")}
+      />
+    </p>
+  );
+}
+
+function ShellToggleButton({
+  active,
+  label,
+  onClick,
+}: {
+  active: boolean;
+  label: string;
+  onClick: () => void;
+}): ReactElement {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      className={cn(
+        "inline-flex h-8 items-center justify-center rounded-full px-3.5 text-[12px] font-medium transition-colors",
+        active
+          ? "hub-tab-toggle-pill text-foreground"
+          : "cursor-pointer text-muted-foreground hover:text-foreground",
+      )}
+    >
+      {label}
+    </button>
+  );
+}
+
 // biome-ignore lint/complexity/noExcessiveCognitiveComplexity: keep source-specific update guidance in one component so the command matrix stays visible.
 export function UpdateStudioInstructions({
   className,
@@ -145,6 +215,9 @@ export function UpdateStudioInstructions({
   const shell = shellOverride ?? defaultShell;
   const prefersReducedMotion = useReducedMotion();
   const windows = shell === "windows";
+  // null means the desktop app: its bundled backend updates through the
+  // built-in updater, so terminal commands would target the wrong install.
+  const desktopManaged = installSource === null;
   const localInstallSource = isLocalInstallSource(installSource);
   const checkoutInstallSource =
     installSource === "editable" || installSource === "local_repo";
@@ -163,6 +236,22 @@ export function UpdateStudioInstructions({
     ? { opacity: 1 }
     : { opacity: 0, y: -2 };
 
+  if (desktopManaged) {
+    return (
+      <div className={cn("flex flex-col gap-3", className)}>
+        {showTitle ? (
+          <p className="shrink-0 whitespace-nowrap text-sm font-semibold font-heading">
+            {t("settings.about.update.title")}
+          </p>
+        ) : null}
+        <p className="text-xs text-muted-foreground leading-relaxed">
+          {t("settings.about.update.desktopManaged")}
+        </p>
+        <UpdateDocsLinks />
+      </div>
+    );
+  }
+
   return (
     <div className={cn("flex flex-col gap-3", className)}>
       <div
@@ -176,42 +265,55 @@ export function UpdateStudioInstructions({
             {t("settings.about.update.title")}
           </p>
         ) : null}
-        <div className="flex shrink-0 items-center gap-0.5 text-[11px]">
-          <button
-            type="button"
-            onClick={() => setShellOverride("windows")}
-            className={cn(
-              "px-0.5 py-0.5 font-medium transition-colors",
-              windows
-                ? "text-foreground"
-                : "text-muted-foreground hover:text-emerald-600",
-            )}
-            aria-pressed={windows}
-          >
-            Windows
-          </button>
-          <span className="text-border">/</span>
-          <button
-            type="button"
+        <div className="hub-tab-toggle inline-flex h-8 shrink-0 items-center rounded-full">
+          <ShellToggleButton
+            active={!windows}
+            label="MacOS / Linux"
             onClick={() => setShellOverride("unix")}
-            className={cn(
-              "px-0.5 py-0.5 font-medium transition-colors",
-              windows
-                ? "text-muted-foreground hover:text-emerald-600"
-                : "text-foreground",
-            )}
-            aria-pressed={!windows}
-          >
-            macOS/Linux
-          </button>
+          />
+          <ShellToggleButton
+            active={windows}
+            label="Windows"
+            onClick={() => setShellOverride("windows")}
+          />
         </div>
       </div>
       {loadingInstallSource ? (
         <p className="text-xs text-muted-foreground leading-relaxed">
           {t("settings.about.update.checkingInstall")}
         </p>
-      ) : localInstallSource ? (
+      ) : (
         <>
+          <p className="text-xs text-muted-foreground leading-relaxed">
+            {t("settings.about.update.installIntro")}
+          </p>
+          <AnimatePresence mode="wait" initial={false}>
+            <motion.div
+              key={`install-${shell}`}
+              initial={fadeInitial}
+              animate={fadeAnimate}
+              exit={fadeExit}
+              transition={fadeTransition}
+            >
+              <CopyableCommand
+                command={
+                  windows ? STUDIO_INSTALL_WINDOWS_CMD : STUDIO_INSTALL_UNIX_CMD
+                }
+                copyLabel={
+                  windows
+                    ? t("settings.about.update.installCommandWindows")
+                    : t("settings.about.update.installCommandUnix")
+                }
+              />
+            </motion.div>
+          </AnimatePresence>
+        </>
+      )}
+      {loadingInstallSource ? null : localInstallSource ? (
+        <>
+          <p className="text-xs font-semibold text-foreground">
+            {t("settings.about.update.localUpdateHeading")}
+          </p>
           <p className="text-xs text-muted-foreground leading-relaxed">
             {t("settings.about.update.localInstallDetected")}
           </p>
@@ -224,16 +326,9 @@ export function UpdateStudioInstructions({
                 command={STUDIO_LOCAL_PULL_CMD}
                 copyLabel={t("settings.about.update.gitPullCommand")}
               />
-              <CopyableCommand
-                command={STUDIO_LOCAL_UPDATE_CMD}
-                copyLabel={t("settings.about.update.localUpdateCommand")}
-              />
-              <p className="text-xs text-muted-foreground leading-relaxed">
-                {t("settings.about.update.localInstallerFallback")}
-              </p>
               <AnimatePresence mode="wait" initial={false}>
                 <motion.div
-                  key={`local-fallback-${shell}`}
+                  key={`local-installer-${shell}`}
                   initial={fadeInitial}
                   animate={fadeAnimate}
                   exit={fadeExit}
@@ -242,8 +337,8 @@ export function UpdateStudioInstructions({
                   <CopyableCommand
                     command={
                       windows
-                        ? STUDIO_LOCAL_FALLBACK_WINDOWS_CMD
-                        : STUDIO_LOCAL_FALLBACK_UNIX_CMD
+                        ? STUDIO_LOCAL_INSTALL_WINDOWS_CMD
+                        : STUDIO_LOCAL_INSTALL_UNIX_CMD
                     }
                     copyLabel={t("settings.about.update.localInstallerCommand")}
                   />
@@ -261,7 +356,7 @@ export function UpdateStudioInstructions({
               </p>
               <AnimatePresence mode="wait" initial={false}>
                 <motion.div
-                  key={`source-fallback-${shell}`}
+                  key={`source-installer-${shell}`}
                   initial={fadeInitial}
                   animate={fadeAnimate}
                   exit={fadeExit}
@@ -270,8 +365,8 @@ export function UpdateStudioInstructions({
                   <CopyableCommand
                     command={
                       windows
-                        ? STUDIO_LOCAL_FALLBACK_WINDOWS_CMD
-                        : STUDIO_LOCAL_FALLBACK_UNIX_CMD
+                        ? STUDIO_LOCAL_INSTALL_WINDOWS_CMD
+                        : STUDIO_LOCAL_INSTALL_UNIX_CMD
                     }
                     copyLabel={t("settings.about.update.localInstallerCommand")}
                   />
@@ -282,54 +377,22 @@ export function UpdateStudioInstructions({
           <p className="text-xs text-muted-foreground leading-relaxed">
             {t("settings.about.update.restartAfterUpdate")}
           </p>
+          <UpdateDocsLinks />
         </>
       ) : unknownInstallSource ? (
         <>
           <p className="text-xs text-muted-foreground leading-relaxed">
             {t("settings.about.update.unknownInstall")}
           </p>
-          <p className="text-xs text-muted-foreground leading-relaxed">
-            {t("settings.about.update.curlOrPypi")}
+          <p className="text-xs font-semibold text-foreground">
+            {t("settings.about.update.localUpdateHeading")}
           </p>
-          <CopyableCommand
-            command={STUDIO_UPDATE_CMD}
-            copyLabel={t("settings.about.update.updateCommand")}
-          />
           <p className="text-xs text-muted-foreground leading-relaxed">
             {t("settings.about.update.localCheckout")}
           </p>
-          <CopyableCommand
-            command={STUDIO_LOCAL_UPDATE_CMD}
-            copyLabel={t("settings.about.update.localUpdateCommand")}
-          />
-          <p className="text-xs text-muted-foreground leading-relaxed">
-            {t("settings.about.update.restartAfterUpdate")}
-          </p>
-        </>
-      ) : (
-        <>
-          <AnimatePresence mode="wait" initial={false}>
-            <motion.p
-              key={`instruction-${shell}`}
-              initial={fadeInitial}
-              animate={fadeAnimate}
-              exit={fadeExit}
-              transition={fadeTransition}
-              className="text-xs text-muted-foreground leading-relaxed"
-            >
-              {getStudioUpdateInstructionLine(shell, t)}
-            </motion.p>
-          </AnimatePresence>
-          <CopyableCommand
-            command={STUDIO_UPDATE_CMD}
-            copyLabel={t("settings.about.update.updateCommand")}
-          />
-          <p className="text-xs text-muted-foreground leading-relaxed">
-            {t("settings.about.update.fallbackInstruction")}
-          </p>
           <AnimatePresence mode="wait" initial={false}>
             <motion.div
-              key={`fallback-${shell}`}
+              key={`local-installer-${shell}`}
               initial={fadeInitial}
               animate={fadeAnimate}
               exit={fadeExit}
@@ -338,16 +401,24 @@ export function UpdateStudioInstructions({
               <CopyableCommand
                 command={
                   windows
-                    ? STUDIO_UPDATE_FALLBACK_WINDOWS_CMD
-                    : STUDIO_UPDATE_FALLBACK_UNIX_CMD
+                    ? STUDIO_LOCAL_INSTALL_WINDOWS_CMD
+                    : STUDIO_LOCAL_INSTALL_UNIX_CMD
                 }
-                copyLabel={t("settings.about.update.fallbackCommand")}
+                copyLabel={t("settings.about.update.localInstallerCommand")}
               />
             </motion.div>
           </AnimatePresence>
           <p className="text-xs text-muted-foreground leading-relaxed">
             {t("settings.about.update.restartAfterUpdate")}
           </p>
+          <UpdateDocsLinks />
+        </>
+      ) : (
+        <>
+          <p className="text-xs text-muted-foreground leading-relaxed">
+            {t("settings.about.update.restartAfterUpdate")}
+          </p>
+          <UpdateDocsLinks />
         </>
       )}
     </div>

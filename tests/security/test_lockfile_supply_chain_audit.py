@@ -1,9 +1,4 @@
-"""Regression tests for `scripts/lockfile_supply_chain_audit.py`.
-
-The auditor is fully offline (file reads only); tests run the script
-as a subprocess against the fixture lockfiles plus an inline
-`Cargo.lock` constructed in a tmpdir.
-"""
+"""Regression tests for the offline `scripts/lockfile_supply_chain_audit.py`."""
 
 from __future__ import annotations
 
@@ -51,10 +46,7 @@ def _run_auditor(
 
 
 def test_malicious_lockfile_exits_1(tmp_path):
-    """The malicious fixture combines a non-registry resolved URL, a
-    known IOC substring (`filev2.getsession.org`), and a missing
-    integrity hash. The auditor must refuse with exit 1.
-    """
+    """Non-registry URL + IOC substring + missing integrity hash -> auditor exits 1."""
     fixture = FIXTURES / "malicious_lockfile.json"
     assert fixture.is_file()
     proc = _run_auditor(root = tmp_path, npm_lockfiles = [fixture])
@@ -66,13 +58,9 @@ def test_malicious_lockfile_exits_1(tmp_path):
     assert "non-registry-resolved-url" in combined
     assert "missing-integrity-hash" in combined
     assert "known-ioc-string" in combined
-    # Verify the scanner WROTE the IOC name into its stdout/stderr. The
-    # literal is constructed at runtime so CodeQL's
-    # py/incomplete-url-substring-sanitization rule (which fires on
-    # source-literal + `in` even when the operand is the scanner's own
-    # output, not a URL being sanitized) does not false-positive across
-    # pre-commit reformatting that may split the assert onto multiple
-    # lines and detach an inline lgtm comment from the operator.
+    # IOC literal built at runtime so CodeQL's
+    # py/incomplete-url-substring-sanitization rule doesn't false-positive on
+    # the source-literal + `in` (the operand is the scanner's own output).
     _ioc_host = "filev2." + "getsession.org"
     assert _ioc_host in combined
 
@@ -88,9 +76,7 @@ def test_clean_lockfile_exits_0(tmp_path):
 
 
 def test_audit_npm_lockfile_direct_call_findings():
-    """In-process call to `audit_npm_lockfile()` returns the same
-    finding shape we expect the subprocess to emit.
-    """
+    """In-process audit_npm_lockfile() returns the same findings as the subprocess."""
     findings = lsa.audit_npm_lockfile(FIXTURES / "malicious_lockfile.json")
     kinds = {f.kind for f in findings}
     assert "non-registry-resolved-url" in kinds
@@ -138,12 +124,8 @@ def test_npm_ioc_strings_contains_may12_additions():
     reason = "Fork 1 (BLOCKED_NPM_VERSIONS in auditor) not merged yet",
 )
 def test_lockfile_auditor_blocked_versions_match_scanner():
-    """The auditor's BLOCKED_NPM_VERSIONS must mirror the scanner's
-    table verbatim (Fork 1's plan says to duplicate with a sync
-    comment until the next PR factors them into a shared module).
-    """
+    """Auditor's BLOCKED_NPM_VERSIONS must mirror the scanner's table verbatim."""
     from scripts import scan_npm_packages as snp
-
     assert (
         lsa.BLOCKED_NPM_VERSIONS == snp.BLOCKED_NPM_VERSIONS
     ), "auditor and scanner BLOCKED_NPM_VERSIONS tables drifted"
@@ -171,15 +153,7 @@ checksum = "0000000000000000000000000000000000000000000000000000000000000000"
 
 
 def test_malicious_cargo_lockfile_refused(tmp_path):
-    """Inline Cargo.lock with `source = "git+https://example.com/..."`
-    must trip the `non-registry-cargo-source` check.
-
-    `non-registry-cargo-source` is an advisory finding kind in the
-    auditor's default mode (per the audit script's BLOCKING_KINDS
-    set). To exercise the historical "refuse to install" behavior we
-    pass --strict here; that promotes every finding to blocking and
-    keeps the test honest about its intent (detection + refusal).
-    """
+    """git+https:// Cargo source trips non-registry-cargo-source; --strict makes it blocking."""
     lockfile = tmp_path / "Cargo.lock"
     lockfile.write_text(_MALICIOUS_CARGO_LOCK)
     proc = _run_auditor(
@@ -195,11 +169,7 @@ def test_malicious_cargo_lockfile_refused(tmp_path):
 
 
 def test_malicious_cargo_lockfile_default_mode_advisory(tmp_path):
-    """Default (non-strict) mode classifies `non-registry-cargo-source`
-    as advisory: the finding is still emitted as a `::warning::`
-    annotation but the process exits 0 so the build is not gated.
-    Regression test for the advisory/strict split.
-    """
+    """Default mode emits non-registry-cargo-source as advisory ::warning:: but exits 0."""
     lockfile = tmp_path / "Cargo.lock"
     lockfile.write_text(_MALICIOUS_CARGO_LOCK)
     proc = _run_auditor(
@@ -232,18 +202,11 @@ def test_audit_cargo_lockfile_direct_call(tmp_path):
 
 
 def test_gha_escape_collapses_finding_to_one_line():
-    """`_gha_escape()` must collapse newlines (`%0A`), carriage
-    returns (`%0D`), and percent signs (`%25`) so that
-    `::warning::<msg>` / `::error::<msg>` render the full finding
-    in the GitHub Actions UI annotation instead of being truncated
-    at the first newline. The `%` replacement must happen first or
-    the subsequent `%0A` / `%0D` escapes get double-encoded.
-    """
+    """_gha_escape() encodes \\n/\\r/% so GHA annotations aren't truncated; % must escape first."""
     assert lsa._gha_escape("a\nb\nc") == "a%0Ab%0Ac"
     assert lsa._gha_escape("a\rb") == "a%0Db"
     assert lsa._gha_escape("100%") == "100%25"
-    # Order regression: `%` must escape before `\n` so the literal
-    # text `a%b\nc` becomes `a%25b%0Ac`, not `a%250Ab%0Ac`.
+    # Order regression: `%` must escape before `\n`, else escapes double-encode.
     assert lsa._gha_escape("a%b\nc") == "a%25b%0Ac"
 
     f = lsa.Finding(
@@ -261,13 +224,7 @@ def test_gha_escape_collapses_finding_to_one_line():
 
 
 def test_advisory_finding_emitted_as_single_line_annotation(tmp_path):
-    """End-to-end check: the `::warning::` line emitted for an
-    advisory finding must be a SINGLE physical line (the rest of
-    the Finding is `%0A`-escaped inside the message). Regression
-    test for the gemini-code-assist review on PR #5604: without
-    `_gha_escape`, GitHub Actions truncates the annotation after
-    `[kind] path` and the package + detail fields never render.
-    """
+    """Advisory ::warning:: must be one physical line (%0A-escaped). Regression for PR #5604."""
     lockfile = tmp_path / "Cargo.lock"
     lockfile.write_text(_MALICIOUS_CARGO_LOCK)
     proc = _run_auditor(
@@ -275,15 +232,12 @@ def test_advisory_finding_emitted_as_single_line_annotation(tmp_path):
         npm_lockfiles = [FIXTURES / "clean_lockfile.json"],
         cargo_lockfiles = [lockfile],
     )
-    warning_lines = [
-        line for line in proc.stderr.splitlines() if line.startswith("::warning::")
-    ]
+    warning_lines = [line for line in proc.stderr.splitlines() if line.startswith("::warning::")]
     assert warning_lines, (
         "expected at least one ::warning:: annotation; " f"stderr was:\n{proc.stderr}"
     )
     for line in warning_lines:
-        # Single physical line: kind, package, detail all present
-        # via %0A escape, not split across stderr lines.
+        # One physical line: kind/package/detail joined via %0A, not split.
         assert "%0A" in line, (
             f"::warning:: line has no %0A escape; multi-line text "
             f"would be truncated by GH Actions:\n{line}"
@@ -299,11 +253,7 @@ def test_advisory_finding_emitted_as_single_line_annotation(tmp_path):
 
 
 def test_skip_env_var_with_short_value_rejected(tmp_path):
-    """`UNSLOTH_LOCKFILE_AUDIT_SKIP=1` used to silently bypass the
-    audit. Per SF4 it must instead emit a `::warning::` to stderr and
-    fall through to run the audit. A real justification value
-    (>=5 chars, not a boolean shape) is still honored.
-    """
+    """SF4: a short/boolean UNSLOTH_LOCKFILE_AUDIT_SKIP is rejected; a real justification is honored."""
     fixture = FIXTURES / "clean_lockfile.json"
 
     # Case 1 -- "1" rejected, audit RUNS.
@@ -325,9 +275,9 @@ def test_skip_env_var_with_short_value_rejected(tmp_path):
     combined_bad = proc_bad.stdout + proc_bad.stderr
     assert "::warning::" in combined_bad, combined_bad
     assert "REQUIRES a justification" in combined_bad, combined_bad
-    # Audit actually ran (saw the per-file banner).
+    # Per-file banner proves the audit ran.
     assert "[lockfile-audit] npm:" in combined_bad, combined_bad
-    # Fixture is clean, so exit 0 -- but the audit was performed.
+    # Clean fixture -> exit 0, but the audit was performed.
     assert proc_bad.returncode == 0, (
         f"expected rc 0 on clean fixture, got {proc_bad.returncode}\n"
         f"--- stdout ---\n{proc_bad.stdout}\n"
@@ -355,7 +305,7 @@ def test_skip_env_var_with_short_value_rejected(tmp_path):
     assert "::warning::" in combined_ok
     assert "skipped" in combined_ok.lower()
     assert "ticket-5397" in combined_ok
-    # Skip path means the audit body never ran (no "npm:" banner).
+    # Skip path: no "npm:" banner means the audit body never ran.
     assert "[lockfile-audit] npm:" not in combined_ok, combined_ok
 
     # Case 3 -- the booleanish tokens are ALL rejected.

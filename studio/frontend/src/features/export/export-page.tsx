@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { SectionCard } from "@/components/section-card";
+import { RecentTrainingsSection } from "@/features/studio/recent-trainings-section";
 import { Button } from "@/components/ui/button";
 import {
   Combobox,
@@ -24,7 +25,6 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
-import { Switch } from "@/components/ui/switch";
 import { Spinner } from "@/components/ui/spinner";
 import {
   Tooltip,
@@ -36,6 +36,7 @@ import {
   type LocalModelInfo,
   useTrainingConfigStore,
 } from "@/features/training";
+import { confirmRemoteCodeIfNeeded } from "@/features/security";
 import {
   useDebouncedValue,
   useHfModelSearch,
@@ -70,12 +71,46 @@ import { QuantPicker } from "./components/quant-picker";
 import {
   type ExportMethod,
   GUIDE_STEPS,
+  buildQuantSizeLabels,
   getEstimatedSize,
 } from "./constants";
+import { useExportSizeEstimate } from "./hooks/use-export-size-estimate";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { exportTourSteps } from "./tour";
 
 const SEARCH_INPUT_REASONS = new Set(["input-change", "input-paste", "input-clear"]);
+
+function buildRelativeSaveDirectory(
+  exportMethod: ExportMethod | null,
+  sourceBaseModelName: string,
+  selectedModelIdx: string | null,
+  checkpoint: string | null,
+): string {
+  if (exportMethod === "gguf") {
+    return `${(sourceBaseModelName.split("/").pop() ?? selectedModelIdx ?? "model")
+      .replace(/[^a-zA-Z0-9._-]/g, "-")}-gguf`;
+  }
+  return `${selectedModelIdx ?? "model"}/${checkpoint}`;
+}
+
+function siblingGgufDirectory(sourcePath: string): string | null {
+  const trimmed = sourcePath.trim().replace(/[\\/]+$/, "");
+  if (!trimmed) return null;
+  const slash = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
+  if (slash < 0) return `${trimmed}_gguf`;
+  const parent =
+    slash === 0 || (slash === 2 && /^[A-Za-z]:/.test(trimmed))
+      ? trimmed.slice(0, slash + 1)
+      : trimmed.slice(0, slash);
+  const name = trimmed.slice(slash + 1);
+  if (!name) return null;
+  const sep = parent.endsWith("/") || parent.endsWith("\\")
+    ? ""
+    : trimmed.includes("\\")
+      ? "\\"
+      : "/";
+  return `${parent}${sep}${name}_gguf`;
+}
 
 export function ExportPage() {
   const { hfToken, setHfToken } = useTrainingConfigStore(
@@ -96,8 +131,6 @@ export function ExportPage() {
     "checkpoint",
   );
   const [modelSource, setModelSource] = useState<"hf" | "local">("hf");
-  const [hfExportTrustRemoteCode, setHfExportTrustRemoteCode] =
-    useState(true);
   const [modelInput, setModelInput] = useState("");
   const [selectedSourceModel, setSelectedSourceModel] = useState<string | null>(
     null,
@@ -114,6 +147,9 @@ export function ExportPage() {
   const [dialogOpen, setDialogOpen] = useState(false);
 
   const [destination, setDestination] = useState<"local" | "hub">("local");
+  const [customSaveDirectory, setCustomSaveDirectory] = useState<string | null>(
+    null,
+  );
   const [hfUsername, setHfUsername] = useState("");
   const [modelName, setModelName] = useState("");
   const [privateRepo, setPrivateRepo] = useState(false);
@@ -121,9 +157,8 @@ export function ExportPage() {
   const [exporting, setExporting] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
   const [exportSuccess, setExportSuccess] = useState(false);
-  // Resolved on-disk path of the most recent successful export, surfaced
-  // on the Export Complete screen so the user can find their model
-  // without digging through the server log. Null for Hub-only pushes.
+  // On-disk path of the last successful export, shown on the Export Complete
+  // screen so the user can find their model. Null for Hub-only pushes.
   const [exportOutputPath, setExportOutputPath] = useState<string | null>(null);
 
   const hfComboboxAnchorRef = useRef<HTMLDivElement>(null);
@@ -209,6 +244,26 @@ export function ExportPage() {
   const sourceBaseModelName = sourceMode === "model"
     ? selectedSourceModel ?? "—"
     : baseModelName;
+
+  // For a full fine-tune checkpoint the weights live in the checkpoint dir
+  // itself (its base_model may be a local/custom path that can't be sized), so
+  // size that dir; for LoRA adapters the export merges into the base model.
+  const sizeTargetModel = useMemo(() => {
+    if (sourceMode === "checkpoint" && !isAdapter) {
+      const cp = checkpointsForModel.find((c) => c.display_name === checkpoint);
+      if (cp?.path) {
+        return cp.path;
+      }
+    }
+    return sourceBaseModelName;
+  }, [sourceMode, isAdapter, checkpointsForModel, checkpoint, sourceBaseModelName]);
+
+  // Real (MoE-aware) fp16 size, used to scale the GGUF quant estimates.
+  const { fp16Bytes } = useExportSizeEstimate(sizeTargetModel, debouncedHfToken);
+  const quantSizeLabels = useMemo(
+    () => buildQuantSizeLabels(fp16Bytes),
+    [fp16Bytes],
+  );
 
   const {
     results: hfResults,
@@ -334,9 +389,39 @@ export function ExportPage() {
     }
   };
 
-  const estimatedSize = getEstimatedSize(exportMethod, quantLevels);
+  const estimatedSize = getEstimatedSize(exportMethod, quantLevels, fp16Bytes);
   const selectedExportSource =
     sourceMode === "checkpoint" ? checkpoint : selectedSourceModel;
+  const defaultSaveDirectory = useMemo(() => {
+    const relative = buildRelativeSaveDirectory(
+      exportMethod,
+      sourceBaseModelName,
+      selectedModelIdx,
+      checkpoint,
+    );
+    if (
+      exportMethod === "gguf" &&
+      sourceMode === "model" &&
+      modelSource === "local" &&
+      selectedSourceModel
+    ) {
+      const localModel = localMetaById.get(selectedSourceModel);
+      if (localModel && (localModel.source === "models_dir" || localModel.source === "custom")) {
+        return siblingGgufDirectory(localModel.path) ?? relative;
+      }
+    }
+    return relative;
+  }, [
+    checkpoint,
+    exportMethod,
+    localMetaById,
+    modelSource,
+    selectedModelIdx,
+    selectedSourceModel,
+    sourceBaseModelName,
+    sourceMode,
+  ]);
+  const saveDirectory = customSaveDirectory?.trim() || defaultSaveDirectory;
   const canExport = !!(
     selectedExportSource &&
     exportMethod &&
@@ -381,6 +466,10 @@ export function ExportPage() {
     setSelectedSourceModel(next || null);
   }, []);
 
+  useEffect(() => {
+    setCustomSaveDirectory(null);
+  }, [checkpoint, exportMethod, modelSource, selectedModelIdx, selectedSourceModel, sourceMode]);
+
   const handleLocalSourceInputChange = useCallback(
     (value: string, eventDetails?: { reason?: string }) => {
       localModelInputRef.current = value;
@@ -411,13 +500,6 @@ export function ExportPage() {
     setExportSuccess(false);
     setExportOutputPath(null);
 
-    // For GGUF, use a flat folder like "exports/gemma-3-4b-it-finetune-gguf"
-    // For other formats, nest under training-run/checkpoint
-    const saveDir =
-      exportMethod === "gguf"
-        ? `${(sourceBaseModelName.split("/").pop() ?? selectedModelIdx ?? "model")
-          .replace(/[^a-zA-Z0-9._-]/g, "-")}-gguf`
-        : `${selectedModelIdx ?? "model"}/${checkpoint}`;
     const pushToHub = destination === "hub";
     const repoId = pushToHub && hfUsername && modelName
       ? `${hfUsername}/${modelName}`
@@ -428,26 +510,45 @@ export function ExportPage() {
       // 1. Load model source
       if (sourceMode === "checkpoint") {
         if (!checkpointPath) return;
-        await loadCheckpoint({ checkpoint_path: checkpointPath });
+        await loadCheckpoint({
+          checkpoint_path: checkpointPath,
+          hf_token: hfToken || null,
+        });
       } else {
+        // Consent gate for an HF source's custom (auto_map) code: the only way to enable
+        // trust_remote_code here. A local checkpoint the user exported is trusted by default.
+        let trustRemoteCode = modelSource !== "hf";
+        let approvedRemoteCodeFingerprint: string | null = null;
+        const remoteCodeOk = await confirmRemoteCodeIfNeeded({
+          modelName: source,
+          hfToken: hfToken || null,
+          // An HF source can need trust_remote_code via its YAML default with no auto_map
+          // to review; signal it so a YAML-only model does not export with it false.
+          requiresTrustRemoteCode: modelSource === "hf",
+          onApprove: (fingerprint) => {
+            trustRemoteCode = true;
+            approvedRemoteCodeFingerprint = fingerprint;
+          },
+        });
+        if (!remoteCodeOk) return;
+
         await loadCheckpoint({
           checkpoint_path: source,
           load_in_4bit: false,
-          trust_remote_code:
-            modelSource === "hf" ? hfExportTrustRemoteCode : true,
+          trust_remote_code: trustRemoteCode,
+          approved_remote_code_fingerprint: approvedRemoteCodeFingerprint,
+          hf_token: hfToken || null,
         });
       }
 
-      // 2. Run export based on method. Capture the resolved output_path
-      // (when the backend wrote a local copy) so the success screen can
-      // show the user the realpath of their saved model. For multi-quant
-      // GGUF runs, the directory is the same for every quant so we just
-      // keep the last response.
+      // 2. Run export. Capture the resolved output_path (when the backend
+      // wrote a local copy) for the success screen. Multi-quant GGUF runs
+      // share one directory, so we just keep the last response.
       let lastOutputPath: string | null = null;
       if (exportMethod === "merged") {
         if (isAdapter) {
           const resp = await exportMerged({
-            save_directory: saveDir,
+            save_directory: saveDirectory,
             push_to_hub: pushToHub,
             repo_id: repoId,
             hf_token: token,
@@ -456,7 +557,7 @@ export function ExportPage() {
           lastOutputPath = resp.details?.output_path ?? null;
         } else {
           const resp = await exportBase({
-            save_directory: saveDir,
+            save_directory: saveDirectory,
             push_to_hub: pushToHub,
             repo_id: repoId,
             hf_token: token,
@@ -468,7 +569,7 @@ export function ExportPage() {
       } else if (exportMethod === "gguf") {
         for (const quant of quantLevels) {
           const resp = await exportGGUF({
-            save_directory: saveDir,
+            save_directory: saveDirectory,
             quantization_method: quant,
             push_to_hub: pushToHub,
             repo_id: repoId,
@@ -478,7 +579,7 @@ export function ExportPage() {
         }
       } else if (exportMethod === "lora") {
         const resp = await exportLoRA({
-          save_directory: saveDir,
+          save_directory: saveDirectory,
           push_to_hub: pushToHub,
           repo_id: repoId,
           hf_token: token,
@@ -510,25 +611,24 @@ export function ExportPage() {
     selectedModelData,
     exportMethod,
     isAdapter,
-    sourceBaseModelName,
     quantLevels,
     destination,
+    saveDirectory,
     hfUsername,
     modelName,
     hfToken,
     privateRepo,
     modelSource,
-    hfExportTrustRemoteCode,
   ]);
 
   // ---- Render ----
   return (
     <div className="min-h-[calc(100dvh-var(--studio-titlebar-height,0px))] bg-background">
-      <main className="mx-auto max-w-7xl px-4 py-8 sm:px-6">
+      <main className="mx-auto max-w-7xl px-5 py-8 sm:px-9">
         <GuidedTour {...tour.tourProps} />
 
         <div className="mb-8 flex flex-col gap-0.5">
-          <h1 className="text-2xl font-semibold tracking-tight">
+          <h1 className="text-[30px] font-semibold leading-[1.04] tracking-[-0.028em] text-foreground sm:text-[34px]">
             Export Model
           </h1>
           <p className="text-sm text-muted-foreground">
@@ -542,7 +642,7 @@ export function ExportPage() {
           description="Select source, method, and quantization"
           accent="emerald"
           featured={true}
-          className="shadow-border ring-1 ring-border"
+          className="ring-0 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:shadow-none"
         >
           {/* Loading / error states */}
           {loadingCheckpoints && (
@@ -808,43 +908,8 @@ export function ExportPage() {
                               </p>
                             )}
                           </div>
-                          <div className="flex items-center gap-2">
-                            <Switch
-                              id="hf-export-trust-remote-code"
-                              size="sm"
-                              checked={hfExportTrustRemoteCode}
-                              onCheckedChange={setHfExportTrustRemoteCode}
-                              disabled={exporting}
-                            />
-                            <label
-                              htmlFor="hf-export-trust-remote-code"
-                              className="cursor-pointer text-xs font-medium text-muted-foreground hover:text-foreground"
-                            >
-                              Trust remote code
-                            </label>
-                            <Tooltip>
-                              <TooltipTrigger asChild={true}>
-                                <button
-                                  type="button"
-                                  className="text-muted-foreground hover:text-foreground -m-1 inline-flex rounded p-1"
-                                  aria-label="About trust remote code"
-                                >
-                                  <HugeiconsIcon
-                                    icon={InformationCircleIcon}
-                                    className="size-3.5"
-                                  />
-                                </button>
-                              </TooltipTrigger>
-                              <TooltipContent
-                                side="top"
-                                className="max-w-[260px] text-xs"
-                              >
-                                Loads custom Python from the repo if the model
-                                needs it. Turn off if you do not trust the
-                                source.
-                              </TooltipContent>
-                            </Tooltip>
-                          </div>
+                          {/* No persistent "trust remote code" toggle: custom code is
+                              consented per model via the load-time review dialog. */}
                           <div className="flex flex-col gap-1.5">
                             <label className="text-xs font-medium text-muted-foreground">
                               Hugging Face Token (Optional)
@@ -1044,21 +1109,28 @@ export function ExportPage() {
               <AnimatePresence>
                 {exportMethod === "gguf" && (
                   <motion.div {...collapseAnim} className="overflow-visible">
-                    <QuantPicker value={quantLevels} onChange={setQuantLevels} />
+                    <QuantPicker
+                      value={quantLevels}
+                      onChange={setQuantLevels}
+                      sizes={quantSizeLabels}
+                    />
                   </motion.div>
                 )}
               </AnimatePresence>
 
               <Separator />
-              <div className="flex items-center justify-end">
-                {/* TODO: unhide once estimated size comes from the backend API */}
-                {/* <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                  <HugeiconsIcon
-                    icon={InformationCircleIcon}
-                    className="size-3.5"
-                  />
-                  <span>Est. size: {estimatedSize} · Free disk space: 120 GB</span>
-                </div> */}
+              <div className="flex items-center justify-between">
+                {estimatedSize ? (
+                  <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                    <HugeiconsIcon
+                      icon={InformationCircleIcon}
+                      className="size-3.5"
+                    />
+                    <span>Est. size: {estimatedSize}</span>
+                  </div>
+                ) : (
+                  <span />
+                )}
                 <Button
                   data-tour="export-cta"
                   disabled={!canExport}
@@ -1070,6 +1142,8 @@ export function ExportPage() {
             </>
           )}
         </SectionCard>
+
+        <RecentTrainingsSection />
       </main>
 
       <ExportDialog
@@ -1083,6 +1157,10 @@ export function ExportPage() {
         isAdapter={sourceMode === "checkpoint" && isAdapter}
         destination={destination}
         onDestinationChange={setDestination}
+        saveDirectory={saveDirectory}
+        defaultSaveDirectory={defaultSaveDirectory}
+        saveDirectoryOverridden={!!customSaveDirectory}
+        onSaveDirectoryChange={setCustomSaveDirectory}
         hfUsername={hfUsername}
         onHfUsernameChange={setHfUsername}
         modelName={modelName}

@@ -1,17 +1,17 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Automatic transformers version switching.
+"""Automatic transformers version switching.
 
 Some newer model architectures (Ministral-3, GLM-4.7-Flash, Qwen3-30B-A3B MoE,
-tiny_qwen3_moe) require transformers>=5.3.0, while Gemma 4 models require
-transformers>=5.5.0.  Everything else needs the default 4.57.x that ships
-with Unsloth.
+tiny_qwen3_moe) require transformers>=5.3.0, while Gemma 4 models require a
+newer 5.x sidecar.  Everything else needs the default 4.57.x that ships with
+Unsloth.
 
 Two separate target directories are maintained:
   - .venv_t5_530/  — transformers 5.3.0 (Ministral-3, GLM, Qwen3 MoE, etc.)
   - .venv_t5_550/  — transformers 5.5.0 (Gemma 4)
+  - .venv_t5_510/  — transformers 5.10.2 (Gemma 4 Unified / 12B)
 
 When loading a LoRA adapter with a custom name, we resolve the base model from
 ``adapter_config.json`` and check *that* against the model list.
@@ -57,8 +57,7 @@ def _env_offline() -> bool:
 # Detection
 # ---------------------------------------------------------------------------
 
-# Lowercase substrings — if ANY appears anywhere in the lowered model name,
-# we need transformers 5.3.0.
+# Lowercase substrings — any match in the lowered model name needs transformers 5.3.0.
 TRANSFORMERS_5_MODEL_SUBSTRINGS: tuple[str, ...] = (
     "ministral-3-",  # Ministral-3-{3,8,14}B-{Instruct,Reasoning,Base}-2512
     "glm-4.7-flash",  # GLM-4.7-Flash
@@ -69,12 +68,31 @@ TRANSFORMERS_5_MODEL_SUBSTRINGS: tuple[str, ...] = (
     "lfm2.5-vl-450m",  # LiquidAI/LFM2.5-VL-450M
 )
 
-# Lowercase substrings for models that require transformers 5.5.0 (checked first).
+# Lowercase substrings for models that require transformers 5.10.x (checked first).
+TRANSFORMERS_510_MODEL_SUBSTRINGS: tuple[str, ...] = (
+    "gemma-4-12b",  # Gemma 4 Unified 12B
+    "gemma4-12b",
+)
+
+# Lowercase substrings for models that require the Gemma 4 transformers 5.5 sidecar.
 TRANSFORMERS_550_MODEL_SUBSTRINGS: tuple[str, ...] = (
     "gemma-4",  # Gemma-4 (E2B-it, E4B-it, 31B-it, 26B-A4B-it)
     "gemma4",  # Gemma-4 alternate naming
     "qwen3.6",
 )
+
+# Architecture classes / model_type values that require transformers 5.10.x.
+# Checked via config.json (local or HuggingFace).
+_TRANSFORMERS_510_ARCHITECTURES: set[str] = {
+    "Gemma4UnifiedForConditionalGeneration",
+    "Gemma4AssistantForCausalLM",
+    "Gemma4UnifiedAssistantForCausalLM",
+}
+_TRANSFORMERS_510_MODEL_TYPES: set[str] = {
+    "gemma4_unified",
+    "gemma4_assistant",
+    "gemma4_unified_assistant",
+}
 
 # Architecture classes / model_type values that require transformers 5.5.0.
 # Checked via config.json (local or HuggingFace).
@@ -85,30 +103,35 @@ _TRANSFORMERS_550_MODEL_TYPES: set[str] = {
     "gemma4",
 }
 
-# Tokenizer classes that only exist in transformers>=5.x
+# Tokenizer classes that only exist in transformers>=5.x.
 _TRANSFORMERS_5_TOKENIZER_CLASSES: set[str] = {
     "TokenizersBackend",
 }
 
-# Cache for dynamic tokenizer_config.json lookups to avoid repeated fetches
+# Cache for dynamic tokenizer_config.json lookups (avoids repeated fetches).
 _tokenizer_class_cache: dict[str, bool] = {}
 
-# Cache for dynamic config.json lookups (architecture/model_type checks)
+# config.json cache keyed on (model_name, token-hash) so authed/unauthed reads stay separate.
+_config_json_cache: dict[tuple[str, str | None], dict | None] = {}
+_config_needs_510_cache: dict[str, bool] = {}
 _config_needs_550_cache: dict[str, bool] = {}
 
 # Versions
+TRANSFORMERS_510_VERSION = "5.10.2"
 TRANSFORMERS_550_VERSION = "5.5.0"
 TRANSFORMERS_530_VERSION = "5.3.0"
 TRANSFORMERS_DEFAULT_VERSION = "4.57.6"
-# Backwards-compat alias — points to 5.5.0 (the highest 5.x tier).
-# Consumers should prefer TRANSFORMERS_530_VERSION / TRANSFORMERS_550_VERSION.
-TRANSFORMERS_5_VERSION = TRANSFORMERS_550_VERSION
+# Backwards-compat alias — points to the highest 5.x tier.
+# Consumers should prefer TRANSFORMERS_510_VERSION / TRANSFORMERS_550_VERSION /
+# TRANSFORMERS_530_VERSION.
+TRANSFORMERS_5_VERSION = TRANSFORMERS_510_VERSION
 
 # Pre-installed directories — created by setup.sh / setup.ps1.
 from utils.paths.storage_roots import studio_root as _studio_root  # noqa: E402
 
 _VENV_T5_530_DIR = str(_studio_root() / ".venv_t5_530")
 _VENV_T5_550_DIR = str(_studio_root() / ".venv_t5_550")
+_VENV_T5_510_DIR = str(_studio_root() / ".venv_t5_510")
 # Backwards-compat alias
 _VENV_T5_DIR = _VENV_T5_550_DIR
 
@@ -116,25 +139,46 @@ _VENV_T5_DIR = _VENV_T5_550_DIR
 def activate_transformers_for_subprocess(model_name: str) -> None:
     """Activate the correct transformers version in a subprocess worker.
 
-    Call this BEFORE any ML imports. Resolves LoRA adapters to their base
-    model, determines the required tier, and prepends the appropriate
-    ``.venv_t5_*`` directory to ``sys.path``.  Also propagates the path
-    via ``PYTHONPATH`` for child processes (e.g. GGUF converter).
-
-    Used by training, inference, and export workers.
+    Call BEFORE any ML imports. Resolves LoRA adapters to their base model,
+    determines the required tier, prepends the appropriate ``.venv_t5_*`` dir to
+    ``sys.path``, and propagates it via ``PYTHONPATH`` for child processes
+    (e.g. GGUF converter). Used by training, inference, and export workers.
     """
     resolved = _resolve_base_model(model_name)
     tier = get_transformers_tier(resolved)
 
-    if tier == "550":
+    if tier == "510":
+        if not _ensure_venv_t5_510_exists():
+            raise RuntimeError(
+                f"Cannot activate transformers {TRANSFORMERS_510_VERSION}: "
+                f".venv_t5_510 missing at {_VENV_T5_510_DIR}"
+            )
+        if _VENV_T5_510_DIR not in sys.path:
+            sys.path.insert(0, _VENV_T5_510_DIR)
+        logger.info(
+            "Prepended transformers %s venv to sys.path from %s "
+            "(path only; the loaded version is confirmed later by "
+            "'Subprocess loaded transformers ...' on first import)",
+            TRANSFORMERS_510_VERSION,
+            _VENV_T5_510_DIR,
+        )
+        _pp = os.environ.get("PYTHONPATH", "")
+        os.environ["PYTHONPATH"] = _VENV_T5_510_DIR + (os.pathsep + _pp if _pp else "")
+    elif tier == "550":
         if not _ensure_venv_t5_550_exists():
             raise RuntimeError(
-                f"Cannot activate transformers 5.5.0: "
+                f"Cannot activate transformers {TRANSFORMERS_550_VERSION}: "
                 f".venv_t5_550 missing at {_VENV_T5_550_DIR}"
             )
         if _VENV_T5_550_DIR not in sys.path:
             sys.path.insert(0, _VENV_T5_550_DIR)
-        logger.info("Activated transformers 5.5.0 from %s", _VENV_T5_550_DIR)
+        logger.info(
+            "Prepended transformers %s venv to sys.path from %s "
+            "(path only; the loaded version is confirmed later by "
+            "'Subprocess loaded transformers ...' on first import)",
+            TRANSFORMERS_550_VERSION,
+            _VENV_T5_550_DIR,
+        )
         _pp = os.environ.get("PYTHONPATH", "")
         os.environ["PYTHONPATH"] = _VENV_T5_550_DIR + (os.pathsep + _pp if _pp else "")
     elif tier == "530":
@@ -145,7 +189,13 @@ def activate_transformers_for_subprocess(model_name: str) -> None:
             )
         if _VENV_T5_530_DIR not in sys.path:
             sys.path.insert(0, _VENV_T5_530_DIR)
-        logger.info("Activated transformers 5.3.0 from %s", _VENV_T5_530_DIR)
+        logger.info(
+            "Prepended transformers %s venv to sys.path from %s "
+            "(path only; the loaded version is confirmed later by "
+            "'Subprocess loaded transformers ...' on first import)",
+            TRANSFORMERS_530_VERSION,
+            _VENV_T5_530_DIR,
+        )
         _pp = os.environ.get("PYTHONPATH", "")
         os.environ["PYTHONPATH"] = _VENV_T5_530_DIR + (os.pathsep + _pp if _pp else "")
     else:
@@ -155,11 +205,10 @@ def activate_transformers_for_subprocess(model_name: str) -> None:
 def _resolve_base_model(model_name: str) -> str:
     """If *model_name* points to a LoRA adapter, return its base model.
 
-    Checks for ``adapter_config.json`` locally first.  Only calls the heavier
-    ``get_base_model_from_lora`` for paths that are actual local directories
-    (avoids noisy warnings for plain HF model IDs).
-
-    Returns the original *model_name* unchanged if it is not a LoRA adapter.
+    Checks ``adapter_config.json`` locally first. Only calls the heavier
+    ``get_base_model_from_lora`` for real local directories (avoids noisy
+    warnings for plain HF model IDs). Returns *model_name* unchanged if not a
+    LoRA adapter.
     """
     # --- Fast local check ---------------------------------------------------
     local_path = Path(model_name)
@@ -201,7 +250,6 @@ def _resolve_base_model(model_name: str) -> str:
     if local_path.is_dir():
         try:
             from utils.models import get_base_model_from_lora
-
             base = get_base_model_from_lora(model_name)
             if base:
                 logger.info(
@@ -222,11 +270,11 @@ def _resolve_base_model(model_name: str) -> str:
 
 
 def _check_tokenizer_config_needs_v5(model_name: str) -> bool:
-    """Fetch tokenizer_config.json from HuggingFace and check if the
-    tokenizer_class requires transformers 5.x.
+    """True if the model's tokenizer_class requires transformers 5.x.
 
-    Results are cached in ``_tokenizer_class_cache`` to avoid repeated fetches.
-    Returns False on any network/parse error (fail-open to default version).
+    Checks local tokenizer_config.json, else fetches from HuggingFace. Cached in
+    ``_tokenizer_class_cache``. Returns False on any network/parse error
+    (fail-open to default version).
     """
     if model_name in _tokenizer_class_cache:
         return _tokenizer_class_cache[model_name]
@@ -275,106 +323,226 @@ def _check_tokenizer_config_needs_v5(model_name: str) -> bool:
         _tokenizer_class_cache[model_name] = result
         return result
     except Exception as exc:
-        logger.debug(
-            "Could not fetch tokenizer_config.json for '%s': %s", model_name, exc
-        )
+        logger.debug("Could not fetch tokenizer_config.json for '%s': %s", model_name, exc)
         _tokenizer_class_cache[model_name] = False
         return False
 
 
-def _check_config_needs_550(model_name: str) -> bool:
-    """Check ``config.json`` for architectures or model_type that require
-    transformers 5.5.0 (e.g. Gemma 4).
+def _load_config_json(model_name: str, hf_token: str | None = None) -> dict | None:
+    """Return parsed ``config.json`` for *model_name*, checking local files first.
 
-    Checks locally first, then falls back to fetching from HuggingFace.
-    Results are cached in ``_config_needs_550_cache``.
-    Returns False on any error (fail-open to lower tier).
+    ``hf_token`` authenticates the raw fetch so gated/private repos resolve. The
+    cache is keyed on the token so an unauthenticated miss never poisons a later
+    authenticated read.
     """
-    if model_name in _config_needs_550_cache:
-        return _config_needs_550_cache[model_name]
+    import hashlib
 
-    def _check_cfg(cfg: dict) -> bool:
-        archs = cfg.get("architectures", [])
-        if any(a in _TRANSFORMERS_550_ARCHITECTURES for a in archs):
-            return True
-        if cfg.get("model_type") in _TRANSFORMERS_550_MODEL_TYPES:
-            return True
-        return False
+    tok = hashlib.sha256(hf_token.encode()).hexdigest()[:16] if hf_token else None
+    cache_key = (model_name, tok)
+    if cache_key in _config_json_cache:
+        return _config_json_cache[cache_key]
 
-    # --- Check local config.json first ------------------------------------
-    local_path = Path(model_name)
-    local_cfg = local_path / "config.json"
+    local_cfg = Path(model_name) / "config.json"
     if local_cfg.is_file():
         try:
             with open(local_cfg) as f:
                 cfg = json.load(f)
-            result = _check_cfg(cfg)
-            if result:
-                logger.info(
-                    "Local config.json check: %s needs transformers 5.5.0 "
-                    "(architectures=%s, model_type=%s)",
-                    model_name,
-                    cfg.get("architectures", []),
-                    cfg.get("model_type"),
-                )
-            _config_needs_550_cache[model_name] = result
-            return result
+            _config_json_cache[cache_key] = cfg
+            return cfg
         except Exception as exc:
             logger.debug("Could not read %s: %s", local_cfg, exc)
+            _config_json_cache[cache_key] = None
+            return None
 
-    # Offline: skip the 10s urllib fetch (fail-open to lower tier).
     if _env_offline():
-        _config_needs_550_cache[model_name] = False
-        return False
+        _config_json_cache[cache_key] = None
+        return None
 
-    # --- Fall back to fetching from HuggingFace ---------------------------
     import urllib.request
 
     url = f"https://huggingface.co/{model_name}/raw/main/config.json"
+    headers = {"User-Agent": "unsloth-studio"}
+    if hf_token:
+        headers["Authorization"] = f"Bearer {hf_token}"
     try:
-        req = urllib.request.Request(url, headers = {"User-Agent": "unsloth-studio"})
+        req = urllib.request.Request(url, headers = headers)
         with urllib.request.urlopen(req, timeout = 10) as resp:
             cfg = json.loads(resp.read().decode())
-        result = _check_cfg(cfg)
-        if result:
-            logger.info(
-                "Dynamic config.json check: %s needs transformers 5.5.0 "
-                "(architectures=%s, model_type=%s)",
-                model_name,
-                cfg.get("architectures", []),
-                cfg.get("model_type"),
-            )
-        _config_needs_550_cache[model_name] = result
-        return result
+        _config_json_cache[cache_key] = cfg
+        return cfg
     except Exception as exc:
         logger.debug("Could not fetch config.json for '%s': %s", model_name, exc)
+        _config_json_cache[cache_key] = None
+        return None
+
+
+def _config_matches_tier(cfg: dict, architectures: set[str], model_types: set[str]) -> bool:
+    archs = cfg.get("architectures", [])
+    if any(a in architectures for a in archs):
+        return True
+    if cfg.get("model_type") in model_types:
+        return True
+    return False
+
+
+def _config_needs_550(cfg: dict) -> bool:
+    return _config_matches_tier(
+        cfg,
+        _TRANSFORMERS_550_ARCHITECTURES,
+        _TRANSFORMERS_550_MODEL_TYPES,
+    )
+
+
+def _config_needs_510(cfg: dict) -> bool:
+    return _config_matches_tier(
+        cfg,
+        _TRANSFORMERS_510_ARCHITECTURES,
+        _TRANSFORMERS_510_MODEL_TYPES,
+    )
+
+
+def _check_config_needs_550(model_name: str) -> bool:
+    """True if ``config.json`` has architectures/model_type needing transformers
+    5.5.0 (e.g. Gemma 4).
+
+    Checks locally first, else fetches from HuggingFace. Cached in
+    ``_config_needs_550_cache``. Returns False on any error (fail-open to lower tier).
+    """
+    if model_name in _config_needs_550_cache:
+        return _config_needs_550_cache[model_name]
+
+    cfg = _load_config_json(model_name)
+    if cfg is None:
         _config_needs_550_cache[model_name] = False
         return False
+
+    result = _config_needs_550(cfg)
+    if result:
+        logger.info(
+            "config.json check: %s needs transformers %s (architectures=%s, model_type=%s)",
+            model_name,
+            TRANSFORMERS_550_VERSION,
+            cfg.get("architectures", []),
+            cfg.get("model_type"),
+        )
+    _config_needs_550_cache[model_name] = result
+    return result
+
+
+def _check_config_needs_510(model_name: str) -> bool:
+    """Check ``config.json`` for Gemma 4 Unified / 12B architectures."""
+    if model_name in _config_needs_510_cache:
+        return _config_needs_510_cache[model_name]
+
+    cfg = _load_config_json(model_name)
+    if cfg is None:
+        _config_needs_510_cache[model_name] = False
+        return False
+
+    result = _config_needs_510(cfg)
+    if result:
+        logger.info(
+            "config.json check: %s needs transformers %s (architectures=%s, model_type=%s)",
+            model_name,
+            TRANSFORMERS_510_VERSION,
+            cfg.get("architectures", []),
+            cfg.get("model_type"),
+        )
+    _config_needs_510_cache[model_name] = result
+    return result
 
 
 def get_transformers_tier(model_name: str) -> str:
     """Return the transformers tier required for *model_name*.
 
-    Returns ``"550"`` for models needing transformers 5.5.0 (e.g. Gemma 4),
+    Returns ``"510"`` for models needing transformers 5.10.x (Gemma 4 Unified),
+    ``"550"`` for models needing transformers 5.5.0 (Gemma 4),
     ``"530"`` for models needing transformers 5.3.0 (e.g. Ministral-3, Qwen3 MoE),
     or ``"default"`` for everything else (4.57.x).
 
-    The 5.5.0 check runs first, then 5.3.0.
+    Higher 5.x tiers run first.
     """
     lowered = model_name.lower()
 
+    # Local checkpoint names can contain architecture substrings in their
+    # directory names (for example a pytest temp dir). If config.json exists,
+    # trust it before using name heuristics.
+    local_cfg = Path(model_name) / "config.json"
+    if local_cfg.is_file():
+        cfg = _load_config_json(model_name)
+        if cfg is not None and _config_needs_510(cfg):
+            logger.info(
+                "Transformers tier 510 selected for %s (local config.json check)",
+                model_name,
+            )
+            return "510"
+        if cfg is not None and _config_needs_550(cfg):
+            logger.info(
+                "Transformers tier 550 selected for %s (local config.json check)",
+                model_name,
+            )
+            return "550"
+        if cfg is not None:
+            local_tc = Path(model_name) / "tokenizer_config.json"
+            if local_tc.is_file() and _check_tokenizer_config_needs_v5(model_name):
+                logger.info(
+                    "Transformers tier 530 selected for %s (local tokenizer_config.json check)",
+                    model_name,
+                )
+                return "530"
+            logger.info(
+                "Transformers tier default (4.57.x) selected for %s (local config.json no match)",
+                model_name,
+            )
+            return "default"
+
     # --- Fast substring checks (no I/O) ------------------------------------
-    if any(sub in lowered for sub in TRANSFORMERS_550_MODEL_SUBSTRINGS):
+    if "assistant" in lowered and ("gemma-4" in lowered or "gemma4" in lowered):
+        logger.info(
+            "Transformers tier 510 selected for %s (gemma-4 assistant variant)",
+            model_name,
+        )
+        return "510"
+    match = next((sub for sub in TRANSFORMERS_510_MODEL_SUBSTRINGS if sub in lowered), None)
+    if match is not None:
+        logger.info(
+            "Transformers tier 510 selected for %s (substring match: %s)",
+            model_name,
+            match,
+        )
+        return "510"
+    match = next((sub for sub in TRANSFORMERS_550_MODEL_SUBSTRINGS if sub in lowered), None)
+    if match is not None:
+        logger.info(
+            "Transformers tier 550 selected for %s (substring match: %s)",
+            model_name,
+            match,
+        )
         return "550"
-    if any(sub in lowered for sub in TRANSFORMERS_5_MODEL_SUBSTRINGS):
+    match = next((sub for sub in TRANSFORMERS_5_MODEL_SUBSTRINGS if sub in lowered), None)
+    if match is not None:
+        logger.info(
+            "Transformers tier 530 selected for %s (substring match: %s)",
+            model_name,
+            match,
+        )
         return "530"
 
-    # --- Slow config fallbacks (local file first, then network) -----------
+    # --- Slow config fallbacks (network for HF IDs) ------------------------
+    if _check_config_needs_510(model_name):
+        logger.info("Transformers tier 510 selected for %s (config.json check)", model_name)
+        return "510"
     if _check_config_needs_550(model_name):
+        logger.info("Transformers tier 550 selected for %s (config.json check)", model_name)
         return "550"
     if _check_tokenizer_config_needs_v5(model_name):
+        logger.info(
+            "Transformers tier 530 selected for %s (tokenizer_config.json check)",
+            model_name,
+        )
         return "530"
 
+    logger.info("Transformers tier default (4.57.x) selected for %s (no match)", model_name)
     return "default"
 
 
@@ -409,12 +577,11 @@ _PURGE_PREFIXES = (
     "trl",
     "accelerate",
     "auto_gptq",
-    # NOTE: bitsandbytes is intentionally EXCLUDED — it registers torch custom
-    # operators at import time via torch.library.define(). Those registrations
-    # live in torch's global operator registry which survives module purge.
-    # Re-importing bitsandbytes after purge → duplicate registration → crash.
-    # Our own modules that import from transformers at module level
-    # (e.g. model_config.py: `from transformers import AutoConfig`)
+    # NOTE: bitsandbytes is intentionally EXCLUDED -- it registers torch custom
+    # operators via torch.library.define() into torch's global registry, which
+    # survives module purge; re-importing after purge -> duplicate registration
+    # -> crash.
+    # Our own modules that import from transformers at module level.
     "utils.models",
     "core.training",
     "core.inference",
@@ -445,6 +612,13 @@ _VENV_T5_530_PACKAGES = (
     "tiktoken",
 )
 
+_VENV_T5_510_PACKAGES = (
+    f"transformers=={TRANSFORMERS_510_VERSION}",
+    "huggingface_hub==1.8.0",
+    "hf_xet==1.4.2",
+    "tiktoken",
+)
+
 _VENV_T5_550_PACKAGES = (
     f"transformers=={TRANSFORMERS_550_VERSION}",
     "huggingface_hub==1.8.0",
@@ -465,16 +639,15 @@ def _venv_dir_is_valid(venv_dir: str, packages: tuple[str, ...]) -> bool:
         pkg_name = parts[0]
         pkg_version = parts[1] if len(parts) > 1 else None
         pkg_name_norm = pkg_name.replace("-", "_")
-        # Check directory exists
+        # Directory must exist.
         if not any(
-            (Path(venv_dir) / d).is_dir()
-            for d in (pkg_name_norm, pkg_name_norm.replace("_", "-"))
+            (Path(venv_dir) / d).is_dir() for d in (pkg_name_norm, pkg_name_norm.replace("_", "-"))
         ):
             return False
-        # For unpinned packages, existence is enough
+        # Unpinned packages: existence is enough.
         if pkg_version is None:
             continue
-        # Check version via .dist-info metadata
+        # Check version via .dist-info metadata.
         dist_info_found = False
         for di in Path(venv_dir).glob(f"{pkg_name_norm}-*.dist-info"):
             metadata = di / "METADATA"
@@ -484,8 +657,8 @@ def _venv_dir_is_valid(venv_dir: str, packages: tuple[str, ...]) -> bool:
                 if line.startswith("Version:"):
                     installed_ver = line.split(":", 1)[1].strip()
                     if installed_ver != pkg_version:
-                        logger.info(
-                            "%s has %s==%s but need %s",
+                        logger.warning(
+                            "%s has %s==%s but need %s -- venv will be wiped and reinstalled",
                             venv_dir,
                             pkg_name,
                             installed_ver,
@@ -502,13 +675,13 @@ def _venv_dir_is_valid(venv_dir: str, packages: tuple[str, ...]) -> bool:
 
 
 def _venv_t5_is_valid() -> bool:
-    """Backwards-compat: check the 5.5.0 venv."""
+    """Backwards-compat: check the Gemma 4 sidecar venv."""
     return _venv_dir_is_valid(_VENV_T5_550_DIR, _VENV_T5_550_PACKAGES)
 
 
 def _install_to_dir(pkg: str, target_dir: str) -> bool:
     """Install a single package into *target_dir*, preferring uv then pip."""
-    # Try uv first (faster) if already on PATH -- do NOT install uv at runtime
+    # Try uv first (faster) if on PATH -- do NOT install uv at runtime.
     if shutil.which("uv"):
         result = subprocess.run(
             [
@@ -533,7 +706,7 @@ def _install_to_dir(pkg: str, target_dir: str) -> bool:
             return True
         logger.warning("uv install of %s failed, falling back to pip", pkg)
 
-    # Fallback to pip
+    # Fallback to pip.
     result = subprocess.run(
         [
             sys.executable,
@@ -563,12 +736,12 @@ def _ensure_venv_dir(venv_dir: str, packages: tuple[str, ...], label: str) -> bo
     if _venv_dir_is_valid(venv_dir, packages):
         return True
 
-    logger.warning(
-        "%s not found or incomplete at %s -- installing at runtime", label, venv_dir
-    )
+    logger.warning("%s not found or incomplete at %s -- installing at runtime", label, venv_dir)
     shutil.rmtree(venv_dir, ignore_errors = True)
     os.makedirs(venv_dir, exist_ok = True)
-    for pkg in packages:
+    total = len(packages)
+    for idx, pkg in enumerate(packages, start = 1):
+        logger.info("Installing %s (%d/%d) into %s ...", pkg, idx, total, venv_dir)
         if not _install_to_dir(pkg, venv_dir):
             return False
     logger.info("Installed %s to %s", label, venv_dir)
@@ -577,20 +750,29 @@ def _ensure_venv_dir(venv_dir: str, packages: tuple[str, ...], label: str) -> bo
 
 def _ensure_venv_t5_530_exists() -> bool:
     """Ensure .venv_t5_530/ exists with transformers 5.3.0."""
-    return _ensure_venv_dir(
-        _VENV_T5_530_DIR, _VENV_T5_530_PACKAGES, "transformers 5.3.0"
-    )
+    return _ensure_venv_dir(_VENV_T5_530_DIR, _VENV_T5_530_PACKAGES, "transformers 5.3.0")
 
 
 def _ensure_venv_t5_550_exists() -> bool:
     """Ensure .venv_t5_550/ exists with transformers 5.5.0."""
     return _ensure_venv_dir(
-        _VENV_T5_550_DIR, _VENV_T5_550_PACKAGES, "transformers 5.5.0"
+        _VENV_T5_550_DIR,
+        _VENV_T5_550_PACKAGES,
+        f"transformers {TRANSFORMERS_550_VERSION}",
+    )
+
+
+def _ensure_venv_t5_510_exists() -> bool:
+    """Ensure .venv_t5_510/ exists with transformers 5.10.x."""
+    return _ensure_venv_dir(
+        _VENV_T5_510_DIR,
+        _VENV_T5_510_PACKAGES,
+        f"transformers {TRANSFORMERS_510_VERSION}",
     )
 
 
 def _ensure_venv_t5_exists() -> bool:
-    """Backwards-compat: ensure the 5.5.0 venv exists."""
+    """Backwards-compat: ensure the Gemma 4 5.5 sidecar venv exists."""
     return _ensure_venv_t5_550_exists()
 
 
@@ -610,7 +792,7 @@ def _activate_venv(venv_dir: str, label: str) -> None:
 
 def _deactivate_5x() -> None:
     """Remove all .venv_t5_*/ dirs from sys.path, purge stale modules, reimport."""
-    for d in (_VENV_T5_530_DIR, _VENV_T5_550_DIR):
+    for d in (_VENV_T5_530_DIR, _VENV_T5_550_DIR, _VENV_T5_510_DIR):
         while d in sys.path:
             sys.path.remove(d)
     logger.info("Removed venv_t5 dirs from sys.path")
@@ -626,22 +808,28 @@ def _deactivate_5x() -> None:
 def ensure_transformers_version(model_name: str) -> None:
     """Ensure the correct ``transformers`` version is active for *model_name*.
 
-    Uses sys.path with .venv_t5_530/ or .venv_t5_550/ (pre-installed by setup.sh):
+    Uses sys.path with .venv_t5_510/, .venv_t5_550/, or .venv_t5_530/
+    (pre-installed by setup.sh):
+      • Need 5.10.x → prepend .venv_t5_510/ to sys.path, purge modules.
       • Need 5.5.0 → prepend .venv_t5_550/ to sys.path, purge modules.
       • Need 5.3.0 → prepend .venv_t5_530/ to sys.path, purge modules.
       • Need 4.x  → remove all .venv_t5_*/ from sys.path, purge modules.
 
-    For LoRA adapters with custom names, the base model is resolved from
+    For custom-named LoRA adapters, the base model is resolved from
     ``adapter_config.json`` before checking.
 
-    NOTE: Training and inference use subprocess isolation instead of this
-    function. This is only used by the export path (routes/export.py).
+    NOTE: Training and inference use subprocess isolation instead. Used only by
+    the export path (routes/export.py).
     """
-    # Resolve LoRA adapters to their base model for accurate detection
+    # Resolve LoRA adapters to their base model for accurate detection.
     resolved = _resolve_base_model(model_name)
     tier = get_transformers_tier(resolved)
 
-    if tier == "550":
+    if tier == "510":
+        target_version = TRANSFORMERS_510_VERSION
+        venv_dir = _VENV_T5_510_DIR
+        ensure_fn = _ensure_venv_t5_510_exists
+    elif tier == "550":
         target_version = TRANSFORMERS_550_VERSION
         venv_dir = _VENV_T5_550_DIR
         ensure_fn = _ensure_venv_t5_550_exists
@@ -676,10 +864,10 @@ def ensure_transformers_version(model_name: str) -> None:
                 model_name,
             )
             return
-        # Different 5.x → need to switch (e.g. 5.3.0 loaded but need 5.5.0)
+        # Different 5.x -> need to switch (e.g. 5.3.0 loaded but need 5.10.x).
         in_memory_major = int(in_memory.split(".")[0])
         if in_memory_major == target_major and venv_dir is None:
-            # Both are default (4.x) — close enough
+            # Both are default (4.x) — close enough.
             logger.info(
                 "transformers %s already loaded — correct for '%s'",
                 in_memory,
@@ -689,19 +877,16 @@ def ensure_transformers_version(model_name: str) -> None:
 
     # --- Switch version -----------------------------------------------------
     if venv_dir is not None:
-        # First remove any other 5.x venv from sys.path
+        # First remove any other 5.x venv from sys.path.
         _deactivate_5x()
         if not ensure_fn():
             raise RuntimeError(
-                f"Cannot activate transformers {target_version}: "
-                f"venv missing at {venv_dir}"
+                f"Cannot activate transformers {target_version}: " f"venv missing at {venv_dir}"
             )
         logger.info("Activating transformers %s…", target_version)
         _activate_venv(venv_dir, f"transformers {target_version}")
     else:
-        logger.info(
-            "Reverting to default transformers %s…", TRANSFORMERS_DEFAULT_VERSION
-        )
+        logger.info("Reverting to default transformers %s…", TRANSFORMERS_DEFAULT_VERSION)
         _deactivate_5x()
 
     final = _get_in_memory_version()

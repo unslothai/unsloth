@@ -1,13 +1,4 @@
-"""End-to-end sandbox tests: Studio modules in isolated no-torch venvs.
-
-Covers:
-- Python 3.12 and 3.13 venv creation (Intel Mac uses 3.12, Apple Silicon/Linux 3.13)
-- data_collators.py loads and dataclasses instantiate without torch
-- chat_templates.py top-level exec works with stubs for relative imports
-- Negative control: prepending 'import torch' fails in no-torch venv
-- Negative control: installing torchao (from overrides.txt) fails in no-torch venv
-- AST structural checks for top-level torch imports
-"""
+"""Sandbox tests: Studio dataset modules load/run in isolated no-torch venvs."""
 
 from __future__ import annotations
 
@@ -23,15 +14,9 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DATA_COLLATORS = (
-    REPO_ROOT / "studio" / "backend" / "utils" / "datasets" / "data_collators.py"
-)
-CHAT_TEMPLATES = (
-    REPO_ROOT / "studio" / "backend" / "utils" / "datasets" / "chat_templates.py"
-)
-FORMAT_CONVERSION = (
-    REPO_ROOT / "studio" / "backend" / "utils" / "datasets" / "format_conversion.py"
-)
+DATA_COLLATORS = REPO_ROOT / "studio" / "backend" / "utils" / "datasets" / "data_collators.py"
+CHAT_TEMPLATES = REPO_ROOT / "studio" / "backend" / "utils" / "datasets" / "chat_templates.py"
+FORMAT_CONVERSION = REPO_ROOT / "studio" / "backend" / "utils" / "datasets" / "format_conversion.py"
 
 
 def _has_uv() -> bool:
@@ -54,10 +39,7 @@ def _create_venv(venv_dir: Path, python_version: str) -> Path | None:
 
 @pytest.fixture(params = ["3.12", "3.13"], scope = "module")
 def no_torch_venv(request, tmp_path_factory):
-    """Create a temporary venv at the requested Python version with no torch.
-
-    Parametrized for 3.12 (Intel Mac) and 3.13 (Apple Silicon / Linux).
-    """
+    """Temp no-torch venv, parametrized for 3.12 (Intel Mac) and 3.13 (Apple Silicon / Linux)."""
     if not _has_uv():
         pytest.skip("uv not available")
 
@@ -67,14 +49,11 @@ def no_torch_venv(request, tmp_path_factory):
     if venv_python is None:
         pytest.skip(f"Could not create Python {py_version} venv")
 
-    # Verify torch is NOT importable
     check = subprocess.run(
         [str(venv_python), "-c", "import torch"],
         capture_output = True,
     )
-    assert (
-        check.returncode != 0
-    ), f"torch should NOT be importable in fresh {py_version} venv"
+    assert check.returncode != 0, f"torch should NOT be importable in fresh {py_version} venv"
 
     return str(venv_python)
 
@@ -223,9 +202,7 @@ class TestDataCollatorsNoTorchVenv:
             capture_output = True,
             timeout = 30,
         )
-        assert (
-            result.returncode == 0
-        ), f"DeepSeekOCRDataCollator failed:\n{result.stderr.decode()}"
+        assert result.returncode == 0, f"DeepSeekOCRDataCollator failed:\n{result.stderr.decode()}"
         assert b"OK: DeepSeekOCRDataCollator instantiated" in result.stdout
 
     def test_dataclass_vlm_collator_instantiable(self, no_torch_venv):
@@ -246,9 +223,7 @@ class TestDataCollatorsNoTorchVenv:
             capture_output = True,
             timeout = 30,
         )
-        assert (
-            result.returncode == 0
-        ), f"VLMDataCollator failed:\n{result.stderr.decode()}"
+        assert result.returncode == 0, f"VLMDataCollator failed:\n{result.stderr.decode()}"
         assert b"OK: VLMDataCollator instantiated" in result.stdout
 
 
@@ -366,7 +341,7 @@ class TestFormatConversionAST:
                         and child.module
                         and child.module.startswith("torch")
                     ):
-                        # This torch import must be inside a Try node
+                        # This torch import must be inside a Try node.
                         found_in_try = False
                         for try_node in ast.walk(node):
                             if isinstance(try_node, ast.Try):
@@ -529,21 +504,15 @@ class TestNegativeControls:
                 capture_output = True,
                 timeout = 30,
             )
+            assert result.returncode != 0, "Expected failure when 'import torch' is prepended"
             assert (
-                result.returncode != 0
-            ), "Expected failure when 'import torch' is prepended"
-            assert (
-                b"ModuleNotFoundError" in result.stderr
-                or b"ImportError" in result.stderr
+                b"ModuleNotFoundError" in result.stderr or b"ImportError" in result.stderr
             ), f"Expected ImportError, got:\n{result.stderr.decode()}"
         finally:
             os.unlink(temp_file)
 
     def test_torchao_install_fails_no_torch_venv(self, no_torch_venv):
-        """Installing torchao (from overrides.txt) fails in a no-torch venv.
-
-        This proves the overrides.txt skip is necessary for Intel Mac.
-        """
+        """torchao install fails in a no-torch venv: proves the overrides.txt skip is needed."""
         result = subprocess.run(
             [
                 no_torch_venv,
@@ -557,10 +526,10 @@ class TestNegativeControls:
             timeout = 60,
         )
         if result.returncode != 0:
-            # torchao install/resolution failed as expected
+            # torchao install/resolution failed as expected.
             pass
         else:
-            # pip dry-run may not catch dependency issues; verify torch is missing
+            # dry-run may miss dep issues; verify torch is absent instead.
             check = subprocess.run(
                 [no_torch_venv, "-c", "import torch"],
                 capture_output = True,
@@ -577,6 +546,4 @@ class TestNegativeControls:
             timeout = 30,
         )
         assert result.returncode != 0, "import torch should fail in no-torch venv"
-        assert (
-            b"ModuleNotFoundError" in result.stderr or b"ImportError" in result.stderr
-        )
+        assert b"ModuleNotFoundError" in result.stderr or b"ImportError" in result.stderr

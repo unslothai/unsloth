@@ -13,7 +13,11 @@ import pytest
 from storage import studio_db
 
 
-def _reset_studio_db(tmp_path, monkeypatch, projects_home = None):
+def _reset_studio_db(
+    tmp_path,
+    monkeypatch,
+    projects_home = None,
+):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setenv(
         "UNSLOTH_STUDIO_PROJECTS_HOME",
@@ -26,9 +30,8 @@ def _reset_studio_db(tmp_path, monkeypatch, projects_home = None):
 def workspace_projects_home(tmp_path):
     """Projects root outside the platform delete denylist.
 
-    tmp_path resolves under /private/tmp on macOS, which the workspace
-    delete guard refuses by design. Linux/Windows tmp is not denied and is
-    used as-is; only the denied case falls back to a home subdir.
+    macOS tmp_path resolves under /private/tmp, which the delete guard refuses;
+    only the denied case falls back to a home subdir.
     """
     candidate = tmp_path / "Projects"
     resolved = str(candidate.resolve())
@@ -105,10 +108,7 @@ def test_sync_chat_messages_upserts_without_pruning(tmp_path, monkeypatch):
     assert by_id["msg-2"]["content"] == [{"type": "text", "text": "updated text"}]
 
 
-def test_chat_projects_delete_cascades_threads_and_messages(
-    tmp_path,
-    monkeypatch,
-):
+def test_chat_projects_delete_cascades_threads_and_messages(tmp_path, monkeypatch):
     _reset_studio_db(tmp_path, monkeypatch)
     project = studio_db.upsert_chat_project(_project())
     assert project["rootPath"].startswith(str(tmp_path / "Projects"))
@@ -231,23 +231,16 @@ def test_settings_merge_atomic_under_concurrency(tmp_path, monkeypatch):
 
 def test_settings_merge_preserves_nested_keys(tmp_path, monkeypatch):
     _reset_studio_db(tmp_path, monkeypatch)
-    studio_db.upsert_chat_settings_merge(
-        {"inferenceParams": {"temperature": 0.5, "topP": 0.8}}
-    )
+    studio_db.upsert_chat_settings_merge({"inferenceParams": {"temperature": 0.5, "topP": 0.8}})
     studio_db.upsert_chat_settings_merge({"inferenceParams": {"temperature": 0.9}})
 
     params = studio_db.list_chat_settings()["inferenceParams"]
     assert params == {"temperature": 0.9, "topP": 0.8}
 
 
-def test_settings_merge_quarantines_corrupt_json_and_rejects_partial_patch(
-    tmp_path,
-    monkeypatch,
-):
+def test_settings_merge_quarantines_corrupt_json_and_rejects_partial_patch(tmp_path, monkeypatch):
     _reset_studio_db(tmp_path, monkeypatch)
-    studio_db.upsert_chat_settings_merge(
-        {"inferenceParams": {"temperature": 0.5, "topP": 0.8}}
-    )
+    studio_db.upsert_chat_settings_merge({"inferenceParams": {"temperature": 0.5, "topP": 0.8}})
     conn = studio_db.get_connection()
     try:
         conn.execute(
@@ -295,9 +288,7 @@ def test_settings_merge_replaces_corrupt_scalar_after_quarantine(tmp_path, monke
     assert settings["autoTitle"] is True
     conn = studio_db.get_connection()
     try:
-        quarantined = conn.execute(
-            "SELECT key, reason FROM chat_settings_quarantine"
-        ).fetchall()
+        quarantined = conn.execute("SELECT key, reason FROM chat_settings_quarantine").fetchall()
     finally:
         conn.close()
     assert [(row["key"], row["reason"]) for row in quarantined] == [
@@ -353,11 +344,7 @@ def test_legacy_imports_records_and_lists(tmp_path, monkeypatch):
     )
     assert accepted == 3
     assert inserted == 3
-    assert set(studio_db.list_chat_legacy_imports()) == {
-        "legacy-a",
-        "legacy-b",
-        "legacy-c",
-    }
+    assert set(studio_db.list_chat_legacy_imports()) == {"legacy-a", "legacy-b", "legacy-c"}
 
 
 def test_legacy_imports_is_idempotent(tmp_path, monkeypatch):
@@ -371,11 +358,7 @@ def test_legacy_imports_is_idempotent(tmp_path, monkeypatch):
     assert (accepted1, inserted1) == (2, 2)
     # legacy-b is already in the ledger, only legacy-c is genuinely new.
     assert (accepted2, inserted2) == (2, 1)
-    assert set(studio_db.list_chat_legacy_imports()) == {
-        "legacy-a",
-        "legacy-b",
-        "legacy-c",
-    }
+    assert set(studio_db.list_chat_legacy_imports()) == {"legacy-a", "legacy-b", "legacy-c"}
 
 
 def test_legacy_imports_dedups_input(tmp_path, monkeypatch):
@@ -383,8 +366,8 @@ def test_legacy_imports_dedups_input(tmp_path, monkeypatch):
     accepted, inserted = studio_db.upsert_chat_legacy_imports(
         ["x", "x", "y", "x"],
     )
-    # accepted is the deduped non-empty input size; inserted is the rows
-    # actually new in the ledger after ON CONFLICT DO NOTHING.
+    # accepted is the deduped non-empty input size; inserted is the rows newly
+    # added to the ledger after ON CONFLICT DO NOTHING.
     assert accepted == 2
     assert inserted == 2
     assert set(studio_db.list_chat_legacy_imports()) == {"x", "y"}
@@ -395,3 +378,135 @@ def test_legacy_imports_ignores_empty(tmp_path, monkeypatch):
     assert studio_db.upsert_chat_legacy_imports([]) == (0, 0)
     assert studio_db.upsert_chat_legacy_imports(["", None]) == (0, 0)  # type: ignore[list-item]
     assert studio_db.list_chat_legacy_imports() == []
+
+
+# ---------------------------------------------------------------------------
+# fork_chat_thread
+# ---------------------------------------------------------------------------
+
+
+def _msg(mid: str, parent: str | None, t: int) -> dict:
+    return {
+        "id": mid,
+        "threadId": "src",
+        "parentId": parent,
+        "role": "user",
+        "content": [{"type": "text", "text": mid}],
+        "createdAt": t,
+    }
+
+
+def test_fork_chat_thread_copies_ancestry_with_fresh_ids(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(
+        {**_thread("src"), "title": "Original", "openaiCodeExecContainerId": "cnt-x"}
+    )
+    # Linear chain: m1 -> m2 -> m3. Plus a sibling m4 off m2 (should NOT
+    # be copied since we fork at m3).
+    studio_db.sync_chat_messages(
+        "src",
+        [
+            _msg("m1", None, 1),
+            _msg("m2", "m1", 2),
+            _msg("m3", "m2", 3),
+            _msg("m4", "m2", 4),  # sibling — must be excluded
+        ],
+    )
+
+    counter = {"i": 0}
+
+    def id_factory():
+        counter["i"] += 1
+        return f"new-{counter['i']}"
+
+    forked = studio_db.fork_chat_thread(
+        source_thread_id = "src",
+        branch_message_id = "m3",
+        new_thread_id = "fork-1",
+        new_title = "fork · Original",
+        created_at = 99,
+        id_factory = id_factory,
+    )
+    assert forked is not None
+    assert forked["id"] == "fork-1"
+    assert forked["forkedFromThreadId"] == "src"
+    assert forked["forkedFromMessageId"] == "m3"
+    # Container ids reset on fork.
+    assert forked["openaiCodeExecContainerId"] is None
+
+    copied = studio_db.list_chat_messages("fork-1")
+    # 3 ancestors (m1, m2, m3); m4 excluded.
+    assert len(copied) == 3
+    # parent_id rewritten using new ids; root has parentId None.
+    assert copied[0]["parentId"] is None
+    assert copied[1]["parentId"] == copied[0]["id"]
+    assert copied[2]["parentId"] == copied[1]["id"]
+    # All new ids regenerated.
+    assert {m["id"] for m in copied}.isdisjoint({"m1", "m2", "m3"})
+
+
+def test_fork_chat_thread_preserves_project_id(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_project(_project("project-1"))
+    studio_db.upsert_chat_thread({**_thread("src"), "projectId": "project-1"})
+    studio_db.upsert_chat_message(_msg("m1", None, 1))
+
+    forked = studio_db.fork_chat_thread(
+        source_thread_id = "src",
+        branch_message_id = "m1",
+        new_thread_id = "fork-1",
+        new_title = "fork · Original",
+        created_at = 99,
+        id_factory = lambda: "new-1",
+    )
+
+    assert forked is not None
+    assert forked["projectId"] == "project-1"
+    assert {thread["id"] for thread in studio_db.list_chat_threads(project_id = "project-1")} == {
+        "fork-1",
+        "src",
+    }
+
+
+def test_fork_chat_thread_returns_none_for_missing_source(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    result = studio_db.fork_chat_thread(
+        source_thread_id = "nope",
+        branch_message_id = "m1",
+        new_thread_id = "fork",
+        new_title = "f",
+        created_at = 1,
+        id_factory = lambda: "x",
+    )
+    assert result is None
+
+
+def test_count_forks_for_message(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread("src"))
+    studio_db.sync_chat_messages("src", [_msg("m1", None, 1)])
+    assert studio_db.count_forks_for_message("src", "m1") == 0
+
+    counter = {"i": 0}
+
+    def id_factory():
+        counter["i"] += 1
+        return f"id-{counter['i']}"
+
+    studio_db.fork_chat_thread(
+        source_thread_id = "src",
+        branch_message_id = "m1",
+        new_thread_id = "f1",
+        new_title = "f1",
+        created_at = 2,
+        id_factory = id_factory,
+    )
+    studio_db.fork_chat_thread(
+        source_thread_id = "src",
+        branch_message_id = "m1",
+        new_thread_id = "f2",
+        new_title = "f2",
+        created_at = 3,
+        id_factory = id_factory,
+    )
+    assert studio_db.count_forks_for_message("src", "m1") == 2

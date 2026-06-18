@@ -30,12 +30,8 @@ class _GgufBackend:
 
 
 def _request_completion(monkeypatch, usage):
-    monkeypatch.setattr(
-        inference_route, "get_llama_cpp_backend", lambda: _GgufBackend(usage)
-    )
-    monkeypatch.setattr(
-        inference_route, "_effective_enable_tools", lambda payload: False
-    )
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: _GgufBackend(usage))
+    monkeypatch.setattr(inference_route, "_effective_enable_tools", lambda payload: False)
 
     app = FastAPI()
     app.include_router(inference_route.router)
@@ -57,10 +53,16 @@ def test_non_streaming_gguf_completion_includes_generated_usage(monkeypatch):
     )
 
     assert response.status_code == 200
-    assert response.json()["usage"] == {
-        "prompt_tokens": 23,
-        "completion_tokens": 1283,
-        "total_tokens": 1306,
+    usage = response.json()["usage"]
+    assert usage["prompt_tokens"] == 23
+    assert usage["completion_tokens"] == 1283
+    assert usage["total_tokens"] == 1306
+    assert usage["prompt_tokens_details"] == {"cached_tokens": 0, "audio_tokens": 0}
+    assert usage["completion_tokens_details"] == {
+        "reasoning_tokens": 0,
+        "audio_tokens": 0,
+        "accepted_prediction_tokens": 0,
+        "rejected_prediction_tokens": 0,
     }
 
 
@@ -71,8 +73,14 @@ def test_non_streaming_gguf_completion_defaults_nullable_usage_to_zero(monkeypat
     )
 
     assert response.status_code == 200
-    assert response.json()["usage"] == {
-        "prompt_tokens": 0,
-        "completion_tokens": 1283,
-        "total_tokens": 0,
+    usage = response.json()["usage"]
+    assert usage["prompt_tokens"] == 0
+    assert usage["completion_tokens"] == 1283
+    assert usage["total_tokens"] == 1283
+    assert usage["prompt_tokens_details"] == {"cached_tokens": 0, "audio_tokens": 0}
+    assert usage["completion_tokens_details"] == {
+        "reasoning_tokens": 0,
+        "audio_tokens": 0,
+        "accepted_prediction_tokens": 0,
+        "rejected_prediction_tokens": 0,
     }

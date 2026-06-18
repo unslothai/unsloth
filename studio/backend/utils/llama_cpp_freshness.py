@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -32,13 +33,14 @@ _INSTALL_MARKER_NAME = "UNSLOTH_PREBUILT_INFO.json"
 
 _marker_cache: dict[str, Optional[dict]] = {}
 _release_memo: dict[str, tuple[float, Optional[str]]] = {}
+# Newest-release asset sizes (name -> bytes), memoized like the tag (24h TTL).
+_assets_memo: dict[str, tuple[float, dict[str, int]]] = {}
 
 
 def _cache_dir() -> Path:
     """Lazy import so tests can stub storage_roots."""
     try:
         from utils.paths.storage_roots import cache_root
-
         return cache_root() / "llama_cpp_freshness"
     except Exception:
         return Path.home() / ".unsloth" / "studio" / "cache" / "llama_cpp_freshness"
@@ -46,7 +48,7 @@ def _cache_dir() -> Path:
 
 def read_install_marker(binary_path: Optional[str]) -> Optional[dict]:
     """Walk up from binary_path to find UNSLOTH_PREBUILT_INFO.json.
-    None means no marker (source build / custom path) or invalid JSON."""
+    None = no marker (source build / custom path) or invalid JSON."""
     if not binary_path:
         return None
     cached = _marker_cache.get(binary_path)
@@ -54,10 +56,7 @@ def read_install_marker(binary_path: Optional[str]) -> Optional[dict]:
         return cached
     p = Path(binary_path)
     marker: Optional[dict] = None
-    # Cover all _find_llama_server_binary layouts:
-    #   <install>/llama-server                          (1 up)
-    #   <install>/build/bin/llama-server                (3 up, Linux/macOS cmake)
-    #   <install>/build/bin/Release/llama-server.exe   (4 up, Windows cmake)
+    # Cover all _find_llama_server_binary layouts (binary is 1-4 dirs deep):
     for parent in p.parents[:5]:
         candidate = parent / _INSTALL_MARKER_NAME
         if candidate.is_file():
@@ -108,11 +107,18 @@ def _save_disk_cache(repo: str, latest_tag: Optional[str]) -> None:
 
 
 def _fetch_latest_release_tag(repo: str, timeout: float = 5.0) -> Optional[str]:
-    """GitHub API call. None on any failure (offline, rate-limited, etc)."""
+    """Newest published release tag for `repo`, by publish time.
+
+    Resolves "latest" the way install_llama_prebuilt.py does (newest
+    non-draft/non-prerelease by ``published_at``), NOT via GitHub's
+    ``/releases/latest`` pointer. That pointer sorts by commit date and can lag
+    behind the build the installer actually installs, so detection and apply
+    disagreed -- the cause of the downgrade/sticky banner. None on any failure
+    (offline, rate-limited, etc)."""
     import urllib.error
     import urllib.request
 
-    url = f"https://api.github.com/repos/{repo}/releases/latest"
+    url = f"https://api.github.com/repos/{repo}/releases?per_page=30"
     headers = {
         "Accept": "application/vnd.github+json",
         "User-Agent": "unsloth-studio-freshness-check",
@@ -132,13 +138,24 @@ def _fetch_latest_release_tag(repo: str, timeout: float = 5.0) -> Optional[str]:
     ) as exc:
         logger.debug("freshness fetch failed", repo = repo, error = str(exc))
         return None
-    tag = data.get("tag_name")
-    return tag if isinstance(tag, str) and tag else None
+    if not isinstance(data, list):
+        return None
+    published = [
+        r
+        for r in data
+        if isinstance(r, dict)
+        and not r.get("draft")
+        and not r.get("prerelease")
+        and isinstance(r.get("tag_name"), str)
+        and r.get("tag_name")
+    ]
+    if not published:
+        return None
+    newest = max(published, key = lambda r: r.get("published_at") or "")
+    return newest["tag_name"]
 
 
-def latest_published_release(
-    repo: str, *, force_refresh: bool = False
-) -> Optional[str]:
+def latest_published_release(repo: str, *, force_refresh: bool = False) -> Optional[str]:
     """Latest release tag for `repo`. Memo + disk-cached (24h TTL).
     None when offline and never previously cached."""
     if not repo:
@@ -165,6 +182,113 @@ def latest_published_release(
     return latest
 
 
+def _fetch_latest_release_assets(repo: str, timeout: float = 5.0) -> Optional[dict[str, int]]:
+    """Asset name -> size (bytes) for the newest published release of `repo`,
+    selected exactly like _fetch_latest_release_tag. None on any failure."""
+    import urllib.error
+    import urllib.request
+
+    url = f"https://api.github.com/repos/{repo}/releases?per_page=30"
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "unsloth-studio-freshness-check",
+    }
+    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    req = urllib.request.Request(url, headers = headers)
+    try:
+        with urllib.request.urlopen(req, timeout = timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except (
+        urllib.error.URLError,
+        urllib.error.HTTPError,
+        OSError,
+        json.JSONDecodeError,
+    ) as exc:
+        logger.debug("freshness asset fetch failed", repo = repo, error = str(exc))
+        return None
+    if not isinstance(data, list):
+        return None
+    published = [
+        r
+        for r in data
+        if isinstance(r, dict)
+        and not r.get("draft")
+        and not r.get("prerelease")
+        and isinstance(r.get("tag_name"), str)
+        and r.get("tag_name")
+    ]
+    if not published:
+        return None
+    newest = max(published, key = lambda r: r.get("published_at") or "")
+    assets: dict[str, int] = {}
+    for a in newest.get("assets") or []:
+        name, size = a.get("name"), a.get("size")
+        if isinstance(name, str) and isinstance(size, int):
+            assets[name] = size
+    return assets
+
+
+def latest_release_assets(repo: str, *, force_refresh: bool = False) -> Optional[dict[str, int]]:
+    """Newest-release asset sizes for `repo`, memoized (24h TTL). None when
+    offline and never fetched. In-memory only -- a restart simply re-fetches."""
+    if not repo:
+        return None
+    now = time.time()
+    if not force_refresh:
+        memo = _assets_memo.get(repo)
+        if memo and now - memo[0] < _RELEASE_CACHE_TTL_SECONDS:
+            return memo[1]
+    assets = _fetch_latest_release_assets(repo)
+    if assets is None:
+        memo = _assets_memo.get(repo)
+        return memo[1] if memo else None
+    _assets_memo[repo] = (now, assets)
+    return assets
+
+
+def update_download_size_bytes(
+    marker: Optional[dict],
+    latest_tag: Optional[str],
+    repo: Optional[str],
+    *,
+    force_refresh: bool = False,
+) -> Optional[int]:
+    """Download size of the latest-release asset matching this host's installed
+    bundle (same platform/arch/runtime suffix as the installed asset). None when
+    there is no marker asset, the latest assets can't be read, or no match."""
+    if not marker or not latest_tag or not repo:
+        return None
+    installed_asset = marker.get("asset")
+    if not isinstance(installed_asset, str):
+        return None
+    # Tag-independent platform suffix: accept the fork's "app-*" bundles and the
+    # upstream ggml-org "ubuntu-*"/"win-*" prebuilts ("windows" before "win").
+    m = re.search(r"-((?:linux|ubuntu|windows|win|macos|darwin)-.*)$", installed_asset)
+    if not m:
+        return None
+    suffix = m.group(1)
+    # Upstream ubuntu/win assets live in the marker's binary_repo, not the fork
+    # publish repo; try the publish repo first, then it.
+    repos = [repo]
+    binary_repo = marker.get("binary_repo")
+    if isinstance(binary_repo, str) and binary_repo and binary_repo != repo:
+        repos.append(binary_repo)
+    want = f"app-{latest_tag}-{suffix}"
+    for r in repos:
+        assets = latest_release_assets(r, force_refresh = force_refresh)
+        if not assets:
+            continue
+        if want in assets:
+            return assets[want]
+        # Tag formatting can vary (mix suffixes); fall back to the platform suffix.
+        for name, size in assets.items():
+            if name.endswith(suffix):
+                return size
+    return None
+
+
 def _parse_installed_at(value: object) -> Optional[datetime]:
     if not isinstance(value, str) or not value:
         return None
@@ -178,19 +302,58 @@ def _parse_installed_at(value: object) -> Optional[datetime]:
     return dt
 
 
+def parse_base_build(tag: object) -> Optional[int]:
+    """Numeric base build from a release tag. Handles both a plain ``bNNNN`` and
+    a mix-build tag like ``b9596-mix-<sha>`` (anchored at the start, so the mix
+    suffix doesn't defeat it). None for anything not starting with ``bNNNN``."""
+    if not isinstance(tag, str):
+        return None
+    m = re.match(r"b(\d+)", tag.strip())
+    return int(m.group(1)) if m else None
+
+
+def is_behind(installed: Optional[str], latest: Optional[str]) -> bool:
+    """Whether `installed` is genuinely behind `latest`, comparing the FULL
+    release identity (so a mix build can legitimately be the latest) with a
+    base-build guard so a lagging GitHub /releases/latest can never read as an
+    update or a downgrade.
+
+    - identical tags -> not behind (clears the sticky banner post-update)
+    - higher base build on `latest` -> behind; lower -> NOT behind (downgrade guard)
+    - same base build: a different/new mix -> behind, but a bare ``bNNNN`` never
+      supersedes a mix build (extra PRs) at that base -> not behind
+    - non-bNNNN tags -> behind (plain inequality, since they already differ)
+    """
+    if not installed or not latest:
+        return False
+    installed, latest = installed.strip(), latest.strip()
+    if installed == latest:
+        return False
+    ib, lb = parse_base_build(installed), parse_base_build(latest)
+    if ib is None or lb is None:
+        return True
+    if lb != ib:
+        return lb > ib
+    # Same base build, different tags: offer a mix (latest carries a suffix), but
+    # never offer a bare base over a mix install at the same base.
+    return latest != f"b{lb}"
+
+
 def check_prebuilt_freshness(
     binary_path: Optional[str],
     *,
     threshold_days: int = STALENESS_THRESHOLD_DAYS,
     now: Optional[datetime] = None,
 ) -> dict:
-    """Returns {has_marker, stale, installed_tag, latest_tag,
+    """Returns {has_marker, stale, behind, installed_tag, latest_tag,
     installed_at_utc, age_days, published_repo, threshold_days}.
-    stale = True iff installed != latest AND age >= threshold.
-    Fails open on missing data (stale stays False)."""
+    behind = installed genuinely older than latest (see is_behind).
+    stale = behind AND age >= threshold.
+    Fails open on missing data (behind/stale stay False)."""
     out: dict = {
         "has_marker": False,
         "stale": False,
+        "behind": False,
         "installed_tag": None,
         "latest_tag": None,
         "installed_at_utc": None,
@@ -202,16 +365,25 @@ def check_prebuilt_freshness(
     if not marker:
         return out
     out["has_marker"] = True
+    # Display prefers the normalized base ("tag"); comparison below prefers the
+    # full "release_tag" -- deliberately opposite fallbacks.
     out["installed_tag"] = marker.get("tag") or marker.get("release_tag")
     out["installed_at_utc"] = marker.get("installed_at_utc")
     out["published_repo"] = marker.get("published_repo")
 
+    # The marker records both a normalized base tag ("tag", e.g. b9596) and the
+    # full release tag ("release_tag", e.g. b9596-mix-<sha>). Compare against the
+    # FULL identity, since GitHub /releases/latest returns the full tag_name --
+    # comparing the normalized base against the full latest is what produced the
+    # permanent "downgrade" banner on every mix release.
+    installed_full = marker.get("release_tag") or marker.get("tag")
     repo = out["published_repo"]
-    if not repo or not out["installed_tag"]:
+    if not repo or not installed_full:
         return out
     latest = latest_published_release(repo)
     out["latest_tag"] = latest
-    if not latest or latest == out["installed_tag"]:
+    out["behind"] = is_behind(installed_full, latest)
+    if not out["behind"]:
         return out
 
     installed_at = _parse_installed_at(out["installed_at_utc"])
@@ -238,7 +410,23 @@ def format_stale_warning(info: dict) -> str:
     )
 
 
-def reset_caches() -> None:
-    """Test-only: drop all in-memory caches."""
+def reset_caches(*, drop_disk: bool = False) -> None:
+    """Drop the in-memory freshness caches. The no-arg form is test-only.
+
+    With ``drop_disk = True`` also delete the on-disk 24h release cache. Used by
+    the post-install/update path: in-memory clearing alone leaves the stale
+    same-base value on disk, so if the post-install GitHub refresh can't reach
+    the network, ``latest_published_release`` would replay that stale disk value
+    (see its last-good fallback) and the banner could linger. Dropping the disk
+    cache makes latest read as None in that offline case, so the banner fails
+    open (off) instead of pointing at the just-replaced build."""
     _marker_cache.clear()
     _release_memo.clear()
+    _assets_memo.clear()
+    if drop_disk:
+        import shutil
+
+        # _cache_dir() is a dedicated freshness-only subdir; it is re-created on
+        # the next _save_disk_cache. ignore_errors so a missing/locked dir is a
+        # no-op rather than breaking an otherwise successful install.
+        shutil.rmtree(_cache_dir(), ignore_errors = True)

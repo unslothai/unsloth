@@ -12,6 +12,7 @@ import { checkDatasetFormat } from "../api/datasets-api";
 import { checkVisionModel, getModelConfig } from "../api/models-api";
 import { mapBackendModelConfigToTrainingPatch } from "../lib/model-defaults";
 import { isRawTextDatasetFormat } from "../lib/training-methods";
+import { validateS3Source } from "../lib/validation";
 import type { BackendModelConfig } from "../api/models-api";
 import type { TrainingConfigState, TrainingConfigStore } from "../types/config";
 
@@ -19,11 +20,8 @@ const MIN_STEP: StepNumber = 1;
 const MAX_STEP: StepNumber = STEPS.length as StepNumber;
 
 /**
- * Auto-select LoRA (16-bit) vs QLoRA (4-bit) based on model size and GPU memory.
- *
- * Rule: if model_size_gb * 1.5 * context_scale fits in free VRAM, use "lora" (16-bit).
- * Otherwise use "qlora" (4-bit).
- *
+ * Auto-select LoRA (16-bit) vs QLoRA (4-bit) by model size and GPU memory.
+ * Use "lora" if model_size_gb * 1.5 * context_scale fits in free VRAM, else "qlora".
  * Context scale: <=8192 = 1.0, >8192 = 1.7, >=16384 = 2.0, >=32768 = 4.0
  */
 async function autoSelectTrainingMethod(
@@ -97,17 +95,16 @@ let _datasetCheckController: AbortController | null = null;
 // AbortController for in-flight model default loads.
 let _modelConfigController: AbortController | null = null;
 
-// Track whether the user has manually toggled trainOnCompletions
-// since the last auto-set (model load or dataset change).
+// Has the user manually toggled trainOnCompletions since the last auto-set
+// (model load or dataset change)?
 let _trainOnCompletionsManuallySet = false;
 
-// Track whether the user has manually edited the learning rate
-// since the last model load. When false, switching training method
-// auto-sets LR to 2e-4 (LoRA/QLoRA) or 2e-5 (full fine-tune).
+// Has the user manually edited the LR since the last model load? When false,
+// switching method auto-sets LR to 2e-4 (LoRA/QLoRA) or 2e-5 (full fine-tune).
 let _learningRateManuallySet = false;
 
-// Stash the model-config-provided (YAML) learning rate so that
-// setTrainingMethod can restore it when switching back from full to adapter.
+// Stash the YAML learning rate so setTrainingMethod can restore it when
+// switching back from full to adapter.
 let _yamlLearningRate: number | undefined = undefined;
 
 // Track whether entering CPT auto-forced datasetFormat="raw" so that
@@ -128,6 +125,7 @@ const NON_PERSISTED_STATE_KEYS: ReadonlySet<keyof TrainingConfigState> = new Set
   "isDatasetAudio",
   "trainOnCompletions",
   "maxPositionEmbeddings",
+  "s3Config",
 ]);
 
 function partializePersistedState(
@@ -152,9 +150,13 @@ function canProceedForStep(state: TrainingConfigState): boolean {
     case 2:
       return state.selectedModel !== null;
     case 3:
-      return state.datasetSource === "upload"
-        ? state.uploadedFile !== null
-        : state.dataset !== null;
+      if (state.datasetSource === "upload") {
+        return state.uploadedFile !== null;
+      }
+      if (state.datasetSource === "s3") {
+        return validateS3Source(state).ok;
+      }
+      return state.dataset !== null;
     case 4:
     case 5:
       return true;
@@ -303,20 +305,18 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             _yamlLearningRate = undefined;
             const patch = mapBackendModelConfigToTrainingPatch(modelDetails.config);
 
-            // If the model config provides a specific learning rate, treat
-            // it as authoritative so the async auto-select does not overwrite it.
+            // Treat a model-config LR as authoritative so async auto-select
+            // won't overwrite it.
             const modelConfigHasLR = patch.learningRate !== undefined;
             _yamlLearningRate = patch.learningRate;
 
-            // YAML learning rates are tuned for adapter methods (LoRA/QLoRA).
-            // If the user is currently on full fine-tune, override with the
-            // full-finetune default instead of applying the YAML adapter LR.
+            // YAML LRs are tuned for adapters (LoRA/QLoRA); on full fine-tune,
+            // use the full-finetune default instead of the YAML adapter LR.
             if (modelConfigHasLR && !isAdapterMethod(get().trainingMethod)) {
               patch.learningRate = LR_DEFAULT_FULL;
             }
 
-            // If vision model + image dataset already known, override
-            // trainOnCompletions to false regardless of backend default.
+            // Vision model + known image dataset: force trainOnCompletions off.
             if (modelDetails.is_vision && get().isDatasetImage === true) {
               patch.trainOnCompletions = false;
             }
@@ -331,17 +331,13 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
               patch.trainOnCompletions = false;
             }
 
-            // Use backend-provided model_type when available, otherwise
-            // infer from capability flags.
+            // Use backend model_type when available, else infer from flags.
             const isEmbedding = !!modelDetails.is_embedding;
             const inferredModelType: ModelType = modelDetails.model_type
               ?? (isEmbedding ? "embeddings" : modelDetails.is_vision ? "vision" : modelDetails.is_audio ? "audio" : "text");
 
-            // Auto-select training method based on model size vs GPU memory.
-            // If model_size * 1.5 * context_scale fits in free VRAM, use LoRA 16-bit.
-            // Otherwise use QLoRA 4-bit.
-            // Auto-select LoRA vs QLoRA based on GPU memory.
-            // Skip if user has manually chosen CPT -- don't override it.
+            // Auto-select LoRA vs QLoRA by model size vs GPU memory (see
+            // autoSelectTrainingMethod). Skip if the user chose CPT.
             const modelSizeBytes = modelDetails.model_size_bytes;
             if (modelSizeBytes && modelSizeBytes > 0 && get().trainingMethod !== "cpt") {
               void autoSelectTrainingMethod(modelSizeBytes, patch.contextLength ?? get().contextLength)
@@ -358,7 +354,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             }
 
             // Preserve CPT hyperparams: YAML adapter defaults (r/alpha/targets/LR)
-            // are tuned for standard LoRA and would otherwise clobber CPT settings.
+            // are tuned for standard LoRA and would clobber CPT settings.
             const cptOverrides =
               get().trainingMethod === "cpt"
                 ? getCptModelDefaultsPatch()
@@ -394,8 +390,8 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
               visionImageSize: DEFAULT_HYPERPARAMS.visionImageSize,
             });
 
-            // Fallback vision check if config endpoint fails.
-            void checkVisionModel(modelName)
+            // Fallback vision check; pass the token so a gated/private VLM classifies right.
+            void checkVisionModel(modelName, get().hfToken || undefined)
               .then((isVision) => {
                 if (get().selectedModel !== modelName) return;
                 set({
@@ -502,12 +498,23 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           const previousModel = get().selectedModel;
           // Reset vision_image_size on a true switch only; same-model reloads
           // go through the mapper, which preserves the user's choice.
-          const patch: { selectedModel: string | null; modelDefaultsError: null; visionImageSize?: number | null } = {
+          const patch: {
+            selectedModel: string | null;
+            modelDefaultsError: null;
+            visionImageSize?: number | null;
+            trustRemoteCode?: boolean;
+            approvedRemoteCodeFingerprint?: string | null;
+          } = {
             selectedModel,
             modelDefaultsError: null,
           };
           if (selectedModel !== previousModel) {
             patch.visionImageSize = DEFAULT_HYPERPARAMS.visionImageSize;
+            // Clear the prior model's approval so a clean model is not trained with a
+            // stale trust_remote_code=true (disables fused CE). Its own YAML default is
+            // re-applied below, and a custom-code model re-opens the dialog before start.
+            patch.trustRemoteCode = false;
+            patch.approvedRemoteCodeFingerprint = null;
           }
           set(patch);
 
@@ -578,6 +585,17 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           if (uploadedFile) {
             runDatasetCheck(uploadedFile, "train");
           }
+        },
+        selectS3Source: () => {
+          _datasetCheckController?.abort();
+          _datasetCheckController = null;
+          _trainOnCompletionsManuallySet = false;
+          set({
+            datasetSource: "s3",
+            dataset: null,
+            uploadedFile: null,
+            ...resetDatasetState(),
+          });
         },
         setDatasetFormat: (datasetFormat) =>
           set((state) => {
@@ -756,6 +774,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         setFinetuneMLPModules: (finetuneMLPModules) =>
           set({ finetuneMLPModules }),
         setTargetModules: (targetModules) => set({ targetModules }),
+        setS3Config: (s3Config) => set({ s3Config }),
         canProceed: () => canProceedForStep(get()),
         reset: () => {
           _trainOnCompletionsManuallySet = false;

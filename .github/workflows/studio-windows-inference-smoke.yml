@@ -13,7 +13,7 @@
 #   2. Tool calling Tests
 #        Qwen3.5-2B UD-Q4_K_XL (~890 MiB).
 #   3. JSON, images
-#        gemma-4-E2B-it UD-Q4_K_XL + mmproj-F16 (~3.4 GiB total).
+#        Qwen3-VL-2B-Instruct UD-IQ2_XXS + mmproj-F16 (~1.4 GiB total).
 #        Within the 14 GB windows-latest SSD budget.
 
 name: Windows Studio GGUF CI
@@ -104,7 +104,7 @@ jobs:
         continue-on-error: true
         with:
           path: hf-cache
-          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v1
+          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v2
 
       - name: Prime HF_HOME with the GGUF
         id: prime-hf
@@ -117,6 +117,7 @@ jobs:
           python -m pip install --upgrade huggingface_hub
           mkdir -p hf-cache
           bash .github/scripts/hf-download-with-retry.sh "$GGUF_REPO" "$GGUF_FILE"
+          bash .github/scripts/hf-download-with-retry.sh ggml-org/models tinyllamas/stories260K.gguf
 
       - name: Save HF_HOME cache for ${{ env.GGUF_REPO }}
         # Only write a fresh cache entry when we actually rebuilt the
@@ -126,7 +127,7 @@ jobs:
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         with:
           path: hf-cache
-          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v1
+          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v2
 
       - name: Pre-install Windows tweaks (npm 11 + Defender exclusions)
         shell: pwsh
@@ -163,6 +164,7 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           New-Item -ItemType Directory -Force -Path logs | Out-Null
           # *>&1 captures Write-Host (Information stream) output;
@@ -507,6 +509,7 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           New-Item -ItemType Directory -Force -Path logs | Out-Null
           # *>&1 captures Write-Host (Information stream) output;
@@ -846,9 +849,9 @@ jobs:
       run:
         shell: bash
     env:
-      GGUF_REPO: unsloth/gemma-4-E2B-it-GGUF
-      GGUF_VARIANT: UD-Q4_K_XL
-      GGUF_FILE: gemma-4-E2B-it-UD-Q4_K_XL.gguf
+      GGUF_REPO: unsloth/Qwen3-VL-2B-Instruct-GGUF
+      GGUF_VARIANT: UD-IQ2_XXS
+      GGUF_FILE: Qwen3-VL-2B-Instruct-UD-IQ2_XXS.gguf
       MMPROJ_FILE: mmproj-F16.gguf
       STUDIO_PORT: '18899'
       HF_HOME: ${{ github.workspace }}/hf-cache
@@ -882,7 +885,7 @@ jobs:
         continue-on-error: true
         with:
           path: hf-cache
-          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-${{ env.MMPROJ_FILE }}-v1
+          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-${{ env.MMPROJ_FILE }}-v2
 
       - name: Prime HF_HOME with the GGUF + mmproj
         id: prime-hf
@@ -894,13 +897,14 @@ jobs:
           mkdir -p hf-cache
           bash .github/scripts/hf-download-with-retry.sh "$GGUF_REPO" "$GGUF_FILE"
           bash .github/scripts/hf-download-with-retry.sh "$GGUF_REPO" "$MMPROJ_FILE"
+          bash .github/scripts/hf-download-with-retry.sh ggml-org/models tinyllamas/stories260K.gguf
 
       - name: Save HF_HOME cache for ${{ env.GGUF_REPO }} (model + mmproj)
         if: always() && steps.prime-hf.outcome == 'success'
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         with:
           path: hf-cache
-          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-${{ env.MMPROJ_FILE }}-v1
+          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-${{ env.MMPROJ_FILE }}-v2
 
       - name: Pre-install Windows tweaks (npm 11 + Defender exclusions)
         shell: pwsh
@@ -937,6 +941,7 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           New-Item -ItemType Directory -Force -Path logs | Out-Null
           # *>&1 captures Write-Host (Information stream) output;
@@ -1126,7 +1131,7 @@ jobs:
           )
           data_uri = f"data:image/png;base64,{PNG_64X64_RED_B64}"
 
-          # On Windows + the gemma-4-E2B mmproj, llama.cpp's vision
+          # On Windows + the Qwen3-VL mmproj, llama.cpp's vision
           # path runs on CPU (no Metal involvement). The wrapper is
           # kept for resilience but the vision path is expected to
           # work on Windows; an exception here is a real regression.

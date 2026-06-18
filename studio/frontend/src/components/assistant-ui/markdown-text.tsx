@@ -4,17 +4,24 @@
 "use client";
 
 import { ArtifactCard, useChatRuntimeStore } from "@/features/chat";
+import {
+  getCodeFence,
+  isFullHtmlDocument,
+  isHtmlFence,
+  isRenderableRenderHtmlToolPart,
+  isSvgFence,
+} from "@/features/chat/artifacts/html-fences";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { preprocessLaTeX } from "@/lib/latex";
 import { openLink } from "@/lib/open-link";
 import { INTERNAL, useAuiState, useMessagePartText } from "@assistant-ui/react";
-import { Copy01Icon, Tick02Icon } from "@hugeicons/core-free-icons";
+import { Tick02Icon } from "@/lib/tick-icon";
+import { Copy01Icon, Download01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { createMathPlugin } from "@streamdown/math";
 import { mermaid } from "@streamdown/mermaid";
-import { DownloadIcon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Block, type BlockProps, Streamdown } from "streamdown";
+import { Block, type BlockProps, Streamdown, defaultUrlTransform, type UrlTransform } from "streamdown";
 import { createCodePlugin } from "./code-plugin";
 import "katex/dist/katex.min.css";
 import { AudioPlayer } from "./audio-player";
@@ -45,60 +52,14 @@ const STREAMDOWN_COMPONENTS = {
 };
 const COPY_RESET_MS = 2000;
 const MERMAID_SOURCE_RE = /```mermaid\s*([\s\S]*?)```/i;
-const CODE_FENCE_RE = /^```([^\r\n`]*)\r?\n([\s\S]*?)\r?\n?```$/;
 const ACTION_PANEL_CLASS =
   "pointer-events-auto flex shrink-0 items-center gap-1";
 const ACTION_BUTTON_CLASS =
   "flex size-8 cursor-pointer items-center justify-center rounded-[10px] text-chat-icon-fg transition-all hover:bg-chat-icon-bg-hover hover:text-chat-icon-fg-hover disabled:cursor-not-allowed disabled:opacity-50";
 
-type CodeFence = {
-  language: string | null;
-  source: string;
-};
-
-type ToolCallPartLike = {
-  type?: string;
-  toolName?: string;
-  args?: unknown;
-  result?: unknown;
-};
-
-function isRenderableRenderHtmlToolPart(part: unknown): boolean {
-  const toolPart = part as ToolCallPartLike;
-  if (toolPart.type !== "tool-call" || toolPart.toolName !== "render_html") {
-    return false;
-  }
-  if (
-    typeof toolPart.result === "string" &&
-    toolPart.result.startsWith("Error:")
-  ) {
-    return false;
-  }
-  if (
-    typeof toolPart.result === "string" &&
-    toolPart.result.startsWith("Rendered HTML artifact")
-  ) {
-    return true;
-  }
-  const args = toolPart.args as { code?: unknown } | undefined;
-  return typeof args?.code === "string" && args.code.trim().length > 0;
-}
-
 function getMermaidSource(blockContent: string): string | null {
   const source = blockContent.match(MERMAID_SOURCE_RE)?.[1]?.trim();
   return source && source.length > 0 ? source : null;
-}
-
-function getCodeFence(blockContent: string): CodeFence | null {
-  const match = blockContent.trimEnd().match(CODE_FENCE_RE);
-  if (!match) {
-    return null;
-  }
-
-  return {
-    language: match[1]?.trim() || null,
-    source: match[2],
-  };
 }
 
 function getCodeFilename(language: string | null) {
@@ -131,35 +92,12 @@ function getCodeFilename(language: string | null) {
   return `snippet.${ext}`;
 }
 
-function isSvgFence(codeFence: CodeFence): boolean {
-  const lang = codeFence.language?.toLowerCase() ?? "";
-  if (lang === "svg") return true;
-  if (lang === "xml" || lang === "html") {
-    const trimmed = codeFence.source.trimStart();
-    // Match <svg directly or <?xml ...?> followed by <svg
-    if (trimmed.startsWith("<svg")) return true;
-    if (trimmed.startsWith("<?xml") && trimmed.includes("<svg")) return true;
-  }
-  return false;
-}
-
-function isHtmlFence(codeFence: CodeFence): boolean {
-  const lang = codeFence.language?.toLowerCase() ?? "";
-  return lang === "html" && !isSvgFence(codeFence);
-}
-
-function isFullHtmlDocument(source: string): boolean {
-  const trimmed = source.trimStart();
-  return /^<!doctype\s+html\b/i.test(trimmed) || /^<html[\s>]/i.test(trimmed);
-}
-
 const UNSAFE_SVG_RE =
   /<script[\s>]|on\w+\s*=|javascript:|<foreignObject[\s>]|<iframe[\s>]|<embed[\s>]|<object[\s>]/i;
 
 function sanitizeSvg(source: string): string | null {
   if (UNSAFE_SVG_RE.test(source)) return null;
-  // Strip XML declaration (<?xml ...?>) -- not needed for data URI
-  // rendering and can cause issues with some renderers.
+  // Strip XML declaration: unneeded for data URIs and breaks some renderers.
   return source.replace(/^\s*<\?xml[^?]*\?>\s*/i, "");
 }
 
@@ -279,16 +217,20 @@ function CodeBlockActions({
             downloadTextFile(getCodeFilename(language), source);
           }}
         >
-          <DownloadIcon className="size-icon" />
+          <HugeiconsIcon icon={Download01Icon} className="size-icon" />
         </button>
       </div>
     </div>
   );
 }
 
+// Collapse a full-HTML answer in place into an artifact card. Diffusion keeps the
+// raw code visible instead (the trailing MessageHtmlArtifacts appends its card).
 function StreamdownBlock(props: BlockProps) {
   const shouldCollapseHtmlArtifacts = useChatRuntimeStore(
-    (state) => state.artifactsEnabled || state.collapseHtmlArtifacts,
+    (state) =>
+      (state.artifactsEnabled || state.collapseHtmlArtifacts) &&
+      !state.loadedIsDiffusion,
   );
   const messageHasRenderableRenderHtmlTool = useAuiState(({ message }) =>
     message.parts.some(isRenderableRenderHtmlToolPart),
@@ -330,7 +272,7 @@ function StreamdownBlock(props: BlockProps) {
   ) {
     return (
       <div className="my-4 flex h-48 items-center justify-center rounded-xl border border-border bg-muted/30 text-sm text-muted-foreground animate-pulse">
-        Loading artifact preview...
+        Loading canvas preview...
       </div>
     );
   }
@@ -382,11 +324,75 @@ function StreamdownBlock(props: BlockProps) {
 }
 const AUDIO_PLAYER_RE = /<audio-player\s+src="([^"]+)"\s*\/>/;
 
+// Coalesce markdown re-parses to one per frame while streaming: tokens arrive
+// hundreds/sec, faster than the monitor can paint. When not streaming we return
+// live text (not the throttled state) so final text never lags and a reused
+// instance (parts keyed by index) shows completed text instead of a stale frame.
+function useRafCoalescedText(text: string, isStreaming: boolean): string {
+  const [displayed, setDisplayed] = useState(text);
+  const pendingRef = useRef(text);
+  const rafRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    pendingRef.current = text;
+    if (!isStreaming) {
+      if (rafRef.current !== null) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
+      return;
+    }
+    if (rafRef.current === null) {
+      rafRef.current = requestAnimationFrame(() => {
+        rafRef.current = null;
+        setDisplayed(pendingRef.current);
+      });
+    }
+  }, [text, isStreaming]);
+
+  // Unmount cleanup: cancel the in-flight rAF and null the handle so a
+  // StrictMode remount isn't gated by a stale id. Separate from the scheduling
+  // effect so it doesn't cancel mid-stream and defeat the throttle.
+  useEffect(() => {
+    return () => {
+      if (rafRef.current !== null) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
+    };
+  }, []);
+
+  if (isStreaming && text.startsWith(displayed)) {
+    return displayed;
+  }
+  return text;
+}
+
+const safeImageUrl: UrlTransform = (url, _key, node) => {
+  // Only images are restricted; links/other nodes use the default transform.
+  if (node.tagName !== "img") return defaultUrlTransform(url, _key, node);
+
+  // Strip ASCII controls first: browsers drop them mid-parse, so a value like
+  // "\t//attacker.com" would otherwise slip past the guards below.
+  // eslint-disable-next-line no-control-regex
+  const normalized = url.replace(/[\x00-\x1f\x7f]/g, "").trim();
+  const lower = normalized.toLowerCase();
+
+  if (lower.startsWith("data:") || lower.startsWith("blob:")) return normalized;
+  if (/^[/\\]{2}/.test(normalized)) return null; // protocol-relative: // \\ /\ \/
+  if (/^[a-zA-Z][a-zA-Z0-9+\-.]*:/.test(normalized)) return null; // scheme prefix (colon later in path is fine)
+  return normalized; // relative -> same-origin
+};
+
 const MarkdownTextImpl = () => {
   const { text, status } = useMessagePartText();
-  const processedText = useMemo(() => preprocessLaTeX(text), [text]);
+  const displayText = useRafCoalescedText(text, status.type === "running");
+  const processedText = useMemo(
+    () => preprocessLaTeX(displayText),
+    [displayText],
+  );
 
-  const audioMatch = text.match(AUDIO_PLAYER_RE);
+  const audioMatch = displayText.match(AUDIO_PLAYER_RE);
   if (audioMatch) {
     return <AudioPlayer src={audioMatch[1]} />;
   }
@@ -398,6 +404,7 @@ const MarkdownTextImpl = () => {
         isAnimating={status.type === "running"}
         plugins={{ code, math, mermaid }}
         components={STREAMDOWN_COMPONENTS}
+        urlTransform={safeImageUrl}
         controls={{
           code: false,
           mermaid: {

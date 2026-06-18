@@ -27,6 +27,7 @@ import {
 } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { cn } from "@/lib/utils";
 import {
   Tooltip,
   TooltipContent,
@@ -40,12 +41,12 @@ import {
 } from "@/hooks";
 import {
   HfDatasetSubsetSplitSelectors,
+  listLocalDatasets,
   uploadTrainingDataset,
   useDatasetPreviewDialogStore,
   useTrainingConfigStore,
+  type LocalDatasetInfo,
 } from "@/features/training";
-import { listLocalDatasets } from "@/features/training/api/datasets-api";
-import type { LocalDatasetInfo } from "@/features/training/types/datasets";
 import { useNavigate } from "@tanstack/react-router";
 import {
   ArrowDown01Icon,
@@ -68,9 +69,17 @@ import {
   useState,
 } from "react";
 import { toast } from "@/lib/toast";
+import {
+  formatUploadSize,
+  getCachedUploadLimitBytes,
+  getCachedUploadLimitLabel,
+  loadUploadLimitSettings,
+  subscribeUploadLimitSettings,
+} from "@/features/settings/api/upload-limit";
 import { useShallow } from "zustand/react/shallow";
 import { DocumentUploadRedirectDialog } from "./document-upload-redirect-dialog";
 import { translate, useT } from "@/i18n";
+import { S3ConfigForm } from "./s3-config-form";
 
 const TRAINING_UPLOAD_EXTENSIONS = [
   ".csv",
@@ -81,18 +90,28 @@ const TRAINING_UPLOAD_EXTENSIONS = [
   ".docx",
   ".txt",
 ] as const;
-const TRAINING_UPLOAD_EXTENSION_SET = new Set<string>(TRAINING_UPLOAD_EXTENSIONS);
+const TRAINING_UPLOAD_EXTENSION_SET = new Set<string>(
+  TRAINING_UPLOAD_EXTENSIONS,
+);
 const TRAINING_UPLOAD_ACCEPT = TRAINING_UPLOAD_EXTENSIONS.join(",");
 const TRAINING_UPLOAD_LABEL = "CSV, JSONL, JSON, Parquet, PDF, DOCX, TXT";
+const TRAINING_DATASET_UPLOAD_LABEL = "CSV, JSONL, JSON, Parquet";
+const DOCUMENT_REDIRECT_LABEL = "PDF/DOCX/TXT open Learning Recipes";
 const DOCUMENT_REDIRECT_EXTENSIONS = new Set([".pdf", ".docx", ".txt"]);
 
-const SEARCH_INPUT_REASONS = new Set(["input-change", "input-paste", "input-clear"]);
+const SEARCH_INPUT_REASONS = new Set([
+  "input-change",
+  "input-paste",
+  "input-clear",
+]);
 const OPEN_LEARNING_RECIPES_ON_ARRIVAL_KEY =
   "data-recipes:open-learning-recipes";
 
 function getFileExtension(fileName: string) {
   const extensionStart = fileName.lastIndexOf(".");
-  return extensionStart >= 0 ? fileName.slice(extensionStart).toLowerCase() : "";
+  return extensionStart >= 0
+    ? fileName.slice(extensionStart).toLowerCase()
+    : "";
 }
 
 function isLikelyLocalDatasetRef(value: string) {
@@ -137,6 +156,7 @@ export function DatasetSection() {
     datasetSource,
     selectHfDataset,
     selectLocalDataset,
+    selectS3Source,
     datasetFormat,
     setDatasetFormat,
     datasetSubset,
@@ -150,6 +170,8 @@ export function DatasetSection() {
     setUploadedEvalFile,
     hfToken,
     modelType,
+    isVisionModel,
+    isAudioModel,
     datasetSliceStart,
     setDatasetSliceStart,
     datasetSliceEnd,
@@ -160,6 +182,7 @@ export function DatasetSection() {
       datasetSource: s.datasetSource,
       selectHfDataset: s.selectHfDataset,
       selectLocalDataset: s.selectLocalDataset,
+      selectS3Source: s.selectS3Source,
       datasetFormat: s.datasetFormat,
       setDatasetFormat: s.setDatasetFormat,
       datasetSubset: s.datasetSubset,
@@ -173,6 +196,8 @@ export function DatasetSection() {
       setUploadedEvalFile: s.setUploadedEvalFile,
       hfToken: s.hfToken,
       modelType: s.modelType,
+      isVisionModel: s.isVisionModel,
+      isAudioModel: s.isAudioModel,
       datasetSliceStart: s.datasetSliceStart,
       setDatasetSliceStart: s.setDatasetSliceStart,
       datasetSliceEnd: s.datasetSliceEnd,
@@ -275,6 +300,11 @@ export function DatasetSection() {
   }
 
   const effectiveModelType = modelType ?? "text";
+  const isMultimodalModel =
+    effectiveModelType === "vision" ||
+    effectiveModelType === "audio" ||
+    isVisionModel ||
+    isAudioModel;
 
   const {
     results: hfResults,
@@ -326,7 +356,11 @@ export function DatasetSection() {
 
   const localResultIds = useMemo(() => {
     const ids = localFilteredDatasets.map((item) => item.id);
-    if (selectedLocalDataset && selectedLocalId && !ids.includes(selectedLocalId)) {
+    if (
+      selectedLocalDataset &&
+      selectedLocalId &&
+      !ids.includes(selectedLocalId)
+    ) {
       ids.push(selectedLocalId);
     }
     return ids;
@@ -352,8 +386,15 @@ export function DatasetSection() {
     selectLocalDataset,
   ]);
 
+  useEffect(() => {
+    if (datasetSource === "s3" && isMultimodalModel) {
+      selectHfDataset(dataset);
+    }
+  }, [dataset, datasetSource, isMultimodalModel, selectHfDataset]);
+
   const activeSourceTab = datasetSource === "upload" ? "local" : "huggingface";
-  const comboboxItems = pickerTab === "huggingface" ? hfResultIds : localResultIds;
+  const comboboxItems =
+    pickerTab === "huggingface" ? hfResultIds : localResultIds;
   const comboboxValue =
     pickerTab === "huggingface"
       ? datasetSource === "huggingface"
@@ -367,11 +408,14 @@ export function DatasetSection() {
     !!dataset &&
     !isLikelyLocalDatasetRef(dataset);
 
-  const selectedDatasetName = datasetSource === "upload" ? uploadedFile : dataset;
+  const selectedDatasetName =
+    datasetSource === "upload" ? uploadedFile : dataset;
   const selectedLocalMetadata = selectedLocalDataset?.metadata ?? null;
   const selectedLocalColumns = selectedLocalMetadata?.columns ?? [];
   const selectedLocalRows =
-    selectedLocalDataset?.rows ?? selectedLocalMetadata?.actual_num_records ?? null;
+    selectedLocalDataset?.rows ??
+    selectedLocalMetadata?.actual_num_records ??
+    null;
   const selectedLocalUpdatedAt = selectedLocalDataset?.updated_at ?? null;
 
   const comboboxAnchorRef = useRef<HTMLDivElement>(null);
@@ -384,11 +428,50 @@ export function DatasetSection() {
 
   const [isUploading, setIsUploading] = useState(false);
   const [isDatasetDragOver, setIsDatasetDragOver] = useState(false);
+  const [uploadLimitBytes, setUploadLimitBytes] = useState(
+    getCachedUploadLimitBytes,
+  );
+  const [uploadLimitLabel, setUploadLimitLabel] = useState(
+    getCachedUploadLimitLabel,
+  );
   const [documentRedirectOpen, setDocumentRedirectOpen] = useState(false);
   const [redirectFileName, setRedirectFileName] = useState<string | null>(null);
 
+  useEffect(() => {
+    let cancelled = false;
+    const applyLimit = (settings: {
+      maxUploadSizeBytes: number;
+      maxUploadSizeLabel: string;
+    }) => {
+      setUploadLimitBytes(settings.maxUploadSizeBytes);
+      setUploadLimitLabel(settings.maxUploadSizeLabel);
+    };
+    const unsubscribe = subscribeUploadLimitSettings(applyLimit);
+    void loadUploadLimitSettings().then((settings) => {
+      if (!cancelled) applyLimit(settings);
+    }).catch(() => {});
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, []);
+
   const handleUploadButtonClick = () => {
     fileInputRef.current?.click();
+  };
+
+  const getLatestUploadLimit = async () => {
+    try {
+      const settings = await loadUploadLimitSettings();
+      setUploadLimitBytes(settings.maxUploadSizeBytes);
+      setUploadLimitLabel(settings.maxUploadSizeLabel);
+      return settings;
+    } catch {
+      return {
+        maxUploadSizeBytes: uploadLimitBytes,
+        maxUploadSizeLabel: uploadLimitLabel,
+      };
+    }
   };
 
   const handleFileUpload = async (
@@ -396,6 +479,16 @@ export function DatasetSection() {
     onSuccess: (storedPath: string) => void,
     successMessage: string,
   ) => {
+    const latestLimit = await getLatestUploadLimit();
+    if (file.size > latestLimit.maxUploadSizeBytes) {
+      toast.error("File too large", {
+        description: `${file.name} is ${formatUploadSize(
+          file.size,
+        )}. Training uploads support up to ${latestLimit.maxUploadSizeLabel}.`,
+      });
+      return;
+    }
+
     setIsUploading(true);
     try {
       const uploaded = await uploadTrainingDataset(file);
@@ -430,7 +523,9 @@ export function DatasetSection() {
     await handleFileUpload(file, selectLocalDataset, t("studio.dataset.datasetUploaded"));
   };
 
-  const handleDatasetFileChange = async (event: ChangeEvent<HTMLInputElement>) => {
+  const handleDatasetFileChange = async (
+    event: ChangeEvent<HTMLInputElement>,
+  ) => {
     const file = event.target.files?.[0];
     event.target.value = "";
     if (!file) return;
@@ -496,6 +591,71 @@ export function DatasetSection() {
         }`}
       >
         <div className="flex min-w-0 flex-col gap-4">
+          {(() => {
+            // Hub-style sliding-pill segmented control, matching the Hub tabs
+            // via the shared .hub-tab-toggle / .hub-tab-toggle-pill classes.
+            const sourceTabs: {
+              value: "huggingface" | "upload" | "s3";
+              label: string;
+            }[] = [
+              { value: "huggingface", label: "Hugging Face" },
+              { value: "upload", label: t("studio.dataset.localTab") },
+              ...(!isMultimodalModel
+                ? [{ value: "s3" as const, label: "Amazon S3" }]
+                : []),
+            ];
+            const activeIndex = Math.max(
+              0,
+              sourceTabs.findIndex((item) => item.value === datasetSource),
+            );
+            return (
+              <div
+                role="radiogroup"
+                aria-label="Dataset source"
+                className="hub-tab-toggle relative inline-flex h-9 w-full items-center rounded-full"
+              >
+                <span
+                  aria-hidden="true"
+                  className="hub-tab-toggle-pill pointer-events-none absolute inset-y-0 left-0 rounded-full transition-transform duration-200 ease-out"
+                  style={{
+                    width: `${100 / sourceTabs.length}%`,
+                    transform: `translateX(${activeIndex * 100}%)`,
+                  }}
+                />
+                {sourceTabs.map((item) => (
+                  <button
+                    key={item.value}
+                    type="button"
+                    role="radio"
+                    aria-checked={datasetSource === item.value}
+                    onClick={() => {
+                      if (item.value === datasetSource) return;
+                      if (item.value === "huggingface") {
+                        selectHfDataset(dataset);
+                      } else if (item.value === "upload") {
+                        selectLocalDataset(uploadedFile);
+                      } else if (item.value === "s3") {
+                        if (isMultimodalModel) return;
+                        selectS3Source();
+                      }
+                    }}
+                    className={cn(
+                      "relative z-10 inline-flex h-9 flex-1 cursor-pointer items-center justify-center rounded-full px-3 text-[12.5px] font-medium transition-colors",
+                      datasetSource === item.value
+                        ? "text-foreground"
+                        : "text-muted-foreground hover:text-foreground",
+                    )}
+                  >
+                    {item.label}
+                  </button>
+                ))}
+              </div>
+            );
+          })()}
+
+          {datasetSource === "s3" && <S3ConfigForm />}
+
+          {datasetSource !== "s3" && (
           <div className="flex min-w-0 flex-col gap-2">
             <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
               {t("studio.dataset.chooseDataset")}
@@ -560,11 +720,16 @@ export function DatasetSection() {
                 value={comboboxValue}
                 onOpenChange={(open) => {
                   setSearchQuery("");
-                  if (open && (pickerTab === "local" || activeSourceTab === "local")) {
+                  if (
+                    open &&
+                    (pickerTab === "local" || activeSourceTab === "local")
+                  ) {
                     void refreshLocalDatasets();
                   }
                   if (!open) {
-                    setPickerTab(pendingSourceTabRef.current ?? activeSourceTab);
+                    setPickerTab(
+                      pendingSourceTabRef.current ?? activeSourceTab,
+                    );
                     pendingSourceTabRef.current = null;
                   }
                 }}
@@ -586,9 +751,7 @@ export function DatasetSection() {
                   handleInputChange(value, eventDetails)
                 }
                 itemToStringValue={(id) =>
-                  pickerTab === "local"
-                    ? localLabelById.get(id) ?? id
-                    : id
+                  pickerTab === "local" ? (localLabelById.get(id) ?? id) : id
                 }
                 autoHighlight={true}
               >
@@ -635,7 +798,11 @@ export function DatasetSection() {
                           <ComboboxList className="p-1 !max-h-none !overflow-visible">
                             {(id: string) => {
                               return (
-                                <ComboboxItem key={id} value={id} className="gap-2">
+                                <ComboboxItem
+                                  key={id}
+                                  value={id}
+                                  className="gap-2"
+                                >
                                   <Tooltip>
                                     <TooltipTrigger asChild={true}>
                                       <span className="block min-w-0 flex-1 truncate">
@@ -670,7 +837,9 @@ export function DatasetSection() {
                         ) : (
                           <>
                             {localError ? (
-                              <p className="px-2 py-2 text-xs text-destructive">{localError}</p>
+                              <p className="px-2 py-2 text-xs text-destructive">
+                                {localError}
+                              </p>
                             ) : (
                               <ComboboxEmpty className="px-2 py-3">
                                 <div className="flex w-full flex-col items-center gap-2 text-center">
@@ -692,7 +861,11 @@ export function DatasetSection() {
                                 {(id: string) => {
                                   const label = localLabelById.get(id) ?? id;
                                   return (
-                                    <ComboboxItem key={id} value={id} className="gap-2">
+                                    <ComboboxItem
+                                      key={id}
+                                      value={id}
+                                      className="gap-2"
+                                    >
                                       <Tooltip>
                                         <TooltipTrigger asChild={true}>
                                           <span className="block min-w-0 flex-1 truncate">
@@ -753,8 +926,10 @@ export function DatasetSection() {
               </p>
             )}
           </div>
+          )}
 
-          {isHfDatasetSelected ? (
+          {datasetSource !== "s3" &&
+            (isHfDatasetSelected ? (
             <HfDatasetSubsetSplitSelectors
               variant="studio"
               enabled={true}
@@ -814,8 +989,10 @@ export function DatasetSection() {
                   <MetadataRow
                     label={t("studio.dataset.batches")}
                     value={
-                      typeof selectedLocalMetadata?.num_completed_batches === "number" &&
-                      typeof selectedLocalMetadata?.total_num_batches === "number"
+                      typeof selectedLocalMetadata?.num_completed_batches ===
+                        "number" &&
+                      typeof selectedLocalMetadata?.total_num_batches ===
+                        "number"
                         ? `${selectedLocalMetadata.num_completed_batches}/${selectedLocalMetadata.total_num_batches}`
                         : "--"
                     }
@@ -827,7 +1004,7 @@ export function DatasetSection() {
                 </div>
               </div>
             </div>
-          ) : null}
+          ) : null)}
 
           {datasetSource === "upload" && uploadedFile && (
             <div className="rounded-lg border bg-muted/20 px-3.5 py-3">
@@ -837,7 +1014,10 @@ export function DatasetSection() {
               {uploadedEvalFile ? (
                 <div className="flex items-center justify-between gap-2">
                   <div className="flex items-center gap-1.5 overflow-hidden">
-                    <HugeiconsIcon icon={FileAttachmentIcon} className="size-3.5 shrink-0 text-muted-foreground" />
+                    <HugeiconsIcon
+                      icon={FileAttachmentIcon}
+                      className="size-3.5 shrink-0 text-muted-foreground"
+                    />
                     <span className="truncate text-xs">
                       {deriveLocalDatasetName(uploadedEvalFile)}
                     </span>
@@ -863,7 +1043,10 @@ export function DatasetSection() {
                     {isUploading ? (
                       <Spinner className="size-3.5" />
                     ) : (
-                      <HugeiconsIcon icon={CloudUploadIcon} className="size-3.5" />
+                      <HugeiconsIcon
+                        icon={CloudUploadIcon}
+                        className="size-3.5"
+                      />
                     )}
                     {isUploading
                       ? t("studio.dataset.uploading")
@@ -962,7 +1145,9 @@ export function DatasetSection() {
                       placeholder="0"
                       value={datasetSliceStart ?? ""}
                       onChange={(e) =>
-                        setDatasetSliceStart(normalizeSliceInput(e.target.value))
+                        setDatasetSliceStart(
+                          normalizeSliceInput(e.target.value),
+                        )
                       }
                     />
                   </div>
@@ -1003,110 +1188,115 @@ export function DatasetSection() {
             </CollapsibleContent>
           </Collapsible>
 
-          <div className="flex flex-col gap-3">
-            {selectedDatasetName ? (
-              <div className="flex items-center gap-3 rounded-lg border bg-muted/40 px-3.5 py-3">
-                <div className="rounded-md bg-indigo-500/10 p-1.5">
-                  <HugeiconsIcon
-                    icon={FileAttachmentIcon}
-                    className="size-4 text-indigo-500"
-                  />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <p className="font-mono text-sm font-medium truncate">
-                    {datasetSource === "upload"
-                      ? selectedLocalDataset?.label ??
-                        deriveLocalDatasetName(selectedDatasetName)
-                      : selectedDatasetName}
-                  </p>
-                  <p className="text-[10px] text-muted-foreground">
-                    {datasetSource === "upload" ? (
-                      uploadedFile ? (
-                        <>
-                          {t("studio.dataset.localDataset")}
-                          {selectedLocalRows != null
-                            ? t("studio.dataset.localDatasetRows", {
-                                count: selectedLocalRows.toLocaleString(),
-                              })
-                            : ""}
-                        </>
+          {datasetSource !== "s3" && (
+            <div className="flex flex-col gap-3">
+              {selectedDatasetName ? (
+                <div className="flex items-center gap-3 rounded-lg border bg-muted/40 px-3.5 py-3">
+                  <div className="rounded-md bg-indigo-500/10 p-1.5">
+                    <HugeiconsIcon
+                      icon={FileAttachmentIcon}
+                      className="size-4 text-indigo-500"
+                    />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="font-mono text-sm font-medium truncate">
+                      {datasetSource === "upload"
+                        ? (selectedLocalDataset?.label ??
+                          deriveLocalDatasetName(selectedDatasetName))
+                        : selectedDatasetName}
+                    </p>
+                    <p className="text-[10px] text-muted-foreground">
+                      {datasetSource === "upload" ? (
+                        uploadedFile ? (
+                          <>
+                            {t("studio.dataset.localDataset")}
+                            {selectedLocalRows != null
+                              ? t("studio.dataset.localDatasetRows", {
+                                  count: selectedLocalRows.toLocaleString(),
+                                })
+                              : ""}
+                          </>
+                        ) : (
+                          t("studio.dataset.localDataset")
+                        )
                       ) : (
-                        t("studio.dataset.localDataset")
-                      )
-                    ) : (
-                      <>
-                        {t("studio.dataset.huggingFaceDataset")}
-                        {datasetSubset && ` / ${datasetSubset}`}
-                        {datasetSplit && ` / ${datasetSplit}`}
-                      </>
-                    )}
-                  </p>
+                        <>
+                          {t("studio.dataset.huggingFaceDataset")}
+                          {datasetSubset && ` / ${datasetSubset}`}
+                          {datasetSplit && ` / ${datasetSplit}`}
+                        </>
+                      )}
+                    </p>
+                  </div>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="shrink-0 text-xs"
+                    onClick={() => clearSelectionForTab(activeSourceTab)}
+                  >
+                    {t("studio.dataset.clear")}
+                  </Button>
                 </div>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="shrink-0 text-xs"
-                  onClick={() => clearSelectionForTab(activeSourceTab)}
+              ) : (
+                <button
+                  type="button"
+                  className={`flex w-full cursor-pointer items-center gap-3 rounded-lg border border-dashed px-3.5 py-3 text-left transition-colors ${
+                    isDatasetDragOver
+                      ? "border-indigo-500/70 bg-indigo-500/10"
+                      : "border-border bg-muted/20 hover:border-indigo-500/50 hover:bg-indigo-500/5"
+                  }`}
+                  disabled={isUploading}
+                  onClick={handleUploadButtonClick}
+                  onDrop={handleDatasetDrop}
+                  onDragOver={handleDatasetDragOver}
+                  onDragLeave={handleDatasetDragLeave}
                 >
-                  {t("studio.dataset.clear")}
+                  <HugeiconsIcon
+                    icon={CloudUploadIcon}
+                    className="pointer-events-none size-4 shrink-0 text-indigo-500"
+                  />
+                  <span className="pointer-events-none min-w-0">
+                    <span className="block text-xs font-medium text-foreground">
+                      {t("studio.dataset.dropFileOrClick")}
+                    </span>
+                    <span className="mt-0.5 block truncate text-[10px] text-muted-foreground">
+                      {TRAINING_DATASET_UPLOAD_LABEL} · up to{" "}
+                      {uploadLimitLabel}; {DOCUMENT_REDIRECT_LABEL}
+                    </span>
+                  </span>
+                </button>
+              )}
+
+              <div className="grid grid-cols-2 gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="cursor-pointer gap-1.5"
+                  disabled={isUploading}
+                  onClick={handleUploadButtonClick}
+                >
+                  {isUploading ? (
+                    <Spinner className="size-3.5" />
+                  ) : (
+                    <HugeiconsIcon icon={CloudUploadIcon} className="size-3.5" />
+                  )}
+                  {isUploading
+                    ? t("studio.dataset.uploading")
+                    : t("studio.dataset.upload")}
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="cursor-pointer gap-1.5"
+                  disabled={!selectedDatasetName}
+                  onClick={() => openPreview()}
+                >
+                  <HugeiconsIcon icon={ViewIcon} className="size-3.5" />
+                  {t("studio.dataset.viewDataset")}
                 </Button>
               </div>
-            ) : (
-              <button
-                type="button"
-                className={`flex w-full cursor-pointer items-center gap-3 rounded-lg border border-dashed px-3.5 py-3 text-left transition-colors ${
-                  isDatasetDragOver
-                    ? "border-indigo-500/70 bg-indigo-500/10"
-                    : "border-border bg-muted/20 hover:border-indigo-500/50 hover:bg-indigo-500/5"
-                }`}
-                disabled={isUploading}
-                onClick={handleUploadButtonClick}
-                onDrop={handleDatasetDrop}
-                onDragOver={handleDatasetDragOver}
-                onDragLeave={handleDatasetDragLeave}
-              >
-                <HugeiconsIcon
-                  icon={CloudUploadIcon}
-                  className="pointer-events-none size-4 shrink-0 text-indigo-500"
-                />
-                <span className="pointer-events-none min-w-0">
-                  <span className="block text-xs font-medium text-foreground">
-                    {t("studio.dataset.dropFileOrClick")}
-                  </span>
-                  <span className="mt-0.5 block truncate text-[10px] text-muted-foreground">
-                    {TRAINING_UPLOAD_LABEL}
-                  </span>
-                </span>
-              </button>
-            )}
-
-            <div className="grid grid-cols-2 gap-2">
-              <Button
-                variant="outline"
-                size="sm"
-                className="cursor-pointer gap-1.5"
-                disabled={isUploading}
-                onClick={handleUploadButtonClick}
-              >
-                {isUploading ? (
-                  <Spinner className="size-3.5" />
-                ) : (
-                  <HugeiconsIcon icon={CloudUploadIcon} className="size-3.5" />
-                )}
-                {isUploading ? t("studio.dataset.uploading") : t("studio.dataset.upload")}
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                className="cursor-pointer gap-1.5"
-                disabled={!selectedDatasetName}
-                onClick={() => openPreview()}
-              >
-                <HugeiconsIcon icon={ViewIcon} className="size-3.5" />
-                {t("studio.dataset.viewDataset")}
-              </Button>
             </div>
-          </div>
+          )}
           <input
             ref={fileInputRef}
             type="file"
@@ -1131,7 +1321,7 @@ export function DatasetSection() {
             fileName={redirectFileName}
             onOpenLearningRecipes={handleOpenLearningRecipes}
           />
-      </div>
+        </div>
       </SectionCard>
     </div>
   );
