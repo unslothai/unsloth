@@ -297,42 +297,16 @@ export function ChatTab() {
         </p>
       </header>
 
-      <SettingsSection
-        title="Chat menu"
-        description={
-          <>
-            Choose which items are pinned in chat's{" "}
-            <PlusIcon
-              aria-label="+"
-              className="inline size-3.5 align-[-2px] stroke-[2px]"
-            />{" "}
-            side menu. Unpinned items move into “More”.
-          </>
-        }
-      >
-        {PLUS_MENU_SETTINGS.map((item) => (
-          <SettingsRow key={item.id} label={item.label} icon={item.icon}>
-            <Switch
-              checked={plusPins[item.id]}
-              onCheckedChange={() => togglePlusPin(item.id)}
-            />
-          </SettingsRow>
-        ))}
-      </SettingsSection>
-
-      <SettingsSection title="Models">
+      <SettingsSection title="Select model settings">
         <SettingsRow
           label="Load on selection"
           description={
             <span className="flex flex-col gap-1.5">
               <span>
-                On: Unsloth auto-picks the best settings for your hardware and
-                loads on selection. Off: picking a model opens Run settings to
-                customize, then click Load model.
+                On: Unsloth auto-picks the best settings and loads it.
               </span>
-              <span>
-                The gear next to a downloaded model always opens Run settings:
-              </span>
+              <span>Off: opens Run settings to customize, then load.</span>
+              <span>The gear always opens Run settings:</span>
               <span className="flex items-center gap-2 rounded-md bg-black/[0.03] dark:bg-white/[0.04] px-2.5 py-1.5">
                 <span className="font-mono text-xs text-foreground">
                   Q4_K_M
@@ -392,6 +366,29 @@ export function ChatTab() {
             onCheckedChange={setShowAllQuantizations}
           />
         </SettingsRow>
+      </SettingsSection>
+
+      <SettingsSection
+        title="Chat menu"
+        description={
+          <>
+            Pin items to chat's{" "}
+            <PlusIcon
+              aria-label="+"
+              className="inline size-3.5 align-[-2px] stroke-[2px]"
+            />{" "}
+            side menu. Others move into “More”.
+          </>
+        }
+      >
+        {PLUS_MENU_SETTINGS.map((item) => (
+          <SettingsRow key={item.id} label={item.label} icon={item.icon}>
+            <Switch
+              checked={plusPins[item.id]}
+              onCheckedChange={() => togglePlusPin(item.id)}
+            />
+          </SettingsRow>
+        ))}
       </SettingsSection>
 
       <SettingsSection title={t("settings.chat.artifacts.title")}>
