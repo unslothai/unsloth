@@ -33,6 +33,13 @@ export interface CheckpointListResponse {
   models: ModelCheckpoints[];
 }
 
+export interface ExportSizeEstimate {
+  /** Estimated FP16/BF16-equivalent on-disk size, or null when unknown. */
+  fp16_bytes: number | null;
+  total_params: number | null;
+  source: string;
+}
+
 export interface ExportOperationResponse {
   success: boolean;
   message: string;
@@ -46,6 +53,22 @@ export interface ExportOperationResponse {
 export async function fetchCheckpoints(): Promise<CheckpointListResponse> {
   const response = await authFetch("/api/models/checkpoints");
   return parseJson<CheckpointListResponse>(response);
+}
+
+/**
+ * Estimate a model's FP16/BF16-equivalent size, used to scale the GGUF quant
+ * size estimates in the Export picker. Returns nulls (not an error) when the
+ * size can't be determined, so the UI shows no estimate rather than a wrong one.
+ */
+export async function fetchExportSize(
+  modelId: string,
+  signal?: AbortSignal,
+): Promise<ExportSizeEstimate> {
+  const response = await authFetch(
+    `/api/models/export-size?model=${encodeURIComponent(modelId)}`,
+    { signal },
+  );
+  return parseJson<ExportSizeEstimate>(response);
 }
 
 export async function loadCheckpoint(params: {

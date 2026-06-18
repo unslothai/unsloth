@@ -9,6 +9,7 @@ import os
 import shutil
 import sys
 import uuid
+from functools import lru_cache
 from pathlib import Path
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from typing import List, Optional
@@ -138,6 +139,7 @@ except ImportError:
 from models import (
     CheckpointInfo,
     CheckpointListResponse,
+    ExportSizeResponse,
     LocalModelInfo,
     LocalModelListResponse,
     ModelCheckpoints,
@@ -2763,3 +2765,53 @@ async def list_checkpoints(
             event = "models.list_checkpoints_failed",
             log = logger,
         )
+
+
+@lru_cache(maxsize = 128)
+def _export_size_cached(
+    model: str, hf_token: Optional[str]
+) -> tuple[Optional[int], Optional[int], str]:
+    """Estimate a model's FP16/BF16-equivalent size in bytes (+ total params).
+
+    Memoized so repeated Export-page selections of the same model don't re-hit
+    Hugging Face on every keystroke. Never raises: any failure (offline, gated,
+    bad id) returns ``(None, None, "unavailable")`` so the Export picker degrades
+    to "no estimate" instead of breaking. The sizer is imported lazily from the
+    module path the tests patch (``utils.hardware.hardware``).
+    """
+    try:
+        from utils.hardware.hardware import estimate_fp16_model_size_bytes
+
+        fp16_bytes, source = estimate_fp16_model_size_bytes(model, hf_token = hf_token)
+        if not fp16_bytes or fp16_bytes <= 0:
+            return None, None, source or "unavailable"
+        return int(fp16_bytes), int(fp16_bytes) // 2, source
+    except Exception as e:  # defensive: never break the Export page over a size hint
+        logger.warning("Could not estimate export size for '%s': %s", model, e)
+        return None, None, "unavailable"
+
+
+@router.get("/export-size", response_model = ExportSizeResponse)
+async def get_export_size(
+    model: str = Query(..., description = "Base model id or local model path to size"),
+    hf_token: Optional[str] = Query(None),
+    current_subject: str = Depends(get_current_subject),
+):
+    """Estimate a model's FP16/BF16-equivalent size for the Export page.
+
+    The Export GGUF quant picker scales its per-quant size estimates from this
+    value (``bytes ~= fp16_bytes * bits_per_weight / 16``). Returns nulls with
+    HTTP 200 when the size can't be determined, so the UI shows no estimate
+    rather than a misleading fixed number. Reuses the MoE-aware sizer
+    ``estimate_fp16_model_size_bytes`` (safetensors -> config -> local -> vllm).
+    """
+    resolved = model
+    if not is_local_path(model):
+        resolved = resolve_cached_repo_id_case(model)
+    fp16_bytes, total_params, source = _export_size_cached(resolved, hf_token)
+    return ExportSizeResponse(
+        model = resolved,
+        fp16_bytes = fp16_bytes,
+        total_params = total_params,
+        source = source,
+    )
