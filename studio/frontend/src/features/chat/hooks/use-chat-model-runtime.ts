@@ -29,6 +29,7 @@ import {
   parseSplitRatio,
   readPersistedSpeculativeType,
   resolveToolsEnabledOnLoad,
+  saveGpuMemoryMode,
   saveSpeculativeType,
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
@@ -491,9 +492,16 @@ export function useChatModelRuntime() {
             previousModel?.isGguf === true
             || previousVariant != null
             || (previousCheckpoint?.toLowerCase().endsWith(".gguf") ?? false);
-          const rollbackMaxSeqLength = previousIsGguf
-            ? (stateBeforeUnload.ggufContextLength ?? 0)
-            : maxSeqLength;
+          // Respect the rolled-back model's fit mode: a fit-mode model with an
+          // unpinned (auto) context must reload with 0 (so --fit re-auto-sizes),
+          // not the positive context it happened to pick (which the backend
+          // would treat as a pin).
+          const rollbackMaxSeqLength = resolveFitMaxSeqLength(
+            previousIsGguf,
+            stateBeforeUnload.loadedGpuMemoryMode ?? "auto",
+            stateBeforeUnload.loadedCustomContextLength,
+            previousIsGguf ? (stateBeforeUnload.ggufContextLength ?? 0) : maxSeqLength,
+          );
           const hfToken = stateBeforeUnload.hfToken || null;
           const previousModelRequiresTrustRemoteCode =
             stateBeforeUnload.modelRequiresTrustRemoteCode;
@@ -619,6 +627,9 @@ export function useChatModelRuntime() {
             // preference now (the requested intent, not the resolved echo;
             // saveSpeculativeType keeps only the universal auto/ngram/off).
             saveSpeculativeType(speculativeType);
+            // Persist the GPU Memory mode only on a successful GGUF load (not on
+            // dropdown change), so an abandoned/unapplied selection doesn't stick.
+            if (isGguf) saveGpuMemoryMode(gpuMemoryMode);
 
             const currentParams = useChatRuntimeStore.getState().params;
             setParams(

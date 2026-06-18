@@ -42,6 +42,7 @@ import {
   resolveLoadedSpeculativeSettings,
   resolveSpeculativeSettingsForLoad,
   resolveToolsEnabledOnLoad,
+  saveGpuMemoryMode,
   saveSpeculativeType,
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
@@ -1277,6 +1278,7 @@ async function autoLoadSmallestModel(): Promise<{
               gpu_ids: rt.selectedGpuIds ?? undefined,
             });
             saveSpeculativeType(specSettings.speculativeType);
+            saveGpuMemoryMode(rt.gpuMemoryMode);
             useChatRuntimeStore
               .getState()
               .setCheckpoint(repo.repo_id, variant.quant);
@@ -1469,6 +1471,7 @@ async function autoLoadSmallestModel(): Promise<{
         gpu_ids: rt.selectedGpuIds ?? undefined,
       });
       saveSpeculativeType(specSettings.speculativeType);
+      saveGpuMemoryMode(rt.gpuMemoryMode);
       useChatRuntimeStore
         .getState()
         .setCheckpoint("unsloth/Qwen3.5-4B-MTP-GGUF", "UD-Q4_K_XL");

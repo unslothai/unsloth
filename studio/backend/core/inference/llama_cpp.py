@@ -4679,15 +4679,20 @@ class LlamaCppBackend:
                         # tensor_parallel is honored, but manual skips the
                         # memory-based TP planner below (gpus = []); the toggle
                         # just emits --split-mode tensor (llama.cpp then splits by
-                        # free VRAM, or by the Split ratio if set). Strip
-                        # any user --split-mode so the toggle owns it (unlike fit,
-                        # this is compatible -- --fit off means no fit/tensor abort).
+                        # free VRAM, or by the Split ratio if set).
                         gpus = []
                         effective_ctx = (
                             requested_ctx if requested_ctx > 0 else (self._context_length or 0)
                         )
                         original_ctx = effective_ctx
-                        extra_args = strip_split_mode_only(extra_args)
+                        # Strip the user --split-mode when the toggle owns the split
+                        # (TP engaged -> Studio emits --split-mode tensor) or when the
+                        # user asked for tensor (which aborts on a single GPU even if
+                        # the manual <2-GPU guard downgraded TP). Otherwise keep their
+                        # non-tensor mode (row/none/layer) -- the toggle can't express
+                        # those.
+                        if tensor_parallel or split_mode_override == "tensor":
+                            extra_args = strip_split_mode_only(extra_args)
 
                     # Will MTP engage? If so, auto-fit reserves draft-model VRAM.
                     # Mirrors _build_speculative_flags: forced mtp/mtp+ngram always

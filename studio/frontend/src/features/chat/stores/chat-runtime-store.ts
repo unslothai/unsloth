@@ -1587,10 +1587,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   setSpeculativeType: (speculativeType) => set({ speculativeType }),
   setSpecDraftNMax: (specDraftNMax) => set({ specDraftNMax }),
   setTensorParallel: (tensorParallel) => set({ tensorParallel }),
-  setGpuMemoryMode: (gpuMemoryMode) => {
-    saveGpuMemoryMode(gpuMemoryMode);
-    set({ gpuMemoryMode });
-  },
+  // Standing preference, but persisted only on a successful load (see
+  // use-chat-model-runtime), not on selection -- so an unapplied pick the user
+  // resets/abandons doesn't stick to the next session.
+  setGpuMemoryMode: (gpuMemoryMode) => set({ gpuMemoryMode }),
   setGpuLayers: (gpuLayers) => set({ gpuLayers }),
   setNCpuMoe: (nCpuMoe) => set({ nCpuMoe }),
   setSplitRatio: (splitRatio) => set({ splitRatio }),
