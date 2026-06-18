@@ -18,10 +18,11 @@ from __future__ import annotations
 
 import threading
 import time
-from typing import Any
+from typing import Any, Optional
 
 OPENAI_AUTO_SWITCH_SETTING_KEY = "openai_api_auto_switch_model"
 AUTO_UNLOAD_IDLE_SETTING_KEY = "openai_api_auto_unload_idle_seconds"
+MODEL_OVERRIDES_SETTING_KEY = "openai_api_auto_switch_overrides"
 
 DEFAULT_OPENAI_AUTO_SWITCH_ENABLED = False
 DEFAULT_AUTO_UNLOAD_IDLE_SECONDS = 0
@@ -103,3 +104,37 @@ def set_auto_unload_idle_seconds(value: Any) -> int:
     upsert_app_settings({AUTO_UNLOAD_IDLE_SETTING_KEY: parsed})
     _invalidate(AUTO_UNLOAD_IDLE_SETTING_KEY)
     return parsed
+
+
+def get_model_overrides() -> dict[str, dict]:
+    """Per-model launch overrides keyed by model id ({llama_extra_args, max_seq_length})."""
+    raw = _cached_setting(MODEL_OVERRIDES_SETTING_KEY, None)
+    return raw if isinstance(raw, dict) else {}
+
+
+def get_model_override(model_id: str) -> dict:
+    """The launch override applied when auto-switch loads ``model_id`` (or empty)."""
+    override = get_model_overrides().get(model_id)
+    return override if isinstance(override, dict) else {}
+
+
+def set_model_override(
+    model_id: str,
+    llama_extra_args: Optional[list[str]] = None,
+    max_seq_length: Optional[int] = None,
+) -> dict:
+    """Upsert one model's launch override; an override with no fields removes it."""
+    if not model_id or not model_id.strip():
+        raise ValueError("model_id is required.")
+    entry: dict[str, Any] = {}
+    if llama_extra_args:
+        entry["llama_extra_args"] = [str(arg) for arg in llama_extra_args]
+    if max_seq_length:
+        entry["max_seq_length"] = max(0, int(max_seq_length))
+
+    from storage.studio_db import upsert_app_setting_map_entry
+
+    # Atomic per-entry merge so two PUTs for different models can't drop each other.
+    upsert_app_setting_map_entry(MODEL_OVERRIDES_SETTING_KEY, model_id.strip(), entry or None)
+    _invalidate(MODEL_OVERRIDES_SETTING_KEY)
+    return entry

@@ -381,3 +381,115 @@ def test_idle_loop_does_not_unload_while_request_inflight(monkeypatch):
 
     asyncio.run(_drive())
     assert unloads == []
+
+
+# ── per-model launch overrides ──────────────────────────────────────
+
+
+def test_auto_switch_applies_model_override(monkeypatch):
+    # A configured model loads with its saved launch flags, not bare defaults.
+    backend = _FakeBackend(None)
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("unsloth/B-GGUF", "Q4_K_M"),
+        backend = backend,
+        recorder = rec,
+    )
+    monkeypatch.setattr(
+        settings,
+        "get_model_override",
+        lambda model_id: {"llama_extra_args": ["--n-gpu-layers", "20"], "max_seq_length": 4096},
+    )
+
+    _run_hook("unsloth/B-GGUF")
+    assert len(rec.calls) == 1
+    req = rec.calls[0]
+    assert req.model_path == "unsloth/B-GGUF"
+    assert req.gguf_variant == "Q4_K_M"
+    assert req.llama_extra_args == ["--n-gpu-layers", "20"]
+    assert req.max_seq_length == 4096
+
+
+def test_auto_switch_applies_partial_override(monkeypatch):
+    # Only llama_extra_args is configured: it is applied, max_seq_length stays default.
+    backend = _FakeBackend(None)
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("unsloth/B-GGUF", "Q4_K_M"),
+        backend = backend,
+        recorder = rec,
+    )
+    monkeypatch.setattr(settings, "get_model_override", lambda model_id: {"llama_extra_args": ["--flash-attn"]})
+
+    _run_hook("unsloth/B-GGUF")
+    req = rec.calls[0]
+    assert req.llama_extra_args == ["--flash-attn"]
+    assert req.max_seq_length == 0  # untouched default
+
+
+def _mock_override_store(monkeypatch):
+    """Back the override read + atomic-merge write with an in-memory dict."""
+    import storage.studio_db as db
+
+    store = {}
+
+    def _merge_entry(key, entry_key, entry_value):
+        current = dict(store.get(key) or {})
+        if entry_value:
+            current[entry_key] = entry_value
+        else:
+            current.pop(entry_key, None)
+        store[key] = current
+        return current
+
+    monkeypatch.setattr(db, "upsert_app_setting_map_entry", _merge_entry)
+    monkeypatch.setattr(db, "get_app_setting", lambda k, default = None: store.get(k, default))
+    settings._cache.clear()
+    return store
+
+
+def test_model_override_roundtrip(monkeypatch):
+    _mock_override_store(monkeypatch)
+
+    settings.set_model_override(
+        "unsloth/B-GGUF", llama_extra_args = ["--n-gpu-layers", "20"], max_seq_length = 4096
+    )
+    assert settings.get_model_override("unsloth/B-GGUF") == {
+        "llama_extra_args": ["--n-gpu-layers", "20"],
+        "max_seq_length": 4096,
+    }
+    # An override with no fields removes the entry rather than storing an empty one.
+    settings.set_model_override("unsloth/B-GGUF", llama_extra_args = [], max_seq_length = None)
+    assert settings.get_model_override("unsloth/B-GGUF") == {}
+    assert settings.get_model_overrides() == {}
+
+
+def test_override_route_rejects_managed_flag_and_removes(monkeypatch):
+    import routes.settings as settings_route
+    from fastapi import HTTPException
+
+    _mock_override_store(monkeypatch)
+
+    # A managed/denylisted llama-server flag is rejected with 400, not 500.
+    bad = settings_route.ModelOverridePayload(
+        model_id = "unsloth/B-GGUF", llama_extra_args = ["--port", "1234"]
+    )
+    with pytest.raises(HTTPException) as excinfo:
+        settings_route.update_openai_auto_switch_override(bad, "tester")
+    assert excinfo.value.status_code == 400
+
+    # A valid override is stored, then an empty payload removes it through the route.
+    ok = settings_route.ModelOverridePayload(
+        model_id = "unsloth/B-GGUF", llama_extra_args = ["--flash-attn"], max_seq_length = 4096
+    )
+    resp = settings_route.update_openai_auto_switch_override(ok, "tester")
+    assert resp.overrides["unsloth/B-GGUF"]["max_seq_length"] == 4096
+    assert "llama_extra_args" in resp.overrides["unsloth/B-GGUF"]
+
+    empty = settings_route.ModelOverridePayload(model_id = "unsloth/B-GGUF")
+    resp2 = settings_route.update_openai_auto_switch_override(empty, "tester")
+    assert "unsloth/B-GGUF" not in resp2.overrides

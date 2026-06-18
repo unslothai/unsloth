@@ -1950,7 +1950,10 @@ async def _maybe_auto_switch_model(
     through so drop-in OpenAI compatibility (any name serves the loaded model)
     is preserved, and no remote download is triggered.
     """
-    from utils.openai_auto_switch_settings import get_openai_auto_switch_enabled
+    from utils.openai_auto_switch_settings import (
+        get_openai_auto_switch_enabled,
+        get_model_override,
+    )
     from core.inference.local_model_resolver import resolve_local_gguf
 
     if not requested_model or not get_openai_auto_switch_enabled():
@@ -1965,9 +1968,17 @@ async def _maybe_auto_switch_model(
     async with _auto_switch_lock:
         if _auto_switch_target_loaded(backend, target_id, variant):
             return
+        # Apply this model's saved launch flags (ctx, ngl, ...) so a swapped
+        # model is served the way the user configured it, not bare defaults.
+        override = get_model_override(target_id)
+        load_kwargs = {"model_path": target_id, "gguf_variant": variant}
+        if override.get("llama_extra_args") is not None:
+            load_kwargs["llama_extra_args"] = override["llama_extra_args"]
+        if override.get("max_seq_length") is not None:
+            load_kwargs["max_seq_length"] = override["max_seq_length"]
         # Reuse the load route so its dedup, tensor fallback, and threading apply.
         await load_model(
-            LoadRequest(model_path = target_id, gguf_variant = variant),
+            LoadRequest(**load_kwargs),
             fastapi_request,
             current_subject = current_subject,
         )
