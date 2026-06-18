@@ -257,12 +257,41 @@ def security_load_subdirs(model_name: str, hf_token: Optional[str] = None) -> tu
     root. Detection is metadata-only (tokenizer special tokens) and cached.
     """
     try:
-        from utils.models.model_config import detect_audio_type
+        from utils.models.model_config import detect_audio_type, load_model_defaults
+
         if detect_audio_type(model_name, hf_token = hf_token) == "bicodec":
+            return ("LLM",)
+        # Tokenizer detection can fail (network/gated/an unresolved alias), but the
+        # Studio YAML default also pins the audio type, so honor it as a fallback --
+        # otherwise a flagged LLM/ pickle is treated as an ignored subdir artifact.
+        if (load_model_defaults(model_name) or {}).get("audio_type") == "bicodec":
             return ("LLM",)
     except Exception:
         pass
     return ()
+
+
+def _load_scan_target(model_name: str, load_subdirs: tuple) -> tuple:
+    """Map a load alias to the ``(repo_id, load_subdirs)`` the load actually fetches.
+
+    The Spark-TTS / BiCodec alias ``<parent>/LLM`` is downloaded by the trainer as
+    ``unsloth/<parent>`` and loaded from ``LLM/`` (see ``core/training/trainer.py``).
+    Scanning the literal alias 404s and fails open, so a flagged ``LLM/`` pickle in the
+    real repo would be missed -- scan the real repo with ``LLM`` as a load root instead.
+    Every other model is returned unchanged.
+    """
+    try:
+        from utils.paths import is_local_path
+
+        if is_local_path(model_name):
+            return model_name, load_subdirs
+    except Exception:
+        return model_name, load_subdirs
+    name = (model_name or "").strip().strip("/")
+    if name.endswith("/LLM") and name.count("/") == 1:
+        parent = name[: -len("/LLM")]
+        return f"unsloth/{parent}", tuple(dict.fromkeys((*load_subdirs, "LLM")))
+    return model_name, load_subdirs
 
 
 def _fetch_security_status(model_name: str, hf_token: Optional[str]):
@@ -314,6 +343,12 @@ def evaluate_file_security(
     flagged file directly under such a subdir is a root-level load artifact there and
     blocks, and an index inside that subdir is honored when scoping flagged shards.
     """
+    # Resolve a load alias to the repo the load actually fetches from, so the gate
+    # scans the same target the loader does (the Spark-TTS "<parent>/LLM" alias is
+    # really unsloth/<parent> loaded from LLM/). Scanning the literal alias 404s and
+    # fails open. Reporting the resolved repo in the decision is the honest target.
+    model_name, load_subdirs = _load_scan_target(model_name, tuple(load_subdirs))
+
     # Local folders/files (including a local .gguf) have no Hub security scan;
     # nothing to check. A REMOTE reference is scanned even if it ends in .gguf, so a
     # repo cannot evade the scan by naming itself "*.gguf".

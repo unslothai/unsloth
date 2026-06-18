@@ -1621,19 +1621,32 @@ async def scan_model_remote_code(
         # Whether OUR scan is what first pulls a repo into the HF cache. A later
         # decline uses this to purge exactly what the scan downloaded, without
         # touching a model the user already had (or a local path). A LoRA scan pulls
-        # BOTH the adapter's and the base's config, so record EVERY target the scan is
-        # about to create, not just the primary -- otherwise a base the scan
+        # BOTH the adapter's and the base's config, AND the scan downloads any EXTERNAL
+        # auto_map repos a config references (owner/name--module.Class), so record every
+        # repo the scan is about to create -- otherwise a base or external repo the scan
         # downloaded is left on disk when the user declines. Computed BEFORE the
         # preflight (which does the downloading) and against EVERY cache the discard
         # searches (active + legacy + default), so a repo the user already had in a
         # legacy/default cache is never misreported as created-by-scan and deleted.
+        from utils.security.remote_code_scan import external_auto_map_repos
+
         scan_created_repos: list = []
-        for _target in security_targets:
+        _seen_created: set = set()
+
+        def _mark_scan_created(repo: str) -> None:
+            if not repo or repo in _seen_created:
+                return
+            _seen_created.add(repo)
             try:
-                if (not is_local_path(_target)) and not _repo_in_any_hf_cache(_target):
-                    scan_created_repos.append(_target)
+                if (not is_local_path(repo)) and not _repo_in_any_hf_cache(repo):
+                    scan_created_repos.append(repo)
             except Exception:
                 pass
+
+        for _target in security_targets:
+            _mark_scan_created(_target)
+            for _ext in external_auto_map_repos(_target, hf_token):
+                _mark_scan_created(_ext)
         decision = preflight_remote_code_consent_for_targets(security_targets, hf_token = hf_token)
         payload = decision.response_payload()
         payload["requires_trust_remote_code"] = decision.has_remote_code

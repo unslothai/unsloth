@@ -279,6 +279,26 @@ def evaluate_remote_code_consent(
     )
 
 
+def _fingerprint_target_key(target: str) -> str:
+    """Namespace key for a target in the combined fingerprint.
+
+    The fingerprint pins the CODE BYTES, not one caller's spelling of the repo id.
+    Hub repo ids are case-insensitive, but the scan endpoint canonicalizes a cached
+    repo's casing (``resolve_cached_repo_id_case``) while the workers pass the raw
+    user input, so the same code under ``Org/Model`` vs ``org/model`` would otherwise
+    fingerprint differently and reject a valid approval. Lowercase Hub ids so the pin
+    is casing-robust; keep local paths as-is (case-sensitive filesystems).
+    """
+    try:
+        from utils.paths import is_local_path
+
+        if is_local_path(target):
+            return target
+    except Exception:
+        return target
+    return target.lower()
+
+
 def evaluate_remote_code_consent_for_targets(
     targets,
     hf_token: Optional[str] = None,
@@ -341,9 +361,11 @@ def evaluate_remote_code_consent_for_targets(
                 approvable = False,
             )
         # Namespace filenames by target so two repos' same-named files stay distinct
-        # in the combined scan + fingerprint.
+        # in the combined scan + fingerprint. The key uses a casing-normalized target
+        # so an approval pins the code, not one caller's spelling of the repo id.
+        target_key = _fingerprint_target_key(target)
         for filename, body in files.items():
-            combined[f"{target}\0{filename}"] = body
+            combined[f"{target_key}\0{filename}"] = body
 
     if not has_remote_code:
         return RemoteCodeDecision(

@@ -591,6 +591,54 @@ def _auto_map_py(cfg: dict) -> set[str]:
     return {fn for repo, fn in _auto_map_refs(cfg) if repo is None}
 
 
+def external_auto_map_repos(model_name: str, hf_token: Optional[str] = None) -> set:
+    """External Hub repos referenced by any of this model's auto_map configs.
+
+    These are the ``owner/name`` repos that ``_add_external_refs`` downloads to scan
+    ``owner/name--module.Class`` code. The scan route uses this so that declining
+    consent purges those repos too, instead of leaving untrusted external code cached.
+    Best-effort and config/metadata-only: returns whatever can be read, never raises.
+    """
+    repos: set = set()
+    try:
+        import json
+        from pathlib import Path
+
+        from utils.paths import is_local_path, normalize_path
+
+        if is_local_path(model_name):
+            root = Path(normalize_path(model_name)).expanduser()
+            for cfg_name in REMOTE_CODE_CONFIG_FILES:
+                p = root / cfg_name
+                if not p.is_file():
+                    continue
+                try:
+                    refs = _auto_map_refs(json.loads(p.read_text()))
+                except Exception:
+                    continue
+                repos.update(repo for repo, _fn in refs if repo)
+            return repos
+
+        from huggingface_hub import hf_hub_download
+        from huggingface_hub.utils import EntryNotFoundError
+
+        for cfg_name in REMOTE_CODE_CONFIG_FILES:
+            try:
+                cfg_path = hf_hub_download(model_name, cfg_name, token = hf_token)
+            except EntryNotFoundError:
+                continue
+            except Exception:
+                continue
+            try:
+                refs = _auto_map_refs(json.loads(Path(cfg_path).read_text()))
+            except Exception:
+                continue
+            repos.update(repo for repo, _fn in refs if repo)
+    except Exception:
+        return repos
+    return repos
+
+
 def _add_external_refs(files: dict, refs, hf_token, model_name: str) -> bool:
     """Download external-repo auto_map code into ``files`` (keyed ``repo--file``).
 
@@ -624,9 +672,29 @@ def _add_external_refs(files: dict, refs, hf_token, model_name: str) -> bool:
                 exc,
             )
             return False
-        # The import closure the loader can execute = every .py in the external repo,
-        # plus any explicitly-referenced entry file (in case listing is incomplete).
-        wanted = {f for f in repo_files if f.endswith(".py")} | set(entry_files)
+        # The import closure the loader can execute = every present .py in the external
+        # repo, plus any explicitly-referenced entry file. When the listing is REAL
+        # (non-empty), present_py already covers the executable code, so an entry ref
+        # absent from it is stale or mis-derived (an older config naming a since-removed
+        # file, or a dotted sub.mod.py vs the real sub/mod.py) and is dropped rather than
+        # failing the whole load closed -- exactly like the own-repo path above. With an
+        # EMPTY/incomplete listing we cannot prove the ref stale, so keep fetching it and
+        # fail closed if it is unreachable; never under-scan external code. A PRESENT
+        # file that cannot be fetched still fails closed below.
+        repo_file_set = set(repo_files)
+        present_py = {f for f in repo_files if f.endswith(".py")}
+        if repo_file_set:
+            for fn in sorted(set(entry_files) - repo_file_set):
+                logger.info(
+                    "repo_remote_code_files(%s): ignoring stale external auto_map target "
+                    "%s:%s (absent from the repo listing; it cannot execute)",
+                    model_name,
+                    repo,
+                    fn,
+                )
+            wanted = present_py | (set(entry_files) & repo_file_set)
+        else:
+            wanted = present_py | set(entry_files)
         for fn in sorted(wanted):
             try:
                 fp = hf_hub_download(repo, fn, token = hf_token)

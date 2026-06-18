@@ -273,6 +273,35 @@ class TestConsentGate:
         # approve an adapter that ships its own code).
         assert base_only.fingerprint != d1.fingerprint
 
+    def test_fingerprint_is_casing_invariant_for_hub_repos(self):
+        # The scan endpoint canonicalizes a cached repo's casing while the workers pass
+        # the raw user input. The fingerprint pins CODE BYTES, not the repo-id spelling,
+        # so the same code under different casing must fingerprint the same -- otherwise
+        # an approval from the scan is rejected by the worker as a mismatch.
+        a, b = _with_auto_map(_HIGH)
+        with a, b:
+            d1 = evaluate_remote_code_consent_for_targets(["Org/Model"], trust_remote_code = True)
+            d2 = evaluate_remote_code_consent_for_targets(["org/model"], trust_remote_code = True)
+        assert d1.fingerprint == d2.fingerprint
+        # An approval pinned from one casing unblocks the load under another casing.
+        a, b = _with_auto_map(_HIGH)
+        with a, b:
+            d3 = evaluate_remote_code_consent_for_targets(
+                ["ORG/model"], trust_remote_code = True, approved_fingerprint = d1.fingerprint
+            )
+        assert d3.blocked is False
+        assert d3.reason == "approved by fingerprint"
+
+    def test_fingerprint_target_key_keeps_local_path_casing(self):
+        from utils.security.consent import _fingerprint_target_key
+
+        # A local path is case-sensitive (case-sensitive filesystems); never folded.
+        with patch("utils.paths.is_local_path", return_value = True):
+            assert _fingerprint_target_key("/Models/Foo") == "/Models/Foo"
+        # A Hub repo id is case-insensitive; folded so the pin is casing-robust.
+        with patch("utils.paths.is_local_path", return_value = False):
+            assert _fingerprint_target_key("Org/Model") == "org/model"
+
     def test_unscannable_target_fails_closed_for_whole_load(self):
         # If ANY target's code is present but unscannable, the combined load fails
         # closed (non-approvable), not just that one repo.
@@ -1040,6 +1069,73 @@ class TestScannerCoversAllExecutableCode:
         ):
             with pytest.raises(RemoteCodeUnscannable):
                 repo_remote_code_files("victim/model")
+
+    def test_external_mis_derived_dotted_ref_dropped_when_real_present(self):
+        # A subpackage ref "evilorg/evilrepo--pkg.modeling_evil.M" derives the filename
+        # "pkg.modeling_evil.py", but the real file is "pkg/modeling_evil.py" (PRESENT in
+        # the listing). The mis-derived name must be DROPPED -- not fetched and failed
+        # closed -- while the present file is scanned, mirroring the own-repo stale-ref
+        # guard. Without this, a valid external-code model is false-blocked.
+        def _dl(
+            repo,
+            fn,
+            token = None,
+        ):
+            import json
+            import tempfile
+
+            if fn == "config.json":
+                p = Path(tempfile.mkdtemp()) / "config.json"
+                p.write_text(
+                    json.dumps(
+                        {"auto_map": {"AutoModel": "evilorg/evilrepo--pkg.modeling_evil.M"}}
+                    )
+                )
+                return str(p)
+            if fn in REMOTE_CODE_CONFIG_FILES:
+                raise EntryNotFoundError(fn)
+            if repo == "evilorg/evilrepo" and fn == "pkg/modeling_evil.py":
+                p = Path(tempfile.mkdtemp()) / "modeling_evil.py"
+                p.write_text("import os\nos.system('id')\n")
+                return str(p)
+            # The mis-derived dotted name must never be fetched.
+            raise RuntimeError(f"unexpected fetch {repo}:{fn}")
+
+        def _list(repo, token = None):
+            if repo == "evilorg/evilrepo":
+                return ["pkg/modeling_evil.py"]
+            return []  # victim/model ships no own .py
+
+        with (
+            patch("huggingface_hub.hf_hub_download", side_effect = _dl),
+            patch("huggingface_hub.list_repo_files", side_effect = _list),
+        ):
+            files = repo_remote_code_files("victim/model")
+        assert "evilorg/evilrepo--pkg/modeling_evil.py" in files  # real file scanned
+        assert "evilorg/evilrepo--pkg.modeling_evil.py" not in files  # mis-derived dropped
+        assert not scan_remote_code_files(files).clean  # os.system flagged
+
+    def test_external_auto_map_repos_enumerated_for_cleanup(self, tmp_path):
+        # The scan downloads external auto_map repos; decline cleanup needs their ids so
+        # the untrusted external code is not left cached. external_auto_map_repos lists
+        # the repos a config references, for both local and (mocked) remote configs.
+        from utils.security.remote_code_scan import external_auto_map_repos
+
+        (tmp_path / "config.json").write_text(
+            '{"auto_map": {"AutoModel": "evilorg/evilrepo--modeling_evil.M"}}'
+        )
+        (tmp_path / "tokenizer_config.json").write_text(
+            '{"auto_map": {"AutoTokenizer": ["other/repo--tokenization_x.Slow", null]}}'
+        )
+        repos = external_auto_map_repos(str(tmp_path))
+        assert repos == {"evilorg/evilrepo", "other/repo"}
+
+        # A config with only own-repo code yields no external repos.
+        (tmp_path / "plain").mkdir()
+        (tmp_path / "plain" / "config.json").write_text(
+            '{"auto_map": {"AutoModel": "modeling_local.M"}}'
+        )
+        assert external_auto_map_repos(str(tmp_path / "plain")) == set()
 
     def test_gguf_repo_vestigial_auto_map_no_py_is_no_code(self):
         # A GGUF repo whose config.json carries an auto_map copied from the original

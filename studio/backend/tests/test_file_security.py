@@ -490,4 +490,56 @@ def test_root_pickle_still_blocks_with_flagged_python_sibling():
     with _patch_status(status):
         d = evaluate_file_security("evil/mixed")
     assert d.blocked is True
-    assert d.unsafe_files == [{"path": "pytorch_model.bin", "level": "unsafe"}]
+
+
+# -- Alias resolution: scan the repo the loader actually fetches from --
+
+
+def _patch_status_capture(status):
+    """Like _patch_status, but records the repo id model_info was queried with."""
+    seen = {}
+
+    def _mi(repo, *_a, **_k):
+        seen["repo"] = repo
+        return SimpleNamespace(security_repo_status = status)
+
+    return patch("huggingface_hub.model_info", side_effect = _mi), seen
+
+
+def test_spark_tts_llm_alias_scans_real_repo():
+    # The trainer downloads the "Spark-TTS-0.5B/LLM" alias as unsloth/Spark-TTS-0.5B
+    # and loads LLM/. The gate must scan THAT repo with LLM as a load root -- scanning
+    # the literal alias 404s and fails open, missing a flagged LLM/ pickle.
+    status = {"filesWithIssues": [{"path": "LLM/pytorch_model.bin", "level": "unsafe"}]}
+    cap, seen = _patch_status_capture(status)
+    with cap, patch("utils.paths.is_local_path", return_value = False), _patch_no_index():
+        d = evaluate_file_security("Spark-TTS-0.5B/LLM", load_subdirs = ())
+    assert seen["repo"] == "unsloth/Spark-TTS-0.5B"  # scanned the real repo, not the alias
+    assert d.model_name == "unsloth/Spark-TTS-0.5B"
+    assert d.blocked is True
+    assert d.unsafe_files == [{"path": "LLM/pytorch_model.bin", "level": "unsafe"}]
+
+
+def test_non_llm_alias_is_not_rewritten():
+    # A normal repo id with one slash must be scanned as-is (no spurious rewrite).
+    status = {"filesWithIssues": [{"path": "pytorch_model.bin", "level": "unsafe"}]}
+    cap, seen = _patch_status_capture(status)
+    with cap, patch("utils.paths.is_local_path", return_value = False):
+        d = evaluate_file_security("org/model")
+    assert seen["repo"] == "org/model"
+    assert d.model_name == "org/model"
+
+
+def test_security_load_subdirs_yaml_fallback(monkeypatch):
+    # When tokenizer detection fails (network/gated/unresolved alias) but the Studio
+    # YAML default pins audio_type=bicodec, the LLM load root must still be returned.
+    import utils.models.model_config as mc
+    from utils.security import security_load_subdirs
+
+    monkeypatch.setattr(mc, "detect_audio_type", lambda *_a, **_k: None)
+    monkeypatch.setattr(mc, "load_model_defaults", lambda *_a, **_k: {"audio_type": "bicodec"})
+    assert security_load_subdirs("unsloth/Spark-TTS-0.5B") == ("LLM",)
+
+    # A non-bicodec default contributes no subdir.
+    monkeypatch.setattr(mc, "load_model_defaults", lambda *_a, **_k: {"audio_type": None})
+    assert security_load_subdirs("unsloth/Llama-3.2-1B") == ()
