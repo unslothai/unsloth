@@ -26,7 +26,6 @@ import { formatEta, formatRate } from "../utils/format-transfer";
 import {
   GPU_LAYERS_ALL,
   loadedGpuMemoryFields,
-  parseSplitRatio,
   persistGpuMemoryModeOnLoad,
   readPersistedSpeculativeType,
   resolveToolsEnabledOnLoad,
@@ -556,7 +555,7 @@ export function useChatModelRuntime() {
                 selectedGpuIds: null,
                 gpuLayers: GPU_LAYERS_ALL,
                 nCpuMoe: 0,
-                splitRatio: "",
+                splitRatio: null,
                 // A fit context pin is per-model; clear it so a different model
                 // loads at Auto/native, not the previous model's pin.
                 customContextLength: null,
@@ -615,7 +614,7 @@ export function useChatModelRuntime() {
               gpu_memory_mode: gpuMemoryMode,
               gpu_layers: gpuLayers,
               n_cpu_moe: nCpuMoe,
-              tensor_split: parseSplitRatio(splitRatio) ?? undefined,
+              tensor_split: splitRatio ?? undefined,
               gpu_ids: selectedGpuIds ?? undefined,
             });
 

@@ -429,22 +429,60 @@ export function persistGpuMemoryModeOnLoad(
 // the model's actual layer count).
 export const GPU_LAYERS_ALL = 999;
 
-// Parse the "Split ratio" text field (e.g. "2,1" or "2/1") into per-GPU shares.
-// Returns null only when blank, non-numeric/negative, or fewer than 2 values.
-// An explicit even ratio (e.g. "1,1") is kept and sent: with no --tensor-split
-// llama.cpp splits by free VRAM, NOT evenly, so "1,1" must be passed to force an
-// even split. Does NOT check the value count against the GPUs in use: the
-// settings sheet warns on a mismatch, and a forced wrong count surfaces
-// llama.cpp's own error.
-export function parseSplitRatio(value: string): number[] | null {
-  const parts = value
-    .split(/[\s,/]+/)
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0);
-  if (parts.length < 2) return null;
-  const nums = parts.map(Number);
-  if (nums.some((n) => !Number.isFinite(n) || n < 0)) return null;
-  return nums;
+// Round real-valued shares to integers summing exactly to `total`, giving the
+// leftover units to the largest fractional parts (largest-remainder method).
+function largestRemainder(shares: number[], total: number): number[] {
+  const out = shares.map((x) => Math.floor(x));
+  let rem = total - out.reduce((a, b) => a + b, 0);
+  const byFrac = shares
+    .map((x, i) => ({ i, frac: x - Math.floor(x) }))
+    .sort((a, b) => b.frac - a.frac);
+  for (let k = 0; rem > 0 && k < byFrac.length; k++, rem--) out[byFrac[k].i] += 1;
+  return out;
+}
+
+// Spread `total` layers across GPUs in proportion to `weights` (e.g. per-GPU
+// VRAM), as integers summing exactly to `total`. Even split when the weights are
+// all zero/empty. Used for the default per-GPU layer split (mirrors llama.cpp's
+// free-VRAM default) before the user edits it.
+export function distributeByWeight(total: number, weights: number[]): number[] {
+  if (weights.length === 0) return [];
+  const t = Math.max(0, Math.floor(total));
+  const sum = weights.reduce((a, b) => a + b, 0);
+  const w = sum > 0 ? weights : weights.map(() => 1);
+  const wSum = w.reduce((a, b) => a + b, 0);
+  return largestRemainder(
+    w.map((x) => (t * x) / wSum),
+    t,
+  );
+}
+
+// Set GPU `index` to `value` and rebalance the rest so the per-GPU layer counts
+// still sum to `total`. The other GPUs absorb the remainder in proportion to
+// their current counts (evenly if they're all zero). This is the --tensor-split
+// editor: counts are sent verbatim, and llama.cpp gives each GPU exactly its
+// count when gpu_layers == sum(counts) (the layer split in llama-model.cpp).
+export function rebalanceSplit(
+  total: number,
+  counts: number[],
+  index: number,
+  value: number,
+): number[] {
+  const v = Math.max(0, Math.min(value, total));
+  const out = counts.slice();
+  const otherIdx = counts.map((_, i) => i).filter((i) => i !== index);
+  // No other GPU to absorb the remainder: this one holds everything.
+  if (otherIdx.length === 0) {
+    out[index] = total;
+    return out;
+  }
+  out[index] = v;
+  const dist = distributeByWeight(
+    total - v,
+    otherIdx.map((i) => counts[i]),
+  );
+  otherIdx.forEach((i, k) => (out[i] = dist[k]));
+  return out;
 }
 
 // Store fields derived from a load/status response's GPU-memory settings.
@@ -480,7 +518,7 @@ export function loadedGpuMemoryFields(resp: {
     ...(mode === "manual" && {
       gpuLayers: resp.gpu_layers ?? GPU_LAYERS_ALL,
       nCpuMoe: resp.n_cpu_moe ?? 0,
-      splitRatio: (resp.tensor_split ?? []).join(","),
+      splitRatio: resp.tensor_split ?? null,
     }),
   };
 }
@@ -681,9 +719,9 @@ type ChatRuntimeStore = {
   /** Manual mode: MoE expert layers to keep on CPU (--n-cpu-moe); 0 = none. */
   nCpuMoe: number;
   loadedNCpuMoe: number | null;
-  /** Manual mode: per-GPU model split ratio as raw text (e.g. "2,1"); "" =
-   *  unset (llama.cpp splits by free VRAM). */
-  splitRatio: string;
+  /** Manual mode: per-GPU layer counts (--tensor-split), in GPU-in-use order;
+   *  null = unset (llama.cpp splits by free VRAM). */
+  splitRatio: number[] | null;
   /** Backend-reported per-GPU split ratio (--tensor-split); null = unset. */
   loadedSplitRatio: number[] | null;
   /** Model layer count (GGUF block_count); the manual gpu-layers ceiling. */
@@ -814,7 +852,7 @@ type ChatRuntimeStore = {
   setGpuMemoryMode: (mode: "auto" | "fit" | "manual") => void;
   setGpuLayers: (value: number) => void;
   setNCpuMoe: (value: number) => void;
-  setSplitRatio: (value: string) => void;
+  setSplitRatio: (value: number[] | null) => void;
   setSelectedGpuIds: (ids: number[] | null) => void;
   setLoadOnSelection: (value: boolean) => void;
   setPendingSelection: (selection: PendingModelSelection | null) => void;
@@ -1047,7 +1085,7 @@ function loadedBaselineSettings(s: ChatRuntimeStore) {
       : readPersistedGpuMemoryMode(),
     gpuLayers: s.loadedGpuLayers ?? GPU_LAYERS_ALL,
     nCpuMoe: s.loadedNCpuMoe ?? 0,
-    splitRatio: (s.loadedSplitRatio ?? []).join(","),
+    splitRatio: s.loadedSplitRatio ?? null,
     selectedGpuIds: s.loadedGpuIds,
   };
 }
@@ -1143,7 +1181,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   loadedGpuLayers: null,
   nCpuMoe: 0,
   loadedNCpuMoe: null,
-  splitRatio: "",
+  splitRatio: null,
   loadedSplitRatio: null,
   ggufLayerCount: null,
   moeLayerCount: null,
@@ -1395,7 +1433,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       loadedGpuLayers: null,
       nCpuMoe: 0,
       loadedNCpuMoe: null,
-      splitRatio: "",
+      splitRatio: null,
       loadedSplitRatio: null,
       ggufLayerCount: null,
       moeLayerCount: null,
@@ -1642,7 +1680,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         // immediate-switch reset.
         gpuLayers: GPU_LAYERS_ALL,
         nCpuMoe: 0,
-        splitRatio: "",
+        splitRatio: null,
         selectedGpuIds: null,
         // Fresh pick starts at Auto context (loadedBaselineSettings would
         // otherwise restore the current model's pin). Leaves the baseline

@@ -100,8 +100,9 @@ import {
 } from "./provider-capabilities";
 import {
   GPU_LAYERS_ALL,
+  distributeByWeight,
   isPendingGguf,
-  parseSplitRatio,
+  rebalanceSplit,
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
 import { RetrievalSettingsSection } from "@/features/rag/components/retrieval-settings-section";
@@ -654,34 +655,47 @@ export function ChatSettingsPanel({
       : [...current, index].sort((a, b) => a - b);
     if (next.length === 0) return; // keep at least one GPU selected
     setSelectedGpuIds(next.length === all.length ? null : next);
-    // Split ratio and TP need 2+ GPUs; narrowing to one hides/disables them, so
-    // clear their values too -- else a stale ratio/toggle is sent but ignored.
+    // The per-GPU split is positional, so any change to the set of GPUs in use
+    // invalidates it: drop it (the sliders fall back to the VRAM-weighted
+    // default). TP needs 2+ GPUs, so disable it when only one remains.
+    setSplitRatio(null);
     if (next.length <= 1) {
       setTensorParallel(false);
-      setSplitRatio("");
     }
   };
   const gpuIdsKey = (ids: number[] | null) => (ids === null ? "auto" : ids.join(","));
   const gpuIdsDirty = gpuIdsKey(selectedGpuIds) !== gpuIdsKey(loadedGpuIds);
-  // Split ratio (--tensor-split): manual + 2+ GPUs in use. The text is free-form,
-  // so warn (don't block) when it can't map to the GPUs in use.
+  // Per-GPU layer split (--tensor-split): manual + 2+ GPUs in use. One slider
+  // per GPU, each a layer count; together they sum to the GPU Layers total.
   const showSplitRatio = isManual && showGpuPicker && gpusInUse.length > 1;
-  const splitRatioTokens = splitRatio
-    .split(/[\s,/]+/)
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0);
-  const splitRatioWarning =
-    splitRatio.trim() === ""
-      ? null
-      : splitRatioTokens.map(Number).some((n) => !Number.isFinite(n) || n < 0)
-        ? "Use numbers like 2,1."
-        : splitRatioTokens.length !== gpusInUse.length
-          ? `Enter ${gpusInUse.length} values, one per GPU in use.`
-          : null;
+  // The total the per-GPU counts sum to (the GPU Layers slider, clamped past the
+  // "all" sentinel). The devices behind the GPUs in use, for labels + the
+  // VRAM-weighted default.
+  const splitTotal = Math.min(gpuLayers, gpuLayersMax);
+  const gpusInUseDevices = gpusInUse.map(
+    (i) => gpuDevices.find((d) => d.index === i) ?? null,
+  );
+  // Explicit per-GPU counts once the user edits a slider; otherwise the default
+  // split (VRAM-weighted, mirroring llama.cpp), shown but not yet sent.
+  const splitCounts =
+    splitRatio && splitRatio.length === gpusInUse.length
+      ? splitRatio
+      : distributeByWeight(
+          splitTotal,
+          gpusInUseDevices.map((d) => d?.memoryTotalGb || 1),
+        );
+  const setSplitCount = (k: number, v: number) =>
+    setSplitRatio(rebalanceSplit(splitTotal, splitCounts, k, v));
+  // Keep the per-GPU counts summing to the GPU Layers total when it changes.
+  const setGpuLayersAndSplit = (v: number) => {
+    setGpuLayers(v);
+    if (splitRatio) {
+      setSplitRatio(distributeByWeight(Math.min(v, gpuLayersMax), splitRatio));
+    }
+  };
   const splitRatioDirty =
     isManual &&
-    JSON.stringify(parseSplitRatio(splitRatio)) !==
-      JSON.stringify(loadedSplitRatio ?? null);
+    JSON.stringify(splitRatio ?? null) !== JSON.stringify(loadedSplitRatio ?? null);
   // Auto-fit context: null / <= 0 means "Auto" (let --fit size it); a positive
   // value pins it (--fit optimizes gpu-layers around it). After a fit load,
   // surface the length --fit actually chose.
@@ -1298,7 +1312,7 @@ export function ChatSettingsPanel({
                       min={0}
                       max={gpuLayersMax}
                       step={1}
-                      onChange={setGpuLayers}
+                      onChange={setGpuLayersAndSplit}
                       valueSize={6}
                       info={
                         <>
@@ -1327,37 +1341,31 @@ export function ChatSettingsPanel({
                       />
                     )}
                     {showSplitRatio && (
-                      <div className="space-y-1.5">
-                        <div className="flex items-center justify-between gap-3">
-                          <div className="flex min-w-0 items-center gap-1.5">
-                            <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
-                              Split ratio
-                            </span>
-                            <InfoHint>
-                              Relative share of the model per GPU
-                              (--tensor-split), in GPU order. e.g. 2,1 puts
-                              twice as much on the first GPU. Leave blank to
-                              split by free VRAM (llama.cpp's default).
-                            </InfoHint>
-                          </div>
-                          <input
-                            type="text"
-                            value={splitRatio}
-                            placeholder={[
-                              "2",
-                              ...Array(gpusInUse.length - 1).fill("1"),
-                            ].join(",")}
-                            onChange={(e) => setSplitRatio(e.target.value)}
-                            data-test-id="split-ratio-input"
-                            aria-label="Split ratio"
-                            className="h-7 w-[96px] rounded-full border-transparent bg-black/[0.04] dark:bg-white/[0.05] hover:bg-black/[0.06] dark:hover:bg-white/[0.1] pl-3 pr-2 py-0 text-right text-[13px] font-medium text-nav-fg outline-none focus-visible:ring-0"
-                          />
+                      <div className="space-y-3.5">
+                        <div className="flex min-w-0 items-center gap-1.5">
+                          <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+                            Layers per GPU
+                          </span>
+                          <InfoHint>
+                            How the GPU Layers above are split across GPUs
+                            (--tensor-split). Each slider is a layer count; they
+                            sum to GPU Layers, and the rest stay on CPU. With
+                            Tensor Parallelism on, these act as a proportional
+                            share.
+                          </InfoHint>
                         </div>
-                        {splitRatioWarning && (
-                          <p className="text-[11px] text-amber-500">
-                            {splitRatioWarning}
-                          </p>
-                        )}
+                        {gpusInUseDevices.map((d, k) => (
+                          <ParamSlider
+                            key={d?.index ?? k}
+                            label={`GPU ${d?.index ?? k}`}
+                            value={Math.min(splitCounts[k] ?? 0, splitTotal)}
+                            min={0}
+                            max={splitTotal}
+                            step={1}
+                            onChange={(v) => setSplitCount(k, v)}
+                            valueSize={6}
+                          />
+                        ))}
                       </div>
                     )}
                   </>

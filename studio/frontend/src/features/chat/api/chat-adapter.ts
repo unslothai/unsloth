@@ -38,7 +38,6 @@ import {
   type PendingImageEditReference,
   type RagAutoInject,
   loadedGpuMemoryFields,
-  parseSplitRatio,
   resolveLoadedSpeculativeSettings,
   resolveSpeculativeSettingsForLoad,
   persistGpuMemoryModeOnLoad,
@@ -1274,7 +1273,7 @@ async function autoLoadSmallestModel(): Promise<{
               gpu_memory_mode: rt.gpuMemoryMode,
               gpu_layers: rt.gpuLayers,
               n_cpu_moe: rt.nCpuMoe,
-              tensor_split: parseSplitRatio(rt.splitRatio) ?? undefined,
+              tensor_split: rt.splitRatio ?? undefined,
               gpu_ids: rt.selectedGpuIds ?? undefined,
             });
             saveSpeculativeType(specSettings.speculativeType);
@@ -1467,7 +1466,7 @@ async function autoLoadSmallestModel(): Promise<{
         gpu_memory_mode: rt.gpuMemoryMode,
         gpu_layers: rt.gpuLayers,
         n_cpu_moe: rt.nCpuMoe,
-        tensor_split: parseSplitRatio(rt.splitRatio) ?? undefined,
+        tensor_split: rt.splitRatio ?? undefined,
         gpu_ids: rt.selectedGpuIds ?? undefined,
       });
       saveSpeculativeType(specSettings.speculativeType);
