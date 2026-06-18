@@ -45,19 +45,16 @@ export function CreateKeyForm({
   };
 
   return (
-    <form
-      onSubmit={handleSubmit}
-      className="flex flex-col gap-2 rounded-lg border border-border bg-muted/20 p-3"
-    >
+    <form onSubmit={handleSubmit} className="flex flex-col gap-2">
       <div className="flex flex-wrap items-center gap-2">
         <Input
           value={name}
           onChange={(e) => setName(e.target.value)}
           placeholder={t("settings.apiKeys.tokenNamePlaceholder")}
-          className="h-8 min-w-[180px] flex-1 text-sm"
+          className="h-9 min-w-[200px] flex-1 text-sm"
           aria-label={t("settings.apiKeys.newAccessTokenName")}
         />
-        <div className="inline-flex items-center rounded-md border border-border bg-background p-0.5">
+        <div className="hub-tab-toggle inline-flex h-8 items-center rounded-full">
           {EXPIRY_PRESETS.map((p) => {
             const active = expiry === p.value;
             return (
@@ -67,9 +64,9 @@ export function CreateKeyForm({
                 onClick={() => setExpiry(p.value)}
                 aria-pressed={active}
                 className={cn(
-                  "rounded px-2 py-1 text-[11px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                  "inline-flex h-8 items-center rounded-full px-3.5 text-[12px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                   active
-                    ? "bg-accent text-foreground"
+                    ? "hub-tab-toggle-pill text-foreground"
                     : "text-muted-foreground hover:text-foreground",
                 )}
               >
