@@ -56,8 +56,8 @@ import {
   AudioWave01Icon,
   Cancel01Icon,
   DashboardCircleIcon,
-  DirectionRight02Icon,
   Download01Icon,
+  Flag01Icon,
   Folder02Icon,
   RemoveCircleIcon,
   Search01Icon,
@@ -2388,7 +2388,7 @@ export function HubModelPicker({
                                 className="shrink-0 rounded p-1 text-muted-foreground/60 transition-colors hover:text-foreground"
                               >
                                 <HugeiconsIcon
-                                  icon={DirectionRight02Icon}
+                                  icon={Flag01Icon}
                                   className="size-3"
                                 />
                               </button>
@@ -2464,10 +2464,7 @@ export function HubModelPicker({
                   <ListLabel
                     spacious={true}
                     icon={
-                      <HugeiconsIcon
-                        icon={DirectionRight02Icon}
-                        className="size-3.5"
-                      />
+                      <HugeiconsIcon icon={Flag01Icon} className="size-3.5" />
                     }
                     collapsed={otherModelsCollapsed}
                     onToggle={() => setOtherModelsCollapsed((v) => !v)}
