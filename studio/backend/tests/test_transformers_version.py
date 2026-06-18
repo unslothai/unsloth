@@ -972,6 +972,30 @@ class TestLocalConfig530Tier:
             # is self-referencing — must not be promoted to 530.
             assert get_transformers_tier(str(d)) == "default"
 
+    def test_hf_id_fallback_not_triggered_when_name_or_path_is_absolute_self(
+        self, tmp_path: Path
+    ):
+        """_name_or_path == absolute path of the same checkpoint while model_name
+        is a relative path: the two strings differ, but both point to the same
+        directory.  The absolute path must not be scanned for tier substrings."""
+        d = tmp_path / "qwen3.5-experiment"
+        d.mkdir()
+        (d / "config.json").write_text(
+            json.dumps(
+                {
+                    "model_type": "llama",
+                    # absolute path — textually different from a relative model_name
+                    "_name_or_path": str(d),
+                }
+            )
+        )
+        with patch(
+            "utils.transformers_version._check_tokenizer_config_needs_v5", return_value = False
+        ):
+            # Even though str(d) contains "qwen3.5", the local-dir branch recurses
+            # into config checks on the resolved path, which returns default.
+            assert get_transformers_tier(str(d)) == "default"
+
     # --- false-positive guard -----------------------------------------------
 
     def test_tier_local_plain_model_still_default(self, tmp_path: Path):

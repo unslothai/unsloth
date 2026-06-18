@@ -569,23 +569,36 @@ def get_transformers_tier(model_name: str) -> str:
                 )
                 return "530"
             # Architecture not in any config set — resolve the base model name
-            # (_name_or_path / model_name in config) and run name-based detection.
-            # _tier_from_name is intentional here: using the full get_transformers_tier
-            # would trigger network probes (config.json + tokenizer_config.json fetches)
-            # for every ordinary checkpoint whose _name_or_path is a plain HF ID.
+            # (_name_or_path / model_name in config) and detect tier from it.
+            # Split on whether the resolved value is a local path or a HF Hub ID:
+            #   local dir  → recurse (config.json check, no network I/O) so a
+            #                 self-referencing absolute path doesn't false-positive
+            #                 on directory-name substrings.
+            #   HF Hub ID  → _tier_from_name only (no network probes).
             resolved = _resolve_base_model(model_name)
             if resolved != model_name:
-                result = _tier_from_name(resolved)
-                if result is not None:
-                    tier, match = result
-                    logger.info(
-                        "Transformers tier %s selected for %s (resolved base model: %s, match: %s)",
-                        tier,
-                        model_name,
-                        resolved,
-                        match,
-                    )
-                    return tier
+                if Path(resolved).is_dir():
+                    tier = get_transformers_tier(resolved)
+                    if tier != "default":
+                        logger.info(
+                            "Transformers tier %s selected for %s (resolved local path: %s)",
+                            tier,
+                            model_name,
+                            resolved,
+                        )
+                        return tier
+                else:
+                    result = _tier_from_name(resolved)
+                    if result is not None:
+                        tier, match = result
+                        logger.info(
+                            "Transformers tier %s selected for %s (resolved HF ID: %s, match: %s)",
+                            tier,
+                            model_name,
+                            resolved,
+                            match,
+                        )
+                        return tier
             local_tc = Path(model_name) / "tokenizer_config.json"
             if local_tc.is_file() and _check_tokenizer_config_needs_v5(model_name):
                 logger.info(
