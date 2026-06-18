@@ -1449,7 +1449,11 @@ export function HubModelPicker({
   const recommendedIds = useMemo(() => {
     const all = dedupe([...models.map((model) => model.id), value ?? ""])
       .filter((id) => !downloadedSet.has(id.toLowerCase()))
-      .filter((id) => !chatOnly || isKnownGgufRepo(id))
+      // Chat-only keeps runnable formats: GGUF anywhere, plus MLX/safetensors
+      // on Mac (matches the empty Recommended view so search stays consistent).
+      .filter(
+        (id) => !chatOnly || isRecommendableFormat(id, isKnownGgufRepo(id), isMac),
+      )
       .filter((id) => !/-FP8[-.]|FP8-Dynamic/i.test(id));
     // Sort: GGUFs first, then hub models
     const gguf: string[] = [];
@@ -1459,7 +1463,7 @@ export function HubModelPicker({
       else hub.push(id);
     }
     return [...gguf, ...hub];
-  }, [models, value, downloadedSet, chatOnly, isKnownGgufRepo]);
+  }, [models, value, downloadedSet, chatOnly, isKnownGgufRepo, isMac]);
 
   const showHfSection = debouncedQuery.trim().length > 0;
 
@@ -1766,7 +1770,11 @@ export function HubModelPicker({
       .map((result) => result.id)
       .filter((id) => id.toLowerCase().startsWith("unsloth/"))
       .filter((id) => !recommendedSet.has(id))
-      .filter((id) => !chatOnly || isKnownGgufRepo(id))
+      // Chat-only keeps runnable formats: GGUF anywhere, plus MLX/safetensors
+      // on Mac (matches the empty Recommended view so search stays consistent).
+      .filter(
+        (id) => !chatOnly || isRecommendableFormat(id, isKnownGgufRepo(id), isMac),
+      )
       .filter((id) => !/-FP8[-.]|FP8-Dynamic/i.test(id))
       .filter((id) =>
         matchesFormatFilter(id, isKnownGgufRepo(id), formatFilter),
@@ -1780,6 +1788,7 @@ export function HubModelPicker({
     isKnownGgufRepo,
     isChatSupported,
     formatFilter,
+    isMac,
   ]);
 
   const hubOptionKeys = useMemo(() => {
