@@ -2075,7 +2075,7 @@ export function HubModelPicker({
           // List sits within the menu padding so left and right gaps match.
           // Height tracks the content up to the cap, so short lists do not
           // leave white space.
-          "model-list-scroll max-h-[21rem] overflow-y-auto pr-0.5",
+          "model-list-scroll max-h-[21rem] overflow-y-auto pr-0.5 mr-1",
           listScrolled && "is-scrolled",
           listMoreBelow && "is-bottom-faded",
         )}
