@@ -939,9 +939,8 @@ export function SharedComposer({
           currentStore.params.checkpoint === sel.id &&
           (currentStore.activeGgufVariant ?? null) ===
             (sel.ggufVariant ?? null);
-        // Already the loaded model: it passed its consent gate at first load, so
-        // skip a redundant reload, which would re-trigger the gate without the
-        // approval fingerprint and fail for HIGH third-party custom code.
+        // Already loaded (gate passed at first load): skip a redundant reload that would
+        // re-trigger the gate without the approval fingerprint and fail for HIGH custom code.
         if (isAlreadyActive) {
           return "ready";
         }

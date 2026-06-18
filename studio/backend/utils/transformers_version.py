@@ -111,8 +111,7 @@ _TRANSFORMERS_5_TOKENIZER_CLASSES: set[str] = {
 # Cache for dynamic tokenizer_config.json lookups (avoids repeated fetches).
 _tokenizer_class_cache: dict[str, bool] = {}
 
-# Cache for dynamic config.json lookups (architecture/model_type checks),
-# keyed on (model_name, token-hash) so authed/unauthed reads stay separate.
+# config.json cache keyed on (model_name, token-hash) so authed/unauthed reads stay separate.
 _config_json_cache: dict[tuple[str, str | None], dict | None] = {}
 _config_needs_510_cache: dict[str, bool] = {}
 _config_needs_550_cache: dict[str, bool] = {}

@@ -2037,9 +2037,7 @@ async def load_model(
                     audio_type = _gguf_audio,
                     has_audio_input = getattr(llama_backend, "_has_audio_input", False),
                     inference = inference_config,
-                    # A GGUF load runs through llama.cpp, which never executes the
-                    # repo's auto_map Python -- the requirement is inert for this
-                    # load, matching validate_model (which reports False for GGUF).
+                    # GGUF loads via llama.cpp: auto_map never executes, so inert (matches validate_model).
                     requires_trust_remote_code = False,
                     context_length = llama_backend.context_length,
                     max_context_length = llama_backend.max_context_length,
@@ -2326,8 +2324,7 @@ async def load_model(
                 audio_type = _gguf_audio,
                 has_audio_input = llama_backend._has_audio_input,
                 inference = inference_config,
-                # GGUF loads through llama.cpp; the repo's auto_map Python never
-                # executes, so the requirement is inert (matches validate_model).
+                # GGUF loads via llama.cpp: auto_map never executes, so inert (matches validate_model).
                 requires_trust_remote_code = False,
                 context_length = llama_backend.context_length,
                 max_context_length = llama_backend.max_context_length,
@@ -2462,10 +2459,9 @@ async def load_model(
         # Classify reasoning/tool flags via the GGUF sniffer.
         _sf_flags = _detect_safetensors_features(backend, _chat_template)
 
-        # Report the SAME requirement validate_model computed (raw auto_map OR YAML),
-        # plus whether this load actually used trust_remote_code, so the frontend stores
-        # the right value and a later retry/rollback does not send trust_remote_code=false
-        # for a custom-code model. Persist it so already-loaded/status report it too.
+        # Report validate_model's requirement (raw auto_map OR YAML) plus the value the
+        # load used, and persist it, so a later retry/rollback doesn't send
+        # trust_remote_code=false for a custom-code model (and status reports it too).
         _requires_rc = _resolve_loaded_trust_remote_code(
             config.identifier,
             None,
@@ -2642,18 +2638,13 @@ async def validate_model(
                 detail = f"Invalid model identifier: {model_log_label}",
             )
 
-        # A LoRA load runs BOTH the adapter's and the base's repo code, and an
-        # adapter can ship its OWN auto_map alongside the base's, so the remote-code
-        # consent flag must follow either repo. A poisoned pickle can likewise live
-        # in either repo, so the security review covers both. Both checks run over
-        # the same [adapter, base] target set, matching the scan route and the
-        # workers, which gate both.
+        # Both checks cover the [adapter, base] set (matching the scan route and workers):
+        # either repo can ship auto_map code or a poisoned pickle.
         security_targets = [config.identifier]
         try:
             from utils.models.model_config import get_base_model_from_lora_identifier
 
-            # Resolve the base for a LOCAL or a REMOTE adapter so a remote LoRA's
-            # base (where the code/weights actually execute) is reviewed too.
+            # Resolve a LOCAL or REMOTE adapter's base so its code/weights are reviewed too.
             _base = get_base_model_from_lora_identifier(model_identifier, request.hf_token)
             if _base:
                 security_targets.append(_base)
@@ -2662,12 +2653,9 @@ async def validate_model(
         security_targets = list(dict.fromkeys(security_targets))
 
         is_gguf = getattr(config, "is_gguf", False)
-        # A selected GGUF artifact loads through llama.cpp, which never executes the
-        # repo's auto_map Python and never deserializes root pickle weights. So repo-level
-        # Transformers artifacts (a config.json with auto_map, or an unsafe pytorch_model.bin
-        # sitting next to the .gguf in a mixed repo) are inert for this load -- gating the
-        # GGUF on them is a false positive. Only run the remote-code/security preflight for
-        # non-GGUF loads.
+        # A selected GGUF loads via llama.cpp: auto_map Python and root pickle weights in a
+        # mixed repo are inert for this load, so gating on them is a false positive. Only
+        # run the remote-code/security preflight for non-GGUF loads.
         requires_trust_remote_code = False
         requires_security_review = False
         if not is_gguf:
@@ -3024,8 +3012,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 loading = [],
                 loaded = [_display_model_id] if _display_model_id else [],
                 inference = _inference_cfg,
-                # GGUF status: llama.cpp never executes the repo's auto_map Python,
-                # so the requirement is inert here too (matches validate_model).
+                # GGUF status: auto_map never executes, so inert (matches validate_model).
                 requires_trust_remote_code = False,
                 supports_reasoning = llama_backend.supports_reasoning,
                 reasoning_style = llama_backend.reasoning_style,

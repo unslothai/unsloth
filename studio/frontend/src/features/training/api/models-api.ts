@@ -92,8 +92,7 @@ interface LocalModelListResponse {
   models: LocalModelInfo[];
 }
 
-/** Ask the backend whether a model is a vision model (GET /api/models/check-vision/{model_name}).
- *  Pass the token so a gated/private VLM is classified correctly (else it 404s -> non-vision). */
+/** GET /api/models/check-vision; pass the token so a gated/private VLM is not misread as non-vision. */
 export async function checkVisionModel(
   modelName: string,
   hfToken?: string | null,
@@ -109,8 +108,7 @@ export async function checkVisionModel(
   return data.is_vision;
 }
 
-/** Ask the backend whether a model is an embedding model (GET /api/models/check-embedding/{model_name}).
- *  Pass the token so a gated/private repo is classified correctly. */
+/** GET /api/models/check-embedding; pass the token for gated/private repos. */
 export async function checkEmbeddingModel(
   modelName: string,
   hfToken?: string | null,

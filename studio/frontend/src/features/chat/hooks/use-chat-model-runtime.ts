@@ -69,9 +69,8 @@ export type SelectedModelInput = {
   keepSpeculative?: boolean;
 };
 
-// Approved remote-code fingerprints by checkpoint, so a rollback after a failed
-// model switch can resend the pinned approval the worker requires for HIGH
-// third-party custom code instead of being blocked.
+// Approved fingerprints by checkpoint, so a rollback after a failed switch can resend
+// the pinned approval the worker requires instead of being blocked.
 const approvedRemoteCodeFingerprints = new Map<string, string>();
 function rememberApprovedRemoteCode(
   checkpoint: string,
@@ -523,12 +522,9 @@ export function useChatModelRuntime() {
               is_lora: isLora,
               gguf_variant: ggufVariant ?? null,
             });
-            // Gate the load on the consent dialog when the model needs custom-code
-            // consent OR Hugging Face's security scan flagged unsafe files (a hard
-            // block). The custom-code gate fires even when the internal
-            // trustRemoteCode flag is preset on (e.g. a first-party YAML/preset
-            // default): the worker requires a matching fingerprint, which only the
-            // dialog produces. A clean model returns immediately without a dialog.
+            // Open the consent dialog when the model needs custom-code consent or has a
+            // flagged unsafe file. Fires even when trustRemoteCode is preset on, since the
+            // worker requires a matching fingerprint that only the dialog produces.
             if (
               validation.requires_trust_remote_code
               || validation.requires_security_review
@@ -781,8 +777,7 @@ export function useChatModelRuntime() {
                   gguf_variant: previousVariant,
                   trust_remote_code:
                     previousModelRequiresTrustRemoteCode || trustRemoteCode,
-                  // Resend the previous model's pinned approval so the gate does
-                  // not block restoring an already-approved custom-code model.
+                  // Resend the previous model's pinned approval so restoring it is not re-blocked.
                   approved_remote_code_fingerprint:
                     approvedRemoteCodeFingerprints.get(previousCheckpoint) ?? null,
                   // Restore the previous model in the split mode it was running,

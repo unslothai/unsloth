@@ -3,26 +3,19 @@
 
 """Static scan of a model's ``auto_map`` remote code, for the consent gate.
 
-When a user opts into ``trust_remote_code`` for a model whose architecture is
-defined by Python shipped in its HF repo (``config.json`` ``auto_map`` ->
-``modeling_*.py`` / ``configuration_*.py``), we scan that code BEFORE executing
-it and surface any suspicious patterns so the consent decision is informed.
+When a user opts into ``trust_remote_code``, the repo's ``auto_map`` Python
+(``modeling_*.py`` etc.) is scanned BEFORE execution and suspicious patterns are
+surfaced to inform consent. A warning aid, not a hard boundary: a determined
+attacker can obfuscate past regexes, so the job is to raise the bar and inform the
+hash-pinned consent. Containment (subprocess/venv) is separate; execution still
+requires opt-in.
 
-This is a *warning aid*, not a hard boundary -- a determined attacker can
-obfuscate past regexes. Its job is to raise the bar and inform the explicit,
-hash-pinned user consent. Containment is provided separately (subprocess/venv
-isolation); execution still only happens with the user's opt-in.
-
-Single source of truth: the detection logic is the repo's canonical
-supply-chain auditor, ``scripts/scan_packages.py`` -- the exact scanner CI runs
-(``security-audit.yml``). We import its ``check_py_file`` so the load-time gate
-inherits every improvement to the CI scanner with no drift. The combination
-heuristics there are deliberately low-false-positive (bare ``subprocess`` /
-``eval`` alone are not flagged; staged-payload / reverse-shell / IMDS
-combinations are). When ``scripts/`` is not present on disk (a stripped
-packaged install), we fall back to the vendored ``_FALLBACK_PATTERNS`` below; a
-test asserts the canonical scanner loads in-repo so the fallback never silently
-takes over in the canonical environment.
+Single source of truth: ``scripts/scan_packages.py`` (the scanner CI runs via
+``security-audit.yml``). We import its ``check_py_file`` so the gate inherits every
+CI improvement with no drift; its heuristics are deliberately low-false-positive
+(combinations flag, not bare ``subprocess``/``eval``). When ``scripts/`` is absent
+(stripped install) we fall back to ``_FALLBACK_PATTERNS`` below; a test asserts the
+canonical scanner loads in-repo so the fallback never silently takes over.
 """
 
 from __future__ import annotations
@@ -44,12 +37,9 @@ HIGH = "HIGH"
 MEDIUM = "MEDIUM"
 _SEVERITY_ORDER = {CRITICAL: 0, HIGH: 1, MEDIUM: 2}
 
-# Single source of truth for the configs that can carry an ``auto_map`` pointing at
-# executable repo ``.py``. ``trust_remote_code`` runs code referenced from ANY of
-# these (model architecture, tokenizer, image/feature processor, processor, video
-# processor), so both the scanner and the consent gate (which imports this) must
-# read the same set -- scanning only config.json/tokenizer would miss a
-# custom-processor VLM entirely. Keep this list and the gate in lockstep.
+# Configs that can carry an ``auto_map`` pointing at executable repo ``.py``.
+# ``trust_remote_code`` runs code from ANY of these, so scanner and gate must read the
+# same set (scanning only config.json/tokenizer would miss a custom-processor VLM).
 REMOTE_CODE_CONFIG_FILES = (
     "config.json",
     "tokenizer_config.json",
@@ -62,20 +52,16 @@ REMOTE_CODE_CONFIG_FILES = (
 class RemoteCodeUnscannable(Exception):
     """The repo's executable code could not be fully fetched/listed to scan.
 
-    Raised (not returned empty) so the consent gate can tell two very different
-    outcomes apart: code is PRESENT but we could not read all of it (offline /
-    gated / transient / a present .py that 404s / a repo-listing failure) -> fail
-    CLOSED; versus the repo simply has NO executable .py (an empty result) ->
-    ``trust_remote_code`` is a no-op -> allow. Conflating them would either block a
-    legitimate code-free repo (e.g. a GGUF repo whose config.json carries a
-    vestigial auto_map) or fail open on code we could not see.
+    Raised (not returned empty) so the gate distinguishes "code PRESENT but unreadable"
+    (offline/gated/transient/404/listing failure) -> fail CLOSED, from "repo has NO .py"
+    (empty result) -> trust_remote_code is a no-op -> allow. Conflating them would block
+    a code-free repo or fail open on code we could not see.
     """
 
 
-# --- Fallback patterns (only used if scripts/scan_packages.py is absent) -----
-# (regex, check-name, severity). A flat subset of the canonical scanner, kept so
-# a stripped packaged install without scripts/ still scans. The canonical
-# scanner (imported below) supersedes this whenever the repo is present.
+# Fallback patterns (used only if scripts/scan_packages.py is absent): (regex, check,
+# severity). A flat subset of the canonical scanner so a stripped install still scans;
+# the canonical scanner (imported below) supersedes it whenever the repo is present.
 _FALLBACK_PATTERNS: tuple[tuple[re.Pattern, str, str], ...] = (
     (
         re.compile(
@@ -135,8 +121,7 @@ _FALLBACK_PATTERNS: tuple[tuple[re.Pattern, str, str], ...] = (
         "subprocess/os-exec",
         HIGH,
     ),
-    # Bare exec()/eval() only; exclude attribute calls like torch's
-    # ``module.eval()`` (eval-mode), which are ubiquitous false positives.
+    # Bare exec()/eval() only; the (?<![\w.]) excludes torch's ``module.eval()``.
     (re.compile(r"(?<![\w.])(?:exec|eval)\s*\("), "exec/eval", HIGH),
     (
         re.compile(
@@ -195,8 +180,8 @@ class Finding:
     filename: str
     check: str
     evidence: str = ""
-    # 1-based line of the match, and a small surrounding code window (see
-    # _attach_location). Populated for the UI; None/[] when unlocatable.
+    # 1-based match line + surrounding code window (see _attach_location). For the UI;
+    # None/[] when unlocatable.
     line: Optional[int] = None
     snippet: list = field(default_factory = list)
 
@@ -229,8 +214,7 @@ class ScanResult:
         return "; ".join(parts)
 
     def findings_payload(self) -> list[dict]:
-        """Structured findings for the UI: one record per match, including the
-        line number and a small surrounding code window for the dialog."""
+        """Structured findings for the UI: one record per match, with line + snippet."""
         return [
             {
                 "severity": f.severity,
@@ -244,11 +228,9 @@ class ScanResult:
         ]
 
 
-# --- Canonical scanner: import scripts/scan_packages.py (the CI scanner) ------
-# Loaded by file path (scripts/ is not an importable package from the backend
-# root). scan_packages.py imports only stdlib at module level (requests/etc. are
-# lazy) and guards its CLI under ``if __name__ == "__main__"``, so importing it
-# is side-effect-free and dependency-light.
+# Canonical scanner: import scripts/scan_packages.py by file path (scripts/ is not an
+# importable package from the backend root). It imports only stdlib at module level and
+# guards its CLI under __main__, so importing it is side-effect-free.
 _CANON_SENTINEL = object()
 _canon_cache = _CANON_SENTINEL
 
@@ -285,12 +267,10 @@ def _load_canonical_scanner():
     return module
 
 
-# Model-context-strict patterns. The canonical scanner is tuned for *package*
-# supply chain, where a bare ``subprocess`` (build scripts) or ``eval`` is
-# common, so it only flags them in combinations. In a model's modeling_*.py
-# none of these have a legitimate place -- a forward pass never shells out --
-# so the load-time gate flags them on their own. This catches, for example, a
-# bare ``subprocess.Popen`` sitting in a config ``__init__``.
+# Model-context-strict patterns. The canonical scanner only flags bare
+# ``subprocess``/``eval`` in combinations (common in package build scripts), but a
+# model's modeling_*.py never legitimately shells out, so the gate flags them alone
+# (e.g. a bare ``subprocess.Popen`` in a config ``__init__``).
 _MODEL_STRICT_PATTERNS: tuple[tuple[re.Pattern, str, str], ...] = (
     (
         re.compile(
@@ -319,9 +299,9 @@ def _snippet_rows(
     col: Optional[int] = None,
     match_len: int = 0,
 ) -> list[dict]:
-    """A `±_SNIPPET_CONTEXT`-line window around `line` (1-based). Each row is
-    {number, text, is_match}; the matched row also carries match_start/match_end
-    for an inline highlight when a precise column span is known."""
+    """A `±_SNIPPET_CONTEXT`-line window around `line` (1-based). Rows are
+    {number, text, is_match}; the matched row adds match_start/match_end for an inline
+    highlight when a precise column span is known."""
     lines = content.splitlines()
     if not lines or line < 1:
         return []
@@ -347,9 +327,8 @@ def _attach_location(
     finding: Finding,
     match: "Optional[re.Match]" = None,
 ) -> None:
-    """Populate finding.line + finding.snippet. A regex match (model-strict /
-    fallback) gives a precise line+column; canonical findings are located via the
-    `L<n>:` prefix their evidence already carries."""
+    """Populate finding.line + finding.snippet. A regex match gives a precise
+    line+column; canonical findings are located via the `L<n>:` prefix in their evidence."""
     if match is not None:
         before = content[: match.start()]
         line = before.count("\n") + 1
@@ -370,8 +349,8 @@ def _scan_content(content: str, filename: str) -> list[Finding]:
 
     canon = _load_canonical_scanner()
     if canon is not None:
-        # Canonical Finding is (severity, package, filename, check, evidence);
-        # adapt to the gate's (severity, filename, check, evidence).
+        # Canonical Finding is (severity, package, filename, check, evidence); adapt to
+        # the gate's (severity, filename, check, evidence).
         for f in canon.check_py_file(content, filename, ""):
             finding = Finding(f.severity, f.filename, f.check, (f.evidence or "")[:120])
             _attach_location(content, finding)
@@ -421,14 +400,12 @@ def remote_code_fingerprint(files: dict[str, str]) -> str:
 def repo_remote_code_files(model_name: str, hf_token: Optional[str] = None) -> dict[str, str]:
     """Download a repo's executable ``.py`` (auto_map targets + modeling/config).
 
-    Returns {filename: content}. An EMPTY dict means the repo genuinely ships no
-    executable ``.py`` (so ``trust_remote_code`` is a no-op). Raises
-    ``RemoteCodeUnscannable`` when code is present but cannot be fully fetched or
-    listed (offline/gated/transient, a referenced ``.py`` that 404s, or a
-    repo-listing failure that could hide an imported helper), so the caller can fail
-    closed rather than fingerprint a partial view of code transformers would later
-    execute in full. The empty-vs-raise split is what lets the gate allow a code-free
-    repo while still blocking truly unscannable code.
+    Returns {filename: content}. An EMPTY dict means the repo ships no executable ``.py``
+    (trust_remote_code is a no-op). Raises ``RemoteCodeUnscannable`` when code is present
+    but cannot be fully fetched/listed (offline/gated/404/listing failure), so the caller
+    fails closed rather than fingerprint a partial view of code transformers would run in
+    full. The empty-vs-raise split lets the gate allow a code-free repo while still
+    blocking unscannable code.
     """
     import json
     from pathlib import Path
@@ -439,21 +416,19 @@ def repo_remote_code_files(model_name: str, hf_token: Optional[str] = None) -> d
 
         if is_local_path(model_name):
             root = Path(normalize_path(model_name)).expanduser()
-            # Walk ALL .py recursively (relative-path keys), not just the auto_map
-            # entry's static import closure. This is DELIBERATE (see the matching
-            # remote-branch note): the entry module can pull in a sibling via an
-            # absolute import, importlib, or exec, none of which a static relative-
-            # import closure follows, so scanning only the closure is a real bypass.
-            # The broad scan never under-scans; the cost is that an unrelated benign
-            # script can over-block, which is the safe failure direction for a load-
-            # time RCE gate (HIGH stays approvable; only CRITICAL hard-blocks).
+            # Walk ALL .py, not just the auto_map entry's static import closure. This is
+            # DELIBERATE (see the remote-branch note): the entry can reach a sibling via
+            # an absolute import, importlib, or exec, which a relative-import closure
+            # misses, so closure-only scanning is a real bypass. Broad scan never
+            # under-scans; the cost is a benign script can over-block, the safe direction
+            # for an RCE gate (HIGH stays approvable; only CRITICAL hard-blocks).
             for p in root.rglob("*.py"):
                 if p.is_file():
                     files[str(p.relative_to(root))] = p.read_text(errors = "replace")
             # A local config can still point auto_map at an EXTERNAL Hub repo
-            # (owner/name--module.Class); that code executes on load, so fetch it.
-            # Every config that can declare auto_map is checked, not just the model
-            # + tokenizer, so a custom processor's external code is not missed.
+            # (owner/name--module.Class) that executes on load, so fetch it. Every config
+            # that can declare auto_map is checked, so a custom processor's external code
+            # is not missed.
             ext_refs = set()
             for name in REMOTE_CODE_CONFIG_FILES:
                 p = root / name
@@ -469,11 +444,9 @@ def repo_remote_code_files(model_name: str, hf_token: Optional[str] = None) -> d
         from huggingface_hub import hf_hub_download, list_repo_files
         from huggingface_hub.utils import EntryNotFoundError
 
-        # Collect auto_map refs from EVERY config that can declare one (model,
-        # tokenizer, image/feature processor, processor, video processor). A genuine
-        # 404 (EntryNotFoundError) means the config is absent -> skip it; any other
-        # failure is transient/auth and could hide an auto_map we must scan, so fail
-        # closed (unscannable) rather than fingerprint an incomplete view.
+        # Collect auto_map refs from EVERY config that can declare one. A 404
+        # (EntryNotFoundError) means the config is absent -> skip; any other failure is
+        # transient/auth and could hide an auto_map, so fail closed (unscannable).
         refs = set()
         for cfg_name in REMOTE_CODE_CONFIG_FILES:
             try:
@@ -489,31 +462,26 @@ def repo_remote_code_files(model_name: str, hf_token: Optional[str] = None) -> d
             except Exception:
                 pass
         own_refs = {fn for repo, fn in refs if repo is None}
-        # The full file list is needed to catch helper .py the auto_map code imports
-        # but does not name. If we cannot list the repo, an imported module could be
-        # missed and the fingerprint would cover less than transformers executes, so
-        # fail closed (unscannable) rather than scan a partial set.
+        # The full file list catches helper .py the auto_map code imports but does not
+        # name. If we cannot list the repo, an imported module could be missed and the
+        # fingerprint cover less than transformers runs, so fail closed (unscannable).
         try:
             repo_files = list_repo_files(model_name, token = hf_token)
         except Exception as exc:
             raise RemoteCodeUnscannable(f"{model_name}: could not list repo files ({exc})") from exc
         repo_file_set = set(repo_files)
-        # Scan every present .py PLUS the own-repo auto_map targets that ACTUALLY EXIST
-        # in this revision. Scanning EVERY .py (not just the auto_map entry's static
-        # import closure) is DELIBERATE: the entry module can reach a sibling via an
-        # absolute import, importlib, or exec, none of which a static relative-import
-        # closure follows, so closure-only scanning is a real bypass. The broad scan
-        # never under-scans; the cost is that an unrelated benign script can over-block,
-        # the safe failure direction for a load-time RCE gate (HIGH stays approvable;
-        # only CRITICAL hard-blocks). An auto_map target that is absent from the listing
-        # is a STALE ref -- an older config
-        # pointing at a file the repo no longer ships (e.g. unsloth/PaddleOCR-VL's
-        # tokenizer_config.json names processing_ppocrvl.py, but the repo ships
-        # processing_paddleocr_vl.py). transformers cannot execute a file that is not
-        # there, so ignore the stale ref rather than fail the whole repo closed; the
-        # present .py are still fully scanned, which is the stronger coverage. This
-        # also absorbs a mis-derived dotted-module filename (sub.mod.py vs sub/mod.py):
-        # the bad name is dropped as stale while the real present file is scanned.
+        # Scan every present .py PLUS own-repo auto_map targets that ACTUALLY EXIST in
+        # this revision. Scanning EVERY .py (not just the closure) is DELIBERATE: the
+        # entry can reach a sibling via absolute import / importlib / exec, which a
+        # relative-import closure misses, so closure-only scanning is a real bypass.
+        # Broad scan never under-scans; the cost is a benign script can over-block, the
+        # safe direction for an RCE gate (HIGH approvable; only CRITICAL hard-blocks). An
+        # auto_map target absent from the listing is a STALE ref (an older config naming a
+        # since-removed file, e.g. unsloth/PaddleOCR-VL names processing_ppocrvl.py but
+        # ships processing_paddleocr_vl.py). transformers cannot execute an absent file,
+        # so drop the stale ref rather than fail closed; present .py are still fully
+        # scanned. This also absorbs a mis-derived dotted name (sub.mod.py vs sub/mod.py):
+        # the bad name drops as stale while the real present file is scanned.
         present_py = {f for f in repo_files if f.endswith(".py")}
         stale_refs = own_refs - repo_file_set
         for fn in sorted(stale_refs):
@@ -528,11 +496,10 @@ def repo_remote_code_files(model_name: str, hf_token: Optional[str] = None) -> d
             try:
                 fp = hf_hub_download(model_name, fn, token = hf_token)
             except Exception as exc:
-                # A .py CONFIRMED PRESENT in the listing could not be fetched. Returning
-                # the partial set would fingerprint "clean" code while transformers
-                # later fetches and runs this file. Fail closed (unscannable) so the
-                # caller blocks. (Stale/absent refs were dropped above and never reach
-                # here, so this only fires on a present-file fetch failure.)
+                # A .py CONFIRMED PRESENT could not be fetched. A partial set would
+                # fingerprint "clean" while transformers later runs this file, so fail
+                # closed. (Stale/absent refs were dropped above, so this only fires on a
+                # present-file fetch failure.)
                 raise RemoteCodeUnscannable(
                     f"{model_name}: present file {fn} could not be fetched ({exc})"
                 ) from exc
@@ -544,22 +511,19 @@ def repo_remote_code_files(model_name: str, hf_token: Optional[str] = None) -> d
         logger.warning("repo_remote_code_files(%s): unscannable; failing closed", model_name)
         raise
     except Exception as exc:
-        # An UNEXPECTED error mid-scan means we could not complete it -> unscannable.
+        # An unexpected error mid-scan means we could not complete it -> unscannable.
         raise RemoteCodeUnscannable(f"{model_name}: scan failed ({exc})") from exc
-    # Reaching here with an empty dict means the listing succeeded and the repo
-    # genuinely ships no executable .py (and no fetchable external refs) -> no remote
-    # code -> the caller treats trust_remote_code as a no-op.
+    # An empty dict here means the listing succeeded and the repo ships no executable .py
+    # (nor fetchable external refs) -> trust_remote_code is a no-op for the caller.
     return files
 
 
 def _iter_auto_map_strings(value):
     """Yield every string class-ref inside one ``auto_map`` value.
 
-    A value can be a bare string (``"modeling_x.Cls"``) OR a list/tuple --
-    transformers encodes a tokenizer as ``"AutoTokenizer": [slow, fast]`` (and may
-    nest), e.g. ``["owner/repo--tokenization_x.Slow", "owner/repo--tokenization_x.Fast"]``
-    or ``[..., null]``. Flatten all forms so external tokenizer code in the list
-    shape is scanned, not silently trusted.
+    A value is a bare string (``"modeling_x.Cls"``) or a list/tuple (transformers encodes
+    a tokenizer as ``"AutoTokenizer": [slow, fast]``, possibly nested or with nulls).
+    Flatten all forms so external tokenizer code in the list shape is scanned.
     """
     if isinstance(value, str):
         yield value
@@ -574,10 +538,9 @@ def _iter_auto_map_strings(value):
 def _auto_map_refs(cfg: dict) -> set:
     """``(repo, filename)`` pairs referenced by config auto_map.
 
-    ``repo`` is ``None`` for code in the model's own repo. An external
-    ``owner/name--module.Class`` ref (transformers' cross-repo form) yields
-    ``("owner/name", "module.py")`` so the code transformers fetches and executes
-    from another repo is scanned + fingerprinted too, not silently trusted.
+    ``repo`` is ``None`` for own-repo code. An external ``owner/name--module.Class`` ref
+    (transformers' cross-repo form) yields ``("owner/name", "module.py")`` so cross-repo
+    code is scanned + fingerprinted too.
     """
     out = set()
     am = cfg.get("auto_map") or {}
@@ -605,10 +568,9 @@ def _auto_map_py(cfg: dict) -> set[str]:
 def external_auto_map_repos(model_name: str, hf_token: Optional[str] = None) -> set:
     """External Hub repos referenced by any of this model's auto_map configs.
 
-    These are the ``owner/name`` repos that ``_add_external_refs`` downloads to scan
-    ``owner/name--module.Class`` code. The scan route uses this so that declining
-    consent purges those repos too, instead of leaving untrusted external code cached.
-    Best-effort and config/metadata-only: returns whatever can be read, never raises.
+    The ``owner/name`` repos ``_add_external_refs`` downloads. The scan route uses this so
+    declining consent purges them too, not leaving untrusted external code cached.
+    Best-effort, config/metadata-only: returns whatever can be read, never raises.
     """
     repos: set = set()
     try:
@@ -653,13 +615,11 @@ def external_auto_map_repos(model_name: str, hf_token: Optional[str] = None) -> 
 def _add_external_refs(files: dict, refs, hf_token, model_name: str) -> bool:
     """Download external-repo auto_map code into ``files`` (keyed ``repo--file``).
 
-    transformers fetches the referenced entry file AND its relative imports from the
-    SAME external repo, so scanning only the entry file would miss dangerous code in
-    a ``helper.py`` it imports, leaving it outside the approved fingerprint. Mirror
-    the own-repo path: enumerate each external repo's ``.py`` and scan the whole set
-    (plus the explicitly-referenced entry files). Returns False if any external repo
-    cannot be listed or any file cannot be fetched, so the caller fails closed rather
-    than fingerprinting code it could not fully scan.
+    transformers fetches the entry file AND its relative imports from the same external
+    repo, so scanning only the entry would miss code in a ``helper.py`` it imports. Mirror
+    the own-repo path: enumerate each external repo's ``.py`` and scan the whole set (plus
+    the referenced entry files). Returns False if any external repo cannot be listed or a
+    file cannot be fetched, so the caller fails closed.
     """
     from pathlib import Path
 
@@ -683,15 +643,12 @@ def _add_external_refs(files: dict, refs, hf_token, model_name: str) -> bool:
                 exc,
             )
             return False
-        # The import closure the loader can execute = every present .py in the external
-        # repo, plus any explicitly-referenced entry file. When the listing is REAL
-        # (non-empty), present_py already covers the executable code, so an entry ref
-        # absent from it is stale or mis-derived (an older config naming a since-removed
-        # file, or a dotted sub.mod.py vs the real sub/mod.py) and is dropped rather than
-        # failing the whole load closed -- exactly like the own-repo path above. With an
-        # EMPTY/incomplete listing we cannot prove the ref stale, so keep fetching it and
-        # fail closed if it is unreachable; never under-scan external code. A PRESENT
-        # file that cannot be fetched still fails closed below.
+        # The loader's executable closure = every present .py plus any referenced entry
+        # file. With a REAL (non-empty) listing, present_py covers the code, so an entry
+        # ref absent from it is stale/mis-derived and is dropped rather than failing
+        # closed (like the own-repo path). With an EMPTY listing we cannot prove the ref
+        # stale, so keep fetching it and fail closed if unreachable; never under-scan. A
+        # PRESENT file that cannot be fetched still fails closed below.
         repo_file_set = set(repo_files)
         present_py = {f for f in repo_files if f.endswith(".py")}
         if repo_file_set:

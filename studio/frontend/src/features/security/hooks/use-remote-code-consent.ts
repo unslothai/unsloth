@@ -10,21 +10,16 @@ import type { RemoteCodeScan } from "../types";
 
 interface ConfirmArgs {
   modelName: string;
-  // Sent to the scan endpoint so gated/private repos resolve the same findings
-  // and fingerprint the worker will later require.
+  // Resolves the same findings + fingerprint for gated/private repos.
   hfToken?: string | null;
-  // Coarse fallback when the scan endpoint is unreachable (gated/offline).
+  // Coarse fallback when the scan endpoint is unreachable.
   requiresTrustRemoteCode?: boolean;
-  // Called on approval with the fingerprint that pins this code version.
+  // Called on approval with the pinning fingerprint.
   onApprove: (fingerprint: string | null) => void;
 }
 
-/**
- * Gate a load that may need trust_remote_code. Scans the model's custom code,
- * shows the consent dialog with findings, and on approval calls `onApprove` with
- * the pinning fingerprint. Returns true if the load may proceed (no custom code,
- * or the user approved), false if the user declined.
- */
+/** Gate a load that may need trust_remote_code: scan, show the consent dialog, and on
+ *  approval call onApprove with the pinning fingerprint. Returns false if declined. */
 export async function confirmRemoteCodeIfNeeded({
   modelName,
   hfToken,
@@ -50,12 +45,9 @@ export async function confirmRemoteCodeIfNeeded({
     };
   }
 
-  // Open the dialog when the model needs custom-code consent OR Hugging Face's
-  // security scan flagged unsafe files (a hard block). Otherwise there is nothing to
-  // review -- but a model can still require trust_remote_code via its Studio YAML
-  // default with no auto_map (e.g. GLM-4.7-Flash). The scan reports no raw auto_map
-  // for those, so propagate the caller's requirement (granting an empty pin) instead
-  // of dropping it, which would send trust_remote_code=false and fail the load.
+  // Open the dialog for custom-code consent OR flagged unsafe files. Otherwise a model
+  // can still need trust_remote_code via its YAML default (no auto_map, e.g. GLM-4.7-Flash):
+  // propagate the caller's requirement with an empty pin instead of sending false.
   if (!scan.requiresTrustRemoteCode && scan.unsafeFiles.length === 0) {
     if (requiresTrustRemoteCode) onApprove(null);
     return true;
@@ -65,10 +57,8 @@ export async function confirmRemoteCodeIfNeeded({
     .getState()
     .requestConsent(scan);
   if (!confirmed) {
-    // Declined: purge every repo our scan was the first to download (a LoRA scan
-    // pulls both the adapter and its base) so the untrusted custom code is not left
-    // on disk. The backend leaves models the user already had, weighted repos, and
-    // local paths untouched. Fall back to the primary flag for an older backend.
+    // Declined: purge every repo our scan first downloaded (a LoRA scan pulls adapter +
+    // base) so untrusted code is not left on disk. Fall back to the primary flag for an older backend.
     const toPurge =
       scan.scanCreatedRepos.length > 0
         ? scan.scanCreatedRepos

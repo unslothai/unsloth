@@ -41,13 +41,8 @@ interface RemoteCodeScanResponse {
   security_blocked?: boolean;
 }
 
-/**
- * Statically scan a model's custom (`auto_map`) code so the consent dialog can
- * show findings before the user enables trust_remote_code. Code-free on the
- * backend: it reads config.json and scans the repo .py, never loading the model.
- *
- * POSTs the token in the body so it never lands in a URL or access log.
- */
+/** Scan a model's auto_map code for the consent dialog (backend reads config + repo
+ *  .py, never loads the model). Token rides in the POST body, never the URL. */
 export async function getRemoteCodeScan(
   modelName: string,
   hfToken?: string | null,
@@ -92,7 +87,7 @@ export async function getRemoteCodeScan(
     findingsSummary: data.findings_summary ?? "",
     modelName: data.model_name ?? modelName,
     createdByScan: Boolean(data.created_by_scan),
-    // Prefer the explicit list; fall back to the primary flag for an older backend.
+    // Fall back to the primary flag for an older backend.
     scanCreatedRepos:
       data.scan_created_repos ??
       (data.created_by_scan ? [data.model_name ?? modelName] : []),
@@ -101,11 +96,8 @@ export async function getRemoteCodeScan(
   };
 }
 
-/**
- * After a user declines a model's custom code, purge what the scan downloaded.
- * Fire-and-forget: the backend only removes a metadata-only cache entry the scan
- * created (never a model with weights, a loaded model, or a local path).
- */
+/** Decline cleanup: purge what the scan downloaded. Fire-and-forget; the backend only
+ *  removes a metadata-only cache entry it created (never weights, a loaded model, or a local path). */
 export async function discardRemoteCodeDownload(modelName: string): Promise<void> {
   try {
     await authFetch(`/api/models/discard-remote-code`, {

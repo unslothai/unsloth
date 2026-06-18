@@ -8,7 +8,7 @@ export interface RemoteCodeSnippetRow {
   number: number; // 1-based source line
   text: string;
   isMatch: boolean; // the flagged line
-  matchStart?: number; // column span of the match, when known
+  matchStart?: number; // match column span, when known
   matchEnd?: number;
 }
 
@@ -17,39 +17,30 @@ export interface RemoteCodeFinding {
   file: string;
   check: string;
   evidence?: string;
-  line?: number | null; // 1-based line of the match
-  snippet?: RemoteCodeSnippetRow[]; // surrounding code (+/- 3 lines)
+  line?: number | null; // 1-based
+  snippet?: RemoteCodeSnippetRow[];
 }
 
 /** A repo file Hugging Face's security scan flagged (e.g. a malicious pickle). */
 export interface UnsafeFile {
   path: string;
-  level: string; // Hugging Face level: "unsafe" | "suspicious" | "malicious"
+  level: string; // HF level: unsafe | suspicious | malicious
 }
 
-/**
- * Result of the backend remote-code scan for a model that ships custom
- * (`auto_map`) Python. Drives the consent dialog: the findings are shown to the
- * user and the fingerprint pins their approval to this exact code version.
- */
+/** Backend remote-code scan result; drives the consent dialog and pins approval to the scanned code version. */
 export interface RemoteCodeScan {
   requiresTrustRemoteCode: boolean;
-  approvable: boolean; // false for CRITICAL -> the user cannot override
+  approvable: boolean; // false for CRITICAL (no override)
   maxSeverity: RemoteCodeSeverity | null;
   fingerprint: string | null;
   findings: RemoteCodeFinding[];
   findingsSummary: string;
   modelName: string;
-  // True when our scan is what first downloaded this repo into the HF cache, so a
-  // decline may safely purge it (a model the user already had stays put).
+  // True when our scan first downloaded this repo, so a decline may purge it.
   createdByScan: boolean;
-  // Every repo the scan first pulled into the HF cache (a LoRA scan downloads both
-  // the adapter and its base). A decline purges each so no scan-downloaded repo is
-  // left on disk -- supersedes createdByScan, which tracks only the primary.
+  // Every repo the scan first cached (a LoRA scan pulls adapter + base); a decline
+  // purges each. Supersedes createdByScan, which tracks only the primary.
   scanCreatedRepos: string[];
-  // Files Hugging Face's security scan flagged as unsafe (malicious pickles etc.).
-  // When non-empty the load is a hard block (approvable is false).
-  unsafeFiles: UnsafeFile[];
-  // True when the load is blocked specifically by the malware/unsafe-file scan.
-  securityBlocked: boolean;
+  unsafeFiles: UnsafeFile[]; // files HF flagged unsafe; non-empty => hard block
+  securityBlocked: boolean; // blocked specifically by the malware gate
 }

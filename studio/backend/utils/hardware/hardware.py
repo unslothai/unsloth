@@ -1127,11 +1127,9 @@ def _get_hf_safetensors_total_params(
 
 
 def _load_config_for_gpu_estimate(model_name: str, hf_token: Optional[str] = None):
-    # GPU/VRAM estimation needs only declarative config.json fields (hidden
-    # size, layers, heads, etc.). This probe runs automatically on model
-    # selection, so it must never execute a model repo's auto_map Python.
-    # Read raw config.json and expose it as an attribute namespace so
-    # downstream getattr(config, ...) access keeps working.
+    # Estimation needs only declarative config.json fields, and this probe runs
+    # on model selection, so read raw config.json (never run auto_map Python) and
+    # expose it as an attribute namespace for downstream getattr access.
     try:
         from utils.transformers_version import _load_config_json
 

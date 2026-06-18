@@ -3,7 +3,7 @@
 
 import type { RemoteCodeSeverity } from "../types";
 
-/** Tailwind classes for a severity badge (mirrors the executions statusTone idiom). */
+/** Tailwind classes for a severity badge. */
 export function severityTone(severity: RemoteCodeSeverity | string): string {
   switch (severity) {
     case "CRITICAL":

@@ -740,8 +740,7 @@ class InferenceOrchestrator:
                     logger.info("Model '%s' loaded successfully in subprocess", model_name)
                     return True
                 else:
-                    # The load worker reports failure under "message" (the consent
-                    # gate included); fall back to "error" then a generic string.
+                    # Worker reports failures (consent gate included) under "message".
                     error = resp.get("message") or resp.get("error") or "Failed to load model"
                     self.loading_models.discard(model_name)
                     self.active_model_name = None

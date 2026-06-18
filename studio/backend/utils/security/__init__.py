@@ -3,32 +3,13 @@
 
 """Security helpers for the ``trust_remote_code`` boundary.
 
-Two orthogonal questions, two helpers:
-
-* ``trusted_org.is_trusted_org_repo`` -- may we *auto-enable* remote code for
-  this name without asking? Only for genuine first-party (``unsloth``/
-  ``nvidia``) Hub repos; never for local paths or spoofed names.
-
-* ``remote_code_scan`` -- *what* would run if the user opts in? Statically scan
-  the repo's ``auto_map`` Python and surface findings for an informed decision.
-
-Intended consent flow for a deliberate LOAD (train / infer / export), wired by
-the load paths:
-
-    1. Try to load with ``trust_remote_code=False`` (safe default).
-    2. If transformers raises the "requires `trust_remote_code=True`" error
-       (architecture defined as repo code via ``auto_map``):
-         a. files = repo_remote_code_files(model_name)
-         b. result = scan_remote_code_files(files)
-         c. Surface result.summary() + result.fingerprint to the user and
-            require explicit consent. ``should_block_remote_code(result)``
-            recommends blocking by default on CRITICAL/HIGH findings.
-         d. Remember approval pinned to result.fingerprint; re-prompt if the
-            code changes on a later load.
-    3. On approval, retry with ``trust_remote_code=True``; otherwise fail.
-
-Detection (is-vision / version / size) never enters this flow -- it reads raw
-``config.json`` and never needs remote code.
+Two orthogonal questions: ``trusted_org.is_trusted_org_repo`` (may we AUTO-enable
+remote code for this name?) and ``remote_code_scan`` (WHAT would run if the user
+opts in?). The load paths try ``trust_remote_code=False`` first and, on the
+transformers "requires trust_remote_code" error, scan the repo's ``auto_map``,
+surface findings + a pinning fingerprint, and require explicit consent before
+retrying with it enabled. Detection (is-vision / version / size) reads raw
+``config.json`` and never enters this flow.
 """
 
 from utils.security.consent import (  # noqa: F401
@@ -85,13 +66,10 @@ def preflight_remote_code_consent(
     approved_fingerprint = None,
     trusted_org = None,
 ) -> "RemoteCodeDecision":
-    """Scan a model's ``auto_map`` code for the consent dialog and route preflight.
-
-    A thin wrapper over ``evaluate_remote_code_consent`` that defaults
-    ``trust_remote_code=True`` so the scan always runs when the repo declares
-    custom code, letting the UI surface findings before the user opts in. The
-    start routes pass the user's real ``trust_remote_code`` + approved fingerprint
-    to enforce consent before any state mutation.
+    """Scan a model's ``auto_map`` for the consent dialog. Thin wrapper over
+    ``evaluate_remote_code_consent`` defaulting ``trust_remote_code=True`` so the scan
+    runs whenever the repo declares custom code; the start routes pass the user's real
+    value + approved fingerprint to enforce consent before any state mutation.
     """
     return evaluate_remote_code_consent(
         model_name,
@@ -109,12 +87,9 @@ def preflight_remote_code_consent_for_targets(
     trust_remote_code: bool = True,
     approved_fingerprint = None,
 ) -> "RemoteCodeDecision":
-    """Preflight consent over MULTIPLE repos (e.g. a LoRA adapter plus its base),
-    scanned as one combined unit with a single pinning fingerprint.
-
-    A thin wrapper over ``evaluate_remote_code_consent_for_targets`` that defaults
-    ``trust_remote_code=True`` so the dialog scan always runs when any target declares
-    custom code. The actual load passes the user's real value + approved fingerprint.
+    """Preflight consent over multiple repos (a LoRA adapter plus its base) scanned as
+    one combined unit with a single pinning fingerprint. Wrapper defaulting
+    ``trust_remote_code=True``; the load passes the user's real value + fingerprint.
     """
     return evaluate_remote_code_consent_for_targets(
         targets,
@@ -125,11 +100,8 @@ def preflight_remote_code_consent_for_targets(
 
 
 def should_block_remote_code(result: "ScanResult") -> bool:
-    """Recommend blocking-by-default when the scan found CRITICAL/HIGH patterns.
-
-    Non-blocking by itself: the caller still surfaces findings and takes explicit
-    user consent. A clean/MEDIUM result returns False (warn but allow with consent);
-    CRITICAL/HIGH returns True (block unless the user force-overrides).
+    """Recommend blocking by default on CRITICAL/HIGH findings. Advisory only: the
+    caller still surfaces findings and takes explicit consent.
     """
     sev = result.max_severity
     return sev in (CRITICAL, HIGH)

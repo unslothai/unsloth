@@ -1,18 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Component A tests: capability detection must never
-execute model repo code.
+"""Component A tests: capability detection must never execute model repo code.
 
-Covers:
-* ``load_model_config`` defaults ``trust_remote_code`` to False (all branches).
-* ``_VISION_CHECK_SCRIPT`` subprocess literal keeps remote code off.
-* Registry-backed vision/audio detection from raw ``config.json`` -- including
-  repo-code VLMs (DeepSeek-OCR, Kimi) detected without execution, and the
-  ``ForConditionalGeneration`` suffix false-positive (T5/Bart, Whisper/Csm)
-  fixed.
-* The model-details and GPU-estimate probes never call AutoConfig with
-  ``trust_remote_code=True``.
+Covers: load_model_config defaults trust_remote_code False; the _VISION_CHECK_SCRIPT
+subprocess literal keeps remote code off; registry-backed vision/audio detection from
+raw config.json (repo-code VLMs detected without execution; ForConditionalGeneration
+false positives fixed); and the model-details / GPU probes never enable remote code.
 """
 
 import json
@@ -46,9 +40,8 @@ def _write_model_dir(
     cfg,
     with_evil_module = False,
 ):
-    """Write a local model dir; optionally an auto_map module that writes a
-    sentinel on import, so any accidental code execution during detection shows
-    up as a file on disk."""
+    """Write a local model dir, optionally with an auto_map module that writes a sentinel
+    on import so accidental code execution during detection shows up on disk."""
     (tmp_path / "config.json").write_text(json.dumps(cfg))
     if with_evil_module:
         sentinel = tmp_path / "PWNED_SENTINEL"
@@ -61,9 +54,7 @@ def _write_model_dir(
     return str(tmp_path)
 
 
-# --------------------------------------------------------------------------- #
 # load_model_config default
-# --------------------------------------------------------------------------- #
 class TestLoadModelConfigDefault:
     @patch("transformers.AutoConfig.from_pretrained")
     def test_default_off_with_token(self, fp):
@@ -90,17 +81,13 @@ class TestLoadModelConfigDefault:
         assert fp.call_args.kwargs["trust_remote_code"] is True
 
 
-# --------------------------------------------------------------------------- #
 # subprocess script literal
-# --------------------------------------------------------------------------- #
 def test_vision_check_script_disables_remote_code():
     assert '"trust_remote_code": False' in _VISION_CHECK_SCRIPT
     assert '"trust_remote_code": True' not in _VISION_CHECK_SCRIPT
 
 
-# --------------------------------------------------------------------------- #
 # _is_vlm matrix (pure function, registry-backed)
-# --------------------------------------------------------------------------- #
 def _cfg(**kw):
     return SimpleNamespace(**kw)
 
@@ -167,16 +154,13 @@ class TestIsVlm:
         assert _is_vlm(c) is True
 
     def test_omni_audio_plus_vision_is_vision(self):
-        # A model whose model_type is in the audio registry but carries an
-        # explicit vision sub-config must still be vision.
+        # An audio-registry model_type with an explicit vision sub-config is still vision.
         audio_mt = next(iter(_AUDIO_ONLY_MODEL_TYPES - _VLM_MODEL_TYPES))
         c = _cfg(model_type = audio_mt, architectures = ["X"], vision_config = {})
         assert _is_vlm(c) is True
 
 
-# --------------------------------------------------------------------------- #
 # _raw_config_has_vision_config (code-free reader, mocked HF download)
-# --------------------------------------------------------------------------- #
 def _mock_raw_config(tmp_path, payload):
     p = tmp_path / "config.json"
     p.write_text(json.dumps(payload))
@@ -232,8 +216,7 @@ class TestRawConfigVisionReader:
             assert _raw_config_has_vision_config("org/model") is expected
 
     def test_reader_never_executes_remote_code(self, tmp_path):
-        # Even with auto_map present, the reader only parses JSON; assert no
-        # AutoConfig / dynamic module machinery is touched.
+        # Even with auto_map present, the reader only parses JSON: no AutoConfig touched.
         cfg_path = _mock_raw_config(
             tmp_path,
             {
@@ -254,9 +237,7 @@ class TestRawConfigVisionReader:
             assert _raw_config_has_vision_config("org/deepseek-ocr") is True
 
 
-# --------------------------------------------------------------------------- #
 # Probes: model-details + GPU estimate never execute remote code
-# --------------------------------------------------------------------------- #
 def test_gpu_estimate_probe_is_code_free():
     from utils.hardware import hardware
 
@@ -279,10 +260,8 @@ def test_gpu_estimate_probe_is_code_free():
 
 
 def test_models_route_source_has_no_remote_code_probe():
-    # The model-details metadata probe must never ENABLE remote code (execute a
-    # repo's auto_map). Referencing the static consent scanner or the
-    # requires_trust_remote_code flag is fine; building a trust_remote_code=True
-    # loader probe is not.
+    # The metadata probe must never build a trust_remote_code=True loader; referencing
+    # the static consent scanner or the requires_trust_remote_code flag is fine.
     import inspect
     import routes.models as models_route
 
@@ -291,13 +270,9 @@ def test_models_route_source_has_no_remote_code_probe():
     assert "trust_remote_code=True" not in src
 
 
-# --------------------------------------------------------------------------- #
-# Adversarial end-to-end: the public is_vision_model + the two metadata probes
-# must never execute a repo's auto_map Python.
-# --------------------------------------------------------------------------- #
+# Adversarial end-to-end: is_vision_model + the two metadata probes never run auto_map.
 def test_no_code_execution_on_detection(tmp_path):
-    # A malicious local model whose auto_map -> modeling_evil must NOT execute
-    # through any of the three metadata probes.
+    # A malicious local auto_map -> modeling_evil must not execute through any probe.
     cfg = {
         "model_type": "deepseek_vl_v2",
         "architectures": ["DeepseekOCRForCausalLM"],

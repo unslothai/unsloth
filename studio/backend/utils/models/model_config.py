@@ -502,17 +502,10 @@ def load_model_config(
     )
 
 
-# Vision/audio detection sets are derived from the installed transformers
-# registry (auto-maintained by HF) rather than a hand-curated list. The
-# registry only knows *native* architectures, so we union a small curated set
-# of repo-code (``auto_map``) VLMs whose architecture is defined in the model
-# repo and is therefore absent from every transformers version (e.g.
-# DeepSeek-OCR ``deepseek_vl_v2``, Kimi ``kimi_k25``, ``phi3_v``).
-#
-# IMPORTANT: ``ForConditionalGeneration`` is deliberately NOT used as a positive
-# vision signal -- it is overloaded across text seq2seq (T5/Bart), audio
-# (Whisper/Csm) and vision (Llava), so matching it produced false positives.
-# ``ForVisionText2Text`` is vision-specific and safe.
+# Detection sets come from the installed transformers registry, unioned with a
+# small curated set of auto_map VLMs (DeepSeek-OCR, Kimi, phi3_v) whose arch is
+# repo-defined and absent from the registry. ForConditionalGeneration is NOT a
+# vision signal (overloaded across text/audio/vision); ForVisionText2Text is.
 _VLM_ARCH_SUFFIXES = ("ForVisionText2Text",)
 
 _CURATED_REMOTE_VLM_TYPES = frozenset(
@@ -593,8 +586,7 @@ def _is_vlm(config) -> bool:
         or hasattr(config, "image_token_index")
         or hasattr(config, "projector_config")
     )
-    # Audio-only models (whisper, csm, ...) are never vision unless they carry
-    # an explicit vision sub-config (true multimodal "omni" models).
+    # Audio-only models are vision only if they carry an explicit vision sub-config.
     if model_type in _AUDIO_ONLY_MODEL_TYPES and not explicit_vision:
         return False
     return (
@@ -629,8 +621,7 @@ def _raw_config_has_vision_config(
             or "image_token_index" in config
             or "projector_config" in config
         )
-        # Audio-only models are never vision unless they carry an explicit
-        # vision sub-config (true multimodal "omni" models).
+        # Audio-only models are vision only if they carry an explicit vision sub-config.
         if model_type in _AUDIO_ONLY_MODEL_TYPES and not explicit_vision:
             return False
         return (
@@ -864,18 +855,15 @@ def _is_vision_model_uncached(model_name: str, hf_token: Optional[str] = None) -
     Returns True/False for definitive results, or None on transient errors
     (network, timeout, subprocess failure) so the caller knows not to cache.
     """
-    # Capability detection reads only declarative config.json fields, so it
-    # never needs to execute a model repo's auto_map Python. Try the raw-config
-    # reader FIRST (code-free, version-independent): it classifies repo-code
-    # VLMs like DeepSeek-OCR via their declarative `vision_config` without any
-    # remote-code execution and without a transformers-5.x subprocess.
+    # Try the raw-config reader FIRST (code-free, version-independent): it classifies
+    # repo-code VLMs like DeepSeek-OCR via declarative vision_config with no remote-code
+    # execution or transformers-5.x subprocess.
     raw = _raw_config_has_vision_config(model_name, hf_token = hf_token)
     if raw is not None:
         return raw
 
-    # Raw read failed transiently (e.g. network/permission). Fall back to
-    # AutoConfig with remote code DISABLED -- in a transformers-5.x subprocess
-    # for architectures the main process can't parse, else in-process.
+    # Raw read failed transiently: fall back to AutoConfig with remote code DISABLED
+    # (in a transformers-5.x subprocess when the main process can't parse the arch).
     from utils.transformers_version import needs_transformers_5
 
     if needs_transformers_5(model_name):
@@ -926,10 +914,8 @@ def _is_vision_model_uncached(model_name: str, hf_token: Optional[str] = None) -
 
 VALID_AUDIO_TYPES = ("snac", "csm", "bicodec", "dac", "whisper", "audio_vlm")
 
-# Cache detection per session to avoid repeated API calls. Keyed by
-# (normalized_model_name, token_fingerprint) like the vision cache: an
-# unauthenticated probe of a gated/private repo returns None, so caching it under
-# the bare name would poison a later authenticated call with a stale None.
+# Keyed by (normalized_name, token_fingerprint) like the vision cache, so an
+# unauthenticated miss (None) cannot poison a later authenticated lookup.
 _audio_detection_cache: Dict[Tuple[str, Optional[str]], Optional[str]] = {}
 
 # Tokenizer token patterns → audio_type (all 6 types from tokenizer_config.json)
@@ -956,9 +942,7 @@ def detect_audio_type(model_name: str, hf_token: Optional[str] = None) -> Option
     Returns an audio_type string ('snac', 'csm', 'bicodec', 'dac', 'whisper',
     'audio_vlm') or None.
     """
-    # Normalize the name so different casings of the same repo share a key, and
-    # include the token fingerprint so an unauthenticated miss cannot poison a later
-    # authenticated lookup (mirrors is_vision_model).
+    # Normalize casing + include the token fingerprint (mirrors is_vision_model).
     try:
         if is_local_path(model_name):
             resolved_name = normalize_path(model_name)
@@ -2308,9 +2292,7 @@ def get_base_model_from_lora_identifier(
                 identifier, "adapter_config.json", token = hf_token if hf_token else None
             )
         except (EntryNotFoundError, RepositoryNotFoundError):
-            # adapter_config.json / the repo genuinely does not exist -> not a LoRA
-            # whose base we can resolve. None is correct; the caller scans the
-            # identifier itself.
+            # No adapter_config.json -> not a resolvable LoRA; caller scans the identifier.
             return None
         except Exception as exc:  # transient / auth / network -> retry once
             last_exc = exc
@@ -2329,8 +2311,7 @@ def get_base_model_from_lora_identifier(
             )
         return base_model  # may be None if the key is absent (still a valid answer)
 
-    # Both attempts hit a transient error: we could not confirm whether this is a
-    # LoRA or read its base. Log loudly -- a missed base is scanned by neither gate.
+    # Both attempts failed transiently: log loudly -- a missed base is gated by neither gate.
     logger.warning(
         "Could not resolve remote LoRA base for '%s' after retry (%s); its base, if "
         "any, will not be added to the security scan targets.",

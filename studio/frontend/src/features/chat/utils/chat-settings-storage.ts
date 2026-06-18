@@ -140,8 +140,7 @@ function sanitizeInferenceParams(
   if (typeof value.systemPrompt === "string") {
     params.systemPrompt = value.systemPrompt;
   }
-  // trustRemoteCode is no longer a persisted user setting: custom code is
-  // consented per model via the load-time review dialog, not a saved toggle.
+  // trustRemoteCode is no longer persisted: custom code is consented per model via the dialog.
   if (typeof value.fastMode === "boolean") {
     params.fastMode = value.fastMode;
   }

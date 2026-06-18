@@ -493,18 +493,15 @@ export function ExportPage() {
           hf_token: hfToken || null,
         });
       } else {
-        // Consent gate: if the source model ships custom (auto_map) code, the
-        // dialog scans it and has the user review the findings before any code
-        // runs. It is the only way to enable trust_remote_code for an HF source;
-        // a local checkpoint the user exported is trusted by default.
+        // Consent gate for an HF source's custom (auto_map) code: the only way to enable
+        // trust_remote_code here. A local checkpoint the user exported is trusted by default.
         let trustRemoteCode = modelSource !== "hf";
         let approvedRemoteCodeFingerprint: string | null = null;
         const remoteCodeOk = await confirmRemoteCodeIfNeeded({
           modelName: source,
           hfToken: hfToken || null,
-          // An HF source may require trust_remote_code via its Studio YAML default
-          // even with no auto_map to review; signal that so the helper grants it
-          // (otherwise a YAML-only model exports with trust_remote_code=false).
+          // An HF source can need trust_remote_code via its YAML default with no auto_map
+          // to review; signal it so a YAML-only model does not export with it false.
           requiresTrustRemoteCode: modelSource === "hf",
           onApprove: (fingerprint) => {
             trustRemoteCode = true;
@@ -889,10 +886,8 @@ export function ExportPage() {
                               </p>
                             )}
                           </div>
-                          {/* Custom code is consented per model through the
-                              load-time review dialog (which scans the repo and
-                              pins approval to a fingerprint), so there is no
-                              persistent "trust remote code" toggle here. */}
+                          {/* No persistent "trust remote code" toggle: custom code is
+                              consented per model via the load-time review dialog. */}
                           <div className="flex flex-col gap-1.5">
                             <label className="text-xs font-medium text-muted-foreground">
                               Hugging Face Token (Optional)

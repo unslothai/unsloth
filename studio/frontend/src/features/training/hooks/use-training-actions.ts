@@ -128,8 +128,7 @@ export function useTrainingActions() {
         return false;
       }
 
-      // Consent gate: if the selected model ships custom (auto_map) code, scan it
-      // and have the user review the findings before enabling trust_remote_code.
+      // Consent gate for the selected model's custom (auto_map) code.
       if (config.selectedModel) {
         const remoteCodeOk = await confirmRemoteCodeIfNeeded({
           modelName: config.selectedModel,
@@ -219,10 +218,8 @@ export function useTrainingActions() {
 
       runtimeStore.setStartResources(payload.model_name, payload.hf_dataset, true);
 
-      // Resume goes straight to startTraining, so it must run the same consent gate
-      // as a fresh start -- otherwise a resumed run whose model needs custom code
-      // (or an old run saved before consent existed, with no approved fingerprint)
-      // hits the worker block with no dialog to proceed through.
+      // Resume goes straight to startTraining, so it runs the same consent gate as a
+      // fresh start; otherwise a resumed custom-code run hits the worker block with no dialog.
       if (payload.model_name) {
         let trustRemoteCode = Boolean(payload.trust_remote_code);
         let approvedRemoteCodeFingerprint =

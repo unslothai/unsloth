@@ -1454,10 +1454,8 @@ def _run_mlx_training(event_queue, stop_queue, config):
     _lora_seed = config.get("lora_random_state")
     lora_random_state = random_seed if _lora_seed is None else int(_lora_seed)
 
-    # ── Malware gate (MLX path) ──
-    # Independent of trust_remote_code: a malicious pickle in a weight file
-    # deserializes when FastMLXModel loads it even with trust_remote_code False,
-    # so check Hugging Face's security scan (metadata-only) here before any load.
+    # Malware gate (MLX): a poisoned pickle deserializes on load even with
+    # trust_remote_code False, so check HF's security scan (metadata-only) first.
     # For a LoRA, gate the base whose weights deserialize.
     from utils.security import evaluate_file_security
 
@@ -1486,11 +1484,9 @@ def _run_mlx_training(event_queue, stop_queue, config):
             )
             return
 
-    # ── Consent gate (MLX path) ──
-    # The CUDA path gates in run_training_process, but MLX training returns
-    # before reaching it, so scan auto_map repo code here before FastMLXModel
-    # executes it. Block CRITICAL/HIGH unless pinned-approved; for a LoRA, gate
-    # the base model whose custom code actually runs.
+    # Consent gate (MLX): the CUDA path gates in run_training_process, but MLX returns
+    # before that, so scan auto_map code here before FastMLXModel runs it. Block
+    # CRITICAL/HIGH unless pinned-approved; for a LoRA, gate the base whose code runs.
     if config.get("trust_remote_code", False):
         from utils.security import evaluate_remote_code_consent_for_targets
 
@@ -2180,9 +2176,8 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     if (
         any(sub in _lowered for sub in _NEMOTRON_TRUST_SUBSTRINGS)
         and (_lowered.startswith("unsloth/") or _lowered.startswith("nvidia/"))
-        # Confirm a genuine first-party Hub repo, not a local path / spoofed
-        # name that merely starts with "unsloth/". Authenticated so private/gated
-        # first-party repos still resolve.
+        # Confirm a genuine first-party Hub repo (not a local/spoofed name starting
+        # with "unsloth/"); authenticated so private first-party repos resolve.
         and is_trusted_org_repo(model_name, hf_token = config.get("hf_token") or None)
         and not config.get("trust_remote_code", False)
     ):
@@ -2192,10 +2187,9 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             model_name,
         )
 
-    # ── 1a. Malware gate: independent of trust_remote_code. A malicious pickle in
-    # a weight file deserializes when the trainer loads it even with
-    # trust_remote_code False, so check Hugging Face's security scan (metadata-only)
-    # before any load. For a LoRA, gate the base whose weights deserialize.
+    # 1a. Malware gate: a poisoned pickle deserializes on load even with
+    # trust_remote_code False, so check HF's security scan (metadata-only) first.
+    # For a LoRA, gate the base whose weights deserialize.
     from utils.security import evaluate_file_security
 
     malware_targets = [model_name]
@@ -2227,14 +2221,12 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             )
             return
 
-    # ── 1a'. Consent gate: before running any model repo code, scan the
-    # auto_map Python and refuse code flagged CRITICAL/HIGH unless the user
-    # pinned approval of this exact code version.
+    # 1a'. Consent gate: scan auto_map Python before it runs; refuse CRITICAL/HIGH
+    # unless pinned-approved.
     if config.get("trust_remote_code", False):
         from utils.security import evaluate_remote_code_consent_for_targets
 
-        # model_name is normally the base, but if it points at a LoRA adapter the
-        # base model's custom code is what runs, so gate that repo too.
+        # A LoRA adapter's base is where custom code runs, so gate it too.
         consent_targets = [model_name]
         try:
             from utils.models.model_config import get_base_model_from_lora_identifier
@@ -3221,12 +3213,9 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
         training_type = config.get("training_type", "LoRA/QLoRA")
         use_lora = training_type == "LoRA/QLoRA"
 
-        # ── Malware gate (embedding path) ──
-        # Independent of trust_remote_code: a malicious pickle in a weight file
-        # deserializes when FastSentenceTransformer loads it even with
-        # trust_remote_code False, so check Hugging Face's security scan
-        # (metadata-only) before any load. For a LoRA, gate the base whose weights
-        # deserialize (resolving a LOCAL or REMOTE adapter's base).
+        # Malware gate (embedding): a poisoned pickle deserializes on load even with
+        # trust_remote_code False, so check HF's security scan (metadata-only) first.
+        # For a LoRA, gate the base whose weights deserialize.
         from utils.security import evaluate_file_security
 
         malware_targets = [model_name]
@@ -3255,10 +3244,8 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
                 )
                 return
 
-        # ── Consent gate (embedding path) ──
-        # If a custom embedding model ships auto_map repo code, scan it before
-        # FastSentenceTransformer executes it; block CRITICAL/HIGH unless
-        # pinned-approved. A no-op for models without auto_map.
+        # Consent gate (embedding): scan any auto_map code before it runs; block
+        # CRITICAL/HIGH unless pinned-approved. A no-op without auto_map.
         if config.get("trust_remote_code", False):
             from utils.security import evaluate_remote_code_consent_for_targets
 

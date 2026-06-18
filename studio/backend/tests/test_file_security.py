@@ -3,14 +3,11 @@
 
 """Tests for the malware / unsafe-file gate (utils.security.file_security).
 
-The gate queries Hugging Face's own security scan
-(``model_info(securityStatus=True).security_repo_status``) -- metadata only, it
-never downloads the flagged files. Only the Hub call is stubbed (no network).
-Policy: hard block on a non-"safe" level (unknown levels fail closed); fail open
-when the scan is unavailable; skip local paths only (a remote *.gguf-named repo is
-still scanned); no first-party exemption. The block is scoped to the load-path RCE
-vector -- a root-level, code-executing file -- so flagged safetensors (inert) and
-flagged pickles in subdirectories (which from_pretrained never reads) do not block.
+The gate reads HF's security scan (model_info securityStatus) metadata-only and never
+downloads flagged files; only the Hub call is stubbed. Policy: block a non-"safe" level
+(unknown levels fail closed), fail open when the scan is unavailable, skip local paths
+only, no first-party exemption. The block is scoped to the load-path RCE vector (a
+root-level code-executing file), so flagged safetensors and subdir pickles do not block.
 """
 
 from types import SimpleNamespace
@@ -87,12 +84,8 @@ def _patch_index_unreadable():
 
 
 def _patch_index_mixed(weight_map, readable_index, failing_index):
-    """Serve ONE index cleanly while a DIFFERENT index fails transiently.
-
-    Models the dangerous case: one index reads fine (so a naive "did we read any
-    index?" check would treat the result as definitive), but the flagged shard is
-    listed only by the index we could not read.
-    """
+    """Serve one index cleanly while another fails transiently: the flagged shard is
+    listed only by the index we could not read, so a naive "read any index?" check breaks."""
     import json
     import tempfile
     from pathlib import Path
@@ -138,8 +131,7 @@ def test_ignores_safe_only():
 
 
 def test_blocks_unsafe_even_when_scans_not_done():
-    # scansDone is frequently False even for clean repos; a file ALREADY flagged
-    # unsafe must still block (do not gate blocking on scansDone).
+    # scansDone is often False for clean repos; an already-flagged file must still block.
     status = {"scansDone": False, "filesWithIssues": [{"path": "x.pkl", "level": "unsafe"}]}
     with _patch_status(status):
         d = evaluate_file_security("evil/repo")
@@ -174,9 +166,8 @@ def test_skips_local_path():
 
 
 def test_remote_gguf_named_repo_is_still_scanned():
-    # A repo must not evade the scan by ending its NAME in .gguf: only LOCAL paths
-    # skip the Hub scan. A remote repo id (even "evil/model.gguf") is scanned, so a
-    # poisoned pickle smuggled into such a repo is still blocked.
+    # Only LOCAL paths skip the Hub scan, so a remote .gguf repo is still scanned and a
+    # poisoned pickle smuggled into it is blocked.
     status = {
         "scansDone": True,
         "filesWithIssues": [{"path": "pytorch_model.bin", "level": "unsafe"}],
@@ -230,9 +221,8 @@ def test_response_payload_shape():
 
 
 def test_flagged_safetensors_does_not_block():
-    # safetensors is tensor-only and cannot execute code; a flag on one (Hub
-    # sometimes marks a repo's safetensors "unsafe" when picklescan trips on a
-    # sibling pickle) is not an RCE vector, so it must not block.
+    # safetensors is tensor-only and cannot execute code, so a flag on one (often
+    # picklescan tripping on a sibling pickle) is not an RCE vector and must not block.
     status = {
         "scansDone": False,
         "filesWithIssues": [{"path": "model-00001-of-00004.safetensors", "level": "unsafe"}],
@@ -244,9 +234,8 @@ def test_flagged_safetensors_does_not_block():
 
 
 def test_flagged_subdirectory_pickle_does_not_block():
-    # from_pretrained reads weight files at the repo ROOT; a flagged pickle in a
-    # subdirectory that NO root index references (e.g. a NeMo checkpoint) is never
-    # loaded, so it must not block.
+    # from_pretrained reads only root weights; a flagged subdir pickle no root index
+    # references (e.g. a NeMo checkpoint) is never loaded, so it must not block.
     status = {
         "scansDone": False,
         "filesWithIssues": [
@@ -261,9 +250,8 @@ def test_flagged_subdirectory_pickle_does_not_block():
 
 
 def test_nemotron_h_shaped_status_loads():
-    # Real shape of nvidia/Nemotron-H-8B-Base-8K: root safetensors flagged "unsafe"
-    # plus NeMo pickle checkpoints under nemo/ that no index references. None are a
-    # load-path RCE vector, so a legitimate first-party model must LOAD, not block.
+    # Real Nemotron-H-8B-Base-8K shape: flagged root safetensors + unreferenced nemo/
+    # pickles. None is a load-path vector, so it must load.
     status = {
         "scansDone": False,
         "filesWithIssues": [
@@ -281,8 +269,7 @@ def test_nemotron_h_shaped_status_loads():
 
 
 def test_indexed_subdir_shard_blocks():
-    # A flagged pickle shard in a SUBDIRECTORY that a root weight index references is
-    # deserialized by from_pretrained, so it IS a load-path vector and must block.
+    # A flagged subdir shard that a root index references IS deserialized, so it blocks.
     status = {
         "scansDone": False,
         "filesWithIssues": [
@@ -302,8 +289,7 @@ def test_indexed_subdir_shard_blocks():
 
 
 def test_unindexed_subdir_pickle_does_not_block_when_index_present():
-    # An index exists, but the flagged subdir pickle is NOT listed in it -> not a
-    # load input -> must not block (the model still loads from the indexed shards).
+    # An index exists but does not list the flagged subdir pickle -> not loaded -> no block.
     status = {
         "scansDone": False,
         "filesWithIssues": [{"path": "extras/notes.bin", "level": "unsafe"}],
@@ -316,8 +302,7 @@ def test_unindexed_subdir_pickle_does_not_block_when_index_present():
 
 
 def test_inconclusive_index_lookup_blocks_subdir_pickle():
-    # If the index lookup cannot complete (transient error) we cannot rule out that
-    # the flagged subdir pickle is a loadable shard, so fail closed (block).
+    # An unreadable index can't rule out that the flagged subdir pickle is a shard -> block.
     status = {
         "scansDone": False,
         "filesWithIssues": [{"path": "weights/model_part.bin", "level": "unsafe"}],
@@ -329,17 +314,15 @@ def test_inconclusive_index_lookup_blocks_subdir_pickle():
 
 
 def test_partial_index_read_with_transient_failure_blocks_subdir_pickle():
-    # One index (safetensors) reads cleanly, but the bin index fails transiently and
-    # the flagged subdir pickle is a .bin shard the unread index would list. A partial
-    # path set must not be treated as definitive: fail closed (block).
+    # The bin index (which would list the flagged shard) fails transiently; a partial
+    # path set is not definitive, so fail closed.
     status = {
         "scansDone": False,
         "filesWithIssues": [
             {"path": "shards/pytorch_model-00001-of-00002.bin", "level": "unsafe"},
         ],
     }
-    # The readable safetensors index lists unrelated, benign shards; the flagged .bin
-    # would only appear in the bin index that we could not fetch.
+    # The readable index lists only benign shards; the flagged .bin is in the unread index.
     safetensors_map = {"layer.0.weight": "model-00001-of-00001.safetensors"}
     with (
         _patch_status(status),
@@ -357,8 +340,7 @@ def test_partial_index_read_with_transient_failure_blocks_subdir_pickle():
 
 
 def test_root_pickle_alongside_safetensors_still_blocks():
-    # A genuinely-dangerous ROOT pickle blocks even when the repo also ships a
-    # (flagged) safetensors -- the pickle is a real load-path vector.
+    # A real root pickle blocks even alongside a flagged safetensors; it is a load-path vector.
     status = {
         "scansDone": False,
         "filesWithIssues": [
@@ -373,8 +355,7 @@ def test_root_pickle_alongside_safetensors_still_blocks():
 
 
 def test_eicar_shaped_root_files_block():
-    # mcpotato/42-eicar-street ships its dangerous files at the repo ROOT, so the
-    # canonical malware repo stays blocked under the load-path scoping.
+    # The canonical eicar repo ships its dangerous files at the ROOT, so it stays blocked.
     status = {
         "scansDone": True,
         "filesWithIssues": [
@@ -390,8 +371,7 @@ def test_eicar_shaped_root_files_block():
 
 
 def test_unknown_future_level_fails_closed():
-    # Hub schema drift: a non-"safe" level we do not recognize (e.g. "infected") on
-    # a root pickle must block, so a newly-named bad verdict is not silently allowed.
+    # Hub schema drift: an unrecognized non-"safe" level (e.g. "infected") on a root pickle must block.
     status = {"scansDone": True, "filesWithIssues": [{"path": "weights.bin", "level": "infected"}]}
     with _patch_status(status):
         d = evaluate_file_security("evil/repo")
@@ -415,8 +395,7 @@ def test_pending_or_scanning_level_does_not_block():
 
 
 def test_flagged_pickle_under_load_subdir_blocks():
-    # A flagged pickle directly under a declared load subdir is a root-level load
-    # artifact there and must block.
+    # A flagged pickle directly under a declared load subdir is a root-level artifact there.
     status = {
         "scansDone": False,
         "filesWithIssues": [{"path": "LLM/pytorch_model.bin", "level": "unsafe"}],
@@ -463,8 +442,8 @@ def test_indexed_shard_under_load_subdir_blocks():
 
 
 def test_flagged_root_python_helper_does_not_block():
-    # A root .py is never deserialized by from_pretrained; executable repo code runs
-    # only via auto_map under the consent gate. Flagging it here would false-block.
+    # A root .py is never deserialized; repo code runs only via auto_map under the consent
+    # gate, so flagging it here would false-block.
     status = {
         "scansDone": True,
         "filesWithIssues": [
@@ -507,8 +486,7 @@ def _patch_status_capture(status):
 
 
 def test_spark_tts_llm_alias_scans_real_repo():
-    # The trainer downloads the "Spark-TTS-0.5B/LLM" alias as unsloth/Spark-TTS-0.5B
-    # and loads LLM/. The gate must scan THAT repo with LLM as a load root -- scanning
+    # "Spark-TTS-0.5B/LLM" loads as unsloth/Spark-TTS-0.5B with LLM as load root; scanning
     # the literal alias 404s and fails open, missing a flagged LLM/ pickle.
     status = {"filesWithIssues": [{"path": "LLM/pytorch_model.bin", "level": "unsafe"}]}
     cap, seen = _patch_status_capture(status)
@@ -531,9 +509,8 @@ def test_non_llm_alias_is_not_rewritten():
 
 
 def test_generic_slash_llm_repo_is_scanned_as_itself():
-    # A real third-party repo that merely ends in "/LLM" is NOT a registry bicodec
-    # alias, so it must be scanned AS ITSELF -- not rewritten to unsloth/<parent>,
-    # which would scan the wrong repo and fail open on a flagged file in the real one.
+    # A third-party repo merely ending in "/LLM" is not a bicodec alias, so it must be
+    # scanned as itself; rewriting to unsloth/<parent> would scan the wrong repo.
     status = {"filesWithIssues": [{"path": "pytorch_model.bin", "level": "unsafe"}]}
     cap, seen = _patch_status_capture(status)
     with cap, patch("utils.paths.is_local_path", return_value = False):
@@ -544,8 +521,7 @@ def test_generic_slash_llm_repo_is_scanned_as_itself():
 
 
 def test_security_load_subdirs_yaml_fallback(monkeypatch):
-    # When tokenizer detection fails (network/gated/unresolved alias) but the Studio
-    # YAML default pins audio_type=bicodec, the LLM load root must still be returned.
+    # Tokenizer detection failed, but a YAML default of audio_type=bicodec still yields LLM.
     import utils.models.model_config as mc
     from utils.security import security_load_subdirs
 

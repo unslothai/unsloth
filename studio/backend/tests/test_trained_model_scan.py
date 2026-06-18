@@ -78,8 +78,7 @@ def test_get_base_model_from_lora_rejects_full_finetune_dirs(tmp_path: Path):
 
 
 def test_lora_identifier_resolves_local_dir_like_the_local_helper(tmp_path: Path):
-    # For a local path, the identifier helper must behave exactly like the
-    # directory reader (no Hub call).
+    # Local path: behaves like the directory reader, no Hub call.
     (tmp_path / "adapter_config.json").write_text(
         json.dumps({"base_model_name_or_path": "HuggingFaceTB/SmolLM-135M"})
     )
@@ -89,9 +88,8 @@ def test_lora_identifier_resolves_local_dir_like_the_local_helper(tmp_path: Path
 
 
 def test_lora_identifier_resolves_remote_adapter_base(tmp_path: Path):
-    # A REMOTE adapter repo has no local dir, so the local helper returns None; the
-    # identifier helper must fetch adapter_config.json from the Hub and surface the
-    # base model so the security gate can scan the base, not just the adapter.
+    # Remote adapter: the identifier helper fetches adapter_config.json from the Hub so
+    # the gate can scan the base, where the local helper returns None.
     cfg = tmp_path / "adapter_config.json"
     cfg.write_text(json.dumps({"base_model_name_or_path": "unsloth/Llama-3.2-1B-Instruct"}))
 
@@ -111,9 +109,7 @@ def test_lora_identifier_resolves_remote_adapter_base(tmp_path: Path):
 
 
 def test_lora_identifier_returns_none_for_non_adapter_remote_repo():
-    # A normal (non-LoRA) remote repo has no adapter_config.json: the Hub raises
-    # EntryNotFoundError and the helper returns None WITHOUT retrying (a genuine 404
-    # is not a transient error).
+    # Non-LoRA remote repo: a 404 on adapter_config.json returns None without retrying.
     from huggingface_hub.utils import EntryNotFoundError
 
     mock = patch("huggingface_hub.hf_hub_download", side_effect = EntryNotFoundError("404"))
@@ -123,9 +119,7 @@ def test_lora_identifier_returns_none_for_non_adapter_remote_repo():
 
 
 def test_lora_identifier_retries_transient_then_resolves(tmp_path: Path):
-    # A transient fetch error must be retried, not treated as "not a LoRA": the
-    # second attempt succeeds and the base is resolved (so the base still gets
-    # scanned despite the blip).
+    # A transient error is retried (not treated as "not a LoRA"); the retry resolves the base.
     cfg = tmp_path / "adapter_config.json"
     cfg.write_text(json.dumps({"base_model_name_or_path": "unsloth/Llama-3.2-1B-Instruct"}))
     calls = {"n": 0}
@@ -147,10 +141,8 @@ def test_lora_identifier_retries_transient_then_resolves(tmp_path: Path):
 
 
 def test_lora_identifier_persistent_transient_returns_none():
-    # Both attempts hit a transient error -> None, and it is logged at WARNING (a
-    # missed base would be scanned by neither gate) rather than silently at debug.
-    # Assert on the logger directly so it is robust to the logging backend (the
-    # real structlog vs this module's stub, which varies with collection order).
+    # Two transient errors -> None, logged at WARNING (a missed base is gated by neither).
+    # Assert on the logger directly: robust to the logging backend (structlog vs stub).
     from utils.models import model_config as _mc
     with (
         patch("huggingface_hub.hf_hub_download", side_effect = RuntimeError("down")),

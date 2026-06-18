@@ -1087,9 +1087,8 @@ export function ChatSettingsPanel({
                 </div>
               </>
             )}
-            {/* Custom code is consented per model through the load-time review
-                dialog (which scans the code and pins approval to its exact
-                version), so there is no persistent "enable custom code" toggle. */}
+            {/* No persistent "enable custom code" toggle: it is consented per model
+                via the load-time review dialog. */}
             {/* Apply/Reset belongs to the model-reload settings above (context
                 length, KV cache, speculative decoding). Render it here, before
                 the Chat Template row, so it never reads as attached to Chat

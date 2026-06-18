@@ -80,11 +80,9 @@ def test_get_model_config_resolves_cached_case_before_model_checks(monkeypatch):
 
 
 def test_repo_in_any_hf_cache_matches_case_variant_in_legacy_cache(tmp_path, monkeypatch):
-    # created_by_scan must be False when a case-variant of the repo already exists in a
-    # legacy/default cache: resolve_cached_repo_id_case only normalizes against the
-    # ACTIVE cache, so an exact probe would miss models--Unsloth--Foo when scanning
-    # unsloth/foo. Since discard deletes case-insensitively, detection must too --
-    # otherwise declining consent deletes a pre-existing user-owned cache entry.
+    # A case-variant in a legacy/default cache must read as present (case resolution only
+    # covers the active cache; discard deletes case-insensitively, so detection must too,
+    # else a decline deletes a pre-existing user repo).
     import utils.paths as paths_pkg
     import huggingface_hub.constants as hf_constants
 
@@ -93,15 +91,15 @@ def test_repo_in_any_hf_cache_matches_case_variant_in_legacy_cache(tmp_path, mon
     default = tmp_path / "default"
     for d in (active, legacy, default):
         d.mkdir()
-    # A pre-existing, differently-cased cache entry lives in the legacy cache only.
+    # Differently-cased entry in the legacy cache only.
     (legacy / "models--Unsloth--Foo").mkdir()
 
-    # Active cache holds no variant, so case resolution returns the request unchanged.
+    # No active-cache variant; case resolution is a no-op here.
     monkeypatch.setattr(paths_pkg, "resolve_cached_repo_id_case", lambda name: name)
     monkeypatch.setattr(paths_pkg, "legacy_hf_cache_dir", lambda: legacy)
     monkeypatch.setattr(paths_pkg, "hf_default_cache_dir", lambda: default)
     monkeypatch.setattr(hf_constants, "HF_HUB_CACHE", str(active))
 
     assert models_route._repo_in_any_hf_cache("unsloth/foo") is True
-    # A repo present in no cache is still correctly reported as absent.
+    # Absent from every cache -> reported absent.
     assert models_route._repo_in_any_hf_cache("unsloth/not-cached") is False

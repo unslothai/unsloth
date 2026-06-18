@@ -116,9 +116,8 @@ class TestVisionCacheSubprocessPath:
     def test_raw_config_primary_skips_subprocess(
         self, mock_needs_t5, mock_subprocess, mock_raw_config
     ):
-        # Raw config.json read is the primary, code-free detection path. When it
-        # returns a definitive answer the transformers-5.x subprocess (and the
-        # needs_transformers_5 routing) are never reached.
+        # The raw config.json read is the primary path; a definitive answer there never
+        # reaches the transformers-5.x subprocess or needs_transformers_5 routing.
         assert is_vision_model("unsloth/gemma-4-E4B-it") is True
         assert is_vision_model("unsloth/gemma-4-E4B-it") is True
 
@@ -507,9 +506,7 @@ class TestVlmAudioExclusion:
     fallback, and the inlined subprocess helper too."""
 
     def test_audio_only_set_canonical(self):
-        # The audio set is now derived from the transformers audio registry
-        # (CTC / speech-seq2seq / audio-classification / text-to-waveform / ...)
-        # so it is a superset of the original {csm, whisper} guard.
+        # Derived from the transformers audio registry, so a superset of {csm, whisper}.
         assert {"csm", "whisper"} <= _AUDIO_ONLY_MODEL_TYPES
 
     def test_is_vlm_excludes_whisper(self):

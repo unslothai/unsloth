@@ -270,9 +270,8 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
             if (
                 any(sub in _mn_lower for sub in _NEMOTRON_TRUST_SUBSTRINGS)
                 and (_mn_lower.startswith("unsloth/") or _mn_lower.startswith("nvidia/"))
-                # Genuine first-party Hub repo only, not a local-path/spoof
-                # that starts with "unsloth/". Authenticated so private/gated
-                # first-party repos still resolve.
+                # Genuine first-party Hub repo only (not a local/spoof name starting
+                # with "unsloth/"); authenticated so private repos resolve.
                 and is_trusted_org_repo(model_name, hf_token = hf_token)
             ):
                 trust_remote_code = True
@@ -281,11 +280,9 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                     model_name,
                 )
 
-        # Malware gate: independent of trust_remote_code. A malicious pickle in a
-        # weight file deserializes during from_pretrained even when
-        # trust_remote_code is False, so check Hugging Face's own security scan
-        # (metadata-only; never downloads the flagged files) for every load. For a
-        # LoRA adapter the base weights are what deserialize, so gate that repo too.
+        # Malware gate: a poisoned pickle deserializes during from_pretrained even
+        # with trust_remote_code False, so check HF's security scan (metadata-only)
+        # every load. For a LoRA, gate the base whose weights deserialize.
         from utils.security import evaluate_file_security, security_load_subdirs
 
         malware_targets = [config["model_name"]]
@@ -309,17 +306,15 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                 )
                 return
 
-        # Consent gate: scan auto_map repo code before executing it; block
-        # CRITICAL/HIGH findings unless pinned-approved. For a LoRA adapter the
-        # base model's custom code is what runs, so gate that repo too.
+        # Consent gate: scan auto_map code before it runs; block CRITICAL/HIGH
+        # unless pinned-approved. For a LoRA, gate the base whose code runs.
         if trust_remote_code:
             from utils.security import evaluate_remote_code_consent_for_targets
 
             consent_targets = [config["model_name"]]
             if mc.is_lora and getattr(mc, "base_model", None):
                 consent_targets.append(str(mc.base_model))
-            # Scan adapter + base as one combined unit, pinned by a single fingerprint,
-            # so an adapter's own auto_map code is reviewed and approvable too.
+            # Scan adapter + base as one unit, pinned by a single fingerprint.
             _rc = evaluate_remote_code_consent_for_targets(
                 consent_targets,
                 hf_token = hf_token,

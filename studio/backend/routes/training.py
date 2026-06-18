@@ -253,11 +253,9 @@ async def start_training(
             "s3_config": request.s3_config.model_dump() if request.s3_config else None,
         }
 
-        # Training page has no trust_remote_code toggle; as a safety net consult
-        # YAML model defaults directly so models that need it get it -- but only
-        # auto-enable for genuine first-party (unsloth/nvidia) Hub repos. A YAML
-        # default must never silently run remote code for a local path or a
-        # spoofed name that merely starts with "unsloth/".
+        # Training page has no trust_remote_code toggle, so honor the YAML default
+        # -- but only for genuine first-party (unsloth/nvidia) Hub repos, never a
+        # local path or a name merely starting with "unsloth/".
         if not training_kwargs["trust_remote_code"]:
             from utils.security.trusted_org import is_trusted_org_repo
 

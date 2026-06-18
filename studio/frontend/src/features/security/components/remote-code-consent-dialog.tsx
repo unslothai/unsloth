@@ -28,7 +28,6 @@ import type {
   UnsafeFile,
 } from "../types";
 
-/** Background tint for the flagged line + matched span, by severity. */
 function matchTone(severity: RemoteCodeSeverity | string): {
   row: string;
   span: string;
@@ -53,7 +52,6 @@ function matchTone(severity: RemoteCodeSeverity | string): {
   }
 }
 
-/** One code line: line-number gutter + source, with the match span highlighted. */
 function SnippetLine({
   row,
   severity,
@@ -163,12 +161,8 @@ function FindingCard({ finding }: { finding: RemoteCodeFinding }) {
   );
 }
 
-/**
- * App-wide consent dialog for loads that need trust_remote_code. Shows the
- * security scan findings with the flagged code in context; CRITICAL is a hard
- * block (no Enable). Mounted once in the root layout; driven by
- * useRemoteCodeConsentDialogStore.
- */
+/** App-wide consent dialog for trust_remote_code loads: shows scan findings with the
+ *  flagged code in context; CRITICAL is a hard block. Mounted once in the root layout. */
 export function RemoteCodeConsentDialog() {
   const open = useRemoteCodeConsentDialogStore((s) => s.open);
   const scan = useRemoteCodeConsentDialogStore((s) => s.scan);
@@ -178,8 +172,7 @@ export function RemoteCodeConsentDialog() {
   const blocked = scan ? !scan.approvable : false;
   const findings = scan?.findings ?? [];
   const unsafeFiles = scan?.unsafeFiles ?? [];
-  // Malware (an unsafe serialized file flagged by Hugging Face's scan) is a hard
-  // block with its own copy, distinct from a CRITICAL custom-code finding.
+  // Malware (an HF-flagged unsafe serialized file) is a hard block with its own copy.
   const malware = unsafeFiles.length > 0;
 
   return (

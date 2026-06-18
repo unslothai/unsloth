@@ -1532,10 +1532,8 @@ async def get_model_config(
         except Exception:
             pass
 
-        # Fallback: read raw config.json (declarative fields only). This is a
-        # metadata probe that runs on model selection, so it must never execute
-        # a model repo's auto_map Python. Reuses the same
-        # code-free reader as transformers-version detection.
+        # Fallback: read raw config.json (declarative fields only) -- a selection-time
+        # metadata probe that must never execute a repo's auto_map Python.
         if max_position_embeddings is None:
             try:
                 from utils.transformers_version import _load_config_json
@@ -1601,16 +1599,11 @@ async def scan_model_remote_code(
 
         if not is_local_path(model_name):
             model_name = resolve_cached_repo_id_case(model_name)
-        # A LoRA load runs BOTH the adapter's and the base's repo code, and a poisoned
-        # pickle can live in either repo. So both the remote-code consent scan and the
-        # malware scan must cover the adapter AND the base (matching the workers, which
-        # gate both). The remote-code scan pins ONE combined fingerprint over both, so
-        # an adapter that ships its own auto_map code is reviewed and approvable too.
-        # Snapshot whether the PRIMARY repo was already cached BEFORE resolving the base:
-        # for a REMOTE adapter, get_base_model_from_lora_identifier downloads the adapter's
-        # own adapter_config.json, which would otherwise make the adapter look already-owned
-        # and wrongly skip its cleanup on decline (leaving the auto_map .py the preflight
-        # fetched). On any error, treat it as pre-existing so a decline never deletes it.
+        # Scan the adapter AND the base together (a LoRA runs both repos' code; a pickle
+        # can live in either), pinned by one combined fingerprint. Snapshot the primary's
+        # cache state BEFORE resolving the base: for a remote adapter that resolve
+        # downloads adapter_config.json, which would otherwise hide the adapter from
+        # cleanup on decline. On error treat as pre-existing so a decline never deletes it.
         try:
             _primary_preexisting = is_local_path(model_name) or _repo_in_any_hf_cache(model_name)
         except Exception:
@@ -1619,24 +1612,17 @@ async def scan_model_remote_code(
         try:
             from utils.models.model_config import get_base_model_from_lora_identifier
 
-            # Resolve the base for a LOCAL or a REMOTE adapter so a remote LoRA's
-            # base (where the code/weights actually execute) is scanned too.
+            # Resolve a LOCAL or REMOTE adapter's base so its code/weights are scanned too.
             _base = get_base_model_from_lora_identifier(model_name, hf_token)
             if _base:
                 security_targets.append(_base)
         except Exception:
             pass
         security_targets = list(dict.fromkeys(security_targets))
-        # Whether OUR scan is what first pulls a repo into the HF cache. A later
-        # decline uses this to purge exactly what the scan downloaded, without
-        # touching a model the user already had (or a local path). A LoRA scan pulls
-        # BOTH the adapter's and the base's config, AND the scan downloads any EXTERNAL
-        # auto_map repos a config references (owner/name--module.Class), so record every
-        # repo the scan is about to create -- otherwise a base or external repo the scan
-        # downloaded is left on disk when the user declines. Computed BEFORE the
-        # preflight (which does the downloading) and against EVERY cache the discard
-        # searches (active + legacy + default), so a repo the user already had in a
-        # legacy/default cache is never misreported as created-by-scan and deleted.
+        # Record every repo OUR scan is first to pull into the cache (adapter, base, and
+        # external auto_map repos like owner/name--module.Class), so a decline purges
+        # exactly what was downloaded. Computed BEFORE the preflight downloads, against
+        # every cache the discard searches, so a repo the user already had is not deleted.
         from utils.security.remote_code_scan import external_auto_map_repos
 
         scan_created_repos: list = []
@@ -1667,15 +1653,12 @@ async def scan_model_remote_code(
         decision = preflight_remote_code_consent_for_targets(security_targets, hf_token = hf_token)
         payload = decision.response_payload()
         payload["requires_trust_remote_code"] = decision.has_remote_code
-        # created_by_scan keeps the primary's flag for older clients; scan_created_repos
-        # drives the decline cleanup so EVERY scan-created repo (adapter + base) is purged.
+        # created_by_scan = primary flag (older clients); scan_created_repos drives cleanup.
         payload["created_by_scan"] = model_name in scan_created_repos
         payload["scan_created_repos"] = scan_created_repos
 
-        # Malware gate (metadata-only): surface any files Hugging Face's security
-        # scan flagged as unsafe so the dialog can hard-block. This is orthogonal
-        # to remote code (a poisoned pickle needs no auto_map), so it can block a
-        # repo with no custom code at all.
+        # Malware gate (metadata-only): surface HF-flagged unsafe files so the dialog can
+        # hard-block. Orthogonal to remote code -- a poisoned pickle needs no auto_map.
         from utils.security import evaluate_file_security, security_load_subdirs
 
         unsafe_files: list = []
@@ -1689,10 +1672,8 @@ async def scan_model_remote_code(
         payload["unsafe_files"] = unsafe_files
         payload["security_blocked"] = security_blocked
         if security_blocked:
-            # Open the dialog as a non-approvable hard block: approvable False hides
-            # the "Enable and continue" button, and flagging the model as requiring
-            # review makes the frontend open the consent gate even for a repo with
-            # no custom code at all.
+            # Non-approvable hard block: approvable False hides "Enable and continue", and
+            # requires_trust_remote_code forces the dialog open even with no custom code.
             payload["approvable"] = False
             payload["requires_trust_remote_code"] = True
             payload["error_kind"] = "malware_blocked"
@@ -2216,9 +2197,7 @@ async def check_vision_model(
     """
     try:
         logger.info(f"Checking if vision model: {model_name}")
-        # Authenticate so a gated/private vision model is classified correctly,
-        # matching the sibling check-embedding endpoint (otherwise it 404s and
-        # reports is_vision=False).
+        # Authenticate so a gated/private VLM classifies correctly (else 404 -> non-vision).
         is_vision = is_vision_model(model_name, hf_token = hf_token)
 
         logger.info(f"Vision check result for {model_name}: is_vision={is_vision}")
@@ -2598,12 +2577,9 @@ def _repo_in_any_hf_cache(model_name: str) -> bool:
             candidates.append(fn())
         except Exception:
             continue
-    # resolve_cached_repo_id_case only normalizes against the ACTIVE cache, so a
-    # case-variant cached in a legacy/default cache (e.g. models--Unsloth--Foo for a
-    # scan of unsloth/foo) would not match an exact probe. discard_remote_code_download
-    # deletes case-insensitively, so we must detect case-insensitively too -- otherwise
-    # a pre-existing case-variant repo is misreported as scan-created and deleted on
-    # decline.
+    # resolve_cached_repo_id_case only normalizes the ACTIVE cache, but discard deletes
+    # case-insensitively across all caches, so detect case-insensitively too -- else a
+    # pre-existing case-variant repo is misreported as scan-created and deleted on decline.
     for cache in candidates:
         try:
             if (cache / dirname).exists():

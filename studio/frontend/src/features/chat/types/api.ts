@@ -74,8 +74,7 @@ export interface ValidateModelResponse {
   is_lora?: boolean;
   is_vision?: boolean;
   requires_trust_remote_code?: boolean;
-  // Hugging Face's security scan flagged unsafe files, so the load is hard-blocked
-  // pending review in the consent dialog.
+  // HF flagged unsafe files, so the load is hard-blocked pending dialog review.
   requires_security_review?: boolean;
   /** Native context length from the local GGUF header; null until downloaded. */
   context_length?: number | null;

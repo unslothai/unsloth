@@ -117,8 +117,7 @@ def _drive_validate(monkeypatch, *, is_gguf: bool):
 
 
 def test_selected_gguf_variant_skips_trc_and_security_review(monkeypatch):
-    # A selected GGUF loads via llama.cpp: repo-level auto_map Python and root pickle
-    # weights are inert, so neither gate should fire even though both helpers say True.
+    # GGUF loads via llama.cpp: auto_map and root pickles are inert, so neither gate fires.
     resp = _drive_validate(monkeypatch, is_gguf = True)
     assert resp.is_gguf is True
     assert resp.requires_trust_remote_code is False
@@ -156,8 +155,7 @@ def test_resolve_loaded_trc_uses_runtime_and_yaml():
 
 
 def test_resolve_loaded_trc_falls_back_to_raw_auto_map(monkeypatch):
-    # No stored value, no runtime/YAML signal: fall back to the raw auto_map check,
-    # matching validate_model so an approved custom-code model is not reported false.
+    # No stored value or runtime/YAML signal: fall back to the raw auto_map check.
     monkeypatch.setattr(inf, "_requires_trust_remote_code_for_model", lambda *_a, **_k: True)
     assert inf._resolve_loaded_trust_remote_code("org/custom", {}, {}) is True
     monkeypatch.setattr(inf, "_requires_trust_remote_code_for_model", lambda *_a, **_k: False)
@@ -199,8 +197,7 @@ def _drive_validate_lora(monkeypatch, *, adapter_needs_trc, base_needs_trc):
 
 
 def test_validate_lora_flags_trc_from_adapter_only(monkeypatch):
-    # The ADAPTER ships its own auto_map; the base does not. validate_model must still
-    # open the dialog -- the requirement follows either repo, not the base alone.
+    # Adapter ships auto_map, base does not: the requirement follows either repo.
     resp = _drive_validate_lora(monkeypatch, adapter_needs_trc = True, base_needs_trc = False)
     assert resp.requires_trust_remote_code is True
 

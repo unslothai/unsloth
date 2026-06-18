@@ -390,8 +390,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
               visionImageSize: DEFAULT_HYPERPARAMS.visionImageSize,
             });
 
-            // Fallback vision check if config endpoint fails. Pass the token so a
-            // gated/private VLM is classified correctly (matches getModelConfig above).
+            // Fallback vision check; pass the token so a gated/private VLM classifies right.
             void checkVisionModel(modelName, get().hfToken || undefined)
               .then((isVision) => {
                 if (get().selectedModel !== modelName) return;
@@ -511,11 +510,9 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           };
           if (selectedModel !== previousModel) {
             patch.visionImageSize = DEFAULT_HYPERPARAMS.visionImageSize;
-            // Clear the previous model's remote-code approval so a clean model is not
-            // trained with a stale trust_remote_code=true (which bypasses the compiler
-            // and disables fused CE). The new model's own YAML default is re-applied by
-            // loadAndApplyModelDefaults below, and a custom-code model re-opens the
-            // consent dialog before training starts.
+            // Clear the prior model's approval so a clean model is not trained with a
+            // stale trust_remote_code=true (disables fused CE). Its own YAML default is
+            // re-applied below, and a custom-code model re-opens the dialog before start.
             patch.trustRemoteCode = false;
             patch.approvedRemoteCodeFingerprint = null;
           }
