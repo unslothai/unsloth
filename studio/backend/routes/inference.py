@@ -6040,6 +6040,10 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
     Note: the loaded model must support pooling, else llama-server returns an
     error (expected).
     """
+    body = await request.json()
+    # Embeddings is a model-bearing inference path too, so honor auto-switch.
+    await _maybe_auto_switch_model(body.get("model"), request, current_subject)
+
     llama_backend = get_llama_cpp_backend()
     if not llama_backend.is_loaded:
         raise HTTPException(
@@ -6047,7 +6051,6 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
             detail = "No GGUF model loaded. Load a GGUF model first.",
         )
 
-    body = await request.json()
     target_url = f"{llama_backend.base_url}/v1/embeddings"
     raw_input = body.get("input", "")
     if isinstance(raw_input, list):

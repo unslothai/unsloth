@@ -202,7 +202,44 @@ def test_responses_endpoint_wires_auto_switch_before_dispatch():
     assert hook_at < src.index("_responses_non_streaming")
 
 
+def test_embeddings_endpoint_wires_auto_switch_before_loaded_check():
+    # /v1/embeddings is model-bearing too, so it must auto-switch before the
+    # loaded-state gate. Asserted on the source for order-independence.
+    import inspect
+
+    src = inspect.getsource(inference_route.openai_embeddings)
+    assert "_maybe_auto_switch_model" in src
+    assert src.index("_maybe_auto_switch_model") < src.index("is_loaded")
+
+
 # ── resolver ────────────────────────────────────────────────────────
+
+
+def test_resolver_excludes_non_gguf_models(tmp_path):
+    from types import SimpleNamespace
+
+    # Transformers/safetensors folder: not a GGUF, must be rejected.
+    tf = tmp_path / "tf-model"
+    tf.mkdir()
+    (tf / "config.json").write_text("{}")
+    (tf / "model.safetensors").write_text("x")
+    assert resolver._has_local_gguf(SimpleNamespace(path = str(tf))) is False
+
+    # models-dir folder holding a .gguf, a bare .gguf file, and an HF-cache
+    # snapshots layout: all real GGUFs.
+    gg = tmp_path / "gguf-model"
+    gg.mkdir()
+    (gg / "model.Q4_K_M.gguf").write_text("x")
+    assert resolver._has_local_gguf(SimpleNamespace(path = str(gg))) is True
+
+    bare = tmp_path / "x.gguf"
+    bare.write_text("x")
+    assert resolver._has_local_gguf(SimpleNamespace(path = str(bare))) is True
+
+    repo = tmp_path / "models--org--repo"
+    (repo / "snapshots" / "abc").mkdir(parents = True)
+    (repo / "snapshots" / "abc" / "w.gguf").write_text("x")
+    assert resolver._has_local_gguf(SimpleNamespace(path = str(repo))) is True
 
 
 def test_resolver_matches_and_splits_variant(monkeypatch):
@@ -259,6 +296,34 @@ def test_idle_loop_does_not_unload_freshly_loaded_model(monkeypatch):
     async def _drive():
         task = asyncio.create_task(kw.idle_unload_loop(poll_seconds = 0.01))
         await asyncio.sleep(0.05)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    asyncio.run(_drive())
+    assert unloads == []
+
+
+def test_idle_loop_does_not_unload_while_request_inflight(monkeypatch):
+    # An in-flight request (inflight > 0) must protect the model from unload
+    # even when it has been idle by wall-clock past the TTL.
+    import time
+    from core.inference import llama_keepwarm as kw
+
+    monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 0.01)
+    monkeypatch.setattr(kw, "_inflight", 1)
+    monkeypatch.setattr(kw, "_last_active", time.monotonic() - 3600)
+
+    unloads = []
+    backend = _FakeBackend("unsloth/Active-GGUF")
+    backend.unload_model = lambda: unloads.append(1)
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+
+    async def _drive():
+        task = asyncio.create_task(kw.idle_unload_loop(poll_seconds = 0.01))
+        await asyncio.sleep(0.08)
         task.cancel()
         try:
             await task

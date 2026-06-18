@@ -21,6 +21,30 @@ _lock = threading.Lock()
 _scan: tuple[float, dict[str, str]] = (0.0, {})
 
 
+def _has_local_gguf(info) -> bool:
+    """True only when the model is, or contains, a real .gguf on disk.
+
+    The scanners also surface Transformers/safetensors models; auto-switch must
+    never load those through the GGUF llama-server path. Covers a direct .gguf
+    file, a models-dir folder, and the HF-cache snapshots layout.
+    """
+    from pathlib import Path
+
+    path = getattr(info, "path", None)
+    if not isinstance(path, str):
+        return False
+    p = Path(path)
+    try:
+        if p.is_file():
+            return p.suffix.lower() == ".gguf"
+        return (
+            next(p.glob("*.gguf"), None) is not None
+            or next(p.glob("snapshots/*/*.gguf"), None) is not None
+        )
+    except OSError:
+        return False
+
+
 def _build_index() -> dict[str, str]:
     """Map normalized id/model_id/display_name -> canonical loader identifier."""
     # Lazy import: routes.models imports core.inference, so import at call time.
@@ -36,7 +60,7 @@ def _build_index() -> dict[str, str]:
         return index
     for info in found:
         loader_id = getattr(info, "id", None)
-        if not loader_id:
+        if not loader_id or not _has_local_gguf(info):
             continue
         for key in (info.id, getattr(info, "model_id", None), getattr(info, "display_name", None)):
             if key:

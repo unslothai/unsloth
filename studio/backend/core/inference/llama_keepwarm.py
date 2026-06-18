@@ -22,6 +22,9 @@ logger = get_logger(__name__)
 _lock = threading.Lock()
 _inflight = 0
 _last_active = time.monotonic()
+# Serializes a request's inflight bump against the idle check + unload so the
+# loop cannot unload in the gap between "looks idle" and the kill.
+_unload_gate = asyncio.Lock()
 
 _INFERENCE_PREFIXES = ("/v1/", "/api/inference/")
 _INFERENCE_SUFFIXES = (
@@ -80,7 +83,8 @@ class LlamaKeepWarmMiddleware:
             await self.app(scope, receive, send)
             return
 
-        _note_start()
+        async with _unload_gate:
+            _note_start()
         ended = {"done": False}
 
         async def send_wrapper(message):
@@ -121,10 +125,12 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
                 seen_model = current
                 if current is not None:
                     _note_activity()
-            # Re-check idle just before unload to shrink the arrival race window.
-            if backend.is_loaded and _is_idle(ttl):
-                await asyncio.to_thread(backend.unload_model)
-                logger.info("Idle auto-unload: freed GGUF after %ss idle", ttl)
-                seen_model = None
+            # Hold the gate across the idle check and the kill so a request
+            # cannot bump inflight in between.
+            async with _unload_gate:
+                if backend.is_loaded and _is_idle(ttl):
+                    await asyncio.to_thread(backend.unload_model)
+                    logger.info("Idle auto-unload: freed GGUF after %ss idle", ttl)
+                    seen_model = None
         except Exception as exc:
             logger.debug("idle_unload_loop iteration failed: %s", exc)
