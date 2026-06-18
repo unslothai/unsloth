@@ -597,7 +597,7 @@ export function ModelSelector({
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
-      <div className="flex min-w-0 items-center gap-1.5">
+      <div className="flex min-w-0 items-center gap-1">
         <ModelSelectorTrigger
           currentModel={currentModel}
           isLoaded={isLoaded}
@@ -613,12 +613,7 @@ export function ModelSelector({
             onClick={handleEject}
             aria-label="Eject loaded model"
             title="Eject model"
-            className={cn(
-              "flex shrink-0 items-center justify-center rounded-full border border-border/60 text-destructive transition-colors hover:bg-destructive/10",
-              size === "sm" && "size-8",
-              size === "default" && "size-9",
-              size === "lg" && "size-10",
-            )}
+            className="flex shrink-0 items-center text-destructive transition-colors hover:text-destructive/70"
           >
             <HugeiconsIcon icon={RemoveCircleIcon} className="size-4" />
           </button>
