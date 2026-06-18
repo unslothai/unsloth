@@ -125,6 +125,7 @@ import {
   Image03Icon,
   McpServerIcon,
   PencilRulerIcon,
+  ShieldBanIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
@@ -140,7 +141,6 @@ import {
   MoreHorizontalIcon,
   PlusIcon,
   RefreshCwIcon,
-  ShieldOffIcon,
   SquareIcon,
   TerminalIcon,
   XIcon,
@@ -2454,7 +2454,11 @@ const BypassPermissionsToggle: FC = () => {
       title="Bypass permissions is on (no confirmation, no sandbox). Click to turn off."
     >
       <PillGlyph>
-        <ShieldOffIcon className="size-[14px]" />
+        <HugeiconsIcon
+          icon={ShieldBanIcon}
+          strokeWidth={2}
+          className="size-[15px]"
+        />
       </PillGlyph>
       <span>Bypass permissions</span>
     </button>

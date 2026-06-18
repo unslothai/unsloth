@@ -43,10 +43,11 @@ import {
   Folder01Icon,
   McpServerIcon,
   PencilRulerIcon,
+  ShieldBanIcon,
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { Columns2Icon, PlusIcon, ShieldOffIcon } from "lucide-react";
+import { Columns2Icon, PlusIcon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { SettingsRow } from "../components/settings-row";
@@ -133,7 +134,13 @@ const PLUS_MENU_SETTINGS: { id: PlusMenuItemId; label: string; icon: ReactNode }
     {
       id: "bypassPermissions",
       label: "Bypass permissions",
-      icon: <ShieldOffIcon className={PLUS_MENU_ICON_CLASS} />,
+      icon: (
+        <HugeiconsIcon
+          icon={ShieldBanIcon}
+          strokeWidth={2}
+          className={PLUS_MENU_ICON_CLASS}
+        />
+      ),
     },
   ];
 

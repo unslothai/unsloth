@@ -33,7 +33,6 @@ import {
   HeadphonesIcon,
   MoreHorizontalIcon,
   PlusIcon,
-  ShieldOffIcon,
   SquareIcon,
   XIcon,
 } from "lucide-react";
@@ -48,6 +47,7 @@ import {
   Image03Icon,
   McpServerIcon,
   PencilRulerIcon,
+  ShieldBanIcon,
 } from "@hugeicons/core-free-icons";
 import { useNavigate } from "@tanstack/react-router";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -1631,7 +1631,11 @@ export function SharedComposer({
               title="Bypass permissions is on (no confirmation, no sandbox). Click to turn off."
             >
               <PillGlyph>
-                <ShieldOffIcon className="size-[14px]" />
+                <HugeiconsIcon
+                  icon={ShieldBanIcon}
+                  strokeWidth={2}
+                  className="size-[15px]"
+                />
               </PillGlyph>
               <span>Bypass permissions</span>
             </button>

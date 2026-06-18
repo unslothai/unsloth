@@ -130,7 +130,7 @@
 	--accent-foreground: oklch(0.2868 0.0649 159.9823);
 	--destructive: oklch(0.6368 0.2078 25.3313);
 	/* Bypass permissions accent: bright, saturated yellow (not dark gold). */
-	--bypass: #d9a900;
+	--bypass: #c99d00;
 	--border: oklch(0.9208 0.0101 164.8536);
 	--input: oklch(0.9208 0.0101 164.8536);
 	--ring: #17b88b;
@@ -1052,17 +1052,18 @@
 	.composer-pill-btn[data-active="true"] {
 		color: var(--primary);
 	}
-	/* Bypass permissions badge: bright saturated yellow, always-visible state. */
+	/* Bypass permissions badge: bright yellow text on a light, mostly-white
+	   tint so the label stays readable. */
 	.composer-pill-btn[data-variant="danger"] {
-		background-color: color-mix(in oklab, var(--bypass) 18%, transparent);
+		background-color: color-mix(in oklab, var(--bypass) 6%, transparent);
 		color: var(--bypass);
 	}
 	.composer-pill-btn[data-variant="danger"]:hover {
-		background-color: color-mix(in oklab, var(--bypass) 26%, transparent);
+		background-color: color-mix(in oklab, var(--bypass) 10%, transparent);
 	}
 	/* Match the hover-X circle to the yellow accent instead of the green primary. */
 	.composer-pill-btn[data-variant="danger"] .composer-pill-x {
-		background-color: color-mix(in oklab, var(--bypass) 30%, transparent);
+		background-color: color-mix(in oklab, var(--bypass) 13%, transparent);
 	}
 
 	/* With more than 4 tools on, drop pill labels to icons only to cut clutter.
