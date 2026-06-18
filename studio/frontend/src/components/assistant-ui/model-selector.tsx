@@ -415,11 +415,11 @@ function ModelSelectorContent({
       data-tour={dataTour}
       onKeyDown={handlePickerEntryKeyDown}
       className={cn(
-        "unsloth-model-selector-menu menu-soft-surface ring-0 max-w-[calc(100vw-1rem)] min-w-0 gap-0 pt-4 pr-2 pb-0 pl-4",
-        // Widen to fit the extra Connected pill alongside the dropdowns.
+        "unsloth-model-selector-menu menu-soft-surface ring-0 max-w-[calc(100vw-1rem)] min-w-0 gap-0 pt-4 pb-0 pl-4",
+        // Widen to fit the extra Connected pill, with more right padding to match.
         hasExternal
-          ? "w-[min(600px,calc(100vw-1rem))]"
-          : "w-[min(504px,calc(100vw-1rem))]",
+          ? "w-[min(600px,calc(100vw-1rem))] pr-4"
+          : "w-[min(504px,calc(100vw-1rem))] pr-2",
         className,
       )}
     >

@@ -2059,11 +2059,17 @@ export function HubModelPicker({
       .sort((a, b) => a.providerName.localeCompare(b.providerName));
   }, [externalModels, debouncedQuery]);
   const showConnected = section === "connected";
+  // With a Connected tab present the box is wider, so right-align the dropdowns
+  // and drop the search inset to keep Search Hub on the last dropdown's edge.
+  const hasConnected = externalModels.length > 0;
 
   return (
     <div className="relative space-y-2">
-      {/* Inset the right so Search Hub lands on the Trending dropdown's edge. */}
-      <div className="flex items-center gap-2 pb-1 pr-2">
+      {/* Inset the right so Search Hub lands on the Trending dropdown's edge.
+          The wider Connected layout right-aligns the dropdowns, so drop it. */}
+      <div
+        className={cn("flex items-center gap-2 pb-1", !hasConnected && "pr-2")}
+      >
         <div className="relative flex-1">
           <HugeiconsIcon
             icon={Search01Icon}
@@ -2093,10 +2099,15 @@ export function HubModelPicker({
         ) : null}
       </div>
 
-      {/* Section tabs then the format and sort dropdowns, packed left with one
-          uniform gap so the spacing between each control matches. The dropdowns
-          hide on Connected since provider models do not use them. */}
-      <div className="flex items-center gap-2">
+      {/* Section tabs then the format and sort dropdowns. Normally packed left
+          with one uniform gap; the wider Connected layout right-aligns them so
+          Trending meets Search Hub. The dropdowns hide on the Connected view. */}
+      <div
+        className={cn(
+          "flex items-center gap-2",
+          hasConnected && "justify-between",
+        )}
+      >
         {sectionToggle}
         {showConnected ? null : (
           <div className="flex items-center gap-2">
