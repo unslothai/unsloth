@@ -1,2 +1,5 @@
-# Torch AO overrides (installed with --force-reinstall --no-cache-dir)
-torchao==0.14.0
+# torchao is installed by studio/install_python_stack.py, which selects the
+# version matching the torch release actually installed in the venv (torchao's
+# C++ extensions are built against one exact torch version, so a fixed pin here
+# would skip them on a newer torch). See _select_torchao_spec /
+# _probe_installed_torch_version in that file.

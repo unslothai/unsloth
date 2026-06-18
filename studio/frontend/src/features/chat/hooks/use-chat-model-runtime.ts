@@ -44,12 +44,13 @@ import {
   type InferenceStatusResponse,
 } from "../types/api";
 import { isExternalModelId } from "../external-providers";
+import { cancelStagedModelDownload } from "@/features/hub";
 import type {
   ChatLoraSummary,
   ChatModelSummary,
 } from "../types/runtime";
 
-type SelectedModelInput = {
+export type SelectedModelInput = {
   id: string;
   isLora?: boolean;
   ggufVariant?: string;
@@ -58,7 +59,14 @@ type SelectedModelInput = {
   expectedBytes?: number;
   forceReload?: boolean;
   nativePathToken?: string;
+  /** Direct local .gguf file (no HF variant / native token) — still a GGUF
+   *  source, so the staging flow treats it as one. */
+  isGguf?: boolean;
   throwOnError?: boolean;
+  /** Keep the current speculative-decoding choice across the model switch
+   *  instead of resetting it to the standing preference. Set by the deferred
+   *  ("Load on selection") Load, where the user picked it for this model. */
+  keepSpeculative?: boolean;
 };
 
 const MODEL_LOAD_TOAST_CLASSNAMES = {
@@ -424,8 +432,27 @@ export function useChatModelRuntime() {
         typeof selection === "string" ? false : selection.forceReload ?? false;
       const nativePathToken =
         typeof selection === "string" ? undefined : selection.nativePathToken;
+      const explicitIsGguf =
+        typeof selection === "string" ? undefined : selection.isGguf;
       const throwOnError =
         typeof selection === "string" ? false : selection.throwOnError ?? false;
+      const keepSpeculative =
+        typeof selection === "string" ? false : selection.keepSpeculative ?? false;
+      // Picking/loading any model abandons a staged (deferred) selection.
+      // Before the early-returns below so even a no-op re-select clears the
+      // stage, and so the Load button unmounts on first click (no double-load).
+      const staged = useChatRuntimeStore.getState().pendingSelection;
+      if (staged) {
+        // Loading a DIFFERENT model abandons this stage, so cancel its in-flight
+        // download. Loading the staged pick itself keeps it (that download feeds
+        // this load).
+        const loadingStagedPick =
+          staged.id === modelId &&
+          (staged.ggufVariant ?? null) === (ggufVariant ?? null) &&
+          (staged.nativePathToken ?? null) === (nativePathToken ?? null);
+        if (!loadingStagedPick) cancelStagedModelDownload(staged);
+        useChatRuntimeStore.getState().setPendingSelection(null);
+      }
       const currentVariant = useChatRuntimeStore.getState().activeGgufVariant;
       if (!forceReload && (!modelId || (params.checkpoint === modelId && (ggufVariant ?? null) === (currentVariant ?? null)))) {
         return;
@@ -445,6 +472,7 @@ export function useChatModelRuntime() {
         typeof selection === "string" ? false : selection.isDownloaded ?? false;
       const model = models.find((entry) => entry.id === modelId);
       const lora = loras.find((entry) => entry.id === modelId);
+      const isGguf = explicitIsGguf ?? model?.isGguf ?? false;
       const loraIsAdapter = lora?.exportType === "lora";
       const isLora =
         explicitIsLora ?? model?.isLora ?? loraIsAdapter ?? false;
@@ -555,7 +583,10 @@ export function useChatModelRuntime() {
             // can't follow the user onto a model without an MTP head.
             // spec_draft_n_max is MTP-only and always resets. The loaded
             // shadow is seeded too, preventing a transient dirty Apply state.
-            if (currentCheckpoint && currentCheckpoint !== modelId) {
+            // keepSpeculative skips this for a staged Load: the user picked the
+            // mode for this model on the sidebar, so honor it (the backend still
+            // falls back at runtime if the model has no MTP head).
+            if (currentCheckpoint && currentCheckpoint !== modelId && !keepSpeculative) {
               const persistedSpeculativeType = readPersistedSpeculativeType();
               useChatRuntimeStore.setState({
                 speculativeType: persistedSpeculativeType,
@@ -579,6 +610,7 @@ export function useChatModelRuntime() {
             const effectiveMaxSeqLength = resolveLoadMaxSeqLength({
               modelId,
               ggufVariant,
+              isGguf,
               customContextLength,
               ggufContextLength,
               currentCheckpoint,
