@@ -44,7 +44,8 @@ export function PillTabs({
         "hub-menu-trigger hub-tab-toggle relative inline-flex items-center rounded-full",
         compact ? "h-7" : "h-9",
         // Don't stretch to fill a flex-column parent (the popover) in fit mode.
-        fit && "w-fit max-w-full self-start",
+        // Trailing pad keeps the last tab clear of the track's rounded edge.
+        fit && "w-fit max-w-full self-start pr-1",
         className,
       )}
     >
