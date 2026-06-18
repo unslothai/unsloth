@@ -2075,10 +2075,10 @@ export function HubModelPicker({
         ref={scrollRef}
         onScroll={(e) => updateListFades(e.currentTarget)}
         className={cn(
-          // Small negative margin pulls the scrollbar in (closer to the rows),
-          // and a thin gutter lets the row pills widen toward it. Height tracks
-          // the content up to the cap, so short lists do not leave white space.
-          "model-list-scroll -mr-1 max-h-[21rem] overflow-y-auto pr-0.5",
+          // Right margin insets the list and scrollbar so the right padding
+          // matches the left. Height tracks the content up to the cap, so short
+          // lists do not leave white space.
+          "model-list-scroll mr-1.5 max-h-[21rem] overflow-y-auto pr-0.5",
           listScrolled && "is-scrolled",
           listMoreBelow && "is-bottom-faded",
         )}
