@@ -1978,7 +1978,7 @@ export function HubModelPicker({
   // dropdown always line up; text-xs matches that button too. The trigger label
   // clips (no ellipsis) when long; the open menu expands to show it in full.
   const sortTriggerClassName =
-    "w-[114px] shrink-0 justify-between pr-2.5 !border-0 text-xs [&>span]:!text-clip";
+    "w-[110px] shrink-0 justify-between pr-2.5 !border-0 text-xs [&>span]:!text-clip";
   // Tighter menu like the Projects activity Select: less left/top padding and
   // text-xs to match the trigger. Keep the option's right padding so the
   // selected-item checkmark never overlaps the label.
@@ -2041,7 +2041,7 @@ export function HubModelPicker({
             type="button"
             onClick={onBrowseHub}
             aria-label="Search more models on the Hub"
-            className="hub-tab-toggle-pill flex h-9 w-[114px] shrink-0 items-center justify-center gap-[5px] rounded-full border-0 text-xs text-foreground transition-colors"
+            className="hub-tab-toggle-pill flex h-9 w-[110px] shrink-0 items-center justify-center gap-[5px] rounded-full border-0 text-xs text-foreground transition-colors"
           >
             <HugeiconsIcon icon={DashboardCircleIcon} className="size-4" />
             Search Hub
