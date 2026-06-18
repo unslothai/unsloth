@@ -4830,9 +4830,10 @@ class LlamaCppBackend:
                             )
                             and (
                                 _mtp_binary_ok
-                                # Reserve on a raised (uncached) probe too: it re-probes
-                                # in _build_speculative_flags and may still load the drafter.
-                                or (_mtp_probe_raised and bool(mtp_draft_path))
+                                # Reserve on a raised (uncached) probe too: it re-probes in
+                                # _build_speculative_flags and may still engage MTP (embedded
+                                # head or separate drafter -- _mtp_model_for_fit covers both).
+                                or _mtp_probe_raised
                             )
                         )
                     )
@@ -4990,9 +4991,6 @@ class LlamaCppBackend:
                     )
                     _pin_fraction = self._GPU_PIN_VRAM_FRACTION - _flat_mtp_reserve
 
-                    # Tensor mode replicates a compute buffer on every GPU, so drop
-                    # GPUs below that reserve from the set up front (gpu_indices
-                    # becomes the CUDA_VISIBLE_DEVICES mask, fully excluding them).
                     if tensor_parallel and effective_is_vision:
                         logger.info(
                             "Tensor parallelism skipped for vision model: "
@@ -5009,6 +5007,9 @@ class LlamaCppBackend:
                             else extra_args
                         )
 
+                    # Tensor mode replicates a compute buffer on every GPU, so drop
+                    # GPUs below that reserve from the set up front (gpu_indices
+                    # becomes the CUDA_VISIBLE_DEVICES mask, fully excluding them).
                     tp_gpus = gpus
                     if tensor_parallel:
                         # Deterministic per-device compute buffer (replicated on
