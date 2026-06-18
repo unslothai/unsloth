@@ -202,9 +202,7 @@ def _is_gguf_repo(model_name: str, hf_token: Optional[str] = None) -> bool:
 
         files = [f.lower() for f in list_repo_files(model_name, token = hf_token)]
         has_gguf = any(f.endswith(".gguf") for f in files)
-        has_transformers_weights = any(
-            f.endswith(_TRANSFORMERS_WEIGHT_SUFFIXES) for f in files
-        )
+        has_transformers_weights = any(f.endswith(_TRANSFORMERS_WEIGHT_SUFFIXES) for f in files)
         return has_gguf and not has_transformers_weights
     except Exception:
         return False

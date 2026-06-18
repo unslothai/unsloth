@@ -1032,7 +1032,12 @@ class TestScannerCoversAllExecutableCode:
         # GGUF-only: transformers can load that weight set and run auto_map, so the
         # consent gate must still apply. Guards against treating "has .gguf and no
         # .safetensors" as inert when a pickle weight set is present.
-        def _dl(repo_id = None, filename = None, token = None, **kw):
+        def _dl(
+            repo_id = None,
+            filename = None,
+            token = None,
+            **kw,
+        ):
             import json
             import tempfile
 
