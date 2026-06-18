@@ -13,7 +13,7 @@ unit-tested without the heavy backend import graph.
 import asyncio
 import contextvars
 import types
-from typing import Callable
+from typing import Callable, Optional
 
 import structlog
 
@@ -24,8 +24,18 @@ async def run_lifespan_shutdown(
     terminate_downloads: Callable[[], None],
     clear_compiled_cache: Callable[[], None],
     hw_module: types.ModuleType,
+    kill_llama_server: Optional[Callable[[], None]] = None,
 ) -> None:
     """Run each shutdown step guarded so one failure can't skip the others; never raise."""
+    # Kill the llama-server child first, before clearing hardware/cache state, so a
+    # direct-uvicorn shutdown (which bypasses run.py's signal handler) cannot orphan a
+    # GPU process. The signal / _graceful_shutdown path already covers SIGTERM/SIGINT.
+    if kill_llama_server is not None:
+        try:
+            kill_llama_server()
+        except Exception as exc:
+            logger.warning("kill_llama_server failed at shutdown: %s", exc)
+
     loop = asyncio.get_running_loop()
     # Copy context for parity with asyncio.to_thread. Schedule and await
     # separately so a dead executor (raises at submit) runs inline, while a

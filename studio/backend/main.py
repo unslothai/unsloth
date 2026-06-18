@@ -478,10 +478,19 @@ async def lifespan(app: FastAPI):
 
     await _close_llama_http()
 
+    def _kill_llama_server_on_shutdown():
+        # Mirror run.py's _graceful_shutdown step 5 so a direct-uvicorn shutdown
+        # (which bypasses the signal handler) also kills the GPU child.
+        from routes.inference import _llama_cpp_backend
+
+        if _llama_cpp_backend is not None:
+            _llama_cpp_backend._kill_process()
+
     await run_lifespan_shutdown(
         terminate_hub_downloads,
         clear_unsloth_compiled_cache,
         _hw_module,
+        kill_llama_server = _kill_llama_server_on_shutdown,
     )
 
 

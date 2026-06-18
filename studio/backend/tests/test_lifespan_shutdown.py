@@ -132,3 +132,40 @@ def test_run_lifespan_shutdown_preserves_contextvars():
     assert seen == ["bound-value"], "terminate must run with the caller's contextvars"
     assert clear_box["n"] == 1
     assert hw.DEVICE is None
+
+
+def test_run_lifespan_shutdown_kills_llama_server_first():
+    """The injected kill_llama_server runs once, before hardware/cache teardown,
+    so a direct-uvicorn shutdown cannot orphan the GPU child."""
+    order = []
+    hw = types.SimpleNamespace(DEVICE = "cuda:0")
+
+    asyncio.run(
+        run_lifespan_shutdown(
+            lambda: order.append("terminate"),
+            lambda: order.append("clear"),
+            hw,
+            kill_llama_server = lambda: order.append("kill"),
+        )
+    )
+
+    assert order and order[0] == "kill", "llama-server must be killed before other teardown"
+    assert order.count("kill") == 1
+    assert "terminate" in order and "clear" in order
+    assert hw.DEVICE is None
+
+
+def test_run_lifespan_shutdown_swallows_kill_llama_server_errors():
+    """A kill_llama_server failure must not block the remaining cleanup."""
+    term_box, terminate = _counter()
+    clear_box, clear = _counter()
+    hw = types.SimpleNamespace(DEVICE = "cuda:0")
+
+    def _boom():
+        raise RuntimeError("kill failed")
+
+    asyncio.run(run_lifespan_shutdown(terminate, clear, hw, kill_llama_server = _boom))
+
+    assert term_box["n"] == 1
+    assert clear_box["n"] == 1
+    assert hw.DEVICE is None
