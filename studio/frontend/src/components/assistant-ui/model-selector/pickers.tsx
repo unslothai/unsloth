@@ -2054,13 +2054,15 @@ export function HubModelPicker({
         }}
         className={cn(
           // Small negative margin pulls the scrollbar in (closer to the rows),
-          // and a thin gutter lets the row pills widen toward it.
-          "model-list-scroll -mr-1 max-h-72 overflow-y-auto pr-0.5",
+          // and a thin gutter lets the row pills widen toward it. A flex column
+          // with a min height keeps the box tall and pins the eject footer to
+          // the bottom even when only a few models are listed.
+          "model-list-scroll -mr-1 flex min-h-[22rem] max-h-[30rem] flex-col overflow-y-auto pr-0.5",
           listScrolled && "is-scrolled",
         )}
         {...hubModelList.listboxProps}
       >
-        <div className="py-1 pr-0">
+        <div className="shrink-0 py-1 pr-0">
           {/* First-load spinner only when nothing cached is shown yet. */}
           {showDownloaded &&
           !cachedReady &&
@@ -2959,7 +2961,7 @@ export function HubModelPicker({
         {/* Sticky footer: no solid block, just a bottom-up fade of the menu
             background so rows scroll under the button and fade out behind it. */}
         {onEject ? (
-          <div className="pointer-events-none sticky bottom-0 flex justify-center bg-gradient-to-t from-popover from-50% to-transparent pt-6 dark:from-[var(--sidebar)]">
+          <div className="pointer-events-none sticky bottom-0 mt-auto flex justify-center bg-gradient-to-t from-popover from-50% to-transparent pt-6 dark:from-[var(--sidebar)]">
             <button
               type="button"
               onClick={onEject}
