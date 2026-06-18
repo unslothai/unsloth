@@ -419,6 +419,75 @@ def fix_vllm_aimv2_issue():
             logger.info(f"Unsloth: Failed patching vLLM with error = {str(e)}")
 
 
+# vLLM >= 0.22 (PR #35024) deleted `vllm.transformers_utils.tokenizer`, but an
+# older unsloth_zoo still imports it unguarded and crashes (issue #6385). Supply
+# a stub via a meta path finder appended AFTER the real finders, so it only
+# activates when vLLM no longer ships the module.
+_VLLM_LORA_TOKENIZER_MODULE = "vllm.transformers_utils.tokenizer"
+_VLLM_TOKENIZER_STUB_SENTINEL = "__unsloth_vllm_tokenizer_stub__"
+
+
+def _unsloth_return_no_lora_tokenizer(*args, **kwargs):
+    # None -> vLLM uses the base tokenizer for LoRA (matches unsloth_zoo).
+    return None
+
+
+class _VllmLoraTokenizerStubLoader(importlib.abc.Loader):
+    __slots__ = ("module_name",)
+
+    def __init__(self, module_name):
+        self.module_name = module_name
+
+    def create_module(self, spec):
+        import types
+
+        module = types.ModuleType(self.module_name)
+        module.__file__ = f"<unsloth stub: {self.module_name}>"
+        module.__package__ = self.module_name.rpartition(".")[0]
+        setattr(module, _VLLM_TOKENIZER_STUB_SENTINEL, True)
+        module.get_lora_tokenizer = _unsloth_return_no_lora_tokenizer
+        module.get_lora_tokenizer_async = _unsloth_return_no_lora_tokenizer
+        return module
+
+    def exec_module(self, module):
+        return None
+
+
+class _VllmLoraTokenizerStubFinder(importlib.abc.MetaPathFinder):
+    __slots__ = (_VLLM_TOKENIZER_STUB_SENTINEL,)
+
+    def __init__(self):
+        setattr(self, _VLLM_TOKENIZER_STUB_SENTINEL, True)
+
+    def find_spec(
+        self,
+        fullname,
+        path = None,
+        target = None,
+    ):
+        if fullname != _VLLM_LORA_TOKENIZER_MODULE:
+            return None
+        return importlib.machinery.ModuleSpec(
+            name = fullname,
+            loader = _VllmLoraTokenizerStubLoader(fullname),
+            is_package = False,
+        )
+
+
+def fix_vllm_lora_tokenizer_module():
+    if importlib.util.find_spec("vllm") is None:
+        return
+    for finder in sys.meta_path:
+        if getattr(finder, _VLLM_TOKENIZER_STUB_SENTINEL, False):
+            return
+    # Appended, not inserted at 0, so a real module on older vLLM always wins.
+    sys.meta_path.append(_VllmLoraTokenizerStubFinder())
+    logger.info(
+        "Unsloth: Installed `vllm.transformers_utils.tokenizer` compatibility "
+        "stub for newer vLLM versions"
+    )
+
+
 def fix_vllm_guided_decoding_params():
     def _maybe_raise_vllm_transformers_mismatch(error):
         error_text = str(error)
@@ -626,6 +695,75 @@ def patch_enable_input_require_grads():
     PreTrainedModel.enable_input_require_grads = _patched_enable_input_require_grads
 
     logger.info("Unsloth: Patched enable_input_require_grads for vision model compatibility")
+
+
+def patch_unsafe_trainer_rng_load():
+    """Harden Trainer._load_rng_state against CVE-2026-1839 (RCE from a malicious
+    rng_state.pth on resume). Hardens only the rng torch.load, via a thread-local
+    flag, so it forces weights_only=True (defeats TORCH_FORCE_NO_WEIGHTS_ONLY_LOAD)
+    and refuses torch < 2.6 (CVE-2025-32434), while rng-less resumes and unrelated
+    torch.load calls are untouched. No-op if transformers is absent or already
+    guards the load (>= 5.0.0rc3)."""
+    if importlib.util.find_spec("transformers") is None:
+        return
+    try:
+        from transformers.trainer import Trainer
+    except Exception:
+        return
+    load_rng_state = getattr(Trainer, "_load_rng_state", None)
+    if load_rng_state is None or getattr(load_rng_state, "_unsloth_safe_rng_load", False):
+        return
+    try:
+        source = inspect.getsource(load_rng_state)
+    except Exception:
+        return
+    if "torch.load" not in source or "check_torch_load_is_safe" in source:
+        return
+
+    import threading, torch
+
+    try:
+        # Older supported transformers (>= 4.51.3) may not export the helper.
+        from transformers.utils.import_utils import check_torch_load_is_safe
+    except Exception:
+
+        def check_torch_load_is_safe():
+            if TrueVersion(torch.__version__.split("+")[0]) < TrueVersion("2.6"):
+                raise RuntimeError(
+                    "Unsloth: refusing to load checkpoint RNG state on torch < 2.6 "
+                    "(CVE-2026-1839 / CVE-2025-32434); upgrade to torch >= 2.6."
+                )
+
+    # Install one process-wide torch.load shim that stays inert unless the calling
+    # thread is inside _load_rng_state, so we gate only at the real rng load with
+    # no global-swap race and no effect on other torch.load callers.
+    if not getattr(torch.load, "_unsloth_rng_guard", False):
+        _orig_load = torch.load
+        _rng_active = threading.local()
+
+        @functools.wraps(_orig_load)
+        def _guarded_torch_load(*args, **kwargs):
+            if getattr(_rng_active, "on", False):
+                check_torch_load_is_safe()  # raises on torch < 2.6 (CVE-2025-32434)
+                kwargs.setdefault("weights_only", True)
+            return _orig_load(*args, **kwargs)
+
+        _guarded_torch_load._unsloth_rng_guard = True
+        _guarded_torch_load._unsloth_rng_flag = _rng_active
+        torch.load = _guarded_torch_load
+    _rng_active = torch.load._unsloth_rng_flag
+
+    @functools.wraps(load_rng_state)
+    def _unsloth_safe_load_rng_state(self, checkpoint):
+        _rng_active.on = True
+        try:
+            return load_rng_state(self, checkpoint)
+        finally:
+            _rng_active.on = False
+
+    _unsloth_safe_load_rng_state._unsloth_safe_rng_load = True
+    Trainer._load_rng_state = _unsloth_safe_load_rng_state
+    logger.info("Unsloth: Hardened Trainer._load_rng_state rng loading (CVE-2026-1839).")
 
 
 def _is_custom_torch_build(raw_version_str):

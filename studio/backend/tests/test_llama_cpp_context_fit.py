@@ -67,7 +67,11 @@ _httpx_stub.Client = type(
 )
 sys.modules.setdefault("httpx", _httpx_stub)
 
-from core.inference.llama_cpp import LlamaCppBackend, classify_gpu_offload_lines
+from core.inference.llama_cpp import (
+    _CTX_FIT_VRAM_FRACTION,
+    LlamaCppBackend,
+    classify_gpu_offload_lines,
+)
 from core.inference.llama_server_args import parse_ctx_override, resolve_requested_ctx
 
 
@@ -171,7 +175,7 @@ def _drive(
                 )
                 kv = inst._estimate_kv_cache_bytes(capped, cache_type_kv)
                 total_mib = (model_size + kv) / (1024 * 1024)
-                if total_mib <= pool_mib * 0.90:
+                if total_mib <= pool_mib * _CTX_FIT_VRAM_FRACTION:
                     best_cap = max(best_cap, capped)
             if best_cap > 0:
                 max_available_ctx = best_cap
@@ -664,3 +668,39 @@ class TestClassifyGpuOffload:
 
     def test_module_level_no_signal_returns_none(self):
         assert classify_gpu_offload_lines(["INFO starting server"]) is None
+
+
+def test_select_gpus_ranks_by_usable_not_raw_free():
+    # 80 GB card (30 GB free -> 25.9 GB usable) vs 32 GB card (29 GB free -> 27.4
+    # GB usable). A 27 GB model fits the 32 GB card alone; raw-free ranking would
+    # try the 80 GB card first and split across both. Usable ranking picks [1].
+    gpus = [(0, 30000), (1, 29000)]
+    totals = {0: 81920, 1: 32607}
+    model = int(27000 * 1024 * 1024)
+    idxs, use_fit = LlamaCppBackend._select_gpus(model, gpus, total_by_idx = totals)
+    assert idxs == [1] and use_fit is False
+
+
+def test_select_gpus_reserves_per_device_overhead():
+    # Two 16 GB cards, ~15181 MiB usable each at 0.95 -> 30362 MiB pooled. A 30000
+    # MiB model fits the pool with no per-device overhead, but a layer split also
+    # pays ~1 GiB/extra-GPU; that pushes the 2-GPU need to 31024 MiB > pool, so a
+    # pin would OOM -> must fall back to --fit. Single-GPU fits add no overhead
+    # (Finding F1, the explicit/file-size multi-GPU pin gap).
+    gpus = [(0, 16000), (1, 16000)]
+    totals = {0: 16384, 1: 16384}
+    gib = 1024 * 1024 * 1024
+    model = int(30000 * 1024 * 1024)
+    idxs, use_fit = LlamaCppBackend._select_gpus(model, gpus, total_by_idx = totals)
+    assert idxs == [0, 1] and use_fit is False  # fits 2 GPUs without overhead
+    idxs2, use_fit2 = LlamaCppBackend._select_gpus(
+        model, gpus, total_by_idx = totals, per_device_overhead_bytes = gib
+    )
+    assert idxs2 is None and use_fit2 is True  # overhead tips it past the pool
+    # A single-GPU fit is unchanged by the overhead (k=1 adds nothing).
+    small = int(15000 * 1024 * 1024)
+    a, _ = LlamaCppBackend._select_gpus(small, gpus, total_by_idx = totals)
+    b, _ = LlamaCppBackend._select_gpus(
+        small, gpus, total_by_idx = totals, per_device_overhead_bytes = gib
+    )
+    assert a == [0] and b == [0]

@@ -169,6 +169,7 @@ from unsloth_zoo.device_type import (
 from .import_fixes import (
     fix_xformers_performance_issue,
     fix_vllm_aimv2_issue,
+    fix_vllm_lora_tokenizer_module,
     check_vllm_torch_sm100_compatibility,
     fix_vllm_guided_decoding_params,
     fix_vllm_pdl_blackwell,
@@ -179,6 +180,7 @@ from .import_fixes import (
     patch_trackio,
     patch_datasets,
     patch_enable_input_require_grads,
+    patch_unsafe_trainer_rng_load,
     fix_openenv_no_vllm,
     patch_openspiel_env_async,
     fix_executorch,
@@ -194,6 +196,7 @@ from .import_fixes import (
 
 fix_xformers_performance_issue()
 fix_vllm_aimv2_issue()
+fix_vllm_lora_tokenizer_module()
 # Check vLLM + torch < 2.9.0 + SM100 compatibility BEFORE importing vLLM
 check_vllm_torch_sm100_compatibility()
 fix_vllm_guided_decoding_params()
@@ -206,6 +209,7 @@ patch_ipykernel_hf_xet()
 patch_trackio()
 patch_datasets()
 patch_enable_input_require_grads()
+patch_unsafe_trainer_rng_load()
 fix_openenv_no_vllm()
 patch_openspiel_env_async()
 fix_executorch()
@@ -222,6 +226,7 @@ patch_accelerate_recursively_apply()
 
 del fix_xformers_performance_issue
 del fix_vllm_aimv2_issue
+del fix_vllm_lora_tokenizer_module
 del check_vllm_torch_sm100_compatibility
 del fix_vllm_guided_decoding_params
 del fix_trl_vllm_ascend

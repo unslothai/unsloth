@@ -41,6 +41,8 @@ export interface LoadModelRequest {
   gguf_variant?: string | null;
   /** Allow loading models with custom code (e.g. NVIDIA Nemotron). Only enable for repos you trust. */
   trust_remote_code?: boolean;
+  /** sha256 fingerprint pinning user approval of this exact custom-code version. */
+  approved_remote_code_fingerprint?: string | null;
   chat_template_override?: string | null;
   cache_type_kv?: string | null;
   /**
@@ -72,6 +74,10 @@ export interface ValidateModelResponse {
   is_lora?: boolean;
   is_vision?: boolean;
   requires_trust_remote_code?: boolean;
+  // HF flagged unsafe files, so the load is hard-blocked pending dialog review.
+  requires_security_review?: boolean;
+  /** Native context length from the local GGUF header; null until downloaded. */
+  context_length?: number | null;
 }
 
 export interface GgufVariantDetail {
@@ -191,6 +197,38 @@ export interface InferenceStatusResponse {
    * it; "runtime_error" -> the current build could not run it. Null otherwise.
    */
   spec_fallback_reason?: string | null;
+}
+
+export interface ApiMonitorEntry {
+  id: string;
+  endpoint: string;
+  method: string;
+  model: string;
+  prompt?: string;
+  reply?: string;
+  prompt_preview: string;
+  reply_preview: string;
+  prompt_truncated: boolean;
+  reply_truncated: boolean;
+  status: "running" | "completed" | "cancelled" | "error";
+  started_at: number;
+  updated_at: number;
+  finished_at?: number | null;
+  duration_ms?: number | null;
+  context_length?: number | null;
+  context_usage?: number | null;
+  prompt_tokens?: number | null;
+  completion_tokens?: number | null;
+  total_tokens?: number | null;
+  error?: string | null;
+}
+
+export interface ApiMonitorResponse {
+  status: "idle" | "ready" | "generating";
+  active_model?: string | null;
+  context_length?: number | null;
+  active_requests: number;
+  entries: ApiMonitorEntry[];
 }
 
 export interface AudioGenerationResponse {

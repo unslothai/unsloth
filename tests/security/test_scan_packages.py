@@ -1,9 +1,5 @@
-"""Regression tests for `scripts/scan_packages.py`.
-
-`download_packages` reaches PyPI; to stay offline we drive the in-process
-`scan_archive` helper against the wheel/sdist fixtures under
-`tests/security/fixtures/`.
-"""
+"""Regression tests for `scripts/scan_packages.py`, driving the offline
+`scan_archive` helper against fixtures under `tests/security/fixtures/`."""
 
 from __future__ import annotations
 
@@ -23,22 +19,13 @@ sys.path.insert(0, str(REPO_ROOT))
 from scripts import scan_packages as sp  # noqa: E402
 
 
-# ---------------------------------------------------------------------------
-# Fixture sanity.
-# ---------------------------------------------------------------------------
-
-
 def test_fixture_files_exist():
     for name in ("malicious_wheel.whl", "clean_wheel.whl", "malicious_sdist.tar.gz"):
         assert (FIXTURES / name).is_file(), name
 
 
 def test_fixture_bytes_are_deterministic(tmp_path):
-    """Re-running `_build.py` must produce byte-identical archives.
-
-    The build helper pins each member's mtime/uid/gid/mode and sorts members.
-    Rebuild into a temp dir and compare SHA-256 against the committed bytes.
-    """
+    """Re-running `_build.py` must produce byte-identical archives (deterministic builds)."""
     # Snapshot committed hashes.
     expected: dict[str, str] = {}
     for name in ("malicious_wheel.whl", "clean_wheel.whl", "malicious_sdist.tar.gz"):
@@ -47,11 +34,11 @@ def test_fixture_bytes_are_deterministic(tmp_path):
     # Rebuild into a sibling dir to avoid clobbering the committed files.
     rebuild_dir = tmp_path / "rebuild"
     rebuild_dir.mkdir()
-    # The build helper writes to its own directory; copy + patch HERE.
+    # The build helper writes to its own dir; copy + patch HERE.
     builder_src = (FIXTURES / "_build.py").read_text()
     rebuilt_helper = rebuild_dir / "_build.py"
     rebuilt_helper.write_text(builder_src)
-    # Run with SOURCE_DATE_EPOCH=0 and HERE override via a tiny shim.
+    # Run with SOURCE_DATE_EPOCH=0 and HERE override via a shim.
     shim = rebuild_dir / "run.py"
     shim.write_text(
         "import sys, pathlib\n"
@@ -80,11 +67,6 @@ def test_fixture_bytes_are_deterministic(tmp_path):
         )
 
 
-# ---------------------------------------------------------------------------
-# scan_archive() against the fixture wheel + sdist.
-# ---------------------------------------------------------------------------
-
-
 def _critical_or_high(findings) -> list:
     return [f for f in findings if f.severity in (sp.CRITICAL, sp.HIGH)]
 
@@ -97,7 +79,6 @@ def test_malicious_wheel_triggers_critical():
     assert findings, "no findings on malicious wheel; scanner regression"
     blockers = _critical_or_high(findings)
     assert blockers, f"no CRITICAL/HIGH findings: {[str(f) for f in findings]}"
-    # At least one finding must reference setup.py.
     assert any("setup.py" in f.filename for f in blockers)
 
 
@@ -119,11 +100,7 @@ def test_clean_wheel_no_findings():
     assert findings == [], f"unexpected findings on clean wheel: {[str(f) for f in findings]}"
 
 
-# ---------------------------------------------------------------------------
 # Fork 1 constants -- gated on availability.
-# ---------------------------------------------------------------------------
-
-
 _BLOCKED_AVAILABLE = hasattr(sp, "BLOCKED_PYPI_VERSIONS")
 _MAY12_AVAILABLE = hasattr(sp, "RE_MAY12_IOC")
 
@@ -157,7 +134,7 @@ def test_re_may12_ioc_catches_each_literal():
     pattern: re.Pattern = sp.RE_MAY12_IOC
     for lit in expected_literals:
         assert pattern.search(lit), f"RE_MAY12_IOC missed literal {lit!r}"
-    # Clean control: a plain string with none of the literals must not match.
+    # Clean control: a string with none of the literals must not match.
     assert not pattern.search("import numpy as np")
 
 
@@ -166,16 +143,13 @@ def test_re_may12_ioc_catches_each_literal():
     reason = "Fork 1 (RE_MAY12_IOC integration) not merged yet",
 )
 def test_may12_ioc_caught_by_scan_archive():
-    """Once RE_MAY12_IOC is wired into check_py_file, the malicious wheel's
-    setup.py must produce a finding referencing the May-12 IOC string.
-    """
+    """Wired into check_py_file, the malicious wheel's setup.py must flag the May-12 IOC string."""
     findings = sp.scan_archive(
         str(FIXTURES / "malicious_wheel.whl"),
         "malicious_fixture",
     )
-    # IOC literals built at runtime so CodeQL's url-substring-sanitization
-    # rule doesn't false-positive on the `in` operand (it's evidence, not a
-    # URL), and so reformatting can't detach an inline lgtm comment.
+    # IOC literals built at runtime so CodeQL's url-substring-sanitization rule
+    # doesn't false-positive on the `in` operand (it's evidence, not a URL).
     _ioc_host = "git-tanstack." + "com"
     _ioc_drop = "transformers." + "pyz"
     hit = any(
@@ -190,18 +164,13 @@ def test_may12_ioc_caught_by_scan_archive():
     )
 
 
-# ---------------------------------------------------------------------------
 # Silent-failure-class hardening (Fork C).
-# ---------------------------------------------------------------------------
 
 
 def test_scan_packages_pip_download_failure_propagates(tmp_path):
-    """A pip download failure must NOT be swallowed into `0 findings, exit 0`.
+    """A pip download failure must exit 2 (SCAN INCOMPLETE), not `0 findings, exit 0`.
 
-    Feeds an unresolvable spec to the scanner subprocess; it must exit 2
-    (scan incomplete) with a SCAN INCOMPLETE banner on stderr. The spec name
-    is long/random so it can't resolve on any index, even offline.
-    """
+    Feeds an unresolvable spec; the name is long/random so it can't resolve on any index."""
     script = REPO_ROOT / "scripts" / "scan_packages.py"
     assert script.is_file(), script
     unresolvable = "pkg-that-does-not-exist-0123456789-fork-c-silentfail==0.0.0"
@@ -222,9 +191,7 @@ def test_scan_packages_pip_download_failure_propagates(tmp_path):
 
 
 def test_archive_corruption_produces_critical_finding(tmp_path):
-    """SF1: a corrupted wheel was silently skipped by `except: continue` in
-    iter_archive_files; it must now yield a CRITICAL `archive_corrupted`.
-    """
+    """SF1: a corrupted wheel (once silently skipped) must yield a CRITICAL `archive_corrupted`."""
     bad = tmp_path / "broken-0.0.1-py3-none-any.whl"
     bad.write_bytes(b"X")  # 1-byte "wheel" -- not a valid zip container
     findings = sp.scan_archive(str(bad), "broken_fixture")
@@ -235,7 +202,7 @@ def test_archive_corruption_produces_critical_finding(tmp_path):
     )
     assert all(f.severity == sp.CRITICAL for f in corrupted)
 
-    # Same check for a corrupted tarball.
+    # Same for a corrupted tarball.
     bad_tar = tmp_path / "broken-0.0.1.tar.gz"
     bad_tar.write_bytes(b"not-a-real-gzip-stream")
     findings_tar = sp.scan_archive(str(bad_tar), "broken_fixture")
@@ -246,9 +213,7 @@ def test_archive_corruption_produces_critical_finding(tmp_path):
     )
 
 
-# ---------------------------------------------------------------------------
 # False-positive hardening: code-only scanning via _strip_noncode.
-# ---------------------------------------------------------------------------
 
 
 def test_strip_noncode_blanks_docstrings_and_comments_keeps_geometry():
@@ -262,10 +227,9 @@ def test_strip_noncode_blanks_docstrings_and_comments_keeps_geometry():
     out = sp._strip_noncode(src)
     # Line geometry is byte-stable so evidence L<n> stays correct.
     assert len(out.splitlines()) == len(src.splitlines())
-    # The dangerous-looking tokens lived only in docstrings/comments -> gone.
+    # Tokens lived only in docstrings/comments -> gone.
     for needle in ("subprocess", "os.system", "eval(", "exec(", "reverse shell"):
         assert needle not in out, needle
-    # Real code survives.
     assert "x = 1" in out
     assert "return x" in out
 
@@ -288,7 +252,7 @@ def test_strip_noncode_falls_back_on_syntax_error():
 
 
 def test_check_py_file_ignores_docstring_only_iocs():
-    # A file whose ONLY dangerous patterns live in a docstring must be clean.
+    # A file whose only dangerous patterns live in a docstring must be clean.
     benign = (
         '"""Usage:\n'
         ">>> import subprocess, urllib.request\n"
@@ -299,7 +263,7 @@ def test_check_py_file_ignores_docstring_only_iocs():
     )
     findings = sp.check_py_file(benign, "pkg/_doc.py", "pkg")
     assert findings == [], f"docstring IOCs should not flag: {[str(f) for f in findings]}"
-    # But the same payload as real code still flags.
+    # The same payload as real code still flags.
     real = (
         "import subprocess, urllib.request\n"
         "subprocess.Popen(['sh','-c','id'])\n"
@@ -310,15 +274,14 @@ def test_check_py_file_ignores_docstring_only_iocs():
 
 
 def test_extract_evidence_multiline_reports_line():
-    # A DOTALL pattern that only matches across lines must still yield evidence
-    # (not an empty string) so a baseline entry is reviewable.
+    # A cross-line DOTALL match must still yield evidence so the baseline entry is reviewable.
     content = "a = 1\ntime.sleep(\n    600\n)\n"
     ev = sp._extract_evidence(content, sp.RE_ANTI_ANALYSIS)
     assert ev and ev.startswith("L"), ev
 
 
 def test_anti_analysis_no_longer_flags_cross_platform_code():
-    # Pure cross-platform code (the old platform.system FP) must be clean.
+    # Pure cross-platform code (the old platform.system false positive) must be clean.
     crossplat = (
         "import platform, subprocess\n"
         "if platform.system() == 'Windows':\n"
@@ -332,11 +295,9 @@ def test_anti_analysis_no_longer_flags_cross_platform_code():
 
 
 def test_proc_self_status_read_flags_anti_analysis():
-    # Reading /proc/self/status (to scrape TracerPid) alongside a subprocess
-    # call is the classic anti-debug combination. The old `\b/proc/self/status\b`
-    # was a dead pattern (\b adjacent to "/" is unsatisfiable); the lookbehind
-    # fix makes it fire. No TracerPid/ptrace token here so only the /proc path
-    # can supply the anti-analysis signal.
+    # Reading /proc/self/status + a subprocess call is the classic anti-debug combo.
+    # The old `\b/proc/self/status\b` was unsatisfiable (\b adjacent to "/"); the
+    # lookbehind fix makes it fire. No TracerPid/ptrace token, so only /proc signals it.
     payload = (
         "import subprocess\n"
         "with open('/proc/self/status') as fh:\n"
@@ -350,8 +311,7 @@ def test_proc_self_status_read_flags_anti_analysis():
 
 
 def test_proc_self_status_pattern_is_live():
-    # Direct regex check across the common call forms; the leading \b made all
-    # of these unsatisfiable before the fix.
+    # Common call forms; the leading \b made all of these unsatisfiable before the fix.
     for s in (
         'open("/proc/self/status")',
         "cat /proc/self/status",
@@ -360,11 +320,6 @@ def test_proc_self_status_pattern_is_live():
         assert sp.RE_ANTI_ANALYSIS.search(s), s
     # A bare cross-platform OS check must still NOT match anti-analysis.
     assert not sp.RE_ANTI_ANALYSIS.search("if platform.system() == 'Linux': pass")
-
-
-# ---------------------------------------------------------------------------
-# Baseline allowlist.
-# ---------------------------------------------------------------------------
 
 
 def _mk(sev, pkg, fname, check):
@@ -376,7 +331,7 @@ def test_baseline_key_version_stable_but_path_specific():
     b = _mk(sp.CRITICAL, "Requests", "requests-3.0.0/requests/sessions.py", "X")
     # Same package-relative path across versions -> same key (stable).
     assert sp._finding_key(a) == sp._finding_key(b)
-    # Same basename in a DIFFERENT path -> different key (no over-suppression).
+    # Same basename in a different path -> different key (no over-suppression).
     c = _mk(sp.CRITICAL, "requests", "requests-2.32.5/requests/vendor/sessions.py", "X")
     assert sp._finding_key(a) != sp._finding_key(c)
 
@@ -385,7 +340,7 @@ def test_fstring_statement_is_not_blanked():
     # A bare f-string evaluates at import, so it must stay scannable.
     src = "f\"{__import__('os').system('id')}\"\n"
     assert "__import__" in sp._strip_noncode(src)
-    # A plain bare docstring IS blanked.
+    # A plain bare docstring is blanked.
     plain = "'a docstring mentioning subprocess.Popen'\n"
     assert "subprocess" not in sp._strip_noncode(plain)
 
@@ -395,7 +350,7 @@ def test_exec_with_payload_hidden_in_docstring_flagged():
     src = '"""' + blob + '"""\nimport os\nexec(__doc__)\n'
     findings = sp.check_py_file(src, "pkg/mod.py", "pkg")
     assert any("hidden in a docstring" in f.check for f in findings)
-    # No exec/eval -> the blanked blob does not produce that finding.
+    # No exec/eval -> the blanked blob produces no such finding.
     src2 = '"""' + blob + '"""\nimport os\n'
     findings2 = sp.check_py_file(src2, "pkg/mod.py", "pkg")
     assert not any("hidden in a docstring" in f.check for f in findings2)
@@ -496,10 +451,8 @@ def test_load_baseline_missing_file_is_empty():
     assert sp._load_baseline("/nonexistent/path/bl.json") == set()
 
 
-# ---------------------------------------------------------------------------
-# sdist fallback: preserve coverage of sdist-only packages without building.
-# All offline -- PyPI JSON / download are mocked.
-# ---------------------------------------------------------------------------
+# sdist fallback: cover sdist-only packages without building. All offline
+# -- PyPI JSON / download are mocked.
 
 
 class _FakeResp:
@@ -658,7 +611,7 @@ def test_download_sdist_direct_refuses_non_pypi_url(tmp_path):
     meta = _meta([_f("sdist", "x-1.0.0.tar.gz", "https://evil.example/x.tar.gz")])
     fpath, err = sp._download_sdist_direct("x", "1.0.0", str(tmp_path), meta = meta)
     assert fpath is None and "non-PyPI" in err
-    assert list(tmp_path.iterdir()) == []  # nothing was written
+    assert list(tmp_path.iterdir()) == []  # nothing written
 
 
 def test_download_sdist_direct_no_sdist_published(tmp_path):
@@ -689,8 +642,7 @@ def test_download_sdist_direct_size_cap(tmp_path, monkeypatch):
 
 
 def test_per_spec_genuine_failure_is_recorded_error(tmp_path, monkeypatch):
-    # A spec that fails pip but HAS a wheel on PyPI is a genuine error (-> exit 2),
-    # never silently swallowed.
+    # A spec that fails pip but HAS a wheel on PyPI is a genuine error (-> exit 2).
     class _Proc:
         returncode = 1
         stderr = "ResolutionImpossible"
