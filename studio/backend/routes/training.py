@@ -280,7 +280,11 @@ async def start_training(
             try:
                 from core.export import get_export_backend
                 exp_backend = get_export_backend()
-                if exp_backend.current_checkpoint:
+                # Tear down the export subprocess whenever an export is in flight,
+                # not just once a checkpoint is loaded: during the load phase
+                # current_checkpoint is still unset while the worker is already
+                # allocating GPU memory, so gate on is_export_active() too.
+                if exp_backend.current_checkpoint or exp_backend.is_export_active():
                     logger.info("Shutting down export subprocess to free GPU memory for training")
                     exp_backend._shutdown_subprocess()
                     exp_backend.current_checkpoint = None

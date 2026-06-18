@@ -133,6 +133,8 @@ export interface RunExportParams {
   trustRemoteCode: boolean;
   /** Consent fingerprint from the load-time remote-code review dialog (HF custom code). */
   approvedRemoteCodeFingerprint?: string | null;
+  /** HF token for loading a gated/private source model (separate from the Hub upload token). */
+  loadToken?: string | null;
   exportMethod: ExportMethod;
   isAdapter: boolean;
   quantLevels: string[];
@@ -288,6 +290,11 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
       // the last-op record when present (accurate success/error/output path),
       // else fall back to the optimistic guess.
       if (!status.is_export_active && state.isExporting && !state.ownsRun) {
+        // A standalone load_checkpoint (or no recorded op) is not an export and
+        // must never settle as a finished export. A completed export ends on its
+        // export_* op or the trailing cleanup, both of which count.
+        const wasExport =
+          !!status.last_op_kind && status.last_op_kind !== "load_checkpoint";
         if (status.last_op_status === "error") {
           return {
             ...base,
@@ -299,7 +306,7 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
         if (status.last_op_status === "cancelled") {
           return { ...base, isExporting: false, phase: "canceled" as const };
         }
-        if (status.last_op_status === "success") {
+        if (status.last_op_status === "success" && wasExport) {
           return {
             ...base,
             isExporting: false,
@@ -310,11 +317,8 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
             },
           };
         }
-        return {
-          ...base,
-          isExporting: false,
-          phase: state.logLines.length > 0 ? ("success" as const) : ("idle" as const),
-        };
+        // Load-only op, or no clear success record: nothing was exported.
+        return { ...base, isExporting: false, phase: "idle" as const };
       }
       return base;
     }),
@@ -403,7 +407,10 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
         }
         const checkpointPath = params.checkpointPath;
         await runRecoverableOp(() =>
-          loadCheckpoint({ checkpoint_path: checkpointPath }),
+          loadCheckpoint({
+            checkpoint_path: checkpointPath,
+            hf_token: params.loadToken ?? null,
+          }),
         );
       } else {
         await runRecoverableOp(() =>
@@ -414,6 +421,7 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
               params.modelSource === "hf" ? params.trustRemoteCode : true,
             approved_remote_code_fingerprint:
               params.approvedRemoteCodeFingerprint ?? null,
+            hf_token: params.loadToken ?? null,
           }),
         );
       }

@@ -501,6 +501,9 @@ export function ExportPage() {
   const handleStart = useCallback(async () => {
     const source = sourceMode === "checkpoint" ? checkpoint : selectedSourceModel;
     if (!source || !exportMethod) return;
+    // A GGUF export with no quant selected runs zero exports yet would still
+    // settle as success with no file; require at least one (mirrors canExport).
+    if (exportMethod === "gguf" && quantLevels.length === 0) return;
 
     const selectedCp = sourceMode === "checkpoint"
       ? checkpointsForModel.find((cp) => cp.display_name === checkpoint)
@@ -545,6 +548,7 @@ export function ExportPage() {
       modelSource,
       trustRemoteCode,
       approvedRemoteCodeFingerprint,
+      loadToken: hfToken || null,
       exportMethod,
       isAdapter: adapterExport,
       quantLevels,
