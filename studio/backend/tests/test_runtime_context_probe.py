@@ -75,6 +75,7 @@ def _cleanup_llama_cpp_import_cache():
     yield
     sys.modules.pop("core.inference.llama_cpp", None)
     import core.inference as _pkg
+
     if hasattr(_pkg, "llama_cpp"):
         delattr(_pkg, "llama_cpp")
 
