@@ -33,6 +33,13 @@ export interface CheckpointListResponse {
   models: ModelCheckpoints[];
 }
 
+export interface ExportSizeEstimate {
+  /** Estimated FP16/BF16-equivalent on-disk size, or null when unknown. */
+  fp16_bytes: number | null;
+  total_params: number | null;
+  source: string;
+}
+
 export interface ExportOperationResponse {
   success: boolean;
   message: string;
@@ -46,6 +53,24 @@ export interface ExportOperationResponse {
 export async function fetchCheckpoints(): Promise<CheckpointListResponse> {
   const response = await authFetch("/api/models/checkpoints");
   return parseJson<CheckpointListResponse>(response);
+}
+
+/** Estimate a model's fp16-equivalent size to scale the GGUF quant labels; nulls (not error) when unknown. */
+export async function fetchExportSize(
+  modelId: string,
+  hfToken?: string | null,
+  signal?: AbortSignal,
+): Promise<ExportSizeEstimate> {
+  // Token in a header (not the query string) so it never lands in URLs/logs.
+  const headers: Record<string, string> = {};
+  if (hfToken) {
+    headers["X-HF-Token"] = hfToken;
+  }
+  const response = await authFetch(
+    `/api/models/export-size?model=${encodeURIComponent(modelId)}`,
+    { signal, headers },
+  );
+  return parseJson<ExportSizeEstimate>(response);
 }
 
 export async function loadCheckpoint(params: {

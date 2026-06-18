@@ -3,6 +3,7 @@
 
 """Model management API routes."""
 
+import asyncio
 import hashlib
 import json
 import os
@@ -10,7 +11,7 @@ import shutil
 import sys
 import uuid
 from pathlib import Path
-from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query
 from typing import List, Optional
 import structlog
 from loggers import get_logger
@@ -149,6 +150,7 @@ from models import (
 from models.models import (
     BrowseEntry,
     BrowseFoldersResponse,
+    ExportSizeResponse,
     GgufVariantDetail,
     GgufVariantsResponse,
     ModelType,
@@ -3008,3 +3010,121 @@ async def list_checkpoints(
             event = "models.list_checkpoints_failed",
             log = logger,
         )
+
+
+# Successful estimates only, keyed by model id (token-independent, never stored).
+# Failures are not cached so a transient offline/gated error can recover later.
+_EXPORT_SIZE_CACHE: dict[str, tuple[int, int, str]] = {}
+
+
+def _is_sizable_local_path(model: str) -> bool:
+    """True only for local paths under a Studio data root.
+
+    Containment is decided lexically (no filesystem access) before the path is
+    touched, then the path is symlink-resolved and re-checked so a symlink
+    inside a root can't point the sizer outside it. A user-controlled path thus
+    can't trigger a scan of an arbitrary dir.
+    """
+    from utils.paths import outputs_root, exports_root, studio_root
+    from utils.paths.storage_roots import cache_root
+
+    def _lexical(p: str) -> str:
+        # Lexical only (no filesystem read); normpath collapses '..'.
+        return os.path.normpath(os.path.abspath(os.path.expanduser(p)))
+
+    raw_roots = [studio_root(), outputs_root(), exports_root(), cache_root()]
+    roots = []
+    for root in raw_roots:
+        try:
+            roots.append(_lexical(str(root)))
+        except (OSError, RuntimeError, ValueError):
+            continue
+
+    try:
+        candidate = _lexical(model)
+    except (OSError, RuntimeError, ValueError):
+        return False
+    for root in roots:
+        if candidate == root or candidate.startswith(root + os.sep):
+            # Contained lexically; resolve symlinks and re-verify the real path
+            # is still under a root before touching the filesystem.
+            try:
+                real = os.path.realpath(candidate)
+            except (OSError, RuntimeError, ValueError):
+                return False
+            for raw in raw_roots:
+                try:
+                    real_root = os.path.realpath(str(raw))
+                except (OSError, RuntimeError, ValueError):
+                    continue
+                if real == real_root or real.startswith(real_root + os.sep):
+                    return os.path.exists(real)
+            return False
+    return False
+
+
+def _export_size_cached(
+    model: str, hf_token: Optional[str]
+) -> tuple[Optional[int], Optional[int], str]:
+    """Estimate a model's fp16/bf16-equivalent size in bytes (+ total params).
+
+    Memoizes successful results by model id; never raises (failures return
+    (None, None, "unavailable") and are not cached). Blocking I/O; call off-thread.
+    """
+    cached = _EXPORT_SIZE_CACHE.get(model)
+    if cached is not None:
+        return cached
+    try:
+        from utils.hardware.hardware import (
+            _resolve_model_identifier_for_gpu_estimate,
+            estimate_fp16_model_size_bytes,
+        )
+
+        # A local LoRA adapter is sized via its base model, which the sizer
+        # reads from the adapter config; re-validate that resolved base so a
+        # crafted adapter can't redirect the local scan outside the roots.
+        if is_local_path(model):
+            base = _resolve_model_identifier_for_gpu_estimate(model, hf_token = hf_token)
+            if is_local_path(base) and not _is_sizable_local_path(base):
+                return None, None, "unavailable"
+
+        fp16_bytes, source = estimate_fp16_model_size_bytes(model, hf_token = hf_token)
+        if not fp16_bytes or fp16_bytes <= 0:
+            return None, None, source or "unavailable"
+        result = (int(fp16_bytes), int(fp16_bytes) // 2, source)
+        _EXPORT_SIZE_CACHE[model] = result
+        return result
+    except Exception as e:  # a size hint must never break export
+        logger.warning("Could not estimate export size for '%s': %s", model, e)
+        return None, None, "unavailable"
+
+
+@router.get("/export-size", response_model = ExportSizeResponse)
+async def get_export_size(
+    model: str = Query(..., description = "Base model id or local model path to size"),
+    hf_token: Optional[str] = Header(None, alias = "X-HF-Token"),
+    current_subject: str = Depends(get_current_subject),
+):
+    """Estimate a model's fp16/bf16-equivalent size for the Export page.
+
+    Returns nulls with HTTP 200 when the size can't be determined. The HF token
+    (for gated repos) comes from the X-HF-Token header so it never hits URLs/logs.
+    """
+    if is_local_path(model):
+        if not _is_sizable_local_path(model):
+            return ExportSizeResponse(
+                model = model, fp16_bytes = None, total_params = None, source = "unavailable"
+            )
+        resolved = model
+    else:
+        resolved = resolve_cached_repo_id_case(model)
+    # Blocking network/disk I/O: run off the event loop.
+    fp16_bytes, total_params, source = await asyncio.to_thread(
+        _export_size_cached, resolved, hf_token
+    )
+    return ExportSizeResponse(
+        model = resolved,
+        fp16_bytes = fp16_bytes,
+        total_params = total_params,
+        source = source,
+    )

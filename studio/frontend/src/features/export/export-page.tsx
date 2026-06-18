@@ -71,8 +71,10 @@ import { QuantPicker } from "./components/quant-picker";
 import {
   type ExportMethod,
   GUIDE_STEPS,
+  buildQuantSizeLabels,
   getEstimatedSize,
 } from "./constants";
+import { useExportSizeEstimate } from "./hooks/use-export-size-estimate";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { exportTourSteps } from "./tour";
 
@@ -243,6 +245,26 @@ export function ExportPage() {
     ? selectedSourceModel ?? "—"
     : baseModelName;
 
+  // For a full fine-tune checkpoint the weights live in the checkpoint dir
+  // itself (its base_model may be a local/custom path that can't be sized), so
+  // size that dir; for LoRA adapters the export merges into the base model.
+  const sizeTargetModel = useMemo(() => {
+    if (sourceMode === "checkpoint" && !isAdapter) {
+      const cp = checkpointsForModel.find((c) => c.display_name === checkpoint);
+      if (cp?.path) {
+        return cp.path;
+      }
+    }
+    return sourceBaseModelName;
+  }, [sourceMode, isAdapter, checkpointsForModel, checkpoint, sourceBaseModelName]);
+
+  // Real (MoE-aware) fp16 size, used to scale the GGUF quant estimates.
+  const { fp16Bytes } = useExportSizeEstimate(sizeTargetModel, debouncedHfToken);
+  const quantSizeLabels = useMemo(
+    () => buildQuantSizeLabels(fp16Bytes),
+    [fp16Bytes],
+  );
+
   const {
     results: hfResults,
     isLoading: isLoadingHfModels,
@@ -367,7 +389,7 @@ export function ExportPage() {
     }
   };
 
-  const estimatedSize = getEstimatedSize(exportMethod, quantLevels);
+  const estimatedSize = getEstimatedSize(exportMethod, quantLevels, fp16Bytes);
   const selectedExportSource =
     sourceMode === "checkpoint" ? checkpoint : selectedSourceModel;
   const defaultSaveDirectory = useMemo(() => {
@@ -1087,21 +1109,28 @@ export function ExportPage() {
               <AnimatePresence>
                 {exportMethod === "gguf" && (
                   <motion.div {...collapseAnim} className="overflow-visible">
-                    <QuantPicker value={quantLevels} onChange={setQuantLevels} />
+                    <QuantPicker
+                      value={quantLevels}
+                      onChange={setQuantLevels}
+                      sizes={quantSizeLabels}
+                    />
                   </motion.div>
                 )}
               </AnimatePresence>
 
               <Separator />
-              <div className="flex items-center justify-end">
-                {/* TODO: unhide once estimated size comes from the backend API */}
-                {/* <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                  <HugeiconsIcon
-                    icon={InformationCircleIcon}
-                    className="size-3.5"
-                  />
-                  <span>Est. size: {estimatedSize} · Free disk space: 120 GB</span>
-                </div> */}
+              <div className="flex items-center justify-between">
+                {estimatedSize ? (
+                  <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                    <HugeiconsIcon
+                      icon={InformationCircleIcon}
+                      className="size-3.5"
+                    />
+                    <span>Est. size: {estimatedSize}</span>
+                  </div>
+                ) : (
+                  <span />
+                )}
                 <Button
                   data-tour="export-cta"
                   disabled={!canExport}
