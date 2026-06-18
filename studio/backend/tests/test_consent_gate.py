@@ -608,6 +608,56 @@ class TestStructuredFindingsForDialog:
         assert payload["scan_created_repos"] == [base]
         assert payload["created_by_scan"] is False
 
+    def test_scan_route_purges_remote_adapter_downloaded_by_base_resolution(self, monkeypatch):
+        """A REMOTE adapter is reported scan-created even though resolving its base first
+        downloads the adapter's own adapter_config.json into the cache. Otherwise the
+        adapter -- and the auto_map .py the preflight fetched -- is left on disk on
+        decline. The static-lambda tests above miss this because they do not model the
+        side effect of base resolution."""
+        import asyncio
+
+        import routes.models as models_route
+        import utils.models.model_config as model_config
+        import utils.security as security
+        import utils.security.remote_code_scan as rcs
+
+        adapter, base = "someone/lora-adapter", "someone/base-model"
+        cached: set = set()  # repos currently present in some HF cache
+
+        def _get_base(name, token = None):
+            # Resolving the base downloads the ADAPTER's adapter_config.json first.
+            cached.add(adapter)
+            return base
+
+        monkeypatch.setattr(models_route, "is_local_path", lambda *_a, **_k: False)
+        monkeypatch.setattr(models_route, "resolve_cached_repo_id_case", lambda n, *a, **k: n)
+        monkeypatch.setattr(model_config, "get_base_model_from_lora_identifier", _get_base)
+        monkeypatch.setattr(models_route, "_repo_in_any_hf_cache", lambda n, *a, **k: n in cached)
+        monkeypatch.setattr(rcs, "external_auto_map_repos", lambda *_a, **_k: set())
+        monkeypatch.setattr(
+            security,
+            "preflight_remote_code_consent_for_targets",
+            lambda *_a, **_k: SimpleNamespace(
+                has_remote_code = True,
+                response_payload = lambda: {"has_remote_code": True, "approvable": True},
+            ),
+        )
+        monkeypatch.setattr(security, "security_load_subdirs", lambda *_a, **_k: ())
+        monkeypatch.setattr(
+            security,
+            "evaluate_file_security",
+            lambda *_a, **_k: SimpleNamespace(blocked = False, unsafe_files = []),
+        )
+        payload = asyncio.run(
+            models_route.scan_model_remote_code(
+                model_name = adapter, hf_token = None, current_subject = "tester"
+            )
+        )
+        # The adapter must be purged on decline despite being cached mid-scan.
+        assert adapter in payload["scan_created_repos"]
+        assert base in payload["scan_created_repos"]
+        assert payload["created_by_scan"] is True
+
     @pytest.mark.parametrize(
         "rel",
         [

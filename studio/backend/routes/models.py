@@ -1606,6 +1606,15 @@ async def scan_model_remote_code(
         # malware scan must cover the adapter AND the base (matching the workers, which
         # gate both). The remote-code scan pins ONE combined fingerprint over both, so
         # an adapter that ships its own auto_map code is reviewed and approvable too.
+        # Snapshot whether the PRIMARY repo was already cached BEFORE resolving the base:
+        # for a REMOTE adapter, get_base_model_from_lora_identifier downloads the adapter's
+        # own adapter_config.json, which would otherwise make the adapter look already-owned
+        # and wrongly skip its cleanup on decline (leaving the auto_map .py the preflight
+        # fetched). On any error, treat it as pre-existing so a decline never deletes it.
+        try:
+            _primary_preexisting = is_local_path(model_name) or _repo_in_any_hf_cache(model_name)
+        except Exception:
+            _primary_preexisting = True
         security_targets = [model_name]
         try:
             from utils.models.model_config import get_base_model_from_lora_identifier
@@ -1633,18 +1642,26 @@ async def scan_model_remote_code(
         scan_created_repos: list = []
         _seen_created: set = set()
 
-        def _mark_scan_created(repo: str) -> None:
+        def _mark_scan_created(repo: str, *, preexisting: Optional[bool] = None) -> None:
             if not repo or repo in _seen_created:
                 return
             _seen_created.add(repo)
             try:
-                if (not is_local_path(repo)) and not _repo_in_any_hf_cache(repo):
+                already = (
+                    preexisting
+                    if preexisting is not None
+                    else (is_local_path(repo) or _repo_in_any_hf_cache(repo))
+                )
+                if not already:
                     scan_created_repos.append(repo)
             except Exception:
                 pass
 
         for _target in security_targets:
-            _mark_scan_created(_target)
+            # Use the pre-base-resolution snapshot for the primary (see above).
+            _mark_scan_created(
+                _target, preexisting = _primary_preexisting if _target == model_name else None
+            )
             for _ext in external_auto_map_repos(_target, hf_token):
                 _mark_scan_created(_ext)
         decision = preflight_remote_code_consent_for_targets(security_targets, hf_token = hf_token)
