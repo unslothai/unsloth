@@ -147,12 +147,14 @@ def test_windows_job_kills_child_when_parent_dies(tmp_path):
         "import utils.process_lifetime as pl\n"
         "pl.initialize_parent_lifetime()\n"
         "p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(300)'])\n"
-        "print(p.pid, flush = True)\n"
+        "print(p.pid, int(pl._win_job_handle is not None), flush = True)\n"
         "time.sleep(300)\n"
     )
     proc = subprocess.Popen([sys.executable, str(mid)], stdout = subprocess.PIPE, text = True)
     try:
-        child_pid = int(proc.stdout.readline().strip())
+        first = proc.stdout.readline().split()
+        child_pid, installed = int(first[0]), first[1] == "1"
+        assert installed, "Windows Job Object was not installed"
         assert _alive(child_pid)
         proc.kill()  # TerminateProcess the parent -> last job handle closes
         proc.wait(timeout = 5)

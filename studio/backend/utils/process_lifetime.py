@@ -63,6 +63,26 @@ def initialize_parent_lifetime() -> None:
             _install_windows_job()
 
 
+def _win_signatures(kernel32) -> None:
+    # Explicit HANDLE-width signatures. Without argtypes, ctypes marshals the
+    # 64-bit job/process handles as c_int and truncates them on Win64, so the
+    # job calls silently operate on a bogus handle and assignment fails.
+    import ctypes
+    from ctypes import wintypes
+
+    H, BOOL, DWORD = wintypes.HANDLE, wintypes.BOOL, wintypes.DWORD
+    kernel32.CreateJobObjectW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p]
+    kernel32.CreateJobObjectW.restype = H
+    kernel32.SetInformationJobObject.argtypes = [H, ctypes.c_int, ctypes.c_void_p, DWORD]
+    kernel32.SetInformationJobObject.restype = BOOL
+    kernel32.AssignProcessToJobObject.argtypes = [H, H]
+    kernel32.AssignProcessToJobObject.restype = BOOL
+    kernel32.GetCurrentProcess.argtypes = []
+    kernel32.GetCurrentProcess.restype = H
+    kernel32.CloseHandle.argtypes = [H]
+    kernel32.CloseHandle.restype = BOOL
+
+
 def _install_windows_job() -> None:
     global _win_job_handle
     try:
@@ -70,6 +90,7 @@ def _install_windows_job() -> None:
         from ctypes import wintypes
 
         kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
+        _win_signatures(kernel32)
 
         class _BASIC(ctypes.Structure):
             _fields_ = [
@@ -106,10 +127,6 @@ def _install_windows_job() -> None:
                 ("PeakProcessMemoryUsed", ctypes.c_size_t),
                 ("PeakJobMemoryUsed", ctypes.c_size_t),
             ]
-
-        kernel32.CreateJobObjectW.restype = wintypes.HANDLE
-        kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
-        kernel32.SetInformationJobObject.restype = wintypes.BOOL
 
         job = kernel32.CreateJobObjectW(None, None)
         if not job:
@@ -186,6 +203,8 @@ def adopt_pid(pid: Optional[int]) -> None:
             from ctypes import wintypes
 
             kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
+            _win_signatures(kernel32)
+            kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
             kernel32.OpenProcess.restype = wintypes.HANDLE
             PROCESS_SET_QUOTA, PROCESS_TERMINATE = 0x0100, 0x0001
             handle = kernel32.OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, False, pid)
