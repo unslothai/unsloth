@@ -47,10 +47,10 @@ export interface ProviderLogo {
 	 */
 	prefixes: readonly string[];
 	/**
-	 * Lowercase family stems matched as a case-insensitive substring, only as a
-	 * fallback after all prefixes miss. Catches qualifier-prefixed derivatives
-	 * (e.g. `diffusiongemma-` for Google). Use only for stems unique to one
-	 * provider, since substring matching is broad.
+	 * Lowercase family stems matched case-insensitively, only as a fallback after
+	 * all prefixes miss. A stem matches when it ends at a word boundary (the next
+	 * char is not a letter), so `gemma` catches `diffusiongemma-` and `gemma-3n`
+	 * but not `gemmafy`. Use only for stems unique to one provider.
 	 */
 	stems?: readonly string[];
 }
@@ -257,10 +257,21 @@ export const PROVIDER_LOGOS: readonly ProviderLogo[] = [
 	},
 ];
 
+// True if `stem` occurs in `haystack` (already lowercased) ending at a word
+// boundary: the char after it is absent or not a letter. So `gemma` matches
+// `diffusiongemma-` and `gemma-3n` but not `gemmafy`.
+function stemMatchesAtBoundary(haystack: string, stem: string): boolean {
+	for (let at = haystack.indexOf(stem); at !== -1; at = haystack.indexOf(stem, at + 1)) {
+		const next = haystack[at + stem.length];
+		if (next === undefined || next < "a" || next > "z") return true;
+	}
+	return false;
+}
+
 /**
  * Resolve a repo name (after `owner/`) to its upstream provider, or null.
  * Pass 1: case-sensitive prefix match (declaration order, first wins). Pass 2:
- * case-insensitive `stems` substring fallback. Prefixes always win, so the
+ * case-insensitive `stems` boundary fallback. Prefixes always win, so the
  * ordered precedence above is never weakened by the broader stem match.
  */
 export function matchProviderLogo(repoName: string): ProviderLogo | null {
@@ -272,7 +283,7 @@ export function matchProviderLogo(repoName: string): ProviderLogo | null {
 	}
 	const lower = repoName.toLowerCase();
 	for (const provider of PROVIDER_LOGOS) {
-		if (provider.stems?.some((stem) => lower.includes(stem))) {
+		if (provider.stems?.some((stem) => stemMatchesAtBoundary(lower, stem))) {
 			return provider;
 		}
 	}
