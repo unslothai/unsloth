@@ -164,16 +164,34 @@ def _is_direct_gguf_file_ref(model_name: str) -> bool:
     return name.count("/") >= 2
 
 
+# Weight formats transformers can load (and therefore run ``auto_map`` for). If a
+# repo ships ANY of these, it is NOT GGUF-only: the user could load that weight set
+# through transformers, where the custom code WOULD execute, so consent still applies.
+# ``.safetensors`` is listed, but so are the pickle/legacy formats -- a repo with a
+# ``.gguf`` plus a ``pytorch_model.bin`` is a transformers-loadable repo, not a
+# llama.cpp-only one, and must still be gated.
+_TRANSFORMERS_WEIGHT_SUFFIXES = (
+    ".safetensors",
+    ".bin",
+    ".pt",
+    ".pth",
+    ".h5",
+    ".msgpack",
+    ".onnx",
+    ".ckpt",
+)
+
+
 def _is_gguf_repo(model_name: str, hf_token: Optional[str] = None) -> bool:
     """Whether a remote repo loads through llama.cpp (GGUF), making its config inert.
 
-    True when the repo ships ``.gguf`` weights and NO ``.safetensors`` (so there is
-    no transformers weight set to load with ``trust_remote_code``). A mixed repo
-    that has both is NOT treated as GGUF here: the user could load the safetensors
-    variant through transformers, where ``auto_map`` WOULD run, so the consent gate
-    must still apply. Direct ``.gguf`` file references are handled by
-    ``_is_direct_gguf_file_ref`` in the caller; a listing failure here is treated as
-    "not known-GGUF" (fall through to scan).
+    True only when the repo ships ``.gguf`` weights and NO transformers-loadable
+    weights (``.safetensors``/``.bin``/``.pt``/``.pth``/``.h5``/``.msgpack``/
+    ``.onnx``/``.ckpt``). A repo that also ships any of those is NOT treated as GGUF:
+    the user could load that weight set through transformers, where ``auto_map``
+    WOULD run, so the consent gate must still apply. Direct ``.gguf`` file references
+    are handled by ``_is_direct_gguf_file_ref`` in the caller; a listing failure here
+    is treated as "not known-GGUF" (fall through to scan).
     """
     try:
         from utils.paths import is_local_path
@@ -184,8 +202,10 @@ def _is_gguf_repo(model_name: str, hf_token: Optional[str] = None) -> bool:
 
         files = [f.lower() for f in list_repo_files(model_name, token = hf_token)]
         has_gguf = any(f.endswith(".gguf") for f in files)
-        has_safetensors = any(f.endswith(".safetensors") for f in files)
-        return has_gguf and not has_safetensors
+        has_transformers_weights = any(
+            f.endswith(_TRANSFORMERS_WEIGHT_SUFFIXES) for f in files
+        )
+        return has_gguf and not has_transformers_weights
     except Exception:
         return False
 

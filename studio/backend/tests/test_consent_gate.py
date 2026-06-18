@@ -1026,6 +1026,40 @@ class TestScannerCoversAllExecutableCode:
         ):
             assert consent._config_has_auto_map("org/Mixed-Repo") is True
 
+    def test_mixed_gguf_and_bin_repo_is_still_gated(self):
+        # A repo with .gguf + a transformers-loadable weight that is NOT safetensors
+        # (pytorch_model.bin / .pt / .pth / .h5 / .msgpack / .onnx / .ckpt) is NOT
+        # GGUF-only: transformers can load that weight set and run auto_map, so the
+        # consent gate must still apply. Guards against treating "has .gguf and no
+        # .safetensors" as inert when a pickle weight set is present.
+        def _dl(repo_id = None, filename = None, token = None, **kw):
+            import json
+            import tempfile
+
+            if filename == "config.json":
+                p = Path(tempfile.mkdtemp()) / "config.json"
+                p.write_text(json.dumps({"auto_map": {"AutoModel": "modeling_x.X"}}))
+                return str(p)
+            raise EntryNotFoundError(filename)
+
+        for weight in (
+            "pytorch_model.bin",
+            "model.pt",
+            "model.pth",
+            "tf_model.h5",
+            "flax_model.msgpack",
+            "model.onnx",
+            "model.ckpt",
+        ):
+            with (
+                patch("huggingface_hub.hf_hub_download", side_effect = _dl),
+                patch(
+                    "huggingface_hub.list_repo_files",
+                    return_value = ["config.json", "modeling_x.py", weight, "model.gguf"],
+                ),
+            ):
+                assert consent._config_has_auto_map("org/Mixed-Bin-GGUF") is True, weight
+
 
 # ---------------------------------------------------------------------------
 # POST /discard-remote-code: purge what the scan downloaded when the user
