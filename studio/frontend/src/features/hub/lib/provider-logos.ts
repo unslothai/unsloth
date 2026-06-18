@@ -46,6 +46,13 @@ export interface ProviderLogo {
 	 * on the family stem so future minor versions are picked up automatically.
 	 */
 	prefixes: readonly string[];
+	/**
+	 * Lowercase family stems matched as a case-insensitive substring, only as a
+	 * fallback after all prefixes miss. Catches qualifier-prefixed derivatives
+	 * (e.g. `diffusiongemma-` for Google). Use only for stems unique to one
+	 * provider, since substring matching is broad.
+	 */
+	stems?: readonly string[];
 }
 
 export const PROVIDER_LOGOS: readonly ProviderLogo[] = [
@@ -217,6 +224,8 @@ export const PROVIDER_LOGOS: readonly ProviderLogo[] = [
 			"metricx-",
 			"bert-",
 		],
+		// Catches `<qualifier>gemma` derivatives (e.g. diffusiongemma-).
+		stems: ["gemma"],
 	},
 
 	// After NVIDIA so `Mistral-NeMo-` wins; generic Mistral-/Mixtral- fall through here.
@@ -250,12 +259,20 @@ export const PROVIDER_LOGOS: readonly ProviderLogo[] = [
 
 /**
  * Resolve a repo name (after `owner/`) to its upstream provider, or null.
- * Iterates PROVIDER_LOGOS in declaration order; first prefix match wins.
+ * Pass 1: case-sensitive prefix match (declaration order, first wins). Pass 2:
+ * case-insensitive `stems` substring fallback. Prefixes always win, so the
+ * ordered precedence above is never weakened by the broader stem match.
  */
 export function matchProviderLogo(repoName: string): ProviderLogo | null {
 	if (!repoName) return null;
 	for (const provider of PROVIDER_LOGOS) {
 		if (provider.prefixes.some((prefix) => repoName.startsWith(prefix))) {
+			return provider;
+		}
+	}
+	const lower = repoName.toLowerCase();
+	for (const provider of PROVIDER_LOGOS) {
+		if (provider.stems?.some((stem) => lower.includes(stem))) {
 			return provider;
 		}
 	}
