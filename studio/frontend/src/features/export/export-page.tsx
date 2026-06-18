@@ -51,10 +51,8 @@ import {
   Search01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { AnimatePresence, motion } from "motion/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
-import { collapseAnim } from "./anim";
 import type { ModelCheckpoints } from "./api/export-api";
 import { fetchCheckpoints } from "./api/export-api";
 import { ExportRunPanel } from "./components/export-run-panel";
@@ -1078,18 +1076,12 @@ export function ExportPage() {
                 }
               />
 
-              <AnimatePresence>
-                {exportMethod === "gguf" && (
-                  <motion.div {...collapseAnim} className="overflow-visible">
-                    <QuantPicker value={quantLevels} onChange={setQuantLevels} />
-                  </motion.div>
-                )}
-              </AnimatePresence>
+              {exportMethod === "gguf" && (
+                <QuantPicker value={quantLevels} onChange={setQuantLevels} />
+              )}
 
               <Separator />
-              <AnimatePresence initial={false}>
-                {showPanel && (
-                  <motion.div key="export-run-panel" {...collapseAnim}>
+              {showPanel && (
                     <ExportRunPanel
                       exportMethod={exportMethod}
                       quantLevels={quantLevels}
@@ -1113,9 +1105,7 @@ export function ExportPage() {
                       onStart={handleStart}
                       onClose={handleClosePanel}
                     />
-                  </motion.div>
                 )}
-              </AnimatePresence>
               {showPanel && (
                 <div ref={panelEndRef} aria-hidden="true" className="h-px w-full" />
               )}

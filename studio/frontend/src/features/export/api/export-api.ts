@@ -170,6 +170,37 @@ export interface ExportLogEntry {
   ts: number | null;
 }
 
+/** A log line from the JSON poll endpoint, carrying its ring-buffer seq. */
+export interface ExportLogPollEntry extends ExportLogEntry {
+  seq: number;
+}
+
+export interface ExportLogsResponse {
+  entries: ExportLogPollEntry[];
+  /** Highest seq returned; pass back as `since` on the next poll. */
+  cursor: number;
+  /** True while a load / export / cleanup op is running on the backend. */
+  active: boolean;
+}
+
+/**
+ * Tunnel-safe JSON fallback for {@link streamExportLogs}. Cloudflare quick
+ * tunnels (`--secure` mode) buffer `text/event-stream`, so the SSE stream
+ * delivers nothing until it closes; this plain-JSON poll is never buffered and
+ * carries the same ring-buffer lines. Poll it while a run is active and merge
+ * the entries into the store (de-duped by seq), so logs appear over the tunnel.
+ */
+export async function fetchExportLogs(
+  since: number | null,
+): Promise<ExportLogsResponse> {
+  const url =
+    typeof since === "number"
+      ? `/api/export/logs?since=${since}`
+      : "/api/export/logs";
+  const response = await authFetch(url);
+  return parseJson<ExportLogsResponse>(response);
+}
+
 export type ExportLogEventName = "log" | "heartbeat" | "complete" | "error";
 
 export interface ExportLogEvent {

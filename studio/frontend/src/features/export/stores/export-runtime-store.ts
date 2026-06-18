@@ -11,6 +11,7 @@ import {
   exportMerged,
   loadCheckpoint,
   type ExportLogEntry,
+  type ExportLogPollEntry,
   type ExportStatus,
 } from "../api/export-api";
 import type { ExportMethod } from "../constants";
@@ -90,7 +91,10 @@ interface ExportRuntimeState {
 interface ExportRuntimeActions {
   runExport: (params: RunExportParams) => Promise<void>;
   requestCancel: () => Promise<void>;
+  /** Append one streamed line (SSE). De-duped by seq against the poll path. */
   appendLog: (entry: ExportLogEntry, seq?: number) => void;
+  /** Merge a batch of polled lines (JSON fallback). De-duped by seq. */
+  appendLogs: (entries: ExportLogPollEntry[]) => void;
   setConnected: (value: boolean) => void;
   applyBackendStatus: (status: ExportStatus) => void;
   reset: () => void;
@@ -126,6 +130,15 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
 
   appendLog: (entry, seq) =>
     set((state) => {
+      // De-dupe by seq: the SSE stream and the JSON poll fallback both feed
+      // logs, so ignore anything at or below the highest seq already seen.
+      if (
+        typeof seq === "number" &&
+        state.lastSeq !== null &&
+        seq <= state.lastSeq
+      ) {
+        return state;
+      }
       const next =
         state.logLines.length >= MAX_LOG_LINES
           ? state.logLines.slice(state.logLines.length - MAX_LOG_LINES + 1)
@@ -137,6 +150,36 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
         // `status` lines are the worker's high-level progress markers; surface
         // the most recent one as the stage label.
         stage: entry.stream === "status" ? entry.line : state.stage,
+      };
+    }),
+
+  appendLogs: (entries) =>
+    set((state) => {
+      // Keep only lines newer than the highest seq we've shown (covers overlap
+      // with the SSE stream and with the previous poll batch).
+      const fresh =
+        state.lastSeq === null
+          ? entries
+          : entries.filter((e) => e.seq > (state.lastSeq as number));
+      if (fresh.length === 0) return state;
+
+      const merged = state.logLines.concat(
+        fresh.map((e) => ({ stream: e.stream, line: e.line, ts: e.ts })),
+      );
+      const next =
+        merged.length > MAX_LOG_LINES
+          ? merged.slice(merged.length - MAX_LOG_LINES)
+          : merged;
+
+      // Latest `status` line in the batch becomes the stage label.
+      let stage = state.stage;
+      for (const e of fresh) {
+        if (e.stream === "status") stage = e.line;
+      }
+      return {
+        logLines: next,
+        lastSeq: fresh[fresh.length - 1].seq,
+        stage,
       };
     }),
 

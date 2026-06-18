@@ -26,10 +26,8 @@ import {
   Key01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
-import { collapseAnim } from "../anim";
 import { EXPORT_METHODS, type ExportMethod } from "../constants";
 import type { ExportLogEntry } from "../api/export-api";
 import {
@@ -296,10 +294,8 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
             </div>
           )}
 
-          <AnimatePresence>
-            {destination === "hub" && (
-              <motion.div {...collapseAnim} className="overflow-hidden">
-                <div className="flex flex-col gap-4 px-0.5">
+          {destination === "hub" && (
+            <div className="flex flex-col gap-4 px-0.5">
                   <div className="grid grid-cols-2 gap-3">
                     <div className="flex flex-col gap-1.5">
                       <label className="text-xs font-medium text-muted-foreground">
@@ -371,9 +367,7 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
                     </label>
                   </div>
                 </div>
-              </motion.div>
-            )}
-          </AnimatePresence>
+          )}
         </>
       )}
 
@@ -479,10 +473,8 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
       )}
 
       {/* Live export output */}
-      <AnimatePresence>
-        {showLogPanel && (isExporting || run.logLines.length > 0) && (
-          <motion.div {...collapseAnim} className="overflow-hidden">
-            <div className="flex flex-col gap-1.5 pt-1">
+      {showLogPanel && (isExporting || run.logLines.length > 0) && (
+        <div className="flex flex-col gap-1.5 pt-1">
               <div className="flex items-center justify-between">
                 <label className="text-xs font-medium text-muted-foreground">
                   Export output
@@ -536,9 +528,7 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
                 )}
               </div>
             </div>
-          </motion.div>
         )}
-      </AnimatePresence>
 
       {/* Footer actions */}
       <div className="flex justify-end gap-2">

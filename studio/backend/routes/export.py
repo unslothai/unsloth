@@ -151,6 +151,59 @@ async def get_export_status(current_subject: str = Depends(get_current_subject))
         )
 
 
+@router.get("/logs")
+async def get_export_logs(
+    since: Optional[int] = Query(
+        None,
+        description = "Return log entries with seq strictly greater than this cursor.",
+    ),
+    current_subject: str = Depends(get_current_subject),
+):
+    """Tunnel-safe JSON fallback for the live export log stream.
+
+    The SSE endpoint (`/logs/stream`) is the low-latency path, but some reverse
+    proxies -- notably Cloudflare quick tunnels (`*.trycloudflare.com`) used by
+    `--secure` mode -- buffer `text/event-stream` responses and only flush when
+    the stream closes, so over the tunnel the browser sees nothing for the whole
+    export ("connecting..." with no logs). This endpoint returns the same
+    ring-buffer lines as a short, complete JSON response that no proxy buffers,
+    so the frontend can poll it and still show logs in near real time.
+
+    Shares the orchestrator's monotonic `seq` cursor with the SSE stream, so the
+    two transports can run together and the client de-dupes by seq.
+    """
+    try:
+        backend = get_export_backend()
+        # No cursor on the first poll of a run: start from the run-start snapshot
+        # so the client gets every line since the run began (matches the SSE
+        # default), not the entire historical ring buffer.
+        if since is None:
+            cursor = backend.get_run_start_seq()
+        else:
+            cursor = max(0, int(since))
+
+        entries, new_cursor = backend.get_logs_since(cursor)
+        return {
+            "entries": [
+                {
+                    "seq": int(entry.get("seq", 0)),
+                    "stream": entry.get("stream", "stdout"),
+                    "line": entry.get("line", ""),
+                    "ts": entry.get("ts"),
+                }
+                for entry in entries
+            ],
+            "cursor": new_cursor,
+            "active": bool(backend.is_export_active()),
+        }
+    except Exception as e:
+        logger.error(f"Error getting export logs: {e}", exc_info = True)
+        raise HTTPException(
+            status_code = 500,
+            detail = "Failed to get export logs",
+        )
+
+
 def _try_register_external_export(path: Path) -> tuple[bool, Optional[str]]:
     """Best-effort registration so absolute exports show up in local scans."""
     try:

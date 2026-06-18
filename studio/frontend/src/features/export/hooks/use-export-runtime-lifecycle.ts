@@ -3,11 +3,20 @@
 
 import { hasAuthToken } from "@/features/auth";
 import { useEffect } from "react";
-import { getExportStatus, streamExportLogs } from "../api/export-api";
+import {
+  fetchExportLogs,
+  getExportStatus,
+  streamExportLogs,
+} from "../api/export-api";
 import { useExportRuntimeStore } from "../stores/export-runtime-store";
 
 const STATUS_POLL_INTERVAL_MS = 5000;
 const STREAM_RECONNECT_DELAY_MS = 600;
+// JSON log poll cadence. The SSE stream is the low-latency path on localhost,
+// but Cloudflare quick tunnels (`--secure`) buffer `text/event-stream`, so this
+// poll is the transport that actually delivers logs over the tunnel. Short
+// JSON responses are never buffered, so this works through any proxy.
+const LOG_POLL_INTERVAL_MS = 750;
 
 /**
  * Global export runtime driver, mounted once at the app root so it runs on every
@@ -28,6 +37,8 @@ export function useExportRuntimeLifecycle(): void {
     let openingStream = false;
     let streamController: AbortController | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let logPolling = false;
+    let logPollTimer: ReturnType<typeof setTimeout> | null = null;
 
     const store = useExportRuntimeStore;
 
@@ -44,8 +55,52 @@ export function useExportRuntimeLifecycle(): void {
         streamController.abort();
         streamController = null;
       }
+      stopLogPolling();
       store.getState().setConnected(false);
     };
+
+    // ── JSON log polling (tunnel-safe fallback) ──────────────────────────
+    // Runs for the whole active run, in parallel with the SSE stream. On
+    // localhost the SSE delivers first and these polls are de-duped away by
+    // seq; over a Cloudflare tunnel the SSE is buffered and these polls are
+    // what actually fill the log panel. A successful poll marks the stream
+    // "connected" so the panel shows "streaming" rather than "connecting...".
+    const pollLogsOnce = async () => {
+      if (disposed || !store.getState().isExporting) return;
+      try {
+        const res = await fetchExportLogs(store.getState().lastSeq);
+        if (disposed) return;
+        store.getState().setConnected(true);
+        if (res.entries.length > 0) {
+          store.getState().appendLogs(res.entries);
+        }
+      } catch {
+        // Transient poll failure: the next poll (or the SSE) will catch up.
+      }
+    };
+
+    const logPollLoop = async () => {
+      if (disposed || !logPolling) return;
+      await pollLogsOnce();
+      if (disposed || !logPolling) return;
+      logPollTimer = setTimeout(() => {
+        void logPollLoop();
+      }, LOG_POLL_INTERVAL_MS);
+    };
+
+    const startLogPolling = () => {
+      if (logPolling || disposed) return;
+      logPolling = true;
+      void logPollLoop();
+    };
+
+    function stopLogPolling() {
+      logPolling = false;
+      if (logPollTimer) {
+        clearTimeout(logPollTimer);
+        logPollTimer = null;
+      }
+    }
 
     const ensureStream = async () => {
       if (
@@ -82,7 +137,11 @@ export function useExportRuntimeLifecycle(): void {
         if (streamController === controller) {
           streamController = null;
         }
-        store.getState().setConnected(false);
+        // Do NOT clear `connected` here: over a Cloudflare tunnel the SSE drops
+        // and reconnects repeatedly (buffered / premature complete), which used
+        // to flap the indicator back to "connecting...". The log poll owns the
+        // connected flag for the duration of the run; stopStream clears it when
+        // the run actually ends.
 
         if (
           !disposed &&
@@ -104,6 +163,7 @@ export function useExportRuntimeLifecycle(): void {
         store.getState().applyBackendStatus(status);
         if (store.getState().isExporting) {
           void ensureStream();
+          startLogPolling();
         }
       } catch {
         // ignore transient status failures
@@ -118,6 +178,7 @@ export function useExportRuntimeLifecycle(): void {
       prevExporting = state.isExporting;
       if (state.isExporting) {
         void ensureStream();
+        startLogPolling();
       } else {
         stopStream();
       }
@@ -126,6 +187,7 @@ export function useExportRuntimeLifecycle(): void {
     void pollStatus();
     if (store.getState().isExporting) {
       void ensureStream();
+      startLogPolling();
     }
 
     const statusTimer = setInterval(() => {
