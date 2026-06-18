@@ -2781,23 +2781,36 @@ def _is_sizable_local_path(model: str) -> bool:
     The local sizing path rglob-scans the directory; restricting it to the
     outputs / exports / cache / home roots prevents an authenticated caller
     from triggering a scan of an arbitrary directory (e.g. ``/``).
+
+    The candidate is first normalized lexically (pure string operations, no
+    filesystem access) and required to sit under a trusted root; only once
+    containment is proven is the filesystem touched. An unvalidated,
+    user-controlled value therefore never reaches a filesystem call.
     """
     from utils.paths import outputs_root, exports_root, studio_root
     from utils.paths.storage_roots import cache_root
 
-    try:
-        target = Path(model).expanduser().resolve()
-    except (OSError, RuntimeError, ValueError):
-        return False
-    if not target.exists():
-        return False
+    def _lexical(p: str) -> str:
+        # normpath collapses '..' so containment cannot be escaped; abspath /
+        # expanduser are string/getcwd only -- none of these read the path.
+        return os.path.normpath(os.path.abspath(os.path.expanduser(p)))
+
+    roots = []
     for root in (studio_root(), outputs_root(), exports_root(), cache_root()):
         try:
-            root_resolved = root.resolve()
+            roots.append(_lexical(str(root)))
         except (OSError, RuntimeError, ValueError):
             continue
-        if target == root_resolved or target.is_relative_to(root_resolved):
-            return True
+
+    try:
+        candidate = _lexical(model)
+    except (OSError, RuntimeError, ValueError):
+        return False
+    for root in roots:
+        if candidate == root or candidate.startswith(root + os.sep):
+            # Containment against a trusted root is proven; only now is it safe
+            # to touch the filesystem.
+            return os.path.exists(candidate)
     return False
 
 

@@ -11,6 +11,7 @@ must degrade to nulls when the size can't be determined.
 
 import asyncio
 import importlib.util
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -187,6 +188,33 @@ class TestExportSizeEndpoint(unittest.TestCase):
             )
         self.assertEqual(resp.fp16_bytes, _QWEN35_FP16_BYTES)
         self.assertEqual(resp.source, "local")
+
+    def test_is_sizable_local_path_containment(self):
+        # The helper must size only paths under a trusted Studio root and must
+        # never let a user-controlled value escape it: containment is decided
+        # by lexical normalization (no filesystem access on an unvalidated path)
+        # before the path is ever touched.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "outputs"
+            inside = root / "run-1"
+            inside.mkdir(parents = True)
+            with (
+                patch("utils.paths.studio_root", return_value = root),
+                patch("utils.paths.outputs_root", return_value = root),
+                patch("utils.paths.exports_root", return_value = root),
+                patch("utils.paths.storage_roots.cache_root", return_value = root),
+            ):
+                is_sizable = self.models_route._is_sizable_local_path
+                # Under a trusted root and present on disk -> sizable.
+                self.assertTrue(is_sizable(str(inside)))
+                # The trusted root itself -> sizable.
+                self.assertTrue(is_sizable(str(root)))
+                # Under a trusted root but missing -> not sizable.
+                self.assertFalse(is_sizable(str(root / "missing")))
+                # An arbitrary absolute path outside every root -> not sizable.
+                self.assertFalse(is_sizable("/etc"))
+                # '..' traversal is collapsed and cannot escape the root.
+                self.assertFalse(is_sizable(str(root / ".." / "etc")))
 
 
 if __name__ == "__main__":
