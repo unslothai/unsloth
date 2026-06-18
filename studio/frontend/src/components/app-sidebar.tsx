@@ -304,7 +304,6 @@ export function AppSidebar() {
   };
 
   const isRecipesRoute = pathname.startsWith("/data-recipes");
-  const isExportRoute = pathname === "/export" || pathname.startsWith("/export/");
   const { displayTitle, avatarDataUrl } = useEffectiveProfile();
 
   const { projects } = useChatProjects();
@@ -368,11 +367,11 @@ export function AppSidebar() {
   // Export runs in the background (parallel with training/inference); reflect it
   // on the Export nav item so it is visible from any tab.
   const exportInProgress = useExportRuntimeStore((s) => s.isExporting);
-  // On the Train and Export tabs, return to the live chat (preserving an in-flight
-  // generation) instead of starting a new one, whenever a chat is running or its
-  // thread is still active, or training is in progress.
+  // On any non-chat tab (Train, Export, Recipes, Projects, Hub, ...) offer a way
+  // back to the live chat instead of starting a new one, whenever a chat is
+  // running or its thread is still active, or a training / export is in progress.
   const showReturnToChat =
-    (isStudioRoute || isExportRoute) &&
+    !isChatRoute &&
     (trainingInProgress || exportInProgress || anyChatRunning || storeThreadId != null);
   // The Train-page status poll doesn't run off-route; keep state fresh so the spinner
   // clears even if a run finishes while the user is on another tab.
