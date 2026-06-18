@@ -71,6 +71,21 @@ def _path_inside_venv(path: str) -> bool:
         return False
 
 
+def _external_hipinfo_on_path() -> bool:
+    """True if a hipinfo outside the venv is reachable on PATH.
+
+    shutil.which returns only the first hit, so the venv-internal hipInfo the bnb
+    fix prepends to PATH would shadow a real HIP SDK's hipinfo later on it; scan
+    every PATH entry and skip the venv copy (see _path_inside_venv)."""
+    for _dir in os.environ.get("PATH", "").split(os.pathsep):
+        if not _dir:
+            continue
+        _candidate = os.path.join(_dir, "hipinfo.exe")
+        if os.path.isfile(_candidate) and not _path_inside_venv(_candidate):
+            return True
+    return False
+
+
 def _amd_smi_allowed() -> bool:
     """Whether it is safe to spawn amd-smi here.
 
@@ -91,8 +106,7 @@ def _amd_smi_allowed() -> bool:
     # hipinfo-on-PATH is the proxy. But ignore the venv-internal hipInfo.exe the
     # AMD torch wheel ships (which the bnb fix puts on PATH) -- it is not a HIP
     # SDK and does NOT stop amd-smi from popping the DiskPart UAC.
-    _hip = shutil.which("hipinfo")
-    if _hip and not _path_inside_venv(_hip):
+    if _external_hipinfo_on_path():
         return True
     for _var in ("HIP_PATH", "HIP_PATH_57", "ROCM_PATH"):
         _root = os.environ.get(_var)

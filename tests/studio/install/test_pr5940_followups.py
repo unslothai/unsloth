@@ -6,9 +6,11 @@
 Mock-only; no AMD hardware or network required."""
 
 import importlib.util
+import os
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -29,6 +31,8 @@ _SPEC.loader.exec_module(prebuilt)
 _INSTALL_PS1 = PACKAGE_ROOT / "install.ps1"
 _SETUP_PS1 = PACKAGE_ROOT / "studio" / "setup.ps1"
 _INSTALL_SH = PACKAGE_ROOT / "install.sh"
+_AMD_PY = PACKAGE_ROOT / "studio" / "backend" / "utils" / "hardware" / "amd.py"
+_PYSTACK_PY = PACKAGE_ROOT / "studio" / "install_python_stack.py"
 
 
 # ── _hf_resolve_url_parts ────────────────────────────────────────────────────
@@ -217,23 +221,23 @@ def test_setup_sh_name_arch_table_in_sync_with_install_sh():
 
 
 def _amd_smi_allowed_under(system, hipinfo_present, env):
-    which = (
-        (lambda name: r"C:\hip\bin\hipinfo.exe" if name == "hipinfo" else None)
-        if hipinfo_present
-        else (lambda name: None)
-    )
-    # Pin sys.prefix to a venv root that does NOT contain the fake C:\hip\bin
-    # hipinfo above, so _path_inside_venv treats it as an external HIP SDK. On a
-    # POSIX test runner abspath(r"C:\hip\...") becomes <cwd>/C:\hip\..., which
-    # would land inside the real sys.prefix if the checkout sits under it -- so
-    # the helper must isolate sys.prefix just like the venv-internal tests do.
-    with (
-        patch.object(prebuilt.platform, "system", return_value = system),
-        patch.object(prebuilt.sys, "prefix", r"C:\venv"),
-        patch.object(prebuilt.shutil, "which", side_effect = which),
-        patch.dict(prebuilt.os.environ, env, clear = True),
-    ):
-        return prebuilt._amd_smi_allowed()
+    # Build a real (temp) PATH so _external_hipinfo_on_path scans it like prod;
+    # an external hipinfo.exe outside the pinned venv models a real HIP SDK.
+    with tempfile.TemporaryDirectory() as tmp:
+        venv_root = os.path.join(tmp, "venv")
+        os.makedirs(venv_root)
+        path_env = dict(env)
+        if hipinfo_present:
+            sdk_bin = os.path.join(tmp, "hipsdk", "bin")
+            os.makedirs(sdk_bin)
+            open(os.path.join(sdk_bin, "hipinfo.exe"), "w").close()
+            path_env["PATH"] = sdk_bin + os.pathsep + path_env.get("PATH", "")
+        with (
+            patch.object(prebuilt.platform, "system", return_value = system),
+            patch.object(prebuilt.sys, "prefix", venv_root),
+            patch.dict(prebuilt.os.environ, path_env, clear = True),
+        ):
+            return prebuilt._amd_smi_allowed()
 
 
 def test_amd_smi_allowed_on_linux_regardless():
@@ -277,17 +281,11 @@ def test_amd_smi_skipped_when_hipinfo_is_venv_internal(tmp_path):
     venv_root = tmp_path / "venv"
     venv_scripts = venv_root / "Scripts"
     venv_scripts.mkdir(parents = True)
-    venv_hipinfo = venv_scripts / "hipInfo.exe"
-    venv_hipinfo.write_text("")
+    (venv_scripts / "hipinfo.exe").write_text("")
     with (
         patch.object(prebuilt.platform, "system", return_value = "Windows"),
         patch.object(prebuilt.sys, "prefix", str(venv_root)),
-        patch.object(
-            prebuilt.shutil,
-            "which",
-            side_effect = lambda name: str(venv_hipinfo) if name == "hipinfo" else None,
-        ),
-        patch.dict(prebuilt.os.environ, {}, clear = True),
+        patch.dict(prebuilt.os.environ, {"PATH": str(venv_scripts)}, clear = True),
     ):
         assert prebuilt._amd_smi_allowed() is False
 
@@ -295,15 +293,35 @@ def test_amd_smi_skipped_when_hipinfo_is_venv_internal(tmp_path):
 def test_amd_smi_allowed_when_hipinfo_outside_venv(tmp_path):
     # A hipinfo from a real HIP SDK (outside the venv) still opens the gate, so
     # HIP-SDK Windows users keep amd-smi (no regression for the venv-exclusion).
+    sdk_bin = tmp_path / "hipsdk" / "bin"
+    sdk_bin.mkdir(parents = True)
+    (sdk_bin / "hipinfo.exe").write_text("")
     with (
         patch.object(prebuilt.platform, "system", return_value = "Windows"),
         patch.object(prebuilt.sys, "prefix", str(tmp_path / "venv")),
-        patch.object(
-            prebuilt.shutil,
-            "which",
-            side_effect = lambda name: r"C:\hipsdk\bin\hipinfo.exe" if name == "hipinfo" else None,
-        ),
-        patch.dict(prebuilt.os.environ, {}, clear = True),
+        patch.dict(prebuilt.os.environ, {"PATH": str(sdk_bin)}, clear = True),
+    ):
+        assert prebuilt._amd_smi_allowed() is True
+
+
+def test_amd_smi_allowed_when_external_hipinfo_shadowed_by_venv(tmp_path):
+    # codex P2: the venv-internal hipInfo.exe is first on PATH (the bnb fix
+    # prepends the venv Scripts dir), but a real HIP SDK's hipinfo sits later on
+    # PATH with HIP_PATH/ROCM_PATH unset. A first-hit shutil.which/Get-Command
+    # would stop at the venv copy and wrongly close the gate; scanning every PATH
+    # entry must still find the external SDK and keep amd-smi available.
+    venv_root = tmp_path / "venv"
+    venv_scripts = venv_root / "Scripts"
+    venv_scripts.mkdir(parents = True)
+    (venv_scripts / "hipinfo.exe").write_text("")
+    sdk_bin = tmp_path / "hipsdk" / "bin"
+    sdk_bin.mkdir(parents = True)
+    (sdk_bin / "hipinfo.exe").write_text("")
+    path = str(venv_scripts) + os.pathsep + str(sdk_bin)  # venv copy first
+    with (
+        patch.object(prebuilt.platform, "system", return_value = "Windows"),
+        patch.object(prebuilt.sys, "prefix", str(venv_root)),
+        patch.dict(prebuilt.os.environ, {"PATH": path}, clear = True),
     ):
         assert prebuilt._amd_smi_allowed() is True
 
@@ -318,7 +336,6 @@ def test_amd_smi_skipped_when_env_root_hipinfo_is_venv_internal(tmp_path):
     with (
         patch.object(prebuilt.platform, "system", return_value = "Windows"),
         patch.object(prebuilt.sys, "prefix", str(venv_root)),
-        patch.object(prebuilt.shutil, "which", side_effect = lambda name: None),
         patch.dict(prebuilt.os.environ, {"ROCM_PATH": str(hip_root)}, clear = True),
     ):
         assert prebuilt._amd_smi_allowed() is False
@@ -333,10 +350,34 @@ def test_amd_smi_allowed_when_env_root_hipinfo_outside_venv(tmp_path):
     with (
         patch.object(prebuilt.platform, "system", return_value = "Windows"),
         patch.object(prebuilt.sys, "prefix", str(tmp_path / "venv")),
-        patch.object(prebuilt.shutil, "which", side_effect = lambda name: None),
         patch.dict(prebuilt.os.environ, {"HIP_PATH": str(hip_root)}, clear = True),
     ):
         assert prebuilt._amd_smi_allowed() is True
+
+
+def test_external_hipinfo_on_path_skips_venv_only(tmp_path):
+    # The helper itself: a PATH holding only the venv-internal hipInfo must not
+    # count as an external HIP SDK (the whole point of the venv filter).
+    venv_root = tmp_path / "venv"
+    venv_scripts = venv_root / "Scripts"
+    venv_scripts.mkdir(parents = True)
+    (venv_scripts / "hipinfo.exe").write_text("")
+    with (
+        patch.object(prebuilt.sys, "prefix", str(venv_root)),
+        patch.dict(prebuilt.os.environ, {"PATH": str(venv_scripts)}, clear = True),
+    ):
+        assert prebuilt._external_hipinfo_on_path() is False
+
+
+def test_python_hipinfo_gates_scan_all_path_entries():
+    # All three copies of the amd-smi HIP-SDK probe must scan every PATH entry
+    # (not just the first shutil.which hit) so the venv-internal hipInfo cannot
+    # shadow a real SDK's hipinfo later on PATH.
+    for src in (_PREBUILT_PATH, _AMD_PY, _PYSTACK_PY):
+        text = src.read_text(encoding = "utf-8")
+        assert "_external_hipinfo_on_path" in text, (
+            f"{src.name} must use the PATH-scanning hipinfo helper"
+        )
 
 
 def test_path_inside_venv_resolves_symlinks(tmp_path):
@@ -366,9 +407,14 @@ def test_ps_installers_gate_amd_smi_on_windows():
         assert (
             "Test-HipinfoIsVenvInternal" in text
         ), f"{ps.name} missing venv-internal hipinfo exclusion helper"
+        # Get-Command returns only the first hipinfo; scan -All and skip the venv
+        # copy so a real SDK hipinfo later on PATH is not shadowed (codex P2).
         assert (
-            "Test-HipinfoIsVenvInternal $hipinfoExe.Source" in text
-        ), f"{ps.name} must run the venv exclusion on the Get-Command hipinfo result"
+            "Get-Command hipinfo -All" in text
+        ), f"{ps.name} must enumerate all hipinfo on PATH (-All), not just the first"
+        assert (
+            "Test-HipinfoIsVenvInternal $_.Source" in text
+        ), f"{ps.name} must run the venv exclusion while scanning hipinfo candidates"
         # The HIP_PATH/ROCM_PATH candidate must also be venv-filtered, else an env
         # var pointing into the venv reopens the gate.
         assert (

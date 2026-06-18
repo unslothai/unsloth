@@ -51,6 +51,21 @@ def _path_inside_venv(path: str) -> bool:
         return False
 
 
+def _external_hipinfo_on_path() -> bool:
+    """True if a hipinfo outside the venv is reachable on PATH.
+
+    shutil.which returns only the first hit, so the venv-internal hipInfo
+    main.py/worker.py prepend to PATH would shadow a real HIP SDK's hipinfo later
+    on it; scan every PATH entry and skip the venv copy (see _path_inside_venv)."""
+    for directory in os.environ.get("PATH", "").split(os.pathsep):
+        if not directory:
+            continue
+        candidate = os.path.join(directory, "hipinfo.exe")
+        if os.path.isfile(candidate) and not _path_inside_venv(candidate):
+            return True
+    return False
+
+
 def _hip_sdk_present() -> bool:
     """True if a HIP SDK is detectable (hipinfo on PATH or under HIP_PATH/
     ROCM_PATH), meaning amd-smi has a working runtime and runs un-elevated.
@@ -58,8 +73,7 @@ def _hip_sdk_present() -> bool:
     Ignores the venv-internal hipInfo.exe shipped by the AMD torch wheel (which
     main.py/worker.py put on PATH for bitsandbytes) -- it is not a HIP SDK and
     does NOT stop amd-smi from popping the DiskPart UAC."""
-    hip = shutil.which("hipinfo")
-    if hip and not _path_inside_venv(hip):
+    if _external_hipinfo_on_path():
         return True
     for var in ("HIP_PATH", "HIP_PATH_57", "ROCM_PATH"):
         root = os.environ.get(var)

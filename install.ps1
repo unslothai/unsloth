@@ -1662,10 +1662,12 @@ exit 0
             }
             return $false
         }
-        $hipinfoExe = Get-Command hipinfo -ErrorAction SilentlyContinue
-        if ($hipinfoExe -and (Test-HipinfoIsVenvInternal $hipinfoExe.Source)) {
-            $hipinfoExe = $null  # venv-internal hipInfo.exe is not a HIP SDK
-        }
+        # Get-Command returns only the first hipinfo on PATH; the venv-internal
+        # hipInfo.exe (prepended by the bnb fix) would shadow a real HIP SDK's
+        # hipinfo later on PATH. Scan all and keep the first non-venv one.
+        $hipinfoExe = Get-Command hipinfo -All -ErrorAction SilentlyContinue |
+            Where-Object { -not (Test-HipinfoIsVenvInternal $_.Source) } |
+            Select-Object -First 1
         if (-not $hipinfoExe) {
             $hipRoot     = if ($env:HIP_PATH) { $env:HIP_PATH } elseif ($env:ROCM_PATH) { $env:ROCM_PATH } else { $null }
             $hipEnvLabel = if ($env:HIP_PATH) { "HIP_PATH"    } else                    { "ROCM_PATH"    }
