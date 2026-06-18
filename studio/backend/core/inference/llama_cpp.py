@@ -1230,6 +1230,9 @@ class LlamaCppBackend:
         # coexist as two llama-server processes (#5401). RLock so MTP-crash
         # recovery can re-acquire it for its nested load_model.
         self._serial_load_lock = threading.RLock()
+        # Serialises mid-session respawns so many generations hitting a killed
+        # server trigger at most one reload (see _respawn_if_dead).
+        self._respawn_lock = threading.Lock()
         # Set by the in-app updater while it swaps prebuilt binaries; load_model()
         # rejects fast so no server starts from a half-swapped binary.
         self._llama_update_in_progress = False
@@ -7058,6 +7061,38 @@ class LlamaCppBackend:
         finally:
             _cancel_closed.set()
 
+    def _respawn_if_dead(self) -> bool:
+        """Relaunch the llama-server if its process has exited.
+
+        A loaded chat model can be SIGKILL'd mid-session (usually GPU/RAM pressure
+        from a training run on the same box), leaving a defunct process while
+        ``is_loaded`` still reads True. Replay the last ``load_model`` call to
+        recover, returning True once healthy. Serialised on ``_respawn_lock`` so
+        many generations hitting the dead server trigger at most one reload.
+        """
+        with self._respawn_lock:
+            proc = self._process
+            if proc is None:
+                return False
+            if proc.poll() is None:
+                # Process is alive: either a concurrent caller already respawned
+                # it (healthy), or this connection error wasn't a dead server.
+                return self._healthy
+            kwargs = self._last_load_kwargs
+            if not kwargs:
+                return False
+            logger.warning(
+                f"llama-server for '{self._model_identifier}' exited "
+                f"(code {proc.returncode}); respawning to recover the session"
+            )
+            with self._lock:
+                self._healthy = False
+            try:
+                return bool(self.load_model(**kwargs))
+            except Exception as exc:
+                logger.error(f"Failed to respawn llama-server: {exc}")
+                return False
+
     def generate_chat_completion(
         self,
         messages: list[dict],
@@ -7075,6 +7110,7 @@ class LlamaCppBackend:
         reasoning_effort: Optional[str] = None,
         preserve_thinking: Optional[bool] = None,
         seed: Optional[int] = None,
+        _allow_respawn_retry: bool = True,
     ) -> Generator[Union[str, dict], None, None]:
         """
         Send a chat completion to llama-server and stream tokens back.
@@ -7241,8 +7277,36 @@ class LlamaCppBackend:
                         }
 
         except httpx.ConnectError as e:
-            # Server already down (e.g. crashed on a prior request): recover MTP.
-            self._maybe_recover_from_mtp_crash(e)
+            # Server already down. If this was an MTP+tensor crash, recover by
+            # reloading without MTP (scheduled in the background) and fail this
+            # request. Otherwise the server was likely SIGKILL'd by GPU pressure
+            # from a concurrent training run: respawn the same config and retry the
+            # generation once (bounded by the private flag, no duplicate output).
+            if self._maybe_recover_from_mtp_crash(e):
+                raise RuntimeError("Lost connection to llama-server")
+            if _allow_respawn_retry and not cumulative and self._respawn_if_dead():
+                logger.warning(
+                    "llama-server was unreachable; respawned it and retrying the generation"
+                )
+                yield from self.generate_chat_completion(
+                    messages,
+                    image_b64 = image_b64,
+                    temperature = temperature,
+                    top_p = top_p,
+                    top_k = top_k,
+                    min_p = min_p,
+                    max_tokens = max_tokens,
+                    repetition_penalty = repetition_penalty,
+                    presence_penalty = presence_penalty,
+                    stop = stop,
+                    cancel_event = cancel_event,
+                    enable_thinking = enable_thinking,
+                    reasoning_effort = reasoning_effort,
+                    preserve_thinking = preserve_thinking,
+                    seed = seed,
+                    _allow_respawn_retry = False,
+                )
+                return
             raise RuntimeError("Lost connection to llama-server")
         except Exception as e:
             if cancel_event is not None and cancel_event.is_set():
