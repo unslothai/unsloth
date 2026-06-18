@@ -6125,10 +6125,8 @@ class LlamaCppBackend:
         except Exception as e:
             logger.warning(f"Error killing llama-server process: {e}")
         finally:
-            # getattr guard: _kill_process runs on the cleanup/teardown path, which
-            # must tolerate a partially-constructed backend (e.g. __init__ raising
-            # before `self._stats_logger = None`, or a __new__-built instance). Mirrors
-            # the `hasattr(self, "_chat_template_file")` guard used elsewhere here.
+            # getattr: teardown must tolerate a partially-built backend (failed
+            # __init__ or a __new__-built instance), as with _llama_log_fh below.
             if getattr(self, "_stats_logger", None) is not None:
                 self._stats_logger.stop()
                 self._stats_logger = None
@@ -6139,8 +6137,9 @@ class LlamaCppBackend:
             # Drives _wait_for_vram_settle in the next load_model; set in finally
             # so both in-process and frontend Apply paths record the kill.
             self._last_kill_monotonic = time.monotonic()
-            if self._stdout_thread is not None:
-                self._stdout_thread.join(timeout = 2)
+            stdout_thread = getattr(self, "_stdout_thread", None)
+            if stdout_thread is not None:
+                stdout_thread.join(timeout = 2)
                 self._stdout_thread = None
             fh = getattr(self, "_llama_log_fh", None)
             if fh is not None:
