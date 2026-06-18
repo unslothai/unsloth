@@ -1665,17 +1665,9 @@ export function ChatSettingsPanel({
                 configuration only. Insert variables with {"{{ name }}"}.
               </p>
             </div>
-            <Textarea
-              value={systemPromptDraft}
-              onChange={(event) => setSystemPromptDraft(event.target.value)}
-              placeholder="You are a helpful assistant..."
-              fieldSizing="fixed"
-              className="min-h-[20rem] max-h-[48vh] overflow-y-auto border-0 text-sm leading-6 corner-squircle focus-visible:ring-0"
-              rows={14}
-            />
             {systemVariablesOpen ? (
-              <div className="space-y-2 rounded-2xl border border-border/60 bg-background/60 p-3">
-                <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="space-y-2 px-0.5">
+                <div className="flex flex-wrap items-start justify-between gap-2">
                   <div className="space-y-0.5">
                     <div className="text-[11px] font-medium">
                       Prompt variables
@@ -1688,7 +1680,7 @@ export function ChatSettingsPanel({
                     {["{{$date}}", "{{$time}}", "{{$now}}"].map((token) => (
                       <span
                         key={token}
-                        className="rounded-full bg-muted px-2 py-1 font-mono text-[10px] text-muted-foreground"
+                        className="rounded-full bg-muted px-2 py-0.5 font-mono text-[10px] text-muted-foreground"
                       >
                         {token}
                       </span>
@@ -1722,6 +1714,14 @@ export function ChatSettingsPanel({
                 )}
               </div>
             ) : null}
+            <Textarea
+              value={systemPromptDraft}
+              onChange={(event) => setSystemPromptDraft(event.target.value)}
+              placeholder="You are a helpful assistant..."
+              fieldSizing="fixed"
+              className="min-h-[20rem] max-h-[48vh] overflow-y-auto border-0 text-sm leading-6 corner-squircle focus-visible:ring-0"
+              rows={14}
+            />
           </div>
           <DialogFooter className="flex-wrap gap-2 sm:justify-between">
             <Button
@@ -1748,7 +1748,9 @@ export function ChatSettingsPanel({
               <Button
                 type="button"
                 onClick={saveSystemPromptEditor}
-                disabled={!systemPromptEditorDirty || Boolean(systemVariablesError)}
+                disabled={
+                  !systemPromptEditorDirty || Boolean(systemVariablesError)
+                }
               >
                 Save
               </Button>
