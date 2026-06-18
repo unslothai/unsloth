@@ -3,6 +3,7 @@
 
 import { createElement, useCallback, useRef, useState } from "react";
 import { toast } from "@/lib/toast";
+import { confirmRemoteCodeIfNeeded } from "@/features/security";
 import { consumeNativePathToken } from "@/features/native-intents/api";
 import {
   notifyNative,
@@ -31,7 +32,9 @@ import {
   resolveToolsEnabledOnLoad,
   saveSpeculativeType,
   useChatRuntimeStore,
+  type ReasoningEffort,
 } from "../stores/chat-runtime-store";
+import { clampReasoningEffortToLevels } from "../provider-capabilities";
 import {
   applyActiveModelStatusToStore,
   clampLocalReasoningEffort,
@@ -71,6 +74,16 @@ export type SelectedModelInput = {
    *  ("Load on selection") Load, where the user picked it for this model. */
   keepSpeculative?: boolean;
 };
+
+// Approved fingerprints by checkpoint, so a rollback after a failed switch can resend
+// the pinned approval the worker requires instead of being blocked.
+const approvedRemoteCodeFingerprints = new Map<string, string>();
+function rememberApprovedRemoteCode(
+  checkpoint: string,
+  fingerprint: string | null,
+): void {
+  if (fingerprint) approvedRemoteCodeFingerprints.set(checkpoint, fingerprint);
+}
 
 const MODEL_LOAD_TOAST_CLASSNAMES = {
   toast: "chat-model-load-toast items-center gap-2.5",
@@ -225,7 +238,7 @@ function toLoraSummary(lora: {
 }
 
 function getTrustRemoteCodeRequiredMessage(modelName: string): string {
-  return `${modelName} needs custom code enabled to load. Turn on "Enable custom code" in Chat Settings, then try again.`;
+  return `${modelName} was not loaded because its custom code was not approved. Load it again to review the code and approve it.`;
 }
 
 export function useChatModelRuntime() {
@@ -485,7 +498,8 @@ export function useChatModelRuntime() {
           const currentCheckpoint =
             useChatRuntimeStore.getState().params.checkpoint;
           const stateBeforeUnload = useChatRuntimeStore.getState();
-          const trustRemoteCode = stateBeforeUnload.params.trustRemoteCode ?? false;
+          let trustRemoteCode = stateBeforeUnload.params.trustRemoteCode ?? false;
+          let approvedRemoteCodeFingerprint: string | null = null;
           const maxSeqLength = stateBeforeUnload.params.maxSeqLength;
           const previousIsGguf =
             previousModel?.isGguf === true
@@ -512,17 +526,49 @@ export function useChatModelRuntime() {
             const validateNativePathLease = nativePathToken
               ? (await consumeNativePathToken(nativePathToken, "validate-model")).nativePathLease
               : undefined;
+            // Validate with the same effective context /load uses: a GGUF native
+            // context can exceed maxSeqLength, so sizing on raw maxSeqLength could
+            // pass, unload, then have /load refuse it. Read pre-unload state; load
+            // recomputes its own value, so this leaves loading untouched.
+            const preUnloadState = useChatRuntimeStore.getState();
+            const validateMaxSeqLength = resolveLoadMaxSeqLength({
+              modelId,
+              ggufVariant,
+              customContextLength: preUnloadState.customContextLength,
+              ggufContextLength: preUnloadState.ggufContextLength,
+              currentCheckpoint,
+              activeGgufVariant: preUnloadState.activeGgufVariant,
+              maxSeqLength,
+              presetSource: preUnloadState.activePresetSource,
+            });
             const validation = await validateModel({
               model_path: modelId,
               nativePathLease: validateNativePathLease,
               hf_token: hfToken,
-              max_seq_length: maxSeqLength,
+              max_seq_length: validateMaxSeqLength,
               load_in_4bit: true,
               is_lora: isLora,
               gguf_variant: ggufVariant ?? null,
             });
-            if (validation.requires_trust_remote_code && !trustRemoteCode) {
-              throw new Error(getTrustRemoteCodeRequiredMessage(displayName));
+            // Open the consent dialog when the model needs custom-code consent or has a
+            // flagged unsafe file. Fires even when trustRemoteCode is preset on, since the
+            // worker requires a matching fingerprint that only the dialog produces.
+            if (
+              validation.requires_trust_remote_code
+              || validation.requires_security_review
+            ) {
+              const approved = await confirmRemoteCodeIfNeeded({
+                modelName: modelId,
+                hfToken,
+                requiresTrustRemoteCode: true,
+                onApprove: (fp) => {
+                  trustRemoteCode = true;
+                  approvedRemoteCodeFingerprint = fp;
+                },
+              });
+              if (!approved) {
+                throw new Error(getTrustRemoteCodeRequiredMessage(displayName));
+              }
             }
             if (abortCtrl.signal.aborted) throw new Error("Cancelled");
             const loadNativePathLease = nativePathToken
@@ -606,6 +652,7 @@ export function useChatModelRuntime() {
               is_lora: isLora,
               gguf_variant: ggufVariant ?? null,
               trust_remote_code: trustRemoteCode,
+              approved_remote_code_fingerprint: approvedRemoteCodeFingerprint,
               chat_template_override: effectiveChatTemplateOverride,
               cache_type_kv: kvCacheDtype,
               speculative_type: speculativeType,
@@ -677,20 +724,28 @@ export function useChatModelRuntime() {
             const reasoningStyle = loadResponse.reasoning_style ?? "enable_thinking";
             const supportsReasoning = loadResponse.supports_reasoning ?? false;
             const supportsTools = loadResponse.supports_tools ?? false;
+            // GLM-5.2-style models report their own effort levels (e.g.
+            // high|max); everything else keeps the default low/medium/high.
             const reasoningEffortLevels =
-              reasoningStyle === "reasoning_effort"
-                ? (["low", "medium", "high"] as const)
+              loadResponse.reasoning_effort_levels &&
+              loadResponse.reasoning_effort_levels.length > 0
+                ? (loadResponse.reasoning_effort_levels as ReasoningEffort[])
                 : (["low", "medium", "high"] as const);
             const existingReasoningEffort = useChatRuntimeStore.getState().reasoningEffort;
-            const clampedReasoningEffort = clampLocalReasoningEffort(
-              existingReasoningEffort,
-            );
+            const clampedReasoningEffort =
+              reasoningStyle === "enable_thinking_effort"
+                ? clampReasoningEffortToLevels(
+                    existingReasoningEffort,
+                    reasoningEffortLevels,
+                  )
+                : clampLocalReasoningEffort(existingReasoningEffort);
             const ggufMaxContextLength = reportedMaxCtx;
             const nextReasoningEnabled = reasoningAlwaysOn
               ? true
               : reloadingSameModel && supportsReasoning
                 ? stateBeforeUnload.reasoningEnabled
                 : reasoningDefault;
+            rememberApprovedRemoteCode(modelId, approvedRemoteCodeFingerprint);
             useChatRuntimeStore.setState({
               ggufContextLength: nativeCtx,
               ggufMaxContextLength,
@@ -793,6 +848,9 @@ export function useChatModelRuntime() {
                   gguf_variant: previousVariant,
                   trust_remote_code:
                     previousModelRequiresTrustRemoteCode || trustRemoteCode,
+                  // Resend the previous model's pinned approval so restoring it is not re-blocked.
+                  approved_remote_code_fingerprint:
+                    approvedRemoteCodeFingerprints.get(previousCheckpoint) ?? null,
                   // Restore the previous model in the split mode it was running,
                   // not the default layer split.
                   tensor_parallel: stateBeforeUnload.loadedTensorParallel ?? false,
@@ -938,8 +996,8 @@ export function useChatModelRuntime() {
 
             if (prog.progress > 0 && prog.progress < 1) {
               hasShownProgress = true;
-              const dlGb = prog.downloaded_bytes / (1024 ** 3);
-              const totalGb = prog.expected_bytes / (1024 ** 3);
+              const dlGb = prog.downloaded_bytes / 1e9;
+              const totalGb = prog.expected_bytes / 1e9;
               const pct = Math.round(prog.progress * 100);
               const progressLabel = composeProgressLabel(
                 dlGb,
@@ -971,7 +1029,7 @@ export function useChatModelRuntime() {
               prog.progress === 0
             ) {
               hasShownProgress = true;
-              const dlGb = prog.downloaded_bytes / (1024 ** 3);
+              const dlGb = prog.downloaded_bytes / 1e9;
               const est = estimate(dlSamples, prog.downloaded_bytes, 0);
               const rateSuffix =
                 est.stable ? ` • ${formatRate(est.rate)}` : "";
@@ -1029,8 +1087,10 @@ export function useChatModelRuntime() {
               return;
             }
             if (prog.bytes_total <= 0) return; // nothing useful to render
-            const loadedGb = prog.bytes_loaded / (1024 ** 3);
-            const totalGb = prog.bytes_total / (1024 ** 3);
+            // Decimal GB (1e9) so the total matches the file size Hugging Face
+            // reports and the model-picker shows, not the smaller base-1024 GiB.
+            const loadedGb = prog.bytes_loaded / 1e9;
+            const totalGb = prog.bytes_total / 1e9;
             const pct = Math.min(99, Math.round(prog.fraction * 100));
             const est = estimate(mmapSamples, prog.bytes_loaded, prog.bytes_total);
             const base = `${loadedGb.toFixed(1)} of ${totalGb.toFixed(1)} GB in memory`;
