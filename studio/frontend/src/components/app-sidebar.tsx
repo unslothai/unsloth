@@ -41,6 +41,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { useAnimatedThemeToggle } from "@/components/ui/animated-theme-toggler";
 import { cn } from "@/lib/utils";
@@ -116,6 +117,7 @@ import {
   emitTrainingRunUpdated,
   removeTrainingUnloadGuard,
   renameTrainingRun,
+  useTrainingCompletionWatch,
   useTrainingHistorySidebarItems,
   useTrainingRuntimeStore,
 } from "@/features/training";
@@ -207,6 +209,7 @@ function NavItem({
   children,
   dataTour,
   className,
+  spinner,
 }: {
   icon: typeof ZapIcon;
   label: string;
@@ -216,6 +219,7 @@ function NavItem({
   children?: ReactNode;
   dataTour?: string;
   className?: string;
+  spinner?: boolean;
 }) {
   return (
     <SidebarMenuItem className={className}>
@@ -230,7 +234,14 @@ function NavItem({
         >
           <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-icon! shrink-0 group-hover/menu-button:animate-icon-pop" />
           <span className="text-[14.5px] leading-[19px] tracking-nav">{label}</span>
+          {spinner && (
+            <Spinner className="ml-auto size-3.5 shrink-0 text-muted-foreground group-data-[collapsible=icon]:hidden" />
+          )}
         </SidebarMenuButton>
+        {spinner && (
+          // Collapsed (icon-only) rail: small spinner badge over the icon corner.
+          <Spinner className="pointer-events-none absolute right-1 top-1 hidden size-2.5 text-muted-foreground group-data-[collapsible=icon]:block" />
+        )}
       </div>
       {children}
     </SidebarMenuItem>
@@ -341,6 +352,11 @@ export function AppSidebar() {
   const currentRunViewActive = useTrainingRuntimeStore((s) => s.currentRunViewActive);
   const selectedHistoryRunId = useTrainingRuntimeStore((s) => s.selectedHistoryRunId);
   const setSelectedHistoryRunId = useTrainingRuntimeStore((s) => s.setSelectedHistoryRunId);
+  // Running or starting up. Drives the Train spinner + New Chat / Return to Chat swap.
+  const trainingInProgress = useTrainingRuntimeStore((s) => s.isTrainingRunning || s.isStarting);
+  // The Train-page status poll doesn't run off-route; keep state fresh so the spinner
+  // clears even if a run finishes while the user is on another tab.
+  useTrainingCompletionWatch();
 
   // Recompute bottom-fade on mount and whenever list height can change
   // (items load, sections toggle, route switch) - onScroll never fires for
@@ -958,14 +974,25 @@ export function AppSidebar() {
           <SidebarMenu>
             <NavItem
               icon={PencilEdit02Icon}
-              label={t("shell.navigation.newChat")}
+              label={
+                trainingInProgress && isStudioRoute
+                  ? t("shell.navigation.returnToChat")
+                  : t("shell.navigation.newChat")
+              }
               active={
                 isChatRoute &&
                 !search.thread &&
                 !search.compare &&
                 !search.project
               }
-              onClick={() => openNewChat(null)}
+              onClick={() => {
+                if (trainingInProgress && isStudioRoute) {
+                  navigate({ to: "/chat" });
+                  closeMobileIfOpen();
+                  return;
+                }
+                openNewChat(null);
+              }}
             />
             <NavItem
               icon={Search01Icon}
@@ -1042,6 +1069,7 @@ export function AppSidebar() {
                   pathname === "/studio" || pathname.startsWith("/studio/")
                 }
                 disabled={chatOnly}
+                spinner={trainingInProgress}
                 onClick={() => {
                   if (chatOnly) return;
                   navigate({ to: "/studio" });
@@ -1069,6 +1097,7 @@ export function AppSidebar() {
                     label={t("shell.navigation.train")}
                     active={pathname === "/studio" || pathname.startsWith("/studio/")}
                     disabled={chatOnly}
+                    spinner={trainingInProgress}
                     onClick={() => {
                       if (chatOnly) return;
                       navigate({ to: "/studio" });

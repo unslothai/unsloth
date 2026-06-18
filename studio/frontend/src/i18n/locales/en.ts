@@ -32,6 +32,7 @@ export const en = {
     },
     navigation: {
       newChat: "New Chat",
+      returnToChat: "Return to Chat",
       compare: "Compare",
       search: "Search",
       hub: "Hub",
