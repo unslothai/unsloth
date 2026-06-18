@@ -134,6 +134,7 @@ def _resolve_lora_4bit(mc, load_in_4bit: bool) -> bool:
         return load_in_4bit
 
     import json
+
     try:
         with open(adapter_cfg_path) as f:
             adapter_cfg = json.load(f)
@@ -150,7 +151,9 @@ def _resolve_lora_4bit(mc, load_in_4bit: bool) -> bool:
             and "-bnb-4bit" not in mc.base_model.lower()
             and load_in_4bit
         ):
-            logger.info("No training method, base model has no -bnb-4bit — setting load_in_4bit=False")
+            logger.info(
+                "No training method, base model has no -bnb-4bit — setting load_in_4bit=False"
+            )
             return False
     except Exception as e:
         logger.warning("Could not read adapter_config.json: %s", e)
@@ -168,7 +171,9 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
         trust_remote_code = config.get("trust_remote_code", False)
         if not trust_remote_code and _needs_nemotron_trust(config["model_name"], hf_token = hf_token):
             trust_remote_code = True
-            logger.info("Auto-enabled trust_remote_code for Nemotron model: %s", config["model_name"])
+            logger.info(
+                "Auto-enabled trust_remote_code for Nemotron model: %s", config["model_name"]
+            )
 
         # Malware gate: a poisoned pickle deserializes during from_pretrained even
         # with trust_remote_code False, so check HF's security scan (metadata-only)
@@ -271,9 +276,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
             }
             _bm = getattr(backend, "models", {}) or {}
             _entry = (
-                _bm.get(mc.identifier)
-                or _bm.get(getattr(backend, "active_model_name", None))
-                or {}
+                _bm.get(mc.identifier) or _bm.get(getattr(backend, "active_model_name", None)) or {}
             )
             try:
                 _context_length = _entry.get("context_length")
