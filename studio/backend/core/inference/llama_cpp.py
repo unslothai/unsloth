@@ -6158,13 +6158,18 @@ class LlamaCppBackend:
 
     @classmethod
     def _record_server_pid(cls, pid: int) -> None:
-        """Best-effort record of the spawned llama-server PID for orphan reaping."""
+        """Best-effort record of the spawned llama-server PID for orphan reaping.
+
+        Stores ``pid:starttime`` so a later startup can reject a PID that has
+        since been recycled to a different process (see ``_pid_start_identity``).
+        A bare ``pid`` (no identity) is still accepted on read for compatibility.
+        """
         path = cls._server_pidfile_path()
         if path is None:
             return
         try:
             path.parent.mkdir(parents = True, exist_ok = True)
-            path.write_text(str(pid))
+            path.write_text(f"{pid}:{cls._pid_start_identity(pid)}")
         except Exception as e:
             logger.debug(f"Could not write llama-server pidfile: {e}")
 
@@ -6210,36 +6215,125 @@ class LlamaCppBackend:
         except OSError:
             return False
 
+    @staticmethod
+    def _pid_start_identity(pid: int) -> str:
+        """Stable per-PID identity (process start time) guarding against PID reuse.
+
+        Returns a token string, or "" when it cannot be determined (the caller
+        then falls back to the llama-server name check only)."""
+        try:
+            import psutil
+            try:
+                return str(psutil.Process(pid).create_time())
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                return ""
+        except ImportError:
+            pass
+        if sys.platform == "linux":
+            try:
+                with open(f"/proc/{pid}/stat", "rb") as fh:
+                    data = fh.read()
+                # field 22 (starttime), counted from after the ")" that closes comm.
+                return data[data.rfind(b")") + 2:].split()[19].decode()
+            except (OSError, IndexError):
+                return ""
+        return ""
+
+    @staticmethod
+    def _pid_parent_is_alive(pid: int) -> bool:
+        """True if the recorded server's parent is still running, i.e. the server is
+        NOT orphaned. Lets the cross-session reap kill only a true orphan (parent
+        gone) and never a live server owned by a running Studio, regardless of which
+        process performs the sweep. Biased toward "alive" on uncertainty so a live
+        server is never mistakenly reaped."""
+        try:
+            import psutil
+            try:
+                ppid = psutil.Process(pid).ppid()
+            except psutil.NoSuchProcess:
+                return False  # the recorded server itself is gone
+            except psutil.Error:
+                return True  # cannot tell -- never risk killing a live server
+            if ppid <= 1:
+                return False  # reparented to init -> orphan
+            return psutil.pid_exists(ppid)
+        except ImportError:
+            pass
+        if sys.platform == "linux":
+            try:
+                with open(f"/proc/{pid}/stat", "rb") as fh:
+                    data = fh.read()
+                ppid = int(data[data.rfind(b")") + 2:].split()[1])
+            except (OSError, IndexError, ValueError):
+                return False
+            if ppid <= 1:
+                return False
+            return Path(f"/proc/{ppid}").exists()
+        return False
+
+    @staticmethod
+    def _unlink_pidfile(path: Path) -> None:
+        """Best-effort removal of a resolved pidfile path."""
+        try:
+            path.unlink(missing_ok = True)
+        except Exception:
+            pass
+
     @classmethod
     def _reap_recorded_pid(cls) -> int:
-        """Kill the exact llama-server PID recorded at spawn if it is still alive and
-        still a llama-server, then clear the pidfile. This is the cross-session
-        backstop the parent-death reaper (Job Object / PR_SET_PDEATHSIG) cannot cover:
-        an orphan left by an already-dead Studio (macOS, a best-effort failure, or a
-        pre-existing orphan). Path-independent, so it also catches an orphan the
-        install-root match would miss; the pidfile only ever names a Studio-spawned
-        server, so unrelated user processes (vllm, games) are never candidates."""
+        """Kill the exact llama-server PID recorded at spawn, but only when it is a
+        genuine orphan -- its parent (the Studio that spawned it) is gone. This is
+        the cross-session backstop the parent-death reaper (Job Object /
+        PR_SET_PDEATHSIG) cannot cover: an orphan left by an already-dead Studio
+        (macOS, a best-effort failure, or a pre-existing orphan). Path-independent,
+        so it also catches an orphan the install-root match would miss.
+
+        A live server whose parent is still running is never reaped, so constructing
+        a second backend in-process (the helper / advisor paths each build a
+        LlamaCppBackend) cannot kill the active chat server. A recorded PID that has
+        been recycled to a different process is rejected by the start-time identity
+        and the llama-server name check, so unrelated user processes are never
+        touched. SIGKILL falls back to SIGTERM on Windows, where os.kill maps it to
+        TerminateProcess and SIGKILL is undefined."""
         path = cls._server_pidfile_path()
         if path is None or not path.exists():
             return 0
-        killed = 0
+
+        pid = -1
+        identity = ""
         try:
-            pid = int(path.read_text().strip())
+            pid_str, _, identity = path.read_text().strip().partition(":")
+            pid = int(pid_str)
         except Exception:
             pid = -1
-        if pid > 0 and pid != os.getpid() and cls._pid_is_llama_server(pid):
+
+        if pid <= 0:
+            cls._unlink_pidfile(path)  # garbage record
+            return 0
+        if pid == os.getpid():
+            return 0  # never our own pid; leave the record alone
+
+        if cls._pid_parent_is_alive(pid):
+            # Live server with a running parent -> not an orphan; keep the record so
+            # a later startup can still reap it if that parent later dies abnormally.
+            return 0
+
+        # Parent is gone: candidate orphan. Reject a PID recycled to something else.
+        if identity and cls._pid_start_identity(pid) != identity:
+            cls._unlink_pidfile(path)
+            return 0
+
+        killed = 0
+        if cls._pid_is_llama_server(pid):
             try:
-                os.kill(pid, signal.SIGKILL)
+                os.kill(pid, getattr(signal, "SIGKILL", signal.SIGTERM))
                 killed = 1
                 logger.info(f"Killed orphaned llama-server from pidfile (pid={pid})")
             except (ProcessLookupError, PermissionError):
                 pass
             except Exception as e:
                 logger.debug(f"Could not kill recorded llama-server pid {pid}: {e}")
-        try:
-            path.unlink(missing_ok = True)
-        except Exception:
-            pass
+        cls._unlink_pidfile(path)
         return killed
 
     @staticmethod
@@ -6259,8 +6353,10 @@ class LlamaCppBackend:
         Returns the count of processes killed; callers arm the VRAM-settle
         wait on a positive count.
         """
-        # Cross-session backstop first: reap the exact PID we recorded at spawn
-        # (path-independent). The root-gated enumeration below stays as a fallback.
+        # Cross-session backstop first: reap the exact PID we recorded at spawn,
+        # but only if it is a true orphan whose parent is gone (so a helper backend
+        # built while a chat server is live can never kill it). The root-gated
+        # enumeration below stays as a fallback.
         killed = LlamaCppBackend._reap_recorded_pid()
         try:
             # -- Build the ownership allowlist --------------------------------
