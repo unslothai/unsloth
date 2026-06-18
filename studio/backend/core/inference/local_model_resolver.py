@@ -103,23 +103,27 @@ def resolve_local_gguf(requested: str) -> Optional[tuple[str, Optional[str]]]:
     bare id resolves to a concrete local quant so /load never fetches a remote
     one, and a requested variant resolves only when that quant is on disk.
     """
-    if not requested or not requested.strip():
+    if not isinstance(requested, str) or not requested.strip():
         return None
     requested = requested.strip()
-    index = _index()
+    try:
+        index = _index()
+        entry = index.get(requested.lower())
+        if entry is not None:
+            return entry.loader_id, (entry.variants[0] if entry.variants else None)
 
-    entry = index.get(requested.lower())
-    if entry is not None:
-        return entry.loader_id, (entry.variants[0] if entry.variants else None)
-
-    base, sep, variant = requested.rpartition(":")
-    if not sep:
+        base, sep, variant = requested.rpartition(":")
+        if not sep:
+            return None
+        entry = index.get(base.strip().lower())
+        if entry is None:
+            return None
+        wanted = variant.strip().lower()
+        for v in entry.variants:
+            if v.lower() == wanted:
+                return entry.loader_id, v
         return None
-    entry = index.get(base.strip().lower())
-    if entry is None:
+    except Exception:
+        # Best-effort: any resolver failure falls through to the loaded model,
+        # so a malformed name can never turn a servable request into a 500.
         return None
-    wanted = variant.strip().lower()
-    for v in entry.variants:
-        if v.lower() == wanted:
-            return entry.loader_id, v
-    return None

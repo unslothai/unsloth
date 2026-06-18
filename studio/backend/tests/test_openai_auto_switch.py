@@ -273,6 +273,25 @@ def test_resolver_matches_and_splits_variant(monkeypatch):
     assert resolver.resolve_local_gguf("") is None
 
 
+def test_resolver_failsafe_on_internal_error(monkeypatch):
+    # Resolution is best-effort: any internal failure must fall through to None
+    # so the request still serves the loaded model instead of 500-ing. The hook
+    # calls resolve_local_gguf without its own guard, so the guard lives here.
+    def boom():
+        raise RuntimeError("scan blew up")
+    monkeypatch.setattr(resolver, "_build_index", boom)
+    resolver._scan = (0.0, {})
+    assert resolver.resolve_local_gguf("unsloth/B-GGUF") is None
+
+
+def test_resolver_nonstring_model_is_failsafe():
+    # /v1/completions and /v1/embeddings pass body.get("model") straight through,
+    # so a non-string must not raise on .strip().
+    assert resolver.resolve_local_gguf(123) is None
+    assert resolver.resolve_local_gguf({"a": 1}) is None
+    assert resolver.resolve_local_gguf(None) is None
+
+
 def test_resolver_exact_id_with_colon_wins(monkeypatch):
     # A local id that itself contains a colon (e.g. a Windows path) must match
     # exactly rather than being split at the drive-letter colon.
