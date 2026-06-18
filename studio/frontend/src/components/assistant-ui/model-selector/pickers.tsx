@@ -56,7 +56,7 @@ import {
   AudioWave01Icon,
   Cancel01Icon,
   DashboardCircleIcon,
-  Directions01Icon,
+  DirectionRight02Icon,
   Download01Icon,
   Folder02Icon,
   RemoveCircleIcon,
@@ -2388,7 +2388,7 @@ export function HubModelPicker({
                                 className="shrink-0 rounded p-1 text-muted-foreground/60 transition-colors hover:text-foreground"
                               >
                                 <HugeiconsIcon
-                                  icon={Directions01Icon}
+                                  icon={DirectionRight02Icon}
                                   className="size-3"
                                 />
                               </button>
@@ -2465,7 +2465,7 @@ export function HubModelPicker({
                     spacious={true}
                     icon={
                       <HugeiconsIcon
-                        icon={Directions01Icon}
+                        icon={DirectionRight02Icon}
                         className="size-3.5"
                       />
                     }
