@@ -2135,6 +2135,13 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       // Colab-style proxies can swallow fetch aborts, so also POST
       // /inference/cancel explicitly on abort.
       const onAbortCancel = () => {
+        // assistant-ui aborts with AbortError(detach=true) when a thread's runtime
+        // unmounts (navigation / background thread switch) and detach=false for an
+        // explicit Stop. Only a real Stop cancels the backend run; a detach must
+        // leave a backgrounded generation streaming.
+        if ((abortSignal.reason as { detach?: boolean } | undefined)?.detach) {
+          return;
+        }
         const body: Record<string, string> = { cancel_id: cancelId };
         if (sandboxSessionId) body.session_id = sandboxSessionId;
         // Plain fetch, not authFetch: authFetch redirects to login on

@@ -2276,8 +2276,14 @@ export function ChatPage({
             items={currentProjectItems}
           />
         ) : view.mode === "single" ? (
+          // Keyed by project only (not thread / new-chat nonce) so switching threads or
+          // starting a New Chat reuses the same provider and switches in place. This keeps
+          // an in-flight generation streaming in the background (assistant-ui keeps every
+          // alive thread's runtime mounted) instead of remounting the provider and cutting
+          // it off; returning to that thread reattaches the live run rather than reloading
+          // a half-saved one.
           <SingleContent
-            key={view.threadId ?? view.newThreadNonce ?? "single"}
+            key={view.projectId ?? "single"}
             threadId={view.threadId}
             newThreadNonce={view.newThreadNonce}
             projectId={view.projectId}

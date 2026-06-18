@@ -340,6 +340,12 @@ export function AppSidebar() {
   const anyChatRunning = useChatRuntimeStore((s) =>
     Object.values(s.runningByThreadId).some(Boolean),
   );
+  // The thread currently generating (if any), so "Return to Chat" lands on the
+  // live chat rather than an empty new-chat draft left active after New Chat.
+  const runningThreadId = useChatRuntimeStore((s) => {
+    const entry = Object.entries(s.runningByThreadId).find(([, on]) => on);
+    return entry ? entry[0] : null;
+  });
   const activeThreadId = isChatRoute
     ? (search.thread as string | undefined) ??
       (search.compare as string | undefined) ??
@@ -996,7 +1002,13 @@ export function AppSidebar() {
               }
               onClick={() => {
                 if (showReturnToChat) {
-                  navigate({ to: "/chat" });
+                  // Prefer the running thread so we return to the live generation,
+                  // not the empty new chat that became active after New Chat.
+                  if (runningThreadId && runningThreadId !== storeThreadId) {
+                    navigate({ to: "/chat", search: { thread: runningThreadId } });
+                  } else {
+                    navigate({ to: "/chat" });
+                  }
                   closeMobileIfOpen();
                   return;
                 }
