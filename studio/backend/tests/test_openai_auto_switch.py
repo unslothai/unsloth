@@ -212,10 +212,19 @@ def test_embeddings_endpoint_wires_auto_switch_before_loaded_check():
     assert src.index("_maybe_auto_switch_model") < src.index("is_loaded")
 
 
+def test_count_tokens_endpoint_wires_auto_switch_before_loaded_check():
+    # The Anthropic token-count endpoint must count with the requested model.
+    import inspect
+
+    src = inspect.getsource(inference_route.anthropic_count_tokens)
+    assert "_maybe_auto_switch_model" in src
+    assert src.index("_maybe_auto_switch_model") < src.index("is_loaded")
+
+
 # ── resolver ────────────────────────────────────────────────────────
 
 
-def test_resolver_excludes_non_gguf_models(tmp_path):
+def test_local_gguf_entry_filters_non_gguf_and_recurses(tmp_path):
     from types import SimpleNamespace
 
     # Transformers/safetensors folder: not a GGUF, must be rejected.
@@ -223,33 +232,43 @@ def test_resolver_excludes_non_gguf_models(tmp_path):
     tf.mkdir()
     (tf / "config.json").write_text("{}")
     (tf / "model.safetensors").write_text("x")
-    assert resolver._has_local_gguf(SimpleNamespace(path = str(tf))) is False
+    assert resolver._local_gguf_entry("tf", SimpleNamespace(path = str(tf))) is None
 
-    # models-dir folder holding a .gguf, a bare .gguf file, and an HF-cache
-    # snapshots layout: all real GGUFs.
-    gg = tmp_path / "gguf-model"
-    gg.mkdir()
-    (gg / "model.Q4_K_M.gguf").write_text("x")
-    assert resolver._has_local_gguf(SimpleNamespace(path = str(gg))) is True
-
+    # Standalone .gguf file: an entry with no quant sub-selection.
     bare = tmp_path / "x.gguf"
     bare.write_text("x")
-    assert resolver._has_local_gguf(SimpleNamespace(path = str(bare))) is True
+    e = resolver._local_gguf_entry("x", SimpleNamespace(path = str(bare)))
+    assert e is not None and e.variants == ()
 
+    # HF-cache snapshots with a quant subdir (the nested layout the previous
+    # shallow glob missed): must still be detected.
     repo = tmp_path / "models--org--repo"
-    (repo / "snapshots" / "abc").mkdir(parents = True)
-    (repo / "snapshots" / "abc" / "w.gguf").write_text("x")
-    assert resolver._has_local_gguf(SimpleNamespace(path = str(repo))) is True
+    (repo / "snapshots" / "abc" / "BF16").mkdir(parents = True)
+    (repo / "snapshots" / "abc" / "BF16" / "model-BF16.gguf").write_text("x")
+    e2 = resolver._local_gguf_entry("org/repo", SimpleNamespace(path = str(repo)))
+    assert e2 is not None and e2.variants
+
+
+def _entry(loader_id, *variants):
+    return resolver._LocalGgufEntry(loader_id, tuple(variants))
 
 
 def test_resolver_matches_and_splits_variant(monkeypatch):
-    monkeypatch.setattr(resolver, "_build_index", lambda: {"unsloth/b-gguf": "unsloth/B-GGUF"})
+    monkeypatch.setattr(
+        resolver,
+        "_build_index",
+        lambda: {"unsloth/b-gguf": _entry("unsloth/B-GGUF", "UD-Q5_K_XL", "Q4_K_M")},
+    )
     resolver._scan = (0.0, {})  # force a rescan
-    assert resolver.resolve_local_gguf("unsloth/B-GGUF:UD-Q5_K_XL") == (
+    # A requested variant present on disk resolves (case-insensitive).
+    assert resolver.resolve_local_gguf("unsloth/B-GGUF:ud-q5_k_xl") == (
         "unsloth/B-GGUF",
         "UD-Q5_K_XL",
     )
-    assert resolver.resolve_local_gguf("unsloth/B-GGUF") == ("unsloth/B-GGUF", None)
+    # A bare id resolves to a concrete local quant, never a remote one.
+    assert resolver.resolve_local_gguf("unsloth/B-GGUF") == ("unsloth/B-GGUF", "UD-Q5_K_XL")
+    # A variant that is not on disk must not resolve (no remote download).
+    assert resolver.resolve_local_gguf("unsloth/B-GGUF:Q8_0") is None
     assert resolver.resolve_local_gguf("totally/unknown") is None
     assert resolver.resolve_local_gguf("") is None
 
@@ -258,7 +277,7 @@ def test_resolver_exact_id_with_colon_wins(monkeypatch):
     # A local id that itself contains a colon (e.g. a Windows path) must match
     # exactly rather than being split at the drive-letter colon.
     win = r"C:\models\foo.gguf"
-    monkeypatch.setattr(resolver, "_build_index", lambda: {win.lower(): win})
+    monkeypatch.setattr(resolver, "_build_index", lambda: {win.lower(): _entry(win)})
     resolver._scan = (0.0, {})
     assert resolver.resolve_local_gguf(win) == (win, None)
 
@@ -304,6 +323,16 @@ def test_idle_loop_does_not_unload_freshly_loaded_model(monkeypatch):
 
     asyncio.run(_drive())
     assert unloads == []
+
+
+def test_audio_generate_is_tracked_as_inference_path():
+    # Direct GGUF TTS uses the llama backend and can outlive the idle TTL, so
+    # the keep-warm middleware must count it as in-flight inference.
+    from core.inference.llama_keepwarm import _is_inference_path
+
+    assert _is_inference_path("/api/inference/audio/generate") is True
+    assert _is_inference_path("/v1/chat/completions") is True
+    assert _is_inference_path("/api/inference/models/list") is False
 
 
 def test_idle_loop_does_not_unload_while_request_inflight(monkeypatch):

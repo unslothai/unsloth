@@ -7603,6 +7603,9 @@ async def anthropic_count_tokens(
     tokenizer, and returns ``{"input_tokens": int}`` only. Unlike /messages,
     max_tokens is NOT required here.
     """
+    # Count with the requested model's tokenizer, like the sibling /messages.
+    await _maybe_auto_switch_model(payload.model, request, current_subject)
+
     llama_backend = get_llama_cpp_backend()
     if not llama_backend.is_loaded:
         raise HTTPException(

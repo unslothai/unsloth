@@ -33,6 +33,7 @@ _INFERENCE_SUFFIXES = (
     "/messages",
     "/embeddings",
     "/responses",
+    "/audio/generate",  # direct GGUF TTS; can outlive the idle TTL
 )
 
 

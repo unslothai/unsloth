@@ -4,54 +4,64 @@
 """Resolve an OpenAI-request ``model`` string to a downloaded local GGUF.
 
 Used by the opt-in auto-switch path. The match is conservative: only names
-that map to an already-downloaded local model are eligible, so an arbitrary
-OpenAI model string still falls through to the loaded model (drop-in compat)
-and no surprise multi-GB download is ever triggered. The local-model scan is
-cached for a few seconds since auto-switch consults it per request.
+that map to an already-downloaded local GGUF (and a quant that is actually on
+disk) are eligible, so an arbitrary OpenAI model string still falls through to
+the loaded model (drop-in compat) and no surprise multi-GB download is ever
+triggered. The local-model scan is cached for a few seconds since auto-switch
+consults it per request.
 """
 
 from __future__ import annotations
 
 import threading
 import time
+from dataclasses import dataclass
 from typing import Optional
+
+
+@dataclass(frozen=True)
+class _LocalGgufEntry:
+    loader_id: str
+    variants: tuple[str, ...]  # local quant labels; () for a standalone .gguf
+
 
 _CACHE_TTL_S = 5.0
 _lock = threading.Lock()
-_scan: tuple[float, dict[str, str]] = (0.0, {})
+_scan: tuple[float, dict[str, _LocalGgufEntry]] = (0.0, {})
 
 
-def _has_local_gguf(info) -> bool:
-    """True only when the model is, or contains, a real .gguf on disk.
+def _local_gguf_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
+    """Build an entry only when real GGUF weights exist locally.
 
-    The scanners also surface Transformers/safetensors models; auto-switch must
-    never load those through the GGUF llama-server path. Covers a direct .gguf
-    file, a models-dir folder, and the HF-cache snapshots layout.
+    Excludes Transformers/safetensors models, and lists only the quants that
+    are on disk so auto-switch never asks /load to fetch a remote one. Recurses
+    snapshots and quant subdirs (e.g. ``snapshots/<sha>/BF16/model.gguf``).
     """
     from pathlib import Path
+    from utils.models.model_config import list_local_gguf_variants
 
     path = getattr(info, "path", None)
     if not isinstance(path, str):
-        return False
+        return None
     p = Path(path)
     try:
         if p.is_file():
-            return p.suffix.lower() == ".gguf"
-        return (
-            next(p.glob("*.gguf"), None) is not None
-            or next(p.glob("snapshots/*/*.gguf"), None) is not None
-        )
-    except OSError:
-        return False
+            # A standalone .gguf loads by path; no quant sub-selection.
+            return _LocalGgufEntry(loader_id, ()) if p.suffix.lower() == ".gguf" else None
+        variants, _ = list_local_gguf_variants(path)
+        quants = tuple(v.quant for v in variants if getattr(v, "quant", None))
+        return _LocalGgufEntry(loader_id, quants) if quants else None
+    except Exception:
+        return None
 
 
-def _build_index() -> dict[str, str]:
-    """Map normalized id/model_id/display_name -> canonical loader identifier."""
+def _build_index() -> dict[str, _LocalGgufEntry]:
+    """Map normalized id/model_id/display_name -> local GGUF entry."""
     # Lazy import: routes.models imports core.inference, so import at call time.
     from pathlib import Path
     from routes.models import _scan_models_dir, _scan_hf_cache, _resolve_hf_cache_dir
 
-    index: dict[str, str] = {}
+    index: dict[str, _LocalGgufEntry] = {}
     try:
         found = _scan_models_dir(Path("./models").resolve()) + _scan_hf_cache(
             _resolve_hf_cache_dir()
@@ -60,15 +70,18 @@ def _build_index() -> dict[str, str]:
         return index
     for info in found:
         loader_id = getattr(info, "id", None)
-        if not loader_id or not _has_local_gguf(info):
+        if not loader_id:
+            continue
+        entry = _local_gguf_entry(loader_id, info)
+        if entry is None:
             continue
         for key in (info.id, getattr(info, "model_id", None), getattr(info, "display_name", None)):
             if key:
-                index.setdefault(key.strip().lower(), loader_id)
+                index.setdefault(key.strip().lower(), entry)
     return index
 
 
-def _index() -> dict[str, str]:
+def _index() -> dict[str, _LocalGgufEntry]:
     global _scan
     now = time.monotonic()
     with _lock:
@@ -85,20 +98,28 @@ def resolve_local_gguf(requested: str) -> Optional[tuple[str, Optional[str]]]:
     """Return ``(loader_id, gguf_variant)`` for a downloaded local match, else None.
 
     ``requested`` may be ``repo`` or ``repo:VARIANT``. An exact id match wins
-    first so ids that themselves contain a colon (e.g. a Windows path) still
-    resolve; only then is a trailing ``:VARIANT`` split off the last colon.
+    first (so ids that themselves contain a colon, e.g. a Windows path, still
+    resolve); otherwise a trailing ``:VARIANT`` is split off the last colon. A
+    bare id resolves to a concrete local quant so /load never fetches a remote
+    one, and a requested variant resolves only when that quant is on disk.
     """
     if not requested or not requested.strip():
         return None
     requested = requested.strip()
     index = _index()
-    loader_id = index.get(requested.lower())
-    if loader_id is not None:
-        return loader_id, None
+
+    entry = index.get(requested.lower())
+    if entry is not None:
+        return entry.loader_id, (entry.variants[0] if entry.variants else None)
+
     base, sep, variant = requested.rpartition(":")
     if not sep:
         return None
-    loader_id = index.get(base.strip().lower())
-    if loader_id is None:
+    entry = index.get(base.strip().lower())
+    if entry is None:
         return None
-    return loader_id, (variant.strip() or None)
+    wanted = variant.strip().lower()
+    for v in entry.variants:
+        if v.lower() == wanted:
+            return entry.loader_id, v
+    return None
