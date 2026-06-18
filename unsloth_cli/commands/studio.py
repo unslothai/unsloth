@@ -799,8 +799,7 @@ def studio_default(
             # Forward the explicit polarity (matches run.py's BooleanOptionalAction).
             args.append("--cloudflare" if cloudflare else "--no-cloudflare")
             args.append("--secure" if secure else "--not-secure")
-            # Forward an explicit tool policy; omit when None so run.py leaves the
-            # process policy unset (tools on, per-chat UI toggle honored).
+            # Forward an explicit tool policy; None -> run.py leaves it unset (tools on).
             if enable_tools is True:
                 args.append("--enable-tools")
             elif enable_tools is False:
@@ -1127,11 +1126,9 @@ def run(
             raise typer.Exit(2)
         host = "127.0.0.1"
 
-    # Tool policy no longer depends on the bind. --secure is a loopback bind
-    # behind an authenticated Cloudflare HTTPS tunnel (not a raw public port),
-    # and the operator owns network security for a raw bind, so tools default on
-    # everywhere; only --disable-tools turns them off. Resolve here so the
-    # re-exec'd child inherits a concrete decision.
+    # Tool policy no longer depends on the bind: tools default on everywhere
+    # (--secure is a loopback tunnel; the operator owns a raw bind). Resolve here
+    # so the re-exec'd child inherits a concrete decision.
     from unsloth_cli._tool_policy import is_external_host, resolve_tool_policy
 
     enable_tools = resolve_tool_policy(
@@ -1184,8 +1181,7 @@ def run(
             args.append("--enable-tools")
         else:
             args.append("--disable-tools")
-        # Forward --yes only if the user passed it; tool resolution no longer
-        # prompts, so there is no network-bind confirmation to pre-clear.
+        # Forward --yes only if the user passed it; resolution no longer prompts.
         if yes:
             args.append("--yes")
         # Typer claims --parallel outside ctx.args; without this the

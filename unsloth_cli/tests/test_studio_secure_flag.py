@@ -241,9 +241,8 @@ def test_studio_default_rejects_secure_with_subcommand():
 
 
 def test_run_secure_resolves_tools_against_loopback(monkeypatch):
-    # --secure is a loopback bind behind an authenticated HTTPS tunnel, not a raw
-    # public port, so tools resolve against 127.0.0.1 and stay ON. The child gets
-    # --enable-tools (default), never --disable-tools.
+    # --secure is a loopback bind behind an authenticated tunnel, so tools resolve
+    # against 127.0.0.1 (ON): the child gets --enable-tools, not --disable-tools.
     studio_mod = _studio()
     monkeypatch.setattr(sys, "prefix", "/nonexistent/outer/venv")
     fake_venv = Path("/fake/studio/venv/unsloth_studio")
@@ -290,9 +289,8 @@ def test_run_secure_resolves_tools_against_loopback(monkeypatch):
 
 
 def test_run_secure_enable_tools_no_auto_yes(monkeypatch):
-    # Tool resolution no longer prompts, so enabling tools on a secure endpoint
-    # forwards --enable-tools but does NOT auto-add --yes (only an explicit --yes
-    # passed by the user is forwarded).
+    # No prompt now, so a secure --enable-tools forwards --enable-tools but not
+    # --yes (only an explicit --yes is forwarded).
     captured = _invoke_run(monkeypatch, _BASE + ["-H", "0.0.0.0", "--secure", "--enable-tools"])
     assert len(captured) == 1, captured
     argv = captured[0]
@@ -325,8 +323,7 @@ def test_studio_default_forwards_enable_tools(monkeypatch):
 
 
 def test_studio_default_no_tool_flag_omits_both(monkeypatch):
-    # No flag -> run.py leaves the process policy unset (tools on for every bind,
-    # per-chat UI toggle honored). Neither flag is forwarded.
+    # No flag -> neither flag forwarded; run.py leaves the policy unset (tools on).
     captured = _invoke_studio_default(monkeypatch, [])
     assert len(captured) == 1, captured
     assert "--enable-tools" not in captured[0] and "--disable-tools" not in captured[0], captured[0]
@@ -345,8 +342,7 @@ def test_studio_default_rejects_enable_tools_with_subcommand():
 
 
 def test_run_tool_help_reflects_default_on_everywhere():
-    # Help text must match the new policy (tools on for every bind, no prompt),
-    # not the removed loopback-on/network-off default + confirmation prompt.
+    # Help must match the new policy (tools on everywhere, no prompt).
     import inspect
 
     params = inspect.signature(_studio().run).parameters

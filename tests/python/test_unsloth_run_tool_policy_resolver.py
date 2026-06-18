@@ -1,20 +1,8 @@
 # Copyright 2025-present the Unsloth AI Inc. team. All rights reserved.
 
-"""
-Truth-table tests for `resolve_tool_policy` -- the pure resolver behind
-`unsloth studio [run] --enable-tools/--disable-tools`.
-
-Tools default ON for every bind: loopback, the `--secure` authenticated
-Cloudflare HTTPS tunnel, and a raw network bind alike. Only an explicit
-`--disable-tools` turns them off. The network-exposure confirmation prompt was
-removed, so `yes` / `silent` / `prompt` are accepted for backward compatibility
-but never change the result or fire a prompt.
-
-Covers:
-  - every host (loopback, 0.0.0.0, a specific LAN IP) defaults on
-  - explicit on / off always wins
-  - the resolver never prompts
-"""
+"""Truth-table tests for `resolve_tool_policy`: tools default on for every bind
+(loopback, --secure tunnel, raw network), explicit on/off wins, and the resolver
+never prompts (yes/silent/prompt kept for compatibility)."""
 
 import pytest
 
@@ -65,9 +53,7 @@ class TestLocalhostHost:
 
 class TestZeroHost:
     def test_default_is_on(self):
-        # Network bind defaults ON now: --secure is a loopback bind behind an
-        # authenticated tunnel, and the operator owns network security for a
-        # raw bind.
+        # Network bind defaults ON now (operator owns network security).
         assert (
             resolve_tool_policy(
                 host = "0.0.0.0",

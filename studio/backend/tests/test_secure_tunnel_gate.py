@@ -71,9 +71,8 @@ def test_run_server_accepts_enable_tools_kwarg():
 
 
 def test_tool_policy_not_auto_disabled_by_bind():
-    # Tools default ON for every bind: loopback, the --secure authenticated HTTPS
-    # tunnel, and a raw 0.0.0.0 bind alike. The backend only changes the process
-    # policy from an explicit --enable-tools/--disable-tools, never from host/secure.
+    # Tools default on for every bind; the backend only changes the policy from
+    # an explicit --enable-tools/--disable-tools, never from host/secure.
     import run
     from state.tool_policy import get_tool_policy, reset_tool_policy
 
@@ -112,8 +111,7 @@ def test_tool_policy_notice_wording():
 
 
 def test_startup_output_emits_tool_notice_on_network_bind(capsys, monkeypatch):
-    # Plain `unsloth studio -H 0.0.0.0` (and direct run.py) must not be silent
-    # about server-side tools now that they default on.
+    # Plain `unsloth studio -H 0.0.0.0` must not be silent about tools now.
     import run
 
     monkeypatch.setattr(run, "_verify_global_reachability", lambda *a, **k: None)

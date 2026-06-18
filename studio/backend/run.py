@@ -396,12 +396,8 @@ def _verify_global_reachability(display_host: str, port: int) -> None:
 
 
 def _tool_policy_notice(host: str, secure: bool, enable_tools: "Optional[bool]") -> str:
-    """One-line server-side tool policy summary for the startup banner.
-
-    Tools default on for every bind, so this makes the resolved policy visible on
-    the plain-server path (which has no per-command banner): a network-reachable
-    launch must never be silent about code execution. `unsloth studio run` prints
-    its own equivalent notice."""
+    """One-line tool-policy summary for the plain-server startup banner, so a
+    network-reachable launch is never silent about code execution."""
     if enable_tools is False:
         return "Server-side tools are DISABLED (--disable-tools)."
     state = (
@@ -449,13 +445,8 @@ def _emit_startup_output(
     secure: bool = False,
     enable_tools: "Optional[bool]" = None,
 ) -> None:
-    """Print the access banner, post-startup warnings, and the tool-policy notice.
-
-    Extracted from ``_run`` so the banner/warning wiring is testable. The access
-    banner is printed without its stop hint; any ``localhost``-to-::1 mismatch or
-    wildcard reachability warning follows, then the one-line tool-policy notice,
-    then a single trailing stop hint.
-    """
+    """Print the access banner, post-startup warnings, the tool-policy notice,
+    then a single stop hint. Extracted from ``_run`` so the wiring is testable."""
     if secure:
         _emit_secure_startup_output(port, enable_tools)
         return
@@ -873,14 +864,9 @@ def _cloudflare_tunnel_should_start(
 
 
 def _apply_cli_tool_policy(enable_tools: "Optional[bool]") -> None:
-    """Install an explicit `--enable-tools/--disable-tools` decision, if any.
-
-    Tools default ON for every bind -- loopback, the `--secure` authenticated
-    Cloudflare HTTPS tunnel, and a raw network bind alike -- so the bind host is
-    never inspected here: `enable_tools is None` leaves the process policy
-    untouched (per-request `enable_tools` honored). Only an explicit flag forces
-    tools on (`True`) or off (`False`) for every request. `unsloth studio run`
-    installs its own resolved policy and passes None here."""
+    """Honor an explicit --enable-tools/--disable-tools; None leaves the policy
+    unset (tools default on, per-request enable_tools honored). Host is never
+    inspected here."""
     if enable_tools is None:
         return
     from state.tool_policy import set_tool_policy
@@ -909,9 +895,8 @@ def run_server(
         silent: Suppress startup messages
         api_only: API server only, no frontend (for Tauri desktop app)
         llama_parallel_slots: parallel slots for llama-server
-        enable_tools: explicit server-side tool policy from
-            `--enable-tools/--disable-tools` (None = leave default; tools stay
-            on for every bind and the per-request `enable_tools` is honored)
+        enable_tools: explicit --enable-tools/--disable-tools policy; None leaves
+            the default (tools on, per-request enable_tools honored)
 
     Note:
         Signal handlers are NOT registered here so embedders (e.g. Colab) keep
@@ -928,9 +913,7 @@ def run_server(
     if secure:
         host = "127.0.0.1"
 
-    # Tools default on for every bind; only an explicit --enable-tools/
-    # --disable-tools changes the process policy. `unsloth studio run` installs
-    # its own resolved policy before calling run_server and passes None here.
+    # `unsloth studio run` installs its own resolved policy and passes None here.
     _apply_cli_tool_policy(enable_tools)
 
     # Windows cp1252 can't encode emoji; reconfigure stdout to UTF-8.
@@ -1222,10 +1205,8 @@ if __name__ == "__main__":
         "if the tunnel can't start. Without it, --not-secure also serves the raw "
         "0.0.0.0 port, which is reachable from anywhere on the network",
     )
-    # Explicit server-side tool policy. Tri-state: neither flag -> None (tools
-    # stay on for every bind, per-request enable_tools honored); --enable-tools
-    # -> forced on; --disable-tools -> forced off. `unsloth studio run` installs
-    # its policy in-process instead of going through these flags.
+    # Tri-state tool policy: no flag -> None (tools on, per-request honored);
+    # --enable-tools/--disable-tools force on/off.
     parser.add_argument(
         "--enable-tools",
         dest = "enable_tools",
