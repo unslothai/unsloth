@@ -191,7 +191,7 @@ def test_render_html_success_filters_active_tools_and_repeat_is_internal():
     ]
 
     first = controller.prepare_call(_call("render_html", {"code": "<html></html>"}, "call_html_1"))
-    controller.record_result(first, "Rendered HTML artifact: Demo")
+    controller.record_result(first, "Rendered HTML canvas: Demo")
 
     assert [t["function"]["name"] for t in controller.active_tools()] == ["web_search"]
 

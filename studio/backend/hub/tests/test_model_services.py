@@ -78,6 +78,28 @@ class TestExtractQuantToken:
         assert labels == {"Q4_K_M", "Q8_0"}
 
 
+def test_big_endian_detection_ignores_model_name_be_token():
+    assert gguf.is_big_endian_gguf_path("model-Q4_K_M-be.gguf", "Q4_K_M")
+    assert gguf.is_big_endian_gguf_path("model-Q4_K_M_be_infill.gguf", "Q4_K_M")
+    assert not gguf.is_big_endian_gguf_path("foo-be-Q4_K_M.gguf", "Q4_K_M")
+    assert not gguf.is_big_endian_gguf_path("Q4_K_M/foo-be.gguf", "Q4_K_M")
+    assert gguf.pick_best_gguf(["model-Q4_K_M-be.gguf", "model-Q4_K_M.gguf"]) == (
+        "model-Q4_K_M.gguf"
+    )
+
+
+def test_list_local_gguf_variants_skips_big_endian_sibling(tmp_path):
+    (tmp_path / "model-Q4_K_M-be.gguf").write_bytes(b"x" * 100)
+    (tmp_path / "model-Q4_K_M.gguf").write_bytes(b"y" * 10)
+
+    variants, has_vision = gguf.list_local_gguf_variants(str(tmp_path))
+
+    assert has_vision is False
+    assert [(v.quant, v.filename, v.size_bytes) for v in variants] == [
+        ("Q4_K_M", "model-Q4_K_M.gguf", 10)
+    ]
+
+
 @pytest.mark.parametrize("repo_id", ["bert-base-uncased", "owner/repo"])
 def test_repo_id_validation_accepts_hf_repo_id_contract(repo_id):
     assert paths.is_valid_repo_id(repo_id)
@@ -302,6 +324,22 @@ def test_gguf_variant_requirements_include_split_files_and_preferred_mmproj():
         "model-Q4_K_M-00002-of-00002.gguf",
         "mmproj-F16.gguf",
     )
+
+
+def test_gguf_variant_requirements_skip_big_endian_sibling():
+    requirements = gguf_variants._build_gguf_variant_requirements(
+        [
+            _sibling("model-Q4_K_M-be.gguf", 100, "main-be"),
+            _sibling("model-Q4_K_M.gguf", 10, "main-le"),
+        ]
+    )
+
+    req = requirements["q4_k_m"]
+
+    assert req.main_size_bytes == 10
+    assert req.main_hashes == frozenset({"main-le"})
+    assert req.main_filenames == frozenset({"model-Q4_K_M.gguf"})
+    assert req.target_filenames == ("model-Q4_K_M.gguf",)
 
 
 def test_worker_gguf_variant_plan_matches_service_requirement(monkeypatch):

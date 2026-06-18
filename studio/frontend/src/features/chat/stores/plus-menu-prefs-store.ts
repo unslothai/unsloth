@@ -14,7 +14,8 @@ export type PlusMenuItemId =
   | "compareChat"
   | "exportChat"
   | "canvas"
-  | "projects";
+  | "projects"
+  | "bypassPermissions";
 
 // Canonical order used both for the pinned items at the top level and for the
 // items that fall into the "More" overflow submenu.
@@ -26,6 +27,7 @@ export const PLUS_MENU_ORDER: PlusMenuItemId[] = [
   "exportChat",
   "canvas",
   "projects",
+  "bypassPermissions",
 ];
 
 // Defaults reproduce the historical layout: Chat with Files, MCP and Projects
@@ -38,6 +40,8 @@ const DEFAULT_PINS: Record<PlusMenuItemId, boolean> = {
   compareChat: false,
   exportChat: false,
   canvas: false,
+  // Lives under "More" by default; it is a rarely toggled, dangerous mode.
+  bypassPermissions: false,
 };
 
 export interface PlusMenuPrefsState {

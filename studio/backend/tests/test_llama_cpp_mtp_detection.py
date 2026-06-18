@@ -9,6 +9,8 @@ the _already_in_target_state mirror that prevents needless reloads.
 
 from __future__ import annotations
 
+import inspect
+import os
 import struct
 import sys
 import types as _types
@@ -52,9 +54,12 @@ import pytest
 
 from core.inference.llama_cpp import (
     LlamaCppBackend,
+    _GPU_OFFLOAD_OVERRIDE_FLAGS,
+    _THREAD_OVERRIDE_FLAGS,
     _backfill_usage_from_timings,
     _build_ngram_mod_flags,
     _canonicalize_spec_mode,
+    _extra_args_set_any_flag,
     _extra_args_set_spec_type,
     _is_mtp_model_name,
 )
@@ -315,6 +320,46 @@ def test_extra_args_set_spec_type_passes_on_non_spec_type_args(extra_args):
     assert _extra_args_set_spec_type(extra_args) is False
 
 
+@pytest.mark.parametrize(
+    "extra_args",
+    [
+        ["-ngl", "12"],
+        ["--gpu-layers", "12"],
+        ["--n-gpu-layers=12"],
+        ["-fit", "off"],
+        ["--fit=off"],
+    ],
+)
+def test_extra_args_detect_gpu_offload_overrides(extra_args):
+    assert _extra_args_set_any_flag(extra_args, _GPU_OFFLOAD_OVERRIDE_FLAGS) is True
+
+
+@pytest.mark.parametrize("extra_args", [["-t", "8"], ["--threads=8"]])
+def test_extra_args_detect_thread_overrides(extra_args):
+    assert _extra_args_set_any_flag(extra_args, _THREAD_OVERRIDE_FLAGS) is True
+
+
+def test_windows_full_offload_flags_use_current_llama_server_args():
+    src = inspect.getsource(LlamaCppBackend.load_model)
+    stale_checkpoint_flag = "--checkpoint-" + "every-n-tokens"
+    assert '"--cache-ram"' in src
+    assert '"--ctx-checkpoints"' in src
+    assert '"--no-cache-prompt"' in src
+    assert stale_checkpoint_flag not in src
+
+
+def test_load_model_sets_threads_once():
+    src = inspect.getsource(LlamaCppBackend.load_model)
+    assert src.count('cmd.extend(["--threads", str(') == 1
+
+
+def test_llama_cpp_annotations_stay_python39_safe():
+    src = inspect.getsource(LlamaCppBackend.generate_chat_completion)
+    helper_src = inspect.getsource(_extra_args_set_any_flag)
+    assert "Generator[str | dict" not in src
+    assert "set[str] | frozenset[str]" not in helper_src
+
+
 def test_already_in_target_state_user_spec_type_override_matches_clean_backend():
     # User --spec-type none suppressed auto-MTP; repeat /load must not re-promote.
     backend = _mtp_backend(
@@ -523,6 +568,38 @@ def test_probe_server_capabilities_detects_draft_mtp(tmp_path):
 
 
 @_NEEDS_BASH
+def test_probe_server_capabilities_uses_binary_library_env(tmp_path, monkeypatch):
+    fake = _make_fake_llama_server(
+        tmp_path / "llama-server",
+        "--spec-type none,mtp,ngram-simple\n",
+    )
+    captured = {}
+
+    monkeypatch.setattr(
+        "core.inference.llama_cpp.child_env_without_native_path_secret",
+        lambda: {"LD_LIBRARY_PATH": "/already-there"},
+    )
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["env"] = kwargs.get("env")
+        return _types.SimpleNamespace(stdout = "--spec-type none,mtp,ngram-simple\n", stderr = "")
+
+    monkeypatch.setattr("core.inference.llama_cpp.subprocess.run", fake_run)
+
+    _clear_caps_cache()
+    caps = LlamaCppBackend.probe_server_capabilities(str(fake))
+
+    assert caps["found"] is True
+    assert caps["supports_mtp"] is True
+    assert captured["cmd"] == [str(fake), "--help"]
+    assert captured["env"] is not None
+    ld_dirs = captured["env"]["LD_LIBRARY_PATH"].split(os.pathsep)
+    assert str(fake.parent) in ld_dirs
+    assert "/already-there" in ld_dirs
+
+
+@_NEEDS_BASH
 def test_probe_server_capabilities_detects_renamed_mtp(tmp_path):
     # Renamed upstream: draft-mtp -> mtp.
     fake = _make_fake_llama_server(
@@ -554,6 +631,9 @@ def test_probe_server_capabilities_handles_missing_binary():
     caps = LlamaCppBackend.probe_server_capabilities("/no/such/llama-server")
     assert caps["found"] is False
     assert caps["supports_mtp"] is False
+    assert caps["supports_cache_ram"] is False
+    assert caps["supports_ctx_checkpoints"] is False
+    assert caps["supports_no_cache_prompt"] is False
 
 
 # ngram-mod flag flavor detection (new vs legacy llama-server).
@@ -586,6 +666,12 @@ _LEGACY_HELP = """\
                                         (env: LLAMA_ARG_DRAFT_MIN)
 --spec-ngram-size-n N                   ngram lookup length (default: 24)
 --spec-type none,ngram-mod,ngram-simple                                        comma-separated list of types of speculative decoding to use
+"""
+
+_CACHE_FLAGS_HELP = """\
+--cache-ram N                           store prompt cache in RAM (default: 0)
+--ctx-checkpoints N                     number of context checkpoints (default: 0)
+--no-cache-prompt                       do not reuse prompt cache
 """
 
 
@@ -632,6 +718,26 @@ def test_probe_no_ngram_mod_on_minimal_binary(tmp_path):
     caps = LlamaCppBackend.probe_server_capabilities(str(fake))
     assert caps["ngram_mod_flavor"] is None
     assert caps["supports_ngram_mod"] is False
+
+
+@_NEEDS_BASH
+def test_probe_detects_windows_cache_flags(tmp_path):
+    fake = _make_fake_llama_server(tmp_path / "llama-server", _CACHE_FLAGS_HELP)
+    _clear_caps_cache()
+    caps = LlamaCppBackend.probe_server_capabilities(str(fake))
+    assert caps["supports_cache_ram"] is True
+    assert caps["supports_ctx_checkpoints"] is True
+    assert caps["supports_no_cache_prompt"] is True
+
+
+@_NEEDS_BASH
+def test_probe_reports_windows_cache_flags_absent_for_older_binary(tmp_path):
+    fake = _make_fake_llama_server(tmp_path / "llama-server", "--threads N\n")
+    _clear_caps_cache()
+    caps = LlamaCppBackend.probe_server_capabilities(str(fake))
+    assert caps["supports_cache_ram"] is False
+    assert caps["supports_ctx_checkpoints"] is False
+    assert caps["supports_no_cache_prompt"] is False
 
 
 def test_build_ngram_mod_flags_new():
@@ -1162,9 +1268,10 @@ def test_build_speculative_flags_user_draft_n_max_override(monkeypatch):
     assert backend.spec_draft_n_max == 5
 
 
-def test_build_speculative_flags_mtp_token_missing_logs_and_skips(monkeypatch):
-    # Outdated llama-server with no MTP support: forced MTP must degrade
-    # to spec-off (warned) rather than emit a bad --spec-type.
+def test_build_speculative_flags_mtp_token_missing_emits_spec_default(monkeypatch):
+    # Outdated llama-server with no MTP support: forced MTP must degrade (warned)
+    # and emit --spec-default so an inherited LLAMA_ARG_SPEC_TYPE=draft-mtp (CLI
+    # wins over env) can't make the child attempt MTP the gate budgeted off.
     backend = _resolver_backend(monkeypatch, mtp_token = None)
     flags = backend._build_speculative_flags(
         speculative_type = "mtp",
@@ -1176,10 +1283,11 @@ def test_build_speculative_flags_mtp_token_missing_logs_and_skips(monkeypatch):
         binary = "/fake/llama-server",
     )
     assert "--spec-type" not in flags
-    # _speculative_type stays None (resolved emission was none); the user's
-    # choice is still reflected in _requested_spec_mode.
+    assert "--spec-default" in flags
+    # Degraded to non-speculative; the user's choice is still reflected.
+    assert backend.speculative_type == "default"
     assert backend.requested_spec_mode == "mtp"
-    assert backend.speculative_type is None
+    assert backend.spec_fallback_reason == "binary_no_mtp"
 
 
 def test_forced_mtp_on_non_mtp_model_defaults_back(monkeypatch):

@@ -2178,6 +2178,30 @@ def _sm_range(artifact: PublishedLlamaArtifact) -> int:
     return 9999
 
 
+def _blackwell_capable_linux_runtime_lines(
+    host_sms: list[str], artifacts: list[PublishedLlamaArtifact]
+) -> list[str]:
+    """CUDA runtime lines (highest major first) shipping a bundle that covers every
+    visible host SM. Lets a Blackwell host prefer a native sm_120 line over torch's
+    reported line, mirroring the Windows Blackwell preference."""
+    lines: set[str] = set()
+    for artifact in artifacts:
+        line = artifact.runtime_line
+        # Only rank "cuda<major>" lines; ignore malformed/future-format values
+        # (e.g. "cuda13.1") so they are skipped, as pre-existing code does, rather
+        # than crashing the major sort.
+        if not (line and line.startswith("cuda") and line[len("cuda") :].isdigit()):
+            continue
+        if not artifact.supported_sms or artifact.min_sm is None or artifact.max_sm is None:
+            continue
+        supported = {str(value) for value in artifact.supported_sms}
+        if all(
+            sm in supported and artifact.min_sm <= int(sm) <= artifact.max_sm for sm in host_sms
+        ):
+            lines.add(line)
+    return sorted(lines, key = lambda line: int(line[len("cuda") :]), reverse = True)
+
+
 def linux_cuda_choice_from_release(
     host: HostInfo,
     release: PublishedReleaseBundle,
@@ -2240,7 +2264,27 @@ def linux_cuda_choice_from_release(
         )
         return None
 
-    if preferred_runtime_line:
+    blackwell_lines = (
+        [
+            line
+            for line in _blackwell_capable_linux_runtime_lines(host_sms, published_artifacts)
+            if line in ordered_runtime_lines
+        ]
+        if _host_is_blackwell(host)
+        else []
+    )
+    if blackwell_lines:
+        # Blackwell host: prefer the highest CUDA-major line shipping an sm_120 bundle
+        # over torch's line (matches the Windows Blackwell preference).
+        ordered_runtime_lines = blackwell_lines + [
+            line for line in ordered_runtime_lines if line not in blackwell_lines
+        ]
+        selection_log.append(
+            "linux_cuda_selection: blackwell_runtime_override prefer="
+            + ",".join(blackwell_lines)
+            + (f" over torch_preferred={preferred_runtime_line}" if preferred_runtime_line else "")
+        )
+    elif preferred_runtime_line:
         if preferred_runtime_line in ordered_runtime_lines:
             ordered_runtime_lines = [preferred_runtime_line] + [
                 runtime_line
@@ -5904,6 +5948,34 @@ def preferred_source_archive(
     )
 
 
+def exact_source_asset_url(
+    approved_checksums: ApprovedReleaseChecksums,
+    source_repo: str,
+    source_archive: ApprovedArtifactHash | None,
+    exact_source: bool,
+    release_tag: str,
+) -> str | None:
+    """Release-asset URL for a mix build's merged source tree, or None.
+
+    A mix build's merge commit is never pushed, so its codeload/archive URLs
+    404; the only durable copy of the merged tree is the
+    ``llama.cpp-source-commit-<sha>.tar.gz`` asset published alongside the
+    prebuilt. Resolve its host and tag defensively so a manifest that omits the
+    top-level ``repo``/``release_tag`` still reaches the asset: prefer the
+    artifact's own repo, then the manifest repo, then the source repo; and prefer
+    the manifest release tag, then the tag we actually installed the prebuilt
+    from (its sibling on the same release). Without this the empty fields drop the
+    only working URL and hydration falls through to the 404-ing commit archive.
+    """
+    if not exact_source or source_archive is None:
+        return None
+    return release_asset_download_url(
+        source_archive.repo or approved_checksums.repo or source_repo,
+        approved_checksums.release_tag or release_tag,
+        source_archive.asset_name,
+    )
+
+
 def selected_source_archive_metadata(
     checksums: ApprovedReleaseChecksums, llama_tag: str
 ) -> tuple[str, str | None]:
@@ -5932,9 +6004,9 @@ def resolve_install_attempts(
 
 def _linux_published_attempts(host: HostInfo, bundle: PublishedReleaseBundle) -> list[AssetChoice]:
     """Build the install attempts for a fork Linux host from a manifest-described
-    bundle: CUDA (with a CPU fallback), per-gfx ROCm, or CPU. Same selection the
-    upstream filename path used, just sourced from the manifest instead of
-    reconstructed from asset names."""
+    bundle: CUDA, per-gfx ROCm, or (non-GPU) CPU. Same selection the upstream
+    filename path used, just sourced from the manifest instead of reconstructed
+    from asset names."""
     attempts: list[AssetChoice] = []
     if host.has_usable_nvidia:
         # Prefer the cudart major Studio loads at runtime (torch's bundled
@@ -5949,7 +6021,7 @@ def _linux_published_attempts(host: HostInfo, bundle: PublishedReleaseBundle) ->
         )
         if selection is not None:
             attempts.extend(selection.attempts)
-    if host.has_rocm and not host.has_usable_nvidia:
+    elif host.has_rocm:
         # Use the fork's own per-gfx ROCm bundle (hash-approved, ships the full
         # ROCm runtime). Do NOT append the CPU asset for ROCm-only hosts: if no
         # bundle covers the GPU we want validate_prebuilt_attempts to raise
@@ -5959,6 +6031,10 @@ def _linux_published_attempts(host: HostInfo, bundle: PublishedReleaseBundle) ->
         if published_rocm is not None:
             attempts.append(published_rocm)
     else:
+        # CPU-only host. A usable-NVIDIA host never reaches here -- if its CUDA
+        # selection produced nothing we want an empty attempt list so the caller
+        # source-builds with CUDA, not a CPU-only binary silently installed on a
+        # GPU host (mirrors the ROCm branch, and Windows NVIDIA).
         cpu_choice = published_asset_choice_for_kind(bundle, "linux-cpu")
         if cpu_choice is not None:
             attempts.append(cpu_choice)
@@ -6341,12 +6417,8 @@ def validate_prebuilt_choice(
     )
     # For an exact (mix) source the merge commit lives only in the release asset,
     # not in any repo, so fetch the asset directly; codeload stays the fallback.
-    asset_url = (
-        release_asset_download_url(
-            approved_checksums.repo, approved_checksums.release_tag, source_archive.asset_name
-        )
-        if exact_source and source_archive is not None
-        else None
+    asset_url = exact_source_asset_url(
+        approved_checksums, source_repo, source_archive, exact_source, release_tag
     )
     if exact_source:
         log(f"hydrating exact llama.cpp source for {source_repo}@{source_ref} into {install_dir}")
