@@ -2678,6 +2678,31 @@ $ResolvedSourceRef = $RequestedLlamaTag
 $ResolvedSourceRefKind = "tag"
 $ResolvedLlamaTag = $RequestedLlamaTag
 
+# ── beellama.cpp (turboquant fork) ─────────────────────────────────────────
+# This fork runs on beellama.cpp -- the build that understands turbo4
+# KV-cache type -- not upstream llama.cpp. Build it from source into
+# $LlamaCppDir. The build is NON-FATAL: on failure the rest of the Unsloth
+# install continues and the user is told to build beellama.cpp themselves (we
+# never silently fall back to a turbo4-less upstream binary). The build guide
+# link is repeated in the footer. Set UNSLOTH_SKIP_BEELLAMA=1 to use the
+# upstream llama.cpp prebuilt/source paths instead.
+$BeellamaBuildGuide = "https://github.com/Anbeeld/beellama.cpp/blob/v0.3.2/docs/build.md"
+$BeellamaHandled = $false
+if ($env:UNSLOTH_SKIP_BEELLAMA -ne "1") {
+    $BeellamaHandled = $true
+    Write-Host ""
+    substep "building beellama.cpp from source (this can take several minutes)..."
+    & python "$PSScriptRoot\install_beellama_source.py" --install-dir $LlamaCppDir
+    if ($LASTEXITCODE -eq 0) {
+        step "beellama.cpp" "built"
+    } else {
+        step "beellama.cpp" "build failed -- continuing without GGUF inference" "Yellow"
+        substep "build beellama.cpp yourself, then restart Studio:" "Yellow"
+        substep "  $BeellamaBuildGuide" "Yellow"
+        $script:LlamaCppDegraded = $true
+    }
+}
+
 if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
     $NeedLlamaSourceBuild = $true
     $SkipPrebuiltInstall = $true
@@ -2753,6 +2778,11 @@ if ($LlamaPr) {
     $NeedLlamaSourceBuild = $true
     $SkipPrebuiltInstall = $true
 }
+
+# Upstream llama.cpp prebuilt/source paths -- skipped entirely when beellama was
+# handled above (UNSLOTH_SKIP_BEELLAMA=1 re-enables them). Closing brace is just
+# before the Footer.
+if (-not $BeellamaHandled) {
 
 if ($env:UNSLOTH_LLAMA_FORCE_COMPILE -eq "1") {
     Write-Host ""
@@ -3428,6 +3458,8 @@ if (-not $NeedLlamaSourceBuild) {
     }
 }
 
+}  # end (-not $BeellamaHandled) (upstream llama.cpp prebuilt/source paths)
+
 # ─────────────────────────────────────────────
 # Footer
 # ─────────────────────────────────────────────
@@ -3451,6 +3483,15 @@ if ($script:StudioVtOk -and -not $env:NO_COLOR) {
 }
 step "launch" "unsloth studio -H 0.0.0.0 -p 8888"
 Write-Host ""
+
+# beellama.cpp build failed earlier: repeat the "build it yourself" note + guide
+# link in the summary so it is the last thing the user sees.
+if ($script:LlamaCppDegraded -and $BeellamaHandled) {
+    Write-Host "  GGUF inference unavailable: beellama.cpp was not built." -ForegroundColor Yellow
+    Write-Host "  Build it yourself, then restart Studio:" -ForegroundColor DarkGray
+    Write-Host "    $BeellamaBuildGuide" -ForegroundColor DarkGray
+    Write-Host ""
+}
 
 # Match studio/setup.sh: exit non-zero for degraded llama.cpp when called
 # from install.ps1 (SKIP_STUDIO_BASE=1) so the installer can detect the

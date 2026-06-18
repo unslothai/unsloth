@@ -1086,6 +1086,29 @@ fi
 
 verbose_substep "requested llama.cpp tag: $_REQUESTED_LLAMA_TAG (repo: $_HELPER_RELEASE_REPO)"
 
+# ── 7b. beellama.cpp (turboquant fork) ─────────────────────────────────────
+# This fork runs on beellama.cpp -- the build that understands turbo4
+# KV-cache type -- not upstream llama.cpp. Build it from source into
+# $LLAMA_CPP_DIR. The build is NON-FATAL: on failure the rest of the Unsloth
+# install continues and the user is told to build beellama.cpp themselves (we
+# never silently fall back to a turbo4-less upstream binary). The build guide
+# link is repeated in the footer. Set UNSLOTH_SKIP_BEELLAMA=1 to use the
+# upstream llama.cpp prebuilt/source paths below instead.
+_BEELLAMA_BUILD_GUIDE="https://github.com/Anbeeld/beellama.cpp/blob/v0.3.2/docs/build.md"
+_BEELLAMA_HANDLED=false
+if [ "${UNSLOTH_SKIP_BEELLAMA:-0}" != "1" ]; then
+    _BEELLAMA_HANDLED=true
+    # beellama replaces upstream llama.cpp; skip both upstream acquisition paths.
+    # The compile itself runs in section 8b (after the WSL build-dep stage).
+    _SKIP_PREBUILT_INSTALL=true
+    _NEED_LLAMA_SOURCE_BUILD=false
+fi
+
+# Upstream llama.cpp prebuilt/source paths -- skipped when beellama was handled
+# (UNSLOTH_SKIP_BEELLAMA=1 re-enables them). Closing `fi` is below section 7's
+# reuse block, before section 8.
+if [ "$_BEELLAMA_HANDLED" != true ]; then
+
 if [ "$_LLAMA_FORCE_COMPILE" = "1" ]; then
     step "llama.cpp" "UNSLOTH_LLAMA_FORCE_COMPILE=1 -- skipping prebuilt" "$C_WARN"
     _NEED_LLAMA_SOURCE_BUILD=true
@@ -1181,10 +1204,13 @@ if [ "$_NEED_LLAMA_SOURCE_BUILD" = true ] && \
     _NEED_LLAMA_SOURCE_BUILD=false
 fi
 
+fi  # end "$_BEELLAMA_HANDLED" != true (upstream llama.cpp prebuilt/source paths)
+
 # ── 8. WSL: pre-install GGUF build dependencies for fallback source builds ──
 # On WSL, sudo requires a password and can't be entered during GGUF export
 # (runs in a non-interactive subprocess). Install build deps here instead.
-if [ "$_NEED_LLAMA_SOURCE_BUILD" = true ] && grep -qi microsoft /proc/version 2>/dev/null; then
+if { [ "$_NEED_LLAMA_SOURCE_BUILD" = true ] || [ "$_BEELLAMA_HANDLED" = true ]; } \
+        && grep -qi microsoft /proc/version 2>/dev/null; then
     _GGUF_DEPS="pciutils build-essential cmake curl git libcurl4-openssl-dev"
     apt-get update -y >/dev/null 2>&1 || true
     apt-get install -y $_GGUF_DEPS >/dev/null 2>&1 || true
@@ -1227,6 +1253,32 @@ if [ "$_NEED_LLAMA_SOURCE_BUILD" = true ] && grep -qi microsoft /proc/version 2>
         step "gguf deps" "missing (no sudo) -- install manually:" "$C_WARN"
         substep "apt-get install -y $_STILL_MISSING"
         _SKIP_GGUF_BUILD=true
+    fi
+fi
+
+# ── 8b. Build beellama.cpp (after the WSL build-dep stage) ──────────────────
+# Runs here, not in section 7b, so on WSL the build toolchain (cmake,
+# build-essential, libcurl, ...) is installed first. NON-FATAL: a failure (or
+# missing build deps) degrades the install and tells the user to build
+# beellama.cpp themselves; the upstream llama.cpp paths above were already
+# skipped, so there is no turbo4-less fallback. The footer repeats the guidance.
+if [ "$_BEELLAMA_HANDLED" = true ]; then
+    if [ "${_SKIP_GGUF_BUILD:-}" = true ]; then
+        step "beellama.cpp" "build skipped (missing build deps)" "$C_WARN"
+        substep "install the deps listed above, then build beellama.cpp yourself:" "$C_WARN"
+        substep "  $_BEELLAMA_BUILD_GUIDE" "$C_WARN"
+        _LLAMA_CPP_DEGRADED=true
+    else
+        substep "building beellama.cpp from source (this can take several minutes)..."
+        if run_quiet_no_exit "build beellama.cpp" \
+                python "$SCRIPT_DIR/install_beellama_source.py" --install-dir "$LLAMA_CPP_DIR"; then
+            step "beellama.cpp" "built"
+        else
+            step "beellama.cpp" "build failed -- continuing without GGUF inference" "$C_WARN"
+            substep "build beellama.cpp yourself, then restart Studio:" "$C_WARN"
+            substep "  $_BEELLAMA_BUILD_GUIDE" "$C_WARN"
+            _LLAMA_CPP_DEGRADED=true
+        fi
     fi
 fi
 
@@ -1673,6 +1725,7 @@ fi  # end _SKIP_GGUF_BUILD check
 # GPU above. If that produced no binary, install ggml-org's arm64 CPU prebuilt
 # instead of leaving the host without llama.cpp.
 if [ "$_LLAMA_CPP_DEGRADED" = true ] \
+        && [ "${_BEELLAMA_HANDLED:-false}" != true ] \
         && [ "$_HOST_SYSTEM" = "Linux" ] \
         && { [ "$_HOST_MACHINE" = "aarch64" ] || [ "$_HOST_MACHINE" = "arm64" ]; }; then
     substep "GPU source build unavailable; trying ggml-org arm64 CPU prebuilt..."
@@ -1729,6 +1782,15 @@ else
     printf "  ${C_DIM}%-15s%s${C_RST}\n" "" "(add -H 0.0.0.0 to allow network / cloud access)"
 fi
 echo ""
+
+# beellama.cpp build failed earlier: repeat the "build it yourself" note + guide
+# link in the summary so it is the last thing the user sees.
+if [ "$_LLAMA_CPP_DEGRADED" = true ] && [ "${_BEELLAMA_HANDLED:-false}" = true ]; then
+    printf "  ${C_WARN}%s${C_RST}\n" "GGUF inference unavailable: beellama.cpp was not built."
+    printf "  ${C_DIM}%s${C_RST}\n" "Build it yourself, then restart Studio:"
+    printf "  ${C_DIM}%s${C_RST}\n" "  ${_BEELLAMA_BUILD_GUIDE:-https://github.com/Anbeeld/beellama.cpp/blob/v0.3.2/docs/build.md}"
+    echo ""
+fi
 
 # When called from install.sh (SKIP_STUDIO_BASE=1), exit non-zero so the
 # installer can report the GGUF failure after finishing PATH/shortcut setup.
