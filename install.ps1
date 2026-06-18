@@ -1486,7 +1486,7 @@ shell.Run cmd, 0, False
     # ProcessStartInfo (not &) so stderr doesn't trip $ErrorActionPreference.
     function Get-InstalledTorchTag {
         param([string]$PythonExe)
-        if (-not (Test-Path -LiteralPath $PythonExe)) { return $null }
+        if (-not $PythonExe -or -not (Test-Path -LiteralPath $PythonExe)) { return $null }
         try {
             $psi = New-Object System.Diagnostics.ProcessStartInfo
             $psi.FileName = $PythonExe
