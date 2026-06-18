@@ -21,11 +21,13 @@ Unsloth Studio lets you run and train models locally.
 
 ## Fork Notes
 
-*Only tested with a CUDA build on an NVIDIA Blackwell GPU (sm_120) using CUDA Toolkit 13.3 on Windows 11. ROCm/HIP, Metal, and CPU builds are untested, as are other NVIDIA architectures (Ampere/Ada/Hopper).*
+*Only tested with a CUDA build on an NVIDIA Blackwell GPU (sm_120) using CUDA Toolkit 13.0 on Windows 11. ROCm/HIP, Metal, and CPU builds are untested, as are other NVIDIA architectures (Ampere/Ada/Hopper).*
+
+This fork uses experimental features; everything may not work perfectly.
 
 ### Setup
 
-Follow the setup from Advanced Installation. Beellama.cpp will automatically build for your machine.
+Follow the setup from [Advanced Installation](https://github.com/lukasdim/unsloth-turboquant#-advanced-installation). Beellama.cpp will automatically build for your machine.
 A few notes:
 - **CUDA:** Run as is
 - **ROCm/HIP:** You may need to enable `UNSLOTH_BEELLAMA_HIP_ROCWMMA_FATTN=1` before running installation

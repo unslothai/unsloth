@@ -200,6 +200,17 @@ def get_installed_llama_version() -> Optional[str]:
     to call from latency-sensitive paths like the About panel.
     """
     binary = _find_binary()
+    # Prefer the beellama source-build identity (branch + commit) when this
+    # install was built by install_beellama_source.py. Pass the resolved binary
+    # so it honours the same resolver/mocking as the rest of this function.
+    # Wrapped so a missing/!importable beellama module never breaks the row.
+    try:
+        from utils.beellama_update import get_installed_beellama_version
+        bee = get_installed_beellama_version(binary)
+        if bee:
+            return bee
+    except Exception:  # pragma: no cover - defensive: never crash the About row
+        pass
     marker = read_install_marker(binary)
     if marker:
         tag = marker.get("release_tag") or marker.get("tag")

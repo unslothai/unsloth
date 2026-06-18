@@ -33,6 +33,14 @@ export interface LlamaUpdateStatus {
   latest_tag: string | null;
   // Download size of the prebuilt Update would fetch, in bytes (null if unknown).
   update_size_bytes: number | null;
+  // ── beellama.cpp source-build notifier (null on the prebuilt path) ──
+  // New commits on the tracked branch since the built commit.
+  commits_behind: number | null;
+  installed_commit: string | null;
+  latest_commit: string | null;
+  branch: string | null;
+  // GitHub compare URL showing the new commits.
+  compare_url: string | null;
   job: LlamaUpdateJob;
 }
 
@@ -47,6 +55,14 @@ function parseStatus(value: unknown): LlamaUpdateStatus | null {
     latest_tag: typeof s.latest_tag === "string" ? s.latest_tag : null,
     update_size_bytes:
       typeof s.update_size_bytes === "number" ? s.update_size_bytes : null,
+    commits_behind:
+      typeof s.commits_behind === "number" ? s.commits_behind : null,
+    installed_commit:
+      typeof s.installed_commit === "string" ? s.installed_commit : null,
+    latest_commit:
+      typeof s.latest_commit === "string" ? s.latest_commit : null,
+    branch: typeof s.branch === "string" ? s.branch : null,
+    compare_url: typeof s.compare_url === "string" ? s.compare_url : null,
     job: {
       state: (job.state as LlamaUpdateJob["state"]) ?? "idle",
       message: typeof job.message === "string" ? job.message : "",

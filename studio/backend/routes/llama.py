@@ -20,7 +20,9 @@ from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
 
 from auth.authentication import get_current_subject
-from utils.llama_cpp_update import get_update_status, start_update
+# beellama_update serves commit-based status for beellama source builds and
+# transparently delegates to the prebuilt updater for non-beellama installs.
+from utils.beellama_update import get_update_status, start_update
 
 router = APIRouter()
 
@@ -57,6 +59,23 @@ class LlamaUpdateStatusResponse(BaseModel):
     )
     update_size_bytes: Optional[int] = Field(
         None, description = "Download size of the prebuilt Update would fetch, in bytes."
+    )
+    # ── beellama.cpp source-build notifier (None on the prebuilt path) ──
+    commits_behind: Optional[int] = Field(
+        None,
+        description = "New commits on the beellama.cpp branch since the built commit.",
+    )
+    installed_commit: Optional[str] = Field(
+        None, description = "Full SHA of the beellama.cpp commit currently built."
+    )
+    latest_commit: Optional[str] = Field(
+        None, description = "Full SHA of the latest commit on the tracked branch."
+    )
+    branch: Optional[str] = Field(
+        None, description = "beellama.cpp branch/ref being tracked (e.g. v0.3.2)."
+    )
+    compare_url: Optional[str] = Field(
+        None, description = "GitHub compare URL showing the new commits (built...branch)."
     )
     job: LlamaUpdateJob = Field(default_factory = LlamaUpdateJob)
 

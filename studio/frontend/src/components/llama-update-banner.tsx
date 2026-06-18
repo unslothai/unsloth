@@ -98,13 +98,16 @@ export function LlamaUpdateBanner({
 
   async function handleUpdate() {
     const result = await apply();
+    const sourceBuild = status?.commits_behind != null;
     if (result?.ok) {
       toast.success(
-        `llama.cpp updated to ${result.tag ?? "the latest build"}. Reload your model to use it.`,
+        sourceBuild
+          ? `beellama.cpp rebuilt${result.tag ? ` at ${result.tag}` : ""}. Reload your model to use it.`
+          : `llama.cpp updated to ${result.tag ?? "the latest build"}. Reload your model to use it.`,
       );
     } else if (result) {
       toast.error(
-        `llama.cpp update failed: ${result.error ?? "unknown error"}`,
+        `${sourceBuild ? "beellama.cpp rebuild" : "llama.cpp update"} failed: ${result.error ?? "unknown error"}`,
       );
     }
   }
@@ -117,6 +120,12 @@ export function LlamaUpdateBanner({
     sizeBytes && sizeBytes > 0
       ? `${Math.round(sizeBytes / (1024 * 1024))} MB`
       : null;
+  // beellama source-build mode: the backend reports commits-behind instead of a
+  // prebuilt tag/size. commits_behind is non-null only for a beellama install.
+  const isSourceBuild = status?.commits_behind != null;
+  const commitsBehind = status?.commits_behind ?? 0;
+  const installedShort = status?.installed_tag ?? "";
+  const compareUrl = status?.compare_url ?? null;
   const updateProgress = status?.job.progress ?? null;
   const jobSucceeded = status?.job.state === "success";
   // Drives the bar so it animates continuously; aria reports the real value.
@@ -173,18 +182,54 @@ export function LlamaUpdateBanner({
           />
           <div className="min-w-0">
             <p className="font-heading text-base font-medium text-foreground">
-              {applying ? "Updating llama.cpp..." : "New llama.cpp update"}
+              {applying
+                ? isSourceBuild
+                  ? "Rebuilding beellama.cpp..."
+                  : "Updating llama.cpp..."
+                : isSourceBuild
+                  ? "beellama.cpp update available"
+                  : "New llama.cpp update"}
             </p>
-            <p className="mt-0.5 text-xs text-muted-foreground">
-              {status?.installed_tag ?? "unknown"} &rarr;{" "}
-              <span className="font-medium text-foreground">
-                {status?.latest_tag ?? ""}
-              </span>
-            </p>
-            <p className="mt-1 text-[11px] text-muted-foreground/70">
-              {sizeLabel ? `${sizeLabel} download · ` : ""}No restart needed
-              after update
-            </p>
+            {isSourceBuild ? (
+              <>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  <span className="font-medium text-foreground">
+                    {commitsBehind} new commit{commitsBehind === 1 ? "" : "s"}
+                  </span>{" "}
+                  since{" "}
+                  <span className="font-mono">{installedShort || "unknown"}</span>
+                </p>
+                <p className="mt-1 text-[11px] text-muted-foreground/70">
+                  {compareUrl ? (
+                    <>
+                      <a
+                        href={compareUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="underline underline-offset-2 hover:text-foreground"
+                      >
+                        View commit history
+                      </a>
+                      {" · "}
+                    </>
+                  ) : null}
+                  Rebuilds from source with your build flags · no restart needed
+                </p>
+              </>
+            ) : (
+              <>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  {status?.installed_tag ?? "unknown"} &rarr;{" "}
+                  <span className="font-medium text-foreground">
+                    {status?.latest_tag ?? ""}
+                  </span>
+                </p>
+                <p className="mt-1 text-[11px] text-muted-foreground/70">
+                  {sizeLabel ? `${sizeLabel} download · ` : ""}No restart needed
+                  after update
+                </p>
+              </>
+            )}
           </div>
         </div>
 
