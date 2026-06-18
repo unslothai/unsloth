@@ -220,11 +220,11 @@ class LoadResponse(BaseModel):
         False,
         description = "Whether model supports thinking/reasoning mode (enable_thinking or reasoning_effort)",
     )
-    reasoning_style: Literal[
-        "enable_thinking", "reasoning_effort", "enable_thinking_effort"
-    ] = Field(
-        "enable_thinking",
-        description = "Reasoning control style: 'enable_thinking' (boolean), 'reasoning_effort' (low|medium|high), or 'enable_thinking_effort' (on/off gate plus an effort level, e.g. GLM-5.2 high|max)",
+    reasoning_style: Literal["enable_thinking", "reasoning_effort", "enable_thinking_effort"] = (
+        Field(
+            "enable_thinking",
+            description = "Reasoning control style: 'enable_thinking' (boolean), 'reasoning_effort' (low|medium|high), or 'enable_thinking_effort' (on/off gate plus an effort level, e.g. GLM-5.2 high|max)",
+        )
     )
     reasoning_effort_levels: List[str] = Field(
         default_factory = list,
@@ -338,11 +338,11 @@ class InferenceStatusResponse(BaseModel):
     supports_reasoning: bool = Field(
         False, description = "Whether the active model supports reasoning/thinking mode"
     )
-    reasoning_style: Literal[
-        "enable_thinking", "reasoning_effort", "enable_thinking_effort"
-    ] = Field(
-        "enable_thinking",
-        description = "Reasoning control style: 'enable_thinking' (boolean), 'reasoning_effort' (low|medium|high), or 'enable_thinking_effort' (on/off gate plus an effort level, e.g. GLM-5.2 high|max)",
+    reasoning_style: Literal["enable_thinking", "reasoning_effort", "enable_thinking_effort"] = (
+        Field(
+            "enable_thinking",
+            description = "Reasoning control style: 'enable_thinking' (boolean), 'reasoning_effort' (low|medium|high), or 'enable_thinking_effort' (on/off gate plus an effort level, e.g. GLM-5.2 high|max)",
+        )
     )
     reasoning_effort_levels: List[str] = Field(
         default_factory = list,

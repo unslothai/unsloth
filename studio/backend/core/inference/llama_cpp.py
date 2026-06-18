@@ -1556,7 +1556,10 @@ class LlamaCppBackend:
                 # (those models genuinely cannot disable).
                 if enable_thinking is not None:
                     kwargs["enable_thinking"] = enable_thinking
-                if enable_thinking is not False and reasoning_effort in self._reasoning_effort_levels:
+                if (
+                    enable_thinking is not False
+                    and reasoning_effort in self._reasoning_effort_levels
+                ):
                     kwargs["reasoning_effort"] = reasoning_effort
             elif self._reasoning_style == "reasoning_effort":
                 if reasoning_effort in ("none", "low", "medium", "high"):
