@@ -5358,17 +5358,6 @@ class LlamaCppBackend:
 
                 # Library paths so llama-server finds its shared libs and CUDA DLLs.
                 env = self._llama_server_env_for_binary(binary)
-                
-                # TurboQuant: when K and V resolve to the same cache type, the
-                # auto-asymmetric policy in llama-kv-cache.cpp (GQA >= 6) upgrades
-                # K off that type. Force it off so the symmetric type the user
-                # picked is honored. Asymmetric (V override differs) and
-                # env-inherited (self._cache_type_kv is None) paths are left alone.
-                if self._cache_type_kv is not None and (
-                    self._cache_type_v is None
-                    or self._cache_type_v == self._cache_type_kv
-                ):
-                    env["TURBO_AUTO_ASYMMETRIC"] = "0"
 
                 # Omitting --threads relies on llama.cpp's physical-core default, so
                 # drop an inherited LLAMA_ARG_THREADS that would otherwise feed the
