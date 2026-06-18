@@ -1,13 +1,4 @@
-"""End-to-end sandbox tests: Studio modules in isolated no-torch venvs.
-
-Covers:
-- Python 3.12 and 3.13 venv creation (Intel Mac uses 3.12, Apple Silicon/Linux 3.13)
-- data_collators.py loads and dataclasses instantiate without torch
-- chat_templates.py top-level exec works with stubs for relative imports
-- Negative control: prepending 'import torch' fails in no-torch venv
-- Negative control: installing torchao (from overrides.txt) fails in no-torch venv
-- AST structural checks for top-level torch imports
-"""
+"""Sandbox tests: Studio dataset modules load/run in isolated no-torch venvs."""
 
 from __future__ import annotations
 
@@ -48,10 +39,7 @@ def _create_venv(venv_dir: Path, python_version: str) -> Path | None:
 
 @pytest.fixture(params = ["3.12", "3.13"], scope = "module")
 def no_torch_venv(request, tmp_path_factory):
-    """Create a temporary venv at the requested Python version with no torch.
-
-    Parametrized for 3.12 (Intel Mac) and 3.13 (Apple Silicon / Linux).
-    """
+    """Temp no-torch venv, parametrized for 3.12 (Intel Mac) and 3.13 (Apple Silicon / Linux)."""
     if not _has_uv():
         pytest.skip("uv not available")
 
@@ -353,7 +341,7 @@ class TestFormatConversionAST:
                         and child.module
                         and child.module.startswith("torch")
                     ):
-                        # This torch import must be inside a Try node
+                        # This torch import must be inside a Try node.
                         found_in_try = False
                         for try_node in ast.walk(node):
                             if isinstance(try_node, ast.Try):
@@ -524,10 +512,7 @@ class TestNegativeControls:
             os.unlink(temp_file)
 
     def test_torchao_install_fails_no_torch_venv(self, no_torch_venv):
-        """Installing torchao (from overrides.txt) fails in a no-torch venv.
-
-        This proves the overrides.txt skip is necessary for Intel Mac.
-        """
+        """torchao install fails in a no-torch venv: proves the overrides.txt skip is needed."""
         result = subprocess.run(
             [
                 no_torch_venv,
@@ -541,10 +526,10 @@ class TestNegativeControls:
             timeout = 60,
         )
         if result.returncode != 0:
-            # torchao install/resolution failed as expected
+            # torchao install/resolution failed as expected.
             pass
         else:
-            # pip dry-run may not catch dependency issues; verify torch is missing
+            # dry-run may miss dep issues; verify torch is absent instead.
             check = subprocess.run(
                 [no_torch_venv, "-c", "import torch"],
                 capture_output = True,

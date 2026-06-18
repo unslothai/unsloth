@@ -63,7 +63,7 @@ def _param_default(method, name):
 
 
 def _load_text_only_namespace():
-    # Exec the text-only helpers from _utils into one namespace (no unsloth import),
+    # Exec the _utils text-only helpers into one namespace (no unsloth import),
     # in dependency order so cross-references resolve.
     source = _source(UTILS_PATH)
     import transformers
@@ -123,8 +123,7 @@ def test_fast_language_model_forwards_text_only_to_fast_model():
     source = _source(LOADER_PATH)
     method = _class_method(ast.parse(source), "FastLanguageModel", "from_pretrained")
 
-    # text_only defaults False (opt-in, not forced True), and both FastModel
-    # delegations forward it.
+    # text_only defaults False (opt-in); both FastModel delegations forward it.
     text_only_default = _param_default(method, "text_only")
     assert isinstance(text_only_default, ast.Constant) and text_only_default.value is False
 
@@ -206,22 +205,14 @@ def test_fast_base_model_text_only_bypasses_vision_auto_model():
 
 
 def test_gemma3_text_only_model_class_resolves_and_has_no_vision_tower():
-    """Tiny end-to-end: build a Gemma3 text-only config, instantiate the
-    matching model class with shrunken hidden sizes, assert it has the
-    text language model attributes and no vision tower attribute.
-
-    This is the integration check the AST-only tests were missing -- it
-    proves the text-only routing actually produces a model that can be
-    instantiated and that the resulting model is purely text. We use
-    shrunken hidden sizes so the test is fast and CPU-only.
-    """
+    """End-to-end: a tiny Gemma3 text-only model instantiates with text LM attrs and no vision tower."""
     transformers = pytest.importorskip("transformers")
     helper = _load_text_only_helper()
 
     full_config = transformers.Gemma3Config()
     text_config = helper(full_config, "google/gemma-3-27b-it")
 
-    # Shrink for a cheap CPU instantiation; keep the shape attrs read at construction.
+    # Shrink for cheap CPU instantiation.
     text_config.num_hidden_layers = 1
     text_config.hidden_size = 32
     text_config.intermediate_size = 32
@@ -233,10 +224,9 @@ def test_gemma3_text_only_model_class_resolves_and_has_no_vision_tower():
     model_class = transformers.AutoModelForCausalLM._model_mapping[type(text_config)]
     model = model_class(text_config)
 
-    # Positive checks: text language model surface is present.
     assert hasattr(model, "lm_head"), "text-only Gemma3 model should expose lm_head"
 
-    # Negative checks: no vision tower / multimodal projector remains.
+    # No vision tower / multimodal projector remains.
     assert not hasattr(
         model, "vision_tower"
     ), "text-only Gemma3 model should not have a vision_tower"
@@ -246,7 +236,7 @@ def test_gemma3_text_only_model_class_resolves_and_has_no_vision_tower():
 
 
 def test_helper_defined_once_in_utils_and_imported():
-    # _get_text_only_config is defined only in _utils and imported by loader + vision.
+    # _get_text_only_config defined only in _utils, imported by loader + vision.
     def _defines(path):
         return any(
             isinstance(n, ast.FunctionDef) and n.name == "_get_text_only_config"
@@ -274,7 +264,7 @@ def _load_util_func(name):
 
 
 def test_text_only_guard_predicate_across_vlm_families():
-    # Text-only is taken only when the resolved class remaps VLM weights.
+    # Text-only taken only when the resolved class remaps VLM weights.
     transformers = pytest.importorskip("transformers")
     from transformers import AutoModelForCausalLM
 
@@ -309,7 +299,7 @@ def test_text_only_guard_predicate_across_vlm_families():
 
 
 def test_text_only_helper_preserves_quantization_config():
-    # quantization_config must survive the strip so pre-quantized repos still load. A
+    # quantization_config must survive the strip so pre-quantized repos load. A
     # sentinel object avoids a bitsandbytes dependency on transformers 4.51.3.
     transformers = pytest.importorskip("transformers")
     helper = _load_text_only_helper()
@@ -318,13 +308,13 @@ def test_text_only_helper_preserves_quantization_config():
     config.quantization_config = sentinel
     text_config = helper(config, "google/gemma-3-27b-it")
     assert getattr(text_config, "quantization_config", None) is sentinel
-    # The parent's shared text sub-config must not be mutated by the carry-over.
+    # The parent's shared text sub-config must not be mutated.
     assert getattr(config.get_text_config(), "quantization_config", None) is None
 
 
 def test_text_only_key_mapping_targets_published_prefixes():
-    # The mapping must remap the published VLM decoder prefixes and only apply on
-    # transformers >=5 (on 4.x base_model_prefix handles it and a mapping hurts).
+    # Remap the published VLM decoder prefixes, applying only on transformers >=5
+    # (on 4.x base_model_prefix handles it and a mapping hurts).
     transformers = pytest.importorskip("transformers")
     get_key_mapping = _load_util_func("_get_text_only_key_mapping")
     mapping = get_key_mapping(transformers.Gemma3Config(), transformers.Gemma3TextConfig())
@@ -338,8 +328,8 @@ def test_text_only_key_mapping_targets_published_prefixes():
 
 
 def test_gemma3_text_only_loads_real_language_weights_from_vlm_checkpoint(tmp_path):
-    # Regression for PR #5816: text-only loading of a Gemma 3 VLM checkpoint must load the
-    # real language weights, not random ones. Fails on tf >=5 without the key_mapping fix.
+    # PR #5816: text-only loading of a Gemma 3 VLM checkpoint must load real
+    # language weights, not random ones. Fails on tf >=5 without the key_mapping fix.
     transformers = pytest.importorskip("transformers")
     torch = pytest.importorskip("torch")
     import shutil
@@ -391,7 +381,7 @@ def test_gemma3_text_only_loads_real_language_weights_from_vlm_checkpoint(tmp_pa
     save_dir = tmp_path / "vlm"
     full_model.save_pretrained(save_dir, safe_serialization = True)
 
-    # tf >=5 saves under an outer "model." prefix; strip it to reproduce the real
+    # tf >=5 saves under an outer "model." prefix; strip it to reproduce the
     # language_model.model.* layout the published Gemma 3 checkpoints use.
     real_dir = tmp_path / "real"
     real_dir.mkdir()

@@ -56,6 +56,7 @@ from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
 from utils.subprocess_compat import (
     windows_hidden_subprocess_kwargs as _windows_hidden_subprocess_kwargs,
 )
+from utils.process_lifetime import child_popen_kwargs as _child_popen_kwargs
 from core.inference.tool_call_parser import (
     RAG_MAX_SEARCHES_PER_TURN,
     RAG_SEARCH_CAP_NUDGE,
@@ -75,6 +76,19 @@ from state.tool_approvals import (
 )
 
 logger = get_logger(__name__)
+
+
+class LlamaServerNotFoundError(RuntimeError):
+    """GGUF model needs the llama.cpp runtime but no llama-server is installed.
+    Subclasses RuntimeError so existing handlers still catch it."""
+
+
+# Shared so the from_identifier preflight and the load-time raise stay in sync.
+LLAMA_SERVER_NOT_FOUND_DETAIL = (
+    "This is a GGUF model, but the llama.cpp runtime (llama-server) is not "
+    "installed. Run `unsloth studio setup` to download the prebuilt runtime, "
+    "then try again. (Advanced: set LLAMA_SERVER_PATH to an existing binary.)"
+)
 
 
 # llama-server can serve HTTP 200 while running a model entirely on CPU when a
@@ -1216,8 +1230,9 @@ class LlamaCppBackend:
         self._nextn_predict_layers: Optional[int] = None
         self._lock = threading.Lock()
         # Wraps load_model() end-to-end so concurrent loads serialise and never
-        # coexist as two llama-server processes (#5401).
-        self._serial_load_lock = threading.Lock()
+        # coexist as two llama-server processes (#5401). RLock so MTP-crash
+        # recovery can re-acquire it for its nested load_model.
+        self._serial_load_lock = threading.RLock()
         # Set by the in-app updater while it swaps prebuilt binaries; load_model()
         # rejects fast so no server starts from a half-swapped binary.
         self._llama_update_in_progress = False
@@ -1228,6 +1243,18 @@ class LlamaCppBackend:
         self._extra_args: Optional[List[str]] = None
         self._extra_args_source: Optional[tuple[str, Optional[str]]] = None
         self._requested_n_ctx: int = 0
+        # Raw kwargs of the last healthy load, for the MTP-crash reload. Memory-only
+        # (carries hf_token, never logged); single-flight via the lock below.
+        self._last_load_kwargs: Optional[dict] = None
+        self._mtp_runtime_fallback_lock = threading.Lock()
+        self._mtp_runtime_fallback_in_progress = False
+        # Background watchdog so an MTP+tensor crash recovers even when no request
+        # observes it (direct proxy endpoints, or nothing in flight).
+        self._mtp_watchdog_thread: Optional[threading.Thread] = None
+        self._mtp_watchdog_stop = threading.Event()
+        # True when the launch actually runs MTP+tensor (Studio- or user/env-driven);
+        # gates the probe, watchdog, and recovery so pass-through MTP is covered.
+        self._mtp_runtime_fallback_active = False
         self._stdout_lines: list[str] = []
         self._stdout_thread: Optional[threading.Thread] = None
         # llama-server tee log (see _drain_stdout / _kill_process).
@@ -3336,28 +3363,16 @@ class LlamaCppBackend:
         except OSError as e:
             logger.debug(f"Could not open diffusion runner log file: {e}")
 
-        # PR_SET_PDEATHSIG: the shim (and its visual server) die with this backend
-        # process, so a Studio crash/restart never orphans a GPU process.
-        popen_kwargs = dict(_windows_hidden_subprocess_kwargs())
-        if sys.platform.startswith("linux"):  # prctl/libc.so.6 are Linux-only
-
-            def _pdeathsig():
-                try:
-                    import ctypes
-                    import signal as _signal
-                    ctypes.CDLL("libc.so.6", use_errno = True).prctl(1, _signal.SIGTERM)
-                except Exception:
-                    pass
-
-            popen_kwargs["preexec_fn"] = _pdeathsig
-
+        # The shim (and its visual server) die with this backend process, so a
+        # Studio crash/restart never orphans a GPU process.
         self._process = subprocess.Popen(
             cmd,
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
             text = True,
             env = env,
-            **popen_kwargs,
+            **_windows_hidden_subprocess_kwargs(),
+            **_child_popen_kwargs(),
         )
         self._stdout_thread = threading.Thread(
             target = self._drain_stdout, daemon = True, name = "diffusion-stdout"
@@ -4121,7 +4136,11 @@ class LlamaCppBackend:
             text = True,
             env = env,
             **_windows_hidden_subprocess_kwargs(),
+            **_child_popen_kwargs(),
         )
+        # Cross-session backstop: record the PID so a later startup can reap this
+        # server if parent-death cleanup did not run (macOS / best-effort failure).
+        self._record_server_pid(self._process.pid)
 
         # Start background thread to drain stdout and prevent pipe deadlock
         self._stdout_thread = threading.Thread(
@@ -4165,6 +4184,28 @@ class LlamaCppBackend:
 
         Returns True if the server started and the health check passed.
         """
+        # Raw load inputs so the runtime MTP-crash reload can replay this model
+        # without MTP. Committed to _last_load_kwargs only on a healthy load.
+        _pending_load_kwargs = {
+            "gguf_path": gguf_path,
+            "mmproj_path": mmproj_path,
+            "mtp_draft_path": mtp_draft_path,
+            "hf_repo": hf_repo,
+            "hf_variant": hf_variant,
+            "hf_token": hf_token,
+            "model_identifier": model_identifier,
+            "is_vision": is_vision,
+            "n_ctx": n_ctx,
+            "chat_template_override": chat_template_override,
+            "cache_type_kv": cache_type_kv,
+            "speculative_type": speculative_type,
+            "spec_draft_n_max": spec_draft_n_max,
+            "tensor_parallel": tensor_parallel,
+            "n_threads": n_threads,
+            "n_gpu_layers": n_gpu_layers,
+            "n_parallel": n_parallel,
+            "extra_args": list(extra_args) if extra_args is not None else None,
+        }
         # Serialise the whole load so concurrent /load calls never leave two
         # llama-server processes alive (#5401 / #5161). Doesn't block /unload.
         with self._serial_load_lock:
@@ -4325,11 +4366,11 @@ class LlamaCppBackend:
                         "(access-denied; antivirus or an in-flight install). "
                         "Retry the load once it is released."
                     )
-                raise RuntimeError(
-                    "llama-server binary not found. "
-                    "Run setup.sh to build it, install llama.cpp, "
-                    "or set LLAMA_SERVER_PATH environment variable."
-                )
+                # Reached only after the diffusion early-return above, so this is a
+                # genuine llama-server-backed GGUF with no runtime. Raise the typed
+                # error so /load returns the actionable 400 (not a generic 500), the
+                # same message remote validation already shows.
+                raise LlamaServerNotFoundError(LLAMA_SERVER_NOT_FOUND_DETAIL)
 
             # Outside ``self._lock`` so /unload, /cancel, /status aren't
             # blocked. ``unload_model`` also records the kill, so the
@@ -5469,7 +5510,9 @@ class LlamaCppBackend:
                             text = True,
                             env = env,
                             **_windows_hidden_subprocess_kwargs(),
+                            **_child_popen_kwargs(),
                         )
+                        self._record_server_pid(self._process.pid)
 
                         # Background thread to drain stdout (prevents pipe deadlock)
                         self._stdout_thread = threading.Thread(
@@ -5527,6 +5570,37 @@ class LlamaCppBackend:
                 )
 
                 healthy = _spawn_and_wait(cmd)
+                # MTP from Studio's spec flags or the user's (extra_args
+                # --spec-type / LLAMA_ARG_SPEC_TYPE). The env reaches the child
+                # only when neither emits a spec flag, so consult it only then.
+                _launch_spec_env: Mapping[str, str] = (
+                    os.environ
+                    if (not _extra_args_set_spec_type(extra_args) and not spec_flags)
+                    else {}
+                )
+                _spec_requested_mtp = any(
+                    "mtp" in str(t).lower() for t in spec_flags
+                ) or _extra_args_requests_mtp(extra_args, env = _launch_spec_env)
+                # Is the launched server actually running MTP+tensor? Gates the
+                # probe/watchdog/recovery; cleared if the MTP-drop fallback wins.
+                _mtp_active_for_launched_server = bool(
+                    self._tensor_parallel and _spec_requested_mtp
+                )
+                # MTP can pass /health then crash the flash-attn kernel on the
+                # first decode under tensor; probe one generation so the fallback
+                # catches that too. Tensor-only, so ordinary MTP stays probe-free.
+                if (
+                    healthy
+                    and self._tensor_parallel
+                    and _spec_requested_mtp
+                    and not self._cancel_event.is_set()
+                    and not self._probe_mtp_decode()
+                ):
+                    logger.warning(
+                        "MTP speculative decoding crashed on the first decode "
+                        "under tensor parallelism; retrying without it."
+                    )
+                    healthy = False
                 # Any MTP request can abort the server: a separate drafter
                 # (Gemma) on a binary that predates its arch, or an embedded
                 # head (Qwen) the binary cannot build. Retry once with the
@@ -5534,8 +5608,8 @@ class LlamaCppBackend:
                 # loads. Gate on the spec block (not the drafter path, which
                 # off/ngram local loads also carry) and keep
                 # _requested_spec_mode so a duplicate /load doesn't thrash. The
-                # cancel check stops an /unload-killed attempt respawning.
-                _spec_requested_mtp = any("mtp" in str(t).lower() for t in spec_flags)
+                # cancel check stops an /unload-killed attempt respawning. A
+                # decode-probe failure above also routes here.
                 if not healthy and _spec_requested_mtp and not self._cancel_event.is_set():
                     # Blame the binary only when the output shows MTP itself
                     # failing (unknown arch / draft or context build); an
@@ -5581,9 +5655,14 @@ class LlamaCppBackend:
                         + ["--spec-default"]
                         + cmd[_spec_start + len(spec_flags) :]
                     )
+                    # User/env MTP survives in the tail; llama.cpp takes the last
+                    # spec flag, so a trailing --spec-default overrides it too.
+                    if _extra_args_requests_mtp(extra_args, env = _launch_spec_env):
+                        fallback_cmd.append("--spec-default")
                     healthy = _spawn_and_wait(fallback_cmd, label = "-retry")
                     if healthy:
                         self._speculative_type = "default"
+                        _mtp_active_for_launched_server = False
 
                 # A vision GGUF launched with --mmproj can abort when the
                 # installed llama.cpp is too old for the model's projector
@@ -5633,6 +5712,11 @@ class LlamaCppBackend:
                     self._extra_args = list(extra_args)
                     self._extra_args_source = (model_identifier, hf_variant)
                 self._requested_n_ctx = int(n_ctx)
+                # Commit the known-good snapshot + whether MTP+tensor is live, then
+                # watch this load for a mid-generation crash.
+                self._last_load_kwargs = _pending_load_kwargs
+                self._mtp_runtime_fallback_active = _mtp_active_for_launched_server
+                self._start_mtp_crash_watchdog()
 
                 # Catch silent CPU fallback when GPU was intended (#5106).
                 self._gpu_offload_active = self._classify_gpu_offload(
@@ -6100,6 +6184,8 @@ class LlamaCppBackend:
             self._hf_repo = None
             self._mtp_draft_path = None
             self._spec_fallback_reason = None
+            self._last_load_kwargs = None
+            self._mtp_runtime_fallback_active = False
             self._hf_variant = None
             self._is_vision = False
             self._is_audio = False
@@ -6163,6 +6249,9 @@ class LlamaCppBackend:
 
     def _kill_process(self):
         """Terminate the subprocess if running."""
+        # Stop the watchdog before a deliberate kill so a planned reload/unload
+        # isn't seen as a crash; a real crash never routes through here.
+        self._stop_mtp_crash_watchdog()
         if self._process is None:
             return
         try:
@@ -6175,18 +6264,22 @@ class LlamaCppBackend:
         except Exception as e:
             logger.warning(f"Error killing llama-server process: {e}")
         finally:
-            if self._stats_logger is not None:
+            # getattr: teardown must tolerate a partially-built backend (failed
+            # __init__ or a __new__-built instance), as with _llama_log_fh below.
+            if getattr(self, "_stats_logger", None) is not None:
                 self._stats_logger.stop()
                 self._stats_logger = None
             self._process = None
+            self._clear_server_pid()
             # Clear healthy so a /load during the replacement's warm-up can't
             # short-circuit against the previous server's health (#5401).
             self._healthy = False
             # Drives _wait_for_vram_settle in the next load_model; set in finally
             # so both in-process and frontend Apply paths record the kill.
             self._last_kill_monotonic = time.monotonic()
-            if self._stdout_thread is not None:
-                self._stdout_thread.join(timeout = 2)
+            stdout_thread = getattr(self, "_stdout_thread", None)
+            if stdout_thread is not None:
+                stdout_thread.join(timeout = 2)
                 self._stdout_thread = None
             fh = getattr(self, "_llama_log_fh", None)
             if fh is not None:
@@ -6195,6 +6288,198 @@ class LlamaCppBackend:
                 except Exception:
                     pass
                 self._llama_log_fh = None
+
+    @staticmethod
+    def _server_pidfile_path() -> Optional[Path]:
+        """Pidfile recording the live llama-server PID, under the active studio root
+        (per-root, so concurrent Studios with distinct UNSLOTH_STUDIO_HOME stay
+        isolated, mirroring the reaper's custom-root isolation)."""
+        try:
+            from utils.paths.storage_roots import studio_root  # noqa: WPS433
+            return studio_root() / "llama-server.pid"
+        except Exception:
+            return None
+
+    @classmethod
+    def _record_server_pid(cls, pid: int) -> None:
+        """Best-effort record of the spawned llama-server PID for orphan reaping.
+
+        Stores ``pid:starttime`` so a later startup can reject a PID that has
+        since been recycled to a different process (see ``_pid_start_identity``).
+        A bare ``pid`` (no identity) is still accepted on read for compatibility.
+        """
+        path = cls._server_pidfile_path()
+        if path is None:
+            return
+        try:
+            path.parent.mkdir(parents = True, exist_ok = True)
+            path.write_text(f"{pid}:{cls._pid_start_identity(pid)}")
+        except Exception as e:
+            logger.debug(f"Could not write llama-server pidfile: {e}")
+
+    @classmethod
+    def _clear_server_pid(cls) -> None:
+        """Best-effort removal of the llama-server pidfile."""
+        path = cls._server_pidfile_path()
+        if path is None:
+            return
+        try:
+            path.unlink(missing_ok = True)
+        except Exception as e:
+            logger.debug(f"Could not remove llama-server pidfile: {e}")
+
+    @staticmethod
+    def _pid_is_llama_server(pid: int) -> bool:
+        """True only if pid is a live process whose binary is a llama-server. Guards
+        against PID reuse before killing a recorded orphan; returns False on any
+        uncertainty so an unrelated process is never killed."""
+        try:
+            import psutil
+            try:
+                proc = psutil.Process(pid)
+                if (proc.name() or "").lower().startswith("llama-server"):
+                    return True
+                return Path(proc.exe() or "").name.lower().startswith("llama-server")
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                return False
+        except ImportError:
+            pass
+        if sys.platform != "linux":
+            return False
+        try:
+            if Path(os.readlink(f"/proc/{pid}/exe")).name.lower().startswith("llama-server"):
+                return True
+        except OSError:
+            pass
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as fh:
+                tokens = fh.read().split(b"\x00")
+            first = tokens[0].decode("utf-8", "replace") if tokens else ""
+            return Path(first).name.lower().startswith("llama-server")
+        except OSError:
+            return False
+
+    @staticmethod
+    def _pid_start_identity(pid: int) -> str:
+        """Stable per-PID identity (process start time) guarding against PID reuse.
+
+        Returns a token string, or "" when it cannot be determined (the caller
+        then falls back to the llama-server name check only)."""
+        try:
+            import psutil
+            try:
+                return str(psutil.Process(pid).create_time())
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                return ""
+        except ImportError:
+            pass
+        if sys.platform == "linux":
+            try:
+                with open(f"/proc/{pid}/stat", "rb") as fh:
+                    data = fh.read()
+                # field 22 (starttime), counted from after the ")" that closes comm.
+                return data[data.rfind(b")") + 2 :].split()[19].decode()
+            except (OSError, IndexError):
+                return ""
+        return ""
+
+    @staticmethod
+    def _pid_parent_is_alive(pid: int) -> bool:
+        """True if the recorded server's parent is still running, i.e. the server is
+        NOT orphaned. Lets the cross-session reap kill only a true orphan (parent
+        gone) and never a live server owned by a running Studio, regardless of which
+        process performs the sweep. Biased toward "alive" on uncertainty so a live
+        server is never mistakenly reaped."""
+        try:
+            import psutil
+
+            try:
+                ppid = psutil.Process(pid).ppid()
+            except psutil.NoSuchProcess:
+                return False  # the recorded server itself is gone
+            except psutil.Error:
+                return True  # cannot tell -- never risk killing a live server
+            if ppid <= 1:
+                return False  # reparented to init -> orphan
+            return psutil.pid_exists(ppid)
+        except ImportError:
+            pass
+        if sys.platform == "linux":
+            try:
+                with open(f"/proc/{pid}/stat", "rb") as fh:
+                    data = fh.read()
+                ppid = int(data[data.rfind(b")") + 2 :].split()[1])
+            except (OSError, IndexError, ValueError):
+                return False
+            if ppid <= 1:
+                return False
+            return Path(f"/proc/{ppid}").exists()
+        return False
+
+    @staticmethod
+    def _unlink_pidfile(path: Path) -> None:
+        """Best-effort removal of a resolved pidfile path."""
+        try:
+            path.unlink(missing_ok = True)
+        except Exception:
+            pass
+
+    @classmethod
+    def _reap_recorded_pid(cls) -> int:
+        """Kill the exact llama-server PID recorded at spawn, but only when it is a
+        genuine orphan -- its parent (the Studio that spawned it) is gone. This is
+        the cross-session backstop the parent-death reaper (Job Object /
+        PR_SET_PDEATHSIG) cannot cover: an orphan left by an already-dead Studio
+        (macOS, a best-effort failure, or a pre-existing orphan). Path-independent,
+        so it also catches an orphan the install-root match would miss.
+
+        A live server whose parent is still running is never reaped, so constructing
+        a second backend in-process (the helper / advisor paths each build a
+        LlamaCppBackend) cannot kill the active chat server. A recorded PID that has
+        been recycled to a different process is rejected by the start-time identity
+        and the llama-server name check, so unrelated user processes are never
+        touched. SIGKILL falls back to SIGTERM on Windows, where os.kill maps it to
+        TerminateProcess and SIGKILL is undefined."""
+        path = cls._server_pidfile_path()
+        if path is None or not path.exists():
+            return 0
+
+        pid = -1
+        identity = ""
+        try:
+            pid_str, _, identity = path.read_text().strip().partition(":")
+            pid = int(pid_str)
+        except Exception:
+            pid = -1
+
+        if pid <= 0:
+            cls._unlink_pidfile(path)  # garbage record
+            return 0
+        if pid == os.getpid():
+            return 0  # never our own pid; leave the record alone
+
+        if cls._pid_parent_is_alive(pid):
+            # Live server with a running parent -> not an orphan; keep the record so
+            # a later startup can still reap it if that parent later dies abnormally.
+            return 0
+
+        # Parent is gone: candidate orphan. Reject a PID recycled to something else.
+        if identity and cls._pid_start_identity(pid) != identity:
+            cls._unlink_pidfile(path)
+            return 0
+
+        killed = 0
+        if cls._pid_is_llama_server(pid):
+            try:
+                os.kill(pid, getattr(signal, "SIGKILL", signal.SIGTERM))
+                killed = 1
+                logger.info(f"Killed orphaned llama-server from pidfile (pid={pid})")
+            except (ProcessLookupError, PermissionError):
+                pass
+            except Exception as e:
+                logger.debug(f"Could not kill recorded llama-server pid {pid}: {e}")
+        cls._unlink_pidfile(path)
+        return killed
 
     @staticmethod
     def _kill_orphaned_servers() -> int:
@@ -6213,7 +6498,11 @@ class LlamaCppBackend:
         Returns the count of processes killed; callers arm the VRAM-settle
         wait on a positive count.
         """
-        killed = 0
+        # Cross-session backstop first: reap the exact PID we recorded at spawn,
+        # but only if it is a true orphan whose parent is gone (so a helper backend
+        # built while a chat server is live can never kill it). The root-gated
+        # enumeration below stays as a fallback.
+        killed = LlamaCppBackend._reap_recorded_pid()
         try:
             # -- Build the ownership allowlist --------------------------------
             # exact_binaries -- env var overrides (exact path match).
@@ -6388,6 +6677,139 @@ class LlamaCppBackend:
             if a in ("-fit", "--fit") or a.startswith(("-fit=", "--fit=")):
                 return False
         return True
+
+    def _probe_mtp_decode(self, timeout: float = 60.0) -> bool:
+        """One tiny /completion to confirm MTP survives the first decode.
+
+        MTP-draft can pass /health yet crash the flash-attn kernel only once
+        tokens generate (e.g. under --split-mode tensor). False on any error so
+        the caller can drop MTP and retry.
+        """
+        url = f"http://127.0.0.1:{self._port}/completion"
+        payload = {"prompt": "Hi", "n_predict": 4, "temperature": 0.0, "stream": False}
+        # Match the --api-key auth direct-stream mode uses, else a spurious 401.
+        headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
+        try:
+            resp = httpx.post(url, json = payload, timeout = timeout, headers = headers)
+        except Exception as e:
+            logger.debug(f"MTP decode probe failed: {e}")
+            return False
+        if resp.status_code != 200:
+            logger.debug(f"MTP decode probe returned HTTP {resp.status_code}")
+            return False
+        # A crash can drop the connection or kill the process right after a reply.
+        if self._process is not None and self._process.poll() is not None:
+            return False
+        return True
+
+    def _maybe_recover_from_mtp_crash(self, exc: Optional[BaseException] = None) -> bool:
+        """Schedule one background reload without MTP after a mid-generation death.
+
+        MTP+tensor can crash the flash-attn kernel on a later request, after
+        load_model returned, past the load-time fallback and decode probe. Not a
+        persistent ban: a fresh load re-tries MTP. Returns True if scheduled.
+        """
+        # Cheap async-safe gate: only our live MTP+tensor launch, not cancelled,
+        # with a snapshot to replay.
+        if self._cancel_event.is_set():
+            return False
+        if not self._mtp_runtime_fallback_active:
+            return False
+        if not self._last_load_kwargs or self._process is None:
+            return False
+        # Single-flight: the first failure claims the reload.
+        with self._mtp_runtime_fallback_lock:
+            if self._mtp_runtime_fallback_in_progress:
+                return False
+            self._mtp_runtime_fallback_in_progress = True
+        snapshot = dict(self._last_load_kwargs)
+        proc = self._process
+
+        def _recover():
+            try:
+                # Confirm the process really exited (the error can arrive a beat
+                # early) so a transient stream error can't disable MTP.
+                deadline = time.monotonic() + 5.0
+                while proc.poll() is None and time.monotonic() < deadline:
+                    time.sleep(0.1)
+                if proc.poll() is None:
+                    logger.debug("Generation error but llama-server is alive; keeping MTP.")
+                    return
+                logger.warning(
+                    "llama-server exited mid-generation with MTP under tensor "
+                    "parallelism (%s); reloading without speculative decoding.",
+                    type(exc).__name__ if exc is not None else "server exited",
+                )
+                # Re-check under the load lock (RLock allows the nested
+                # load_model) so a newer load isn't clobbered by this stale replay.
+                requested_mode = snapshot.get("speculative_type")
+                with self._serial_load_lock:
+                    if self._cancel_event.is_set():
+                        logger.info("MTP-crash reload skipped: load was cancelled/unloaded.")
+                        return
+                    if self._process is not proc:
+                        logger.info("MTP-crash reload skipped: a newer load is already active.")
+                        return
+                    if self._last_load_kwargs != snapshot:
+                        logger.info("MTP-crash reload skipped: load settings changed.")
+                        return
+                    snapshot["speculative_type"] = "off"
+                    # Drop user/env MTP too: append a last-wins --spec-default.
+                    _ea = list(snapshot.get("extra_args") or [])
+                    if _extra_args_requests_mtp(_ea, env = os.environ):
+                        _ea.append("--spec-default")
+                        snapshot["extra_args"] = _ea
+                    self.load_model(**snapshot)
+                    # Restore the requested mode + reason load_model("off") cleared,
+                    # so /status shows the user's mode + note (like the startup fallback).
+                    self._requested_spec_mode = _canonicalize_spec_mode(requested_mode)
+                    self._spec_fallback_reason = "runtime_error"
+                logger.info("Reloaded without MTP after the tensor-parallel crash.")
+            except Exception as e:
+                logger.error(f"Reload without MTP failed: {e}")
+            finally:
+                with self._mtp_runtime_fallback_lock:
+                    self._mtp_runtime_fallback_in_progress = False
+
+        threading.Thread(target = _recover, daemon = True, name = "mtp-crash-reload").start()
+        return True
+
+    def _start_mtp_crash_watchdog(self) -> None:
+        """Background poll that recovers on an MTP+tensor crash even when no
+        request observes it (direct proxy endpoints, or nothing in flight).
+
+        Armed only for a live MTP+tensor launch; the no-MTP reload disarms it, so
+        it can't loop.
+        """
+        if not self._mtp_runtime_fallback_active:
+            return
+        proc = self._process
+        if proc is None:
+            return
+        # Replace any prior watchdog (loads are serialised, so at most one).
+        self._stop_mtp_crash_watchdog()
+        stop = threading.Event()
+        self._mtp_watchdog_stop = stop
+
+        def _watch():
+            # Exit on stop or process death. _kill_process sets stop before
+            # terminating, so re-check it: only a real crash (stop unset) recovers.
+            while not stop.wait(1.0):
+                if proc.poll() is not None:
+                    if not stop.is_set():
+                        self._maybe_recover_from_mtp_crash()
+                    return
+
+        t = threading.Thread(target = _watch, daemon = True, name = "mtp-crash-watchdog")
+        self._mtp_watchdog_thread = t
+        t.start()
+
+    def _stop_mtp_crash_watchdog(self) -> None:
+        """Signal the crash watchdog to exit; called before any deliberate kill."""
+        stop = getattr(self, "_mtp_watchdog_stop", None)
+        if stop is not None:
+            stop.set()
+        self._mtp_watchdog_thread = None
 
     def _wait_for_health(
         self,
@@ -6868,11 +7290,15 @@ class LlamaCppBackend:
                             "finish_reason": _metadata_finish_reason,
                         }
 
-        except httpx.ConnectError:
+        except httpx.ConnectError as e:
+            # Server already down (e.g. crashed on a prior request): recover MTP.
+            self._maybe_recover_from_mtp_crash(e)
             raise RuntimeError("Lost connection to llama-server")
         except Exception as e:
             if cancel_event is not None and cancel_event.is_set():
                 return
+            # Died mid-generation: recover MTP, re-raise unchanged for this request.
+            self._maybe_recover_from_mtp_crash(e)
             raise
 
     # ── Tool-calling agentic loop ──────────────────────────────
