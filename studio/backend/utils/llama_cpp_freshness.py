@@ -33,6 +33,8 @@ _INSTALL_MARKER_NAME = "UNSLOTH_PREBUILT_INFO.json"
 
 _marker_cache: dict[str, Optional[dict]] = {}
 _release_memo: dict[str, tuple[float, Optional[str]]] = {}
+# Newest-release asset sizes (name -> bytes), memoized like the tag (24h TTL).
+_assets_memo: dict[str, tuple[float, dict[str, int]]] = {}
 
 
 def _cache_dir() -> Path:
@@ -180,6 +182,113 @@ def latest_published_release(repo: str, *, force_refresh: bool = False) -> Optio
     return latest
 
 
+def _fetch_latest_release_assets(repo: str, timeout: float = 5.0) -> Optional[dict[str, int]]:
+    """Asset name -> size (bytes) for the newest published release of `repo`,
+    selected exactly like _fetch_latest_release_tag. None on any failure."""
+    import urllib.error
+    import urllib.request
+
+    url = f"https://api.github.com/repos/{repo}/releases?per_page=30"
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "unsloth-studio-freshness-check",
+    }
+    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    req = urllib.request.Request(url, headers = headers)
+    try:
+        with urllib.request.urlopen(req, timeout = timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except (
+        urllib.error.URLError,
+        urllib.error.HTTPError,
+        OSError,
+        json.JSONDecodeError,
+    ) as exc:
+        logger.debug("freshness asset fetch failed", repo = repo, error = str(exc))
+        return None
+    if not isinstance(data, list):
+        return None
+    published = [
+        r
+        for r in data
+        if isinstance(r, dict)
+        and not r.get("draft")
+        and not r.get("prerelease")
+        and isinstance(r.get("tag_name"), str)
+        and r.get("tag_name")
+    ]
+    if not published:
+        return None
+    newest = max(published, key = lambda r: r.get("published_at") or "")
+    assets: dict[str, int] = {}
+    for a in newest.get("assets") or []:
+        name, size = a.get("name"), a.get("size")
+        if isinstance(name, str) and isinstance(size, int):
+            assets[name] = size
+    return assets
+
+
+def latest_release_assets(repo: str, *, force_refresh: bool = False) -> Optional[dict[str, int]]:
+    """Newest-release asset sizes for `repo`, memoized (24h TTL). None when
+    offline and never fetched. In-memory only -- a restart simply re-fetches."""
+    if not repo:
+        return None
+    now = time.time()
+    if not force_refresh:
+        memo = _assets_memo.get(repo)
+        if memo and now - memo[0] < _RELEASE_CACHE_TTL_SECONDS:
+            return memo[1]
+    assets = _fetch_latest_release_assets(repo)
+    if assets is None:
+        memo = _assets_memo.get(repo)
+        return memo[1] if memo else None
+    _assets_memo[repo] = (now, assets)
+    return assets
+
+
+def update_download_size_bytes(
+    marker: Optional[dict],
+    latest_tag: Optional[str],
+    repo: Optional[str],
+    *,
+    force_refresh: bool = False,
+) -> Optional[int]:
+    """Download size of the latest-release asset matching this host's installed
+    bundle (same platform/arch/runtime suffix as the installed asset). None when
+    there is no marker asset, the latest assets can't be read, or no match."""
+    if not marker or not latest_tag or not repo:
+        return None
+    installed_asset = marker.get("asset")
+    if not isinstance(installed_asset, str):
+        return None
+    # Tag-independent platform suffix: accept the fork's "app-*" bundles and the
+    # upstream ggml-org "ubuntu-*"/"win-*" prebuilts ("windows" before "win").
+    m = re.search(r"-((?:linux|ubuntu|windows|win|macos|darwin)-.*)$", installed_asset)
+    if not m:
+        return None
+    suffix = m.group(1)
+    # Upstream ubuntu/win assets live in the marker's binary_repo, not the fork
+    # publish repo; try the publish repo first, then it.
+    repos = [repo]
+    binary_repo = marker.get("binary_repo")
+    if isinstance(binary_repo, str) and binary_repo and binary_repo != repo:
+        repos.append(binary_repo)
+    want = f"app-{latest_tag}-{suffix}"
+    for r in repos:
+        assets = latest_release_assets(r, force_refresh = force_refresh)
+        if not assets:
+            continue
+        if want in assets:
+            return assets[want]
+        # Tag formatting can vary (mix suffixes); fall back to the platform suffix.
+        for name, size in assets.items():
+            if name.endswith(suffix):
+                return size
+    return None
+
+
 def _parse_installed_at(value: object) -> Optional[datetime]:
     if not isinstance(value, str) or not value:
         return None
@@ -313,6 +422,7 @@ def reset_caches(*, drop_disk: bool = False) -> None:
     open (off) instead of pointing at the just-replaced build."""
     _marker_cache.clear()
     _release_memo.clear()
+    _assets_memo.clear()
     if drop_disk:
         import shutil
 

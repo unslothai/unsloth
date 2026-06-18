@@ -2178,6 +2178,30 @@ def _sm_range(artifact: PublishedLlamaArtifact) -> int:
     return 9999
 
 
+def _blackwell_capable_linux_runtime_lines(
+    host_sms: list[str], artifacts: list[PublishedLlamaArtifact]
+) -> list[str]:
+    """CUDA runtime lines (highest major first) shipping a bundle that covers every
+    visible host SM. Lets a Blackwell host prefer a native sm_120 line over torch's
+    reported line, mirroring the Windows Blackwell preference."""
+    lines: set[str] = set()
+    for artifact in artifacts:
+        line = artifact.runtime_line
+        # Only rank "cuda<major>" lines; ignore malformed/future-format values
+        # (e.g. "cuda13.1") so they are skipped, as pre-existing code does, rather
+        # than crashing the major sort.
+        if not (line and line.startswith("cuda") and line[len("cuda") :].isdigit()):
+            continue
+        if not artifact.supported_sms or artifact.min_sm is None or artifact.max_sm is None:
+            continue
+        supported = {str(value) for value in artifact.supported_sms}
+        if all(
+            sm in supported and artifact.min_sm <= int(sm) <= artifact.max_sm for sm in host_sms
+        ):
+            lines.add(line)
+    return sorted(lines, key = lambda line: int(line[len("cuda") :]), reverse = True)
+
+
 def linux_cuda_choice_from_release(
     host: HostInfo,
     release: PublishedReleaseBundle,
@@ -2240,7 +2264,27 @@ def linux_cuda_choice_from_release(
         )
         return None
 
-    if preferred_runtime_line:
+    blackwell_lines = (
+        [
+            line
+            for line in _blackwell_capable_linux_runtime_lines(host_sms, published_artifacts)
+            if line in ordered_runtime_lines
+        ]
+        if _host_is_blackwell(host)
+        else []
+    )
+    if blackwell_lines:
+        # Blackwell host: prefer the highest CUDA-major line shipping an sm_120 bundle
+        # over torch's line (matches the Windows Blackwell preference).
+        ordered_runtime_lines = blackwell_lines + [
+            line for line in ordered_runtime_lines if line not in blackwell_lines
+        ]
+        selection_log.append(
+            "linux_cuda_selection: blackwell_runtime_override prefer="
+            + ",".join(blackwell_lines)
+            + (f" over torch_preferred={preferred_runtime_line}" if preferred_runtime_line else "")
+        )
+    elif preferred_runtime_line:
         if preferred_runtime_line in ordered_runtime_lines:
             ordered_runtime_lines = [preferred_runtime_line] + [
                 runtime_line

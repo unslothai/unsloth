@@ -72,6 +72,8 @@ export interface ValidateModelResponse {
   is_lora?: boolean;
   is_vision?: boolean;
   requires_trust_remote_code?: boolean;
+  /** Native context length from the local GGUF header; null until downloaded. */
+  context_length?: number | null;
 }
 
 export interface GgufVariantDetail {
@@ -193,6 +195,38 @@ export interface InferenceStatusResponse {
   spec_fallback_reason?: string | null;
 }
 
+export interface ApiMonitorEntry {
+  id: string;
+  endpoint: string;
+  method: string;
+  model: string;
+  prompt?: string;
+  reply?: string;
+  prompt_preview: string;
+  reply_preview: string;
+  prompt_truncated: boolean;
+  reply_truncated: boolean;
+  status: "running" | "completed" | "cancelled" | "error";
+  started_at: number;
+  updated_at: number;
+  finished_at?: number | null;
+  duration_ms?: number | null;
+  context_length?: number | null;
+  context_usage?: number | null;
+  prompt_tokens?: number | null;
+  completion_tokens?: number | null;
+  total_tokens?: number | null;
+  error?: string | null;
+}
+
+export interface ApiMonitorResponse {
+  status: "idle" | "ready" | "generating";
+  active_model?: string | null;
+  context_length?: number | null;
+  active_requests: number;
+  entries: ApiMonitorEntry[];
+}
+
 export interface AudioGenerationResponse {
   id: string;
   object: string;
@@ -289,6 +323,7 @@ export interface OpenAIChatCompletionsRequest {
     | "xhigh"
     | null;
   preserve_thinking?: boolean | null;
+  thinking?: {type: "disabled" | "enabled";} | null;
   enable_tools?: boolean | null;
   enabled_tools?: string[];
   /** Local models + enable_tools only. */

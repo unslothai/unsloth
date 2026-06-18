@@ -14,6 +14,7 @@ import { translate, useT } from "@/i18n";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { useCallback, useEffect, useState } from "react";
 import { fetchApiKeys, revokeApiKey, type ApiKey } from "../api/api-keys";
+import { ApiMonitorConsole } from "../components/api-monitor-console";
 import { ApiKeyRow } from "../components/api-key-row";
 import { CreateKeyForm } from "../components/create-key-form";
 import { KeyRevealCard } from "../components/key-reveal-card";
@@ -166,7 +167,9 @@ export function ApiKeysTab() {
         )}
       </section>
 
-      <UsageExamples />
+      <ApiMonitorConsole />
+
+      <UsageExamples apiKey={revealed} />
 
       <Dialog open={revokeTarget !== null} onOpenChange={(o) => !o && setRevokeTarget(null)}>
         <DialogContent className="max-w-md">

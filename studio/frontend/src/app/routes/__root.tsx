@@ -118,6 +118,8 @@ function RootLayout() {
         const chatRuntime = useChatRuntimeStore.getState();
         chatRuntime.setActiveThreadId(null);
         chatRuntime.setActiveProjectId(null);
+        chatRuntime.setIncognito(false);
+        if (chatRuntime.pendingSelection) chatRuntime.abandonStagedModel();
         void navigate({
           to: "/chat",
           search: { new: crypto.randomUUID() },
@@ -133,6 +135,8 @@ function RootLayout() {
     const chatRuntime = useChatRuntimeStore.getState();
     chatRuntime.setActiveProjectId(null);
     chatRuntime.setActiveThreadId(null);
+    chatRuntime.setIncognito(false);
+    if (chatRuntime.pendingSelection) chatRuntime.abandonStagedModel();
   }, [isChatRoute]);
 
   return (
