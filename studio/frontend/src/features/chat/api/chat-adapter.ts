@@ -242,21 +242,24 @@ function resolveSystemPromptVariables(
   const now = new Date();
   const systemVariables: Record<string, string> = {
     $date: now.toISOString().slice(0, 10),
-    $time: now.toTimeString().slice(0, 8),
+    $time: now.toISOString().slice(11, 19),
     $now: now.toISOString(),
   };
   const customVariables = parseSystemVariablesMap(customVariablesRaw);
-  return prompt.replaceAll(/{{\s*([a-zA-Z_$][a-zA-Z0-9_$.-]*)\s*}}/g, (full, keyRaw) => {
-    const key = String(keyRaw).trim();
-    if (key in systemVariables) {
-      return systemVariables[key] ?? full;
-    }
-    const resolved = getNestedValue(customVariables, key);
-    if (resolved === undefined) {
-      return full;
-    }
-    return stringifyTemplateValue(resolved);
-  });
+  return prompt.replaceAll(
+    /{{\s*([a-zA-Z_$][a-zA-Z0-9_$.-]*)\s*}}/g,
+    (full, keyRaw) => {
+      const key = String(keyRaw).trim();
+      if (key in systemVariables) {
+        return systemVariables[key] ?? full;
+      }
+      const resolved = getNestedValue(customVariables, key);
+      if (resolved === undefined) {
+        return full;
+      }
+      return stringifyTemplateValue(resolved);
+    },
+  );
 }
 
 export const ThreadAutosaveHandle: ThreadAutosaveHandle = {
@@ -1852,7 +1855,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
               params.systemPrompt,
               typeof params.systemVariables === "string"
                 ? params.systemVariables
-                : "{}",
+                : "",
             )
           : "";
       const projectInstructions =
