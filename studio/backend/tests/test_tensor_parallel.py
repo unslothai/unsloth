@@ -64,8 +64,11 @@ _httpx_stub.Client = type(
 sys.modules.setdefault("httpx", _httpx_stub)
 
 from core.inference import llama_cpp as llama_cpp_module
-from core.inference.llama_cpp import LlamaCppBackend
-from core.inference.llama_server_args import resolve_tensor_parallel
+from core.inference.llama_cpp import _CTX_FIT_VRAM_FRACTION, LlamaCppBackend
+from core.inference.llama_server_args import (
+    _effective_tensor_parallel,
+    resolve_tensor_parallel,
+)
 from core.inference.tensor_fallback import load_with_tensor_fallback
 from models.inference import (
     InferenceStatusResponse,
@@ -615,16 +618,21 @@ def _plan(
 
 
 def _kv_budget_b(model_gb, gpus = _ASYM):
+    # No totals here, so usable is the legacy free*frac (keeps the 5% cushion).
     reserve = LlamaCppBackend._TENSOR_PARALLEL_BUFFER_RESERVE_MIB
-    return (sum(f for _, f in gpus) - len(gpus) * reserve) * 1024 * 1024 - int(model_gb * _GB)
+    usable = sum(f * _CTX_FIT_VRAM_FRACTION for _, f in gpus)
+    return (usable - len(gpus) * reserve) * 1024 * 1024 - int(model_gb * _GB)
 
 
 def test_tp_plan_weighted_split_on_asymmetric_big_model():
     b, (ec, mac, gi, ts) = _plan(50)
     reserve = b._TENSOR_PARALLEL_BUFFER_RESERVE_MIB
     assert gi == [0, 1]
-    # split weighted by (free - buffer), not raw free
-    assert ts == [48000 - reserve, 24000 - reserve]
+    # split weighted by (usable - buffer); with no totals usable is free*frac
+    assert ts == [
+        int(48000 * _CTX_FIT_VRAM_FRACTION - reserve),
+        int(24000 * _CTX_FIT_VRAM_FRACTION - reserve),
+    ]
     assert ec < 131072  # capped below native
 
 
@@ -727,11 +735,9 @@ def test_tp_plan_drops_gpu_below_buffer_reserve():
 
 
 # ── route auto-fallback survives a *raised* tensor-load crash ─────────
-# A tensor-incompatible model makes load_model RAISE (Gemma 3n aborts) rather
-# than return False. The /load fallback helper must catch that and retry with
-# layer split -- stripping any --split-mode from the extras so the retry can't
-# relaunch tensor -- while a non-tensor load propagates its exception. These
-# exercise the real helper with a fake loader (no GPU, no llama-server).
+# A tensor-incompatible model makes load_model RAISE (not return False); the
+# /load fallback must catch it and retry with layer split (stripping --split-mode
+# so the retry can't relaunch tensor), while a non-tensor load propagates.
 
 
 class _RecordingLoader:
@@ -840,15 +846,46 @@ def test_tensor_fallback_skips_layer_retry_when_cancelled():
 )
 def test_tensor_fallback_strips_split_mode_from_extras_on_retry(extras):
     # Tensor engaged via extras (boolean False); the retry must drop every
-    # --split-mode form (long/short, space/=) but keep the user's other flags,
-    # else resolve_tensor_parallel re-enables tensor and relaunches the crash.
+    # --split-mode form (long/short, space/=) and force layer, keeping the user's
+    # other flags, else tensor is re-enabled and relaunches the crash.
     loader = _RecordingLoader()
     ok = asyncio.run(
         load_with_tensor_fallback(loader, requested_tensor = False, extra_args = extras, label = "m")
     )
     assert ok is True
     assert len(loader.calls) == 2
-    assert loader.calls[1][1] == ["-c", "4096"]  # split-mode stripped, -c kept
+    # User --split-mode replaced by an explicit layer override; -c kept.
+    assert loader.calls[1][1] == ["-c", "4096", "--split-mode", "layer"]
+
+
+def test_tensor_fallback_env_tensor_retry_forces_layer(monkeypatch):
+    # Env-only tensor (toggle off, no --split-mode extra): load_model engages
+    # tensor via LLAMA_ARG_SPLIT_MODE and a tensor-incompatible model crashes. The
+    # wrapper must (1) recognise the env tensor request and retry, and (2) force
+    # --split-mode layer so the retry doesn't re-engage tensor via the still-set
+    # env and crash again (#6312).
+    monkeypatch.setenv("LLAMA_ARG_SPLIT_MODE", "tensor")
+    calls: list = []
+
+    async def _crash_when_effectively_tensor(tensor_parallel, extra_args):
+        calls.append(list(extra_args) if extra_args else extra_args)
+        # Mirror real load_model: env-aware tensor engagement crashes.
+        if _effective_tensor_parallel(extra_args, tensor_parallel):
+            raise RuntimeError("llama-server failed to start (tensor)")
+        return True
+
+    ok = asyncio.run(
+        load_with_tensor_fallback(
+            _crash_when_effectively_tensor,
+            requested_tensor = False,
+            extra_args = None,
+            label = "m",
+        )
+    )
+    assert ok is True
+    assert len(calls) == 2
+    # The forced layer override neutralises the inherited tensor env on retry.
+    assert calls[1] == ["--split-mode", "layer"]
 
 
 def test_tensor_fallback_propagates_non_tensor_crash():
@@ -861,3 +898,143 @@ def test_tensor_fallback_propagates_non_tensor_crash():
                 _always_raise, requested_tensor = False, extra_args = None, label = "m"
             )
         )
+
+
+# ── _plan_tensor_parallel: total-based headroom + ubatch (review fixes) ──
+
+
+def test_tensor_caps_context_to_total_vram_budget():
+    # Partly-used 80 GB cards: 20 GB free each. With total_by_idx the planner must
+    # cap occupancy at 0.95*total (not spend the cushion the layer-split paths keep).
+    b = _kv_seeded_backend()
+    gpus = [(0, 20000), (1, 20000)]
+    totals = {0: 81920, 1: 81920}
+    model = int(18 * _GB)
+    with_total, *_ = b._plan_tensor_parallel(gpus, model, 131072, total_by_idx = totals)
+    without, *_ = b._plan_tensor_parallel(gpus, model, 131072)
+    assert with_total < without  # total cap tightens the chosen context
+
+    MIB = 1024 * 1024
+    reserve = LlamaCppBackend._TENSOR_PARALLEL_BUFFER_RESERVE_MIB  # flat (no vocab dims)
+    pool_usable = sum(f - (1.0 - _CTX_FIT_VRAM_FRACTION) * totals[i] for i, f in gpus)
+    foot_total = (model + b._estimate_kv_cache_bytes(with_total, None)) / MIB + len(gpus) * reserve
+    foot_free = (model + b._estimate_kv_cache_bytes(without, None)) / MIB + len(gpus) * reserve
+    assert foot_total <= pool_usable + 2  # fix: fits the total-based budget
+    assert foot_free > pool_usable  # old behavior over-spent the cushion
+
+
+def test_tensor_unknown_total_keeps_fraction_cushion():
+    # A two-column nvidia-smi probe yields total 0. The planner must fall back to
+    # free*frac (keep the 5% cushion), like _select_gpus/_gpu_usable, not raw free,
+    # or it over-advertises context exactly where the PR is hardening the budget.
+    b = _kv_seeded_backend()
+    gpus = [(0, 20000), (1, 20000)]
+    MIB = 1024 * 1024
+    reserve = LlamaCppBackend._TENSOR_PARALLEL_BUFFER_RESERVE_MIB
+    model = int(18 * _GB)
+    ec_zero, *_ = b._plan_tensor_parallel(gpus, model, 131072, total_by_idx = {0: 0, 1: 0})
+    ec_none, *_ = b._plan_tensor_parallel(gpus, model, 131072)
+    assert ec_zero == ec_none  # total 0 == total absent: both use free*frac
+    pool_free = sum(f for _, f in gpus)
+    foot = (model + b._estimate_kv_cache_bytes(ec_zero, None)) / MIB + len(gpus) * reserve
+    assert foot <= pool_free * _CTX_FIT_VRAM_FRACTION + 2  # within free*frac, not raw free
+
+
+def test_tensor_reserve_scales_with_ubatch():
+    # A user --ubatch override must enlarge the per-device reserve -> less ctx room.
+    b = _kv_seeded_backend()
+    b._vocab_size = 152064  # enable the deterministic compute-buffer estimate
+    gpus = [(0, 16000), (1, 16000)]
+    model = int(18 * _GB)
+    small_ub, *_ = b._plan_tensor_parallel(gpus, model, 131072, n_ubatch = 512)
+    big_ub, *_ = b._plan_tensor_parallel(gpus, model, 131072, n_ubatch = 4096)
+    assert big_ub < small_ub
+
+
+def test_plan_tensor_carries_unsized_mtp_flat_reserve():
+    # review run3 #1/#5: with a weights-only (KV-unsized) MTP reserve, the planner
+    # gets a non-None mtp_overhead_fn but must still subtract the flat unsized-KV
+    # cushion, or its binary search spends it on context. Passing the reserve must
+    # pick a strictly smaller context than passing 0.
+    b = _kv_seeded_backend()
+    gpus = [(0, 14000), (1, 14000)]  # tight pool so the context is actually capped
+    model = int(8 * _GB)
+    weights_only = lambda c: 3 * _GB  # noqa: E731 -- constant drafter weights, no KV term
+    ctx_no_flat, *_ = b._plan_tensor_parallel(
+        gpus,
+        model,
+        131072,
+        mtp_engaged = True,
+        mtp_overhead_fn = weights_only,
+        mtp_flat_reserve_bytes = 0,
+    )
+    ctx_flat, *_ = b._plan_tensor_parallel(
+        gpus,
+        model,
+        131072,
+        mtp_engaged = True,
+        mtp_overhead_fn = weights_only,
+        mtp_flat_reserve_bytes = 2 * _GB,
+    )
+    assert 0 < ctx_flat < ctx_no_flat
+
+
+def test_tensor_admission_drops_gpu_below_usable_budget():
+    # A partly-used big card can clear the buffer reserve on raw free yet have no
+    # usable budget left (free - 0.05*total). Admit by usable budget: GPU 0 here is
+    # 6000 free on an 80 GB card -> usable 1904 < flat reserve 5120, so it's dropped
+    # (leaving <2 -> no split). Without total_by_idx, raw free 6000 >= 5120 admits it.
+    b = _kv_seeded_backend()
+    gpus = [(0, 6000), (1, 40000)]
+    totals = {0: 81920, 1: 81920}
+    _ec, _mac, gi, ts = b._plan_tensor_parallel(gpus, int(8 * _GB), 8192, total_by_idx = totals)
+    assert gi == [1] and ts is None  # GPU 0 excluded on usable budget
+    _ec2, _mac2, gi_raw, _ts2 = b._plan_tensor_parallel(gpus, int(8 * _GB), 8192)
+    assert gi_raw == [0, 1]  # raw free would have admitted both
+
+
+def test_load_model_tensor_admission_and_capacity_gate_use_usable_budget():
+    # load_model is too entangled (subprocess + GPU probe) to drive end-to-end, so
+    # assert at the source level that the tensor prefilter admits on the usable
+    # budget (_gpu_usable), not raw free, and downgrades to layer split when the
+    # pooled budget can't hold weights + per-device compute buffers.
+    src = inspect.getsource(LlamaCppBackend.load_model)
+    assert "_gpu_usable(g) >= reserve_mib" in src  # admit by usable budget
+    assert "g[1] >= reserve_mib" not in src  # not raw free
+    assert "_tp_weight_budget_mib" in src  # pooled-weight capacity gate
+    assert "falling back to layer split" in src  # downgrade on overcommit
+    # The gate's required footprint must include the non-shrinkable MTP reserve,
+    # not weights alone, or a separate-drafter MTP load can still overcommit.
+    assert "_tp_mtp_floor" in src
+    assert "model_size + _tp_mtp_floor" in src
+
+
+def test_load_model_tensor_floor_keeps_flat_reserve_for_weights_only():
+    # Tensor mode has no --fit valve, so a weights-only drafter (KV unsized) must
+    # keep the flat reserve as the draft-KV cushion, not just the byte weights
+    # (Finding H1, the tensor analog of the layer-split _mtp_kv_unsized handling).
+    compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
+    # byte-only floor used only when KV is sizable (not the weights-only case)
+    assert "mtp_overhead_fnisnotNoneandnot_mtp_kv_unsized" in compact
+    # weights-only / dims-unavailable: flat reserve, never below the byte floor
+    assert "_tp_mtp_floor=max(" in compact
+
+
+def test_load_model_reserves_pipeline_per_device_overhead():
+    # Layer split must reserve the fixed per-device overhead per EXTRA device so a
+    # tight multi-GPU split can't pin a context that OOMs a device (Finding A); k=1
+    # adds nothing.
+    assert LlamaCppBackend._PIPELINE_PER_DEVICE_OVERHEAD_MIB > 0
+    compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
+    assert "def_subset_model_size(n_gpus:int)->int:" in compact
+    assert "max(0,n_gpus-1)*_pipeline_overhead_bytes" in compact
+    assert "_subset_model_size(n_gpus)" in compact  # used in the layer-split fit
+
+
+def test_load_model_restores_quantized_kv_on_tensor_downgrade():
+    # A quantized KV dropped for the tensor attempt must be restored if tensor
+    # downgrades to layer split (Finding D); captured once, restored at both the
+    # GPU-count and capacity-gate downgrades.
+    compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
+    assert "_tensor_dropped_cache_type_kv=cache_type_kv" in compact  # captured pre-null
+    assert compact.count("cache_type_kv=_tensor_dropped_cache_type_kv") >= 2  # restored
