@@ -86,6 +86,31 @@ def _patch_index_unreadable():
     return patch("huggingface_hub.hf_hub_download", side_effect = _dl)
 
 
+def _patch_index_mixed(weight_map, readable_index, failing_index):
+    """Serve ONE index cleanly while a DIFFERENT index fails transiently.
+
+    Models the dangerous case: one index reads fine (so a naive "did we read any
+    index?" check would treat the result as definitive), but the flagged shard is
+    listed only by the index we could not read.
+    """
+    import json
+    import tempfile
+    from pathlib import Path
+
+    from huggingface_hub.utils import EntryNotFoundError
+
+    def _dl(repo_id = None, filename = None, token = None, **kw):
+        if filename == readable_index:
+            p = Path(tempfile.mkdtemp()) / filename
+            p.write_text(json.dumps({"weight_map": weight_map}))
+            return str(p)
+        if filename == failing_index:
+            raise RuntimeError("transient network error")
+        raise EntryNotFoundError(filename or "")
+
+    return patch("huggingface_hub.hf_hub_download", side_effect = _dl)
+
+
 @pytest.mark.parametrize("level", ["unsafe", "suspicious", "malicious"])
 def test_blocks_each_blocking_level(level):
     status = {"scansDone": True, "filesWithIssues": [{"path": "pytorch_model.bin", "level": level}]}
@@ -296,6 +321,31 @@ def test_inconclusive_index_lookup_blocks_subdir_pickle():
         d = evaluate_file_security("org/transient")
     assert d.blocked is True
     assert d.unsafe_files == [{"path": "weights/model_part.bin", "level": "unsafe"}]
+
+
+def test_partial_index_read_with_transient_failure_blocks_subdir_pickle():
+    # One index (safetensors) reads cleanly, but the bin index fails transiently and
+    # the flagged subdir pickle is a .bin shard the unread index would list. A partial
+    # path set must not be treated as definitive: fail closed (block).
+    status = {
+        "scansDone": False,
+        "filesWithIssues": [
+            {"path": "shards/pytorch_model-00001-of-00002.bin", "level": "unsafe"},
+        ],
+    }
+    # The readable safetensors index lists unrelated, benign shards; the flagged .bin
+    # would only appear in the bin index that we could not fetch.
+    safetensors_map = {"layer.0.weight": "model-00001-of-00001.safetensors"}
+    with _patch_status(status), _patch_index_mixed(
+        safetensors_map,
+        readable_index = "model.safetensors.index.json",
+        failing_index = "pytorch_model.bin.index.json",
+    ):
+        d = evaluate_file_security("evil/mixed-index")
+    assert d.blocked is True
+    assert d.unsafe_files == [
+        {"path": "shards/pytorch_model-00001-of-00002.bin", "level": "unsafe"}
+    ]
 
 
 def test_root_pickle_alongside_safetensors_still_blocks():

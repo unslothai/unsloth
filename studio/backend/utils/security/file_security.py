@@ -150,7 +150,6 @@ def _indexed_shard_paths(model_name: str, hf_token: Optional[str]):
 
     paths: set = set()
     inconclusive = False
-    read_any = False
     for filename in _TRANSFORMERS_INDEX_FILES:
         try:
             index_path = hf_hub_download(model_name, filename, token = hf_token or None)
@@ -163,13 +162,15 @@ def _indexed_shard_paths(model_name: str, hf_token: Optional[str]):
             weight_map = (json.loads(open(index_path).read()) or {}).get("weight_map") or {}
             for shard in weight_map.values():
                 paths.add(_normalize_repo_path(str(shard)))
-            read_any = True
         except Exception:
             inconclusive = True
-    # Only "inconclusive" when a transient error stopped us AND we read no index at
-    # all. If we read at least one index (or confirmed all are absent), the result
-    # is definitive.
-    if inconclusive and not read_any:
+    # Any transient failure makes the result inconclusive, even if another index read
+    # cleanly: the flagged shard could be listed only by the index we could not read,
+    # so a partial path set is not safe to treat as definitive. Fail closed (None) and
+    # let the caller block the already-flagged subdir pickle. A repo that simply ships
+    # no index files raises EntryNotFoundError for each (never sets inconclusive) and
+    # returns an empty set -- a definitive "nothing sharded".
+    if inconclusive:
         return None
     return paths
 
