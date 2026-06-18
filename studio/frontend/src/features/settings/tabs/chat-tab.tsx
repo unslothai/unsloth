@@ -351,8 +351,7 @@ export function ChatTab() {
           label="Show all quantizations"
           description={
             <span>
-              On: list every On Device quantization, including ones you have not
-              downloaded.
+              On: list every On Device quantization, including not downloaded.
               <br />
               Off: show only downloaded quantizations.
             </span>
