@@ -1347,11 +1347,10 @@ export function ChatSettingsPanel({
                             Layers per GPU
                           </span>
                           <InfoHint>
-                            How the GPU Layers above are split across GPUs
-                            (--tensor-split). Each slider is a layer count; they
-                            sum to GPU Layers, and the rest stay on CPU. With
-                            Tensor Parallelism on, these act as a proportional
-                            share.
+                            Splits GPU Layers across GPUs (--tensor-split).
+                            Without Tensor Parallelism each value is the layer
+                            count on that GPU; with it, every GPU holds a slice
+                            of each layer, so the values are only a ratio.
                           </InfoHint>
                         </div>
                         {gpusInUseDevices.map((d, k) => (
