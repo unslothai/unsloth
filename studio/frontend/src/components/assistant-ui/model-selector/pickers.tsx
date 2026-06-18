@@ -9,6 +9,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { usePlatformStore } from "@/config/env";
+import { classifyUnslothSupport } from "@/features/hub/lib/unsloth-support";
 import {
   type ScanFolderInfo,
   addScanFolder,
@@ -30,6 +31,7 @@ import type {
 import type { GgufVariantDetail } from "@/features/chat/types/api";
 import { useDebouncedValue, useGpuInfo } from "@/hooks";
 import {
+  type HfModelResult,
   type HfSortKey,
   useHubModelSearch,
 } from "@/features/hub/hooks/use-hub-model-search";
@@ -46,6 +48,7 @@ import { DotTag } from "@/features/hub/catalog/dot-tag";
 import { HubOptionMenu, type HubOption } from "@/features/hub/catalog/hub-option-menu";
 import { FolderBrowser } from "./folder-browser";
 import { ModelDeleteAction } from "./model-delete-action";
+import { ModelLoadSettingsAction } from "./model-load-settings-action";
 import {
   type FormatFilter,
   estimateQuantBytes,
@@ -385,7 +388,7 @@ function ModelRow({
       }}
       onClick={onClick}
       className={cn(
-        "flex w-full items-center gap-2 rounded-full px-3 py-1.5 text-left text-sm transition-colors hover:bg-[#ececec] focus-visible:bg-[#ececec] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/45 dark:hover:bg-[var(--sidebar-accent)] dark:focus-visible:bg-[var(--sidebar-accent)]",
+        "flex w-full items-center gap-2 rounded-full px-2 py-1.5 text-left text-sm transition-colors hover:bg-[#ececec] focus-visible:bg-[#ececec] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/45 dark:hover:bg-[var(--sidebar-accent)] dark:focus-visible:bg-[var(--sidebar-accent)]",
         selected && "bg-[#ececec] dark:bg-[var(--sidebar-accent)]",
       )}
     >
@@ -503,6 +506,8 @@ function GgufVariantExpander({
   const [variants, setVariants] = useState<GgufVariantDetail[] | null>(null);
   const [defaultVariant, setDefaultVariant] = useState<string | null>(null);
   const [hasVision, setHasVision] = useState(false);
+  // Native max context (GGUF metadata); only set once a variant is downloaded.
+  const [nativeContext, setNativeContext] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -517,6 +522,7 @@ function GgufVariantExpander({
         setVariants(res.variants);
         setDefaultVariant(res.default_variant);
         setHasVision(res.has_vision);
+        setNativeContext(res.context_length ?? null);
       })
       .catch((err) => {
         if (canceled) return;
@@ -686,7 +692,7 @@ function GgufVariantExpander({
                 handleVariantClick(v.quant, v.downloaded, v.size_bytes)
               }
               className={cn(
-                "flex min-w-0 flex-1 items-center justify-between gap-2 rounded-full px-3 py-1 text-left text-sm transition-colors hover:bg-[#ececec] focus-visible:bg-[#ececec] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/45 dark:hover:bg-[var(--sidebar-accent)] dark:focus-visible:bg-[var(--sidebar-accent)]",
+                "flex min-w-0 flex-1 items-center justify-between gap-2 rounded-full px-2 py-1 text-left text-sm transition-colors hover:bg-[#ececec] focus-visible:bg-[#ececec] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/45 dark:hover:bg-[var(--sidebar-accent)] dark:focus-visible:bg-[var(--sidebar-accent)]",
               )}
             >
               <span className="min-w-0 flex-1 truncate font-mono text-xs">
@@ -717,6 +723,17 @@ function GgufVariantExpander({
                 </span>
               </span>
             </button>
+            {v.downloaded && (
+              <ModelLoadSettingsAction
+                ariaLabel={`Inference settings for ${repoId} ${v.quant}`}
+                repoId={repoId}
+                quant={v.quant}
+                maxContext={nativeContext}
+                onLoad={() =>
+                  handleVariantClick(v.quant, v.downloaded, v.size_bytes)
+                }
+              />
+            )}
             {v.downloaded && onDeleteVariant && (
               <ModelDeleteAction
                 ariaLabel={`Delete ${repoId} ${v.quant}`}
@@ -1158,7 +1175,23 @@ export function HubModelPicker({
   }, [cachedGguf, cachedModels]);
 
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
-  const isMac = usePlatformStore((s) => s.deviceType) === "mac";
+  const deviceType = usePlatformStore((s) => s.deviceType);
+  const isMac = deviceType === "mac";
+
+  // Drop models Studio can't run for chat (diffusion / image / video / etc.)
+  // using the Hub's classifier on the tags the listing already carries.
+  const isChatSupported = useCallback(
+    (r: HfModelResult) =>
+      classifyUnslothSupport({
+        modelId: r.id,
+        pipelineTag: r.pipelineTag,
+        tags: r.tags,
+        libraryName: r.libraryName,
+        quantMethod: r.quantMethod,
+        deviceType,
+      }).status !== "unsupported",
+    [deviceType],
+  );
 
   const recommendedIds = useMemo(() => {
     const all = dedupe([...models.map((model) => model.id), value ?? ""])
@@ -1189,6 +1222,8 @@ export function HubModelPicker({
   const recommendedRows = useMemo(() => {
     // Never list mobile-targeted builds in the Unsloth section.
     let rows = recommendedSearch.results.filter((r) => !isMobileVariant(r.id));
+    // Drop models Studio can't run for chat (diffusion / image / video / etc.).
+    rows = rows.filter(isChatSupported);
     // Keep only formats we recommend for this device.
     rows = rows.filter((r) => isRecommendableFormat(r.id, r.isGguf, isMac));
     // The format toggle narrows further.
@@ -1217,7 +1252,7 @@ export function HubModelPicker({
         requireKnown: true,
       });
     });
-  }, [recommendedSearch.results, downloadedSet, recommendedSort, formatFilter, isMac, gpu]);
+  }, [recommendedSearch.results, downloadedSet, recommendedSort, formatFilter, isMac, gpu, isChatSupported]);
 
   // Per-row meta + VRAM badge from the recommended listing's own metadata.
   const recommendedMeta = useMemo(() => {
@@ -1403,12 +1438,13 @@ export function HubModelPicker({
     // Only the Unsloth tab searches the HF listing, and only Unsloth models.
     if (!showHfSection || section !== "recommended") return [];
     return results
+      .filter(isChatSupported)
       .map((result) => result.id)
       .filter((id) => id.toLowerCase().startsWith("unsloth/"))
       .filter((id) => !recommendedSet.has(id))
       .filter((id) => !chatOnly || isKnownGgufRepo(id))
       .filter((id) => !/-FP8[-.]|FP8-Dynamic/i.test(id));
-  }, [recommendedSet, results, showHfSection, section, chatOnly, isKnownGgufRepo]);
+  }, [recommendedSet, results, showHfSection, section, chatOnly, isKnownGgufRepo, isChatSupported]);
 
   const hubOptionKeys = useMemo(() => {
     const keys: string[] = [];
@@ -1630,12 +1666,12 @@ export function HubModelPicker({
   // dropdown always line up; text-xs matches that button too. The trigger label
   // clips (no ellipsis) when long; the open menu expands to show it in full.
   const sortTriggerClassName =
-    "w-[100px] shrink-0 justify-between pr-2.5 !border-0 text-xs [&>span]:!text-clip";
+    "w-[106px] shrink-0 justify-between pr-2.5 !border-0 text-xs [&>span]:!text-clip";
   // Tighter menu like the Projects activity Select: less left/top padding and
   // text-xs to match the trigger. Keep the option's right padding so the
   // selected-item checkmark never overlaps the label.
   const sortMenuContentClassName =
-    "!p-1 !rounded-[14px] [&_[role=option]]:!pl-2 [&_[role=option]]:!py-1.5 [&_[role=option]]:!text-xs";
+    "!p-1 !rounded-[14px] [&_[role=option]]:!pl-2 [&_[role=option]]:!py-1.5 [&_[role=option]]:!text-xs [&_[role=option]]:!rounded-[14px]";
   const sectionSortDropdown = showHfSection ? null : section === "recommended" ? (
     <HubOptionMenu
       value={recommendedSort}
@@ -1692,7 +1728,7 @@ export function HubModelPicker({
             type="button"
             onClick={onBrowseHub}
             aria-label="Search more models on the Hub"
-            className="field-soft flex h-9 w-[100px] shrink-0 items-center justify-center gap-[5px] rounded-full border-0 text-xs text-muted-foreground transition-colors hover:text-foreground"
+            className="hub-tab-toggle-pill flex h-9 w-[106px] shrink-0 items-center justify-center gap-[5px] rounded-full border-0 text-xs text-foreground transition-colors"
           >
             <HugeiconsIcon icon={DashboardCircleIcon} className="size-4" />
             Search Hub
@@ -1702,9 +1738,9 @@ export function HubModelPicker({
 
       {/* Section tabs, then the format and sort dropdowns, all on one row
           spaced by the same gap so the row reads evenly. */}
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-1.5">
         {sectionToggle}
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5">
           {!showHfSection ? (
             <HubOptionMenu
               value={formatFilter}
@@ -1734,8 +1770,8 @@ export function HubModelPicker({
         )}
         {...hubModelList.listboxProps}
       >
-        {/* Slight right inset so the row hover stops short of the scrollbar. */}
-        <div className="py-1 pr-1">
+        {/* Tiny right inset so the row hover sits just off the scrollbar. */}
+        <div className="py-1 pr-0.5">
           {/* First-load spinner only when nothing cached is shown yet. */}
           {showDownloaded &&
           !cachedReady &&

@@ -136,6 +136,10 @@ class GgufVariantsResponse(BaseModel):
     default_variant: Optional[str] = Field(
         None, description = "Recommended default quantization variant"
     )
+    context_length: Optional[int] = Field(
+        None,
+        description = "Native max context from GGUF metadata; set once a variant is downloaded",
+    )
 
 
 class LocalModelInfo(BaseModel):

@@ -50,6 +50,9 @@ _CACHE_MAX_ENTRIES = 4096
 # keyed by (file cache key, wanted key). None = key absent / file unreadable.
 _BOOL_CACHE: Dict[Tuple[_CacheKey, str], Optional[bool]] = {}
 
+# Cache for native context length (the `<arch>.context_length` numeric key).
+_CTX_CACHE: Dict[_CacheKey, Optional[int]] = {}
+
 
 def _cache_key(path: str) -> Optional[_CacheKey]:
     try:
@@ -268,6 +271,79 @@ def read_mmproj_audio_capability(path: str) -> Optional[bool]:
     gemma4ua): ``True``/``False`` if present, ``None`` if absent/unreadable.
     Flags audio-input models independently of tokenizer token names."""
     return _read_gguf_bool(path, "clip.has_audio_encoder")
+
+
+def _parse_gguf_context_length(path: str) -> Optional[int]:
+    """First numeric ``*.context_length`` (the model's native context) from a
+    GGUF header, or ``None`` if absent/unreadable. Matches the arch-prefixed key
+    without needing the architecture first."""
+    # Numeric vtypes carrying a context length: uint32/int32 (4 bytes),
+    # uint64/int64 (8 bytes).
+    fmt_by_vtype = {4: "<I", 5: "<i", 10: "<Q", 11: "<q"}
+    try:
+        with open(path, "rb") as f:
+            head = f.read(24)
+            if len(head) < 24:
+                return None
+            magic, _version, _tcount, kv_count = struct.unpack("<IIQQ", head)
+            if magic != _GGUF_MAGIC:
+                return None
+
+            for _ in range(kv_count):
+                try:
+                    klen_bytes = f.read(8)
+                    if len(klen_bytes) < 8:
+                        break
+                    klen = struct.unpack("<Q", klen_bytes)[0]
+                    if klen > 1 << 20:  # 1 MB sanity bound
+                        break
+                    kbytes = f.read(klen)
+                    if len(kbytes) < klen:
+                        break
+                    key = kbytes.decode("utf-8", "replace")
+                    vt_bytes = f.read(4)
+                    if len(vt_bytes) < 4:
+                        break
+                    vtype = struct.unpack("<I", vt_bytes)[0]
+
+                    if key.endswith(".context_length") and vtype in fmt_by_vtype:
+                        size = 4 if vtype in (4, 5) else 8
+                        nbytes = f.read(size)
+                        if len(nbytes) < size:
+                            break
+                        val = struct.unpack(fmt_by_vtype[vtype], nbytes)[0]
+                        return val if val > 0 else None
+                    if not _skip_gguf_value(f, vtype):
+                        break
+                except (struct.error, UnicodeDecodeError):
+                    break
+    except OSError as e:
+        logger.debug(f"_parse_gguf_context_length: cannot open {path}: {e}")
+        return None
+    except Exception as e:
+        logger.debug(f"_parse_gguf_context_length: parse failure on {path}: {e}")
+        return None
+    return None
+
+
+def read_gguf_context_length(path: str) -> Optional[int]:
+    """Cached native context length from a GGUF header, or ``None``. Lets the UI
+    show a model's true max context before loading it."""
+    key = _cache_key(path)
+    if key is None:
+        return None
+    with _CACHE_LOCK:
+        if key in _CTX_CACHE:
+            return _CTX_CACHE[key]
+    result = _parse_gguf_context_length(path)
+    with _CACHE_LOCK:
+        while len(_CTX_CACHE) >= _CACHE_MAX_ENTRIES:
+            try:
+                _CTX_CACHE.pop(next(iter(_CTX_CACHE)))
+            except StopIteration:
+                break
+        _CTX_CACHE[key] = result
+    return result
 
 
 def is_mmproj_by_metadata(meta: Optional[Dict[str, str]]) -> Optional[bool]:

@@ -2089,6 +2089,38 @@ async def check_embedding_model(
         )
 
 
+def _read_native_context_length(repo_id: str, is_local: bool) -> Optional[int]:
+    """Native max context from a downloaded GGUF for this repo, or None.
+
+    The value is identical across quants, so reading one non-mmproj shard's
+    header is enough. Only resolves once a file is on disk. Never raises.
+    """
+    try:
+        from utils.models.gguf_metadata import read_gguf_context_length
+
+        if is_local:
+            roots = [Path(repo_id)]
+        else:
+            from huggingface_hub import constants as hf_constants
+
+            if not _is_valid_repo_id(repo_id):
+                return None
+            cache_dir = Path(hf_constants.HF_HUB_CACHE)
+            target = f"models--{repo_id.replace('/', '--')}".lower()
+            roots = [e for e in cache_dir.iterdir() if e.name.lower() == target]
+
+        for root in roots:
+            for f in _iter_gguf_paths(root):
+                if _is_mmproj_filename(f.name):
+                    continue
+                n = read_gguf_context_length(str(f))
+                if n:
+                    return n
+    except Exception:
+        pass
+    return None
+
+
 @router.get("/gguf-variants", response_model = GgufVariantsResponse)
 async def get_gguf_variants(
     repo_id: str = Query(
@@ -2126,6 +2158,7 @@ async def get_gguf_variants(
                 ],
                 has_vision = has_vision,
                 default_variant = default_variant,
+                context_length = _read_native_context_length(repo_id, is_local = True),
             )
 
         # Remote HuggingFace repo — query HF API.
@@ -2194,6 +2227,7 @@ async def get_gguf_variants(
             ],
             has_vision = has_vision,
             default_variant = default_variant,
+            context_length = _read_native_context_length(repo_id, is_local = False),
         )
 
     except Exception as e:
