@@ -2074,7 +2074,7 @@ export function HubModelPicker({
           // Small negative margin pulls the scrollbar in (closer to the rows),
           // and a thin gutter lets the row pills widen toward it. Height tracks
           // the content up to the cap, so short lists do not leave white space.
-          "model-list-scroll -mr-1 max-h-[20.5rem] overflow-y-auto pr-0.5",
+          "model-list-scroll -mr-1 max-h-[21rem] overflow-y-auto pr-0.5",
           listScrolled && "is-scrolled",
           listMoreBelow && "is-bottom-faded",
         )}
