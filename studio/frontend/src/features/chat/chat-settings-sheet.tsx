@@ -535,6 +535,9 @@ export function ChatSettingsPanel({
   );
   const currentCheckpoint = params.checkpoint;
   const ggufContextLength = useChatRuntimeStore((s) => s.ggufContextLength);
+  const ggufLaunchContextLength = useChatRuntimeStore(
+    (s) => s.ggufLaunchContextLength,
+  );
   const ggufMaxContextLength = useChatRuntimeStore(
     (s) => s.ggufMaxContextLength,
   );
@@ -569,7 +572,9 @@ export function ChatSettingsPanel({
   const stagedContextLength = pendingSelection?.contextLength ?? null;
   // While staging, the sheet reflects the STAGED model, so its header context
   // takes precedence over the loaded model's (which may differ or be larger).
-  const baseContext = pendingIsGguf ? stagedContextLength : ggufContextLength;
+  const baseContext = pendingIsGguf
+    ? stagedContextLength
+    : (ggufLaunchContextLength ?? ggufContextLength);
   const baseNativeContext = pendingIsGguf
     ? stagedContextLength
     : ggufNativeContextLength;

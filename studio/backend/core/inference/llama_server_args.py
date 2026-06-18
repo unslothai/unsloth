@@ -280,8 +280,8 @@ def parse_fit_override(args: Optional[Iterable[str]]) -> Optional[bool]:
     return override
 
 
-_KV_UNIFIED_FLAGS: frozenset[str] = frozenset({"--kv-unified"})
-_NO_KV_UNIFIED_FLAGS: frozenset[str] = frozenset({"--no-kv-unified"})
+_KV_UNIFIED_FLAGS: frozenset[str] = frozenset({"-kvu", "--kv-unified"})
+_NO_KV_UNIFIED_FLAGS: frozenset[str] = frozenset({"-no-kvu", "--no-kv-unified"})
 
 
 def parse_kv_unified(args: Optional[Iterable[str]]) -> Optional[bool]:

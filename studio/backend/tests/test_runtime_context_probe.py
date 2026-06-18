@@ -74,6 +74,9 @@ def _cleanup_llama_cpp_import_cache():
     """Drop cached llama_cpp so later tests re-import real httpx/loggers."""
     yield
     sys.modules.pop("core.inference.llama_cpp", None)
+    import core.inference as _pkg
+    if hasattr(_pkg, "llama_cpp"):
+        delattr(_pkg, "llama_cpp")
 
 
 def _backend(**kwargs):

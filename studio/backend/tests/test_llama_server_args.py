@@ -554,6 +554,13 @@ def test_parse_kv_unified_last_wins():
     assert parse_kv_unified(["--no-kv-unified", "--kv-unified"]) is True
 
 
+def test_parse_kv_unified_short_aliases():
+    assert parse_kv_unified(["-kvu"]) is True
+    assert parse_kv_unified(["-no-kvu"]) is False
+    assert parse_kv_unified(["-kvu", "-no-kvu"]) is False
+    assert parse_kv_unified(["--kv-unified", "-no-kvu"]) is False
+
+
 # ── --split-mode (Tensor Parallelism toggle) ─────────────────────────
 # Soft-shadowed exactly like --cache-type-*: pass-through allowed (keeps
 # the row/none/layer modes the boolean toggle doesn't expose), stripped

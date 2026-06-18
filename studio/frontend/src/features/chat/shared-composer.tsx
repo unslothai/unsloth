@@ -86,6 +86,7 @@ import {
   loadOptionalBool,
   resolveLoadedSpeculativeSettings,
   resolveSpeculativeSettingsForLoad,
+  resolveToolsEnabledOnLoad,
   saveSpeculativeType,
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
@@ -1107,11 +1108,17 @@ export function SharedComposer({
           resp.requires_trust_remote_code ?? false,
         );
         useChatRuntimeStore.setState({
+          ggufContextLength: resp.context_length ?? null,
+          ggufMaxContextLength:
+            resp.max_context_length ?? resp.context_length ?? null,
+          ggufRequestedContextLength: resp.requested_context_length ?? null,
+          ggufLaunchContextLength: resp.launch_context_length ?? null,
           supportsReasoning: resp.supports_reasoning ?? false,
           reasoningAlwaysOn: resp.reasoning_always_on ?? false,
           reasoningStyle: resp.reasoning_style ?? "enable_thinking",
           supportsPreserveThinking: resp.supports_preserve_thinking ?? false,
           supportsTools: resp.supports_tools ?? false,
+          ...resolveToolsEnabledOnLoad(resp.supports_tools ?? false),
           tensorParallel: resp.tensor_parallel ?? false,
           loadedTensorParallel: resp.tensor_parallel ?? false,
           loadedIsMultimodal: isMultimodalResponse(resp),
