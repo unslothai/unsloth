@@ -467,13 +467,16 @@ export function ModelSelector({
       const displayName = lora.name.includes("/")
         ? lora.name.split("/")[0].trim()
         : lora.name;
-      // Show type tag instead of base model name
+      // Build a compact description that mirrors the multi-tag layout used
+      // inside the picker rows (format + source), so the trigger chip and
+      // the popover tell the same story. Addresses the "what is a
+      // Fine-tuned model" confusion in #6381.
       const isLocal = lora.source === "local";
       const isTraining = lora.source === "training";
       const isExported = lora.source === "exported";
       const isMerged = lora.exportType === "merged";
       const isGguf = lora.exportType === "gguf";
-      const tag = isLocal
+      const formatLabel = isLocal
         ? isGguf
           ? "GGUF"
           : "Local"
@@ -481,13 +484,20 @@ export function ModelSelector({
           ? "Full finetune"
           : isExported
             ? isMerged
-              ? "Merged · Exported"
-              : "LoRA · Exported"
+              ? "Merged"
+              : isGguf
+                ? "GGUF"
+                : "LoRA"
             : "LoRA";
+      const sourceLabel = isLocal
+        ? "Local"
+        : isExported
+          ? "Exported"
+          : "Fine-tuned";
       all.set(lora.id, {
         ...lora,
         name: displayName,
-        description: tag,
+        description: `${formatLabel} · ${sourceLabel}`,
       });
     }
     for (const externalModel of externalModels) {

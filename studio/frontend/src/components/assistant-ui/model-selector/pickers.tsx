@@ -61,6 +61,137 @@ import type {
   ModelSelectorChangeMeta,
 } from "./types";
 
+// Tag tones map to the global format/status color tokens defined in
+// hub.css (:root + @theme inline). They resolve everywhere — including
+// this chat-surface popover — so we reuse the same visual vocabulary
+// users already learn from the Hub catalog.
+export type ModelRowTagTone =
+  | "gguf"
+  | "safetensors"
+  | "lora"
+  | "merged"
+  | "full"
+  | "local"
+  | "hub"
+  | "downloaded"
+  | "exported"
+  | "training"
+  | "finetuned";
+
+const TAG_TONE_CLASS: Record<ModelRowTagTone, string> = {
+  // Format family — colored dot + tinted ring/text.
+  gguf: "text-format-gguf ring-format-gguf/25 bg-format-gguf/10",
+  safetensors: "text-format-checkpoint ring-format-checkpoint/25 bg-format-checkpoint/10",
+  lora: "text-format-adapter ring-format-adapter/25 bg-format-adapter/10",
+  merged: "text-format-adapter ring-format-adapter/25 bg-format-adapter/10",
+  full: "text-format-mlx ring-format-mlx/25 bg-format-mlx/10",
+  // Source / status family — neutral or success-tinted.
+  local: "text-muted-foreground ring-border/60 bg-muted/50",
+  hub: "text-muted-foreground ring-border/60 bg-muted/50",
+  downloaded: "text-status-success ring-status-success/25 bg-status-success/10",
+  exported: "text-format-mlx ring-format-mlx/25 bg-format-mlx/10",
+  training: "text-status-warning ring-status-warning/25 bg-status-warning/10",
+  finetuned: "text-format-adapter ring-format-adapter/25 bg-format-adapter/10",
+};
+
+export interface ModelRowTag {
+  tone: ModelRowTagTone;
+  label: string;
+  /** Optional explanation shown in a tooltip — addresses the "what does
+   * Hub / Fine-tuned mean" confusion raised in #6381. */
+  tooltip?: string;
+}
+
+function ModelRowTagChip({ tag }: { tag: ModelRowTag }) {
+  const chip = (
+    <span
+      className={cn(
+        "inline-flex h-[18px] shrink-0 items-center gap-1 whitespace-nowrap rounded-full px-1.5 text-[9.5px] font-medium leading-none ring-1 ring-inset",
+        TAG_TONE_CLASS[tag.tone],
+      )}
+    >
+      <span
+        aria-hidden="true"
+        className={cn(
+          "inline-block size-1 shrink-0 rounded-full",
+          tag.tone === "local" || tag.tone === "hub"
+            ? "bg-current opacity-60"
+            : "bg-current",
+        )}
+      />
+      {tag.label}
+    </span>
+  );
+  if (!tag.tooltip) return chip;
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild={true}>{chip}</TooltipTrigger>
+      <TooltipContent side="top" sideOffset={4} className="tooltip-compact max-w-xs">
+        {tag.tooltip}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+// ── Tag builders ──────────────────────────────────────────────
+// Centralized so every section renders consistent labels/tooltips.
+// The tooltips answer the "what does Hub / Fine-tuned mean?" questions
+// raised in #6381; the multi-tag layout answers the "I can only see one
+// property at a time" complaint in #6367.
+
+const TOOLTIPS: Record<ModelRowTagTone, string> = {
+  gguf: "GGUF format — quantized weights for llama.cpp and other GGUF runners.",
+  safetensors: "Safetensors format — native PyTorch / Transformers weights.",
+  lora: "LoRA adapter — a lightweight fine-tune layered on a base model.",
+  merged: "Merged checkpoint — adapter weights baked into the base model.",
+  full: "Full finetune — every model weight was trained.",
+  local: "On your device — indexed from a local file or folder you added.",
+  hub: "On the Hugging Face Hub — needs to be downloaded before use.",
+  downloaded: "Already downloaded to your Hugging Face cache.",
+  exported: "Exported from a fine-tuned model — ready to share or deploy.",
+  training: "Currently in training — checkpoints update as training progresses.",
+  finetuned: "Fine-tuned model — produced by training, not a Hub checkpoint.",
+};
+
+/** Format tag for the model row — drives the primary colored chip. */
+function formatTag(
+  format: "gguf" | "safetensors" | "lora" | "merged" | "full",
+): ModelRowTag {
+  const label =
+    format === "gguf"
+      ? "GGUF"
+      : format === "safetensors"
+        ? "Safetensors"
+        : format === "lora"
+          ? "LoRA"
+          : format === "merged"
+            ? "Merged"
+            : "Full";
+  return { tone: format, label, tooltip: TOOLTIPS[format] };
+}
+
+const HUB_TAG: ModelRowTag = { tone: "hub", label: "Hub", tooltip: TOOLTIPS.hub };
+const LOCAL_TAG: ModelRowTag = {
+  tone: "local",
+  label: "Local",
+  tooltip: TOOLTIPS.local,
+};
+const DOWNLOADED_TAG: ModelRowTag = {
+  tone: "downloaded",
+  label: "Downloaded",
+  tooltip: TOOLTIPS.downloaded,
+};
+const EXPORTED_TAG: ModelRowTag = {
+  tone: "exported",
+  label: "Exported",
+  tooltip: TOOLTIPS.exported,
+};
+const FINETUNED_TAG: ModelRowTag = {
+  tone: "finetuned",
+  label: "Fine-tuned",
+  tooltip: TOOLTIPS.finetuned,
+};
+
 function dedupe(values: string[]): string[] {
   return [...new Set(values.filter(Boolean))];
 }
@@ -282,6 +413,7 @@ function formatBytes(bytes: number): string {
 function ModelRow({
   label,
   meta,
+  tags,
   selected,
   onClick,
   vramStatus,
@@ -293,6 +425,7 @@ function ModelRow({
 }: {
   label: string;
   meta?: string | null;
+  tags?: ModelRowTag[];
   selected?: boolean;
   onClick: () => void;
   vramStatus?: VramFitStatus | null;
@@ -313,6 +446,7 @@ function ModelRow({
           ? `~${vramEst}GB VRAM (tight fit on ${gpuGb}GB)`
           : `~${vramEst}GB VRAM`
       : null;
+  const visibleTags = tags?.filter(Boolean) ?? [];
 
   const content = (
     <button
@@ -345,6 +479,13 @@ function ModelRow({
         )}
         {vramStatus === "tight" && (
           <span className="text-[9px] font-medium !text-amber-400">TIGHT</span>
+        )}
+        {visibleTags.length > 0 && (
+          <span className="flex items-center gap-1">
+            {visibleTags.map((tag, index) => (
+              <ModelRowTagChip key={`${tag.tone}-${tag.label}-${index}`} tag={tag} />
+            ))}
+          </span>
         )}
         {meta ? (
           <span className="text-[10px] text-muted-foreground">{meta}</span>
@@ -1262,7 +1403,8 @@ export function HubModelPicker({
                     <div key={c.repo_id}>
                       <ModelRow
                         label={c.repo_id}
-                        meta={`GGUF · ${formatBytes(c.size_bytes)}`}
+                        tags={[formatTag("gguf"), DOWNLOADED_TAG]}
+                        meta={formatBytes(c.size_bytes)}
                         selected={value === c.repo_id}
                         optionProps={hubModelList.getOptionProps(
                           optionKey,
@@ -1315,6 +1457,7 @@ export function HubModelPicker({
                       <div className="min-w-0 flex-1">
                         <ModelRow
                           label={c.repo_id}
+                          tags={[formatTag("safetensors"), DOWNLOADED_TAG]}
                           meta={formatBytes(c.size_bytes)}
                           selected={value === c.repo_id}
                           optionProps={hubModelList.getOptionProps(
@@ -1364,7 +1507,11 @@ export function HubModelPicker({
                   <div key={m.id}>
                     <ModelRow
                       label={m.model_id ?? m.display_name}
-                      meta={isGguf || isGgufFile ? "GGUF" : "Local"}
+                      tags={
+                        isGguf || m.path.toLowerCase().endsWith(".gguf")
+                          ? [formatTag("gguf"), LOCAL_TAG]
+                          : [LOCAL_TAG]
+                      }
                       selected={value === m.id}
                       optionProps={hubModelList.getOptionProps(
                         optionKey,
@@ -1582,7 +1729,7 @@ export function HubModelPicker({
                   <div key={m.id}>
                     <ModelRow
                       label={m.model_id ?? m.display_name}
-                      meta={isGguf ? "GGUF" : "Local"}
+                      tags={isGguf ? [formatTag("gguf"), LOCAL_TAG] : [LOCAL_TAG]}
                       selected={value === m.id}
                       optionProps={hubModelList.getOptionProps(
                         optionKey,
@@ -1660,9 +1807,14 @@ export function HubModelPicker({
                     <div key={id}>
                       <ModelRow
                         label={id}
+                        tags={
+                          isKnownGgufRepo(id)
+                            ? [formatTag("gguf"), HUB_TAG]
+                            : [HUB_TAG]
+                        }
                         meta={
                           isKnownGgufRepo(id)
-                            ? "GGUF"
+                            ? null
                             : (vram?.detail ?? extractParamLabel(id))
                         }
                         selected={value === id}
@@ -1733,9 +1885,14 @@ export function HubModelPicker({
                   <div key={id}>
                     <ModelRow
                       label={id}
+                      tags={
+                        isKnownGgufRepo(id)
+                          ? [formatTag("gguf"), HUB_TAG]
+                          : [HUB_TAG]
+                      }
                       meta={
                         isKnownGgufRepo(id)
-                          ? "GGUF"
+                          ? null
                           : (vram?.detail ?? extractParamLabel(id))
                       }
                       selected={value === id}
@@ -1809,9 +1966,14 @@ export function HubModelPicker({
                     <div key={id}>
                       <ModelRow
                         label={id}
+                        tags={
+                          isSearchGguf
+                            ? [formatTag("gguf"), HUB_TAG]
+                            : [HUB_TAG]
+                        }
                         meta={
                           isSearchGguf
-                            ? "GGUF"
+                            ? null
                             : (metricsById.get(id) ?? extractParamLabel(id))
                         }
                         selected={value === id}
@@ -2002,35 +2164,36 @@ export function LoraModelPicker({
                     isLocal &&
                     (isGgufRepo(adapter.id) || isGgufRepo(adapter.name));
                   const optionKey = makeModelOptionKey("lora", adapter.id);
-                  const tag = isLocal
-                    ? isLocalGgufDir
-                      ? "GGUF"
-                      : "Local"
-                    : isGguf
-                      ? "GGUF"
-                      : isTrainingFull
-                        ? "Full"
-                      : isExported
-                        ? isMerged
-                          ? "Merged"
-                          : "LoRA"
-                        : "LoRA";
-                  const meta = isLocal
-                    ? isLocalGgufDir
-                      ? "GGUF"
-                      : "Local"
-                    : isTrainingFull
-                      ? "Full finetune"
-                    : isExported
-                      ? `${tag} · Exported`
-                      : tag;
+                  // Build the tag list so multiple properties of a fine-tuned
+                  // model are visible at once: format (LoRA/Merged/Full/GGUF)
+                  // plus source (Local/Exported) plus the Fine-tuned marker.
+                  // The previous design collapsed everything into one string
+                  // so e.g. a local GGUF fine-tune only showed "GGUF" — see
+                  // issues #6367 and #6381.
+                  const finetunedTags: ModelRowTag[] = [FINETUNED_TAG];
+                  if (isLocal) {
+                    if (isLocalGgufDir) finetunedTags.push(formatTag("gguf"));
+                    finetunedTags.push(LOCAL_TAG);
+                  } else if (isExportedGguf) {
+                    finetunedTags.push(formatTag("gguf"));
+                    finetunedTags.push(EXPORTED_TAG);
+                  } else if (isTrainingFull) {
+                    finetunedTags.push(formatTag("full"));
+                  } else if (isExported) {
+                    finetunedTags.push(
+                      isMerged ? formatTag("merged") : formatTag("lora"),
+                    );
+                    finetunedTags.push(EXPORTED_TAG);
+                  } else {
+                    finetunedTags.push(formatTag("lora"));
+                  }
                   return (
                     <div key={adapter.id}>
                       <div className="flex items-center gap-0.5">
                         <div className="min-w-0 flex-1">
                           <ModelRow
                             label={adapter.name}
-                            meta={meta}
+                            tags={finetunedTags}
                             selected={value === adapter.id}
                             optionProps={loraModelList.getOptionProps(
                               optionKey,
