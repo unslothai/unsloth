@@ -901,3 +901,49 @@ def test_start_update_marked_refuses_when_not_behind(monkeypatch, tmp_path):
     res = upd.start_update()
     assert res["started"] is False
     assert res["reason"] == "up_to_date"
+
+
+def test_status_update_available_includes_size(monkeypatch, tmp_path):
+    # Marker (prebuilt) update path attaches the download size of the asset the
+    # banner would fetch.
+    binary = _write_install(tmp_path, "b9493", asset = "app-b9493-linux-x64-cuda13-newer.tar.gz")
+    monkeypatch.setattr(upd, "_find_binary", lambda: binary)
+    monkeypatch.setattr(freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: "b9518")
+    monkeypatch.setattr(
+        freshness,
+        "latest_release_assets",
+        lambda repo, *, force_refresh = False: {
+            "app-b9518-linux-x64-cuda13-newer.tar.gz": 88_000_000
+        },
+    )
+    st = upd.get_update_status(force_refresh = True)
+    assert st["update_available"] is True
+    assert st["update_size_bytes"] == 88_000_000
+
+
+def test_status_source_build_includes_update_size(monkeypatch, tmp_path):
+    # #6338 P3: a source build offered a prebuilt must carry the asset size too.
+    binary = tmp_path / "llama.cpp" / "build" / "bin" / "llama-server"
+    binary.parent.mkdir(parents = True)
+    binary.write_text("stub")  # no marker -> source build
+    monkeypatch.setattr(upd, "_find_binary", lambda: str(binary))
+    _prebuilt(
+        monkeypatch,
+        repo = "unslothai/llama.cpp",
+        release_tag = "b9585",
+        asset = "app-b9585-linux-x64-cpu.tar.gz",
+    )
+    monkeypatch.setattr(upd, "_installed_build_number", lambda b: None)
+    monkeypatch.setattr(
+        upd,
+        "latest_release_assets",
+        lambda repo, *, force_refresh = False: (
+            {"app-b9585-linux-x64-cpu.tar.gz": 77_000_000}
+            if repo == "unslothai/llama.cpp"
+            else None
+        ),
+    )
+    st = upd.get_update_status()
+    assert st["source_build"] is True
+    assert st["update_available"] is True
+    assert st["update_size_bytes"] == 77_000_000
