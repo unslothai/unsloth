@@ -131,7 +131,8 @@ def _print_cuda_device_list(is_rocm: bool) -> None:
         for i in range(count):
             try:
                 name = torch.cuda.get_device_properties(i).name
-            except Exception:
+            except Exception as e:
+                logger.debug("CUDA device %d property probe failed: %s", i, e)
                 name = "<unavailable>"
             lines.append(f"  [{i}] {name}")
         print("\n".join(lines))
@@ -162,7 +163,8 @@ def detect_hardware() -> DeviceType:
             CHAT_ONLY = False
             try:
                 device_name = torch.cuda.get_device_properties(0).name
-            except Exception:
+            except Exception as e:
+                logger.debug("CUDA device 0 property probe failed: %s", e)
                 device_name = "<unavailable>"
 
             # Distinguish ROCm from CUDA for display only (DeviceType stays CUDA).
