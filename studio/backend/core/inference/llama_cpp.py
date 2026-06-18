@@ -552,6 +552,27 @@ _TOOL_TEMPLATE_MARKERS = (
 )
 
 
+# Canonical reasoning_effort levels, weakest -> strongest. Used to read the
+# discrete set a template branches on (e.g. GLM-5.2 uses 'high' | 'max') so we
+# only ever offer levels the template actually understands.
+_REASONING_EFFORT_SCALE = ("minimal", "low", "medium", "high", "max")
+
+
+def _extract_reasoning_effort_levels(chat_template: str) -> list:
+    """Return the reasoning_effort levels a template references, in canonical
+    (weakest -> strongest) order.
+
+    Looks for the quoted literals (e.g. ``'high'`` / ``"max"``) the template
+    compares ``reasoning_effort`` against, so we surface exactly the levels it
+    branches on and nothing else.
+    """
+    return [
+        level
+        for level in _REASONING_EFFORT_SCALE
+        if f"'{level}'" in chat_template or f'"{level}"' in chat_template
+    ]
+
+
 def detect_reasoning_flags(
     chat_template: Optional[str],
     model_identifier: Optional[str] = None,
@@ -571,6 +592,7 @@ def detect_reasoning_flags(
         "supports_reasoning": False,
         "reasoning_style": "enable_thinking",
         "reasoning_always_on": False,
+        "reasoning_effort_levels": [],
         "supports_preserve_thinking": False,
         "supports_tools": False,
     }
@@ -579,7 +601,25 @@ def detect_reasoning_flags(
     tpl = chat_template
     prefix = f"{log_source}: " if log_source else ""
 
-    if "enable_thinking" in tpl:
+    effort_levels = (
+        _extract_reasoning_effort_levels(tpl)
+        if ("reasoning_effort" in tpl and "enable_thinking" in tpl)
+        else []
+    )
+    if "enable_thinking" in tpl and "reasoning_effort" in tpl and effort_levels:
+        # GLM-5.2-style: an enable_thinking on/off gate PLUS a reasoning_effort
+        # level among a discrete set (e.g. 'high' | 'max'). Distinct from
+        # gpt-oss (reasoning_effort only, no on/off gate) and Qwen
+        # (enable_thinking only). Disabling is enable_thinking=false; the levels
+        # are the quoted effort literals the template actually branches on.
+        flags["supports_reasoning"] = True
+        flags["reasoning_style"] = "enable_thinking_effort"
+        flags["reasoning_effort_levels"] = effort_levels
+        logger.info(
+            f"{prefix}model supports reasoning "
+            f"(enable_thinking + reasoning_effort: {effort_levels})"
+        )
+    elif "enable_thinking" in tpl:
         flags["supports_reasoning"] = True
         flags["reasoning_style"] = "enable_thinking"
         logger.info(f"{prefix}model supports reasoning (enable_thinking)")
@@ -1147,9 +1187,9 @@ class LlamaCppBackend:
     """Manages a llama-server subprocess for GGUF model inference.
 
     Lifecycle:
-        1. load_model() — start llama-server with the GGUF file
-        2. generate_chat_completion() — proxy to /v1/chat/completions, stream back
-        3. unload_model() — terminate the subprocess
+        1. load_model(): start llama-server with the GGUF file
+        2. generate_chat_completion(): proxy to /v1/chat/completions, stream back
+        3. unload_model(): terminate the subprocess
     """
 
     def __init__(self):
@@ -1185,6 +1225,7 @@ class LlamaCppBackend:
         self._supports_reasoning: bool = False
         self._reasoning_always_on: bool = False
         self._reasoning_style: str = "enable_thinking"
+        self._reasoning_effort_levels: list = []
         self._supports_preserve_thinking: bool = False
         self._supports_tools: bool = False
         self._cache_type_kv: Optional[str] = None
@@ -1230,6 +1271,9 @@ class LlamaCppBackend:
         # coexist as two llama-server processes (#5401). RLock so MTP-crash
         # recovery can re-acquire it for its nested load_model.
         self._serial_load_lock = threading.RLock()
+        # Serialises mid-session respawns so many generations hitting a killed
+        # server trigger at most one reload (see _respawn_if_dead).
+        self._respawn_lock = threading.Lock()
         # Set by the in-app updater while it swaps prebuilt binaries; load_model()
         # rejects fast so no server starts from a half-swapped binary.
         self._llama_update_in_progress = False
@@ -1466,6 +1510,12 @@ class LlamaCppBackend:
         return self._reasoning_style
 
     @property
+    def reasoning_effort_levels(self) -> list:
+        """Discrete reasoning_effort levels the template offers (e.g. GLM-5.2's
+        ['high', 'max']). Empty unless reasoning_style == 'enable_thinking_effort'."""
+        return self._reasoning_effort_levels
+
+    @property
     def supports_preserve_thinking(self) -> bool:
         return self._supports_preserve_thinking
 
@@ -1474,6 +1524,10 @@ class LlamaCppBackend:
         return self._reasoning_default
 
     def _reasoning_kwargs(self, enable_thinking: bool) -> dict:
+        if self._reasoning_style == "enable_thinking_effort":
+            # GLM-5.2-style: enable_thinking is the on/off gate; when on, leave
+            # the template's default effort (max) in place.
+            return {"enable_thinking": enable_thinking}
         if self._reasoning_style == "reasoning_effort":
             return {"reasoning_effort": "high" if enable_thinking else "low"}
         return {"enable_thinking": enable_thinking}
@@ -1494,7 +1548,20 @@ class LlamaCppBackend:
         # Always-on reasoning models hardcode <think> tags and don't consume
         # enable_thinking / reasoning_effort -- skip.
         if self._supports_reasoning and not self._reasoning_always_on:
-            if self._reasoning_style == "reasoning_effort":
+            if self._reasoning_style == "enable_thinking_effort":
+                # GLM-5.2-style: enable_thinking gates thinking on/off, and the
+                # reasoning_effort level (e.g. 'high' | 'max') is only meaningful
+                # while thinking is on. Disabling is enable_thinking=false; a raw
+                # API caller can also disable via the OpenAI-style
+                # reasoning_effort="none" sentinel. We never coerce off into a
+                # 'low' effort the way gpt-oss does (those models genuinely
+                # cannot disable).
+                thinking_off = enable_thinking is False or reasoning_effort == "none"
+                if enable_thinking is not None or reasoning_effort == "none":
+                    kwargs["enable_thinking"] = not thinking_off
+                if not thinking_off and reasoning_effort in self._reasoning_effort_levels:
+                    kwargs["reasoning_effort"] = reasoning_effort
+            elif self._reasoning_style == "reasoning_effort":
                 if reasoning_effort in ("none", "low", "medium", "high"):
                     kwargs["reasoning_effort"] = reasoning_effort
                 elif reasoning_effort == "minimal":
@@ -1877,11 +1944,12 @@ class LlamaCppBackend:
         return total
 
     @staticmethod
-    def _amd_apu_wants_unified_memory() -> bool:
+    def _amd_apu_wants_unified_memory(gpu_indices = None) -> bool:
         """True only for AMD unified-memory APUs (gfx1150/gfx1151), where
-        GGML_CUDA_ENABLE_UNIFIED_MEMORY lets llama.cpp use shared system RAM.
-        False elsewhere (the env hurts discrete GPUs). ROCm reuses torch.cuda.*;
-        gcnArchName suffix is stripped."""
+        GGML_CUDA_ENABLE_UNIFIED_MEMORY lets llama.cpp use shared system RAM (it
+        hurts discrete GPUs). gpu_indices (PHYSICAL ids) scopes the check to the
+        selected GPUs, so a dGPU on a mixed host is not treated as unified-memory;
+        None means every visible GPU."""
         try:
             import torch
 
@@ -1889,12 +1957,39 @@ class LlamaCppBackend:
                 return False
             if not (hasattr(torch, "cuda") and torch.cuda.is_available()):
                 return False
-            for _i in range(torch.cuda.device_count()):
+            # Map visible ordinal -> physical id via the active ROCm mask (HIP,
+            # then ROCR, then CUDA), mirroring _get_gpu_memory's ROCm branch.
+            physical_ids: Optional[list[int]] = None
+            hip_v = os.environ.get("HIP_VISIBLE_DEVICES")
+            rocr_v = os.environ.get("ROCR_VISIBLE_DEVICES")
+            cvd = (
+                hip_v
+                if hip_v is not None
+                else rocr_v
+                if rocr_v is not None
+                else os.environ.get("CUDA_VISIBLE_DEVICES")
+            )
+            if cvd is not None:
                 try:
-                    _arch = getattr(torch.cuda.get_device_properties(_i), "gcnArchName", "") or ""
+                    physical_ids = [int(x.strip()) for x in cvd.split(",") if x.strip()]
+                except ValueError:
+                    physical_ids = None
+            arch_by_id: dict[int, str] = {}
+            for ordinal in range(torch.cuda.device_count()):
+                try:
+                    _arch = (
+                        getattr(torch.cuda.get_device_properties(ordinal), "gcnArchName", "") or ""
+                    )
                 except Exception:
                     continue
-                if _arch.split(":")[0].strip().lower() in {"gfx1150", "gfx1151"}:
+                pid = (
+                    physical_ids[ordinal]
+                    if physical_ids is not None and ordinal < len(physical_ids)
+                    else ordinal
+                )
+                arch_by_id[pid] = _arch.split(":")[0].strip().lower()
+            for _i in list(gpu_indices) if gpu_indices is not None else list(arch_by_id):
+                if arch_by_id.get(_i) in {"gfx1150", "gfx1151"}:
                     return True
         except Exception:
             return False
@@ -2127,6 +2222,48 @@ class LlamaCppBackend:
         except Exception as e:
             logger.debug(f"torch GPU probe failed: {e}")
             return []
+
+    @staticmethod
+    def _available_system_memory_mib() -> Optional[int]:
+        """Available system RAM in MiB (psutil, then /proc/meminfo), or None if
+        neither is readable. On a unified-memory APU this, not the ROCm-reported
+        VRAM, is the real ceiling: the weights load into shared system RAM."""
+        try:
+            import psutil
+            return int(psutil.virtual_memory().available // (1024 * 1024))
+        except Exception:
+            pass
+        try:
+            with open("/proc/meminfo") as f:
+                for line in f:
+                    if line.startswith("MemAvailable:"):
+                        return int(line.split()[1]) // 1024  # kB -> MiB
+        except Exception:
+            pass
+        return None
+
+    @staticmethod
+    def _apu_ram_shortfall_message(
+        model_size_bytes: int,
+        avail_mib: Optional[int],
+        headroom_mib: int = 2048,
+    ) -> Optional[str]:
+        """On a unified-memory APU, return a user-facing refusal when the weights
+        cannot fit in available system RAM (else None). Weights only: KV/context
+        auto-reduce, so counting them too would refuse loads that would succeed.
+        None avail (unknown RAM) never refuses."""
+        if avail_mib is None:
+            return None
+        need_mib = model_size_bytes / (1024 * 1024)
+        if need_mib <= avail_mib - headroom_mib:
+            return None
+        return (
+            f"This model needs about {need_mib / 1024:.0f} GB but only about "
+            f"{avail_mib / 1024:.0f} GB of memory is available. On a unified-memory "
+            "APU the weights load into system RAM, so a larger model is stopped by "
+            "the OS mid-load. Use a smaller or more quantized GGUF, or free memory "
+            "(on WSL, raise the memory limit in .wslconfig)."
+        )
 
     # Skip the wait when the last kill is older than this; the driver has
     # already reclaimed the prior process's allocations.
@@ -2688,9 +2825,10 @@ class LlamaCppBackend:
         n_parallel: int = 1,
     ) -> Optional[int]:
         """MTP draft reserve at ``n_ctx`` = draft KV (grows with ctx) + separate-
-        drafter weights. The verify buffer rides in the ctx-fit headroom (no tuned
-        constant). None when the draft KV can't be sized (caller keeps the flat
-        fallback). ``draft_weights_bytes`` is the drafter file size (0 for embedded)."""
+        drafter weights + (MLA only) a duplicated target KV context. The verify
+        buffer rides in the ctx-fit headroom (no tuned constant). None when the
+        draft KV can't be sized (caller keeps the flat fallback).
+        ``draft_weights_bytes`` is the drafter file size (0 for embedded)."""
         draft_kv = self._mtp_draft_kv_bytes(
             n_ctx,
             drafter_path = drafter_path,
@@ -2699,13 +2837,25 @@ class LlamaCppBackend:
             n_parallel = n_parallel,
         )
         weights = max(0, draft_weights_bytes)
+        # MLA models (GLM-5.x, DeepSeek, Kimi-K2) keep a *second* full copy of the
+        # target model's KV context for MTP draft verification -- llama.cpp's
+        # `ctx_tgt=yes` -- allocated at f16 regardless of the main cache type. It is
+        # ~the main KV again and dwarfs the embedded draft head (GLM-5.2 @ 1M ctx:
+        # a ~2 GiB head next to a ~89 GiB target copy), so omitting it lets auto-fit
+        # pick a context that fits on paper but OOMs cublasCreate at the first
+        # decode. Non-MLA MTP (Qwen/Gemma) keeps no such copy, so this is gated
+        # strictly on MLA (kv_lora_rank present) and leaves those models unchanged.
+        target_ctx_copy = 0
+        if self._kv_lora_rank is not None:
+            target_ctx_copy = self._estimate_kv_cache_bytes(n_ctx, "f16", n_parallel = n_parallel)
         if draft_kv is None:
-            # KV unsized (exotic/remote drafter): still reserve known weights so a
-            # large drafter can't launch over budget (the small unsized KV rides in
-            # the cushion). Nothing known -> None, so the caller keeps the flat
-            # fallback.
-            return weights if weights > 0 else None
-        return draft_kv + weights
+            # KV unsized (exotic/remote drafter): still reserve known weights + any
+            # MLA target copy so a large config can't launch over budget (the small
+            # unsized draft KV rides in the cushion). Nothing known -> None, so the
+            # caller keeps the flat fallback.
+            total = weights + target_ctx_copy
+            return total if total > 0 else None
+        return draft_kv + weights + target_ctx_copy
 
     _DEFAULT_N_UBATCH = 512  # llama.cpp --ubatch default; Studio does not override it
     _COMPUTE_BUFFER_SAFETY = 1.15  # upper-bound margin on the compute-buffer estimate
@@ -2999,6 +3149,7 @@ class LlamaCppBackend:
         self._supports_reasoning = False
         self._reasoning_always_on = False
         self._reasoning_style = "enable_thinking"
+        self._reasoning_effort_levels = []
         self._reasoning_default = True
         self._supports_preserve_thinking = False
         self._supports_tools = False
@@ -3218,6 +3369,7 @@ class LlamaCppBackend:
                 )
                 self._supports_reasoning = flags["supports_reasoning"]
                 self._reasoning_style = flags["reasoning_style"]
+                self._reasoning_effort_levels = flags.get("reasoning_effort_levels", [])
                 self._reasoning_always_on = flags["reasoning_always_on"]
                 self._supports_preserve_thinking = flags["supports_preserve_thinking"]
                 self._supports_tools = flags["supports_tools"]
@@ -3812,7 +3964,10 @@ class LlamaCppBackend:
 
     @staticmethod
     def _classify_llama_start_failure(
-        output: str, gguf_path: Optional[str], model_identifier: Optional[str]
+        output: str,
+        gguf_path: Optional[str],
+        model_identifier: Optional[str],
+        returncode: Optional[int] = None,
     ) -> str:
         """Explain *why* llama-server failed to start, from its output.
 
@@ -3883,6 +4038,24 @@ class LlamaCppBackend:
                     "different model, or use this model directly through "
                     "Ollama instead."
                 )
+
+        # SIGKILL with no diagnostic output is the OOM killer (e.g. a model too
+        # large for the WSL VM's RAM cap); name it actionably.
+        if returncode == -9:
+            return (
+                "llama-server was stopped by the operating system (signal 9), "
+                "most likely out of memory. Try a smaller or more quantized "
+                "GGUF, lower the context length, or free memory (on WSL, raise "
+                "the memory limit in .wslconfig)."
+            )
+        # SIGTERM is also how an unload/cancel or a supervisor stops the server,
+        # so report it neutrally rather than blaming memory.
+        if returncode == -15:
+            return (
+                "llama-server was terminated (signal 15) before it became "
+                "healthy. If you cancelled or unloaded the model this is "
+                "expected; otherwise check the llama-server log for the cause."
+            )
 
         # Fallback: genuinely unknown failure (OOM, missing binary ...).
         return (
@@ -4061,6 +4234,71 @@ class LlamaCppBackend:
             and "projector" in text
             and ("unknown" in text or "unsupported" in text or "not supported" in text)
         )
+
+    @staticmethod
+    def _output_has_nonprojector_diagnostic(output: str) -> bool:
+        """True when the output already names a concrete non-projector cause (out
+        of memory, an unsupported architecture, a tensor-parallel limit). A hard
+        crash carrying such a marker must surface that error, not be silently
+        retried text-only as if the vision projector were at fault; a bare crash
+        with no marker still gets the text-only retry.
+        """
+        text = (output or "").lower()
+        return any(
+            m in text
+            for m in (
+                "out of memory",
+                "failed to allocate",
+                "unknown model architecture",
+                "split_mode_tensor not implemented",
+            )
+        )
+
+    @staticmethod
+    def _is_signal_crash(returncode: Optional[int]) -> bool:
+        """True only on a hard fault (SIGSEGV/SIGABRT/SIGILL/SIGFPE/SIGBUS or a
+        Windows 0xC0000000+ status), not SIGKILL/SIGTERM/SIGINT (OOM killer /
+        unload) nor a clean exit or still-running (None) process.
+        """
+        if returncode is None:
+            return False
+        if returncode >= 0xC0000000:  # Windows access violation / illegal instruction
+            return True
+        return -returncode in (4, 6, 7, 8, 11)  # SIGILL SIGABRT SIGBUS SIGFPE SIGSEGV
+
+    @staticmethod
+    def _with_flash_attn_off(cmd: list[str]) -> Optional[list[str]]:
+        """Return cmd with flash attention forced off, or None when its effective
+        (last-wins) value is already off/absent so there is nothing to retry. FA
+        kernels hard-crash at startup on some ROCm builds; disabling FA keeps
+        vision and MTP, the least destructive rung. A bare --flash-attn/-fa reads
+        as on, so it counts toward the effective value and is neutralised too;
+        every form is flipped in place (length preserved for downstream slices)."""
+        out = list(cmd)
+
+        def explicit(i):
+            nxt = out[i + 1] if i + 1 < len(out) else None
+            return nxt if nxt in ("on", "auto", "off") else None
+
+        effective = None
+        for i, tok in enumerate(out):
+            if tok.startswith(("--flash-attn=", "-fa=")):
+                effective = tok.partition("=")[2]
+            elif tok in ("--flash-attn", "-fa"):
+                effective = explicit(i) or "on"
+        if effective not in ("on", "auto"):
+            return None
+        for i, tok in enumerate(out):
+            if tok.startswith(("--flash-attn=", "-fa=")):
+                flag, _, value = tok.partition("=")
+                if value in ("on", "auto"):
+                    out[i] = f"{flag}=off"
+            elif tok in ("--flash-attn", "-fa"):
+                if explicit(i) in ("on", "auto"):
+                    out[i + 1] = "off"
+                elif explicit(i) is None:  # bare flag (reads as on) -> explicit off
+                    out[i] = f"{tok}=off"
+        return out
 
     @staticmethod
     def _strip_mmproj_args(cmd: list[str]) -> list[str]:
@@ -4486,6 +4724,7 @@ class LlamaCppBackend:
                         "Vision-capable GGUF loaded without a usable mmproj; "
                         "image input will be disabled for this session"
                     )
+                model_size = None  # set in the fit try; used by the APU RAM guard
                 try:
                     gguf_size = self._get_gguf_size_bytes(model_path)
                     # Include GPU-loaded mmproj in the fit budget (#5825).
@@ -5090,6 +5329,17 @@ class LlamaCppBackend:
                     tp_tensor_split = None
                     effective_ctx = requested_ctx  # fall back to original
 
+                # Unified-memory APUs load weights into system RAM (under WSL the VM
+                # cap, not the ROCm-reported VRAM, is the real ceiling); refuse an
+                # oversize load the OS would otherwise kill mid-flight. Base model
+                # only: an optional MTP drafter is dropped by the MTP-drop fallback.
+                if model_size is not None and self._amd_apu_wants_unified_memory(gpu_indices):
+                    _ram_msg = self._apu_ram_shortfall_message(
+                        model_size, self._available_system_memory_mib()
+                    )
+                    if _ram_msg:
+                        raise RuntimeError(_ram_msg)
+
                 # Audio input straight from the mmproj (clip.has_audio_encoder),
                 # independent of token names.
                 self._mmproj_has_audio = False
@@ -5252,6 +5502,7 @@ class LlamaCppBackend:
                     )
                     self._supports_reasoning = flags["supports_reasoning"]
                     self._reasoning_style = flags["reasoning_style"]
+                    self._reasoning_effort_levels = flags.get("reasoning_effort_levels", [])
                     self._reasoning_always_on = flags["reasoning_always_on"]
                     self._supports_preserve_thinking = flags["supports_preserve_thinking"]
                     self._supports_tools = flags["supports_tools"]
@@ -5389,7 +5640,7 @@ class LlamaCppBackend:
 
                 # AMD unified-memory APUs (gfx1150/gfx1151): let llama.cpp use
                 # shared system RAM. setdefault so a user value wins.
-                if self._amd_apu_wants_unified_memory():
+                if self._amd_apu_wants_unified_memory(gpu_indices):
                     env.setdefault("GGML_CUDA_ENABLE_UNIFIED_MEMORY", "1")
                     logger.info("AMD unified-memory APU: set GGML_CUDA_ENABLE_UNIFIED_MEMORY=1")
 
@@ -5440,6 +5691,9 @@ class LlamaCppBackend:
                 # retry once with --fit off before declaring the load failed.
                 # Never retry when fit was requested (use_fit) or the caller
                 # passed an explicit fit flag via extra args.
+                # Argv actually launched (post --fit off / MTP); text-only retry strips this.
+                _last_spawn_cmd = list(cmd)
+
                 def _spawn_and_wait(run_cmd, *, label = ""):
                     """Start llama-server with run_cmd and wait for health.
 
@@ -5447,6 +5701,7 @@ class LlamaCppBackend:
                     crashes during startup and run_cmd is eligible (see
                     _fit_off_retry_eligible).
                     """
+                    nonlocal _last_spawn_cmd
                     _fit_retry_allowed = self._fit_off_retry_eligible(run_cmd, use_fit)
                     for _spawn_attempt in (0, 1):
                         # Defensive kill: drop an orphan Popen a concurrent load may
@@ -5481,6 +5736,7 @@ class LlamaCppBackend:
                             # Best-effort; never block the load on logging.
                             logger.debug(f"Could not open llama-server log file: {e}")
                             self._llama_log_path = None
+                        _last_spawn_cmd = list(run_cmd)
                         self._process = subprocess.Popen(
                             run_cmd,
                             stdout = subprocess.PIPE,
@@ -5548,6 +5804,28 @@ class LlamaCppBackend:
                 )
 
                 healthy = _spawn_and_wait(cmd)
+                # Flash-attention kernels hard-crash at startup on some ROCm/GPU
+                # builds (frequently inside the vision tower). Disabling FA keeps
+                # both vision and MTP, so retry that way before dropping either.
+                # Only on a hard fault with FA on; a cancel/unload stops respawn.
+                if not healthy and not self._cancel_event.is_set():
+                    _fa_rc = self._process.poll() if self._process is not None else None
+                    _fa_cmd = (
+                        self._with_flash_attn_off(_last_spawn_cmd)
+                        if self._is_signal_crash(_fa_rc)
+                        else None
+                    )
+                    if _fa_cmd is not None:
+                        logger.warning(
+                            "llama-server hard-crashed at startup (exit %s) with "
+                            "flash attention on; retrying once with --flash-attn "
+                            "off (keeps vision and MTP).",
+                            _fa_rc,
+                        )
+                        self._kill_process()
+                        cmd = _fa_cmd
+                        healthy = _spawn_and_wait(_fa_cmd, label = "-noflash")
+
                 # MTP from Studio's spec flags or the user's (extra_args
                 # --spec-type / LLAMA_ARG_SPEC_TYPE). The env reaches the child
                 # only when neither emits a spec flag, so consult it only then.
@@ -5574,11 +5852,32 @@ class LlamaCppBackend:
                     and not self._cancel_event.is_set()
                     and not self._probe_mtp_decode()
                 ):
-                    logger.warning(
-                        "MTP speculative decoding crashed on the first decode "
-                        "under tensor parallelism; retrying without it."
+                    # A first-decode hard fault is usually the FA kernel: retry
+                    # FA-off (keeps MTP) before dropping speculative decoding below.
+                    _probe_rc = self._process.poll() if self._process is not None else None
+                    _fa_cmd = (
+                        self._with_flash_attn_off(_last_spawn_cmd)
+                        if self._is_signal_crash(_probe_rc)
+                        else None
                     )
                     healthy = False
+                    if _fa_cmd is not None:
+                        logger.warning(
+                            "MTP first-decode hard-crashed (exit %s) with flash "
+                            "attention on; retrying with --flash-attn off.",
+                            _probe_rc,
+                        )
+                        self._kill_process()
+                        cmd = _fa_cmd
+                        healthy = (
+                            _spawn_and_wait(_fa_cmd, label = "-noflash-mtp")
+                            and self._probe_mtp_decode()
+                        )
+                    if not healthy:
+                        logger.warning(
+                            "MTP speculative decoding crashed on the first decode "
+                            "under tensor parallelism; retrying without it."
+                        )
                 # Any MTP request can abort the server: a separate drafter
                 # (Gemma) on a binary that predates its arch, or an embedded
                 # head (Qwen) the binary cannot build. Retry once with the
@@ -5642,25 +5941,39 @@ class LlamaCppBackend:
                         self._speculative_type = "default"
                         _mtp_active_for_launched_server = False
 
-                # A vision GGUF launched with --mmproj can abort when the
-                # installed llama.cpp is too old for the model's projector
-                # ("Unknown projector type"); in that one case retry once
-                # text-only rather than failing the whole load.
+                # A too-old llama.cpp can reject a model's --mmproj projector
+                # (format message or a bare SIGSEGV); retry once text-only.
                 if not healthy:
                     out = "\n".join(self._stdout_lines[-50:])
+                    # Read the crash code before _kill_process() clears _process.
+                    _crash_rc = self._process.poll() if self._process is not None else None
                     self._kill_process()
-                    if launched_with_mmproj and self._is_projector_incompatibility(out):
+                    # Skip if a cancel/unload is pending (mirrors the MTP guard).
+                    if (
+                        launched_with_mmproj
+                        and not self._cancel_event.is_set()
+                        and (
+                            self._is_projector_incompatibility(out)
+                            or (
+                                self._is_signal_crash(_crash_rc)
+                                and not self._output_has_nonprojector_diagnostic(out)
+                            )
+                        )
+                    ):
                         logger.warning(
                             "llama-server could not load this model's vision "
                             "projector (--mmproj). The installed llama.cpp build is "
                             "likely too old for it. Loading text-only for this "
                             "session; run 'unsloth studio update' to enable vision."
                         )
-                        cmd = self._strip_mmproj_args(cmd)
+                        cmd = self._strip_mmproj_args(_last_spawn_cmd)
                         self._is_vision = False
                         self._mmproj_has_audio = False
                         self._start_llama_process(cmd, env)
                         if not self._wait_for_health(timeout = 600.0):
+                            # Read the exit code before _kill_process() clears it, so
+                            # an OS-killed text-only retry still gets the OOM message.
+                            _retry_rc = self._process.poll() if self._process is not None else None
                             self._kill_process()
                             raise RuntimeError(
                                 "Vision projector incompatible with this llama.cpp "
@@ -5669,6 +5982,7 @@ class LlamaCppBackend:
                                     "\n".join(self._stdout_lines[-50:]),
                                     gguf_path,
                                     self._model_identifier,
+                                    _retry_rc,
                                 )
                             )
                     else:
@@ -5677,6 +5991,7 @@ class LlamaCppBackend:
                                 out,
                                 gguf_path,
                                 self._model_identifier,
+                                _crash_rc,
                             )
                         )
 
@@ -6177,6 +6492,7 @@ class LlamaCppBackend:
             self._supports_reasoning = False
             self._reasoning_always_on = False
             self._reasoning_style = "enable_thinking"
+            self._reasoning_effort_levels = []
             self._reasoning_default = True
             self._supports_preserve_thinking = False
             self._supports_tools = False
@@ -7082,6 +7398,38 @@ class LlamaCppBackend:
         finally:
             _cancel_closed.set()
 
+    def _respawn_if_dead(self) -> bool:
+        """Relaunch the llama-server if its process has exited.
+
+        A loaded chat model can be SIGKILL'd mid-session (usually GPU/RAM pressure
+        from a training run on the same box), leaving a defunct process while
+        ``is_loaded`` still reads True. Replay the last ``load_model`` call to
+        recover, returning True once healthy. Serialised on ``_respawn_lock`` so
+        many generations hitting the dead server trigger at most one reload.
+        """
+        with self._respawn_lock:
+            proc = self._process
+            if proc is None:
+                return False
+            if proc.poll() is None:
+                # Process is alive: either a concurrent caller already respawned
+                # it (healthy), or this connection error wasn't a dead server.
+                return self._healthy
+            kwargs = self._last_load_kwargs
+            if not kwargs:
+                return False
+            logger.warning(
+                f"llama-server for '{self._model_identifier}' exited "
+                f"(code {proc.returncode}); respawning to recover the session"
+            )
+            with self._lock:
+                self._healthy = False
+            try:
+                return bool(self.load_model(**kwargs))
+            except Exception as exc:
+                logger.error(f"Failed to respawn llama-server: {exc}")
+                return False
+
     def generate_chat_completion(
         self,
         messages: list[dict],
@@ -7099,6 +7447,7 @@ class LlamaCppBackend:
         reasoning_effort: Optional[str] = None,
         preserve_thinking: Optional[bool] = None,
         seed: Optional[int] = None,
+        _allow_respawn_retry: bool = True,
     ) -> Generator[Union[str, dict], None, None]:
         """
         Send a chat completion to llama-server and stream tokens back.
@@ -7265,8 +7614,36 @@ class LlamaCppBackend:
                         }
 
         except httpx.ConnectError as e:
-            # Server already down (e.g. crashed on a prior request): recover MTP.
-            self._maybe_recover_from_mtp_crash(e)
+            # Server already down. If this was an MTP+tensor crash, recover by
+            # reloading without MTP (scheduled in the background) and fail this
+            # request. Otherwise the server was likely SIGKILL'd by GPU pressure
+            # from a concurrent training run: respawn the same config and retry the
+            # generation once (bounded by the private flag, no duplicate output).
+            if self._maybe_recover_from_mtp_crash(e):
+                raise RuntimeError("Lost connection to llama-server")
+            if _allow_respawn_retry and not cumulative and self._respawn_if_dead():
+                logger.warning(
+                    "llama-server was unreachable; respawned it and retrying the generation"
+                )
+                yield from self.generate_chat_completion(
+                    messages,
+                    image_b64 = image_b64,
+                    temperature = temperature,
+                    top_p = top_p,
+                    top_k = top_k,
+                    min_p = min_p,
+                    max_tokens = max_tokens,
+                    repetition_penalty = repetition_penalty,
+                    presence_penalty = presence_penalty,
+                    stop = stop,
+                    cancel_event = cancel_event,
+                    enable_thinking = enable_thinking,
+                    reasoning_effort = reasoning_effort,
+                    preserve_thinking = preserve_thinking,
+                    seed = seed,
+                    _allow_respawn_retry = False,
+                )
+                return
             raise RuntimeError("Lost connection to llama-server")
         except Exception as e:
             if cancel_event is not None and cancel_event.is_set():
@@ -8371,7 +8748,7 @@ class LlamaCppBackend:
                 try:
                     # llama-server's /apply-template renders tool declarations
                     # into the prompt when ``tools`` is supplied, so pass them
-                    # through — otherwise tool-schema tokens go uncounted.
+                    # through, otherwise tool-schema tokens go uncounted.
                     template_body = {"messages": template_messages}
                     if tools:
                         template_body["tools"] = tools
