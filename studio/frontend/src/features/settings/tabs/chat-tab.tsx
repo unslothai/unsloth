@@ -308,7 +308,7 @@ export function ChatTab() {
               Off: opens Run settings to customize, then load.
               <br />
               The gear always opens Run settings:{" "}
-              <span className="inline-flex items-center gap-3 align-middle">
+              <span className="ml-2 inline-flex items-center gap-3 align-middle">
                 <span className="font-mono text-xs text-foreground">
                   Q4_K_M
                 </span>
