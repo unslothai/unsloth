@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import type { ChatSearch } from "@/app/routes/chat";
 import {
   type DeletedModelRef,
   type ExternalModelOption,
@@ -36,7 +35,7 @@ import {
   LayoutAlignRightIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useNavigate, useRouterState, useSearch } from "@tanstack/react-router";
+import { useNavigate } from "@tanstack/react-router";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import type { PanelImperativeHandle } from "react-resizable-panels";
 import {
@@ -83,7 +82,11 @@ import {
   providerSupportsBuiltinWebFetch,
   providerSupportsBuiltinWebSearch,
 } from "./provider-capabilities";
-import { ChatRuntimeProvider } from "./runtime-provider";
+import {
+  ChatActiveContext,
+  ChatRuntimeProvider,
+  useChatActive,
+} from "./runtime-provider";
 import {
   type CompareHandle,
   type CompareHandles,
@@ -522,6 +525,7 @@ const LoraCompareContent = memo(function LoraCompareContent({
   const handlesRef = useRef<Record<string, CompareHandle>>({});
   const [baseThreadId, setBaseThreadId] = useState<string>();
   const [loraThreadId, setLoraThreadId] = useState<string>();
+  const active = useChatActive();
 
   const compareRunning = useChatRuntimeStore(
     (s) => Object.keys(s.runningByThreadId).length > 0,
@@ -550,12 +554,16 @@ const LoraCompareContent = memo(function LoraCompareContent({
     <CompareShell
       handlesRef={handlesRef}
       composer={
-        <SharedComposer
-          handlesRef={handlesRef}
-          onExitCompare={onExitCompare}
-          model1ThreadId={baseThreadId}
-          model2ThreadId={loraThreadId}
-        />
+        active ? (
+          <SharedComposer
+            handlesRef={handlesRef}
+            onExitCompare={onExitCompare}
+            model1ThreadId={baseThreadId}
+            model2ThreadId={loraThreadId}
+          />
+        ) : (
+          <></>
+        )
       }
     >
       <>
@@ -622,6 +630,9 @@ function GeneralCompareHeader({
   deleteDisabled?: boolean;
   side: "left" | "right";
 }): ReactElement {
+  // Controlled so the body-portaled popover can't linger over another tab off-route.
+  const active = useChatActive();
+  const [selectorOpen, setSelectorOpen] = useState(false);
   return (
     <div
       className={cn(
@@ -640,6 +651,8 @@ function GeneralCompareHeader({
         deleteDisabled={deleteDisabled}
         variant="ghost"
         className="max-w-[80%] !h-[34px]"
+        open={active && selectorOpen}
+        onOpenChange={(open) => setSelectorOpen(active && open)}
       />
     </div>
   );
@@ -673,6 +686,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
 
   const globalCheckpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const globalGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
+  const active = useChatActive();
   const compareRunning = useChatRuntimeStore(
     (s) => Object.keys(s.runningByThreadId).length > 0,
   );
@@ -730,14 +744,18 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
     <CompareShell
       handlesRef={handlesRef}
       composer={
-        <SharedComposer
-          handlesRef={handlesRef}
-          model1={model1}
-          model2={model2}
-          onExitCompare={onExitCompare}
-          model1ThreadId={model1ThreadId}
-          model2ThreadId={model2ThreadId}
-        />
+        active ? (
+          <SharedComposer
+            handlesRef={handlesRef}
+            model1={model1}
+            model2={model2}
+            onExitCompare={onExitCompare}
+            model1ThreadId={model1ThreadId}
+            model2ThreadId={model2ThreadId}
+          />
+        ) : (
+          <></>
+        )
       }
     >
       <>
@@ -1021,11 +1039,31 @@ function ProjectLanding({
   );
 }
 
-export function ChatPage(): ReactElement {
-  const search = useSearch({ from: "/chat" });
+export type ChatSearch = {
+  thread?: string;
+  compare?: string;
+  new?: string;
+  project?: string;
+};
+
+export function validateChatSearch(search: Record<string, unknown>): ChatSearch {
+  return {
+    thread: typeof search.thread === "string" ? search.thread : undefined,
+    compare: typeof search.compare === "string" ? search.compare : undefined,
+    new: typeof search.new === "string" ? search.new : undefined,
+    project: typeof search.project === "string" ? search.project : undefined,
+  };
+}
+
+// `search` comes from RootLayout (not useSearch) so ChatPage stays mounted off-route
+// (keeping an in-flight generation alive), frozen to the last /chat search. `active`
+// is false off-route: close body-portaled surfaces and stop route-specific listeners
+// that would otherwise bleed over the visible tab.
+export function ChatPage({
+  search,
+  active,
+}: { search: ChatSearch; active: boolean }): ReactElement {
   const navigate = useNavigate();
-  const pathname = useRouterState({ select: (s) => s.location.pathname });
-  const isCurrentChatRoute = pathname.startsWith("/chat");
 
   const settingsOpen = useChatRuntimeStore((s) => s.settingsPanelOpen);
   const setSettingsOpen = useChatRuntimeStore((s) => s.setSettingsPanelOpen);
@@ -1082,6 +1120,9 @@ export function ChatPage(): ReactElement {
   }, [hydratePersistedSettings]);
 
   useEffect(() => {
+    // Skip while off-route: ChatPage stays mounted, and toast+navigate here would
+    // yank the user back to chat from whatever tab they're on.
+    if (!active) return;
     const threadId = search.thread;
     if (!threadId) return;
 
@@ -1110,7 +1151,7 @@ export function ChatPage(): ReactElement {
     return () => {
       canceled = true;
     };
-  }, [navigate, search.thread]);
+  }, [active, navigate, search.thread]);
 
   const [modelSelectorOpen, setModelSelectorOpen] = useState(false);
   const [modelSelectorLocked, setModelSelectorLocked] = useState(false);
@@ -1622,7 +1663,7 @@ export function ChatPage(): ReactElement {
     onAutoLoad: handleNativeModelPickerAutoLoad,
   });
   const nativeModelDropState = useNativeModelDrop({
-    enabled: view.mode === "single",
+    enabled: active && view.mode === "single",
     nativePathLeasesSupported,
     hasActiveModel,
     isModelLoading: Boolean(loadingModel) || modelLoading,
@@ -2078,6 +2119,9 @@ export function ChatPage(): ReactElement {
   }, [refresh, refreshLocalModels]);
 
   useEffect(() => {
+    // ChatPage no longer remounts on navigation, so re-check the handoff whenever
+    // we return to /chat (e.g. from the training progress "compare in chat" action).
+    if (!active) return;
     const handoff = getTrainingCompareHandoff();
     if (!handoff) return;
     console.info("[chat-handoff] received", handoff);
@@ -2139,7 +2183,7 @@ export function ChatPage(): ReactElement {
     return () => {
       canceled = true;
     };
-  }, []);
+  }, [active, navigate]);
 
   const tourSteps = useMemo(
     () =>
@@ -2184,20 +2228,20 @@ export function ChatPage(): ReactElement {
       (view.mode === "compare" || artifactSurface === "overlay"),
   );
 
-  if (!isCurrentChatRoute) {
-    return (
-      <div className="flex min-h-0 min-w-0 flex-1 basis-0 bg-background" />
-    );
-  }
-
   return (
+    // Provides `active` to ChatRuntimeProvider (drops the message views/composers
+    // while off-route, keeping the runtime alive) and to the compare chrome.
+    <ChatActiveContext.Provider value={active}>
     <div className="flex min-h-0 min-w-0 flex-1 basis-0 bg-background overflow-hidden">
-      <GuidedTour {...tour.tourProps} />
-      {/* Single app-level mount for the Bypass Permissions warning. It is driven
+      {/* Portaled surfaces render to document.body, escaping the parent's hidden
+          wrapper, so gate them on `active` to keep them off other tabs. */}
+      {active && <GuidedTour {...tour.tourProps} />}
+      {/* Single app-level mount for the Bypass permissions warning. It is driven
           by global store state, so it must live at one stable root (not inside a
           Composer) -- otherwise Compare mode's multiple composers would each
-          render their own copy and the shared-composer menu would have none. */}
-      <BypassPermissionsConfirmDialog />
+          render their own copy and the shared-composer menu would have none. It
+          also portals to body, so gate it on `active` like the tour above. */}
+      {active && <BypassPermissionsConfirmDialog />}
       <div className="relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
         <NativeModelDropOverlay state={nativeModelDropState} />
         {/* Fade under the top bar so messages dissolve as they scroll
@@ -2233,7 +2277,7 @@ export function ChatPage(): ReactElement {
                 onModelsChange={refreshModelLists}
                 deleteDisabled={modelOperationInProgress}
                 variant="ghost"
-                open={modelSelectorOpen}
+                open={active && modelSelectorOpen}
                 onOpenChange={handleModelSelectorOpenChange}
                 triggerDataTour="chat-model-selector"
                 contentDataTour="chat-model-selector-popover"
@@ -2384,8 +2428,14 @@ export function ChatPage(): ReactElement {
             items={currentProjectItems}
           />
         ) : view.mode === "single" ? (
+          // Keyed by project only (not thread / new-chat nonce) so switching threads or
+          // starting a New Chat reuses the same provider and switches in place. This keeps
+          // an in-flight generation streaming in the background (assistant-ui keeps every
+          // alive thread's runtime mounted) instead of remounting the provider and cutting
+          // it off; returning to that thread reattaches the live run rather than reloading
+          // a half-saved one.
           <SingleContent
-            key={view.threadId ?? view.newThreadNonce ?? "single"}
+            key={view.projectId ?? "single"}
             threadId={view.threadId}
             newThreadNonce={view.newThreadNonce}
             projectId={view.projectId}
@@ -2408,7 +2458,7 @@ export function ChatPage(): ReactElement {
           />
         )}
 
-        {showArtifactOverlay && selectedArtifact ? (
+        {active && showArtifactOverlay && selectedArtifact ? (
           <ArtifactSurface
             artifact={selectedArtifact}
             variant="overlay"
@@ -2418,7 +2468,7 @@ export function ChatPage(): ReactElement {
       </div>
 
       <ChatSettingsPanel
-        open={settingsOpen}
+        open={active && settingsOpen}
         onOpenChange={(open) => {
           setSettingsOpen(open);
           // Closing the sheet abandons a staged (not-yet-loaded) pick: cancel its
@@ -2494,5 +2544,6 @@ export function ChatPage(): ReactElement {
         }
       />
     </div>
+    </ChatActiveContext.Provider>
   );
 }

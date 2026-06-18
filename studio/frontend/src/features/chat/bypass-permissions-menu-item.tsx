@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { ShieldOffIcon } from "lucide-react";
-
+import { ShieldBanIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
 import {
@@ -19,7 +18,7 @@ import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { Tick02Icon } from "@/lib/tick-icon";
 
-// "Bypass Permissions" entry for the composer "+" -> More menu. Mirrors the
+// "Bypass permissions" entry for the composer "+" -> More menu. Mirrors the
 // settings toggle: enabling demands the danger warning, disabling is immediate.
 // The menu closes normally on select (no preventDefault) -- the warning dialog
 // lives outside the menu (BypassPermissionsConfirmDialog, mounted once at the
@@ -36,9 +35,7 @@ export function BypassPermissionsMenuItem() {
 
   return (
     <DropdownMenuItem
-      className={
-        bypassPermissions ? "text-destructive font-medium" : undefined
-      }
+      className={bypassPermissions ? "text-bypass font-medium" : undefined}
       onSelect={() => {
         if (bypassPermissions) {
           setBypassPermissions(false);
@@ -50,8 +47,8 @@ export function BypassPermissionsMenuItem() {
         }
       }}
     >
-      <ShieldOffIcon />
-      Bypass Permissions
+      <HugeiconsIcon icon={ShieldBanIcon} strokeWidth={2} />
+      Bypass permissions
       {bypassPermissions ? (
         <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="ml-auto" />
       ) : null}
@@ -74,9 +71,9 @@ export function BypassPermissionsConfirmDialog() {
     <AlertDialog open={open} onOpenChange={setOpen}>
       <AlertDialogContent size="sm">
         <AlertDialogHeader>
-          <AlertDialogTitle>Enable Bypass Permissions?</AlertDialogTitle>
+          <AlertDialogTitle>Enable Bypass permissions?</AlertDialogTitle>
           <AlertDialogDescription>
-            Bypass Permissions is dangerous since the AI model might delete,
+            Bypass permissions is dangerous since the AI model might delete,
             corrupt your machine, and or cause real world damage to you or the
             world - only accept if you are certain
           </AlertDialogDescription>
