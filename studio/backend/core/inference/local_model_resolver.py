@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 
-@dataclass(frozen=True)
+@dataclass(frozen = True)
 class _LocalGgufEntry:
     loader_id: str
     variants: tuple[str, ...]  # local quant labels; () for a standalone .gguf
