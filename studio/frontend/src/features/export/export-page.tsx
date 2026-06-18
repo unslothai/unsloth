@@ -136,8 +136,20 @@ export function ExportPage() {
   const debouncedModelQuery = useDebouncedValue(modelInput);
   const debouncedHfToken = useDebouncedValue(hfToken, 500);
 
-  const [exportMethod, setExportMethod] = useState<ExportMethod | null>(null);
-  const [quantLevels, setQuantLevels] = useState<string[]>([]);
+  // Seed the method + quants from a live run so that navigating away and back
+  // (which remounts this page) keeps the method card selected and the run panel
+  // showing its logs/progress. The run itself lives in the global store; only
+  // this form state is local and would otherwise reset to null on remount.
+  const [exportMethod, setExportMethod] = useState<ExportMethod | null>(() => {
+    const s = useExportRuntimeStore.getState();
+    return isExportPanelActive(s) && s.summary ? s.summary.method : null;
+  });
+  const [quantLevels, setQuantLevels] = useState<string[]>(() => {
+    const s = useExportRuntimeStore.getState();
+    return isExportPanelActive(s) && s.summary?.method === "gguf"
+      ? s.summary.quantLevels
+      : [];
+  });
   // Whether the inline export panel is expanded. The panel also shows itself
   // whenever a run is active/terminal (see `panelActive`), so it survives
   // navigation even though this local flag resets on remount.

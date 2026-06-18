@@ -162,10 +162,16 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
   const isTerminal =
     run.phase === "success" || run.phase === "error" || run.phase === "canceled";
   const showConfig = run.phase === "idle";
+  // Gate the log area on the active run's method (from the store) as well as the
+  // local form selection, so it stays visible after navigating away and back
+  // (the form `exportMethod` resets on remount, but the run does not).
+  const panelMethod = run.summary?.method ?? exportMethod;
   const showLogPanel =
-    exportMethod === "merged" ||
-    exportMethod === "gguf" ||
-    exportMethod === "lora";
+    isExporting ||
+    run.logLines.length > 0 ||
+    panelMethod === "merged" ||
+    panelMethod === "gguf" ||
+    panelMethod === "lora";
 
   const elapsedSeconds = useElapsedSeconds(run.startedAt, isExporting);
 
