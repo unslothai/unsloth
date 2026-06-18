@@ -1551,13 +1551,16 @@ class LlamaCppBackend:
             if self._reasoning_style == "enable_thinking_effort":
                 # GLM-5.2-style: enable_thinking gates thinking on/off, and the
                 # reasoning_effort level (e.g. 'high' | 'max') is only meaningful
-                # while thinking is on. Disabling is enable_thinking=false; we
-                # never coerce off into a 'low' effort the way gpt-oss does
-                # (those models genuinely cannot disable).
-                if enable_thinking is not None:
-                    kwargs["enable_thinking"] = enable_thinking
+                # while thinking is on. Disabling is enable_thinking=false; a raw
+                # API caller can also disable via the OpenAI-style
+                # reasoning_effort="none" sentinel. We never coerce off into a
+                # 'low' effort the way gpt-oss does (those models genuinely
+                # cannot disable).
+                thinking_off = enable_thinking is False or reasoning_effort == "none"
+                if enable_thinking is not None or reasoning_effort == "none":
+                    kwargs["enable_thinking"] = not thinking_off
                 if (
-                    enable_thinking is not False
+                    not thinking_off
                     and reasoning_effort in self._reasoning_effort_levels
                 ):
                     kwargs["reasoning_effort"] = reasoning_effort
