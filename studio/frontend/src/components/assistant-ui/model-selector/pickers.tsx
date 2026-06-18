@@ -2965,7 +2965,7 @@ export function HubModelPicker({
             <button
               type="button"
               onClick={onEject}
-              className="pointer-events-auto inline-flex items-center justify-center gap-2 rounded-md px-3 py-2 text-[13px] text-destructive transition-colors hover:bg-destructive/10"
+              className="pointer-events-auto inline-flex items-center justify-center gap-2 rounded-md bg-destructive/10 px-3 py-2 text-[13px] text-destructive shadow-sm transition-colors hover:bg-destructive/20"
               title="Eject model"
             >
               <HugeiconsIcon icon={RemoveCircleIcon} className="size-3.5" />
