@@ -337,6 +337,9 @@ export function AppSidebar() {
   const [pinnedOpen, setPinnedOpen] = useState(true);
   const storeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const setActiveThreadId = useChatRuntimeStore((s) => s.setActiveThreadId);
+  const anyChatRunning = useChatRuntimeStore((s) =>
+    Object.values(s.runningByThreadId).some(Boolean),
+  );
   const activeThreadId = isChatRoute
     ? (search.thread as string | undefined) ??
       (search.compare as string | undefined) ??
@@ -354,6 +357,12 @@ export function AppSidebar() {
   const setSelectedHistoryRunId = useTrainingRuntimeStore((s) => s.setSelectedHistoryRunId);
   // Running or starting up. Drives the Train spinner + New Chat / Return to Chat swap.
   const trainingInProgress = useTrainingRuntimeStore((s) => s.isTrainingRunning || s.isStarting);
+  // On the Train tab, return to the live chat (preserving an in-flight generation)
+  // instead of starting a new one, whenever a chat is running or its thread is still
+  // active, or training is in progress.
+  const showReturnToChat =
+    isStudioRoute &&
+    (trainingInProgress || anyChatRunning || storeThreadId != null);
   // The Train-page status poll doesn't run off-route; keep state fresh so the spinner
   // clears even if a run finishes while the user is on another tab.
   useTrainingCompletionWatch();
@@ -975,7 +984,7 @@ export function AppSidebar() {
             <NavItem
               icon={PencilEdit02Icon}
               label={
-                trainingInProgress && isStudioRoute
+                showReturnToChat
                   ? t("shell.navigation.returnToChat")
                   : t("shell.navigation.newChat")
               }
@@ -986,7 +995,7 @@ export function AppSidebar() {
                 !search.project
               }
               onClick={() => {
-                if (trainingInProgress && isStudioRoute) {
+                if (showReturnToChat) {
                   navigate({ to: "/chat" });
                   closeMobileIfOpen();
                   return;
