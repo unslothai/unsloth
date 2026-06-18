@@ -35,6 +35,21 @@ from typing import Optional, Dict, Any
 logger = get_logger(__name__)
 
 
+# ── GPU index ordering ──────────────────────────────────────────────────────
+# CUDA defaults to CUDA_DEVICE_ORDER=FASTEST_FIRST, numbering GPUs by compute
+# performance. nvidia-smi -- and every free-VRAM probe in Studio -- numbers GPUs
+# by PCI bus id instead. On a mixed-GPU host (e.g. an RTX 5090 alongside an RTX
+# PRO 6000) the two orderings disagree, so an index picked from nvidia-smi data
+# ("the emptiest card is GPU 1") gets written into CUDA_VISIBLE_DEVICES and then
+# reinterpreted by CUDA against FASTEST_FIRST -- landing the model on a different
+# physical GPU than the one selected. Pinning PCI_BUS_ID makes torch, nvidia-smi,
+# and CUDA_VISIBLE_DEVICES share a single index space, matching what users see in
+# `nvidia-smi -L`. Set at import (before any torch.cuda call latches the order
+# at context creation) and inherited by child processes, since the llama-server
+# and spawn workers copy os.environ. setdefault so an explicit user override wins.
+os.environ.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
+
+
 # ========== Device Enum ==========
 
 
@@ -91,6 +106,40 @@ def _has_mlx() -> bool:
         return False
 
 
+def _print_cuda_device_list(is_rocm: bool) -> None:
+    """List every visible CUDA/ROCm GPU with its index at startup.
+
+    The "Hardware detected" banner names only device 0, which hides the other
+    cards on a multi-GPU host. This lists the full visible set in CUDA-ordinal
+    order, matching `nvidia-smi -L` when no CUDA_VISIBLE_DEVICES mask is set
+    (under a mask the indices are visible ordinals, not physical PCI ids).
+    CUDA_DEVICE_ORDER governs only CUDA, so it is shown for CUDA but not ROCm.
+    No-ops on single-GPU hosts and never raises -- it is purely informational.
+    """
+    try:
+        import torch
+
+        count = torch.cuda.device_count()
+        if count <= 1:
+            return
+        if is_rocm:
+            header = f"ROCm devices ({count}):"
+        else:
+            order = os.environ.get("CUDA_DEVICE_ORDER", "default")
+            header = f"CUDA devices ({count}, CUDA_DEVICE_ORDER={order}):"
+        lines = [header]
+        for i in range(count):
+            try:
+                name = torch.cuda.get_device_properties(i).name
+            except Exception as e:
+                logger.debug("CUDA device %d property probe failed: %s", i, e)
+                name = "<unavailable>"
+            lines.append(f"  [{i}] {name}")
+        print("\n".join(lines))
+    except Exception:
+        return  # purely informational; never disrupt startup
+
+
 def detect_hardware() -> DeviceType:
     """
     Detect the best compute device and set the module-level DEVICE global.
@@ -112,7 +161,11 @@ def detect_hardware() -> DeviceType:
         if torch.cuda.is_available():
             DEVICE = DeviceType.CUDA
             CHAT_ONLY = False
-            device_name = torch.cuda.get_device_properties(0).name
+            try:
+                device_name = torch.cuda.get_device_properties(0).name
+            except Exception as e:
+                logger.debug("CUDA device 0 property probe failed: %s", e)
+                device_name = "<unavailable>"
 
             # Distinguish ROCm from CUDA for display only (DeviceType stays CUDA).
             # AMD SDK wheels don't set torch.version.hip, so fall back to __version__.
@@ -123,6 +176,7 @@ def detect_hardware() -> DeviceType:
                 print(f"Hardware detected: ROCm (HIP {_hip_label}) -- {device_name}")
             else:
                 print(f"Hardware detected: CUDA -- {device_name}")
+            _print_cuda_device_list(IS_ROCM)
             return DEVICE
 
     # --- XPU: Intel GPU ---
@@ -1057,10 +1111,18 @@ def _get_local_weight_size_bytes(model_name: str) -> Optional[int]:
         return None
 
     weight_exts = (".safetensors", ".bin", ".pt", ".pth")
+    # Skip intermediate training checkpoints: a run dir can hold several
+    # checkpoint-*/global_step* snapshots, but export loads only the model at
+    # the root, so counting them would multiply the estimate.
+    skip_prefixes = ("checkpoint-", "global_step")
     total = 0
     for file in model_path.rglob("*"):
-        if file.is_file() and file.suffix in weight_exts:
-            total += file.stat().st_size
+        if not file.is_file() or file.suffix not in weight_exts:
+            continue
+        rel = file.relative_to(model_path)
+        if any(part.startswith(skip_prefixes) for part in rel.parts):
+            continue
+        total += file.stat().st_size
     return total if total > 0 else None
 
 
@@ -1082,14 +1144,22 @@ def _get_hf_safetensors_total_params(
 
 
 def _load_config_for_gpu_estimate(model_name: str, hf_token: Optional[str] = None):
+    # Estimation needs only declarative config.json fields, and this probe runs
+    # on model selection, so read raw config.json (never run auto_map Python) and
+    # expose it as an attribute namespace for downstream getattr access.
     try:
-        from transformers import AutoConfig
-        trust_remote_code = model_name.lower().startswith("unsloth/")
-        return AutoConfig.from_pretrained(
-            model_name,
-            token = hf_token,
-            trust_remote_code = trust_remote_code,
-        )
+        from utils.transformers_version import _load_config_json
+
+        cfg = _load_config_json(model_name, hf_token = hf_token)
+        if cfg is None:
+            return None
+
+        def _to_ns(d):
+            if isinstance(d, dict):
+                return types.SimpleNamespace(**{k: _to_ns(v) for k, v in d.items()})
+            return d
+
+        return _to_ns(cfg)
     except Exception as e:
         logger.warning("Could not load config for '%s': %s", model_name, e)
         return None

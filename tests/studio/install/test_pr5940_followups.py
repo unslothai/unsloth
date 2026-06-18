@@ -1,14 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Tests for the AMD-Windows installer follow-ups (PR #5940):
-
-  * the huggingface_hub validation-model fetch + its urllib fallback,
-  * run_capture's Windows-only amd-smi __COMPAT_LAYER=RunAsInvoker injection,
-  * parity of the name->arch table between install.ps1 and setup.ps1.
-
-Mock-only; no AMD hardware or network required.
-"""
+"""AMD-Windows installer follow-ups (PR #5940): hf-hub validation-model fetch
++ urllib fallback, amd-smi RunAsInvoker injection, name->arch table parity.
+Mock-only; no AMD hardware or network required."""
 
 import importlib.util
 import re
@@ -21,8 +16,7 @@ import pytest
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[3]
 
-# install_llama_prebuilt.py is self-contained (stdlib + optional filelock), so it
-# loads without the studio backend on sys.path.
+# install_llama_prebuilt.py is self-contained, so it loads without the studio backend.
 _PREBUILT_PATH = PACKAGE_ROOT / "studio" / "install_llama_prebuilt.py"
 _SPEC = importlib.util.spec_from_file_location(
     "studio_install_llama_prebuilt_pr5940", _PREBUILT_PATH
@@ -151,8 +145,7 @@ def test_radeon_8060s_resolves_to_gfx1151():
 
 
 def _sh_name_arch_rows(text, var = "_gpu_disp_gfx"):
-    """Parse a bash `case "$..._mkt" in ... ) <var>="gfxNNNN"` name->arch
-    table into [(substr_tokens, arch), ...] preserving order."""
+    """Parse a bash name->arch case table into ordered [(substr_tokens, arch), ...]."""
     rows = []
     for line in text.splitlines():
         m = re.search(var + r'="(gfx[0-9a-z]+)"', line)
@@ -172,9 +165,8 @@ def _sh_resolve(rows, name):
 
 
 def test_install_sh_name_arch_agrees_with_ps_for_strix_and_non_amd():
-    """The bash install.sh name->arch table must agree with the PowerShell
-    source-of-truth for the Strix Halo (gfx1151) vs Strix Point (gfx1150)
-    split, and must never misclassify NVIDIA/Intel as an AMD gfx."""
+    """install.sh name->arch table must match the PowerShell source on the Strix
+    Halo/Point split and never misclassify NVIDIA/Intel as an AMD gfx."""
     sh_rows = _sh_name_arch_rows(_INSTALL_SH.read_text(encoding = "utf-8"))
     ps_rows = _ps_name_arch_rows(_INSTALL_PS1.read_text(encoding = "utf-8"))
     assert sh_rows, "no name->arch case table found in install.sh"
@@ -196,9 +188,8 @@ def test_install_sh_name_arch_agrees_with_ps_for_strix_and_non_amd():
 
 
 def test_setup_sh_name_arch_table_in_sync_with_install_sh():
-    """studio/setup.sh keeps its own copy of the bash name->arch table (over
-    `_setup_gfx`); it must stay row-for-row identical to install.sh's, both in
-    tokens and in match order (order carries the RX 7700S -> gfx1102 rule)."""
+    """studio/setup.sh's name->arch table must stay row-for-row identical to
+    install.sh's (order carries the RX 7700S -> gfx1102 rule)."""
     install_rows = _sh_name_arch_rows(_INSTALL_SH.read_text(encoding = "utf-8"))
     setup_rows = _sh_name_arch_rows(
         (PACKAGE_ROOT / "studio" / "setup.sh").read_text(encoding = "utf-8"),
@@ -209,8 +200,7 @@ def test_setup_sh_name_arch_table_in_sync_with_install_sh():
         "bash name->arch tables drifted:\n"
         f"install.sh={install_rows}\nstudio/setup.sh={setup_rows}"
     )
-    # The historical drift this guards against: Strix Point SKUs must be
-    # gfx1150, and the spaceless RX 7700S must match gfx1102 before gfx1100.
+    # Guards historical drift: Strix Point -> gfx1150, RX 7700S -> gfx1102 (before gfx1100).
     for name, expect in {
         "AMD Radeon 890M Graphics": "gfx1150",
         "AMD Ryzen AI 9 HX 370 w/ Radeon 890M": "gfx1150",
@@ -222,9 +212,8 @@ def test_setup_sh_name_arch_table_in_sync_with_install_sh():
 
 
 # ── amd-smi gating (DiskPart UAC-prompt avoidance) ───────────────────────────
-# On Windows w/o a HIP SDK, amd-smi elevates and pops a UAC/DiskPart prompt
-# RunAsInvoker can't suppress, so _amd_smi_allowed() skips it by default;
-# HIP-SDK hosts and an explicit opt-in keep it.
+# On Windows w/o a HIP SDK, amd-smi pops a UAC/DiskPart prompt RunAsInvoker
+# can't suppress, so _amd_smi_allowed() skips it unless HIP-SDK or opt-in.
 
 
 def _amd_smi_allowed_under(system, hipinfo_present, env):
@@ -248,7 +237,7 @@ def _amd_smi_allowed_under(system, hipinfo_present, env):
 
 
 def test_amd_smi_allowed_on_linux_regardless():
-    # Linux amd-smi does not elevate -> always allowed (no regression on Linux).
+    # Linux amd-smi does not elevate -> always allowed.
     assert _amd_smi_allowed_under("Linux", hipinfo_present = False, env = {}) is True
 
 
@@ -258,8 +247,7 @@ def test_amd_smi_skipped_on_windows_without_hip_sdk():
 
 
 def test_amd_smi_allowed_on_windows_with_hip_sdk():
-    # hipinfo present => amd-smi runs un-elevated, so it is allowed (no regression
-    # for HIP-SDK Windows users, who never saw the prompt).
+    # hipinfo present => amd-smi runs un-elevated, so it is allowed.
     assert _amd_smi_allowed_under("Windows", hipinfo_present = True, env = {}) is True
 
 
@@ -368,8 +356,7 @@ def test_path_inside_venv_resolves_symlinks(tmp_path):
 
 
 def test_ps_installers_gate_amd_smi_on_windows():
-    # Both PowerShell installers must gate amd-smi behind HIP-SDK presence + the
-    # UNSLOTH_ENABLE_AMD_SMI opt-in, mirroring _amd_smi_allowed().
+    # Both PowerShell installers must gate amd-smi like _amd_smi_allowed().
     for ps in (_INSTALL_PS1, _SETUP_PS1):
         text = ps.read_text(encoding = "utf-8")
         assert "UNSLOTH_ENABLE_AMD_SMI" in text, f"{ps.name} missing amd-smi opt-in gate"
@@ -416,17 +403,15 @@ def test_setup_ps1_expands_tilde_for_custom_studio_home_in_venv_probe():
 
 
 def test_install_python_stack_gates_every_amd_smi_spawn():
-    # Regression for the DiskPart UAC prompt: every function that both names the
-    # `amd-smi` command AND spawns a subprocess must gate it behind
-    # _amd_smi_allowed(). The "ROCm torch missing" probe once spawned `amd-smi
-    # list` ungated on Adrenalin-only hosts; not-spawning is the only fix.
+    # Regression for the DiskPart UAC prompt: every function naming `amd-smi`
+    # AND spawning a subprocess must gate it behind _amd_smi_allowed().
     import ast
 
     src = (PACKAGE_ROOT / "studio" / "install_python_stack.py").read_text(encoding = "utf-8")
     tree = ast.parse(src)
 
     def _names_amd_smi_command(node):
-        # Exact "amd-smi"/"amd-smi.exe" constant, not a substring in a log message.
+        # Exact "amd-smi"/"amd-smi.exe" constant, not a substring in a log.
         return any(
             isinstance(n, ast.Constant)
             and isinstance(n.value, str)

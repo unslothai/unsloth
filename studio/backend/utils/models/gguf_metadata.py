@@ -50,6 +50,10 @@ _CACHE_MAX_ENTRIES = 4096
 # keyed by (file cache key, wanted key). None = key absent / file unreadable.
 _BOOL_CACHE: Dict[Tuple[_CacheKey, str], Optional[bool]] = {}
 
+# Native training context length (``{arch}.context_length``). None = absent /
+# unreadable. Lets the UI show the real context ceiling before a model loads.
+_CONTEXT_CACHE: Dict[_CacheKey, Optional[int]] = {}
+
 
 def _cache_key(path: str) -> Optional[_CacheKey]:
     try:
@@ -136,6 +140,92 @@ def _parse_gguf_header(path: str) -> Optional[Dict[str, str]]:
         logger.debug(f"read_gguf_general_metadata: parse failure on {path}: {e}")
         return None
     return out
+
+
+def read_gguf_context_length(path: str) -> Optional[int]:
+    """Return the GGUF's native training context length (``{arch}.context_length``),
+    or ``None`` if missing/unreadable/not a GGUF. Cached by (path, mtime, size).
+    Lets the UI populate the context slider before the model is loaded."""
+    key = _cache_key(path)
+    if key is None:
+        return None
+    with _CACHE_LOCK:
+        if key in _CONTEXT_CACHE:
+            return _CONTEXT_CACHE[key]
+    result = _parse_gguf_context_length(path)
+    with _CACHE_LOCK:
+        while len(_CONTEXT_CACHE) >= _CACHE_MAX_ENTRIES:
+            try:
+                _CONTEXT_CACHE.pop(next(iter(_CONTEXT_CACHE)))
+            except StopIteration:
+                break
+        _CONTEXT_CACHE[key] = result
+    return result
+
+
+def _parse_gguf_context_length(path: str) -> Optional[int]:
+    # The context key is architecture-namespaced (``llama.context_length`` etc.),
+    # so we learn the key only after reading ``general.architecture``. GGUF writes
+    # general.* before arch.* keys, matching the loader's own parser.
+    ctx_key: Optional[str] = None
+    try:
+        with open(path, "rb") as f:
+            head = f.read(24)
+            if len(head) < 24:
+                return None
+            magic, _version, _tcount, kv_count = struct.unpack("<IIQQ", head)
+            if magic != _GGUF_MAGIC:
+                return None
+
+            for _ in range(kv_count):
+                try:
+                    klen_bytes = f.read(8)
+                    if len(klen_bytes) < 8:
+                        break
+                    klen = struct.unpack("<Q", klen_bytes)[0]
+                    if klen > 1 << 20:  # 1 MB sanity bound
+                        break
+                    kbytes = f.read(klen)
+                    if len(kbytes) < klen:
+                        break
+                    key = kbytes.decode("utf-8", "replace")
+                    vt_bytes = f.read(4)
+                    if len(vt_bytes) < 4:
+                        break
+                    vtype = struct.unpack("<I", vt_bytes)[0]
+
+                    if vtype == 8 and key == "general.architecture":
+                        slen_bytes = f.read(8)
+                        if len(slen_bytes) < 8:
+                            break
+                        slen = struct.unpack("<Q", slen_bytes)[0]
+                        if slen > 1 << 22:  # 4 MB sanity bound
+                            break
+                        sbytes = f.read(slen)
+                        if len(sbytes) < slen:
+                            break
+                        ctx_key = f"{sbytes.decode('utf-8', 'replace')}.context_length"
+                    elif ctx_key is not None and key == ctx_key and vtype in (4, 10):
+                        width = 4 if vtype == 4 else 8
+                        n_bytes = f.read(width)
+                        if len(n_bytes) < width:
+                            break
+                        value = struct.unpack("<I" if vtype == 4 else "<Q", n_bytes)[0]
+                        # A real context length is positive; treat 0/garbage as
+                        # absent so the UI never builds a slider with max < min.
+                        return value if value > 0 else None
+                    else:
+                        if not _skip_gguf_value(f, vtype):
+                            break
+                except (struct.error, UnicodeDecodeError):
+                    break
+    except OSError as e:
+        logger.debug(f"read_gguf_context_length: cannot open {path}: {e}")
+        return None
+    except Exception as e:
+        logger.debug(f"read_gguf_context_length: parse failure on {path}: {e}")
+        return None
+    return None
 
 
 # Strings (8) and arrays (9) are handled inline.

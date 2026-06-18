@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Spinner } from "@/components/ui/spinner";
-import { modelIdsMatch } from "@/features/hub/lib/model-identity";
 import {
   CubeIcon,
   DownloadCircle02Icon,
@@ -10,7 +9,10 @@ import {
 } from "@hugeicons/core-free-icons";
 import type { RefObject } from "react";
 import { useMemo } from "react";
-import { inventoryRowMatches, scoreInventoryRow } from "../lib/inventory-search";
+import {
+  inventoryRowMatches,
+  scoreInventoryRow,
+} from "../lib/inventory-search";
 import type {
   CachedInventoryRow,
   DiscoverRow,
@@ -24,15 +26,32 @@ import {
   NetworkErrorState,
   SkeletonList,
 } from "./catalog-states";
+import { InventoryRow, VirtualRows } from "./models-catalog-rows";
 import {
-  DiscoverModelRow,
-  InventoryRow,
-  VirtualRows,
-} from "./models-catalog-rows";
+  type AllModelsView,
+  type InventorySort,
+  RESULT_CARD_HEIGHT_PX,
+  RESULT_GRID_HEIGHT_PX,
+  RESULT_GRID_ROW_HEIGHT_PX,
+  RESULT_ROW_HEIGHT_PX,
+  RESULT_SPLIT_HEIGHT_PX,
+  RESULT_SPLIT_ROW_HEIGHT_PX,
+  ResultCard,
+  ResultGridRow,
+  ResultSplitRow,
+} from "./models-table";
 
 type InventoryItem =
   | { variant: "cached"; row: CachedInventoryRow }
   | { variant: "local"; row: LocalInventoryRow };
+
+function inventoryItemTitle(item: InventoryItem): string {
+  return item.variant === "cached" ? item.row.repo : item.row.title;
+}
+
+function inventoryItemSize(item: InventoryItem): number {
+  return item.variant === "cached" ? item.row.bytes : 0;
+}
 
 export function InventoryWarningRow({
   isDataset,
@@ -62,13 +81,13 @@ export function InventoryWarningRow({
 
 export function DiscoverList({
   discoverRows,
-  selectedId,
   onSelect,
   isLoading,
   query,
   scrollElement,
+  scrollMargin = 0,
+  suppressEmptyState = false,
   sentinelRef,
-  activeCheckpoint,
   searchError,
   online,
   isDataset,
@@ -76,21 +95,23 @@ export function DiscoverList({
   scannedCount,
   isLoadingMore,
   hasMore,
-  manualFetchAvailable,
   hasActiveFilters,
   onFetchMore,
   onClearFilters,
   onRetry,
   onSwitchDevice,
+  view,
+  selectedId,
 }: {
   discoverRows: DiscoverRow[];
-  selectedId: string | null;
   onSelect: (id: string) => void;
+  selectedId?: string | null;
   isLoading: boolean;
   query: string;
   scrollElement: HTMLDivElement | null;
+  scrollMargin?: number;
+  suppressEmptyState?: boolean;
   sentinelRef: RefObject<HTMLDivElement | null>;
-  activeCheckpoint: string | null;
   searchError: string | null;
   online: boolean;
   isDataset: boolean;
@@ -98,24 +119,84 @@ export function DiscoverList({
   scannedCount: number;
   isLoadingMore: boolean;
   hasMore: boolean;
-  manualFetchAvailable: boolean;
   hasActiveFilters: boolean;
   onFetchMore: () => void;
   onClearFilters: () => void;
   onRetry: () => void;
   onSwitchDevice?: () => void;
+  view: AllModelsView;
 }) {
+  // "two" = two cards per row; "grid" = compact table rows; "split" = one card
+  // per row in the master pane alongside an inline detail view.
+  const isSplit = view === "split";
+  const isCardLike = view === "two" || view === "split";
+  const rowHeight = isSplit
+    ? RESULT_SPLIT_ROW_HEIGHT_PX
+    : isCardLike
+      ? RESULT_ROW_HEIGHT_PX
+      : RESULT_GRID_ROW_HEIGHT_PX;
+  const cellHeight = isSplit
+    ? RESULT_SPLIT_HEIGHT_PX
+    : isCardLike
+      ? RESULT_CARD_HEIGHT_PX
+      : RESULT_GRID_HEIGHT_PX;
+  const columns = view === "two" ? 2 : 1;
+
   return (
     <>
       {online ? (
-        searchError && discoverRows.length === 0 ? (
+        discoverRows.length > 0 ? (
+          <>
+            <VirtualRows
+              items={discoverRows}
+              scrollElement={scrollElement}
+              scrollMargin={scrollMargin}
+              columns={columns}
+              rowHeight={rowHeight}
+              cellHeight={cellHeight}
+              getKey={(row) => row.id}
+              renderRow={(row) =>
+                view === "split" ? (
+                  <ResultSplitRow
+                    row={row}
+                    deviceType={deviceType}
+                    isDataset={isDataset}
+                    selected={row.id === selectedId}
+                    onSelect={onSelect}
+                  />
+                ) : isCardLike ? (
+                  <ResultCard
+                    row={row}
+                    deviceType={deviceType}
+                    isDataset={isDataset}
+                    onSelect={onSelect}
+                  />
+                ) : (
+                  <ResultGridRow
+                    row={row}
+                    deviceType={deviceType}
+                    isDataset={isDataset}
+                    onSelect={onSelect}
+                  />
+                )
+              }
+            />
+            {hasMore && (
+              <DiscoverFetchMoreFooter
+                hasActiveFilters={hasActiveFilters}
+                isLoadingMore={isLoadingMore}
+                onFetchMore={onFetchMore}
+              />
+            )}
+          </>
+        ) : suppressEmptyState ? null : searchError ? (
           <NetworkErrorState
             online={online}
             message={searchError}
             onRetry={onRetry}
             resourceLabel={isDataset ? "datasets" : "models"}
           />
-        ) : hasMore && discoverRows.length === 0 ? (
+        ) : hasMore ? (
           <DiscoverFetchMoreState
             scannedCount={scannedCount}
             hasActiveFilters={hasActiveFilters}
@@ -123,9 +204,9 @@ export function DiscoverList({
             onFetchMore={onFetchMore}
             onClearFilters={onClearFilters}
           />
-        ) : discoverRows.length === 0 && isLoading ? (
+        ) : isLoading ? (
           <SkeletonList />
-        ) : discoverRows.length === 0 ? (
+        ) : (
           <EmptyState
             icon={query.trim() ? FolderSearchIcon : CubeIcon}
             title={
@@ -139,35 +220,8 @@ export function DiscoverList({
                 : "The current filters are excluding every result."
             }
           />
-        ) : (
-          <>
-            <VirtualRows
-              items={discoverRows}
-              scrollElement={scrollElement}
-              getKey={(row) => row.id}
-              renderRow={(row) => (
-                <DiscoverModelRow
-                  row={row}
-                  selected={selectedId === row.id}
-                  active={modelIdsMatch(activeCheckpoint, row.id)}
-                  deviceType={deviceType}
-                  isDataset={isDataset}
-                  onSelect={onSelect}
-                />
-              )}
-            />
-            {hasMore && (
-              <DiscoverFetchMoreFooter
-                scannedCount={scannedCount}
-                manualFetchAvailable={manualFetchAvailable}
-                hasActiveFilters={hasActiveFilters}
-                isLoadingMore={isLoadingMore}
-                onFetchMore={onFetchMore}
-              />
-            )}
-          </>
         )
-      ) : (
+      ) : suppressEmptyState ? null : (
         <NetworkErrorState
           online={online}
           message="Discovery is unavailable while offline."
@@ -191,11 +245,14 @@ export function DownloadedList({
   inventoryError,
   query,
   scrollElement,
+  columns = 1,
   activeCheckpoint,
   activeGgufVariant,
   isDataset,
   inventoryTokens,
   deviceType,
+  compact = false,
+  sort,
   onInventoryChange,
 }: {
   cachedRows: CachedInventoryRow[];
@@ -206,11 +263,15 @@ export function DownloadedList({
   inventoryError: boolean;
   query: string;
   scrollElement: HTMLDivElement | null;
+  columns?: number;
   activeCheckpoint: string | null;
   activeGgufVariant: string | null;
   isDataset: boolean;
   inventoryTokens: readonly string[];
   deviceType: string | null;
+  /** Narrow split master pane: render compact inventory rows. */
+  compact?: boolean;
+  sort: InventorySort;
   onInventoryChange?: () => void;
 }) {
   const inventoryItems = useMemo<InventoryItem[]>(() => {
@@ -218,16 +279,31 @@ export function DownloadedList({
       ...cachedRows.map((row) => ({ variant: "cached" as const, row })),
       ...localRows.map((row) => ({ variant: "local" as const, row })),
     ];
-    if (inventoryTokens.length === 0) return merged;
+    if (inventoryTokens.length > 0) {
+      return merged
+        .map((item, index) => ({
+          item,
+          index,
+          score: scoreInventoryRow(item.row, inventoryTokens),
+        }))
+        .sort((a, b) => b.score - a.score || a.index - b.index)
+        .map((entry) => entry.item);
+    }
+    if (sort === "recent") {
+      return merged;
+    }
     return merged
-      .map((item, index) => ({
-        item,
-        index,
-        score: scoreInventoryRow(item.row, inventoryTokens),
-      }))
-      .sort((a, b) => b.score - a.score || a.index - b.index)
+      .map((item, index) => ({ item, index }))
+      .sort((a, b) =>
+        sort === "name"
+          ? inventoryItemTitle(a.item).localeCompare(
+              inventoryItemTitle(b.item),
+            ) || a.index - b.index
+          : inventoryItemSize(b.item) - inventoryItemSize(a.item) ||
+            a.index - b.index,
+      )
       .map((entry) => entry.item);
-  }, [cachedRows, localRows, inventoryTokens]);
+  }, [cachedRows, localRows, inventoryTokens, sort]);
   const hasInventoryRows = cachedRows.length > 0 || localRows.length > 0;
 
   if (!downloadedReady && !hasInventoryRows) {
@@ -268,6 +344,9 @@ export function DownloadedList({
     <VirtualRows
       items={inventoryItems}
       scrollElement={scrollElement}
+      columns={columns}
+      rowHeight={compact ? RESULT_SPLIT_ROW_HEIGHT_PX : RESULT_GRID_ROW_HEIGHT_PX}
+      cellHeight={compact ? RESULT_SPLIT_HEIGHT_PX : RESULT_GRID_HEIGHT_PX}
       getKey={(item) => `${item.variant}-${item.row.id}`}
       renderRow={(item) => (
         <InventoryRow
@@ -278,6 +357,7 @@ export function DownloadedList({
           isDataset={isDataset}
           dimmed={!inventoryRowMatches(item.row, inventoryTokens)}
           deviceType={deviceType}
+          compact={compact}
           onSelect={onSelect}
           onChange={onInventoryChange}
         />
