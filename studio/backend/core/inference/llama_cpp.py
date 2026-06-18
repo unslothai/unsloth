@@ -1920,7 +1920,7 @@ class LlamaCppBackend:
                     else ordinal
                 )
                 arch_by_id[pid] = _arch.split(":")[0].strip().lower()
-            for _i in list(gpu_indices) if gpu_indices else list(arch_by_id):
+            for _i in list(gpu_indices) if gpu_indices is not None else list(arch_by_id):
                 if arch_by_id.get(_i) in {"gfx1150", "gfx1151"}:
                     return True
         except Exception:
@@ -4185,27 +4185,37 @@ class LlamaCppBackend:
 
     @staticmethod
     def _with_flash_attn_off(cmd: list[str]) -> Optional[list[str]]:
-        """Return cmd with every flash-attention enable flipped to 'off', or None
-        when flash attention is already off / absent (nothing to retry).
-        Flash-attention kernels hard-crash at startup on some ROCm/GPU builds
-        (often in the vision tower); disabling it keeps vision and MTP, so it is
-        the least destructive recovery rung -- tried before dropping either.
-        llama.cpp is last-wins, so EVERY occurrence is flipped (--flash-attn /
-        -fa, space or '=' form): one leftover enable (e.g. from extra_args)
-        would re-crash the retry.
-        """
+        """Return cmd with flash attention forced off, or None when its effective
+        (last-wins) value is already off/absent so there is nothing to retry. FA
+        kernels hard-crash at startup on some ROCm builds; disabling FA keeps
+        vision and MTP, the least destructive rung. A bare --flash-attn/-fa reads
+        as on, so it counts toward the effective value and is neutralised too;
+        every form is flipped in place (length preserved for downstream slices)."""
         out = list(cmd)
-        changed = False
+
+        def explicit(i):
+            nxt = out[i + 1] if i + 1 < len(out) else None
+            return nxt if nxt in ("on", "auto", "off") else None
+
+        effective = None
         for i, tok in enumerate(out):
-            if tok in ("--flash-attn", "-fa") and i + 1 < len(out) and out[i + 1] in ("on", "auto"):
-                out[i + 1] = "off"
-                changed = True
-            elif tok.startswith(("--flash-attn=", "-fa=")):
+            if tok.startswith(("--flash-attn=", "-fa=")):
+                effective = tok.partition("=")[2]
+            elif tok in ("--flash-attn", "-fa"):
+                effective = explicit(i) or "on"
+        if effective not in ("on", "auto"):
+            return None
+        for i, tok in enumerate(out):
+            if tok.startswith(("--flash-attn=", "-fa=")):
                 flag, _, value = tok.partition("=")
                 if value in ("on", "auto"):
                     out[i] = f"{flag}=off"
-                    changed = True
-        return out if changed else None
+            elif tok in ("--flash-attn", "-fa"):
+                if explicit(i) in ("on", "auto"):
+                    out[i + 1] = "off"
+                elif explicit(i) is None:  # bare flag (reads as on) -> explicit off
+                    out[i] = f"{tok}=off"
+        return out
 
     @staticmethod
     def _strip_mmproj_args(cmd: list[str]) -> list[str]:
@@ -4632,7 +4642,6 @@ class LlamaCppBackend:
                         "image input will be disabled for this session"
                     )
                 model_size = None  # set in the fit try; used by the APU RAM guard
-                _apu_ram_size = None  # main+mmproj(+drafter) resident in unified RAM
                 try:
                     gguf_size = self._get_gguf_size_bytes(model_path)
                     # Include GPU-loaded mmproj in the fit budget (#5825).
@@ -4766,7 +4775,6 @@ class LlamaCppBackend:
                     # Drafter offloaded to CPU keeps its weights+KV off the GPU, so
                     # drop it from the budget (an embedded head stays in the model).
                     # Consult the env too: the child honors LLAMA_ARG_N_GPU_LAYERS_DRAFT.
-                    _mtp_draft_for_ram = _mtp_draft_for_budget  # pre-offload path
                     _draft_on_cpu = _extra_args_draft_offloaded_to_cpu(extra_args, env = os.environ)
                     if _draft_on_cpu:
                         _mtp_draft_for_budget = None
@@ -4776,15 +4784,6 @@ class LlamaCppBackend:
                             _mtp_draft_weights = self._get_gguf_size_bytes(_mtp_draft_for_budget)
                         except Exception:
                             _mtp_draft_weights = 0
-                    # A unified-memory APU holds the drafter in system RAM too (even
-                    # CPU-offloaded), so add it when MTP engages; the GPU budget drops it.
-                    _apu_draft_ram = _mtp_draft_weights
-                    if _mtp_draft_for_ram and not _mtp_draft_weights:
-                        try:
-                            _apu_draft_ram = self._get_gguf_size_bytes(_mtp_draft_for_ram)
-                        except Exception:
-                            _apu_draft_ram = 0
-                    _apu_ram_size = model_size + (_apu_draft_ram if _mtp_will_engage else 0)
                     # Draft K/V types (f16 by default; independent extras overrides).
                     _mtp_draft_ck, _mtp_draft_cv = _extra_args_draft_cache_types(extra_args)
 
@@ -5226,11 +5225,11 @@ class LlamaCppBackend:
 
                 # Unified-memory APUs load weights into system RAM (under WSL the VM
                 # cap, not the ROCm-reported VRAM, is the real ceiling); refuse an
-                # oversize load the OS would otherwise kill mid-flight.
+                # oversize load the OS would otherwise kill mid-flight. Base model
+                # only: an optional MTP drafter is dropped by the MTP-drop fallback.
                 if model_size is not None and self._amd_apu_wants_unified_memory(gpu_indices):
                     _ram_msg = self._apu_ram_shortfall_message(
-                        _apu_ram_size if _apu_ram_size is not None else model_size,
-                        self._available_system_memory_mib(),
+                        model_size, self._available_system_memory_mib()
                     )
                     if _ram_msg:
                         raise RuntimeError(_ram_msg)

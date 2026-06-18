@@ -233,6 +233,22 @@ class TestFlashAttnOff:
     def test_none_when_equals_off(self):
         assert _flash_off(["llama-server", "--flash-attn=off"]) is None
 
+    def test_none_when_user_off_wins_last(self):
+        # User appended 'off' after Studio's 'on'; effective (last-wins) is off,
+        # so there is nothing to retry.
+        assert _flash_off(["llama-server", "--flash-attn", "on", "--flash-attn", "off"]) is None
+
+    def test_neutralizes_trailing_bare_flag(self):
+        # A bare --flash-attn reads as on under last-wins; it must be neutralized
+        # too, else the retry re-enables FA and re-crashes.
+        out = _flash_off(["llama-server", "--flash-attn", "on", "--flash-attn"])
+        assert out == ["llama-server", "--flash-attn", "off", "--flash-attn=off"]
+        assert "on" not in out
+
+    def test_bare_flag_only(self):
+        assert _flash_off(["llama-server", "--flash-attn"]) == ["llama-server", "--flash-attn=off"]
+        assert _flash_off(["llama-server", "-fa"]) == ["llama-server", "-fa=off"]
+
 
 class TestNonProjectorDiagnostic:
     """_output_has_nonprojector_diagnostic gates the signal-only text-only retry:

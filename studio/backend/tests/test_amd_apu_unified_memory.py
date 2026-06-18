@@ -49,13 +49,26 @@ def test_apu_unified_memory_gating(monkeypatch, hip, archs, expected):
 
 def test_apu_guard_scopes_to_selected_gpu(monkeypatch):
     # Mixed host: physical id 0 = discrete gfx1100, 1 = gfx1151 APU.
-    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
+    for _m in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
+        monkeypatch.delenv(_m, raising = False)
     monkeypatch.setitem(sys.modules, "torch", _fake_torch("6.2.0", ["gfx1100", "gfx1151"]))
-    # Selecting only the dGPU must not be treated as unified-memory.
+    # Selecting only the dGPU, or an empty selection, must not be unified-memory.
     assert LlamaCppBackend._amd_apu_wants_unified_memory([0]) is False
+    assert LlamaCppBackend._amd_apu_wants_unified_memory([]) is False
     # Selecting the APU, or no selection, does.
     assert LlamaCppBackend._amd_apu_wants_unified_memory([1]) is True
     assert LlamaCppBackend._amd_apu_wants_unified_memory() is True
+
+
+def test_apu_guard_honors_hip_visible_devices_mask(monkeypatch):
+    # ROCm resolves ids via HIP first: the mask exposes only the APU as ordinal 0
+    # but physical id 1, so the selection [1] must still match.
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
+    monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
+    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "1")
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch("6.2.0", ["gfx1151"]))
+    assert LlamaCppBackend._amd_apu_wants_unified_memory([1]) is True
+    assert LlamaCppBackend._amd_apu_wants_unified_memory([0]) is False
 
 
 def test_cpu_no_cuda_returns_false(monkeypatch):
