@@ -221,6 +221,9 @@ _remove_path "$HOME/.unsloth/.cache"
 # Normally pruned after activate, but an interrupted build can leave it behind;
 # removing it lets the rmdir below succeed. No-op in env/custom mode and absent.
 _remove_path "$HOME/.unsloth/.staging"
+# llama.cpp install lock (serializes the shared build); a stray lock keeps
+# ~/.unsloth from being pruned below. No-op in env/custom mode and when absent.
+_remove_path "$HOME/.unsloth/.llama.cpp.install.lock"
 # ROCm-on-WSL helper artifacts (librocdxg build clone + smoke-test venv). No-op
 # where they don't exist; removing them lets the rmdir below succeed.
 _remove_path "$HOME/.unsloth/librocdxg"
@@ -298,7 +301,15 @@ case "$_os" in
                                 Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue
                             } catch { }
                         }
-                    }' >/dev/null 2>&1 || true
+                    }
+                    # Drop the shared Unsloth icon this installer wrote, and the dir
+                    # if it is now empty. A native install also stores its launcher
+                    # there, so the empty-dir guard leaves that case intact (its own
+                    # uninstall.ps1 owns it).
+                    $iconDir = Join-Path $env:LOCALAPPDATA "Unsloth Studio";
+                    $ico = Join-Path $iconDir "unsloth.ico";
+                    if (Test-Path -LiteralPath $ico) { Remove-Item -LiteralPath $ico -Force -ErrorAction SilentlyContinue }
+                    if ((Test-Path -LiteralPath $iconDir) -and -not (Get-ChildItem -LiteralPath $iconDir -Force -ErrorAction SilentlyContinue)) { Remove-Item -LiteralPath $iconDir -Recurse -Force -ErrorAction SilentlyContinue }' >/dev/null 2>&1 || true
             fi
             # Fallback when powershell.exe can't run (interop disabled): remove the
             # WSL .lnk files via drvfs. The "Unsloth Studio (WSL..." name is
@@ -325,6 +336,10 @@ case "$_os" in
                                 done
                             fi
                         done
+                        # Drop the shared icon this installer wrote + the dir if empty.
+                        _icodir="$_udir/AppData/Local/Unsloth Studio"
+                        [ -f "$_icodir/unsloth.ico" ] && rm -f "$_icodir/unsloth.ico" 2>/dev/null || true
+                        [ -d "$_icodir" ] && rmdir "$_icodir" 2>/dev/null || true
                     done
                 done
             fi

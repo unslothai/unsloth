@@ -22,15 +22,24 @@ function Uninstall-UnslothStudio {
         param([string]$Path)
         if ([string]::IsNullOrWhiteSpace($Path)) { return }
         if (-not (Test-Path -LiteralPath $Path)) { return }
-        for ($attempt = 1; $attempt -le 3; $attempt++) {
+        for ($attempt = 1; $attempt -le 4; $attempt++) {
             try {
                 Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop
+            } catch {
+                if ($attempt -lt 4) { Start-Sleep -Milliseconds 700; continue }
+                _Substep "could not remove: $Path ($($_.Exception.Message))" "Yellow"
+                return
+            }
+            # Remove-Item -Recurse can report success yet leave a child behind when
+            # a file is transiently held open (e.g. unsloth.ico locked by Explorer's
+            # icon cache while a shortcut still references it). Verify and retry so
+            # we neither claim "removed" falsely nor orphan the directory.
+            if (-not (Test-Path -LiteralPath $Path)) {
                 _Substep "removed: $Path" "Green"
                 return
-            } catch {
-                if ($attempt -lt 3) { Start-Sleep -Milliseconds 700; continue }
-                _Substep "could not remove: $Path ($($_.Exception.Message))" "Yellow"
             }
+            if ($attempt -lt 4) { Start-Sleep -Milliseconds 700; continue }
+            _Substep "still present (files held open): $Path" "Yellow"
         }
     }
 
@@ -334,6 +343,9 @@ function Uninstall-UnslothStudio {
     if ($defaultLlamaCpp) { _RemovePath $defaultLlamaCpp }
     if ($defaultCache) { _RemovePath $defaultCache }
     if ($defaultStaging) { _RemovePath $defaultStaging }
+    # llama.cpp install lock (serializes the shared build); a stray lock keeps
+    # ~/.unsloth from being pruned below. No-op in env/custom mode and when absent.
+    if ($defaultUnslothHome) { _RemovePath (Join-Path $defaultUnslothHome ".llama.cpp.install.lock") }
     # Drop ~/.unsloth itself, but ONLY if now empty -- never nuke unrelated content.
     if ($defaultUnslothHome -and (Test-Path -LiteralPath $defaultUnslothHome) -and
         -not (Get-ChildItem -LiteralPath $defaultUnslothHome -Force -ErrorAction SilentlyContinue)) {
@@ -361,6 +373,14 @@ function Uninstall-UnslothStudio {
             Stop-Process -Name StartMenuExperienceHost -Force -ErrorAction SilentlyContinue
         }
     } catch { }
+
+    # Re-sweep the data dir: unsloth.ico lives there and Explorer/StartMenuExperience
+    # Host may have held it open while the shortcuts above referenced it as their
+    # icon, leaving the dir behind on the first pass. Now that those shortcuts (and
+    # SMEH) are gone, the handle is released. (A dual native+WSL install can still
+    # hold it via the WSL shortcut, which uninstall.sh removes -- and that script
+    # then drops the leftover icon + empty dir.)
+    if ($defaultDataDir -and (Test-Path -LiteralPath $defaultDataDir)) { _RemovePath $defaultDataDir }
 
     # ── Clean user PATH and registry backup ──
     _Step "Cleaning user PATH and registry..."
