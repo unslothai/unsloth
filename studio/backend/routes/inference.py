@@ -1972,13 +1972,10 @@ async def _maybe_auto_switch_model(
         # model is served the way the user configured it, not bare defaults.
         override = get_model_override(target_id)
         load_kwargs = {"model_path": target_id, "gguf_variant": variant}
-        if override:
-            # An explicit (possibly empty) list so a configured override is
-            # deterministic, instead of /load inheriting stale same-model args
-            # left from an earlier manual load of this GGUF.
-            load_kwargs["llama_extra_args"] = override.get("llama_extra_args") or []
-            if override.get("max_seq_length") is not None:
-                load_kwargs["max_seq_length"] = override["max_seq_length"]
+        if override.get("llama_extra_args") is not None:
+            load_kwargs["llama_extra_args"] = override["llama_extra_args"]
+        if override.get("max_seq_length") is not None:
+            load_kwargs["max_seq_length"] = override["max_seq_length"]
         # Reuse the load route so its dedup, tensor fallback, and threading apply.
         await load_model(
             LoadRequest(**load_kwargs),

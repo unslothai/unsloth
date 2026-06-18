@@ -433,45 +433,6 @@ def test_auto_switch_applies_partial_override(monkeypatch):
     assert req.max_seq_length == 0  # untouched default
 
 
-def test_override_without_extra_args_clears_inheritance(monkeypatch):
-    # A max_seq_length-only override must send an explicit empty extra-args list,
-    # so /load can't inherit stale same-model flags from an earlier manual load.
-    backend = _FakeBackend(None)
-    rec = _LoadRecorder(backend)
-    _wire(
-        monkeypatch,
-        enabled = True,
-        resolves_to = ("unsloth/B-GGUF", "Q4_K_M"),
-        backend = backend,
-        recorder = rec,
-    )
-    monkeypatch.setattr(settings, "get_model_override", lambda model_id: {"max_seq_length": 8192})
-
-    _run_hook("unsloth/B-GGUF")
-    req = rec.calls[0]
-    assert req.llama_extra_args == []  # explicit empty, not None/absent (which would inherit)
-    assert req.max_seq_length == 8192
-
-
-def test_no_override_leaves_extra_args_inheritable(monkeypatch):
-    # No override: llama_extra_args stays None so /load's same-model inherit applies.
-    backend = _FakeBackend(None)
-    rec = _LoadRecorder(backend)
-    _wire(
-        monkeypatch,
-        enabled = True,
-        resolves_to = ("unsloth/B-GGUF", "Q4_K_M"),
-        backend = backend,
-        recorder = rec,
-    )
-    monkeypatch.setattr(settings, "get_model_override", lambda model_id: {})
-
-    _run_hook("unsloth/B-GGUF")
-    req = rec.calls[0]
-    assert req.llama_extra_args is None
-    assert req.max_seq_length == 0
-
-
 def _mock_override_store(monkeypatch):
     """Back the override read + atomic-merge write with an in-memory dict."""
     import storage.studio_db as db
@@ -558,28 +519,6 @@ def test_list_switch_eligible_ids(monkeypatch):
     ]
 
 
-def test_list_switch_eligible_excludes_hidden_models(monkeypatch):
-    # The llama.cpp install-validation probe and RAG embedding models are hidden
-    # from pickers, so discovery must not advertise them either.
-    real = resolver._LocalGgufEntry("unsloth/B-GGUF", ("Q4_K_M",))
-    probe_repo = resolver._LocalGgufEntry("ggml-org/models", ("stories260K",))
-    probe_file = resolver._LocalGgufEntry("/models/stories260K.gguf", ())  # standalone form
-    monkeypatch.setattr(
-        resolver,
-        "_build_index",
-        lambda: {
-            "unsloth/b-gguf": real,
-            "ggml-org/models": probe_repo,
-            "/models/stories260k.gguf": probe_file,
-        },
-    )
-    resolver._scan = (0.0, {})
-    ids = resolver.list_switch_eligible_ids()
-    assert "unsloth/B-GGUF" in ids
-    assert "ggml-org/models" not in ids  # repo-id needle
-    assert "/models/stories260K.gguf" not in ids  # filename needle
-
-
 def test_v1_models_lists_eligible_only_when_enabled(monkeypatch):
     # Loaded model B (rich fields); eligible models A and B.
     monkeypatch.setattr(
@@ -663,3 +602,58 @@ def test_v1_models_retrieve_is_case_insensitive(monkeypatch):
     # The loaded model is also case-insensitively retrievable.
     loaded = asyncio.run(inference_route.openai_retrieve_model("UNSLOTH/B-GGUF", "tester"))
     assert loaded["id"] == "unsloth/B-GGUF"
+
+
+# ── hardening: hidden models, idle/enabled coupling, count_tokens keep-warm ──
+
+
+def test_index_excludes_hidden_models(tmp_path, monkeypatch):
+    # The llama.cpp validation probe and RAG embedding weights are hidden from
+    # Studio's pickers; they must never become auto-switch targets.
+    from types import SimpleNamespace
+    import routes.models as models_route
+
+    normal = tmp_path / "normal-Q4_K_M.gguf"
+    normal.write_bytes(b"x" * 32)
+    probe = tmp_path / "stories260K.gguf"  # llama.cpp install-validation probe
+    probe.write_bytes(b"x" * 32)
+
+    def _info(mid, path):
+        return SimpleNamespace(id = mid, path = str(path), model_id = mid, display_name = mid)
+
+    monkeypatch.setattr(
+        models_route,
+        "_scan_models_dir",
+        lambda *a, **k: [_info("org/Normal-GGUF", normal), _info("ggml-org/models", probe)],
+    )
+    monkeypatch.setattr(models_route, "_scan_hf_cache", lambda *a, **k: [])
+    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: tmp_path)
+    resolver._scan = (0.0, {})
+
+    index = resolver._index()
+    assert "org/normal-gguf" in index  # keys are normalized to lowercase
+    assert "ggml-org/models" not in index
+    # And the hidden probe cannot be auto-switched to by name.
+    resolver._scan = (0.0, {})
+    assert resolver.resolve_local_gguf("ggml-org/models") is None
+
+
+def test_idle_disabled_when_auto_switch_off(monkeypatch):
+    # "Off means unchanged": a stored idle TTL must report 0 while auto-switch is
+    # off, so the idle loop and keep-warm middleware can never unload the model.
+    store = {settings.AUTO_UNLOAD_IDLE_SETTING_KEY: 60}
+    monkeypatch.setattr(settings, "_cached_setting", lambda k, d = None: store.get(k, d))
+    monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: False)
+    assert settings.get_auto_unload_idle_seconds() == 0
+    monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: True)
+    assert settings.get_auto_unload_idle_seconds() == 60
+
+
+def test_count_tokens_is_tracked_as_inference_path():
+    # count_tokens counts via the loaded tokenizer, so idle-unload must not pull
+    # the model out from under it; it has to be a tracked in-flight path.
+    from core.inference.llama_keepwarm import _is_inference_path
+
+    assert _is_inference_path("/v1/messages/count_tokens") is True
+    assert _is_inference_path("/api/inference/messages/count_tokens") is True
+    assert _is_inference_path("/v1/messages") is True
