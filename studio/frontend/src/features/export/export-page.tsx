@@ -25,7 +25,6 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
-import { Switch } from "@/components/ui/switch";
 import { Spinner } from "@/components/ui/spinner";
 import {
   Tooltip,
@@ -37,6 +36,7 @@ import {
   type LocalModelInfo,
   useTrainingConfigStore,
 } from "@/features/training";
+import { confirmRemoteCodeIfNeeded } from "@/features/security";
 import {
   useDebouncedValue,
   useHfModelSearch,
@@ -129,8 +129,6 @@ export function ExportPage() {
     "checkpoint",
   );
   const [modelSource, setModelSource] = useState<"hf" | "local">("hf");
-  const [hfExportTrustRemoteCode, setHfExportTrustRemoteCode] =
-    useState(true);
   const [modelInput, setModelInput] = useState("");
   const [selectedSourceModel, setSelectedSourceModel] = useState<string | null>(
     null,
@@ -490,13 +488,34 @@ export function ExportPage() {
       // 1. Load model source
       if (sourceMode === "checkpoint") {
         if (!checkpointPath) return;
-        await loadCheckpoint({ checkpoint_path: checkpointPath });
+        await loadCheckpoint({
+          checkpoint_path: checkpointPath,
+          hf_token: hfToken || null,
+        });
       } else {
+        // Consent gate for an HF source's custom (auto_map) code: the only way to enable
+        // trust_remote_code here. A local checkpoint the user exported is trusted by default.
+        let trustRemoteCode = modelSource !== "hf";
+        let approvedRemoteCodeFingerprint: string | null = null;
+        const remoteCodeOk = await confirmRemoteCodeIfNeeded({
+          modelName: source,
+          hfToken: hfToken || null,
+          // An HF source can need trust_remote_code via its YAML default with no auto_map
+          // to review; signal it so a YAML-only model does not export with it false.
+          requiresTrustRemoteCode: modelSource === "hf",
+          onApprove: (fingerprint) => {
+            trustRemoteCode = true;
+            approvedRemoteCodeFingerprint = fingerprint;
+          },
+        });
+        if (!remoteCodeOk) return;
+
         await loadCheckpoint({
           checkpoint_path: source,
           load_in_4bit: false,
-          trust_remote_code:
-            modelSource === "hf" ? hfExportTrustRemoteCode : true,
+          trust_remote_code: trustRemoteCode,
+          approved_remote_code_fingerprint: approvedRemoteCodeFingerprint,
+          hf_token: hfToken || null,
         });
       }
 
@@ -578,7 +597,6 @@ export function ExportPage() {
     hfToken,
     privateRepo,
     modelSource,
-    hfExportTrustRemoteCode,
   ]);
 
   // ---- Render ----
@@ -868,43 +886,8 @@ export function ExportPage() {
                               </p>
                             )}
                           </div>
-                          <div className="flex items-center gap-2">
-                            <Switch
-                              id="hf-export-trust-remote-code"
-                              size="sm"
-                              checked={hfExportTrustRemoteCode}
-                              onCheckedChange={setHfExportTrustRemoteCode}
-                              disabled={exporting}
-                            />
-                            <label
-                              htmlFor="hf-export-trust-remote-code"
-                              className="cursor-pointer text-xs font-medium text-muted-foreground hover:text-foreground"
-                            >
-                              Trust remote code
-                            </label>
-                            <Tooltip>
-                              <TooltipTrigger asChild={true}>
-                                <button
-                                  type="button"
-                                  className="text-muted-foreground hover:text-foreground -m-1 inline-flex rounded p-1"
-                                  aria-label="About trust remote code"
-                                >
-                                  <HugeiconsIcon
-                                    icon={InformationCircleIcon}
-                                    className="size-3.5"
-                                  />
-                                </button>
-                              </TooltipTrigger>
-                              <TooltipContent
-                                side="top"
-                                className="max-w-[260px] text-xs"
-                              >
-                                Loads custom Python from the repo if the model
-                                needs it. Turn off if you do not trust the
-                                source.
-                              </TooltipContent>
-                            </Tooltip>
-                          </div>
+                          {/* No persistent "trust remote code" toggle: custom code is
+                              consented per model via the load-time review dialog. */}
                           <div className="flex flex-col gap-1.5">
                             <label className="text-xs font-medium text-muted-foreground">
                               Hugging Face Token (Optional)
