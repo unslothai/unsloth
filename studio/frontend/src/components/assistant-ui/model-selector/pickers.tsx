@@ -433,7 +433,7 @@ function ModelRow({
             <TooltipTrigger asChild={true}>
               <span
                 aria-label="Vision"
-                className="flex size-[18px] shrink-0 items-center justify-center rounded-md border border-border/60 text-indigo-700 dark:text-indigo-300"
+                className="flex h-[18px] shrink-0 items-center justify-center rounded-md border border-border/60 px-1.5 text-indigo-700 dark:text-indigo-300"
               >
                 <HugeiconsIcon
                   icon={ViewIcon}
@@ -451,7 +451,7 @@ function ModelRow({
           <DotTag
             tone="success"
             label="Loaded"
-            className="h-[18px] gap-1 rounded-md px-1"
+            className="h-[18px] gap-1 rounded-md px-1.5"
             dotClassName="size-[5px]"
           />
         )}
@@ -459,7 +459,7 @@ function ModelRow({
           <span
             title="Already downloaded"
             aria-label="Already downloaded"
-            className="flex size-[18px] shrink-0 items-center justify-center rounded-md border border-border/60 text-muted-foreground"
+            className="flex h-[18px] shrink-0 items-center justify-center rounded-md border border-border/60 px-1.5 text-muted-foreground"
           >
             <HugeiconsIcon
               icon={Download01Icon}
@@ -477,7 +477,7 @@ function ModelRow({
           <span className="text-[9px] font-medium !text-amber-400">TIGHT</span>
         )}
         {paramLabel ? (
-          <span className="rounded-md border border-border/60 px-1 py-px text-[10px] font-medium text-muted-foreground tabular-nums">
+          <span className="rounded-md border border-border/60 px-1.5 py-px text-[10px] font-medium text-muted-foreground tabular-nums">
             {paramLabel}
           </span>
         ) : null}
@@ -486,7 +486,7 @@ function ModelRow({
             key={f.label}
             tone={f.tone}
             label={f.label}
-            className="h-[18px] gap-[3px] rounded-md px-1"
+            className="h-[18px] gap-[3px] rounded-md px-1.5"
             dotClassName="size-[5px]"
           />
         ))}
@@ -2965,7 +2965,7 @@ export function HubModelPicker({
             <button
               type="button"
               onClick={onEject}
-              className="pointer-events-auto inline-flex items-center justify-center gap-2 rounded-md bg-popover px-3 py-2 text-[13px] text-destructive shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] transition-colors hover:bg-[color-mix(in_srgb,var(--destructive)_12%,var(--popover))] dark:bg-[var(--sidebar)] dark:shadow-none dark:hover:bg-[color-mix(in_srgb,var(--destructive)_22%,var(--sidebar))]"
+              className="pointer-events-auto inline-flex items-center justify-center gap-2 rounded-md bg-popover px-3 py-2 text-[13px] text-destructive shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] transition-colors hover:bg-[color-mix(in_srgb,var(--destructive)_12%,var(--popover))] dark:bg-[color-mix(in_srgb,var(--foreground)_10%,var(--sidebar))] dark:shadow-none dark:hover:bg-[color-mix(in_srgb,var(--destructive)_22%,var(--sidebar))]"
               title="Eject model"
             >
               <HugeiconsIcon icon={RemoveCircleIcon} className="size-3.5" />
