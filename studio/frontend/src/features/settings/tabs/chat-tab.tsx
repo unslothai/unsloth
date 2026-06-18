@@ -307,25 +307,26 @@ export function ChatTab() {
                 On: Unsloth auto-picks the best settings and loads it.
                 <br />
                 Off: opens Run settings to customize, then load.
-                <br />
-                The gear always opens Run settings:
               </span>
-              <span className="flex items-center gap-2 rounded-md bg-black/[0.03] dark:bg-white/[0.04] px-2.5 py-1.5">
-                <span className="font-mono text-xs text-foreground">
-                  Q4_K_M
-                </span>
-                <span className="text-[9px] font-medium text-green-400">
-                  downloaded
-                </span>
-                <span className="ml-auto text-[10px] text-muted-foreground">
-                  16 GB
-                </span>
-                <span className="flex size-5 items-center justify-center rounded-md bg-black/[0.06] dark:bg-white/[0.08]">
-                  <HugeiconsIcon
-                    icon={Settings02Icon}
-                    strokeWidth={1.75}
-                    className="size-3 text-muted-foreground/80"
-                  />
+              <span className="flex flex-wrap items-center gap-2">
+                <span>The gear always opens Run settings:</span>
+                <span className="flex items-center gap-2 rounded-md bg-black/[0.03] px-2.5 py-1.5 dark:bg-white/[0.04]">
+                  <span className="font-mono text-xs text-foreground">
+                    Q4_K_M
+                  </span>
+                  <span className="text-[9px] font-medium text-green-400">
+                    downloaded
+                  </span>
+                  <span className="text-[10px] text-muted-foreground">
+                    16 GB
+                  </span>
+                  <span className="flex size-5 items-center justify-center rounded-md bg-black/[0.06] dark:bg-white/[0.08]">
+                    <HugeiconsIcon
+                      icon={Settings02Icon}
+                      strokeWidth={1.75}
+                      className="size-3 text-muted-foreground/80"
+                    />
+                  </span>
                 </span>
               </span>
             </span>
