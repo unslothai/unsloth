@@ -67,8 +67,7 @@ def test_emit_raises_when_real_weight_missing_alongside_position_ids():
     with pytest.raises(Exception, match = "some weights are not initialized"):
         handler.emit(
             _record(
-                "['model.vision_model.embeddings.position_ids', "
-                "'model.layers.5.mlp.weight']"
+                "['model.vision_model.embeddings.position_ids', 'model.layers.5.mlp.weight']"
             )
         )
 
