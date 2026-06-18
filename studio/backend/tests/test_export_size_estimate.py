@@ -40,7 +40,7 @@ class TestExportSizeEndpoint(unittest.TestCase):
 
     def setUp(self):
         # Each test starts with a cold cache so memoization doesn't leak.
-        self.models_route._export_size_cached.cache_clear()
+        self.models_route._EXPORT_SIZE_CACHE.clear()
 
     def _call(self, model: str = "unsloth/Qwen3.6-35B-A3B"):
         # Keep id resolution deterministic and offline (no HF cache lookup).
@@ -115,8 +115,22 @@ class TestExportSizeEndpoint(unittest.TestCase):
             first = self._call()
             second = self._call()
         self.assertEqual(first.fp16_bytes, second.fp16_bytes)
-        # Second identical call is served from the lru_cache.
+        # Second identical call is served from cache (sizer called once).
         self.assertEqual(mock_sizer.call_count, 1)
+
+    def test_failures_are_not_cached(self):
+        # A transient failure must NOT poison the cache: once metadata (or a
+        # token) becomes available, a later call for the same model recovers.
+        with patch(
+            "utils.hardware.hardware.estimate_fp16_model_size_bytes",
+            side_effect = [(None, "unavailable"), (_QWEN35_FP16_BYTES, "safetensors")],
+        ) as mock_sizer:
+            first = self._call()
+            second = self._call()
+        self.assertIsNone(first.fp16_bytes)
+        self.assertEqual(second.fp16_bytes, _QWEN35_FP16_BYTES)
+        # The failed first call was re-attempted (not served from cache).
+        self.assertEqual(mock_sizer.call_count, 2)
 
 
 if __name__ == "__main__":

@@ -62,10 +62,16 @@ export async function fetchCheckpoints(): Promise<CheckpointListResponse> {
  */
 export async function fetchExportSize(
   modelId: string,
+  hfToken?: string | null,
   signal?: AbortSignal,
 ): Promise<ExportSizeEstimate> {
+  // The token lets the sizer read safetensors/config metadata for private or
+  // gated repos, which would otherwise return no estimate.
+  const tokenParam = hfToken
+    ? `&hf_token=${encodeURIComponent(hfToken)}`
+    : "";
   const response = await authFetch(
-    `/api/models/export-size?model=${encodeURIComponent(modelId)}`,
+    `/api/models/export-size?model=${encodeURIComponent(modelId)}${tokenParam}`,
     { signal },
   );
   return parseJson<ExportSizeEstimate>(response);

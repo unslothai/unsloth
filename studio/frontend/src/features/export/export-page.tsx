@@ -248,8 +248,12 @@ export function ExportPage() {
     : baseModelName;
 
   // Real (MoE-aware) fp16 size of the selected base model, used to scale the
-  // GGUF quant size estimates instead of a hardcoded ~8B constant.
-  const { fp16Bytes } = useExportSizeEstimate(sourceBaseModelName);
+  // GGUF quant size estimates instead of a hardcoded ~8B constant. The token
+  // lets private/gated models resolve their metadata.
+  const { fp16Bytes } = useExportSizeEstimate(
+    sourceBaseModelName,
+    debouncedHfToken,
+  );
   const quantSizeLabels = useMemo(
     () => buildQuantSizeLabels(fp16Bytes),
     [fp16Bytes],

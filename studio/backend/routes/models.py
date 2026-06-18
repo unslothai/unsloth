@@ -3,13 +3,13 @@
 
 """Model management API routes."""
 
+import asyncio
 import hashlib
 import json
 import os
 import shutil
 import sys
 import uuid
-from functools import lru_cache
 from pathlib import Path
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from typing import List, Optional
@@ -2767,25 +2767,38 @@ async def list_checkpoints(
         )
 
 
-@lru_cache(maxsize = 128)
+# Cache only successful estimates, keyed by (model, hf_token). Failures are NOT
+# cached so a transient HF/offline/gated error can recover once metadata (or a
+# token) becomes available, instead of being pinned until process restart.
+_EXPORT_SIZE_CACHE: dict[tuple[str, Optional[str]], tuple[int, int, str]] = {}
+
+
 def _export_size_cached(
     model: str, hf_token: Optional[str]
 ) -> tuple[Optional[int], Optional[int], str]:
     """Estimate a model's FP16/BF16-equivalent size in bytes (+ total params).
 
-    Memoized so repeated Export-page selections of the same model don't re-hit
-    Hugging Face on every keystroke. Never raises: any failure (offline, gated,
-    bad id) returns ``(None, None, "unavailable")`` so the Export picker degrades
-    to "no estimate" instead of breaking. The sizer is imported lazily from the
+    Successful results are memoized so repeated Export-page selections of the
+    same model don't re-hit Hugging Face. Never raises: any failure (offline,
+    gated, bad id) returns ``(None, None, "unavailable")`` -- and is deliberately
+    NOT cached so it can recover later. The sizer is imported lazily from the
     module path the tests patch (``utils.hardware.hardware``).
+
+    Blocking (HF metadata / config / disk); call via a worker thread.
     """
+    key = (model, hf_token)
+    cached = _EXPORT_SIZE_CACHE.get(key)
+    if cached is not None:
+        return cached
     try:
         from utils.hardware.hardware import estimate_fp16_model_size_bytes
 
         fp16_bytes, source = estimate_fp16_model_size_bytes(model, hf_token = hf_token)
         if not fp16_bytes or fp16_bytes <= 0:
             return None, None, source or "unavailable"
-        return int(fp16_bytes), int(fp16_bytes) // 2, source
+        result = (int(fp16_bytes), int(fp16_bytes) // 2, source)
+        _EXPORT_SIZE_CACHE[key] = result
+        return result
     except Exception as e:  # defensive: never break the Export page over a size hint
         logger.warning("Could not estimate export size for '%s': %s", model, e)
         return None, None, "unavailable"
@@ -2808,7 +2821,11 @@ async def get_export_size(
     resolved = model
     if not is_local_path(model):
         resolved = resolve_cached_repo_id_case(model)
-    fp16_bytes, total_params, source = _export_size_cached(resolved, hf_token)
+    # The sizer does blocking network/disk I/O; run it off the event loop so a
+    # slow Hub request can't stall other API/SSE endpoints.
+    fp16_bytes, total_params, source = await asyncio.to_thread(
+        _export_size_cached, resolved, hf_token
+    )
     return ExportSizeResponse(
         model = resolved,
         fp16_bytes = fp16_bytes,

@@ -83,9 +83,10 @@ export function formatModelSize(bytes: number): string {
     return "";
   }
   const units = ["B", "KB", "MB", "GB", "TB"];
-  const i = Math.min(
-    Math.floor(Math.log(bytes) / Math.log(1024)),
-    units.length - 1,
+  // Clamp to [0, len-1]: bytes < 1 would otherwise give a negative index.
+  const i = Math.max(
+    0,
+    Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1),
   );
   const value = bytes / 1024 ** i;
   return `${value.toFixed(value < 10 ? 1 : 0)} ${units[i]}`;
