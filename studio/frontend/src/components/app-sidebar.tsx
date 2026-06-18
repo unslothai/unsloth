@@ -67,7 +67,7 @@ import {
   PowerIcon,
   PencilEdit02Icon,
   LayoutAlignLeftIcon,
-  Setting07Icon,
+  Settings02Icon,
   Sun03Icon,
   TestTube01Icon,
   ZapIcon,
@@ -1302,7 +1302,7 @@ export function AppSidebar() {
                   </div>
                   {/* settings cog (replaces the up/down chevron) */}
                   <HugeiconsIcon
-                    icon={Setting07Icon}
+                    icon={Settings02Icon}
                     strokeWidth={1.5}
                     className="ml-auto !size-[18px] text-muted-foreground group-data-[collapsible=icon]:hidden"
                   />
@@ -1318,7 +1318,7 @@ export function AppSidebar() {
                   <DropdownMenuItem
                     onSelect={() => useSettingsDialogStore.getState().openDialog()}
                   >
-                    <HugeiconsIcon icon={Setting07Icon} strokeWidth={1.75} className="size-icon" />
+                    <HugeiconsIcon icon={Settings02Icon} strokeWidth={1.75} className="size-icon" />
                     <span>{t("shell.navigation.settings")}</span>
                     <DropdownMenuShortcut>⌘,</DropdownMenuShortcut>
                   </DropdownMenuItem>

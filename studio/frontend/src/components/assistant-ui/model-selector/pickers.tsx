@@ -2062,7 +2062,7 @@ export function HubModelPicker({
         )}
         {...hubModelList.listboxProps}
       >
-        <div className="shrink-0 pt-1 pr-0 pb-12">
+        <div className="shrink-0 py-1 pr-0">
           {/* First-load spinner only when nothing cached is shown yet. */}
           {showDownloaded &&
           !cachedReady &&
@@ -2965,7 +2965,7 @@ export function HubModelPicker({
             <button
               type="button"
               onClick={onEject}
-              className="pointer-events-auto inline-flex items-center justify-center gap-2 rounded-md bg-destructive/10 px-3 py-2 text-[13px] text-destructive shadow-sm transition-colors hover:bg-destructive/20"
+              className="pointer-events-auto inline-flex items-center justify-center gap-2 rounded-md bg-popover px-3 py-2 text-[13px] text-destructive shadow-sm transition-colors hover:bg-destructive/10 dark:bg-[var(--sidebar)]"
               title="Eject model"
             >
               <HugeiconsIcon icon={RemoveCircleIcon} className="size-3.5" />
