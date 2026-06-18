@@ -2958,14 +2958,14 @@ export function HubModelPicker({
             </>
           ) : null}
         </div>
-        {/* Sticky footer: no solid block, just a bottom-up fade of the menu
-            background so rows scroll under the button and fade out behind it. */}
+        {/* Eject sits inline at the end of the list, no background block, just a
+            centered button that scrolls with the rest of the models. */}
         {onEject ? (
-          <div className="pointer-events-none sticky bottom-0 mt-auto flex justify-center bg-gradient-to-t from-popover from-50% to-transparent pt-6 dark:from-[var(--sidebar)]">
+          <div className="flex justify-center py-1">
             <button
               type="button"
               onClick={onEject}
-              className="pointer-events-auto inline-flex items-center justify-center gap-2 rounded-md px-3 py-2 text-[13px] text-destructive transition-colors hover:bg-destructive/10"
+              className="inline-flex items-center justify-center gap-2 rounded-md px-3 py-2 text-[13px] text-destructive transition-colors hover:bg-destructive/10"
               title="Eject model"
             >
               <HugeiconsIcon icon={RemoveCircleIcon} className="size-3.5" />
