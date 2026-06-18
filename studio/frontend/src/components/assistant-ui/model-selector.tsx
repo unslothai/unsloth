@@ -390,8 +390,14 @@ function ModelSelectorContent({
       )}
     >
       {/* Local provider so popover tooltips open instantly, including when the
-          cursor moves between icons. */}
-      <TooltipProvider delayDuration={0} skipDelayDuration={0}>
+          cursor moves between icons. disableHoverableContent drops the grace
+          area between a trigger and its tooltip, so moving from one icon to the
+          next switches the tooltip at once instead of keeping the old one up. */}
+      <TooltipProvider
+        delayDuration={0}
+        skipDelayDuration={0}
+        disableHoverableContent={true}
+      >
         {tabs.length > 1 ? (
           <PillTabs
             ariaLabel="Model source"

@@ -37,7 +37,8 @@ function splitBreadcrumb(path: string): { label: string; value: string }[] {
   // Detect path style BEFORE normalizing: on POSIX, `\` is a valid filename
   // char, so blindly rewriting `\` -> `/` mangles names like `my\backup` into
   // 404ing breadcrumbs. Only Windows-style paths (drive letter, or UNC) convert.
-  const isWindowsDrive = /^[A-Za-z]:[\\/]/.test(path) || /^[A-Za-z]:$/.test(path);
+  const isWindowsDrive =
+    /^[A-Za-z]:[\\/]/.test(path) || /^[A-Za-z]:$/.test(path);
   const isUnc = /^\\\\/.test(path);
   const isWindows = isWindowsDrive || isUnc;
   const normalized = isWindows ? path.replace(/\\/g, "/") : path;
@@ -200,19 +201,27 @@ export function FolderBrowser({
           </div>
         )}
 
-        {/* Entry list */}
+        {/* Entry list. Keep the list mounted while a refetch is in flight (e.g.
+        toggling Show hidden) and just dim it, so the dialog doesn't collapse and
+        flash. The full-height spinner only shows on the first load, when there
+        is no data yet. */}
         <div className="max-h-64 min-h-24 overflow-y-auto border-t border-border/50">
           {error && (
             <div className="px-6 py-3 text-xs text-destructive">{error}</div>
           )}
-          {!error && loading && (
+          {!error && !data && loading && (
             <div className="flex items-center gap-2 px-6 py-3">
               <Spinner className="size-3 text-muted-foreground" />
               <span className="text-xs text-muted-foreground">Loading…</span>
             </div>
           )}
-          {!error && !loading && data && (
-            <>
+          {!error && data && (
+            <div
+              className={cn(
+                "transition-opacity duration-150",
+                loading && "pointer-events-none opacity-50",
+              )}
+            >
               {/* Up row */}
               {data.parent !== null && (
                 <button
@@ -227,16 +236,20 @@ export function FolderBrowser({
                   <span className="font-mono">..</span>
                 </button>
               )}
-              {data.entries.length === 0 && !(data.model_files_here && data.model_files_here > 0) && (
-                <div className="px-6 py-3 text-xs text-muted-foreground/60">
-                  (empty directory)
-                </div>
-              )}
-              {data.model_files_here !== undefined && data.model_files_here > 0 && (
-                <div className="border-t border-border/30 px-6 py-1.5 text-[10px] text-foreground/70">
-                  {data.model_files_here} model file{data.model_files_here === 1 ? "" : "s"} in this folder. Click "Use this folder" to scan it.
-                </div>
-              )}
+              {data.entries.length === 0 &&
+                !(data.model_files_here && data.model_files_here > 0) && (
+                  <div className="px-6 py-3 text-xs text-muted-foreground/60">
+                    (empty directory)
+                  </div>
+                )}
+              {data.model_files_here !== undefined &&
+                data.model_files_here > 0 && (
+                  <div className="border-t border-border/30 px-6 py-1.5 text-[10px] text-foreground/70">
+                    {data.model_files_here} model file
+                    {data.model_files_here === 1 ? "" : "s"} in this folder.
+                    Click "Use this folder" to scan it.
+                  </div>
+                )}
               {data.truncated === true && (
                 <div className="border-t border-border/30 px-6 py-1.5 text-[10px] text-muted-foreground/70">
                   Showing first {data.entries.length} entries. Narrow the path
@@ -273,7 +286,7 @@ export function FolderBrowser({
                   )}
                 </button>
               ))}
-            </>
+            </div>
           )}
         </div>
 

@@ -1106,6 +1106,20 @@ export function HubModelPicker({
       });
     });
   }, []);
+  // The Custom Folders header; the folder icon on the Unsloth header scrolls
+  // here instead of opening the browse popup.
+  const customFolderSectionRef = useRef<HTMLDivElement>(null);
+  const scrollToCustomFolders = useCallback(() => {
+    setCustomFoldersCollapsed(false);
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        customFolderSectionRef.current?.scrollIntoView({
+          behavior: "smooth",
+          block: "start",
+        });
+      });
+    });
+  }, []);
 
   // Cached (downloaded) repos -- module-level cache avoids flashing an
   // empty "Downloaded" section when the popover re-mounts.
@@ -1992,35 +2006,27 @@ export function HubModelPicker({
                 onToggle={() => setDownloadedCollapsed((v) => !v)}
                 action={
                   <>
-                    {fineTunedRows.length > 0 ? (
-                      <Tooltip delayDuration={0}>
-                        <TooltipTrigger asChild={true}>
-                          <button
-                            type="button"
-                            onClick={scrollToFineTuned}
-                            aria-label="Go to fine-tuned models"
-                            className="shrink-0 rounded p-1 text-muted-foreground/60 transition-colors hover:text-foreground"
-                          >
-                            <HugeiconsIcon
-                              icon={TrainIcon}
-                              className="size-3"
-                            />
-                          </button>
-                        </TooltipTrigger>
-                        <TooltipContent
-                          side="bottom"
-                          className="tooltip-compact"
-                        >
-                          Go to fine-tuned models
-                        </TooltipContent>
-                      </Tooltip>
-                    ) : null}
                     <Tooltip delayDuration={0}>
                       <TooltipTrigger asChild={true}>
                         <button
                           type="button"
-                          onClick={() => setShowFolderBrowser(true)}
-                          aria-label="Add a custom folder"
+                          onClick={scrollToFineTuned}
+                          aria-label="Go to fine-tuned models"
+                          className="shrink-0 rounded p-1 text-muted-foreground/60 transition-colors hover:text-foreground"
+                        >
+                          <HugeiconsIcon icon={TrainIcon} className="size-3" />
+                        </button>
+                      </TooltipTrigger>
+                      <TooltipContent side="bottom" className="tooltip-compact">
+                        Go to fine-tuned models
+                      </TooltipContent>
+                    </Tooltip>
+                    <Tooltip delayDuration={0}>
+                      <TooltipTrigger asChild={true}>
+                        <button
+                          type="button"
+                          onClick={scrollToCustomFolders}
+                          aria-label="Go to custom folders"
                           className="shrink-0 rounded p-1 text-muted-foreground/60 transition-colors hover:text-foreground"
                         >
                           <HugeiconsIcon
@@ -2030,7 +2036,7 @@ export function HubModelPicker({
                         </button>
                       </TooltipTrigger>
                       <TooltipContent side="bottom" className="tooltip-compact">
-                        Detect models from a folder
+                        Go to custom folders
                       </TooltipContent>
                     </Tooltip>
                   </>
@@ -2145,9 +2151,10 @@ export function HubModelPicker({
             </>
           ) : null}
 
-          {/* Fine-tuned models: a section above Custom Folders, only when any
-              exist (after query filtering). */}
-          {section === "downloaded" && fineTunedRows.length > 0 ? (
+          {/* Fine-tuned models: a section above Custom Folders. Always shown on
+              On Device so the train shortcut always has a target, with an empty
+              state when none exist. */}
+          {section === "downloaded" ? (
             <>
               <div
                 ref={fineTunedSectionRef}
@@ -2177,25 +2184,35 @@ export function HubModelPicker({
                   </button>
                 </div>
               </div>
-              {!fineTunedCollapsed && (
-                <FineTunedRows
-                  adapters={fineTunedRows}
-                  value={value}
-                  onSelect={onSelect}
-                  onModelsChange={onModelsChange}
-                  deleteDisabled={deleteDisabled}
-                  loraModelList={hubModelList}
-                  expandedGguf={expandedGguf}
-                  setExpandedGguf={setExpandedGguf}
-                  gpu={gpu}
-                />
-              )}
+              {!fineTunedCollapsed &&
+                (fineTunedRows.length > 0 ? (
+                  <FineTunedRows
+                    adapters={fineTunedRows}
+                    value={value}
+                    onSelect={onSelect}
+                    onModelsChange={onModelsChange}
+                    deleteDisabled={deleteDisabled}
+                    loraModelList={hubModelList}
+                    expandedGguf={expandedGguf}
+                    setExpandedGguf={setExpandedGguf}
+                    gpu={gpu}
+                  />
+                ) : (
+                  <div className="px-2.5 pb-1 pt-0.5 text-[11px] text-muted-foreground/60">
+                    {localQuery
+                      ? "No fine-tuned models match your search."
+                      : "No fine-tuned models yet. Train a model to see it here."}
+                  </div>
+                ))}
             </>
           ) : null}
 
           {showCustom ? (
             <>
-              <div className="flex items-center gap-1 px-2.5 pb-1.5 pt-3">
+              <div
+                ref={customFolderSectionRef}
+                className="flex items-center gap-1 px-2.5 pb-1.5 pt-3"
+              >
                 <button
                   type="button"
                   onClick={() => setShowFolderBrowser(true)}
