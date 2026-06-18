@@ -112,6 +112,11 @@ function dedupe(values: string[]): string[] {
   return [...new Set(values.filter(Boolean))];
 }
 
+/** Repos published by Unsloth; the rest group under the "Other models" section. */
+function isUnslothRepoId(repoId: string): boolean {
+  return repoId.toLowerCase().startsWith("unsloth/");
+}
+
 /** Lowercase and strip separators for fuzzy search. */
 function normalizeForSearch(s: string): string {
   return s.toLowerCase().replace(/[\s_.-]/g, "");
@@ -1181,6 +1186,7 @@ export function HubModelPicker({
   );
 
   const [downloadedCollapsed, setDownloadedCollapsed] = useState(false);
+  const [otherModelsCollapsed, setOtherModelsCollapsed] = useState(false);
   const [customFoldersCollapsed, setCustomFoldersCollapsed] = useState(false);
   const [fineTunedCollapsed, setFineTunedCollapsed] = useState(false);
   const [lmStudioCollapsed, setLmStudioCollapsed] = useState(false);
@@ -1678,6 +1684,25 @@ export function HubModelPicker({
   // logic must use this (not visibleCachedModels) or the picker can go blank.
   const visibleCachedModelRows = chatOnly ? [] : visibleCachedModels;
 
+  // Split downloaded models so non-Unsloth repos get their own "Other models"
+  // section above Fine-tuned.
+  const unslothCachedGguf = useMemo(
+    () => visibleCachedGguf.filter((c) => isUnslothRepoId(c.repo_id)),
+    [visibleCachedGguf],
+  );
+  const otherCachedGguf = useMemo(
+    () => visibleCachedGguf.filter((c) => !isUnslothRepoId(c.repo_id)),
+    [visibleCachedGguf],
+  );
+  const unslothCachedModelRows = useMemo(
+    () => visibleCachedModelRows.filter((c) => isUnslothRepoId(c.repo_id)),
+    [visibleCachedModelRows],
+  );
+  const otherCachedModelRows = useMemo(
+    () => visibleCachedModelRows.filter((c) => !isUnslothRepoId(c.repo_id)),
+    [visibleCachedModelRows],
+  );
+
   // Recommended models that match the current search query
   const filteredRecommendedIds = useMemo(() => {
     if (!showHfSection) return [];
@@ -1737,20 +1762,20 @@ export function HubModelPicker({
   const hubOptionKeys = useMemo(() => {
     const keys: string[] = [];
 
-    // Downloaded rows (query-filtered) on the On Device tab only.
+    // Downloaded (Unsloth) rows (query-filtered) on the On Device tab only.
     if (
       section === "downloaded" &&
       cachedReady &&
       !downloadedCollapsed &&
-      (visibleCachedGguf.length > 0 || visibleCachedModelRows.length > 0)
+      (unslothCachedGguf.length > 0 || unslothCachedModelRows.length > 0)
     ) {
       keys.push(
-        ...visibleCachedGguf.map((model) =>
+        ...unslothCachedGguf.map((model) =>
           makeModelOptionKey("downloaded-gguf", model.repo_id),
         ),
       );
       keys.push(
-        ...visibleCachedModelRows.map((model) =>
+        ...unslothCachedModelRows.map((model) =>
           makeModelOptionKey("downloaded-model", model.repo_id),
         ),
       );
@@ -1765,6 +1790,25 @@ export function HubModelPicker({
       );
       keys.push(...hfIds.map((id) => makeModelOptionKey("search-hf", id)));
       return keys;
+    }
+
+    // Other (non-Unsloth) downloaded rows sit just above Fine-tuned.
+    if (
+      section === "downloaded" &&
+      cachedReady &&
+      !otherModelsCollapsed &&
+      (otherCachedGguf.length > 0 || otherCachedModelRows.length > 0)
+    ) {
+      keys.push(
+        ...otherCachedGguf.map((model) =>
+          makeModelOptionKey("downloaded-gguf", model.repo_id),
+        ),
+      );
+      keys.push(
+        ...otherCachedModelRows.map((model) =>
+          makeModelOptionKey("downloaded-model", model.repo_id),
+        ),
+      );
     }
 
     // Fine-tuned models sit below downloaded, above custom folders.
@@ -1821,8 +1865,11 @@ export function HubModelPicker({
     showHfSection,
     sortedLocalDir,
     localDirCollapsed,
-    visibleCachedGguf,
-    visibleCachedModelRows,
+    unslothCachedGguf,
+    unslothCachedModelRows,
+    otherCachedGguf,
+    otherCachedModelRows,
+    otherModelsCollapsed,
   ]);
 
   const selectedHubOptionKey = useMemo(
@@ -2063,6 +2110,91 @@ export function HubModelPicker({
   // and drop the search inset to keep Search Hub on the last dropdown's edge.
   const hasConnected = externalModels.length > 0;
 
+  // Shared row renderers so Downloaded (Unsloth) and Other models render alike.
+  const renderDownloadedGgufRow = (c: (typeof visibleCachedGguf)[number]) => {
+    const optionKey = makeModelOptionKey("downloaded-gguf", c.repo_id);
+    return (
+      <div key={c.repo_id}>
+        <ModelRow
+          label={c.repo_id}
+          meta="GGUF"
+          showVision={c.has_vision ?? visionByRepo[c.repo_id]}
+          selected={value === c.repo_id}
+          optionProps={hubModelList.getOptionProps(
+            optionKey,
+            value === c.repo_id,
+          )}
+          onClick={() => toggleGgufExpanded(c.repo_id)}
+          onArrowDownIntoChildren={
+            isGgufExpanded(c.repo_id)
+              ? () => focusFirstChildOption(optionKey)
+              : undefined
+          }
+          vramStatus={null}
+        />
+        {isGgufExpanded(c.repo_id) && (
+          <GgufVariantExpander
+            repoId={c.repo_id}
+            onDevice={true}
+            onHasVision={(v) => reportVision(c.repo_id, v)}
+            onSelect={onSelect}
+            parentOptionKey={optionKey}
+            onNavigatePastStart={() => hubModelList.focusOption(optionKey)}
+            onNavigatePastEnd={() => hubModelList.moveFocus(optionKey, "next")}
+            gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
+            systemRamGb={gpu.available ? gpu.systemRamAvailableGb : undefined}
+            onDeleteVariant={async (quant) => {
+              await deleteCachedModel(c.repo_id, quant);
+              refreshCachedLists();
+            }}
+          />
+        )}
+      </div>
+    );
+  };
+  const renderDownloadedModelRow = (
+    c: (typeof visibleCachedModelRows)[number],
+  ) => {
+    const optionKey = makeModelOptionKey("downloaded-model", c.repo_id);
+    return (
+      <div key={c.repo_id} className="flex items-center gap-0.5">
+        <div className="min-w-0 flex-1">
+          <ModelRow
+            label={c.repo_id}
+            meta={formatBytes(c.size_bytes)}
+            selected={value === c.repo_id}
+            optionProps={hubModelList.getOptionProps(
+              optionKey,
+              value === c.repo_id,
+            )}
+            onClick={() =>
+              onSelect(c.repo_id, {
+                source: "hub",
+                isLora: false,
+                isDownloaded: true,
+              })
+            }
+            vramStatus={null}
+          />
+        </div>
+        <ModelDeleteAction
+          ariaLabel={`Delete ${c.repo_id}`}
+          title="Delete cached model?"
+          description={
+            <>
+              This will remove{" "}
+              <span className="font-medium text-foreground">{c.repo_id}</span>{" "}
+              from disk. You can re-download it later.
+            </>
+          }
+          successMessage={`Deleted ${c.repo_id}`}
+          onConfirm={() => deleteCachedModel(c.repo_id)}
+          onDeleted={refreshCachedLists}
+        />
+      </div>
+    );
+  };
+
   return (
     <div className="relative space-y-2">
       {/* Inset the right so Search Hub lands on the Trending dropdown's edge.
@@ -2210,10 +2342,10 @@ export function HubModelPicker({
                 </div>
               ) : null}
 
-              {/* Downloaded stays visible (filtered) while searching. */}
+              {/* Downloaded (Unsloth) stays visible (filtered) while searching. */}
               {showDownloaded &&
-              (visibleCachedGguf.length > 0 ||
-                visibleCachedModelRows.length > 0) ? (
+              (unslothCachedGguf.length > 0 ||
+                unslothCachedModelRows.length > 0) ? (
                 <>
                   <ListLabel
                     collapsed={downloadedCollapsed}
@@ -2270,113 +2402,28 @@ export function HubModelPicker({
                     {sortedLmStudio.length > 0 ? "Unsloth" : "Downloaded"}
                   </ListLabel>
                   {!downloadedCollapsed &&
-                    visibleCachedGguf.map((c) => {
-                      const optionKey = makeModelOptionKey(
-                        "downloaded-gguf",
-                        c.repo_id,
-                      );
-                      return (
-                        <div key={c.repo_id}>
-                          <ModelRow
-                            label={c.repo_id}
-                            meta="GGUF"
-                            showVision={c.has_vision ?? visionByRepo[c.repo_id]}
-                            selected={value === c.repo_id}
-                            optionProps={hubModelList.getOptionProps(
-                              optionKey,
-                              value === c.repo_id,
-                            )}
-                            onClick={() => toggleGgufExpanded(c.repo_id)}
-                            onArrowDownIntoChildren={
-                              isGgufExpanded(c.repo_id)
-                                ? () => {
-                                    const focused =
-                                      focusFirstChildOption(optionKey);
-                                    return focused;
-                                  }
-                                : undefined
-                            }
-                            vramStatus={null}
-                          />
-                          {isGgufExpanded(c.repo_id) && (
-                            <GgufVariantExpander
-                              repoId={c.repo_id}
-                              onDevice={true}
-                              onHasVision={(v) => reportVision(c.repo_id, v)}
-                              onSelect={onSelect}
-                              parentOptionKey={optionKey}
-                              onNavigatePastStart={() =>
-                                hubModelList.focusOption(optionKey)
-                              }
-                              onNavigatePastEnd={() =>
-                                hubModelList.moveFocus(optionKey, "next")
-                              }
-                              gpuGb={
-                                gpu.available ? gpu.memoryTotalGb : undefined
-                              }
-                              systemRamGb={
-                                gpu.available
-                                  ? gpu.systemRamAvailableGb
-                                  : undefined
-                              }
-                              onDeleteVariant={async (quant) => {
-                                await deleteCachedModel(c.repo_id, quant);
-                                refreshCachedLists();
-                              }}
-                            />
-                          )}
-                        </div>
-                      );
-                    })}
+                    unslothCachedGguf.map(renderDownloadedGgufRow)}
                   {!downloadedCollapsed &&
-                    visibleCachedModelRows.map((c) => {
-                      const optionKey = makeModelOptionKey(
-                        "downloaded-model",
-                        c.repo_id,
-                      );
-                      return (
-                        <div
-                          key={c.repo_id}
-                          className="flex items-center gap-0.5"
-                        >
-                          <div className="min-w-0 flex-1">
-                            <ModelRow
-                              label={c.repo_id}
-                              meta={formatBytes(c.size_bytes)}
-                              selected={value === c.repo_id}
-                              optionProps={hubModelList.getOptionProps(
-                                optionKey,
-                                value === c.repo_id,
-                              )}
-                              onClick={() =>
-                                onSelect(c.repo_id, {
-                                  source: "hub",
-                                  isLora: false,
-                                  isDownloaded: true,
-                                })
-                              }
-                              vramStatus={null}
-                            />
-                          </div>
-                          <ModelDeleteAction
-                            ariaLabel={`Delete ${c.repo_id}`}
-                            title="Delete cached model?"
-                            description={
-                              <>
-                                This will remove{" "}
-                                <span className="font-medium text-foreground">
-                                  {c.repo_id}
-                                </span>{" "}
-                                from disk. You can re-download it later.
-                              </>
-                            }
-                            successMessage={`Deleted ${c.repo_id}`}
-                            onConfirm={() => deleteCachedModel(c.repo_id)}
-                            onDeleted={refreshCachedLists}
-                          />
-                        </div>
-                      );
-                    })}
+                    unslothCachedModelRows.map(renderDownloadedModelRow)}
+                </>
+              ) : null}
+
+              {/* Other models: non-Unsloth downloads, grouped just above
+              Fine-tuned. */}
+              {showDownloaded &&
+              (otherCachedGguf.length > 0 ||
+                otherCachedModelRows.length > 0) ? (
+                <>
+                  <ListLabel
+                    collapsed={otherModelsCollapsed}
+                    onToggle={() => setOtherModelsCollapsed((v) => !v)}
+                  >
+                    Other models
+                  </ListLabel>
+                  {!otherModelsCollapsed &&
+                    otherCachedGguf.map(renderDownloadedGgufRow)}
+                  {!otherModelsCollapsed &&
+                    otherCachedModelRows.map(renderDownloadedModelRow)}
                 </>
               ) : null}
 
