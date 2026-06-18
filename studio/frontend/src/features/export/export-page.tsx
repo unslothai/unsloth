@@ -280,7 +280,9 @@ export function ExportPage() {
   } = useHubModelSearch(debouncedModelQuery, {
     accessToken: debouncedHfToken || undefined,
     excludeGguf: true,
-    ownerScope: "unsloth",
+    // Curated unsloth listing by default, but a typed query searches the whole
+    // Hub (unsloth floated first) so non-unsloth base models stay selectable.
+    ownerScope: debouncedModelQuery.trim() ? "all" : "unsloth",
   });
   const { error: tokenValidationError, isChecking: isCheckingToken } =
     useHfTokenValidation(hfToken);

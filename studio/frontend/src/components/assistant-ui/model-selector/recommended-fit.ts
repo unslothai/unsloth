@@ -102,8 +102,10 @@ export function fitsDevice(opts: {
   requireKnown?: boolean;
 }): boolean {
   const { sizeBytes, estimatedVramGb, gpuGb, systemRamGb, requireKnown } = opts;
-  if (!gpuGb || gpuGb <= 0) return true;
-  const budgetGb = gpuGb * 0.7 + (systemRamGb ?? 0) * 0.7;
+  // Unified-memory hosts (Mac / no discrete GPU) report system RAM but no GPU,
+  // so the budget must include RAM. Only an entirely unknown budget fits freely.
+  const budgetGb = Math.max(0, gpuGb ?? 0) * 0.7 + Math.max(0, systemRamGb ?? 0) * 0.7;
+  if (budgetGb <= 0) return true;
   if (sizeBytes && sizeBytes > 0) {
     return sizeBytes / 1024 ** 3 <= budgetGb;
   }

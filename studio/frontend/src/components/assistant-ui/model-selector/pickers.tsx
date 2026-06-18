@@ -1024,9 +1024,10 @@ function sortLocalModels(
   });
 }
 
-/** GGUF detection for a local model by name or file path. */
+/** GGUF detection for a local model by backend format hint, name, or file path. */
 function localModelIsGguf(m: LocalModelInfo): boolean {
   return (
+    m.model_format === "gguf" ||
     isGgufRepo(m.id) ||
     isGgufRepo(m.display_name) ||
     m.path.toLowerCase().endsWith(".gguf")
@@ -1492,7 +1493,11 @@ export function HubModelPicker({
     return rows.filter((r) => {
       // Downloaded models always show, regardless of device fit.
       if (downloadedSet.has(r.id.toLowerCase())) return true;
-      if (!gpu.available) return true;
+      // Unified-memory hosts (Mac / no discrete GPU) still report system RAM,
+      // so fall back to that budget instead of skipping the fit check entirely.
+      const hasDeviceBudget =
+        gpu.memoryTotalGb > 0 || gpu.systemRamAvailableGb > 0;
+      if (!hasDeviceBudget) return true;
       // GGUF/MLX repos rarely expose safetensors metadata, so fall back to the
       // GGUF param count, then the repo name, for a size estimate. Anything we
       // still cannot size is hidden (requireKnown) so over-budget models like a
@@ -1554,8 +1559,10 @@ export function HubModelPicker({
         const sizeBytes =
           r.estimatedSizeBytes ??
           (params ? estimateQuantBytes(params) : undefined);
+        const hasDeviceBudget =
+          gpu.memoryTotalGb > 0 || gpu.systemRamAvailableGb > 0;
         const exceeds =
-          gpu.available &&
+          hasDeviceBudget &&
           sizeBytes != null &&
           !fitsDevice({
             sizeBytes,
@@ -2182,7 +2189,7 @@ export function HubModelPicker({
             onNavigatePastStart={() => hubModelList.focusOption(optionKey)}
             onNavigatePastEnd={() => hubModelList.moveFocus(optionKey, "next")}
             gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
-            systemRamGb={gpu.available ? gpu.systemRamAvailableGb : undefined}
+            systemRamGb={gpu.systemRamAvailableGb || undefined}
             onDeleteVariant={async (quant) => {
               await deleteCachedModel(c.repo_id, quant);
               refreshCachedLists();
@@ -2791,6 +2798,9 @@ export function HubModelPicker({
                                   source: "local",
                                   isLora: false,
                                   isDownloaded: true,
+                                  // Mark GGUF so "Load on selection = off" stages
+                                  // through Run settings (matches LM Studio path).
+                                  isGguf: true,
                                 });
                               } else if (isGguf) {
                                 toggleGgufExpanded(m.id);
@@ -2935,6 +2945,11 @@ export function HubModelPicker({
                   </ListLabel>
                   {!localDirCollapsed &&
                     sortedLocalDir.map((m) => {
+                      // A loose ./models/*.gguf file loads directly; a GGUF repo
+                      // directory expands to pick a variant. The backend's local
+                      // variant scanner returns nothing for a config-less loose
+                      // file, so expanding it would dead-end at "No GGUF variants".
+                      const isGgufFile = m.path.toLowerCase().endsWith(".gguf");
                       const isGguf = localModelIsGguf(m);
                       const optionKey = makeModelOptionKey("local-dir", m.id);
                       return (
@@ -2948,7 +2963,14 @@ export function HubModelPicker({
                               value === m.id,
                             )}
                             onClick={() => {
-                              if (isGguf) {
+                              if (isGgufFile) {
+                                onSelect(m.id, {
+                                  source: "local",
+                                  isLora: false,
+                                  isDownloaded: true,
+                                  isGguf: true,
+                                });
+                              } else if (isGguf) {
                                 toggleGgufExpanded(m.id);
                               } else {
                                 onSelect(m.id, {
@@ -2959,13 +2981,13 @@ export function HubModelPicker({
                               }
                             }}
                             onArrowDownIntoChildren={
-                              isGgufExpanded(m.id)
+                              !isGgufFile && isGgufExpanded(m.id)
                                 ? () => focusFirstChildOption(optionKey)
                                 : undefined
                             }
                             vramStatus={null}
                           />
-                          {isGgufExpanded(m.id) && (
+                          {!isGgufFile && isGgufExpanded(m.id) && (
                             <GgufVariantExpander
                               repoId={m.id}
                               onDevice={true}
@@ -3435,9 +3457,7 @@ function FineTunedRows({
                   loraModelList.moveFocus(optionKey, "next")
                 }
                 gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
-                systemRamGb={
-                  gpu.available ? gpu.systemRamAvailableGb : undefined
-                }
+                systemRamGb={gpu.systemRamAvailableGb || undefined}
                 sourceOverride={isExportedGguf ? "exported" : undefined}
                 deleteVariantTitle="Delete exported GGUF variant?"
                 renderDeleteVariantDescription={(quant) => (

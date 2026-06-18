@@ -28,21 +28,27 @@ import {
 } from "../lib/unsloth-support";
 import { pullBatch, useHubPaginatedSearch } from "./use-hub-paginated-search";
 
-const ALL_FIELDS: (
-  | "safetensors"
-  | "tags"
-  | "library_name"
-  | "config"
-  | "createdAt"
-  | "downloadsAllTime"
-)[] = [
+// "gguf" is not in the @huggingface/hub expandable-key type, but the listing
+// supports expand=gguf (see withGgufExpand) and listModels' pick() copies any
+// requested field through at runtime. Request it here so GGUF repos whose id
+// has no "<n>B" token (Kimi, MiniMax, GLM) still populate m.gguf.total for the
+// param chip / OOM badge. The cast bridges that single library type gap.
+const ALL_FIELDS = [
   "safetensors",
   "tags",
   "library_name",
   "config",
   "createdAt",
   "downloadsAllTime",
-];
+  "gguf",
+] as unknown as (
+  | "safetensors"
+  | "tags"
+  | "library_name"
+  | "config"
+  | "createdAt"
+  | "downloadsAllTime"
+)[];
 
 export { classifyUnslothSupport };
 export type { UnslothSupport, UnslothSupportStatus };

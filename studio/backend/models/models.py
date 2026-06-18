@@ -174,6 +174,11 @@ class LocalModelInfo(BaseModel):
         None,
         description = "HF repo id for cached models, e.g. org/model",
     )
+    model_format: Optional[str] = Field(
+        None,
+        description = "Detected weights format ('gguf' when known). Lets the UI "
+        "classify scanned folders whose name lacks a -GGUF suffix.",
+    )
     updated_at: Optional[float] = Field(
         None,
         description = "Unix timestamp of latest observed update",

@@ -253,13 +253,14 @@ def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[Loca
         try:
             if not child.is_dir():
                 continue
-            has_model_files = (
+            has_gguf = any(child.glob("*.gguf"))
+            has_weights = (
                 (child / "config.json").exists()
                 or (child / "adapter_config.json").exists()
                 or any(child.glob("*.safetensors"))
                 or any(child.glob("*.bin"))
-                or any(child.glob("*.gguf"))
             )
+            has_model_files = has_weights or has_gguf
         except OSError:
             # Skip unreadable children rather than failing the scan.
             continue
@@ -269,12 +270,16 @@ def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[Loca
             updated_at = child.stat().st_mtime
         except OSError:
             updated_at = None
+        # A GGUF-only folder (no safetensors/config) has no -GGUF suffix to read,
+        # so surface the format explicitly for the UI's GGUF classification.
+        model_format = "gguf" if has_gguf and not has_weights else None
         found.append(
             LocalModelInfo(
                 id = str(child),
                 display_name = child.name,
                 path = str(child),
                 source = "models_dir",
+                model_format = model_format,
                 updated_at = updated_at,
             ),
         )
@@ -294,6 +299,7 @@ def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[Loca
                         display_name = gguf_file.stem,
                         path = str(gguf_file),
                         source = "models_dir",
+                        model_format = "gguf",
                         updated_at = updated_at,
                     ),
                 )
@@ -858,11 +864,15 @@ def _dir_has_downloaded_model(directory: Path, max_entries: int = 4000) -> bool:
     Bounded by *max_entries* so a huge tree can't stall the request.
     """
     # Ollama layout: manifest files reference blobs that lack extensions.
+    visited = 0
     manifests = directory / "manifests"
     blobs = directory / "blobs"
     try:
         if _safe_is_dir(manifests) and _safe_is_dir(blobs):
             for m in manifests.rglob("*"):
+                visited += 1
+                if visited > max_entries:
+                    break
                 if m.is_file():
                     return True
     except OSError:
@@ -2326,12 +2336,18 @@ def _resolve_quant_gguf(repo_id: str, quant: str, is_local: bool) -> tuple[Optio
     """Primary shard path and total weight bytes for a downloaded quant, or
     (None, 0). Metadata lives in shard 1, so the lexicographically first file of
     the matching quant is returned. Scoped to one snapshot to avoid summing the
-    same quant across revisions. Never raises.
+    same quant across revisions; when several snapshots hold the quant the most
+    complete one (largest total) wins so a partial revision can't shadow it.
+    Mirrors list_local_gguf_variants: quant labels are read from the snapshot-
+    relative path (so layouts like ``BF16/model.gguf`` resolve) and MTP drafter
+    files are skipped (so a ``...-Q8_0-MTP.gguf`` drafter can't be picked as the
+    Q8_0 weights). Never raises.
     """
     try:
         from utils.models.model_config import (
             _extract_quant_label,
             _is_big_endian_gguf_path,
+            _is_mtp_drafter,
         )
 
         if is_local:
@@ -2351,14 +2367,22 @@ def _resolve_quant_gguf(repo_id: str, quant: str, is_local: bool) -> tuple[Optio
                         roots.extend(s for s in snaps.iterdir() if s.is_dir())
 
         want = quant.lower().replace("-", "").replace("_", "")
+        best_total = 0
+        best_first: Optional[str] = None
         for root in roots:
-            matches: list[Path] = []
+            matches: list[tuple[str, Path]] = []
             total = 0
             for f in _iter_gguf_paths(root):
                 if _is_mmproj_filename(f.name):
                     continue
-                q = _extract_quant_label(f.name)
-                if _is_big_endian_gguf_path(f.name, q):
+                try:
+                    rel = f.relative_to(root).as_posix()
+                except ValueError:
+                    rel = f.name
+                if _is_mtp_drafter(rel):
+                    continue
+                q = _extract_quant_label(rel)
+                if _is_big_endian_gguf_path(rel, q):
                     continue
                 if q.lower().replace("-", "").replace("_", "") != want:
                     continue
@@ -2366,10 +2390,15 @@ def _resolve_quant_gguf(repo_id: str, quant: str, is_local: bool) -> tuple[Optio
                     total += f.stat().st_size
                 except OSError:
                     continue
-                matches.append(f)
-            if matches:
-                matches.sort(key = lambda p: p.name)
-                return str(matches[0]), total
+                matches.append((rel, f))
+            # Prefer the most complete snapshot so a partial older revision can't
+            # shadow a newer complete one and underestimate the weight bytes.
+            if matches and total > best_total:
+                matches.sort(key = lambda m: m[0])
+                best_total = total
+                best_first = str(matches[0][1])
+        if best_first is not None:
+            return best_first, best_total
     except Exception:
         pass
     return None, 0

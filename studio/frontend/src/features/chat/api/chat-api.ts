@@ -281,6 +281,9 @@ export interface LocalModelInfo {
   path: string;
   source: "models_dir" | "hf_cache" | "lmstudio" | "custom";
   model_id?: string | null;
+  // Backend-detected weights format ("gguf" when known), so the UI can
+  // classify scanned folders whose name lacks a -GGUF suffix.
+  model_format?: string | null;
   updated_at?: number | null;
 }
 

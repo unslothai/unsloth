@@ -100,7 +100,9 @@ export function ModelSelectionStep() {
     accessToken: debouncedHfToken || undefined,
     excludeGguf: true,
     priorityIds: PRIORITY_TRAINING_MODELS,
-    ownerScope: "unsloth",
+    // Curated unsloth listing by default, but a typed query searches the whole
+    // Hub (unsloth floated first) so non-unsloth base models stay selectable.
+    ownerScope: debouncedQuery.trim() ? "all" : "unsloth",
   });
 
   const { error: tokenValidationError, isChecking: isCheckingToken } =
