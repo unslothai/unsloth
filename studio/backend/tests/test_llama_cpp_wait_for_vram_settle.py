@@ -598,7 +598,9 @@ def test_reap_recorded_pid_windows_sigkill_fallback(tmp_path, monkeypatch):
     ):
         n = LlamaCppBackend._reap_recorded_pid()
     assert n == 1
-    assert captured.get("sig") == _signal.SIGTERM, "must fall back to SIGTERM when SIGKILL is absent"
+    assert (
+        captured.get("sig") == _signal.SIGTERM
+    ), "must fall back to SIGTERM when SIGKILL is absent"
     assert not pidfile.exists()
 
 

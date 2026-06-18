@@ -6234,7 +6234,7 @@ class LlamaCppBackend:
                 with open(f"/proc/{pid}/stat", "rb") as fh:
                     data = fh.read()
                 # field 22 (starttime), counted from after the ")" that closes comm.
-                return data[data.rfind(b")") + 2:].split()[19].decode()
+                return data[data.rfind(b")") + 2 :].split()[19].decode()
             except (OSError, IndexError):
                 return ""
         return ""
@@ -6248,6 +6248,7 @@ class LlamaCppBackend:
         server is never mistakenly reaped."""
         try:
             import psutil
+
             try:
                 ppid = psutil.Process(pid).ppid()
             except psutil.NoSuchProcess:
@@ -6263,7 +6264,7 @@ class LlamaCppBackend:
             try:
                 with open(f"/proc/{pid}/stat", "rb") as fh:
                     data = fh.read()
-                ppid = int(data[data.rfind(b")") + 2:].split()[1])
+                ppid = int(data[data.rfind(b")") + 2 :].split()[1])
             except (OSError, IndexError, ValueError):
                 return False
             if ppid <= 1:
