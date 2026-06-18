@@ -4869,6 +4869,8 @@ async def openai_chat_completions(
                     tb = traceback.format_exc()
                     logger.error(f"Error during GGUF tool streaming: {e}\n{tb}")
                     api_monitor.fail(monitor_id, _friendly_error(e))
+                    # Recover if an MTP+tensor crash killed the server mid-stream.
+                    get_llama_cpp_backend()._maybe_recover_from_mtp_crash(e)
                     error_chunk = _openai_stream_error_chunk(e)
                     yield f"data: {json.dumps(error_chunk)}\n\n"
                 finally:
@@ -5115,6 +5117,8 @@ async def openai_chat_completions(
             except Exception as e:
                 logger.error(f"Error during GGUF completion: {e}", exc_info = True)
                 api_monitor.fail(monitor_id, _friendly_error(e))
+                # Recover if an MTP+tensor crash killed the server.
+                get_llama_cpp_backend()._maybe_recover_from_mtp_crash(e)
                 # An over-context prompt makes llama-server return 400; map any
                 # upstream 4xx to a 400 client error rather than leaking a 500.
                 _cls = _classify_llama_generation_error(e)
@@ -8641,6 +8645,7 @@ async def _anthropic_passthrough_stream(
         except (httpx.RemoteProtocolError, httpx.ReadError, httpx.CloseError) as e:
             if not cancel_event.is_set():
                 logger.error("anthropic_messages passthrough stream error: %s", e)
+                get_llama_cpp_backend()._maybe_recover_from_mtp_crash(e)
                 event = _anthropic_stream_error_event(
                     e,
                     force = True,
@@ -8651,6 +8656,7 @@ async def _anthropic_passthrough_stream(
         except Exception as e:
             if not cancel_event.is_set():
                 logger.error("anthropic_messages passthrough stream error: %s", e)
+                get_llama_cpp_backend()._maybe_recover_from_mtp_crash(e)
                 event = _anthropic_stream_error_event(
                     e,
                     force = True,
@@ -9282,11 +9288,12 @@ async def _openai_passthrough_stream(
             except asyncio.CancelledError:
                 api_monitor.finish(monitor_id, "cancelled")
                 raise
-            except (httpx.RemoteProtocolError, httpx.ReadError, httpx.CloseError):
+            except (httpx.RemoteProtocolError, httpx.ReadError, httpx.CloseError) as e:
                 # Watcher closed resp on cancel. Emit nothing extra; the client
                 # initiated the cancel or already disconnected.
                 if not cancel_event.is_set():
                     api_monitor.fail(monitor_id, "Stream interrupted")
+                    get_llama_cpp_backend()._maybe_recover_from_mtp_crash(e)
                     raise
                 api_monitor.finish(monitor_id, "cancelled")
             except Exception as e:
@@ -9296,6 +9303,7 @@ async def _openai_passthrough_stream(
                 # 200 headers already flushed; errors must go in the SSE body.
                 logger.error("openai passthrough stream error: %s", e)
                 api_monitor.fail(monitor_id, _friendly_error(e))
+                get_llama_cpp_backend()._maybe_recover_from_mtp_crash(e)
                 err = _openai_stream_error_chunk(e)
                 yield f"data: {json.dumps(err)}\n\n"
             finally:
@@ -9374,6 +9382,7 @@ async def _openai_passthrough_non_streaming(
             # a bare 500 with no diagnostic.
             logger.error("openai passthrough non-streaming: upstream unreachable: %s", e)
             api_monitor.fail(monitor_id, _friendly_error(e))
+            get_llama_cpp_backend()._maybe_recover_from_mtp_crash(e)
             raise HTTPException(
                 status_code = 502,
                 detail = _friendly_error(e),
