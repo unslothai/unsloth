@@ -484,9 +484,7 @@ def test_reap_recorded_pid_skips_pid_reuse(tmp_path):
     try:
         with (
             patch.object(LlamaCppBackend, "_server_pidfile_path", staticmethod(lambda: pidfile)),
-            patch.object(
-                LlamaCppBackend, "_pid_is_llama_server", staticmethod(lambda pid: False)
-            ),
+            patch.object(LlamaCppBackend, "_pid_is_llama_server", staticmethod(lambda pid: False)),
         ):
             n = LlamaCppBackend._reap_recorded_pid()
         assert n == 0
