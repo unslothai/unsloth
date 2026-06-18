@@ -129,8 +129,8 @@ def _grouped_gemm_forward_kernel(
                 # Between them the load/store offsets and strides are flipped.
                 if PERMUTE_X:
                     load_idx = (
-                        (expert_token_offsets // TOPK) * K
-                    )  # token -> expert order; //TOPK indexes the original tokens
+                        expert_token_offsets // TOPK
+                    ) * K  # token -> expert order; //TOPK indexes the original tokens
                     store_idx = indices_to_gather[:, None] * N  # contiguous store
                 else:
                     off_am = tile_m_idx * BLOCK_SIZE_M

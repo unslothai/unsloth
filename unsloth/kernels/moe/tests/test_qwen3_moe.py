@@ -113,9 +113,7 @@ def test_qwen3_moe(
     permute_y: bool,
     autotune: bool,
 ):
-    torch.manual_seed(
-        SEED
-    )  # Redundant under pytest -- conftest.py has an autouse fixture
+    torch.manual_seed(SEED)  # Redundant under pytest -- conftest.py has an autouse fixture
     device = "cuda"
     hidden_size = config.hidden_size
     bs = 1

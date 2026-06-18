@@ -114,7 +114,7 @@ def torch_grouped_gemm(
             m_end = m_start + m_size
 
             X_g = X[m_start:m_end]  # [m_size, K]
-            W_g = W[g]              # [N, K]
+            W_g = W[g]  # [N, K]
 
             # Y_g = X_g @ W_g.T -> [m_size, N]
             W_g = W_g.T if transpose else W_g
