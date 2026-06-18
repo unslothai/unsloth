@@ -189,9 +189,7 @@ _SPLIT_SHADOWING_FLAGS: frozenset[str] = _SPLIT_MODE_FLAGS | _TENSOR_SPLIT_FLAGS
 _LAYER_OFFLOAD_FLAGS: frozenset[str] = frozenset(
     {"-ngl", "--gpu-layers", "--n-gpu-layers", "-fit", "--fit"}
 )
-_MOE_OFFLOAD_FLAGS: frozenset[str] = frozenset(
-    {"-ncmoe", "--n-cpu-moe", "-cmoe", "--cpu-moe"}
-)
+_MOE_OFFLOAD_FLAGS: frozenset[str] = frozenset({"-ncmoe", "--n-cpu-moe", "-cmoe", "--cpu-moe"})
 _OFFLOAD_SHADOWING_FLAGS: frozenset[str] = _LAYER_OFFLOAD_FLAGS | _MOE_OFFLOAD_FLAGS
 
 _SHADOWING_FLAGS: frozenset[str] = (
