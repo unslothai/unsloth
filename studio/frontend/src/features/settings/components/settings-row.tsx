@@ -55,7 +55,9 @@ export function SettingsRow({
         <div
           className={cn(
             "flex shrink-0",
-            alignTop ? "items-start pt-0.5" : "items-center",
+            // Drop the control past the label row so it lines up with the first
+            // description line instead of the label.
+            alignTop ? "items-start pt-[21px]" : "items-center",
           )}
         >
           {children}
