@@ -1621,10 +1621,14 @@ async def scan_model_remote_code(
         security_targets = list(dict.fromkeys(security_targets))
         # Whether OUR scan is what first pulls this repo into the HF cache. A later
         # decline uses this to purge exactly what the scan downloaded, without
-        # touching a model the user already had (or a local path).
+        # touching a model the user already had (or a local path). Check EVERY cache
+        # the discard searches (active + legacy + default), not just the active one:
+        # otherwise a repo the user already had in a legacy/default cache would be
+        # misreported created_by_scan and deleted on decline.
         try:
-            from utils.paths import get_cache_path
-            created_by_scan = (not is_local_path(model_name)) and get_cache_path(model_name) is None
+            created_by_scan = (not is_local_path(model_name)) and not _repo_in_any_hf_cache(
+                model_name
+            )
         except Exception:
             created_by_scan = False
         decision = preflight_remote_code_consent(model_name, hf_token = hf_token)
@@ -2518,6 +2522,44 @@ def _get_repo_size_cached(repo_id: str) -> int:
     except Exception as e:
         logger.warning(f"Failed to get repo size for {repo_id}: {e}")
         return 0
+
+
+def _repo_in_any_hf_cache(model_name: str) -> bool:
+    """Whether ``model_name`` already exists in ANY HF cache the discard searches
+    (active, legacy, default).
+
+    ``created_by_scan`` must be True only when the scan itself first pulled the repo;
+    checking just the active cache (``get_cache_path``) would mark a repo the user
+    already had in a legacy/default cache as scan-created, so declining the consent
+    would delete a model they did not download via the scan. Mirrors the cache set in
+    ``_all_hf_cache_scans`` but only probes for the one repo dir (cheap, no full scan).
+    """
+    from utils.paths import (
+        hf_default_cache_dir,
+        legacy_hf_cache_dir,
+        resolve_cached_repo_id_case,
+    )
+
+    dirname = f"models--{resolve_cached_repo_id_case(model_name).replace('/', '--')}"
+    candidates = []
+    try:
+        from huggingface_hub.constants import HF_HUB_CACHE
+
+        candidates.append(Path(HF_HUB_CACHE))
+    except Exception:
+        pass
+    for fn in (legacy_hf_cache_dir, hf_default_cache_dir):
+        try:
+            candidates.append(fn())
+        except Exception:
+            continue
+    for cache in candidates:
+        try:
+            if (cache / dirname).exists():
+                return True
+        except Exception:
+            continue
+    return False
 
 
 def _all_hf_cache_scans():
