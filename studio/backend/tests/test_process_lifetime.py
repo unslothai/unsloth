@@ -40,11 +40,27 @@ def _reset_module_state():
 
 
 def _alive(pid: int) -> bool:
+    if sys.platform == "win32":
+        return _win_alive(pid)
     try:
-        os.kill(pid, 0)
+        os.kill(pid, 0)  # POSIX existence probe (on Windows this would terminate it)
         return True
     except OSError:
         return False
+
+
+def _win_alive(pid: int) -> bool:
+    import ctypes
+
+    PROCESS_QUERY_LIMITED_INFORMATION, STILL_ACTIVE = 0x1000, 259
+    kernel32 = ctypes.windll.kernel32
+    handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not handle:
+        return False
+    code = ctypes.c_ulong()
+    kernel32.GetExitCodeProcess(handle, ctypes.byref(code))
+    kernel32.CloseHandle(handle)
+    return code.value == STILL_ACTIVE
 
 
 def _wait_dead(pid: int, timeout: float) -> bool:
@@ -115,6 +131,32 @@ def test_pdeathsig_child_dies_when_parent_sigkilled(tmp_path):
         proc.kill()  # hard-kill the parent (no graceful shutdown runs)
         proc.wait(timeout = 5)
         assert _wait_dead(sleeper_pid, 5.0), "child orphaned after parent SIGKILL"
+    finally:
+        proc.kill()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason = "Windows Job Object")
+def test_windows_job_kills_child_when_parent_dies(tmp_path):
+    # Real kill-on-job-close: the parent installs the job and assigns itself, a
+    # child inherits it automatically, and terminating the parent must reap the
+    # child (the orphaned-cloudflared.exe scenario).
+    mid = tmp_path / "mid.py"
+    mid.write_text(
+        "import sys, subprocess, time\n"
+        f"sys.path.insert(0, {str(_BACKEND)!r})\n"
+        "import utils.process_lifetime as pl\n"
+        "pl.initialize_parent_lifetime()\n"
+        "p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(300)'])\n"
+        "print(p.pid, flush = True)\n"
+        "time.sleep(300)\n"
+    )
+    proc = subprocess.Popen([sys.executable, str(mid)], stdout = subprocess.PIPE, text = True)
+    try:
+        child_pid = int(proc.stdout.readline().strip())
+        assert _alive(child_pid)
+        proc.kill()  # TerminateProcess the parent -> last job handle closes
+        proc.wait(timeout = 5)
+        assert _wait_dead(child_pid, 5.0), "child orphaned after parent killed"
     finally:
         proc.kill()
 
