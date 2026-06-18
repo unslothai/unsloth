@@ -50,8 +50,15 @@ export async function confirmRemoteCodeIfNeeded({
   }
 
   // Open the dialog when the model needs custom-code consent OR Hugging Face's
-  // security scan flagged unsafe files (a hard block). Otherwise nothing to confirm.
-  if (!scan.requiresTrustRemoteCode && scan.unsafeFiles.length === 0) return true;
+  // security scan flagged unsafe files (a hard block). Otherwise there is nothing to
+  // review -- but a model can still require trust_remote_code via its Studio YAML
+  // default with no auto_map (e.g. GLM-4.7-Flash). The scan reports no raw auto_map
+  // for those, so propagate the caller's requirement (granting an empty pin) instead
+  // of dropping it, which would send trust_remote_code=false and fail the load.
+  if (!scan.requiresTrustRemoteCode && scan.unsafeFiles.length === 0) {
+    if (requiresTrustRemoteCode) onApprove(null);
+    return true;
+  }
 
   const confirmed = await useRemoteCodeConsentDialogStore
     .getState()

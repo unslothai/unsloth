@@ -502,7 +502,10 @@ export function ExportPage() {
         const remoteCodeOk = await confirmRemoteCodeIfNeeded({
           modelName: source,
           hfToken: hfToken || null,
-          requiresTrustRemoteCode: trustRemoteCode,
+          // An HF source may require trust_remote_code via its Studio YAML default
+          // even with no auto_map to review; signal that so the helper grants it
+          // (otherwise a YAML-only model exports with trust_remote_code=false).
+          requiresTrustRemoteCode: modelSource === "hf",
           onApprove: (fingerprint) => {
             trustRemoteCode = true;
             approvedRemoteCodeFingerprint = fingerprint;

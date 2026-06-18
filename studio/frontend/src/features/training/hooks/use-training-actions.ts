@@ -219,6 +219,31 @@ export function useTrainingActions() {
 
       runtimeStore.setStartResources(payload.model_name, payload.hf_dataset, true);
 
+      // Resume goes straight to startTraining, so it must run the same consent gate
+      // as a fresh start -- otherwise a resumed run whose model needs custom code
+      // (or an old run saved before consent existed, with no approved fingerprint)
+      // hits the worker block with no dialog to proceed through.
+      if (payload.model_name) {
+        let trustRemoteCode = Boolean(payload.trust_remote_code);
+        let approvedRemoteCodeFingerprint =
+          payload.approved_remote_code_fingerprint ?? null;
+        const remoteCodeOk = await confirmRemoteCodeIfNeeded({
+          modelName: payload.model_name,
+          hfToken: payload.hf_token ?? null,
+          requiresTrustRemoteCode: trustRemoteCode,
+          onApprove: (fingerprint) => {
+            trustRemoteCode = true;
+            approvedRemoteCodeFingerprint = fingerprint;
+          },
+        });
+        if (!remoteCodeOk) {
+          runtimeStore.setStarting(false);
+          return false;
+        }
+        payload.trust_remote_code = trustRemoteCode;
+        payload.approved_remote_code_fingerprint = approvedRemoteCodeFingerprint;
+      }
+
       const response = await startTraining(payload);
       if (response.status === "error") {
         throw new Error(response.error || response.message);
