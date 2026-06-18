@@ -451,8 +451,9 @@ def test_indexed_shard_under_load_subdir_blocks():
         "layer.0.weight": "shards/pytorch_model-00001-of-00002.bin",
         "layer.1.weight": "shards/pytorch_model-00002-of-00002.bin",
     }
-    with _patch_status(status), _patch_index(
-        weight_map, index_filename = "LLM/pytorch_model.bin.index.json"
+    with (
+        _patch_status(status),
+        _patch_index(weight_map, index_filename = "LLM/pytorch_model.bin.index.json"),
     ):
         d = evaluate_file_security("org/spark-tts", load_subdirs = ("LLM",))
     assert d.blocked is True

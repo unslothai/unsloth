@@ -1630,9 +1630,7 @@ async def scan_model_remote_code(
             )
         except Exception:
             created_by_scan = False
-        decision = preflight_remote_code_consent_for_targets(
-            security_targets, hf_token = hf_token
-        )
+        decision = preflight_remote_code_consent_for_targets(security_targets, hf_token = hf_token)
         payload = decision.response_payload()
         payload["requires_trust_remote_code"] = decision.has_remote_code
         payload["created_by_scan"] = created_by_scan

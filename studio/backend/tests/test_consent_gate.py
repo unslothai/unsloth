@@ -306,9 +306,7 @@ class TestConsentGate:
                 return "MEDIUM: large-base64-blob"
 
             def findings_payload(self):
-                return [
-                    {"severity": "MEDIUM", "file": "modeling.py", "check": "large-base64-blob"}
-                ]
+                return [{"severity": "MEDIUM", "file": "modeling.py", "check": "large-base64-blob"}]
 
         with (
             patch.object(consent, "_config_has_auto_map", return_value = True),

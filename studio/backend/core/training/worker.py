@@ -1472,6 +1472,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
     except Exception as exc:
         logger.debug("Could not resolve LoRA base for malware scan: %s", exc)
     from utils.security import security_load_subdirs
+
     for target in dict.fromkeys(malware_targets):
         _fs = evaluate_file_security(
             target, hf_token = hf_token, load_subdirs = security_load_subdirs(target, hf_token)
@@ -2208,6 +2209,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     except Exception as exc:
         logger.debug("Could not resolve LoRA base for malware scan: %s", exc)
     from utils.security import security_load_subdirs
+
     _ls_hf = config.get("hf_token") or None
     for target in dict.fromkeys(malware_targets):
         _fs = evaluate_file_security(
@@ -3236,6 +3238,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
         except Exception as exc:
             logger.debug("Could not resolve LoRA base for malware scan: %s", exc)
         from utils.security import security_load_subdirs
+
         for target in dict.fromkeys(malware_targets):
             _fs = evaluate_file_security(
                 target, hf_token = hf_token, load_subdirs = security_load_subdirs(target, hf_token)

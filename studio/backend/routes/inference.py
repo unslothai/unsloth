@@ -2471,9 +2471,9 @@ async def load_model(
             trust_remote_code_used = bool(getattr(request, "trust_remote_code", False)),
         )
         try:
-            backend.models.setdefault(config.identifier, {})[
-                "requires_trust_remote_code"
-            ] = _requires_rc
+            backend.models.setdefault(config.identifier, {})["requires_trust_remote_code"] = (
+                _requires_rc
+            )
         except Exception:
             pass
 

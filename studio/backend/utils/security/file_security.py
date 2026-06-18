@@ -166,7 +166,11 @@ def _index_prefixes(load_subdirs) -> tuple:
     return tuple(prefixes)
 
 
-def _indexed_shard_paths(model_name: str, hf_token: Optional[str], load_subdirs = ()):
+def _indexed_shard_paths(
+    model_name: str,
+    hf_token: Optional[str],
+    load_subdirs = (),
+):
     """Repo-relative weight paths a load could fetch via weight-index files.
 
     Returns a ``set`` of normalized paths (possibly empty when the repo simply ships
@@ -293,7 +297,10 @@ def _fetch_security_status(model_name: str, hf_token: Optional[str]):
 
 
 def evaluate_file_security(
-    model_name: str, hf_token: Optional[str] = None, *, load_subdirs = ()
+    model_name: str,
+    hf_token: Optional[str] = None,
+    *,
+    load_subdirs = (),
 ) -> FileSecurityDecision:
     """Block a load when Hugging Face's security scan flags unsafe serialized files.
 
