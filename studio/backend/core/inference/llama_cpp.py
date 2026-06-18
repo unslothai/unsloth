@@ -3357,6 +3357,7 @@ class LlamaCppBackend:
         model_identifier: str,
         n_ctx: int,
         extra_args: Optional[List[str]],
+        gpu_ids: Optional[List[int]] = None,
     ) -> bool:
         """Launch the OpenAI-compat diffusion shim (which drives the on-device
         visual decoder) and wait for health. Presents the same /v1 + /health
@@ -3380,7 +3381,9 @@ class LlamaCppBackend:
         # Auto-size (0): the visual server probes the largest context that fits this GPU's VRAM
         # (capped at the training context). An explicit in-range n_ctx overrides it.
         maxtok = n_ctx if (n_ctx and 0 < n_ctx <= 65536) else 0
-        gpu = os.environ.get("DG_GPU", "0")
+        # Honor the GPU picker: the diffusion runner takes a single device, so
+        # use the first selected GPU. Falls back to DG_GPU / 0 when unset.
+        gpu = str(gpu_ids[0]) if gpu_ids else os.environ.get("DG_GPU", "0")
 
         cmd = list(shim_cmd) + [
             "--gguf",
@@ -3459,6 +3462,9 @@ class LlamaCppBackend:
         self._model_identifier = model_identifier
         self._cache_type_kv = None
         self._gpu_offload_active = True
+        # Record the picked device so the load response echoes it and a re-Apply
+        # with the same pick dedups instead of forcing a needless reload.
+        self._gpu_ids = sorted(gpu_ids) if gpu_ids else None
         if hf_variant:
             self._hf_variant = hf_variant
         elif gguf_path:
@@ -4407,6 +4413,7 @@ class LlamaCppBackend:
                         model_identifier = model_identifier,
                         n_ctx = n_ctx,
                         extra_args = extra_args,
+                        gpu_ids = gpu_ids,
                     )
 
             if not binary:

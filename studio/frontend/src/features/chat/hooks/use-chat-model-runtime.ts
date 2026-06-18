@@ -549,6 +549,9 @@ export function useChatModelRuntime() {
                 gpuLayers: GPU_LAYERS_ALL,
                 nCpuMoe: 0,
                 splitRatio: "",
+                // A fit context pin is per-model; clear it so a different model
+                // loads at Auto/native, not the previous model's pin.
+                customContextLength: null,
               });
             }
 
