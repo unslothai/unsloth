@@ -479,7 +479,7 @@ export function ModelSelector({
       const formatLabel = isLocal
         ? isGguf
           ? "GGUF"
-          : "Local"
+          : ""
         : isTraining && isMerged
           ? "Full finetune"
           : isExported
@@ -497,7 +497,7 @@ export function ModelSelector({
       all.set(lora.id, {
         ...lora,
         name: displayName,
-        description: `${formatLabel} · ${sourceLabel}`,
+        description: formatLabel ? `${formatLabel} · ${sourceLabel}` : sourceLabel,
       });
     }
     for (const externalModel of externalModels) {

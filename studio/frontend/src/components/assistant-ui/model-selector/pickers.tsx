@@ -191,6 +191,11 @@ const FINETUNED_TAG: ModelRowTag = {
   label: "Fine-tuned",
   tooltip: TOOLTIPS.finetuned,
 };
+const TRAINING_TAG: ModelRowTag = {
+  tone: "training",
+  label: "Training",
+  tooltip: TOOLTIPS.training,
+};
 
 function dedupe(values: string[]): string[] {
   return [...new Set(values.filter(Boolean))];
@@ -2171,6 +2176,9 @@ export function LoraModelPicker({
                   // so e.g. a local GGUF fine-tune only showed "GGUF" — see
                   // issues #6367 and #6381.
                   const finetunedTags: ModelRowTag[] = [FINETUNED_TAG];
+                  if (isTraining) {
+                    finetunedTags.push(TRAINING_TAG);
+                  }
                   if (isLocal) {
                     if (isLocalGgufDir) finetunedTags.push(formatTag("gguf"));
                     finetunedTags.push(LOCAL_TAG);
