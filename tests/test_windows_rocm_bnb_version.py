@@ -11,10 +11,7 @@
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 # GNU Lesser General Public License for more details.
 
-"""Tests for ``maybe_set_windows_rocm_bnb_version`` (unsloth/import_fixes.py).
-
-The module is loaded in isolation (stdlib + packaging only), so no torch /
-GPU is required and unsloth's GPU init never runs."""
+"""Tests for ``maybe_set_windows_rocm_bnb_version`` (loaded in isolation, no torch/GPU)."""
 
 from __future__ import annotations
 
@@ -45,8 +42,8 @@ def import_fixes():
 
 @pytest.fixture()
 def clean_env(monkeypatch):
-    """Unset the env vars and remove them afterwards (the function writes
-    os.environ directly, which monkeypatch does not auto-revert)."""
+    """Unset the env vars and remove them afterwards; the function writes
+    os.environ directly, which monkeypatch does not auto-revert."""
     for var in (
         "BNB_ROCM_VERSION",
         "UNSLOTH_SKIP_BNB_ROCM_VERSION",
@@ -78,7 +75,7 @@ def test_detect_picks_highest_rocm_suffix(import_fixes, tmp_path, monkeypatch):
     pkg.mkdir()
     for name in (
         "libbitsandbytes_rocm72.dll",
-        "libbitsandbytes_rocm713.dll",  # numerically highest -> should win
+        "libbitsandbytes_rocm713.dll",  # numerically highest -> wins
         "libbitsandbytes_cpu.dll",
         "__init__.py",
     ):
@@ -129,8 +126,7 @@ def test_noop_when_not_rocm_torch(import_fixes, clean_env):
 
 
 def test_noop_when_no_rocm_dll_installed(import_fixes, clean_env):
-    # Never force a ROCm backend name when no ROCm DLL ships (avoid breaking a
-    # non-ROCm bitsandbytes that happens to sit next to a ROCm torch build).
+    # No ROCm DLL ships -> don't force a backend name (would break non-ROCm bnb).
     _force(import_fixes, clean_env, win = True, rocm = True, detected = None)
     assert import_fixes.maybe_set_windows_rocm_bnb_version() is None
     assert "BNB_ROCM_VERSION" not in os.environ
@@ -151,8 +147,7 @@ def test_explicit_opt_out(import_fixes, clean_env):
 
 
 def test_redetects_sitecustomize_seeded_default(import_fixes, clean_env):
-    # Studio's installer persists a default via the venv sitecustomize.py; the
-    # wheel may have changed since, so the seeded value must be redetected.
+    # A sitecustomize-seeded default must be redetected (the wheel may have changed).
     clean_env.setenv("BNB_ROCM_VERSION", "72")
     clean_env.setenv("UNSLOTH_BNB_ROCM_VERSION_SOURCE", "sitecustomize")
     _force(import_fixes, clean_env, win = True, rocm = True, detected = "713")
@@ -181,8 +176,7 @@ def test_user_value_with_non_sitecustomize_marker_untouched(import_fixes, clean_
 
 
 def test_opt_out_unseats_sitecustomize_seeded_value(import_fixes, clean_env):
-    # The opt-out must also drop a default our own sitecustomize block seeded,
-    # so bitsandbytes never sees the override the user disabled.
+    # Opt-out must also drop a sitecustomize-seeded default so bnb never sees it.
     clean_env.setenv("BNB_ROCM_VERSION", "72")
     clean_env.setenv("UNSLOTH_BNB_ROCM_VERSION_SOURCE", "sitecustomize")
     clean_env.setenv("UNSLOTH_SKIP_BNB_ROCM_VERSION", "1")
@@ -202,8 +196,7 @@ def test_opt_out_keeps_explicit_user_value(import_fixes, clean_env):
 
 
 def test_empty_string_value_without_marker_is_respected(import_fixes, clean_env):
-    # "" counts as present: without the sitecustomize marker it is not ours
-    # to overwrite.
+    # "" counts as present: without the sitecustomize marker it is not ours to overwrite.
     clean_env.setenv("BNB_ROCM_VERSION", "")
     _force(import_fixes, clean_env, win = True, rocm = True, detected = "72")
     assert import_fixes.maybe_set_windows_rocm_bnb_version() is None
@@ -211,8 +204,8 @@ def test_empty_string_value_without_marker_is_respected(import_fixes, clean_env)
 
 
 # ---------------------------------------------------------------------------
-# _is_hip_torch_build (the strict gate -- regression for the HIP-SDK-on-a-
-# CUDA-box false positive: env hints like HIP_PATH must NOT count)
+# _is_hip_torch_build: strict gate; HIP-SDK env hints (HIP_PATH) must NOT count
+# (regression for the HIP-SDK-on-a-CUDA-box false positive).
 # ---------------------------------------------------------------------------
 
 
@@ -226,15 +219,14 @@ def test_hip_build_true_from_wheel_tag(import_fixes, monkeypatch):
 
 
 def test_hip_build_true_from_torch_version_hip(import_fixes, monkeypatch):
-    # Custom/source HIP build without the +rocm tag.
+    # Custom/source HIP build without the +rocm wheel tag.
     monkeypatch.setattr(import_fixes, "importlib_version", lambda name: "2.11.0")
     monkeypatch.setitem(__import__("sys").modules, "torch", _fake_torch("7.2.0"))
     assert import_fixes._is_hip_torch_build() is True
 
 
 def test_hip_build_false_for_cuda_torch_despite_rocm_env_hints(import_fixes, monkeypatch):
-    """HIP SDK env vars set but CUDA torch: the strict gate must say False,
-    otherwise BNB_ROCM_VERSION gets set and CUDA bitsandbytes raises."""
+    """HIP SDK env vars but CUDA torch: gate must be False, else CUDA bnb raises."""
     monkeypatch.setenv("HIP_PATH", r"C:\Program Files\AMD\ROCm\6.2")
     monkeypatch.setenv("ROCM_PATH", r"C:\Program Files\AMD\ROCm\6.2")
     monkeypatch.setattr(import_fixes, "importlib_version", lambda name: "2.9.0+cu126")
