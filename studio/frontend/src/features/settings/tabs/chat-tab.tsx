@@ -310,7 +310,7 @@ export function ChatTab() {
               </span>
               <span className="flex flex-wrap items-center gap-2">
                 <span>The gear always opens Run settings:</span>
-                <span className="flex items-center gap-2 rounded-md bg-black/[0.03] px-2.5 py-1.5 dark:bg-white/[0.04]">
+                <span className="flex items-center gap-2">
                   <span className="font-mono text-xs text-foreground">
                     Q4_K_M
                   </span>
