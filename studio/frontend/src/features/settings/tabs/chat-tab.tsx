@@ -65,7 +65,7 @@ const PLUS_MENU_SETTINGS: {
 }[] = [
   {
     id: "chatWithFiles",
-    label: "Chat with Files",
+    label: "Chat with Files (RAG)",
     icon: (
       <HugeiconsIcon
         icon={FileDatabaseIcon}
