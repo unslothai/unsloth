@@ -5126,6 +5126,8 @@ class LlamaCppBackend:
                     # llama.cpp build; flash-attn (forced on above) covers the
                     # quantized-V requirement.
                     "turbo4",
+                    "turbo3",
+                    "turbo2",
                     "f32",
                 }
                 if (

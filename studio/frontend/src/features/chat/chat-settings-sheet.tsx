@@ -965,6 +965,8 @@ export function ChatSettingsPanel({
                         <SelectItem value="q5_1">q5_1</SelectItem>
                         <SelectItem value="q4_1">q4_1</SelectItem>
                         <SelectItem value="turbo4">turbo4</SelectItem>
+                        <SelectItem value="turbo3">turbo3</SelectItem>
+                        <SelectItem value="turbo2">turbo2</SelectItem>
                       </SelectContent>
                     </Select>
                   </div>
@@ -1004,6 +1006,8 @@ export function ChatSettingsPanel({
                         <SelectItem value="q5_1">q5_1</SelectItem>
                         <SelectItem value="q4_1">q4_1</SelectItem>
                         <SelectItem value="turbo4">turbo4</SelectItem>
+                        <SelectItem value="turbo3">turbo3</SelectItem>
+                        <SelectItem value="turbo2">turbo2</SelectItem>
                       </SelectContent>
                     </Select>
                   </div>
