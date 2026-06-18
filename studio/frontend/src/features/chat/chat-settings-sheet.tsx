@@ -2,6 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
+  Alert,
+  AlertDescription,
+  AlertTitle,
+} from "@/components/ui/alert";
+import {
   AlertDialog,
   AlertDialogAction,
   AlertDialogCancel,
@@ -49,18 +54,14 @@ import {
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
+import { InfoHint } from "@/components/ui/info-hint";
+import { Tooltip, TooltipContent } from "@/components/ui/tooltip";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useLlamaUpdateCheck } from "@/hooks/use-llama-update-check";
 import { cn } from "@/lib/utils";
 import {
   ArrowTurnBackwardIcon,
   Edit03Icon,
-  InformationCircleIcon,
   LayoutAlignRightIcon,
 } from "@hugeicons/core-free-icons";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
@@ -96,7 +97,10 @@ import {
   providerSupportsBuiltinCodeExecution,
   providerSupportsFastMode,
 } from "./provider-capabilities";
-import { useChatRuntimeStore } from "./stores/chat-runtime-store";
+import {
+  isPendingGguf,
+  useChatRuntimeStore,
+} from "./stores/chat-runtime-store";
 import { RetrievalSettingsSection } from "@/features/rag/components/retrieval-settings-section";
 import type { InferenceParams } from "./types/runtime";
 
@@ -105,33 +109,6 @@ export type { InferenceParams } from "./types/runtime";
 
 function canUseStorage(): boolean {
   return typeof window !== "undefined";
-}
-
-export function InfoHint({ children }: { children: ReactNode }) {
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <button
-          type="button"
-          aria-label="More info"
-          className="inline-flex size-4 shrink-0 cursor-help items-center justify-center rounded-full text-muted-foreground/70 transition-colors hover:text-[#383835] dark:hover:text-[#e8e8e8] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        >
-          <HugeiconsIcon
-            icon={InformationCircleIcon}
-            strokeWidth={1.75}
-            className="size-3.5"
-          />
-        </button>
-      </TooltipTrigger>
-      <TooltipContent
-        side="left"
-        sideOffset={8}
-        className="tooltip-compact [&_span>svg]:hidden! duration-0 max-w-64"
-      >
-        {children}
-      </TooltipContent>
-    </Tooltip>
-  );
 }
 
 /**
@@ -461,6 +438,12 @@ interface ChatSettingsPanelProps {
    */
   externalProviderType?: string | null;
   onReloadModel?: () => void;
+  /** Loads the staged `pendingSelection` (deferred "Load on selection" flow). */
+  onLoadPendingModel?: () => void;
+  /** Download progress (0–1) for a staged GGUF being fetched, or null when idle. */
+  stagedDownloadFraction?: number | null;
+  /** Cancels the in-flight staged download (paired with abandoning the stage). */
+  onCancelStagedDownload?: () => void;
 }
 
 export function ChatSettingsPanel({
@@ -474,6 +457,9 @@ export function ChatSettingsPanel({
   onExternalProviderChange,
   externalProviderType = null,
   onReloadModel,
+  onLoadPendingModel,
+  stagedDownloadFraction,
+  onCancelStagedDownload,
 }: ChatSettingsPanelProps) {
   // Local models show every knob; providerCapabilities is only consulted when
   // isExternalModel. Unknown providers fall back to the OpenAI-compat shape via
@@ -488,9 +474,31 @@ export function ChatSettingsPanel({
   const showPresencePenalty =
     !isExternalModel || Boolean(providerCapabilities?.presencePenalty);
   const isMobile = useIsMobile();
-  const isGguf = useChatRuntimeStore((s) => s.activeGgufVariant) != null;
+  const pendingSelection = useChatRuntimeStore((s) => s.pendingSelection);
+  const abandonStagedModel = useChatRuntimeStore((s) => s.abandonStagedModel);
+  const resetModelSettingsToLoaded = useChatRuntimeStore(
+    (s) => s.resetModelSettingsToLoaded,
+  );
+  // A staged GGUF pick (deferred load) shows the GGUF load knobs so they can be
+  // set before the single load.
+  const pendingIsGguf = isPendingGguf(pendingSelection);
+  // Short, human-readable name for the staged pick (HF ids carry an org prefix;
+  // native picks are already a display label). Drives the "staged, not loaded"
+  // callout so it's obvious the selection hasn't loaded yet.
+  const stagedLabel = (() => {
+    const id = pendingSelection?.id ?? "";
+    const slash = id.lastIndexOf("/");
+    const base = slash >= 0 ? id.slice(slash + 1) : id;
+    return base || id;
+  })();
+  const isLoadedGguf =
+    useChatRuntimeStore((s) => s.activeGgufVariant) != null;
+  const isGguf = isLoadedGguf || pendingIsGguf;
+  // A staged pick is always a local GGUF, so show its Model section (and the
+  // Load button) even when the currently active model is external.
   const hasModelContent =
-    !isExternalModel && (isGguf || Boolean(params.checkpoint));
+    pendingSelection != null ||
+    (!isExternalModel && (isGguf || Boolean(params.checkpoint)));
   const speculativeType = useChatRuntimeStore((s) => s.speculativeType);
   const setSpeculativeType = useChatRuntimeStore((s) => s.setSpeculativeType);
   const loadedSpeculativeType = useChatRuntimeStore(
@@ -552,8 +560,25 @@ export function ChatSettingsPanel({
   const setActivePreset = useChatRuntimeStore((s) => s.setActivePreset);
   const settingsHydrated = useChatRuntimeStore((s) => s.settingsHydrated);
 
-  const ctxDisplayValue = customContextLength ?? ggufContextLength ?? "";
-  const ctxMaxValue = ggufNativeContextLength ?? ggufContextLength ?? null;
+  // A staged (not-yet-loaded) GGUF carries its own header context length on
+  // pendingSelection, so the slider can use the staged model's real ceiling
+  // without reading the loaded model's `ggufContextLength`.
+  const stagedContextLength = pendingSelection?.contextLength ?? null;
+  // While staging, the sheet reflects the STAGED model, so its header context
+  // takes precedence over the loaded model's (which may differ or be larger).
+  const baseContext = pendingIsGguf ? stagedContextLength : ggufContextLength;
+  const baseNativeContext = pendingIsGguf
+    ? stagedContextLength
+    : ggufNativeContextLength;
+  // Context controls render once we actually have a ceiling: for a staged GGUF,
+  // once its header metadata arrives (post-download); otherwise post-load.
+  const showContextControl = pendingIsGguf
+    ? stagedContextLength != null
+    : isLoadedGguf;
+  const stagedDownloading =
+    stagedDownloadFraction != null && stagedDownloadFraction < 1;
+  const ctxDisplayValue = customContextLength ?? baseContext ?? "";
+  const ctxMaxValue = baseNativeContext ?? baseContext ?? null;
   const kvDirty = kvCacheDtype !== loadedKvCacheDtype;
   const ctxDirty = customContextLength !== null;
   const specDirty = speculativeType !== loadedSpeculativeType;
@@ -561,12 +586,6 @@ export function ChatSettingsPanel({
   const tpDirty = tensorParallel !== (loadedTensorParallel ?? false);
   const modelSettingsDirty =
     kvDirty || ctxDirty || specDirty || specDraftDirty || tpDirty;
-  const loadedChatTemplateOverride = useChatRuntimeStore(
-    (s) => s.loadedChatTemplateOverride,
-  );
-  const setChatTemplateOverride = useChatRuntimeStore(
-    (s) => s.setChatTemplateOverride,
-  );
   const [presetNameInput, setPresetNameInput] = useState(activePreset);
   const [systemPromptEditorOpen, setSystemPromptEditorOpen] = useState(false);
   const [systemPromptDraft, setSystemPromptDraft] = useState("");
@@ -804,7 +823,7 @@ export function ChatSettingsPanel({
                 <button
                   type="button"
                   onClick={() => onOpenChange?.(false)}
-                  className="flex h-[34px] w-[34px] cursor-pointer items-center justify-center rounded-[12px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  className="flex h-[34px] w-[34px] cursor-pointer items-center justify-center rounded-full text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   aria-label="Close run settings"
                 >
                   <HugeiconsIcon
@@ -834,8 +853,19 @@ export function ChatSettingsPanel({
         {hasModelContent && (
         <CollapsibleSection label="Model" defaultOpen={true} first>
           <div className="flex flex-col gap-4 pt-1">
+            {pendingSelection && (
+              <Alert className="rounded-[14px] border-primary/30 bg-primary/5 px-3 py-2">
+                <AlertTitle className="text-[12px] font-medium">
+                  {stagedLabel} is staged, not loaded yet
+                </AlertTitle>
+                <AlertDescription className="text-[11.5px] leading-[1.45] text-muted-foreground">
+                  Set the options below, then choose Load model to load it.
+                </AlertDescription>
+              </Alert>
+            )}
             {isGguf && (
               <>
+                {showContextControl && (
                 <div className="space-y-3.5">
                   <div className="flex items-center justify-between gap-3">
                     <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
@@ -845,14 +875,14 @@ export function ChatSettingsPanel({
                       value={
                         typeof ctxDisplayValue === "number"
                           ? ctxDisplayValue
-                          : (ggufContextLength ?? 0)
+                          : (baseContext ?? 0)
                       }
                       min={128}
                       max={ctxMaxValue ?? undefined}
                       step={1}
                       onChange={(v) => {
                         setCustomContextLength(
-                          v === (ggufContextLength ?? 0) ? null : v,
+                          v === (baseContext ?? 0) ? null : v,
                         );
                       }}
                       ariaLabel="Context Length"
@@ -867,14 +897,14 @@ export function ChatSettingsPanel({
                       Math.min(
                         typeof ctxDisplayValue === "number"
                           ? ctxDisplayValue
-                          : (ggufContextLength ?? 4096),
+                          : (baseContext ?? 4096),
                         ctxMaxValue ?? 4096,
                       ),
                     ]}
                     onValueChange={([v]) => {
                       const snapped = Math.round(v);
                       setCustomContextLength(
-                        snapped === (ggufContextLength ?? 0) ? null : snapped,
+                        snapped === (baseContext ?? 0) ? null : snapped,
                       );
                     }}
                     className="panel-slider"
@@ -889,6 +919,7 @@ export function ChatSettingsPanel({
                       </p>
                     )}
                 </div>
+                )}
                 <div className="flex items-center justify-between gap-3">
                   <div className="flex min-w-0 items-center gap-1.5">
                     <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
@@ -925,6 +956,8 @@ export function ChatSettingsPanel({
                     </Select>
                   </div>
                 </div>
+                {isGguf && (
+                  <>
                 <div className="flex items-center justify-between gap-3">
                   <div className="flex min-w-0 items-center gap-1.5">
                     <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
@@ -1032,6 +1065,8 @@ export function ChatSettingsPanel({
                     />
                   </div>
                 )}
+                  </>
+                )}
                 <div className="flex items-center justify-between gap-3">
                   <div className="flex min-w-0 items-center gap-1.5">
                     <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
@@ -1058,8 +1093,44 @@ export function ChatSettingsPanel({
             {/* Apply/Reset belongs to the model-reload settings above (context
                 length, KV cache, speculative decoding). Render it here, before
                 the Chat Template row, so it never reads as attached to Chat
-                Template (which is edited via its own dialog). */}
-            {modelSettingsDirty && (
+                Template (which is edited via its own dialog). When a model is
+                staged (deferred load), Load/Cancel takes its place: there's
+                nothing loaded to "apply" against yet. */}
+            {pendingSelection ? (
+              <div className="flex flex-col gap-2">
+                {stagedDownloading && (
+                  <p className="text-[11px] text-muted-foreground">
+                    Downloading…{" "}
+                    {Math.round((stagedDownloadFraction ?? 0) * 100)}%
+                  </p>
+                )}
+                <div className="flex flex-wrap gap-1.5">
+                  <Button
+                    type="button"
+                    onClick={() => onLoadPendingModel?.()}
+                    disabled={stagedDownloading}
+                    size="sm"
+                    className="h-7 px-3 text-[12px] font-medium tracking-nav bg-primary/92 text-primary-foreground hover:bg-primary"
+                  >
+                    Load model
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      // Cancel abandons the stage; if a download is mid-flight,
+                      // stop it too rather than leaving it running headless.
+                      if (stagedDownloading) onCancelStagedDownload?.();
+                      abandonStagedModel();
+                    }}
+                    className="h-7 px-3 text-[12px] font-medium tracking-nav text-muted-foreground"
+                  >
+                    Cancel
+                  </Button>
+                </div>
+              </div>
+            ) : modelSettingsDirty ? (
               <div className="flex flex-wrap gap-1.5">
                 <Button
                   type="button"
@@ -1073,20 +1144,13 @@ export function ChatSettingsPanel({
                   type="button"
                   variant="outline"
                   size="sm"
-                  onClick={() => {
-                    setCustomContextLength(null);
-                    setKvCacheDtype(loadedKvCacheDtype);
-                    setSpeculativeType(loadedSpeculativeType);
-                    setSpecDraftNMax(loadedSpecDraftNMax);
-                    setTensorParallel(loadedTensorParallel ?? false);
-                    setChatTemplateOverride(loadedChatTemplateOverride);
-                  }}
+                  onClick={() => resetModelSettingsToLoaded()}
                   className="h-7 px-3 text-[12px] font-medium tracking-nav text-muted-foreground"
                 >
                   Reset
                 </Button>
               </div>
-            )}
+            ) : null}
             <ChatTemplateFields />
           </div>
         </CollapsibleSection>
@@ -1468,21 +1532,21 @@ export function ChatSettingsPanel({
                   : 64
               }
               max={
-                isExternalModel
+                // A staged GGUF caps to its own context even over an active
+                // external model (the staged model is what will load).
+                !pendingIsGguf && isExternalModel
                   ? getExternalMaxOutputTokens(
                       externalProviderType,
                       externalSelection?.modelId,
                     )
-                  : isGguf && ggufContextLength
-                    ? ggufContextLength
+                  : isGguf && baseContext
+                    ? baseContext
                     : 32768
               }
               step={64}
               onChange={set("maxTokens")}
               displayValue={
-                isGguf &&
-                ggufContextLength &&
-                params.maxTokens >= ggufContextLength
+                isGguf && baseContext && params.maxTokens >= baseContext
                   ? "Max"
                   : undefined
               }

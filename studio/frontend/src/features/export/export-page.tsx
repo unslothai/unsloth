@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { SectionCard } from "@/components/section-card";
+import { RecentTrainingsSection } from "@/features/studio/recent-trainings-section";
 import { Button } from "@/components/ui/button";
 import {
   Combobox,
@@ -1114,6 +1115,8 @@ export function ExportPage() {
             </>
           )}
         </SectionCard>
+
+        <RecentTrainingsSection />
       </main>
 
       <ExportDialog

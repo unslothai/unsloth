@@ -50,6 +50,12 @@ export interface HfDatasetResult {
   id: string;
   downloads: number;
   likes: number;
+  private?: boolean;
+  gated?: false | "auto" | "manual";
+  updatedAt?: string;
+  createdAt?: string;
+  downloadsAllTime?: number;
+  prettyName?: string;
   totalExamples?: number;
   sizeCategory?: string;
   taskCategories: string[];
@@ -60,7 +66,12 @@ function mapDataset(raw: unknown): HfDatasetResult {
   const ds = raw as {
     name: string;
     downloads?: number;
+    downloadsAllTime?: number;
     likes?: number;
+    private?: boolean;
+    gated?: false | "auto" | "manual";
+    updatedAt?: Date | string;
+    createdAt?: Date | string;
     tags?: string[];
     cardData?: unknown;
   };
@@ -70,10 +81,28 @@ function mapDataset(raw: unknown): HfDatasetResult {
     .filter((t) => t.startsWith("task_categories:"))
     .map((t) => t.slice("task_categories:".length));
   const plainTags = tags.filter((t) => !t.includes(":"));
+  const updatedAt =
+    ds.updatedAt instanceof Date
+      ? ds.updatedAt.toISOString()
+      : typeof ds.updatedAt === "string"
+        ? ds.updatedAt
+        : undefined;
+  const createdAt =
+    ds.createdAt instanceof Date
+      ? ds.createdAt.toISOString()
+      : typeof ds.createdAt === "string"
+        ? ds.createdAt
+        : undefined;
   return {
     id: ds.name,
     downloads: ds.downloads ?? 0,
     likes: ds.likes ?? 0,
+    private: ds.private,
+    gated: ds.gated,
+    updatedAt,
+    createdAt,
+    downloadsAllTime: ds.downloadsAllTime,
+    prettyName: card?.pretty_name,
     totalExamples: extractTotalExamples(card),
     sizeCategory: card?.size_categories?.[0],
     taskCategories,
@@ -392,7 +421,7 @@ export function useHubDatasetSearch(
       }
       return listDatasets({
         search: hasQuery ? { query } : {},
-        additionalFields: ["cardData", "tags"],
+        additionalFields: ["cardData", "tags", "createdAt", "downloadsAllTime"],
         fetch: makeDatasetSortFetch(sortBy, sortDirection, signal),
         ...(accessToken ? { credentials: { accessToken } } : {}),
       }) as AsyncGenerator<unknown>;

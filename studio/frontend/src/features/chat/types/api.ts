@@ -77,6 +77,8 @@ export interface ValidateModelResponse {
   // Hugging Face's security scan flagged unsafe files, so the load is hard-blocked
   // pending review in the consent dialog.
   requires_security_review?: boolean;
+  /** Native context length from the local GGUF header; null until downloaded. */
+  context_length?: number | null;
 }
 
 export interface GgufVariantDetail {

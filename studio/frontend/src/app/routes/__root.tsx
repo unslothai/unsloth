@@ -120,6 +120,7 @@ function RootLayout() {
         chatRuntime.setActiveThreadId(null);
         chatRuntime.setActiveProjectId(null);
         chatRuntime.setIncognito(false);
+        if (chatRuntime.pendingSelection) chatRuntime.abandonStagedModel();
         void navigate({
           to: "/chat",
           search: { new: crypto.randomUUID() },
@@ -136,6 +137,7 @@ function RootLayout() {
     chatRuntime.setActiveProjectId(null);
     chatRuntime.setActiveThreadId(null);
     chatRuntime.setIncognito(false);
+    if (chatRuntime.pendingSelection) chatRuntime.abandonStagedModel();
   }, [isChatRoute]);
 
   return (
