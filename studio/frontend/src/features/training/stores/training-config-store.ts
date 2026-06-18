@@ -499,12 +499,25 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           const previousModel = get().selectedModel;
           // Reset vision_image_size on a true switch only; same-model reloads
           // go through the mapper, which preserves the user's choice.
-          const patch: { selectedModel: string | null; modelDefaultsError: null; visionImageSize?: number | null } = {
+          const patch: {
+            selectedModel: string | null;
+            modelDefaultsError: null;
+            visionImageSize?: number | null;
+            trustRemoteCode?: boolean;
+            approvedRemoteCodeFingerprint?: string | null;
+          } = {
             selectedModel,
             modelDefaultsError: null,
           };
           if (selectedModel !== previousModel) {
             patch.visionImageSize = DEFAULT_HYPERPARAMS.visionImageSize;
+            // Clear the previous model's remote-code approval so a clean model is not
+            // trained with a stale trust_remote_code=true (which bypasses the compiler
+            // and disables fused CE). The new model's own YAML default is re-applied by
+            // loadAndApplyModelDefaults below, and a custom-code model re-opens the
+            // consent dialog before training starts.
+            patch.trustRemoteCode = false;
+            patch.approvedRemoteCodeFingerprint = null;
           }
           set(patch);
 
