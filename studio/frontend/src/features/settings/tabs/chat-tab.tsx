@@ -302,32 +302,23 @@ export function ChatTab() {
           label="Load on selection"
           alignTop={true}
           description={
-            <span className="flex flex-col gap-1.5">
-              <span>
-                On: Unsloth auto-picks the best settings and loads it.
-                <br />
-                Off: opens Run settings to customize, then load.
-              </span>
-              <span className="flex flex-wrap items-center gap-2">
-                <span>The gear always opens Run settings:</span>
-                <span className="flex items-center gap-2">
-                  <span className="font-mono text-xs text-foreground">
-                    Q4_K_M
-                  </span>
-                  <span className="text-[9px] font-medium text-green-400">
-                    downloaded
-                  </span>
-                  <span className="text-[10px] text-muted-foreground">
-                    16 GB
-                  </span>
-                  <span className="flex size-5 items-center justify-center rounded-md bg-black/[0.06] dark:bg-white/[0.08]">
-                    <HugeiconsIcon
-                      icon={Settings02Icon}
-                      strokeWidth={1.75}
-                      className="size-3 text-muted-foreground/80"
-                    />
-                  </span>
-                </span>
+            <span>
+              On: Unsloth auto-picks the best settings and loads it.
+              <br />
+              Off: opens Run settings to customize, then load.
+              <br />
+              The gear always opens Run settings:{" "}
+              <span className="font-mono text-xs text-foreground">Q4_K_M</span>{" "}
+              <span className="text-[9px] font-medium text-green-400">
+                downloaded
+              </span>{" "}
+              <span className="text-[10px] text-muted-foreground">16 GB</span>{" "}
+              <span className="inline-flex size-4 items-center justify-center rounded bg-black/[0.06] align-[-3px] dark:bg-white/[0.08]">
+                <HugeiconsIcon
+                  icon={Settings02Icon}
+                  strokeWidth={1.75}
+                  className="size-2.5 text-muted-foreground/80"
+                />
               </span>
             </span>
           }
