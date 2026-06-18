@@ -2121,6 +2121,110 @@ def _read_native_context_length(repo_id: str, is_local: bool) -> Optional[int]:
     return None
 
 
+def _resolve_quant_gguf(
+    repo_id: str, quant: str, is_local: bool
+) -> tuple[Optional[str], int]:
+    """Primary shard path and total weight bytes for a downloaded quant, or
+    (None, 0). Metadata lives in shard 1, so the lexicographically first file of
+    the matching quant is returned. Scoped to one snapshot to avoid summing the
+    same quant across revisions. Never raises.
+    """
+    try:
+        from utils.models.model_config import (
+            _extract_quant_label,
+            _is_big_endian_gguf_path,
+        )
+
+        if is_local:
+            roots = [Path(repo_id)]
+        else:
+            from huggingface_hub import constants as hf_constants
+
+            if not _is_valid_repo_id(repo_id):
+                return None, 0
+            cache_dir = Path(hf_constants.HF_HUB_CACHE)
+            target = f"models--{repo_id.replace('/', '--')}".lower()
+            roots = []
+            for entry in cache_dir.iterdir():
+                if entry.name.lower() == target:
+                    snaps = entry / "snapshots"
+                    if snaps.is_dir():
+                        roots.extend(s for s in snaps.iterdir() if s.is_dir())
+
+        want = quant.lower().replace("-", "").replace("_", "")
+        for root in roots:
+            matches: list[Path] = []
+            total = 0
+            for f in _iter_gguf_paths(root):
+                if _is_mmproj_filename(f.name):
+                    continue
+                q = _extract_quant_label(f.name)
+                if _is_big_endian_gguf_path(f.name, q):
+                    continue
+                if q.lower().replace("-", "").replace("_", "") != want:
+                    continue
+                try:
+                    total += f.stat().st_size
+                except OSError:
+                    continue
+                matches.append(f)
+            if matches:
+                matches.sort(key = lambda p: p.name)
+                return str(matches[0]), total
+    except Exception:
+        pass
+    return None, 0
+
+
+@router.get("/kv-cache-estimate")
+async def get_kv_cache_estimate(
+    repo_id: str = Query(..., description = "HF repo ID or local path"),
+    quant: str = Query(..., description = "Quantization label (e.g. Q4_K_M)"),
+    n_ctx: int = Query(..., ge = 1, description = "Context length to size the KV cache for"),
+    cache_type_kv: Optional[str] = Query(None, description = "KV cache dtype (e.g. q8_0)"),
+    current_subject: str = Depends(get_current_subject),
+):
+    """Estimate KV cache + weight bytes for a downloaded GGUF at n_ctx.
+
+    Powers the load dialog's "exceeds memory" warning using the same
+    architecture-aware estimator as load. Best-effort: returns nulls when the
+    metadata is unavailable so the UI simply shows no warning.
+    """
+    null = {"kv_bytes": None, "weights_bytes": None, "native_context": None}
+    try:
+        from utils.models.model_config import is_local_path
+
+        is_local = is_local_path(repo_id)
+        path, weights_bytes = _resolve_quant_gguf(repo_id, quant, is_local)
+        if not path:
+            return null
+
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        be = LlamaCppBackend.__new__(LlamaCppBackend)
+        for attr in (
+            "_context_length", "_n_layers", "_n_kv_heads", "_n_heads",
+            "_embedding_length", "_kv_key_length", "_kv_value_length",
+            "_kv_lora_rank", "_sliding_window", "_sliding_window_pattern",
+            "_ssm_inner_size", "_full_attention_interval", "_key_length_mla",
+            "_n_kv_heads_by_layer", "_kv_key_length_swa", "_kv_value_length_swa",
+            "_shared_kv_layers", "_nextn_predict_layers",
+        ):
+            setattr(be, attr, None)
+        be._model_identifier = "kv-estimate"
+        be._read_gguf_metadata(path)
+
+        kv = be._estimate_kv_cache_bytes(n_ctx, cache_type_kv)
+        return {
+            "kv_bytes": int(kv) if kv else None,
+            "weights_bytes": weights_bytes or None,
+            "native_context": be._context_length,
+        }
+    except Exception as e:
+        logger.debug(f"kv-cache-estimate failed for '{repo_id}' {quant}: {e}")
+        return null
+
+
 @router.get("/gguf-variants", response_model = GgufVariantsResponse)
 async def get_gguf_variants(
     repo_id: str = Query(

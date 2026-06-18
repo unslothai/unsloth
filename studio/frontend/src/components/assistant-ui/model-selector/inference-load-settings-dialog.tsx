@@ -25,15 +25,20 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { estimateKvCache } from "@/features/chat/api/chat-api";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
-import { InformationCircleIcon } from "@hugeicons/core-free-icons";
+import { Alert02Icon, InformationCircleIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { type ReactNode, useRef, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import {
   clearRememberedLoadSettings,
   loadRememberedLoadSettings,
   saveRememberedLoadSettings,
 } from "./remembered-load-settings";
+
+// Fraction of total memory we treat as usable before warning, matching the
+// recommended list's OOM threshold (0.7 of VRAM + system RAM).
+const MEM_BUDGET_FRACTION = 0.7;
 
 // Filled pill controls, all the same height/width so the rows line up.
 const FIELD_CLASS =
@@ -97,6 +102,8 @@ export function InferenceLoadSettingsDialog({
   repoId,
   quant,
   maxContext,
+  gpuGb,
+  systemRamGb,
   onLoad,
 }: {
   open: boolean;
@@ -104,6 +111,8 @@ export function InferenceLoadSettingsDialog({
   repoId: string;
   quant: string;
   maxContext?: number | null;
+  gpuGb?: number;
+  systemRamGb?: number;
   onLoad: () => void;
 }) {
   const setCustomContextLength = useChatRuntimeStore(
@@ -160,6 +169,42 @@ export function InferenceLoadSettingsDialog({
   // Use the model's native max when known, else the fallback ceiling.
   const ctxMax = maxContext && maxContext > CTX_MIN ? maxContext : CTX_MAX;
 
+  // Warn when weights + KV cache at the chosen context exceed device memory.
+  // The KV size is estimated by the backend (architecture-aware); the budget
+  // uses the VRAM + system RAM we already know about.
+  const budgetGb = MEM_BUDGET_FRACTION * ((gpuGb ?? 0) + (systemRamGb ?? 0));
+  const [memWarning, setMemWarning] = useState<{
+    neededGb: number;
+    budgetGb: number;
+  } | null>(null);
+  useEffect(() => {
+    // Auto (no explicit context) lets the backend fit it; nothing to warn about.
+    if (!open || ctx == null || budgetGb <= 0) {
+      setMemWarning(null);
+      return;
+    }
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      estimateKvCache(repoId, quant, ctx, kv ?? "f16", controller.signal)
+        .then((res) => {
+          if (res.kv_bytes == null) {
+            setMemWarning(null);
+            return;
+          }
+          const neededBytes = (res.weights_bytes ?? 0) + res.kv_bytes;
+          const neededGb = neededBytes / 1024 ** 3;
+          setMemWarning(neededGb > budgetGb ? { neededGb, budgetGb } : null);
+        })
+        .catch(() => {
+          /* best-effort: no estimate, no warning */
+        });
+    }, 350);
+    return () => {
+      controller.abort();
+      clearTimeout(timer);
+    };
+  }, [open, ctx, kv, repoId, quant, budgetGb]);
+
   const handleLoad = () => {
     setCustomContextLength(ctx);
     setKvCacheDtype(kv);
@@ -184,7 +229,7 @@ export function InferenceLoadSettingsDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
-        className="corner-squircle dialog-soft-surface dark:!bg-background sm:max-w-[424px] overflow-hidden p-0 gap-0"
+        className="corner-squircle dialog-soft-surface dark:!bg-[#202125] sm:max-w-[424px] overflow-hidden p-0 gap-0"
         overlayClassName="bg-black/20 backdrop-blur-none"
       >
         <DialogHeader className="px-8 pt-6 pb-3">
@@ -204,7 +249,7 @@ export function InferenceLoadSettingsDialog({
                 min={128}
                 step={1}
                 value={ctx ?? ""}
-                placeholder="default"
+                placeholder="auto"
                 onChange={(e) => {
                   const raw = e.target.value;
                   if (raw === "") {
@@ -232,6 +277,19 @@ export function InferenceLoadSettingsDialog({
                 ? `Model supports up to ${maxContext.toLocaleString()} tokens.`
                 : "Higher limits use more memory."}
             </p>
+            {memWarning && (
+              <p className="flex items-start gap-1.5 text-[11px] leading-snug text-amber-600 dark:text-amber-500">
+                <HugeiconsIcon
+                  icon={Alert02Icon}
+                  className="mt-px size-3.5 shrink-0"
+                />
+                <span>
+                  Needs about {memWarning.neededGb.toFixed(1)} GB, more than the
+                  ~{memWarning.budgetGb.toFixed(1)} GB available. Loading may fail
+                  or run slowly.
+                </span>
+              </p>
+            )}
           </Setting>
 
           <Setting

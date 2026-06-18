@@ -733,6 +733,34 @@ export async function listGgufVariants(
   return parseJsonOrThrow<GgufVariantsResponse>(response);
 }
 
+export interface KvCacheEstimate {
+  kv_bytes: number | null;
+  weights_bytes: number | null;
+  native_context: number | null;
+}
+
+/** Estimate KV cache + weight bytes for a downloaded quant at a context length,
+ * for the load dialog's memory warning. */
+export async function estimateKvCache(
+  repoId: string,
+  quant: string,
+  nCtx: number,
+  cacheTypeKv?: string | null,
+  signal?: AbortSignal,
+): Promise<KvCacheEstimate> {
+  const params = new URLSearchParams({
+    repo_id: repoId,
+    quant,
+    n_ctx: String(nCtx),
+  });
+  if (cacheTypeKv) params.set("cache_type_kv", cacheTypeKv);
+  const response = await authFetch(
+    `/api/models/kv-cache-estimate?${params}`,
+    signal ? { signal } : undefined,
+  );
+  return parseJsonOrThrow<KvCacheEstimate>(response);
+}
+
 function parseSseEvent(rawEvent: string): string[] {
   const dataLines: string[] = [];
   for (const line of rawEvent.split(/\r?\n/)) {

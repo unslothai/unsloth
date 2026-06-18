@@ -14,12 +14,16 @@ export function ModelLoadSettingsAction({
   repoId,
   quant,
   maxContext,
+  gpuGb,
+  systemRamGb,
   onLoad,
 }: {
   ariaLabel: string;
   repoId: string;
   quant: string;
   maxContext?: number | null;
+  gpuGb?: number;
+  systemRamGb?: number;
   onLoad: () => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -51,6 +55,8 @@ export function ModelLoadSettingsAction({
           repoId={repoId}
           quant={quant}
           maxContext={maxContext}
+          gpuGb={gpuGb}
+          systemRamGb={systemRamGb}
           onLoad={onLoad}
         />
       )}

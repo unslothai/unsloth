@@ -42,7 +42,7 @@ import { extractParamLabel } from "@/lib/model-size";
 import { cn, formatCompact } from "@/lib/utils";
 import type { VramFitStatus } from "@/lib/vram";
 import { checkVramFit, estimateLoadingVram } from "@/lib/vram";
-import { Add01Icon, AudioWave01Icon, Cancel01Icon, DashboardCircleIcon, Download01Icon, Folder02Icon, Search01Icon, StarIcon, ViewIcon } from "@hugeicons/core-free-icons";
+import { Add01Icon, AudioWave01Icon, Cancel01Icon, DashboardCircleIcon, Download01Icon, Folder02Icon, Search01Icon, ViewIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { DotTag } from "@/features/hub/catalog/dot-tag";
 import { HubOptionMenu, type HubOption } from "@/features/hub/catalog/hub-option-menu";
@@ -729,6 +729,8 @@ function GgufVariantExpander({
                 repoId={repoId}
                 quant={v.quant}
                 maxContext={nativeContext}
+                gpuGb={gpuGb}
+                systemRamGb={systemRamGb}
                 onLoad={() =>
                   handleVariantClick(v.quant, v.downloaded, v.size_bytes)
                 }
@@ -821,9 +823,9 @@ type LocalSortKey = "recent" | "downloaded" | "size" | "name";
 
 const LOCAL_SORT_OPTIONS: HubOption<LocalSortKey>[] = [
   { value: "recent", label: "Recent" },
-  { value: "downloaded", label: "Downloaded" },
   { value: "size", label: "Size" },
   { value: "name", label: "Name" },
+  { value: "downloaded", label: "Downloaded" },
 ];
 
 // Format filter dropdown for the Unsloth listing. Plain labels are reused in
@@ -949,21 +951,23 @@ export function HubModelPicker({
   // and Hub run one implementation. Scoped to unsloth like the old listing.
   const online = useOnlineStatus();
   const accessToken = useHfTokenStore((s) => s.token) || undefined;
-  const { results, isLoading, isLoadingMore, fetchMore, scannedCount, hasMore } =
-    useHubModelSearch(debouncedQuery, {
-      ownerScope: "unsloth",
-      pinUnslothFirst: true,
-      keepUnsupportedTags: true,
-      accessToken,
-      enabled: online,
-    });
-  // Recommended section: a live unsloth listing sorted by the dropdown.
-  // Declared here (not lower) so its GGUF hints feed the gguf-id set below.
+  // Recommended section: a live unsloth listing sorted by the dropdown. The
+  // same sort drives the search results so the dropdown works while searching.
   const [recommendedSort, setRecommendedSort] =
     useState<RecommendedSortKey>("trendingScore");
   // "recommended" surfaces the most recently created Unsloth repos.
   const recommendedSortBy: HfSortKey =
     recommendedSort === "recommended" ? "createdAt" : recommendedSort;
+  const { results, isLoading, isLoadingMore, fetchMore, scannedCount, hasMore } =
+    useHubModelSearch(debouncedQuery, {
+      ownerScope: "unsloth",
+      sortBy: recommendedSortBy,
+      sortDirection: "desc",
+      pinUnslothFirst: true,
+      keepUnsupportedTags: true,
+      accessToken,
+      enabled: online,
+    });
   const recommendedSearch = useHubModelSearch("", {
     ownerScope: "unsloth",
     sortBy: recommendedSortBy,
@@ -1416,8 +1420,10 @@ export function HubModelPicker({
   const filteredRecommendedIds = useMemo(() => {
     if (!showHfSection) return [];
     const q = normalizeForSearch(debouncedQuery.trim());
-    return recommendedIds.filter((id) => normalizeForSearch(id).includes(q));
-  }, [showHfSection, debouncedQuery, recommendedIds]);
+    return recommendedIds
+      .filter((id) => normalizeForSearch(id).includes(q))
+      .filter((id) => matchesFormatFilter(id, isKnownGgufRepo(id), formatFilter));
+  }, [showHfSection, debouncedQuery, recommendedIds, formatFilter, isKnownGgufRepo]);
 
   // Param counts come straight off the unsloth listings the picker already
   // loaded, so no extra per-id fetch is needed for the VRAM badges.
@@ -1443,8 +1449,9 @@ export function HubModelPicker({
       .filter((id) => id.toLowerCase().startsWith("unsloth/"))
       .filter((id) => !recommendedSet.has(id))
       .filter((id) => !chatOnly || isKnownGgufRepo(id))
-      .filter((id) => !/-FP8[-.]|FP8-Dynamic/i.test(id));
-  }, [recommendedSet, results, showHfSection, section, chatOnly, isKnownGgufRepo, isChatSupported]);
+      .filter((id) => !/-FP8[-.]|FP8-Dynamic/i.test(id))
+      .filter((id) => matchesFormatFilter(id, isKnownGgufRepo(id), formatFilter));
+  }, [recommendedSet, results, showHfSection, section, chatOnly, isKnownGgufRepo, isChatSupported, formatFilter]);
 
   const hubOptionKeys = useMemo(() => {
     const keys: string[] = [];
@@ -1661,8 +1668,8 @@ export function HubModelPicker({
     sortedLocalDir.length === 0;
 
   // Sort dropdown shown inline to the right of the section toggle. Options
-  // depend on the tab; hidden while searching (sorting doesn't apply to search
-  // results). Fixed width matching the Search Hub button so it and the format
+  // depend on the tab and stay visible while searching so results can be
+  // sorted. Fixed width matching the Search Hub button so it and the format
   // dropdown always line up; text-xs matches that button too. The trigger label
   // clips (no ellipsis) when long; the open menu expands to show it in full.
   const sortTriggerClassName =
@@ -1672,7 +1679,7 @@ export function HubModelPicker({
   // selected-item checkmark never overlaps the label.
   const sortMenuContentClassName =
     "!p-1 !rounded-[14px] [&_[role=option]]:!pl-2 [&_[role=option]]:!py-1.5 [&_[role=option]]:!text-xs [&_[role=option]]:!rounded-[14px]";
-  const sectionSortDropdown = showHfSection ? null : section === "recommended" ? (
+  const sectionSortDropdown = section === "recommended" ? (
     <HubOptionMenu
       value={recommendedSort}
       options={RECOMMENDED_SORT_OPTIONS}
@@ -1741,17 +1748,15 @@ export function HubModelPicker({
       <div className="flex items-center gap-1.5">
         {sectionToggle}
         <div className="flex items-center gap-1.5">
-          {!showHfSection ? (
-            <HubOptionMenu
-              value={formatFilter}
-              options={FORMAT_FILTER_OPTIONS}
-              onValueChange={setFormatFilter}
-              ariaLabel="Filter by format"
-              align="end"
-              className={sortTriggerClassName}
-              contentClassName={sortMenuContentClassName}
-            />
-          ) : null}
+          <HubOptionMenu
+            value={formatFilter}
+            options={FORMAT_FILTER_OPTIONS}
+            onValueChange={setFormatFilter}
+            ariaLabel="Filter by format"
+            align="end"
+            className={sortTriggerClassName}
+            contentClassName={sortMenuContentClassName}
+          />
           {sectionSortDropdown}
         </div>
       </div>
@@ -1924,10 +1929,15 @@ export function HubModelPicker({
           {showCustom ? (
             <>
               <div className="flex items-center gap-1 px-2.5 pb-1.5 pt-3">
-                <span className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                <button
+                  type="button"
+                  onClick={() => setShowFolderBrowser(true)}
+                  title="Browse folders on the server"
+                  className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground transition-colors hover:text-foreground"
+                >
                   <HugeiconsIcon icon={Folder02Icon} className="size-3.5" />
                   Custom Folders
-                </span>
+                </button>
                 <div className="flex items-center gap-0.5">
                   <button
                     type="button"
@@ -2362,7 +2372,6 @@ export function HubModelPicker({
           section === "recommended" &&
           filteredRecommendedIds.length > 0 ? (
             <>
-              <ListLabel icon={<HugeiconsIcon icon={StarIcon} className="size-3" />}>Recommended</ListLabel>
               {filteredRecommendedIds.map((id) => {
                 const vram = recommendedVramMap.get(id);
                 const optionKey = makeModelOptionKey("search-recommended", id);
@@ -2431,9 +2440,6 @@ export function HubModelPicker({
 
           {showHfSection && section === "recommended" ? (
             <>
-              {(hfIds.length > 0 || isLoading) && (
-                <ListLabel>Hugging Face</ListLabel>
-              )}
               {hfIds.length === 0 && !isLoading ? (
                 filteredRecommendedIds.length === 0 ? (
                   <div className="px-2.5 py-2 text-xs text-muted-foreground">

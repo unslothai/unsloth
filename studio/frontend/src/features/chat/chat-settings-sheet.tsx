@@ -1574,14 +1574,18 @@ export function ChatSettingsPanel({
                 configuration only.
               </p>
             </div>
-            <Textarea
-              value={systemPromptDraft}
-              onChange={(event) => setSystemPromptDraft(event.target.value)}
-              placeholder="You are a helpful assistant..."
-              fieldSizing="fixed"
-              className="min-h-[24rem] max-h-[50vh] overflow-y-auto border-0 text-sm leading-6 corner-squircle focus-visible:ring-0"
-              rows={14}
-            />
+            {/* Rounded wrapper clips the textarea's scrollbar so the right
+                corners stay as round as the left. */}
+            <div className="corner-squircle w-full overflow-hidden rounded-xl bg-input/30">
+              <Textarea
+                value={systemPromptDraft}
+                onChange={(event) => setSystemPromptDraft(event.target.value)}
+                placeholder="You are a helpful assistant..."
+                fieldSizing="fixed"
+                className="min-h-[24rem] max-h-[50vh] w-full overflow-y-auto rounded-none border-0 bg-transparent text-sm leading-6 focus-visible:ring-0"
+                rows={14}
+              />
+            </div>
           </div>
           <DialogFooter className="flex-wrap gap-2 sm:justify-between">
             <Button
@@ -1922,14 +1926,18 @@ function ChatTemplateFields() {
                 Jinja syntax. Save matching the default clears the override.
               </p>
             </div>
-            <Textarea
-              value={draft}
-              onChange={(event) => setDraft(event.target.value)}
-              fieldSizing="fixed"
-              className="min-h-[24rem] max-h-[50vh] overflow-y-auto border-0 font-mono text-xs leading-5 corner-squircle focus-visible:ring-0"
-              rows={14}
-              spellCheck={false}
-            />
+            {/* Rounded wrapper clips the textarea's scrollbar so the right
+                corners stay as round as the left. */}
+            <div className="corner-squircle w-full overflow-hidden rounded-xl bg-input/30">
+              <Textarea
+                value={draft}
+                onChange={(event) => setDraft(event.target.value)}
+                fieldSizing="fixed"
+                className="min-h-[24rem] max-h-[50vh] w-full overflow-y-auto rounded-none border-0 bg-transparent font-mono text-[11px] leading-[1.45] md:text-[11px] focus-visible:ring-0"
+                rows={14}
+                spellCheck={false}
+              />
+            </div>
           </div>
           <DialogFooter className="flex-wrap gap-2 sm:justify-between">
             <Button

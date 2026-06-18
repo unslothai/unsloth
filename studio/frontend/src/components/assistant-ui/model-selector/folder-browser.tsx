@@ -156,7 +156,7 @@ export function FolderBrowser({
         data-testid="folder-browser-dialog"
       >
         <DialogHeader className="px-6 pt-6 pb-2">
-          <DialogTitle>Browse for folder</DialogTitle>
+          <DialogTitle>Select folder to detect models</DialogTitle>
         </DialogHeader>
 
         {/* Breadcrumb */}

@@ -148,6 +148,12 @@ function makeSortFetch(
       effectiveSort && DESC_ONLY_SORTS.has(effectiveSort) ? "desc" : direction;
     url.searchParams.set("direction", effectiveDir === "asc" ? "1" : "-1");
 
+    // The Hub lib doesn't whitelist gguf metadata, but the listing supports it;
+    // request it so GGUF repos report a param count (used for the OOM badge).
+    if (!url.searchParams.getAll("expand").includes("gguf")) {
+      url.searchParams.append("expand", "gguf");
+    }
+
     return fetchWithTimeout(
       url,
       signal ? { ...init, signal } : init,
