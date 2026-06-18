@@ -137,11 +137,24 @@ async def get_export_status(current_subject: str = Depends(get_current_subject))
     """Get export backend status (loaded checkpoint, model type, PEFT flag)."""
     try:
         backend = get_export_backend()
+        last_op = backend.get_last_op()
+        # Relativise the recovered output path the same way the per-op POST response
+        # does, so the success banner shows an identical path on either route.
+        last_op_output_path = None
+        if last_op and last_op.get("output_path"):
+            details = _export_details(last_op["output_path"])
+            last_op_output_path = (details or {}).get("output_path")
         return ExportStatusResponse(
             current_checkpoint = backend.current_checkpoint,
             is_vision = bool(getattr(backend, "is_vision", False)),
             is_peft = bool(getattr(backend, "is_peft", False)),
             is_export_active = bool(backend.is_export_active()),
+            active_op_kind = backend.get_active_op_kind(),
+            last_op_seq = int(last_op["seq"]) if last_op else 0,
+            last_op_kind = last_op.get("kind") if last_op else None,
+            last_op_status = last_op.get("status") if last_op else None,
+            last_op_output_path = last_op_output_path,
+            last_op_error = last_op.get("error") if last_op else None,
         )
     except Exception as e:
         logger.error(f"Error getting export status: {e}", exc_info = True)

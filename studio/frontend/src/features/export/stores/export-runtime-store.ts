@@ -9,12 +9,94 @@ import {
   exportGGUF,
   exportLoRA,
   exportMerged,
+  getExportStatus,
+  isRecoverableTransportError,
   loadCheckpoint,
   type ExportLogEntry,
   type ExportLogPollEntry,
+  type ExportOperationResponse,
   type ExportStatus,
 } from "../api/export-api";
 import type { ExportMethod } from "../constants";
+
+/** Thrown by status recovery when the backend reports the op was cancelled. */
+class ExportCanceledError extends Error {
+  constructor() {
+    super("Export canceled");
+    this.name = "ExportCanceledError";
+  }
+}
+
+// Status-recovery tuning (used when a blocking export POST is cut off by a
+// Cloudflare tunnel 524 while the backend op keeps running).
+const RECOVERY_POLL_INTERVAL_MS = 1500;
+const RECOVERY_GRACE_MS = 15000; // wait this long for the op to appear on status
+const RECOVERY_MAX_MS = 2 * 60 * 60 * 1000; // hard cap (exports can be long)
+const RECOVERY_MAX_STATUS_FAILS = 5; // give up if status itself is unreachable
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Settle an export phase whose blocking POST was cut off by a tunnel timeout, by
+ * polling /api/export/status until the still-running backend op finishes, then
+ * reading its recorded outcome. `baseline` is `last_op_seq` captured before the
+ * POST; a record is "ours" once the op went inactive AND either we observed it
+ * active or its seq advanced past the baseline (single serial driver ⇒ exact).
+ */
+async function recoverViaStatus(
+  baseline: number | null,
+  isCurrent: () => boolean,
+): Promise<{ outputPath: string | null }> {
+  const start = Date.now();
+  let statusFails = 0;
+  let sawActive = false;
+
+  while (Date.now() - start < RECOVERY_MAX_MS) {
+    if (!isCurrent()) throw new Error("Export run superseded");
+    await sleep(RECOVERY_POLL_INTERVAL_MS);
+
+    let st: ExportStatus;
+    try {
+      st = await getExportStatus();
+      statusFails = 0;
+    } catch {
+      // Status itself is transiently unreachable; tolerate a few, then (past the
+      // grace window) give up so a truly-down backend surfaces a real error.
+      statusFails += 1;
+      if (
+        Date.now() - start > RECOVERY_GRACE_MS &&
+        statusFails >= RECOVERY_MAX_STATUS_FAILS
+      ) {
+        throw new Error("Lost connection to the export server.");
+      }
+      continue;
+    }
+
+    if (st.is_export_active) {
+      sawActive = true;
+      continue;
+    }
+
+    const seq = st.last_op_seq ?? 0;
+    const isOurs = sawActive || (baseline !== null && seq > baseline);
+    if (isOurs) {
+      if (st.last_op_status === "success") {
+        return { outputPath: st.last_op_output_path ?? null };
+      }
+      if (st.last_op_status === "cancelled") throw new ExportCanceledError();
+      throw new Error(st.last_op_error || "Export failed");
+    }
+
+    // Inactive but our op was never observed: the POST likely died before the
+    // backend started it. Allow a grace window for the op to appear, then fail.
+    if (Date.now() - start > RECOVERY_GRACE_MS) {
+      throw new Error(
+        "The export request failed before the server started the operation.",
+      );
+    }
+  }
+  throw new Error("Timed out waiting for the export to finish.");
+}
 
 // Keep the same scrollback depth as the backend ring buffer so the inline
 // panel shows the full server-side history.
@@ -78,6 +160,9 @@ interface ExportRuntimeState {
   logLines: ExportLogEntry[];
   lastSeq: number | null;
   connected: boolean;
+  /** True while a phase POST's response was lost (tunnel timeout) and we are
+   *  settling the run by polling /api/export/status instead. Logs keep streaming. */
+  reconnecting: boolean;
   startedAt: number | null;
   result: { outputPath: string | null; destination: ExportDestination } | null;
   error: string | null;
@@ -114,6 +199,7 @@ const initialState: ExportRuntimeState = {
   logLines: [],
   lastSeq: null,
   connected: false,
+  reconnecting: false,
   startedAt: null,
   result: null,
   error: null,
@@ -196,9 +282,32 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
           startedAt: state.startedAt ?? Date.now(),
         };
       }
-      // A recovered (not store-owned) run finished on the backend. We can't know
-      // success vs failure for a run we didn't drive, so settle optimistically.
+      // A recovered (not store-owned) run finished on the backend. Settle from
+      // the last-op record when present (accurate success/error/output path),
+      // else fall back to the optimistic guess.
       if (!status.is_export_active && state.isExporting && !state.ownsRun) {
+        if (status.last_op_status === "error") {
+          return {
+            ...base,
+            isExporting: false,
+            phase: "error" as const,
+            error: status.last_op_error ?? "Export failed",
+          };
+        }
+        if (status.last_op_status === "cancelled") {
+          return { ...base, isExporting: false, phase: "canceled" as const };
+        }
+        if (status.last_op_status === "success") {
+          return {
+            ...base,
+            isExporting: false,
+            phase: "success" as const,
+            result: {
+              outputPath: status.last_op_output_path ?? null,
+              destination: state.result?.destination ?? "local",
+            },
+          };
+        }
         return {
           ...base,
           isExporting: false,
@@ -247,6 +356,7 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
       logLines: [],
       lastSeq: null,
       connected: false,
+      reconnecting: false,
       startedAt: Date.now(),
       result: null,
       error: null,
@@ -256,20 +366,52 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
     const isCurrent = () => get().runId === runId;
     const pushToHub = params.destination === "hub";
 
+    // Run a phase POST so it survives a Cloudflare tunnel 524: capture the
+    // last-op baseline, fire the POST, and on a recoverable transport failure
+    // settle the still-running backend op via short status polls instead of
+    // failing. Returns the resolved output path (null for load/hub-only).
+    const runRecoverableOp = async (
+      post: () => Promise<ExportOperationResponse>,
+    ): Promise<{ outputPath: string | null }> => {
+      let baseline: number | null = null;
+      try {
+        baseline = (await getExportStatus()).last_op_seq ?? 0;
+      } catch {
+        baseline = null; // pre-read failed; recovery falls back to "saw active"
+      }
+      try {
+        const resp = await post();
+        return { outputPath: resp.details?.output_path ?? null };
+      } catch (err) {
+        if (!isRecoverableTransportError(err)) throw err;
+        set({ reconnecting: true });
+        try {
+          return await recoverViaStatus(baseline, isCurrent);
+        } finally {
+          if (isCurrent()) set({ reconnecting: false });
+        }
+      }
+    };
+
     try {
       // 1. Load the model source into a fresh export subprocess.
       if (params.sourceMode === "checkpoint") {
         if (!params.checkpointPath) {
           throw new Error("No checkpoint selected");
         }
-        await loadCheckpoint({ checkpoint_path: params.checkpointPath });
+        const checkpointPath = params.checkpointPath;
+        await runRecoverableOp(() =>
+          loadCheckpoint({ checkpoint_path: checkpointPath }),
+        );
       } else {
-        await loadCheckpoint({
-          checkpoint_path: params.source,
-          load_in_4bit: false,
-          trust_remote_code:
-            params.modelSource === "hf" ? params.trustRemoteCode : true,
-        });
+        await runRecoverableOp(() =>
+          loadCheckpoint({
+            checkpoint_path: params.source,
+            load_in_4bit: false,
+            trust_remote_code:
+              params.modelSource === "hf" ? params.trustRemoteCode : true,
+          }),
+        );
       }
       if (!isCurrent()) return;
 
@@ -280,65 +422,81 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
 
       if (params.exportMethod === "merged") {
         if (params.isAdapter) {
-          const resp = await exportMerged({
-            save_directory: params.saveDirectory,
-            push_to_hub: pushToHub,
-            repo_id: params.repoId,
-            hf_token: params.token,
-            private: params.privateRepo,
-          });
-          lastOutputPath = resp.details?.output_path ?? null;
+          const { outputPath } = await runRecoverableOp(() =>
+            exportMerged({
+              save_directory: params.saveDirectory,
+              push_to_hub: pushToHub,
+              repo_id: params.repoId,
+              hf_token: params.token,
+              private: params.privateRepo,
+            }),
+          );
+          lastOutputPath = outputPath;
         } else {
-          const resp = await exportBase({
-            save_directory: params.saveDirectory,
-            push_to_hub: pushToHub,
-            repo_id: params.repoId,
-            hf_token: params.token,
-            private: params.privateRepo,
-            base_model_id: params.baseModelId,
-          });
-          lastOutputPath = resp.details?.output_path ?? null;
+          const { outputPath } = await runRecoverableOp(() =>
+            exportBase({
+              save_directory: params.saveDirectory,
+              push_to_hub: pushToHub,
+              repo_id: params.repoId,
+              hf_token: params.token,
+              private: params.privateRepo,
+              base_model_id: params.baseModelId,
+            }),
+          );
+          lastOutputPath = outputPath;
         }
       } else if (params.exportMethod === "gguf") {
         for (let i = 0; i < params.quantLevels.length; i += 1) {
           if (!isCurrent()) return;
           set({ quantIndex: i });
-          const resp = await exportGGUF({
-            save_directory: params.saveDirectory,
-            quantization_method: params.quantLevels[i],
-            push_to_hub: pushToHub,
-            repo_id: params.repoId,
-            hf_token: params.token,
-          });
-          lastOutputPath = resp.details?.output_path ?? lastOutputPath;
+          const quant = params.quantLevels[i];
+          const { outputPath } = await runRecoverableOp(() =>
+            exportGGUF({
+              save_directory: params.saveDirectory,
+              quantization_method: quant,
+              push_to_hub: pushToHub,
+              repo_id: params.repoId,
+              hf_token: params.token,
+            }),
+          );
+          lastOutputPath = outputPath ?? lastOutputPath;
           if (!isCurrent()) return;
           set({ quantIndex: i + 1 });
         }
       } else if (params.exportMethod === "lora") {
-        const resp = await exportLoRA({
-          save_directory: params.saveDirectory,
-          push_to_hub: pushToHub,
-          repo_id: params.repoId,
-          hf_token: params.token,
-          private: params.privateRepo,
-        });
-        lastOutputPath = resp.details?.output_path ?? null;
+        const { outputPath } = await runRecoverableOp(() =>
+          exportLoRA({
+            save_directory: params.saveDirectory,
+            push_to_hub: pushToHub,
+            repo_id: params.repoId,
+            hf_token: params.token,
+            private: params.privateRepo,
+          }),
+        );
+        lastOutputPath = outputPath;
       }
       if (!isCurrent()) return;
 
       set({
         phase: "success",
         isExporting: false,
+        reconnecting: false,
         result: { outputPath: lastOutputPath, destination: params.destination },
       });
     } catch (err) {
       if (!isCurrent()) return;
-      if (get().cancelRequested) {
-        set({ phase: "canceled", isExporting: false, error: null });
+      if (get().cancelRequested || err instanceof ExportCanceledError) {
+        set({
+          phase: "canceled",
+          isExporting: false,
+          reconnecting: false,
+          error: null,
+        });
       } else {
         set({
           phase: "error",
           isExporting: false,
+          reconnecting: false,
           error: err instanceof Error ? err.message : "Export failed",
         });
       }

@@ -6,11 +6,43 @@ import { readFastApiError } from "@/lib/format-fastapi-error";
 
 const readError = (r: Response): Promise<string> => readFastApiError(r);
 
+/**
+ * Error from an export request that preserves the HTTP status, so callers can
+ * tell an authoritative backend rejection (4xx) from a transport timeout that
+ * the long export may survive (e.g. Cloudflare's 524 over a quick tunnel).
+ */
+export class ExportRequestError extends Error {
+  status: number | null;
+  constructor(message: string, status: number | null) {
+    super(message);
+    this.name = "ExportRequestError";
+    this.status = status;
+  }
+}
+
 async function parseJson<T>(response: Response): Promise<T> {
   if (!response.ok) {
-    throw new Error(await readError(response));
+    throw new ExportRequestError(await readError(response), response.status);
   }
   return (await response.json()) as T;
+}
+
+/**
+ * Whether an error from an export POST is a recoverable transport failure (the
+ * backend op may still be running and may still succeed) rather than an
+ * authoritative rejection. A Cloudflare quick tunnel returns 524 (and friends
+ * 520/522/523) when a request runs past ~100s; a dropped connection surfaces as
+ * a status-less network error from authFetch. Real 4xx (400/404/409/422) are
+ * the backend saying no and must fail immediately.
+ */
+export function isRecoverableTransportError(err: unknown): boolean {
+  if (err instanceof ExportRequestError) {
+    // 502/503/504 gateway + 520/522/523/524 Cloudflare timeouts are recoverable.
+    return typeof err.status === "number" ? err.status >= 502 : true;
+  }
+  // No HTTP status at all (authFetch threw on a fetch TypeError = network drop /
+  // backend unreachable): indeterminate, so recover by polling status.
+  return err instanceof Error;
 }
 
 export interface CheckpointInfo {
@@ -146,6 +178,15 @@ export interface ExportStatus {
   is_peft: boolean;
   /** True while a load / export / cleanup operation is running on the backend. */
   is_export_active: boolean;
+  /** Kind of the currently running op (load_checkpoint / export_* / cleanup). */
+  active_op_kind?: string | null;
+  /** Monotonic counter of finished ops; baseline to detect "my op finished". */
+  last_op_seq?: number;
+  last_op_kind?: string | null;
+  /** Outcome of the most recently finished op. */
+  last_op_status?: "success" | "error" | "cancelled" | null;
+  last_op_output_path?: string | null;
+  last_op_error?: string | null;
 }
 
 /**

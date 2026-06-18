@@ -67,6 +67,16 @@ class ExportOrchestrator:
         # caller distinguish a user cancel from a genuine subprocess crash.
         self._cancel_requested: bool = False
 
+        # Last finished operation, so a client whose blocking POST was cut off by a
+        # Cloudflare tunnel timeout (524 at ~100s, while the op runs for minutes) can
+        # poll /api/export/status and still learn the real outcome. Guarded by
+        # _op_lock. `_op_seq` is a monotonic counter the client uses as a baseline to
+        # tell "my op finished" (seq grew) from a stale previous result.
+        self._op_lock = threading.Lock()
+        self._op_seq: int = 0
+        self._active_op_kind: Optional[str] = None
+        self._last_op: Optional[Dict[str, Any]] = None
+
         atexit.register(self._cleanup)
         logger.info("ExportOrchestrator initialized (subprocess mode)")
 
@@ -125,6 +135,42 @@ class ExportOrchestrator:
     def was_cancelled(self) -> bool:
         """True if the in-flight (or most recent) run was cancelled by the user."""
         return self._cancel_requested
+
+    def _record_op_finished(
+        self,
+        success: bool,
+        message: str,
+        output_path: Optional[str],
+    ) -> None:
+        """Snapshot the just-finished op so status pollers can recover its outcome.
+
+        Called from each op's ``finally`` (with ``_active_op_kind`` still set) BEFORE
+        ``_export_active`` is cleared, so a status read that observes the op as
+        inactive is guaranteed to also see this matching result.
+        """
+        with self._op_lock:
+            self._op_seq += 1
+            status = (
+                "cancelled"
+                if self._cancel_requested
+                else ("success" if success else "error")
+            )
+            self._last_op = {
+                "seq": self._op_seq,
+                "kind": self._active_op_kind,
+                "status": status,
+                "output_path": output_path if success else None,
+                "error": None if success else (message or None),
+            }
+
+    def get_last_op(self) -> Optional[Dict[str, Any]]:
+        """Return the last finished op record (or None), for status recovery."""
+        with self._op_lock:
+            return dict(self._last_op) if self._last_op is not None else None
+
+    def get_active_op_kind(self) -> Optional[str]:
+        """Return the kind of the currently running op (or None when idle)."""
+        return self._active_op_kind
 
     def cancel_export(self) -> bool:
         """Terminate the in-flight export subprocess immediately.
@@ -361,7 +407,9 @@ class ExportOrchestrator:
             # Fresh log buffer so the UI sees only this run's output.
             self.clear_logs()
             self._cancel_requested = False
+            self._active_op_kind = "load_checkpoint"
             self._export_active = True
+            op_success, op_message = False, ""
             try:
                 # Always kill any existing subprocess and spawn fresh.
                 if self._ensure_subprocess_alive():
@@ -379,6 +427,7 @@ class ExportOrchestrator:
                     self.current_checkpoint = None
                     self.is_vision = False
                     self.is_peft = False
+                    op_success, op_message = False, str(exc)
                     return False, str(exc)
 
                 if resp.get("success"):
@@ -386,15 +435,19 @@ class ExportOrchestrator:
                     self.is_vision = resp.get("is_vision", False)
                     self.is_peft = resp.get("is_peft", False)
                     logger.info("Checkpoint '%s' loaded in subprocess", checkpoint_path)
-                    return True, resp.get("message", "Loaded successfully")
+                    op_success, op_message = True, resp.get("message", "Loaded successfully")
+                    return True, op_message
                 else:
                     error = resp.get("message", "Failed to load checkpoint")
                     logger.error("Failed to load checkpoint: %s", error)
                     self.current_checkpoint = None
                     self.is_vision = False
                     self.is_peft = False
+                    op_success, op_message = False, error
                     return False, error
             finally:
+                self._record_op_finished(op_success, op_message, None)
+                self._active_op_kind = None
                 self._export_active = False
 
     def export_merged_model(
@@ -497,7 +550,9 @@ class ExportOrchestrator:
 
             self.clear_logs()
             self._cancel_requested = False
+            self._active_op_kind = f"export_{export_type}"
             self._export_active = True
+            op_success, op_message, op_output_path = False, "", None
             try:
                 cmd = {"type": "export", "export_type": export_type, **params}
                 try:
@@ -506,14 +561,16 @@ class ExportOrchestrator:
                         f"export_{export_type}_done",
                         timeout = 3600,  # GGUF for 30B+ models can take 30+ min
                     )
-                    return (
-                        resp.get("success", False),
-                        resp.get("message", ""),
-                        resp.get("output_path"),
-                    )
+                    op_success = resp.get("success", False)
+                    op_message = resp.get("message", "")
+                    op_output_path = resp.get("output_path")
+                    return op_success, op_message, op_output_path
                 except RuntimeError as exc:
+                    op_success, op_message = False, str(exc)
                     return False, str(exc), None
             finally:
+                self._record_op_finished(op_success, op_message, op_output_path)
+                self._active_op_kind = None
                 self._export_active = False
 
     def cleanup_memory(self) -> bool:
@@ -525,7 +582,9 @@ class ExportOrchestrator:
                 self.is_peft = False
                 return True
 
+            self._active_op_kind = "cleanup"
             self._export_active = True
+            success = False
             try:
                 try:
                     self._send_cmd({"type": "cleanup"})
@@ -542,6 +601,8 @@ class ExportOrchestrator:
                 self.is_peft = False
                 return success
             finally:
+                self._record_op_finished(success, "", None)
+                self._active_op_kind = None
                 self._export_active = False
 
     def scan_checkpoints(self, outputs_dir: str = str(outputs_root())) -> List[Tuple[str, list]]:

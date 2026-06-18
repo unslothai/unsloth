@@ -145,6 +145,7 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
       isExporting: s.isExporting,
       logLines: s.logLines,
       connected: s.connected,
+      reconnecting: s.reconnecting,
       stage: s.stage,
       quantIndex: s.quantIndex,
       quantTotal: s.quantTotal,
@@ -482,17 +483,21 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
                 <div className="flex items-center gap-2 text-[11px] text-muted-foreground/80">
                   <span
                     className={
-                      run.connected
-                        ? "inline-block size-1.5 rounded-full bg-emerald-500"
-                        : "inline-block size-1.5 rounded-full bg-muted-foreground/40"
+                      run.reconnecting
+                        ? "inline-block size-1.5 rounded-full bg-amber-500"
+                        : run.connected
+                          ? "inline-block size-1.5 rounded-full bg-emerald-500"
+                          : "inline-block size-1.5 rounded-full bg-muted-foreground/40"
                     }
                   />
                   <span>
-                    {run.connected
-                      ? "streaming"
-                      : isExporting
-                        ? "connecting..."
-                        : "idle"}
+                    {run.reconnecting
+                      ? "reconnecting..."
+                      : run.connected
+                        ? "streaming"
+                        : isExporting
+                          ? "connecting..."
+                          : "idle"}
                   </span>
                 </div>
               </div>
