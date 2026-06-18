@@ -300,6 +300,7 @@ export function ChatTab() {
       <SettingsSection title="Select model settings">
         <SettingsRow
           label="Load on selection"
+          alignTop={true}
           description={
             <span className="flex flex-col gap-1.5">
               <span>
