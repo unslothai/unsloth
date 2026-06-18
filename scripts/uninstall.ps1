@@ -43,6 +43,45 @@ function Uninstall-UnslothStudio {
         }
     }
 
+    # Remove the shared data dir, but in a dual native+WSL install keep unsloth.ico
+    # when a WSL shortcut still points at it -- else removing the dir blanks that
+    # shortcut's icon. install.sh reuses LOCALAPPDATA\Unsloth Studio for the WSL
+    # shortcut's icon; uninstall.sh drops the leftover icon + empty dir when WSL is
+    # later removed. (The old code relied on Explorer holding the icon open, which
+    # is unreliable -- preserve it explicitly.)
+    function _RemoveDataDirKeepingWslIcon {
+        param(
+            [string]$DataDir,
+            # Dirs to scan for a surviving WSL shortcut. Defaults to the Start Menu
+            # + Desktop install.sh writes to; overridable so tests stay hermetic.
+            [string[]]$ShortcutDirs = $null
+        )
+        if ([string]::IsNullOrWhiteSpace($DataDir)) { return }
+        if (-not (Test-Path -LiteralPath $DataDir)) { return }
+        # $null = caller passed nothing (use defaults); an explicit @() means
+        # "no dirs to scan" and must be honored (-not @() is $true, so test it
+        # against $null rather than truthiness).
+        if ($null -eq $ShortcutDirs) {
+            $ShortcutDirs = @(Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs")
+            try { $ShortcutDirs += [Environment]::GetFolderPath("Desktop") } catch {}
+        }
+        $wslShortcuts = @()
+        foreach ($d in $ShortcutDirs) {
+            if ($d -and (Test-Path -LiteralPath $d)) {
+                $wslShortcuts += Get-ChildItem -LiteralPath $d -Filter "Unsloth Studio (WSL*.lnk" -ErrorAction SilentlyContinue
+            }
+        }
+        if (@($wslShortcuts).Count -eq 0) {
+            _RemovePath $DataDir
+            return
+        }
+        # A WSL shortcut survives: drop everything except its shared icon.
+        _Substep "keeping $(Join-Path $DataDir 'unsloth.ico') for the WSL shortcut" "Gray"
+        Get-ChildItem -LiteralPath $DataDir -Force -ErrorAction SilentlyContinue | ForEach-Object {
+            if ($_.Name -ne "unsloth.ico") { _RemovePath $_.FullName }
+        }
+    }
+
     # A path is a Studio-owned root iff one of install.ps1's sentinels exists:
     #   <root>\share\studio.conf, <root>\unsloth_studio\.unsloth-studio-owned,
     #   or <root>\bin\unsloth.exe.
@@ -337,7 +376,7 @@ function Uninstall-UnslothStudio {
     # Default install dir (always at %USERPROFILE%\.unsloth\studio when present).
     if ($defaultStudioHome) { _RemovePath $defaultStudioHome }
     # Default data dir.
-    if ($defaultDataDir) { _RemovePath $defaultDataDir }
+    if ($defaultDataDir) { _RemoveDataDirKeepingWslIcon $defaultDataDir }
     # Default-mode shared llama.cpp build + cache (siblings of studio under
     # ~/.unsloth). No-op in env/custom mode and when absent.
     if ($defaultLlamaCpp) { _RemovePath $defaultLlamaCpp }
@@ -375,12 +414,12 @@ function Uninstall-UnslothStudio {
     } catch { }
 
     # Re-sweep the data dir: unsloth.ico lives there and Explorer/StartMenuExperience
-    # Host may have held it open while the shortcuts above referenced it as their
-    # icon, leaving the dir behind on the first pass. Now that those shortcuts (and
-    # SMEH) are gone, the handle is released. (A dual native+WSL install can still
-    # hold it via the WSL shortcut, which uninstall.sh removes -- and that script
-    # then drops the leftover icon + empty dir.)
-    if ($defaultDataDir -and (Test-Path -LiteralPath $defaultDataDir)) { _RemovePath $defaultDataDir }
+    # Host may have held it open while the native shortcut above referenced it as its
+    # icon, leaving the dir behind on the first pass. Now that the native shortcut
+    # (and SMEH) are gone, the handle is released. A dual native+WSL install keeps
+    # the icon for the surviving WSL shortcut (uninstall.sh removes it with the dir
+    # when WSL is later uninstalled).
+    if ($defaultDataDir -and (Test-Path -LiteralPath $defaultDataDir)) { _RemoveDataDirKeepingWslIcon $defaultDataDir }
 
     # ── Clean user PATH and registry backup ──
     _Step "Cleaning user PATH and registry..."
