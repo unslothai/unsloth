@@ -2598,9 +2598,7 @@ def _repo_has_mmproj(repo_info) -> bool:
     """True if the repo ships a GGUF vision adapter (mmproj), so it can
     take image inputs. Cheap: scans already-listed file names only."""
     return any(
-        _is_mmproj_filename(f.file_name)
-        for revision in repo_info.revisions
-        for f in revision.files
+        _is_mmproj_filename(f.file_name) for revision in repo_info.revisions for f in revision.files
     )
 
 
