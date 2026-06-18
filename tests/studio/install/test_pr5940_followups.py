@@ -375,9 +375,9 @@ def test_python_hipinfo_gates_scan_all_path_entries():
     # shadow a real SDK's hipinfo later on PATH.
     for src in (_PREBUILT_PATH, _AMD_PY, _PYSTACK_PY):
         text = src.read_text(encoding = "utf-8")
-        assert "_external_hipinfo_on_path" in text, (
-            f"{src.name} must use the PATH-scanning hipinfo helper"
-        )
+        assert (
+            "_external_hipinfo_on_path" in text
+        ), f"{src.name} must use the PATH-scanning hipinfo helper"
 
 
 def test_path_inside_venv_resolves_symlinks(tmp_path):
