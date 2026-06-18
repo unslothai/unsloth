@@ -439,9 +439,14 @@ def repo_remote_code_files(model_name: str, hf_token: Optional[str] = None) -> d
 
         if is_local_path(model_name):
             root = Path(normalize_path(model_name)).expanduser()
-            # Walk ALL .py recursively (relative-path keys): a modeling_*.py can
-            # import nested helper modules that execute on a trust_remote_code
-            # load, so they must be scanned + fingerprinted too.
+            # Walk ALL .py recursively (relative-path keys), not just the auto_map
+            # entry's static import closure. This is DELIBERATE (see the matching
+            # remote-branch note): the entry module can pull in a sibling via an
+            # absolute import, importlib, or exec, none of which a static relative-
+            # import closure follows, so scanning only the closure is a real bypass.
+            # The broad scan never under-scans; the cost is that an unrelated benign
+            # script can over-block, which is the safe failure direction for a load-
+            # time RCE gate (HIGH stays approvable; only CRITICAL hard-blocks).
             for p in root.rglob("*.py"):
                 if p.is_file():
                     files[str(p.relative_to(root))] = p.read_text(errors = "replace")
@@ -493,9 +498,15 @@ def repo_remote_code_files(model_name: str, hf_token: Optional[str] = None) -> d
         except Exception as exc:
             raise RemoteCodeUnscannable(f"{model_name}: could not list repo files ({exc})") from exc
         repo_file_set = set(repo_files)
-        # Scan every present .py (the import closure the loader can execute) PLUS the
-        # own-repo auto_map targets that ACTUALLY EXIST in this revision. An auto_map
-        # target that is absent from the listing is a STALE ref -- an older config
+        # Scan every present .py PLUS the own-repo auto_map targets that ACTUALLY EXIST
+        # in this revision. Scanning EVERY .py (not just the auto_map entry's static
+        # import closure) is DELIBERATE: the entry module can reach a sibling via an
+        # absolute import, importlib, or exec, none of which a static relative-import
+        # closure follows, so closure-only scanning is a real bypass. The broad scan
+        # never under-scans; the cost is that an unrelated benign script can over-block,
+        # the safe failure direction for a load-time RCE gate (HIGH stays approvable;
+        # only CRITICAL hard-blocks). An auto_map target that is absent from the listing
+        # is a STALE ref -- an older config
         # pointing at a file the repo no longer ships (e.g. unsloth/PaddleOCR-VL's
         # tokenizer_config.json names processing_ppocrvl.py, but the repo ships
         # processing_paddleocr_vl.py). transformers cannot execute a file that is not

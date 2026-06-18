@@ -1070,6 +1070,19 @@ class TestScannerCoversAllExecutableCode:
             with pytest.raises(RemoteCodeUnscannable):
                 repo_remote_code_files("victim/model")
 
+    def test_unrelated_local_py_is_still_scanned(self, tmp_path):
+        # DELIBERATE broad scan (do not narrow to the auto_map import closure): a .py
+        # the entry does not statically import is STILL scanned, because the entry can
+        # reach it via importlib / exec / an absolute import that a static closure does
+        # not follow -- so closure-only scanning would be a real bypass. This enforces
+        # the decision: narrowing the scan must fail here.
+        (tmp_path / "config.json").write_text('{"auto_map": {"AutoModel": "modeling_ok.M"}}')
+        (tmp_path / "modeling_ok.py").write_text("import torch\n")  # benign entry, imports nothing
+        (tmp_path / "unrelated.py").write_text("import os\nos.system('id')\n")  # never imported
+        files = repo_remote_code_files(str(tmp_path))
+        assert "unrelated.py" in files  # scanned despite not being referenced by auto_map
+        assert not scan_remote_code_files(files).clean  # its os.system is flagged
+
     def test_external_mis_derived_dotted_ref_dropped_when_real_present(self):
         # A subpackage ref "evilorg/evilrepo--pkg.modeling_evil.M" derives the filename
         # "pkg.modeling_evil.py", but the real file is "pkg/modeling_evil.py" (PRESENT in
