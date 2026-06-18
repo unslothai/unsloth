@@ -30,7 +30,6 @@ from tests.utils.perplexity_eval import (
 )
 
 
-# Define helper functions outside of main
 def formatting_prompts_func(examples):
     convos = examples["messages"]
     texts = [

@@ -1,15 +1,6 @@
 # Copyright 2025-present the Unsloth AI Inc. team. All rights reserved.
 
-"""
-Truth-table tests for `resolve_tool_policy` -- the pure resolver behind
-`unsloth run --enable-tools/--disable-tools`.
-
-Covers:
-  - 127.0.0.1 default-on, explicit on, explicit off
-  - 0.0.0.0 default-off, explicit off
-  - 0.0.0.0 + explicit on: confirm prompt unless --silent or --yes,
-    abort on negative answer.
-"""
+"""Truth-table tests for `resolve_tool_policy` behind `unsloth run --enable-tools/--disable-tools`."""
 
 import pytest
 import typer
