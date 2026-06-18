@@ -186,7 +186,6 @@ def update_openai_auto_switch_override(
     payload: ModelOverridePayload, current_subject: str = Depends(get_current_subject)
 ) -> ModelOverridesResponse:
     from core.inference.llama_server_args import validate_extra_args
-
     try:
         extra_args = validate_extra_args(payload.llama_extra_args)
         set_model_override(

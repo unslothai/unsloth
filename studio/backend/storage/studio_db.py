@@ -1686,9 +1686,7 @@ def upsert_app_setting_map_entry(
     conn = get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
-        row = conn.execute(
-            "SELECT value_json FROM app_settings WHERE key = ?", (key,)
-        ).fetchone()
+        row = conn.execute("SELECT value_json FROM app_settings WHERE key = ?", (key,)).fetchone()
         current = _json_loads(row["value_json"], {}) if row else {}
         if not isinstance(current, dict):
             current = {}

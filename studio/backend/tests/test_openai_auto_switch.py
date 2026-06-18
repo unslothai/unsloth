@@ -423,7 +423,9 @@ def test_auto_switch_applies_partial_override(monkeypatch):
         backend = backend,
         recorder = rec,
     )
-    monkeypatch.setattr(settings, "get_model_override", lambda model_id: {"llama_extra_args": ["--flash-attn"]})
+    monkeypatch.setattr(
+        settings, "get_model_override", lambda model_id: {"llama_extra_args": ["--flash-attn"]}
+    )
 
     _run_hook("unsloth/B-GGUF")
     req = rec.calls[0]
