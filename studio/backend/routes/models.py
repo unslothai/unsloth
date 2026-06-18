@@ -2541,6 +2541,7 @@ def _repo_in_any_hf_cache(model_name: str) -> bool:
     )
 
     dirname = f"models--{resolve_cached_repo_id_case(model_name).replace('/', '--')}"
+    dirname_lower = dirname.lower()
     candidates = []
     try:
         from huggingface_hub.constants import HF_HUB_CACHE
@@ -2552,10 +2553,20 @@ def _repo_in_any_hf_cache(model_name: str) -> bool:
             candidates.append(fn())
         except Exception:
             continue
+    # resolve_cached_repo_id_case only normalizes against the ACTIVE cache, so a
+    # case-variant cached in a legacy/default cache (e.g. models--Unsloth--Foo for a
+    # scan of unsloth/foo) would not match an exact probe. discard_remote_code_download
+    # deletes case-insensitively, so we must detect case-insensitively too -- otherwise
+    # a pre-existing case-variant repo is misreported as scan-created and deleted on
+    # decline.
     for cache in candidates:
         try:
             if (cache / dirname).exists():
                 return True
+            if cache.is_dir():
+                for entry in cache.iterdir():
+                    if entry.name.lower() == dirname_lower and entry.is_dir():
+                        return True
         except Exception:
             continue
     return False
