@@ -2489,6 +2489,7 @@ export function ChatPage({
           );
         }}
         externalProviderType={activeExternalProviderType}
+        loadingModel={loadingModel}
         onReloadModel={() => {
           const state = useChatRuntimeStore.getState();
           if (state.params.checkpoint) {
@@ -2506,22 +2507,23 @@ export function ChatPage({
           if (!pending) return;
           const keyAtLoad = chatContextKey;
           // forceReload: the staged model isn't loaded yet, so bypass the
-          // same-checkpoint dedupe (and selectModel clears pendingSelection).
-          // keepSpeculative: honor the speculative mode set on the sidebar.
+          // same-checkpoint dedupe. keepSpeculative: honor the speculative mode
+          // set on the sidebar.
           void selectModel({
             ...pending,
             forceReload: true,
             keepSpeculative: true,
             throwOnError: true,
           }).catch(() => {
-            // Recoverable failure (expired token, gated repo, OOM…): selectModel
-            // cleared the pick but left the edited knobs intact.
+            // Recoverable failure (expired token, gated repo, OOM…): the pick is
+            // cleared only on success, so it normally stays staged with edited
+            // knobs intact — nothing to restore.
             const store = useChatRuntimeStore.getState();
-            // A pick staged meanwhile owns the knobs now; leave it untouched.
+            // Still staged (this pick, or a newer one queued meanwhile): leave it.
             if (store.pendingSelection) return;
-            // Restore (not re-stage, which would reset the knobs) only if the
-            // staged-load is still wanted: same chat context, sheet still open,
-            // page still mounted.
+            // Cleared mid-load (sheet closed / switched chats). Re-stage only if
+            // the staged-load is still wanted: same chat context, sheet still
+            // open, page still mounted.
             const stillWanted =
               mountedRef.current &&
               store.settingsPanelOpen &&

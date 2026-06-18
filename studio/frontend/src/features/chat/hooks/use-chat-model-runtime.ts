@@ -25,6 +25,7 @@ import {
 } from "../api/chat-api";
 import { formatEta, formatRate } from "../utils/format-transfer";
 import {
+  pendingSelectionMatches,
   readPersistedSpeculativeType,
   resolveToolsEnabledOnLoad,
   saveSpeculativeType,
@@ -399,18 +400,22 @@ export function useChatModelRuntime() {
         typeof selection === "string" ? false : selection.keepSpeculative ?? false;
       // Picking/loading any model abandons a staged (deferred) selection.
       // Before the early-returns below so even a no-op re-select clears the
-      // stage, and so the Load button unmounts on first click (no double-load).
+      // stage.
       const staged = useChatRuntimeStore.getState().pendingSelection;
       if (staged) {
-        // Loading a DIFFERENT model abandons this stage, so cancel its in-flight
-        // download. Loading the staged pick itself keeps it (that download feeds
-        // this load).
-        const loadingStagedPick =
-          staged.id === modelId &&
-          (staged.ggufVariant ?? null) === (ggufVariant ?? null) &&
-          (staged.nativePathToken ?? null) === (nativePathToken ?? null);
-        if (!loadingStagedPick) cancelStagedModelDownload(staged);
-        useChatRuntimeStore.getState().setPendingSelection(null);
+        // Loading a DIFFERENT model abandons this stage. Loading the staged pick
+        // ITSELF keeps it so the sidebar can show its load settings (context, KV
+        // cache, …) during the load. Cleared on success below; on failure it's
+        // left staged so the user can retry (see onLoadPendingModel's catch).
+        const loadingStagedPick = pendingSelectionMatches(staged, {
+          id: modelId,
+          ggufVariant,
+          nativePathToken,
+        });
+        if (!loadingStagedPick) {
+          cancelStagedModelDownload(staged);
+          useChatRuntimeStore.getState().setPendingSelection(null);
+        }
       }
       const currentVariant = useChatRuntimeStore.getState().activeGgufVariant;
       if (!forceReload && (!modelId || (params.checkpoint === modelId && (ggufVariant ?? null) === (currentVariant ?? null)))) {
@@ -773,6 +778,18 @@ export function useChatModelRuntime() {
               }
             }
             await refresh({ signal: abortCtrl.signal });
+            // Cold start (nothing was loaded): refresh()'s setCheckpoint doesn't
+            // clear pendingSelection, so this pick would linger as a stale
+            // "staged" over the now-active model. Drop it. Scoped to this pick so
+            // a newer stage queued mid-load survives.
+            if (
+              pendingSelectionMatches(
+                useChatRuntimeStore.getState().pendingSelection,
+                { id: modelId, ggufVariant, nativePathToken },
+              )
+            ) {
+              useChatRuntimeStore.getState().setPendingSelection(null);
+            }
           } catch (error) {
             // Skip rollback if user cancelled -- model is already being unloaded.
             if (abortCtrl.signal.aborted) throw error;

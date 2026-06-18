@@ -52,6 +52,7 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { Slider } from "@/components/ui/slider";
+import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { InfoHint } from "@/components/ui/info-hint";
@@ -438,6 +439,10 @@ interface ChatSettingsPanelProps {
    */
   externalProviderType?: string | null;
   onReloadModel?: () => void;
+  /** The in-flight load (id + native path token), or null when idle. Used to
+   *  show a loading state for the staged pick only — not for an unrelated load
+   *  or a cancel's background unload. */
+  loadingModel?: { id: string; nativePathToken?: string | null } | null;
   /** Loads the staged `pendingSelection` (deferred "Load on selection" flow). */
   onLoadPendingModel?: () => void;
   /** Download progress (0–1) for a staged GGUF being fetched, or null when idle. */
@@ -457,6 +462,7 @@ export function ChatSettingsPanel({
   onExternalProviderChange,
   externalProviderType = null,
   onReloadModel,
+  loadingModel = null,
   onLoadPendingModel,
   stagedDownloadFraction,
   onCancelStagedDownload,
@@ -475,6 +481,17 @@ export function ChatSettingsPanel({
     !isExternalModel || Boolean(providerCapabilities?.presencePenalty);
   const isMobile = useIsMobile();
   const pendingSelection = useChatRuntimeStore((s) => s.pendingSelection);
+  // "Loading" only when the in-flight load IS this pick (not an unrelated load
+  // or a cancel's background unload). Matched on id + native token only:
+  // loadingModel carries no ggufVariant, but a variant mismatch would have
+  // abandoned the stage before load, so a surviving pendingSelection here always
+  // shares the loading pick's variant.
+  const stagedLoading =
+    pendingSelection != null &&
+    loadingModel != null &&
+    loadingModel.id === pendingSelection.id &&
+    (loadingModel.nativePathToken ?? null) ===
+      (pendingSelection.nativePathToken ?? null);
   const abandonStagedModel = useChatRuntimeStore((s) => s.abandonStagedModel);
   const resetModelSettingsToLoaded = useChatRuntimeStore(
     (s) => s.resetModelSettingsToLoaded,
@@ -856,10 +873,14 @@ export function ChatSettingsPanel({
             {pendingSelection && (
               <Alert className="rounded-[14px] border-primary/30 bg-primary/5 px-3 py-2">
                 <AlertTitle className="text-[12px] font-medium">
-                  {stagedLabel} is staged, not loaded yet
+                  {stagedLoading
+                    ? `Loading ${stagedLabel}…`
+                    : `${stagedLabel} is staged, not loaded yet`}
                 </AlertTitle>
                 <AlertDescription className="text-[11.5px] leading-[1.45] text-muted-foreground">
-                  Set the options below, then choose Load model to load it.
+                  {stagedLoading
+                    ? "Applying your settings."
+                    : "Set the options below, then choose Load model to load it."}
                 </AlertDescription>
               </Alert>
             )}
@@ -1103,31 +1124,44 @@ export function ChatSettingsPanel({
                     {Math.round((stagedDownloadFraction ?? 0) * 100)}%
                   </p>
                 )}
-                <div className="flex flex-wrap gap-1.5">
+                {stagedLoading ? (
+                  // Mid-load: nothing to load or abandon until it settles, so disable.
                   <Button
                     type="button"
-                    onClick={() => onLoadPendingModel?.()}
-                    disabled={stagedDownloading}
+                    disabled
                     size="sm"
-                    className="h-7 px-3 text-[12px] font-medium tracking-nav bg-primary/92 text-primary-foreground hover:bg-primary"
+                    className="h-7 w-fit px-3 text-[12px] font-medium tracking-nav bg-primary/92 text-primary-foreground hover:bg-primary"
                   >
-                    Load model
+                    <Spinner className="size-3.5" />
+                    Loading…
                   </Button>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={() => {
-                      // Cancel abandons the stage; if a download is mid-flight,
-                      // stop it too rather than leaving it running headless.
-                      if (stagedDownloading) onCancelStagedDownload?.();
-                      abandonStagedModel();
-                    }}
-                    className="h-7 px-3 text-[12px] font-medium tracking-nav text-muted-foreground"
-                  >
-                    Cancel
-                  </Button>
-                </div>
+                ) : (
+                  <div className="flex flex-wrap gap-1.5">
+                    <Button
+                      type="button"
+                      onClick={() => onLoadPendingModel?.()}
+                      disabled={stagedDownloading}
+                      size="sm"
+                      className="h-7 px-3 text-[12px] font-medium tracking-nav bg-primary/92 text-primary-foreground hover:bg-primary"
+                    >
+                      Load model
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => {
+                        // Cancel abandons the stage; if a download is mid-flight,
+                        // stop it too rather than leaving it running headless.
+                        if (stagedDownloading) onCancelStagedDownload?.();
+                        abandonStagedModel();
+                      }}
+                      className="h-7 px-3 text-[12px] font-medium tracking-nav text-muted-foreground"
+                    >
+                      Cancel
+                    </Button>
+                  </div>
+                )}
               </div>
             ) : modelSettingsDirty ? (
               <div className="flex flex-wrap gap-1.5">
