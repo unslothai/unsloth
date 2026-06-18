@@ -116,6 +116,10 @@ export async function validateModel(
       hf_token: payload.hf_token,
       gguf_variant: payload.gguf_variant ?? null,
       trust_remote_code: payload.trust_remote_code ?? false,
+      // Send the intended load settings so validate's VRAM check matches the
+      // follow-up /load and doesn't unload for a load /load would then reject.
+      max_seq_length: payload.max_seq_length,
+      load_in_4bit: payload.load_in_4bit,
     }),
     ...(signal ? { signal } : {}),
   });

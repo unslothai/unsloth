@@ -241,3 +241,5 @@ llama.cpp/
 /studio/.omc
 /studio/backend/.omc
 *.patch
+# Stray "~" dir some tools create from a literal ~ TMPDIR; never part of the repo.
+/~/

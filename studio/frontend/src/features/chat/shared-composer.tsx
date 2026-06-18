@@ -49,6 +49,7 @@ import {
   Image03Icon,
   McpServerIcon,
   PencilRulerIcon,
+  ShieldBanIcon,
 } from "@hugeicons/core-free-icons";
 import { useNavigate } from "@tanstack/react-router";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -62,6 +63,7 @@ import {
 import { listPromptEntries, type PromptEntry } from "./api/prompts-api";
 import { McpComposerButton } from "./mcp-composer-button";
 import { BypassPermissionsMenuItem } from "./bypass-permissions-menu-item";
+import { reasoningCapsFromLoad } from "./lib/apply-inference-status-to-store";
 import { KnowledgeBaseComposerButton } from "@/features/rag/components/knowledge-base-composer-button";
 import { NewProjectDialog } from "./components/new-project-dialog";
 import { useChatProjects } from "./hooks/use-chat-projects";
@@ -705,7 +707,11 @@ export function SharedComposer({
   const reasoningDisabled = !modelLoaded || !effectiveSupportsReasoning;
   const showReasoningControl =
     effectiveSupportsReasoning || effectiveReasoningAlwaysOn;
-  const isEffort = effectiveReasoningStyle === "reasoning_effort";
+  // enable_thinking_effort (GLM-5.2: high|max + disable) reuses the effort
+  // dropdown; it just also carries an Off row via supportsReasoningOff.
+  const isEffort =
+    effectiveReasoningStyle === "reasoning_effort" ||
+    effectiveReasoningStyle === "enable_thinking_effort";
   const thinkingActiveLook = isEffort
     ? reasoningLockedOn || (effectiveReasoningVisualEnabled && !reasoningDisabled)
     : reasoningLockedOn || (effectiveReasoningEnabled && !reasoningDisabled);
@@ -1346,7 +1352,7 @@ export function SharedComposer({
         useChatRuntimeStore.setState({
           supportsReasoning: resp.supports_reasoning ?? false,
           reasoningAlwaysOn: resp.reasoning_always_on ?? false,
-          reasoningStyle: resp.reasoning_style ?? "enable_thinking",
+          ...reasoningCapsFromLoad(resp),
           supportsPreserveThinking: resp.supports_preserve_thinking ?? false,
           supportsTools: resp.supports_tools ?? false,
           tensorParallel: resp.tensor_parallel ?? false,
@@ -2111,7 +2117,7 @@ export function SharedComposer({
                     <MoreHorizontalIcon className="size-4" />
                     More
                   </DropdownMenuSubTrigger>
-                  <DropdownMenuSubContent className="unsloth-plus-menu w-[232px]">
+                  <DropdownMenuSubContent className="unsloth-plus-menu w-[248px]">
                     {overflowPlusItems.map((id) => (
                       <Fragment key={id}>{plusMenuNodes[id]}</Fragment>
                     ))}
@@ -2134,6 +2140,29 @@ export function SharedComposer({
             </PillGlyph>
             <span>Compare</span>
           </button>
+          {/* Bypass sits immediately after Compare and ahead of every other
+              tool pill (Search, Code, ...) so the active danger state reads
+              first; only Compare outranks it. */}
+          {bypassPermissions && (
+            <button
+              type="button"
+              onClick={() => setBypassPermissions(false)}
+              className="composer-pill-btn"
+              data-active="true"
+              data-variant="danger"
+              aria-label="Disable Bypass permissions"
+              title="Bypass permissions is on (no confirmation, no sandbox). Click to turn off."
+            >
+              <PillGlyph>
+                <HugeiconsIcon
+                  icon={ShieldBanIcon}
+                  strokeWidth={2}
+                  className="size-[15px]"
+                />
+              </PillGlyph>
+              <span>Bypass permissions</span>
+            </button>
+          )}
           <button
             type="button"
             disabled={searchDisabled}
@@ -2249,20 +2278,6 @@ export function SharedComposer({
             </button>
           ) : null}
           {mcpEnabledForChat ? <McpComposerButton side="top" /> : null}
-          {bypassPermissions && (
-            <button
-              type="button"
-              onClick={() => setBypassPermissions(false)}
-              className="composer-pill-btn"
-              data-active="true"
-              data-variant="danger"
-              aria-label="Disable Bypass Permissions"
-              title="Bypass Permissions is on (no confirmation, no sandbox). Click to turn off."
-            >
-              <XIcon className="size-3" />
-              <span>Bypass Permissions</span>
-            </button>
-          )}
         </div>
         {/* mr-0.5 matches the send button inset from the edge in normal chat;
             gap-1.5 matches its control spacing. */}

@@ -14,7 +14,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse, JSONResponse, Response
 from pydantic import ValidationError
-from typing import Any, Optional, Union
+from typing import Any, List, Optional, Union
 import json
 import httpx
 import structlog
@@ -1049,6 +1049,7 @@ def _detect_safetensors_features(backend, chat_template: Optional[str]) -> dict:
             "supports_reasoning": False,
             "reasoning_style": "enable_thinking",
             "reasoning_always_on": False,
+            "reasoning_effort_levels": [],
             "supports_preserve_thinking": False,
             "supports_tools": False,
         }
@@ -1930,6 +1931,203 @@ def _resolve_model_identifier_for_request(
 # keep resolving to the one instance load/list/delete/shutdown consult.
 
 
+def _effective_load_in_4bit(config: ModelConfig, requested: bool) -> bool:
+    """Effective quantization the loader will use: a LoRA adapter can flip 4-bit to
+    16-bit via adapter_config.json, so the guard sizes this, not the raw request."""
+    load_in_4bit = requested
+    if not getattr(config, "is_lora", False) or not getattr(config, "path", None):
+        return load_in_4bit
+    adapter_cfg_path = Path(config.path) / "adapter_config.json"
+    if not adapter_cfg_path.exists():
+        return load_in_4bit
+    try:
+        with open(adapter_cfg_path) as f:
+            adapter_cfg = json.load(f)
+        if not isinstance(adapter_cfg, dict):  # malformed -> keep requested
+            return load_in_4bit
+    except Exception as e:
+        logger.warning(f"Could not read adapter_config.json: {e}")
+        return load_in_4bit
+    training_method = adapter_cfg.get("unsloth_training_method")
+    if training_method == "lora":
+        return False
+    if training_method == "qlora":
+        return True
+    if not training_method and config.base_model and "-bnb-4bit" not in config.base_model.lower():
+        return False
+    return load_in_4bit
+
+
+def _remote_gguf_companion_bytes(
+    repo: str, *, hf_token: Optional[str], include_mmproj: bool
+) -> int:
+    """Bytes of MTP/mmproj companion GGUFs llama-server auto-downloads. 0 on error,
+    so it can only add headroom, never refuse a load by itself."""
+    try:
+        from huggingface_hub import model_info
+
+        info = model_info(repo, token = hf_token, files_metadata = True)
+        total = 0
+        for sibling in info.siblings or []:
+            base = Path(sibling.rfilename or "").name.lower()
+            if not base.endswith(".gguf"):
+                continue
+            if base.startswith("mtp-") or (include_mmproj and "mmproj" in base):
+                total += getattr(sibling, "size", 0) or 0
+        return total
+    except Exception as e:
+        logger.warning(f"Could not size GGUF companions for {repo}: {e}")
+        return 0
+
+
+def _estimate_gguf_kv_gb(
+    gguf_path: str,
+    max_seq_length: int,
+    llama_extra_args: Optional[list[str]] = None,
+    n_parallel: int = 1,
+) -> float:
+    """KV-cache VRAM (GB) at the larger of max_seq_length and any `--ctx-size`/`-c`
+    override, over n_parallel slots, with the default f16 cache so the estimate is
+    never below what the server allocates. 0 if metadata is unreadable."""
+    try:
+        from core.inference.llama_server_args import parse_ctx_override
+
+        probe = LlamaCppBackend()
+        probe._read_gguf_metadata(gguf_path)
+        if not probe._can_estimate_kv():
+            return 0.0
+        try:
+            ctx_override = parse_ctx_override(llama_extra_args) or 0
+        except Exception:
+            ctx_override = 0  # malformed extras are rejected upstream; fall back
+        ctx = max(max_seq_length or 0, ctx_override) or (probe._context_length or 0)
+        if ctx <= 0:
+            return 0.0
+        kv = probe._estimate_kv_cache_bytes(ctx, n_parallel = max(1, n_parallel or 1))
+        return kv / (1024**3)
+    except Exception as e:
+        logger.warning(f"Could not size GGUF KV cache for training guard: {e}")
+        return 0.0
+
+
+def _estimate_gguf_required_gb(
+    config: ModelConfig,
+    hf_token: Optional[str] = None,
+    max_seq_length: int = 0,
+    llama_extra_args: Optional[list[str]] = None,
+    n_parallel: int = 1,
+) -> Optional[float]:
+    """Approximate GGUF VRAM (GB): quantized weights + companions, plus the KV
+    cache for local files (unreadable pre-download for remote). None when nothing
+    resolves so the caller default-denies."""
+    try:
+        total_bytes = 0
+        main = getattr(config, "gguf_file", None)
+        if main and Path(main).is_file():
+            total_bytes += LlamaCppBackend._get_gguf_size_bytes(str(main))
+        for attr in ("gguf_mmproj_file", "gguf_mtp_file"):
+            f = getattr(config, attr, None)
+            if f and Path(f).is_file():
+                total_bytes += Path(f).stat().st_size
+        if total_bytes > 0:
+            return total_bytes / (1024**3) + _estimate_gguf_kv_gb(
+                main, max_seq_length, llama_extra_args, n_parallel
+            )
+
+        repo = getattr(config, "gguf_hf_repo", None)
+        variant = getattr(config, "gguf_variant", None)
+        if repo and variant:
+            from utils.models.model_config import list_gguf_variants
+
+            variants, has_vision = list_gguf_variants(repo, hf_token = hf_token)
+            main_bytes = next(
+                (v.size_bytes for v in variants if v.quant.lower() == variant.lower()), None
+            )
+            if main_bytes is None:
+                return None
+            companions = _remote_gguf_companion_bytes(
+                repo, hf_token = hf_token, include_mmproj = bool(has_vision)
+            )
+            return (main_bytes + companions) / (1024**3)
+        return None
+    except Exception as e:
+        logger.warning(f"Could not size GGUF model for training guard: {e}")
+        return None
+
+
+def _guard_chat_load_against_training(
+    config: ModelConfig,
+    *,
+    model_identifier: str,
+    hf_token: Optional[str],
+    load_in_4bit: bool,
+    max_seq_length: int,
+    requested_gpu_ids: Optional[List[int]],
+    llama_extra_args: Optional[list[str]] = None,
+    n_parallel: int = 1,
+) -> None:
+    """Refuse loading a local chat model that would OOM an active training run.
+    No-op when training is inactive or unknown. `load_in_4bit` must be the
+    effective quantization (see _effective_load_in_4bit). Raises HTTP 409 when the
+    model would not fit alongside training."""
+    from core.training import get_training_backend
+    from routes.training_vram import can_load_chat_during_training
+
+    try:
+        if not get_training_backend().is_training_active():
+            return
+    except Exception as e:
+        logger.warning("Could not check training state for chat-load guard: %s", e)
+        return
+
+    is_gguf = bool(getattr(config, "is_gguf", False))
+    required_override_gb = (
+        _estimate_gguf_required_gb(
+            config,
+            hf_token = hf_token,
+            max_seq_length = max_seq_length,
+            llama_extra_args = llama_extra_args,
+            n_parallel = n_parallel,
+        )
+        if is_gguf
+        else None
+    )
+
+    ok, info = can_load_chat_during_training(
+        model_name = model_identifier,
+        hf_token = hf_token,
+        load_in_4bit = load_in_4bit,
+        max_seq_length = max_seq_length,
+        requested_gpu_ids = requested_gpu_ids,
+        is_gguf = is_gguf,
+        required_override_gb = required_override_gb,
+    )
+    if ok:
+        return
+
+    usable = info.get("usable_gb")
+    needed = info.get("needed_gb")
+    if needed is None:
+        needed = info.get("required_gb")
+    if needed is not None and usable is not None:
+        detail = (
+            f"Not enough free GPU memory to load this model while training is "
+            f"running (needs ~{needed:.0f} GB including safety headroom, "
+            f"~{usable:.0f} GB free). Training was left untouched. Use an external "
+            f"provider, a smaller or more quantized model, or try again after "
+            f"training finishes."
+        )
+    else:
+        detail = (
+            "Can't load this model while training is running: its GPU memory use "
+            "could not be verified, so the load was refused to protect the "
+            "training run. Use an external provider or try again after training "
+            "finishes."
+        )
+    logger.info("Refusing chat-model load during training: %s", info)
+    raise HTTPException(status_code = 409, detail = detail)
+
+
 def _model_json_response(model, status_code: int = 200) -> Response:
     """Serialize a pydantic response once via pydantic-core.
 
@@ -1958,6 +2156,8 @@ async def load_model(
 
     GGUF models load via llama-server (llama.cpp) instead of Unsloth.
     """
+    from core.inference.llama_cpp import LlamaServerNotFoundError
+
     native_grant_backed = False
     model_log_label = request.model_path
     try:
@@ -2051,6 +2251,7 @@ async def load_model(
                     native_context_length = llama_backend.native_context_length,
                     supports_reasoning = llama_backend.supports_reasoning,
                     reasoning_style = llama_backend.reasoning_style,
+                    reasoning_effort_levels = llama_backend.reasoning_effort_levels,
                     reasoning_always_on = llama_backend.reasoning_always_on,
                     supports_preserve_thinking = llama_backend.supports_preserve_thinking,
                     supports_tools = llama_backend.supports_tools,
@@ -2098,6 +2299,7 @@ async def load_model(
                     ),
                     supports_reasoning = _sf_supports_reasoning,
                     reasoning_style = _sf_reasoning_style,
+                    reasoning_effort_levels = _sf_flags.get("reasoning_effort_levels", []),
                     reasoning_always_on = _sf_flags["reasoning_always_on"],
                     supports_preserve_thinking = _sf_flags["supports_preserve_thinking"],
                     supports_tools = _sf_flags["supports_tools"],
@@ -2141,14 +2343,37 @@ async def load_model(
         # Normalize gpu_ids: empty list means auto-selection, same as None
         effective_gpu_ids = request.gpu_ids if request.gpu_ids else None
 
+        # Reject GGUF + gpu_ids first so the guard can't mask it with a VRAM 409.
+        if config.is_gguf and effective_gpu_ids is not None:
+            raise HTTPException(
+                status_code = 400,
+                detail = "gpu_ids is not supported for GGUF models yet.",
+            )
+
+        # Effective quantization (LoRA can flip 4-bit -> 16-bit); guard + load reuse it.
+        effective_load_in_4bit = _effective_load_in_4bit(config, request.load_in_4bit)
+        if effective_load_in_4bit != request.load_in_4bit:
+            logger.info(
+                f"Resolved load_in_4bit={effective_load_in_4bit} for '{model_log_label}' "
+                f"from adapter_config.json / base model (requested {request.load_in_4bit})"
+            )
+
+        # Refuse a load that would OOM active training, before the unload step below
+        # frees the resident model. Off-loop: guard does sync nvidia-smi / HF work.
+        await asyncio.to_thread(
+            _guard_chat_load_against_training,
+            config,
+            model_identifier = model_identifier,
+            hf_token = request.hf_token,
+            load_in_4bit = effective_load_in_4bit,
+            max_seq_length = request.max_seq_length,
+            requested_gpu_ids = effective_gpu_ids,
+            llama_extra_args = extra_llama_args,
+            n_parallel = getattr(fastapi_request.app.state, "llama_parallel_slots", 1),
+        )
+
         # ── GGUF path: load via llama-server ──────────────────────
         if config.is_gguf:
-            if effective_gpu_ids is not None:
-                raise HTTPException(
-                    status_code = 400,
-                    detail = "gpu_ids is not supported for GGUF models yet.",
-                )
-
             llama_backend = get_llama_cpp_backend()
             unsloth_backend = get_inference_backend()
 
@@ -2356,6 +2581,7 @@ async def load_model(
                 native_context_length = llama_backend.native_context_length,
                 supports_reasoning = llama_backend.supports_reasoning,
                 reasoning_style = llama_backend.reasoning_style,
+                reasoning_effort_levels = llama_backend.reasoning_effort_levels,
                 reasoning_always_on = llama_backend.reasoning_always_on,
                 supports_preserve_thinking = llama_backend.supports_preserve_thinking,
                 supports_tools = llama_backend.supports_tools,
@@ -2388,51 +2614,8 @@ async def load_model(
         except Exception as e:
             logger.warning("Could not shut down export subprocess: %s", e)
 
-        # Auto-detect quantization for LoRA adapters from adapter_config.json.
-        # The training pipeline writes "unsloth_training_method" ('qlora' or
-        # 'lora'); only LoRA (16-bit) needs load_in_4bit=False.
-        load_in_4bit = request.load_in_4bit
-        if config.is_lora and config.path:
-            import json
-            from pathlib import Path
-
-            adapter_cfg_path = Path(config.path) / "adapter_config.json"
-            if adapter_cfg_path.exists():
-                try:
-                    with open(adapter_cfg_path) as f:
-                        adapter_cfg = json.load(f)
-                    training_method = adapter_cfg.get("unsloth_training_method")
-                    if training_method == "lora" and load_in_4bit:
-                        logger.info(
-                            f"adapter_config.json says unsloth_training_method='lora' — "
-                            f"setting load_in_4bit=False to match 16-bit training"
-                        )
-                        load_in_4bit = False
-                    elif training_method == "qlora" and not load_in_4bit:
-                        logger.info(
-                            f"adapter_config.json says unsloth_training_method='qlora' — "
-                            f"setting load_in_4bit=True to match QLoRA training"
-                        )
-                        load_in_4bit = True
-                    elif training_method:
-                        logger.info(
-                            f"Training method: {training_method}, load_in_4bit={load_in_4bit}"
-                        )
-                    else:
-                        # No unsloth_training_method -- fall back to base model name
-                        if (
-                            config.base_model
-                            and "-bnb-4bit" not in config.base_model.lower()
-                            and load_in_4bit
-                        ):
-                            logger.info(
-                                f"No unsloth_training_method in adapter_config.json. "
-                                f"Base model '{config.base_model}' has no -bnb-4bit suffix — "
-                                f"setting load_in_4bit=False"
-                            )
-                            load_in_4bit = False
-                except Exception as e:
-                    logger.warning(f"Could not read adapter_config.json: {e}")
+        # Resolved before the guard so both size the same load.
+        load_in_4bit = effective_load_in_4bit
 
         # Load in a thread so the event loop stays free for download progress
         # polling and other requests.
@@ -2515,6 +2698,7 @@ async def load_model(
             requires_trust_remote_code = _requires_rc,
             supports_reasoning = _sf_flags["supports_reasoning"],
             reasoning_style = _sf_flags["reasoning_style"],
+            reasoning_effort_levels = _sf_flags.get("reasoning_effort_levels", []),
             reasoning_always_on = _sf_flags["reasoning_always_on"],
             supports_preserve_thinking = _sf_flags["supports_preserve_thinking"],
             supports_tools = _sf_flags["supports_tools"],
@@ -2536,6 +2720,10 @@ async def load_model(
         logger.warning("Rejected inference GPU selection: %s", e)
         # User-facing validation (e.g. "Invalid gpu_ids [99]"): redact paths, keep detail.
         raise HTTPException(status_code = 400, detail = redact_native_paths(str(e)))
+    except LlamaServerNotFoundError as e:
+        # Missing GGUF runtime: 400 with the install message, not a generic 500.
+        logger.warning("GGUF runtime missing while loading '%s': %s", model_log_label, e)
+        raise HTTPException(status_code = 400, detail = str(e))
     except Exception as e:
         # Friendlier message for models Unsloth cannot load.
         not_supported_hints = [
@@ -2645,6 +2833,8 @@ async def validate_model(
     Checks that ModelConfig.from_identifier() can resolve model_path, but does
     NOT load model weights into GPU memory.
     """
+    from core.inference.llama_cpp import LlamaServerNotFoundError
+
     native_grant_backed = False
     model_log_label = request.model_path
     try:
@@ -2687,6 +2877,27 @@ async def validate_model(
                 status_code = 400,
                 detail = f"Invalid model identifier: {model_log_label}",
             )
+
+        # Refuse early (before the frontend unloads to load this) if it can't fit
+        # alongside training, using the same settings /load uses so they agree.
+        effective_gpu_ids = request.gpu_ids if request.gpu_ids else None
+        # Mirror /load: reject GGUF + gpu_ids before the guard so both return 400.
+        if config.is_gguf and effective_gpu_ids is not None:
+            raise HTTPException(
+                status_code = 400,
+                detail = "gpu_ids is not supported for GGUF models yet.",
+            )
+        effective_load_in_4bit = _effective_load_in_4bit(config, request.load_in_4bit)
+        # Off-loop: guard does sync nvidia-smi / HF work.
+        await asyncio.to_thread(
+            _guard_chat_load_against_training,
+            config,
+            model_identifier = model_identifier,
+            hf_token = request.hf_token,
+            load_in_4bit = effective_load_in_4bit,
+            max_seq_length = request.max_seq_length,
+            requested_gpu_ids = effective_gpu_ids,
+        )
 
         # Both checks cover the [adapter, base] set (matching the scan route and workers):
         # either repo can ship auto_map code or a poisoned pickle.
@@ -2759,6 +2970,10 @@ async def validate_model(
 
     except HTTPException:
         raise
+    except LlamaServerNotFoundError as e:
+        # Missing GGUF runtime: 400 with the install message, not a generic "Invalid model".
+        logger.warning("GGUF runtime missing while validating '%s': %s", request.model_path, e)
+        raise HTTPException(status_code = 400, detail = str(e))
     except Exception as e:
         not_supported_hints = [
             "No config file found",
@@ -3099,6 +3314,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 requires_trust_remote_code = False,
                 supports_reasoning = llama_backend.supports_reasoning,
                 reasoning_style = llama_backend.reasoning_style,
+                reasoning_effort_levels = llama_backend.reasoning_effort_levels,
                 reasoning_always_on = llama_backend.reasoning_always_on,
                 supports_preserve_thinking = llama_backend.supports_preserve_thinking,
                 supports_tools = llama_backend.supports_tools,
@@ -3159,6 +3375,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
             ),
             supports_reasoning = _sf_flags["supports_reasoning"],
             reasoning_style = _sf_flags["reasoning_style"],
+            reasoning_effort_levels = _sf_flags.get("reasoning_effort_levels", []),
             reasoning_always_on = _sf_flags["reasoning_always_on"],
             supports_preserve_thinking = _sf_flags["supports_preserve_thinking"],
             supports_tools = _sf_flags["supports_tools"],

@@ -270,16 +270,18 @@ def test_proportional_tensor_split_is_emitted_in_tensor_mode():
 def test_mtp_decode_probe_wired_under_tensor_parallel():
     # MTP-draft can pass /health and crash the CUDA FA kernel only on the first
     # decode under --split-mode tensor. Rather than statically banning MTP+TP
-    # (which a future llama.cpp may support), load_model probes a decode and
-    # routes a failure into the existing MTP-drop fallback.
+    # (which a future llama.cpp may support), load_model probes a decode; a hard
+    # fault retries --flash-attn off first, else routes into the MTP-drop fallback.
     src = _load_model_source()
     probe = src.find("_probe_mtp_decode()")
     assert probe != -1, "load_model must decode-probe MTP under tensor parallelism"
     # Gated on tensor mode AND an MTP request (ordinary MTP loads stay unprobed).
     guard = src[max(0, probe - 400) : probe]
     assert "self._tensor_parallel" in guard and "_spec_requested_mtp" in guard
-    # A failed probe flips healthy so the shared MTP-drop fallback fires.
-    assert "healthy = False" in src[probe : probe + 400]
+    # A hard fault retries FA-off (keeps MTP) before flipping healthy so the
+    # shared MTP-drop fallback fires.
+    after = src[probe : probe + 900]
+    assert "_with_flash_attn_off" in after and "healthy = False" in after
     fallback = src.find("if not healthy and _spec_requested_mtp")
     assert 0 <= probe < fallback, "the probe must precede the MTP-drop fallback"
 

@@ -2680,13 +2680,14 @@ class ModelConfig:
                 # download. include_denied: a transiently locked binary still
                 # exists (the lock clears long before the download finishes; the
                 # load itself reports a still-locked binary distinctly).
-                from core.inference.llama_cpp import LlamaCppBackend
+                from core.inference.llama_cpp import (
+                    LLAMA_SERVER_NOT_FOUND_DETAIL,
+                    LlamaCppBackend,
+                    LlamaServerNotFoundError,
+                )
 
                 if not LlamaCppBackend._find_llama_server_binary(include_denied = True):
-                    raise RuntimeError(
-                        "llama-server binary not found — cannot load GGUF models. "
-                        "Run setup.sh to build it, or set LLAMA_SERVER_PATH."
-                    )
+                    raise LlamaServerNotFoundError(LLAMA_SERVER_NOT_FOUND_DETAIL)
 
                 # list_gguf_variants() detects vision & resolves the variant
                 variants, has_vision = list_gguf_variants(identifier, hf_token = hf_token)
