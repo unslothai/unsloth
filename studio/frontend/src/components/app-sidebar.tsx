@@ -1194,7 +1194,7 @@ export function AppSidebar() {
                       >
                         <SidebarMenuButton
                           isActive={isActiveRun}
-                          className="sidebar-nav-btn h-auto flex-col items-start gap-0.5 py-[5px] rounded-full pl-3 pr-7 text-[14.5px] tracking-nav font-medium"
+                          className="sidebar-nav-btn h-auto flex-col items-start gap-0.5 py-[5px] rounded-[14px] pl-3 pr-7 text-[14.5px] tracking-nav font-medium"
                           onClick={() => {
                             setSelectedHistoryRunId(run.id);
                             // From Recipes/Export, jump to Train so the run's
