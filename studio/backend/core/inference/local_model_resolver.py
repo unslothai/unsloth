@@ -59,7 +59,12 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
     """Map normalized id/model_id/display_name -> local GGUF entry."""
     # Lazy import: routes.models imports core.inference, so import at call time.
     from pathlib import Path
-    from routes.models import _scan_models_dir, _scan_hf_cache, _resolve_hf_cache_dir
+    from routes.models import (
+        _scan_models_dir,
+        _scan_hf_cache,
+        _resolve_hf_cache_dir,
+        _is_hidden_model,
+    )
 
     index: dict[str, _LocalGgufEntry] = {}
     try:
@@ -71,6 +76,11 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
     for info in found:
         loader_id = getattr(info, "id", None)
         if not loader_id:
+            continue
+        # Skip what Studio hides from its own pickers (the llama.cpp validation
+        # probe, RAG embedding weights): not usable chat models, so never an
+        # auto-switch target.
+        if _is_hidden_model(loader_id, getattr(info, "path", None)):
             continue
         entry = _local_gguf_entry(loader_id, info)
         if entry is None:

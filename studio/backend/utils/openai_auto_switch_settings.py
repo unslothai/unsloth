@@ -90,6 +90,12 @@ def set_openai_auto_switch_enabled(value: Any) -> bool:
 
 
 def get_auto_unload_idle_seconds() -> int:
+    # Idle auto-unload is meaningful only with auto-switch on: an unloaded model
+    # comes back only when the next request swaps it in. Report 0 (disabled)
+    # while auto-switch is off so "switch off" can never trigger a destructive
+    # unload, keeping the off state byte-for-byte the pre-feature behavior.
+    if not get_openai_auto_switch_enabled():
+        return 0
     parsed = _coerce_int(_cached_setting(AUTO_UNLOAD_IDLE_SETTING_KEY, None))
     return parsed if parsed is not None else DEFAULT_AUTO_UNLOAD_IDLE_SECONDS
 

@@ -380,3 +380,58 @@ def test_idle_loop_does_not_unload_while_request_inflight(monkeypatch):
 
     asyncio.run(_drive())
     assert unloads == []
+
+
+# ── hardening: hidden models, idle/enabled coupling, count_tokens keep-warm ──
+
+
+def test_index_excludes_hidden_models(tmp_path, monkeypatch):
+    # The llama.cpp validation probe and RAG embedding weights are hidden from
+    # Studio's pickers; they must never become auto-switch targets.
+    from types import SimpleNamespace
+    import routes.models as models_route
+
+    normal = tmp_path / "normal-Q4_K_M.gguf"
+    normal.write_bytes(b"x" * 32)
+    probe = tmp_path / "stories260K.gguf"  # llama.cpp install-validation probe
+    probe.write_bytes(b"x" * 32)
+
+    def _info(mid, path):
+        return SimpleNamespace(id = mid, path = str(path), model_id = mid, display_name = mid)
+
+    monkeypatch.setattr(
+        models_route,
+        "_scan_models_dir",
+        lambda *a, **k: [_info("org/Normal-GGUF", normal), _info("ggml-org/models", probe)],
+    )
+    monkeypatch.setattr(models_route, "_scan_hf_cache", lambda *a, **k: [])
+    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: tmp_path)
+    resolver._scan = (0.0, {})
+
+    index = resolver._index()
+    assert "org/normal-gguf" in index  # keys are normalized to lowercase
+    assert "ggml-org/models" not in index
+    # And the hidden probe cannot be auto-switched to by name.
+    resolver._scan = (0.0, {})
+    assert resolver.resolve_local_gguf("ggml-org/models") is None
+
+
+def test_idle_disabled_when_auto_switch_off(monkeypatch):
+    # "Off means unchanged": a stored idle TTL must report 0 while auto-switch is
+    # off, so the idle loop and keep-warm middleware can never unload the model.
+    store = {settings.AUTO_UNLOAD_IDLE_SETTING_KEY: 60}
+    monkeypatch.setattr(settings, "_cached_setting", lambda k, d = None: store.get(k, d))
+    monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: False)
+    assert settings.get_auto_unload_idle_seconds() == 0
+    monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: True)
+    assert settings.get_auto_unload_idle_seconds() == 60
+
+
+def test_count_tokens_is_tracked_as_inference_path():
+    # count_tokens counts via the loaded tokenizer, so idle-unload must not pull
+    # the model out from under it; it has to be a tracked in-flight path.
+    from core.inference.llama_keepwarm import _is_inference_path
+
+    assert _is_inference_path("/v1/messages/count_tokens") is True
+    assert _is_inference_path("/api/inference/messages/count_tokens") is True
+    assert _is_inference_path("/v1/messages") is True

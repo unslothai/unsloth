@@ -31,6 +31,7 @@ _INFERENCE_SUFFIXES = (
     "/chat/completions",
     "/completions",
     "/messages",
+    "/messages/count_tokens",  # counts via the loaded tokenizer; protect like /messages
     "/embeddings",
     "/responses",
     "/audio/generate",  # direct GGUF TTS; can outlive the idle TTL
