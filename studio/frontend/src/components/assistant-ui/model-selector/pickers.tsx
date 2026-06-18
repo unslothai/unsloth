@@ -273,9 +273,12 @@ function ListLabel({
 /** Format bytes to a human-readable size string. */
 function formatBytes(bytes: number): string {
   if (bytes === 0) return "0 B";
+  // Decimal (base-1000) units to match what Hugging Face reports for a repo's
+  // file sizes -- e.g. 217 GB, not the 201.8 GiB a base-1024 divide would show.
+  // (GPU-fit math below stays base-1024 since VRAM is binary.)
   const units = ["B", "KB", "MB", "GB", "TB"];
-  const i = Math.floor(Math.log(bytes) / Math.log(1024));
-  const value = bytes / 1024 ** i;
+  const i = Math.floor(Math.log(bytes) / Math.log(1000));
+  const value = bytes / 1000 ** i;
   return `${value.toFixed(value < 10 ? 1 : 0)} ${units[i]}`;
 }
 

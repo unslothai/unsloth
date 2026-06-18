@@ -73,7 +73,10 @@ import { parseExternalModelId } from "@/features/chat/external-providers";
 import { McpComposerButton } from "@/features/chat/mcp-composer-button";
 import { getExternalReasoningCapabilities } from "@/features/chat/provider-capabilities";
 import { useRagToolDisabled } from "@/features/chat/hooks/use-rag-tool-disabled";
-import { BypassPermissionsMenuItem } from "@/features/chat/bypass-permissions-menu-item";
+import {
+  BypassPermissionsConfirmDialog,
+  BypassPermissionsMenuItem,
+} from "@/features/chat/bypass-permissions-menu-item";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { useExternalProvidersStore } from "@/features/chat/stores/external-providers-store";
 import { PROMPT_QUEUE_STOP_EVENT } from "@/features/chat/utils/prompt-queue-boundary";
@@ -1674,6 +1677,7 @@ const Composer: FC<{
           {/* Active-mode badge: always visible when bypass is on, even while
               the pill row is collapsed (returns null when off). */}
           <BypassPermissionsToggle />
+          <BypassPermissionsConfirmDialog />
           {composerExpanded ? (
             <>
               <WebSearchToggle />

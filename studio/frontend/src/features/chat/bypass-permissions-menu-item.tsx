@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { ShieldOffIcon } from "lucide-react";
-import { useState } from "react";
 
 import { HugeiconsIcon } from "@hugeicons/react";
 
@@ -22,61 +21,75 @@ import { Tick02Icon } from "@/lib/tick-icon";
 
 // "Bypass Permissions" entry for the composer "+" -> More menu. Mirrors the
 // settings toggle: enabling demands the danger warning, disabling is immediate.
-// onSelect preventDefault keeps the menu mounted so the warning dialog (which
-// lives in this same fragment) survives instead of unmounting with the menu.
+// The menu closes normally on select (no preventDefault) -- the warning dialog
+// lives outside the menu (BypassPermissionsConfirmDialog, driven by the store),
+// so it survives the menu unmounting and the "+"/More popovers don't stay frozen.
 export function BypassPermissionsMenuItem() {
   const bypassPermissions = useChatRuntimeStore((s) => s.bypassPermissions);
   const setBypassPermissions = useChatRuntimeStore(
     (s) => s.setBypassPermissions,
   );
-  const [dialogOpen, setDialogOpen] = useState(false);
+  const setBypassConfirmOpen = useChatRuntimeStore(
+    (s) => s.setBypassConfirmOpen,
+  );
 
   return (
-    <>
-      <DropdownMenuItem
-        className={
-          bypassPermissions ? "text-destructive font-medium" : undefined
+    <DropdownMenuItem
+      className={
+        bypassPermissions ? "text-destructive font-medium" : undefined
+      }
+      onSelect={() => {
+        if (bypassPermissions) {
+          setBypassPermissions(false);
+        } else {
+          setBypassConfirmOpen(true);
         }
-        onSelect={(e) => {
-          if (bypassPermissions) {
-            setBypassPermissions(false);
-          } else {
-            e.preventDefault();
-            setDialogOpen(true);
-          }
-        }}
-      >
-        <ShieldOffIcon />
-        Bypass Permissions
-        {bypassPermissions ? (
-          <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="ml-auto" />
-        ) : null}
-      </DropdownMenuItem>
-      <AlertDialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <AlertDialogContent size="sm">
-          <AlertDialogHeader>
-            <AlertDialogTitle>Enable Bypass Permissions?</AlertDialogTitle>
-            <AlertDialogDescription>
-              Bypass Permissions is dangerous since the AI model might delete,
-              corrupt your machine, and or cause real world damage to you or the
-              world - only accept if you are certain
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              variant="destructive"
-              className="!bg-destructive !text-destructive-foreground hover:!bg-destructive/90"
-              onClick={() => {
-                setBypassPermissions(true);
-                setDialogOpen(false);
-              }}
-            >
-              I understand
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-    </>
+      }}
+    >
+      <ShieldOffIcon />
+      Bypass Permissions
+      {bypassPermissions ? (
+        <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="ml-auto" />
+      ) : null}
+    </DropdownMenuItem>
+  );
+}
+
+// The danger-confirmation dialog. Rendered at a stable spot in the composer
+// (not inside the menu) and driven by the store, so confirming or cancelling it
+// never leaves the composer "+"/More popovers frozen open.
+export function BypassPermissionsConfirmDialog() {
+  const open = useChatRuntimeStore((s) => s.bypassConfirmOpen);
+  const setOpen = useChatRuntimeStore((s) => s.setBypassConfirmOpen);
+  const setBypassPermissions = useChatRuntimeStore(
+    (s) => s.setBypassPermissions,
+  );
+
+  return (
+    <AlertDialog open={open} onOpenChange={setOpen}>
+      <AlertDialogContent size="sm">
+        <AlertDialogHeader>
+          <AlertDialogTitle>Enable Bypass Permissions?</AlertDialogTitle>
+          <AlertDialogDescription>
+            Bypass Permissions is dangerous since the AI model might delete,
+            corrupt your machine, and or cause real world damage to you or the
+            world - only accept if you are certain
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction
+            variant="destructive"
+            className="!bg-destructive !text-destructive-foreground hover:!bg-destructive/90"
+            onClick={() => {
+              setBypassPermissions(true);
+              setOpen(false);
+            }}
+          >
+            I understand
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   );
 }
