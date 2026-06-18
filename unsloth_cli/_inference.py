@@ -14,6 +14,10 @@ import typer
 _THINK_OPEN = "<think>"
 _THINK_BLOCK = re.compile(rf"{re.escape(_THINK_OPEN)}.*?</think>", re.DOTALL)
 
+# Cloudflare (in front of remote Studio proxies like RunPod) 403s the default
+# "Python-urllib/X.Y" User-Agent as a bot; send a real one on every request.
+_USER_AGENT = "unsloth-cli"
+
 
 def ensure_studio_backend_path() -> None:
     backend_dir = str(Path(__file__).resolve().parents[1] / "studio" / "backend")
@@ -254,11 +258,13 @@ def load_chat_backend(
     return ChatBackend("unsloth", backend)
 
 
-def find_studio_server(timeout: float = 0.4) -> Optional[str]:
+def find_studio_server(timeout: float = 3.0) -> Optional[str]:
     import urllib.request
+
     base = os.environ.get("UNSLOTH_STUDIO_URL", "http://127.0.0.1:8888").rstrip("/")
+    request = urllib.request.Request(f"{base}/api/health", headers = {"User-Agent": _USER_AGENT})
     try:
-        with urllib.request.urlopen(f"{base}/api/health", timeout = timeout):
+        with urllib.request.urlopen(request, timeout = timeout):
             return base
     except Exception:
         return None
@@ -306,6 +312,7 @@ class HttpChatBackend:
             headers = {
                 "Authorization": f"Bearer {self._token}",
                 "Content-Type": "application/json",
+                "User-Agent": _USER_AGENT,
             },
             method = method,
         )

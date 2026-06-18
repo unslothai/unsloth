@@ -125,6 +125,11 @@ class ValidateModelRequest(BaseModel):
     gguf_variant: Optional[str] = Field(
         None, description = "GGUF quantization variant (e.g. 'Q4_K_M')"
     )
+    include_context_length: bool = Field(
+        False,
+        description = "Also read the native context length from the local GGUF header. "
+        "Opt-in so the normal load preflight doesn't pay for a cache scan it doesn't need.",
+    )
 
 
 class ValidateModelResponse(BaseModel):
@@ -143,6 +148,11 @@ class ValidateModelResponse(BaseModel):
     requires_trust_remote_code: bool = Field(
         False,
         description = "Whether the model defaults require trust_remote_code to be enabled for loading.",
+    )
+    context_length: Optional[int] = Field(
+        None,
+        description = "Native training context length, read from the GGUF header when the file "
+        "is already downloaded locally; None for non-GGUF, gated, or not-yet-downloaded models.",
     )
 
 

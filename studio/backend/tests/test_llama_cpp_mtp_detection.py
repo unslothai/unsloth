@@ -1268,9 +1268,10 @@ def test_build_speculative_flags_user_draft_n_max_override(monkeypatch):
     assert backend.spec_draft_n_max == 5
 
 
-def test_build_speculative_flags_mtp_token_missing_logs_and_skips(monkeypatch):
-    # Outdated llama-server with no MTP support: forced MTP must degrade
-    # to spec-off (warned) rather than emit a bad --spec-type.
+def test_build_speculative_flags_mtp_token_missing_emits_spec_default(monkeypatch):
+    # Outdated llama-server with no MTP support: forced MTP must degrade (warned)
+    # and emit --spec-default so an inherited LLAMA_ARG_SPEC_TYPE=draft-mtp (CLI
+    # wins over env) can't make the child attempt MTP the gate budgeted off.
     backend = _resolver_backend(monkeypatch, mtp_token = None)
     flags = backend._build_speculative_flags(
         speculative_type = "mtp",
@@ -1282,10 +1283,11 @@ def test_build_speculative_flags_mtp_token_missing_logs_and_skips(monkeypatch):
         binary = "/fake/llama-server",
     )
     assert "--spec-type" not in flags
-    # _speculative_type stays None (resolved emission was none); the user's
-    # choice is still reflected in _requested_spec_mode.
+    assert "--spec-default" in flags
+    # Degraded to non-speculative; the user's choice is still reflected.
+    assert backend.speculative_type == "default"
     assert backend.requested_spec_mode == "mtp"
-    assert backend.speculative_type is None
+    assert backend.spec_fallback_reason == "binary_no_mtp"
 
 
 def test_forced_mtp_on_non_mtp_model_defaults_back(monkeypatch):

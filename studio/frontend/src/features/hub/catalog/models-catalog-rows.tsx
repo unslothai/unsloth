@@ -45,16 +45,19 @@ import type {
   LocalInventoryRow,
 } from "../types";
 import { OwnerAvatar } from "./owner-avatar";
+import { AccessGlyphs } from "./shared";
+import { paramLabelFromId } from "../lib/view-models";
 
 const COARSE_POINTER =
   typeof window !== "undefined" &&
   typeof window.matchMedia === "function" &&
   window.matchMedia("(pointer: coarse)").matches;
 
-// Defer the cached-size chip (a Radix Tooltip + two store subscriptions) until the
-// row is hovered/focused so flicking the list doesn't pay that cost per row. The
-// placeholder renders an identical StatChip, so the swap shifts nothing. Coarse
-// pointers have no hover, so arm immediately; default true so out-of-row usage works.
+// Defer the cached-size chip (Radix Tooltip + two store subscriptions) until a
+// row is first hovered/focused so scrolling the virtualized list doesn't pay
+// that cost per row; an identical StatChip placeholder makes the swap invisible.
+// Coarse pointers have no hover, so they arm immediately. Default true so any
+// out-of-row usage stays functional.
 const CatalogRowInteractiveContext = createContext(true);
 
 function CachedSizeChip(props: {
@@ -66,7 +69,9 @@ function CachedSizeChip(props: {
 }) {
   const interactive = useContext(CatalogRowInteractiveContext);
   if (!interactive) {
-    return <StatChip icon={PackageIcon} value={formatBytes(props.totalBytes)} />;
+    return (
+      <StatChip icon={PackageIcon} value={formatBytes(props.totalBytes)} />
+    );
   }
   return <CachedSizeChipLive {...props} />;
 }
@@ -172,9 +177,11 @@ function CachedSizeChipLive({
               >
                 <span className="min-w-0 truncate">{row.label}</span>
                 <span className="ml-auto">
+                  {/* Brightened for the dark tooltip: muted grey reads poorly there. */}
                   <StatChip
                     icon={PackageIcon}
                     value={formatBytes(row.size_bytes)}
+                    className="text-[11px] text-white/70"
                   />
                 </span>
               </li>
@@ -190,15 +197,31 @@ function CachedSizeChipLive({
   );
 }
 
+// Thin "·" separator for inline meta lines (owner · format · params).
+function MetaDivider() {
+  return (
+    <span aria-hidden="true" className="shrink-0 text-muted-foreground/35">
+      ·
+    </span>
+  );
+}
+
 export function StatChip({
   icon,
   value,
+  className,
 }: {
   icon: IconSvgElement;
   value: string;
+  className?: string;
 }) {
   return (
-    <span className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap text-[10px] font-medium leading-none tabular-nums text-muted-foreground/75">
+    <span
+      className={cn(
+        "inline-flex shrink-0 items-center gap-1 whitespace-nowrap text-[10px] font-medium leading-none tabular-nums text-muted-foreground/75",
+        className,
+      )}
+    >
       <HugeiconsIcon
         icon={icon}
         strokeWidth={1.75}
@@ -216,6 +239,7 @@ function CatalogRow({
   tooltip,
   label,
   children,
+  variant = "flat",
 }: {
   selected: boolean;
   active?: boolean;
@@ -223,25 +247,37 @@ function CatalogRow({
   onClick: () => void;
   label: string;
   children: ReactNode;
+  variant?: "flat" | "card";
 }) {
   const [interactive, setInteractive] = useState(COARSE_POINTER);
   const arm = useCallback(() => setInteractive(true), []);
+  const card = variant === "card";
   const button = (
     <div
       data-selected={selected || undefined}
       data-active={active || undefined}
       onPointerEnter={arm}
       onFocusCapture={arm}
-      className="catalog-row group/row relative block w-full select-none overflow-hidden rounded-[14px] pl-3 pr-4 py-2.5 text-left"
+      className={cn(
+        "group/row relative w-full select-none overflow-hidden text-left",
+        card
+          ? "hub-result-row flex h-full items-center rounded-[16px] px-4"
+          : "catalog-row block rounded-[14px] pl-3 pr-2.5 py-2.5",
+      )}
     >
       <button
         type="button"
         aria-label={label}
         onClick={onClick}
-        className="absolute inset-0 cursor-pointer rounded-[14px] outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
+        className={cn(
+          "absolute inset-0 cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
+          card ? "rounded-[16px]" : "rounded-[14px]",
+        )}
       />
       <CatalogRowInteractiveContext.Provider value={interactive}>
-        <div className="pointer-events-none relative">{children}</div>
+        <div className={cn("pointer-events-none relative", card && "z-[1] w-full")}>
+          {children}
+        </div>
       </CatalogRowInteractiveContext.Provider>
     </div>
   );
@@ -250,9 +286,9 @@ function CatalogRow({
     <Tooltip>
       <TooltipTrigger asChild={true}>{button}</TooltipTrigger>
       <TooltipContent
-        side="right"
-        align="center"
-        sideOffset={8}
+        side={card ? "top" : "right"}
+        align="start"
+        sideOffset={card ? 6 : 8}
         className="tooltip-compact max-w-xs"
       >
         {tooltip}
@@ -304,7 +340,7 @@ function TooltipLegendRow({
   );
 }
 
-function buildRowStatusTooltip({
+export function buildRowStatusTooltip({
   isGguf,
   isAdapter,
   isAvailableOnDevice,
@@ -365,8 +401,7 @@ function buildRowStatusTooltip({
           </span>
         )}
         <span className="mt-0.5 block text-white/75">
-          Still downloadable to your Hugging Face cache, shared with every
-          framework that reads it.
+          Still downloadable to your Hugging Face cache.
         </span>
       </TooltipLegendRow>,
     );
@@ -432,14 +467,20 @@ export const DiscoverModelRow = memo(function DiscoverModelRow({
         <OwnerAvatar
           owner={row.owner}
           repoName={row.repo}
-          className="size-8 rounded-[9px]"
+          className="size-8 rounded-[11px]"
+          remote={false}
         />
         <div className="flex min-w-0 flex-1 flex-col gap-[3px]">
           <div className="flex h-[18px] min-w-0 items-center justify-between gap-2">
-            <div className="flex min-w-0 items-center gap-1.5 pr-2">
+            <div className="flex min-w-0 items-center gap-2 pr-2">
               <p className="truncate text-[12px] font-medium leading-[18px] tracking-[-0.005em] text-foreground">
                 {row.repo}
               </p>
+              <AccessGlyphs
+                gated={row.result.gated}
+                isPrivate={row.result.private}
+                tooltip={false}
+              />
               {row.result.isGguf && (
                 <span
                   role="img"
@@ -520,6 +561,7 @@ export const InventoryRow = memo(function InventoryRow({
   isDataset,
   dimmed,
   deviceType,
+  compact = false,
   onSelect,
   onChange,
 }: {
@@ -530,6 +572,8 @@ export const InventoryRow = memo(function InventoryRow({
   isDataset: boolean;
   dimmed: boolean;
   deviceType: string | null;
+  /** Narrow split master pane: drop the capability column so the name fits. */
+  compact?: boolean;
   onSelect: (id: string) => void;
   onChange?: () => void;
 }) {
@@ -591,9 +635,200 @@ export const InventoryRow = memo(function InventoryRow({
     unsupported,
     resourceLabel: isDataset ? "dataset" : "model",
   });
+  // Always-derivable stats so on-device rows don't show empty placeholder cells:
+  // format badge, parameter count from the repo name, and GGUF quant variant.
+  const formatLabel =
+    row.modelFormat === "gguf"
+      ? "GGUF"
+      : row.modelFormat === "adapter"
+        ? "Adapter"
+        : row.modelFormat === "safetensors" || row.modelFormat === "checkpoint"
+          ? "Safetensors"
+          : null;
+  const paramLabel = useMemo(() => paramLabelFromId(title), [title]);
+  const quantLabel = row.formatVariant?.trim() || null;
+
+  const metaChips =
+    !isDataset && (formatLabel || paramLabel || quantLabel) ? (
+      <div className="hidden shrink-0 items-center gap-1.5 sm:flex">
+        {/* Format already shows as the status dot, so the pill stays neutral. */}
+        {formatLabel && <span className="hub-chip">{formatLabel}</span>}
+        {paramLabel && <span className="hub-chip tabular-nums">{paramLabel}</span>}
+        {quantLabel && (
+          <span className="hub-chip font-mono text-[10.5px] uppercase">
+            {quantLabel}
+          </span>
+        )}
+      </div>
+    ) : null;
+
+  // On-disk size for cached repos, else local source or last-modified date.
+  const sourceLabel = row.kind === "local" ? row.sourceLabel : null;
+
+  const statusMarkers = (
+    <>
+      {row.isGguf && (
+        <span
+          role="img"
+          aria-label="GGUF"
+          className="inline-block size-[5px] shrink-0 rounded-full bg-format-gguf"
+        />
+      )}
+      {row.modelFormat === "adapter" && (
+        <span
+          role="img"
+          aria-label="Adapter"
+          className="inline-block size-[5px] shrink-0 rounded-full bg-format-adapter"
+        />
+      )}
+      {partialRepoId ? (
+        <StatusDot tone="warning" label="Partial download" />
+      ) : (
+        <StatusDot tone="success" label="On device" />
+      )}
+      {unsupported && (
+        <StatusDot tone="danger" label="May not be supported yet" />
+      )}
+    </>
+  );
+
+  // Compact rows are all on-device, so the format dots are noise: surface only
+  // exceptional states; format + params move to the meta line.
+  const compactMarkers =
+    partialRepoId || unsupported ? (
+      <span className="flex shrink-0 items-center gap-1">
+        {partialRepoId && (
+          <StatusDot tone="warning" label="Partial download" />
+        )}
+        {unsupported && (
+          <StatusDot tone="danger" label="May not be supported yet" />
+        )}
+      </span>
+    ) : null;
+
+  const ownerLine = (
+    <span className="mt-0.5 flex min-w-0 items-center gap-1 text-[11.5px] leading-[15px] text-muted-foreground/80">
+      <span className="truncate">{subLabel}</span>
+      {subLabel.toLowerCase() === "unsloth" && (
+        <span
+          aria-label="Verified Unsloth"
+          className="hub-verified-badge size-3.5 shrink-0 text-primary"
+        />
+      )}
+    </span>
+  );
+
+  const deleteAction =
+    canDelete && cacheDeletableRepoId ? (
+      <ModelDeleteAction
+        ariaLabel={`Delete ${cacheDeletableRepoId}`}
+        title={isDataset ? "Delete cached dataset?" : "Delete cached model?"}
+        description={
+          <>
+            This will remove{" "}
+            <span className="font-medium text-foreground">
+              {cacheDeletableRepoId}
+            </span>{" "}
+            {isDataset
+              ? "and its downloaded files"
+              : row.isGguf
+                ? "and all of its downloaded quantizations"
+                : "and all of its downloaded files"}
+            {row.kind === "cache" ? ` (${formatBytes(row.bytes)})` : ""} from
+            disk. You can re-download it later.
+          </>
+        }
+        successMessage={`Deleted ${cacheDeletableRepoId}`}
+        buttonClassName="pointer-events-auto hub-modal-pe-guard p-2 opacity-0 transition-opacity group-hover/row:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 [@media(pointer:coarse)]:opacity-100"
+        iconClassName="size-4"
+        onConfirm={async () => {
+          if (isDataset) {
+            await deleteCachedDataset(cacheDeletableRepoId);
+          } else {
+            await deleteCachedModel(cacheDeletableRepoId);
+          }
+        }}
+        onDeleted={onChange}
+      />
+    ) : null;
+
+  // Compact master pane: drop the capability column and collapse size + date
+  // into one trailing group so the name keeps the whole middle.
+  if (compact) {
+    return (
+      <CatalogRow
+        variant="flat"
+        selected={selected}
+        active={active}
+        tooltip={tooltip}
+        label={title}
+        onClick={handleClick}
+      >
+        <div
+          className={cn(
+            "flex w-full items-center gap-2.5 transition-opacity",
+            dimmed && "opacity-25 group-hover/row:opacity-60",
+          )}
+        >
+          <OwnerAvatar
+            owner={row.owner}
+            repoName={title}
+            className="size-8 shrink-0 rounded-[9px] text-[12px]"
+            remote={false}
+          />
+          <div className="min-w-0 flex-1">
+            <div className="flex min-w-0 items-center gap-1.5">
+              <span className="truncate text-[12.5px] font-semibold leading-[16px] text-foreground">
+                {title}
+              </span>
+              {compactMarkers}
+            </div>
+            <span className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[10.5px] leading-[14px] text-muted-foreground/75">
+              <span className="flex min-w-0 items-center gap-1">
+                <span className="truncate">{subLabel}</span>
+                {subLabel.toLowerCase() === "unsloth" && (
+                  <span
+                    aria-label="Verified Unsloth"
+                    className="hub-verified-badge size-3 shrink-0 text-primary"
+                  />
+                )}
+              </span>
+              {formatLabel && (
+                <>
+                  <MetaDivider />
+                  <span className="shrink-0">{formatLabel}</span>
+                </>
+              )}
+              {paramLabel && (
+                <>
+                  <MetaDivider />
+                  <span className="shrink-0 tabular-nums">{paramLabel}</span>
+                </>
+              )}
+            </span>
+          </div>
+          <div className="flex shrink-0 items-center gap-2 text-[10.5px] tabular-nums text-muted-foreground/70">
+            {row.kind === "cache" ? (
+              <CachedSizeChip
+                repoId={row.repoId}
+                totalBytes={row.bytes}
+                isGguf={row.isGguf}
+                isDataset={isDataset}
+                cachePath={row.cachePath}
+              />
+            ) : trailing ? (
+              <span>{trailing}</span>
+            ) : null}
+            {deleteAction}
+          </div>
+        </div>
+      </CatalogRow>
+    );
+  }
 
   return (
     <CatalogRow
+      variant="card"
       selected={selected}
       active={active}
       tooltip={tooltip}
@@ -602,110 +837,52 @@ export const InventoryRow = memo(function InventoryRow({
     >
       <div
         className={cn(
-          "flex items-center gap-3 transition-opacity",
+          "flex w-full items-center gap-3 transition-opacity",
           dimmed && "opacity-25 group-hover/row:opacity-60",
         )}
       >
-        <OwnerAvatar
-          owner={row.owner}
-          repoName={title}
-          className="size-8 rounded-[9px]"
-        />
-        <div className="flex min-w-0 flex-1 flex-col gap-[3px]">
-          <div className="flex h-[18px] min-w-0 items-center justify-between gap-2">
-            <div className="flex min-w-0 items-center gap-1.5 pr-2">
-              <p className="truncate text-[12px] font-medium leading-[18px] tracking-[-0.005em] text-foreground">
+        <div className="flex min-w-0 flex-1 items-center gap-3">
+          <OwnerAvatar
+            owner={row.owner}
+            repoName={title}
+            className="size-9 rounded-[12px]"
+            remote={false}
+          />
+          <div className="min-w-0 flex-1">
+            <div className="flex min-w-0 items-center gap-1.5">
+              <span className="truncate text-[13.5px] font-semibold leading-[17px] text-foreground">
                 {title}
-              </p>
-              {row.isGguf && (
-                <span
-                  role="img"
-                  aria-label="GGUF"
-                  className="inline-block size-[5px] shrink-0 rounded-full bg-format-gguf"
-                />
-              )}
-              {row.modelFormat === "adapter" && (
-                <span
-                  role="img"
-                  aria-label="Adapter"
-                  className="inline-block size-[5px] shrink-0 rounded-full bg-format-adapter"
-                />
-              )}
-              {partialRepoId ? (
-                <StatusDot tone="warning" label="Partial download" />
-              ) : (
-                <StatusDot tone="success" label="On device" />
-              )}
-              {unsupported && (
-                <StatusDot tone="danger" label="May not be supported yet" />
-              )}
-            </div>
-            <div className="flex shrink-0 items-center gap-1">
-              {canDelete && cacheDeletableRepoId && (
-                <ModelDeleteAction
-                  ariaLabel={`Delete ${cacheDeletableRepoId}`}
-                  title={
-                    isDataset
-                      ? "Delete cached dataset?"
-                      : "Delete cached model?"
-                  }
-                  description={
-                    <>
-                      This will remove{" "}
-                      <span className="font-medium text-foreground">
-                        {cacheDeletableRepoId}
-                      </span>{" "}
-                      {isDataset
-                        ? "and its downloaded files"
-                        : row.isGguf
-                          ? "and all of its downloaded quantizations"
-                          : "and all of its downloaded files"}
-                      {row.kind === "cache"
-                        ? ` (${formatBytes(row.bytes)})`
-                        : ""}{" "}
-                      from disk. You can re-download it later.
-                    </>
-                  }
-                  successMessage={`Deleted ${cacheDeletableRepoId}`}
-                  buttonClassName="pointer-events-auto hub-modal-pe-guard opacity-0 transition-opacity group-hover/row:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 [@media(pointer:coarse)]:opacity-100"
-                  iconClassName="size-3.5"
-                  onConfirm={async () => {
-                    if (isDataset) {
-                      await deleteCachedDataset(cacheDeletableRepoId);
-                    } else {
-                      await deleteCachedModel(cacheDeletableRepoId);
-                    }
-                  }}
-                  onDeleted={onChange}
-                />
-              )}
-              {row.kind === "cache" && (
-                <CachedSizeChip
-                  repoId={row.repoId}
-                  totalBytes={row.bytes}
-                  isGguf={row.isGguf}
-                  isDataset={isDataset}
-                  cachePath={row.cachePath}
-                />
-              )}
-            </div>
-          </div>
-          <div className="flex h-[16px] min-w-0 items-center justify-between gap-2 text-[11.5px] leading-[16px] text-muted-foreground/85">
-            <span className="flex min-w-0 items-center gap-1">
-              <span className="truncate">{subLabel}</span>
-              {subLabel.toLowerCase() === "unsloth" && (
-                <span
-                  aria-label="Verified Unsloth"
-                  className="hub-verified-badge size-3.5 shrink-0 text-primary"
-                />
-              )}
-            </span>
-            {trailing && (
-              <span className="shrink-0 text-[10.5px] tabular-nums">
-                {trailing}
               </span>
-            )}
+              {statusMarkers}
+            </div>
+            {ownerLine}
           </div>
+        </div>
+
+        {metaChips}
+
+        <div className="flex w-[96px] shrink-0 items-center justify-end text-right">
+          {row.kind === "cache" ? (
+            <CachedSizeChip
+              repoId={row.repoId}
+              totalBytes={row.bytes}
+              isGguf={row.isGguf}
+              isDataset={isDataset}
+              cachePath={row.cachePath}
+            />
+          ) : trailing ? (
+            <span className="truncate text-[11.5px] tabular-nums text-muted-foreground/70">
+              {trailing}
+            </span>
+          ) : sourceLabel ? (
+            <span className="truncate text-[11.5px] text-muted-foreground/55">
+              {sourceLabel}
+            </span>
+          ) : null}
+        </div>
+
+        <div className="flex w-9 shrink-0 items-center justify-end">
+          {deleteAction}
         </div>
       </div>
     </CatalogRow>
@@ -719,19 +896,35 @@ export function VirtualRows<T>({
   scrollElement,
   getKey,
   renderRow,
+  scrollMargin = 0,
+  columns = 1,
+  rowHeight = CATALOG_ROW_HEIGHT_PX,
+  cellHeight = rowHeight,
+  columnGap = 12,
 }: {
   items: readonly T[];
   scrollElement: HTMLDivElement | null;
   getKey: (item: T, index: number) => string;
   renderRow: (item: T) => ReactNode;
+  scrollMargin?: number;
+  columns?: number;
+  rowHeight?: number;
+  cellHeight?: number;
+  columnGap?: number;
 }) {
+  const lanes = Math.max(1, columns);
+  const rowCount = Math.ceil(items.length / lanes);
   // eslint-disable-next-line react-hooks/incompatible-library
   const virtualizer = useVirtualizer({
-    count: items.length,
+    count: rowCount,
     getScrollElement: () => scrollElement,
-    estimateSize: () => CATALOG_ROW_HEIGHT_PX,
+    estimateSize: () => rowHeight,
     overscan: 10,
-    getItemKey: (index) => getKey(items[index], index),
+    scrollMargin,
+    getItemKey: (rowIndex) => {
+      const item = items[rowIndex * lanes];
+      return item ? getKey(item, rowIndex * lanes) : `row-${rowIndex}`;
+    },
   });
 
   return (
@@ -743,26 +936,51 @@ export function VirtualRows<T>({
         overflowAnchor: "none",
       }}
     >
-      {virtualizer.getVirtualItems().map((virtualRow) => (
-        <li
-          key={virtualRow.key}
-          data-index={virtualRow.index}
-          style={{
-            position: "absolute",
-            top: 0,
-            left: 0,
-            width: "100%",
-            transform: `translateY(${virtualRow.start}px)`,
-            // Lock rows to estimateSize with no measureElement ref: per-mount
-            // measurement churns the virtualizer (re-renders + offset recompute)
-            // that reads as a jump. A fixed matching height keeps appends stable.
-            height: `${CATALOG_ROW_HEIGHT_PX}px`,
-            contain: "layout paint",
-          }}
-        >
-          {renderRow(items[virtualRow.index])}
-        </li>
-      ))}
+      {virtualizer.getVirtualItems().map((virtualRow) => {
+        const startIndex = virtualRow.index * lanes;
+        return (
+          <li
+            key={virtualRow.key}
+            data-index={virtualRow.index}
+            style={{
+              position: "absolute",
+              top: 0,
+              left: 0,
+              width: "100%",
+              transform: `translateY(${virtualRow.start - scrollMargin}px)`,
+              // Fixed height matching estimateSize (no measureElement ref):
+              // dynamic per-row measurement churns virtualizer state and causes
+              // visible jumps as new rows arrive.
+              height: `${rowHeight}px`,
+              contain: "layout",
+            }}
+          >
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: `repeat(${lanes}, minmax(0, 1fr))`,
+                columnGap: `${columnGap}px`,
+                height: `${cellHeight}px`,
+              }}
+            >
+              {Array.from({ length: lanes }, (_, lane) => {
+                const item = items[startIndex + lane];
+                if (item === undefined) {
+                  return <div key={`empty-${lane}`} />;
+                }
+                return (
+                  <div
+                    key={getKey(item, startIndex + lane)}
+                    className="min-w-0"
+                  >
+                    {renderRow(item)}
+                  </div>
+                );
+              })}
+            </div>
+          </li>
+        );
+      })}
     </ul>
   );
 }
