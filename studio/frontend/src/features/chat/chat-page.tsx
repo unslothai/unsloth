@@ -10,6 +10,7 @@ import {
   ModelSelector,
 } from "@/components/assistant-ui/model-selector";
 import { ProjectComposer, Thread } from "@/components/assistant-ui/thread";
+import { CopyableErrorChip } from "@/components/ui/copyable-error-chip";
 import {
   ResizableHandle,
   ResizablePanel,
@@ -17,18 +18,20 @@ import {
 } from "@/components/ui/resizable";
 import { useSidebar } from "@/components/ui/sidebar";
 import { Tooltip, TooltipContent } from "@/components/ui/tooltip";
-import { ProjectSourcesPanel } from "@/features/rag/components/project-sources-panel";
+import { useLatestRef } from "@/features/hub/hooks/use-latest-ref";
 import {
+  type NativeIntent,
   NativeModelChip,
   NativeModelDropOverlay,
-  type NativeIntent,
   useChooseNativeModel,
   useNativeIntentStore,
   useNativeModelDrop,
   useNativePathLeasesSupported,
 } from "@/features/native-intents";
+import { ProjectSourcesPanel } from "@/features/rag/components/project-sources-panel";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { isTauri } from "@/lib/api-base";
+import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
   BubbleChatTemporaryIcon,
@@ -38,7 +41,6 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate, useRouterState, useSearch } from "@tanstack/react-router";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
-import type { PanelImperativeHandle } from "react-resizable-panels";
 import {
   type CSSProperties,
   type ReactElement,
@@ -49,10 +51,16 @@ import {
   useRef,
   useState,
 } from "react";
-import { toast } from "@/lib/toast";
+import type { PanelImperativeHandle } from "react-resizable-panels";
 import { listLocalModels } from "./api/chat-api";
+import { ArtifactSurface } from "./artifacts/artifact-surface";
+import {
+  clearAutoOpenedArtifacts,
+  useChatArtifactsStore,
+  useSelectedChatArtifact,
+} from "./artifacts/store";
+import type { ChatArtifact, ChatArtifactSurface } from "./artifacts/types";
 import { ChatSettingsPanel } from "./chat-settings-sheet";
-import { CopyableErrorChip } from "@/components/ui/copyable-error-chip";
 import { ContextUsageBar } from "./components/context-usage-bar";
 import { ModelLoadInlineStatus } from "./components/model-load-status";
 import { ProjectSwitcher } from "./components/project-switcher";
@@ -64,12 +72,11 @@ import {
 import { useChatModelRuntime } from "./hooks/use-chat-model-runtime";
 import type { SelectedModelInput } from "./hooks/use-chat-model-runtime";
 import { useChatProjects } from "./hooks/use-chat-projects";
-import { useStagedModelPreparation } from "./hooks/use-staged-model-preparation";
-import { useLatestRef } from "@/features/hub/hooks/use-latest-ref";
 import {
   type SidebarItem,
   useChatSidebarItems,
 } from "./hooks/use-chat-sidebar-items";
+import { useStagedModelPreparation } from "./hooks/use-staged-model-preparation";
 import {
   clearTrainingCompareHandoff,
   getTrainingCompareHandoff,
@@ -100,15 +107,9 @@ import {
   loadOptionalBool,
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
+import type { PendingModelSelection } from "./stores/chat-runtime-store";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
 import { buildChatTourSteps } from "./tour";
-import { ArtifactSurface } from "./artifacts/artifact-surface";
-import {
-  clearAutoOpenedArtifacts,
-  useChatArtifactsStore,
-  useSelectedChatArtifact,
-} from "./artifacts/store";
-import type { ChatArtifact, ChatArtifactSurface } from "./artifacts/types";
 import type { ChatView, MessageRecord } from "./types";
 import {
   getStoredChatThread,
@@ -887,7 +888,9 @@ function ProjectLanding({
               },
             ] as const;
           }
-          const messages = await listStoredChatMessages(item.id).catch(() => []);
+          const messages = await listStoredChatMessages(item.id).catch(
+            () => [],
+          );
           const firstUserMessage =
             messages.find((message) => message.role === "user") ?? messages[0];
           return [
@@ -977,41 +980,41 @@ function ProjectLanding({
             {projectTab === "sources" ? (
               <ProjectSourcesPanel projectId={projectId} />
             ) : (
-            <div className="mt-8 flex flex-col gap-1">
-              {items.map((item) => {
-                const preview = previews[item.id];
-                return (
-                  <button
-                    key={`${item.type}:${item.id}`}
-                    type="button"
-                    onClick={() => {
-                      navigate({
-                        to: "/chat",
-                        search:
-                          item.type === "single"
-                            ? { thread: item.id, project: projectId }
-                            : { compare: item.id, project: projectId },
-                      });
-                    }}
-                    className="group flex min-h-[58px] w-full items-center gap-4 rounded-full px-4 py-2 text-left transition-colors hover:bg-nav-surface-hover"
-                  >
-                    <div className="min-w-0 flex-1">
-                      <div className="truncate text-[15px] font-semibold leading-5 text-foreground">
-                        {item.title}
-                      </div>
-                      {preview?.snippet ? (
-                        <div className="mt-0.5 truncate text-[14px] leading-5 text-muted-foreground">
-                          {preview.snippet}
+              <div className="mt-8 flex flex-col gap-1">
+                {items.map((item) => {
+                  const preview = previews[item.id];
+                  return (
+                    <button
+                      key={`${item.type}:${item.id}`}
+                      type="button"
+                      onClick={() => {
+                        navigate({
+                          to: "/chat",
+                          search:
+                            item.type === "single"
+                              ? { thread: item.id, project: projectId }
+                              : { compare: item.id, project: projectId },
+                        });
+                      }}
+                      className="group flex min-h-[58px] w-full items-center gap-4 rounded-full px-4 py-2 text-left transition-colors hover:bg-nav-surface-hover"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate text-[15px] font-semibold leading-5 text-foreground">
+                          {item.title}
                         </div>
-                      ) : null}
-                    </div>
-                    <span className="shrink-0 text-[14px] text-muted-foreground">
-                      {preview?.date ?? formatProjectChatDate(item.createdAt)}
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
+                        {preview?.snippet ? (
+                          <div className="mt-0.5 truncate text-[14px] leading-5 text-muted-foreground">
+                            {preview.snippet}
+                          </div>
+                        ) : null}
+                      </div>
+                      <span className="shrink-0 text-[14px] text-muted-foreground">
+                        {preview?.date ?? formatProjectChatDate(item.createdAt)}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
             )}
           </div>
         </div>
@@ -1030,7 +1033,14 @@ export function ChatPage(): ReactElement {
   const setSettingsOpen = useChatRuntimeStore((s) => s.setSettingsPanelOpen);
   // Deferred-load staging: downloads a staged GGUF (if needed) and reads its
   // header context so the sheet can show the context slider before the load.
-  const stagedDownload = useStagedModelPreparation();
+  // autoLoad picks instead load the cached file as soon as the download ends;
+  // selectModel is defined below, so the load runs through a ref.
+  const autoLoadStagedRef = useRef<
+    ((pending: PendingModelSelection) => void) | null
+  >(null);
+  const stagedDownload = useStagedModelPreparation({
+    onAutoLoad: (pending) => autoLoadStagedRef.current?.(pending),
+  });
   // Abandon a staged pick: the store action cancels its in-flight download and
   // reverts the edited knobs, so nothing lingers after the user walks away.
   const abandonStaged = useCallback(() => {
@@ -1205,6 +1215,20 @@ export function ChatPage(): ReactElement {
     refreshRef.current = refresh;
     selectModelRef.current = selectModel;
   }, [refresh, selectModel]);
+  // Load a cached autoLoad pick once its download finishes. The sheet was never
+  // opened, so on a load failure just drop the orphaned staged knobs.
+  autoLoadStagedRef.current = (pending) => {
+    void selectModel({
+      ...pending,
+      isDownloaded: true,
+      forceReload: true,
+      keepSpeculative: false,
+      throwOnError: true,
+    }).catch(() => {
+      const store = useChatRuntimeStore.getState();
+      if (!store.pendingSelection) store.resetModelSettingsToLoaded();
+    });
+  };
   const isExternalModel = useMemo(
     () => isExternalModelId(inferenceParams.checkpoint),
     [inferenceParams.checkpoint],
@@ -1399,7 +1423,9 @@ export function ChatPage(): ReactElement {
       }
 
       if (search.thread) {
-        const thread = await getStoredChatThread(search.thread).catch(() => null);
+        const thread = await getStoredChatThread(search.thread).catch(
+          () => null,
+        );
         if (!canceled) {
           const projectId = thread?.projectId ?? null;
           setCurrentProjectId(projectId);
@@ -1546,10 +1572,14 @@ export function ChatPage(): ReactElement {
   const stageOrLoad = useCallback(
     async (selection: SelectedModelInput) => {
       const store = useChatRuntimeStore.getState();
-      // Only GGUF picks have pre-load options worth staging. Non-GGUF models
-      // (and the toggle-on case) load immediately, so e.g. a trust_remote_code
-      // approval surfaces through the normal load path.
-      if (store.loadOnSelection || !hasGgufSource(selection)) {
+      // Staging is GGUF-only, so non-GGUF picks always load immediately (e.g. a
+      // trust_remote_code approval surfaces through the normal load path). With
+      // "Load on selection" on, a cached GGUF also loads now; an un-cached GGUF
+      // downloads through the manager first (global indicator) and auto-loads.
+      if (
+        !hasGgufSource(selection) ||
+        (store.loadOnSelection && selection.isDownloaded)
+      ) {
         // Abandon any staged GGUF first so its edited knobs (e.g. a custom
         // context length) don't leak into this immediate load -- resolveLoad
         // reads customContextLength before checking the target is GGUF.
@@ -1558,7 +1588,8 @@ export function ChatPage(): ReactElement {
         return;
       }
       // Tear down any existing staged pick first so its in-flight download is
-      // cancelled, not left running after we rebind to the new pick.
+      // cancelled, not left running after we rebind to the new pick. With the
+      // toggle on, autoLoad downloads silently then loads; off stages for the sheet.
       abandonStaged();
       store.stageModel({
         id: selection.id,
@@ -1568,6 +1599,7 @@ export function ChatPage(): ReactElement {
         expectedBytes: selection.expectedBytes,
         nativePathToken: selection.nativePathToken,
         isGguf: selection.isGguf,
+        autoLoad: store.loadOnSelection,
       });
     },
     [abandonStaged, selectModel],
@@ -1661,8 +1693,7 @@ export function ChatPage(): ReactElement {
           selectedProvider?.providerType,
           selectedExternal?.modelId,
           {
-            isReasoningProvider:
-              selectedProvider?.isReasoningModel === true,
+            isReasoningProvider: selectedProvider?.isReasoningModel === true,
             baseUrl: selectedProvider?.baseUrl ?? null,
           },
         );
@@ -1919,8 +1950,7 @@ export function ChatPage(): ReactElement {
           if (!usage) return;
           const store = useChatRuntimeStore.getState();
           const activeCheckpoint = store.params.checkpoint;
-          const usageModelId =
-            (usage as { modelId?: unknown }).modelId;
+          const usageModelId = (usage as { modelId?: unknown }).modelId;
           // Scope by modelId when present; reject if no active checkpoint
           // (model-scoped usage can't be attributed to "nothing").
           if (typeof usageModelId === "string" && usageModelId) {
@@ -2196,7 +2226,7 @@ export function ChatPage(): ReactElement {
             beneath it, instead of a hard cut. */}
         {view.mode !== "compare" && (
           <div
-            aria-hidden
+            aria-hidden={true}
             className="pointer-events-none absolute left-0 right-[10px] top-[48px] z-20 h-6 bg-gradient-to-b from-background to-transparent"
           />
         )}
@@ -2245,7 +2275,7 @@ export function ChatPage(): ReactElement {
                 />
                 {currentProject && activeThreadId ? (
                   <>
-                    <span className="shrink-0" aria-hidden>
+                    <span className="shrink-0" aria-hidden={true}>
                       /
                     </span>
                     <span className="min-w-0 truncate">
@@ -2479,7 +2509,8 @@ export function ChatPage(): ReactElement {
         stagedDownloadFraction={stagedDownload.progress?.fraction ?? null}
         onCancelStagedDownload={() =>
           stagedDownload.cancelDownload(
-            useChatRuntimeStore.getState().pendingSelection?.ggufVariant ?? null,
+            useChatRuntimeStore.getState().pendingSelection?.ggufVariant ??
+              null,
           )
         }
       />

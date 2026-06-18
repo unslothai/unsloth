@@ -440,6 +440,9 @@ export type PendingModelSelection = {
    *  Scoped here (not the shared `ggufContextLength`) so a staged model's
    *  metadata never pollutes the currently-loaded model's context display. */
   contextLength?: number | null;
+  /** "Load on selection" on + un-cached GGUF: download via the manager (global
+   *  indicator) without opening the sheet, then load once the download finishes. */
+  autoLoad?: boolean;
 };
 
 /** A pick is a GGUF (HF variant, native file, or a direct local .gguf) and so
@@ -1485,7 +1488,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       return {
         ...loadedBaselineSettings(s),
         pendingSelection: selection,
-        settingsPanelOpen: true,
+        // autoLoad downloads silently and loads on completion, so keep the sheet shut.
+        settingsPanelOpen: !selection.autoLoad,
         // Speculative starts from the standing default, not the loaded model's
         // mode, so a fresh pick doesn't inherit (and then carry, via the staged
         // Load's keepSpeculative) a forced MTP mode onto a model that may lack it.

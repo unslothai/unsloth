@@ -3,15 +3,16 @@
 
 import { useCallback, useEffect } from "react";
 
-import { useLatestRef } from "@/features/hub/hooks/use-latest-ref";
 import { useRepoDownload } from "@/features/hub/download-manager/use-repo-download";
 import type { DownloadJob } from "@/features/hub/download-manager/use-repo-download";
+import { useLatestRef } from "@/features/hub/hooks/use-latest-ref";
 
 import { fetchGgufContextLength } from "../api/chat-api";
 import {
   isPendingGguf,
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
+import type { PendingModelSelection } from "../stores/chat-runtime-store";
 
 /**
  * Drives the deferred ("Load on selection" off) staging flow for a GGUF:
@@ -22,7 +23,10 @@ import {
  * the loaded model's `ggufContextLength`). Returns the live download job so the
  * sheet can render progress / cancel. Mount once on the chat page.
  */
-export function useStagedModelPreparation(): DownloadJob {
+export function useStagedModelPreparation(opts?: {
+  /** Load the cached file once an autoLoad pick's download completes. */
+  onAutoLoad?: (pending: PendingModelSelection) => void;
+}): DownloadJob {
   const pendingId = useChatRuntimeStore((s) => s.pendingSelection?.id ?? null);
   const pendingVariant = useChatRuntimeStore(
     (s) => s.pendingSelection?.ggufVariant ?? null,
@@ -41,6 +45,19 @@ export function useStagedModelPreparation(): DownloadJob {
     (s) => s.pendingSelection?.contextLength != null,
   );
   const setPendingSelection = useChatRuntimeStore((s) => s.setPendingSelection);
+  const onAutoLoadRef = useLatestRef(opts?.onAutoLoad);
+
+  // A failed or cancelled autoLoad download has no sheet to retry from, so drop
+  // the staged pick rather than leave it waiting on a load that won't come.
+  const handleAutoLoadAbort = useCallback((variant: string | null) => {
+    const latest = useChatRuntimeStore.getState().pendingSelection;
+    if (
+      latest?.autoLoad &&
+      (latest.ggufVariant ?? null) === (variant ?? null)
+    ) {
+      useChatRuntimeStore.getState().abandonStagedModel();
+    }
+  }, []);
 
   const fetchContextMetadata = useCallback(async () => {
     const current = useChatRuntimeStore.getState().pendingSelection;
@@ -78,9 +95,21 @@ export function useStagedModelPreparation(): DownloadJob {
     // inert until something is staged.
     repoId: pendingId ?? "__staged_idle__",
     activeVariant: pendingVariant,
-    onComplete: () => {
+    onComplete: (variant) => {
+      // autoLoad picks load the cached file now; staged picks read the header so
+      // the sheet's context slider can show before a manual load.
+      const latest = useChatRuntimeStore.getState().pendingSelection;
+      if (
+        latest?.autoLoad &&
+        (latest.ggufVariant ?? null) === (variant ?? null)
+      ) {
+        onAutoLoadRef.current?.(latest);
+        return;
+      }
       void fetchContextMetadata();
     },
+    onError: handleAutoLoadAbort,
+    onCancelled: handleAutoLoadAbort,
   });
 
   // job.requestStartDownload's identity changes per render; hold it in a ref so
