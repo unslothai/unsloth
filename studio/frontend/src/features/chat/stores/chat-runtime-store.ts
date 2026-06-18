@@ -563,6 +563,8 @@ type ChatRuntimeStore = {
   toolCallTimeout: number;
   kvCacheDtype: string | null;
   loadedKvCacheDtype: string | null;
+  vCacheDtype: string | null;
+  loadedVCacheDtype: string | null;
   speculativeType: string | null;
   loadedSpeculativeType: string | null;
   /**
@@ -684,6 +686,7 @@ type ChatRuntimeStore = {
   setMaxToolCallsPerMessage: (value: number) => void;
   setToolCallTimeout: (value: number) => void;
   setKvCacheDtype: (dtype: string | null) => void;
+  setVCacheDtype: (dtype: string | null) => void;
   setSpeculativeType: (type: string | null) => void;
   setSpecDraftNMax: (value: number | null) => void;
   /** Revert the editable load knobs to the loaded model's baseline (or defaults
@@ -908,6 +911,7 @@ function loadedBaselineSettings(s: ChatRuntimeStore) {
   return {
     customContextLength: null,
     kvCacheDtype: s.loadedKvCacheDtype,
+    vCacheDtype: s.loadedVCacheDtype,
     tensorParallel: s.loadedTensorParallel ?? false,
     speculativeType: hasLoadedModel
       ? s.loadedSpeculativeType
@@ -995,6 +999,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   toolCallTimeout: 5,
   kvCacheDtype: null,
   loadedKvCacheDtype: null,
+  vCacheDtype: null,
+  loadedVCacheDtype: null,
   speculativeType: readPersistedSpeculativeType(),
   loadedSpeculativeType: null,
   specFallbackReason: null,
@@ -1233,6 +1239,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       activeDiffusionCanvas: null,
       kvCacheDtype: null,
       loadedKvCacheDtype: null,
+      vCacheDtype: null,
+      loadedVCacheDtype: null,
       speculativeType: readPersistedSpeculativeType(),
       loadedSpeculativeType: null,
       specFallbackReason: null,
@@ -1433,6 +1441,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       return { toolCallTimeout };
     }),
   setKvCacheDtype: (kvCacheDtype) => set({ kvCacheDtype }),
+  setVCacheDtype: (vCacheDtype) => set({ vCacheDtype }),
   setSpeculativeType: (speculativeType) => set({ speculativeType }),
   setSpecDraftNMax: (specDraftNMax) => set({ specDraftNMax }),
   setTensorParallel: (tensorParallel) => set({ tensorParallel }),

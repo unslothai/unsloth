@@ -174,6 +174,11 @@ export function applyActiveModelStatusToStore(
         kvCacheDtype: status.cache_type_kv,
         loadedKvCacheDtype: status.cache_type_kv,
       }),
+    ...(status.cache_type_v !== undefined &&
+      prevState.loadedVCacheDtype === null && {
+        vCacheDtype: status.cache_type_v,
+        loadedVCacheDtype: status.cache_type_v,
+      }),
     ...(status.tensor_parallel !== undefined &&
       prevState.loadedTensorParallel === null && {
         tensorParallel: status.tensor_parallel,

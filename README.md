@@ -19,6 +19,26 @@ Unsloth Studio lets you run and train models locally.
 <a href="https://unsloth.ai/docs/new/studio">
 <img alt="unsloth studio ui homepage" src="https://github.com/user-attachments/assets/53ae17a9-d975-44ef-9686-efb4ebd0454d" style="max-width: 100%; margin-bottom: 0;"></a>
 
+## Fork Notes
+
+### Setup
+
+- You **must** follow the Advanced Installation. 
+- You will also need to build the [llama-cpp turboquant](https://github.com/TheTom/llama-cpp-turboquant) fork.
+  - Without it, turbo4 will not work and there will likely be other consequenses I have not tested for.
+- After building both, delete Unsloth's llama-cpp binaries and replace them with the turboquant llama-cpp binaries in the default directory: `C:\Users\<user>\.unsloth\llama.cpp\build\bin\Release`.
+- In the future, I'll add TheTom's llamacpp fork into the install scripts.
+
+### Additional Notes
+
+TheTom's llama-cpp fork automatically reverts k-cache to q8 if both k and v caches are set to turbo and GQA >= 6. I disabled that by setting `TURBO_AUTO_ASYMMETRIC` to 0. That way, you can make your own determination. Depending on the model, you may run into higher perplexity. In that case, I suggest reverting k cache to q8 manually.
+
+If you want it to automatically revert when GQA >= 6, navigate to `./studio/backend/core/inference/llama_cpp.py` and remove lines 5319-5329.
+
+Additionally, memory estimates for turboquant kv-cache are not accurate and default to f16. This means memory estimates will (most likely) be more than what is used.
+
+*Note: This fork is purposefully minimal to avoid upstream merge conflicts*
+
 ## ⚡ Get started
 
 #### macOS, Linux, WSL:
@@ -164,7 +184,7 @@ Read our [guide](https://unsloth.ai/docs/get-started/fine-tuning-llms-guide). Ad
 The below advanced instructions are for Unsloth Studio. For Unsloth Core advanced installation, [view our docs](https://unsloth.ai/docs/get-started/install/pip-install#advanced-pip-installation).
 #### Developer installs: macOS, Linux, WSL:
 ```bash
-git clone https://github.com/unslothai/unsloth
+git clone https://github.com/lukasdim/unsloth-turboquant.git
 cd unsloth
 ./install.sh --local
 unsloth studio -p 8888
@@ -178,7 +198,7 @@ unsloth studio -p 8888
 
 #### Developer installs: Windows PowerShell:
 ```powershell
-git clone https://github.com/unslothai/unsloth.git
+git clone https://github.com/lukasdim/unsloth-turboquant.git
 cd unsloth
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\install.ps1 --local
@@ -191,62 +211,6 @@ cd unsloth && git pull
 unsloth studio -p 8888
 ```
 
-#### Nightly: MacOS, Linux, WSL:
-```bash
-git clone https://github.com/unslothai/unsloth
-cd unsloth
-git checkout nightly
-./install.sh --local
-unsloth studio -p 8888
-```
-Then to launch every time:
-```bash
-unsloth studio -p 8888
-```
-
-#### Nightly: Windows:
-Run in Windows Powershell:
-```powershell
-git clone https://github.com/unslothai/unsloth.git
-cd unsloth
-git checkout nightly
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-.\install.ps1 --local
-unsloth studio -p 8888
-```
-Then to launch every time:
-```bash
-unsloth studio -p 8888
-```
-
-#### Advanced launch options
-Installer options can be passed as environment variables. On macOS, Linux and WSL place the variable after the pipe so the shell passes it to `sh`; on Windows set it with `$env:` before piping to `iex`.
-
-Skip PyTorch (GGUF-only mode):
-```bash
-curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_NO_TORCH=1 sh
-```
-```powershell
-$env:UNSLOTH_NO_TORCH=1; irm https://unsloth.ai/install.ps1 | iex
-```
-
-Pin the Python version:
-```bash
-curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_PYTHON=3.12 sh
-```
-```powershell
-$env:UNSLOTH_PYTHON='3.12'; irm https://unsloth.ai/install.ps1 | iex
-```
-
-Install to a custom location with `UNSLOTH_STUDIO_HOME`:
-```bash
-curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_STUDIO_HOME=/abs/path sh
-```
-```powershell
-$env:UNSLOTH_STUDIO_HOME='C:\path'; irm https://unsloth.ai/install.ps1 | iex
-```
-
-Cap Studio's native CPU thread pools on high-core hosts: `UNSLOTH_CPU_THREADS=8 unsloth studio -p 8888`.
 
 #### Uninstall
 The recommended way to fully remove Unsloth Studio is the matching uninstall script for your OS. It stops any running servers, removes the install dir, the launcher data dir, the desktop shortcut, and any platform-specific entries (macOS `.app` bundle + Launch Services on Mac; Start Menu, `HKCU\Software\Unsloth` registry key and user `PATH` entries on Windows):

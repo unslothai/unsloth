@@ -1802,6 +1802,10 @@ def _request_matches_loaded_settings(
         llama_backend.cache_type_kv
     ):
         return False
+    if _normalise_settings_str(request.cache_type_v) != _normalise_settings_str(
+        llama_backend.cache_type_v
+    ):
+        return False
     # Reconcile a user --split-mode in extras into the effective tensor state.
     # When the request omits llama_extra_args ("inherit"), compare using the
     # stored extras stripped the way the reload strips them, so an extras-driven
@@ -2169,7 +2173,9 @@ async def load_model(
                     stripped = strip_shadowing_flags(
                         llama_backend.extra_args,
                         strip_context = "max_seq_length" in fields_set,
-                        strip_cache = "cache_type_kv" in fields_set,
+                        strip_cache = (
+                            "cache_type_kv" in fields_set or "cache_type_v" in fields_set
+                        ),
                         strip_spec = (
                             "speculative_type" in fields_set or "spec_draft_n_max" in fields_set
                         ),
@@ -2212,6 +2218,7 @@ async def load_model(
                 n_ctx = request.max_seq_length,
                 chat_template_override = effective_chat_template_override,
                 cache_type_kv = request.cache_type_kv,
+                cache_type_v = request.cache_type_v,
                 speculative_type = request.speculative_type,
                 spec_draft_n_max = request.spec_draft_n_max,
                 n_parallel = _n_parallel,
@@ -2321,6 +2328,7 @@ async def load_model(
                 supports_preserve_thinking = llama_backend.supports_preserve_thinking,
                 supports_tools = llama_backend.supports_tools,
                 cache_type_kv = llama_backend.cache_type_kv,
+                cache_type_v = llama_backend.cache_type_v,
                 chat_template = llama_backend.chat_template,
                 speculative_type = llama_backend.requested_spec_mode,
                 spec_draft_n_max = llama_backend.spec_draft_n_max,
@@ -2897,6 +2905,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 max_context_length = llama_backend.max_context_length,
                 native_context_length = llama_backend.native_context_length,
                 cache_type_kv = llama_backend.cache_type_kv,
+                cache_type_v = llama_backend.cache_type_v,
                 chat_template_override = _reported_chat_template_override,
                 speculative_type = llama_backend.requested_spec_mode,
                 spec_draft_n_max = llama_backend.spec_draft_n_max,

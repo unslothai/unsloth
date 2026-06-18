@@ -43,6 +43,8 @@ export interface LoadModelRequest {
   trust_remote_code?: boolean;
   chat_template_override?: string | null;
   cache_type_kv?: string | null;
+  /** V-only KV-cache dtype override. When set, --cache-type-v uses this; K always follows cache_type_kv. Unset = V follows cache_type_kv. */
+  cache_type_v?: string | null;
   /**
    * Speculative decoding mode for GGUF models. Canonical values: "auto"
    * (platform-aware: MTP on MTP GGUFs, ngram-mod fallback for sub-3B), "mtp"
@@ -138,6 +140,7 @@ export interface LoadModelResponse {
   supports_preserve_thinking?: boolean;
   supports_tools?: boolean;
   cache_type_kv?: string | null;
+  cache_type_v?: string | null;
   chat_template?: string | null;
   /** Canonical UI-facing mode the load request resolved to. See LoadModelRequest. */
   speculative_type?: string | null;
@@ -181,6 +184,7 @@ export interface InferenceStatusResponse {
   max_context_length?: number | null;
   native_context_length?: number | null;
   cache_type_kv?: string | null;
+  cache_type_v?: string | null;
   chat_template_override?: string | null;
   /** Canonical UI-facing mode currently active. See LoadModelRequest. */
   speculative_type?: string | null;

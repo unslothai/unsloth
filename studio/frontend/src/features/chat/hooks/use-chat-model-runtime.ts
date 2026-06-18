@@ -545,6 +545,7 @@ export function useChatModelRuntime() {
             const {
               chatTemplateOverride,
               kvCacheDtype,
+              vCacheDtype,
               customContextLength,
               ggufContextLength,
               speculativeType,
@@ -577,6 +578,7 @@ export function useChatModelRuntime() {
               trust_remote_code: trustRemoteCode,
               chat_template_override: effectiveChatTemplateOverride,
               cache_type_kv: kvCacheDtype,
+              cache_type_v: vCacheDtype,
               speculative_type: speculativeType,
               spec_draft_n_max: specDraftNMax,
               tensor_parallel: tensorParallel,
@@ -612,6 +614,7 @@ export function useChatModelRuntime() {
               }
             }
             const loadedKv = loadResponse.cache_type_kv ?? null;
+            const loadedV = loadResponse.cache_type_v ?? null;
             const loadedTp = loadResponse.tensor_parallel ?? false;
             const loadedSpec = normalizeSpeculativeType(
               loadResponse.speculative_type,
@@ -669,6 +672,8 @@ export function useChatModelRuntime() {
                 : resolveToolsEnabledOnLoad(supportsTools)),
               kvCacheDtype: loadedKv,
               loadedKvCacheDtype: loadedKv,
+              vCacheDtype: loadedV,
+              loadedVCacheDtype: loadedV,
               tensorParallel: loadedTp,
               loadedTensorParallel: loadedTp,
               speculativeType: loadedSpec,

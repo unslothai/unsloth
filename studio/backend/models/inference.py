@@ -58,6 +58,15 @@ class LoadRequest(BaseModel):
         None,
         description = "KV cache data type for both K and V (e.g. 'f16', 'bf16', 'q8_0', 'q4_1', 'q5_1')",
     )
+    cache_type_v: Optional[str] = Field(
+        None,
+        description = (
+            "Override the V (value) KV-cache dtype only. When set, --cache-type-v "
+            "uses this instead of cache_type_kv; --cache-type-k always follows "
+            "cache_type_kv. Unset = V follows cache_type_kv. Ignored under "
+            "tensor-parallel (which requires a non-quantized cache)."
+        ),
+    )
     gpu_ids: Optional[List[int]] = Field(
         None,
         description = "Physical GPU indices to use, for example [0, 1]. Omit or pass [] to use automatic selection. Explicit gpu_ids are unsupported when the parent CUDA_VISIBLE_DEVICES uses UUID/MIG entries. Not supported for GGUF models.",
@@ -226,6 +235,10 @@ class LoadResponse(BaseModel):
         None,
         description = "KV cache data type for K and V (e.g. 'f16', 'bf16', 'q8_0')",
     )
+    cache_type_v: Optional[str] = Field(
+        None,
+        description = "Active V-only KV-cache dtype override, or None when V follows cache_type_kv.",
+    )
     chat_template: Optional[str] = Field(
         None,
         description = "Jinja2 chat template string (from GGUF metadata or tokenizer)",
@@ -344,6 +357,10 @@ class InferenceStatusResponse(BaseModel):
     cache_type_kv: Optional[str] = Field(
         None,
         description = "KV cache quantization dtype (e.g. 'q8_0'), or None for default",
+    )
+    cache_type_v: Optional[str] = Field(
+        None,
+        description = "Active V-only KV-cache dtype override, or None when V follows cache_type_kv.",
     )
     chat_template: Optional[str] = Field(
         None, description = "Model's default chat template (Jinja2 source), if any"

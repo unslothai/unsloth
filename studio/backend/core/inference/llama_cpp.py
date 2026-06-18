@@ -1174,6 +1174,9 @@ class LlamaCppBackend:
         self._supports_preserve_thinking: bool = False
         self._supports_tools: bool = False
         self._cache_type_kv: Optional[str] = None
+        # V-only cache dtype override (--cache-type-v), or None when V follows
+        # _cache_type_kv. K always follows _cache_type_kv.
+        self._cache_type_v: Optional[str] = None
         # Whether --split-mode tensor was applied on the active load.
         self._tensor_parallel: bool = False
         self._reasoning_default: bool = True
@@ -1492,6 +1495,10 @@ class LlamaCppBackend:
     @property
     def cache_type_kv(self) -> Optional[str]:
         return self._cache_type_kv
+
+    @property
+    def cache_type_v(self) -> Optional[str]:
+        return self._cache_type_v
 
     @property
     def tensor_parallel(self) -> bool:
@@ -3364,6 +3371,7 @@ class LlamaCppBackend:
         self._is_audio = False  # clear any prior TTS/audio model's routing flag
         self._model_identifier = model_identifier
         self._cache_type_kv = None
+        self._cache_type_v = None
         self._gpu_offload_active = True
         if hf_variant:
             self._hf_variant = hf_variant
@@ -4140,6 +4148,7 @@ class LlamaCppBackend:
         n_ctx: int = 4096,
         chat_template_override: Optional[str] = None,
         cache_type_kv: Optional[str] = None,
+        cache_type_v: Optional[str] = None,
         speculative_type: Optional[str] = None,
         spec_draft_n_max: Optional[int] = None,
         tensor_parallel: bool = False,
@@ -4172,6 +4181,7 @@ class LlamaCppBackend:
                 hf_variant = hf_variant,
                 n_ctx = n_ctx,
                 cache_type_kv = cache_type_kv,
+                cache_type_v = cache_type_v,
                 speculative_type = speculative_type,
                 spec_draft_n_max = spec_draft_n_max,
                 tensor_parallel = tensor_parallel,
@@ -5112,6 +5122,10 @@ class LlamaCppBackend:
                     "q5_0",
                     "q5_1",
                     "iq4_nl",
+                    # TurboQuant 4-bit KV cache. Requires a turboquant-capable
+                    # llama.cpp build; flash-attn (forced on above) covers the
+                    # quantized-V requirement.
+                    "turbo4",
                     "f32",
                 }
                 if (
@@ -5133,6 +5147,24 @@ class LlamaCppBackend:
                     # An env-only type is left inherited (untouched) so an
                     # asymmetric K/V env reaches the child as set.
                     self._cache_type_kv = None
+
+                # V-cache override. llama.cpp takes the LAST --cache-type-v, so
+                # appending here last-wins-overrides only the V axis emitted
+                # above without editing that block; K stays on cache_type_kv (or
+                # the implicit f16 default when the block above emitted nothing).
+                # Skipped under tensor split (rejects a quantized V axis, like
+                # the block above) and when the cache type is env-inherited.
+                if (
+                    cache_type_v
+                    and cache_type_v in _valid_cache_types
+                    and not _cache_type_from_env
+                    and not tensor_parallel
+                ):
+                    cmd.extend(["--cache-type-v", cache_type_v])
+                    self._cache_type_v = cache_type_v
+                    logger.info(f"V cache type override: {cache_type_v}")
+                else:
+                    self._cache_type_v = None
 
                 # Tensor parallelism: split the model across GPUs by tensor
                 # rather than by layer. Multi-GPU only -- a no-op on a single
@@ -5283,6 +5315,18 @@ class LlamaCppBackend:
 
                 # Library paths so llama-server finds its shared libs and CUDA DLLs.
                 env = self._llama_server_env_for_binary(binary)
+                
+                # TurboQuant: when K and V resolve to the same cache type, the
+                # auto-asymmetric policy in llama-kv-cache.cpp (GQA >= 6) upgrades
+                # K off that type. Force it off so the symmetric type the user
+                # picked is honored. Asymmetric (V override differs) and
+                # env-inherited (self._cache_type_kv is None) paths are left alone.
+                if self._cache_type_kv is not None and (
+                    self._cache_type_v is None
+                    or self._cache_type_v == self._cache_type_kv
+                ):
+                    env["TURBO_AUTO_ASYMMETRIC"] = "0"
+
                 # Omitting --threads relies on llama.cpp's physical-core default, so
                 # drop an inherited LLAMA_ARG_THREADS that would otherwise feed the
                 # arg handler and silently force hardware_concurrency(). #5692
@@ -5924,6 +5968,7 @@ class LlamaCppBackend:
         hf_variant: Optional[str],
         n_ctx: int,
         cache_type_kv: Optional[str],
+        cache_type_v: Optional[str] = None,
         speculative_type: Optional[str],
         chat_template_override: Optional[str],
         extra_args: Optional[List[str]],
@@ -5965,6 +6010,9 @@ class LlamaCppBackend:
             return value
 
         if _norm(self._cache_type_kv) != _norm(cache_type_kv):
+            return False
+
+        if _norm(self._cache_type_v) != _norm(cache_type_v):
             return False
 
         # Reconcile a user --split-mode in extras AND an inherited tensor

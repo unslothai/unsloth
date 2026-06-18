@@ -544,6 +544,9 @@ export function ChatSettingsPanel({
   const kvCacheDtype = useChatRuntimeStore((s) => s.kvCacheDtype);
   const setKvCacheDtype = useChatRuntimeStore((s) => s.setKvCacheDtype);
   const loadedKvCacheDtype = useChatRuntimeStore((s) => s.loadedKvCacheDtype);
+  const vCacheDtype = useChatRuntimeStore((s) => s.vCacheDtype);
+  const setVCacheDtype = useChatRuntimeStore((s) => s.setVCacheDtype);
+  const loadedVCacheDtype = useChatRuntimeStore((s) => s.loadedVCacheDtype);
   const tensorParallel = useChatRuntimeStore((s) => s.tensorParallel);
   const setTensorParallel = useChatRuntimeStore((s) => s.setTensorParallel);
   const loadedTensorParallel = useChatRuntimeStore(
@@ -583,12 +586,13 @@ export function ChatSettingsPanel({
   const ctxDisplayValue = customContextLength ?? baseContext ?? "";
   const ctxMaxValue = baseNativeContext ?? baseContext ?? null;
   const kvDirty = kvCacheDtype !== loadedKvCacheDtype;
+  const vDirty = vCacheDtype !== loadedVCacheDtype;
   const ctxDirty = customContextLength !== null;
   const specDirty = speculativeType !== loadedSpeculativeType;
   const specDraftDirty = specDraftNMax !== loadedSpecDraftNMax;
   const tpDirty = tensorParallel !== (loadedTensorParallel ?? false);
   const modelSettingsDirty =
-    kvDirty || ctxDirty || specDirty || specDraftDirty || tpDirty;
+    kvDirty || vDirty || ctxDirty || specDirty || specDraftDirty || tpDirty;
   const [presetNameInput, setPresetNameInput] = useState(activePreset);
   const [systemPromptEditorOpen, setSystemPromptEditorOpen] = useState(false);
   const [systemPromptDraft, setSystemPromptDraft] = useState("");
@@ -935,7 +939,8 @@ export function ChatSettingsPanel({
                     <InfoHint>
                       Lower KV cache precision to save VRAM at the cost of some
                       quality. f16/bf16 are full precision; q8_0/q5_1/q4_1 are
-                      quantized.
+                      quantized; turbo4 is TurboQuant 4-bit (needs a
+                      turboquant-capable llama.cpp build).
                     </InfoHint>
                   </div>
                   <div className="flex shrink-0 items-center gap-1.5">
@@ -949,7 +954,7 @@ export function ChatSettingsPanel({
                         animateRadius={false}
                         icon={ChevronDownStandardIcon}
                         iconClassName="size-3.5"
-                        className="grid h-7 w-[64px] min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-1 rounded-full border-transparent bg-black/[0.04] dark:bg-white/[0.05] hover:bg-black/[0.06] dark:hover:bg-white/[0.1] pl-3 pr-2 py-0 text-[13px]! font-medium text-nav-fg focus-visible:ring-0 focus-visible:border-transparent [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate [&>svg]:shrink-0"
+                        className="grid h-7 w-[84px] min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-1 rounded-full border-transparent bg-black/[0.04] dark:bg-white/[0.05] hover:bg-black/[0.06] dark:hover:bg-white/[0.1] pl-3 pr-2 py-0 text-[13px]! font-medium text-nav-fg focus-visible:ring-0 focus-visible:border-transparent [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate [&>svg]:shrink-0"
                       >
                         <SelectValue />
                       </SelectTrigger>
@@ -959,6 +964,46 @@ export function ChatSettingsPanel({
                         <SelectItem value="q8_0">q8_0</SelectItem>
                         <SelectItem value="q5_1">q5_1</SelectItem>
                         <SelectItem value="q4_1">q4_1</SelectItem>
+                        <SelectItem value="turbo4">turbo4</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex min-w-0 items-center gap-1.5">
+                    <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
+                      V Cache Dtype
+                    </span>
+                    <InfoHint>
+                      Override the value (V) cache precision on its own.
+                      &quot;Same as KV&quot; follows the KV Cache Dtype above;
+                      the key (K) cache always follows KV Cache Dtype. Ignored
+                      under tensor parallelism.
+                    </InfoHint>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-1.5">
+                    <Select
+                      value={vCacheDtype ?? "auto"}
+                      onValueChange={(v) => {
+                        setVCacheDtype(v === "auto" ? null : v);
+                      }}
+                    >
+                      <SelectTrigger
+                        animateRadius={false}
+                        icon={ChevronDownStandardIcon}
+                        iconClassName="size-3.5"
+                        className="grid h-7 w-[112px] min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-1 rounded-full border-transparent bg-black/[0.04] dark:bg-white/[0.05] hover:bg-black/[0.06] dark:hover:bg-white/[0.1] pl-3 pr-2 py-0 text-[13px]! font-medium text-nav-fg focus-visible:ring-0 focus-visible:border-transparent [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate [&>svg]:shrink-0"
+                      >
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent className="menu-soft-surface ring-0 border-0 rounded-lg">
+                        <SelectItem value="auto">Same as KV</SelectItem>
+                        <SelectItem value="f16">f16</SelectItem>
+                        <SelectItem value="bf16">bf16</SelectItem>
+                        <SelectItem value="q8_0">q8_0</SelectItem>
+                        <SelectItem value="q5_1">q5_1</SelectItem>
+                        <SelectItem value="q4_1">q4_1</SelectItem>
+                        <SelectItem value="turbo4">turbo4</SelectItem>
                       </SelectContent>
                     </Select>
                   </div>
