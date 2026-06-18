@@ -173,7 +173,9 @@ function DownloadRow({ jobKey }: { jobKey: string }) {
   );
 }
 
-export function DownloadManagerPanel() {
+export function DownloadManagerPanel({
+  positioned = true,
+}: { positioned?: boolean } = {}) {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const enabled = canUseDownloadManager(pathname);
   const [collapsed, setCollapsed] = useState(false);
@@ -195,7 +197,14 @@ export function DownloadManagerPanel() {
       : "Downloads";
 
   return (
-    <div className="pointer-events-none fixed bottom-4 right-4 z-50">
+    <div
+      className={cn(
+        // Standalone: anchor bottom-right. In a shared stack (positioned=false)
+        // flow as a right-aligned row so overlays stack instead of overlapping.
+        "pointer-events-none",
+        positioned ? "fixed bottom-4 right-4 z-50" : "flex justify-end",
+      )}
+    >
       {collapsed ? (
         <Tooltip>
           <TooltipTrigger asChild={true}>

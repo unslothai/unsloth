@@ -32,16 +32,15 @@ export function isRunnableRecommendedFormat(
   return isGgufId(id, hintedIsGguf) || isMlxId(id);
 }
 
-/** What Recommended is allowed to suggest: GGUF anywhere, MLX only on Mac,
- * never safetensors. */
+/** What Recommended is allowed to suggest: GGUF anywhere; on Mac also MLX and
+ * safetensors (both now run locally there). GPU keeps GGUF-only recommendations. */
 export function isRecommendableFormat(
   id: string,
   hintedIsGguf: boolean | undefined,
   isMac: boolean,
 ): boolean {
   if (isGgufId(id, hintedIsGguf)) return true;
-  if (isMlxId(id)) return isMac;
-  return false;
+  return isMac;
 }
 
 /** Format filter for the listing toggle. "safetensors" means anything that is

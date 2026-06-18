@@ -38,6 +38,10 @@ export function useStagedModelPreparation(opts?: {
   const pendingIsGguf = useChatRuntimeStore((s) =>
     isPendingGguf(s.pendingSelection),
   );
+  // Non-GGUF HF repos download a full snapshot (variant null) but have no header.
+  const pendingIsHubRepo = useChatRuntimeStore(
+    (s) => s.pendingSelection?.isHubRepo ?? false,
+  );
   const pendingDownloaded = useChatRuntimeStore(
     (s) => s.pendingSelection?.isDownloaded ?? false,
   );
@@ -118,9 +122,18 @@ export function useStagedModelPreparation(opts?: {
   const fetchMetadataRef = useLatestRef(fetchContextMetadata);
 
   useEffect(() => {
-    if (!pendingId || !pendingIsGguf || pendingHasContext) return;
+    // GGUF picks (header worth reading) and uncached non-GGUF hub repos (full
+    // snapshot, no header) both run here; everything else is loaded directly.
+    if (
+      !pendingId ||
+      (!pendingIsGguf && !pendingIsHubRepo) ||
+      pendingHasContext
+    ) {
+      return;
+    }
     // Native files and already-downloaded HF files are local: read the header
-    // now. Otherwise download first; onComplete then reads it.
+    // now. Otherwise download first (a GGUF variant, or a null-variant snapshot
+    // for a hub repo); onComplete then reads the header or auto-loads.
     if (pendingNativeToken || pendingDownloaded) {
       void fetchMetadataRef.current();
     } else {
@@ -133,6 +146,7 @@ export function useStagedModelPreparation(opts?: {
     pendingVariant,
     pendingNativeToken,
     pendingIsGguf,
+    pendingIsHubRepo,
     pendingDownloaded,
     pendingHasContext,
     startDownloadRef,

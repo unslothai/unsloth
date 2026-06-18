@@ -104,6 +104,7 @@ import {
   CHAT_TOOLS_ENABLED_KEY,
   CHAT_WEB_FETCH_TOOLS_ENABLED_KEY,
   hasGgufSource,
+  isDownloadableHubRepo,
   loadOptionalBool,
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
@@ -1572,15 +1573,16 @@ export function ChatPage(): ReactElement {
   const stageOrLoad = useCallback(
     async (selection: SelectedModelInput) => {
       const store = useChatRuntimeStore.getState();
-      // Staging is GGUF-only, so non-GGUF picks always load immediately (e.g. a
-      // trust_remote_code approval surfaces through the normal load path). With
-      // "Load on selection" on, a cached GGUF also loads now; an un-cached GGUF
-      // downloads through the manager first (global indicator) and auto-loads.
+      // An un-cached HF repo (GGUF variant or a full non-GGUF snapshot) downloads
+      // through the manager first (global indicator), then auto-loads. Everything
+      // else -- cached picks, local/native files, LoRA, external -- loads now.
+      const wantManagerDownload =
+        isDownloadableHubRepo(selection) && !selection.isDownloaded;
       if (
-        !hasGgufSource(selection) ||
+        (!hasGgufSource(selection) && !wantManagerDownload) ||
         (store.loadOnSelection && selection.isDownloaded)
       ) {
-        // Abandon any staged GGUF first so its edited knobs (e.g. a custom
+        // Abandon any staged pick first so its edited knobs (e.g. a custom
         // context length) don't leak into this immediate load -- resolveLoad
         // reads customContextLength before checking the target is GGUF.
         abandonStaged();
@@ -1599,6 +1601,7 @@ export function ChatPage(): ReactElement {
         expectedBytes: selection.expectedBytes,
         nativePathToken: selection.nativePathToken,
         isGguf: selection.isGguf,
+        isHubRepo: wantManagerDownload || undefined,
         autoLoad: store.loadOnSelection,
       });
     },
@@ -1851,6 +1854,7 @@ export function ChatPage(): ReactElement {
         }
         const selection = {
           id: value,
+          source: meta?.source,
           isLora: meta?.isLora,
           ggufVariant: meta?.ggufVariant,
           isDownloaded: meta?.isDownloaded,

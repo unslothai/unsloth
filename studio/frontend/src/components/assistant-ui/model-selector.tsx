@@ -219,30 +219,33 @@ function ModelSelectorTrigger({
 
 type HubSection = "downloaded" | "recommended" | "custom" | "connected";
 
-// The user's most recently clicked Hub section, remembered across opens so the
-// selector can fall back to it when there are no downloaded models.
+// The user's most recently clicked Hub section, restored on every open so the
+// selector returns to the tab they last used.
 const HUB_SECTION_KEY = "unsloth_model_selector_section";
-function loadLastHubSection(): HubSection {
+// Last tab the user actually clicked, or null when none is stored yet. Only
+// On Device / Recommended persist (Connected is provider-conditional).
+function loadLastHubSection(): HubSection | null {
   try {
     const raw = localStorage.getItem(HUB_SECTION_KEY);
-    // Only restore sections that still have a tab; a stale "custom" (removed)
-    // would otherwise open to an empty view.
-    return raw === "downloaded" || raw === "recommended" ? raw : "recommended";
+    return raw === "downloaded" || raw === "recommended" ? raw : null;
   } catch {
-    return "recommended";
+    return null;
   }
 }
 function saveLastHubSection(section: HubSection): void {
+  if (section !== "downloaded" && section !== "recommended") return;
   try {
     localStorage.setItem(HUB_SECTION_KEY, section);
   } catch {
     // Ignore unavailable storage.
   }
 }
-// Default the Hub section: On Device when the user has downloaded models, else
-// their last-used section.
+// Default the Hub section: the last tab the user clicked; first time, On Device
+// when they have downloads, else Recommended.
 function defaultHubSection(): HubSection {
-  return hasDownloadedModels() ? "downloaded" : loadLastHubSection();
+  return (
+    loadLastHubSection() ?? (hasDownloadedModels() ? "downloaded" : "recommended")
+  );
 }
 
 const HUB_SECTION_TABS: { value: string; label: string; icon?: ReactNode }[] = [

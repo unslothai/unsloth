@@ -285,21 +285,22 @@ function ListLabel({
   action,
   collapsed,
   onToggle,
-  spacious,
+  divider,
 }: {
   children: ReactNode;
   icon?: ReactNode;
   action?: ReactNode;
   collapsed?: boolean;
   onToggle?: () => void;
-  /** Extra top padding to separate this section from the one above. */
-  spacious?: boolean;
+  /** Draw a divider line above, evenly spaced, to separate it from the section
+   *  above (omit on the first section). */
+  divider?: boolean;
 }) {
   return (
     <div
       className={cn(
         "flex items-center justify-between gap-1 px-2.5 pb-1.5",
-        spacious ? "pt-6" : "pt-3",
+        divider ? "mt-3 border-t border-border/50 pt-3" : "pt-3",
       )}
     >
       <span className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
@@ -1468,22 +1469,21 @@ export function HubModelPicker({
   // Format filter toggle for the Unsloth listing.
   const [formatFilter, setFormatFilter] = useState<FormatFilter>("all");
 
-  // Recommended only suggests GGUF (anywhere) and MLX (Mac only); safetensors
-  // are never recommended. The "recommended" sort also drops models too big for
-  // the device. Already-downloaded models stay visible (badged), never hidden.
+  // Recommended suggests GGUF anywhere; on Mac also MLX and safetensors. The
+  // "recommended" sort also drops models too big for the device. Already-
+  // downloaded models stay visible (badged), never hidden.
   const recommendedRows = useMemo(() => {
     // Never list mobile-targeted builds in the Unsloth section.
     let rows = recommendedSearch.results.filter((r) => !isMobileVariant(r.id));
     // Drop models Studio can't run for chat (diffusion / image / video / etc.).
     rows = rows.filter(isChatSupported);
-    // Keep only formats we recommend for this device.
-    rows = rows.filter((r) => isRecommendableFormat(r.id, r.isGguf, isMac));
-    // The format toggle narrows further.
-    if (formatFilter !== "all") {
-      rows = rows.filter((r) =>
-        matchesFormatFilter(r.id, r.isGguf, formatFilter),
-      );
-    }
+    // With no explicit format, show the device-recommended formats (GGUF, plus
+    // MLX on Mac). When the user picks a format, honor it instead so Safetensors
+    // is not dropped by the recommendation default.
+    rows =
+      formatFilter === "all"
+        ? rows.filter((r) => isRecommendableFormat(r.id, r.isGguf, isMac))
+        : rows.filter((r) => matchesFormatFilter(r.id, r.isGguf, formatFilter));
     if (recommendedSort !== "recommended") return rows;
     return rows.filter((r) => {
       // Downloaded models always show, regardless of device fit.
@@ -2030,10 +2030,15 @@ export function HubModelPicker({
         // Toggle GGUF variant expander
         setExpandedGguf((prev) => (prev === id ? null : id));
       } else {
-        onSelect(id, { source: "hub", isLora: false });
+        // Cached repos load now; uncached ones download via the Hub manager.
+        onSelect(id, {
+          source: "hub",
+          isLora: false,
+          isDownloaded: downloadedSet.has(id.toLowerCase()),
+        });
       }
     },
-    [onSelect, isKnownGgufRepo],
+    [onSelect, isKnownGgufRepo, downloadedSet],
   );
 
   // On Device owns the downloaded and custom-folder models; the Unsloth tab
@@ -2296,7 +2301,10 @@ export function HubModelPicker({
         )}
         {...hubModelList.listboxProps}
       >
-        <div className="py-1 pr-0">
+        {/* Clear space for the floating Eject pill when scrolled to the end, so
+            its gap above the last row matches its gap below (applies to every
+            section, including Recommended). */}
+        <div className={cn("pt-1 pr-0", onEject ? "pb-[60px]" : "pb-4")}>
           {showConnected ? (
             connectedGroups.length === 0 ? (
               <div className="px-2.5 py-2 text-xs leading-relaxed text-muted-foreground">
@@ -2463,7 +2471,7 @@ export function HubModelPicker({
               {showDownloaded && hasOtherModels ? (
                 <div ref={otherModelsSectionRef}>
                   <ListLabel
-                    spacious={true}
+                    divider={true}
                     icon={
                       <HugeiconsIcon icon={Flag01Icon} className="size-3.5" />
                     }
@@ -2486,7 +2494,7 @@ export function HubModelPicker({
                 <>
                   <div
                     ref={fineTunedSectionRef}
-                    className="flex items-center gap-1 px-2.5 pb-1.5 pt-6"
+                    className="mt-3 flex items-center gap-1 border-t border-border/50 px-2.5 pb-1.5 pt-3"
                   >
                     <span className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
                       <HugeiconsIcon icon={TrainIcon} className="size-3.5" />
@@ -2532,7 +2540,7 @@ export function HubModelPicker({
                 <>
                   <div
                     ref={customFolderSectionRef}
-                    className="flex items-center gap-1 px-2.5 pb-1.5 pt-6"
+                    className="mt-3 flex items-center gap-1 border-t border-border/50 px-2.5 pb-1.5 pt-3"
                   >
                     <button
                       type="button"
@@ -2834,7 +2842,7 @@ export function HubModelPicker({
               {section === "downloaded" && sortedLmStudio.length > 0 ? (
                 <>
                   <ListLabel
-                    spacious={true}
+                    divider={true}
                     collapsed={lmStudioCollapsed}
                     onToggle={() => setLmStudioCollapsed((v) => !v)}
                   >
@@ -2910,7 +2918,7 @@ export function HubModelPicker({
               {section === "downloaded" && sortedLocalDir.length > 0 ? (
                 <>
                   <ListLabel
-                    spacious={true}
+                    divider={true}
                     collapsed={localDirCollapsed}
                     onToggle={() => setLocalDirCollapsed((v) => !v)}
                   >

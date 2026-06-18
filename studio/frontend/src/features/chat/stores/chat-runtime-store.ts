@@ -443,6 +443,9 @@ export type PendingModelSelection = {
   /** "Load on selection" on + un-cached GGUF: download via the manager (global
    *  indicator) without opening the sheet, then load once the download finishes. */
   autoLoad?: boolean;
+  /** Uncached non-GGUF HF repo: download the full snapshot via the manager
+   *  (variant null) the same way GGUF picks download a variant. */
+  isHubRepo?: boolean;
 };
 
 /** A pick is a GGUF (HF variant, native file, or a direct local .gguf) and so
@@ -454,6 +457,33 @@ export function hasGgufSource(x: {
 }): boolean {
   return (
     x.ggufVariant != null || x.nativePathToken != null || x.isGguf === true
+  );
+}
+
+/** A local-disk model id: Unix absolute (/), relative (./ ../), tilde (~/),
+ *  Windows drive (C:\) or UNC (\\server). Shared so the loader and the
+ *  hub-repo predicate classify ids identically. */
+export function isLocalModelPath(id: string): boolean {
+  return /^(\/|\.{1,2}[\\/]|~[\\/]|[A-Za-z]:[\\/]|\\\\)/.test(id);
+}
+
+/** An uncached HF hub repo we can download as a full snapshot (non-GGUF
+ *  safetensors / MLX). Excludes GGUF sources, local paths, native files, LoRA,
+ *  and external provider models so none are mis-routed into a snapshot. */
+export function isDownloadableHubRepo(x: {
+  id: string;
+  source?: string;
+  isLora?: boolean;
+  ggufVariant?: string;
+  nativePathToken?: string;
+  isGguf?: boolean;
+}): boolean {
+  return (
+    x.source === "hub" &&
+    !hasGgufSource(x) &&
+    x.isLora !== true &&
+    x.nativePathToken == null &&
+    !isLocalModelPath(x.id)
   );
 }
 
