@@ -136,12 +136,7 @@ class ExportOrchestrator:
         """True if the in-flight (or most recent) run was cancelled by the user."""
         return self._cancel_requested
 
-    def _record_op_finished(
-        self,
-        success: bool,
-        message: str,
-        output_path: Optional[str],
-    ) -> None:
+    def _record_op_finished(self, success: bool, message: str, output_path: Optional[str]) -> None:
         """Snapshot the just-finished op so status pollers can recover its outcome.
 
         Called from each op's ``finally`` (with ``_active_op_kind`` still set) BEFORE
@@ -150,11 +145,7 @@ class ExportOrchestrator:
         """
         with self._op_lock:
             self._op_seq += 1
-            status = (
-                "cancelled"
-                if self._cancel_requested
-                else ("success" if success else "error")
-            )
+            status = "cancelled" if self._cancel_requested else ("success" if success else "error")
             self._last_op = {
                 "seq": self._op_seq,
                 "kind": self._active_op_kind,
