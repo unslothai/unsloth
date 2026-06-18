@@ -118,20 +118,20 @@ def _print_cuda_device_list(is_rocm: bool) -> None:
     try:
         import torch
         count = torch.cuda.device_count()
+        if count <= 1:
+            return
+        label = "ROCm" if is_rocm else "CUDA"
+        order = os.environ.get("CUDA_DEVICE_ORDER", "default")
+        lines = [f"{label} devices ({count}, CUDA_DEVICE_ORDER={order}):"]
+        for i in range(count):
+            try:
+                name = torch.cuda.get_device_properties(i).name
+            except Exception:
+                name = "<unavailable>"
+            lines.append(f"  [{i}] {name}")
+        print("\n".join(lines))
     except Exception:
-        return
-    if count <= 1:
-        return
-    label = "ROCm" if is_rocm else "CUDA"
-    order = os.environ.get("CUDA_DEVICE_ORDER", "default")
-    lines = [f"{label} devices ({count}, CUDA_DEVICE_ORDER={order}):"]
-    for i in range(count):
-        try:
-            name = torch.cuda.get_device_properties(i).name
-        except Exception:
-            name = "<unavailable>"
-        lines.append(f"  [{i}] {name}")
-    print("\n".join(lines))
+        return  # purely informational; never disrupt startup
 
 
 def detect_hardware() -> DeviceType:

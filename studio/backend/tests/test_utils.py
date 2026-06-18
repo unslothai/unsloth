@@ -318,9 +318,10 @@ class TestCudaDeviceOrder:
         from pathlib import Path
 
         env = os.environ.copy()
-        env["PYTHONPATH"] = (
-            str(Path(__file__).resolve().parents[1]) + os.pathsep + env.get("PYTHONPATH", "")
-        )
+        backend = str(Path(__file__).resolve().parents[1])
+        existing = env.get("PYTHONPATH", "")
+        # Avoid a trailing os.pathsep (empty entry -> cwd on sys.path) when unset.
+        env["PYTHONPATH"] = (backend + os.pathsep + existing) if existing else backend
         if preset is None:
             env.pop("CUDA_DEVICE_ORDER", None)
         else:
