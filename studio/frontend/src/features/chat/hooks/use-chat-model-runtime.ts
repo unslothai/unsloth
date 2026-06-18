@@ -785,16 +785,23 @@ export function useChatModelRuntime() {
               }
             }
             await refresh({ signal: abortCtrl.signal });
-            // Cold start (nothing was loaded): refresh()'s setCheckpoint doesn't
-            // clear pendingSelection, so this pick would linger as a stale
-            // "staged" over the now-active model. Drop it. Scoped to this pick so
-            // a newer stage queued mid-load survives.
-            if (
-              pendingSelectionMatches(
-                useChatRuntimeStore.getState().pendingSelection,
-                { id: modelId, ggufVariant, nativePathToken },
-              )
-            ) {
+            // A successful load owns the shared (pick-unscoped) settings fields,
+            // so any surviving stage is stale: the just-loaded pick itself, or a
+            // pick queued for a different model mid-load whose knobs this load
+            // overwrote. Drop it. Only a DIFFERENT pick's download needs
+            // cancelling; the loaded pick's is already consumed, and cancelling
+            // it inside its post-complete linger window would flicker its card.
+            const staleStage = useChatRuntimeStore.getState().pendingSelection;
+            if (staleStage) {
+              if (
+                !pendingSelectionMatches(staleStage, {
+                  id: modelId,
+                  ggufVariant,
+                  nativePathToken,
+                })
+              ) {
+                cancelStagedModelDownload(staleStage);
+              }
               useChatRuntimeStore.getState().setPendingSelection(null);
             }
           } catch (error) {
