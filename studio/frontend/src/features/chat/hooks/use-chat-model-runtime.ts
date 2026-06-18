@@ -651,9 +651,14 @@ export function useChatModelRuntime() {
             const reportedNativeCtx = loadResponse.is_gguf
               ? (loadResponse.native_context_length ?? null)
               : null;
-            // A successful reload has applied settings, so clear pending custom
-            // context state and display the backend-reported effective context.
-            const keepCustomCtx = null;
+            // A successful reload has applied settings, so display the backend
+            // effective context. Keep an explicit fit-mode pin (so a later Apply
+            // doesn't silently revert it to Auto); other modes clear to null and
+            // baseline on ggufContextLength.
+            const keepCustomCtx =
+              gpuMemoryMode === "fit" && (customContextLength ?? 0) > 0
+                ? customContextLength
+                : null;
             const reasoningAlwaysOn = loadResponse.reasoning_always_on ?? false;
             const reasoningStyle = loadResponse.reasoning_style ?? "enable_thinking";
             const supportsReasoning = loadResponse.supports_reasoning ?? false;
@@ -703,6 +708,7 @@ export function useChatModelRuntime() {
               specDraftNMax: loadResponse.spec_draft_n_max ?? null,
               loadedSpecDraftNMax: loadResponse.spec_draft_n_max ?? null,
               customContextLength: keepCustomCtx,
+              loadedCustomContextLength: keepCustomCtx,
               defaultChatTemplate: loadResponse.chat_template ?? null,
               chatTemplateOverride: effectiveChatTemplateOverride,
               loadedChatTemplateOverride: effectiveChatTemplateOverride,
@@ -789,6 +795,11 @@ export function useChatModelRuntime() {
                   // Re-baseline the GPU knobs from the rolled-back model, else
                   // the on-switch reset shows phantom unsaved changes.
                   loadedGpuMemoryMode: null,
+                  // refresh() can't re-derive the context pin (status has no such
+                  // field), so restore it to the rolled-back model's directly.
+                  customContextLength: stateBeforeUnload.loadedCustomContextLength,
+                  loadedCustomContextLength:
+                    stateBeforeUnload.loadedCustomContextLength,
                 });
                 await refresh();
               } catch {

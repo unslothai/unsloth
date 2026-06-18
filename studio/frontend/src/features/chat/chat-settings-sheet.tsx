@@ -571,6 +571,9 @@ export function ChatSettingsPanel({
   const loadedGpuIds = useChatRuntimeStore((s) => s.loadedGpuIds);
   const gpuDevices = useGpuDevices();
   const customContextLength = useChatRuntimeStore((s) => s.customContextLength);
+  const loadedCustomContextLength = useChatRuntimeStore(
+    (s) => s.loadedCustomContextLength,
+  );
   const setCustomContextLength = useChatRuntimeStore(
     (s) => s.setCustomContextLength,
   );
@@ -604,7 +607,7 @@ export function ChatSettingsPanel({
   const ctxDisplayValue = customContextLength ?? baseContext ?? "";
   const ctxMaxValue = baseNativeContext ?? baseContext ?? null;
   const kvDirty = kvCacheDtype !== loadedKvCacheDtype;
-  const ctxDirty = customContextLength !== null;
+  const ctxDirty = customContextLength !== loadedCustomContextLength;
   const specDirty = speculativeType !== loadedSpeculativeType;
   const specDraftDirty = specDraftNMax !== loadedSpecDraftNMax;
   const tpDirty = tensorParallel !== (loadedTensorParallel ?? false);

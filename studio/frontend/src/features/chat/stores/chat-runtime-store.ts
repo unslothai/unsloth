@@ -697,6 +697,9 @@ type ChatRuntimeStore = {
    *  per step, cleared when the run ends, never persisted into the transcript. */
   activeDiffusionCanvas: DiffusionCanvasFrame | null;
   customContextLength: number | null;
+  /** The pinned context the loaded model used (null = Auto), so dirty-tracking
+   *  and a later fit Apply can tell an explicit pin apart from Auto. */
+  loadedCustomContextLength: number | null;
   defaultChatTemplate: string | null;
   chatTemplateOverride: string | null;
   loadedChatTemplateOverride: string | null;
@@ -1016,7 +1019,8 @@ function setScalarSettingVersion<K extends ScalarSettingKey>(
 function loadedBaselineSettings(s: ChatRuntimeStore) {
   const hasLoadedModel = Boolean(s.params.checkpoint);
   return {
-    customContextLength: null,
+    // Revert to the loaded model's pin (null = Auto), not a blanket Auto.
+    customContextLength: s.loadedCustomContextLength,
     kvCacheDtype: s.loadedKvCacheDtype,
     tensorParallel: s.loadedTensorParallel ?? false,
     speculativeType: hasLoadedModel
@@ -1139,6 +1143,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   loadedIsMultimodal: false,
   loadedIsDiffusion: false,
   customContextLength: null,
+  loadedCustomContextLength: null,
   defaultChatTemplate: null,
   chatTemplateOverride: null,
   loadedChatTemplateOverride: null,
@@ -1388,6 +1393,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       loadedIsMultimodal: false,
       loadedIsDiffusion: false,
       customContextLength: null,
+      loadedCustomContextLength: null,
       defaultChatTemplate: null,
       chatTemplateOverride: null,
       loadedChatTemplateOverride: null,
@@ -1621,6 +1627,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         nCpuMoe: 0,
         splitRatio: "",
         selectedGpuIds: null,
+        // Fresh pick starts at Auto context (loadedBaselineSettings would
+        // otherwise restore the current model's pin). Leaves the baseline
+        // intact, like the GPU knobs, so abandoning restores the loaded pin.
+        customContextLength: null,
       };
     }),
   abandonStagedModel: () => {
