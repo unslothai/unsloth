@@ -639,6 +639,7 @@ class InferenceOrchestrator:
         load_in_4bit: bool = True,
         hf_token: Optional[str] = None,
         trust_remote_code: bool = False,
+        approved_remote_code_fingerprint: Optional[str] = None,
         gpu_ids: Optional[list[int]] = None,
     ) -> bool:
         """Load a model for inference.
@@ -662,6 +663,7 @@ class InferenceOrchestrator:
                 "hf_token": hf_token or "",
                 "gguf_variant": getattr(config, "gguf_variant", None),
                 "trust_remote_code": trust_remote_code,
+                "approved_remote_code_fingerprint": approved_remote_code_fingerprint,
                 "gpu_ids": gpu_ids,
             }
             resolved_gpu_ids, gpu_selection = prepare_gpu_selection(
@@ -741,7 +743,8 @@ class InferenceOrchestrator:
                     logger.info("Model '%s' loaded successfully in subprocess", model_name)
                     return True
                 else:
-                    error = resp.get("error", "Failed to load model")
+                    # Worker reports failures (consent gate included) under "message".
+                    error = resp.get("message") or resp.get("error") or "Failed to load model"
                     self.loading_models.discard(model_name)
                     self.active_model_name = None
                     self.models.clear()
