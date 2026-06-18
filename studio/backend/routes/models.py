@@ -1618,22 +1618,29 @@ async def scan_model_remote_code(
         except Exception:
             pass
         security_targets = list(dict.fromkeys(security_targets))
-        # Whether OUR scan is what first pulls this repo into the HF cache. A later
+        # Whether OUR scan is what first pulls a repo into the HF cache. A later
         # decline uses this to purge exactly what the scan downloaded, without
-        # touching a model the user already had (or a local path). Check EVERY cache
-        # the discard searches (active + legacy + default), not just the active one:
-        # otherwise a repo the user already had in a legacy/default cache would be
-        # misreported created_by_scan and deleted on decline.
-        try:
-            created_by_scan = (not is_local_path(model_name)) and not _repo_in_any_hf_cache(
-                model_name
-            )
-        except Exception:
-            created_by_scan = False
+        # touching a model the user already had (or a local path). A LoRA scan pulls
+        # BOTH the adapter's and the base's config, so record EVERY target the scan is
+        # about to create, not just the primary -- otherwise a base the scan
+        # downloaded is left on disk when the user declines. Computed BEFORE the
+        # preflight (which does the downloading) and against EVERY cache the discard
+        # searches (active + legacy + default), so a repo the user already had in a
+        # legacy/default cache is never misreported as created-by-scan and deleted.
+        scan_created_repos: list = []
+        for _target in security_targets:
+            try:
+                if (not is_local_path(_target)) and not _repo_in_any_hf_cache(_target):
+                    scan_created_repos.append(_target)
+            except Exception:
+                pass
         decision = preflight_remote_code_consent_for_targets(security_targets, hf_token = hf_token)
         payload = decision.response_payload()
         payload["requires_trust_remote_code"] = decision.has_remote_code
-        payload["created_by_scan"] = created_by_scan
+        # created_by_scan keeps the primary's flag for older clients; scan_created_repos
+        # drives the decline cleanup so EVERY scan-created repo (adapter + base) is purged.
+        payload["created_by_scan"] = model_name in scan_created_repos
+        payload["scan_created_repos"] = scan_created_repos
 
         # Malware gate (metadata-only): surface any files Hugging Face's security
         # scan flagged as unsafe so the dialog can hard-block. This is orthogonal

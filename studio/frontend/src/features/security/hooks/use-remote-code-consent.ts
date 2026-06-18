@@ -44,6 +44,7 @@ export async function confirmRemoteCodeIfNeeded({
       findingsSummary: "",
       modelName,
       createdByScan: false,
+      scanCreatedRepos: [],
       unsafeFiles: [],
       securityBlocked: false,
     };
@@ -64,10 +65,17 @@ export async function confirmRemoteCodeIfNeeded({
     .getState()
     .requestConsent(scan);
   if (!confirmed) {
-    // Declined: if our scan was the first to download this repo, purge it so the
-    // untrusted custom code is not left on disk (the backend leaves models the
-    // user already had, weighted repos, and local paths untouched).
-    if (scan.createdByScan) void discardRemoteCodeDownload(scan.modelName);
+    // Declined: purge every repo our scan was the first to download (a LoRA scan
+    // pulls both the adapter and its base) so the untrusted custom code is not left
+    // on disk. The backend leaves models the user already had, weighted repos, and
+    // local paths untouched. Fall back to the primary flag for an older backend.
+    const toPurge =
+      scan.scanCreatedRepos.length > 0
+        ? scan.scanCreatedRepos
+        : scan.createdByScan
+          ? [scan.modelName]
+          : [];
+    for (const repo of toPurge) void discardRemoteCodeDownload(repo);
     return false;
   }
   onApprove(scan.fingerprint);

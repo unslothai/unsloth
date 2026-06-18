@@ -510,6 +510,79 @@ class TestStructuredFindingsForDialog:
         # an adapter's own auto_map code is reviewed and approvable too.
         assert "preflight_remote_code_consent_for_targets" in src
 
+    def _run_scan_route(self, monkeypatch, *, adapter, base, in_cache):
+        """Call scan_model_remote_code with every network/cache dependency stubbed.
+
+        ``in_cache(repo)`` decides whether the repo was already in an HF cache
+        BEFORE the scan (so it is not reported as scan-created).
+        """
+        import asyncio
+
+        import routes.models as models_route
+        import utils.models.model_config as model_config
+        import utils.security as security
+
+        monkeypatch.setattr(models_route, "is_local_path", lambda *_a, **_k: False)
+        monkeypatch.setattr(
+            models_route, "resolve_cached_repo_id_case", lambda n, *a, **k: n
+        )
+        monkeypatch.setattr(
+            model_config, "get_base_model_from_lora_identifier", lambda *_a, **_k: base
+        )
+        monkeypatch.setattr(
+            models_route, "_repo_in_any_hf_cache", lambda n, *a, **k: in_cache(n)
+        )
+        monkeypatch.setattr(
+            security,
+            "preflight_remote_code_consent_for_targets",
+            lambda *_a, **_k: SimpleNamespace(
+                has_remote_code = False,
+                response_payload = lambda: {"has_remote_code": False, "approvable": True},
+            ),
+        )
+        monkeypatch.setattr(security, "security_load_subdirs", lambda *_a, **_k: ())
+        monkeypatch.setattr(
+            security,
+            "evaluate_file_security",
+            lambda *_a, **_k: SimpleNamespace(blocked = False, unsafe_files = []),
+        )
+        return asyncio.run(
+            models_route.scan_model_remote_code(
+                model_name = adapter, hf_token = None, current_subject = "tester"
+            )
+        )
+
+    def test_scan_route_reports_all_scan_created_repos(self, monkeypatch):
+        """A LoRA scan that first pulls BOTH the adapter and its base into the cache
+        reports every created repo, so a decline purges all of them -- not just the
+        primary the older created_by_scan flag tracked."""
+        adapter, base = "someone/lora-adapter", "someone/base-model"
+        payload = self._run_scan_route(
+            monkeypatch, adapter = adapter, base = base, in_cache = lambda _n: False
+        )
+        assert payload["scan_created_repos"] == [adapter, base]
+        assert payload["created_by_scan"] is True
+
+    def test_scan_route_omits_repo_already_cached(self, monkeypatch):
+        """A base the user already had is NOT reported as scan-created, so a decline
+        never deletes it -- only the newly downloaded adapter is purged."""
+        adapter, base = "someone/lora-adapter", "someone/base-model"
+        payload = self._run_scan_route(
+            monkeypatch, adapter = adapter, base = base, in_cache = lambda n: n == base
+        )
+        assert payload["scan_created_repos"] == [adapter]
+        assert payload["created_by_scan"] is True
+
+    def test_scan_route_primary_already_cached_clears_created_by_scan(self, monkeypatch):
+        """When only the base is new, the primary's back-compat flag is False but the
+        base is still purged via scan_created_repos."""
+        adapter, base = "someone/lora-adapter", "someone/base-model"
+        payload = self._run_scan_route(
+            monkeypatch, adapter = adapter, base = base, in_cache = lambda n: n == adapter
+        )
+        assert payload["scan_created_repos"] == [base]
+        assert payload["created_by_scan"] is False
+
     @pytest.mark.parametrize(
         "rel",
         [

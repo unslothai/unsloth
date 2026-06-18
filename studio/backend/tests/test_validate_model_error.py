@@ -162,3 +162,54 @@ def test_resolve_loaded_trc_falls_back_to_raw_auto_map(monkeypatch):
     assert inf._resolve_loaded_trust_remote_code("org/custom", {}, {}) is True
     monkeypatch.setattr(inf, "_requires_trust_remote_code_for_model", lambda *_a, **_k: False)
     assert inf._resolve_loaded_trust_remote_code("org/plain", {}, {}) is False
+
+
+def _drive_validate_lora(monkeypatch, *, adapter_needs_trc, base_needs_trc):
+    """Run validate_model for a LoRA adapter whose base resolves, with per-target
+    trust_remote_code answers; return the response."""
+    from types import SimpleNamespace
+
+    import utils.models.model_config as mc
+
+    adapter, base = "org/lora-adapter", "org/base-model"
+    monkeypatch.setattr(
+        inf,
+        "_resolve_model_identifier_for_request",
+        lambda request, operation: (adapter, adapter, False),
+    )
+    config = SimpleNamespace(
+        identifier = adapter,
+        display_name = adapter,
+        is_gguf = False,
+        is_lora = True,
+        is_vision = False,
+        gguf_file = None,
+    )
+    monkeypatch.setattr(inf.ModelConfig, "from_identifier", staticmethod(lambda **_kw: config))
+    monkeypatch.setattr(mc, "get_base_model_from_lora_identifier", lambda *_a, **_k: base)
+    trc = {adapter: adapter_needs_trc, base: base_needs_trc}
+    monkeypatch.setattr(
+        inf, "_requires_trust_remote_code_for_model",
+        lambda target, *_a, **_k: trc.get(target, False),
+    )
+    monkeypatch.setattr(inf, "_requires_security_review_for_model", lambda *_a, **_k: False)
+    req = ValidateModelRequest(model_path = adapter)
+    return asyncio.run(inf.validate_model(req, current_subject = "tester"))
+
+
+def test_validate_lora_flags_trc_from_adapter_only(monkeypatch):
+    # The ADAPTER ships its own auto_map; the base does not. validate_model must still
+    # open the dialog -- the requirement follows either repo, not the base alone.
+    resp = _drive_validate_lora(monkeypatch, adapter_needs_trc = True, base_needs_trc = False)
+    assert resp.requires_trust_remote_code is True
+
+
+def test_validate_lora_flags_trc_from_base_only(monkeypatch):
+    # The classic case: the base ships custom code, the adapter does not.
+    resp = _drive_validate_lora(monkeypatch, adapter_needs_trc = False, base_needs_trc = True)
+    assert resp.requires_trust_remote_code is True
+
+
+def test_validate_lora_clean_when_neither_needs_trc(monkeypatch):
+    resp = _drive_validate_lora(monkeypatch, adapter_needs_trc = False, base_needs_trc = False)
+    assert resp.requires_trust_remote_code is False

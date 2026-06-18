@@ -2037,9 +2037,10 @@ async def load_model(
                     audio_type = _gguf_audio,
                     has_audio_input = getattr(llama_backend, "_has_audio_input", False),
                     inference = inference_config,
-                    requires_trust_remote_code = bool(
-                        inference_config.get("trust_remote_code", False)
-                    ),
+                    # A GGUF load runs through llama.cpp, which never executes the
+                    # repo's auto_map Python -- the requirement is inert for this
+                    # load, matching validate_model (which reports False for GGUF).
+                    requires_trust_remote_code = False,
                     context_length = llama_backend.context_length,
                     max_context_length = llama_backend.max_context_length,
                     native_context_length = llama_backend.native_context_length,
@@ -2325,7 +2326,9 @@ async def load_model(
                 audio_type = _gguf_audio,
                 has_audio_input = llama_backend._has_audio_input,
                 inference = inference_config,
-                requires_trust_remote_code = bool(inference_config.get("trust_remote_code", False)),
+                # GGUF loads through llama.cpp; the repo's auto_map Python never
+                # executes, so the requirement is inert (matches validate_model).
+                requires_trust_remote_code = False,
                 context_length = llama_backend.context_length,
                 max_context_length = llama_backend.max_context_length,
                 native_context_length = llama_backend.native_context_length,
@@ -2639,11 +2642,12 @@ async def validate_model(
                 detail = f"Invalid model identifier: {model_log_label}",
             )
 
-        # For a LoRA adapter the base model's CODE is what executes on load, so the
-        # remote-code consent flag follows the base. A poisoned pickle can live in
-        # the ADAPTER repo itself, so the security review must cover both the
-        # adapter and the base (matching the workers, which gate both).
-        trc_target = config.identifier
+        # A LoRA load runs BOTH the adapter's and the base's repo code, and an
+        # adapter can ship its OWN auto_map alongside the base's, so the remote-code
+        # consent flag must follow either repo. A poisoned pickle can likewise live
+        # in either repo, so the security review covers both. Both checks run over
+        # the same [adapter, base] target set, matching the scan route and the
+        # workers, which gate both.
         security_targets = [config.identifier]
         try:
             from utils.models.model_config import get_base_model_from_lora_identifier
@@ -2652,7 +2656,6 @@ async def validate_model(
             # base (where the code/weights actually execute) is reviewed too.
             _base = get_base_model_from_lora_identifier(model_identifier, request.hf_token)
             if _base:
-                trc_target = _base
                 security_targets.append(_base)
         except Exception:
             pass
@@ -2668,8 +2671,9 @@ async def validate_model(
         requires_trust_remote_code = False
         requires_security_review = False
         if not is_gguf:
-            requires_trust_remote_code = _requires_trust_remote_code_for_model(
-                trc_target, request.hf_token
+            requires_trust_remote_code = any(
+                _requires_trust_remote_code_for_model(_t, request.hf_token)
+                for _t in security_targets
             )
             requires_security_review = any(
                 _requires_security_review_for_model(_t, request.hf_token) for _t in security_targets
@@ -3020,9 +3024,9 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 loading = [],
                 loaded = [_display_model_id] if _display_model_id else [],
                 inference = _inference_cfg,
-                requires_trust_remote_code = bool(
-                    (_inference_cfg or {}).get("trust_remote_code", False)
-                ),
+                # GGUF status: llama.cpp never executes the repo's auto_map Python,
+                # so the requirement is inert here too (matches validate_model).
+                requires_trust_remote_code = False,
                 supports_reasoning = llama_backend.supports_reasoning,
                 reasoning_style = llama_backend.reasoning_style,
                 reasoning_always_on = llama_backend.reasoning_always_on,

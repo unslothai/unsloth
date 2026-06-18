@@ -36,6 +36,7 @@ interface RemoteCodeScanResponse {
   findings_summary?: string;
   model_name?: string;
   created_by_scan?: boolean;
+  scan_created_repos?: string[];
   unsafe_files?: Array<{ path?: string; level?: string }>;
   security_blocked?: boolean;
 }
@@ -91,6 +92,10 @@ export async function getRemoteCodeScan(
     findingsSummary: data.findings_summary ?? "",
     modelName: data.model_name ?? modelName,
     createdByScan: Boolean(data.created_by_scan),
+    // Prefer the explicit list; fall back to the primary flag for an older backend.
+    scanCreatedRepos:
+      data.scan_created_repos ??
+      (data.created_by_scan ? [data.model_name ?? modelName] : []),
     unsafeFiles,
     securityBlocked: Boolean(data.security_blocked),
   };

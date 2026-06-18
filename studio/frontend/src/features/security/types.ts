@@ -43,6 +43,10 @@ export interface RemoteCodeScan {
   // True when our scan is what first downloaded this repo into the HF cache, so a
   // decline may safely purge it (a model the user already had stays put).
   createdByScan: boolean;
+  // Every repo the scan first pulled into the HF cache (a LoRA scan downloads both
+  // the adapter and its base). A decline purges each so no scan-downloaded repo is
+  // left on disk -- supersedes createdByScan, which tracks only the primary.
+  scanCreatedRepos: string[];
   // Files Hugging Face's security scan flagged as unsafe (malicious pickles etc.).
   // When non-empty the load is a hard block (approvable is false).
   unsafeFiles: UnsafeFile[];
