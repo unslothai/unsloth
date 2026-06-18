@@ -46,6 +46,11 @@ export interface ProviderLogo {
 	 * on the family stem so future minor versions are picked up automatically.
 	 */
 	prefixes: readonly string[];
+	/**
+	 * Case-insensitive fallback after all prefixes miss; matched at a word boundary
+	 * (`gemma` -> `diffusiongemma-`, `gemma-3n`, not `gemmafy`). Use stems unique to one provider.
+	 */
+	stems?: readonly string[];
 }
 
 export const PROVIDER_LOGOS: readonly ProviderLogo[] = [
@@ -217,6 +222,7 @@ export const PROVIDER_LOGOS: readonly ProviderLogo[] = [
 			"metricx-",
 			"bert-",
 		],
+		stems: ["gemma"],
 	},
 
 	// After NVIDIA so `Mistral-NeMo-` wins; generic Mistral-/Mixtral- fall through here.
@@ -248,14 +254,29 @@ export const PROVIDER_LOGOS: readonly ProviderLogo[] = [
 	},
 ];
 
+function stemMatchesAtBoundary(haystack: string, stem: string): boolean {
+	for (let at = haystack.indexOf(stem); at !== -1; at = haystack.indexOf(stem, at + 1)) {
+		const next = haystack[at + stem.length];
+		if (next === undefined || next < "a" || next > "z") return true;
+	}
+	return false;
+}
+
 /**
- * Resolve a repo name (after `owner/`) to its upstream provider, or null.
- * Iterates PROVIDER_LOGOS in declaration order; first prefix match wins.
+ * Resolve a repo name (after `owner/`) to its provider, or null. Pass 1: prefix
+ * match in declaration order (first wins). Pass 2: case-insensitive `stems`
+ * boundary fallback; prefixes always win.
  */
 export function matchProviderLogo(repoName: string): ProviderLogo | null {
 	if (!repoName) return null;
 	for (const provider of PROVIDER_LOGOS) {
 		if (provider.prefixes.some((prefix) => repoName.startsWith(prefix))) {
+			return provider;
+		}
+	}
+	const lower = repoName.toLowerCase();
+	for (const provider of PROVIDER_LOGOS) {
+		if (provider.stems?.some((stem) => stemMatchesAtBoundary(lower, stem))) {
 			return provider;
 		}
 	}
