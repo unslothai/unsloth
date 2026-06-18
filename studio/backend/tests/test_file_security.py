@@ -99,7 +99,12 @@ def _patch_index_mixed(weight_map, readable_index, failing_index):
 
     from huggingface_hub.utils import EntryNotFoundError
 
-    def _dl(repo_id = None, filename = None, token = None, **kw):
+    def _dl(
+        repo_id = None,
+        filename = None,
+        token = None,
+        **kw,
+    ):
         if filename == readable_index:
             p = Path(tempfile.mkdtemp()) / filename
             p.write_text(json.dumps({"weight_map": weight_map}))
@@ -336,10 +341,13 @@ def test_partial_index_read_with_transient_failure_blocks_subdir_pickle():
     # The readable safetensors index lists unrelated, benign shards; the flagged .bin
     # would only appear in the bin index that we could not fetch.
     safetensors_map = {"layer.0.weight": "model-00001-of-00001.safetensors"}
-    with _patch_status(status), _patch_index_mixed(
-        safetensors_map,
-        readable_index = "model.safetensors.index.json",
-        failing_index = "pytorch_model.bin.index.json",
+    with (
+        _patch_status(status),
+        _patch_index_mixed(
+            safetensors_map,
+            readable_index = "model.safetensors.index.json",
+            failing_index = "pytorch_model.bin.index.json",
+        ),
     ):
         d = evaluate_file_security("evil/mixed-index")
     assert d.blocked is True

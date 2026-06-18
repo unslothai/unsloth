@@ -105,9 +105,7 @@ def _drive_validate(monkeypatch, *, is_gguf: bool):
         is_vision = False,
         gguf_file = None,
     )
-    monkeypatch.setattr(
-        inf.ModelConfig, "from_identifier", staticmethod(lambda **_kw: config)
-    )
+    monkeypatch.setattr(inf.ModelConfig, "from_identifier", staticmethod(lambda **_kw: config))
     # No LoRA base to resolve; keep it offline.
     monkeypatch.setattr(mc, "get_base_model_from_lora_identifier", lambda *_a, **_k: None)
     # Both gates WOULD flag this repo (mixed repo with auto_map + an unsafe pickle).
