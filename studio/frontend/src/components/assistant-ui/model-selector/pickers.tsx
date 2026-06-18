@@ -2019,55 +2019,51 @@ export function HubModelPicker({
 
   return (
     <div className="relative space-y-2">
-      {/* Search row and tab/dropdown row share a width via the grid, so Search
-          Hub lines up with the last dropdown above. */}
-      <div className="grid w-fit gap-2">
-        <div className="flex w-full items-center gap-2">
-          <div className="relative flex-1">
-            <HugeiconsIcon
-              icon={Search01Icon}
-              className="pointer-events-none absolute left-2.5 top-2.5 size-4 text-muted-foreground"
-            />
-            <Input
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder="Search models"
-              data-model-picker-search-input={true}
-              className="field-soft h-9 border-0 pl-8 pr-8"
-            />
-            {isLoading && (
-              <Spinner className="pointer-events-none absolute right-2.5 top-2.5 size-4 text-muted-foreground" />
-            )}
-          </div>
-          {onBrowseHub ? (
-            <button
-              type="button"
-              onClick={onBrowseHub}
-              aria-label="Search more models on the Hub"
-              className="hub-tab-toggle-pill flex h-9 w-[110px] shrink-0 items-center justify-center gap-[5px] rounded-full border-0 text-xs text-foreground transition-colors"
-            >
-              <HugeiconsIcon icon={DashboardCircleIcon} className="size-4" />
-              Search Hub
-            </button>
-          ) : null}
+      <div className="flex items-center gap-2 pb-1">
+        <div className="relative flex-1">
+          <HugeiconsIcon
+            icon={Search01Icon}
+            className="pointer-events-none absolute left-2.5 top-2.5 size-4 text-muted-foreground"
+          />
+          <Input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Search models"
+            data-model-picker-search-input={true}
+            className="field-soft h-9 border-0 pl-8 pr-8"
+          />
+          {isLoading && (
+            <Spinner className="pointer-events-none absolute right-2.5 top-2.5 size-4 text-muted-foreground" />
+          )}
         </div>
+        {onBrowseHub ? (
+          <button
+            type="button"
+            onClick={onBrowseHub}
+            aria-label="Search more models on the Hub"
+            className="hub-tab-toggle-pill flex h-9 w-[110px] shrink-0 items-center justify-center gap-[5px] rounded-full border-0 text-xs text-foreground transition-colors"
+          >
+            <HugeiconsIcon icon={DashboardCircleIcon} className="size-4" />
+            Search Hub
+          </button>
+        ) : null}
+      </div>
 
-        {/* Section tabs, then the format and sort dropdowns sitting just to the
-            right of the toggle. */}
+      {/* Section tabs on the left; format and sort dropdowns pushed to the right
+          so the last one lines up with the Search Hub button above. */}
+      <div className="flex items-center justify-between gap-2">
+        {sectionToggle}
         <div className="flex items-center gap-2">
-          {sectionToggle}
-          <div className="flex items-center gap-2">
-            <HubOptionMenu
-              value={formatFilter}
-              options={FORMAT_FILTER_OPTIONS}
-              onValueChange={setFormatFilter}
-              ariaLabel="Filter by format"
-              align="end"
-              className={sortTriggerClassName}
-              contentClassName={sortMenuContentClassName}
-            />
-            {sectionSortDropdown}
-          </div>
+          <HubOptionMenu
+            value={formatFilter}
+            options={FORMAT_FILTER_OPTIONS}
+            onValueChange={setFormatFilter}
+            ariaLabel="Filter by format"
+            align="end"
+            className={sortTriggerClassName}
+            contentClassName={sortMenuContentClassName}
+          />
+          {sectionSortDropdown}
         </div>
       </div>
 
@@ -2075,10 +2071,10 @@ export function HubModelPicker({
         ref={scrollRef}
         onScroll={(e) => updateListFades(e.currentTarget)}
         className={cn(
-          // Right margin insets the list and scrollbar so the right padding
-          // matches the left. Height tracks the content up to the cap, so short
-          // lists do not leave white space.
-          "model-list-scroll mr-1.5 max-h-[21rem] overflow-y-auto pr-0.5",
+          // List sits within the menu padding so left and right gaps match.
+          // Height tracks the content up to the cap, so short lists do not
+          // leave white space.
+          "model-list-scroll max-h-[21rem] overflow-y-auto pr-0.5",
           listScrolled && "is-scrolled",
           listMoreBelow && "is-bottom-faded",
         )}
