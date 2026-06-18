@@ -926,10 +926,11 @@ export function ModelsPage() {
     }
   }, [allModelsView]);
 
-  // Split view previews the first row so the detail pane isn't empty, except in
-  // feed mode where the feed must stay visible.
+  // Split view previews the first row so the detail pane isn't empty. Feed mode
+  // included: split view hides the trending feed and shows only the master list,
+  // so previewing its first row lands on a real README instead of a placeholder.
   useEffect(() => {
-    if (allModelsView !== "split" || urlModel || isFeedMode) return;
+    if (allModelsView !== "split" || urlModel) return;
     // Use the filtered rows the master pane renders, not raw inventory, so the
     // preview never lands on a filtered-out row.
     const firstId = isDiscoverTab
@@ -945,7 +946,6 @@ export function ModelsPage() {
   }, [
     allModelsView,
     urlModel,
-    isFeedMode,
     isDiscoverTab,
     listRows,
     filteredCachedRows,
@@ -1004,6 +1004,23 @@ export function ModelsPage() {
     (opts: ModelLoadOptions, isDownloaded: boolean) => {
       if (!selectedModel) return;
       const runId = selectedModel.resource.runId;
+      // "Load on selection" off: stage GGUF picks instead of loading, so the
+      // chat page's staging flow can read the header and show the load options.
+      // Non-GGUF models have nothing to configure pre-load, so they load now.
+      if (
+        !useChatRuntimeStore.getState().loadOnSelection &&
+        (opts.ggufVariant != null || selectedModel.isGguf)
+      ) {
+        useChatRuntimeStore.getState().stageModel({
+          id: runId,
+          ggufVariant: opts.ggufVariant,
+          isGguf: selectedModel.isGguf,
+          isDownloaded,
+          expectedBytes: opts.expectedBytes,
+        });
+        openNewChat();
+        return;
+      }
       void selectModel({
         id: runId,
         ggufVariant: opts.ggufVariant,
@@ -1012,6 +1029,7 @@ export function ModelsPage() {
         throwOnError: true,
       })
         .then(() => {
+          // Read fresh: the load is async, so the checkpoint may have changed.
           const store = useChatRuntimeStore.getState();
           if (!modelIdsMatch(store.params.checkpoint, runId)) {
             store.setCheckpoint(runId, opts.ggufVariant ?? null);

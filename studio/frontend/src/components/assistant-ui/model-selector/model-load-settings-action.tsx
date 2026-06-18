@@ -19,13 +19,11 @@ export function ModelLoadSettingsAction({
   repoId,
   quant,
   maxContext,
-  source,
 }: {
   ariaLabel: string;
   repoId: string;
   quant: string;
   maxContext?: number | null;
-  source?: string;
 }) {
   return (
     <Tooltip delayDuration={0}>
@@ -39,7 +37,6 @@ export function ModelLoadSettingsAction({
               ggufVariant: quant,
               isDownloaded: true,
               contextLength: maxContext ?? null,
-              source,
             });
           }}
           aria-label={ariaLabel}

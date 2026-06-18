@@ -10,7 +10,6 @@ import {
   ModelSelector,
 } from "@/components/assistant-ui/model-selector";
 import { ProjectComposer, Thread } from "@/components/assistant-ui/thread";
-import { CopyableErrorChip } from "@/components/ui/copyable-error-chip";
 import {
   ResizableHandle,
   ResizablePanel,
@@ -18,19 +17,18 @@ import {
 } from "@/components/ui/resizable";
 import { useSidebar } from "@/components/ui/sidebar";
 import { Tooltip, TooltipContent } from "@/components/ui/tooltip";
+import { ProjectSourcesPanel } from "@/features/rag/components/project-sources-panel";
 import {
-  type NativeIntent,
   NativeModelChip,
   NativeModelDropOverlay,
+  type NativeIntent,
   useChooseNativeModel,
   useNativeIntentStore,
   useNativeModelDrop,
   useNativePathLeasesSupported,
 } from "@/features/native-intents";
-import { ProjectSourcesPanel } from "@/features/rag/components/project-sources-panel";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { isTauri } from "@/lib/api-base";
-import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
   BubbleChatTemporaryIcon,
@@ -40,6 +38,7 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate, useRouterState, useSearch } from "@tanstack/react-router";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
+import type { PanelImperativeHandle } from "react-resizable-panels";
 import {
   type CSSProperties,
   type ReactElement,
@@ -50,16 +49,10 @@ import {
   useRef,
   useState,
 } from "react";
-import type { PanelImperativeHandle } from "react-resizable-panels";
+import { toast } from "@/lib/toast";
 import { listLocalModels } from "./api/chat-api";
-import { ArtifactSurface } from "./artifacts/artifact-surface";
-import {
-  clearAutoOpenedArtifacts,
-  useChatArtifactsStore,
-  useSelectedChatArtifact,
-} from "./artifacts/store";
-import type { ChatArtifact, ChatArtifactSurface } from "./artifacts/types";
 import { ChatSettingsPanel } from "./chat-settings-sheet";
+import { CopyableErrorChip } from "@/components/ui/copyable-error-chip";
 import { ContextUsageBar } from "./components/context-usage-bar";
 import { ModelLoadInlineStatus } from "./components/model-load-status";
 import { ProjectSwitcher } from "./components/project-switcher";
@@ -69,7 +62,10 @@ import {
   parseExternalModelId,
 } from "./external-providers";
 import { useChatModelRuntime } from "./hooks/use-chat-model-runtime";
+import type { SelectedModelInput } from "./hooks/use-chat-model-runtime";
 import { useChatProjects } from "./hooks/use-chat-projects";
+import { useStagedModelPreparation } from "./hooks/use-staged-model-preparation";
+import { useLatestRef } from "@/features/hub/hooks/use-latest-ref";
 import {
   type SidebarItem,
   useChatSidebarItems,
@@ -100,11 +96,19 @@ import {
   CHAT_IMAGE_TOOLS_ENABLED_KEY,
   CHAT_TOOLS_ENABLED_KEY,
   CHAT_WEB_FETCH_TOOLS_ENABLED_KEY,
+  hasGgufSource,
   loadOptionalBool,
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
 import { buildChatTourSteps } from "./tour";
+import { ArtifactSurface } from "./artifacts/artifact-surface";
+import {
+  clearAutoOpenedArtifacts,
+  useChatArtifactsStore,
+  useSelectedChatArtifact,
+} from "./artifacts/store";
+import type { ChatArtifact, ChatArtifactSurface } from "./artifacts/types";
 import type { ChatView, MessageRecord } from "./types";
 import {
   getStoredChatThread,
@@ -883,9 +887,7 @@ function ProjectLanding({
               },
             ] as const;
           }
-          const messages = await listStoredChatMessages(item.id).catch(
-            () => [],
-          );
+          const messages = await listStoredChatMessages(item.id).catch(() => []);
           const firstUserMessage =
             messages.find((message) => message.role === "user") ?? messages[0];
           return [
@@ -975,41 +977,41 @@ function ProjectLanding({
             {projectTab === "sources" ? (
               <ProjectSourcesPanel projectId={projectId} />
             ) : (
-              <div className="mt-8 flex flex-col gap-1">
-                {items.map((item) => {
-                  const preview = previews[item.id];
-                  return (
-                    <button
-                      key={`${item.type}:${item.id}`}
-                      type="button"
-                      onClick={() => {
-                        navigate({
-                          to: "/chat",
-                          search:
-                            item.type === "single"
-                              ? { thread: item.id, project: projectId }
-                              : { compare: item.id, project: projectId },
-                        });
-                      }}
-                      className="group flex min-h-[58px] w-full items-center gap-4 rounded-full px-4 py-2 text-left transition-colors hover:bg-nav-surface-hover"
-                    >
-                      <div className="min-w-0 flex-1">
-                        <div className="truncate text-[15px] font-semibold leading-5 text-foreground">
-                          {item.title}
-                        </div>
-                        {preview?.snippet ? (
-                          <div className="mt-0.5 truncate text-[14px] leading-5 text-muted-foreground">
-                            {preview.snippet}
-                          </div>
-                        ) : null}
+            <div className="mt-8 flex flex-col gap-1">
+              {items.map((item) => {
+                const preview = previews[item.id];
+                return (
+                  <button
+                    key={`${item.type}:${item.id}`}
+                    type="button"
+                    onClick={() => {
+                      navigate({
+                        to: "/chat",
+                        search:
+                          item.type === "single"
+                            ? { thread: item.id, project: projectId }
+                            : { compare: item.id, project: projectId },
+                      });
+                    }}
+                    className="group flex min-h-[58px] w-full items-center gap-4 rounded-full px-4 py-2 text-left transition-colors hover:bg-nav-surface-hover"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-[15px] font-semibold leading-5 text-foreground">
+                        {item.title}
                       </div>
-                      <span className="shrink-0 text-[14px] text-muted-foreground">
-                        {preview?.date ?? formatProjectChatDate(item.createdAt)}
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
+                      {preview?.snippet ? (
+                        <div className="mt-0.5 truncate text-[14px] leading-5 text-muted-foreground">
+                          {preview.snippet}
+                        </div>
+                      ) : null}
+                    </div>
+                    <span className="shrink-0 text-[14px] text-muted-foreground">
+                      {preview?.date ?? formatProjectChatDate(item.createdAt)}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
             )}
           </div>
         </div>
@@ -1026,6 +1028,18 @@ export function ChatPage(): ReactElement {
 
   const settingsOpen = useChatRuntimeStore((s) => s.settingsPanelOpen);
   const setSettingsOpen = useChatRuntimeStore((s) => s.setSettingsPanelOpen);
+  // Deferred-load staging: downloads a staged GGUF (if needed) and reads its
+  // header context so the sheet can show the context slider before the load.
+  const stagedDownload = useStagedModelPreparation();
+  // Abandon a staged pick: the store action cancels its in-flight download and
+  // reverts the edited knobs, so nothing lingers after the user walks away.
+  const abandonStaged = useCallback(() => {
+    useChatRuntimeStore.getState().abandonStagedModel();
+  }, []);
+  // Tracks whether the chat page is still mounted, so a staged-load failure that
+  // resolves after the user left chat doesn't resurrect the abandoned pick.
+  const mountedRef = useRef(true);
+  useEffect(() => () => void (mountedRef.current = false), []);
   const incognito = useChatRuntimeStore((s) => s.incognito);
   const setIncognito = useChatRuntimeStore((s) => s.setIncognito);
   const incognitoLabel = incognito
@@ -1385,9 +1399,7 @@ export function ChatPage(): ReactElement {
       }
 
       if (search.thread) {
-        const thread = await getStoredChatThread(search.thread).catch(
-          () => null,
-        );
+        const thread = await getStoredChatThread(search.thread).catch(() => null);
         if (!canceled) {
           const projectId = thread?.projectId ?? null;
           setCurrentProjectId(projectId);
@@ -1507,12 +1519,64 @@ export function ChatPage(): ReactElement {
     closeArtifactSurface();
   }, [activeThreadId, closeArtifactSurface, selectedArtifact, view]);
 
+  // Abandon a staged (not-yet-loaded) pick when the chat context actually
+  // changes — switching threads, leaving single view, or starting a new chat /
+  // project — so a stale Load button can't resurface in a different context.
+  // New Chat keeps activeThreadId null and only bumps the `new` search nonce, so
+  // the key includes the route identity, not just the thread. Mirrors the
+  // incognito reset pattern. (Route exit is handled in __root.tsx, which runs
+  // after this unmounts.) Clear only on a real change, never on mount: staging
+  // from the Hub sets pendingSelection then navigates here, and clearing on
+  // mount would wipe it. Comparing the previous context (rather than a first-run
+  // flag) is also safe under StrictMode's double-invoke and component remounts.
+  const chatContextKey = `${view.mode}|${activeThreadId ?? ""}|${search.new ?? ""}|${search.project ?? ""}`;
+  const chatContextKeyRef = useLatestRef(chatContextKey);
+  const prevChatContextRef = useRef<string | null>(null);
+  useEffect(() => {
+    const prev = prevChatContextRef.current;
+    prevChatContextRef.current = chatContextKey;
+    if (prev === null || prev === chatContextKey) return;
+    abandonStaged();
+  }, [chatContextKey, abandonStaged]);
+
   const hasActiveModel = Boolean(inferenceParams.checkpoint);
+  // Load immediately, or — when "Load on selection" is off — stage the pick so
+  // its load options can be set first. Shared by the main selector, native
+  // drag-drop/picker, and the dropped-file chip (the Hub stages via the store).
+  const stageOrLoad = useCallback(
+    async (selection: SelectedModelInput) => {
+      const store = useChatRuntimeStore.getState();
+      // Only GGUF picks have pre-load options worth staging. Non-GGUF models
+      // (and the toggle-on case) load immediately, so e.g. a trust_remote_code
+      // approval surfaces through the normal load path.
+      if (store.loadOnSelection || !hasGgufSource(selection)) {
+        // Abandon any staged GGUF first so its edited knobs (e.g. a custom
+        // context length) don't leak into this immediate load -- resolveLoad
+        // reads customContextLength before checking the target is GGUF.
+        abandonStaged();
+        await selectModel(selection);
+        return;
+      }
+      // Tear down any existing staged pick first so its in-flight download is
+      // cancelled, not left running after we rebind to the new pick.
+      abandonStaged();
+      store.stageModel({
+        id: selection.id,
+        isLora: selection.isLora,
+        ggufVariant: selection.ggufVariant,
+        isDownloaded: selection.isDownloaded,
+        expectedBytes: selection.expectedBytes,
+        nativePathToken: selection.nativePathToken,
+        isGguf: selection.isGguf,
+      });
+    },
+    [abandonStaged, selectModel],
+  );
   const loadNativeModelIntent = useCallback(
     async (intent: NativeIntent, loadingDescription: string) => {
       const label =
         intent.path.displayLabel || intent.displayLabel || "Local GGUF model";
-      await selectModel({
+      await stageOrLoad({
         id: label,
         nativePathToken: intent.path.token,
         isDownloaded: true,
@@ -1522,7 +1586,7 @@ export function ChatPage(): ReactElement {
       });
       useNativeIntentStore.getState().clearModelIntent(intent.id);
     },
-    [selectModel],
+    [stageOrLoad],
   );
   const handleNativeModelDropAutoLoad = useCallback(
     (intent: NativeIntent) =>
@@ -1571,7 +1635,7 @@ export function ChatPage(): ReactElement {
         ggufVariant?: string;
         isDownloaded?: boolean;
         expectedBytes?: number;
-        contextLength?: number | null;
+        isGguf?: boolean;
       },
     ) => {
       const store = useChatRuntimeStore.getState();
@@ -1584,6 +1648,9 @@ export function ChatPage(): ReactElement {
       )
         return;
       if (meta?.source === "external" || isExternalModelId(value)) {
+        // Switching to an external model abandons any staged local pick: cancel
+        // its download too (setCheckpoint below only clears the pending + knobs).
+        abandonStaged();
         const selectedExternal = parseExternalModelId(value);
         const selectedProvider = selectedExternal
           ? externalProvidersForChat.find(
@@ -1594,7 +1661,8 @@ export function ChatPage(): ReactElement {
           selectedProvider?.providerType,
           selectedExternal?.modelId,
           {
-            isReasoningProvider: selectedProvider?.isReasoningModel === true,
+            isReasoningProvider:
+              selectedProvider?.isReasoningModel === true,
             baseUrl: selectedProvider?.baseUrl ?? null,
           },
         );
@@ -1726,20 +1794,6 @@ export function ChatPage(): ReactElement {
       }
       // Local model picked → drop any cached openrouter/free chosen model.
       useChatRuntimeStore.setState({ lastOpenRouterChosenModel: null });
-      // Load on selection off + a GGUF pick → stage into the sidebar instead of
-      // loading. The user sets options there, then clicks Load model.
-      if (!store.loadOnSelection && meta?.ggufVariant != null) {
-        store.stageModel({
-          id: value,
-          isLora: meta?.isLora,
-          ggufVariant: meta?.ggufVariant,
-          isDownloaded: meta?.isDownloaded,
-          expectedBytes: meta?.expectedBytes,
-          source: meta?.source,
-          contextLength: meta?.contextLength ?? null,
-        });
-        return;
-      }
       void (async () => {
         let showImageCompatibilityWarning = false;
         if (view.mode === "single" && activeThreadId) {
@@ -1764,20 +1818,27 @@ export function ChatPage(): ReactElement {
             duration: 6000,
           });
         }
-        await selectModel({
+        const selection = {
           id: value,
           isLora: meta?.isLora,
           ggufVariant: meta?.ggufVariant,
           isDownloaded: meta?.isDownloaded,
           expectedBytes: meta?.expectedBytes,
-        });
+          isGguf: meta?.isGguf,
+        };
+        // "Load on selection" off: stage the model and open settings so its
+        // load knobs (tensor parallel, context length…) can be set, then it
+        // loads once via the sheet's Load button. The currently loaded model
+        // stays put until the user commits.
+        await stageOrLoad(selection);
       })();
     },
     [
+      abandonStaged,
       activeThreadId,
       externalProvidersForChat,
       modelsFromStore,
-      selectModel,
+      stageOrLoad,
       view,
     ],
   );
@@ -1858,7 +1919,8 @@ export function ChatPage(): ReactElement {
           if (!usage) return;
           const store = useChatRuntimeStore.getState();
           const activeCheckpoint = store.params.checkpoint;
-          const usageModelId = (usage as { modelId?: unknown }).modelId;
+          const usageModelId =
+            (usage as { modelId?: unknown }).modelId;
           // Scope by modelId when present; reject if no active checkpoint
           // (model-scoped usage can't be attributed to "nothing").
           if (typeof usageModelId === "string" && usageModelId) {
@@ -2134,7 +2196,7 @@ export function ChatPage(): ReactElement {
             beneath it, instead of a hard cut. */}
         {view.mode !== "compare" && (
           <div
-            aria-hidden={true}
+            aria-hidden
             className="pointer-events-none absolute left-0 right-[10px] top-[48px] z-20 h-6 bg-gradient-to-b from-background to-transparent"
           />
         )}
@@ -2183,7 +2245,7 @@ export function ChatPage(): ReactElement {
                 />
                 {currentProject && activeThreadId ? (
                   <>
-                    <span className="shrink-0" aria-hidden={true}>
+                    <span className="shrink-0" aria-hidden>
                       /
                     </span>
                     <span className="min-w-0 truncate">
@@ -2197,7 +2259,7 @@ export function ChatPage(): ReactElement {
               <NativeModelChip
                 intent={pendingNativeModelIntent}
                 nativeReadsDisabled={!nativePathLeasesSupported}
-                onLoad={(selection) => selectModel(selection)}
+                onLoad={(selection) => stageOrLoad(selection)}
               />
             ) : null}
             {loadingModel && loadToastDismissed ? (
@@ -2348,23 +2410,11 @@ export function ChatPage(): ReactElement {
       <ChatSettingsPanel
         open={settingsOpen}
         onOpenChange={(open) => {
-          // Closing the sidebar abandons any staged (unloaded) model and
-          // reverts its edited knobs to the loaded baseline.
-          if (!open) useChatRuntimeStore.getState().abandonStagedModel();
           setSettingsOpen(open);
-        }}
-        onLoadPendingModel={() => {
-          const pending = useChatRuntimeStore.getState().pendingSelection;
-          if (!pending) return;
-          void selectModel({
-            id: pending.id,
-            isLora: pending.isLora,
-            ggufVariant: pending.ggufVariant,
-            isDownloaded: pending.isDownloaded,
-            expectedBytes: pending.expectedBytes,
-            forceReload: true,
-            keepSpeculative: true,
-          });
+          // Closing the sheet abandons a staged (not-yet-loaded) pick: cancel its
+          // download and revert the staged knobs so nothing lingers as a dirty
+          // edit (or a background download) on the loaded model.
+          if (!open) abandonStaged();
         }}
         params={inferenceParams}
         onParamsChange={setInferenceParams}
@@ -2391,6 +2441,47 @@ export function ChatPage(): ReactElement {
             });
           }
         }}
+        onLoadPendingModel={() => {
+          const pending = useChatRuntimeStore.getState().pendingSelection;
+          if (!pending) return;
+          const keyAtLoad = chatContextKey;
+          // forceReload: the staged model isn't loaded yet, so bypass the
+          // same-checkpoint dedupe (and selectModel clears pendingSelection).
+          // keepSpeculative: honor the speculative mode set on the sidebar.
+          void selectModel({
+            ...pending,
+            forceReload: true,
+            keepSpeculative: true,
+            throwOnError: true,
+          }).catch(() => {
+            // Recoverable failure (expired token, gated repo, OOM…): selectModel
+            // cleared the pick but left the edited knobs intact.
+            const store = useChatRuntimeStore.getState();
+            // A pick staged meanwhile owns the knobs now; leave it untouched.
+            if (store.pendingSelection) return;
+            // Restore (not re-stage, which would reset the knobs) only if the
+            // staged-load is still wanted: same chat context, sheet still open,
+            // page still mounted.
+            const stillWanted =
+              mountedRef.current &&
+              store.settingsPanelOpen &&
+              chatContextKeyRef.current === keyAtLoad;
+            if (stillWanted) {
+              store.setPendingSelection(pending);
+            } else {
+              // Abandoned (closed the sheet / switched chats / left chat): drop
+              // the orphaned staged knob edits so they don't linger as dirty
+              // settings over the loaded model.
+              store.resetModelSettingsToLoaded();
+            }
+          });
+        }}
+        stagedDownloadFraction={stagedDownload.progress?.fraction ?? null}
+        onCancelStagedDownload={() =>
+          stagedDownload.cancelDownload(
+            useChatRuntimeStore.getState().pendingSelection?.ggufVariant ?? null,
+          )
+        }
       />
     </div>
   );
