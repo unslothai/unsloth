@@ -1087,9 +1087,7 @@ class TestScannerCoversAllExecutableCode:
             if fn == "config.json":
                 p = Path(tempfile.mkdtemp()) / "config.json"
                 p.write_text(
-                    json.dumps(
-                        {"auto_map": {"AutoModel": "evilorg/evilrepo--pkg.modeling_evil.M"}}
-                    )
+                    json.dumps({"auto_map": {"AutoModel": "evilorg/evilrepo--pkg.modeling_evil.M"}})
                 )
                 return str(p)
             if fn in REMOTE_CODE_CONFIG_FILES:

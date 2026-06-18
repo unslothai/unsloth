@@ -258,7 +258,6 @@ def security_load_subdirs(model_name: str, hf_token: Optional[str] = None) -> tu
     """
     try:
         from utils.models.model_config import detect_audio_type, load_model_defaults
-
         if detect_audio_type(model_name, hf_token = hf_token) == "bicodec":
             return ("LLM",)
         # Tokenizer detection can fail (network/gated/an unresolved alias), but the
@@ -282,7 +281,6 @@ def _load_scan_target(model_name: str, load_subdirs: tuple) -> tuple:
     """
     try:
         from utils.paths import is_local_path
-
         if is_local_path(model_name):
             return model_name, load_subdirs
     except Exception:

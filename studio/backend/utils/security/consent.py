@@ -291,7 +291,6 @@ def _fingerprint_target_key(target: str) -> str:
     """
     try:
         from utils.paths import is_local_path
-
         if is_local_path(target):
             return target
     except Exception:
