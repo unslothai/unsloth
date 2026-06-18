@@ -278,15 +278,16 @@ function formatBytes(bytes: number): string {
   // Decimal (base-1000) units to match what Hugging Face reports for a repo's
   // file sizes -- e.g. 217 GB, not the 201.8 GiB a base-1024 divide would show.
   // (GPU-fit math below stays base-1024 since VRAM is binary.)
+  // Divide iteratively rather than via Math.log, which has float error at exact
+  // powers of 1000 (log(1e12)/log(1000) = 3.9999... would mislabel 1 TB as
+  // "1000 GB"); the loop also can't run off the end of units.
   const units = ["B", "KB", "MB", "GB", "TB"];
-  // Clamp the unit index into [0, TB]: lower bound covers sub-1-byte values
-  // (negative index), upper bound covers >= 1 PB and Math.log float error
-  // (Math.log(1000**n)/Math.log(1000) can fall just under n).
-  const i = Math.max(
-    0,
-    Math.min(Math.floor(Math.log(bytes) / Math.log(1000)), units.length - 1),
-  );
-  const value = bytes / 1000 ** i;
+  let i = 0;
+  let value = bytes;
+  while (value >= 1000 && i < units.length - 1) {
+    value /= 1000;
+    i += 1;
+  }
   return `${value.toFixed(value < 10 ? 1 : 0)} ${units[i]}`;
 }
 

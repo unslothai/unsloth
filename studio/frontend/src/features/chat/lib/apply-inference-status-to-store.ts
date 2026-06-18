@@ -7,6 +7,7 @@ import {
   CHAT_REASONING_ENABLED_KEY,
   loadOptionalBool,
   type ReasoningEffort,
+  type ReasoningStyle,
   resolveToolsEnabledOnLoad,
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
@@ -48,6 +49,38 @@ export function clampLocalReasoningEffort(
     return value;
   }
   return "low";
+}
+
+/**
+ * Reasoning capability fields derived from a model load/status response.
+ *
+ * Centralises the effort-levels + can-disable derivation so every load path
+ * (main load, status sync, shared/Compare composer, first-chat auto-load) agrees:
+ * a hybrid GLM-style `enable_thinking_effort` model keeps its high|max|Off
+ * controls no matter which path loaded it, instead of falling back to the
+ * default low|medium|high and losing Max/Off.
+ */
+export function reasoningCapsFromLoad(resp: {
+  reasoning_style?: ReasoningStyle | null;
+  reasoning_effort_levels?: string[] | null;
+}): {
+  reasoningStyle: ReasoningStyle;
+  reasoningEffortLevels: readonly ReasoningEffort[];
+  supportsReasoningOff: boolean;
+} {
+  const reasoningStyle: ReasoningStyle =
+    resp.reasoning_style ?? "enable_thinking";
+  const reasoningEffortLevels: readonly ReasoningEffort[] =
+    resp.reasoning_effort_levels && resp.reasoning_effort_levels.length > 0
+      ? (resp.reasoning_effort_levels as ReasoningEffort[])
+      : (["low", "medium", "high"] as const);
+  // enable_thinking and enable_thinking_effort can both be turned off; only the
+  // pure gpt-oss-style reasoning_effort is always-on.
+  return {
+    reasoningStyle,
+    reasoningEffortLevels,
+    supportsReasoningOff: reasoningStyle !== "reasoning_effort",
+  };
 }
 
 export function resolveInferenceCheckpointId(
