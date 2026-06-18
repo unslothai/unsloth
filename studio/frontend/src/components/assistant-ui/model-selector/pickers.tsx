@@ -433,11 +433,11 @@ function ModelRow({
             <TooltipTrigger asChild={true}>
               <span
                 aria-label="Vision"
-                className="flex items-center text-blue-400"
+                className="flex size-[18px] shrink-0 items-center justify-center rounded-md border border-border/60 text-blue-400"
               >
                 <HugeiconsIcon
                   icon={ViewIcon}
-                  className="size-3.5"
+                  className="size-3"
                   strokeWidth={1.8}
                 />
               </span>
