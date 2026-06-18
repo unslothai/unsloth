@@ -433,6 +433,45 @@ def test_auto_switch_applies_partial_override(monkeypatch):
     assert req.max_seq_length == 0  # untouched default
 
 
+def test_override_without_extra_args_clears_inheritance(monkeypatch):
+    # A max_seq_length-only override must send an explicit empty extra-args list,
+    # so /load can't inherit stale same-model flags from an earlier manual load.
+    backend = _FakeBackend(None)
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("unsloth/B-GGUF", "Q4_K_M"),
+        backend = backend,
+        recorder = rec,
+    )
+    monkeypatch.setattr(settings, "get_model_override", lambda model_id: {"max_seq_length": 8192})
+
+    _run_hook("unsloth/B-GGUF")
+    req = rec.calls[0]
+    assert req.llama_extra_args == []  # explicit empty, not None/absent (which would inherit)
+    assert req.max_seq_length == 8192
+
+
+def test_no_override_leaves_extra_args_inheritable(monkeypatch):
+    # No override: llama_extra_args stays None so /load's same-model inherit applies.
+    backend = _FakeBackend(None)
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("unsloth/B-GGUF", "Q4_K_M"),
+        backend = backend,
+        recorder = rec,
+    )
+    monkeypatch.setattr(settings, "get_model_override", lambda model_id: {})
+
+    _run_hook("unsloth/B-GGUF")
+    req = rec.calls[0]
+    assert req.llama_extra_args is None
+    assert req.max_seq_length == 0
+
+
 def _mock_override_store(monkeypatch):
     """Back the override read + atomic-merge write with an in-memory dict."""
     import storage.studio_db as db
@@ -517,6 +556,28 @@ def test_list_switch_eligible_ids(monkeypatch):
         "unsloth/B-GGUF",
         "unsloth/C-GGUF",
     ]
+
+
+def test_list_switch_eligible_excludes_hidden_models(monkeypatch):
+    # The llama.cpp install-validation probe and RAG embedding models are hidden
+    # from pickers, so discovery must not advertise them either.
+    real = resolver._LocalGgufEntry("unsloth/B-GGUF", ("Q4_K_M",))
+    probe_repo = resolver._LocalGgufEntry("ggml-org/models", ("stories260K",))
+    probe_file = resolver._LocalGgufEntry("/models/stories260K.gguf", ())  # standalone form
+    monkeypatch.setattr(
+        resolver,
+        "_build_index",
+        lambda: {
+            "unsloth/b-gguf": real,
+            "ggml-org/models": probe_repo,
+            "/models/stories260k.gguf": probe_file,
+        },
+    )
+    resolver._scan = (0.0, {})
+    ids = resolver.list_switch_eligible_ids()
+    assert "unsloth/B-GGUF" in ids
+    assert "ggml-org/models" not in ids  # repo-id needle
+    assert "/models/stories260K.gguf" not in ids  # filename needle
 
 
 def test_v1_models_lists_eligible_only_when_enabled(monkeypatch):

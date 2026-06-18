@@ -133,9 +133,19 @@ def list_switch_eligible_ids() -> list[str]:
     """Distinct loader ids for every downloaded GGUF auto-switch can serve.
 
     Advertised in ``/v1/models`` so a client can discover what it can swap to,
-    mirroring llama-swap. Each is a name ``resolve_local_gguf`` accepts.
+    mirroring llama-swap. Each is a name ``resolve_local_gguf`` accepts. Hidden
+    helper/probe weights (RAG embeddings, the llama.cpp validation probe) are
+    excluded, matching the model pickers elsewhere in Studio.
     """
     try:
-        return sorted({entry.loader_id for entry in _index().values()})
+        from routes.models import _is_hidden_model
+
+        return sorted(
+            {
+                entry.loader_id
+                for entry in _index().values()
+                if not _is_hidden_model(entry.loader_id)
+            }
+        )
     except Exception:
         return []
