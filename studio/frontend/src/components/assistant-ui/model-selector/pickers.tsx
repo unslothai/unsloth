@@ -2175,9 +2175,15 @@ export function LoraModelPicker({
                   // The previous design collapsed everything into one string
                   // so e.g. a local GGUF fine-tune only showed "GGUF" — see
                   // issues #6367 and #6381.
-                  const finetunedTags: ModelRowTag[] = [FINETUNED_TAG];
-                  if (isTraining) {
-                    finetunedTags.push(TRAINING_TAG);
+                  // Gate the Fine-tuned tag to models with exportType or from
+                  // training/exported sources; local base models should only
+                  // show Local/GGUF tags without being labeled as fine-tuned.
+                  const finetunedTags: ModelRowTag[] = [];
+                  if (isTraining || isExported || adapter.exportType) {
+                    finetunedTags.push(FINETUNED_TAG);
+                    if (isTraining) {
+                      finetunedTags.push(TRAINING_TAG);
+                    }
                   }
                   if (isLocal) {
                     if (isLocalGgufDir) finetunedTags.push(formatTag("gguf"));
@@ -2192,7 +2198,7 @@ export function LoraModelPicker({
                       isMerged ? formatTag("merged") : formatTag("lora"),
                     );
                     finetunedTags.push(EXPORTED_TAG);
-                  } else {
+                  } else if (adapter.exportType) {
                     finetunedTags.push(formatTag("lora"));
                   }
                   return (
