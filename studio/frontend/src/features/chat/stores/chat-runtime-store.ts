@@ -1620,9 +1620,15 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         // Load's keepSpeculative) a forced MTP mode onto a model that may lack it.
         speculativeType: readPersistedSpeculativeType(),
         specDraftNMax: null,
-        // Per-model GPU knobs start from defaults too (gpuMemoryMode stays a
-        // standing preference) so a fresh pick doesn't inherit the loaded
-        // model's layer/MoE/split/GPU choices, matching the immediate-switch reset.
+        // Keep the on-screen GPU Memory selection (loadedBaselineSettings would
+        // otherwise revert it to the loaded model's mode, silently dropping a
+        // Fit/Manual choice just made). Use the live store value, not the
+        // persisted one: a mode hydrated from an out-of-band load isn't persisted,
+        // so the persisted value can lag what the dropdown actually shows.
+        gpuMemoryMode: s.gpuMemoryMode,
+        // Per-model GPU knobs start from defaults too so a fresh pick doesn't
+        // inherit the loaded model's layer/MoE/split/GPU choices, matching the
+        // immediate-switch reset.
         gpuLayers: GPU_LAYERS_ALL,
         nCpuMoe: 0,
         splitRatio: "",
