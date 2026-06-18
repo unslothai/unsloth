@@ -2,8 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
-import { Switch } from "@/components/ui/switch";
-import { toast } from "@/lib/toast";
 import {
   Dialog,
   DialogContent,
@@ -22,19 +20,21 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { Switch } from "@/components/ui/switch";
 import {
   EXPORT_FORMATS_LIST,
+  type PlusMenuItemId,
   bulkExportConversationsByScope,
   clearAllChats,
   countAllChats,
   downloadChatExport,
   importConversationsFromFile,
-  useChatRuntimeStore,
   useChatPreferencesStore,
-  type PlusMenuItemId,
+  useChatRuntimeStore,
   usePlusMenuPrefsStore,
 } from "@/features/chat";
 import { useT } from "@/i18n";
+import { toast } from "@/lib/toast";
 import {
   Bookmark02Icon,
   Delete02Icon,
@@ -43,94 +43,98 @@ import {
   Folder01Icon,
   McpServerIcon,
   PencilRulerIcon,
+  Settings02Icon,
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Columns2Icon, PlusIcon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
+import { ArchivedChatsDialog } from "../components/archived-chats-dialog";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
-import { ArchivedChatsDialog } from "../components/archived-chats-dialog";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 
 // Adjustable "+" menu items shown in settings, in display order. Icons mirror
 // the ones used in the composer + menu itself.
 const PLUS_MENU_ICON_CLASS = "size-[18px]";
-const PLUS_MENU_SETTINGS: { id: PlusMenuItemId; label: string; icon: ReactNode }[] =
-  [
-    {
-      id: "chatWithFiles",
-      label: "Chat with Files",
-      icon: (
-        <HugeiconsIcon
-          icon={FileDatabaseIcon}
-          strokeWidth={2}
-          className={PLUS_MENU_ICON_CLASS}
-        />
-      ),
-    },
-    {
-      id: "mcp",
-      label: "MCP",
-      icon: (
-        <HugeiconsIcon
-          icon={McpServerIcon}
-          strokeWidth={2}
-          className={PLUS_MENU_ICON_CLASS}
-        />
-      ),
-    },
-    {
-      id: "savedPrompts",
-      label: "Saved prompts",
-      icon: (
-        <HugeiconsIcon
-          icon={Bookmark02Icon}
-          strokeWidth={2}
-          className={PLUS_MENU_ICON_CLASS}
-        />
-      ),
-    },
-    {
-      id: "compareChat",
-      label: "Compare chat",
-      icon: <Columns2Icon className={PLUS_MENU_ICON_CLASS} />,
-    },
-    {
-      id: "exportChat",
-      label: "Export chat",
-      icon: (
-        <HugeiconsIcon
-          icon={Download01Icon}
-          strokeWidth={2}
-          className={PLUS_MENU_ICON_CLASS}
-        />
-      ),
-    },
-    {
-      id: "canvas",
-      label: "Canvas",
-      icon: (
-        <HugeiconsIcon
-          icon={PencilRulerIcon}
-          strokeWidth={2}
-          className={PLUS_MENU_ICON_CLASS}
-        />
-      ),
-    },
-    {
-      id: "projects",
-      label: "Projects",
-      icon: (
-        <HugeiconsIcon
-          icon={Folder01Icon}
-          strokeWidth={2}
-          className={PLUS_MENU_ICON_CLASS}
-        />
-      ),
-    },
-  ];
+const PLUS_MENU_SETTINGS: {
+  id: PlusMenuItemId;
+  label: string;
+  icon: ReactNode;
+}[] = [
+  {
+    id: "chatWithFiles",
+    label: "Chat with Files",
+    icon: (
+      <HugeiconsIcon
+        icon={FileDatabaseIcon}
+        strokeWidth={2}
+        className={PLUS_MENU_ICON_CLASS}
+      />
+    ),
+  },
+  {
+    id: "mcp",
+    label: "MCP",
+    icon: (
+      <HugeiconsIcon
+        icon={McpServerIcon}
+        strokeWidth={2}
+        className={PLUS_MENU_ICON_CLASS}
+      />
+    ),
+  },
+  {
+    id: "savedPrompts",
+    label: "Saved prompts",
+    icon: (
+      <HugeiconsIcon
+        icon={Bookmark02Icon}
+        strokeWidth={2}
+        className={PLUS_MENU_ICON_CLASS}
+      />
+    ),
+  },
+  {
+    id: "compareChat",
+    label: "Compare chat",
+    icon: <Columns2Icon className={PLUS_MENU_ICON_CLASS} />,
+  },
+  {
+    id: "exportChat",
+    label: "Export chat",
+    icon: (
+      <HugeiconsIcon
+        icon={Download01Icon}
+        strokeWidth={2}
+        className={PLUS_MENU_ICON_CLASS}
+      />
+    ),
+  },
+  {
+    id: "canvas",
+    label: "Canvas",
+    icon: (
+      <HugeiconsIcon
+        icon={PencilRulerIcon}
+        strokeWidth={2}
+        className={PLUS_MENU_ICON_CLASS}
+      />
+    ),
+  },
+  {
+    id: "projects",
+    label: "Projects",
+    icon: (
+      <HugeiconsIcon
+        icon={Folder01Icon}
+        strokeWidth={2}
+        className={PLUS_MENU_ICON_CLASS}
+      />
+    ),
+  },
+];
 
 export function ChatTab() {
   const t = useT();
@@ -168,6 +172,10 @@ export function ChatTab() {
   );
   const hydratePersistedSettings = useChatRuntimeStore(
     (state) => state.hydratePersistedSettings,
+  );
+  const loadOnSelection = useChatRuntimeStore((state) => state.loadOnSelection);
+  const setLoadOnSelection = useChatRuntimeStore(
+    (state) => state.setLoadOnSelection,
   );
   const confirmDeleteChats = useChatPreferencesStore(
     (state) => state.confirmDeleteChats,
@@ -298,6 +306,45 @@ export function ChatTab() {
             />
           </SettingsRow>
         ))}
+      </SettingsSection>
+
+      <SettingsSection title="Models">
+        <SettingsRow
+          label="Load on selection"
+          description={
+            <span className="flex flex-col gap-1.5">
+              <span>
+                On: Unsloth auto-picks the best settings for your hardware and
+                loads on selection. Off: picking a model opens Run settings to
+                customize, then click Load model.
+              </span>
+              <span>
+                The gear next to a downloaded model always opens Run settings:
+              </span>
+              <span className="flex items-center gap-2 rounded-md bg-black/[0.03] dark:bg-white/[0.04] px-2.5 py-1.5">
+                <span className="font-mono text-xs text-foreground">Q4_K_M</span>
+                <span className="text-[9px] font-medium text-green-400">
+                  downloaded
+                </span>
+                <span className="ml-auto text-[10px] text-muted-foreground">
+                  16 GB
+                </span>
+                <span className="flex size-5 items-center justify-center rounded-md bg-black/[0.06] dark:bg-white/[0.08]">
+                  <HugeiconsIcon
+                    icon={Settings02Icon}
+                    strokeWidth={1.75}
+                    className="size-3 text-muted-foreground/80"
+                  />
+                </span>
+              </span>
+            </span>
+          }
+        >
+          <Switch
+            checked={loadOnSelection}
+            onCheckedChange={setLoadOnSelection}
+          />
+        </SettingsRow>
       </SettingsSection>
 
       <SettingsSection title={t("settings.chat.artifacts.title")}>
@@ -450,7 +497,7 @@ export function ChatTab() {
         </SettingsRow>
 
         <SettingsRow
-          destructive
+          destructive={true}
           // divide-y already draws the row separator; drop the extra border.
           className="border-t-0 mt-0 pt-3"
           label={t("settings.chat.clearAllChats")}

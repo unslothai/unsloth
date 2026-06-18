@@ -56,6 +56,7 @@ import {
   DashboardCircleIcon,
   Download01Icon,
   Folder02Icon,
+  RemoveCircleIcon,
   Search01Icon,
   ViewIcon,
 } from "@hugeicons/core-free-icons";
@@ -70,6 +71,7 @@ import {
   useEffect,
   useId,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import { FolderBrowser } from "./folder-browser";
@@ -590,9 +592,10 @@ function GgufVariantExpander({
         ggufVariant: quant,
         isDownloaded: isLocalPath ? true : downloaded,
         expectedBytes: sizeBytes,
+        contextLength: nativeContext,
       });
     },
-    [repoId, isLocalPath, onSelect, sourceOverride],
+    [repoId, isLocalPath, onSelect, sourceOverride, nativeContext],
   );
 
   // GGUF fit classification matching llama-server's _select_gpus logic:
@@ -775,9 +778,7 @@ function GgufVariantExpander({
                 repoId={repoId}
                 quant={v.quant}
                 maxContext={nativeContext}
-                onLoad={() =>
-                  handleVariantClick(v.quant, v.downloaded, v.size_bytes)
-                }
+                source={sourceOverride ?? (isLocalPath ? "local" : "hub")}
               />
             )}
             {v.downloaded && onDeleteVariant && (
@@ -829,6 +830,19 @@ let _lmStudioCache: LocalModelInfo[] = [];
 let _localDirCache: LocalModelInfo[] = [];
 let _customFolderCache: LocalModelInfo[] = [];
 let _scanFoldersCache: ScanFolderInfo[] = [];
+
+/** True when any on-device model (downloaded GGUF, cached repo, LM Studio, or
+ * custom-folder model) is known. Reads the module caches, which persist across
+ * popover mounts, so the selector can default to the On Device tab. */
+export function hasDownloadedModels(): boolean {
+  return (
+    _cachedGgufCache.length > 0 ||
+    _cachedModelsCache.length > 0 ||
+    _lmStudioCache.length > 0 ||
+    _localDirCache.length > 0 ||
+    _customFolderCache.length > 0
+  );
+}
 
 /** Sort LM Studio models with unsloth publisher first. */
 function sortLmStudio(models: LocalModelInfo[]): LocalModelInfo[] {
@@ -979,6 +993,7 @@ export function HubModelPicker({
   deleteDisabled = false,
   section = "downloaded",
   sectionToggle,
+  onEject,
 }: {
   models: ModelOption[];
   /** Fine-tuned models, shown as a section in the On Device view. */
@@ -994,6 +1009,8 @@ export function HubModelPicker({
   section?: "downloaded" | "recommended" | "custom";
   /** Section toggle rendered under the search bar. */
   sectionToggle?: ReactNode;
+  /** Eject the loaded model. Rendered as the last list row when set. */
+  onEject?: () => void;
 }) {
   const gpu = useGpuInfo();
   // Last-loaded timestamps power the "Recent" sort (vs "Downloaded" = file date).
@@ -1073,6 +1090,22 @@ export function HubModelPicker({
   const [downloadedCollapsed, setDownloadedCollapsed] = useState(false);
   const [customFoldersCollapsed, setCustomFoldersCollapsed] = useState(false);
   const [fineTunedCollapsed, setFineTunedCollapsed] = useState(false);
+  // The Fine-tuned section header; the train icon on the Unsloth header scrolls
+  // here so users can jump to their trained models.
+  const fineTunedSectionRef = useRef<HTMLDivElement>(null);
+  const scrollToFineTuned = useCallback(() => {
+    setFineTunedCollapsed(false);
+    // Two frames so the expand renders before we scroll the section to the top
+    // of the list.
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        fineTunedSectionRef.current?.scrollIntoView({
+          behavior: "smooth",
+          block: "start",
+        });
+      });
+    });
+  }, []);
 
   // Cached (downloaded) repos -- module-level cache avoids flashing an
   // empty "Downloaded" section when the popover re-mounts.
@@ -1913,15 +1946,14 @@ export function HubModelPicker({
           setListScrolled((prev) => (prev === next ? prev : next));
         }}
         className={cn(
-          // Negative margin + matching padding nudges the scrollbar toward the
-          // box edge while keeping the rows in place.
-          "model-list-scroll -mr-1.5 max-h-72 overflow-y-auto pr-1.5",
+          // Small negative margin pulls the scrollbar in (closer to the rows),
+          // and a thin gutter lets the row pills widen toward it.
+          "model-list-scroll -mr-1 max-h-72 overflow-y-auto pr-0.5",
           listScrolled && "is-scrolled",
         )}
         {...hubModelList.listboxProps}
       >
-        {/* Tiny right inset so the row hover sits just off the scrollbar. */}
-        <div className="py-1 pr-0.5">
+        <div className="py-1 pr-0">
           {/* First-load spinner only when nothing cached is shown yet. */}
           {showDownloaded &&
           !cachedReady &&
@@ -1959,15 +1991,49 @@ export function HubModelPicker({
                 collapsed={downloadedCollapsed}
                 onToggle={() => setDownloadedCollapsed((v) => !v)}
                 action={
-                  <button
-                    type="button"
-                    onClick={() => setShowFolderBrowser(true)}
-                    aria-label="Add a custom folder"
-                    title="Add a custom folder"
-                    className="shrink-0 rounded p-1 text-muted-foreground/60 transition-colors hover:text-foreground"
-                  >
-                    <HugeiconsIcon icon={Folder02Icon} className="size-3" />
-                  </button>
+                  <>
+                    {fineTunedRows.length > 0 ? (
+                      <Tooltip delayDuration={0}>
+                        <TooltipTrigger asChild={true}>
+                          <button
+                            type="button"
+                            onClick={scrollToFineTuned}
+                            aria-label="Go to fine-tuned models"
+                            className="shrink-0 rounded p-1 text-muted-foreground/60 transition-colors hover:text-foreground"
+                          >
+                            <HugeiconsIcon
+                              icon={TrainIcon}
+                              className="size-3"
+                            />
+                          </button>
+                        </TooltipTrigger>
+                        <TooltipContent
+                          side="bottom"
+                          className="tooltip-compact"
+                        >
+                          Go to fine-tuned models
+                        </TooltipContent>
+                      </Tooltip>
+                    ) : null}
+                    <Tooltip delayDuration={0}>
+                      <TooltipTrigger asChild={true}>
+                        <button
+                          type="button"
+                          onClick={() => setShowFolderBrowser(true)}
+                          aria-label="Add a custom folder"
+                          className="shrink-0 rounded p-1 text-muted-foreground/60 transition-colors hover:text-foreground"
+                        >
+                          <HugeiconsIcon
+                            icon={Folder02Icon}
+                            className="size-3"
+                          />
+                        </button>
+                      </TooltipTrigger>
+                      <TooltipContent side="bottom" className="tooltip-compact">
+                        Detect models from a folder
+                      </TooltipContent>
+                    </Tooltip>
+                  </>
                 }
               >
                 {/* When other providers (LM Studio/Ollama) also show here, name
@@ -2083,7 +2149,10 @@ export function HubModelPicker({
               exist (after query filtering). */}
           {section === "downloaded" && fineTunedRows.length > 0 ? (
             <>
-              <div className="flex items-center gap-1 px-2.5 pb-1.5 pt-3">
+              <div
+                ref={fineTunedSectionRef}
+                className="flex items-center gap-1 px-2.5 pb-1.5 pt-3"
+              >
                 <span className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
                   <HugeiconsIcon icon={TrainIcon} className="size-3.5" />
                   Fine-tuned
@@ -2775,6 +2844,17 @@ export function HubModelPicker({
                 </div>
               ) : null}
             </>
+          ) : null}
+          {onEject ? (
+            <button
+              type="button"
+              onClick={onEject}
+              className="mt-1 flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-[13px] text-destructive transition-colors hover:bg-destructive/10"
+              title="Eject model"
+            >
+              <HugeiconsIcon icon={RemoveCircleIcon} className="size-3.5" />
+              Eject loaded model
+            </button>
           ) : null}
         </div>
       </div>

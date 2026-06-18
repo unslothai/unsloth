@@ -8,6 +8,7 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { usePlatformStore } from "@/config/env";
 import { isCustomProviderType } from "@/features/chat/external-providers";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
@@ -32,7 +33,7 @@ import {
   useState,
 } from "react";
 import { Input } from "../ui/input";
-import { HubModelPicker } from "./model-selector/pickers";
+import { HubModelPicker, hasDownloadedModels } from "./model-selector/pickers";
 import { PillTabs } from "./model-selector/pill-tabs";
 import {
   buildSourceTabs,
@@ -218,6 +219,32 @@ function ModelSelectorTrigger({
 
 type HubSection = "downloaded" | "recommended" | "custom";
 
+// The user's most recently clicked Hub section, remembered across opens so the
+// selector can fall back to it when there are no downloaded models.
+const HUB_SECTION_KEY = "unsloth_model_selector_section";
+function loadLastHubSection(): HubSection {
+  try {
+    const raw = localStorage.getItem(HUB_SECTION_KEY);
+    return raw === "downloaded" || raw === "recommended" || raw === "custom"
+      ? raw
+      : "recommended";
+  } catch {
+    return "recommended";
+  }
+}
+function saveLastHubSection(section: HubSection): void {
+  try {
+    localStorage.setItem(HUB_SECTION_KEY, section);
+  } catch {
+    // Ignore unavailable storage.
+  }
+}
+// Default the Hub section: On Device when the user has downloaded models, else
+// their last-used section.
+function defaultHubSection(): HubSection {
+  return hasDownloadedModels() ? "downloaded" : loadLastHubSection();
+}
+
 const HUB_SECTION_TABS: { value: string; label: string; icon?: ReactNode }[] = [
   {
     value: "recommended",
@@ -295,7 +322,7 @@ function ModelSelectorContent({
   const effectiveTab = tabs.some((tab) => tab.value === activeTab)
     ? activeTab
     : tabs[0].value;
-  const [hubSection, setHubSection] = useState<HubSection>("recommended");
+  const [hubSection, setHubSection] = useState<HubSection>(defaultHubSection);
 
   // The picker below remounts on each open, but this tab state does not, so a
   // persisted selection that lands in lora/external after async load would
@@ -304,6 +331,8 @@ function ModelSelectorContent({
   useEffect(() => {
     if (open && !wasOpen.current) {
       setActiveTab(chatOnly ? chatOnlyTabsDefault : studioTabsDefault);
+      // On Device when the user has downloaded models, else their last section.
+      setHubSection(defaultHubSection());
     }
     wasOpen.current = open;
   }, [open, chatOnly, chatOnlyTabsDefault, studioTabsDefault]);
@@ -360,74 +389,85 @@ function ModelSelectorContent({
         className,
       )}
     >
-      {tabs.length > 1 ? (
-        <PillTabs
-          ariaLabel="Model source"
-          tabs={tabs}
-          value={effectiveTab}
-          onValueChange={setActiveTab}
-          fit={true}
-          className="mb-2"
-        />
-      ) : null}
+      {/* Local provider so popover tooltips open instantly, including when the
+          cursor moves between icons. */}
+      <TooltipProvider delayDuration={0} skipDelayDuration={0}>
+        {tabs.length > 1 ? (
+          <PillTabs
+            ariaLabel="Model source"
+            tabs={tabs}
+            value={effectiveTab}
+            onValueChange={setActiveTab}
+            fit={true}
+            className="mb-2"
+          />
+        ) : null}
 
-      {effectiveTab === "hub" ? (
-        <HubModelPicker
-          models={models}
-          loraModels={fineTunedModels}
-          value={value}
-          onSelect={onSelect}
-          onFoldersChange={onFoldersChange}
-          onBrowseHub={onBrowseHub}
-          onModelsChange={onModelsChange}
-          deleteDisabled={deleteDisabled}
-          section={hubSection}
-          sectionToggle={
-            <PillTabs
-              ariaLabel="Hub section"
-              tabs={HUB_SECTION_TABS}
-              value={hubSection}
-              onValueChange={(next) => setHubSection(next as HubSection)}
-              fit={true}
-            />
-          }
-        />
-      ) : null}
+        {effectiveTab === "hub" ? (
+          <HubModelPicker
+            models={models}
+            loraModels={fineTunedModels}
+            value={value}
+            onSelect={onSelect}
+            onFoldersChange={onFoldersChange}
+            onBrowseHub={onBrowseHub}
+            onModelsChange={onModelsChange}
+            deleteDisabled={deleteDisabled}
+            section={hubSection}
+            onEject={hasSelection && onEject ? onEject : undefined}
+            sectionToggle={
+              <PillTabs
+                ariaLabel="Hub section"
+                tabs={HUB_SECTION_TABS}
+                value={hubSection}
+                onValueChange={(next) => {
+                  const section = next as HubSection;
+                  setHubSection(section);
+                  saveLastHubSection(section);
+                }}
+                fit={true}
+              />
+            }
+          />
+        ) : null}
 
-      {effectiveTab === "external" ? (
-        <ExternalModelPicker
-          externalModels={externalModels}
-          value={value}
-          onSelect={onSelect}
-        />
-      ) : null}
+        {effectiveTab === "external" ? (
+          <ExternalModelPicker
+            externalModels={externalModels}
+            value={value}
+            onSelect={onSelect}
+          />
+        ) : null}
 
-      {onPickLocalModel ? (
-        <div className="mt-1.5 border-t border-border/70 pt-1.5">
-          <button
-            type="button"
-            onClick={onPickLocalModel}
-            className="flex w-full items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-muted/60"
-            title="Pick a model file from disk"
-          >
-            <HugeiconsIcon icon={FolderSearchIcon} className="size-3.5" />
-            Pick a model file from disk
-          </button>
-        </div>
-      ) : null}
-      {hasSelection && onEject ? (
-        <div className="mt-1.5 pt-1.5">
-          <button
-            type="button"
-            onClick={onEject}
-            className="flex w-full items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-destructive transition-colors hover:bg-destructive/10"
-            title="Eject model"
-          >
-            <HugeiconsIcon icon={RemoveCircleIcon} className="size-3.5" />
-            Eject loaded model
-          </button>
-        </div>
-      ) : null}
+        {onPickLocalModel ? (
+          <div className="mt-1.5 border-t border-border/70 pt-1.5">
+            <button
+              type="button"
+              onClick={onPickLocalModel}
+              className="flex w-full items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-muted/60"
+              title="Pick a model file from disk"
+            >
+              <HugeiconsIcon icon={FolderSearchIcon} className="size-3.5" />
+              Pick a model file from disk
+            </button>
+          </div>
+        ) : null}
+        {/* Hub renders Eject inline as the last list row; other tabs keep the
+          footer button. */}
+        {effectiveTab !== "hub" && hasSelection && onEject ? (
+          <div className="mt-1.5 pt-1.5">
+            <button
+              type="button"
+              onClick={onEject}
+              className="flex w-full items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-destructive transition-colors hover:bg-destructive/10"
+              title="Eject model"
+            >
+              <HugeiconsIcon icon={RemoveCircleIcon} className="size-3.5" />
+              Eject loaded model
+            </button>
+          </div>
+        ) : null}
+      </TooltipProvider>
     </PopoverContent>
   );
 }

@@ -3,24 +3,24 @@
 
 import { toast } from "@/lib/toast";
 import { create } from "zustand";
+import { isExternalModelId, parseExternalModelId } from "../external-providers";
 import {
   type ChatPresetSource,
   type Preset,
   getPresetSource,
 } from "../presets/preset-policy";
+import { getExternalMaxOutputTokens } from "../provider-capabilities";
 import {
   type ChatLoraSummary,
   type ChatModelSummary,
   DEFAULT_INFERENCE_PARAMS,
   type InferenceParams,
 } from "../types/runtime";
-import { isExternalModelId, parseExternalModelId } from "../external-providers";
-import { getExternalMaxOutputTokens } from "../provider-capabilities";
-import { useExternalProvidersStore } from "./external-providers-store";
 import {
   loadChatSettingsWithLegacyImport,
   savePersistedChatSettingsPatch,
 } from "../utils/chat-settings-storage";
+import { useExternalProvidersStore } from "./external-providers-store";
 
 const HF_TOKEN_KEY = "unsloth_hf_token";
 const HF_TOKEN_CHANGED_EVENT = "unsloth:hf-token-changed";
@@ -35,6 +35,7 @@ export const CHAT_ALLOW_ARTIFACT_NETWORK_ACCESS_KEY =
   "unsloth_chat_allow_artifact_network_access";
 export const CHAT_MCP_ENABLED_KEY = "unsloth_chat_mcp_enabled";
 export const CHAT_CONFIRM_TOOL_CALLS_KEY = "unsloth_chat_confirm_tool_calls";
+export const CHAT_LOAD_ON_SELECTION_KEY = "unsloth_chat_load_on_selection";
 export const CHAT_BYPASS_PERMISSIONS_KEY = "unsloth_chat_bypass_permissions";
 export const CHAT_WEB_FETCH_TOOLS_ENABLED_KEY =
   "unsloth_chat_web_fetch_tools_enabled";
@@ -51,9 +52,7 @@ export const CHAT_SPECULATIVE_TYPE_KEY = "unsloth_chat_speculative_type";
 // choice would silently no-op on models without an MTP head. Unknown -> auto.
 const PERSISTED_SPEC_MODES = new Set(["auto", "ngram", "off"]);
 
-export type RagSource =
-  | { type: "thread" }
-  | { type: "kb"; kbId: string };
+export type RagSource = { type: "thread" } | { type: "kb"; kbId: string };
 
 export type RagMode = "hybrid" | "lexical" | "dense";
 
@@ -85,8 +84,7 @@ function saveRagSource(value: RagSource): void {
   if (typeof window === "undefined") return;
   try {
     window.localStorage.setItem(CHAT_RAG_SOURCE_KEY, JSON.stringify(value));
-  } catch {
-  }
+  } catch {}
 }
 
 function loadRagMode(): RagMode {
@@ -117,7 +115,11 @@ function loadRagTopK(): number {
 function loadRagNumber(
   key: string,
   fallback: number,
-  { min, max, integer = false }: { min: number; max: number; integer?: boolean },
+  {
+    min,
+    max,
+    integer = false,
+  }: { min: number; max: number; integer?: boolean },
 ): number {
   if (typeof window === "undefined") return fallback;
   try {
@@ -351,7 +353,10 @@ export function normalizeSpeculativeType(
   }
   if (s === "mtp+ngram") return "mtp+ngram";
   // Comma-chained legacy values (e.g. from older backend echoes).
-  const parts = s.split(",").map((p) => p.trim()).filter(Boolean);
+  const parts = s
+    .split(",")
+    .map((p) => p.trim())
+    .filter(Boolean);
   const hasMtp = parts.some((p) => p === "mtp" || p === "draft-mtp");
   const hasNgram = parts.some(
     (p) => p === "ngram" || p === "ngram-mod" || p === "ngram-simple",
@@ -399,10 +404,53 @@ export function saveSpeculativeType(value: string | null): void {
   }
 }
 
+// A model picked but not yet loaded: its settings are configured in the Run
+// settings sidebar, then loaded on demand. `contextLength` is the staged
+// model's native context (read pre-load), scoped here so it never pollutes the
+// loaded model's `ggufContextLength`.
+export type PendingModelSelection = {
+  id: string;
+  isLora?: boolean;
+  ggufVariant?: string;
+  isDownloaded?: boolean;
+  expectedBytes?: number;
+  source?: string;
+  contextLength?: number | null;
+};
+
+// Staging applies to local GGUF models only (the gear sits on downloaded
+// variants); other picks load immediately.
+export function hasGgufSource(x: { ggufVariant?: string }): boolean {
+  return x.ggufVariant != null;
+}
+
+export function isPendingGguf(pending: PendingModelSelection | null): boolean {
+  return pending != null && hasGgufSource(pending);
+}
+
+// Load-setting values to revert to when abandoning a stage or resetting the
+// sidebar: the loaded model's shadow values (or persisted defaults when nothing
+// is loaded). Keeps a stage's edits from leaking into the loaded model.
+function loadedBaselineSettings(s: ChatRuntimeStore) {
+  const hasLoadedModel = Boolean(s.params.checkpoint);
+  return {
+    customContextLength: null,
+    kvCacheDtype: s.loadedKvCacheDtype,
+    tensorParallel: s.loadedTensorParallel ?? false,
+    speculativeType: hasLoadedModel
+      ? s.loadedSpeculativeType
+      : readPersistedSpeculativeType(),
+    specDraftNMax: hasLoadedModel ? s.loadedSpecDraftNMax : null,
+    chatTemplateOverride: s.loadedChatTemplateOverride,
+  };
+}
+
 function notifyHfTokenChanged(value: string): void {
   if (!canUseStorage()) return;
   try {
-    window.dispatchEvent(new CustomEvent(HF_TOKEN_CHANGED_EVENT, { detail: value }));
+    window.dispatchEvent(
+      new CustomEvent(HF_TOKEN_CHANGED_EVENT, { detail: value }),
+    );
   } catch {
     // ignore
   }
@@ -560,6 +608,10 @@ type ChatRuntimeStore = {
    */
   incognito: boolean;
   settingsPanelOpen: boolean;
+  /** On: a model pick loads immediately. Off: it stages into the sidebar. */
+  loadOnSelection: boolean;
+  /** A GGUF model staged in the sidebar but not yet loaded. */
+  pendingSelection: PendingModelSelection | null;
   pendingAudioBase64: string | null;
   pendingAudioName: string | null;
   pendingImageEditReference: PendingImageEditReference | null;
@@ -593,6 +645,11 @@ type ChatRuntimeStore = {
   setActiveProjectId: (projectId: string | null) => void;
   setIncognito: (incognito: boolean) => void;
   setSettingsPanelOpen: (open: boolean) => void;
+  setLoadOnSelection: (value: boolean) => void;
+  setPendingSelection: (selection: PendingModelSelection | null) => void;
+  stageModel: (selection: PendingModelSelection) => void;
+  abandonStagedModel: () => void;
+  resetModelSettingsToLoaded: () => void;
   clearCheckpoint: () => void;
   setReasoningEnabled: (
     enabled: boolean,
@@ -934,6 +991,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   activeProjectId: null,
   incognito: false,
   settingsPanelOpen: false,
+  loadOnSelection: loadBool(CHAT_LOAD_ON_SELECTION_KEY, true),
+  pendingSelection: null,
   pendingAudioBase64: null,
   pendingAudioName: null,
   pendingImageEditReference: null,
@@ -1080,6 +1139,11 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           nextMaxTokens = cap;
         }
       }
+      // Drop a stale stage when switching away from a loaded model. Guarded on a
+      // non-empty previous checkpoint so a background status sync (empty->active)
+      // can't wipe a fresh stage.
+      const clearStage =
+        checkpointChanged && state.params.checkpoint && state.pendingSelection;
       return {
         params: {
           ...state.params,
@@ -1088,6 +1152,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         },
         activeGgufVariant: ggufVariant ?? null,
         ...(checkpointChanged ? { contextUsage: null } : {}),
+        ...(clearStage
+          ? { ...loadedBaselineSettings(state), pendingSelection: null }
+          : {}),
       };
     }),
   setActiveThreadId: (activeThreadId) =>
@@ -1095,6 +1162,28 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   setActiveProjectId: (activeProjectId) => set({ activeProjectId }),
   setIncognito: (incognito) => set({ incognito }),
   setSettingsPanelOpen: (settingsPanelOpen) => set({ settingsPanelOpen }),
+  setLoadOnSelection: (loadOnSelection) => {
+    saveBool(CHAT_LOAD_ON_SELECTION_KEY, loadOnSelection);
+    set({ loadOnSelection });
+  },
+  setPendingSelection: (pendingSelection) => set({ pendingSelection }),
+  stageModel: (selection) =>
+    set((s) => ({
+      ...loadedBaselineSettings(s),
+      pendingSelection: selection,
+      settingsPanelOpen: true,
+      // Fresh default, not the loaded model's mode, so a stage never inherits a
+      // forced spec mode (kept by the staged load via keepSpeculative).
+      speculativeType: readPersistedSpeculativeType(),
+      specDraftNMax: null,
+    })),
+  abandonStagedModel: () =>
+    set((s) =>
+      s.pendingSelection
+        ? { ...loadedBaselineSettings(s), pendingSelection: null }
+        : {},
+    ),
+  resetModelSettingsToLoaded: () => set((s) => loadedBaselineSettings(s)),
   clearCheckpoint: () => {
     // Mirror setCheckpoint's persistence: dropping the checkpoint must also
     // clear any stored external selection so the next refresh doesn't snap
@@ -1150,6 +1239,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       chatTemplateOverride: null,
       loadedChatTemplateOverride: null,
       pendingImageEditReference: null,
+      pendingSelection: null,
     }));
   },
   setReasoningEnabled: (reasoningEnabled, options) =>
@@ -1364,7 +1454,7 @@ export function resolveSpeculativeSettingsForLoad({
   const state = useChatRuntimeStore.getState();
   const speculativeType = usePersistedPreference
     ? readPersistedSpeculativeType()
-    : state.speculativeType ?? readPersistedSpeculativeType();
+    : (state.speculativeType ?? readPersistedSpeculativeType());
   return {
     speculativeType,
     specDraftNMax:

@@ -31,6 +31,8 @@ export interface ModelSelectorChangeMeta {
   ggufVariant?: string;
   isDownloaded?: boolean;
   expectedBytes?: number;
+  /** Native GGUF context, threaded so a staged pick can seed the slider. */
+  contextLength?: number | null;
 }
 
 export interface DeletedModelRef {

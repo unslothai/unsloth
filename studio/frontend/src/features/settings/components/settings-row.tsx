@@ -13,7 +13,7 @@ export function SettingsRow({
   className,
 }: {
   label: string;
-  description?: string;
+  description?: ReactNode;
   icon?: ReactNode;
   children?: ReactNode;
   destructive?: boolean;
