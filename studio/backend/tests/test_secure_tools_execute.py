@@ -32,6 +32,7 @@ from state.tool_policy import get_tool_policy, reset_tool_policy, set_tool_polic
 
 # ── Fake llama-server stream (mirrors test_llama_cpp_tool_loop.py) ──
 
+
 def _sse(delta: dict) -> str:
     return "data: " + json.dumps({"choices": [{"index": 0, "delta": delta}]}) + "\n"
 
@@ -75,10 +76,21 @@ def _make_backend(monkeypatch, streams: list[list[str]]):
     backend._supports_preserve_thinking = False
 
     @contextlib.contextmanager
-    def fake_stream_with_retry(_client, _url, payload, _cancel_event, headers = None, first_token_deadline = None):
+    def fake_stream_with_retry(
+        _client,
+        _url,
+        payload,
+        _cancel_event,
+        headers = None,
+        first_token_deadline = None,
+    ):
         yield type("FakeResponse", (), {"status_code": 200, "chunks": streams.pop(0)})()
 
-    def fake_iter_text_cancellable(response, _cancel_event, first_token_deadline = None):
+    def fake_iter_text_cancellable(
+        response,
+        _cancel_event,
+        first_token_deadline = None,
+    ):
         yield from response.chunks
 
     monkeypatch.setattr(backend, "_stream_with_retry", fake_stream_with_retry)
@@ -110,7 +122,9 @@ def _run_one_tool(monkeypatch, tool_name: str, arguments: dict) -> str:
             max_tool_iterations = 1,
         )
     )
-    tool_ends = [e for e in events if e.get("type") == "tool_end" and e.get("tool_name") == tool_name]
+    tool_ends = [
+        e for e in events if e.get("type") == "tool_end" and e.get("tool_name") == tool_name
+    ]
     assert tool_ends, f"loop never executed {tool_name}; events={[e.get('type') for e in events]}"
     return tool_ends[0]["result"]
 
@@ -123,6 +137,7 @@ def _reset_policy():
 
 
 # ── Real tool execution under the loop ──
+
 
 def test_python_tool_counts_to_100(monkeypatch):
     # "Use the python tool to count from 1 to 100."
@@ -153,7 +168,11 @@ def test_web_search_tool_runs_with_mocked_fetch(monkeypatch):
         def __init__(self, *a, **k):
             pass
 
-        def text(self, query, max_results = 5):
+        def text(
+            self,
+            query,
+            max_results = 5,
+        ):
             return [
                 {
                     "title": "San Francisco Weather",
@@ -169,6 +188,7 @@ def test_web_search_tool_runs_with_mocked_fetch(monkeypatch):
 
 
 # ── Policy tie-in: the post-fix `--secure` path keeps tools reachable ──
+
 
 class _Payload:
     def __init__(self, enable_tools):
