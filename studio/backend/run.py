@@ -642,6 +642,13 @@ def _graceful_shutdown(server = None):
     except Exception as e:
         logger.warning("Error stopping Cloudflare tunnel: %s", e)
 
+    # 7. Backstop sweep for any adopted child the steps above missed.
+    try:
+        from utils.process_lifetime import terminate_all
+        terminate_all()
+    except Exception as e:
+        logger.warning("Error in process-lifetime sweep: %s", e)
+
     logger.info("All subprocesses cleaned up")
 
 
@@ -876,6 +883,12 @@ def run_server(
     """
     global _server, _shutdown_event
 
+    # Reap every child if the parent dies abnormally (terminal close, Task
+    # Manager kill, SIGKILL); must run before any child can spawn.
+    from utils.process_lifetime import initialize_parent_lifetime
+
+    initialize_parent_lifetime()
+
     # --secure exposes only the Cloudflare link: force a loopback bind so the raw
     # port is never public (even with -H 0.0.0.0), and reject the contradictory combo.
     if secure and not cloudflare:
@@ -1083,6 +1096,9 @@ def run_server(
     import atexit
 
     atexit.register(_remove_pid_file)
+    from utils.process_lifetime import terminate_all
+
+    atexit.register(terminate_all)
 
     # Output port for Tauri (api-only), only after sockets bind and startup done.
     if api_only:
