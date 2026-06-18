@@ -465,6 +465,10 @@ async def lifespan(app: FastAPI):
         app.state.bootstrap_password = storage.get_bootstrap_password()
     yield
 
+    from core.inference.llama_http import aclose as _close_llama_http
+
+    await _close_llama_http()
+
     await run_lifespan_shutdown(
         terminate_hub_downloads,
         clear_unsloth_compiled_cache,
