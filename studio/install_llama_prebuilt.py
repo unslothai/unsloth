@@ -5948,6 +5948,34 @@ def preferred_source_archive(
     )
 
 
+def exact_source_asset_url(
+    approved_checksums: ApprovedReleaseChecksums,
+    source_repo: str,
+    source_archive: ApprovedArtifactHash | None,
+    exact_source: bool,
+    release_tag: str,
+) -> str | None:
+    """Release-asset URL for a mix build's merged source tree, or None.
+
+    A mix build's merge commit is never pushed, so its codeload/archive URLs
+    404; the only durable copy of the merged tree is the
+    ``llama.cpp-source-commit-<sha>.tar.gz`` asset published alongside the
+    prebuilt. Resolve its host and tag defensively so a manifest that omits the
+    top-level ``repo``/``release_tag`` still reaches the asset: prefer the
+    artifact's own repo, then the manifest repo, then the source repo; and prefer
+    the manifest release tag, then the tag we actually installed the prebuilt
+    from (its sibling on the same release). Without this the empty fields drop the
+    only working URL and hydration falls through to the 404-ing commit archive.
+    """
+    if not exact_source or source_archive is None:
+        return None
+    return release_asset_download_url(
+        source_archive.repo or approved_checksums.repo or source_repo,
+        approved_checksums.release_tag or release_tag,
+        source_archive.asset_name,
+    )
+
+
 def selected_source_archive_metadata(
     checksums: ApprovedReleaseChecksums, llama_tag: str
 ) -> tuple[str, str | None]:
@@ -6389,12 +6417,8 @@ def validate_prebuilt_choice(
     )
     # For an exact (mix) source the merge commit lives only in the release asset,
     # not in any repo, so fetch the asset directly; codeload stays the fallback.
-    asset_url = (
-        release_asset_download_url(
-            approved_checksums.repo, approved_checksums.release_tag, source_archive.asset_name
-        )
-        if exact_source and source_archive is not None
-        else None
+    asset_url = exact_source_asset_url(
+        approved_checksums, source_repo, source_archive, exact_source, release_tag
     )
     if exact_source:
         log(f"hydrating exact llama.cpp source for {source_repo}@{source_ref} into {install_dir}")
