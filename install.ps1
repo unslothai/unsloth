@@ -482,6 +482,37 @@ function Install-UnslothStudio {
         }
     }
 
+    # Retry Invoke-InstallCommand on transient uv download failures with backoff.
+    # Returns the last exit code on permanent failure so rollback still fires.
+    function Invoke-InstallCommandRetry {
+        param(
+            [Parameter(Mandatory = $true, Position = 0)][ScriptBlock]$Command,
+            [string]$Label = "install step"
+        )
+        # Sanitize overrides to a default of 3 (a typo must not disable retries; =1 disables).
+        # TryParse with bounds avoids an Int32 overflow throw. Bounds: 1..100 retries, 0..3600s.
+        $maxAttempts = 3
+        $parsedAttempts = 0
+        if ([int]::TryParse($env:UNSLOTH_INSTALL_RETRIES, [ref]$parsedAttempts) -and $parsedAttempts -ge 1 -and $parsedAttempts -le 100) {
+            $maxAttempts = $parsedAttempts
+        }
+        $delay = 3
+        $parsedDelay = 0
+        if ([int]::TryParse($env:UNSLOTH_INSTALL_RETRY_DELAY, [ref]$parsedDelay) -and $parsedDelay -ge 0 -and $parsedDelay -le 3600) {
+            $delay = $parsedDelay
+        }
+        $attempt = 1
+        while ($true) {
+            $code = Invoke-InstallCommand $Command
+            if ($code -eq 0) { return 0 }
+            if ($attempt -ge $maxAttempts) { return $code }
+            substep ("retrying ""$Label"" after transient failure (attempt $($attempt + 1)/$maxAttempts, waiting ${delay}s)...") "Yellow"
+            Start-Sleep -Seconds $delay
+            $attempt++
+            $delay = $delay * 2
+        }
+    }
+
     function New-StudioShortcuts {
         param(
             [Parameter(Mandatory = $true)][string]$UnslothExePath
@@ -506,7 +537,6 @@ function Install-UnslothStudio {
             }
             $appDir = $StudioDataDir
             $launcherPs1 = Join-Path $appDir "launch-studio.ps1"
-            $launcherVbs = Join-Path $appDir "launch-studio.vbs"
             $desktopDir = [Environment]::GetFolderPath("Desktop")
             $desktopLink = if ($desktopDir -and $desktopDir.Trim()) {
                 Join-Path $desktopDir "Unsloth Studio.lnk"
@@ -799,17 +829,30 @@ exit 0
             # even when install.ps1 is executed from PowerShell 7.
             $utf8Bom = New-Object System.Text.UTF8Encoding($true)
             [System.IO.File]::WriteAllText($launcherPs1, $launcherContent, $utf8Bom)
-            $vbsContent = @"
-Set shell = CreateObject("WScript.Shell")
-cmd = "powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""$launcherPs1"""
-shell.Run cmd, 0, False
-"@
-            # WSH handles UTF-16LE reliably for .vbs files with non-ASCII paths.
-            Set-Content -LiteralPath $launcherVbs -Value $vbsContent -Encoding Unicode -Force
+            # No .vbs launcher is written. A WScript.Shell .vbs that spawns a hidden
+            # ExecutionPolicy-Bypass PowerShell is exactly the shape VBS-dropper
+            # heuristics score (e.g. Kaspersky HEUR:Trojan.VBS.Agent.gen). The .lnk
+            # shortcuts instead point straight at powershell.exe running
+            # launch-studio.ps1 with a hidden window (selected below).
+
+            # Delete any launch-studio.vbs left by a pre-hardening install. New
+            # installs no longer generate it, but an upgrade that merely stopped
+            # generating it would leave the exact file AV flags on disk, so remove
+            # it explicitly. Covers default and env-mode installs (same $appDir).
+            $legacyLauncherVbs = Join-Path $appDir "launch-studio.vbs"
+            if (Test-Path -LiteralPath $legacyLauncherVbs) {
+                Remove-Item -LiteralPath $legacyLauncherVbs -Force -ErrorAction SilentlyContinue
+            }
 
             # Prefer bundled icon from local clone/dev installs.
             # If not available, best-effort download from raw GitHub.
             # We only attach the icon if the resulting file has a valid ICO header.
+            # Snapshot the existing icon first so we can tell whether it actually
+            # changed and gate the heavier icon-cache refresh on a real change.
+            $preIconHash = $null
+            if (Test-Path -LiteralPath $iconPath) {
+                try { $preIconHash = (Get-FileHash -LiteralPath $iconPath -Algorithm SHA256).Hash } catch {}
+            }
             $hasValidIcon = $false
             if ($bundledIcon -and (Test-Path -LiteralPath $bundledIcon)) {
                 try {
@@ -845,6 +888,24 @@ shell.Run cmd, 0, False
                 }
             }
 
+            # Did the icon content actually change vs the previous install?
+            # Only a real change (or a first/removed icon) should trigger the heavy
+            # refresh; a no-op reinstall with no icon at all must not.
+            $iconChanged = $false
+            if ($hasValidIcon) {
+                if (-not $preIconHash) {
+                    $iconChanged = $true
+                } else {
+                    try {
+                        $postIconHash = (Get-FileHash -LiteralPath $iconPath -Algorithm SHA256).Hash
+                        $iconChanged = ($postIconHash -ne $preIconHash)
+                    } catch { $iconChanged = $true }
+                }
+            } elseif ($preIconHash) {
+                # A previously present icon was removed or invalidated.
+                $iconChanged = $true
+            }
+
             # Env-mode: skip persistent Desktop / Start Menu .lnk shortcuts
             # that may point at a deleted workspace; launcher + icon stay.
             if ($StudioRedirectMode -eq 'env') {
@@ -852,8 +913,22 @@ shell.Run cmd, 0, False
                 return
             }
 
-            $wscriptExe = Join-Path $env:SystemRoot "System32\wscript.exe"
-            $shortcutArgs = "//B //Nologo `"$launcherVbs`""
+            # Whether this is effectively a first install (no pre-existing .lnk).
+            # Used to gate the heavier icon-cache refresh below so a no-op reinstall
+            # does not repeatedly clear caches / restart StartMenuExperienceHost --
+            # a behavioral cluster AV heuristics can score as dropper-like.
+            $firstInstall = -not (
+                ($desktopLink -and (Test-Path -LiteralPath $desktopLink)) -or
+                ($startMenuLink -and (Test-Path -LiteralPath $startMenuLink))
+            )
+
+            # Launch transport for the shortcuts: powershell.exe runs
+            # launch-studio.ps1 with a hidden window. We deliberately avoid a
+            # .vbs/WScript.Shell wrapper -- that script-engine shape is what AV
+            # VBS-dropper heuristics score (Kaspersky HEUR:Trojan.VBS.Agent.gen).
+            $powershellForLnk = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
+            $shortcutTarget = $powershellForLnk
+            $shortcutArgs = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$launcherPs1`""
 
             try {
                 $wshell = New-Object -ComObject WScript.Shell
@@ -863,9 +938,11 @@ shell.Run cmd, 0, False
                     if (-not $linkPath -or [string]::IsNullOrWhiteSpace($linkPath)) { continue }
                     try {
                         $shortcut = $wshell.CreateShortcut($linkPath)
-                        $shortcut.TargetPath = $wscriptExe
+                        $shortcut.TargetPath = $shortcutTarget
                         $shortcut.Arguments = $shortcutArgs
                         $shortcut.WorkingDirectory = $appDir
+                        # Start minimized so the brief PowerShell console flash is muted.
+                        $shortcut.WindowStyle = 7
                         $shortcut.Description = "Launch Unsloth Studio"
                         if ($hasValidIcon) {
                             $shortcut.IconLocation = "$iconPath,0"
@@ -879,15 +956,13 @@ shell.Run cmd, 0, False
                 }
                 if ($createdShortcutCount -gt 0) {
                     substep "Created Unsloth Studio shortcut"
-                    # Force Explorer to re-read each new shortcut's icon so it renders
-                    # immediately instead of a stale/generic entry (a same-name .lnk
-                    # recreated across reinstalls keeps Explorer's cached per-item icon).
-                    # The reliable, non-disruptive fix (no explorer restart) is a per-item
-                    # SHChangeNotify SHCNE_UPDATEITEM + SHCNF_PATHW per .lnk; the global
-                    # SHCNE_ASSOCCHANGED broadcast alone does NOT recover a stale item.
-                    # Also clear the on-disk icon cache (covers heavier staleness).
-                    try { & "$env:SystemRoot\System32\ie4uinit.exe" -ClearIconCache 2>$null } catch {}
-                    try { & "$env:SystemRoot\System32\ie4uinit.exe" -show 2>$null } catch {}
+                    # Always do the cheap, non-disruptive per-item refresh so a
+                    # rewritten same-name .lnk renders with its new target/icon
+                    # immediately (a same-name .lnk recreated across reinstalls keeps
+                    # Explorer's cached per-item icon). The reliable fix (no explorer
+                    # restart) is a per-item SHChangeNotify SHCNE_UPDATEITEM +
+                    # SHCNF_PATHW per .lnk; the global SHCNE_ASSOCCHANGED broadcast
+                    # alone does NOT recover a stale item.
                     try {
                         Add-Type -Namespace UnslothShell -Name IconRefresh -MemberDefinition '[System.Runtime.InteropServices.DllImport("shell32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)] public static extern void SHChangeNotify(int eventId, uint flags, string item1, System.IntPtr item2);' -ErrorAction SilentlyContinue
                         # SHCNE_UPDATEITEM (0x00002000) + SHCNF_PATHW (0x0005) per shortcut
@@ -897,21 +972,31 @@ shell.Run cmd, 0, False
                         # SHCNE_ASSOCCHANGED (0x08000000) global refresh (belt-and-suspenders)
                         [UnslothShell.IconRefresh]::SHChangeNotify(0x08000000, 0, $null, [System.IntPtr]::Zero)
                     } catch {}
-                    # Win11's Start Menu (StartMenuExperienceHost) keeps its OWN
-                    # pre-rendered tile-icon cache that ie4uinit/explorer restart do NOT
-                    # invalidate, so a rewritten same-name shortcut shows the old tile
-                    # until the host restarts. Drop only the render caches (NEVER
-                    # start2.bin -- the pinned layout) and let the host rebuild.
-                    # Best-effort; Win10 has no such host (Test-Path skips it).
-                    try {
-                        $smehTemp = Join-Path $env:LOCALAPPDATA "Packages\Microsoft.Windows.StartMenuExperienceHost_cw5n1h2txyewy\TempState"
-                        if (Test-Path -LiteralPath $smehTemp) {
-                            Get-ChildItem -LiteralPath $smehTemp -Filter "TileCache_*" -ErrorAction SilentlyContinue |
-                                Remove-Item -Force -ErrorAction SilentlyContinue
-                            Remove-Item -LiteralPath (Join-Path $smehTemp "StartUnifiedTileModelCache.dat") -Force -ErrorAction SilentlyContinue
-                            Stop-Process -Name StartMenuExperienceHost -Force -ErrorAction SilentlyContinue
-                        }
-                    } catch {}
+                    # Heavier on-disk icon-cache clear + StartMenuExperienceHost tile
+                    # rebuild only when the icon actually changed or this is a first
+                    # install. Running "clear icon cache + kill StartMenuExperienceHost"
+                    # on every no-op reinstall is a dropper-like behavioral cluster and
+                    # is unnecessary when the icon is unchanged (the per-item notify
+                    # above already refreshes the rewritten shortcut).
+                    if ($firstInstall -or $iconChanged) {
+                        try { & "$env:SystemRoot\System32\ie4uinit.exe" -ClearIconCache 2>$null } catch {}
+                        try { & "$env:SystemRoot\System32\ie4uinit.exe" -show 2>$null } catch {}
+                        # Win11's Start Menu (StartMenuExperienceHost) keeps its OWN
+                        # pre-rendered tile-icon cache that ie4uinit/explorer restart do NOT
+                        # invalidate, so a rewritten same-name shortcut shows the old tile
+                        # until the host restarts. Drop only the render caches (NEVER
+                        # start2.bin -- the pinned layout) and let the host rebuild.
+                        # Best-effort; Win10 has no such host (Test-Path skips it).
+                        try {
+                            $smehTemp = Join-Path $env:LOCALAPPDATA "Packages\Microsoft.Windows.StartMenuExperienceHost_cw5n1h2txyewy\TempState"
+                            if (Test-Path -LiteralPath $smehTemp) {
+                                Get-ChildItem -LiteralPath $smehTemp -Filter "TileCache_*" -ErrorAction SilentlyContinue |
+                                    Remove-Item -Force -ErrorAction SilentlyContinue
+                                Remove-Item -LiteralPath (Join-Path $smehTemp "StartUnifiedTileModelCache.dat") -Force -ErrorAction SilentlyContinue
+                                Stop-Process -Name StartMenuExperienceHost -Force -ErrorAction SilentlyContinue
+                            }
+                        } catch {}
+                    }
                 } else {
                     substep "no Unsloth Studio shortcuts were created" "Yellow"
                 }
@@ -1179,7 +1264,7 @@ shell.Run cmd, 0, False
 
     # ── Install uv ──
     Write-TauriLog "STEP" "Installing uv package manager"
-    $UvMinVersion = "0.7.22"
+    $UvMinVersion = "0.8.16"
     function Test-UvVersionOk {
         $cmd = Get-Command uv -ErrorAction SilentlyContinue
         if (-not $cmd) { return $false }
@@ -1248,6 +1333,15 @@ shell.Run cmd, 0, False
     # default on slow machines. Default to 180s, preserving overrides ("0" disables).
     if (-not $env:UV_COMPILE_BYTECODE_TIMEOUT) {
         $env:UV_COMPILE_BYTECODE_TIMEOUT = "180"
+    }
+
+    # uv >= 0.8.16 retries HTTP/2 streaming body errors; raise retries and read
+    # timeout for large wheel downloads. User-provided values are preserved.
+    if (-not $env:UV_HTTP_RETRIES) {
+        $env:UV_HTTP_RETRIES = "5"
+    }
+    if (-not $env:UV_HTTP_TIMEOUT) {
+        $env:UV_HTTP_TIMEOUT = "180"
     }
 
     # ── Create venv (migrate old layout if possible, otherwise fresh) ──
@@ -1551,7 +1645,9 @@ shell.Run cmd, 0, False
             $HipSdkInstalled = $true   # binary found → SDK is installed regardless of device state
             try {
                 $hipOut = & $hipinfoExe.Source 2>&1 | Out-String
-                if ($LASTEXITCODE -eq 0 -and $hipOut -match "(?i)gcnArchName") {
+                if ($hipOut -match "(?i)gcnArchName") {
+                    # hipinfo can crash after printing gcnArchName (#6043).
+                    # Once the arch is printed, keep the ROCm wheel path.
                     $HasROCm = $true
                     $_hipAllArches = @([regex]::Matches($hipOut, "(?im)^\s*gcnArchName\s*:\s*(\S+)") | ForEach-Object { ($_.Groups[1].Value -split ':')[0].Trim().ToLower() })
                     $_hipVisIdx = if ($env:HIP_VISIBLE_DEVICES -match '^\d') { [int]($env:HIP_VISIBLE_DEVICES -split ',')[0] } elseif ($env:ROCR_VISIBLE_DEVICES -match '^\d') { [int]($env:ROCR_VISIBLE_DEVICES -split ',')[0] } else { 0 }
@@ -1561,8 +1657,13 @@ shell.Run cmd, 0, False
                     } else {
                         $ROCmGpuLabel = "AMD ROCm"
                     }
+                    if ($LASTEXITCODE -ne 0) {
+                        Write-Host "  [INFO] hipinfo exited with code $LASTEXITCODE but reported gcnArchName -- treating as ROCm-capable (see #6043)" -ForegroundColor Cyan
+                    }
                 } elseif ($LASTEXITCODE -ne 0) {
-                    # hipinfo ran but returned a HIP runtime error (e.g. "no ROCm-capable device detected")
+                    # hipinfo ran but returned a HIP runtime error without any gcnArchName
+                    # output (e.g. "no ROCm-capable device detected"), or crashed before
+                    # printing device info.
                     $firstLine = ($hipOut -split '\r?\n' | Where-Object { $_.Trim() } | Select-Object -First 1)
                     Write-Host "  [WARN] hipinfo returned a HIP runtime error (exit $LASTEXITCODE)" -ForegroundColor Yellow
                     Write-Host "         $firstLine" -ForegroundColor Yellow
@@ -1921,21 +2022,21 @@ shell.Run cmd, 0, False
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.6.6" unsloth-zoo }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated no-torch)" { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.6.7" unsloth-zoo }
             if ($baseInstallExit -eq 0) {
                 # Resolve pydantic WITH deps so pip pins pydantic-core
                 # to the matching version (no-torch-runtime.txt below
                 # is --no-deps). All transitive deps are torch-free.
-                $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython pydantic }
+                $baseInstallExit = Invoke-InstallCommandRetry -Label "install pydantic" { uv pip install --python $VenvPython pydantic }
             }
             if ($baseInstallExit -eq 0) {
                 $NoTorchReq = Find-NoTorchRuntimeFile
                 if ($NoTorchReq) {
-                    $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --no-deps -r $NoTorchReq }
+                    $baseInstallExit = Invoke-InstallCommandRetry -Label "install no-torch runtime deps" { uv pip install --python $VenvPython --no-deps -r $NoTorchReq }
                 }
             }
         } else {
-            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.6.6" unsloth-zoo }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { uv pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.6.7" unsloth-zoo }
         }
         if ($baseInstallExit -ne 0) {
             Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
@@ -1949,7 +2050,7 @@ shell.Run cmd, 0, False
                 return (Exit-InstallFailure "Failed to overlay local repo (exit code $overlayExit)" $overlayExit)
             }
             substep "overlaying unsloth-zoo from git main..."
-            $zooOverlayExit = Invoke-InstallCommand { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth-zoo "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo" }
+            $zooOverlayExit = Invoke-InstallCommandRetry -Label "overlay unsloth-zoo (git main)" { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth-zoo "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo" }
             if ($zooOverlayExit -ne 0) {
                 Write-Host "[ERROR] Failed to overlay unsloth-zoo (exit code $zooOverlayExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to overlay unsloth-zoo (exit code $zooOverlayExit)" $zooOverlayExit)
@@ -1962,7 +2063,7 @@ shell.Run cmd, 0, False
             Write-TauriLog "STEP" "Installing PyTorch (AMD ROCm Windows)"
             substep "installing PyTorch from $ROCmIndexUrl..."
             $torchSpec = if ($ROCmTorchFloor) { $ROCmTorchFloor } else { "torch" }
-            $torchInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --force-reinstall --index-url $ROCmIndexUrl $torchSpec torchvision torchaudio }
+            $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch (AMD ROCm)" { uv pip install --python $VenvPython --force-reinstall --index-url $ROCmIndexUrl $torchSpec torchvision torchaudio }
             if ($torchInstallExit -ne 0) {
                 Write-Host "[ERROR] Failed to install AMD ROCm PyTorch (exit code $torchInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install AMD ROCm PyTorch (exit code $torchInstallExit)" $torchInstallExit)
@@ -1970,7 +2071,7 @@ shell.Run cmd, 0, False
         } else {
             Write-TauriLog "STEP" "Installing PyTorch"
             substep "installing PyTorch ($TorchIndexUrl)..."
-            $torchInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython "torch>=2.4,<2.11.0" torchvision torchaudio --index-url $TorchIndexUrl }
+            $torchInstallExit = Invoke-InstallCommandRetry -Label "install PyTorch" { uv pip install --python $VenvPython "torch>=2.4,<2.11.0" torchvision torchaudio --index-url $TorchIndexUrl }
             if ($torchInstallExit -ne 0) {
                 Write-Host "[ERROR] Failed to install PyTorch (exit code $torchInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install PyTorch (exit code $torchInstallExit)" $torchInstallExit)
@@ -1982,21 +2083,21 @@ shell.Run cmd, 0, False
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "unsloth>=2026.6.6" unsloth-zoo }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (no-torch)" { uv pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "unsloth>=2026.6.7" unsloth-zoo }
             if ($baseInstallExit -eq 0) {
                 # Same pydantic-with-deps trick as the migrated branch.
-                $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython pydantic }
+                $baseInstallExit = Invoke-InstallCommandRetry -Label "install pydantic" { uv pip install --python $VenvPython pydantic }
             }
             if ($baseInstallExit -eq 0) {
                 $NoTorchReq = Find-NoTorchRuntimeFile
                 if ($NoTorchReq) {
-                    $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --no-deps -r $NoTorchReq }
+                    $baseInstallExit = Invoke-InstallCommandRetry -Label "install no-torch runtime deps" { uv pip install --python $VenvPython --no-deps -r $NoTorchReq }
                 }
             }
         } elseif ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.6.6" unsloth-zoo }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { uv pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.6.7" unsloth-zoo }
         } else {
-            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --upgrade-package unsloth -- "$PackageName" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth" { uv pip install --python $VenvPython --upgrade-package unsloth -- "$PackageName" }
         }
         if ($baseInstallExit -ne 0) {
             Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
@@ -2011,7 +2112,7 @@ shell.Run cmd, 0, False
                 return (Exit-InstallFailure "Failed to overlay local repo (exit code $overlayExit)" $overlayExit)
             }
             substep "overlaying unsloth-zoo from git main..."
-            $zooOverlayExit = Invoke-InstallCommand { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth-zoo "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo" }
+            $zooOverlayExit = Invoke-InstallCommandRetry -Label "overlay unsloth-zoo (git main)" { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth-zoo "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo" }
             if ($zooOverlayExit -ne 0) {
                 Write-Host "[ERROR] Failed to overlay unsloth-zoo (exit code $zooOverlayExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to overlay unsloth-zoo (exit code $zooOverlayExit)" $zooOverlayExit)
@@ -2022,7 +2123,7 @@ shell.Run cmd, 0, False
         Write-TauriLog "STEP" "Installing unsloth"
         substep "installing unsloth (this may take a few minutes)..."
         if ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython unsloth-zoo "unsloth>=2026.6.6" --torch-backend=auto }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { uv pip install --python $VenvPython unsloth-zoo "unsloth>=2026.6.7" --torch-backend=auto }
             if ($baseInstallExit -ne 0) {
                 Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install unsloth (exit code $baseInstallExit)" $baseInstallExit)
@@ -2034,13 +2135,13 @@ shell.Run cmd, 0, False
                 return (Exit-InstallFailure "Failed to overlay local repo (exit code $overlayExit)" $overlayExit)
             }
             substep "overlaying unsloth-zoo from git main..."
-            $zooOverlayExit = Invoke-InstallCommand { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth-zoo "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo" }
+            $zooOverlayExit = Invoke-InstallCommandRetry -Label "overlay unsloth-zoo (git main)" { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth-zoo "unsloth-zoo @ git+https://github.com/unslothai/unsloth-zoo" }
             if ($zooOverlayExit -ne 0) {
                 Write-Host "[ERROR] Failed to overlay unsloth-zoo (exit code $zooOverlayExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to overlay unsloth-zoo (exit code $zooOverlayExit)" $zooOverlayExit)
             }
         } else {
-            $baseInstallExit = Invoke-InstallCommand { uv pip install --python $VenvPython --torch-backend=auto -- "$PackageName" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { uv pip install --python $VenvPython --torch-backend=auto -- "$PackageName" }
             if ($baseInstallExit -ne 0) {
                 Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install unsloth (exit code $baseInstallExit)" $baseInstallExit)

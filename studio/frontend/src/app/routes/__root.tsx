@@ -6,6 +6,7 @@ import { Navbar } from "@/components/navbar";
 import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { SettingsDialog, useSettingsDialogStore } from "@/features/settings";
+import { RemoteCodeConsentDialog } from "@/features/security";
 import { clearNewChatDraft, useChatRuntimeStore } from "@/features/chat";
 import { useTrainingUnloadGuard } from "@/features/training";
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
@@ -118,6 +119,8 @@ function RootLayout() {
         const chatRuntime = useChatRuntimeStore.getState();
         chatRuntime.setActiveThreadId(null);
         chatRuntime.setActiveProjectId(null);
+        chatRuntime.setIncognito(false);
+        if (chatRuntime.pendingSelection) chatRuntime.abandonStagedModel();
         void navigate({
           to: "/chat",
           search: { new: crypto.randomUUID() },
@@ -133,11 +136,14 @@ function RootLayout() {
     const chatRuntime = useChatRuntimeStore.getState();
     chatRuntime.setActiveProjectId(null);
     chatRuntime.setActiveThreadId(null);
+    chatRuntime.setIncognito(false);
+    if (chatRuntime.pendingSelection) chatRuntime.abandonStagedModel();
   }, [isChatRoute]);
 
   return (
     <AppProvider>
       <SettingsDialog />
+      <RemoteCodeConsentDialog />
       {hideNavbar ? (
         <main className="flex-1">
           <Suspense fallback={<RouteFallback />}>

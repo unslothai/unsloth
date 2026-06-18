@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch, getAuthToken } from "@/features/auth";
+import { refreshHardwareInfo } from "@/hooks/use-hardware-info";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 // First check shortly after load, then re-surface as an hourly reminder. The
@@ -30,6 +31,8 @@ export interface LlamaUpdateStatus {
   update_available: boolean;
   installed_tag: string | null;
   latest_tag: string | null;
+  // Download size of the prebuilt Update would fetch, in bytes (null if unknown).
+  update_size_bytes: number | null;
   job: LlamaUpdateJob;
 }
 
@@ -42,6 +45,8 @@ function parseStatus(value: unknown): LlamaUpdateStatus | null {
     update_available: s.update_available === true,
     installed_tag: typeof s.installed_tag === "string" ? s.installed_tag : null,
     latest_tag: typeof s.latest_tag === "string" ? s.latest_tag : null,
+    update_size_bytes:
+      typeof s.update_size_bytes === "number" ? s.update_size_bytes : null,
     job: {
       state: (job.state as LlamaUpdateJob["state"]) ?? "idle",
       message: typeof job.message === "string" ? job.message : "",
@@ -67,6 +72,11 @@ async function fetchStatus(
     return null;
   }
 }
+
+// Update probes force a refresh so a newly published build is not masked by the
+// backend's 24h release cache (the banner would otherwise lag up to a day). The
+// job-progress poll below stays cached; it only reads local job state.
+const recheckStatus = () => fetchStatus(true);
 
 interface UseLlamaUpdateCheckOptions {
   enabled?: boolean;
@@ -115,6 +125,7 @@ export function useLlamaUpdateCheck({
         setApplying(false);
         if (s.job.state === "success") {
           setVisible(false);
+          void refreshHardwareInfo();
           onDone?.({ ok: true, tag: s.job.to_tag });
         } else if (s.job.state === "error") {
           // Leave the banner up so the user can retry; clearing applying drops
@@ -161,13 +172,13 @@ export function useLlamaUpdateCheck({
     let canceled = false;
 
     const firstTimer = setTimeout(() => {
-      fetchStatus().then((s) => {
+      recheckStatus().then((s) => {
         if (!canceled) surfaceIfAvailable(s);
       });
     }, FIRST_CHECK_DELAY_MS);
 
     const reminder = setInterval(() => {
-      fetchStatus().then((s) => {
+      recheckStatus().then((s) => {
         if (!canceled) surfaceIfAvailable(s);
       });
     }, REMINDER_INTERVAL_MS);
@@ -194,7 +205,7 @@ export function useLlamaUpdateCheck({
     if (snoozeTimer.current) clearTimeout(snoozeTimer.current);
     snoozeTimer.current = setTimeout(() => {
       snoozeTimer.current = null;
-      fetchStatus().then(surfaceIfAvailable);
+      recheckStatus().then(surfaceIfAvailable);
     }, SNOOZE_DELAY_MS);
   }, [surfaceIfAvailable]);
 
