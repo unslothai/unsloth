@@ -130,6 +130,34 @@ export async function cleanupExport(): Promise<ExportOperationResponse> {
   return parseJson<ExportOperationResponse>(response);
 }
 
+/**
+ * Cancel the in-flight export by terminating its worker subprocess. Training
+ * and inference are left running. Always resolves (best-effort) so callers can
+ * fire it without guarding for a missing active run.
+ */
+export async function cancelExport(): Promise<ExportOperationResponse> {
+  const response = await authFetch("/api/export/cancel", { method: "POST" });
+  return parseJson<ExportOperationResponse>(response);
+}
+
+export interface ExportStatus {
+  current_checkpoint: string | null;
+  is_vision: boolean;
+  is_peft: boolean;
+  /** True while a load / export / cleanup operation is running on the backend. */
+  is_export_active: boolean;
+}
+
+/**
+ * Snapshot of the export backend, used to hydrate the runtime store on mount /
+ * page reload so a still-running export (started in another tab, or before a
+ * refresh) is reflected even though the in-memory store reset.
+ */
+export async function getExportStatus(): Promise<ExportStatus> {
+  const response = await authFetch("/api/export/status");
+  return parseJson<ExportStatus>(response);
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // Live export log stream (Server-Sent Events)
 // ─────────────────────────────────────────────────────────────────────

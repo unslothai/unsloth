@@ -50,40 +50,14 @@ logger = get_logger(__name__)
 async def load_checkpoint(
     request: LoadCheckpointRequest, current_subject: str = Depends(get_current_subject)
 ):
-    """Load a checkpoint into the export backend (ExportBackend.load_checkpoint)."""
+    """Load a checkpoint into the export backend (ExportBackend.load_checkpoint).
+
+    Export runs in its own subprocess and is allowed to run in parallel with
+    training and inference. We deliberately do NOT stop training or unload the
+    chat model here -- if the GPU runs out of memory the load/export fails with
+    a clear error instead of tearing down the user's other running workloads.
+    """
     try:
-        # Free GPU memory: shut down running inference/training subprocesses
-        # before loading the export checkpoint (they'd compete for VRAM).
-        try:
-            from core.inference import get_inference_backend
-            inf = get_inference_backend()
-            if inf.active_model_name:
-                logger.info(
-                    "Unloading inference model '%s' to free GPU memory for export",
-                    inf.active_model_name,
-                )
-                inf._shutdown_subprocess()
-                inf.active_model_name = None
-                inf.models.clear()
-        except Exception as e:
-            logger.warning("Could not unload inference model: %s", e)
-
-        try:
-            from core.training import get_training_backend
-            trn = get_training_backend()
-            if trn.is_training_active():
-                logger.info("Stopping active training to free GPU memory for export")
-                trn.stop_training()
-                # Wait for the training subprocess to exit, else it may still hold GPU memory.
-                for _ in range(60):  # up to 30s
-                    if not trn.is_training_active():
-                        break
-                    await asyncio.sleep(0.5)
-                else:
-                    logger.warning("Training subprocess did not exit within 30s, proceeding anyway")
-        except Exception as e:
-            logger.warning("Could not stop training: %s", e)
-
         backend = get_export_backend()
         # Run in a worker thread (spawns and waits on a subprocess, can take
         # minutes) so the event loop stays free to serve the live log SSE stream.
@@ -136,6 +110,28 @@ async def cleanup_export_memory(current_subject: str = Depends(get_current_subje
         )
 
 
+@router.post("/cancel", response_model = ExportOperationResponse)
+async def cancel_export(current_subject: str = Depends(get_current_subject)):
+    """Cancel the in-flight export by terminating its worker subprocess.
+
+    Only the export subprocess is killed; training and inference run in their
+    own subprocesses and keep going.
+    """
+    try:
+        backend = get_export_backend()
+        cancelled = await asyncio.to_thread(backend.cancel_export)
+        return ExportOperationResponse(
+            success = True,
+            message = "Export cancelled" if cancelled else "No active export to cancel",
+        )
+    except Exception as e:
+        logger.error(f"Error cancelling export: {e}", exc_info = True)
+        raise HTTPException(
+            status_code = 500,
+            detail = "Failed to cancel export",
+        )
+
+
 @router.get("/status", response_model = ExportStatusResponse)
 async def get_export_status(current_subject: str = Depends(get_current_subject)):
     """Get export backend status (loaded checkpoint, model type, PEFT flag)."""
@@ -145,6 +141,7 @@ async def get_export_status(current_subject: str = Depends(get_current_subject))
             current_checkpoint = backend.current_checkpoint,
             is_vision = bool(getattr(backend, "is_vision", False)),
             is_peft = bool(getattr(backend, "is_peft", False)),
+            is_export_active = bool(backend.is_export_active()),
         )
     except Exception as e:
         logger.error(f"Error getting export status: {e}", exc_info = True)

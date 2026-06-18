@@ -68,6 +68,10 @@ class ExportStatusResponse(BaseModel):
         False,
         description = "True if the loaded checkpoint is a PEFT (LoRA) model",
     )
+    is_export_active: bool = Field(
+        False,
+        description = "True while a load / export / cleanup operation is running",
+    )
 
 
 class ExportOperationResponse(BaseModel):

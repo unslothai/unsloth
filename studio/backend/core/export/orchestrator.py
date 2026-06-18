@@ -63,6 +63,9 @@ class ExportOrchestrator:
         self._run_start_seq: int = 0
         # True while an export op runs; SSE ends the stream 1s after this flips False.
         self._export_active: bool = False
+        # Set by cancel_export(); reset when a new load/export run starts. Lets the
+        # caller distinguish a user cancel from a genuine subprocess crash.
+        self._cancel_requested: bool = False
 
         atexit.register(self._cleanup)
         logger.info("ExportOrchestrator initialized (subprocess mode)")
@@ -118,6 +121,45 @@ class ExportOrchestrator:
     def is_export_active(self) -> bool:
         """True while an export / load / cleanup command is running."""
         return self._export_active
+
+    def was_cancelled(self) -> bool:
+        """True if the in-flight (or most recent) run was cancelled by the user."""
+        return self._cancel_requested
+
+    def cancel_export(self) -> bool:
+        """Terminate the in-flight export subprocess immediately.
+
+        An export op holds ``self._lock`` for its whole duration (blocked in
+        ``_wait_response``), so we deliberately do NOT take the lock here -- we
+        kill the worker process directly, which unblocks that wait and makes the
+        in-flight op return a failure the caller surfaces as "cancelled".
+
+        Only the export subprocess is touched; training and inference run in
+        their own subprocesses and are left untouched.
+
+        Returns True if a live subprocess was terminated, False if none ran.
+        """
+        self._cancel_requested = True
+        proc = self._proc
+        if proc is None or not proc.is_alive():
+            return False
+        logger.info(
+            "Export cancel requested: terminating export subprocess (pid=%s)",
+            proc.pid,
+        )
+        try:
+            proc.terminate()
+            proc.join(timeout = 5)
+        except Exception:
+            pass
+        if proc.is_alive():
+            logger.warning("Export subprocess survived terminate, killing")
+            try:
+                proc.kill()
+                proc.join(timeout = 3)
+            except Exception:
+                pass
+        return True
 
     # ------------------------------------------------------------------
     # Subprocess lifecycle
@@ -318,6 +360,7 @@ class ExportOrchestrator:
         with self._lock:
             # Fresh log buffer so the UI sees only this run's output.
             self.clear_logs()
+            self._cancel_requested = False
             self._export_active = True
             try:
                 # Always kill any existing subprocess and spawn fresh.
@@ -453,6 +496,7 @@ class ExportOrchestrator:
                 )
 
             self.clear_logs()
+            self._cancel_requested = False
             self._export_active = True
             try:
                 cmd = {"type": "export", "export_type": export_type, **params}

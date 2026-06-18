@@ -122,6 +122,7 @@ import {
   useTrainingRuntimeStore,
 } from "@/features/training";
 import type { TrainingRunSummary } from "@/features/training";
+import { useExportRuntimeStore } from "@/features/export";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { toast } from "@/lib/toast";
 import { ShutdownDialog } from "@/components/shutdown-dialog";
@@ -363,6 +364,9 @@ export function AppSidebar() {
   const setSelectedHistoryRunId = useTrainingRuntimeStore((s) => s.setSelectedHistoryRunId);
   // Running or starting up. Drives the Train spinner + New Chat / Return to Chat swap.
   const trainingInProgress = useTrainingRuntimeStore((s) => s.isTrainingRunning || s.isStarting);
+  // Export runs in the background (parallel with training/inference); reflect it
+  // on the Export nav item so it is visible from any tab.
+  const exportInProgress = useExportRuntimeStore((s) => s.isExporting);
   // On the Train tab, return to the live chat (preserving an in-flight generation)
   // instead of starting a new one, whenever a chat is running or its thread is still
   // active, or training is in progress.
@@ -1139,6 +1143,7 @@ export function AppSidebar() {
                     label={t("shell.navigation.export")}
                     active={pathname === "/export" || pathname.startsWith("/export/")}
                     disabled={chatOnly}
+                    spinner={exportInProgress}
                     onClick={() => {
                       if (chatOnly) return;
                       navigate({ to: "/export" });

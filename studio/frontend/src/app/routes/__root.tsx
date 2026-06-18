@@ -13,6 +13,7 @@ import {
   type ChatSearch,
 } from "@/features/chat";
 import { useTrainingUnloadGuard } from "@/features/training";
+import { useExportRuntimeLifecycle } from "@/features/export";
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
 import { useT, type TranslationKey } from "@/i18n";
 import {
@@ -130,6 +131,9 @@ function RootLayout() {
   const shouldMountChat = isChatRoute || chatMounted;
 
   useTrainingUnloadGuard();
+  // Global export driver: streams worker logs and tracks status from any route
+  // so an export keeps running and stays visible while training / chatting.
+  useExportRuntimeLifecycle();
 
   const matchedTitle = useMatches({
     select: (matches) => {
