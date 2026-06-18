@@ -359,6 +359,7 @@ function ModelRow({
   capabilities,
   hideOwner,
   downloaded,
+  showVision,
 }: {
   label: string;
   meta?: string | null;
@@ -376,6 +377,8 @@ function ModelRow({
   hideOwner?: boolean;
   /** Mark a row already on disk (shown in Recommended instead of being hidden). */
   downloaded?: boolean;
+  /** Show a Vision badge on the name (On Device, read from GGUF metadata). */
+  showVision?: boolean;
 }) {
   const exceeds = vramStatus === "exceeds";
   const showVramTooltip =
@@ -425,6 +428,20 @@ function ModelRow({
       </span>
       <span className="ml-auto flex shrink-0 items-center gap-1.5">
         {showCaps && <CapabilityIcons caps={caps} />}
+        {showVision && (
+          <span
+            title="Vision"
+            aria-label="Vision"
+            className="flex items-center gap-0.5 text-[9px] font-medium text-blue-400"
+          >
+            <HugeiconsIcon
+              icon={ViewIcon}
+              className="size-3"
+              strokeWidth={1.8}
+            />
+            Vision
+          </span>
+        )}
         {selected && (
           <DotTag
             tone="success"
@@ -530,6 +547,7 @@ function GgufVariantExpander({
   getDeleteVariantSuccessMessage,
   deleteDisabled = false,
   onDevice = false,
+  onHasVision,
 }: {
   repoId: string;
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
@@ -547,6 +565,8 @@ function GgufVariantExpander({
   /** On Device rows honor the Show all quantizations setting; Recommended and
    *  other browse lists always show every quant. */
   onDevice?: boolean;
+  /** Report GGUF vision support up so the parent row can badge it. */
+  onHasVision?: (hasVision: boolean) => void;
 }) {
   const [variants, setVariants] = useState<GgufVariantDetail[] | null>(null);
   const [defaultVariant, setDefaultVariant] = useState<string | null>(null);
@@ -567,6 +587,7 @@ function GgufVariantExpander({
         setVariants(res.variants);
         setDefaultVariant(res.default_variant);
         setHasVision(res.has_vision);
+        onHasVision?.(res.has_vision);
         setNativeContext(res.context_length ?? null);
       })
       .catch((err) => {
@@ -724,21 +745,25 @@ function GgufVariantExpander({
       }
       className="pl-4 border-l-2 border-accent/50 ml-3 my-1"
     >
-      <div className="px-2 py-1 flex items-center gap-1.5">
-        <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-          Quantizations
-        </span>
-        {hasVision && (
-          <span className="flex items-center gap-0.5 text-[9px] font-medium text-blue-400">
-            <HugeiconsIcon
-              icon={ViewIcon}
-              className="size-3"
-              strokeWidth={1.8}
-            />
-            Vision
+      {/* On Device shows the model name above, so the Quantizations heading is
+          redundant; its Vision badge is relayed to the name instead. */}
+      {!onDevice && (
+        <div className="px-2 py-1 flex items-center gap-1.5">
+          <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+            Quantizations
           </span>
-        )}
-      </div>
+          {hasVision && (
+            <span className="flex items-center gap-0.5 text-[9px] font-medium text-blue-400">
+              <HugeiconsIcon
+                icon={ViewIcon}
+                className="size-3"
+                strokeWidth={1.8}
+              />
+              Vision
+            </span>
+          )}
+        </div>
+      )}
       {displayVariants.map((v) => {
         const fit = getGgufFit(v.size_bytes);
         const oom = fit === "oom";
@@ -1102,6 +1127,14 @@ export function HubModelPicker({
 
   // Track which GGUF repo is expanded for variant selection
   const [expandedGguf, setExpandedGguf] = useState<string | null>(null);
+  // GGUF vision support per repo, reported by the expander once it has read the
+  // metadata, so On Device rows can show a Vision badge on the name.
+  const [visionByRepo, setVisionByRepo] = useState<Record<string, boolean>>({});
+  const reportVision = useCallback((repoId: string, hasVision: boolean) => {
+    setVisionByRepo((prev) =>
+      prev[repoId] === hasVision ? prev : { ...prev, [repoId]: hasVision },
+    );
+  }, []);
   // When on, On Device GGUF repos show their quantizations without a click.
   const expandQuantizations = useChatRuntimeStore((s) => s.expandQuantizations);
   // Repos the user clicked to collapse while expand-by-default is on. Kept in
@@ -2104,7 +2137,8 @@ export function HubModelPicker({
                     <div key={c.repo_id}>
                       <ModelRow
                         label={c.repo_id}
-                        meta={`GGUF · ${formatBytes(c.size_bytes)}`}
+                        meta="GGUF"
+                        showVision={visionByRepo[c.repo_id]}
                         selected={value === c.repo_id}
                         optionProps={hubModelList.getOptionProps(
                           optionKey,
@@ -2126,6 +2160,7 @@ export function HubModelPicker({
                         <GgufVariantExpander
                           repoId={c.repo_id}
                           onDevice={true}
+                          onHasVision={(v) => reportVision(c.repo_id, v)}
                           onSelect={onSelect}
                           parentOptionKey={optionKey}
                           onNavigatePastStart={() =>
