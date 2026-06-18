@@ -139,7 +139,6 @@ def list_switch_eligible_ids() -> list[str]:
     """
     try:
         from routes.models import _is_hidden_model
-
         return sorted(
             {
                 entry.loader_id
