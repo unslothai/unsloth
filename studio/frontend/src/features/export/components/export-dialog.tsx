@@ -252,7 +252,7 @@ export function ExportDialog({
   checkpoint,
   exportMethod,
   quantLevels,
-  estimatedSize: _estimatedSize,
+  estimatedSize,
   baseModelName,
   isAdapter,
   destination,
@@ -576,11 +576,14 @@ export function ExportDialog({
                   </span>
                 </div>
               )}
-              {/* TODO: unhide once estimated size comes from the backend API */}
-              {/* <div className="flex justify-between">
-            <span>Est. size</span>
-            <span className="font-medium text-foreground">{estimatedSize}</span>
-          </div> */}
+              {estimatedSize && (
+                <div className="flex justify-between">
+                  <span>Est. size</span>
+                  <span className="font-medium text-foreground">
+                    {estimatedSize}
+                  </span>
+                </div>
+              )}
             </div>
 
             {/* Live export output panel */}

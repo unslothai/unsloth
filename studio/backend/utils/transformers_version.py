@@ -127,8 +127,8 @@ _TRANSFORMERS_5_TOKENIZER_CLASSES: set[str] = {
 # Cache for dynamic tokenizer_config.json lookups (avoids repeated fetches).
 _tokenizer_class_cache: dict[str, bool] = {}
 
-# Cache for dynamic config.json lookups (architecture/model_type checks).
-_config_json_cache: dict[str, dict | None] = {}
+# config.json cache keyed on (model_name, token-hash) so authed/unauthed reads stay separate.
+_config_json_cache: dict[tuple[str, str | None], dict | None] = {}
 _config_needs_510_cache: dict[str, bool] = {}
 _config_needs_550_cache: dict[str, bool] = {}
 
@@ -344,39 +344,51 @@ def _check_tokenizer_config_needs_v5(model_name: str) -> bool:
         return False
 
 
-def _load_config_json(model_name: str) -> dict | None:
-    """Return parsed ``config.json`` for *model_name*, checking local files first."""
-    if model_name in _config_json_cache:
-        return _config_json_cache[model_name]
+def _load_config_json(model_name: str, hf_token: str | None = None) -> dict | None:
+    """Return parsed ``config.json`` for *model_name*, checking local files first.
+
+    ``hf_token`` authenticates the raw fetch so gated/private repos resolve. The
+    cache is keyed on the token so an unauthenticated miss never poisons a later
+    authenticated read.
+    """
+    import hashlib
+
+    tok = hashlib.sha256(hf_token.encode()).hexdigest()[:16] if hf_token else None
+    cache_key = (model_name, tok)
+    if cache_key in _config_json_cache:
+        return _config_json_cache[cache_key]
 
     local_cfg = Path(model_name) / "config.json"
     if local_cfg.is_file():
         try:
             with open(local_cfg) as f:
                 cfg = json.load(f)
-            _config_json_cache[model_name] = cfg
+            _config_json_cache[cache_key] = cfg
             return cfg
         except Exception as exc:
             logger.debug("Could not read %s: %s", local_cfg, exc)
-            _config_json_cache[model_name] = None
+            _config_json_cache[cache_key] = None
             return None
 
     if _env_offline():
-        _config_json_cache[model_name] = None
+        _config_json_cache[cache_key] = None
         return None
 
     import urllib.request
 
     url = f"https://huggingface.co/{model_name}/raw/main/config.json"
+    headers = {"User-Agent": "unsloth-studio"}
+    if hf_token:
+        headers["Authorization"] = f"Bearer {hf_token}"
     try:
-        req = urllib.request.Request(url, headers = {"User-Agent": "unsloth-studio"})
+        req = urllib.request.Request(url, headers = headers)
         with urllib.request.urlopen(req, timeout = 10) as resp:
             cfg = json.loads(resp.read().decode())
-        _config_json_cache[model_name] = cfg
+        _config_json_cache[cache_key] = cfg
         return cfg
     except Exception as exc:
         logger.debug("Could not fetch config.json for '%s': %s", model_name, exc)
-        _config_json_cache[model_name] = None
+        _config_json_cache[cache_key] = None
         return None
 
 
