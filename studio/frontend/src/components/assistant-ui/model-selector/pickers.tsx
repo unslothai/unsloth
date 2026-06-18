@@ -729,8 +729,6 @@ function GgufVariantExpander({
                 repoId={repoId}
                 quant={v.quant}
                 maxContext={nativeContext}
-                gpuGb={gpuGb}
-                systemRamGb={systemRamGb}
                 onLoad={() =>
                   handleVariantClick(v.quant, v.downloaded, v.size_bytes)
                 }

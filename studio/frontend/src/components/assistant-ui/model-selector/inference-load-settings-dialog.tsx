@@ -27,6 +27,7 @@ import {
 } from "@/components/ui/tooltip";
 import { estimateKvCache } from "@/features/chat/api/chat-api";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+import { useGpuInfo } from "@/hooks";
 import { Alert02Icon, InformationCircleIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
@@ -42,7 +43,7 @@ const MEM_BUDGET_FRACTION = 0.7;
 
 // Filled pill controls, all the same height/width so the rows line up.
 const FIELD_CLASS =
-  "h-8 w-[116px] rounded-full border-0 bg-black/[0.04] dark:bg-white/[0.05] px-3 text-[13px]";
+  "h-8 w-[132px] shrink-0 rounded-full border-0 bg-black/[0.04] dark:bg-white/[0.05] px-3 text-[13px]";
 const NUMBER_FIELD_CLASS = `${FIELD_CLASS} [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none`;
 
 // Slider range. The ceiling is the model's native max when known (passed in via
@@ -102,8 +103,6 @@ export function InferenceLoadSettingsDialog({
   repoId,
   quant,
   maxContext,
-  gpuGb,
-  systemRamGb,
   onLoad,
 }: {
   open: boolean;
@@ -111,8 +110,6 @@ export function InferenceLoadSettingsDialog({
   repoId: string;
   quant: string;
   maxContext?: number | null;
-  gpuGb?: number;
-  systemRamGb?: number;
   onLoad: () => void;
 }) {
   const setCustomContextLength = useChatRuntimeStore(
@@ -171,8 +168,10 @@ export function InferenceLoadSettingsDialog({
 
   // Warn when weights + KV cache at the chosen context exceed device memory.
   // The KV size is estimated by the backend (architecture-aware); the budget
-  // uses the VRAM + system RAM we already know about.
-  const budgetGb = MEM_BUDGET_FRACTION * ((gpuGb ?? 0) + (systemRamGb ?? 0));
+  // is VRAM plus system RAM, which also covers Mac unified memory (VRAM 0).
+  const gpu = useGpuInfo();
+  const budgetGb =
+    MEM_BUDGET_FRACTION * (gpu.memoryTotalGb + gpu.systemRamAvailableGb);
   const [memWarning, setMemWarning] = useState<{
     neededGb: number;
     budgetGb: number;
