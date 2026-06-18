@@ -1,10 +1,7 @@
 """Regression tests for `scripts/check_new_install_scripts.py`.
 
-The fixture lockfiles are tiny dicts written to `tmp_path` so the
-tests stay self-contained. The session-wide `network_blocker` fixture
-in conftest.py refuses any real-world socket connect; the scanner
-treats that block as "registry unreachable, emit finding anyway",
-which is the offline-safe path under test.
+Lockfiles are tiny dicts in tmp_path; the network_blocker fixture forces the
+scanner's offline path (registry unreachable -> emit finding anyway).
 """
 
 from __future__ import annotations
@@ -45,8 +42,6 @@ def _write(path: Path, content: dict) -> Path:
 
 
 # Lockfile fixtures
-
-
 def _v3_lockfile(packages: dict) -> dict:
     return {
         "name": "unsloth-theme",
@@ -69,8 +64,6 @@ def _v2_lockfile(packages: dict, dependencies: dict) -> dict:
 
 
 # Tests
-
-
 def test_no_new_install_scripts_exit_0(tmp_path: Path):
     """If base == head, nothing new can have been added."""
     same = _v3_lockfile(
@@ -137,7 +130,7 @@ def test_existing_dep_with_postinstall_ignored(tmp_path: Path):
         },
     }
     head_pkgs = dict(base_pkgs)
-    # An ENTIRELY UNRELATED non-install-script dep is added in head.
+    # Add an unrelated non-install-script dep in head.
     head_pkgs["node_modules/lodash"] = {
         "version": "4.17.21",
         "resolved": "https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz",
@@ -188,8 +181,7 @@ def test_v2_v3_lockfile_format_support(tmp_path: Path):
     )
     assert "v2-postinstall-dep" in result.stderr
 
-    # And again: same packages dict but lockfileVersion 3 -- should
-    # produce the same finding shape.
+    # Same packages as lockfileVersion 3 must give the same finding.
     base_v3 = _write(tmp_path / "base_v3.json", _v3_lockfile(base_pkgs))
     head_v3 = _write(tmp_path / "head_v3.json", _v3_lockfile(head_pkgs))
     result_v3 = _run(base_v3, head_v3)

@@ -878,6 +878,7 @@ from state.tool_approvals import resolve_tool_decision
 
 from core.inference.key_exchange import decrypt_api_key
 from core.inference.api_monitor import api_monitor
+from core.inference.llama_http import nonstreaming_client
 from core.inference.providers import get_provider_info, get_base_url
 from core.inference.external_provider import ExternalProviderClient
 from core.inference.chat_templates import resolve_effective_chat_template_override
@@ -1920,6 +1921,19 @@ _llama_cpp_backend = LlamaCppBackend()
 
 def get_llama_cpp_backend() -> LlamaCppBackend:
     return _llama_cpp_backend
+
+
+def _model_json_response(model, status_code: int = 200) -> Response:
+    """Serialize a pydantic response once via pydantic-core.
+
+    Equivalent body to ``JSONResponse(content = model.model_dump())`` but
+    avoids the dict round-trip plus Starlette's second ``json.dumps``.
+    """
+    return Response(
+        content = model.model_dump_json(),
+        media_type = "application/json",
+        status_code = status_code,
+    )
 
 
 @router.post("/load", response_model = LoadResponse)
@@ -4318,7 +4332,7 @@ async def openai_chat_completions(
                         )
                     ],
                 )
-                return JSONResponse(content = response.model_dump())
+                return _model_json_response(response)
 
     if monitor_id is None and not getattr(request.state, "skip_api_monitor", False):
         monitor_id = api_monitor.start(
@@ -4983,7 +4997,7 @@ async def openai_chat_completions(
                     _monitor_context_length(),
                 )
                 api_monitor.finish(monitor_id)
-                return JSONResponse(content = response.model_dump())
+                return _model_json_response(response)
 
             except Exception as e:
                 logger.error(f"Error during GGUF completion: {e}", exc_info = True)
@@ -5383,7 +5397,7 @@ async def openai_chat_completions(
                     )
                 ],
             )
-            return JSONResponse(content = response.model_dump())
+            return _model_json_response(response)
         except asyncio.CancelledError:
             cancel_event.set()
             backend.reset_generation_state()
@@ -5593,7 +5607,7 @@ async def openai_chat_completions(
             if _stats:
                 _monitor_usage(monitor_id, _stats.get("usage"))
             api_monitor.finish(monitor_id)
-            return JSONResponse(content = response.model_dump())
+            return _model_json_response(response)
 
         except Exception as e:
             backend.reset_generation_state()
@@ -5941,12 +5955,11 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
         return StreamingResponse(_stream(), media_type = "text/event-stream")
     else:
         try:
-            async with httpx.AsyncClient() as client:
-                resp = await client.post(
-                    target_url,
-                    json = body,
-                    timeout = _llama_non_streaming_generation_timeout(),
-                )
+            resp = await nonstreaming_client().post(
+                target_url,
+                json = body,
+                timeout = _llama_non_streaming_generation_timeout(),
+            )
         except asyncio.CancelledError:
             api_monitor.finish(monitor_id, "cancelled")
             raise
@@ -6011,12 +6024,11 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
         )
 
     try:
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(
-                target_url,
-                json = body,
-                timeout = _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
-            )
+        resp = await nonstreaming_client().post(
+            target_url,
+            json = body,
+            timeout = _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
+        )
     except asyncio.CancelledError:
         api_monitor.finish(monitor_id, "cancelled")
         raise
@@ -6649,7 +6661,7 @@ async def _responses_non_streaming(
         api_monitor.set_reply(monitor_id, text or _monitor_tool_calls_text(tool_calls))
         _monitor_usage(monitor_id, usage_data, _monitor_context_length())
         api_monitor.finish(monitor_id)
-        return JSONResponse(content = response.model_dump())
+        return _model_json_response(response)
     except asyncio.CancelledError:
         api_monitor.finish(monitor_id, "cancelled")
         raise
@@ -8253,7 +8265,7 @@ async def _anthropic_tool_non_streaming(
             output_tokens = usage.get("completion_tokens", 0),
         ),
     )
-    return JSONResponse(content = resp.model_dump())
+    return _model_json_response(resp)
 
 
 async def _anthropic_plain_non_streaming(run_gen, message_id, model_name):
@@ -8295,7 +8307,7 @@ async def _anthropic_plain_non_streaming(run_gen, message_id, model_name):
             output_tokens = usage.get("completion_tokens", 0),
         ),
     )
-    return JSONResponse(content = resp.model_dump())
+    return _model_json_response(resp)
 
 
 # =====================================================================
@@ -8611,12 +8623,11 @@ async def _anthropic_passthrough_non_streaming(
         backend_ctx = llama_backend.context_length,
     )
 
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            target_url,
-            json = body,
-            timeout = _llama_non_streaming_generation_timeout(),
-        )
+    resp = await nonstreaming_client().post(
+        target_url,
+        json = body,
+        timeout = _llama_non_streaming_generation_timeout(),
+    )
 
     if resp.status_code != 200:
         raise HTTPException(
@@ -8667,7 +8678,7 @@ async def _anthropic_passthrough_non_streaming(
             output_tokens = usage.get("completion_tokens", 0),
         ),
     )
-    return JSONResponse(content = resp_obj.model_dump())
+    return _model_json_response(resp_obj)
 
 
 # =====================================================================
@@ -9236,12 +9247,11 @@ async def _openai_passthrough_non_streaming(
     )
     while True:
         try:
-            async with httpx.AsyncClient() as client:
-                resp = await client.post(
-                    target_url,
-                    json = body,
-                    timeout = _llama_non_streaming_generation_timeout(),
-                )
+            resp = await nonstreaming_client().post(
+                target_url,
+                json = body,
+                timeout = _llama_non_streaming_generation_timeout(),
+            )
         except asyncio.CancelledError:
             api_monitor.finish(monitor_id, "cancelled")
             raise
