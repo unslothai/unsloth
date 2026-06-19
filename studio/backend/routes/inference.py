@@ -603,6 +603,7 @@ try:
     from core.inference import get_inference_backend
     from core.inference.llama_cpp import (
         LlamaCppBackend,
+        LlamaServerNotFoundError,
         _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
         _DEFAULT_MAX_TOKENS_FLOOR,
         _DEFAULT_STREAM_STALL_TIMEOUT_S,
@@ -638,6 +639,7 @@ except ImportError:
     from core.inference import get_inference_backend
     from core.inference.llama_cpp import (
         LlamaCppBackend,
+        LlamaServerNotFoundError,
         _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
         _DEFAULT_MAX_TOKENS_FLOOR,
         _DEFAULT_STREAM_STALL_TIMEOUT_S,
@@ -666,6 +668,12 @@ except ImportError:
         redact_native_paths,
         verify_native_path_lease,
     )
+
+
+def _is_llama_server_not_found(exc: BaseException) -> bool:
+    # importlib-loaded route modules can see a different class object than the
+    # test/runtime copy when llama_cpp was reloaded; match by name + base type.
+    return isinstance(exc, RuntimeError) and type(exc).__name__ == "LlamaServerNotFoundError"
 
 
 def _llama_non_streaming_generation_timeout() -> httpx.Timeout:
@@ -2149,8 +2157,6 @@ async def load_model(
 
     GGUF models load via llama-server (llama.cpp) instead of Unsloth.
     """
-    from core.inference.llama_cpp import LlamaServerNotFoundError
-
     native_grant_backed = False
     model_log_label = request.model_path
     try:
@@ -2700,6 +2706,9 @@ async def load_model(
         logger.warning("GGUF runtime missing while loading '%s': %s", model_log_label, e)
         raise HTTPException(status_code = 400, detail = str(e))
     except Exception as e:
+        if _is_llama_server_not_found(e):
+            logger.warning("GGUF runtime missing while loading '%s': %s", model_log_label, e)
+            raise HTTPException(status_code = 400, detail = str(e))
         # Friendlier message for models Unsloth cannot load.
         not_supported_hints = [
             "No config file found",
@@ -2808,8 +2817,6 @@ async def validate_model(
     Checks that ModelConfig.from_identifier() can resolve model_path, but does
     NOT load model weights into GPU memory.
     """
-    from core.inference.llama_cpp import LlamaServerNotFoundError
-
     native_grant_backed = False
     model_log_label = request.model_path
     try:
@@ -2925,6 +2932,9 @@ async def validate_model(
         logger.warning("GGUF runtime missing while validating '%s': %s", request.model_path, e)
         raise HTTPException(status_code = 400, detail = str(e))
     except Exception as e:
+        if _is_llama_server_not_found(e):
+            logger.warning("GGUF runtime missing while validating '%s': %s", request.model_path, e)
+            raise HTTPException(status_code = 400, detail = str(e))
         not_supported_hints = [
             "No config file found",
             "not yet supported",

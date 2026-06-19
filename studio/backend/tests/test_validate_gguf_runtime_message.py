@@ -50,7 +50,11 @@ class TestValidateGgufRuntimeMessage(unittest.TestCase):
 
     def test_missing_llama_server_returns_actionable_message(self):
         route = _load_route_module("inf_route_runtime_msg_1", "routes/inference.py")
-        err = self._validate(route, "unsloth/Qwen3-1.7B-GGUF", LlamaServerNotFoundError(_GGUF_MSG))
+        err = self._validate(
+            route,
+            "unsloth/Qwen3-1.7B-GGUF",
+            route.LlamaServerNotFoundError(_GGUF_MSG),
+        )
         self.assertEqual(err.status_code, 400)
         self.assertIn("unsloth studio setup", err.detail)
         self.assertIn("llama.cpp runtime", err.detail)
@@ -91,7 +95,11 @@ class TestLoadGgufRuntimeMessage(unittest.TestCase):
 
     def test_missing_llama_server_returns_actionable_message(self):
         route = _load_route_module("inf_route_load_runtime_msg_1", "routes/inference.py")
-        err = self._load(route, "unsloth/Qwen3-1.7B-GGUF", LlamaServerNotFoundError(_GGUF_MSG))
+        err = self._load(
+            route,
+            "unsloth/Qwen3-1.7B-GGUF",
+            route.LlamaServerNotFoundError(_GGUF_MSG),
+        )
         self.assertEqual(err.status_code, 400)
         self.assertIn("unsloth studio setup", err.detail)
         self.assertIn("llama.cpp runtime", err.detail)
