@@ -682,8 +682,16 @@ def get_models_folder_response() -> dict:
     # dir, not a user's explicit HF_HOME / HF_HUB_CACHE.
     try:
         path.mkdir(parents = True, exist_ok = True)
-    except OSError:
-        pass
+    except OSError as e:
+        raise HTTPException(
+            status_code = 500,
+            detail = f"Failed to create models folder: {path}: {e}",
+        ) from e
+    if not path.is_dir():
+        raise HTTPException(
+            status_code = 500,
+            detail = f"Models folder path is not a directory: {path}",
+        )
     return {"path": str(path)}
 
 
