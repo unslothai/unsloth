@@ -257,7 +257,7 @@ function stopPromptQueueSubscription({
   }
 }
 
-function resetPromptQueue(showToast = false) {
+function resetPromptQueue() {
   promptQueueGeneration += 1;
   promptQueueIsRunning = false;
   promptQueueItems = [];
@@ -269,13 +269,6 @@ function resetPromptQueue(showToast = false) {
   }
   stopPromptQueueSubscription();
   syncPromptQueueUI();
-  if (showToast) {
-    toast.success("Prompt queue complete");
-  }
-}
-
-function queueToastDescription(prompt: string) {
-  return prompt.length > 80 ? `${prompt.slice(0, 80)}...` : prompt;
 }
 
 function appendQueuedPrompt(item: PromptQueueItem) {
@@ -424,7 +417,7 @@ function syncPromptQueueUI() {
   const current = promptQueueIndex >= 0 ? Math.min(activeItemIndex + 1, total) : 0;
   const items = promptQueueItems
     .map((item, index): PromptQueueUIItem | null => {
-      if (index < activeItemIndex) {
+      if (index < activeItemIndex || item.dispatched) {
         return null;
       }
       const isActive = promptQueueIndex >= 0 && index === activeItemIndex;
@@ -601,15 +594,12 @@ function isActivePromptQueueTargetRunning(
 function advancePromptQueue() {
   const nextIndex = promptQueueIndex + 1;
   if (nextIndex >= promptQueueItems.length) {
-    resetPromptQueue(true);
+    resetPromptQueue();
     return;
   }
   promptQueueIndex = nextIndex;
   syncPromptQueueUI();
   const next = promptQueueItems[nextIndex];
-  toast(`Prompt ${nextIndex + 1} / ${promptQueueItems.length}`, {
-    description: queueToastDescription(next.prompt),
-  });
   promptQueueWaitingForTargetIdle = false;
   promptQueuePrevStoreRunning = false;
   scheduleQueuedPromptDispatch(next, 100);
@@ -674,9 +664,6 @@ function startPromptQueue(
       ...filtered.map((prompt) => createQueuedPrompt(prompt, target)),
     );
     syncPromptQueueUI();
-    toast.success("Added to prompt queue", {
-      description: `${filtered.length} prompt${filtered.length === 1 ? "" : "s"} queued.`,
-    });
     return;
   }
 
@@ -692,12 +679,6 @@ function startPromptQueue(
   promptQueueIsRunning = true;
   promptQueuePrevStoreRunning = shouldWaitForCurrentRun;
   syncPromptQueueUI();
-  toast(
-    shouldWaitForCurrentRun ? "Prompt queued" : `Prompt 1 / ${filtered.length}`,
-    {
-      description: queueToastDescription(filtered[0]),
-    },
-  );
   startPromptQueueSubscription();
   if (!shouldWaitForCurrentRun) {
     const first = promptQueueItems[0];
@@ -1168,7 +1149,7 @@ const ThreadComposerDock: FC<{
   onHeightChange?: (height: number | null) => void;
 }> = ({ disabled, threadId, onHeightChange }) => {
   const { overlay } = useGeneratedImageOverlay();
-  const queueVisible = usePromptQueueUI((s) => s.isRunning && s.total > 0);
+  const queueVisible = usePromptQueueUI((s) => s.items.length > 0);
 
   // Report dock height so the viewport reserves matching scroll space when
   // attachments or multiline input grow the composer.
@@ -3185,7 +3166,7 @@ const PromptQueueStack: FC = () => {
     setDraftPrompt("");
   }, [editingItemCanEdit, editingItemId]);
 
-  if (!isRunning || total === 0) {
+  if (!isRunning || items.length === 0) {
     return null;
   }
 
@@ -3282,16 +3263,14 @@ const PromptQueueStack: FC = () => {
                       <HugeiconsIcon icon={Edit03Icon} strokeWidth={2} />
                       Edit
                     </Button>
-                  ) : (
-                    <div className="h-7 w-[5.25rem]" aria-hidden={true} />
-                  )}
+                  ) : null}
                   <TooltipIconButton
                     tooltip="Remove from queue"
                     side="bottom"
                     type="button"
                     variant="ghost"
                     size="icon"
-                    className="size-7 justify-self-center text-muted-foreground/70 hover:text-destructive"
+                    className="col-start-3 size-7 justify-self-center text-muted-foreground/70 hover:text-destructive"
                     aria-label={`Remove queued prompt ${item.position}`}
                     disabled={!item.canRemove}
                     onClick={() => removePromptQueueItem(item.id)}
