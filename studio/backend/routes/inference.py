@@ -7606,21 +7606,6 @@ async def _responses_stream(
                     "delta": final_visible,
                 },
             )
-        if full_reasoning and not full_text and not tool_call_state:
-            for event in _ensure_message_open():
-                yield event
-            full_text = full_reasoning
-            api_monitor.set_reply(monitor_id, full_text)
-            yield _sse(
-                "response.output_text.delta",
-                {
-                    "type": "response.output_text.delta",
-                    "item_id": message_state["item_id"],
-                    "output_index": message_state["output_index"],
-                    "content_index": 0,
-                    "delta": full_text,
-                },
-            )
 
         close_items: list[tuple[int, str, dict[str, Any]]] = []
         if reasoning_state["opened"]:

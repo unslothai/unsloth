@@ -1,14 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tool-call XML parsing and stripping helpers.
+"""Lightweight tool-call XML parsing and stripping helpers.
 
-Extracted verbatim from studio/backend/core/inference/llama_cpp.py so external
-inference servers can reuse the logic without importing the inference
+External inference servers import this module without pulling in the inference
 orchestrator, structlog, httpx, or the rest of the studio backend.
-
-Regexes and bodies are byte-for-byte identical to the original; any change must
-preserve that. test_tool_healing_extraction_is_exact.py verifies via AST.
 """
 
 import json
