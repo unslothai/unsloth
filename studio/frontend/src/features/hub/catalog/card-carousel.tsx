@@ -126,6 +126,8 @@ export function CardCarousel<T>({
     if (!d.moved && Math.abs(dx) < 5) return;
     if (!d.moved) {
       d.moved = true;
+      // Snap fights the per-frame scrollLeft writes; disable it while dragging.
+      el.style.scrollSnapType = "none";
       el.setPointerCapture(d.id);
     }
     el.scrollLeft = d.left - dx;
@@ -137,7 +139,10 @@ export function CardCarousel<T>({
     if (d.moved) {
       // A drag just happened: swallow the click it would fire on a card.
       suppressClick.current = true;
-      scrollerRef.current?.releasePointerCapture?.(d.id);
+      const el = scrollerRef.current;
+      // Restore snap so the row settles on a card after the drag.
+      if (el) el.style.scrollSnapType = "";
+      el?.releasePointerCapture?.(d.id);
     }
     drag.current = null;
   }, []);
