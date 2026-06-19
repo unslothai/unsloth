@@ -50,8 +50,17 @@ if [ "$HAVE_APT" -eq 1 ]; then
     $SUDO apt-get install -y --no-install-recommends gcc-14 g++-14 >/dev/null 2>&1 || true
 fi
 
-# 3. Locate nvcc; install the CUDA toolkit if missing.
-find_nvcc() { command -v nvcc 2>/dev/null || ls /usr/local/cuda*/bin/nvcc 2>/dev/null | sort -V | tail -1; }
+# 3. Locate nvcc; install the CUDA toolkit if missing. Prefer the highest
+# /usr/local/cuda-<ver> toolkit: a stale unversioned `cuda` symlink or an older
+# nvcc earlier on PATH could otherwise win and rebuild with CUDA 12.x, re-hitting
+# the glibc>=2.41 / Blackwell clash this script exists to avoid. Fall back to a
+# PATH nvcc (e.g. conda) only when no versioned system toolkit is present.
+find_nvcc() {
+    local _v
+    _v="$(ls -d /usr/local/cuda-*/bin/nvcc 2>/dev/null | sort -V | tail -1)"
+    if [ -n "$_v" ]; then printf '%s\n' "$_v"; return 0; fi
+    command -v nvcc 2>/dev/null || ls /usr/local/cuda*/bin/nvcc 2>/dev/null | sort -V | tail -1
+}
 NVCC="$(find_nvcc)"
 if [ -z "$NVCC" ] && [ "$HAVE_APT" -eq 1 ]; then
     log "CUDA toolkit (nvcc) not found - installing CUDA 13.3 (matches torch cu13x; avoids glibc>=2.41 rsqrt clash)"
@@ -99,8 +108,14 @@ HCXX=g++; command -v g++-14 >/dev/null 2>&1 && HCXX=g++-14
 export CC="$HCC" CXX="$HCXX" CUDAHOSTCXX="$HCXX"
 
 # 5. CUDA arch from the GPU's compute capability (e.g. "12.1" -> 121). Fallback: native.
+# Only a purely-numeric capability is a valid CMAKE_CUDA_ARCHITECTURES; some WSL
+# GPU-PV / driver combos report "N/A", which CMake would reject (aborting an
+# otherwise-usable build) instead of letting "native" autodetect.
 CC_CAP="$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d ' .')"
-if [ -n "$CC_CAP" ]; then CUDA_ARCH="$CC_CAP"; else CUDA_ARCH="native"; fi
+case "$CC_CAP" in
+    ''|*[!0-9]*) CUDA_ARCH="native" ;;
+    *)           CUDA_ARCH="$CC_CAP" ;;
+esac
 
 # 6. Clone + build into ~/.unsloth/llama.cpp, honoring a UNSLOTH_LLAMA_TAG pin
 # (same var setup.sh uses) instead of always tracking ggml-org main.

@@ -1731,6 +1731,7 @@ if [ "$_HOST_SYSTEM" = "Linux" ] \
         && { [ "$_HOST_MACHINE" = "aarch64" ] || [ "$_HOST_MACHINE" = "arm64" ]; } \
         && { ! grep -qi microsoft /proc/version 2>/dev/null || [ "${UNSLOTH_WSL_LLAMA_DEFERRED:-0}" != "1" ]; } \
         && [ "${UNSLOTH_NO_LLAMA_CUDA:-0}" != "1" ] \
+        && [ "${_SKIP_GGUF_BUILD:-}" != true ] \
         && command -v nvidia-smi >/dev/null 2>&1 \
         && nvidia-smi -L 2>/dev/null | awk '/^GPU[[:space:]]+[0-9]+:/{found=1} END{exit !found}' \
         && ! _have_cuda_llama_server; then
