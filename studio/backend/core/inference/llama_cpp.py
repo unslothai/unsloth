@@ -1355,6 +1355,12 @@ class LlamaCppBackend:
         return f"http://127.0.0.1:{self._port}"
 
     @property
+    def _auth_headers(self) -> "Optional[dict[str, str]]":
+        """Bearer header matching the --api-key direct-stream mode uses, else
+        None (so unauthenticated llama-server calls don't get a spurious 401)."""
+        return {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
+
+    @property
     def model_identifier(self) -> Optional[str]:
         return self._model_identifier
 
@@ -6921,10 +6927,8 @@ class LlamaCppBackend:
         """
         url = f"{self.base_url}/completion"
         payload = {"prompt": "Hi", "n_predict": 4, "temperature": 0.0, "stream": False}
-        # Match the --api-key auth direct-stream mode uses, else a spurious 401.
-        headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
         try:
-            resp = httpx.post(url, json = payload, timeout = timeout, headers = headers)
+            resp = httpx.post(url, json = payload, timeout = timeout, headers = self._auth_headers)
         except Exception as e:
             logger.debug(f"MTP decode probe failed: {e}")
             return False
@@ -7194,6 +7198,33 @@ class LlamaCppBackend:
 
     # ── Generation (proxy to llama-server) ────────────────────────
 
+    @contextlib.contextmanager
+    def _open_stream(self, url: str, payload: dict, cancel_event):
+        """Open a streaming POST to llama-server, retrying through prefill, and
+        yield ``(response, first_token_deadline)`` once a 200 lands. Owns the
+        httpx.Client + auth headers for the stream's lifetime; raises
+        RuntimeError on a non-200. Shared scaffold for the streaming consumers,
+        which differ only in how they parse the SSE body."""
+        stream_timeout = httpx.Timeout(connect = 10, read = 0.5, write = 10, pool = 10)
+        with httpx.Client(
+            timeout = stream_timeout, limits = httpx.Limits(max_keepalive_connections = 0)
+        ) as client:
+            first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
+            with self._stream_with_retry(
+                client,
+                url,
+                payload,
+                cancel_event,
+                headers = self._auth_headers,
+                first_token_deadline = first_token_deadline,
+            ) as response:
+                if response.status_code != 200:
+                    error_body = response.read().decode()
+                    raise RuntimeError(
+                        f"llama-server returned {response.status_code}: {error_body}"
+                    )
+                yield response, first_token_deadline
+
     @staticmethod
     def _iter_text_cancellable(
         response: "httpx.Response",
@@ -7443,119 +7474,102 @@ class LlamaCppBackend:
         _metadata_finish_reason = None
 
         try:
-            # Prefill can use the long first-token timeout; body reads are lowered after headers.
-            stream_timeout = httpx.Timeout(connect = 10, read = 0.5, write = 10, pool = 10)
-            _auth_headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
-            with httpx.Client(
-                timeout = stream_timeout, limits = httpx.Limits(max_keepalive_connections = 0)
-            ) as client:
-                first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
-                with self._stream_with_retry(
-                    client,
-                    url,
-                    payload,
+            with self._open_stream(url, payload, cancel_event) as (
+                response,
+                first_token_deadline,
+            ):
+                buffer = ""
+                has_content_tokens = False
+                reasoning_text = ""
+                for raw_chunk in self._iter_text_cancellable(
+                    response,
                     cancel_event,
-                    headers = _auth_headers,
                     first_token_deadline = first_token_deadline,
-                ) as response:
-                    if response.status_code != 200:
-                        error_body = response.read().decode()
-                        raise RuntimeError(
-                            f"llama-server returned {response.status_code}: {error_body}"
-                        )
+                ):
+                    buffer += raw_chunk
+                    while "\n" in buffer:
+                        line, buffer = buffer.split("\n", 1)
+                        line = line.strip()
 
-                    buffer = ""
-                    has_content_tokens = False
-                    reasoning_text = ""
-                    for raw_chunk in self._iter_text_cancellable(
-                        response,
-                        cancel_event,
-                        first_token_deadline = first_token_deadline,
-                    ):
-                        buffer += raw_chunk
-                        while "\n" in buffer:
-                            line, buffer = buffer.split("\n", 1)
-                            line = line.strip()
+                        if not line:
+                            continue
+                        if line == "data: [DONE]":
+                            if in_thinking:
+                                if has_content_tokens:
+                                    # Real thinking + content: close the tag
+                                    cumulative += "</think>"
+                                    yield cumulative
+                                else:
+                                    # Only reasoning_content, no content:
+                                    # model put its whole reply in reasoning
+                                    # (e.g. Qwen3 always-think). Show it as
+                                    # the main response, not a thinking block.
+                                    cumulative = reasoning_text
+                                    yield cumulative
+                            _stream_done = True
+                            break  # exit inner while
+                        if not line.startswith("data: "):
+                            continue
 
-                            if not line:
+                        try:
+                            data = json.loads(line[6:])
+                            # Diffusion frame (per-step canvas) from the shim: forward untouched so
+                            # the frontend renders it in place. No assistant text, so it never enters
+                            # the cumulative content.
+                            if data.get("type") == "diffusion_frame":
+                                yield data
                                 continue
-                            if line == "data: [DONE]":
-                                if in_thinking:
-                                    if has_content_tokens:
-                                        # Real thinking + content: close the tag
+                            # Capture server timings/usage from final chunks.
+                            _chunk_timings = data.get("timings")
+                            if _chunk_timings:
+                                _metadata_timings = _chunk_timings
+                            _chunk_usage = data.get("usage")
+                            if _chunk_usage:
+                                _metadata_usage = _chunk_usage
+                            choices = data.get("choices", [])
+                            if choices:
+                                delta = choices[0].get("delta", {})
+                                _fr = choices[0].get("finish_reason")
+                                if _fr:
+                                    _metadata_finish_reason = _fr
+
+                                # Reasoning/thinking tokens: llama-server
+                                # sends these as "reasoning_content"; wrap
+                                # in <think> tags for the frontend parser.
+                                reasoning = delta.get("reasoning_content", "")
+                                if reasoning:
+                                    reasoning_text += reasoning
+                                    if not in_thinking:
+                                        cumulative += "<think>"
+                                        in_thinking = True
+                                    cumulative += reasoning
+                                    yield cumulative
+
+                                token = delta.get("content", "")
+                                if token:
+                                    has_content_tokens = True
+                                    if in_thinking:
                                         cumulative += "</think>"
-                                        yield cumulative
-                                    else:
-                                        # Only reasoning_content, no content:
-                                        # model put its whole reply in reasoning
-                                        # (e.g. Qwen3 always-think). Show it as
-                                        # the main response, not a thinking block.
-                                        cumulative = reasoning_text
-                                        yield cumulative
-                                _stream_done = True
-                                break  # exit inner while
-                            if not line.startswith("data: "):
-                                continue
-
-                            try:
-                                data = json.loads(line[6:])
-                                # Diffusion frame (per-step canvas) from the shim: forward untouched so
-                                # the frontend renders it in place. No assistant text, so it never enters
-                                # the cumulative content.
-                                if data.get("type") == "diffusion_frame":
-                                    yield data
-                                    continue
-                                # Capture server timings/usage from final chunks.
-                                _chunk_timings = data.get("timings")
-                                if _chunk_timings:
-                                    _metadata_timings = _chunk_timings
-                                _chunk_usage = data.get("usage")
-                                if _chunk_usage:
-                                    _metadata_usage = _chunk_usage
-                                choices = data.get("choices", [])
-                                if choices:
-                                    delta = choices[0].get("delta", {})
-                                    _fr = choices[0].get("finish_reason")
-                                    if _fr:
-                                        _metadata_finish_reason = _fr
-
-                                    # Reasoning/thinking tokens: llama-server
-                                    # sends these as "reasoning_content"; wrap
-                                    # in <think> tags for the frontend parser.
-                                    reasoning = delta.get("reasoning_content", "")
-                                    if reasoning:
-                                        reasoning_text += reasoning
-                                        if not in_thinking:
-                                            cumulative += "<think>"
-                                            in_thinking = True
-                                        cumulative += reasoning
-                                        yield cumulative
-
-                                    token = delta.get("content", "")
-                                    if token:
-                                        has_content_tokens = True
-                                        if in_thinking:
-                                            cumulative += "</think>"
-                                            in_thinking = False
-                                        cumulative += token
-                                        yield cumulative
-                            except json.JSONDecodeError:
-                                logger.debug(f"Skipping malformed SSE line: {line[:100]}")
-                        if _stream_done:
-                            break  # exit outer for
-                    if _metadata_usage or _metadata_timings or _metadata_finish_reason:
-                        _metadata_usage = _backfill_usage_from_timings(
-                            _metadata_usage, _metadata_timings
-                        )
-                        yield {
-                            "type": "metadata",
-                            # Never None: a finish-only metadata event (no usage,
-                            # no timings) would otherwise crash consumers that do
-                            # usage.get(...) on the non-streaming paths.
-                            "usage": _metadata_usage or {},
-                            "timings": _metadata_timings,
-                            "finish_reason": _metadata_finish_reason,
-                        }
+                                        in_thinking = False
+                                    cumulative += token
+                                    yield cumulative
+                        except json.JSONDecodeError:
+                            logger.debug(f"Skipping malformed SSE line: {line[:100]}")
+                    if _stream_done:
+                        break  # exit outer for
+                if _metadata_usage or _metadata_timings or _metadata_finish_reason:
+                    _metadata_usage = _backfill_usage_from_timings(
+                        _metadata_usage, _metadata_timings
+                    )
+                    yield {
+                        "type": "metadata",
+                        # Never None: a finish-only metadata event (no usage,
+                        # no timings) would otherwise crash consumers that do
+                        # usage.get(...) on the non-streaming paths.
+                        "usage": _metadata_usage or {},
+                        "timings": _metadata_timings,
+                        "finish_reason": _metadata_finish_reason,
+                    }
 
         except httpx.ConnectError as e:
             # Server already down. If this was an MTP+tensor crash, recover by
@@ -7774,10 +7788,6 @@ class LlamaCppBackend:
                 payload["seed"] = seed
 
             try:
-                _auth_headers = (
-                    {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
-                )
-
                 # ── Speculative buffer state machine ──────────────────
                 # BUFFERING: accumulate content, check for tool signals
                 # STREAMING: no tool detected, yield tokens to caller
@@ -7803,194 +7813,228 @@ class LlamaCppBackend:
                 provisional_render_html_tool_call_ids = set()
                 _suppress_visible_output = _forced_tool_call_pending
 
-                stream_timeout = httpx.Timeout(
-                    connect = 10,
-                    read = 0.5,
-                    write = 10,
-                    pool = 10,
-                )
-                with httpx.Client(
-                    timeout = stream_timeout,
-                    limits = httpx.Limits(max_keepalive_connections = 0),
-                ) as client:
-                    first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
-                    with self._stream_with_retry(
-                        client,
-                        url,
-                        payload,
+                with self._open_stream(url, payload, cancel_event) as (
+                    response,
+                    first_token_deadline,
+                ):
+                    raw_buf = ""
+                    for raw_chunk in self._iter_text_cancellable(
+                        response,
                         cancel_event,
-                        headers = _auth_headers,
                         first_token_deadline = first_token_deadline,
-                    ) as response:
-                        if response.status_code != 200:
-                            error_body = response.read().decode()
-                            raise RuntimeError(
-                                f"llama-server returned {response.status_code}: {error_body}"
-                            )
+                    ):
+                        raw_buf += raw_chunk
+                        while "\n" in raw_buf:
+                            line, raw_buf = raw_buf.split("\n", 1)
+                            line = line.strip()
 
-                        raw_buf = ""
-                        for raw_chunk in self._iter_text_cancellable(
-                            response,
-                            cancel_event,
-                            first_token_deadline = first_token_deadline,
-                        ):
-                            raw_buf += raw_chunk
-                            while "\n" in raw_buf:
-                                line, raw_buf = raw_buf.split("\n", 1)
-                                line = line.strip()
+                            if not line:
+                                continue
+                            if line == "data: [DONE]":
+                                # Flush thinking state for STREAMING
+                                if detect_state == _S_STREAMING and in_thinking:
+                                    if has_content_tokens:
+                                        cumulative_display += "</think>"
+                                        if not _suppress_visible_output:
+                                            yield {
+                                                "type": "content",
+                                                "text": _strip_tool_markup(
+                                                    cumulative_display,
+                                                    final = True,
+                                                ),
+                                            }
+                                    else:
+                                        cumulative_display = reasoning_accum
+                                        if not _suppress_visible_output:
+                                            yield {
+                                                "type": "content",
+                                                "text": cumulative_display,
+                                            }
+                                _stream_done = True
+                                break  # exit inner while
+                            if not line.startswith("data: "):
+                                continue
 
-                                if not line:
+                            try:
+                                chunk_data = json.loads(line[6:])
+                                _ct = chunk_data.get("timings")
+                                if _ct:
+                                    _iter_timings = _ct
+                                _cu = chunk_data.get("usage")
+                                if _cu:
+                                    _iter_usage = _cu
+
+                                choices = chunk_data.get("choices", [])
+                                if not choices:
                                     continue
-                                if line == "data: [DONE]":
-                                    # Flush thinking state for STREAMING
-                                    if detect_state == _S_STREAMING and in_thinking:
-                                        if has_content_tokens:
+
+                                delta = choices[0].get("delta", {})
+                                _fr = choices[0].get("finish_reason")
+                                if _fr:
+                                    _iter_finish_reason = _fr
+
+                                # ── Structured tool_calls ──
+                                tc_deltas = delta.get("tool_calls")
+                                if tc_deltas:
+                                    # llama-server can emit visible assistant
+                                    # preface content before native structured
+                                    # tool_calls. Preserve content_accum as
+                                    # the assistant pre-tool text and still
+                                    # drain/execute the structured call.
+                                    has_structured_tc = True
+                                    detect_state = _S_DRAINING
+                                    for tc_d in tc_deltas:
+                                        idx = tc_d.get("index", 0)
+                                        if idx not in tool_calls_acc:
+                                            tool_calls_acc[idx] = {
+                                                "id": tc_d.get("id", f"call_{idx}"),
+                                                "type": "function",
+                                                "function": {
+                                                    "name": "",
+                                                    "arguments": "",
+                                                },
+                                            }
+                                        elif tc_d.get("id"):
+                                            # Update ID if a real one
+                                            # arrives on a later delta.
+                                            tool_calls_acc[idx]["id"] = tc_d["id"]
+                                        func = tc_d.get("function", {})
+                                        if func.get("name"):
+                                            tool_calls_acc[idx]["function"]["name"] += func[
+                                                "name"
+                                            ]
+                                        if func.get("arguments"):
+                                            tool_calls_acc[idx]["function"]["arguments"] += (
+                                                func["arguments"]
+                                            )
+                                        current_name = tool_calls_acc[idx]["function"].get(
+                                            "name", ""
+                                        )
+                                        fallback_id = f"call_{idx}"
+                                        current_id = tool_calls_acc[idx].get("id", fallback_id)
+                                        already_started = (
+                                            current_id in provisional_render_html_tool_call_ids
+                                        )
+                                        has_real_id = current_id != fallback_id
+                                        if (
+                                            current_name == "render_html"
+                                            and not _tool_succeeded("render_html")
+                                            and any(
+                                                (
+                                                    (tool.get("function") or {}).get("name")
+                                                    == "render_html"
+                                                )
+                                                for tool in active_tools
+                                            )
+                                            and not already_started
+                                            and not provisional_render_html_tool_call_ids
+                                            and has_real_id
+                                        ):
+                                            provisional_render_html_tool_call_ids.add(
+                                                current_id
+                                            )
+                                            yield {
+                                                "type": "tool_start",
+                                                "tool_name": "render_html",
+                                                "tool_call_id": current_id,
+                                                "arguments": {},
+                                                "provenance": tool_event_provenance(
+                                                    provisional = True,
+                                                ),
+                                            }
+                                    continue
+
+                                # ── Reasoning tokens ──
+                                # Yield only in STREAMING. In BUFFERING and
+                                # DRAINING, accumulate silently so we don't
+                                # corrupt the consumer's prev_text tracker
+                                # (routes/inference.py never resets it
+                                # between tool iterations).
+                                reasoning = delta.get("reasoning_content", "")
+                                if reasoning:
+                                    reasoning_accum += reasoning
+                                    if detect_state == _S_STREAMING:
+                                        if not in_thinking:
+                                            cumulative_display += "<think>"
+                                            in_thinking = True
+                                        cumulative_display += reasoning
+                                        if not _suppress_visible_output:
+                                            yield {
+                                                "type": "content",
+                                                "text": cumulative_display,
+                                            }
+
+                                # ── Content tokens ──
+                                token = delta.get("content", "")
+                                if token:
+                                    has_content_tokens = True
+                                    content_accum += token
+
+                                    if detect_state == _S_DRAINING:
+                                        pass  # accumulate silently
+
+                                    elif detect_state == _S_STREAMING:
+                                        if in_thinking:
                                             cumulative_display += "</think>"
+                                            in_thinking = False
+                                        cumulative_display += token
+                                        cleaned = _strip_tool_markup_streaming(
+                                            cumulative_display
+                                        )
+                                        if len(cleaned) > len(_last_emitted):
+                                            _last_emitted = cleaned
                                             if not _suppress_visible_output:
                                                 yield {
                                                     "type": "content",
-                                                    "text": _strip_tool_markup(
-                                                        cumulative_display,
-                                                        final = True,
-                                                    ),
-                                                }
-                                        else:
-                                            cumulative_display = reasoning_accum
-                                            if not _suppress_visible_output:
-                                                yield {
-                                                    "type": "content",
-                                                    "text": cumulative_display,
-                                                }
-                                    _stream_done = True
-                                    break  # exit inner while
-                                if not line.startswith("data: "):
-                                    continue
-
-                                try:
-                                    chunk_data = json.loads(line[6:])
-                                    _ct = chunk_data.get("timings")
-                                    if _ct:
-                                        _iter_timings = _ct
-                                    _cu = chunk_data.get("usage")
-                                    if _cu:
-                                        _iter_usage = _cu
-
-                                    choices = chunk_data.get("choices", [])
-                                    if not choices:
-                                        continue
-
-                                    delta = choices[0].get("delta", {})
-                                    _fr = choices[0].get("finish_reason")
-                                    if _fr:
-                                        _iter_finish_reason = _fr
-
-                                    # ── Structured tool_calls ──
-                                    tc_deltas = delta.get("tool_calls")
-                                    if tc_deltas:
-                                        # llama-server can emit visible assistant
-                                        # preface content before native structured
-                                        # tool_calls. Preserve content_accum as
-                                        # the assistant pre-tool text and still
-                                        # drain/execute the structured call.
-                                        has_structured_tc = True
-                                        detect_state = _S_DRAINING
-                                        for tc_d in tc_deltas:
-                                            idx = tc_d.get("index", 0)
-                                            if idx not in tool_calls_acc:
-                                                tool_calls_acc[idx] = {
-                                                    "id": tc_d.get("id", f"call_{idx}"),
-                                                    "type": "function",
-                                                    "function": {
-                                                        "name": "",
-                                                        "arguments": "",
-                                                    },
-                                                }
-                                            elif tc_d.get("id"):
-                                                # Update ID if a real one
-                                                # arrives on a later delta.
-                                                tool_calls_acc[idx]["id"] = tc_d["id"]
-                                            func = tc_d.get("function", {})
-                                            if func.get("name"):
-                                                tool_calls_acc[idx]["function"]["name"] += func[
-                                                    "name"
-                                                ]
-                                            if func.get("arguments"):
-                                                tool_calls_acc[idx]["function"]["arguments"] += (
-                                                    func["arguments"]
-                                                )
-                                            current_name = tool_calls_acc[idx]["function"].get(
-                                                "name", ""
-                                            )
-                                            fallback_id = f"call_{idx}"
-                                            current_id = tool_calls_acc[idx].get("id", fallback_id)
-                                            already_started = (
-                                                current_id in provisional_render_html_tool_call_ids
-                                            )
-                                            has_real_id = current_id != fallback_id
-                                            if (
-                                                current_name == "render_html"
-                                                and not _tool_succeeded("render_html")
-                                                and any(
-                                                    (
-                                                        (tool.get("function") or {}).get("name")
-                                                        == "render_html"
-                                                    )
-                                                    for tool in active_tools
-                                                )
-                                                and not already_started
-                                                and not provisional_render_html_tool_call_ids
-                                                and has_real_id
-                                            ):
-                                                provisional_render_html_tool_call_ids.add(
-                                                    current_id
-                                                )
-                                                yield {
-                                                    "type": "tool_start",
-                                                    "tool_name": "render_html",
-                                                    "tool_call_id": current_id,
-                                                    "arguments": {},
-                                                    "provenance": tool_event_provenance(
-                                                        provisional = True,
-                                                    ),
-                                                }
-                                        continue
-
-                                    # ── Reasoning tokens ──
-                                    # Yield only in STREAMING. In BUFFERING and
-                                    # DRAINING, accumulate silently so we don't
-                                    # corrupt the consumer's prev_text tracker
-                                    # (routes/inference.py never resets it
-                                    # between tool iterations).
-                                    reasoning = delta.get("reasoning_content", "")
-                                    if reasoning:
-                                        reasoning_accum += reasoning
-                                        if detect_state == _S_STREAMING:
-                                            if not in_thinking:
-                                                cumulative_display += "<think>"
-                                                in_thinking = True
-                                            cumulative_display += reasoning
-                                            if not _suppress_visible_output:
-                                                yield {
-                                                    "type": "content",
-                                                    "text": cumulative_display,
+                                                    "text": cleaned,
                                                 }
 
-                                    # ── Content tokens ──
-                                    token = delta.get("content", "")
-                                    if token:
-                                        has_content_tokens = True
-                                        content_accum += token
+                                    elif detect_state == _S_BUFFERING:
+                                        content_buffer += token
+                                        stripped_buf = content_buffer.lstrip()
+                                        if not stripped_buf:
+                                            continue
 
-                                        if detect_state == _S_DRAINING:
-                                            pass  # accumulate silently
+                                        # Check tool signal prefixes.
+                                        is_prefix = False
+                                        is_match = False
+                                        for sig in _tool_xml_signals:
+                                            if stripped_buf.startswith(sig):
+                                                is_match = True
+                                                break
+                                            if sig.startswith(stripped_buf):
+                                                is_prefix = True
+                                                break
 
-                                        elif detect_state == _S_STREAMING:
-                                            if in_thinking:
-                                                cumulative_display += "</think>"
-                                                in_thinking = False
-                                            cumulative_display += token
+                                        if is_match:
+                                            # Tool signal -- flush any visible
+                                            # prefix before DRAINING so the
+                                            # route sends it before tool_start.
+                                            _flush_reasoning_and_buffer()
                                             cleaned = _strip_tool_markup_streaming(
-                                                cumulative_display
+                                                cumulative_display,
+                                                force = True,
+                                            )
+                                            if len(cleaned) > len(_last_emitted):
+                                                _last_emitted = cleaned
+                                                if not _suppress_visible_output:
+                                                    yield {
+                                                        "type": "content",
+                                                        "text": cleaned,
+                                                    }
+                                            detect_state = _S_DRAINING
+                                        elif (
+                                            is_prefix and len(stripped_buf) < _MAX_BUFFER_CHARS
+                                        ):
+                                            pass  # keep buffering
+                                        else:
+                                            # Not a tool -- flush buffer
+                                            detect_state = _S_STREAMING
+                                            # Flush reasoning accumulated
+                                            # during BUFFERING.
+                                            _flush_reasoning_and_buffer()
+                                            cleaned = _strip_tool_markup(
+                                                cumulative_display,
                                             )
                                             if len(cleaned) > len(_last_emitted):
                                                 _last_emitted = cleaned
@@ -8000,65 +8044,10 @@ class LlamaCppBackend:
                                                         "text": cleaned,
                                                     }
 
-                                        elif detect_state == _S_BUFFERING:
-                                            content_buffer += token
-                                            stripped_buf = content_buffer.lstrip()
-                                            if not stripped_buf:
-                                                continue
-
-                                            # Check tool signal prefixes.
-                                            is_prefix = False
-                                            is_match = False
-                                            for sig in _tool_xml_signals:
-                                                if stripped_buf.startswith(sig):
-                                                    is_match = True
-                                                    break
-                                                if sig.startswith(stripped_buf):
-                                                    is_prefix = True
-                                                    break
-
-                                            if is_match:
-                                                # Tool signal -- flush any visible
-                                                # prefix before DRAINING so the
-                                                # route sends it before tool_start.
-                                                _flush_reasoning_and_buffer()
-                                                cleaned = _strip_tool_markup_streaming(
-                                                    cumulative_display,
-                                                    force = True,
-                                                )
-                                                if len(cleaned) > len(_last_emitted):
-                                                    _last_emitted = cleaned
-                                                    if not _suppress_visible_output:
-                                                        yield {
-                                                            "type": "content",
-                                                            "text": cleaned,
-                                                        }
-                                                detect_state = _S_DRAINING
-                                            elif (
-                                                is_prefix and len(stripped_buf) < _MAX_BUFFER_CHARS
-                                            ):
-                                                pass  # keep buffering
-                                            else:
-                                                # Not a tool -- flush buffer
-                                                detect_state = _S_STREAMING
-                                                # Flush reasoning accumulated
-                                                # during BUFFERING.
-                                                _flush_reasoning_and_buffer()
-                                                cleaned = _strip_tool_markup(
-                                                    cumulative_display,
-                                                )
-                                                if len(cleaned) > len(_last_emitted):
-                                                    _last_emitted = cleaned
-                                                    if not _suppress_visible_output:
-                                                        yield {
-                                                            "type": "content",
-                                                            "text": cleaned,
-                                                        }
-
-                                except json.JSONDecodeError:
-                                    logger.debug(f"Skipping malformed SSE line: {line[:100]}")
-                            if _stream_done:
-                                break  # exit outer for
+                            except json.JSONDecodeError:
+                                logger.debug(f"Skipping malformed SSE line: {line[:100]}")
+                        if _stream_done:
+                            break  # exit outer for
 
                 # ── Resolve BUFFERING at stream end ──
                 if detect_state == _S_BUFFERING:
@@ -8446,125 +8435,109 @@ class LlamaCppBackend:
         _stream_done = False
 
         try:
-            stream_timeout = httpx.Timeout(connect = 10, read = 0.5, write = 10, pool = 10)
-            _auth_headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
-            with httpx.Client(
-                timeout = stream_timeout, limits = httpx.Limits(max_keepalive_connections = 0)
-            ) as client:
-                first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
-                with self._stream_with_retry(
-                    client,
-                    url,
-                    stream_payload,
+            with self._open_stream(url, stream_payload, cancel_event) as (
+                response,
+                first_token_deadline,
+            ):
+                buffer = ""
+                for raw_chunk in self._iter_text_cancellable(
+                    response,
                     cancel_event,
-                    headers = _auth_headers,
                     first_token_deadline = first_token_deadline,
-                ) as response:
-                    if response.status_code != 200:
-                        error_body = response.read().decode()
-                        raise RuntimeError(
-                            f"llama-server returned {response.status_code}: {error_body}"
-                        )
+                ):
+                    buffer += raw_chunk
+                    while "\n" in buffer:
+                        line, buffer = buffer.split("\n", 1)
+                        line = line.strip()
 
-                    buffer = ""
-                    for raw_chunk in self._iter_text_cancellable(
-                        response,
-                        cancel_event,
-                        first_token_deadline = first_token_deadline,
-                    ):
-                        buffer += raw_chunk
-                        while "\n" in buffer:
-                            line, buffer = buffer.split("\n", 1)
-                            line = line.strip()
+                        if not line:
+                            continue
+                        if line == "data: [DONE]":
+                            if in_thinking:
+                                if has_content_tokens:
+                                    cumulative += "</think>"
+                                    yield {
+                                        "type": "content",
+                                        "text": _strip_tool_markup(cumulative, final = True),
+                                    }
+                                else:
+                                    cumulative = reasoning_text
+                                    yield {"type": "content", "text": cumulative}
+                            _stream_done = True
+                            break  # exit inner while
+                        if not line.startswith("data: "):
+                            continue
 
-                            if not line:
-                                continue
-                            if line == "data: [DONE]":
-                                if in_thinking:
-                                    if has_content_tokens:
+                        try:
+                            chunk_data = json.loads(line[6:])
+                            # Capture server timings/usage from final chunks.
+                            _chunk_timings = chunk_data.get("timings")
+                            if _chunk_timings:
+                                _metadata_timings = _chunk_timings
+                            _chunk_usage = chunk_data.get("usage")
+                            if _chunk_usage:
+                                _metadata_usage = _chunk_usage
+                            choices = chunk_data.get("choices", [])
+                            if choices:
+                                delta = choices[0].get("delta", {})
+                                _fr = choices[0].get("finish_reason")
+                                if _fr:
+                                    _metadata_finish_reason = _fr
+
+                                reasoning = delta.get("reasoning_content", "")
+                                if reasoning:
+                                    reasoning_text += reasoning
+                                    if not in_thinking:
+                                        cumulative += "<think>"
+                                        in_thinking = True
+                                    cumulative += reasoning
+                                    yield {"type": "content", "text": cumulative}
+
+                                token = delta.get("content", "")
+                                if token:
+                                    has_content_tokens = True
+                                    if in_thinking:
                                         cumulative += "</think>"
-                                        yield {
-                                            "type": "content",
-                                            "text": _strip_tool_markup(cumulative, final = True),
-                                        }
-                                    else:
-                                        cumulative = reasoning_text
-                                        yield {"type": "content", "text": cumulative}
-                                _stream_done = True
-                                break  # exit inner while
-                            if not line.startswith("data: "):
-                                continue
-
-                            try:
-                                chunk_data = json.loads(line[6:])
-                                # Capture server timings/usage from final chunks.
-                                _chunk_timings = chunk_data.get("timings")
-                                if _chunk_timings:
-                                    _metadata_timings = _chunk_timings
-                                _chunk_usage = chunk_data.get("usage")
-                                if _chunk_usage:
-                                    _metadata_usage = _chunk_usage
-                                choices = chunk_data.get("choices", [])
-                                if choices:
-                                    delta = choices[0].get("delta", {})
-                                    _fr = choices[0].get("finish_reason")
-                                    if _fr:
-                                        _metadata_finish_reason = _fr
-
-                                    reasoning = delta.get("reasoning_content", "")
-                                    if reasoning:
-                                        reasoning_text += reasoning
-                                        if not in_thinking:
-                                            cumulative += "<think>"
-                                            in_thinking = True
-                                        cumulative += reasoning
-                                        yield {"type": "content", "text": cumulative}
-
-                                    token = delta.get("content", "")
-                                    if token:
-                                        has_content_tokens = True
-                                        if in_thinking:
-                                            cumulative += "</think>"
-                                            in_thinking = False
-                                        cumulative += token
-                                        cleaned = _strip_tool_markup(cumulative)
-                                        # Emit only when cleaned text grows (monotonic).
-                                        if len(cleaned) > len(_last_emitted):
-                                            _last_emitted = cleaned
-                                            yield {"type": "content", "text": cleaned}
-                            except json.JSONDecodeError:
-                                logger.debug(f"Skipping malformed SSE line: {line[:100]}")
-                        if _stream_done:
-                            break  # exit outer for
-                    _final_usage = _metadata_usage or {}
-                    _final_completion = _final_usage.get("completion_tokens", 0)
-                    _final_prompt = _final_usage.get("prompt_tokens", 0)
-                    _total_completion = _final_completion + _accumulated_completion_tokens
-                    if _metadata_usage or _metadata_timings or _metadata_finish_reason:
-                        _merged_timings = dict(_metadata_timings) if _metadata_timings else {}
-                        if _accumulated_predicted_ms or _accumulated_predicted_n:
-                            _merged_timings["predicted_ms"] = (
-                                _merged_timings.get("predicted_ms", 0) + _accumulated_predicted_ms
+                                        in_thinking = False
+                                    cumulative += token
+                                    cleaned = _strip_tool_markup(cumulative)
+                                    # Emit only when cleaned text grows (monotonic).
+                                    if len(cleaned) > len(_last_emitted):
+                                        _last_emitted = cleaned
+                                        yield {"type": "content", "text": cleaned}
+                        except json.JSONDecodeError:
+                            logger.debug(f"Skipping malformed SSE line: {line[:100]}")
+                    if _stream_done:
+                        break  # exit outer for
+                _final_usage = _metadata_usage or {}
+                _final_completion = _final_usage.get("completion_tokens", 0)
+                _final_prompt = _final_usage.get("prompt_tokens", 0)
+                _total_completion = _final_completion + _accumulated_completion_tokens
+                if _metadata_usage or _metadata_timings or _metadata_finish_reason:
+                    _merged_timings = dict(_metadata_timings) if _metadata_timings else {}
+                    if _accumulated_predicted_ms or _accumulated_predicted_n:
+                        _merged_timings["predicted_ms"] = (
+                            _merged_timings.get("predicted_ms", 0) + _accumulated_predicted_ms
+                        )
+                        _total_predicted_n = (
+                            _merged_timings.get("predicted_n", 0) + _accumulated_predicted_n
+                        )
+                        _merged_timings["predicted_n"] = _total_predicted_n
+                        _total_predicted_ms = _merged_timings["predicted_ms"]
+                        if _total_predicted_ms > 0:
+                            _merged_timings["predicted_per_second"] = _total_predicted_n / (
+                                _total_predicted_ms / 1000.0
                             )
-                            _total_predicted_n = (
-                                _merged_timings.get("predicted_n", 0) + _accumulated_predicted_n
-                            )
-                            _merged_timings["predicted_n"] = _total_predicted_n
-                            _total_predicted_ms = _merged_timings["predicted_ms"]
-                            if _total_predicted_ms > 0:
-                                _merged_timings["predicted_per_second"] = _total_predicted_n / (
-                                    _total_predicted_ms / 1000.0
-                                )
-                        yield {
-                            "type": "metadata",
-                            "usage": {
-                                "prompt_tokens": _final_prompt,
-                                "completion_tokens": _total_completion,
-                                "total_tokens": _final_prompt + _total_completion,
-                            },
-                            "timings": _merged_timings,
-                            "finish_reason": _metadata_finish_reason,
-                        }
+                    yield {
+                        "type": "metadata",
+                        "usage": {
+                            "prompt_tokens": _final_prompt,
+                            "completion_tokens": _total_completion,
+                            "total_tokens": _final_prompt + _total_completion,
+                        },
+                        "timings": _merged_timings,
+                        "finish_reason": _metadata_finish_reason,
+                    }
 
         except httpx.ConnectError:
             raise RuntimeError("Lost connection to llama-server")
@@ -8637,8 +8610,7 @@ class LlamaCppBackend:
             system_text = _block_text(system)
 
         try:
-            _auth_headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
-            with httpx.Client(timeout = 10, headers = _auth_headers) as client:
+            with httpx.Client(timeout = 10, headers = self._auth_headers) as client:
 
                 def _tokenize(text: str) -> int:
                     r = client.post(
@@ -8754,8 +8726,7 @@ class LlamaCppBackend:
         """Codec name on match, None on non-audio, raises on transport/JSON errors."""
         if not self.is_loaded:
             return None
-        _auth_headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
-        with httpx.Client(timeout = 10, headers = _auth_headers) as client:
+        with httpx.Client(timeout = 10, headers = self._auth_headers) as client:
 
             def _detok(tid: int) -> str:
                 # Non-200 means "marker not in vocab" -- keep probing.
@@ -8869,8 +8840,7 @@ class LlamaCppBackend:
         if need_ids:
             payload["n_probs"] = 1
 
-        _auth_headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
-        with httpx.Client(timeout = httpx.Timeout(300, connect = 10), headers = _auth_headers) as client:
+        with httpx.Client(timeout = httpx.Timeout(300, connect = 10), headers = self._auth_headers) as client:
             resp = client.post(f"{self.base_url}/completion", json = payload)
             if resp.status_code != 200:
                 raise RuntimeError(f"llama-server returned {resp.status_code}: {resp.text}")

@@ -538,6 +538,43 @@ def _openai_stream_usage_chunk(
     return f"data: {usage_chunk.model_dump_json(exclude_none = True)}\n\n"
 
 
+def _chat_chunk_sse(completion_id, created, model_name, *, delta, finish_reason) -> str:
+    """One ``ChatCompletionChunk`` as an SSE ``data:`` line. The role / content /
+    final chunks every in-process streamer emits differ only in their ``delta``
+    and ``finish_reason``."""
+    chunk = ChatCompletionChunk(
+        id = completion_id,
+        created = created,
+        model = model_name,
+        choices = [ChunkChoice(delta = delta, finish_reason = finish_reason)],
+    )
+    return f"data: {chunk.model_dump_json(exclude_none = True)}\n\n"
+
+
+def _chat_role_chunk(completion_id, created, model_name) -> str:
+    """Opening assistant-role chunk for a chat stream."""
+    return _chat_chunk_sse(
+        completion_id, created, model_name,
+        delta = ChoiceDelta(role = "assistant"), finish_reason = None,
+    )
+
+
+def _chat_content_chunk(completion_id, created, model_name, text) -> str:
+    """A content-delta chunk carrying ``text``."""
+    return _chat_chunk_sse(
+        completion_id, created, model_name,
+        delta = ChoiceDelta(content = text), finish_reason = None,
+    )
+
+
+def _chat_final_chunk(completion_id, created, model_name, finish_reason) -> str:
+    """Terminal stop chunk (empty delta) carrying the finish reason."""
+    return _chat_chunk_sse(
+        completion_id, created, model_name,
+        delta = ChoiceDelta(), finish_reason = finish_reason,
+    )
+
+
 def _rewrite_cmpl_id(raw: bytes) -> bytes:
     """Rewrite llama-server's chat-style ``chatcmpl-`` ids to the ``cmpl-``
     prefix OpenAI's legacy /v1/completions use. Anchored on the ``"id":`` key
@@ -4613,18 +4650,7 @@ async def openai_chat_completions(
 
                 async def audio_input_stream():
                     try:
-                        first_chunk = ChatCompletionChunk(
-                            id = completion_id,
-                            created = created,
-                            model = model_name,
-                            choices = [
-                                ChunkChoice(
-                                    delta = ChoiceDelta(role = "assistant"),
-                                    finish_reason = None,
-                                )
-                            ],
-                        )
-                        yield f"data: {first_chunk.model_dump_json(exclude_none = True)}\n\n"
+                        yield _chat_role_chunk(completion_id, created, model_name)
 
                         gen = audio_input_generate()
                         _DONE = object()
@@ -4642,27 +4668,12 @@ async def openai_chat_completions(
                                 break
                             if chunk_text:
                                 api_monitor.append_reply(monitor_id, chunk_text)
-                                chunk = ChatCompletionChunk(
-                                    id = completion_id,
-                                    created = created,
-                                    model = model_name,
-                                    choices = [
-                                        ChunkChoice(
-                                            delta = ChoiceDelta(content = chunk_text),
-                                            finish_reason = None,
-                                        )
-                                    ],
+                                yield _chat_content_chunk(
+                                    completion_id, created, model_name, chunk_text
                                 )
-                                yield f"data: {chunk.model_dump_json(exclude_none = True)}\n\n"
 
-                        final_chunk = ChatCompletionChunk(
-                            id = completion_id,
-                            created = created,
-                            model = model_name,
-                            choices = [ChunkChoice(delta = ChoiceDelta(), finish_reason = "stop")],
-                        )
                         api_monitor.finish(monitor_id, "cancelled" if cancelled else "completed")
-                        yield f"data: {final_chunk.model_dump_json(exclude_none = True)}\n\n"
+                        yield _chat_final_chunk(completion_id, created, model_name, "stop")
                         yield "data: [DONE]\n\n"
                     except asyncio.CancelledError:
                         cancel_event.set()
@@ -4993,18 +5004,7 @@ async def openai_chat_completions(
             async def gguf_tool_stream():
                 gen = None
                 try:
-                    first_chunk = ChatCompletionChunk(
-                        id = completion_id,
-                        created = created,
-                        model = model_name,
-                        choices = [
-                            ChunkChoice(
-                                delta = ChoiceDelta(role = "assistant"),
-                                finish_reason = None,
-                            )
-                        ],
-                    )
-                    yield f"data: {first_chunk.model_dump_json(exclude_none = True)}\n\n"
+                    yield _chat_role_chunk(completion_id, created, model_name)
 
                     # Iterate the sync generator in a thread so the event loop
                     # stays free for disconnect detection.
@@ -5068,31 +5068,12 @@ async def openai_chat_completions(
                         if not new_text:
                             continue
                         api_monitor.append_reply(monitor_id, new_text)
-                        chunk = ChatCompletionChunk(
-                            id = completion_id,
-                            created = created,
-                            model = model_name,
-                            choices = [
-                                ChunkChoice(
-                                    delta = ChoiceDelta(content = new_text),
-                                    finish_reason = None,
-                                )
-                            ],
-                        )
-                        yield f"data: {chunk.model_dump_json(exclude_none = True)}\n\n"
+                        yield _chat_content_chunk(completion_id, created, model_name, new_text)
 
-                    final_chunk = ChatCompletionChunk(
-                        id = completion_id,
-                        created = created,
-                        model = model_name,
-                        choices = [
-                            ChunkChoice(
-                                delta = ChoiceDelta(),
-                                finish_reason = _clamp_finish_reason(_stream_finish),
-                            )
-                        ],
+                    yield _chat_final_chunk(
+                        completion_id, created, model_name,
+                        _clamp_finish_reason(_stream_finish),
                     )
-                    yield f"data: {final_chunk.model_dump_json(exclude_none = True)}\n\n"
                     usage_line = _openai_stream_usage_chunk(
                         payload,
                         completion_id,
@@ -5165,19 +5146,7 @@ async def openai_chat_completions(
 
             async def gguf_stream_chunks():
                 try:
-                    # First chunk: role
-                    first_chunk = ChatCompletionChunk(
-                        id = completion_id,
-                        created = created,
-                        model = model_name,
-                        choices = [
-                            ChunkChoice(
-                                delta = ChoiceDelta(role = "assistant"),
-                                finish_reason = None,
-                            )
-                        ],
-                    )
-                    yield f"data: {first_chunk.model_dump_json(exclude_none = True)}\n\n"
+                    yield _chat_role_chunk(completion_id, created, model_name)
 
                     # Iterate the sync generator in a thread so the event loop
                     # stays free for disconnect detection.
@@ -5217,32 +5186,12 @@ async def openai_chat_completions(
                         if not new_text:
                             continue
                         api_monitor.append_reply(monitor_id, new_text)
-                        chunk = ChatCompletionChunk(
-                            id = completion_id,
-                            created = created,
-                            model = model_name,
-                            choices = [
-                                ChunkChoice(
-                                    delta = ChoiceDelta(content = new_text),
-                                    finish_reason = None,
-                                )
-                            ],
-                        )
-                        yield f"data: {chunk.model_dump_json(exclude_none = True)}\n\n"
+                        yield _chat_content_chunk(completion_id, created, model_name, new_text)
 
-                    # Final chunk
-                    final_chunk = ChatCompletionChunk(
-                        id = completion_id,
-                        created = created,
-                        model = model_name,
-                        choices = [
-                            ChunkChoice(
-                                delta = ChoiceDelta(),
-                                finish_reason = _clamp_finish_reason(_stream_finish),
-                            )
-                        ],
+                    yield _chat_final_chunk(
+                        completion_id, created, model_name,
+                        _clamp_finish_reason(_stream_finish),
                     )
-                    yield f"data: {final_chunk.model_dump_json(exclude_none = True)}\n\n"
                     usage_line = _openai_stream_usage_chunk(
                         payload,
                         completion_id,
@@ -5571,18 +5520,7 @@ async def openai_chat_completions(
         async def sf_tool_stream():
             gen = None
             try:
-                first_chunk = ChatCompletionChunk(
-                    id = completion_id,
-                    created = created,
-                    model = model_name,
-                    choices = [
-                        ChunkChoice(
-                            delta = ChoiceDelta(role = "assistant"),
-                            finish_reason = None,
-                        )
-                    ],
-                )
-                yield f"data: {first_chunk.model_dump_json(exclude_none = True)}\n\n"
+                yield _chat_role_chunk(completion_id, created, model_name)
 
                 gen = sf_generate_with_tools()
                 prev_text = ""
@@ -5629,31 +5567,9 @@ async def openai_chat_completions(
                     if not new_text:
                         continue
                     api_monitor.append_reply(monitor_id, new_text)
-                    chunk = ChatCompletionChunk(
-                        id = completion_id,
-                        created = created,
-                        model = model_name,
-                        choices = [
-                            ChunkChoice(
-                                delta = ChoiceDelta(content = new_text),
-                                finish_reason = None,
-                            )
-                        ],
-                    )
-                    yield f"data: {chunk.model_dump_json(exclude_none = True)}\n\n"
+                    yield _chat_content_chunk(completion_id, created, model_name, new_text)
 
-                final_chunk = ChatCompletionChunk(
-                    id = completion_id,
-                    created = created,
-                    model = model_name,
-                    choices = [
-                        ChunkChoice(
-                            delta = ChoiceDelta(),
-                            finish_reason = "stop",
-                        )
-                    ],
-                )
-                yield f"data: {final_chunk.model_dump_json(exclude_none = True)}\n\n"
+                yield _chat_final_chunk(completion_id, created, model_name, "stop")
                 # Usage chunk from the last turn, same shape as the
                 # GGUF tool loop's metadata. Request-scoped holder, so
                 # concurrent streams cannot read each other's stats.
@@ -5805,18 +5721,7 @@ async def openai_chat_completions(
 
         async def stream_chunks():
             try:
-                first_chunk = ChatCompletionChunk(
-                    id = completion_id,
-                    created = created,
-                    model = model_name,
-                    choices = [
-                        ChunkChoice(
-                            delta = ChoiceDelta(role = "assistant"),
-                            finish_reason = None,
-                        )
-                    ],
-                )
-                yield f"data: {first_chunk.model_dump_json(exclude_none = True)}\n\n"
+                yield _chat_role_chunk(completion_id, created, model_name)
 
                 prev_text = ""
                 # Run the sync generator in a thread pool to avoid blocking the
@@ -5848,31 +5753,9 @@ async def openai_chat_completions(
                     if not new_text:
                         continue
                     api_monitor.append_reply(monitor_id, new_text)
-                    chunk = ChatCompletionChunk(
-                        id = completion_id,
-                        created = created,
-                        model = model_name,
-                        choices = [
-                            ChunkChoice(
-                                delta = ChoiceDelta(content = new_text),
-                                finish_reason = None,
-                            )
-                        ],
-                    )
-                    yield f"data: {chunk.model_dump_json(exclude_none = True)}\n\n"
+                    yield _chat_content_chunk(completion_id, created, model_name, new_text)
 
-                final_chunk = ChatCompletionChunk(
-                    id = completion_id,
-                    created = created,
-                    model = model_name,
-                    choices = [
-                        ChunkChoice(
-                            delta = ChoiceDelta(),
-                            finish_reason = "stop",
-                        )
-                    ],
-                )
-                yield f"data: {final_chunk.model_dump_json(exclude_none = True)}\n\n"
+                yield _chat_final_chunk(completion_id, created, model_name, "stop")
                 # Usage chunk (choices=[], usage set), same shape as the
                 # GGUF path so the speed popover works for MLX too.
                 # Request-scoped holder, so concurrent streams cannot
