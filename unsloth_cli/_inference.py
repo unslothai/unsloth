@@ -266,8 +266,8 @@ def _local_studio_install_id() -> Optional[str]:
     try:
         ensure_studio_backend_path()
         from utils.paths import studio_root
-        token = (studio_root() / "share" / "studio_install_id").read_text().strip()
-    except (OSError, ValueError, ImportError):
+        token = (studio_root() / "share" / "studio_install_id").read_text(encoding = "utf-8").strip()
+    except Exception:
         return None
     return token if _STUDIO_INSTALL_ID_RE.fullmatch(token) else None
 
@@ -292,6 +292,13 @@ def _is_loopback(host: str) -> bool:
         return False
 
 
+def _same_origin(a: str, b: str) -> bool:
+    from urllib.parse import urlparse
+
+    pa, pb = urlparse(a), urlparse(b)
+    return (pa.scheme, pa.hostname, pa.port) == (pb.scheme, pb.hostname, pb.port)
+
+
 def find_studio_server(timeout: float = 3.0) -> Optional[str]:
     import json
     import urllib.request
@@ -301,12 +308,17 @@ def find_studio_server(timeout: float = 3.0) -> Optional[str]:
     request = urllib.request.Request(f"{base}/api/health", headers = {"User-Agent": _USER_AGENT})
     try:
         with urllib.request.urlopen(request, timeout = timeout) as response:
+            final_url = response.geturl()
             body = json.loads(response.read(_HEALTH_BODY_LIMIT).decode("utf-8", "replace"))
     except Exception:
         return None
     if not _is_studio_health(body):
         return None
     if _is_loopback(urlparse(base).hostname or ""):
+        # A squatter on this port could 302 the probe to the real Studio so the
+        # id check passes, yet we'd still send credentials back to the squatter.
+        if not _same_origin(final_url, base):
+            return None
         install_id = _local_studio_install_id()
         if install_id is not None and body.get("studio_root_id") != install_id:
             return None

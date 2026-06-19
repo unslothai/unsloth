@@ -263,8 +263,9 @@ def test_find_studio_server_none_when_not_running(monkeypatch):
 class _FakeHealth:
     """Minimal urlopen() return value carrying a canned /api/health body."""
 
-    def __init__(self, body: bytes):
+    def __init__(self, body: bytes, final_url: str = "http://127.0.0.1:8888"):
         self._body = body
+        self._final_url = final_url
 
     def __enter__(self):
         return self
@@ -274,6 +275,9 @@ class _FakeHealth:
 
     def read(self, limit = None):
         return self._body if limit is None else self._body[:limit]
+
+    def geturl(self):
+        return self._final_url
 
 
 def _healthy_body(root_id = None) -> bytes:
@@ -367,18 +371,56 @@ def test_find_studio_server_checks_id_on_explicit_loopback_port(monkeypatch):
 
     # A custom *local* port still gets the id check: a squatter on 127.0.0.1:9000
     # must not receive credentials just because UNSLOTH_STUDIO_URL is set.
-    monkeypatch.setenv("UNSLOTH_STUDIO_URL", "http://127.0.0.1:9000")
+    port = "http://127.0.0.1:9000"
+    monkeypatch.setenv("UNSLOTH_STUDIO_URL", port)
+    monkeypatch.setattr(_inference, "_local_studio_install_id", lambda: "a" * 64)
+    monkeypatch.setattr(
+        urllib.request, "urlopen", lambda *a, **k: _FakeHealth(_healthy_body("b" * 64), port)
+    )
+    assert _inference.find_studio_server() is None
+
+    # The real local Studio on that port (matching id) is still adopted.
+    monkeypatch.setattr(
+        urllib.request, "urlopen", lambda *a, **k: _FakeHealth(_healthy_body("a" * 64), port)
+    )
+    assert _inference.find_studio_server() == port
+
+
+def test_find_studio_server_rejects_redirected_health(monkeypatch):
+    import urllib.request
+
+    from unsloth_cli import _inference
+
+    # A squatter on 8888 redirects the probe to the real Studio on 9000, so the
+    # body + id check pass — but credentials would still go to 8888. Reject it.
+    monkeypatch.delenv("UNSLOTH_STUDIO_URL", raising = False)
+    monkeypatch.setattr(_inference, "_local_studio_install_id", lambda: "a" * 64)
+    monkeypatch.setattr(
+        urllib.request,
+        "urlopen",
+        lambda *a, **k: _FakeHealth(_healthy_body("a" * 64), "http://127.0.0.1:9000/api/health"),
+    )
+    assert _inference.find_studio_server() is None
+
+
+def test_find_studio_server_empty_url_is_treated_as_default(monkeypatch):
+    import urllib.request
+
+    from unsloth_cli import _inference
+
+    # An empty UNSLOTH_STUDIO_URL must fall back to the loopback default *and*
+    # still be id-checked, not silently skip verification.
+    monkeypatch.setenv("UNSLOTH_STUDIO_URL", "")
     monkeypatch.setattr(_inference, "_local_studio_install_id", lambda: "a" * 64)
     monkeypatch.setattr(
         urllib.request, "urlopen", lambda *a, **k: _FakeHealth(_healthy_body("b" * 64))
     )
     assert _inference.find_studio_server() is None
 
-    # The real local Studio on that port (matching id) is still adopted.
     monkeypatch.setattr(
         urllib.request, "urlopen", lambda *a, **k: _FakeHealth(_healthy_body("a" * 64))
     )
-    assert _inference.find_studio_server() == "http://127.0.0.1:9000"
+    assert _inference.find_studio_server() == "http://127.0.0.1:8888"
 
 
 def test_connect_studio_server_does_not_issue_token_for_unverified_health(monkeypatch):
