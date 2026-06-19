@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2026.6.2"
+__version__ = "2026.6.8"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -69,6 +69,7 @@ __all__ = [
     "resolve_attention_implementation",
     "resolve_encoder_attention_implementation",
     "_set_attn_impl",
+    "set_task_config_attr",
     "patch_fast_lora",
     "validate_loftq_config",
     "RaiseUninitialized",
@@ -304,6 +305,28 @@ def _config_set(config, field_name, value):
         config[field_name] = value
     elif config is not None:
         setattr(config, field_name, value)
+
+
+def set_task_config_attr(config, field_name, value):
+    _config_set(config, field_name, value)
+    text_config = None
+    if isinstance(config, dict):
+        text_config = config.get("text_config", None)
+    elif config is not None:
+        get_text_config = getattr(config, "get_text_config", None)
+        if callable(get_text_config):
+            try:
+                text_config = get_text_config()
+            except Exception:
+                text_config = None
+        if text_config is None:
+            text_config = getattr(config, "text_config", None)
+    if (
+        text_config is not None
+        and text_config is not config
+        and (isinstance(text_config, dict) or hasattr(text_config, "__dict__"))
+    ):
+        _config_set(text_config, field_name, value)
 
 
 def _iter_attention_configs(config, seen = None):
@@ -992,18 +1015,44 @@ except:
 from transformers.modeling_utils import logger as transformers_logger
 
 
+def _all_missing_keys_are_position_ids(record_str):
+    """True only when EVERY key in the 'newly initialized: [...]' list is a position_ids
+    buffer.
+
+    transformers reports all missing keys in a single record, so a substring test would
+    wrongly suppress the warning when a real missing weight is listed alongside a benign
+    position_ids buffer. position_ids is a deterministic arange buffer that transformers
+    itself lists in _keys_to_ignore_on_load_missing (some VLMs, e.g. DeepSeek-OCR, ship it
+    non-persistently), so a record listing ONLY position_ids keys is safe to ignore;
+    anything else must still raise.
+    """
+    import ast
+    import re
+
+    match = re.search(r"newly initialized:\s*(\[[^\]]*\])", record_str)
+    if not match:
+        return False
+    try:
+        keys = ast.literal_eval(match.group(1))
+    except Exception:
+        return False
+    return bool(keys) and all("position_ids" in str(key) for key in keys)
+
+
 class _RaiseUninitialized(logging.Handler):
     def __init__(self):
         super().__init__()
 
     def emit(self, record):
-        record_lower = str(record).lower()
+        record_str = str(record)
+        record_lower = record_str.lower()
         if (
             ("some weights of" in record_lower)
             and ("score.weight" not in record_lower)
             and ("classifier.weight" not in record_lower)
             and ("cls.predictions" not in record_lower)
             and ("predictions.decoder" not in record_lower)
+            and not _all_missing_keys_are_position_ids(record_str)
             and (os.environ.get("UNSLOTH_WARN_UNINITIALIZED", "1") == "1")
         ):
             raise Exception(
@@ -1264,6 +1313,18 @@ if is_openai_available():
 from transformers import AutoTokenizer
 from transformers.utils.import_utils import _is_package_available
 
+
+def _package_available(pkg_name: str) -> bool:
+    # transformers >= 5.x makes `_is_package_available` always return a
+    # `(exists, version)` tuple, which is truthy even when the package is
+    # absent; older versions returned a plain bool. Normalise to a bool so
+    # callers don't take "package present" branches for missing packages.
+    result = _is_package_available(pkg_name)
+    if isinstance(result, tuple):
+        return bool(result[0])
+    return bool(result)
+
+
 SUPPORTS_BFLOAT16 = False
 HAS_FLASH_ATTENTION = False
 HAS_FLASH_ATTENTION_SOFTCAPPING = False
@@ -1274,7 +1335,7 @@ if DEVICE_TYPE == "cuda":
 
     if major_version >= 8:
         SUPPORTS_BFLOAT16 = True
-        if _is_package_available("flash_attn"):
+        if _package_available("flash_attn"):
             # Check for CUDA linking errors "undefined symbol: _ZNK3c106SymIntltEl"
             try:
                 try:
@@ -1319,7 +1380,7 @@ if DEVICE_TYPE == "cuda":
         HAS_FLASH_ATTENTION = False
 elif DEVICE_TYPE == "hip":
     SUPPORTS_BFLOAT16 = True
-    if _is_package_available("flash_attn"):
+    if _package_available("flash_attn"):
         # Check for CUDA linking errors "undefined symbol: _ZNK3c106SymIntltEl"
         try:
             try:
@@ -1981,7 +2042,7 @@ def is_bfloat16_supported():
 
 
 def is_vLLM_available():
-    return _is_package_available("vllm")
+    return _package_available("vllm")
 
 
 # Patches models to add RoPE Scaling
@@ -2668,6 +2729,16 @@ class EmptyLogits:
     def __str__(self):
         return LOGITS_ERROR_STRING
 
+    def __reduce__(self):
+        # Stateless pickling so gather_object works on the sentinel
+        return (type(self), ())
+
+    def __eq__(self, other):
+        # Gathered copies must compare equal in accelerate debug mode
+        return type(other).__name__ == "EmptyLogits"
+
+    __hash__ = object.__hash__
+
 
 EMPTY_LOGITS = EmptyLogits()
 functions = dir(torch.Tensor)
@@ -2678,6 +2749,13 @@ for j, function in enumerate(functions):
             exec(f"EMPTY_LOGITS.{function} = raise_{j}", globals(), locals())
         except:
             continue
+# The loop above stomps pickle hooks with stubs returning None, which breaks
+# gather_object on EMPTY_LOGITS in distributed runs. Restore default pickling.
+for function in ("__reduce__", "__reduce_ex__", "__getstate__", "__setstate__"):
+    try:
+        delattr(EMPTY_LOGITS, function)
+    except Exception:
+        pass
 
 
 def validate_loftq_config(loftq_config, lora_dropout, bias, init_lora_weights, model):

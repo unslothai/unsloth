@@ -57,6 +57,14 @@ export interface ThreadRecord {
    * clears this field so the next turn falls back to auto-create.
    */
   anthropicCodeExecContainerId?: string | null;
+  /**
+   * If this thread was created via fork-from-message, points back at
+   * the source thread + branch-point msg. Null/undefined for non-fork
+   * threads. Used by the sidebar "fork" badge and the parent thread's
+   * "N forks" indicator on the branch-point msg.
+   */
+  forkedFromThreadId?: string | null;
+  forkedFromMessageId?: string | null;
 }
 
 export interface MessageRecord {

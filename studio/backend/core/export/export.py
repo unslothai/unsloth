@@ -18,7 +18,12 @@ from utils.hardware import clear_gpu_cache
 
 from utils.models import is_vision_model, get_base_model_from_lora
 from utils.models.model_config import detect_audio_type
-from utils.paths import ensure_dir, outputs_root, resolve_export_dir, resolve_output_dir
+from utils.paths import (
+    ensure_dir,
+    outputs_root,
+    resolve_export_write_dir,
+    resolve_output_dir,
+)
 from core.inference import get_inference_backend
 
 # GPU-only imports — guarded for Apple Silicon where these aren't needed
@@ -140,13 +145,19 @@ class ExportBackend:
         max_seq_length: int = 2048,
         load_in_4bit: bool = True,
         trust_remote_code: bool = False,
+        hf_token: Optional[str] = None,
     ) -> Tuple[bool, str]:
         """
         Load a checkpoint for export.
 
+        ``hf_token`` authenticates the actual weight load for gated/private
+        checkpoints, matching the token the worker used for the security preflight
+        (otherwise a gated repo passes scanning then 401s at from_pretrained).
+
         Returns:
             Tuple of (success: bool, message: str)
         """
+        token = hf_token if hf_token and hf_token.strip() else None
         try:
             logger.info(f"Loading checkpoint: {checkpoint_path}")
 
@@ -164,8 +175,10 @@ class ExportBackend:
 
             model_id = base_model or checkpoint_path
 
-            self._audio_type = detect_audio_type(model_id)
-            self.is_vision = not self._audio_type and is_vision_model(model_id)
+            # Token the type-detection probes too, else a gated multimodal base
+            # 404s here and falls through to the text loader.
+            self._audio_type = detect_audio_type(model_id, hf_token = token)
+            self.is_vision = not self._audio_type and is_vision_model(model_id, hf_token = token)
 
             if self._audio_type == "csm":
                 from unsloth import FastModel
@@ -179,6 +192,7 @@ class ExportBackend:
                     auto_model = CsmForConditionalGeneration,
                     load_in_4bit = False,
                     trust_remote_code = trust_remote_code,
+                    token = token,
                 )
 
             elif self._audio_type == "whisper":
@@ -192,6 +206,7 @@ class ExportBackend:
                     load_in_4bit = False,
                     auto_model = WhisperForConditionalGeneration,
                     trust_remote_code = trust_remote_code,
+                    token = token,
                 )
 
             elif self._audio_type == "snac":
@@ -202,6 +217,7 @@ class ExportBackend:
                     dtype = None,
                     load_in_4bit = load_in_4bit,
                     trust_remote_code = trust_remote_code,
+                    token = token,
                 )
 
             elif self._audio_type == "bicodec":
@@ -213,6 +229,7 @@ class ExportBackend:
                     dtype = None if _IS_MLX else torch.float32,
                     load_in_4bit = False,
                     trust_remote_code = trust_remote_code,
+                    token = token,
                 )
 
             elif self._audio_type == "dac":
@@ -223,6 +240,7 @@ class ExportBackend:
                     max_seq_length = max_seq_length,
                     load_in_4bit = False,
                     trust_remote_code = trust_remote_code,
+                    token = token,
                 )
 
             elif self.is_vision:
@@ -233,6 +251,7 @@ class ExportBackend:
                     dtype = None,
                     load_in_4bit = load_in_4bit,
                     trust_remote_code = trust_remote_code,
+                    token = token,
                 )
                 tokenizer = processor  # vision: processor acts as tokenizer
 
@@ -244,6 +263,7 @@ class ExportBackend:
                     dtype = None,
                     load_in_4bit = load_in_4bit,
                     trust_remote_code = trust_remote_code,
+                    token = token,
                 )
 
             if _IS_MLX:
@@ -336,7 +356,7 @@ class ExportBackend:
                     save_method = "merged_16bit"
 
             if save_directory:
-                save_directory = str(resolve_export_dir(save_directory))
+                save_directory = str(resolve_export_write_dir(save_directory))
                 logger.info(f"Saving merged model locally to: {save_directory}")
                 ensure_dir(Path(save_directory))
 
@@ -436,7 +456,7 @@ class ExportBackend:
         output_path: Optional[str] = None
         try:
             if save_directory:
-                save_directory = str(resolve_export_dir(save_directory))
+                save_directory = str(resolve_export_write_dir(save_directory))
                 logger.info(f"Saving base model locally to: {save_directory}")
                 ensure_dir(Path(save_directory))
 
@@ -563,6 +583,7 @@ class ExportBackend:
             return False, "No model loaded. Please select a checkpoint first.", None
 
         output_path: Optional[str] = None
+        model_tmp_to_cleanup: Optional[str] = None
         try:
             # unsloth expects lowercase quant method
             quant_method = quantization_method.lower()
@@ -588,9 +609,8 @@ class ExportBackend:
                     _LLAMA_CPP_SCRIPTS_WARNING_EMITTED = True
 
             if save_directory:
-                save_directory = str(resolve_export_dir(save_directory))
-                # Absolute path so unsloth's relative-path internals resolve
-                # against the repo root cwd, not the export directory.
+                save_directory = str(resolve_export_write_dir(save_directory))
+                # Keep unsloth relative-path internals anchored to the repo cwd.
                 abs_save_dir = os.path.abspath(save_directory)
                 logger.info(f"Saving GGUF model locally to: {abs_save_dir}")
 
@@ -604,9 +624,15 @@ class ExportBackend:
                 cwd = os.getcwd()
                 pre_existing_ggufs = set(glob.glob(os.path.join(cwd, "*.gguf")))
 
-                model_save_path = os.path.join(abs_save_dir, "model")
+                pre_existing_subs = {d.name for d in Path(abs_save_dir).iterdir() if d.is_dir()}
+
+                # Avoid clobbering an existing user-owned model/ directory.
+                import uuid
+
+                _model_tmp = os.path.join(abs_save_dir, f"_tmp_model_{uuid.uuid4().hex[:8]}")
+                model_tmp_to_cleanup = _model_tmp
                 self.current_model.save_pretrained_gguf(
-                    model_save_path,
+                    _model_tmp,
                     self.current_tokenizer,
                     quantization_method = quant_method,
                 )
@@ -618,9 +644,11 @@ class ExportBackend:
                     shutil.move(src, dest)
                     logger.info(f"Relocated GGUF: {os.path.basename(src)} → {abs_save_dir}/")
 
-                # Flatten any .gguf from subdirs (e.g. model_gguf/) into abs_save_dir.
+                # Flatten GGUF files from subdirs created during this export.
                 for sub in list(Path(abs_save_dir).iterdir()):
                     if not sub.is_dir():
+                        continue
+                    if sub.name in pre_existing_subs:
                         continue
                     for src in sub.glob("*.gguf"):
                         dest = os.path.join(abs_save_dir, src.name)
@@ -634,7 +662,7 @@ class ExportBackend:
                 if self.current_checkpoint:
                     ckpt = Path(self.current_checkpoint)
                     gguf_dir = ckpt.parent / f"{ckpt.name}_gguf"
-                    if gguf_dir.is_dir():
+                    if gguf_dir.is_dir() and gguf_dir.resolve() != Path(abs_save_dir).resolve():
                         for src in gguf_dir.glob("*.gguf"):
                             dest = os.path.join(abs_save_dir, src.name)
                             shutil.move(str(src), dest)
@@ -683,6 +711,8 @@ class ExportBackend:
             )
 
         except Exception as e:
+            if model_tmp_to_cleanup:
+                shutil.rmtree(model_tmp_to_cleanup, ignore_errors = True)
             logger.error(f"Error exporting GGUF model: {e}")
             import traceback
 
@@ -712,7 +742,7 @@ class ExportBackend:
         output_path: Optional[str] = None
         try:
             if save_directory:
-                save_directory = str(resolve_export_dir(save_directory))
+                save_directory = str(resolve_export_write_dir(save_directory))
                 logger.info(f"Saving LoRA adapter locally to: {save_directory}")
                 ensure_dir(Path(save_directory))
 

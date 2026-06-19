@@ -10,16 +10,23 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from auth.authentication import get_current_subject
 from core.inference.mcp_client import (
+    TOOL_CACHE_INVALIDATING_FIELDS,
+    cache_tools,
     clear_oauth_tokens_async,
+    invalidate_tool_cache,
     is_stdio,
     list_tools_async,
     parse_server_headers,
     parse_stdio_command,
     probe_timeout,
+    record_probe_failure,
     stdio_mcp_enabled,
 )
+from core.inference.mcp_config_import import parse_mcp_config
 from models.mcp_servers import (
     McpServerCreate,
+    McpServerImportRequest,
+    McpServerImportResult,
     McpServerProbeResult,
     McpServerResponse,
     McpServerTestRequest,
@@ -70,13 +77,17 @@ def _validate_url(url: str) -> str:
         return trimmed
     parsed = urlparse(trimmed)
     if parsed.scheme not in ("http", "https"):
-        detail = (
-            "MCP server address must start with http:// or https:// "
-            "(for example https://example.com/mcp)."
-        )
-        # Host-scoped wording: self-hosted hosts can opt in via the env var.
         if _looks_like_command(trimmed):
-            detail += " Running a local command is not enabled on this server."
+            detail = (
+                "Local commands aren't enabled on this server. To allow them, "
+                "set UNSLOTH_STUDIO_ALLOW_STDIO_MCP=1 and restart Studio, or use "
+                "an http:// or https:// URL instead."
+            )
+        else:
+            detail = (
+                "MCP server address must start with http:// or https:// "
+                "(for example https://example.com/mcp)."
+            )
         raise HTTPException(status_code = 400, detail = detail)
     if not parsed.netloc:
         raise HTTPException(status_code = 400, detail = "url is missing a host")
@@ -195,6 +206,11 @@ async def update_mcp_server(
     ):
         await clear_oauth_tokens_async(old["url"])
     mcp_servers_db.update_server(server_id, changes)
+    # A new endpoint/auth makes cached tools wrong and disabling makes them
+    # unreachable, so drop them and let the next send re-probe; a rename
+    # leaves them valid.
+    if changes.keys() & TOOL_CACHE_INVALIDATING_FIELDS:
+        invalidate_tool_cache(server_id)
     return _row_to_response(mcp_servers_db.get_server(server_id))
 
 
@@ -206,6 +222,7 @@ async def delete_mcp_server(server_id: str, current_subject: str = Depends(get_c
     if old.get("use_oauth"):
         await clear_oauth_tokens_async(old["url"])
     mcp_servers_db.delete_server(server_id)
+    invalidate_tool_cache(server_id)
 
 
 @router.post("/{server_id}/refresh", response_model = McpServerProbeResult)
@@ -235,9 +252,64 @@ async def refresh_mcp_server_tools(
             error = str(exc),
             exc_info = True,
         )
+        current = mcp_servers_db.get_server(server_id)
+        if current is not None and not any(
+            current.get(k) != server.get(k) for k in TOOL_CACHE_INVALIDATING_FIELDS
+        ):
+            # Start the cool-off so the next chat send doesn't immediately re-hang
+            # on this server's timeout. If the row changed while the probe was
+            # awaiting, the failure belongs to the old config and must not park
+            # the newly edited server.
+            record_probe_failure(server_id, use_oauth)
         return McpServerProbeResult(ok = False, error = safe_curated_detail(exc))
 
+    # Warm the chat-path cache so the next send skips re-probing.
+    current = mcp_servers_db.get_server(server_id)
+    if current is not None and not any(
+        current.get(k) != server.get(k) for k in TOOL_CACHE_INVALIDATING_FIELDS
+    ):
+        cache_tools(server_id, tools)
     return McpServerProbeResult(ok = True, tool_count = len(tools))
+
+
+@router.post("/import", response_model = McpServerImportResult)
+async def import_mcp_servers(
+    payload: McpServerImportRequest, current_subject: str = Depends(get_current_subject)
+):
+    """Bulk-register servers from a standard mcpServers JSON config (issue
+    #5936). Each entry rides the existing create path: _validate_url applies
+    the same stdio gate (a stdio entry becomes a per-entry error when stdio is
+    off; http still imports), and entries whose url already exists are skipped
+    so re-importing the same file is idempotent. One bad entry never 400s the
+    whole batch -- failures are reported per entry."""
+    entries, errors = parse_mcp_config(payload.config)
+    created: list[McpServerResponse] = []
+    skipped: list[str] = []
+    seen_urls = {row["url"] for row in mcp_servers_db.list_servers()}
+
+    for entry in entries:
+        try:
+            url = _validate_url(entry.url)
+        except HTTPException as exc:
+            errors.append(f"{entry.display_name}: {exc.detail}")
+            continue
+        if url in seen_urls:
+            skipped.append(entry.display_name)
+            continue
+        headers = _normalize_headers(entry.headers)
+        server_id = uuid.uuid4().hex[:16]
+        mcp_servers_db.create_server(
+            id = server_id,
+            display_name = entry.display_name,
+            url = url,
+            headers_json = json.dumps(headers) if headers else None,
+            is_enabled = entry.is_enabled,
+            use_oauth = entry.use_oauth and not is_stdio(url),
+        )
+        seen_urls.add(url)
+        created.append(_row_to_response(mcp_servers_db.get_server(server_id)))
+
+    return McpServerImportResult(created = created, skipped = skipped, errors = errors)
 
 
 @router.post("/test", response_model = McpServerProbeResult)

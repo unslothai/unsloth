@@ -15,6 +15,15 @@ from dataclasses import asdict
 # Suppress C-level dependency warnings globally
 os.environ["PYTHONWARNINGS"] = "ignore"
 
+# Pin GPU index ordering to PCI bus id before any torch import creates a CUDA
+# context. Without this, torch/CUDA default to FASTEST_FIRST while nvidia-smi
+# (and Studio's VRAM probes) use PCI-bus order, so a GPU index chosen from
+# nvidia-smi data can resolve to a different physical card via
+# CUDA_VISIBLE_DEVICES. setdefault so an explicit user override wins. See
+# utils/hardware/hardware.py for the full rationale; set here too so the entry
+# process is covered before its heavy ML imports.
+os.environ.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
+
 # ── Windows AMD ROCm DLL injection ──────────────────────────────────────────
 # Python 3.8+ ignores PATH for extension modules; register ROCm bin dirs with
 # os.add_dll_directory() so amdhip64.dll etc. are found before any torch import.
@@ -83,9 +92,9 @@ if sys.platform == "win32":
     # ── Windows AMD ROCm: set BNB_ROCM_VERSION before any bitsandbytes import ─
     # bitsandbytes derives the rocm<ver>.dll name from torch.version.hip, but the
     # wheel ships rocm72.dll, so the server crashes ("Configured ROCm binary not
-    # found") without this. Detect the shipped DLL and fall back to "72" (mirrors
-    # worker.py). Gate on the rocm bnb DLL / HIP_PATH rather than torch.version.hip
-    # to avoid importing torch on every Windows host.
+    # found") without this. Detect the shipped DLL (mirrors worker.py); gate on
+    # the rocm bnb DLL rather than torch.version.hip to avoid importing torch on
+    # every Windows host.
     # Values seeded by the installer's sitecustomize.py are redetectable
     # defaults; explicit caller values remain authoritative.
     if (
@@ -95,7 +104,6 @@ if sys.platform == "win32":
         import glob as _glob
         import logging as _logging
 
-        _hip_env = bool(os.environ.get("HIP_PATH") or os.environ.get("ROCM_PATH"))
         _bnb_rocm_ver = None
         _found_rocm_bnb = False
         try:
@@ -118,11 +126,13 @@ if sys.platform == "win32":
                     _bnb_rocm_ver = max(_all_vers_main, key = lambda v: int(v))
         except Exception as _e:
             _logging.getLogger(__name__).warning(
-                "Windows ROCm: BNB DLL detection failed (%s); falling back to version '72'",
+                "Windows ROCm: BNB DLL detection failed (%s); leaving BNB_ROCM_VERSION as is",
                 _e,
             )
-        # rocm bnb DLL present, or HIP_PATH/ROCM_PATH set (DLL unparsable -> "72")
-        if _found_rocm_bnb or _hip_env:
+        # Only when a ROCm bnb DLL actually exists: HIP_PATH/ROCM_PATH alone
+        # (HIP SDK on a CUDA/CPU box) must not force a ROCm backend onto a
+        # non-ROCm bitsandbytes, which raises at import. DLL unparsable -> "72".
+        if _found_rocm_bnb:
             _bnb_rocm_ver_final = _bnb_rocm_ver or os.environ.get("BNB_ROCM_VERSION") or "72"
             os.environ["BNB_ROCM_VERSION"] = _bnb_rocm_ver_final
             os.environ["UNSLOTH_BNB_ROCM_VERSION_SOURCE"] = "detected"
@@ -192,6 +202,11 @@ if _STUDIO_ROOT_RESOLVED != _LEGACY_STUDIO_ROOT:
     if not os.environ.get("UNSLOTH_LLAMA_CPP_PATH"):
         os.environ["UNSLOTH_LLAMA_CPP_PATH"] = str(_STUDIO_ROOT_RESOLVED / "llama.cpp")
 
+# The studio bundles unsloth_zoo; declare unsloth present (as `import unsloth`
+# does) so its lazy submodule imports (export, hardware, mlx) and the
+# DiffusionGemma runner never trip the install guard on a clean install.
+os.environ.setdefault("UNSLOTH_IS_PRESENT", "1")
+
 import hashlib
 import mimetypes
 import re as _re
@@ -244,7 +259,7 @@ if os.getenv("ENVIRONMENT_TYPE", "production") == "production":
     # warnings.filterwarnings("ignore", category=DeprecationWarning)
     # warnings.filterwarnings("ignore", module="triton.*")
 
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse, Response
@@ -290,6 +305,7 @@ from utils.hardware import (
 import utils.hardware.hardware as _hw_module
 
 from utils.cache_cleanup import clear_unsloth_compiled_cache
+from utils.lifespan_shutdown import run_lifespan_shutdown
 from utils.native_path_leases import native_path_leases_supported
 from utils.update_status import (
     get_studio_install_source_status,
@@ -457,9 +473,16 @@ async def lifespan(app: FastAPI):
     else:
         app.state.bootstrap_password = storage.get_bootstrap_password()
     yield
-    await asyncio.to_thread(terminate_hub_downloads)
-    _hw_module.DEVICE = None
-    clear_unsloth_compiled_cache()
+
+    from core.inference.llama_http import aclose as _close_llama_http
+
+    await _close_llama_http()
+
+    await run_lifespan_shutdown(
+        terminate_hub_downloads,
+        clear_unsloth_compiled_cache,
+        _hw_module,
+    )
 
 
 app = FastAPI(
@@ -482,8 +505,7 @@ app.add_middleware(LoggingMiddleware)
 
 # img/media-src allow any https origin so HF model-card assets render (mirrors
 # tauri.conf.json); scripts/frames/connect-src stay same-origin + HF.
-from starlette.middleware.base import BaseHTTPMiddleware  # noqa: E402
-from starlette.requests import Request as _StarletteRequest  # noqa: E402
+from starlette.datastructures import MutableHeaders  # noqa: E402
 
 
 _CSP_SCRIPT_NONCE_HEADER = "x-internal-script-nonce"
@@ -539,28 +561,51 @@ def _build_csp(script_nonce: "str | None" = None) -> str:
     )
 
 
-class SecurityHeadersMiddleware(BaseHTTPMiddleware):
-    """Set baseline security headers; splice per-response inline-script nonces into CSP."""
+class SecurityHeadersMiddleware:
+    """Set baseline security headers; splice per-response inline-script nonces into CSP.
 
-    async def dispatch(self, request: _StarletteRequest, call_next):
-        response = await call_next(request)
-        # Strip the internal nonce hand-off header so it never reaches the client
-        nonce = response.headers.get(_CSP_SCRIPT_NONCE_HEADER)
-        if nonce is not None:
-            del response.headers[_CSP_SCRIPT_NONCE_HEADER]
-        response.headers.setdefault("Content-Security-Policy", _build_csp(nonce))
-        # Omit X-Frame-Options in Colab — CSP frame-ancestors handles it, and
-        # DENY would block serve_kernel_port_as_iframe regardless of CSP.
-        if not _IS_COLAB and request.url.path != _ARTIFACT_PREVIEW_FRAME_PATH:
-            response.headers.setdefault("X-Frame-Options", "DENY")
-        response.headers.setdefault("X-Content-Type-Options", "nosniff")
-        response.headers.setdefault("Referrer-Policy", "no-referrer")
-        response.headers.setdefault(
-            "Permissions-Policy",
-            "camera=(), microphone=(self), geolocation=()",
-        )
-        response.headers["server"] = "unsloth-studio"
-        return response
+    Pure ASGI (not BaseHTTPMiddleware) so streaming responses are not wrapped in
+    an anyio stream. Header logic mirrors the prior version exactly via
+    MutableHeaders on the response-start message.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        path = scope.get("path", "")
+
+        async def send_wrapper(message):
+            if message["type"] == "http.response.start":
+                # ASGI headers are an iterable; coerce to a list so MutableHeaders
+                # can mutate in place even if a server sends a tuple or omits it.
+                raw = message.setdefault("headers", [])
+                if not isinstance(raw, list):
+                    raw = list(raw)
+                    message["headers"] = raw
+                headers = MutableHeaders(raw = raw)
+                # Strip the internal nonce hand-off header so it never reaches the client
+                nonce = headers.get(_CSP_SCRIPT_NONCE_HEADER)
+                if nonce is not None:
+                    del headers[_CSP_SCRIPT_NONCE_HEADER]
+                headers.setdefault("Content-Security-Policy", _build_csp(nonce))
+                # Omit X-Frame-Options in Colab: CSP frame-ancestors handles it, and
+                # DENY would block serve_kernel_port_as_iframe regardless of CSP.
+                if not _IS_COLAB and path != _ARTIFACT_PREVIEW_FRAME_PATH:
+                    headers.setdefault("X-Frame-Options", "DENY")
+                headers.setdefault("X-Content-Type-Options", "nosniff")
+                headers.setdefault("Referrer-Policy", "no-referrer")
+                headers.setdefault(
+                    "Permissions-Policy",
+                    "camera=(), microphone=(self), geolocation=()",
+                )
+                headers["server"] = "unsloth-studio"
+            await send(message)
+
+        await self.app(scope, receive, send_wrapper)
 
 
 app.add_middleware(SecurityHeadersMiddleware)
@@ -867,6 +912,10 @@ async def health_check(request: Request):
         "version": UNSLOTH_VERSION,
         "studio_version": STUDIO_VERSION,
         "device_type": device_type,
+        # API-screen fields (authed-only; they fingerprint how the host is exposed).
+        "cloudflare_url": getattr(request.app.state, "cloudflare_url", None),
+        "server_url": getattr(request.app.state, "server_url", None),
+        "secure": bool(getattr(request.app.state, "secure", False)),
     }
 
 
@@ -957,17 +1006,40 @@ async def get_gpu_visibility(current_subject: str = Depends(get_current_subject)
 
 
 @app.get("/api/system/hardware")
-async def get_hardware_info(current_subject: str = Depends(get_current_subject)):
+def get_hardware_info(
+    include_details: bool = Query(False), current_subject: str = Depends(get_current_subject)
+):
     """Return GPU name, total VRAM, and key ML package versions.
 
     Gated behind auth alongside /api/system -- same fingerprinting concern.
     /api/system/gpu-visibility is also auth-gated.
+
+    ``include_details`` is for About/diagnostics. The default response stays
+    cheap for callers that only need the primary GPU summary, like training
+    method auto-selection. Sync def (not async): hardware/detail probes can
+    shell out, and FastAPI runs sync endpoints in a threadpool.
     """
     from utils.hardware import get_gpu_summary, get_package_versions
-    return {
+
+    body = {
         "gpu": get_gpu_summary(),
         "versions": get_package_versions(),
     }
+    if include_details:
+        from utils.llama_cpp_update import get_installed_llama_version
+
+        # All backend-visible GPUs (respects CUDA_VISIBLE_DEVICES), so multi-GPU
+        # hosts list every device -- get_gpu_summary alone reports only the primary.
+        # Sort by visible_ordinal: the nvidia-smi path returns rows in physical order,
+        # so under a reordering CUDA_VISIBLE_DEVICES (e.g. "5,3") labeling by array
+        # index would otherwise disagree with the GPU 0/1 the backend actually sees.
+        devices = get_backend_visible_gpu_info().get("devices", [])
+        body["gpus"] = [
+            {"name": d.get("name"), "vram_total_gb": d.get("memory_total_gb")}
+            for d in sorted(devices, key = lambda d: d.get("visible_ordinal", 0))
+        ]
+        body["llama_cpp"] = get_installed_llama_version()
+    return body
 
 
 # ============ Serve Frontend (Optional) ============

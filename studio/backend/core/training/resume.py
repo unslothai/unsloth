@@ -3,6 +3,7 @@
 
 """Helpers for validating resumable training outputs."""
 
+import json
 from pathlib import Path
 from typing import Optional
 
@@ -56,8 +57,28 @@ def normalize_resume_output_dir(path_value: str) -> str:
     return str(path)
 
 
+def _run_config(run: dict) -> dict:
+    raw_config = run.get("config_json")
+    if isinstance(raw_config, dict):
+        return raw_config
+    if not isinstance(raw_config, str) or not raw_config.strip():
+        return {}
+    try:
+        parsed = json.loads(raw_config)
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _uses_s3_dataset(run: dict) -> bool:
+    config = _run_config(run)
+    return config.get("dataset_source") == "s3" or "s3_dataset" in config
+
+
 def can_resume_run(run: dict) -> bool:
     if run.get("resumed_later"):
+        return False
+    if _uses_s3_dataset(run):
         return False
 
     final_step = run.get("final_step")

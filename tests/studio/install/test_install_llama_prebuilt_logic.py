@@ -1,3 +1,4 @@
+import errno
 import importlib.util
 import io
 import json
@@ -28,6 +29,7 @@ ApprovedReleaseChecksums = INSTALL_LLAMA_PREBUILT.ApprovedReleaseChecksums
 hydrate_source_tree = INSTALL_LLAMA_PREBUILT.hydrate_source_tree
 validate_prebuilt_choice = INSTALL_LLAMA_PREBUILT.validate_prebuilt_choice
 activate_install_tree = INSTALL_LLAMA_PREBUILT.activate_install_tree
+activate_staged_dir = INSTALL_LLAMA_PREBUILT.activate_staged_dir
 create_install_staging_dir = INSTALL_LLAMA_PREBUILT.create_install_staging_dir
 sha256_file = INSTALL_LLAMA_PREBUILT.sha256_file
 source_archive_logical_name = INSTALL_LLAMA_PREBUILT.source_archive_logical_name
@@ -204,6 +206,109 @@ def test_hydrate_source_tree_extracts_upstream_archive_contents(
     assert (install_dir / "convert_hf_to_gguf.py").exists()
     assert (install_dir / "gguf-py" / "gguf" / "__init__.py").exists()
     assert not (install_dir / f"llama.cpp-{upstream_tag}").exists()
+
+
+def test_release_asset_download_url():
+    fn = INSTALL_LLAMA_PREBUILT.release_asset_download_url
+    assert fn(
+        "unslothai/llama.cpp", "b9000-mix-abc1234", "llama.cpp-source-commit-deadbeef.tar.gz"
+    ) == (
+        "https://github.com/unslothai/llama.cpp/releases/download/"
+        "b9000-mix-abc1234/llama.cpp-source-commit-deadbeef.tar.gz"
+    )
+    # Any missing component -> None (no asset url, caller falls back to codeload).
+    assert fn(None, "b9000", "x.tar.gz") is None
+    assert fn("unslothai/llama.cpp", None, "x.tar.gz") is None
+    assert fn("unslothai/llama.cpp", "b9000", None) is None
+
+
+def _mk_source_tarball(path: Path, tag: str) -> None:
+    with tarfile.open(path, "w:gz") as archive:
+        add_bytes_to_tar(
+            archive, f"llama.cpp-{tag}/CMakeLists.txt", b"cmake_minimum_required(VERSION 3.14)\n"
+        )
+        add_bytes_to_tar(
+            archive,
+            f"llama.cpp-{tag}/convert_hf_to_gguf.py",
+            b"#!/usr/bin/env python3\nimport gguf\n",
+        )
+        add_bytes_to_tar(archive, f"llama.cpp-{tag}/gguf-py/gguf/__init__.py", b"__all__ = []\n")
+
+
+def test_hydrate_source_tree_prefers_release_asset_for_mix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    # A mix build's merge commit 404s on codeload, so hydrate must fetch the release asset.
+    commit = "a" * 40
+    archive_path = tmp_path / "merged-source.tar.gz"
+    _mk_source_tarball(archive_path, f"b9000-mix-{commit[:7]}")
+    asset_url = INSTALL_LLAMA_PREBUILT.release_asset_download_url(
+        "unslothai/llama.cpp", "b9000-mix-abc1234", f"llama.cpp-source-commit-{commit}.tar.gz"
+    )
+    codeload_urls = set(
+        INSTALL_LLAMA_PREBUILT.commit_source_archive_urls("unslothai/llama.cpp", commit)
+    )
+    seen = []
+
+    def fake_download_file(url: str, destination: Path) -> None:
+        seen.append(url)
+        if url in codeload_urls:
+            raise AssertionError("codeload was hit even though the release asset was available")
+        assert url == asset_url
+        destination.write_bytes(archive_path.read_bytes())
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "download_file", fake_download_file)
+
+    install_dir = tmp_path / "install"
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    hydrate_source_tree(
+        commit,
+        install_dir,
+        work_dir,
+        source_repo = "unslothai/llama.cpp",
+        expected_sha256 = sha256_file(archive_path),
+        exact_source = True,
+        asset_url = asset_url,
+    )
+    assert seen == [asset_url]
+    assert (install_dir / "CMakeLists.txt").exists()
+    assert (install_dir / "convert_hf_to_gguf.py").exists()
+
+
+def test_hydrate_source_tree_falls_back_to_codeload_when_asset_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    # If the release asset 404s, fall back to codeload/archive (vanilla path).
+    commit = "b" * 40
+    archive_path = tmp_path / "vanilla-source.tar.gz"
+    _mk_source_tarball(archive_path, f"commit-{commit[:7]}")
+    asset_url = INSTALL_LLAMA_PREBUILT.release_asset_download_url(
+        "unslothai/llama.cpp", "b9000", f"llama.cpp-source-commit-{commit}.tar.gz"
+    )
+    codeload_urls = INSTALL_LLAMA_PREBUILT.commit_source_archive_urls("unslothai/llama.cpp", commit)
+
+    def fake_download_file(url: str, destination: Path) -> None:
+        if url == asset_url:
+            raise RuntimeError("404 Not Found")
+        assert url in codeload_urls
+        destination.write_bytes(archive_path.read_bytes())
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "download_file", fake_download_file)
+
+    install_dir = tmp_path / "install"
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    hydrate_source_tree(
+        commit,
+        install_dir,
+        work_dir,
+        source_repo = "unslothai/llama.cpp",
+        expected_sha256 = sha256_file(archive_path),
+        exact_source = True,
+        asset_url = asset_url,
+    )
+    assert (install_dir / "CMakeLists.txt").exists()
 
 
 def test_validate_prebuilt_choice_creates_repo_shaped_linux_install(
@@ -562,6 +667,48 @@ def test_activate_install_tree_cleans_all_paths_when_rollback_restore_fails(
     assert "removing rollback path" in output
 
 
+def test_activate_staged_dir_copies_when_replace_hits_busy_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    staging_dir = tmp_path / "llama.cpp.staging-test"
+    (staging_dir / "bin").mkdir(parents = True)
+    (staging_dir / "bin" / "ggml-base.dll").write_bytes(b"fake dll")
+    dst = tmp_path / "llama.cpp"
+
+    def denied_replace(src, dst_arg):
+        raise PermissionError(errno.EACCES, "Access is denied", str(src))
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "replace", denied_replace)
+
+    activate_staged_dir(staging_dir, dst)
+
+    assert (dst / "bin" / "ggml-base.dll").read_bytes() == b"fake dll"
+    assert not staging_dir.exists()
+
+    captured = capsys.readouterr()
+    assert "falling back to file-by-file copy" in captured.out + captured.err
+
+
+def test_activate_staged_dir_reraises_non_busy_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    staging_dir = tmp_path / "llama.cpp.staging-test"
+    staging_dir.mkdir()
+    (staging_dir / "new.txt").write_text("new install\n")
+    dst = tmp_path / "llama.cpp"
+
+    def out_of_space_replace(src, dst_arg):
+        raise OSError(errno.ENOSPC, "No space left on device", str(src))
+
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT.os, "replace", out_of_space_replace)
+
+    with pytest.raises(OSError, match = "No space left on device"):
+        activate_staged_dir(staging_dir, dst)
+
+    assert not dst.exists()
+    assert (staging_dir / "new.txt").read_text() == "new install\n"
+
+
 def test_binary_env_linux_includes_binary_parent_in_ld_library_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
@@ -733,8 +880,7 @@ def write_linux_install_shape(install_dir: Path) -> None:
     (install_dir / "llama-quantize").write_text("#!/bin/sh\n", encoding = "utf-8")
     (runtime_dir / "llama-server").write_text("#!/bin/sh\n", encoding = "utf-8")
     (runtime_dir / "llama-quantize").write_text("#!/bin/sh\n", encoding = "utf-8")
-    # Mirror the runtime payload health groups in install_llama_prebuilt.py:
-    # libllama-common.so* was added by PR #5135 and is required.
+    # libllama-common.so* (PR #5135) is a required runtime payload health group.
     (runtime_dir / "libllama-common.so.0").write_bytes(b"DLL")
     (runtime_dir / "libllama.so.0").write_bytes(b"DLL")
     (runtime_dir / "libggml.so.0").write_bytes(b"DLL")
@@ -1131,10 +1277,7 @@ def test_existing_install_matches_plan_windows_cuda_requires_cuda_dll(tmp_path: 
 
 
 def test_existing_install_matches_plan_windows_cuda_paired_requires_cudart(tmp_path: Path):
-    """When the choice ships a paired cudart bundle (#5106), the install
-    is considered stale unless cudart64_*.dll and cublas64_*.dll are
-    actually on disk. Otherwise existing broken installs would keep
-    matching and skip the reinstall that drops cudart in."""
+    """A paired cudart bundle (#5106) marks the install stale unless cudart64_* and cublas64_* are on disk."""
     install_dir = tmp_path / "llama.cpp"
     install_dir.mkdir()
     write_windows_install_shape(
@@ -1232,10 +1375,7 @@ def test_existing_install_matches_plan_windows_cuda_paired_requires_cudart(tmp_p
     (install_dir / "build" / "bin" / "Release" / "cudart64_12.dll").unlink()
     assert existing_install_matches_plan(install_dir, host, plan) is False
 
-    # cublasLt missing -- stale, must reinstall. The upstream cudart
-    # bundle ships all three of cudart / cublas / cublasLt; a user with
-    # cudart + cublas but no cublasLt is still missing a required GPU
-    # initialisation DLL and Studio must refresh the install.
+    # cublasLt missing -- stale, must reinstall (all three DLLs are required).
     write_windows_install_shape(
         install_dir,
         include_llama_dll = True,
@@ -1247,11 +1387,7 @@ def test_existing_install_matches_plan_windows_cuda_paired_requires_cudart(tmp_p
 
 
 def test_existing_install_matches_plan_windows_cuda_unpaired_skips_cudart_check(tmp_path: Path):
-    """If the choice has no paired runtime archive (manifest dropped it,
-    or upstream did not ship cudart), legacy installs without cudart on
-    disk must still pass the health check -- otherwise the installer
-    would loop on reinstall forever because install_from_archives has no
-    cudart source to drop in."""
+    """With no paired runtime archive, a legacy install lacking cudart must still pass (else reinstall loops)."""
     install_dir = tmp_path / "llama.cpp"
     install_dir.mkdir()
     write_windows_install_shape(
@@ -1327,11 +1463,7 @@ def test_existing_install_matches_plan_windows_cuda_unpaired_skips_cudart_check(
 
 
 def test_existing_install_fingerprint_changes_when_cudart_pair_added(tmp_path: Path):
-    """Existing pre-#5322 Windows CUDA installs (no paired cudart) must
-    be treated as stale once the choice gains a runtime archive,
-    otherwise the fingerprint match would keep skipping the reinstall
-    that drops the cudart DLLs in. This is the install-cache half of the
-    #5106 fix -- the health-check half lives in the test above."""
+    """A pre-#5322 CUDA install must go stale once the choice gains a runtime archive (#5106 fingerprint half)."""
     install_dir = tmp_path / "llama.cpp"
     install_dir.mkdir()
     write_windows_install_shape(
@@ -1406,7 +1538,7 @@ def test_existing_install_fingerprint_changes_when_cudart_pair_added(tmp_path: P
         },
     )
 
-    # Install metadata was written for the legacy (no-pair) choice.
+    # Metadata written for the legacy (no-pair) choice.
     write_prebuilt_metadata(
         install_dir,
         requested_tag = "latest",
@@ -1417,10 +1549,7 @@ def test_existing_install_fingerprint_changes_when_cudart_pair_added(tmp_path: P
         prebuilt_fallback_used = False,
     )
 
-    # New plan offers the paired choice -- fingerprint must differ so
-    # the install is refreshed. The health check would also catch this
-    # because cudart64_*.dll is missing on disk; we test the fingerprint
-    # half explicitly by comparing the two fingerprints directly.
+    # The paired choice's fingerprint must differ from the legacy one so the install refreshes.
     legacy_fingerprint = INSTALL_LLAMA_PREBUILT.expected_install_fingerprint(
         llama_tag = "b9001",
         release_tag = "release-1",
@@ -2236,8 +2365,7 @@ def test_existing_install_matches_choice_fails_when_install_tree_incomplete(tmp_
         is True
     )
 
-    # Remove convert_hf_to_gguf.py (checked by confirm_install_tree but not
-    # runtime_payload_is_healthy) and verify the guard catches it
+    # Remove convert_hf_to_gguf.py (confirm_install_tree checks it; runtime health does not).
     (install_dir / "convert_hf_to_gguf.py").unlink()
     assert (
         existing_install_matches_choice(
@@ -2341,12 +2469,7 @@ def test_existing_install_matches_choice_fails_when_install_tree_incomplete_maco
 
 
 def test_paired_runtime_dll_patterns_excludes_executables() -> None:
-    """The paired runtime archive must only contribute CUDA DLLs to
-    the install. The narrow pattern list -- not the broad
-    runtime_patterns_for_choice ``*.exe`` / ``*.dll`` -- is what
-    prevents a malformed cudart bundle from overwriting
-    llama-server.exe at install time.
-    """
+    """The paired runtime archive must contribute only CUDA DLLs (no *.exe/*.dll) so it can't overwrite binaries."""
     paired_runtime_dll_patterns = INSTALL_LLAMA_PREBUILT.paired_runtime_dll_patterns
     paired_choice = AssetChoice(
         repo = "x",
@@ -2390,10 +2513,7 @@ def test_paired_runtime_dll_patterns_excludes_executables() -> None:
 
 
 def test_runtime_overlay_cannot_overwrite_main_archive_payload(tmp_path: Path) -> None:
-    """End-to-end: a malformed runtime archive containing
-    ``llama-server.exe`` alongside the real cudart DLLs must NOT
-    replace the main archive's ``llama-server.exe``.
-    """
+    """A malformed runtime archive with llama-server.exe must NOT replace the main archive's binary."""
     install_from_archives = INSTALL_LLAMA_PREBUILT.install_from_archives
 
     work = tmp_path / "work"
@@ -2579,13 +2699,7 @@ def test_linux_runtime_overlay_copies_llama_tool_impl_libraries(tmp_path: Path) 
 
 
 def test_python_runtime_dirs_covers_cu13_and_library_bin(monkeypatch, tmp_path: Path) -> None:
-    """Installer-side runtime DLL discovery must scan the same path
-    set as the backend ``_windows_pip_nvidia_dll_dirs``: legacy
-    ``nvidia/<pkg>/bin``, current ``nvidia/<pkg>/bin/x86_64``
-    (cu13 layout), conda-style ``nvidia/<pkg>/Library/bin``, plus
-    ``torch/lib``. Otherwise installer preflight and backend launch
-    can disagree about which DLLs are actually present.
-    """
+    """Installer DLL discovery must scan the same path set as the backend (cu12/cu13/conda layouts + torch/lib)."""
     import site as _site
 
     python_runtime_dirs = INSTALL_LLAMA_PREBUILT.python_runtime_dirs
@@ -2613,3 +2727,104 @@ def test_python_runtime_dirs_covers_cu13_and_library_bin(monkeypatch, tmp_path: 
     assert str(cu13_arch) in dirs
     assert str(library_bin) in dirs
     assert str(torch_lib) in dirs
+
+
+def _nvidia_linux_host():
+    return HostInfo(
+        system = "Linux",
+        machine = "x86_64",
+        is_windows = False,
+        is_linux = True,
+        is_macos = False,
+        is_x86_64 = True,
+        is_arm64 = False,
+        nvidia_smi = None,
+        driver_cuda_version = None,
+        compute_caps = ["10.0"],
+        visible_cuda_devices = None,
+        has_physical_nvidia = True,
+        has_usable_nvidia = True,
+    )
+
+
+def _run_validate_prebuilt_choice(monkeypatch, tmp_path, *, expected_sha256):
+    """Run validate_prebuilt_choice with heavy steps stubbed; return the quantize/server smoke-test call counts."""
+    calls = {"quantize": 0, "server": 0}
+    server_path = tmp_path / "install" / "build" / "bin" / "llama-server"
+    quantize_path = tmp_path / "install" / "build" / "bin" / "llama-quantize"
+
+    src = INSTALL_LLAMA_PREBUILT
+    monkeypatch.setattr(
+        src, "preferred_source_archive", lambda *a, **k: ("repo", "ref", None, False)
+    )
+    monkeypatch.setattr(src, "hydrate_source_tree", lambda *a, **k: None)
+    monkeypatch.setattr(src, "install_from_archives", lambda *a, **k: (server_path, quantize_path))
+    monkeypatch.setattr(src, "preflight_linux_installed_binaries", lambda *a, **k: None)
+    monkeypatch.setattr(src, "preflight_macos_installed_binaries", lambda *a, **k: None)
+    monkeypatch.setattr(src, "ensure_repo_shape", lambda *a, **k: None)
+    monkeypatch.setattr(src, "write_prebuilt_metadata", lambda *a, **k: None)
+    monkeypatch.setattr(
+        src,
+        "validate_quantize",
+        lambda *a, **k: calls.__setitem__("quantize", calls["quantize"] + 1),
+    )
+    monkeypatch.setattr(
+        src, "validate_server", lambda *a, **k: calls.__setitem__("server", calls["server"] + 1)
+    )
+
+    bundle_name = "app-b9998-linux-x64-cuda13-newer.tar.gz"
+    source_archive = tmp_path / "source.tar.gz"
+    bundle_archive = tmp_path / "bundle.tar.gz"
+    source_archive.write_bytes(b"source")
+    bundle_archive.write_bytes(b"bundle")
+
+    choice = AssetChoice(
+        repo = "local",
+        tag = "b9998",
+        name = bundle_name,
+        url = "file://bundle",
+        source_label = "local",
+        is_ready_bundle = True,
+        install_kind = "linux-cuda",
+        bundle_profile = "cuda13-newer",
+        runtime_line = "cuda13",
+        expected_sha256 = expected_sha256,
+    )
+    src.validate_prebuilt_choice(
+        choice,
+        _nvidia_linux_host(),
+        tmp_path / "install",
+        tmp_path / "work",
+        tmp_path / "stories260K.gguf",
+        requested_tag = "b9998",
+        llama_tag = "b9998",
+        release_tag = "b9998",
+        approved_checksums = approved_checksums_for(
+            "b9998",
+            source_archive = source_archive,
+            bundle_archive = bundle_archive,
+            bundle_name = bundle_name,
+        ),
+        prebuilt_fallback_used = False,
+        quantized_path = tmp_path / "stories260K-q4.gguf",
+    )
+    return calls
+
+
+def test_validate_prebuilt_choice_approved_validation_skipped_when_flag_off(tmp_path, monkeypatch):
+    # An approved (sha256-verified) bundle skips the smoke test while the flag is off.
+    calls = _run_validate_prebuilt_choice(monkeypatch, tmp_path, expected_sha256 = "ab" * 32)
+    assert calls == {"quantize": 0, "server": 0}
+
+
+def test_validate_prebuilt_choice_hashless_build_always_validated(tmp_path, monkeypatch):
+    # A hashless build has no sha256 gate, so the smoke test must run even with the flag off.
+    calls = _run_validate_prebuilt_choice(monkeypatch, tmp_path, expected_sha256 = None)
+    assert calls == {"quantize": 1, "server": 1}
+
+
+def test_validate_prebuilt_choice_approved_validation_runs_when_flag_enabled(tmp_path, monkeypatch):
+    # _RUN_STAGED_PREBUILT_VALIDATION back on restores the smoke test for approved bundles too.
+    monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_RUN_STAGED_PREBUILT_VALIDATION", True)
+    calls = _run_validate_prebuilt_choice(monkeypatch, tmp_path, expected_sha256 = "ab" * 32)
+    assert calls == {"quantize": 1, "server": 1}

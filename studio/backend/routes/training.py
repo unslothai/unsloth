@@ -125,6 +125,17 @@ async def start_training(
 
         backend = get_training_backend()
 
+        # S3 dataset loading needs the optional boto3 dependency. Reject early
+        # with a clear message so credentials are never accepted and then
+        # silently dropped on a host without boto3 installed.
+        if request.s3_config is not None:
+            from core.training.s3_dataset import boto3_available
+            if not boto3_available():
+                raise HTTPException(
+                    status_code = 501,
+                    detail = "S3 dataset loading requires boto3. Install it with: pip install boto3",
+                )
+
         # Check before mutating state.
         if backend.is_training_active():
             existing_job_id: Optional[str] = getattr(backend, "current_job_id", "")
@@ -204,6 +215,9 @@ async def start_training(
             "save_steps": request.save_steps,
             "weight_decay": request.weight_decay,
             "max_grad_norm": request.max_grad_norm,
+            "max_grad_value": request.max_grad_value,
+            "max_grad_leaf_norm": request.max_grad_leaf_norm,
+            "cast_norm_output_to_input_dtype": request.cast_norm_output_to_input_dtype,
             "random_seed": request.random_seed,
             "packing": request.packing,
             "optim": request.optim,
@@ -234,48 +248,99 @@ async def start_training(
             "output_dir": resume_output_dir,
             "resume_from_checkpoint": request.resume_from_checkpoint,
             "trust_remote_code": request.trust_remote_code,
+            "approved_remote_code_fingerprint": request.approved_remote_code_fingerprint,
             "gpu_ids": request.gpu_ids,
+            "s3_config": request.s3_config.model_dump() if request.s3_config else None,
         }
 
-        # Training page has no trust_remote_code toggle; as a safety net consult
-        # YAML model defaults directly so models that need it always get it.
+        # Training page has no trust_remote_code toggle, so honor the YAML default
+        # -- but only for genuine first-party (unsloth/nvidia) Hub repos, never a
+        # local path or a name merely starting with "unsloth/".
         if not training_kwargs["trust_remote_code"]:
+            from utils.security.trusted_org import is_trusted_org_repo
+
             model_defaults = load_model_defaults(request.model_name)
             yaml_trust = model_defaults.get("training", {}).get("trust_remote_code", False)
-            if yaml_trust:
+            if yaml_trust and is_trusted_org_repo(
+                request.model_name, hf_token = request.hf_token or None
+            ):
                 logger.info(f"YAML config sets trust_remote_code=True for {request.model_name}")
                 training_kwargs["trust_remote_code"] = True
-
-        # Free GPU memory: shut down any running inference/export subprocesses
-        # before training (they'd compete for VRAM otherwise).
-        try:
-            from core.inference import get_inference_backend
-            inf_backend = get_inference_backend()
-            if inf_backend.active_model_name:
-                logger.info(
-                    "Unloading inference model '%s' to free GPU memory for training",
-                    inf_backend.active_model_name,
+            elif yaml_trust:
+                logger.warning(
+                    "YAML sets trust_remote_code=True for %s but it is not a trusted "
+                    "first-party repo; leaving disabled (user can opt in explicitly).",
+                    request.model_name,
                 )
-                inf_backend._shutdown_subprocess()
-                inf_backend.active_model_name = None
-                inf_backend.models.clear()
-        except Exception as e:
-            logger.warning("Could not unload inference model: %s", e)
 
-        try:
-            from core.export import get_export_backend
-            exp_backend = get_export_backend()
-            if exp_backend.current_checkpoint:
-                logger.info("Shutting down export subprocess to free GPU memory for training")
-                exp_backend._shutdown_subprocess()
-                exp_backend.current_checkpoint = None
-                exp_backend.is_vision = False
-                exp_backend.is_peft = False
-        except Exception as e:
-            logger.warning("Could not shut down export subprocess: %s", e)
+        # Free VRAM for training: stop export, unload chat unless it can coexist.
+        # A before_spawn hook -> runs only after start_training's guards pass, so
+        # we never tear down chat/export VRAM for a start that is then refused.
+        def _free_vram_for_training() -> None:
+            try:
+                from core.export import get_export_backend
+                exp_backend = get_export_backend()
+                # Tear down the export subprocess whenever an export is in flight,
+                # not just once a checkpoint is loaded: during the load phase
+                # current_checkpoint is still unset while the worker is already
+                # allocating GPU memory, so gate on is_export_active() too.
+                if exp_backend.current_checkpoint or exp_backend.is_export_active():
+                    logger.info("Shutting down export subprocess to free GPU memory for training")
+                    exp_backend._shutdown_subprocess()
+                    exp_backend.current_checkpoint = None
+                    exp_backend.is_vision = False
+                    exp_backend.is_peft = False
+            except Exception as e:
+                logger.warning("Could not shut down export subprocess: %s", e)
 
-        # start_training spawns a subprocess (non-blocking).
-        success = backend.start_training(job_id = job_id, **training_kwargs)
+            try:
+                from routes.training_vram import (
+                    can_keep_chat_during_training,
+                    free_chat_models_for_training,
+                    summarize_resident_chat,
+                )
+
+                resident = summarize_resident_chat()
+                if not resident["any"]:
+                    return
+                if resident.get("loading"):
+                    # In-flight load can't be sized -> free rather than risk OOM.
+                    freed = free_chat_models_for_training(reason = "chat model still loading")
+                    logger.info("Freed in-flight chat load for training: %s", freed)
+                    return
+                keep, info = can_keep_chat_during_training(
+                    model_name = training_kwargs["model_name"],
+                    hf_token = training_kwargs["hf_token"],
+                    training_type = training_kwargs["training_type"],
+                    load_in_4bit = training_kwargs["load_in_4bit"],
+                    batch_size = training_kwargs["batch_size"],
+                    max_seq_length = training_kwargs["max_seq_length"],
+                    lora_rank = training_kwargs["lora_r"],
+                    target_modules = training_kwargs["target_modules"],
+                    gradient_checkpointing = training_kwargs["gradient_checkpointing"],
+                    optimizer = training_kwargs["optim"],
+                    gpu_ids = training_kwargs["gpu_ids"],
+                )
+                if keep:
+                    logger.info(
+                        "Keeping chat model(s) loaded during training "
+                        "(free ~%s GB, needs ~%s GB): %s",
+                        info.get("usable_gb"),
+                        info.get("required_gb"),
+                        resident,
+                    )
+                else:
+                    freed = free_chat_models_for_training(
+                        reason = "insufficient VRAM to run training alongside chat",
+                    )
+                    logger.info("Freed chat model(s) for training: %s", freed)
+            except Exception as e:
+                logger.warning("Chat/training VRAM coordination failed; proceeding: %s", e)
+
+        # The hook runs only once start guards pass -> VRAM freed iff training starts.
+        success = backend.start_training(
+            job_id = job_id, before_spawn = _free_vram_for_training, **training_kwargs
+        )
 
         if not success:
             progress_error = backend.trainer.training_progress.error
@@ -293,6 +358,10 @@ async def start_training(
             error = None,
         )
 
+    except HTTPException:
+        # Deliberate rejections (S3 not implemented, resume validation) must
+        # reach the client with their original status, not a generic 500.
+        raise
     except ValueError as e:
         logger.warning("Rejected training GPU selection: %s", e)
         # Deliberate user-facing GPU-selection validation message.
@@ -665,10 +734,17 @@ async def stream_training_progress(
 
             # If not active, send final state and exit
             if not is_active:
-                if backend.step_history:
-                    final_step = backend.step_history[-1]
+                _live = (getattr(tp, "step", 0) or 0) if tp else 0
+                if backend.step_history or _live > 0:
+                    final_step = backend.step_history[-1] if backend.step_history else 0
                     final_loss = backend.loss_history[-1] if backend.loss_history else None
                     final_lr = backend.lr_history[-1] if backend.lr_history else None
+                    # Histories skip non-finite steps; report the live step with
+                    # loss=None instead of the last finite pair.
+                    if _live > final_step:
+                        final_step = _live
+                        final_loss = getattr(tp, "loss", None)
+                        final_lr = getattr(tp, "learning_rate", final_lr)
                     final_total_steps = getattr(tp, "total_steps", final_step) if tp else final_step
                     final_epoch = getattr(tp, "epoch", None) if tp else None
                     payload = build_progress(
@@ -697,11 +773,18 @@ async def stream_training_progress(
 
         while backend.is_training_active():
             try:
-                if backend.step_history:
-                    current_step = backend.step_history[-1]
+                tp_inner = getattr(getattr(backend, "trainer", None), "training_progress", None)
+                live_step = (getattr(tp_inner, "step", 0) or 0) if tp_inner else 0
+                if backend.step_history or live_step > 0:
+                    current_step = backend.step_history[-1] if backend.step_history else 0
                     current_loss = backend.loss_history[-1] if backend.loss_history else None
                     current_lr = backend.lr_history[-1] if backend.lr_history else None
-                    tp_inner = getattr(getattr(backend, "trainer", None), "training_progress", None)
+                    # Histories skip non-finite steps; follow the live progress
+                    # step and report its loss (None until it recovers).
+                    if live_step > current_step:
+                        current_step = live_step
+                        current_loss = getattr(tp_inner, "loss", None)
+                        current_lr = getattr(tp_inner, "learning_rate", current_lr)
                     current_total_steps = (
                         getattr(tp_inner, "total_steps", current_step) if tp_inner else current_step
                     )
@@ -798,6 +881,13 @@ async def stream_training_progress(
         final_loss = backend.loss_history[-1] if backend.loss_history else None
         final_lr = backend.lr_history[-1] if backend.lr_history else None
         final_tp = getattr(getattr(backend, "trainer", None), "training_progress", None)
+        # If the run ended on a non-finite stretch, report the live step with
+        # loss=None instead of rolling back to the last finite pair.
+        _final_live_step = (getattr(final_tp, "step", 0) or 0) if final_tp else 0
+        if _final_live_step > (final_step if final_step is not None else -1):
+            final_step = _final_live_step
+            final_loss = getattr(final_tp, "loss", None)
+            final_lr = getattr(final_tp, "learning_rate", final_lr)
         final_total_steps = getattr(final_tp, "total_steps", final_step) if final_tp else final_step
         final_epoch = getattr(final_tp, "epoch", None) if final_tp else None
         final_payload = build_progress(

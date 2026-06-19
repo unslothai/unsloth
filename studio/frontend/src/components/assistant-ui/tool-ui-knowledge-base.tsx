@@ -7,7 +7,8 @@ import {
   type ToolCallMessagePartComponent,
   useAuiState,
 } from "@assistant-ui/react";
-import { FileTextIcon, LibraryBigIcon, LoaderIcon } from "lucide-react";
+import { FileTextIcon, LibraryBigIcon } from "lucide-react";
+import { Spinner } from "@/components/ui/spinner";
 import { memo, useEffect, useMemo, useState } from "react";
 import { Badge } from "./badge";
 import {
@@ -106,7 +107,7 @@ const KnowledgeBaseToolUIImpl: ToolCallMessagePartComponent = ({
       <ToolFallbackContent>
         {isRunning ? (
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <LoaderIcon className="size-3.5 animate-spin" />
+            <Spinner className="size-3.5" />
             <span>
               {query ? (
                 <>Searching documents for &ldquo;{query}&rdquo;&hellip;</>

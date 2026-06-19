@@ -155,9 +155,60 @@ _nvcc_meets_llama_minimum() {
     echo "$_raw"
 }
 
+# Run a GPU probe under a 10s timeout when `timeout` is available so a wedged
+# NVIDIA driver cannot hang setup; fall back to a bare call where it is not.
+_setup_run_smi() {
+    if command -v timeout >/dev/null 2>&1; then
+        timeout 10 "$@"
+    else
+        "$@"
+    fi
+}
+
+# Returns 0 when CUDA_VISIBLE_DEVICES is set to "" or "-1", i.e. every NVIDIA
+# device is deliberately hidden (mixed AMD+NVIDIA hosts steering work to the
+# AMD card). Unset means all devices visible. nvidia-smi ignores this env var,
+# so the probes below cannot see the distinction on their own.
+_setup_cvd_hides_nvidia() {
+    [ "${CUDA_VISIBLE_DEVICES+set}" = "set" ] || return 1
+    _setup_cvd_trim=$(printf '%s' "$CUDA_VISIBLE_DEVICES" | tr -d '[:space:]')
+    [ -z "$_setup_cvd_trim" ] || [ "$_setup_cvd_trim" = "-1" ]
+}
+
+# Returns 0 when an NVIDIA GPU is present and usable. Primary probe is
+# `nvidia-smi -L` (timeout-bounded). Fallback is /proc/driver/nvidia/gpus,
+# which the driver populates per GPU regardless of nvidia-smi state -- handles
+# PATH gaps and driver init races. Mirrors install.sh _has_usable_nvidia_gpu
+# (PR 6174) so setup routes the same way as the torch installer. A GPU hidden
+# via CUDA_VISIBLE_DEVICES=""/-1 counts as NOT usable (matches
+# install_llama_prebuilt.py has_usable_nvidia), so the AMD probes still run
+# and a mixed host steered to its AMD card keeps the ROCm route.
+_setup_has_usable_nvidia_gpu() {
+    if _setup_cvd_hides_nvidia; then
+        return 1
+    fi
+    _setup_nvsmi=""
+    if command -v nvidia-smi >/dev/null 2>&1; then
+        _setup_nvsmi="nvidia-smi"
+    elif [ -x "/usr/bin/nvidia-smi" ]; then
+        _setup_nvsmi="/usr/bin/nvidia-smi"
+    fi
+    if [ -n "$_setup_nvsmi" ]; then
+        if _setup_run_smi "$_setup_nvsmi" -L 2>/dev/null \
+           | awk '/^GPU[[:space:]]+[0-9]+:/{found=1} END{exit !found}'; then
+            return 0
+        fi
+    fi
+    if [ -d /proc/driver/nvidia/gpus ] && \
+       [ -n "$(ls -A /proc/driver/nvidia/gpus 2>/dev/null)" ]; then
+        return 0
+    fi
+    return 1
+}
+
 _cuda_driver_max_version() {
     command -v nvidia-smi >/dev/null 2>&1 || return 0
-    nvidia-smi 2>/dev/null \
+    _setup_run_smi nvidia-smi 2>/dev/null \
         | sed -nE 's/.*CUDA( UMD)? Version:[[:space:]]*([0-9]+)\.([0-9]+).*/\2.\3/p' \
         | head -1 || true
 }
@@ -289,9 +340,9 @@ binary_tag = str(payload.get("binary_release_tag") or "").strip()
 if not repo or not release_tag:
     raise SystemExit(0)
 
-# For non-upstream sources (e.g. lemonade) the published_repo/release_tag
-# refer to the unsloth source tree while the actual binaries came from a
-# different repo. Show both so the log is unambiguous.
+# For non-fork sources (e.g. ggml-org upstream prebuilts) the published_repo/
+# release_tag refer to the unsloth source tree while the actual binaries came
+# from a different repo. Show both so the log is unambiguous.
 if source and source != "upstream" and binary_repo and binary_tag and binary_repo != repo:
     message = f"installed release: {repo}@{release_tag} + {source}@{binary_tag}"
 else:
@@ -334,6 +385,84 @@ keynames=$'\n'$(printenv | cut -d= -f1)
 if [[ "$keynames" == *$'\nCOLAB_'* ]]; then
     IS_COLAB=true
 fi
+
+# Resolve studio home + ownership marker before the llama-only split: the
+# llama.cpp section needs STUDIO_HOME / _STUDIO_HOME_IS_CUSTOM, but
+# UNSLOTH_STUDIO_LLAMA_ONLY=1 ('unsloth studio update') skips the base install.
+# UNSLOTH_STUDIO_HOME (or STUDIO_HOME alias) overrides the install root
+# (mirrors install.sh). UNSLOTH_STUDIO_HOME wins when both are set.
+_studio_override_var=""
+_studio_override="${UNSLOTH_STUDIO_HOME:-}"
+if [ -n "$_studio_override" ]; then
+    _studio_override_var="UNSLOTH_STUDIO_HOME"
+else
+    _studio_override="${STUDIO_HOME:-}"
+    [ -n "$_studio_override" ] && _studio_override_var="STUDIO_HOME"
+fi
+# Strip whitespace so " " is treated as unset (matches Python .strip()).
+_studio_override=$(printf '%s' "$_studio_override" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+case "$_studio_override" in
+    "~") _studio_override="$HOME" ;;
+    "~/"*) _studio_override="$HOME/${_studio_override#'~/'}" ;;
+esac
+if [ -n "$_studio_override" ]; then
+    # setup.sh runs against an existing install (via 'unsloth studio update');
+    # a typo in the override must fail fast instead of materializing an
+    # empty workspace dir. Mirrors setup.ps1 behavior.
+    if [ ! -d "$_studio_override" ]; then
+        echo "ERROR: $_studio_override_var=$_studio_override does not exist." >&2
+        echo "       Run install.sh to create the install root before 'unsloth studio update'." >&2
+        exit 1
+    fi
+    [ -w "$_studio_override" ] || { echo "ERROR: $_studio_override_var=$_studio_override is not writable." >&2; exit 1; }
+    STUDIO_HOME="$(CDPATH= cd -P -- "$_studio_override" && pwd -P)" || exit 1
+else
+    STUDIO_HOME="$HOME/.unsloth/studio"
+fi
+VENV_DIR="$STUDIO_HOME/unsloth_studio"
+VENV_T5_530_DIR="$STUDIO_HOME/.venv_t5_530"
+VENV_T5_550_DIR="$STUDIO_HOME/.venv_t5_550"
+VENV_T5_510_DIR="$STUDIO_HOME/.venv_t5_510"
+
+_STUDIO_OWNED_MARKER=".unsloth-studio-owned"
+_LEGACY_STUDIO_HOME="$HOME/.unsloth/studio"
+_studio_home_canon="$STUDIO_HOME"
+if [ -d "$_studio_home_canon" ]; then
+    _studio_home_canon=$(CDPATH= cd -P -- "$_studio_home_canon" 2>/dev/null && pwd -P) \
+        || _studio_home_canon="$STUDIO_HOME"
+fi
+if [ -d "$_LEGACY_STUDIO_HOME" ]; then
+    _LEGACY_STUDIO_HOME=$(CDPATH= cd -P -- "$_LEGACY_STUDIO_HOME" 2>/dev/null && pwd -P) \
+        || _LEGACY_STUDIO_HOME="$HOME/.unsloth/studio"
+fi
+_STUDIO_HOME_IS_CUSTOM=false
+if [ "$_studio_home_canon" != "$_LEGACY_STUDIO_HOME" ]; then
+    _STUDIO_HOME_IS_CUSTOM=true
+fi
+# Directory-local evidence that Studio created "$1", used to adopt a custom-home
+# llama.cpp predating the .unsloth-studio-owned marker without weakening the guard.
+# Only UNSLOTH_PREBUILT_INFO.json counts (written exclusively by the prebuilt
+# installer). A top-level llama-quantize symlink is NOT trusted: a user may have
+# their own build with one, and this runs right before a destructive rm -rf, so we
+# match Windows and keep markerless source builds strict.
+_studio_owned_adoptable() {
+    [ -f "$1/UNSLOTH_PREBUILT_INFO.json" ] && return 0
+    return 1
+}
+_assert_studio_owned_or_absent() {
+    _aso_dir="$1"
+    _aso_label="$2"
+    [ -d "$_aso_dir" ] || return 0
+    if [ "$_STUDIO_HOME_IS_CUSTOM" = true ] && [ ! -f "$_aso_dir/$_STUDIO_OWNED_MARKER" ]; then
+        if _studio_owned_adoptable "$_aso_dir"; then
+            : > "$_aso_dir/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
+            return 0
+        fi
+        echo "ERROR: $_aso_dir already exists and is not marked as a Studio-owned $_aso_label." >&2
+        echo "       Move it aside or choose an empty UNSLOTH_STUDIO_HOME before re-running." >&2
+        exit 1
+    fi
+}
 
 if [ "$_LLAMA_ONLY" != "1" ]; then
 # ── Detect whether frontend needs building ──
@@ -554,40 +683,6 @@ if [ -d "$SCRIPT_DIR/backend/core/data_recipe/oxc-validator" ] && command -v npm
 fi
 
 # ── Python venv + deps ──
-# UNSLOTH_STUDIO_HOME (or STUDIO_HOME alias) overrides the install root
-# (mirrors install.sh). UNSLOTH_STUDIO_HOME wins when both are set.
-_studio_override_var=""
-_studio_override="${UNSLOTH_STUDIO_HOME:-}"
-if [ -n "$_studio_override" ]; then
-    _studio_override_var="UNSLOTH_STUDIO_HOME"
-else
-    _studio_override="${STUDIO_HOME:-}"
-    [ -n "$_studio_override" ] && _studio_override_var="STUDIO_HOME"
-fi
-# Strip whitespace so " " is treated as unset (matches Python .strip()).
-_studio_override=$(printf '%s' "$_studio_override" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
-case "$_studio_override" in
-    "~") _studio_override="$HOME" ;;
-    "~/"*) _studio_override="$HOME/${_studio_override#'~/'}" ;;
-esac
-if [ -n "$_studio_override" ]; then
-    # setup.sh runs against an existing install (via 'unsloth studio update');
-    # a typo in the override must fail fast instead of materializing an
-    # empty workspace dir. Mirrors setup.ps1 behavior.
-    if [ ! -d "$_studio_override" ]; then
-        echo "ERROR: $_studio_override_var=$_studio_override does not exist." >&2
-        echo "       Run install.sh to create the install root before 'unsloth studio update'." >&2
-        exit 1
-    fi
-    [ -w "$_studio_override" ] || { echo "ERROR: $_studio_override_var=$_studio_override is not writable." >&2; exit 1; }
-    STUDIO_HOME="$(CDPATH= cd -P -- "$_studio_override" && pwd -P)" || exit 1
-else
-    STUDIO_HOME="$HOME/.unsloth/studio"
-fi
-VENV_DIR="$STUDIO_HOME/unsloth_studio"
-VENV_T5_530_DIR="$STUDIO_HOME/.venv_t5_530"
-VENV_T5_550_DIR="$STUDIO_HOME/.venv_t5_550"
-VENV_T5_510_DIR="$STUDIO_HOME/.venv_t5_510"
 
 [ -d "$REPO_ROOT/.venv" ] && rm -rf "$REPO_ROOT/.venv"
 [ -d "$REPO_ROOT/.venv_overlay" ] && rm -rf "$REPO_ROOT/.venv_overlay"
@@ -706,38 +801,6 @@ fi
 # Gemma 4 models need transformers>=5.5.0; Gemma 4 Unified needs 5.10.x.
 # Pre-install into separate directories to avoid runtime pip overhead.
 # The training subprocess prepends the appropriate dir to sys.path.
-#
-# Runs outside the _SKIP_PYTHON_DEPS gate so that upgrades from legacy
-# single .venv_t5 are always migrated to the tiered layout.
-# why: in env-override mode $STUDIO_HOME is user-chosen; require the
-# ownership marker before rm -rf so unrelated dirs survive. Gated on the
-# canonical comparison so an override pointing at the legacy default still
-# behaves like a default install.
-_STUDIO_OWNED_MARKER=".unsloth-studio-owned"
-_LEGACY_STUDIO_HOME="$HOME/.unsloth/studio"
-_studio_home_canon="$STUDIO_HOME"
-if [ -d "$_studio_home_canon" ]; then
-    _studio_home_canon=$(CDPATH= cd -P -- "$_studio_home_canon" 2>/dev/null && pwd -P) \
-        || _studio_home_canon="$STUDIO_HOME"
-fi
-if [ -d "$_LEGACY_STUDIO_HOME" ]; then
-    _LEGACY_STUDIO_HOME=$(CDPATH= cd -P -- "$_LEGACY_STUDIO_HOME" 2>/dev/null && pwd -P) \
-        || _LEGACY_STUDIO_HOME="$HOME/.unsloth/studio"
-fi
-_STUDIO_HOME_IS_CUSTOM=false
-if [ "$_studio_home_canon" != "$_LEGACY_STUDIO_HOME" ]; then
-    _STUDIO_HOME_IS_CUSTOM=true
-fi
-_assert_studio_owned_or_absent() {
-    _aso_dir="$1"
-    _aso_label="$2"
-    [ -d "$_aso_dir" ] || return 0
-    if [ "$_STUDIO_HOME_IS_CUSTOM" = true ] && [ ! -f "$_aso_dir/$_STUDIO_OWNED_MARKER" ]; then
-        echo "ERROR: $_aso_dir already exists and is not marked as a Studio-owned $_aso_label." >&2
-        echo "       Move it aside or choose an empty UNSLOTH_STUDIO_HOME before re-running." >&2
-        exit 1
-    fi
-}
 _target_has_pkg_version() {
     _thpv_dir="$1"
     _thpv_pkg="$2"
@@ -815,25 +878,42 @@ _setup_amd_detected=false
 _setup_nvidia_usable=false
 _setup_gfx_all=""
 _setup_mkt=""
-if command -v rocminfo >/dev/null 2>&1 && \
-   rocminfo 2>/dev/null | awk '/Name:[[:space:]]*gfx[1-9][0-9]/{found=1} END{exit !found}'; then
-    _setup_amd_detected=true
-    _setup_gfx_all=$(rocminfo 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
-    _setup_mkt=$(rocminfo 2>/dev/null | awk -F': ' \
-        '/Marketing Name:/{gsub(/^[[:space:]]+|[[:space:]]+$/,"", $2); if($2){print $2; exit}}' || true)
-elif command -v amd-smi >/dev/null 2>&1 && \
-     amd-smi list 2>/dev/null | awk '/^GPU[[:space:]]*[:\[][[:space:]]*[0-9]/{ found=1 } END{ exit !found }'; then
-    _setup_amd_detected=true
-    _setup_gfx_all=$(amd-smi list 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
-    [ -z "$_setup_gfx_all" ] && \
-        _setup_gfx_all=$(amd-smi static --asic 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
-    _setup_mkt=$(amd-smi static --asic 2>/dev/null | awk -F'[:|]' \
-        '/[Mm]arket.?[Nn]ame/{gsub(/^[[:space:]]+|[[:space:]]+$/,"", $2); if($2){print $2; exit}}' || true)
+# NVIDIA priority: classify NVIDIA first and skip the AMD probes entirely on
+# a usable-NVIDIA host (mirrors _has_rocm_gpu in install_python_stack.py).
+# This also keeps a wedged rocminfo/amd-smi from hanging setup before the
+# host is classified; the AMD probes themselves run under _setup_run_smi.
+if _setup_has_usable_nvidia_gpu; then
+    _setup_nvidia_usable=true
+fi
+if [ "$_setup_nvidia_usable" != true ]; then
+    if command -v rocminfo >/dev/null 2>&1 && \
+       _setup_run_smi rocminfo 2>/dev/null | awk '/Name:[[:space:]]*gfx[1-9][0-9]/{found=1} END{exit !found}'; then
+        _setup_amd_detected=true
+        _setup_gfx_all=$(_setup_run_smi rocminfo 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
+        _setup_mkt=$(_setup_run_smi rocminfo 2>/dev/null | awk -F': ' \
+            '/Marketing Name:/{gsub(/^[[:space:]]+|[[:space:]]+$/,"", $2); if($2){print $2; exit}}' || true)
+    elif command -v amd-smi >/dev/null 2>&1 && \
+         _setup_run_smi amd-smi list 2>/dev/null | awk '/^GPU[[:space:]]*[:\[][[:space:]]*[0-9]/{ found=1 } END{ exit !found }'; then
+        _setup_amd_detected=true
+        _setup_gfx_all=$(_setup_run_smi amd-smi list 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
+        [ -z "$_setup_gfx_all" ] && \
+            _setup_gfx_all=$(_setup_run_smi amd-smi static --asic 2>/dev/null | grep -oE 'gfx[1-9][0-9a-z]{2,3}' || true)
+        _setup_mkt=$(_setup_run_smi amd-smi static --asic 2>/dev/null | awk -F'[:|]' \
+            '/[Mm]arket.?[Nn]ame/{gsub(/^[[:space:]]+|[[:space:]]+$/,"", $2); if($2){print $2; exit}}' || true)
+    elif [ -e /dev/kfd ] && \
+         awk 'FNR==1{ gpu=0; amd=0 } /gpu_id/{ gpu=($2+0>0) } /vendor_id/{ amd=($2==4098) } \
+              gpu && amd { found=1 } END{ exit !found }' \
+             /sys/class/kfd/kfd/topology/nodes/*/properties 2>/dev/null; then
+        # KFD sysfs fallback, AMD vendor_id 4098 only (mirrors install.sh
+        # _has_amd_rocm_gpu): covers AMD hosts where rocminfo/amd-smi are
+        # missing but the kernel exposes the GPU, so the source-build gate
+        # below does not drop them to a CPU llama.cpp build. No gfx arch is
+        # available from this path; name-based inference handles it.
+        _setup_amd_detected=true
+    fi
 fi
 
-if command -v nvidia-smi >/dev/null 2>&1 && \
-   nvidia-smi -L 2>/dev/null | awk '/^GPU[[:space:]]+[0-9]+:/{found=1} END{exit !found}'; then
-    _setup_nvidia_usable=true
+if [ "$_setup_nvidia_usable" = true ]; then
     step "gpu" "NVIDIA GPU detected"
 elif [ "$_setup_amd_detected" = true ]; then
     _setup_vis="${HIP_VISIBLE_DEVICES:-${ROCR_VISIBLE_DEVICES:-}}"
@@ -918,15 +998,15 @@ _HOST_MACHINE="$(uname -m 2>/dev/null || true)"
 # use unslothai.
 _LINUX_HAS_GPU=false
 # Route to the fork only for a usable GPU. NVIDIA counts only when a device is
-# actually enumerated (_setup_nvidia_usable, from the nvidia-smi -L probe above)
-# AND not hidden via CUDA_VISIBLE_DEVICES=-1 -- mirroring install_llama_prebuilt.py's
-# has_usable_nvidia. Mere nvidia-smi presence (CPU-only CUDA-toolkit containers,
-# broken drivers) or a hidden GPU therefore takes the ggml-org CPU prebuilt
-# instead of a slow source build. AMD is deliberately left on tooling presence,
-# not usability: an unusable NVIDIA host has a good CPU prebuilt to fall back to,
-# whereas tightening AMD would regress ROCm hosts exposing only hipconfig/hipinfo
-# into an unnecessary CPU build.
-if [ "$_setup_nvidia_usable" = true ] && [ "${CUDA_VISIBLE_DEVICES:-}" != "-1" ]; then
+# actually enumerated and not hidden via CUDA_VISIBLE_DEVICES=""/-1
+# (_setup_nvidia_usable, from _setup_has_usable_nvidia_gpu above) -- mirroring
+# install_llama_prebuilt.py's has_usable_nvidia. Mere nvidia-smi presence
+# (CPU-only CUDA-toolkit containers, broken drivers) or a hidden GPU therefore
+# takes the ggml-org CPU prebuilt instead of a slow source build. AMD is
+# deliberately left on tooling presence, not usability: an unusable NVIDIA host
+# has a good CPU prebuilt to fall back to, whereas tightening AMD would regress
+# ROCm hosts exposing only hipconfig/hipinfo into an unnecessary CPU build.
+if [ "$_setup_nvidia_usable" = true ]; then
     _LINUX_HAS_GPU=true
 else
     for _GPU_TOOL in rocminfo amd-smi hipconfig hipinfo; do
@@ -935,6 +1015,19 @@ else
             break
         fi
     done
+fi
+# UNSLOTH_ROCM_GFX_ARCH may be set on a host where no probe fired, so the override
+# nested in the AMD-detected branch above never ran and _setup_gfx is still empty.
+# Honour it here so the routing guard below and the --rocm-gfx forwarding both see
+# it (install_llama_prebuilt.py reads the same env var as the --rocm-gfx default).
+if [ "$_setup_nvidia_usable" != true ] && [ -z "${_setup_gfx:-}" ] && [ -n "${UNSLOTH_ROCM_GFX_ARCH:-}" ]; then
+    _setup_gfx="${UNSLOTH_ROCM_GFX_ARCH}"
+fi
+# A resolved/forwarded gfx arch (UNSLOTH_ROCM_GFX_ARCH) means an AMD GPU even when
+# no ROCm tooling is on PATH; route it to the fork so the per-gfx prebuilt is
+# picked instead of ggml-org / a source build.
+if [ "$_LINUX_HAS_GPU" = false ] && [ -n "${_setup_gfx:-}" ]; then
+    _LINUX_HAS_GPU=true
 fi
 
 if [ "$_HOST_SYSTEM" = "Linux" ] \
@@ -1018,7 +1111,7 @@ else
     if [ -n "${UNSLOTH_LLAMA_RELEASE_TAG:-}" ]; then
         _PREBUILT_CMD+=(--published-release-tag "$UNSLOTH_LLAMA_RELEASE_TAG")
     fi
-    # Forward the gfx arch resolved above so the lemonade HIP prebuilt is picked
+    # Forward the gfx arch resolved above so the per-gfx ROCm prebuilt is picked
     # even when the installer's own probe cannot report it (amd-smi-only hosts,
     # name-inferred arch). Implies --has-rocm on the installer side.
     if [ -n "${_setup_gfx:-}" ]; then
@@ -1271,23 +1364,35 @@ else
 
             GPU_BACKEND=""
             NVCC_PATH=""
-            if command -v nvcc &>/dev/null; then
-                NVCC_PATH="$(command -v nvcc)"
-                GPU_BACKEND="cuda"
-            elif [ -x /usr/local/cuda/bin/nvcc ]; then
-                NVCC_PATH="/usr/local/cuda/bin/nvcc"
-                export PATH="/usr/local/cuda/bin:$PATH"
-                GPU_BACKEND="cuda"
-            elif ls /usr/local/cuda-*/bin/nvcc &>/dev/null 2>&1; then
-                # Pick the newest cuda-XX.X directory
-                NVCC_PATH="$(ls -d /usr/local/cuda-*/bin/nvcc 2>/dev/null | sort -V | tail -1)"
-                export PATH="$(dirname "$NVCC_PATH"):$PATH"
-                GPU_BACKEND="cuda"
+            # Gate the CUDA toolkit search on an actually-usable NVIDIA GPU
+            # (_setup_nvidia_usable, computed in the GPU summary block above;
+            # already false when hidden via CUDA_VISIBLE_DEVICES=""/-1).
+            # A CUDA toolkit alone (CPU-only build container, leftover packages)
+            # is not proof of a GPU: building with -DGGML_CUDA=ON there yields a
+            # binary that fails at runtime, so fall through to the CPU build.
+            if [ "$_setup_nvidia_usable" = true ]; then
+                if command -v nvcc &>/dev/null; then
+                    NVCC_PATH="$(command -v nvcc)"
+                    GPU_BACKEND="cuda"
+                elif [ -x /usr/local/cuda/bin/nvcc ]; then
+                    NVCC_PATH="/usr/local/cuda/bin/nvcc"
+                    export PATH="/usr/local/cuda/bin:$PATH"
+                    GPU_BACKEND="cuda"
+                elif ls /usr/local/cuda-*/bin/nvcc &>/dev/null 2>&1; then
+                    # Pick the newest cuda-XX.X directory
+                    NVCC_PATH="$(ls -d /usr/local/cuda-*/bin/nvcc 2>/dev/null | sort -V | tail -1)"
+                    export PATH="$(dirname "$NVCC_PATH"):$PATH"
+                    GPU_BACKEND="cuda"
+                fi
             fi
 
-            # Check for ROCm (AMD) only if CUDA was not already selected
+            # Check for ROCm (AMD) only if CUDA was not already selected, and
+            # only when an AMD GPU was actually detected (_setup_amd_detected).
+            # hipcc presence alone (HIP SDK, no GPU) must not select a HIP build.
+            # NVIDIA-usable hosts never build HIP (defense in depth: the AMD
+            # probes above are already skipped when NVIDIA is usable).
             ROCM_HIPCC=""
-            if [ -z "$GPU_BACKEND" ]; then
+            if [ -z "$GPU_BACKEND" ] && [ "$_setup_nvidia_usable" != true ] && [ "$_setup_amd_detected" = true ]; then
                 if command -v hipcc &>/dev/null; then
                     ROCM_HIPCC="$(command -v hipcc)"
                     GPU_BACKEND="rocm"
@@ -1349,7 +1454,7 @@ else
 
                         CUDA_ARCHS=""
                         if command -v nvidia-smi &>/dev/null; then
-                            _raw_caps=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null || true)
+                            _raw_caps=$(_setup_run_smi nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null || true)
                             while IFS= read -r _cap; do
                                 _cap=$(echo "$_cap" | tr -d '[:space:]')
                                 if [[ "$_cap" =~ ^([0-9]+)\.([0-9]+)$ ]]; then
@@ -1455,7 +1560,7 @@ else
                     CMAKE_ARGS="$CMAKE_ARGS -DGPU_TARGETS=${GPU_TARGETS}"
                     _BUILD_DESC="building (ROCm, ${GPU_TARGETS//;/+})"
                 fi
-            elif [ -d /usr/local/cuda ] || nvidia-smi &>/dev/null; then
+            elif [ -d /usr/local/cuda ] || _setup_run_smi nvidia-smi &>/dev/null; then
                 _BUILD_DESC="building (CPU, CUDA driver found but nvcc missing)"
             elif [ -d /opt/rocm ] || command -v rocm-smi &>/dev/null; then
                 _BUILD_DESC="building (CPU, ROCm driver found but hipcc missing)"
@@ -1523,6 +1628,9 @@ else
 
         if [ "$BUILD_OK" = true ]; then
             run_quiet_no_exit "build llama-quantize" cmake --build "$_BUILD_TMP/build" --config Release --target llama-quantize -j"$NCPU" || true
+            # Best-effort: the DiffusionGemma visual server (an example target, present
+            # on llama.cpp PR #24423). No-op when the diffusion example is not configured.
+            run_quiet_no_exit "build diffusion visual server" cmake --build "$_BUILD_TMP/build" --config Release --target llama-diffusion-gemma-visual-server -j"$NCPU" || true
         fi
 
         # Swap only after build succeeds -- preserves existing install on failure
@@ -1535,6 +1643,11 @@ else
             QUANTIZE_BIN="$LLAMA_CPP_DIR/build/bin/llama-quantize"
             if [ -f "$QUANTIZE_BIN" ]; then
                 ln -sf build/bin/llama-quantize "$LLAMA_CPP_DIR/llama-quantize"
+            fi
+            # DiffusionGemma visual server, if it was built (PR #24423): link next to
+            # llama-server so Studio serves DiffusionGemma GGUFs without DG_VISUAL_BIN.
+            if [ -f "$LLAMA_CPP_DIR/build/bin/llama-diffusion-gemma-visual-server" ]; then
+                ln -sf build/bin/llama-diffusion-gemma-visual-server "$LLAMA_CPP_DIR/llama-diffusion-gemma-visual-server"
             fi
         else
             rm -rf "$_BUILD_TMP"

@@ -42,6 +42,10 @@ class LoadRequest(BaseModel):
         False,
         description = "Allow loading models with custom code (e.g. NVIDIA Nemotron). Only enable for repos you trust.",
     )
+    approved_remote_code_fingerprint: Optional[str] = Field(
+        None,
+        description = "sha256 fingerprint from the remote-code scan, pinning user approval of this exact custom-code version.",
+    )
     chat_template_override: Optional[str] = Field(
         None,
         description = "Custom Jinja2 chat template to use instead of the model's default",
@@ -87,6 +91,15 @@ class LoadRequest(BaseModel):
             "'mtp' or 'mtp+ngram'."
         ),
     )
+    tensor_parallel: bool = Field(
+        False,
+        description = (
+            "Split the model across GPUs by tensor (--split-mode tensor) "
+            "instead of by layer for GGUF models. Only affects multi-GPU "
+            "setups, where it can make generation significantly faster. "
+            "No effect on a single GPU. Ignored for non-GGUF models."
+        ),
+    )
     load_mmproj: bool = Field(
         True,
         description = (
@@ -123,6 +136,16 @@ class ValidateModelRequest(BaseModel):
     gguf_variant: Optional[str] = Field(
         None, description = "GGUF quantization variant (e.g. 'Q4_K_M')"
     )
+    # Intended load settings so validate's coexistence check matches the follow-up
+    # /load; defaults preserve old behavior for callers that omit them.
+    max_seq_length: int = Field(0, ge = 0, le = 1048576)
+    load_in_4bit: bool = Field(True)
+    gpu_ids: Optional[List[int]] = Field(None)
+    include_context_length: bool = Field(
+        False,
+        description = "Also read the native context length from the local GGUF header. "
+        "Opt-in so the normal load preflight doesn't pay for a cache scan it doesn't need.",
+    )
 
 
 class ValidateModelResponse(BaseModel):
@@ -141,6 +164,16 @@ class ValidateModelResponse(BaseModel):
     requires_trust_remote_code: bool = Field(
         False,
         description = "Whether the model defaults require trust_remote_code to be enabled for loading.",
+    )
+    requires_security_review: bool = Field(
+        False,
+        description = "Whether Hugging Face's security scan flagged unsafe files (e.g. a "
+        "malicious pickle), so the load is hard-blocked pending review.",
+    )
+    context_length: Optional[int] = Field(
+        None,
+        description = "Native training context length, read from the GGUF header when the file "
+        "is already downloaded locally; None for non-GGUF, gated, or not-yet-downloaded models.",
     )
 
 
@@ -167,6 +200,9 @@ class LoadResponse(BaseModel):
     is_vision: bool = Field(False, description = "Whether model is a vision model")
     is_lora: bool = Field(False, description = "Whether model is a LoRA adapter")
     is_gguf: bool = Field(False, description = "Whether model is a GGUF model (llama.cpp)")
+    is_diffusion: bool = Field(
+        False, description = "Whether model is a block-diffusion model (DiffusionGemma)"
+    )
     is_audio: bool = Field(False, description = "Whether model is a TTS audio model")
     audio_type: Optional[str] = Field(None, description = "Audio codec type: snac, csm, bicodec, dac")
     has_audio_input: bool = Field(False, description = "Whether model accepts audio input (ASR)")
@@ -178,7 +214,7 @@ class LoadResponse(BaseModel):
         description = "Whether the model defaults require trust_remote_code to be enabled for loading.",
     )
     context_length: Optional[int] = Field(
-        None, description = "Model's native context length (from GGUF metadata)"
+        None, description = "Runtime context length in tokens for the loaded model"
     )
     max_context_length: Optional[int] = Field(
         None, description = "Maximum context length currently available on this hardware"
@@ -191,9 +227,15 @@ class LoadResponse(BaseModel):
         False,
         description = "Whether model supports thinking/reasoning mode (enable_thinking or reasoning_effort)",
     )
-    reasoning_style: Literal["enable_thinking", "reasoning_effort"] = Field(
-        "enable_thinking",
-        description = "Reasoning control style: 'enable_thinking' (boolean) or 'reasoning_effort' (low|medium|high)",
+    reasoning_style: Literal["enable_thinking", "reasoning_effort", "enable_thinking_effort"] = (
+        Field(
+            "enable_thinking",
+            description = "Reasoning control style: 'enable_thinking' (boolean), 'reasoning_effort' (low|medium|high), or 'enable_thinking_effort' (on/off gate plus an effort level, e.g. GLM-5.2 high|max)",
+        )
+    )
+    reasoning_effort_levels: List[str] = Field(
+        default_factory = list,
+        description = "Discrete reasoning_effort levels the template offers when reasoning_style is 'enable_thinking_effort' (e.g. ['high', 'max']); empty otherwise",
     )
     reasoning_always_on: bool = Field(
         False,
@@ -230,6 +272,10 @@ class LoadResponse(BaseModel):
             "Active --spec-draft-n-max for MTP speculative decoding, or "
             "None when the platform default is in effect."
         ),
+    )
+    tensor_parallel: bool = Field(
+        False,
+        description = "Whether tensor-parallel split (--split-mode tensor) is active.",
     )
     load_mmproj: bool = Field(
         True,
@@ -284,6 +330,9 @@ class InferenceStatusResponse(BaseModel):
     )
     is_vision: bool = Field(False, description = "Whether the active model is a vision model")
     is_gguf: bool = Field(False, description = "Whether the active model is a GGUF model (llama.cpp)")
+    is_diffusion: bool = Field(
+        False, description = "Whether the active model is a block-diffusion model (DiffusionGemma)"
+    )
     gguf_variant: Optional[str] = Field(None, description = "GGUF quantization variant (e.g. Q4_K_M)")
     is_audio: bool = Field(False, description = "Whether the active model is a TTS audio model")
     audio_type: Optional[str] = Field(None, description = "Audio codec type: snac, csm, bicodec, dac")
@@ -300,9 +349,15 @@ class InferenceStatusResponse(BaseModel):
     supports_reasoning: bool = Field(
         False, description = "Whether the active model supports reasoning/thinking mode"
     )
-    reasoning_style: Literal["enable_thinking", "reasoning_effort"] = Field(
-        "enable_thinking",
-        description = "Reasoning control style: 'enable_thinking' (boolean) or 'reasoning_effort' (low|medium|high)",
+    reasoning_style: Literal["enable_thinking", "reasoning_effort", "enable_thinking_effort"] = (
+        Field(
+            "enable_thinking",
+            description = "Reasoning control style: 'enable_thinking' (boolean), 'reasoning_effort' (low|medium|high), or 'enable_thinking_effort' (on/off gate plus an effort level, e.g. GLM-5.2 high|max)",
+        )
+    )
+    reasoning_effort_levels: List[str] = Field(
+        default_factory = list,
+        description = "Discrete reasoning_effort levels the template offers when reasoning_style is 'enable_thinking_effort' (e.g. ['high', 'max']); empty otherwise",
     )
     reasoning_always_on: bool = Field(
         False, description = "Whether reasoning is always on (not toggleable)"
@@ -350,6 +405,10 @@ class InferenceStatusResponse(BaseModel):
             "None when the platform default is in effect."
         ),
     )
+    tensor_parallel: bool = Field(
+        False,
+        description = "Whether tensor-parallel split (--split-mode tensor) is active.",
+    )
     load_mmproj: bool = Field(
         True,
         description = "Whether the current GGUF load requested mmproj vision projector support.",
@@ -359,6 +418,21 @@ class InferenceStatusResponse(BaseModel):
         description = (
             "Whether llama.cpp supports MTP (--spec-type mtp/draft-mtp). "
             "False -> recommend `unsloth studio update`."
+        ),
+    )
+    spec_fallback_reason: Optional[str] = Field(
+        None,
+        description = (
+            "Why MTP was disabled on the loaded model despite being requested "
+            "(auto on an MTP model, or forced mtp / mtp+ngram). "
+            "'binary_no_mtp' / 'binary_outdated' -> a newer prebuilt would "
+            "re-enable it (show the update affordance); 'runtime_error' -> the "
+            "current build could not run it. 'mla_mtp_disabled' -> an Auto-mode "
+            "policy downgrade: the model is MLA (GLM-5.2 et al.) whose llama.cpp "
+            "MTP path runs slower than no speculation, so Auto used ngram-mod or "
+            "spec-off instead -- updating won't help; choose MTP in Settings (or "
+            "set UNSLOTH_MLA_MTP_ENABLED=1) to force it. None when MTP engaged or "
+            "was not requested."
         ),
     )
     llama_cpp_prebuilt_stale: bool = Field(
@@ -397,7 +471,7 @@ class ImageUrl(BaseModel):
     """Image URL object — supports data URIs and remote URLs."""
 
     url: str = Field(..., description = "data:image/png;base64,... or https://...")
-    detail: Optional[Literal["auto", "low", "high"]] = "auto"
+    detail: Optional[Literal["auto", "low", "high", "original"]] = "auto"
 
 
 class ImageContentPart(BaseModel):
@@ -548,8 +622,10 @@ class ChatMessage(BaseModel):
 
         if self.role == "tool":
             # tool_call_id resolution happens at ChatCompletionRequest scope.
-            if not self.content:
-                raise ValueError('role="tool" messages require non-empty "content".')
+            # OpenAI accepts empty tool results (commands with no output);
+            # normalize to "" instead of a 400 agentic clients treat as fatal.
+            if self.content is None or self.content == []:
+                self.content = ""
         elif self.role == "assistant":
             # Post-Stop sentinel: collapse content="" / [] to None.
             if (self.content == "" or self.content == []) and not self.tool_calls:
@@ -558,6 +634,16 @@ class ChatMessage(BaseModel):
             if self.content is None or self.content == []:
                 raise ValueError(f'role="{self.role}" messages require "content".')
         return self
+
+
+class ThinkingConfig(BaseModel):
+    """Anthropic-compatible thinking/reasoning configuration.
+    Use type='disabled' to turn off thinking, or type='enabled' to turn it on.
+    Only type is read; extra fields (e.g. budget_tokens) are ignored, since
+    Studio sets provider thinking budgets itself.
+    """
+
+    type: Literal["disabled", "enabled"] = "disabled"
 
 
 class ChatCompletionRequest(BaseModel):
@@ -673,6 +759,11 @@ class ChatCompletionRequest(BaseModel):
         None,
         description = "[x-unsloth] When true, keep historical <think> blocks from past assistant turns in the prompt (Qwen3.6 templates). Independent of enable_thinking / reasoning_effort.",
     )
+    thinking: Optional[ThinkingConfig] = Field(
+        None,
+        description = "[Anthropic-compatible] Thinking configuration. "
+        "Use {type: 'disabled'} to disable thinking, {type: 'enabled'} to enable.",
+    )
     enable_tools: Optional[bool] = Field(
         None,
         description = "[x-unsloth] Enable tool calling for supported models",
@@ -692,9 +783,27 @@ class ChatCompletionRequest(BaseModel):
         None,
         description = "[x-unsloth] When true, append tools from every enabled MCP server to this request's tool list.",
     )
+    confirm_tool_calls: Optional[bool] = Field(
+        None,
+        description = "[x-unsloth] When true, pause before each tool call and wait for the user to allow/deny it via POST /api/inference/tool-confirm.",
+    )
+    bypass_permissions: Optional[bool] = Field(
+        False,
+        description = "[x-unsloth] Bypass Permissions: when true, skip the tool-call confirmation gate AND disable the python/terminal execution sandbox (safety checks, command blocklist, resource limits). Secret env vars are still stripped. Takes precedence over confirm_tool_calls.",
+    )
     auto_heal_tool_calls: Optional[bool] = Field(
         True,
         description = "[x-unsloth] Auto-detect and fix malformed tool calls from model output.",
+    )
+    context_overflow: Optional[Literal["error", "truncate_middle"]] = Field(
+        None,
+        description = (
+            "[x-unsloth] Passthrough behavior when the prompt exceeds the real "
+            "context window. 'error' (default) returns a 400 with "
+            "code=context_length_exceeded. 'truncate_middle' drops middle "
+            "turn-groups (system prompt, first turn, and recent turns kept; "
+            "tool calls stay paired with their results) and retries."
+        ),
     )
     max_tool_calls_per_message: Optional[int] = Field(
         25,
@@ -917,6 +1026,26 @@ class ChatCompletionRequest(BaseModel):
             msg.tool_call_id = picked
         return self
 
+    @model_validator(mode = "after")
+    def _map_thinking_to_enable_thinking(self) -> "ChatCompletionRequest":
+        """Map Anthropic-style ``thinking`` parameter to internal ``enable_thinking``.
+
+        ``thinking: {type: 'enabled'}`` sets ``enable_thinking = True`` and
+        ``thinking: {type: 'disabled'}`` sets ``enable_thinking = False``.
+        ``enable_thinking`` takes precedence when both are provided so that
+        callers who already use the internal field are unaffected. Invalid
+        ``thinking`` shapes are rejected at validation time (422).
+        """
+        if self.thinking is not None and self.enable_thinking is None:
+            self.enable_thinking = self.thinking.type == "enabled"
+        return self
+
+
+class ToolConfirmRequest(BaseModel):
+    session_id: Optional[str] = None
+    approval_id: Optional[str] = None
+    decision: Literal["allow", "deny"] = "deny"
+
 
 # ── OpenAI shell-tool container management ─────────────────────
 
@@ -1084,7 +1213,7 @@ class ResponsesInputImagePart(BaseModel):
 
     type: Literal["input_image"]
     image_url: str = Field(..., description = "data:image/png;base64,... or https://...")
-    detail: Optional[Literal["auto", "low", "high"]] = "auto"
+    detail: Optional[Literal["auto", "low", "high", "original"]] = "auto"
 
 
 class ResponsesOutputTextPart(BaseModel):
@@ -1296,6 +1425,23 @@ class ResponsesOutputMessage(BaseModel):
     content: list[ResponsesOutputTextContent] = Field(default_factory = list)
 
 
+class ResponsesOutputReasoningContent(BaseModel):
+    """A reasoning text content block inside a reasoning output item."""
+
+    type: Literal["reasoning_text"] = "reasoning_text"
+    text: str
+
+
+class ResponsesOutputReasoning(BaseModel):
+    """A top-level reasoning output item in the Responses API response."""
+
+    type: Literal["reasoning"] = "reasoning"
+    id: str = Field(default_factory = lambda: f"rs_{uuid.uuid4().hex[:12]}")
+    status: Literal["completed", "in_progress", "incomplete"] = "completed"
+    summary: list = Field(default_factory = list)
+    content: Optional[list[ResponsesOutputReasoningContent]] = None
+
+
 class ResponsesOutputFunctionCall(BaseModel):
     """A function-call output item in the Responses API response.
 
@@ -1310,7 +1456,11 @@ class ResponsesOutputFunctionCall(BaseModel):
     status: Literal["completed", "in_progress", "incomplete"] = "completed"
 
 
-ResponsesOutputItem = Union[ResponsesOutputMessage, ResponsesOutputFunctionCall]
+ResponsesOutputItem = Union[
+    ResponsesOutputMessage,
+    ResponsesOutputReasoning,
+    ResponsesOutputFunctionCall,
+]
 
 
 class ResponsesUsage(BaseModel):
@@ -1469,6 +1619,10 @@ class AnthropicMessagesRequest(BaseModel):
     enabled_tools: Optional[list[str]] = None
     session_id: Optional[str] = None
     cancel_id: Optional[str] = None
+    bypass_permissions: Optional[bool] = Field(
+        False,
+        description = "[x-unsloth] Bypass Permissions: when true, disable the python/terminal execution sandbox (safety checks, command blocklist, resource limits) for server-side tool calls. Secret env vars are still stripped. Declared explicitly (not relied on via extra='allow') so omitted requests default to False instead of raising AttributeError.",
+    )
     model_config = {"extra": "allow"}
 
     @model_validator(mode = "before")

@@ -65,17 +65,20 @@ jobs:
         with:
           persist-credentials: false
 
-      # Fast GPU-free gate: parse setup.ps1 and run the Resolve-CudaToolkit unit
-      # test (deferred Windows CUDA Toolkit check) before the heavy GGUF smoke.
-      - name: setup.ps1 unit test (Resolve-CudaToolkit)
+      # Fast GPU-free gate: parse install.ps1 + setup.ps1 and run the PowerShell
+      # unit tests (CUDA-toolkit + torch-flavor helpers) before the heavy GGUF smoke.
+      - name: PowerShell installer unit tests
         shell: pwsh
         run: |
-          $errs = $null
-          [void][System.Management.Automation.Language.Parser]::ParseFile(
-            (Resolve-Path studio/setup.ps1).Path, [ref]$null, [ref]$errs)
-          if ($errs) { $errs | ForEach-Object { $_.ToString() }; exit 1 }
-          Write-Host "setup.ps1 parsed with no errors"
+          foreach ($f in @('install.ps1', 'studio/setup.ps1')) {
+            $errs = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $f).Path, [ref]$null, [ref]$errs)
+            if ($errs) { $errs | ForEach-Object { $_.ToString() }; exit 1 }
+            Write-Host "$f parsed with no errors"
+          }
           pwsh -NoProfile -File tests/studio/test_resolve_cuda_toolkit.ps1
+          pwsh -NoProfile -File tests/studio/test_torch_flavor.ps1
 
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
         with:
@@ -101,7 +104,7 @@ jobs:
         continue-on-error: true
         with:
           path: hf-cache
-          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v1
+          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v2
 
       - name: Prime HF_HOME with the GGUF
         id: prime-hf
@@ -114,6 +117,7 @@ jobs:
           python -m pip install --upgrade huggingface_hub
           mkdir -p hf-cache
           bash .github/scripts/hf-download-with-retry.sh "$GGUF_REPO" "$GGUF_FILE"
+          bash .github/scripts/hf-download-with-retry.sh ggml-org/models tinyllamas/stories260K.gguf
 
       - name: Save HF_HOME cache for ${{ env.GGUF_REPO }}
         # Only write a fresh cache entry when we actually rebuilt the
@@ -123,7 +127,7 @@ jobs:
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         with:
           path: hf-cache
-          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v1
+          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v2
 
       - name: Pre-install Windows tweaks (npm 11 + Defender exclusions)
         shell: pwsh
@@ -160,6 +164,7 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           New-Item -ItemType Directory -Force -Path logs | Out-Null
           # *>&1 captures Write-Host (Information stream) output;
@@ -504,6 +509,7 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           New-Item -ItemType Directory -Force -Path logs | Out-Null
           # *>&1 captures Write-Host (Information stream) output;
@@ -879,7 +885,7 @@ jobs:
         continue-on-error: true
         with:
           path: hf-cache
-          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-${{ env.MMPROJ_FILE }}-v1
+          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-${{ env.MMPROJ_FILE }}-v2
 
       - name: Prime HF_HOME with the GGUF + mmproj
         id: prime-hf
@@ -891,13 +897,14 @@ jobs:
           mkdir -p hf-cache
           bash .github/scripts/hf-download-with-retry.sh "$GGUF_REPO" "$GGUF_FILE"
           bash .github/scripts/hf-download-with-retry.sh "$GGUF_REPO" "$MMPROJ_FILE"
+          bash .github/scripts/hf-download-with-retry.sh ggml-org/models tinyllamas/stories260K.gguf
 
       - name: Save HF_HOME cache for ${{ env.GGUF_REPO }} (model + mmproj)
         if: always() && steps.prime-hf.outcome == 'success'
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         with:
           path: hf-cache
-          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-${{ env.MMPROJ_FILE }}-v1
+          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-${{ env.MMPROJ_FILE }}-v2
 
       - name: Pre-install Windows tweaks (npm 11 + Defender exclusions)
         shell: pwsh
@@ -934,6 +941,7 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           New-Item -ItemType Directory -Force -Path logs | Out-Null
           # *>&1 captures Write-Host (Information stream) output;

@@ -44,6 +44,62 @@ from utils.hardware import (
 # doesn't crash on RDNA2/RDNA3 with older ROCm wheels.
 if hasattr(torch._dynamo.config, "recompile_limit"):
     torch._dynamo.config.recompile_limit = 64
+
+
+def _ensure_real_packages(*names: str) -> None:
+    """Stop `import <name>` from binding to a namespace-package shadow.
+
+    A directory named like the package but missing __init__.py on sys.path (a
+    stray checkout, a partial clone, or a polluted PYTHONPATH) makes the path
+    finder return a namespace package, so `from unsloth import FastLanguageModel`
+    dies with "cannot import name ... (unknown location)". A normal
+    site-packages install always wins, so only source/editable installs are
+    exposed. Drop the offending entries, import the real packages, then restore
+    sys.path so other modules on those entries keep importing.
+    """
+    import importlib
+    import importlib.util
+
+    bad: set = set()
+    shadowed: list = []
+    for name in names:
+        try:
+            spec = importlib.util.find_spec(name)
+        except (ImportError, ValueError, AttributeError):
+            spec = None
+        # a real package exposes its __init__ via spec.origin; a namespace
+        # shadow has origin None/"namespace" and only search locations
+        if spec is None or spec.origin not in (None, "namespace"):
+            continue
+        dirs = {os.path.realpath(d) for d in (spec.submodule_search_locations or [])}
+        if not dirs:
+            continue
+        shadowed.append(name)
+        for entry in sys.path:
+            pkg = os.path.join(entry or os.getcwd(), name)
+            if os.path.realpath(pkg) in dirs and not os.path.isfile(
+                os.path.join(pkg, "__init__.py")
+            ):
+                bad.add(entry)
+    if not bad:
+        return
+    saved = list(sys.path)
+    sys.path[:] = [e for e in sys.path if e not in bad]
+    for name in shadowed:
+        for cached in [m for m in list(sys.modules) if m == name or m.startswith(name + ".")]:
+            del sys.modules[cached]
+    try:
+        importlib.invalidate_caches()
+        # Import unsloth before unsloth_zoo (names are dependency-first):
+        # unsloth.__init__ runs ROCm/Windows bnb fixes before it imports zoo,
+        # so importing zoo first here would skip them. Repeat import is a no-op.
+        for name in reversed(names):
+            importlib.import_module(name)
+    finally:
+        sys.path[:] = saved
+
+
+_ensure_real_packages("unsloth_zoo", "unsloth")
 from unsloth import FastLanguageModel, FastVisionModel, is_bfloat16_supported
 from unsloth.chat_templates import get_chat_template
 
@@ -2175,6 +2231,9 @@ class UnslothTrainer:
         for dataset_file in file_paths:
             if os.path.isabs(dataset_file):
                 file_path = dataset_file
+            elif os.path.exists(dataset_file):
+                # A path relative to the current working directory (CLI usage)
+                file_path = os.path.abspath(dataset_file)
             else:
                 file_path = str(resolve_dataset_path(dataset_file))
 
@@ -2227,6 +2286,7 @@ class UnslothTrainer:
         dataset_slice_start: int = None,
         dataset_slice_end: int = None,
         is_cpt: bool = False,
+        s3_config: dict = None,
     ) -> Optional[tuple]:
         """
         Load and prepare a dataset for training.
@@ -2237,6 +2297,9 @@ class UnslothTrainer:
         Returns (dataset_info, eval_dataset) or None on error; eval_dataset
         may be None if no eval split is available.
         """
+        from core.training.s3_dataset import S3DownloadCancelled
+
+        s3_download = None
         try:
             dataset = None
             eval_dataset = None
@@ -2271,6 +2334,22 @@ class UnslothTrainer:
                         logger.info(f"{notice.message}\n")
 
                 return result.dataset
+
+            # S3 datasets are downloaded to a local temp dir and then consumed
+            # through the same local-file path below.
+            if s3_config and not local_datasets:
+                from core.training.s3_dataset import prepare_s3_dataset_download
+
+                self._update_progress(status_message = "Downloading dataset from S3...")
+                s3_download = prepare_s3_dataset_download(
+                    s3_config,
+                    cancel_callback = lambda: self.should_stop,
+                )
+                local_datasets = s3_download.files
+                if self.should_stop:
+                    logger.info("Stopped during S3 download\n")
+                    return None
+                logger.info(f"Downloaded {len(local_datasets)} file(s) from S3\n")
 
             if local_datasets:
                 # Use load_dataset() for an Arrow-backed result; in-memory
@@ -2539,10 +2618,16 @@ class UnslothTrainer:
 
             return (dataset_info, eval_dataset)
 
+        except S3DownloadCancelled:
+            logger.info("Stopped during S3 download\n")
+            return None
         except Exception as e:
             logger.error(f"Error loading dataset: {e}")
             self._update_progress(error = str(e))
             return None
+        finally:
+            if s3_download is not None:
+                s3_download.cleanup()
 
     def _auto_detect_eval_split_from_hf(
         self, dataset_source: str, subset: str
@@ -2695,6 +2780,74 @@ class UnslothTrainer:
             self.is_training = False
             logger.error(f"Failed to start training thread: {e}")
             return False
+
+    def _chat_template_renders_empty(self) -> bool:
+        """True when the chat template renders a sample to empty text (base-model signature)."""
+        try:
+            ds = getattr(self.trainer, "train_dataset", None)
+            if ds is None or len(ds) == 0:
+                return False
+            row = ds[0]
+            messages = row.get("messages") if isinstance(row, dict) else None
+            if not messages:
+                return False
+            tok = self.tokenizer
+            if not hasattr(tok, "apply_chat_template"):
+                return False
+            rendered = tok.apply_chat_template(
+                messages, tokenize = False, add_generation_prompt = False
+            )
+            return not (isinstance(rendered, str) and rendered.strip())
+        except Exception:
+            return False
+
+    def _preflight_first_batch(self) -> Optional[str]:
+        """Validate the first real batch before train(). A base model whose chat
+        template renders empty yields empty float32 input_ids that crash the
+        embedding on step 1; catch it here. Returns None for a valid batch."""
+        try:
+            loader = self.trainer.get_train_dataloader()
+            batch = next(iter(loader))
+        except StopIteration:
+            return None
+        except Exception as e:
+            model = self.model_name or "this model"
+            return (
+                f"Cannot start training: failed to build the first training batch "
+                f"for '{model}': {e}"
+            )
+
+        try:
+            input_ids = batch["input_ids"] if "input_ids" in batch else None
+        except Exception:
+            input_ids = getattr(batch, "input_ids", None)
+        if input_ids is None:
+            return None  # some collators omit input_ids
+
+        seq_len = input_ids.shape[-1] if input_ids.ndim > 0 else 0
+        if not (input_ids.is_floating_point() or input_ids.numel() == 0 or seq_len == 0):
+            return None
+
+        model = self.model_name or "this model"
+        if self._chat_template_renders_empty():
+            low = model.lower()
+            suffix = (
+                f" such as '{model}-Instruct'"
+                if not any(t in low for t in ("instruct", "chat", "-it", "_it"))
+                else ""
+            )
+            return (
+                f"Cannot start training: the chat template for '{model}' produced "
+                f"no text for your dataset, so the first batch had empty token IDs. "
+                f"'{model}' looks like a base (pretrained) model without a chat "
+                f"template suited to conversational fine-tuning. Use the "
+                f"instruction-tuned variant{suffix} or provide a chat template."
+            )
+        return (
+            f"Cannot start training: the first batch produced invalid token IDs "
+            f"(dtype={input_ids.dtype}, length={seq_len}). Check that your dataset "
+            f"columns are mapped correctly for '{model}'."
+        )
 
     def _train_worker(self, dataset: Dataset, **training_args):
         """Worker function for training (runs in separate thread)"""
@@ -3367,7 +3520,19 @@ class UnslothTrainer:
             # ========== PROGRESS TRACKING ==========
             self.trainer.add_callback(self._create_progress_callback())
 
-            num_samples = len(dataset["dataset"] if isinstance(dataset, dict) else dataset)
+            num_samples = None
+            if hasattr(self.trainer, "train_dataset") and self.trainer.train_dataset is not None:
+                try:
+                    num_samples = len(self.trainer.train_dataset)
+                except TypeError:
+                    logger.debug(
+                        "train_dataset does not support len(); falling back to "
+                        "raw dataset size for step estimation."
+                    )
+
+            if num_samples is None:
+                num_samples = len(dataset["dataset"] if isinstance(dataset, dict) else dataset)
+
             batch_size = training_args.get("batch_size", 2)
             total_steps = self._calculate_total_steps(
                 num_samples,
@@ -3376,10 +3541,15 @@ class UnslothTrainer:
                 training_args.get("num_epochs", 3),
                 training_args.get("max_steps", 0),
             )
-            self._update_progress(total_steps = total_steps)
-
             # ========== START TRAINING ==========
-            self._update_progress(status_message = "Starting training...")
+            # Fail fast on an invalid first batch (empty/float input_ids) vs a step-1 crash.
+            preflight_error = self._preflight_first_batch()
+            if preflight_error:
+                logger.error(preflight_error)
+                self._update_progress(error = preflight_error, is_training = False)
+                return
+
+            self._update_progress(total_steps = total_steps, status_message = "Starting training...")
             logger.info("Starting training...\n")
             self.trainer.train(resume_from_checkpoint = training_args.get("resume_from_checkpoint"))
 

@@ -4,6 +4,8 @@
 """Tests for transformers version detection with local checkpoint fallbacks."""
 
 import json
+import logging
+import os
 import pytest
 from pathlib import Path
 from unittest.mock import patch
@@ -38,7 +40,30 @@ from utils.transformers_version import (
     _config_needs_550_cache,
     needs_transformers_5,
     get_transformers_tier,
+    activate_transformers_for_subprocess,
+    _venv_dir_is_valid,
+    _ensure_venv_dir,
 )
+
+
+@pytest.fixture(autouse = True)
+def _capturable_logger(monkeypatch):
+    """Make the ``caplog`` assertions independent of test collection order.
+
+    The ``sys.modules.setdefault("loggers", ...)`` stub above only installs the
+    stdlib-logger stub when ``loggers`` has not been imported yet. In a full
+    backend pytest run another module (e.g. ``test_log_filter_no_truncation``,
+    collected earlier) imports the real ``loggers`` first, so the stub is a
+    no-op and ``transformers_version.logger`` ends up a structlog/stdout logger
+    that ``caplog`` cannot see -- the tier/activation/install log assertions
+    would then fail even though the line was emitted. Bind a real stdlib logger
+    for the duration of each test so the module logs through ``logging`` and
+    ``caplog`` captures them regardless of import order.
+    """
+    monkeypatch.setattr(
+        "utils.transformers_version.logger",
+        logging.getLogger("utils.transformers_version"),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -503,6 +528,54 @@ class TestGetTransformersTier:
         """5.5.0 is checked before 5.3.0 - a model matching both gets 550."""
         assert get_transformers_tier("gemma-4-model") == "550"
 
+    # ---- issue #6103: the tier decision must be traceable in the logs ----
+
+    def test_tier_550_selection_is_logged(self, caplog):
+        caplog.set_level(logging.INFO)
+        assert get_transformers_tier("google/gemma-4-E2B-it") == "550"
+        text = " ".join(r.getMessage() for r in caplog.records).lower()
+        assert "550" in text, f"tier selection not logged: {text!r}"
+        assert "gemma-4-e2b-it" in text, f"tier log omits the model: {text!r}"
+
+    def test_tier_530_selection_is_logged(self, caplog):
+        caplog.set_level(logging.INFO)
+        with patch(
+            "utils.transformers_version._check_config_needs_550",
+            return_value = False,
+        ):
+            assert get_transformers_tier("Qwen/Qwen3.5-9B") == "530"
+        text = " ".join(r.getMessage() for r in caplog.records).lower()
+        assert "530" in text, f"tier selection not logged: {text!r}"
+        assert "qwen3.5-9b" in text, f"tier log omits the model: {text!r}"
+
+    def test_tier_default_selection_is_logged(self, caplog):
+        caplog.set_level(logging.INFO)
+        with (
+            patch(
+                "utils.transformers_version._check_config_needs_510",
+                return_value = False,
+            ),
+            patch(
+                "utils.transformers_version._check_config_needs_550",
+                return_value = False,
+            ),
+            patch(
+                "utils.transformers_version._check_tokenizer_config_needs_v5",
+                return_value = False,
+            ),
+        ):
+            assert get_transformers_tier("meta-llama/Llama-3-8B") == "default"
+        text = " ".join(r.getMessage() for r in caplog.records).lower()
+        assert "default" in text, f"tier selection not logged: {text!r}"
+
+    def test_local_config_json_selection_is_logged(self, tmp_path: Path, caplog):
+        cfg = {"architectures": ["Gemma4ForConditionalGeneration"], "model_type": "gemma4"}
+        (tmp_path / "config.json").write_text(json.dumps(cfg))
+        caplog.set_level(logging.INFO)
+        assert get_transformers_tier(str(tmp_path)) == "550"
+        text = " ".join(r.getMessage() for r in caplog.records).lower()
+        assert "550" in text and "local config.json" in text, f"local tier not logged: {text!r}"
+
     def test_needs_transformers_5_compat(self):
         """needs_transformers_5 should return True for 510, 530, and 550 models."""
         assert needs_transformers_5("unsloth/gemma-4-12b-it") is True
@@ -533,3 +606,186 @@ class TestGetTransformersTier:
             ),
         ):
             assert needs_transformers_5("meta-llama/Llama-3-8B") is False
+
+
+# ---------------------------------------------------------------------------
+# activate_transformers_for_subprocess — issue #6103
+# The early log must make clear it only prepends to sys.path; the real
+# confirmation comes later from "Subprocess loaded transformers X.X.X".
+# ---------------------------------------------------------------------------
+
+
+class TestActivateLoggingClarity:
+    """issue #6103: 'Activated transformers' was misleading (path-prepend only)."""
+
+    def _snapshot_env(self):
+        return list(sys.path), os.environ.get("PYTHONPATH")
+
+    def _restore_env(self, snapshot):
+        saved_path, saved_pp = snapshot
+        sys.path[:] = saved_path
+        if saved_pp is None:
+            os.environ.pop("PYTHONPATH", None)
+        else:
+            os.environ["PYTHONPATH"] = saved_pp
+
+    def test_activate_550_log_clarifies_path_prepend_only(self, caplog):
+        caplog.set_level(logging.INFO)
+        snap = self._snapshot_env()
+        try:
+            with (
+                patch(
+                    "utils.transformers_version._resolve_base_model",
+                    side_effect = lambda m: m,
+                ),
+                patch(
+                    "utils.transformers_version.get_transformers_tier",
+                    return_value = "550",
+                ),
+                patch(
+                    "utils.transformers_version._ensure_venv_t5_550_exists",
+                    return_value = True,
+                ),
+            ):
+                activate_transformers_for_subprocess("google/gemma-4-E2B-it")
+        finally:
+            self._restore_env(snap)
+
+        text = " ".join(r.getMessage() for r in caplog.records).lower()
+        assert "5.5.0" in text, f"version not logged: {text!r}"
+        # Must signal this is only a sys.path manipulation, not a confirmed import.
+        assert (
+            "sys.path" in text or "path only" in text
+        ), f"early activation log does not clarify it is path-prepend only: {text!r}"
+
+    def test_activate_530_log_clarifies_path_prepend_only(self, caplog):
+        caplog.set_level(logging.INFO)
+        snap = self._snapshot_env()
+        try:
+            with (
+                patch(
+                    "utils.transformers_version._resolve_base_model",
+                    side_effect = lambda m: m,
+                ),
+                patch(
+                    "utils.transformers_version.get_transformers_tier",
+                    return_value = "530",
+                ),
+                patch(
+                    "utils.transformers_version._ensure_venv_t5_530_exists",
+                    return_value = True,
+                ),
+            ):
+                activate_transformers_for_subprocess("Qwen/Qwen3.5-9B")
+        finally:
+            self._restore_env(snap)
+
+        text = " ".join(r.getMessage() for r in caplog.records).lower()
+        assert "5.3.0" in text, f"version not logged: {text!r}"
+        assert (
+            "sys.path" in text or "path only" in text
+        ), f"early activation log does not clarify it is path-prepend only: {text!r}"
+
+
+# ---------------------------------------------------------------------------
+# _venv_dir_is_valid — issue #6103
+# A version mismatch triggers a full wipe + reinstall, so it must be logged
+# at WARNING (not INFO) so the reinstall is visible.
+# ---------------------------------------------------------------------------
+
+
+class TestVenvDirIsValidLogging:
+    def _make_venv(self, venv_dir: Path, pkg: str, version: str):
+        """Create a fake target-dir install of *pkg* at *version*."""
+        (venv_dir / pkg).mkdir(parents = True)
+        di = venv_dir / f"{pkg}-{version}.dist-info"
+        di.mkdir()
+        (di / "METADATA").write_text(f"Name: {pkg}\nVersion: {version}\n")
+
+    def test_version_mismatch_logged_at_warning(self, tmp_path: Path, caplog):
+        venv_dir = tmp_path / "venv"
+        self._make_venv(venv_dir, "transformers", "5.0.0")  # wrong version
+
+        caplog.set_level(logging.INFO)
+        result = _venv_dir_is_valid(str(venv_dir), ("transformers==5.3.0",))
+
+        assert result is False
+        warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert warnings, (
+            "version mismatch must be logged at WARNING; got: "
+            f"{[(r.levelname, r.getMessage()) for r in caplog.records]!r}"
+        )
+        joined = " ".join(r.getMessage() for r in warnings)
+        assert (
+            "5.0.0" in joined and "5.3.0" in joined
+        ), f"mismatch log omits the versions: {joined!r}"
+
+    def test_correct_version_does_not_warn(self, tmp_path: Path, caplog):
+        venv_dir = tmp_path / "venv"
+        self._make_venv(venv_dir, "transformers", "5.3.0")  # correct version
+
+        caplog.set_level(logging.INFO)
+        result = _venv_dir_is_valid(str(venv_dir), ("transformers==5.3.0",))
+
+        assert result is True
+        assert not [
+            r for r in caplog.records if r.levelno >= logging.WARNING
+        ], "no warning expected when the installed version matches"
+
+
+# ---------------------------------------------------------------------------
+# _ensure_venv_dir — issue #6103
+# A slow runtime install must log each package as it starts, otherwise it
+# looks like a hang.
+# ---------------------------------------------------------------------------
+
+
+class TestEnsureVenvDirProgressLogging:
+    def test_logs_each_package_with_progress(self, tmp_path: Path, caplog):
+        installed = []
+        caplog.set_level(logging.INFO)
+        with (
+            patch(
+                "utils.transformers_version._venv_dir_is_valid",
+                return_value = False,
+            ),
+            patch(
+                "utils.transformers_version._install_to_dir",
+                side_effect = lambda pkg, d: (installed.append(pkg), True)[1],
+            ),
+        ):
+            ok = _ensure_venv_dir(
+                str(tmp_path / "venv"),
+                ("transformers==5.3.0", "tokenizers==0.21.0"),
+                "transformers 5.3.0",
+            )
+
+        assert ok is True
+        assert installed == ["transformers==5.3.0", "tokenizers==0.21.0"]
+
+        msgs = " ".join(r.getMessage() for r in caplog.records)
+        assert "transformers==5.3.0" in msgs, f"first package not logged: {msgs!r}"
+        assert "tokenizers==0.21.0" in msgs, f"second package not logged: {msgs!r}"
+        # progress counter present so a slow install is not mistaken for a hang
+        assert "1/2" in msgs and "2/2" in msgs, f"progress count missing: {msgs!r}"
+
+    def test_no_install_logging_when_venv_already_valid(self, tmp_path: Path, caplog):
+        caplog.set_level(logging.INFO)
+        with (
+            patch(
+                "utils.transformers_version._venv_dir_is_valid",
+                return_value = True,
+            ),
+            patch(
+                "utils.transformers_version._install_to_dir",
+            ) as mock_install,
+        ):
+            ok = _ensure_venv_dir(
+                str(tmp_path / "venv"),
+                ("transformers==5.3.0",),
+                "transformers 5.3.0",
+            )
+
+        assert ok is True
+        mock_install.assert_not_called()
+        assert "Installing" not in " ".join(r.getMessage() for r in caplog.records)
