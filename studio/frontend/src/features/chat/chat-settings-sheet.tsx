@@ -1005,7 +1005,9 @@ export function ChatSettingsPanel({
                     speculativeType === "mtp+ngram") && (
                     <div className="rounded-lg bg-amber-500/[0.08] px-3 py-2 text-[12px] leading-[1.4] text-nav-fg/80">
                       <p>
-                        {specFallbackReason === "runtime_error"
+                        {specFallbackReason === "mla_mtp_disabled"
+                          ? "MTP is disabled by default for this model architecture because it currently runs slower than standard decoding. Select MTP above to force it."
+                          : specFallbackReason === "runtime_error"
                           ? "MTP could not start for this model on the installed llama.cpp build, so it is running without speculative decoding."
                           : specFallbackReason === "drafter_not_found"
                             ? "This model supports MTP but its drafter file could not be downloaded, so it is running without MTP. Check your network connection or Hugging Face access, then reload the model."
