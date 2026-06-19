@@ -452,6 +452,7 @@ if _IS_MLX:
             dataset_order_explicit = "dataset_order" in kwargs or bool(
                 kwargs.get("preserve_dataset_order", False)
             )
+            append_eos_explicit = "append_eos" in kwargs
             grad_clip_explicit = any(
                 name in kwargs for name in ("max_grad_norm", "max_grad_value", "max_grad_leaf_norm")
             )
@@ -502,6 +503,7 @@ if _IS_MLX:
 
             super().__init__(**filtered_kwargs)
             self._unsloth_mlx_dataset_order_explicit = dataset_order_explicit
+            self._unsloth_mlx_append_eos_explicit = append_eos_explicit
             self._unsloth_mlx_max_seq_length_explicit = max_seq_length_explicit
             self._unsloth_mlx_max_length_value = max_length_value
             if "max_length" in kwargs:
@@ -591,6 +593,11 @@ if _IS_MLX:
                 args.dataset_order = "torch_randperm"
 
         if isinstance(args, UnslothTrainingArguments) and not getattr(
+            args, "_unsloth_mlx_append_eos_explicit", False
+        ):
+            args.append_eos = False
+
+        if isinstance(args, UnslothTrainingArguments) and not getattr(
             args, "_unsloth_mlx_grad_clip_explicit", False
         ):
             max_grad_norm = _positive_mlx_training_number(
@@ -615,6 +622,7 @@ if _IS_MLX:
         if isinstance(args, MLXTrainingConfig) and not overrides:
             return args
         dataset_order_explicit = None
+        append_eos_explicit = None
         max_seq_length_explicit = None
         max_length_value = None
         grad_clip_explicit = None
@@ -629,6 +637,11 @@ if _IS_MLX:
                 args,
                 "_unsloth_mlx_dataset_order_explicit",
                 False,
+            )
+            append_eos_explicit = getattr(
+                args,
+                "_unsloth_mlx_append_eos_explicit",
+                None,
             )
             max_seq_length_explicit = getattr(
                 args,
@@ -656,6 +669,8 @@ if _IS_MLX:
             and "preserve_dataset_order" not in overrides
         ):
             coerced._unsloth_mlx_dataset_order_explicit = dataset_order_explicit
+        if append_eos_explicit is not None and "append_eos" not in overrides:
+            coerced._unsloth_mlx_append_eos_explicit = append_eos_explicit
         if (
             max_seq_length_explicit is not None
             and "max_seq_length" not in overrides
