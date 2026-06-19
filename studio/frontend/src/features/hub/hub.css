@@ -157,7 +157,9 @@
   }
 
   .hub-page .hub-carousel-fade-left {
-    left: 0;
+    /* -8px matches the scroller's -mx-2 bleed so the opaque edge sits on the
+       clip edge and no card peeks out beside the fade. */
+    left: -8px;
     background: linear-gradient(
       to right,
       var(--background),
@@ -167,7 +169,8 @@
   }
 
   .hub-page .hub-carousel-fade-right {
-    right: 0;
+    /* Mirror of fade-left: offset by the -mx-2 bleed to reach the clip edge. */
+    right: -8px;
     background: linear-gradient(
       to left,
       var(--background),
