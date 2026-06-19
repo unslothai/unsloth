@@ -697,6 +697,53 @@ def _set_stream_response_read_timeout(
         pass
 
 
+_STREAM_DISCONNECT_POLL_TIMEOUT_S = 0.25
+
+
+class _CompatSameTaskTimeout:
+    """Same-task timeout fallback for Python versions before asyncio.timeout."""
+
+    def __init__(self, timeout_s: float):
+        self.timeout_s = timeout_s
+        self._task = None
+        self._handle = None
+        self._timed_out = False
+        self._cancelling = 0
+
+    async def __aenter__(self):
+        self._task = asyncio.current_task()
+        if self._task is None:
+            return self
+        if hasattr(self._task, "cancelling"):
+            self._cancelling = self._task.cancelling()
+        loop = asyncio.get_running_loop()
+        self._handle = loop.call_later(max(self.timeout_s, 0), self._cancel_task)
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        if self._handle is not None:
+            self._handle.cancel()
+        if exc_type is not None and issubclass(exc_type, asyncio.CancelledError):
+            if self._timed_out:
+                if self._task is not None and hasattr(self._task, "uncancel"):
+                    if self._task.uncancel() > self._cancelling:
+                        return None
+                raise asyncio.TimeoutError from exc
+        return None
+
+    def _cancel_task(self) -> None:
+        self._timed_out = True
+        if self._task is not None:
+            self._task.cancel()
+
+
+def _same_task_timeout(timeout_s: float):
+    timeout_ctx = getattr(asyncio, "timeout", None)
+    if timeout_ctx is not None:
+        return timeout_ctx(timeout_s)
+    return _CompatSameTaskTimeout(timeout_s)
+
+
 async def _preheader_cancelled(cancel_event = None, request: Optional[Request] = None) -> bool:
     if cancel_event is not None and cancel_event.is_set():
         return True
@@ -785,13 +832,31 @@ async def _aiter_llama_stream_items(
                 remaining_s = first_token_deadline - time.monotonic()
                 if remaining_s <= 0:
                     raise httpx.ReadTimeout("The model did not produce a first token in time.")
+                read_timeout_s = remaining_s
+                if request is not None:
+                    read_timeout_s = min(read_timeout_s, _STREAM_DISCONNECT_POLL_TIMEOUT_S)
                 if response is not None:
-                    _set_stream_response_read_timeout(response, remaining_s)
+                    _set_stream_response_read_timeout(response, read_timeout_s)
                 # Keep httpx/httpcore's AnyIO cancel scope in this task.
                 # asyncio.wait_for would drive __anext__ in a child task.
-                async with asyncio.timeout(remaining_s):
+                async with _same_task_timeout(remaining_s):
                     item = await async_iter.__anext__()
             else:
+                if (
+                    request is not None
+                    and response is not None
+                    and post_first_item_read_timeout_s is not None
+                    and last_item_at is not None
+                ):
+                    stall_remaining_s = post_first_item_read_timeout_s - (
+                        time.monotonic() - last_item_at
+                    )
+                    if stall_remaining_s <= 0:
+                        raise httpx.ReadTimeout("The model stopped producing tokens mid-response.")
+                    _set_stream_response_read_timeout(
+                        response,
+                        min(stall_remaining_s, _STREAM_DISCONNECT_POLL_TIMEOUT_S),
+                    )
                 item = await async_iter.__anext__()
         except asyncio.TimeoutError as exc:
             if waiting_first_item:
@@ -804,6 +869,12 @@ async def _aiter_llama_stream_items(
             if last_item_at is None:
                 if now >= first_token_deadline:
                     raise
+                continue
+            if (
+                request is not None
+                and post_first_item_read_timeout_s is not None
+                and now - last_item_at < post_first_item_read_timeout_s
+            ):
                 continue
             raise httpx.ReadTimeout("The model stopped producing tokens mid-response.")
         if (
@@ -1291,6 +1362,7 @@ _TOOL_XML_RE = _re.compile(
     r"<(?:tool_call|function=[\w-]+)>.*?(?:</(?:tool_call|function)>|\Z)"
     r"|<\|tool_call>.*?(?:<tool_call\|>|\Z)"
     r"|</(?:tool_call|function)>"
+    r"|<tool_call\|>"
     r"|</parameter>\s*\Z",
     _re.DOTALL,
 )
@@ -7400,6 +7472,7 @@ async def _responses_stream(
             async for raw_line in _aiter_llama_stream_items(
                 lines_iter,
                 cancel_event = disconnect_event,
+                request = request,
                 first_token_deadline = first_token_deadline,
                 response = resp,
             ):

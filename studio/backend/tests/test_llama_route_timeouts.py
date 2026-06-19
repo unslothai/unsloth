@@ -5,6 +5,7 @@ import asyncio
 import os
 import sys
 import time
+import threading
 from types import SimpleNamespace
 
 _backend = os.path.join(os.path.dirname(__file__), "..")
@@ -65,6 +66,73 @@ def test_stream_first_item_deadline_does_not_hop_tasks():
 
         assert out == ["data: {}"]
         assert seen_tasks == [outer_task, outer_task]
+
+    asyncio.run(_run())
+
+
+def test_stream_first_item_deadline_uses_compat_timeout_without_task_hop(monkeypatch):
+    monkeypatch.setattr(inf_mod.asyncio, "timeout", None, raising = False)
+
+    async def _run():
+        outer_task = asyncio.current_task()
+        seen_tasks = []
+
+        class _One:
+            def __init__(self):
+                self.done = False
+
+            async def __anext__(self):
+                seen_tasks.append(asyncio.current_task())
+                if self.done:
+                    raise StopAsyncIteration
+                self.done = True
+                return "data: {}"
+
+        out = []
+        async for item in inf_mod._aiter_llama_stream_items(
+            _One(),
+            first_token_deadline = time.monotonic() + 1,
+        ):
+            out.append(item)
+
+        assert out == ["data: {}"]
+        assert seen_tasks == [outer_task, outer_task]
+
+    asyncio.run(_run())
+
+
+def test_stream_wait_polls_disconnect_without_background_watcher():
+    async def _run():
+        state = SimpleNamespace(disconnect_checks = 0)
+        cancel_event = threading.Event()
+        response = SimpleNamespace(request = SimpleNamespace(extensions = {"timeout": {}}))
+
+        class _Request:
+            async def is_disconnected(self):
+                state.disconnect_checks += 1
+                return state.disconnect_checks >= 2
+
+        class _SlowFirstItem:
+            async def __anext__(self):
+                await asyncio.sleep(0.02)
+                raise inf_mod.httpx.ReadTimeout("poll")
+
+        started = time.monotonic()
+        async for _ in inf_mod._aiter_llama_stream_items(
+            _SlowFirstItem(),
+            cancel_event = cancel_event,
+            request = _Request(),
+            response = response,
+            first_token_deadline = started + 1,
+        ):
+            raise AssertionError("stream should stop after disconnect")
+
+        assert cancel_event.is_set()
+        assert state.disconnect_checks >= 2
+        assert time.monotonic() - started < 0.5
+        assert response.request.extensions["timeout"]["read"] <= (
+            inf_mod._STREAM_DISCONNECT_POLL_TIMEOUT_S
+        )
 
     asyncio.run(_run())
 

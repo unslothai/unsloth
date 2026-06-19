@@ -135,6 +135,7 @@ def _quote_gemma_object_keys(src: str) -> str:
 
 
 def _gemma_arguments_to_json(args_src: str) -> dict:
+    """Parse Gemma 4's native call:name{key:value} argument object."""
     args_src = args_src.strip()
     if not args_src:
         return {}
