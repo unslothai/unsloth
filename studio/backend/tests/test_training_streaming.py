@@ -287,6 +287,40 @@ def test_streaming_start_rejects_missing_max_steps():
     assert "max_steps" in exc_info.value.detail
 
 
+def test_streaming_start_rejects_embedding_models():
+    # The embedding training path loads the full dataset (no streaming) and uses
+    # len/select, so the route must reject streaming for embedding runs even on a
+    # direct API call (the UI blocker doesn't cover that).
+    training_route = _load_route_module(
+        "training_route_module_for_streaming_embedding_test",
+        "routes/training.py",
+    )
+    request = TrainingStartRequest(
+        model_name = "unsloth/test",
+        training_type = "LoRA/QLoRA",
+        hf_dataset = "org/dataset",
+        format_type = "chatml",
+        dataset_streaming = True,
+        is_embedding = True,
+        max_steps = 10,
+    )
+
+    backend = SimpleNamespace(
+        current_job_id = None,
+        is_training_active = lambda: False,
+        start_training = lambda **kwargs: pytest.fail("backend should not start"),
+    )
+
+    with patch.object(training_route, "get_training_backend", return_value = backend):
+        with pytest.raises(HTTPException) as exc_info:
+            asyncio.run(
+                training_route.start_training(request, current_subject = "test-user")
+            )
+
+    assert exc_info.value.status_code == 400
+    assert "embedding" in exc_info.value.detail
+
+
 @pytest.mark.parametrize(
     "training_type, format_type",
     [

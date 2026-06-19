@@ -1004,7 +1004,10 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         if (!state) return;
         const patch = streamingCompatiblePatch(state);
         if (Object.keys(patch).length > 0) {
-          useTrainingConfigStore.setState(patch);
+          // Sync localStorage hydration runs inside create(), before
+          // useTrainingConfigStore is assigned (TDZ). Defer to a microtask so the
+          // store exists when we reconcile the persisted streaming combo.
+          queueMicrotask(() => useTrainingConfigStore.setState(patch));
         }
       },
     },

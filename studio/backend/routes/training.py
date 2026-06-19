@@ -198,6 +198,18 @@ async def start_training(
                     status_code = 400,
                     detail = "dataset_streaming is not supported for vision or audio datasets.",
                 )
+            if request.is_embedding:
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "dataset_streaming is not supported for embedding training; the embedding loader needs the full dataset.",
+                )
+            from utils.hardware import hardware as _hw
+
+            if _hw.DEVICE == _hw.DeviceType.MLX:
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "dataset_streaming is not yet supported on Apple Silicon (MLX); the MLX loader materializes the full dataset.",
+                )
             if request.max_steps is None or request.max_steps <= 0:
                 raise HTTPException(
                     status_code = 422,

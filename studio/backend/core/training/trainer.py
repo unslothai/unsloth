@@ -2498,7 +2498,11 @@ class UnslothTrainer:
                                     f"Could not list splits for '{dataset_source}' "
                                     f"to validate eval_split='{eval_split}': {probe_err}"
                                 )
-                            if eval_split not in available_splits:
+                            # HF split slicing (e.g. "validation[:1000]") is a
+                            # valid split expression; validate the base split name,
+                            # not the whole slice expression.
+                            base_eval_split = eval_split.split("[", 1)[0]
+                            if base_eval_split not in available_splits:
                                 raise ValueError(
                                     f"Requested eval split '{eval_split}' not found in "
                                     f"dataset '{dataset_source}'. Available splits: "
