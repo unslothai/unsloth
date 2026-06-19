@@ -1147,11 +1147,11 @@ export function ChatSettingsPanel({
                       onClick={() => onLoadPendingModel?.()}
                       // A DIFFERENT model is mid-load (loadingModel is set but
                       // doesn't match this staged pick -- stagedLoading is false).
-                      // Block the click: selectModel's in-flight-load guard keys
-                      // on id + native token, so a different GGUF variant of the
-                      // same repo would be silently deduped to a no-op, leaving an
-                      // enabled button that does nothing. The stage stays put;
-                      // retry once the in-flight load settles.
+                      // Disable rather than leave an enabled button that can't act:
+                      // selectModel refuses to start a second concurrent load while
+                      // one is in flight, so the click would only surface a "wait
+                      // or cancel first" toast. The stage stays put; retry once the
+                      // in-flight load settles.
                       disabled={stagedDownloading || loadingModel != null}
                       size="sm"
                       className="h-7 px-3 text-[12px] font-medium tracking-nav bg-primary/92 text-primary-foreground hover:bg-primary"

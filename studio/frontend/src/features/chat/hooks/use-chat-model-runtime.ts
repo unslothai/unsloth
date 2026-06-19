@@ -422,12 +422,30 @@ export function useChatModelRuntime() {
       if (!forceReload && (!modelId || (params.checkpoint === modelId && (ggufVariant ?? null) === (currentVariant ?? null)))) {
         return;
       }
-      // Prevent duplicate loads if already loading this model
-      if (
-        loadingModelRef.current?.id === modelId &&
-        (loadingModelRef.current?.nativePathToken ?? null) === (nativePathToken ?? null)
-      )
+      // A load is already in flight. If it's this exact pick (id + GGUF variant +
+      // native path token), ignore the duplicate click. If it's a DIFFERENT model
+      // -- crucially including a different GGUF variant of the same repo, which the
+      // old id+token-only guard wrongly treated as a duplicate and silently
+      // no-op'd -- don't start a second concurrent load (the load path has no clean
+      // supersession) and don't silently swallow the request: surface it so the
+      // user knows to wait for, or cancel, the in-flight load. Centralized here so
+      // every entry point is covered, not just the staged Load button.
+      const inFlightLoad = loadingModelRef.current;
+      if (inFlightLoad) {
+        const loadingSamePick =
+          inFlightLoad.id === modelId &&
+          (inFlightLoad.ggufVariant ?? null) === (ggufVariant ?? null) &&
+          (inFlightLoad.nativePathToken ?? null) === (nativePathToken ?? null);
+        if (loadingSamePick) return;
+        const message =
+          "Another model is already loading. Wait for it to finish or cancel it first.";
+        setModelsError(message);
+        if (throwOnError) throw new Error(message);
+        toast.info("Another model is already loading", {
+          description: "Wait for it to finish or cancel it first.",
+        });
         return;
+      }
 
       const explicitIsLora =
         typeof selection === "string" ? undefined : selection.isLora;
