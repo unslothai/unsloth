@@ -87,6 +87,7 @@ if _IS_MLX:
         from unsloth_zoo.mlx.trainer import (
             MLXTrainer,
             MLXTrainingConfig,
+            _normalize_mlx_optimizer_name,
         )
         from unsloth_zoo.mlx.loader import FastMLXModel
     except ImportError as _e:
@@ -223,28 +224,6 @@ if _IS_MLX:
         )
     )
 
-    def _normalize_mlx_training_optimizer_name(value):
-        """Normalize notebook optimizer aliases before MLX trainer validation."""
-        if hasattr(value, "value"):
-            value = value.value
-        optim = str(value or "adamw").strip().lower()
-        optim = optim.rsplit(".", 1)[-1].replace("-", "_")
-        if optim in (
-            "adamw_8bit",
-            "paged_adamw_8bit",
-            "adamw_bnb_8bit",
-            "paged_adamw_32bit",
-            "adamw_torch",
-            "adamw_torch_fused",
-            "paged_adamw",
-            "adamw_32bit",
-            "adamw_hf",
-            "adamw_anyprecision",
-            "adamw_apex_fused",
-        ):
-            return "adamw"
-        return optim
-
     def _is_mlx_no_save_strategy(value):
         """Return whether a Transformers save strategy disables checkpointing."""
         if hasattr(value, "value"):
@@ -256,7 +235,7 @@ if _IS_MLX:
     def _normalize_mlx_training_value(key, value):
         """Normalize TRL/Transformers argument values to MLX-compatible values."""
         if key == "optim":
-            return _normalize_mlx_training_optimizer_name(value)
+            return _normalize_mlx_optimizer_name(value)
         return value
 
     def _mlx_training_argument_values(args):

@@ -1252,32 +1252,17 @@ def _adapt_for_mlx_vlm(
     return adapted
 
 
-_MLX_STUDIO_OPTIM_MAP = {
-    "adamw_8bit": "adamw",
-    "paged_adamw_8bit": "adamw",
-    "adamw_bnb_8bit": "adamw",
-    "paged_adamw_32bit": "adamw",
-    "adamw_torch": "adamw",
-    "adamw_torch_fused": "adamw",
-    "adamw": "adamw",
-    "adafactor": "adafactor",
-    "sgd": "sgd",
-    "adam": "adam",
-    "muon": "muon",
-    "lion": "lion",
-}
 _MLX_STUDIO_LR_SCHEDULERS = {"linear", "cosine", "constant"}
 
 
 def _normalize_mlx_studio_optimizer(value):
-    raw = str(value or "adamw_8bit").strip().lower()
     try:
-        return _MLX_STUDIO_OPTIM_MAP[raw]
-    except KeyError:
-        supported = ", ".join(sorted(_MLX_STUDIO_OPTIM_MAP))
+        from unsloth_zoo.mlx.trainer import _normalize_mlx_optimizer_name
+        return _normalize_mlx_optimizer_name(value or "adamw_8bit")
+    except ValueError as exc:
         raise ValueError(
-            f"Unsupported optimizer for MLX training: {value!r}. " f"Supported values: {supported}."
-        )
+            f"Unsupported optimizer for MLX training: {value!r}."
+        ) from exc
 
 
 def _normalize_mlx_studio_scheduler(value):
