@@ -3194,6 +3194,8 @@ async def generate_stream(
     _tracker.__enter__()
 
     async def stream():
+        gen = None
+        completed = False
         _DONE = object()
         try:
             yield f"data: {json.dumps({'completion_id': completion_id})}\n\n"
@@ -3220,14 +3222,27 @@ async def generate_stream(
                 if chunk is _DONE:
                     break
                 yield f"data: {json.dumps({'content': chunk})}\n\n"
+            completed = True
             yield "data: [DONE]\n\n"
 
+        except asyncio.CancelledError:
+            cancel_event.set()
+            backend.reset_generation_state()
+            raise
         except Exception as e:
+            cancel_event.set()
             backend.reset_generation_state()
             logger.error(f"Error during generation: {e}", exc_info = True)
             yield f"data: {json.dumps({'error': _friendly_error(e)})}\n\n"
         finally:
-            cancel_event.set()
+            if not completed and not cancel_event.is_set():
+                cancel_event.set()
+                backend.reset_generation_state()
+            if gen is not None:
+                try:
+                    await asyncio.to_thread(gen.close)
+                except (RuntimeError, ValueError):
+                    pass
             _tracker.__exit__(None, None, None)
 
     return StreamingResponse(
