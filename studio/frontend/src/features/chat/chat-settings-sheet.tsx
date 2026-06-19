@@ -17,6 +17,12 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import {
+  clearRememberedLoadSettings,
+  loadRememberedLoadSettings,
+  saveRememberedLoadSettings,
+} from "@/components/assistant-ui/model-selector/remembered-load-settings";
 import {
   Dialog,
   DialogContent,
@@ -564,6 +570,29 @@ export function ChatSettingsPanel({
   // pendingSelection, so the slider can use the staged model's real ceiling
   // without reading the loaded model's `ggufContextLength`.
   const stagedContextLength = pendingSelection?.contextLength ?? null;
+  // "Remember settings next time" tick for a staged model. Seeds the store from
+  // the saved per-model settings on stage, so the sheet opens with what was used
+  // last time; the tick reflects whether a saved entry exists.
+  const [remember, setRemember] = useState(false);
+  const pendingId = pendingSelection?.id ?? null;
+  useEffect(() => {
+    if (!pendingId) return;
+    const saved = loadRememberedLoadSettings(pendingId);
+    setRemember(saved != null);
+    if (!saved) return;
+    setCustomContextLength(saved.contextLength);
+    setKvCacheDtype(saved.kvCacheDtype);
+    setSpeculativeType(saved.speculativeType ?? "auto");
+    setSpecDraftNMax(saved.specDraftNMax);
+    setTensorParallel(saved.tensorParallel);
+  }, [
+    pendingId,
+    setCustomContextLength,
+    setKvCacheDtype,
+    setSpeculativeType,
+    setSpecDraftNMax,
+    setTensorParallel,
+  ]);
   // While staging, the sheet reflects the STAGED model, so its header context
   // takes precedence over the loaded model's (which may differ or be larger).
   const baseContext = pendingIsGguf ? stagedContextLength : ggufContextLength;
@@ -1096,20 +1125,47 @@ export function ChatSettingsPanel({
                 staged (deferred load), Load/Cancel takes its place: there's
                 nothing loaded to "apply" against yet. */}
             {pendingSelection ? (
-              <div className="flex flex-col gap-2">
+              <div className="flex flex-col gap-4">
                 {stagedDownloading && (
                   <p className="text-[11px] text-muted-foreground">
                     Downloading…{" "}
                     {Math.round((stagedDownloadFraction ?? 0) * 100)}%
                   </p>
                 )}
-                <div className="flex flex-wrap gap-1.5">
+                <label className="flex cursor-pointer items-center gap-2 pb-1.5 text-[12px] text-muted-foreground">
+                  <Checkbox
+                    className="size-3.5 rounded-full [&_[data-slot=checkbox-indicator]_svg]:size-2.5"
+                    checked={remember}
+                    onCheckedChange={(v) => setRemember(v === true)}
+                  />
+                  Remember settings next time
+                </label>
+                <div className="grid grid-cols-2 gap-3">
                   <Button
                     type="button"
-                    onClick={() => onLoadPendingModel?.()}
+                    onClick={() => {
+                      // Persist (or clear) this model's load knobs before loading.
+                      // Save the explicit context override only (null = auto), so
+                      // restoring never forces the native context into an OOM.
+                      const pid = pendingSelection?.id;
+                      if (pid) {
+                        if (remember) {
+                          saveRememberedLoadSettings(pid, {
+                            contextLength: customContextLength,
+                            kvCacheDtype,
+                            speculativeType,
+                            specDraftNMax,
+                            tensorParallel,
+                          });
+                        } else {
+                          clearRememberedLoadSettings(pid);
+                        }
+                      }
+                      onLoadPendingModel?.();
+                    }}
                     disabled={stagedDownloading}
                     size="sm"
-                    className="h-7 px-3 text-[12px] font-medium tracking-nav bg-primary/92 text-primary-foreground hover:bg-primary"
+                    className="h-9 w-full rounded-full text-[13px] font-medium tracking-nav bg-primary text-primary-foreground hover:bg-primary/90"
                   >
                     Load model
                   </Button>
@@ -1123,7 +1179,7 @@ export function ChatSettingsPanel({
                       if (stagedDownloading) onCancelStagedDownload?.();
                       abandonStagedModel();
                     }}
-                    className="h-7 px-3 text-[12px] font-medium tracking-nav text-muted-foreground"
+                    className="h-9 w-full rounded-full text-[13px] font-medium tracking-nav text-muted-foreground"
                   >
                     Cancel
                   </Button>

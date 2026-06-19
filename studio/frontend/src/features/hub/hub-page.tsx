@@ -576,9 +576,10 @@ export function ModelsPage() {
   const effectiveSort: HfSortKey =
     isFeedMode && liveListChannel ? liveListChannel.sort : sortBy;
   const effectiveDirection: HfSortDirection = isFeedMode ? "desc" : direction;
-  // Feed mode uses the live channel format so it does not hide non-matching rows.
-  const effectiveDiscoverFormat: ModelFormatFilter =
-    isFeedMode && liveListChannel ? liveListChannel.format : deferredFormatFilter;
+  // The format dropdown always filters the visible list, including the feed's
+  // "Latest" list, so the default (GGUF) hides fp8/safetensors and picking a
+  // format actually changes the rows.
+  const effectiveDiscoverFormat: ModelFormatFilter = deferredFormatFilter;
 
   const listChannel = useMemo<HfModelSearchChannel | null>(() => {
     if (!liveListChannel) return null;
