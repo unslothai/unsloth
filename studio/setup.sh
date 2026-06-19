@@ -968,7 +968,7 @@ elif [ "$_setup_amd_detected" = true ]; then
     substep "ROCm: $_setup_rocm_root"
     [ -n "$_setup_rocm_ver" ] && substep "hipconfig: $_setup_rocm_ver"
     [ -n "$_setup_mkt" ] && [ -n "$_setup_gfx" ] && substep "GPU: $_setup_mkt"
-elif [ "$(uname -s 2>/dev/null)" = "Darwin" ] && { [ "$(uname -m 2>/dev/null)" = "arm64" ] || [ "$(uname -m 2>/dev/null)" = "aarch64" ]; }; then
+elif [ "$(uname -s 2>/dev/null)" = "Darwin" ] && [ "$(uname -m 2>/dev/null)" = "arm64" ]; then
     # Apple Silicon: llama.cpp builds with Metal over unified memory, so not a CPU-only host.
     step "gpu" "Apple Silicon (Metal, unified memory)"
 else
