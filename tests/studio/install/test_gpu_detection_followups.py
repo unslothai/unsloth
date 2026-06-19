@@ -260,12 +260,11 @@ class TestSetupShHardening:
             idx = setup_src.find("--query-gpu=compute_cap", start)
             if idx < 0:
                 break
-            if "_setup_run_smi" in setup_src[max(0, idx - 80):idx]:
+            if "_setup_run_smi" in setup_src[max(0, idx - 80) : idx]:
                 wrapped = True
                 break
             start = idx + 1
-        assert wrapped, \
-            "compute_cap probe must be wrapped in _setup_run_smi (timeout-bounded)"
+        assert wrapped, "compute_cap probe must be wrapped in _setup_run_smi (timeout-bounded)"
 
     def test_driver_version_probe_timeout_wrapped(self, setup_src):
         start = setup_src.find("_cuda_driver_max_version()")
