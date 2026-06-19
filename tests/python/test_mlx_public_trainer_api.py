@@ -1,0 +1,536 @@
+"""Tests for the MLX public trainer compatibility surface."""
+
+from __future__ import annotations
+
+import importlib
+import importlib.util
+import sys
+import types
+import warnings
+
+import pytest
+
+
+def _import_mlx_unsloth():
+    """Import unsloth and skip when the current platform is not using MLX."""
+    unsloth = importlib.import_module("unsloth")
+    if getattr(unsloth, "DEVICE_TYPE", None) != "mlx":
+        pytest.skip("MLX public trainer API is only active on the MLX backend")
+    return unsloth
+
+
+class _DummyModel:
+    """Small model stub that satisfies MLXTrainer constructor probes."""
+
+    def trainable_parameters(self):
+        """Return no trainable parameters for constructor-only tests."""
+        return {}
+
+
+def test_mlx_exports_unsloth_trainer_api():
+    """MLX imports should expose the public Unsloth trainer API."""
+    unsloth = _import_mlx_unsloth()
+    from unsloth import (
+        RawTextDataLoader,
+        TextPreprocessor,
+        UnslothTrainer,
+        UnslothTrainingArguments,
+        clear_gpu_memory,
+        get_gpu_memory_stats,
+    )
+
+    assert RawTextDataLoader is unsloth.RawTextDataLoader
+    assert TextPreprocessor is unsloth.TextPreprocessor
+    assert UnslothTrainer is unsloth.UnslothTrainer
+    assert UnslothTrainingArguments is unsloth.UnslothTrainingArguments
+    assert get_gpu_memory_stats is unsloth.get_gpu_memory_stats
+    assert clear_gpu_memory is unsloth.clear_gpu_memory
+    assert issubclass(UnslothTrainer, unsloth.MLXTrainer)
+    assert issubclass(UnslothTrainingArguments, unsloth.MLXTrainingConfig)
+    assert importlib.util.find_spec("unsloth.memory") is None
+
+
+def test_non_mlx_exports_public_trainer_api_when_available():
+    """GPU/ROCm imports should keep exporting the public Unsloth trainer API."""
+    unsloth = importlib.import_module("unsloth")
+    if getattr(unsloth, "DEVICE_TYPE", None) == "mlx":
+        pytest.skip("non-MLX export smoke test only runs on GPU/ROCm backends")
+
+    assert unsloth.UnslothTrainer is not None
+    assert unsloth.UnslothTrainingArguments is not None
+    assert callable(unsloth.get_gpu_memory_stats)
+    assert callable(unsloth.clear_gpu_memory)
+    assert importlib.util.find_spec("unsloth.memory") is None
+
+
+def test_mlx_training_arguments_accept_trl_style_kwargs():
+    """TRL/SFTConfig-style kwargs should normalize without breaking MLX config."""
+    unsloth = _import_mlx_unsloth()
+
+    with pytest.warns(RuntimeWarning, match="bf16.*dataset_kwargs"):
+        args = unsloth.UnslothTrainingArguments(
+            max_length=123,
+            max_steps=10,
+            warmup_ratio=0.2,
+            remove_unused_columns=False,
+            dataset_kwargs={"skip_prepare_dataset": True},
+            bf16=True,
+        )
+
+    assert args.max_seq_length == 123
+    assert args.warmup_steps == 2
+    assert args.remove_unused_columns is False
+    assert args.dataset_kwargs == {"skip_prepare_dataset": True}
+    assert args.bf16 is True
+    assert args._unsloth_mlx_extra_args["warmup_ratio"] == 0.2
+
+
+def test_mlx_training_arguments_do_not_warn_for_implemented_or_falsey_extras():
+    """Implemented and falsey inert compatibility kwargs should stay quiet."""
+    unsloth = _import_mlx_unsloth()
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        args = unsloth.UnslothTrainingArguments(
+            warmup_ratio=0.2,
+            max_steps=10,
+            padding_free=False,
+            remove_unused_columns=False,
+        )
+
+    assert args.warmup_steps == 2
+    assert args.padding_free is False
+    assert args.remove_unused_columns is False
+    assert caught == []
+
+
+def test_mlx_training_arguments_prefer_canonical_max_seq_length():
+    """Canonical MLX config fields should win over compatibility aliases."""
+    unsloth = _import_mlx_unsloth()
+
+    args = unsloth.UnslothTrainingArguments(max_seq_length=456, max_length=123)
+    dict_args = unsloth.UnslothTrainingArguments(
+        {"max_length": 123, "max_seq_length": 456},
+    )
+
+    assert args.max_seq_length == 456
+    assert dict_args.max_seq_length == 456
+
+
+def test_mlx_training_arguments_warn_on_meaningful_inert_kwargs():
+    """Unsupported TrainingArguments knobs should not be silently ignored."""
+    unsloth = _import_mlx_unsloth()
+
+    with pytest.warns(RuntimeWarning, match="push_to_hub.*save_strategy"):
+        args = unsloth.UnslothTrainingArguments(
+            save_strategy="steps",
+            push_to_hub=True,
+            padding_free=False,
+        )
+
+    assert args.save_strategy == "steps"
+    assert args.push_to_hub is True
+    assert args.padding_free is False
+
+
+def test_mlx_training_arguments_reject_unknown_kwargs():
+    """Unknown SFTConfig flags should fail instead of becoming inert attributes."""
+    unsloth = _import_mlx_unsloth()
+
+    with pytest.raises(NotImplementedError, match="assistant_only_loss"):
+        unsloth.UnslothTrainingArguments(assistant_only_loss=True)
+
+
+def test_mlx_training_arguments_reject_unsupported_object_flags():
+    """Object-style SFTConfig flags should not be silently dropped."""
+    unsloth = _import_mlx_unsloth()
+
+    class ArgsObject:
+        max_steps = 1
+        assistant_only_loss = True
+
+    with pytest.raises(NotImplementedError, match="assistant_only_loss"):
+        unsloth._coerce_mlx_training_args(ArgsObject())
+
+
+def test_mlx_training_arguments_accept_output_dir_positional():
+    """A single positional output_dir should match TrainingArguments behavior."""
+    unsloth = _import_mlx_unsloth()
+
+    args = unsloth.UnslothTrainingArguments("custom-outputs", max_steps=3)
+
+    assert args.output_dir == "custom-outputs"
+    assert args.max_steps == 3
+
+
+def test_mlx_training_arguments_normalize_optim_and_object_aliases():
+    """Common notebook optimizer names and object aliases should normalize."""
+    unsloth = _import_mlx_unsloth()
+
+    class ArgsObject:
+        optim = "adamw_8bit"
+        max_length = 321
+
+    args = unsloth._coerce_mlx_training_args(ArgsObject())
+
+    assert args.optim == "adamw"
+    assert args.max_seq_length == 321
+
+
+def test_mlx_trainer_accepts_common_sft_kwargs():
+    """UnslothTrainer should accept common SFTTrainer kwargs on MLX."""
+    unsloth = _import_mlx_unsloth()
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        trainer = unsloth.UnslothTrainer(
+            model=_DummyModel(),
+            tokenizer=None,
+            train_dataset=[],
+            args={"max_steps": 1},
+            dataset_num_proc=8,
+            max_length=456,
+            optim="adamw_bnb_8bit",
+            processing_class=object(),
+        )
+
+    assert trainer.args.max_steps == 1
+    assert trainer.args.dataset_num_proc == 8
+    assert trainer.args.max_seq_length == 456
+    assert trainer.args.optim == "adamw"
+    assert trainer._unsloth_mlx_ignored_trainer_kwargs == {}
+    assert caught == []
+
+
+def test_mlx_trainer_processing_class_overrides_explicit_none_tokenizer():
+    """TRL passes tokenizer=None while processing_class carries the tokenizer."""
+    unsloth = _import_mlx_unsloth()
+    tokenizer = object()
+
+    class Processor:
+        pass
+
+    processor = Processor()
+    processor.tokenizer = tokenizer
+
+    trainer = unsloth.UnslothTrainer(
+        model=_DummyModel(),
+        tokenizer=None,
+        train_dataset=[],
+        args={"max_steps": 1},
+        processing_class=processor,
+    )
+
+    assert trainer.processor is processor
+    assert trainer.tokenizer is tokenizer
+
+
+def test_mlx_trainer_vision_collator_processor_overrides_processing_class():
+    """Vision notebooks pass the tokenizer as processing_class and processor in collator."""
+    unsloth = _import_mlx_unsloth()
+    tokenizer = object()
+
+    class Processor:
+        pass
+
+    processor = Processor()
+    processor.tokenizer = tokenizer
+    collator = unsloth.UnslothVisionDataCollator(_DummyModel(), processor)
+
+    trainer = unsloth.UnslothTrainer(
+        model=_DummyModel(),
+        tokenizer=None,
+        train_dataset=[],
+        args={"max_steps": 1},
+        processing_class=tokenizer,
+        data_collator=collator,
+    )
+
+    assert trainer.processor is processor
+    assert trainer.tokenizer is tokenizer
+
+
+def test_mlx_trainer_preserves_explicit_processor_over_vision_collator():
+    """Explicit processor kwargs should stay authoritative over collator metadata."""
+    unsloth = _import_mlx_unsloth()
+    tokenizer = object()
+    explicit_processor = object()
+
+    class Processor:
+        pass
+
+    collator_processor = Processor()
+    collator_processor.tokenizer = tokenizer
+    collator = unsloth.UnslothVisionDataCollator(_DummyModel(), collator_processor)
+
+    trainer = unsloth.UnslothTrainer(
+        model=_DummyModel(),
+        tokenizer=None,
+        train_dataset=[],
+        args={"max_steps": 1},
+        processor=explicit_processor,
+        processing_class=tokenizer,
+        data_collator=collator,
+    )
+
+    assert trainer.processor is explicit_processor
+    assert trainer.tokenizer is tokenizer
+
+
+def test_mlx_trainer_rejects_unsafe_unsupported_sft_kwargs():
+    """Unsupported kwargs that change training semantics should fail on MLX."""
+    unsloth = _import_mlx_unsloth()
+
+    with pytest.raises(NotImplementedError, match="peft_config"):
+        unsloth.UnslothTrainer(
+            model=_DummyModel(),
+            tokenizer=None,
+            train_dataset=[],
+            peft_config=object(),
+        )
+
+
+def test_mlx_trainer_rejects_metrics_and_callbacks():
+    """Trainer hooks should fail because MLXTrainer cannot honor them yet."""
+    unsloth = _import_mlx_unsloth()
+
+    with pytest.raises(NotImplementedError, match="callbacks"):
+        unsloth.UnslothTrainer(
+            model=_DummyModel(),
+            tokenizer=None,
+            train_dataset=[],
+            callbacks=[object()],
+        )
+    with pytest.raises(NotImplementedError, match="compute_metrics"):
+        unsloth.UnslothTrainer(
+            model=_DummyModel(),
+            tokenizer=None,
+            train_dataset=[],
+            compute_metrics=lambda *_: None,
+        )
+
+
+def test_mlx_trainer_rejects_custom_data_collator():
+    """MLXTrainer owns batching; custom SFT data collators must not be ignored."""
+    unsloth = _import_mlx_unsloth()
+
+    with pytest.raises(NotImplementedError, match="data_collator"):
+        unsloth.UnslothTrainer(
+            model=_DummyModel(),
+            tokenizer=None,
+            train_dataset=[],
+            data_collator=object(),
+        )
+
+
+def test_mlx_trainer_accepts_trl_style_positional_args():
+    """TRL-style positional `(model, args, ...)` should not be read as tokenizer."""
+    unsloth = _import_mlx_unsloth()
+
+    args = unsloth.UnslothTrainingArguments("trl-outputs", max_steps=2)
+    trainer = unsloth.UnslothTrainer(
+        _DummyModel(),
+        args,
+        train_dataset=[],
+        tokenizer=None,
+    )
+
+    assert trainer.args is args
+    assert trainer.args.output_dir == "trl-outputs"
+    assert trainer.train_dataset == []
+
+
+def test_mlx_trainer_accepts_trl_none_placeholder_positionals():
+    """Explicit TRL default placeholders should preserve later positional args."""
+    unsloth = _import_mlx_unsloth()
+    dataset = [{"text": "hello"}]
+    processing_class = object()
+
+    trainer = unsloth.UnslothTrainer(
+        _DummyModel(),
+        None,
+        None,
+        dataset,
+        None,
+        processing_class,
+    )
+
+    assert trainer.train_dataset is dataset
+    assert trainer.tokenizer is processing_class
+    assert trainer.args.max_steps == 60
+
+
+def test_mlx_trainer_accepts_short_trl_none_placeholder_positionals():
+    """Short TRL placeholder calls should keep the fourth arg as train_dataset."""
+    unsloth = _import_mlx_unsloth()
+    dataset = [{"text": "hello"}]
+
+    trainer = unsloth.UnslothTrainer(
+        _DummyModel(),
+        None,
+        None,
+        dataset,
+    )
+
+    assert trainer.train_dataset is dataset
+    assert trainer.eval_dataset is None
+    assert trainer.args.max_steps == 60
+
+
+def test_mlx_trainer_accepts_short_trl_placeholders_with_keyword_dataset():
+    """Short TRL placeholders should not conflict with keyword train_dataset."""
+    unsloth = _import_mlx_unsloth()
+    dataset = [{"text": "hello"}]
+
+    trainer = unsloth.UnslothTrainer(
+        _DummyModel(),
+        None,
+        None,
+        train_dataset=dataset,
+    )
+
+    assert trainer.train_dataset is dataset
+    assert trainer.eval_dataset is None
+    assert trainer.args.max_steps == 60
+
+
+def test_mlx_trainer_preserves_mlx_positional_schema_with_none_tokenizer():
+    """MLX-style `(model, tokenizer, train_dataset, ...)` should still work."""
+    unsloth = _import_mlx_unsloth()
+    dataset = [{"text": "hello"}]
+
+    trainer = unsloth.UnslothTrainer(
+        _DummyModel(),
+        None,
+        dataset,
+        None,
+    )
+
+    assert trainer.tokenizer is None
+    assert trainer.train_dataset is dataset
+    assert trainer.eval_dataset is None
+
+
+def test_mlx_compatibility_shims_are_installed():
+    """Old notebook imports should resolve to the MLX public API after unsloth import."""
+    unsloth = _import_mlx_unsloth()
+
+    trl = importlib.import_module("trl")
+    trainer_module = importlib.import_module("unsloth.trainer")
+    chat_templates = importlib.import_module("unsloth.chat_templates")
+    dataset_utils = importlib.import_module("unsloth_zoo.dataset_utils")
+
+    assert importlib.util.find_spec("trl") is not None
+    assert importlib.util.find_spec("unsloth.trainer") is not None
+    assert unsloth.trainer is trainer_module
+    assert unsloth.chat_templates is chat_templates
+    assert trl.SFTTrainer is unsloth.UnslothTrainer
+    assert trl.SFTConfig is unsloth.UnslothTrainingArguments
+    assert trainer_module.UnslothTrainer is unsloth.UnslothTrainer
+    assert trainer_module.UnslothVisionDataCollator is unsloth.UnslothVisionDataCollator
+    assert chat_templates.train_on_responses_only is dataset_utils.train_on_responses_only
+    assert unsloth.train_on_responses_only is dataset_utils.train_on_responses_only
+
+
+def test_mlx_trl_shim_preserves_existing_trl_module(monkeypatch):
+    """The MLX TRL shim should patch, not replace, an already-loaded TRL module."""
+    unsloth = _import_mlx_unsloth()
+    trl = types.ModuleType("trl")
+    trl.__path__ = ["real-trainer-package"]
+    trl.existing_marker = object()
+    monkeypatch.setitem(sys.modules, "trl", trl)
+
+    unsloth._install_mlx_trl_sft_shim()
+
+    assert sys.modules["trl"] is trl
+    assert trl.__path__ == ["real-trainer-package"]
+    assert trl.SFTTrainer is unsloth.UnslothTrainer
+    assert trl.SFTConfig is unsloth.UnslothTrainingArguments
+    assert trl.__UNSLOTH_MLX_COMPAT__ is True
+
+
+def test_mlx_trl_shim_installs_real_trl_or_stub(monkeypatch):
+    """The MLX TRL shim should prefer real TRL and stub only if unavailable."""
+    unsloth = _import_mlx_unsloth()
+    real_trl_available = importlib.util.find_spec("trl") is not None
+    monkeypatch.delitem(sys.modules, "trl", raising=False)
+
+    unsloth._install_mlx_trl_sft_shim()
+    trl = importlib.import_module("trl")
+
+    if real_trl_available:
+        assert trl.__version__ != "0.0.0+unsloth-mlx"
+    else:
+        assert trl.__version__ == "0.0.0+unsloth-mlx"
+    assert trl.SFTTrainer is unsloth.UnslothTrainer
+    assert trl.SFTConfig is unsloth.UnslothTrainingArguments
+    assert trl.__UNSLOTH_MLX_COMPAT__ is True
+
+
+def test_mlx_vision_collator_is_constructor_compatible():
+    """Vision notebooks should be able to instantiate the collator placeholder."""
+    unsloth = _import_mlx_unsloth()
+
+    collator = unsloth.UnslothVisionDataCollator("model", "processor", flag=True)
+
+    assert collator.model == "model"
+    assert collator.processor == "processor"
+    assert collator.kwargs == {"flag": True}
+
+
+def test_mlx_train_on_responses_only_returns_shared_mask_function():
+    """The MLX public shim should expose the shared response-mask helper."""
+    unsloth = _import_mlx_unsloth()
+
+    class Tokenizer:
+        def __call__(self, text, add_special_tokens=False):
+            return types.SimpleNamespace(input_ids={
+                "<user>": [1],
+                "<assistant>": [2],
+            }[text])
+
+        def convert_tokens_to_ids(self, token):
+            return token
+
+    mask_fn = unsloth.train_on_responses_only(
+        None,
+        instruction_part="<user>",
+        response_part="<assistant>",
+        tokenizer=Tokenizer(),
+        return_function=True,
+    )
+    masked = mask_fn({
+        "input_ids": [[1, 10, 2, 20, 21, 1, 11]],
+    })
+
+    assert masked == {
+        "labels": [[-100, -100, -100, 20, 21, -100, -100]],
+    }
+
+    last_mask_fn = unsloth.train_on_responses_only(
+        None,
+        instruction_part="<user>",
+        response_part="<assistant>",
+        tokenizer=Tokenizer(),
+        return_function=True,
+        last_response_only=True,
+    )
+    last_masked = last_mask_fn({
+        "input_ids": [[1, 10, 2, 20, 1, 11, 2, 30]],
+    })
+
+    assert last_masked == {
+        "labels": [[-100, -100, -100, -100, -100, -100, -100, 30]],
+    }
+
+
+def test_mlx_gpu_memory_stats_helper_shape():
+    """The portable memory helper should return notebook-compatible values."""
+    unsloth = _import_mlx_unsloth()
+
+    stats, used, total = unsloth.get_gpu_memory_stats()
+
+    assert isinstance(stats.name, str)
+    assert hasattr(stats, "total_memory")
+    assert isinstance(used, float)
+    assert total > 0
