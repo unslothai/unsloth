@@ -43,6 +43,7 @@ import {
   useHubModelSearch,
 } from "@/features/hub/hooks/use-hub-model-search";
 import { useOnlineStatus } from "@/features/hub/hooks/use-online-status";
+import { isHiddenModelId } from "@/features/hub/lib/hidden-models";
 import { classifyUnslothSupport } from "@/features/hub/lib/unsloth-support";
 import { useHfTokenStore } from "@/features/hub/stores/hf-token-store";
 import { useDebouncedValue, useGpuInfo } from "@/hooks";
@@ -1461,6 +1462,7 @@ export function HubModelPicker({
 
   const recommendedIds = useMemo(() => {
     const all = dedupe([...models.map((model) => model.id), value ?? ""])
+      .filter((id) => !isHiddenModelId(id))
       .filter((id) => !downloadedSet.has(id.toLowerCase()))
       // Chat-only keeps runnable formats: GGUF anywhere, plus MLX/safetensors
       // on Mac (matches the empty Recommended view so search stays consistent).
@@ -1491,7 +1493,9 @@ export function HubModelPicker({
   // downloaded models stay visible (badged), never hidden.
   const recommendedRows = useMemo(() => {
     // Never list mobile-targeted builds in the Unsloth section.
-    let rows = recommendedSearch.results.filter((r) => !isMobileVariant(r.id));
+    let rows = recommendedSearch.results
+      .filter((r) => !isHiddenModelId(r.id))
+      .filter((r) => !isMobileVariant(r.id));
     // Drop models Studio can't run for chat (diffusion / image / video / etc.).
     rows = rows.filter(isChatSupported);
     // With no explicit format, show the device-recommended formats (GGUF, plus
@@ -1787,6 +1791,7 @@ export function HubModelPicker({
     return results
       .filter(isChatSupported)
       .map((result) => result.id)
+      .filter((id) => !isHiddenModelId(id))
       .filter((id) => id.toLowerCase().startsWith("unsloth/"))
       .filter((id) => !recommendedSet.has(id))
       // Chat-only keeps runnable formats: GGUF anywhere, plus MLX/safetensors
