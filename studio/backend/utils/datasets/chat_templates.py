@@ -252,7 +252,12 @@ def apply_chat_template_to_dataset(
                 return result
 
             try:
-                dataset = dataset.map(_apply_custom_mapping, batched = True, batch_size = batch_size)
+                # Mirror the other call sites: omit eager-only kwargs (num_proc/desc)
+                # for streaming IterableDatasets, whose .map() rejects them.
+                custom_map_kwargs = {"batched": True, "batch_size": batch_size}
+                if not is_streaming_dataset(dataset):
+                    custom_map_kwargs["desc"] = "Applying custom ChatML mapping"
+                dataset = dataset.map(_apply_custom_mapping, **custom_map_kwargs)
                 # Update to use conversations format
                 final_format = "chatml_conversations"
                 chat_column = "conversations"

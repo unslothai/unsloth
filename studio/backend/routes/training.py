@@ -217,6 +217,15 @@ async def start_training(
                         status_code = 422,
                         detail = "dataset_streaming with evaluation requires a separate eval_split.",
                     )
+            if request.format_type == "raw" or request.training_type == "Continued Pretraining":
+                raise HTTPException(
+                    status_code = 422,
+                    detail = (
+                        "dataset_streaming is not supported for raw-text or "
+                        "continued-pretraining mode yet (raw-text preprocessing "
+                        "requires a finite dataset length)."
+                    ),
+                )
 
         # Convert request to kwargs for backend
         training_kwargs = {

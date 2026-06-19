@@ -3383,6 +3383,12 @@ class UnslothTrainer:
                 # Only add packing for text models (not DeepSeek OCR which is VLM)
                 if not is_deepseek_ocr:
                     packing_enabled = training_args.get("packing", False)
+                    if packing_enabled and training_args.get("dataset_streaming", False):
+                        logger.warning(
+                            "Sequence packing is enabled with dataset streaming: "
+                            "max_steps governs training length and packed-sample "
+                            "counts are approximate since the stream length is unknown.\n"
+                        )
                     config_args["packing"] = packing_enabled
                     logger.info(
                         f"Sequence packing: {'enabled' if packing_enabled else 'disabled'}\n"

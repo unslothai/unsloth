@@ -195,6 +195,73 @@ def test_streaming_start_requires_separate_eval_split(eval_split):
     assert "separate eval_split" in exc_info.value.detail
 
 
+def test_streaming_start_rejects_missing_max_steps():
+    training_route = _load_route_module(
+        "training_route_module_for_streaming_max_steps_test",
+        "routes/training.py",
+    )
+    request = TrainingStartRequest(
+        model_name = "unsloth/test",
+        training_type = "LoRA/QLoRA",
+        hf_dataset = "org/dataset",
+        format_type = "chatml",
+        dataset_streaming = True,
+        max_steps = 0,
+    )
+
+    backend = SimpleNamespace(
+        current_job_id = None,
+        is_training_active = lambda: False,
+        start_training = lambda **kwargs: pytest.fail("backend should not start"),
+    )
+
+    with patch.object(training_route, "get_training_backend", return_value = backend):
+        with pytest.raises(HTTPException) as exc_info:
+            asyncio.run(
+                training_route.start_training(request, current_subject = "test-user")
+            )
+
+    assert exc_info.value.status_code == 422
+    assert "max_steps" in exc_info.value.detail
+
+
+@pytest.mark.parametrize(
+    "training_type, format_type",
+    [
+        ("LoRA/QLoRA", "raw"),  # raw-text format alone
+        ("Continued Pretraining", "chatml"),  # CPT training_type alone
+    ],
+)
+def test_streaming_start_rejects_raw_text_and_cpt(training_type, format_type):
+    training_route = _load_route_module(
+        "training_route_module_for_streaming_raw_cpt_test",
+        "routes/training.py",
+    )
+    request = TrainingStartRequest(
+        model_name = "unsloth/test",
+        training_type = training_type,
+        hf_dataset = "org/dataset",
+        format_type = format_type,
+        dataset_streaming = True,
+        max_steps = 10,
+    )
+
+    backend = SimpleNamespace(
+        current_job_id = None,
+        is_training_active = lambda: False,
+        start_training = lambda **kwargs: pytest.fail("backend should not start"),
+    )
+
+    with patch.object(training_route, "get_training_backend", return_value = backend):
+        with pytest.raises(HTTPException) as exc_info:
+            asyncio.run(
+                training_route.start_training(request, current_subject = "test-user")
+            )
+
+    assert exc_info.value.status_code == 422
+    assert "raw-text or continued-pretraining" in exc_info.value.detail
+
+
 def test_dataset_slice_bounds_are_non_negative():
     with pytest.raises(ValidationError):
         TrainingStartRequest(
@@ -234,6 +301,31 @@ def test_dataset_slice_accepts_equal_and_ordered_bounds():
         dataset_slice_end = 9,
     )
     assert ordered.dataset_slice_end == 9
+
+
+def test_dataset_slice_rejects_above_max_index():
+    # Upper bound guards streaming `.skip(n)` against pathological indices.
+    with pytest.raises(ValidationError):
+        TrainingStartRequest(
+            model_name = "unsloth/test",
+            training_type = "LoRA/QLoRA",
+            format_type = "alpaca",
+            dataset_slice_start = 2_000_000_000,
+        )
+
+
+@pytest.mark.parametrize(
+    "bad_hf_dataset",
+    ["../../etc/passwd", "org/../../secret", "a" * 257],
+)
+def test_hf_dataset_rejects_unsafe_values(bad_hf_dataset):
+    with pytest.raises(ValidationError):
+        TrainingStartRequest(
+            model_name = "unsloth/test",
+            training_type = "LoRA/QLoRA",
+            format_type = "alpaca",
+            hf_dataset = bad_hf_dataset,
+        )
 
 
 def test_is_streaming_dataset_detects_hf_iterable():

@@ -130,6 +130,7 @@ const NON_PERSISTED_STATE_KEYS: ReadonlySet<keyof TrainingConfigState> = new Set
   "isDatasetAudio",
   "trainOnCompletions",
   "maxPositionEmbeddings",
+  "isVisionModel",
 ]);
 
 function partializePersistedState(
@@ -206,6 +207,25 @@ function streamingCompatiblePatch(
   }
 
   return patch;
+}
+
+// streamingCompatiblePatch can silently flip streaming-coupled fields. Surface a
+// toast when it does, so the indirect setters (split / eval-split / max-steps /
+// eval-steps) match setDatasetStreaming's "tell the user what changed" behavior.
+function notifyStreamingCompat(patch: Partial<TrainingConfigState>): void {
+  if (patch.datasetStreaming === false) {
+    toast.info("Streaming turned off: streaming needs a fixed Max Steps > 0.");
+    return;
+  }
+  const disabled = [
+    patch.trainOnCompletions === false && "assistant-completions-only",
+    patch.evalSteps === 0 && "evaluation (needs a separate eval split)",
+  ].filter(Boolean);
+  if (disabled.length > 0) {
+    toast.info(
+      `Adjusted for streaming. Disabled incompatible options: ${disabled.join(", ")}.`,
+    );
+  }
 }
 
 type TrainingMethodStatePatch = Partial<
@@ -678,14 +698,16 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         setDatasetSplit: (datasetSplit) => {
           const state = get();
           const nextState = { ...state, datasetSplit };
+          const streamingPatch = streamingCompatiblePatch(nextState);
           set({
             datasetSplit,
             datasetManualMapping: emptyManualMapping(),
             isDatasetImage: null,
             isDatasetAudio: false,
             isCheckingDataset: false,
-            ...streamingCompatiblePatch(nextState),
+            ...streamingPatch,
           });
+          notifyStreamingCompat(streamingPatch);
 
           const datasetName =
             state.datasetSource === "huggingface"
@@ -712,11 +734,17 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         setDatasetEvalSplit: (datasetEvalSplit) => {
           const state = get();
           const evalSteps = datasetEvalSplit ? 0.1 : 0;
+          const streamingPatch = streamingCompatiblePatch({
+            ...state,
+            datasetEvalSplit,
+            evalSteps,
+          });
           set({
             datasetEvalSplit,
             evalSteps,
-            ...streamingCompatiblePatch({ ...state, datasetEvalSplit, evalSteps }),
+            ...streamingPatch,
           });
+          notifyStreamingCompat(streamingPatch);
         },
         setDatasetStreaming: (datasetStreaming) => {
           if (!datasetStreaming) {
@@ -816,19 +844,24 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         setWarmupSteps: (warmupSteps) => set({ warmupSteps }),
         setMaxSteps: (maxSteps) => {
           const state = get();
+          // streamingCompatiblePatch already turns streaming off when maxSteps<=0,
+          // so no separate datasetStreaming reset is needed here.
+          const streamingPatch = streamingCompatiblePatch({ ...state, maxSteps });
           set({
             maxSteps,
-            ...(maxSteps > 0 ? {} : { datasetStreaming: false }),
-            ...streamingCompatiblePatch({ ...state, maxSteps }),
+            ...streamingPatch,
           });
+          notifyStreamingCompat(streamingPatch);
         },
         setSaveSteps: (saveSteps) => set({ saveSteps }),
         setEvalSteps: (evalSteps) => {
           const state = get();
+          const streamingPatch = streamingCompatiblePatch({ ...state, evalSteps });
           set({
             evalSteps,
-            ...streamingCompatiblePatch({ ...state, evalSteps }),
+            ...streamingPatch,
           });
+          notifyStreamingCompat(streamingPatch);
         },
         setPacking: (packing) => set({ packing }),
         setTrainOnCompletions: (trainOnCompletions) => {
@@ -886,7 +919,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
     },
     {
       name: "unsloth_training_config_v1",
-      version: 10,
+      version: 11,
       migrate: (persisted, version) => {
         const s = persisted as Record<string, unknown>;
         if (version < 2 && s.datasetSubset == null && s.datasetConfig != null) {
@@ -922,19 +955,22 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             s.weightDecay = DEFAULT_HYPERPARAMS.weightDecay;
           }
         }
-        if (version < 10) {
-          s.datasetStreaming ??= false;
-          if (s.trainingMethod === "cpt") {
-            // Backfill CPT defaults for state persisted before they existed.
-            s.loraRank = 128;
-            s.loraAlpha = 32;
-            s.loraVariant = "rslora";
-            s.targetModules = CPT_TARGET_MODULES;
-            s.datasetFormat = "raw";
-            if (s.learningRate == null || s.learningRate === LR_DEFAULT_LORA) {
-              s.learningRate = LR_DEFAULT_CPT;
-            }
+        if (version < 10 && s.trainingMethod === "cpt") {
+          // Backfill CPT defaults for state persisted before they existed.
+          s.loraRank = 128;
+          s.loraAlpha = 32;
+          s.loraVariant = "rslora";
+          s.targetModules = CPT_TARGET_MODULES;
+          s.datasetFormat = "raw";
+          if (s.learningRate == null || s.learningRate === LR_DEFAULT_LORA) {
+            s.learningRate = LR_DEFAULT_CPT;
           }
+        }
+        if (version < 11) {
+          // Standalone bump: users already on main's v10 (CPT) skipped the
+          // streaming backfill when it was nested under v<10, so give it its
+          // own version guard.
+          s.datasetStreaming ??= false;
         }
         return s as unknown as TrainingConfigStore;
       },

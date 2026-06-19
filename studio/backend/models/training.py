@@ -28,6 +28,10 @@ _MAX_LORA_ALPHA = 32_768
 _MIN_VISION_IMAGE_SIZE = 256
 # 2048 was the most I could get most llms to work at without getting unstable
 _MAX_VISION_IMAGE_SIZE = 2048
+# Upper bound for dataset slice indices. Caps `.skip(n)` on streaming datasets so
+# an absurd index can't make the loader iterate effectively forever (DoS guard).
+# 1e9 is far beyond any realistic fine-tuning dataset row count.
+_MAX_DATASET_SLICE_INDEX = 1_000_000_000
 
 
 def _parse_lr(v: Any) -> float:
@@ -103,11 +107,13 @@ class TrainingStartRequest(BaseModel):
     dataset_slice_start: Optional[int] = Field(
         None,
         ge = 0,
+        le = _MAX_DATASET_SLICE_INDEX,
         description = "Inclusive start row index for dataset slicing",
     )
     dataset_slice_end: Optional[int] = Field(
         None,
         ge = 0,
+        le = _MAX_DATASET_SLICE_INDEX,
         description = "Inclusive end row index for dataset slicing",
     )
 
@@ -119,6 +125,9 @@ class TrainingStartRequest(BaseModel):
             values.setdefault("train_split", values.pop("split"))
         return values
 
+    # NOTE: pydantic runs all `mode="after"` validators in definition order. A
+    # second one, `_check_steps_or_epochs`, is defined lower in this class; keep
+    # these cross-field checks order-independent so the two stay decoupled.
     @model_validator(mode = "after")
     def _validate_dataset_slice(self) -> "TrainingStartRequest":
         # Only the ordering is validated here. No upper bound is enforced on the
@@ -135,6 +144,52 @@ class TrainingStartRequest(BaseModel):
                 "dataset_slice_end must be greater than or equal to dataset_slice_start"
             )
         return self
+
+    @field_validator("hf_dataset")
+    @classmethod
+    def _check_hf_dataset(cls, v: Optional[str]) -> Optional[str]:
+        # Constrain the HF dataset id to a safe charset + length to shrink the
+        # path-traversal / SSRF surface of `load_dataset(<id>, ...)`.
+        if v is None:
+            return v
+        v = v.strip()
+        if not v:
+            return None
+        if len(v) > 256:
+            raise ValueError("hf_dataset is too long (max 256 chars)")
+        if ".." in v:
+            raise ValueError("hf_dataset must not contain '..'")
+        if not re.fullmatch(r"[A-Za-z0-9._\-/]+", v):
+            raise ValueError(
+                "hf_dataset may only contain letters, digits, '_', '-', '.', '/'"
+            )
+        return v
+
+    @field_validator("subset")
+    @classmethod
+    def _check_subset(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        if len(v) > 128:
+            raise ValueError("subset is too long (max 128 chars)")
+        if not re.fullmatch(r"[A-Za-z0-9._\-]*", v):
+            raise ValueError("subset may only contain letters, digits, '_', '-', '.'")
+        return v
+
+    @field_validator("train_split", "eval_split")
+    @classmethod
+    def _check_split_name(cls, v: Optional[str]) -> Optional[str]:
+        # Split names feed HF slice syntax (e.g. "train[:80%]"), so allow that
+        # charset but cap length and block path-traversal / NUL bytes.
+        if v is None:
+            return v
+        if len(v) > 128:
+            raise ValueError("split name is too long (max 128 chars)")
+        if "\x00" in v or ".." in v or "/" in v or "\\" in v:
+            raise ValueError("split name contains invalid characters")
+        if not re.fullmatch(r"[A-Za-z0-9_\-\[\]:%.+ ]*", v):
+            raise ValueError("split name contains invalid characters")
+        return v
 
     @field_validator("learning_rate", mode = "before")
     @classmethod

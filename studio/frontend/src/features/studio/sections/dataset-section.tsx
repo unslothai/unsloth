@@ -46,6 +46,8 @@ import {
   useTrainingConfigStore,
   type LocalDatasetInfo,
 } from "@/features/training";
+// Imported directly from the store module rather than the "@/features/training"
+// barrel to avoid an import cycle (the barrel re-exports this section's siblings).
 import { hasSeparateStreamingEvalSplit } from "@/features/training/stores/training-config-store";
 import { useNavigate } from "@tanstack/react-router";
 import {
@@ -225,6 +227,12 @@ export function DatasetSection() {
     maxSteps > 0 &&
     !trainOnCompletions &&
     hasSeparateStreamingEvalSplit({ evalSteps, datasetSplit, datasetEvalSplit }) &&
+    // Raw-text / CPT mode preprocesses via a finite-length code path
+    // (prepare_raw_text_dataset -> len(dataset)) that crashes on an
+    // IterableDataset, so streaming is unsupported there. CPT always forces
+    // datasetFormat="raw", so this single check covers both cases; the backend
+    // also rejects format_type=="raw" / Continued Pretraining defensively.
+    datasetFormat !== "raw" &&
     !isVisionModel &&
     !isAudioModel &&
     !isDatasetImage &&
