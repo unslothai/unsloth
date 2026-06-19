@@ -657,10 +657,27 @@ def detect_reasoning_flags(
     return flags
 
 
+# Gemma model families known to ship separate MTP drafters.
+_GEMMA_MTP_FAMILY_RE = re.compile(
+    r"gemma[-_]?(?:3n|4)[-_]", re.IGNORECASE
+)
+
+
+def _is_gemma_mtp_family(name: str) -> bool:
+    """True if the name matches a Gemma family known to ship MTP drafters."""
+    return bool(_GEMMA_MTP_FAMILY_RE.search(name))
+
+
 def _is_mtp_model_name(model_identifier: Optional[str], gguf_path: Optional[str] = None) -> bool:
     """Name-based MTP detector. Fallback for the metadata signal."""
     for cand in (model_identifier, Path(gguf_path).name if gguf_path else None):
         if cand and "-mtp" in cand.lower():
+            return True
+        # Gemma 3n/4 families ship MTP via a separate drafter (mtp-*.gguf)
+        # and don't embed "-mtp" in the main model name. Recognise them so
+        # is_mtp_model stays True even when the drafter download fails,
+        # allowing the user to see a fallback reason instead of silent default.
+        if cand and _is_gemma_mtp_family(cand):
             return True
     return False
 
@@ -6313,13 +6330,54 @@ class LlamaCppBackend:
         # effective_mode == "auto": the promotion path. llama.cpp #22673:
         # MTP is compatible with mmproj, so there's no vision gate.
         if is_mtp_model and not _mtp_too_small:
-            # GPU: MTP-only. CPU/Mac: chain ngram-mod + MTP.
-            _emit_mtp(chain_ngram = not gpus)
+            # Can we actually emit MTP? Need either an embedded head or a
+            # separate drafter. A Gemma name match with no drafter means
+            # the download failed — fall back to ngram-mod with a reason.
+            _has_mtp_capability = True
+            if _is_gemma_mtp_family(model_identifier) and not mtp_draft_path:
+                _has_mtp_capability = False
+            
+            if _has_mtp_capability:
+                # GPU: MTP-only. CPU/Mac: chain ngram-mod + MTP.
+                _emit_mtp(chain_ngram = not gpus)
+            else:
+                # Name says MTP but no head/drafter resolved. The download
+                # silently failed or the repo lacks a root-level mtp-*.gguf.
+                logger.warning(
+                    "Model is recognised as MTP-capable (%s) but no MTP head "
+                    "or drafter was found; falling back to ngram-mod. Check "
+                    "network connectivity or run `unsloth studio update`.",
+                    model_identifier,
+                )
+                _small_caps = self.probe_server_capabilities(binary)
+                if _small_caps.get("supports_ngram_mod"):
+                    _emit_ngram_mod()
+                else:
+                    flags.append("--spec-default")
+                    self._speculative_type = "default"
+                self._spec_fallback_reason = "drafter_not_found"
         elif is_mtp_model and _mtp_too_small:
             # Sub-3B fallback: drop the MTP draft head, keep ngram-mod when
             # the binary supports it.
+            _has_mtp_capability = True
+            if _is_gemma_mtp_family(model_identifier) and not mtp_draft_path:
+                _has_mtp_capability = False
+            
             _small_caps = self.probe_server_capabilities(binary)
-            if _small_caps.get("supports_ngram_mod"):
+            if not _has_mtp_capability:
+                logger.warning(
+                    "Model is recognised as MTP-capable (%s) but no MTP head "
+                    "or drafter was found; falling back to ngram-mod. Check "
+                    "network connectivity or run `unsloth studio update`.",
+                    model_identifier,
+                )
+                if _small_caps.get("supports_ngram_mod"):
+                    _emit_ngram_mod()
+                else:
+                    flags.append("--spec-default")
+                    self._speculative_type = "default"
+                self._spec_fallback_reason = "drafter_not_found"
+            elif _small_caps.get("supports_ngram_mod"):
                 logger.info(
                     f"MTP GGUF detected but model size {_mtp_size_b:.1f}B "
                     "is below the 3B speedup threshold; using ngram-mod "

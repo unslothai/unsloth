@@ -1376,6 +1376,8 @@ _REAL_REPO_MATRIX = [
 
 def _resolve_real(monkeypatch, repo, drafter, mode):
     backend = _resolver_backend(monkeypatch)
+    if "qwen" in repo.lower() and "-mtp" in repo.lower():
+        backend._nextn_predict_layers = 1
     flags = backend._build_speculative_flags(
         speculative_type = mode,
         spec_draft_n_max = None,
@@ -1566,3 +1568,32 @@ def test_spec_fallback_reason_reset_on_off(monkeypatch):
         binary = "/fake/llama-server",
     )
     assert backend.spec_fallback_reason is None
+
+
+def test_is_gemma_mtp_family():
+    from core.inference.llama_cpp import _is_gemma_mtp_family
+
+    assert _is_gemma_mtp_family("unsloth/gemma-4-E4B-it-GGUF") is True
+    assert _is_gemma_mtp_family("unsloth/gemma-3n-E2B-it-GGUF") is True
+    assert _is_gemma_mtp_family("unsloth/Qwen3.5-35B-A3B-MTP-GGUF") is False
+    assert _is_gemma_mtp_family("unsloth/llama-3-8b") is False
+
+
+def test_spec_fallback_reason_drafter_not_found(monkeypatch):
+    # A Gemma MTP model that fails to resolve its drafter should fall back
+    # to ngram-mod and set drafter_not_found.
+    backend = _resolver_backend(monkeypatch)
+    flags = backend._build_speculative_flags(
+        speculative_type="auto",
+        spec_draft_n_max=None,
+        extra_args=None,
+        model_identifier="unsloth/gemma-4-E4B-it-GGUF",
+        model_path=None,
+        gpus=True,
+        binary="/fake/llama-server",
+        mtp_draft_path=None,  # Drafter download failed
+    )
+    parsed = _flags_dict(flags)
+    assert parsed.get("--spec-type") == "ngram-mod"
+    assert backend.speculative_type == "ngram-mod"
+    assert backend.spec_fallback_reason == "drafter_not_found"
