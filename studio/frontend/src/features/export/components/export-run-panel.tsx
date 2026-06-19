@@ -521,7 +521,7 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
                     </span>
                   </div>
                 ) : (
-                  <pre className="whitespace-pre-wrap break-words">
+                  <div className="whitespace-pre-wrap break-words">
                     {run.logLines.map((entry, idx) => (
                       <div
                         key={idx}
@@ -530,7 +530,7 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
                         {formatLogLine(entry)}
                       </div>
                     ))}
-                  </pre>
+                  </div>
                 )}
               </div>
             </div>
