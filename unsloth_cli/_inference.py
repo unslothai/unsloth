@@ -281,12 +281,23 @@ def _is_studio_health(body) -> bool:
     )
 
 
+def _is_loopback(host: str) -> bool:
+    import ipaddress
+
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
 def find_studio_server(timeout: float = 3.0) -> Optional[str]:
     import json
     import urllib.request
+    from urllib.parse import urlparse
 
-    url_override = os.environ.get("UNSLOTH_STUDIO_URL")
-    base = (url_override or "http://127.0.0.1:8888").rstrip("/")
+    base = (os.environ.get("UNSLOTH_STUDIO_URL") or "http://127.0.0.1:8888").rstrip("/")
     request = urllib.request.Request(f"{base}/api/health", headers = {"User-Agent": _USER_AGENT})
     try:
         with urllib.request.urlopen(request, timeout = timeout) as response:
@@ -295,7 +306,7 @@ def find_studio_server(timeout: float = 3.0) -> Optional[str]:
         return None
     if not _is_studio_health(body):
         return None
-    if url_override is None:
+    if _is_loopback(urlparse(base).hostname or ""):
         install_id = _local_studio_install_id()
         if install_id is not None and body.get("studio_root_id") != install_id:
             return None

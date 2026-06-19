@@ -350,14 +350,35 @@ def test_find_studio_server_honors_explicit_remote_url(monkeypatch):
 
     from unsloth_cli import _inference
 
-    # Explicit URL = user intent (e.g. RunPod proxy); a remote id won't match a
-    # local one, so the install-id gate must not apply.
+    # Remote (non-loopback) Studio, e.g. a RunPod proxy: its install id won't
+    # match a local one, so the id gate must not apply to remote hosts.
     monkeypatch.setenv("UNSLOTH_STUDIO_URL", "https://studio.example.com")
     monkeypatch.setattr(_inference, "_local_studio_install_id", lambda: "a" * 64)
     monkeypatch.setattr(
         urllib.request, "urlopen", lambda *a, **k: _FakeHealth(_healthy_body("b" * 64))
     )
     assert _inference.find_studio_server() == "https://studio.example.com"
+
+
+def test_find_studio_server_checks_id_on_explicit_loopback_port(monkeypatch):
+    import urllib.request
+
+    from unsloth_cli import _inference
+
+    # A custom *local* port still gets the id check: a squatter on 127.0.0.1:9000
+    # must not receive credentials just because UNSLOTH_STUDIO_URL is set.
+    monkeypatch.setenv("UNSLOTH_STUDIO_URL", "http://127.0.0.1:9000")
+    monkeypatch.setattr(_inference, "_local_studio_install_id", lambda: "a" * 64)
+    monkeypatch.setattr(
+        urllib.request, "urlopen", lambda *a, **k: _FakeHealth(_healthy_body("b" * 64))
+    )
+    assert _inference.find_studio_server() is None
+
+    # The real local Studio on that port (matching id) is still adopted.
+    monkeypatch.setattr(
+        urllib.request, "urlopen", lambda *a, **k: _FakeHealth(_healthy_body("a" * 64))
+    )
+    assert _inference.find_studio_server() == "http://127.0.0.1:9000"
 
 
 def test_connect_studio_server_does_not_issue_token_for_unverified_health(monkeypatch):
