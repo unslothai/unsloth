@@ -4748,7 +4748,7 @@ async def openai_chat_completions(
                     finally:
                         _tracker.__exit__(None, None, None)
 
-                return StreamingResponse(
+                return _SameTaskStreamingResponse(
                     audio_input_stream(),
                     media_type = "text/event-stream",
                     headers = {
@@ -5239,7 +5239,7 @@ async def openai_chat_completions(
                             pass
                     _tracker.__exit__(None, None, None)
 
-            return StreamingResponse(
+            return _SameTaskStreamingResponse(
                 gguf_tool_stream(),
                 media_type = "text/event-stream",
                 headers = {
@@ -5393,7 +5393,7 @@ async def openai_chat_completions(
                 finally:
                     _tracker.__exit__(None, None, None)
 
-            return StreamingResponse(
+            return _SameTaskStreamingResponse(
                 gguf_stream_chunks(),
                 media_type = "text/event-stream",
                 headers = {
@@ -5842,7 +5842,7 @@ async def openai_chat_completions(
                 _sf_tracker.__exit__(None, None, None)
 
         if payload.stream:
-            return StreamingResponse(
+            return _SameTaskStreamingResponse(
                 sf_tool_stream(),
                 media_type = "text/event-stream",
                 headers = {
@@ -6062,7 +6062,7 @@ async def openai_chat_completions(
             finally:
                 _tracker.__exit__(None, None, None)
 
-        return StreamingResponse(
+        return _SameTaskStreamingResponse(
             stream_chunks(),
             media_type = "text/event-stream",
             headers = {
@@ -9547,7 +9547,7 @@ async def _openai_passthrough_stream(
                 except Exception:
                     pass
                 _tracker.__exit__(None, None, None)
-                return StreamingResponse(
+                return _SameTaskStreamingResponse(
                     iter(()),
                     media_type = "text/event-stream",
                     headers = {
@@ -9598,6 +9598,26 @@ async def _openai_passthrough_stream(
                 _await_disconnect_then_close(request, resp, cancel_event)
             )
             monitor_done = False
+            saw_finish_reason = False
+            saw_done = False
+            last_chunk_id = completion_id
+            last_chunk_model = model_name
+            last_chunk_created = int(time.time())
+
+            def _synthetic_finish_line() -> str:
+                chunk = ChatCompletionChunk(
+                    id = last_chunk_id,
+                    created = last_chunk_created,
+                    model = last_chunk_model,
+                    choices = [
+                        ChunkChoice(
+                            delta = ChoiceDelta(),
+                            finish_reason = "stop",
+                        )
+                    ],
+                )
+                return f"data: {chunk.model_dump_json(exclude_none = True)}"
+
             try:
                 lines_iter = resp.aiter_lines()
                 async for raw_line in _aiter_llama_stream_items(
@@ -9611,6 +9631,37 @@ async def _openai_passthrough_stream(
                         continue
                     if not raw_line.startswith("data: "):
                         continue
+                    data_text = raw_line[6:].strip()
+                    if data_text == "[DONE]":
+                        saw_done = True
+                        if not saw_finish_reason and not cancel_event.is_set():
+                            finish_line = _synthetic_finish_line()
+                            _monitor_openai_sse_line(
+                                monitor_id,
+                                finish_line,
+                                llama_backend.context_length,
+                            )
+                            yield finish_line + "\n\n"
+                            saw_finish_reason = True
+                        yield raw_line + "\n\n"
+                        monitor_done = True
+                        break
+                    try:
+                        chunk_data = json.loads(data_text)
+                    except json.JSONDecodeError:
+                        chunk_data = None
+                    if isinstance(chunk_data, dict):
+                        if isinstance(chunk_data.get("id"), str):
+                            last_chunk_id = chunk_data["id"]
+                        if isinstance(chunk_data.get("model"), str):
+                            last_chunk_model = chunk_data["model"]
+                        if isinstance(chunk_data.get("created"), int):
+                            last_chunk_created = chunk_data["created"]
+                        choices = chunk_data.get("choices")
+                        if isinstance(choices, list) and choices:
+                            choice = choices[0]
+                            if isinstance(choice, dict) and choice.get("finish_reason"):
+                                saw_finish_reason = True
                     # Honor parallel_tool_calls=false (best-effort): drop tool_call
                     # deltas with index>=1 so only the first call streams. Only
                     # lines carrying tool_calls are reparsed; everything else is
@@ -9625,9 +9676,19 @@ async def _openai_passthrough_stream(
                     # Relay verbatim to preserve llama-server's native id,
                     # finish_reason, delta.tool_calls, and usage chunks.
                     yield raw_line + "\n\n"
-                    if monitor_event == "done" or raw_line[6:].strip() == "[DONE]":
+                    if monitor_event == "done":
                         monitor_done = True
                         break
+                if not saw_done and not saw_finish_reason and not cancel_event.is_set():
+                    finish_line = _synthetic_finish_line()
+                    _monitor_openai_sse_line(
+                        monitor_id,
+                        finish_line,
+                        llama_backend.context_length,
+                    )
+                    yield finish_line + "\n\n"
+                    yield "data: [DONE]\n\n"
+                    monitor_done = True
                 if not monitor_done:
                     api_monitor.finish(
                         monitor_id,
@@ -9680,7 +9741,7 @@ async def _openai_passthrough_stream(
                     pass
                 _tracker.__exit__(None, None, None)
 
-        return StreamingResponse(
+        return _SameTaskStreamingResponse(
             _stream(),
             media_type = "text/event-stream",
             headers = {

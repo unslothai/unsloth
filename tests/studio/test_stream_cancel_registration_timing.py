@@ -146,24 +146,42 @@ def test_async_generators_cleanup_tracker_in_finally():
     )
 
 
-def test_streaming_responses_have_no_background_task():
-    top = None
-    for n in ast.walk(_TREE):
-        if isinstance(n, ast.AsyncFunctionDef) and n.name == "openai_chat_completions":
-            top = n
-            break
-    assert top is not None
+def test_chat_completions_streams_avoid_starlette_task_group():
+    top = _async_function("openai_chat_completions")
+    legacy_calls = []
+    same_task_calls = 0
     for sub in ast.walk(top):
         if not (isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name)):
             continue
-        if sub.func.id != "StreamingResponse":
+        if sub.func.id == "StreamingResponse":
+            legacy_calls.append(sub.lineno)
+        if sub.func.id == "_SameTaskStreamingResponse":
+            same_task_calls += 1
+    assert not legacy_calls, (
+        "Streaming /v1/chat/completions must use _SameTaskStreamingResponse, "
+        "not Starlette's legacy task-group StreamingResponse. Lines: "
+        f"{legacy_calls}"
+    )
+    assert same_task_calls >= 5
+
+
+def test_openai_passthrough_stream_avoids_starlette_task_group():
+    top = _async_function("_openai_passthrough_stream")
+    legacy_calls = []
+    same_task_calls = 0
+    for sub in ast.walk(top):
+        if not (isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name)):
             continue
-        kwargs = {kw.arg for kw in sub.keywords if kw.arg}
-        assert "background" not in kwargs, (
-            "StreamingResponse in openai_chat_completions must not pass "
-            "`background=` -- cleanup now lives in the generator's finally "
-            "block; a BackgroundTask would be skipped on abrupt disconnect"
-        )
+        if sub.func.id == "StreamingResponse":
+            legacy_calls.append(sub.lineno)
+        if sub.func.id == "_SameTaskStreamingResponse":
+            same_task_calls += 1
+    assert not legacy_calls, (
+        "OpenAI passthrough streams must use _SameTaskStreamingResponse, "
+        "not Starlette's legacy task-group StreamingResponse. Lines: "
+        f"{legacy_calls}"
+    )
+    assert same_task_calls >= 2
 
 
 def test_direct_llama_server_streams_install_disconnect_watcher():
