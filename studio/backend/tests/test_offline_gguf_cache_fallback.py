@@ -3,29 +3,14 @@
 
 """Regression tests for the offline GGUF cache fallback path (#5505).
 
-Three failure modes hit users when ``huggingface.co`` is unreachable
-but the requested GGUF repo is fully cached locally:
+When ``huggingface.co`` is unreachable but the repo is cached, three failures
+hit: ``list_gguf_variants`` 500'd (empty dropdown), ``detect_gguf_model_remote``
+returned None (GGUF-only repo misrouted), and ``_download_gguf`` synthesised a
+name absent from cache. Follow-ups: the cache filter matches the snapshot-relative
+path (subdir layouts findable), and DNS auto-detect scopes ``HF_HUB_OFFLINE`` to
+one load so a transient hiccup can't pin the singleton offline.
 
-* ``list_gguf_variants`` raised through ``HTTPException(500)`` so the
-  variant dropdown sat empty.
-* ``detect_gguf_model_remote`` returned ``None`` so a GGUF-only repo
-  was misrouted into the transformers/Unsloth backend (on macOS this
-  surfaced as a hardware error).
-* ``_download_gguf`` fell back to a synthetic ``{repo}-{variant}.gguf``
-  name that did not exist in cache when the in-repo filename did not
-  echo the repo name (e.g. ``unsloth/Qwen3.6-27B-MTP-GGUF`` ships
-  ``Qwen3.6-27B-UD-Q4_K_XL.gguf`` with no ``MTP`` token).
-
-Two follow-up regressions covered here:
-
-* P1 #1: the cache-side variant filter must match the snapshot-relative
-  path, not just the basename, so subdir layouts like
-  ``BF16/foo.gguf`` are findable.
-* P1 #2: the DNS auto-detect must scope ``HF_HUB_OFFLINE`` to one load
-  via try/finally so a transient resolver hiccup cannot lock the
-  long-lived ``LlamaCppBackend`` singleton offline forever.
-
-No GPU, no network, no subprocess. Linux, macOS, Windows compatible.
+No GPU, no network, no subprocess. Linux/macOS/Windows compatible.
 """
 
 from __future__ import annotations
@@ -44,8 +29,8 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-# Stub heavy/unavailable external deps before importing the modules
-# under test (same pattern as other studio backend tests).
+# Stub heavy/unavailable external deps before importing the modules under
+# test (same pattern as other studio backend tests).
 _loggers_stub = _types.ModuleType("loggers")
 _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
 sys.modules.setdefault("loggers", _loggers_stub)
@@ -94,6 +79,7 @@ from huggingface_hub import constants as hf_constants
 
 from core.inference.llama_cpp import (
     LlamaCppBackend,
+    _gguf_files_for_variant,
     _hf_offline_if_dns_dead,
     _probe_dns_dead,
 )
@@ -145,12 +131,160 @@ def clean_offline_env(monkeypatch):
     monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
 
 
+class TestGgufVariantFileResolution:
+    def test_prefers_exact_unknown_variant_over_big_endian_sibling(self):
+        files = [
+            "tinyllamas/stories260K-be.gguf",
+            "tinyllamas/stories260K-infill.gguf",
+            "tinyllamas/stories260K.gguf",
+        ]
+
+        assert _gguf_files_for_variant(files, "stories260K") == ["tinyllamas/stories260K.gguf"]
+
+    @pytest.mark.parametrize(
+        "big_endian_path",
+        [
+            "model-Q4_K_M-be.gguf",
+            "model-Q4_K_M_be.gguf",
+            "model-Q4_K_M_be_infill.gguf",
+            r"nested\model-Q4_K_M_be.gguf",
+        ],
+    )
+    def test_filters_big_endian_known_quant_before_exact_match(self, big_endian_path):
+        files = [
+            big_endian_path,
+            "model-Q4_K_M.gguf",
+        ]
+
+        assert _gguf_files_for_variant(files, "Q4_K_M") == ["model-Q4_K_M.gguf"]
+
+    def test_keeps_model_name_be_token_before_quant(self):
+        files = [
+            "foo-be-Q4_K_M.gguf",
+        ]
+
+        assert _gguf_files_for_variant(files, "Q4_K_M") == ["foo-be-Q4_K_M.gguf"]
+
+    def test_keeps_model_name_be_token_with_quant_subdir(self):
+        files = [
+            "Q4_K_M/foo-be.gguf",
+        ]
+
+        assert _gguf_files_for_variant(files, "Q4_K_M") == ["Q4_K_M/foo-be.gguf"]
+
+    def test_empty_variant_filters_big_endian_files(self):
+        files = [
+            "model-Q4_K_M-be.gguf",
+            "model-Q4_K_M.gguf",
+        ]
+
+        assert _gguf_files_for_variant(files, "") == ["model-Q4_K_M.gguf"]
+
+    def test_remote_listing_skips_big_endian_quant_sibling(self, monkeypatch, clean_offline_env):
+        siblings = [
+            _types.SimpleNamespace(rfilename = "model-Q4_K_M-be.gguf", size = 100),
+            _types.SimpleNamespace(rfilename = "model-Q4_K_M.gguf", size = 10),
+        ]
+        monkeypatch.setattr(
+            "huggingface_hub.model_info",
+            lambda *_args, **_kwargs: _types.SimpleNamespace(siblings = siblings),
+        )
+
+        variants, has_vision = list_gguf_variants("org/repo")
+
+        assert has_vision is False
+        assert [(v.quant, v.filename, v.size_bytes) for v in variants] == [
+            ("Q4_K_M", "model-Q4_K_M.gguf", 10)
+        ]
+
+    def test_download_uses_exact_variant_label(self, monkeypatch, tmp_path):
+        backend = LlamaCppBackend()
+        downloaded: list[str] = []
+
+        def fake_get_paths_info(
+            _repo_id,
+            paths,
+            token = None,
+        ):
+            return [_types.SimpleNamespace(path = path, size = 1) for path in paths if path is not None]
+
+        def fake_download(
+            repo_id,
+            filename,
+            token = None,
+            **_kwargs,
+        ):
+            downloaded.append(filename)
+            return f"/fake/{repo_id}/{filename}"
+
+        monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
+        with (
+            patch(
+                "huggingface_hub.list_repo_files",
+                lambda *_a, **_k: [
+                    "tinyllamas/stories260K-be.gguf",
+                    "tinyllamas/stories260K-infill.gguf",
+                    "tinyllamas/stories260K.gguf",
+                ],
+            ),
+            patch("huggingface_hub.get_paths_info", fake_get_paths_info),
+            patch("huggingface_hub.try_to_load_from_cache", lambda *_a, **_k: None),
+            patch("core.inference.llama_cpp.hf_hub_download_with_xet_fallback", fake_download),
+        ):
+            out = backend._download_gguf(
+                hf_repo = "ggml-org/models",
+                hf_variant = "stories260K",
+            )
+
+        assert downloaded == ["tinyllamas/stories260K.gguf"]
+        assert out == "/fake/ggml-org/models/tinyllamas/stories260K.gguf"
+
+    def test_download_includes_uppercase_split_gguf_shards(self, monkeypatch, tmp_path):
+        backend = LlamaCppBackend()
+        downloaded: list[str] = []
+
+        files = [
+            "model-Q4_K_M-00001-of-00002.GGUF",
+            "model-Q4_K_M-00002-of-00002.GGUF",
+        ]
+
+        def fake_get_paths_info(
+            _repo_id,
+            paths,
+            token = None,
+        ):
+            return [_types.SimpleNamespace(path = path, size = 1) for path in paths if path is not None]
+
+        def fake_download(
+            repo_id,
+            filename,
+            token = None,
+            **_kwargs,
+        ):
+            downloaded.append(filename)
+            return f"/fake/{repo_id}/{filename}"
+
+        monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
+        with (
+            patch("huggingface_hub.list_repo_files", lambda *_a, **_k: files),
+            patch("huggingface_hub.get_paths_info", fake_get_paths_info),
+            patch("huggingface_hub.try_to_load_from_cache", lambda *_a, **_k: None),
+            patch("core.inference.llama_cpp.hf_hub_download_with_xet_fallback", fake_download),
+        ):
+            out = backend._download_gguf(
+                hf_repo = "org/repo",
+                hf_variant = "Q4_K_M",
+            )
+
+        assert downloaded == files
+        assert out == "/fake/org/repo/model-Q4_K_M-00001-of-00002.GGUF"
+
+
 def _siblings(items: dict[str, int]):
     """Mock ``hf_model_info(...).siblings`` payload."""
     return _types.SimpleNamespace(
         siblings = [
-            _types.SimpleNamespace(rfilename = name, size = size)
-            for name, size in items.items()
+            _types.SimpleNamespace(rfilename = name, size = size) for name, size in items.items()
         ],
     )
 
@@ -174,12 +308,8 @@ class TestIterHfCacheSnapshots:
         assert list(_iter_hf_cache_snapshots("unsloth/bare")) == []
 
     def test_yields_newest_first(self, hf_cache):
-        old = _build_cache(
-            hf_cache, "unsloth/multi", {"x.gguf": 1}, snapshot_sha = "a" * 40
-        )
-        new = _build_cache(
-            hf_cache, "unsloth/multi", {"y.gguf": 1}, snapshot_sha = "b" * 40
-        )
+        old = _build_cache(hf_cache, "unsloth/multi", {"x.gguf": 1}, snapshot_sha = "a" * 40)
+        new = _build_cache(hf_cache, "unsloth/multi", {"y.gguf": 1}, snapshot_sha = "b" * 40)
         os.utime(old, (1000, 1000))
         os.utime(new, (2000, 2000))
         out = list(_iter_hf_cache_snapshots("unsloth/multi"))
@@ -187,7 +317,7 @@ class TestIterHfCacheSnapshots:
 
     def test_repo_id_match_is_case_insensitive(self, hf_cache):
         _build_cache(hf_cache, "unsloth/Foo-GGUF", {"Foo-Q4_K_M.gguf": 1})
-        # Lookup with a different casing of the org/name still resolves
+        # Lookup with different org/name casing still resolves
         out = list(_iter_hf_cache_snapshots("UNSLOTH/foo-gguf"))
         assert len(out) == 1
 
@@ -218,9 +348,7 @@ class TestListGgufVariantsFromCache:
 
 
 class TestListGgufVariantsOffline:
-    def test_offline_env_short_circuits_api(
-        self, hf_cache, clean_offline_env, monkeypatch
-    ):
+    def test_offline_env_short_circuits_api(self, hf_cache, clean_offline_env, monkeypatch):
         _build_cache(hf_cache, "unsloth/a", {"a-UD-Q4_K_XL.gguf": 1})
         monkeypatch.setenv("HF_HUB_OFFLINE", "1")
 
@@ -232,11 +360,7 @@ class TestListGgufVariantsOffline:
         assert len(variants) == 1
         assert variants[0].quant == "UD-Q4_K_XL"
 
-    def test_api_exception_falls_back_to_cache(
-        self,
-        hf_cache,
-        clean_offline_env,
-    ):
+    def test_api_exception_falls_back_to_cache(self, hf_cache, clean_offline_env):
         _build_cache(hf_cache, "unsloth/a", {"a-Q4_K_M.gguf": 1})
 
         def boom(*a, **k):
@@ -282,10 +406,8 @@ class TestDetectGgufFromCache:
         assert _detect_gguf_from_hf_cache("unsloth/a") == "a-UD-Q4_K_XL.gguf"
 
     def test_subdir_only_quant_resolves(self, hf_cache):
-        """P1 #1 regression: ``BF16/foo.gguf`` (quant only in directory).
-        Before the fix, the offline cache scan matched on basename and
-        missed this layout, falling through to the synthetic
-        ``{repo}-{variant}.gguf`` heuristic."""
+        """Regression: ``BF16/foo.gguf`` (quant only in directory). The pre-fix
+        cache scan matched on basename and missed this layout."""
         _build_cache(
             hf_cache,
             "unsloth/gpt-oss-20b-BF16",
@@ -296,18 +418,29 @@ class TestDetectGgufFromCache:
             out == "BF16/foo.gguf"
         ), f"subdir-only layout must resolve to relative path, got {out}"
 
+    def test_subdir_quant_keeps_be_model_name_token(self, hf_cache):
+        _build_cache(
+            hf_cache,
+            "unsloth/a",
+            {"Q4_K_M/foo-be.gguf": 1},
+        )
+        assert _detect_gguf_from_hf_cache("unsloth/a") == "Q4_K_M/foo-be.gguf"
+
+    def test_big_endian_only_cache_is_not_detected(self, hf_cache):
+        _build_cache(
+            hf_cache,
+            "unsloth/a",
+            {"model-Q4_K_M-be.gguf": 1},
+        )
+        assert _detect_gguf_from_hf_cache("unsloth/a") is None
+
     def test_returns_none_when_no_gguf(self, hf_cache):
         _build_cache(hf_cache, "unsloth/a", {"README.md": 10})
         assert _detect_gguf_from_hf_cache("unsloth/a") is None
 
 
 class TestDetectGgufModelRemoteOffline:
-    def test_offline_env_short_circuits_retries(
-        self,
-        hf_cache,
-        clean_offline_env,
-        monkeypatch,
-    ):
+    def test_offline_env_short_circuits_retries(self, hf_cache, clean_offline_env, monkeypatch):
         _build_cache(hf_cache, "unsloth/a", {"a-Q4_K_M.gguf": 1})
         monkeypatch.setenv("HF_HUB_OFFLINE", "1")
 
@@ -331,12 +464,19 @@ class TestDetectGgufModelRemoteOffline:
             out = detect_gguf_model_remote("unsloth/a")
         assert out == "a-Q4_K_M.gguf"
 
-    def test_repository_not_found_does_not_consult_cache(
-        self,
-        hf_cache,
-        clean_offline_env,
-    ):
-        # Cache has a file but the API explicitly says repo is gone.
+    def test_remote_big_endian_only_repo_is_not_detected(self, clean_offline_env, monkeypatch):
+        siblings = [
+            _types.SimpleNamespace(rfilename = "model-Q4_K_M-be.gguf"),
+        ]
+        monkeypatch.setattr(
+            "huggingface_hub.model_info",
+            lambda *_args, **_kwargs: _types.SimpleNamespace(siblings = siblings),
+        )
+
+        assert detect_gguf_model_remote("unsloth/a") is None
+
+    def test_repository_not_found_does_not_consult_cache(self, hf_cache, clean_offline_env):
+        # Cache has a file but the API says the repo is gone.
         _build_cache(hf_cache, "unsloth/a", {"a-Q4_K_M.gguf": 1})
 
         class RepositoryNotFoundError(Exception):
@@ -430,12 +570,7 @@ class TestHfOfflineIfDnsDead:
             assert did_set is False
             assert "HF_HUB_OFFLINE" not in os.environ
 
-    def test_user_set_hf_hub_offline_is_preserved(
-        self,
-        dns,
-        clean_offline_env,
-        monkeypatch,
-    ):
+    def test_user_set_hf_hub_offline_is_preserved(self, dns, clean_offline_env, monkeypatch):
         # User explicitly set offline before launching Studio.
         monkeypatch.setenv("HF_HUB_OFFLINE", "1")
         dns.fail()
@@ -445,12 +580,7 @@ class TestHfOfflineIfDnsDead:
         # Helper must not pop a variable it did not set.
         assert os.environ.get("HF_HUB_OFFLINE") == "1"
 
-    def test_user_set_transformers_offline_is_preserved(
-        self,
-        dns,
-        clean_offline_env,
-        monkeypatch,
-    ):
+    def test_user_set_transformers_offline_is_preserved(self, dns, clean_offline_env, monkeypatch):
         monkeypatch.setenv("TRANSFORMERS_OFFLINE", "1")
         dns.fail()
         with _hf_offline_if_dns_dead():
@@ -461,11 +591,7 @@ class TestHfOfflineIfDnsDead:
         # TRANSFORMERS_OFFLINE pre-existed -> preserved.
         assert os.environ.get("TRANSFORMERS_OFFLINE") == "1"
 
-    def test_exception_inside_block_still_restores_env(
-        self,
-        dns,
-        clean_offline_env,
-    ):
+    def test_exception_inside_block_still_restores_env(self, dns, clean_offline_env):
         dns.fail()
         with pytest.raises(RuntimeError, match = "boom"):
             with _hf_offline_if_dns_dead():
@@ -476,9 +602,8 @@ class TestHfOfflineIfDnsDead:
 
 
 class TestExtractQuantLabelSubdir:
-    """``_extract_quant_label`` must consider the parent directories when
-    the basename has no quant token. Subdir layouts like ``BF16/foo.gguf``
-    are documented in this codebase and surface through the cache scan."""
+    """``_extract_quant_label`` must consider parent dirs when the basename has
+    no quant token (subdir layouts like ``BF16/foo.gguf``)."""
 
     def test_quant_in_basename_unchanged(self):
         assert _extract_quant_label("BF16/foo-BF16.gguf") == "BF16"
@@ -491,22 +616,15 @@ class TestExtractQuantLabelSubdir:
         assert _extract_quant_label("UD-Q4_K_XL/weight.gguf") == "UD-Q4_K_XL"
 
     def test_deeper_nesting_picks_nearest_quant_dir(self):
-        # When multiple parent segments could match, prefer the one closest
-        # to the file (innermost). This matches how repos like
-        # ``models/MXFP4_MOE/foo.gguf`` are laid out.
+        # Multiple matching parents: prefer the innermost (closest to the file).
         assert _extract_quant_label("models/MXFP4_MOE/foo.gguf") == "MXFP4_MOE"
 
 
 class TestDownloadMmprojOfflineCacheFallback:
-    """``LlamaCppBackend._download_mmproj`` must resolve cached mmproj
-    GGUFs offline, same shape as ``_download_gguf``. Without this the
-    offline vision GGUF load path returns ``None`` even when the mmproj
-    is present in cache."""
+    """``_download_mmproj`` must resolve cached mmproj GGUFs offline, like
+    ``_download_gguf``; else the offline vision load returns None despite a cache hit."""
 
-    def test_cache_lookup_returns_cached_mmproj_when_list_repo_files_fails(
-        self,
-        hf_cache,
-    ):
+    def test_cache_lookup_returns_cached_mmproj_when_list_repo_files_fails(self, hf_cache):
         _build_cache(
             hf_cache,
             "unsloth/vision-GGUF",
@@ -520,13 +638,21 @@ class TestDownloadMmprojOfflineCacheFallback:
         def boom_list(*a, **k):
             raise OSError("offline")
 
-        def fake_download(*, repo_id, filename, token = None):
+        def fake_download(
+            repo_id,
+            filename,
+            token = None,
+            **kwargs,
+        ):
             # Echo back so the test can verify the cache-resolved filename
             return f"/fake/cache/{repo_id}/{filename}"
 
         with (
             patch("huggingface_hub.list_repo_files", boom_list),
-            patch("huggingface_hub.hf_hub_download", fake_download),
+            patch(
+                "core.inference.llama_cpp.hf_hub_download_with_xet_fallback",
+                fake_download,
+            ),
         ):
             out = backend._download_mmproj(
                 hf_repo = "unsloth/vision-GGUF",
@@ -551,13 +677,21 @@ class TestDownloadMmprojOfflineCacheFallback:
 
         captured = {}
 
-        def fake_download(*, repo_id, filename, token = None):
+        def fake_download(
+            repo_id,
+            filename,
+            token = None,
+            **kwargs,
+        ):
             captured["filename"] = filename
             return f"/fake/{filename}"
 
         with (
             patch("huggingface_hub.list_repo_files", boom_list),
-            patch("huggingface_hub.hf_hub_download", fake_download),
+            patch(
+                "core.inference.llama_cpp.hf_hub_download_with_xet_fallback",
+                fake_download,
+            ),
         ):
             backend._download_mmproj(
                 hf_repo = "unsloth/vision-GGUF",
@@ -586,7 +720,7 @@ class TestDownloadMmprojOfflineCacheFallback:
 
 class TestListLocalGgufVariantsSubdir:
     """Subdir layouts like ``BF16/foo.gguf`` and ``Q4_K_M/foo.gguf`` must
-    produce distinct quant labels, not collapse on basename."""
+    yield distinct quant labels, not collapse on basename."""
 
     def test_two_subdir_variants_do_not_collapse(self, tmp_path):
         from utils.models.model_config import list_local_gguf_variants
@@ -614,6 +748,49 @@ class TestListLocalGgufVariantsSubdir:
         out = _find_local_gguf_by_variant(str(tmp_path), "BF16")
         assert out is not None
         assert Path(out).name == "foo.gguf"
+
+    def test_find_local_gguf_by_variant_ignores_big_endian_sibling(self, tmp_path):
+        from utils.models.model_config import _find_local_gguf_by_variant
+
+        (tmp_path / "config.json").write_text("{}")
+        (tmp_path / "model-Q4_K_M-be.gguf").write_bytes(b"\0" * 10)
+        target = tmp_path / "model-Q4_K_M.gguf"
+        target.write_bytes(b"\0" * 20)
+
+        out = _find_local_gguf_by_variant(str(tmp_path), "Q4_K_M")
+        assert out == str(target.resolve())
+
+    def test_find_local_gguf_by_variant_skips_big_endian_only_match(self, tmp_path):
+        from utils.models.model_config import _find_local_gguf_by_variant
+
+        (tmp_path / "config.json").write_text("{}")
+        (tmp_path / "model-Q4_K_M-be.gguf").write_bytes(b"\0" * 10)
+
+        assert _find_local_gguf_by_variant(str(tmp_path), "Q4_K_M") is None
+
+    def test_model_config_variant_ignores_big_endian_sibling(self, tmp_path):
+        from utils.models.model_config import ModelConfig
+
+        (tmp_path / "config.json").write_text("{}")
+        (tmp_path / "model-Q4_K_M-be.gguf").write_bytes(b"\0" * 10)
+        target = tmp_path / "model-Q4_K_M.gguf"
+        target.write_bytes(b"\0" * 20)
+
+        config = ModelConfig.from_identifier(str(tmp_path), gguf_variant = "Q4_K_M")
+        assert config is not None
+        assert config.gguf_file == str(target.resolve())
+
+    def test_local_variant_listing_keeps_subdir_be_model_name_token(self, tmp_path):
+        from utils.models.model_config import list_local_gguf_variants
+
+        (tmp_path / "config.json").write_text("{}")
+        (tmp_path / "Q4_K_M").mkdir()
+        (tmp_path / "Q4_K_M" / "foo-be.gguf").write_bytes(b"\0" * 10)
+
+        variants, _ = list_local_gguf_variants(str(tmp_path))
+        assert [(v.quant, v.filename, v.size_bytes) for v in variants] == [
+            ("Q4_K_M", "Q4_K_M/foo-be.gguf", 10)
+        ]
 
 
 class TestListGgufVariantsPermanentErrors:
@@ -655,9 +832,7 @@ class TestListGgufVariantsPermanentErrors:
                 list_gguf_variants("u/gated-gguf")
         assert type(exc_info.value).__name__ == "GatedRepoError"
 
-    def test_transient_error_still_falls_back_to_cache(
-        self, hf_cache, clean_offline_env
-    ):
+    def test_transient_error_still_falls_back_to_cache(self, hf_cache, clean_offline_env):
         from utils.models.model_config import list_gguf_variants
 
         _build_cache(hf_cache, "u/transient-gguf", {"foo-Q4_K_M.gguf": 1})
@@ -671,12 +846,11 @@ class TestListGgufVariantsPermanentErrors:
 
 
 class TestDetectGgufFromCacheExcludesMmproj:
-    """A partial cache with only a vision projector must not route the
-    projector as the main model."""
+    """A partial cache with only a vision projector must not route it as
+    the main model."""
 
     def test_mmproj_only_returns_none(self, hf_cache):
         from utils.models.model_config import _detect_gguf_from_hf_cache
-
         _build_cache(
             hf_cache,
             "u/vision-only-mmproj",
@@ -701,9 +875,8 @@ class TestDetectGgufFromCacheExcludesMmproj:
 
 
 class TestProbeDnsDeadNoGlobalTimeoutMutation:
-    """``_probe_dns_dead`` must not change ``socket.setdefaulttimeout``
-    process-wide -- concurrent sockets without explicit timeout would
-    inherit it for the probe window."""
+    """``_probe_dns_dead`` must not change ``socket.setdefaulttimeout`` process-wide;
+    concurrent sockets would inherit it during the probe window."""
 
     def test_default_timeout_unchanged_when_dns_up(self, monkeypatch):
         import socket as _socket
@@ -724,7 +897,7 @@ class TestProbeDnsDeadNoGlobalTimeoutMutation:
         try:
             _probe_dns_dead("example.invalid", timeout = 0.5)
         finally:
-            # Restore exact state regardless of any test-side mutation.
+            # Restore exact state regardless of test-side mutation.
             original_set(prev)
 
         assert set_calls == [], (
@@ -739,7 +912,6 @@ class TestProbeDnsDeadNoGlobalTimeoutMutation:
         # Simulate a wedged resolver: thread blocks forever.
         def wedged(host):
             import threading
-
             threading.Event().wait()
 
         monkeypatch.setattr(_socket, "gethostbyname", wedged)
@@ -747,9 +919,8 @@ class TestProbeDnsDeadNoGlobalTimeoutMutation:
 
 
 class TestWaitForHealthRetriesOnReadError:
-    """A TCP RST mid-read while llama-server is still binding the port
-    (Windows: WinError 10054) must not abort the health-poll loop --
-    that masks a legitimate 'still warming up' state as a fatal load."""
+    """A TCP RST mid-read while llama-server is still binding (Windows: WinError
+    10054) must not abort the health-poll loop and mask warmup as a fatal load."""
 
     def test_read_error_then_success(self, monkeypatch):
         import httpx

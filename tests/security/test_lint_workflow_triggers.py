@@ -1,10 +1,4 @@
-"""Regression tests for scripts/lint_workflow_triggers.py.
-
-Guards against future regressions that would re-introduce GHSA-g7cv-rxg3-hmpx
-(TanStack) -class supply-chain vectors:
-  * pull_request_target (fork PR runs in base context).
-  * Shared cache keys between PR-triggered workflows and the publish workflow.
-"""
+"""Regression tests for scripts/lint_workflow_triggers.py, guarding GHSA-g7cv-rxg3-hmpx vectors."""
 
 from __future__ import annotations
 
@@ -104,7 +98,7 @@ def test_lint_rejects_shared_cache_key_between_pr_and_publish(tmp_path):
     publish workflow is the TanStack cache-poisoning vector."""
     wf = tmp_path / "wf"
     wf.mkdir()
-    # PR-triggered: writes to a cache that the publish job will also restore.
+    # PR-triggered: writes a cache the publish job will also restore.
     (wf / "pr-build.yml").write_text(
         "name: pr-build\n"
         "on:\n"
@@ -118,7 +112,7 @@ def test_lint_rejects_shared_cache_key_between_pr_and_publish(tmp_path):
         "          path: node_modules\n"
         "          key: shared-cache-v1\n"
     )
-    # Publish workflow with the IDENTICAL cache key -- the actual attack pattern.
+    # Publish workflow with the IDENTICAL cache key (the attack pattern).
     (wf / "release-desktop.yml").write_text(
         "name: release-desktop\n"
         "on:\n"

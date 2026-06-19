@@ -28,7 +28,7 @@ export function buildChatTourSteps({
       body: (
         <>
           This selects what’s loaded for inference. Hub = base models. Fine-tuned
-          = trained Studio outputs, including LoRA adapters and full finetunes.
+          = trained Unsloth outputs, including LoRA adapters and full finetunes.
         </>
       ),
     },
@@ -38,7 +38,7 @@ export function buildChatTourSteps({
       title: "Two tabs",
       body: (
         <>
-          Hub: search Hugging Face models. Fine-tuned: local Studio outputs you’ve
+          Hub: search Hugging Face models. Fine-tuned: local Unsloth outputs you’ve
           trained or exported. If results look off, compare base vs fine-tuned
           outputs to see what changed.
         </>
@@ -62,8 +62,8 @@ export function buildChatTourSteps({
   ];
 
   if (canCompare) {
-    // Compare now lives in the + menu, so there is no sidebar button to anchor
-    // to; the view step enters compare on its own and explains it.
+    // Compare lives in the + menu (no sidebar button to anchor to); this step
+    // enters compare on its own and explains it.
     steps.push({
       id: "compare-view",
       target: "chat-compare-view",

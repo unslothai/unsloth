@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import type { ChatSearch } from "@/app/routes/chat";
 import {
   type DeletedModelRef,
   type ExternalModelOption,
@@ -16,8 +15,8 @@ import {
   ResizablePanelGroup,
 } from "@/components/ui/resizable";
 import { useSidebar } from "@/components/ui/sidebar";
-import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent } from "@/components/ui/tooltip";
+import { ProjectSourcesPanel } from "@/features/rag/components/project-sources-panel";
 import {
   NativeModelChip,
   NativeModelDropOverlay,
@@ -31,12 +30,12 @@ import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { isTauri } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
 import {
+  BubbleChatTemporaryIcon,
   Folder02Icon,
-  FolderAddIcon,
   LayoutAlignRightIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useNavigate, useRouterState, useSearch } from "@tanstack/react-router";
+import { useNavigate } from "@tanstack/react-router";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import type { PanelImperativeHandle } from "react-resizable-panels";
 import {
@@ -62,7 +61,10 @@ import {
   parseExternalModelId,
 } from "./external-providers";
 import { useChatModelRuntime } from "./hooks/use-chat-model-runtime";
+import type { SelectedModelInput } from "./hooks/use-chat-model-runtime";
 import { useChatProjects } from "./hooks/use-chat-projects";
+import { useStagedModelPreparation } from "./hooks/use-staged-model-preparation";
+import { useLatestRef } from "@/features/hub/hooks/use-latest-ref";
 import {
   type SidebarItem,
   useChatSidebarItems,
@@ -80,7 +82,11 @@ import {
   providerSupportsBuiltinWebFetch,
   providerSupportsBuiltinWebSearch,
 } from "./provider-capabilities";
-import { ChatRuntimeProvider } from "./runtime-provider";
+import {
+  ChatActiveContext,
+  ChatRuntimeProvider,
+  useChatActive,
+} from "./runtime-provider";
 import {
   type CompareHandle,
   type CompareHandles,
@@ -88,11 +94,13 @@ import {
   RegisterCompareHandle,
   SharedComposer,
 } from "./shared-composer";
+import { BypassPermissionsConfirmDialog } from "./bypass-permissions-menu-item";
 import {
   CHAT_CODE_TOOLS_ENABLED_KEY,
   CHAT_IMAGE_TOOLS_ENABLED_KEY,
   CHAT_TOOLS_ENABLED_KEY,
   CHAT_WEB_FETCH_TOOLS_ENABLED_KEY,
+  hasGgufSource,
   loadOptionalBool,
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
@@ -112,6 +120,7 @@ import {
   listStoredChatMessages,
   listStoredChatThreads,
 } from "./utils/chat-history-storage";
+import { isAssistantLocalThreadId } from "./utils/thread-ids";
 
 type LoraCandidate = {
   id: string;
@@ -159,12 +168,6 @@ function pickBestLoraForBase(
     );
   });
   return partial ?? sorted[0] ?? null;
-}
-
-function isAssistantLocalThreadId(
-  threadId: string | null | undefined,
-): boolean {
-  return Boolean(threadId?.startsWith("__LOCALID_"));
 }
 
 function messageHasImage(message: MessageRecord): boolean {
@@ -367,9 +370,8 @@ function modelMatchesDeleted(
 }
 
 /**
- * Detect if this is a LoRA base-vs-fine-tuned compare.
- * Returns true when the loaded checkpoint is a LoRA — in that case
- * we use the fast simultaneous base/lora adapter-toggle path.
+ * True when the loaded checkpoint is a LoRA, meaning a base-vs-fine-tuned
+ * compare that uses the fast simultaneous adapter-toggle path.
  */
 function useIsLoraCompare(): boolean {
   return useChatRuntimeStore((s) => {
@@ -424,15 +426,12 @@ const CompareContent = memo(function CompareContent({
 });
 
 /**
- * A single column in the compare layout. Hosts one ChatRuntimeProvider
- * and one Thread rendered with hideComposer — the composer is shared
- * across both panes and rendered outside the pane flex.
+ * A single column in the compare layout: one ChatRuntimeProvider and one
+ * Thread with hideComposer (the composer is shared across panes).
  *
- * Each pane is a flex item with `flex-1 basis-0 min-h-0 min-w-0` so on
- * mobile (flex-col) they share height equally, and on desktop (flex-row)
- * they share width equally. The `min-*` constraints are required for
- * the inner viewport to scroll internally instead of spilling into the
- * page.
+ * Each pane is `flex-1 basis-0 min-h-0 min-w-0` so panes share height
+ * (mobile flex-col) or width (desktop flex-row) equally. The `min-*`
+ * constraints let the inner viewport scroll instead of spilling.
  */
 function ComparePane({
   modelType,
@@ -476,16 +475,13 @@ function ComparePane({
 }
 
 /**
- * Shared shell for both compare variants. A vertical flex column with
- * the two panes as siblings and the shared composer docked at the
- * bottom. On mobile the panes stack (flex-col); on desktop they sit
- * side by side (md:flex-row).
+ * Shared shell for both compare variants: a flex column with the two panes
+ * as siblings and the shared composer docked at the bottom. Panes stack on
+ * mobile (flex-col), sit side by side on desktop (md:flex-row).
  *
- * Flex is used rather than CSS grid for the pane container so that
- * viewport sizing stays stable across viewport-size transitions. Grid
- * rows with 1fr were triggering resize thrash in assistant-ui's
- * autoscroll hook on breakpoint crossings, leaving it stuck in a
- * scroll-to-bottom loop.
+ * Flex, not grid, for the pane container: grid rows with 1fr triggered
+ * resize thrash in assistant-ui's autoscroll on breakpoint crossings,
+ * leaving it stuck in a scroll-to-bottom loop.
  */
 function CompareShell({
   handlesRef,
@@ -529,8 +525,14 @@ const LoraCompareContent = memo(function LoraCompareContent({
   const handlesRef = useRef<Record<string, CompareHandle>>({});
   const [baseThreadId, setBaseThreadId] = useState<string>();
   const [loraThreadId, setLoraThreadId] = useState<string>();
+  const active = useChatActive();
+
+  const compareRunning = useChatRuntimeStore(
+    (s) => Object.keys(s.runningByThreadId).length > 0,
+  );
 
   useEffect(() => {
+    if (compareRunning) return;
     let isActive = true;
     listStoredChatThreads({ pairId })
       .then((threads) => {
@@ -546,16 +548,22 @@ const LoraCompareContent = memo(function LoraCompareContent({
     return () => {
       isActive = false;
     };
-  }, [pairId]);
+  }, [pairId, compareRunning]);
 
   return (
     <CompareShell
       handlesRef={handlesRef}
       composer={
-        <SharedComposer
-          handlesRef={handlesRef}
-          onExitCompare={onExitCompare}
-        />
+        active ? (
+          <SharedComposer
+            handlesRef={handlesRef}
+            onExitCompare={onExitCompare}
+            model1ThreadId={baseThreadId}
+            model2ThreadId={loraThreadId}
+          />
+        ) : (
+          <></>
+        )
       }
     >
       <>
@@ -594,10 +602,9 @@ const LoraCompareContent = memo(function LoraCompareContent({
 });
 
 /**
- * Per-pane header rendered inside GeneralCompareContent. Contains the
- * model selector aligned with the global topbar height. The left pane
- * reserves room for the mobile sidebar trigger; the right pane reserves
- * room for the global settings button.
+ * Per-pane header (inside GeneralCompareContent) with the model selector,
+ * aligned to the global topbar height. Left pane reserves room for the
+ * mobile sidebar trigger; right pane for the global settings button.
  */
 function GeneralCompareHeader({
   models,
@@ -623,6 +630,9 @@ function GeneralCompareHeader({
   deleteDisabled?: boolean;
   side: "left" | "right";
 }): ReactElement {
+  // Controlled so the body-portaled popover can't linger over another tab off-route.
+  const active = useChatActive();
+  const [selectorOpen, setSelectorOpen] = useState(false);
   return (
     <div
       className={cn(
@@ -641,6 +651,8 @@ function GeneralCompareHeader({
         deleteDisabled={deleteDisabled}
         variant="ghost"
         className="max-w-[80%] !h-[34px]"
+        open={active && selectorOpen}
+        onOpenChange={(open) => setSelectorOpen(active && open)}
       />
     </div>
   );
@@ -674,6 +686,10 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
 
   const globalCheckpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const globalGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
+  const active = useChatActive();
+  const compareRunning = useChatRuntimeStore(
+    (s) => Object.keys(s.runningByThreadId).length > 0,
+  );
   const [model1, setModel1] = useState<CompareModelSelection>({
     id: globalCheckpoint || "",
     isLora: false,
@@ -698,6 +714,7 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
   );
 
   useEffect(() => {
+    if (compareRunning) return;
     let isActive = true;
     listStoredChatThreads({ pairId })
       .then((threads) => {
@@ -721,18 +738,24 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
     return () => {
       isActive = false;
     };
-  }, [pairId]);
+  }, [pairId, compareRunning]);
 
   return (
     <CompareShell
       handlesRef={handlesRef}
       composer={
-        <SharedComposer
-          handlesRef={handlesRef}
-          model1={model1}
-          model2={model2}
-          onExitCompare={onExitCompare}
-        />
+        active ? (
+          <SharedComposer
+            handlesRef={handlesRef}
+            model1={model1}
+            model2={model2}
+            onExitCompare={onExitCompare}
+            model1ThreadId={model1ThreadId}
+            model2ThreadId={model2ThreadId}
+          />
+        ) : (
+          <></>
+        )
       }
     >
       <>
@@ -928,13 +951,16 @@ function ProjectLanding({
             } as CSSProperties
           }
         >
-          <div className="mx-auto flex w-full max-w-[48rem] flex-col pt-[120px] pb-14">
-            <div className="mb-12 flex items-center gap-3">
-              <HugeiconsIcon
-                icon={Folder02Icon}
-                strokeWidth={1.75}
-                className="size-9 shrink-0 text-foreground"
-              />
+          {/* 46rem matches the composer so every block shares the same edges. */}
+          <div className="mx-auto flex w-full max-w-[46rem] flex-col pt-[120px] pb-14">
+            <div className="mb-12 flex items-center gap-4">
+              <span className="flex size-13 shrink-0 items-center justify-center rounded-[18px] bg-muted text-foreground/80">
+                <HugeiconsIcon
+                  icon={Folder02Icon}
+                  strokeWidth={1.75}
+                  className="size-6.5"
+                />
+              </span>
               <h1 className="truncate font-sans text-[30px] font-medium leading-tight tracking-normal text-foreground">
                 {projectName}
               </h1>
@@ -950,7 +976,7 @@ function ProjectLanding({
                 type="button"
                 onClick={() => setProjectTab("chats")}
                 data-active={projectTab === "chats"}
-                className="h-10 rounded-full border px-5 text-[14px] font-semibold transition-colors data-[active=true]:border-border data-[active=true]:bg-muted data-[active=true]:text-foreground data-[active=false]:border-transparent data-[active=false]:text-muted-foreground data-[active=false]:hover:bg-nav-surface-hover"
+                className="h-10 rounded-full px-5 text-[14px] font-semibold transition-colors data-[active=true]:bg-muted data-[active=true]:text-foreground data-[active=false]:text-muted-foreground data-[active=false]:hover:bg-nav-surface-hover"
               >
                 Chats
               </button>
@@ -958,35 +984,17 @@ function ProjectLanding({
                 type="button"
                 onClick={() => setProjectTab("sources")}
                 data-active={projectTab === "sources"}
-                className="h-10 rounded-full border px-5 text-[14px] font-semibold transition-colors data-[active=true]:border-border data-[active=true]:bg-muted data-[active=true]:text-foreground data-[active=false]:border-transparent data-[active=false]:text-muted-foreground data-[active=false]:hover:bg-nav-surface-hover"
+                className="flex h-10 items-center gap-1.5 rounded-full px-5 text-[14px] font-semibold transition-colors data-[active=true]:bg-muted data-[active=true]:text-foreground data-[active=false]:text-muted-foreground data-[active=false]:hover:bg-nav-surface-hover"
               >
                 Sources
+                <span className="rounded-full bg-emerald-500/10 px-2 py-1 text-[10px] font-semibold leading-none text-emerald-700 dark:text-emerald-300">
+                  New
+                </span>
               </button>
             </div>
 
             {projectTab === "sources" ? (
-              <div className="mt-8 flex flex-col items-center justify-center gap-3 rounded-[16px] border border-dashed border-border/70 bg-muted/30 px-6 py-16 text-center">
-                <span className="flex size-12 items-center justify-center rounded-full bg-muted text-muted-foreground">
-                  <HugeiconsIcon
-                    icon={FolderAddIcon}
-                    strokeWidth={1.75}
-                    className="size-6"
-                  />
-                </span>
-                <div className="space-y-1">
-                  <p className="text-[15px] font-semibold text-foreground">
-                    Give this project context
-                  </p>
-                  <p className="max-w-sm text-sm text-muted-foreground">
-                    Upload PDFs, documents, or other text. The model can
-                    reference them in every chat in this project.
-                  </p>
-                </div>
-                <Button type="button" className="mt-1" disabled>
-                  Add sources
-                </Button>
-                <p className="text-[11px] text-muted-foreground">Coming soon</p>
-              </div>
+              <ProjectSourcesPanel projectId={projectId} />
             ) : (
             <div className="mt-8 flex flex-col gap-1">
               {items.map((item) => {
@@ -1004,7 +1012,7 @@ function ProjectLanding({
                             : { compare: item.id, project: projectId },
                       });
                     }}
-                    className="group flex min-h-[58px] w-full items-center gap-4 rounded-[10px] px-4 py-2 text-left transition-colors hover:bg-nav-surface-hover"
+                    className="group flex min-h-[58px] w-full items-center gap-4 rounded-full px-4 py-2 text-left transition-colors hover:bg-nav-surface-hover"
                   >
                     <div className="min-w-0 flex-1">
                       <div className="truncate text-[15px] font-semibold leading-5 text-foreground">
@@ -1031,14 +1039,72 @@ function ProjectLanding({
   );
 }
 
-export function ChatPage(): ReactElement {
-  const search = useSearch({ from: "/chat" });
+export type ChatSearch = {
+  thread?: string;
+  compare?: string;
+  new?: string;
+  project?: string;
+};
+
+export function validateChatSearch(search: Record<string, unknown>): ChatSearch {
+  return {
+    thread: typeof search.thread === "string" ? search.thread : undefined,
+    compare: typeof search.compare === "string" ? search.compare : undefined,
+    new: typeof search.new === "string" ? search.new : undefined,
+    project: typeof search.project === "string" ? search.project : undefined,
+  };
+}
+
+// `search` comes from RootLayout (not useSearch) so ChatPage stays mounted off-route
+// (keeping an in-flight generation alive), frozen to the last /chat search. `active`
+// is false off-route: close body-portaled surfaces and stop route-specific listeners
+// that would otherwise bleed over the visible tab.
+export function ChatPage({
+  search,
+  active,
+}: { search: ChatSearch; active: boolean }): ReactElement {
   const navigate = useNavigate();
-  const pathname = useRouterState({ select: (s) => s.location.pathname });
-  const isCurrentChatRoute = pathname.startsWith("/chat");
 
   const settingsOpen = useChatRuntimeStore((s) => s.settingsPanelOpen);
   const setSettingsOpen = useChatRuntimeStore((s) => s.setSettingsPanelOpen);
+  const loadOnSelection = useChatRuntimeStore((s) => s.loadOnSelection);
+  const setLoadOnSelection = useChatRuntimeStore((s) => s.setLoadOnSelection);
+  // Deferred-load staging: downloads a staged GGUF (if needed) and reads its
+  // header context so the sheet can show the context slider before the load.
+  const stagedDownload = useStagedModelPreparation();
+  // Abandon a staged pick: the store action cancels its in-flight download and
+  // reverts the edited knobs, so nothing lingers after the user walks away.
+  const abandonStaged = useCallback(() => {
+    useChatRuntimeStore.getState().abandonStagedModel();
+  }, []);
+  // Tracks whether the chat page is still mounted, so a staged-load failure that
+  // resolves after the user left chat doesn't resurrect the abandoned pick.
+  const mountedRef = useRef(true);
+  useEffect(() => () => void (mountedRef.current = false), []);
+  const incognito = useChatRuntimeStore((s) => s.incognito);
+  const setIncognito = useChatRuntimeStore((s) => s.setIncognito);
+  const incognitoLabel = incognito
+    ? "Turn off temporary chat"
+    : "Turn on temporary chat";
+  const toggleIncognito = useCallback(() => {
+    const store = useChatRuntimeStore.getState();
+    store.setIncognito(!store.incognito);
+    // On an empty scratch chat there's nothing to abandon, so flip in
+    // place: navigating would remount the thread and bounce the composer
+    // (it docks to the bottom before the welcome state re-centers it).
+    // Otherwise start a clean chat so the temporary session can't inherit
+    // or leave behind a persisted thread (matches ChatGPT / Gemini).
+    const onEmptyScratchChat =
+      !search.thread &&
+      !search.compare &&
+      !search.project &&
+      store.activeThreadId == null;
+    if (onEmptyScratchChat) return;
+    // setActiveThreadId already clears contextUsage.
+    store.setActiveThreadId(null);
+    store.setActiveProjectId(null);
+    navigate({ to: "/chat", search: { new: crypto.randomUUID() } });
+  }, [navigate, search]);
   const hydratePersistedSettings = useChatRuntimeStore(
     (s) => s.hydratePersistedSettings,
   );
@@ -1054,6 +1120,9 @@ export function ChatPage(): ReactElement {
   }, [hydratePersistedSettings]);
 
   useEffect(() => {
+    // Skip while off-route: ChatPage stays mounted, and toast+navigate here would
+    // yank the user back to chat from whatever tab they're on.
+    if (!active) return;
     const threadId = search.thread;
     if (!threadId) return;
 
@@ -1082,14 +1151,13 @@ export function ChatPage(): ReactElement {
     return () => {
       canceled = true;
     };
-  }, [navigate, search.thread]);
+  }, [active, navigate, search.thread]);
 
   const [modelSelectorOpen, setModelSelectorOpen] = useState(false);
   const [modelSelectorLocked, setModelSelectorLocked] = useState(false);
   const viewBeforeCompareRef = useRef<ChatSearch | null>(null);
-  // Tracks the latest non-compare view so exiting compare can restore it even
-  // when compare was opened from a path that does not set viewBeforeCompareRef
-  // (e.g. the composer + menu).
+  // Latest non-compare view, so exiting compare can restore it even when
+  // compare was opened from a path that doesn't set viewBeforeCompareRef.
   const lastNonCompareViewRef = useRef<ChatSearch | null>(null);
   useEffect(() => {
     if (!search.compare) {
@@ -1249,15 +1317,11 @@ export function ChatPage(): ReactElement {
       preferredEffort,
       effortLevels,
     );
-    // Per-provider default effort. Anthropic gets the highest available
-    // level (xhigh on 4.6/4.7, high on 4.5) since Claude's adaptive
-    // thinking adjusts cost per turn — sitting at the top of the dial
-    // gives users the strongest answers and the model can still skip
-    // thinking when the turn is trivial. OpenAI gets "high" by default
-    // — the gpt-5.x reasoning models accept high across the board and
-    // it's the right cost/quality sweet spot for Responses-API tools
-    // (web search included). Everyone else gets "medium" as a balanced
-    // default. Users can pick another level via the Think dropdown.
+    // Per-provider default effort. Anthropic gets the highest level since
+    // Claude's adaptive thinking adjusts cost per turn (top of dial =
+    // strongest answers, still skips thinking when trivial). OpenAI gets
+    // "high" (gpt-5.x accept it across the board; good cost/quality for
+    // Responses-API tools). Everyone else "medium". Overridable via Think.
     const isAnthropic = provider?.providerType === "anthropic";
     const isOpenAI = provider?.providerType === "openai";
     const anthropicTopEffort = effortLevels.includes("xhigh")
@@ -1298,19 +1362,15 @@ export function ChatPage(): ReactElement {
     const supportsBuiltinWebFetch = providerSupportsBuiltinWebFetch(
       provider?.providerType,
     );
-    // Kimi's k2.6/k2.5 default to thinking enabled on the server side
-    // (per https://platform.kimi.ai/docs/models). Mirror that default
-    // in the UI so the Think pill comes up clicked when the user picks
-    // a Kimi model. The Search pill stays off by default; the mutual-
-    // exclusion handlers in the composer flip the two when needed.
+    // Kimi's k2.6/k2.5 default to thinking enabled server-side (per
+    // https://platform.kimi.ai/docs/models). Mirror that so the Think pill
+    // comes up clicked for Kimi models. Search stays off; the composer's
+    // mutual-exclusion handlers flip the two when needed.
     const isKimi = provider?.providerType === "kimi";
-    // Web search is on by default for the two providers we trust most
-    // for it: Anthropic (web_search_20250305 server tool, structured
-    // citations) and OpenAI (/v1/responses web_search, structured
-    // citations). Other providers stay off-by-default — OpenRouter's
-    // plugins shape and Kimi's $web_search builtin still work when the
-    // user opts in via the pill, but they're a notch less reliable so
-    // we don't pre-enable them.
+    // Web search on by default only for the two providers we trust most:
+    // Anthropic and OpenAI (both with structured citations). Others stay
+    // off-by-default; OpenRouter and Kimi work on opt-in but are less
+    // reliable, so we don't pre-enable them.
     const searchOnByDefault =
       supportsBuiltinWebSearch &&
       (provider?.providerType === "anthropic" ||
@@ -1345,15 +1405,11 @@ export function ChatPage(): ReactElement {
           : true
         : state.reasoningEnabled,
       supportsPreserveThinking: false,
-      // External models never give us a local tool runtime (no
-      // python sandbox), so `supportsTools` must be false. The three
-      // `supportsBuiltin*` flags pick up the slack for providers that
-      // run the tool server-side: `supportsBuiltinWebSearch` lights
-      // up the Search pill (OpenAI / Anthropic / OpenRouter / Kimi),
-      // `supportsBuiltinCodeExecution` lights up the Code pill
-      // (Anthropic Claude 4.x and OpenAI gpt-5.5), and
-      // `supportsBuiltinImageGeneration` lights up the Images pill
-      // (OpenAI cloud Responses-API models only).
+      // External models have no local tool runtime, so `supportsTools` is
+      // false. The `supportsBuiltin*` flags cover providers that run tools
+      // server-side: WebSearch lights the Search pill (OpenAI/Anthropic/
+      // OpenRouter/Kimi), CodeExecution the Code pill (Claude 4.x, gpt-5.5),
+      // ImageGeneration the Images pill (OpenAI cloud Responses-API only).
       supportsTools: false,
       supportsBuiltinWebSearch,
       supportsBuiltinCodeExecution,
@@ -1465,6 +1521,17 @@ export function ChatPage(): ReactElement {
     currentProjectId,
   ]);
 
+  // Temporary chat only applies to a fresh single-view chat. Exit incognito
+  // when we land on anything else (compare, a project, or an existing thread
+  // via sidebar/deep link/back), so the toggle isn't stranded and the UI
+  // never implies a saved thread is temporary.
+  useEffect(() => {
+    const onFreshSingleChat = view.mode === "single" && !view.threadId;
+    if (incognito && !onFreshSingleChat) {
+      setIncognito(false);
+    }
+  }, [view, incognito, setIncognito]);
+
   const selectedArtifact = useSelectedChatArtifact();
   const artifactSurface = useChatArtifactsStore((state) => state.surface);
   const closeArtifactSurface = useChatArtifactsStore(
@@ -1485,9 +1552,9 @@ export function ChatPage(): ReactElement {
   useEffect(() => {
     if (view.mode !== "single") return;
     if (view.threadId || view.newThreadNonce || !selectedArtifact) return;
-    // view intentionally excludes __LOCALID_ threads (they fall through to
-    // { mode: "single" } with no threadId/nonce).  Don't close an artifact
-    // whose thread is the currently active local thread.
+    // view excludes __LOCALID_ threads (they fall through to mode:"single"
+    // with no threadId/nonce). Don't close a canvas whose thread is the
+    // active local thread.
     if (
       selectedArtifact.threadId &&
       selectedArtifact.threadId === activeThreadId
@@ -1496,12 +1563,64 @@ export function ChatPage(): ReactElement {
     closeArtifactSurface();
   }, [activeThreadId, closeArtifactSurface, selectedArtifact, view]);
 
+  // Abandon a staged (not-yet-loaded) pick when the chat context actually
+  // changes — switching threads, leaving single view, or starting a new chat /
+  // project — so a stale Load button can't resurface in a different context.
+  // New Chat keeps activeThreadId null and only bumps the `new` search nonce, so
+  // the key includes the route identity, not just the thread. Mirrors the
+  // incognito reset pattern. (Route exit is handled in __root.tsx, which runs
+  // after this unmounts.) Clear only on a real change, never on mount: staging
+  // from the Hub sets pendingSelection then navigates here, and clearing on
+  // mount would wipe it. Comparing the previous context (rather than a first-run
+  // flag) is also safe under StrictMode's double-invoke and component remounts.
+  const chatContextKey = `${view.mode}|${activeThreadId ?? ""}|${search.new ?? ""}|${search.project ?? ""}`;
+  const chatContextKeyRef = useLatestRef(chatContextKey);
+  const prevChatContextRef = useRef<string | null>(null);
+  useEffect(() => {
+    const prev = prevChatContextRef.current;
+    prevChatContextRef.current = chatContextKey;
+    if (prev === null || prev === chatContextKey) return;
+    abandonStaged();
+  }, [chatContextKey, abandonStaged]);
+
   const hasActiveModel = Boolean(inferenceParams.checkpoint);
+  // Load immediately, or — when "Load on selection" is off — stage the pick so
+  // its load options can be set first. Shared by the main selector, native
+  // drag-drop/picker, and the dropped-file chip (the Hub stages via the store).
+  const stageOrLoad = useCallback(
+    async (selection: SelectedModelInput) => {
+      const store = useChatRuntimeStore.getState();
+      // Only GGUF picks have pre-load options worth staging. Non-GGUF models
+      // (and the toggle-on case) load immediately, so e.g. a trust_remote_code
+      // approval surfaces through the normal load path.
+      if (store.loadOnSelection || !hasGgufSource(selection)) {
+        // Abandon any staged GGUF first so its edited knobs (e.g. a custom
+        // context length) don't leak into this immediate load -- resolveLoad
+        // reads customContextLength before checking the target is GGUF.
+        abandonStaged();
+        await selectModel(selection);
+        return;
+      }
+      // Tear down any existing staged pick first so its in-flight download is
+      // cancelled, not left running after we rebind to the new pick.
+      abandonStaged();
+      store.stageModel({
+        id: selection.id,
+        isLora: selection.isLora,
+        ggufVariant: selection.ggufVariant,
+        isDownloaded: selection.isDownloaded,
+        expectedBytes: selection.expectedBytes,
+        nativePathToken: selection.nativePathToken,
+        isGguf: selection.isGguf,
+      });
+    },
+    [abandonStaged, selectModel],
+  );
   const loadNativeModelIntent = useCallback(
     async (intent: NativeIntent, loadingDescription: string) => {
       const label =
         intent.path.displayLabel || intent.displayLabel || "Local GGUF model";
-      await selectModel({
+      await stageOrLoad({
         id: label,
         nativePathToken: intent.path.token,
         isDownloaded: true,
@@ -1511,7 +1630,7 @@ export function ChatPage(): ReactElement {
       });
       useNativeIntentStore.getState().clearModelIntent(intent.id);
     },
-    [selectModel],
+    [stageOrLoad],
   );
   const handleNativeModelDropAutoLoad = useCallback(
     (intent: NativeIntent) =>
@@ -1544,7 +1663,7 @@ export function ChatPage(): ReactElement {
     onAutoLoad: handleNativeModelPickerAutoLoad,
   });
   const nativeModelDropState = useNativeModelDrop({
-    enabled: view.mode === "single",
+    enabled: active && view.mode === "single",
     nativePathLeasesSupported,
     hasActiveModel,
     isModelLoading: Boolean(loadingModel) || modelLoading,
@@ -1560,6 +1679,7 @@ export function ChatPage(): ReactElement {
         ggufVariant?: string;
         isDownloaded?: boolean;
         expectedBytes?: number;
+        isGguf?: boolean;
       },
     ) => {
       const store = useChatRuntimeStore.getState();
@@ -1572,6 +1692,9 @@ export function ChatPage(): ReactElement {
       )
         return;
       if (meta?.source === "external" || isExternalModelId(value)) {
+        // Switching to an external model abandons any staged local pick: cancel
+        // its download too (setCheckpoint below only clears the pending + knobs).
+        abandonStaged();
         const selectedExternal = parseExternalModelId(value);
         const selectedProvider = selectedExternal
           ? externalProvidersForChat.find(
@@ -1593,9 +1716,8 @@ export function ChatPage(): ReactElement {
           preferredEffort,
           effortLevels,
         );
-        // Same per-provider default policy as the useEffect path above:
-        // Anthropic picks the highest available level, OpenAI picks
-        // "high", everyone else picks "medium".
+        // Same per-provider default policy as the useEffect above:
+        // Anthropic highest level, OpenAI "high", everyone else "medium".
         const isAnthropic = selectedProvider?.providerType === "anthropic";
         const isOpenAI = selectedProvider?.providerType === "openai";
         const anthropicTopEffort = effortLevels.includes("xhigh")
@@ -1617,9 +1739,8 @@ export function ChatPage(): ReactElement {
                 ? "medium"
                 : clampedEffort
           : store.reasoningEffort;
-        // Clear any cached router-picked openrouter/free model unless the
-        // user is staying on openrouter/free — otherwise the chip would
-        // keep showing a stale ":<chosen>" suffix from a previous model.
+        // Clear any cached router-picked openrouter/free model unless staying
+        // on openrouter/free, else the chip keeps a stale ":<chosen>" suffix.
         const stillOnOpenRouterFree =
           selectedProvider?.providerType === "openrouter" &&
           selectedExternal?.modelId === "openrouter/free";
@@ -1644,13 +1765,12 @@ export function ChatPage(): ReactElement {
         const supportsBuiltinWebFetch = providerSupportsBuiltinWebFetch(
           selectedProvider?.providerType,
         );
-        // See sibling useEffect above: Kimi's k2.x default to thinking
-        // enabled, so the Think pill comes up clicked. Search pill stays
-        // off by default; mutual exclusion flips them via the composer.
+        // See sibling useEffect: Kimi's k2.x default to thinking enabled
+        // (Think pill clicked). Search stays off; the composer's mutual
+        // exclusion flips them.
         const isKimi = selectedProvider?.providerType === "kimi";
-        // Mirror of sibling useEffect: Anthropic and OpenAI get Search
-        // on-by-default since their server tools emit structured
-        // citations end-to-end. OpenRouter and Kimi stay off-by-default.
+        // Mirror of sibling useEffect: Anthropic/OpenAI get Search on by
+        // default (structured citations end-to-end); others stay off.
         const searchOnByDefault =
           supportsBuiltinWebSearch &&
           (selectedProvider?.providerType === "anthropic" ||
@@ -1676,9 +1796,8 @@ export function ChatPage(): ReactElement {
           ggufMaxContextLength: null,
           ggufNativeContextLength: null,
           activeNativePathToken: null,
-          // Clear previous-model counters; the relaxed external-provider
-          // render gate would otherwise show stale stats until the next
-          // completion overwrites them.
+          // Clear previous-model counters, else the relaxed external-provider
+          // render gate shows stale stats until the next completion.
           contextUsage: null,
           supportsReasoning: reasoningCaps.supportsReasoning,
           reasoningAlwaysOn: reasoningCaps.reasoningAlwaysOn,
@@ -1694,14 +1813,10 @@ export function ChatPage(): ReactElement {
               : true
             : store.reasoningEnabled,
           supportsPreserveThinking: false,
-          // External models have no local tool runtime → supportsTools
-          // stays false. The three supportsBuiltin* flags carry the
-          // server-side capability info for each pill:
-          //   - Search → providerSupportsBuiltinWebSearch
-          //   - Code   → providerSupportsBuiltinCodeExecution
-          //              (Anthropic Claude 4.x + OpenAI gpt-5.5)
-          //   - Images → providerSupportsBuiltinImageGeneration
-          //              (OpenAI cloud Responses-API models)
+          // External models have no local tool runtime → supportsTools false.
+          // The supportsBuiltin* flags carry server-side capability per pill:
+          // Search, Code (Claude 4.x + gpt-5.5), Images (OpenAI cloud
+          // Responses-API).
           supportsTools: false,
           supportsBuiltinWebSearch,
           supportsBuiltinCodeExecution,
@@ -1747,20 +1862,27 @@ export function ChatPage(): ReactElement {
             duration: 6000,
           });
         }
-        await selectModel({
+        const selection = {
           id: value,
           isLora: meta?.isLora,
           ggufVariant: meta?.ggufVariant,
           isDownloaded: meta?.isDownloaded,
           expectedBytes: meta?.expectedBytes,
-        });
+          isGguf: meta?.isGguf,
+        };
+        // "Load on selection" off: stage the model and open settings so its
+        // load knobs (tensor parallel, context length…) can be set, then it
+        // loads once via the sheet's Load button. The currently loaded model
+        // stays put until the user commits.
+        await stageOrLoad(selection);
       })();
     },
     [
+      abandonStaged,
       activeThreadId,
       externalProvidersForChat,
       modelsFromStore,
-      selectModel,
+      stageOrLoad,
       view,
     ],
   );
@@ -1813,8 +1935,8 @@ export function ChatPage(): ReactElement {
   }, [currentProjectId, navigate, search]);
 
   const exitCompare = useCallback(() => {
-    // Prefer the explicit save; fall back to the last non-compare view so the
-    // composer + menu path also returns to where the user started.
+    // Prefer the explicit save; fall back to the last non-compare view so
+    // the composer + menu path also returns where the user started.
     const saved = viewBeforeCompareRef.current ?? lastNonCompareViewRef.current;
     // No saved view (compare opened by direct URL); fall back to a fresh chat.
     if (!saved) {
@@ -1823,9 +1945,8 @@ export function ChatPage(): ReactElement {
     }
     viewBeforeCompareRef.current = null;
     navigate({ to: "/chat", search: saved });
-    // Restore usage from the last assistant message, but only if it
-    // matches the currently active checkpoint. Without this guard the
-    // relaxed render gate would show stale stats from another model.
+    // Restore usage from the last assistant message, only if it matches the
+    // active checkpoint, else the relaxed render gate shows stale stats.
     const threadId =
       saved.thread ?? useChatRuntimeStore.getState().activeThreadId;
     if (threadId) {
@@ -1845,7 +1966,7 @@ export function ChatPage(): ReactElement {
           const usageModelId =
             (usage as { modelId?: unknown }).modelId;
           // Scope by modelId when present; reject if no active checkpoint
-          // (model-scoped usage cannot be attributed to "nothing").
+          // (model-scoped usage can't be attributed to "nothing").
           if (typeof usageModelId === "string" && usageModelId) {
             if (!activeCheckpoint || usageModelId !== activeCheckpoint) {
               return;
@@ -1895,15 +2016,13 @@ export function ChatPage(): ReactElement {
         .flatMap((provider) =>
           provider.models.map((model) => {
             // For OpenRouter's free router we know which underlying free
-            // model the gateway actually picked once a stream completes
-            // (chat-adapter latches `chunk.model` into the runtime store).
-            // Render the chip as `openrouter:<short-chosen>` — drop the
-            // redundant `/free` from the router id and the org prefix
-            // from the chosen id (e.g.
-            //   openrouter/free + inclusionai/ring-2.6-1t-20260508:free
-            //     -> openrouter:ring-2.6-1t-20260508:free
-            // ). The `:free` suffix on the chosen id already conveys
-            // 'free model', so the leading `/free` is noise.
+            // model the gateway picked once a stream completes (chat-adapter
+            // latches `chunk.model`). Render the chip as
+            // `openrouter:<short-chosen>`, dropping the redundant `/free`
+            // and the chosen id's org prefix (e.g. openrouter/free +
+            // inclusionai/ring-2.6-1t-20260508:free ->
+            // openrouter:ring-2.6-1t-20260508:free). The `:free` suffix
+            // already conveys "free model".
             let displayName = model;
             if (
               provider.providerType === "openrouter" &&
@@ -2000,6 +2119,9 @@ export function ChatPage(): ReactElement {
   }, [refresh, refreshLocalModels]);
 
   useEffect(() => {
+    // ChatPage no longer remounts on navigation, so re-check the handoff whenever
+    // we return to /chat (e.g. from the training progress "compare in chat" action).
+    if (!active) return;
     const handoff = getTrainingCompareHandoff();
     if (!handoff) return;
     console.info("[chat-handoff] received", handoff);
@@ -2061,7 +2183,7 @@ export function ChatPage(): ReactElement {
     return () => {
       canceled = true;
     };
-  }, []);
+  }, [active, navigate]);
 
   const tourSteps = useMemo(
     () =>
@@ -2106,19 +2228,24 @@ export function ChatPage(): ReactElement {
       (view.mode === "compare" || artifactSurface === "overlay"),
   );
 
-  if (!isCurrentChatRoute) {
-    return (
-      <div className="flex min-h-0 min-w-0 flex-1 basis-0 bg-background" />
-    );
-  }
-
   return (
+    // Provides `active` to ChatRuntimeProvider (drops the message views/composers
+    // while off-route, keeping the runtime alive) and to the compare chrome.
+    <ChatActiveContext.Provider value={active}>
     <div className="flex min-h-0 min-w-0 flex-1 basis-0 bg-background overflow-hidden">
-      <GuidedTour {...tour.tourProps} />
+      {/* Portaled surfaces render to document.body, escaping the parent's hidden
+          wrapper, so gate them on `active` to keep them off other tabs. */}
+      {active && <GuidedTour {...tour.tourProps} />}
+      {/* Single app-level mount for the Bypass permissions warning. It is driven
+          by global store state, so it must live at one stable root (not inside a
+          Composer) -- otherwise Compare mode's multiple composers would each
+          render their own copy and the shared-composer menu would have none. It
+          also portals to body, so gate it on `active` like the tour above. */}
+      {active && <BypassPermissionsConfirmDialog />}
       <div className="relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
         <NativeModelDropOverlay state={nativeModelDropState} />
-        {/* Bottom fade under the top bar so messages dissolve as they scroll
-            beneath it (Gemini / unsloth-sidebar style), instead of a hard cut. */}
+        {/* Fade under the top bar so messages dissolve as they scroll
+            beneath it, instead of a hard cut. */}
         {view.mode !== "compare" && (
           <div
             aria-hidden
@@ -2143,12 +2270,14 @@ export function ChatPage(): ReactElement {
                 activeGgufVariant={activeGgufVariant}
                 onValueChange={handleCheckpointChange}
                 onEject={handleEject}
+                loadOnSelection={loadOnSelection}
+                onLoadOnSelectionChange={setLoadOnSelection}
                 onFoldersChange={refreshLocalModels}
                 onPickLocalModel={isTauri ? chooseNativeModel : undefined}
                 onModelsChange={refreshModelLists}
                 deleteDisabled={modelOperationInProgress}
                 variant="ghost"
-                open={modelSelectorOpen}
+                open={active && modelSelectorOpen}
                 onOpenChange={handleModelSelectorOpenChange}
                 triggerDataTour="chat-model-selector"
                 contentDataTour="chat-model-selector-popover"
@@ -2184,7 +2313,7 @@ export function ChatPage(): ReactElement {
               <NativeModelChip
                 intent={pendingNativeModelIntent}
                 nativeReadsDisabled={!nativePathLeasesSupported}
-                onLoad={(selection) => selectModel(selection)}
+                onLoad={(selection) => stageOrLoad(selection)}
               />
             ) : null}
             {loadingModel && loadToastDismissed ? (
@@ -2231,13 +2360,44 @@ export function ChatPage(): ReactElement {
                 className="h-[34px]"
               />
             ) : null}
+            {view.mode === "single" && (
+              <Tooltip>
+                <TooltipPrimitive.Trigger asChild={true}>
+                  <button
+                    type="button"
+                    onClick={toggleIncognito}
+                    className={cn(
+                      "flex h-[34px] w-[34px] cursor-pointer items-center justify-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                      incognito
+                        ? "bg-primary/10 text-primary hover:bg-primary/15"
+                        : "text-nav-fg hover:bg-nav-surface-hover hover:text-black dark:hover:text-white",
+                    )}
+                    aria-label={incognitoLabel}
+                    aria-pressed={incognito}
+                  >
+                    <HugeiconsIcon
+                      icon={BubbleChatTemporaryIcon}
+                      strokeWidth={1.75}
+                      className="size-icon"
+                    />
+                  </button>
+                </TooltipPrimitive.Trigger>
+                <TooltipContent
+                  side="bottom"
+                  sideOffset={6}
+                  className="tooltip-compact"
+                >
+                  {incognitoLabel}
+                </TooltipContent>
+              </Tooltip>
+            )}
             {!settingsOpen && (
               <Tooltip>
                 <TooltipPrimitive.Trigger asChild={true}>
                   <button
                     type="button"
                     onClick={() => setSettingsOpen(true)}
-                    className="flex h-[34px] w-[34px] translate-x-[2px] cursor-pointer items-center justify-center rounded-[12px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    className="flex h-[34px] w-[34px] translate-x-[2px] cursor-pointer items-center justify-center rounded-full text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     aria-label="Open run settings"
                     data-tour="chat-settings"
                   >
@@ -2268,8 +2428,14 @@ export function ChatPage(): ReactElement {
             items={currentProjectItems}
           />
         ) : view.mode === "single" ? (
+          // Keyed by project only (not thread / new-chat nonce) so switching threads or
+          // starting a New Chat reuses the same provider and switches in place. This keeps
+          // an in-flight generation streaming in the background (assistant-ui keeps every
+          // alive thread's runtime mounted) instead of remounting the provider and cutting
+          // it off; returning to that thread reattaches the live run rather than reloading
+          // a half-saved one.
           <SingleContent
-            key={view.threadId ?? view.newThreadNonce ?? "single"}
+            key={view.projectId ?? "single"}
             threadId={view.threadId}
             newThreadNonce={view.newThreadNonce}
             projectId={view.projectId}
@@ -2292,7 +2458,7 @@ export function ChatPage(): ReactElement {
           />
         )}
 
-        {showArtifactOverlay && selectedArtifact ? (
+        {active && showArtifactOverlay && selectedArtifact ? (
           <ArtifactSurface
             artifact={selectedArtifact}
             variant="overlay"
@@ -2302,8 +2468,14 @@ export function ChatPage(): ReactElement {
       </div>
 
       <ChatSettingsPanel
-        open={settingsOpen}
-        onOpenChange={setSettingsOpen}
+        open={active && settingsOpen}
+        onOpenChange={(open) => {
+          setSettingsOpen(open);
+          // Closing the sheet abandons a staged (not-yet-loaded) pick: cancel its
+          // download and revert the staged knobs so nothing lingers as a dirty
+          // edit (or a background download) on the loaded model.
+          if (!open) abandonStaged();
+        }}
         params={inferenceParams}
         onParamsChange={setInferenceParams}
         isExternalModel={isExternalModel}
@@ -2329,7 +2501,49 @@ export function ChatPage(): ReactElement {
             });
           }
         }}
+        onLoadPendingModel={() => {
+          const pending = useChatRuntimeStore.getState().pendingSelection;
+          if (!pending) return;
+          const keyAtLoad = chatContextKey;
+          // forceReload: the staged model isn't loaded yet, so bypass the
+          // same-checkpoint dedupe (and selectModel clears pendingSelection).
+          // keepSpeculative: honor the speculative mode set on the sidebar.
+          void selectModel({
+            ...pending,
+            forceReload: true,
+            keepSpeculative: true,
+            throwOnError: true,
+          }).catch(() => {
+            // Recoverable failure (expired token, gated repo, OOM…): selectModel
+            // cleared the pick but left the edited knobs intact.
+            const store = useChatRuntimeStore.getState();
+            // A pick staged meanwhile owns the knobs now; leave it untouched.
+            if (store.pendingSelection) return;
+            // Restore (not re-stage, which would reset the knobs) only if the
+            // staged-load is still wanted: same chat context, sheet still open,
+            // page still mounted.
+            const stillWanted =
+              mountedRef.current &&
+              store.settingsPanelOpen &&
+              chatContextKeyRef.current === keyAtLoad;
+            if (stillWanted) {
+              store.setPendingSelection(pending);
+            } else {
+              // Abandoned (closed the sheet / switched chats / left chat): drop
+              // the orphaned staged knob edits so they don't linger as dirty
+              // settings over the loaded model.
+              store.resetModelSettingsToLoaded();
+            }
+          });
+        }}
+        stagedDownloadFraction={stagedDownload.progress?.fraction ?? null}
+        onCancelStagedDownload={() =>
+          stagedDownload.cancelDownload(
+            useChatRuntimeStore.getState().pendingSelection?.ggufVariant ?? null,
+          )
+        }
       />
     </div>
+    </ChatActiveContext.Provider>
   );
 }

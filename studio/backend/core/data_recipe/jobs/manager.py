@@ -108,9 +108,7 @@ class Subscription:
             event_id = self._next_id
         body = json.dumps(event, separators = (",", ":"), ensure_ascii = False)
         event_type = event.get("type") or "message"
-        return (
-            f"id: {event_id}\n" f"event: {event_type}\n" f"data: {body}\n\n"
-        ).encode("utf-8")
+        return (f"id: {event_id}\n" f"event: {event_type}\n" f"data: {body}\n\n").encode("utf-8")
 
 
 class JobManager:
@@ -134,10 +132,9 @@ class JobManager:
     ) -> str:
         """Spawn the job subprocess (one at a time, no cap).
 
-        ``internal_api_key_id`` is the row id of a workflow-scoped
-        sk-unsloth-* key minted by the route layer for local providers.
-        JobManager revokes it when the job reaches a terminal state so the
-        key's live window is no longer than the run.
+        ``internal_api_key_id`` is a workflow-scoped sk-unsloth-* key row id
+        minted by the route layer; revoked on terminal state so the key's
+        live window is no longer than the run.
         """
         llm_columns = recipe.get("columns") or []
         llm_column_count = 0
@@ -158,9 +155,7 @@ class JobManager:
             job_id = uuid.uuid4().hex
             self._job = Job(job_id = job_id, status = "pending", started_at = time.time())
             self._job.progress_columns_total = llm_column_count
-            self._job.source_progress_estimated_total = _github_source_estimated_total(
-                recipe
-            )
+            self._job.source_progress_estimated_total = _github_source_estimated_total(recipe)
             self._job.internal_api_key_id = internal_api_key_id
             self._events.clear()
             self._seq = 0
@@ -181,15 +176,16 @@ class JobManager:
                     daemon = True,
                 )
                 proc.start()
+                from utils.process_lifetime import adopt_pid
+
+                adopt_pid(proc.pid)  # bind to parent lifetime (Windows job / sweep)
 
             self._mp_q = mp_q
             self._proc = proc
             self._pump_thread = threading.Thread(target = self._pump_loop, daemon = True)
             self._pump_thread.start()
 
-            self._emit(
-                {"type": EVENT_JOB_ENQUEUED, "ts": time.time(), "job_id": job_id}
-            )
+            self._emit({"type": EVENT_JOB_ENQUEUED, "ts": time.time(), "job_id": job_id})
             return job_id
 
     def cancel(self, job_id: str) -> bool:
@@ -200,9 +196,7 @@ class JobManager:
             if self._proc is None or not self._proc.is_alive():
                 return True
             self._job.status = "cancelling"
-            self._emit(
-                {"type": EVENT_JOB_CANCELLING, "ts": time.time(), "job_id": job_id}
-            )
+            self._emit({"type": EVENT_JOB_CANCELLING, "ts": time.time(), "job_id": job_id})
             try:
                 self._proc.terminate()
             except (AttributeError, OSError):
@@ -210,7 +204,7 @@ class JobManager:
             return True
 
     def get_status(self, job_id: str) -> dict | None:
-        """UI friendly snapshot that we need. Alternative to sse kinda of and structured"""
+        """UI-friendly structured snapshot; an alternative to SSE."""
         with self._lock:
             if self._job is None or self._job.job_id != job_id:
                 return None
@@ -319,19 +313,12 @@ class JobManager:
             if not parquet_dir.exists():
                 return {"error": f"dataset path missing: {parquet_dir}"}
 
-            return self._load_dataset_page(
-                parquet_dir = parquet_dir, limit = limit, offset = offset
-            )
+            return self._load_dataset_page(parquet_dir = parquet_dir, limit = limit, offset = offset)
         except Exception as exc:
             return {"error": f"dataset load failed: {exc}"}
 
     @staticmethod
-    def _load_dataset_page(
-        *,
-        parquet_dir: Path,
-        limit: int,
-        offset: int,
-    ) -> dict[str, Any]:
+    def _load_dataset_page(*, parquet_dir: Path, limit: int, offset: int) -> dict[str, Any]:
         dataset_page = JobManager._load_dataset_page_with_duckdb(
             parquet_dir = parquet_dir,
             limit = limit,
@@ -347,10 +334,7 @@ class JobManager:
 
     @staticmethod
     def _load_dataset_page_with_duckdb(
-        *,
-        parquet_dir: Path,
-        limit: int,
-        offset: int,
+        *, parquet_dir: Path, limit: int, offset: int
     ) -> dict[str, Any] | None:
         parquet_glob = str((parquet_dir / "*.parquet").resolve())
         try:
@@ -389,10 +373,7 @@ class JobManager:
 
     @staticmethod
     def _load_dataset_page_with_data_designer(
-        *,
-        parquet_dir: Path,
-        limit: int,
-        offset: int,
+        *, parquet_dir: Path, limit: int, offset: int
     ) -> dict[str, Any]:
         from data_designer.config.utils.io_helpers import read_parquet_dataset
 
@@ -402,7 +383,10 @@ class JobManager:
         return {"dataset": to_preview_jsonable(rows), "total": total}
 
     def subscribe(
-        self, job_id: str, *, after_seq: int | None = None
+        self,
+        job_id: str,
+        *,
+        after_seq: int | None = None,
     ) -> Subscription | None:
         """SSE subscribe: get replay buffer + live events stream."""
         with self._lock:
@@ -497,9 +481,7 @@ class JobManager:
                         self._job.error = self._job.error or "process exited"
                     self._job.finished_at = time.time()
                     event_type = (
-                        EVENT_JOB_CANCELLED
-                        if self._job.status == "cancelled"
-                        else EVENT_JOB_ERROR
+                        EVENT_JOB_CANCELLED if self._job.status == "cancelled" else EVENT_JOB_ERROR
                     )
                     self._emit(
                         {
@@ -557,16 +539,14 @@ class JobManager:
     def _retire_workflow_key(self, job: Job) -> None:
         """Revoke the workflow-scoped sk-unsloth-* key, if one was minted.
 
-        Best-effort: revocation failures are swallowed. The key would
-        expire on its own after 24h, so a missed revoke is a latency
-        concern, not a correctness one.
+        Best-effort: failures are swallowed. The key expires after 24h, so a
+        missed revoke is a latency, not correctness, concern.
         """
         key_id = getattr(job, "internal_api_key_id", None)
         if not key_id:
             return
         try:
-            from auth import storage  # deferred: avoids circular import
-
+            from auth import storage  # deferred: avoid circular import
             storage.revoke_internal_api_key(int(key_id))
         except Exception:
             pass

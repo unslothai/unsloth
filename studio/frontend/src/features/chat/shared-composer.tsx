@@ -7,6 +7,7 @@ import {
   thinkToggleAriaLabel,
 } from "@/components/assistant-ui/think-aria-label";
 import { Button } from "@/components/ui/button";
+import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
 import {
   DropdownMenu,
@@ -27,30 +28,44 @@ import { getImageInputUnavailableReason } from "./utils/image-input-support";
 import { useAui } from "@assistant-ui/react";
 import {
   ArrowUpIcon,
-  CheckIcon,
   Columns2Icon,
   GlobeIcon,
   HeadphonesIcon,
+  MoreHorizontalIcon,
   PlusIcon,
   SquareIcon,
   XIcon,
 } from "lucide-react";
 import {
   AttachmentIcon,
+  Bookmark02Icon,
   CodeIcon,
   Download01Icon,
+  FileDatabaseIcon,
   Folder01Icon,
   FolderAddIcon,
   Image03Icon,
   McpServerIcon,
   PencilRulerIcon,
+  ShieldBanIcon,
 } from "@hugeicons/core-free-icons";
 import { useNavigate } from "@tanstack/react-router";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { toast } from "@/lib/toast";
+import {
+  PromptStorageDialog,
+  exportConversationShareGPT,
+  exportConversationRawJsonl,
+  exportConversationCsv,
+} from "./prompt-storage/prompt-storage-dialog";
+import { listPromptEntries, type PromptEntry } from "./api/prompts-api";
 import { McpComposerButton } from "./mcp-composer-button";
+import { BypassPermissionsMenuItem } from "./bypass-permissions-menu-item";
+import { reasoningCapsFromLoad } from "./lib/apply-inference-status-to-store";
+import { KnowledgeBaseComposerButton } from "@/features/rag/components/knowledge-base-composer-button";
 import { NewProjectDialog } from "./components/new-project-dialog";
 import { useChatProjects } from "./hooks/use-chat-projects";
+import { confirmRemoteCodeIfNeeded } from "@/features/security";
 import { loadModel, validateModel } from "./api/chat-api";
 import {
   parseExternalModelId,
@@ -58,7 +73,15 @@ import {
 } from "./external-providers";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
 import {
+  PLUS_MENU_ORDER,
+  type PlusMenuItemId,
+  usePlusMenuPrefsStore,
+} from "./stores/plus-menu-prefs-store";
+import {
   type ReasoningEffort,
+  resolveLoadedSpeculativeSettings,
+  resolveSpeculativeSettingsForLoad,
+  saveSpeculativeType,
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
 import {
@@ -74,6 +97,7 @@ import {
   type MutableRefObject,
   type ReactElement,
   type ReactNode,
+  Fragment,
   createContext,
   useCallback,
   useContext,
@@ -102,7 +126,7 @@ export interface CompareHandle {
 const IMAGE_ACCEPT = "image/jpeg,image/png,image/webp,image/gif";
 const MAX_IMAGE_SIZE = 20 * 1024 * 1024;
 
-// Inlined to avoid a new icon dependency. Kept in sync with the main composer.
+// Inlined to avoid a new icon dep. Kept in sync with the main composer.
 const ArrowDownStandardIcon: FC<{ className?: string }> = ({ className }) => (
   <svg
     className={className}
@@ -149,9 +173,9 @@ function isNativeComposing(event: Event) {
   return "isComposing" in event && (event as InputEvent).isComposing === true;
 }
 
-// Mirrors the threshold in thread.tsx — see the comment there. Chrome on
-// Windows-over-WSL (issue #5546) never fires `compositionend` after the
-// IME commit, so the compose flag would otherwise stay true forever.
+// Mirrors the threshold in thread.tsx. Chrome on Windows-over-WSL (#5546)
+// never fires `compositionend` after IME commit, so the compose flag would
+// otherwise stay true forever.
 const IME_STUCK_TIMEOUT_MS = 2500;
 
 function fileToBase64DataURL(file: File): Promise<string> {
@@ -187,8 +211,8 @@ function formatReasoningDisabledLabel(
   modelId?: string,
 ): string {
   const normalized = modelId?.trim().toLowerCase() ?? "";
-  // Magistral keeps the "none" wire value, but UX should present this floor
-  // as "Medium" rather than a disabled state label.
+  // Magistral keeps the "none" wire value, but UX presents this floor as
+  // "Medium" rather than a disabled-state label.
   if (normalized.includes("magistral-medium-latest")) return "Medium";
   return supportsReasoningOff && isExternalOpenAIReasoning ? "None" : "Off";
 }
@@ -374,7 +398,7 @@ type CompareModelSelection = {
   ggufVariant?: string;
 };
 
-// Tool icon plus an X overlay the CSS reveals on hover when the pill is active.
+// Tool icon plus an X overlay CSS reveals on hover when the pill is active.
 function PillGlyph({ children }: { children: ReactNode }) {
   return (
     <span className="composer-pill-glyph">
@@ -389,15 +413,18 @@ export function SharedComposer({
   model1,
   model2,
   onExitCompare,
+  model1ThreadId,
+  model2ThreadId,
 }: {
   handlesRef: CompareHandles;
   model1?: CompareModelSelection;
   model2?: CompareModelSelection;
   onExitCompare?: () => void;
+  model1ThreadId?: string;
+  model2ThreadId?: string;
 }): ReactElement {
   const navigate = useNavigate();
-  // Exit compare. Uses the parent's restore handler, or a fresh chat when
-  // compare was opened by direct URL.
+  // Exit compare: parent's restore handler, or fresh chat if opened by URL.
   const handleExitCompare = useCallback(() => {
     if (onExitCompare) {
       onExitCompare();
@@ -416,6 +443,29 @@ export function SharedComposer({
   const [dragging, setDragging] = useState(false);
   const [isComposing, setIsComposing] = useState(false);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
+  const [promptStorageOpen, setPromptStorageOpen] = useState(false);
+  const [recentPrompts, setRecentPrompts] = useState<PromptEntry[]>([]);
+  const refreshRecentPrompts = useCallback(async () => {
+    try {
+      const rows = await listPromptEntries();
+      const byRecent = [...rows].sort((a, b) => b.updatedAt - a.updatedAt);
+      // Pinned prompts take over the submenu; fall back to the 3 most recent.
+      const pinnedIds = usePlusMenuPrefsStore.getState().pinnedPromptIds;
+      const pinned = byRecent.filter((p) => pinnedIds.includes(p.id));
+      setRecentPrompts(pinned.length > 0 ? pinned : byRecent.slice(0, 3));
+    } catch {
+    }
+  }, []);
+  const plusPins = usePlusMenuPrefsStore((s) => s.pins);
+  const [isQueueRunning, setIsQueueRunning] = useState(false);
+  const [queueProgress, setQueueProgress] = useState({ current: 0, total: 0 });
+  const queueRef = useRef<string[]>([]);
+  const queueIndexRef = useRef(0);
+  const isQueueRunningRef = useRef(false);
+  const prevRunningRef = useRef(false);
+  const prevComparingRef = useRef(false);
+  const compareStepSucceededRef = useRef(false);
+  const sendRef = useRef<(() => void) | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const composingRef = useRef(false);
   const stuckImeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -472,7 +522,7 @@ export function SharedComposer({
   const setMcpEnabledForChat = useChatRuntimeStore(
     (s) => s.setMcpEnabledForChat,
   );
-  // Three most recently updated projects for the quick-access submenu.
+  // Three most recently updated projects for the quick-access submenu
   const { projects } = useChatProjects();
   const recentProjects = [...projects]
     .sort((a, b) => b.updatedAt - a.updatedAt)
@@ -486,6 +536,17 @@ export function SharedComposer({
   );
   const setWebFetchToolsEnabled = useChatRuntimeStore(
     (s) => s.setWebFetchToolsEnabled,
+  );
+  const bypassPermissions = useChatRuntimeStore((s) => s.bypassPermissions);
+  const setBypassPermissions = useChatRuntimeStore(
+    (s) => s.setBypassPermissions,
+  );
+  const ragEnabled = useChatRuntimeStore((s) => s.ragEnabled);
+  const setRagEnabled = useChatRuntimeStore((s) => s.setRagEnabled);
+  const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
+  // Empty until a compare run; gates Export chat off.
+  const exportThreadIds = [model1ThreadId, model2ThreadId, activeThreadId].filter(
+    (id): id is string => Boolean(id),
   );
   const lastOpenRouterChosenModel = useChatRuntimeStore(
     (s) => s.lastOpenRouterChosenModel,
@@ -507,11 +568,10 @@ export function SharedComposer({
     modelLoaded,
   });
   const isCompareMode = Boolean(model1?.id || model2?.id);
-  // Attach-time gate. Compare mode defers to send: the catalog can lag
-  // behind a model's real capabilities (e.g., a GGUF whose mmproj
-  // arrives after the catalog snapshot), and we only sync the models[]
-  // entry after ensureModelLoaded runs at send time. Single mode uses
-  // the loaded model's runtime capability.
+  // Attach-time gate. Compare mode defers to send: the catalog can lag a
+  // model's real capabilities (e.g. a GGUF whose mmproj arrives after the
+  // snapshot), and models[] only syncs after ensureModelLoaded at send time.
+  // Single mode uses the loaded model's runtime capability.
   const attachUnavailableReason = isCompareMode ? null : imageUnavailableReason;
   const effectiveExternalModelId =
     selectedExternalProvider?.providerType === "openrouter" &&
@@ -547,11 +607,10 @@ export function SharedComposer({
   const reasoningLockedOn =
     effectiveSupportsReasoning &&
     (effectiveReasoningAlwaysOn || !effectiveSupportsReasoningOff);
-  // Kimi's $web_search builtin mandates thinking=disabled per the docs at
-  // https://platform.kimi.ai/docs/guide/use-web-search. Both pills stay
-  // clickable for Kimi, but turning one on flips the other off — the
-  // click handlers below enforce this mutual exclusion so the visible
-  // state always matches what the backend actually sends.
+  // Kimi's $web_search builtin mandates thinking=disabled
+  // (https://platform.kimi.ai/docs/guide/use-web-search). Both pills stay
+  // clickable, but turning one on flips the other off; the click handlers
+  // below enforce this so the visible state matches what the backend sends.
   const isKimiExternal = selectedExternalProvider?.providerType === "kimi";
   const effectiveReasoningEnabled = reasoningLockedOn ? true : reasoningEnabled;
   const effectiveReasoningVisualEnabled =
@@ -559,19 +618,21 @@ export function SharedComposer({
   const reasoningDisabled = !modelLoaded || !effectiveSupportsReasoning;
   const showReasoningControl =
     effectiveSupportsReasoning || effectiveReasoningAlwaysOn;
-  const isEffort = effectiveReasoningStyle === "reasoning_effort";
+  // enable_thinking_effort (GLM-5.2: high|max + disable) reuses the effort
+  // dropdown; it just also carries an Off row via supportsReasoningOff.
+  const isEffort =
+    effectiveReasoningStyle === "reasoning_effort" ||
+    effectiveReasoningStyle === "enable_thinking_effort";
   const thinkingActiveLook = isEffort
     ? reasoningLockedOn || (effectiveReasoningVisualEnabled && !reasoningDisabled)
     : reasoningLockedOn || (effectiveReasoningEnabled && !reasoningDisabled);
-  // Two-pill gating: Search pill lights up when the runtime has either
-  // a local tool runtime (supportsTools, gives us our Code/python + local
-  // web_search) OR a server-side web_search the provider runs for us
-  // (supportsBuiltinWebSearch, currently OpenAI / Anthropic / OpenRouter
-  // / Kimi). Code pill lights up on the local runtime OR when Anthropic
-  // is selected with a model that accepts the server-side
-  // code_execution_20250825 tool — see
-  // providerSupportsBuiltinCodeExecution. Anthropic is the only external
-  // provider that ships a code-execution tool today.
+  // Two-pill gating: Search lights up on a local tool runtime (supportsTools:
+  // Code/python + local web_search) OR a provider-run server-side web_search
+  // (supportsBuiltinWebSearch: OpenAI/Anthropic/OpenRouter/Kimi). Code lights
+  // up on the local runtime OR Anthropic with a model accepting the
+  // server-side code_execution_20250825 tool (see
+  // providerSupportsBuiltinCodeExecution). Anthropic is the only external
+  // provider shipping a code-execution tool today.
   const supportsBuiltinCodeExecution = providerSupportsBuiltinCodeExecution(
     selectedExternalProvider?.providerType,
     effectiveExternalModelId,
@@ -586,24 +647,22 @@ export function SharedComposer({
     selectedExternalProvider?.providerType,
   );
   // Gemini rejects codeExecution alongside image modalities. Search is
-  // blocked on older Gemini image ids but allowed on Gemini 3 image
-  // models -- supportsBuiltinWebSearch already encodes the per-model
-  // allowance, so we only disable Code unconditionally in Gemini
-  // image mode.
+  // blocked on older Gemini image ids but allowed on Gemini 3 image models
+  // (supportsBuiltinWebSearch encodes the per-model allowance), so we only
+  // disable Code unconditionally in Gemini image mode.
   const isExternalGemini = selectedExternalProvider?.providerType === "gemini";
   const imageDisabled = !modelLoaded || !supportsBuiltinImageGeneration;
   const imageModeDisablesCode =
     isExternalGemini && imageToolsEnabled && !imageDisabled;
   // Image-tier Gemini models always reject codeExecution and reject
-  // web_search on older ids (Gemini 3.x Pro/Flash allow it -- encoded
-  // in supportsBuiltinWebSearch). Don't let the local `supportsTools`
-  // runtime flag re-enable a pill the Gemini backend will silently
-  // drop. Detect "external provider is Gemini AND model is image-tier"
-  // and gate strictly on the provider builtin support.
+  // web_search on older ids (Gemini 3.x Pro/Flash allow it, encoded in
+  // supportsBuiltinWebSearch). Don't let local `supportsTools` re-enable a
+  // pill the Gemini backend silently drops: detect image-tier Gemini and
+  // gate strictly on provider builtin support.
   const isGeminiImageTier =
     isExternalGemini && supportsBuiltinImageGeneration;
   // Disable only when a loaded model lacks the capability; with no model the
-  // tool can still be pre-selected and reflected, matching the + menu.
+  // tool can still be pre-selected, matching the + menu.
   const searchDisabled =
     modelLoaded &&
     (isGeminiImageTier
@@ -615,23 +674,29 @@ export function SharedComposer({
         ? true
         : !(supportsTools || supportsBuiltinCodeExecution))) ||
     imageModeDisablesCode;
-  // Images pill is only ever lit on OpenAI cloud's Responses-API models
-  // and Gemini Nano Banana family. No local tool runtime fallback.
+  // Images pill lights only on OpenAI cloud Responses-API models and the
+  // Gemini Nano Banana family. No local tool runtime fallback.
   const showImagePill = supportsBuiltinImageGeneration;
   // Fetch pill: Anthropic-only (web_fetch_20250910 / web_fetch_20260209).
   const webFetchDisabled = !modelLoaded || !supportsBuiltinWebFetch;
   const showWebFetchPill = supportsBuiltinWebFetch;
-  // With more than 4 pills showing, collapse them to icons only to cut clutter.
-  // Compare, Search and Code always show; the rest are conditional.
+  // Docs (RAG) is local-only: search_knowledge_base needs the local runtime.
+  // Disable only when a loaded model can't run it; with no model the toggle
+  // can still be pre-selected, matching Web search/Code/MCP.
+  const ragDisabled = modelLoaded && (isExternalModel || !supportsTools);
+  const showRagPill = !isExternalModel;
+  // Above 4 pills, collapse to icons only to cut clutter. Compare, Search and
+  // Code always show; the rest are conditional.
   const pillsCompact =
     3 +
       (showImagePill ? 1 : 0) +
+      (showRagPill && ragEnabled && !ragDisabled ? 1 : 0) +
       (showWebFetchPill ? 1 : 0) +
       (artifactsEnabled ? 1 : 0) +
       (mcpEnabledForChat ? 1 : 0) >
     4;
-  // Backwards-compatible alias for any other call site that may still
-  // reference `toolsDisabled` (rare; both pills used it before).
+  // Backwards-compatible alias for call sites still referencing
+  // `toolsDisabled` (rare; both pills used it before).
   const toolsDisabled = codeDisabled;
   const setPendingAudioStore = useChatRuntimeStore((s) => s.setPendingAudio);
   const clearPendingAudioStore = useChatRuntimeStore(
@@ -653,6 +718,55 @@ export function SharedComposer({
     }, 200);
     return () => clearInterval(id);
   }, [handlesRef]);
+
+  function advanceQueue() {
+    const nextIndex = queueIndexRef.current + 1;
+    if (nextIndex >= queueRef.current.length) {
+      isQueueRunningRef.current = false;
+      setIsQueueRunning(false);
+      queueRef.current = [];
+      queueIndexRef.current = 0;
+      setQueueProgress({ current: 0, total: 0 });
+      toast.success("Prompt queue complete");
+      return;
+    }
+    queueIndexRef.current = nextIndex;
+    setQueueProgress({ current: nextIndex + 1, total: queueRef.current.length });
+    const next = queueRef.current[nextIndex];
+    toast(`Prompt ${nextIndex + 1} / ${queueRef.current.length}`, {
+      description: next.length > 80 ? next.slice(0, 80) + "…" : next,
+    });
+    setText(next);
+    setTimeout(() => { sendRef.current?.(); }, 100);
+  }
+
+  // Compare mode: advance the queue on cycle end, but stop on a failed step so we
+  // don't burn prompts on incomplete results.
+  useEffect(() => {
+    const wasComparing = prevComparingRef.current;
+    prevComparingRef.current = comparing;
+    if (!isQueueRunningRef.current || !wasComparing || comparing) return;
+    if (!compareStepSucceededRef.current) {
+      isQueueRunningRef.current = false;
+      setIsQueueRunning(false);
+      queueRef.current = [];
+      queueIndexRef.current = 0;
+      setQueueProgress({ current: 0, total: 0 });
+      toast.error("Prompt queue stopped", {
+        description: "A compare step failed; remaining prompts were not sent.",
+      });
+      return;
+    }
+    prevRunningRef.current = false;
+    advanceQueue();
+  }, [comparing]);
+
+  useEffect(() => {
+    const wasRunning = prevRunningRef.current;
+    prevRunningRef.current = running;
+    if (!isQueueRunningRef.current || !wasRunning || running || comparing) return;
+    advanceQueue();
+  }, [running, comparing]);
 
   // Auto-expand textarea up to 6 rows, then scroll (matches regular chat composer).
   useEffect(() => {
@@ -753,11 +867,11 @@ export function SharedComposer({
     const isGeneralizedCompare =
       hasCompareHandles && Boolean(model1?.id && model2?.id);
 
-    // Generalized compare requires both panes to have a model. A
-    // half-selected send either races to an empty bubble with bogus
-    // tok/s (#5569) or leaves the empty pane with a dangling prompt.
-    // hasCompareHandles is true only in GeneralCompareContent, so
-    // LoraCompare and single-pane chats are unaffected.
+    // Generalized compare requires both panes to have a model. A half-
+    // selected send either races to an empty bubble with bogus tok/s (#5569)
+    // or leaves the empty pane with a dangling prompt. hasCompareHandles is
+    // true only in GeneralCompareContent, so LoraCompare and single-pane
+    // chats are unaffected.
     if (hasCompareHandles && !isGeneralizedCompare) {
       toast.error("Pick a model in each pane to compare", {
         description:
@@ -771,10 +885,10 @@ export function SharedComposer({
       !isGeneralizedCompare &&
       imageUnavailableReason
     ) {
-      // Single mode: the loaded model's runtime capability is known
-      // here. Compare mode defers — each ensureModelLoaded below sets
-      // loadedIsMultimodal for its side, and the chat-adapter's
-      // pre-stream gate runs per-side against that fresh state.
+      // Single mode: the loaded model's runtime capability is known here.
+      // Compare mode defers: each ensureModelLoaded sets loadedIsMultimodal
+      // for its side, and the chat-adapter's pre-stream gate runs per-side
+      // against that fresh state.
       toast.error(imageUnavailableReason);
       return;
     }
@@ -811,6 +925,9 @@ export function SharedComposer({
       const effectiveChatTemplateOverride = chatTemplateOverride?.trim()
         ? chatTemplateOverride
         : null;
+      const specSettings = resolveSpeculativeSettingsForLoad({
+        usePersistedPreference: true,
+      });
 
       function modelDisplayName(id: string): string {
         const parts = id.split("/");
@@ -822,24 +939,43 @@ export function SharedComposer({
         sel: CompareModelSelection,
       ): Promise<string> {
         const currentStore = useChatRuntimeStore.getState();
+        let loadTrustRemoteCode = trustRemoteCode;
+        let approvedRemoteCodeFingerprint: string | null = null;
         const isAlreadyActive =
           currentStore.params.checkpoint === sel.id &&
           (currentStore.activeGgufVariant ?? null) ===
             (sel.ggufVariant ?? null);
-        if (!isAlreadyActive) {
-          const validation = await validateModel({
-            model_path: sel.id,
-            hf_token: currentStore.hfToken || null,
-            max_seq_length: maxSeqLength,
-            load_in_4bit: true,
-            is_lora: sel.isLora,
-            gguf_variant: sel.ggufVariant ?? null,
-            trust_remote_code: trustRemoteCode,
-            chat_template_override: effectiveChatTemplateOverride,
+        // Already loaded (gate passed at first load): skip a redundant reload that would
+        // re-trigger the gate without the approval fingerprint and fail for HIGH custom code.
+        if (isAlreadyActive) {
+          return "ready";
+        }
+        const validation = await validateModel({
+          model_path: sel.id,
+          hf_token: currentStore.hfToken || null,
+          max_seq_length: maxSeqLength,
+          load_in_4bit: true,
+          is_lora: sel.isLora,
+          gguf_variant: sel.ggufVariant ?? null,
+          trust_remote_code: loadTrustRemoteCode,
+          chat_template_override: effectiveChatTemplateOverride,
+        });
+        if (
+          validation.requires_trust_remote_code ||
+          validation.requires_security_review
+        ) {
+          const approved = await confirmRemoteCodeIfNeeded({
+            modelName: sel.id,
+            hfToken: currentStore.hfToken || null,
+            requiresTrustRemoteCode: true,
+            onApprove: (fp) => {
+              loadTrustRemoteCode = true;
+              approvedRemoteCodeFingerprint = fp;
+            },
           });
-          if (validation.requires_trust_remote_code && !trustRemoteCode) {
+          if (!approved) {
             throw new Error(
-              `${modelDisplayName(sel.id)} needs custom code enabled to load. Turn on "Enable custom code" in Chat Settings, then try again.`,
+              `${modelDisplayName(sel.id)} needs custom code approval to load.`,
             );
           }
         }
@@ -850,9 +986,15 @@ export function SharedComposer({
           load_in_4bit: true,
           is_lora: sel.isLora,
           gguf_variant: sel.ggufVariant ?? null,
-          trust_remote_code: trustRemoteCode,
+          trust_remote_code: loadTrustRemoteCode,
+          approved_remote_code_fingerprint: approvedRemoteCodeFingerprint,
           chat_template_override: effectiveChatTemplateOverride,
+          speculative_type: specSettings.speculativeType,
+          spec_draft_n_max: specSettings.specDraftNMax,
+          // Honor the Tensor Parallelism toggle on compare loads too.
+          tensor_parallel: currentStore.tensorParallel,
         });
+        saveSpeculativeType(specSettings.speculativeType);
         const store = useChatRuntimeStore.getState();
         store.setCheckpoint(
           resp.model,
@@ -864,15 +1006,17 @@ export function SharedComposer({
         useChatRuntimeStore.setState({
           supportsReasoning: resp.supports_reasoning ?? false,
           reasoningAlwaysOn: resp.reasoning_always_on ?? false,
-          reasoningStyle: resp.reasoning_style ?? "enable_thinking",
+          ...reasoningCapsFromLoad(resp),
           supportsPreserveThinking: resp.supports_preserve_thinking ?? false,
           supportsTools: resp.supports_tools ?? false,
+          tensorParallel: resp.tensor_parallel ?? false,
+          loadedTensorParallel: resp.tensor_parallel ?? false,
           loadedIsMultimodal: isMultimodalResponse(resp),
+          ...resolveLoadedSpeculativeSettings(resp),
         });
-        // Sync the models[] entry with the load response so the
-        // attach/send gates read fresh capabilities. /api/models/list
-        // can lag behind a model's actual state (e.g., a GGUF whose
-        // mmproj was downloaded after the catalog snapshot).
+        // Sync the models[] entry with the load response so attach/send gates
+        // read fresh capabilities. /api/models/list can lag a model's actual
+        // state (e.g. a GGUF whose mmproj arrived after the snapshot).
         const currentModels = useChatRuntimeStore.getState().models;
         const idx = currentModels.findIndex((m) => m.id === sel.id);
         const synced = {
@@ -954,8 +1098,10 @@ export function SharedComposer({
           await done;
         }
 
+        compareStepSucceededRef.current = true;
         toast.success("Compare complete", { id: toastId, duration: 2000 });
       } catch (err) {
+        compareStepSucceededRef.current = false;
         toast.error("Compare failed", {
           id: toastId,
           description: err instanceof Error ? err.message : "Unknown error",
@@ -971,6 +1117,7 @@ export function SharedComposer({
       }
     }
   }
+  sendRef.current = send;
 
   function stop() {
     if (isDictating) stopDictation();
@@ -982,17 +1129,30 @@ export function SharedComposer({
   const busy = running || comparing;
 
   function onKeyDown(e: KeyboardEvent) {
-    // IME composition (Japanese/Chinese/Korean): Enter commits the candidate.
-    // Don't hijack it. See issue #5318. Re-pin composingRef in case the stuck
-    // watchdog (#5546) cleared it during a long candidate-window pause; this
-    // keeps a follow-up click-Send from submitting preedit text. Re-arm the
-    // watchdog on the same path — without it the WSL+Chrome no-compositionend
-    // case would leave composingRef pinned forever after an IME keypress and
-    // re-lock Send.
+    // IME composition (JP/CN/KR): Enter commits the candidate, don't hijack it
+    // (#5318). Re-pin composingRef in case the stuck watchdog (#5546) cleared
+    // it during a long candidate-window pause, so a follow-up click-Send won't
+    // submit preedit text. Re-arm the watchdog on the same path; without it the
+    // WSL+Chrome no-compositionend case pins composingRef forever after an IME
+    // keypress and re-locks Send.
     if (e.nativeEvent.isComposing || e.keyCode === 229) {
       composingRef.current = true;
       refreshStuckImeTimer();
       return;
+    }
+    // Non-IME key while composingRef is stuck; mirrors the fix in thread.tsx.
+    // On macOS, switching input methods without composing can leave composingRef
+    // pinned; clear it immediately on the first non-IME keystroke.
+    if (composingRef.current) {
+      // Candidate-confirming Enter can arrive as non-composing; keep it gated.
+      if (e.key === "Enter") {
+        if (!e.shiftKey) {
+          e.preventDefault();
+        }
+        refreshStuckImeTimer();
+        return;
+      }
+      setCompositionState(false);
     }
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
@@ -1009,6 +1169,158 @@ export function SharedComposer({
     !busy &&
     !isComposing;
 
+  // Adjustable "+" menu items, keyed by id. Pinned ones render at the top
+  // level; the rest fall into the "More" overflow submenu. Core items (photos,
+  // web search, code) and "More" itself live outside this map.
+  const plusMenuNodes: Record<PlusMenuItemId, ReactNode> = {
+    chatWithFiles: (
+      <DropdownMenuItem
+        disabled={ragDisabled}
+        className={
+          ragEnabled && !ragDisabled ? "text-primary font-medium" : undefined
+        }
+        onSelect={() => setRagEnabled(!ragEnabled)}
+      >
+        <HugeiconsIcon icon={FileDatabaseIcon} strokeWidth={2} />
+        Chat with Files
+        {ragEnabled && !ragDisabled ? (
+          <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="ml-auto" />
+        ) : null}
+      </DropdownMenuItem>
+    ),
+    mcp: (
+      <DropdownMenuItem
+        disabled={!supportsTools}
+        className={mcpEnabledForChat ? "text-primary font-medium" : undefined}
+        onSelect={() => setMcpEnabledForChat(!mcpEnabledForChat)}
+      >
+        <HugeiconsIcon icon={McpServerIcon} strokeWidth={2} />
+        MCP
+        {mcpEnabledForChat ? (
+          <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="ml-auto" />
+        ) : null}
+      </DropdownMenuItem>
+    ),
+    savedPrompts: (
+      <DropdownMenuSub>
+        <DropdownMenuSubTrigger>
+          <HugeiconsIcon icon={Bookmark02Icon} strokeWidth={2} />
+          Saved prompts
+        </DropdownMenuSubTrigger>
+        <DropdownMenuSubContent
+          collisionPadding={16}
+          className="unsloth-plus-menu w-[208px]"
+        >
+          {recentPrompts.map((p) => (
+            <DropdownMenuItem
+              key={p.id}
+              onSelect={() => {
+                setText(p.text);
+                requestAnimationFrame(() => textareaRef.current?.focus());
+              }}
+            >
+              <span className="truncate">{p.name}</span>
+            </DropdownMenuItem>
+          ))}
+          {recentPrompts.length > 0 ? <DropdownMenuSeparator /> : null}
+          <DropdownMenuItem onSelect={() => setPromptStorageOpen(true)}>
+            All saved prompts…
+          </DropdownMenuItem>
+        </DropdownMenuSubContent>
+      </DropdownMenuSub>
+    ),
+    compareChat: (
+      // Always active: this menu only renders in compare mode. Click exits.
+      <DropdownMenuItem
+        className="text-primary font-medium"
+        onSelect={handleExitCompare}
+      >
+        <Columns2Icon />
+        Compare chat
+        <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="ml-auto" />
+      </DropdownMenuItem>
+    ),
+    exportChat: (
+      <DropdownMenuSub>
+        <DropdownMenuSubTrigger disabled={exportThreadIds.length === 0}>
+          <HugeiconsIcon icon={Download01Icon} strokeWidth={2} />
+          Export chat
+        </DropdownMenuSubTrigger>
+        <DropdownMenuSubContent
+          collisionPadding={16}
+          className="unsloth-plus-menu w-[208px]"
+        >
+          {[
+            { label: "Raw JSONL", fn: exportConversationRawJsonl },
+            { label: "CSV", fn: exportConversationCsv },
+            { label: "ShareGPT JSONL", fn: exportConversationShareGPT },
+          ].map(({ label, fn }) => (
+            <DropdownMenuItem
+              key={label}
+              disabled={exportThreadIds.length === 0}
+              onSelect={() => {
+                if (!exportThreadIds.length) {
+                  toast.error("No conversation to export yet.");
+                  return;
+                }
+                Promise.all(exportThreadIds.map((id) => fn(id))).catch(() =>
+                  toast.error("Export failed."),
+                );
+              }}
+            >
+              {label}
+            </DropdownMenuItem>
+          ))}
+        </DropdownMenuSubContent>
+      </DropdownMenuSub>
+    ),
+    canvas: (
+      <DropdownMenuItem
+        className={artifactsEnabled ? "text-primary font-medium" : undefined}
+        onSelect={() => setArtifactsEnabled(!artifactsEnabled)}
+      >
+        <HugeiconsIcon icon={PencilRulerIcon} strokeWidth={2} />
+        Canvas
+        {artifactsEnabled ? (
+          <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="ml-auto" />
+        ) : null}
+      </DropdownMenuItem>
+    ),
+    bypassPermissions: <BypassPermissionsMenuItem />,
+    projects: (
+      <DropdownMenuSub>
+        <DropdownMenuSubTrigger>
+          <HugeiconsIcon icon={Folder01Icon} strokeWidth={2} />
+          Projects
+        </DropdownMenuSubTrigger>
+        <DropdownMenuSubContent className="unsloth-plus-menu w-[232px]">
+          <DropdownMenuItem onSelect={() => setNewProjectOpen(true)}>
+            <HugeiconsIcon icon={FolderAddIcon} strokeWidth={2} />
+            New project
+          </DropdownMenuItem>
+          <DropdownMenuLabel>Recents</DropdownMenuLabel>
+          {recentProjects.length > 0 ? (
+            recentProjects.map((project) => (
+              <DropdownMenuItem
+                key={project.id}
+                onSelect={() => openProject(project.id)}
+              >
+                <HugeiconsIcon icon={Folder01Icon} strokeWidth={2} />
+                <span className="truncate">{project.name}</span>
+              </DropdownMenuItem>
+            ))
+          ) : (
+            <DropdownMenuItem disabled={true}>
+              No recent projects
+            </DropdownMenuItem>
+          )}
+        </DropdownMenuSubContent>
+      </DropdownMenuSub>
+    ),
+  };
+  const pinnedPlusItems = PLUS_MENU_ORDER.filter((id) => plusPins[id]);
+  const overflowPlusItems = PLUS_MENU_ORDER.filter((id) => !plusPins[id]);
+
   return (
     <div
       className="chat-composer-surface"
@@ -1019,14 +1331,49 @@ export function SharedComposer({
       }}
       onDragLeave={() => setDragging(false)}
       onDrop={(e) => {
-        // Phase 1 native model drops own Tauri local-path drops. Restore browser
-        // attachment drops in Tauri when Phase 1d adds attachment-token bridging.
+        // Phase 1 native model drops own Tauri local-path drops. Restore
+        // browser attachment drops in Tauri once Phase 1d adds token bridging.
         if (isTauri) return;
         e.preventDefault();
         setDragging(false);
         addFiles(e.dataTransfer.files);
       }}
     >
+      <PromptStorageDialog
+        open={promptStorageOpen}
+        onOpenChange={setPromptStorageOpen}
+        onUse={(t) => {
+          setText(t);
+          requestAnimationFrame(() => textareaRef.current?.focus());
+        }}
+        onRunList={(items) => {
+          const filtered = items.filter((p) => p.trim());
+          if (!filtered.length) return;
+          const hasCompareHandles = Boolean(
+            handlesRef.current["model1"] || handlesRef.current["model2"],
+          );
+          const isGeneralizedCompare =
+            hasCompareHandles && Boolean(model1?.id && model2?.id);
+          if (hasCompareHandles && !isGeneralizedCompare) {
+            toast.error("Pick a model in each pane to compare", {
+              description:
+                "Use the model dropdown above each pane, then send your prompt.",
+            });
+            return;
+          }
+          setPromptStorageOpen(false);
+          queueRef.current = filtered;
+          queueIndexRef.current = 0;
+          isQueueRunningRef.current = true;
+          setIsQueueRunning(true);
+          setQueueProgress({ current: 1, total: filtered.length });
+          toast(`Prompt 1 / ${filtered.length}`, {
+            description: filtered[0].length > 80 ? filtered[0].slice(0, 80) + "…" : filtered[0],
+          });
+          setText(filtered[0]);
+          setTimeout(() => { sendRef.current?.(); }, 100);
+        }}
+      />
       {/* Gemini-style drop affordance, mirrored from the single composer. */}
       <div
         className={`pointer-events-none absolute inset-0 z-20 flex flex-col items-center justify-center gap-1 overflow-hidden rounded-[32px] bg-background/90 backdrop-blur-sm transition-opacity duration-150 dark:bg-card/90 ${dragging ? "opacity-100" : "opacity-0"}`}
@@ -1071,11 +1418,11 @@ export function SharedComposer({
         value={text}
         onChange={(e) => {
           // ALWAYS mirror the DOM value into React state, even during IME
-          // composition. The controlled `value` prop must match the DOM at
-          // all times, otherwise any unrelated parent re-render reconciles
-          // the textarea back to the stored value mid-composition — wiping
-          // the IME preedit AND prior committed text (e.g. Tab cycling
-          // candidates erases earlier words). Issue #5318.
+          // composition: the controlled `value` must match the DOM at all
+          // times, else an unrelated parent re-render reconciles the textarea
+          // back to the stored value mid-composition, wiping the IME preedit
+          // AND prior committed text (e.g. Tab-cycling candidates erases
+          // earlier words). #5318.
           setCompositionState(isNativeComposing(e.nativeEvent));
           setText(e.target.value);
         }}
@@ -1090,11 +1437,17 @@ export function SharedComposer({
           setText(e.currentTarget.value);
         }}
         onKeyDown={onKeyDown}
+        onBlur={() => {
+          // Mac: switching input methods can fire compositionstart without a
+          // matching compositionend, leaving composingRef pinned. The OS always
+          // commits or cancels composition before the element loses focus.
+          setCompositionState(false);
+        }}
         placeholder="Send to both models..."
         className="composer-input"
         rows={1}
-        // dir="auto" auto-detects RTL (Arabic / Hebrew / Persian / Urdu)
-        // from the first strong character; no effect on LTR scripts.
+        // dir="auto" detects RTL (Arabic/Hebrew/Persian/Urdu) from the first
+        // strong character; no effect on LTR scripts.
         dir="auto"
       />
       <div className="composer-action-wrapper">
@@ -1127,9 +1480,13 @@ export function SharedComposer({
             open={newProjectOpen}
             onOpenChange={setNewProjectOpen}
           />
-          {/* Same + side menu as the single-chat composer (ComposerToolsMenu),
-              wired to the compare composer's own file/audio inputs and tools. */}
-          <DropdownMenu>
+          {/* Same + menu as single-chat (ComposerToolsMenu), wired to the
+              compare composer's own file/audio inputs and tools. */}
+          <DropdownMenu
+            onOpenChange={(open) => {
+              if (open) void refreshRecentPrompts();
+            }}
+          >
             <DropdownMenuTrigger asChild={true}>
               <button
                 type="button"
@@ -1142,9 +1499,9 @@ export function SharedComposer({
             <DropdownMenuContent
               side="top"
               align="start"
-              sideOffset={2}
+              sideOffset={0}
               avoidCollisions={true}
-              className="unsloth-plus-menu w-[212px]"
+              className="unsloth-plus-menu w-[244px]"
               onCloseAutoFocus={(event) => event.preventDefault()}
             >
               <DropdownMenuItem onSelect={() => fileInputRef.current?.click()}>
@@ -1179,7 +1536,11 @@ export function SharedComposer({
                 <GlobeIcon />
                 Web search
                 {toolsEnabled && !searchDisabled ? (
-                  <CheckIcon className="ml-auto" />
+                  <HugeiconsIcon
+                    icon={Tick02Icon}
+                    strokeWidth={2}
+                    className="ml-auto"
+                  />
                 ) : null}
               </DropdownMenuItem>
               <DropdownMenuItem
@@ -1191,14 +1552,20 @@ export function SharedComposer({
                 }
                 onSelect={() => setCodeToolsEnabled(!codeToolsEnabled)}
               >
+                {/* Scale, not width: an oversized box pushed the label out of
+                    line. */}
                 <HugeiconsIcon
                   icon={CodeIcon}
                   strokeWidth={2}
-                  className="size-[1.175rem]!"
+                  className="scale-[1.12]"
                 />
                 Code
                 {codeToolsEnabled && !codeDisabled ? (
-                  <CheckIcon className="ml-auto" />
+                  <HugeiconsIcon
+                    icon={Tick02Icon}
+                    strokeWidth={2}
+                    className="ml-auto"
+                  />
                 ) : null}
               </DropdownMenuItem>
               {showImagePill && (
@@ -1214,72 +1581,31 @@ export function SharedComposer({
                   <HugeiconsIcon icon={Image03Icon} strokeWidth={2} />
                   Images
                   {imageToolsEnabled && !imageDisabled ? (
-                    <CheckIcon className="ml-auto" />
+                    <HugeiconsIcon
+                      icon={Tick02Icon}
+                      strokeWidth={2}
+                      className="ml-auto"
+                    />
                   ) : null}
                 </DropdownMenuItem>
               )}
               <DropdownMenuSeparator />
-              <DropdownMenuItem
-                className={
-                  artifactsEnabled ? "text-primary font-medium" : undefined
-                }
-                onSelect={() => setArtifactsEnabled(!artifactsEnabled)}
-              >
-                <HugeiconsIcon icon={PencilRulerIcon} strokeWidth={2} />
-                Canvas
-                {artifactsEnabled ? <CheckIcon className="ml-auto" /> : null}
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                disabled={!supportsTools}
-                className={
-                  mcpEnabledForChat ? "text-primary font-medium" : undefined
-                }
-                onSelect={() => setMcpEnabledForChat(!mcpEnabledForChat)}
-              >
-                <HugeiconsIcon icon={McpServerIcon} strokeWidth={2} />
-                MCP
-                {mcpEnabledForChat ? <CheckIcon className="ml-auto" /> : null}
-              </DropdownMenuItem>
-              {/* RAG hidden temporarily */}
-              {/* Always active: this menu only renders in compare mode.
-                  Ticked like Web search/Code; click toggles it off. */}
-              <DropdownMenuItem
-                className="text-primary font-medium"
-                onSelect={handleExitCompare}
-              >
-                <Columns2Icon />
-                Compare chat
-                <CheckIcon className="ml-auto" />
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuSub>
-                <DropdownMenuSubTrigger>
-                  <HugeiconsIcon icon={Folder01Icon} strokeWidth={2} />
-                  Projects
-                </DropdownMenuSubTrigger>
-                <DropdownMenuSubContent className="unsloth-plus-menu w-[200px]">
-                  <DropdownMenuItem onSelect={() => setNewProjectOpen(true)}>
-                    <HugeiconsIcon icon={FolderAddIcon} strokeWidth={2} />
-                    New project
-                  </DropdownMenuItem>
-                  <DropdownMenuLabel>Recents</DropdownMenuLabel>
-                  {recentProjects.length > 0 ? (
-                    recentProjects.map((project) => (
-                      <DropdownMenuItem
-                        key={project.id}
-                        onSelect={() => openProject(project.id)}
-                      >
-                        <HugeiconsIcon icon={Folder01Icon} strokeWidth={2} />
-                        <span className="truncate">{project.name}</span>
-                      </DropdownMenuItem>
-                    ))
-                  ) : (
-                    <DropdownMenuItem disabled={true}>
-                      No recent projects
-                    </DropdownMenuItem>
-                  )}
-                </DropdownMenuSubContent>
-              </DropdownMenuSub>
+              {pinnedPlusItems.map((id) => (
+                <Fragment key={id}>{plusMenuNodes[id]}</Fragment>
+              ))}
+              {overflowPlusItems.length > 0 ? (
+                <DropdownMenuSub>
+                  <DropdownMenuSubTrigger>
+                    <MoreHorizontalIcon className="size-4" />
+                    More
+                  </DropdownMenuSubTrigger>
+                  <DropdownMenuSubContent className="unsloth-plus-menu w-[248px]">
+                    {overflowPlusItems.map((id) => (
+                      <Fragment key={id}>{plusMenuNodes[id]}</Fragment>
+                    ))}
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
+              ) : null}
             </DropdownMenuContent>
           </DropdownMenu>
           {/* Active in compare mode; sits first. Click to exit back to single chat. */}
@@ -1296,6 +1622,29 @@ export function SharedComposer({
             </PillGlyph>
             <span>Compare</span>
           </button>
+          {/* Bypass sits immediately after Compare and ahead of every other
+              tool pill (Search, Code, ...) so the active danger state reads
+              first; only Compare outranks it. */}
+          {bypassPermissions && (
+            <button
+              type="button"
+              onClick={() => setBypassPermissions(false)}
+              className="composer-pill-btn"
+              data-active="true"
+              data-variant="danger"
+              aria-label="Disable Bypass permissions"
+              title="Bypass permissions is on (no confirmation, no sandbox). Click to turn off."
+            >
+              <PillGlyph>
+                <HugeiconsIcon
+                  icon={ShieldBanIcon}
+                  strokeWidth={2}
+                  className="size-[15px]"
+                />
+              </PillGlyph>
+              <span>Bypass permissions</span>
+            </button>
+          )}
           <button
             type="button"
             disabled={searchDisabled}
@@ -1303,7 +1652,7 @@ export function SharedComposer({
               const next = !toolsEnabled;
               setToolsEnabled(next);
               // Kimi's $web_search builtin requires thinking=disabled
-              // (https://platform.kimi.ai/docs/guide/use-web-search). Toggle
+              // (https://platform.kimi.ai/docs/guide/use-web-search): toggle
               // the Think pill off when Search is on, mirroring the backend.
               if (isKimiExternal) {
                 setReasoningEnabled(!next, { persist: false });
@@ -1311,6 +1660,7 @@ export function SharedComposer({
               }
             }}
             className="composer-pill-btn"
+            data-pill-label="Search"
             data-active={toolsEnabled && !searchDisabled ? "true" : "false"}
             aria-label={
               toolsEnabled ? "Disable web search" : "Enable web search"
@@ -1326,6 +1676,7 @@ export function SharedComposer({
             disabled={codeDisabled}
             onClick={() => setCodeToolsEnabled(!codeToolsEnabled)}
             className="composer-pill-btn"
+            data-pill-label="Code"
             data-active={codeToolsEnabled && !codeDisabled ? "true" : "false"}
             aria-label={
               codeToolsEnabled
@@ -1348,6 +1699,7 @@ export function SharedComposer({
               disabled={imageDisabled}
               onClick={() => setImageToolsEnabled(!imageToolsEnabled)}
               className="composer-pill-btn"
+              data-pill-label="Images"
               data-active={
                 imageToolsEnabled && !imageDisabled ? "true" : "false"
               }
@@ -1367,12 +1719,14 @@ export function SharedComposer({
               <span>Images</span>
             </button>
           )}
+          {showRagPill && <KnowledgeBaseComposerButton side="top" />}
           {showWebFetchPill && (
             <button
               type="button"
               disabled={webFetchDisabled}
               onClick={() => setWebFetchToolsEnabled(!webFetchToolsEnabled)}
               className="composer-pill-btn"
+              data-pill-label="Fetch"
               data-active={
                 webFetchToolsEnabled && !webFetchDisabled ? "true" : "false"
               }
@@ -1391,6 +1745,7 @@ export function SharedComposer({
               type="button"
               onClick={() => setArtifactsEnabled(false)}
               className="composer-pill-btn"
+              data-pill-label="Canvas"
               data-active="true"
               aria-label="Disable canvas"
             >
@@ -1454,7 +1809,9 @@ export function SharedComposer({
                             setPreserveThinking(false);
                           }}
                         >
-                          <CheckIcon
+                          <HugeiconsIcon
+                    icon={Tick02Icon}
+                    strokeWidth={2}
                             className={cn(
                               "unsloth-tick size-4",
                               effectiveReasoningVisualEnabled && "opacity-0",
@@ -1483,7 +1840,9 @@ export function SharedComposer({
                               }
                             }}
                           >
-                            <CheckIcon
+                            <HugeiconsIcon
+                    icon={Tick02Icon}
+                    strokeWidth={2}
                               className={cn(
                                 "unsloth-tick size-4",
                                 !(
@@ -1514,7 +1873,9 @@ export function SharedComposer({
                           }
                         }}
                       >
-                        <CheckIcon
+                        <HugeiconsIcon
+                    icon={Tick02Icon}
+                    strokeWidth={2}
                           className={cn(
                             "unsloth-tick size-4",
                             !effectiveReasoningEnabled && "opacity-0",
@@ -1538,7 +1899,9 @@ export function SharedComposer({
                         }
                       }}
                     >
-                      <CheckIcon
+                      <HugeiconsIcon
+                    icon={Tick02Icon}
+                    strokeWidth={2}
                         className={cn(
                           "unsloth-tick size-4",
                           !preserveThinking && "opacity-0",
@@ -1564,9 +1927,8 @@ export function SharedComposer({
                   const next = !reasoningEnabled;
                   setReasoningEnabled(next);
                   applyQwenThinkingParams(next);
-                  // Mutual exclusion: Kimi's $web_search builtin
-                  // requires thinking off, so turning thinking on flips
-                  // the Search pill off (and vice versa).
+                  // Mutual exclusion: Kimi's $web_search builtin requires
+                  // thinking off, so turning thinking on flips Search off.
                   if (isKimiExternal && next && toolsEnabled) {
                     setToolsEnabled(false, { persist: false });
                   }
@@ -1616,7 +1978,26 @@ export function SharedComposer({
               )}
             </>
           )}
-          {busy ? (
+          {isQueueRunning ? (
+            <button
+              type="button"
+              onClick={() => {
+                isQueueRunningRef.current = false;
+                setIsQueueRunning(false);
+                queueRef.current = [];
+                queueIndexRef.current = 0;
+                setQueueProgress({ current: 0, total: 0 });
+                stop();
+              }}
+              aria-label="Stop prompt queue"
+              className="ml-1.5 flex items-center gap-1.5 rounded-full border border-border/60 bg-muted/60 px-2.5 py-1 text-xs font-semibold text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            >
+              <SquareIcon className="size-2.5 shrink-0 fill-current" />
+              <span className="tabular-nums">
+                Stop queue {queueProgress.current}/{queueProgress.total}
+              </span>
+            </button>
+          ) : busy ? (
             <Button
               type="button"
               variant="default"

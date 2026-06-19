@@ -60,9 +60,7 @@ def _slugify_run_name(value: str) -> str:
     return slug[:80].strip("-")
 
 
-def _build_dataset_name(
-    *, run_name: str | None, job_id: str, artifact_root: Path
-) -> str:
+def _build_dataset_name(*, run_name: str | None, job_id: str, artifact_root: Path) -> str:
     fallback = f"recipe_{job_id}"
     slug = _slugify_run_name(run_name or "")
     base_name = f"recipe_{slug}" if slug else fallback
@@ -74,21 +72,11 @@ def _build_dataset_name(
     return candidate
 
 
-def run_job_process(
-    *,
-    event_queue,
-    recipe: dict[str, Any],
-    run: dict[str, Any],
-) -> None:
-    """
-    Subprocess entrypoint.
-    Sends events to `event_queue`.
-    """
+def run_job_process(*, event_queue, recipe: dict[str, Any], run: dict[str, Any]) -> None:
+    """Subprocess entrypoint. Sends events to `event_queue`."""
     import os
 
-    os.environ["PYTHONWARNINGS"] = (
-        "ignore"  # Suppress warnings at C-level before imports
-    )
+    os.environ["PYTHONWARNINGS"] = "ignore"  # suppress C-level warnings before imports
 
     import warnings
     from loggers.config import LogConfig
@@ -124,8 +112,8 @@ def run_job_process(
         builder = build_config_builder(recipe)
         designer = create_data_designer(recipe, artifact_path = str(_ARTIFACT_ROOT))
 
-        # DataDesigner configures root logging in DataDesigner.__init__.
-        # Attach queue logger directly to `data_designer` so parser events survive root resets.
+        # DataDesigner resets root logging in __init__; attach the queue handler
+        # to the named loggers directly so parser events survive.
         handler = _QueueLogHandler(event_queue)
         handler.setLevel(logging.INFO)
         for logger_name in (
@@ -172,14 +160,10 @@ def run_job_process(
                 }
             )
         else:
-            results = designer.create(
-                builder, num_records = rows, dataset_name = dataset_name
-            )
+            results = designer.create(builder, num_records = rows, dataset_name = dataset_name)
             analysis = to_jsonable(results.load_analysis().model_dump(mode = "json"))
             if merge_batches:
-                _merge_batches_to_single_parquet(
-                    results.artifact_storage.base_dataset_path
-                )
+                _merge_batches_to_single_parquet(results.artifact_storage.base_dataset_path)
             artifact_path = str(results.artifact_storage.base_dataset_path)
             event_queue.put(
                 {

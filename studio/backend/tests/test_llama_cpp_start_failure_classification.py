@@ -4,10 +4,10 @@
 """Tests for LlamaCppBackend._classify_llama_start_failure.
 
 When llama-server exits before becoming healthy, load_model turns its
-captured stdout/stderr into a user-facing reason. A diffusion / image
-GGUF (FLUX, Qwen-Image, ...) is a valid file with plenty of memory, so
-the generic "invalid file or out of memory" message is actively
-misleading (issue #5842). These tests pin the classification.
+captured stdout/stderr into a user-facing reason. A diffusion/image GGUF
+(FLUX, Qwen-Image, ...) is a valid file with plenty of memory, so the
+generic "invalid file or out of memory" message is misleading (issue
+#5842). These tests pin the classification.
 """
 
 from __future__ import annotations
@@ -22,17 +22,15 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-# Match the stubbing pattern in sibling tests so the module imports in a
-# lightweight env without fastapi.
+# Match sibling tests' stubbing so the module imports in a lightweight
+# env without fastapi.
 _loggers_stub = _types.ModuleType("loggers")
 _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
 sys.modules.setdefault("loggers", _loggers_stub)
 # Give the structlog stub a real get_logger: a bare ModuleType poisons
 # sys.modules for later tests that call structlog.get_logger at import time.
 _structlog_stub = _types.ModuleType("structlog")
-_structlog_stub.get_logger = lambda *a, **k: __import__("logging").getLogger(
-    "structlog"
-)
+_structlog_stub.get_logger = lambda *a, **k: __import__("logging").getLogger("structlog")
 sys.modules.setdefault("structlog", _structlog_stub)
 if not hasattr(sys.modules["structlog"], "get_logger"):
     sys.modules["structlog"].get_logger = _structlog_stub.get_logger
@@ -109,8 +107,7 @@ class TestUnsupportedNonDiffusionArchitecture:
 
 class TestOllamaAndFallback:
     _OLLAMA_GGUF = (
-        f"/home/u/.ollama{__import__('os').sep}ollama_links"
-        f"{__import__('os').sep}m.gguf"
+        f"/home/u/.ollama{__import__('os').sep}ollama_links" f"{__import__('os').sep}m.gguf"
     )
 
     def test_ollama_compat_message_still_works(self):
@@ -142,3 +139,35 @@ class TestOllamaAndFallback:
     def test_empty_output_is_safe(self):
         msg = _classify("", None, None)
         assert "llama-server failed to start" in msg
+
+
+class TestOsKillReturncode:
+    """SIGKILL (-9) with no diagnostic output is the OOM killer and gets a named,
+    actionable message; SIGTERM (-15) is also unload/cancel/supervisor stop, so it
+    stays neutral; a recognized output still wins; a hard fault (-11) keeps the
+    generic fallback."""
+
+    def test_sigkill_with_no_output_names_oom(self):
+        msg = _classify("", "/models/big-bf16.gguf", "local/big", -9)
+        assert "signal 9" in msg
+        assert "out of memory" in msg.lower()
+        assert ".wslconfig" in msg
+        assert "GGUF file is valid" not in msg
+
+    def test_sigterm_is_neutral_not_oom(self):
+        msg = _classify("", "/models/big-bf16.gguf", "local/big", -15)
+        assert "signal 15" in msg
+        assert "terminated" in msg.lower()
+        assert "out of memory" not in msg.lower()
+
+    def test_specific_output_wins_over_os_kill_code(self):
+        msg = _classify(_QWEN_IMAGE_OUT, "/models/qwen-image.gguf", "local/qwen-image", -9)
+        assert "diffusion" in msg.lower()
+        assert "out of memory" not in msg.lower()
+
+    def test_signal_crash_code_keeps_generic_message(self):
+        # -11 is handled by the retry ladder; if it reaches here with no output
+        # it gets the generic fallback, not the OOM message.
+        msg = _classify("", "/models/x.gguf", "local/x", -11)
+        assert "GGUF file is valid" in msg
+        assert "out of memory" not in msg.lower()
