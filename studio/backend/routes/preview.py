@@ -11,13 +11,14 @@ from pathlib import Path
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from loggers import get_logger
 
 from auth.authentication import get_current_subject
 from auth.storage import DEFAULT_ADMIN_USERNAME
 from models.inference import ChatCompletionRequest, LoadRequest
 from routes.inference import load_model, openai_chat_completions
+from state.tool_policy import tools_force_disabled
 from utils.models.checkpoints import list_preview_targets, resolve_preview_checkpoint
 
 logger = get_logger(__name__)
@@ -41,28 +42,55 @@ def _resolve_or_4xx(run: str, checkpoint: str | None):
         raise HTTPException(status_code = 404, detail = str(exc))
 
 
-def _without_tools(payload: ChatCompletionRequest) -> ChatCompletionRequest:
-    # Tools run shell/python on the host; this surface is public, so force them off.
+def _sanitize_preview_payload(payload: ChatCompletionRequest) -> ChatCompletionRequest:
+    # Public surface: drop tools/MCP (host code execution) and provider routing
+    # (would make /p/ an open proxy). Tools are also hard-off via the policy below.
     return payload.model_copy(
         update = {
             "tools": None,
             "enable_tools": False,
             "enabled_tools": None,
+            "mcp_enabled": False,
             "bypass_permissions": False,
             "openai_code_exec_container_id": None,
             "anthropic_code_exec_container_id": None,
+            "provider_id": None,
+            "provider_type": None,
+            "external_model": None,
+            "encrypted_api_key": None,
+            "provider_base_url": None,
         }
     )
+
+
+async def _unlock_after(body_iterator):
+    # Hold the lock until the stream drains, else another checkpoint could swap the backend mid-stream.
+    try:
+        async for chunk in body_iterator:
+            yield chunk
+    finally:
+        _preview_lock.release()
 
 
 async def _serve_chat(
     run: str, checkpoint: str | None, payload: ChatCompletionRequest, request: Request
 ):
     path = _resolve_or_4xx(run, checkpoint)
-    payload = _without_tools(payload)
-    async with _preview_lock:
+    payload = _sanitize_preview_payload(payload)
+    await _preview_lock.acquire()
+    keep_locked = False
+    try:
         await load_model(LoadRequest(model_path = str(path)), request, DEFAULT_ADMIN_USERNAME)
-        return await openai_chat_completions(payload, request, DEFAULT_ADMIN_USERNAME)
+        # Beats a process-wide `--enable-tools` (enable_tools=False alone wouldn't).
+        with tools_force_disabled():
+            response = await openai_chat_completions(payload, request, DEFAULT_ADMIN_USERNAME)
+        if isinstance(response, StreamingResponse):
+            response.body_iterator = _unlock_after(response.body_iterator)
+            keep_locked = True
+        return response
+    finally:
+        if not keep_locked:
+            _preview_lock.release()
 
 
 @router.get("")

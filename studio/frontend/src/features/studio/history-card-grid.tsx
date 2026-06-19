@@ -394,7 +394,7 @@ export function HistoryCardGrid({
                 isRunning
                   ? "border-blue-400/50 dark:border-blue-500/30"
                   : "border-border/60",
-                canResume && "gap-2",
+                (canResume || canCopyPreview) && "gap-2",
               )}
               onClick={() => onSelectRun(run.id)}
               onKeyDown={(e) => {
@@ -487,7 +487,7 @@ export function HistoryCardGrid({
                 </p>
               </div>
               {run.loss_sparkline && run.loss_sparkline.length >= 2 && (
-                <div className={cn(canResume && "h-7 overflow-hidden")}>
+                <div className={cn((canResume || canCopyPreview) && "h-7 overflow-hidden")}>
                   <Sparkline
                     values={run.loss_sparkline}
                     id={run.id}
