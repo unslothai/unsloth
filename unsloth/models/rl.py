@@ -1901,10 +1901,14 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
                 # If model has vllm_engine, then use vllm in colocate mode. Donot wait for server
                 vllm_setter += " " * 12 + "args.vllm_mode='colocate'\n"
                 if trl_version >= Version("0.23.0"):
-                    # We need to set this flag for sleep mode auto working with trl update
+                    # Align TRL sleep mode with the engine's actual enable_sleep_mode
+                    # (the vision standby gate may have disabled it); fall back to the
+                    # standby env var when the engine cannot be introspected.
                     vllm_setter += (
                         " " * 12
-                        + "if os.environ.get('UNSLOTH_VLLM_STANDBY', '0') == '1':\n"
+                        + "_unsloth_esm = getattr(getattr(getattr(getattr(model.vllm_engine, 'llm_engine', None), 'vllm_config', None), 'model_config', None), 'enable_sleep_mode', None)\n"
+                        + " " * 12
+                        + "if (_unsloth_esm if _unsloth_esm is not None else os.environ.get('UNSLOTH_VLLM_STANDBY', '0') != '0'):\n"
                         + " " * 16
                         + "args.vllm_enable_sleep_mode=True\n"
                     )

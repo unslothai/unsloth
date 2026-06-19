@@ -340,10 +340,20 @@ def test_norm_pkg_name_strips_version_keeps_scope():
 
 
 def test_baseline_key_is_version_stable():
-    # Same package/file/pattern across a version bump -> identical key.
-    a = _finding("left-pad@1.0.0", "node_modules/left-pad/index.js", "obfuscated-blob")
-    b = _finding("left-pad@9.9.9", "left-pad/index.js", "obfuscated-blob")
+    # Same in-package path across a version bump -> identical key. npm tarballs
+    # root every file at ``package/``, so the path is stable; only the version in
+    # the display name changes.
+    a = _finding("left-pad@1.0.0", "package/index.js", "obfuscated-blob")
+    b = _finding("left-pad@9.9.9", "package/index.js", "obfuscated-blob")
     assert snp._finding_key(a) == snp._finding_key(b)
+
+
+def test_baseline_key_distinguishes_same_basename_diff_dir():
+    # Package-relative keying: the same basename in a different directory is a
+    # DIFFERENT key, so a new dist/ vs src/ file is not silently suppressed.
+    a = _finding("pkg@1.0.0", "package/dist/index.js", "obfuscated-blob")
+    b = _finding("pkg@1.0.0", "package/src/index.js", "obfuscated-blob")
+    assert snp._finding_key(a) != snp._finding_key(b)
 
 
 def test_baseline_suppresses_listed_but_not_new_pattern(tmp_path):
@@ -351,11 +361,11 @@ def test_baseline_suppresses_listed_but_not_new_pattern(tmp_path):
     bl.write_text(
         json.dumps(
             {
-                "version": 1,
+                "version": snp._BASELINE_SCHEMA_VERSION,
                 "entries": [
                     {
                         "package": "aws-sdk",
-                        "file": "metadata.js",
+                        "file": "package/metadata.js",
                         "pattern": "cred-surface-host (outbound)",
                         "severity": "HIGH",
                     }
@@ -366,9 +376,9 @@ def test_baseline_suppresses_listed_but_not_new_pattern(tmp_path):
     )
     baseline = snp._load_baseline(str(bl))
 
-    listed = _finding("aws-sdk@2.0.0", "aws-sdk/metadata.js", "cred-surface-host (outbound)")
-    # A new pattern in the same file must NOT be suppressed.
-    new_kind = _finding("aws-sdk@2.0.0", "aws-sdk/metadata.js", "obfuscated-blob")
+    listed = _finding("aws-sdk@2.0.0", "package/metadata.js", "cred-surface-host (outbound)")
+    # A NEW kind of finding in the SAME file is a different pattern -> not suppressed.
+    new_kind = _finding("aws-sdk@2.0.0", "package/metadata.js", "obfuscated-blob")
     active, suppressed = snp._partition_baseline([listed, new_kind], baseline)
     assert listed in suppressed
     assert new_kind in active
@@ -377,9 +387,9 @@ def test_baseline_suppresses_listed_but_not_new_pattern(tmp_path):
 def test_write_then_load_baseline_roundtrip(tmp_path):
     bl = tmp_path / "out.json"
     findings = [
-        _finding("evil@1.0.0", "evil/a.js", "obfuscated-blob", snp.CRITICAL),
-        _finding("evil@1.0.0", "evil/a.js", "obfuscated-blob", snp.CRITICAL),  # dup
-        _finding("noise@1.0.0", "noise/b.js", "js-env-token", snp.MEDIUM),  # below thresh
+        _finding("evil@1.0.0", "package/a.js", "obfuscated-blob", snp.CRITICAL),
+        _finding("evil@1.0.0", "package/a.js", "obfuscated-blob", snp.CRITICAL),  # dup
+        _finding("noise@1.0.0", "package/b.js", "js-env-token", snp.MEDIUM),  # below thresh
     ]
     n = snp._write_baseline(str(bl), findings, snp._SEVERITY_RANK[snp.HIGH])
     assert n == 1  # dedup + MEDIUM excluded
@@ -387,6 +397,25 @@ def test_write_then_load_baseline_roundtrip(tmp_path):
     assert (snp._norm_pkg_name("evil@1.0.0"), "a.js", "obfuscated-blob") in keys
     # MEDIUM below HIGH threshold -> not written.
     assert all(k[2] != "js-env-token" for k in keys)
+
+
+def test_legacy_schema_baseline_is_ignored(tmp_path):
+    # A pre-v2 baseline stored basenames; its keys are ambiguous under
+    # package-relative matching, so a populated legacy file is ignored (fail
+    # closed) rather than silently suppressing a different same-named file.
+    bl = tmp_path / "legacy.json"
+    bl.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "entries": [
+                    {"package": "aws-sdk", "file": "index.js", "pattern": "obfuscated-blob"}
+                ],
+            }
+        ),
+        encoding = "utf-8",
+    )
+    assert snp._load_baseline(str(bl)) == set()
 
 
 def test_committed_baseline_is_empty_and_valid():

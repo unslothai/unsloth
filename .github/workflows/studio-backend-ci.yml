@@ -224,7 +224,8 @@ jobs:
               tests/sh/test_mac_intel_compat.sh \
               tests/sh/test_nvcc_meets_llama_minimum.sh \
               tests/sh/test_tauri_install_exit_order.sh \
-              tests/sh/test_torch_constraint.sh; do
+              tests/sh/test_torch_constraint.sh \
+              tests/sh/test_torch_flavor.sh; do
               echo "::group::$s"
               bash "$s"
               echo "::endgroup::"
