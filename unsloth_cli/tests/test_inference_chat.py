@@ -263,7 +263,11 @@ def test_find_studio_server_none_when_not_running(monkeypatch):
 class _FakeHealth:
     """Minimal urlopen() return value carrying a canned /api/health body."""
 
-    def __init__(self, body: bytes, final_url: str = "http://127.0.0.1:8888"):
+    def __init__(
+        self,
+        body: bytes,
+        final_url: str = "http://127.0.0.1:8888",
+    ):
         self._body = body
         self._final_url = final_url
 

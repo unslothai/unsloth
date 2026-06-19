@@ -283,7 +283,6 @@ def _is_studio_health(body) -> bool:
 
 def _is_loopback(host: str) -> bool:
     import ipaddress
-
     if host == "localhost":
         return True
     try:
@@ -294,7 +293,6 @@ def _is_loopback(host: str) -> bool:
 
 def _same_origin(a: str, b: str) -> bool:
     from urllib.parse import urlparse
-
     pa, pb = urlparse(a), urlparse(b)
     return (pa.scheme, pa.hostname, pa.port) == (pb.scheme, pb.hostname, pb.port)
 
