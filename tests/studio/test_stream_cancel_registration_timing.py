@@ -657,9 +657,7 @@ def test_generate_stream_stays_responsive_under_blocking_next():
 
     async def _main():
         direct_out, direct_ticks, direct_max_gap = await _run_with_heartbeat(_direct_loop)
-        threaded_out, threaded_ticks, threaded_max_gap = await _run_with_heartbeat(
-            _to_thread_loop
-        )
+        threaded_out, threaded_ticks, threaded_max_gap = await _run_with_heartbeat(_to_thread_loop)
         return (
             direct_out,
             direct_ticks,
@@ -678,9 +676,7 @@ def test_generate_stream_stays_responsive_under_blocking_next():
         threaded_max_gap,
     ) = asyncio.run(_main())
 
-    assert threaded_out == direct_out == [_sse(chunk) for chunk in chunks] + [
-        "data: [DONE]\n\n"
-    ]
+    assert threaded_out == direct_out == [_sse(chunk) for chunk in chunks] + ["data: [DONE]\n\n"]
     assert direct_ticks == 0, (
         f"direct generate_stream loop should block the event loop; "
         f"got {direct_ticks} heartbeat ticks and max gap {direct_max_gap:.3f}s"
