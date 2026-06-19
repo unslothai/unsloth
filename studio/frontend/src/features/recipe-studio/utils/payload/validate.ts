@@ -54,7 +54,9 @@ export function validateTimedeltaConfigs(
     }
     const reference = config.reference_column_name?.trim() ?? "";
     if (!reference) {
-      errors.push(`Timedelta ${config.name}: reference datetime column required.`);
+      errors.push(
+        `Timedelta ${config.name}: reference datetime column required.`,
+      );
       continue;
     }
     const parent = nameToConfig.get(reference);
@@ -63,7 +65,9 @@ export function validateTimedeltaConfigs(
       parent.kind !== "sampler" ||
       parent.sampler_type !== "datetime"
     ) {
-      errors.push(`Timedelta ${config.name}: reference '${reference}' must be datetime.`);
+      errors.push(
+        `Timedelta ${config.name}: reference '${reference}' must be datetime.`,
+      );
     }
   }
 }
@@ -91,9 +95,18 @@ export function validateModelConfigProviders(
     const provider = config.provider.trim();
     const alias = config.name;
     const isLocal = localProviderNames.has(provider);
-    // Local providers do not require a real model id - the loaded Chat
-    // model is used regardless of what gets sent in the payload.
-    if (!isLocal && modelAliases.has(alias) && !config.model.trim()) {
+    const isUsed = modelAliases.has(alias);
+    const model = config.model.trim();
+    const isLegacyLocalPlaceholder = model.toLowerCase() === "local";
+
+    if (!isLocal && isUsed && isLegacyLocalPlaceholder) {
+      errors.push(`Model config ${alias}: model is required.`);
+      continue;
+    }
+    if (isLocal && isUsed && !model) {
+      errors.push(`Model config ${alias}: choose a local model.`);
+    }
+    if (!isLocal && isUsed && !model) {
       errors.push(`Model config ${alias}: model is required.`);
     }
     if (provider && !modelProviderNames.has(provider)) {
@@ -121,7 +134,9 @@ export function validateUsedProviders(
       errors.push(`Model provider ${provider.name}: endpoint is required.`);
     }
     if (!provider.provider_type.trim()) {
-      errors.push(`Model provider ${provider.name}: provider_type is required.`);
+      errors.push(
+        `Model provider ${provider.name}: provider_type is required.`,
+      );
     }
   }
 }
@@ -145,7 +160,9 @@ export function validateValidatorConfigs(
       continue;
     }
     if (targetConfig.kind !== "llm" || targetConfig.llm_type !== "code") {
-      errors.push(`Validator ${config.name}: target '${target}' must be LLM Code.`);
+      errors.push(
+        `Validator ${config.name}: target '${target}' must be LLM Code.`,
+      );
       continue;
     }
     if (

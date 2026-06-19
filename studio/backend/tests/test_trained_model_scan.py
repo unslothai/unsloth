@@ -28,7 +28,16 @@ from utils.models.model_config import (
 )
 
 
-def test_scan_trained_models_includes_lora_and_full_finetune_outputs(tmp_path: Path):
+def test_scan_trained_models_includes_lora_and_full_finetune_outputs(
+    tmp_path: Path, monkeypatch
+):
+    # resolve_output_dir refuses absolutes outside outputs_root; point it at tmp_path.
+    from utils.models import model_config as _mc
+    from utils.paths import storage_roots as _sr
+
+    monkeypatch.setattr(_sr, "outputs_root", lambda: tmp_path)
+    monkeypatch.setattr(_mc, "outputs_root", lambda: tmp_path)
+
     lora_dir = tmp_path / "unsloth_SmolLM-135M_1775412608"
     lora_dir.mkdir()
     (lora_dir / "adapter_config.json").write_text(

@@ -26,6 +26,7 @@ export interface TrainingStatusResponse {
     total_steps?: number;
     loss?: number;
     learning_rate?: number;
+    output_dir?: string;
   } | null;
   metric_history?: {
     steps?: number[];
@@ -80,6 +81,9 @@ export interface TrainingRuntimeState {
   hasHydrated: boolean;
   isStarting: boolean;
   startError: string | null;
+  startModelName: string | null;
+  startDatasetName: string | null;
+  startFromResume: boolean;
   sseConnected: boolean;
   firstStepReceived: boolean;
   lastEventId: number | null;
@@ -93,12 +97,17 @@ export interface TrainingRuntimeState {
   etaSeconds: number | null;
   currentGradNorm: number | null;
   currentNumTokens: number | null;
+  outputDir: string | null;
   lossHistory: TrainingSeriesPoint[];
   lrHistory: TrainingSeriesPoint[];
   gradNormHistory: TrainingSeriesPoint[];
   evalLossHistory: TrainingSeriesPoint[];
   resetGeneration: number;
   stopRequested: boolean;
+  selectedHistoryRunId: string | null;
+  // True while the studio "Current Run" tab is the active view, so the sidebar
+  // can highlight which run row the current run refers to (the active job).
+  currentRunViewActive: boolean;
 }
 
 export interface TrainingRuntimeActions {
@@ -107,6 +116,11 @@ export interface TrainingRuntimeActions {
   setHasHydrated: (value: boolean) => void;
   setStarting: (value: boolean) => void;
   setStartError: (value: string | null) => void;
+  setStartResources: (
+    modelName: string | null,
+    datasetName: string | null,
+    fromResume?: boolean,
+  ) => void;
   setSseConnected: (value: boolean) => void;
   setLastEventId: (value: number | null) => void;
   resetRuntime: () => void;
@@ -115,6 +129,8 @@ export interface TrainingRuntimeActions {
   applyProgress: (payload: TrainingProgressPayload, eventId?: number) => void;
   setStartQueued: (jobId: string, message: string) => void;
   setRuntimeError: (message: string) => void;
+  setSelectedHistoryRunId: (id: string | null) => void;
+  setCurrentRunViewActive: (value: boolean) => void;
 }
 
 export type TrainingRuntimeStore = TrainingRuntimeState & TrainingRuntimeActions;
@@ -129,6 +145,7 @@ export interface TrainingViewData {
   currentGradNorm: number | null;
   currentEpoch: number | null;
   currentNumTokens: number | null;
+  outputDir: string | null;
   progressPercent: number;
   elapsedSeconds: number | null;
   etaSeconds: number | null;

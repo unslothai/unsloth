@@ -5,8 +5,34 @@
 Pydantic schemas for Export API.
 """
 
-from pydantic import BaseModel, Field
+from pathlib import Path
+
+from pydantic import BaseModel, Field, field_validator
 from typing import List, Optional, Literal, Dict, Any
+
+
+def _validate_save_directory(value: str) -> str:
+    """Reject save_directory values that escape the export root."""
+    if value is None:
+        raise ValueError("save_directory is required")
+    raw = str(value).strip()
+    if not raw:
+        raise ValueError("save_directory must not be empty")
+    if "\x00" in raw:
+        raise ValueError("save_directory may not contain null bytes")
+    if any(ch in raw for ch in ("\r", "\n")):
+        raise ValueError("save_directory may not contain control characters")
+    if len(raw) > 255:
+        raise ValueError("save_directory must be <= 255 characters")
+    path = Path(raw).expanduser()
+    if path.is_absolute():
+        raise ValueError(
+            "save_directory must be a name or relative path under the "
+            "export root; absolute paths are rejected"
+        )
+    if ".." in path.parts:
+        raise ValueError("save_directory may not contain '..' segments")
+    return raw
 
 
 class LoadCheckpointRequest(BaseModel):
@@ -64,6 +90,12 @@ class ExportCommonOptions(BaseModel):
         ...,
         description = "Local directory where the exported artifacts will be written",
     )
+
+    @field_validator("save_directory", mode = "before")
+    @classmethod
+    def _check_save_directory(cls, v):
+        return _validate_save_directory(v)
+
     push_to_hub: bool = Field(
         False,
         description = "If True, also push the exported model to the Hugging Face Hub",
@@ -108,6 +140,12 @@ class ExportGGUFRequest(BaseModel):
         ...,
         description = "Directory where GGUF files will be saved",
     )
+
+    @field_validator("save_directory", mode = "before")
+    @classmethod
+    def _check_save_directory(cls, v):
+        return _validate_save_directory(v)
+
     quantization_method: str = Field(
         "Q4_K_M",
         description = 'GGUF quantization method (e.g. "Q4_K_M")',

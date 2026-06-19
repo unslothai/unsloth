@@ -36,7 +36,21 @@ import subprocess
 import sys
 from pathlib import Path
 
+from utils.native_path_leases import child_env_without_native_path_secret
+from utils.subprocess_compat import (
+    windows_hidden_subprocess_kwargs as _windows_hidden_subprocess_kwargs,
+)
+
 logger = get_logger(__name__)
+
+
+def _env_offline() -> bool:
+    """True if HF_HUB_OFFLINE or TRANSFORMERS_OFFLINE is set to a truthy value."""
+    return os.environ.get("HF_HUB_OFFLINE", "").lower() in (
+        "1",
+        "true",
+        "yes",
+    ) or os.environ.get("TRANSFORMERS_OFFLINE", "").lower() in ("1", "true", "yes")
 
 
 # ---------------------------------------------------------------------------
@@ -52,12 +66,14 @@ TRANSFORMERS_5_MODEL_SUBSTRINGS: tuple[str, ...] = (
     "qwen3.5",  # Qwen3.5 family (35B-A3B, etc.)
     "qwen3-next",  # Qwen3-Next and variants
     "tiny_qwen3_moe",  # imdatta0/tiny_qwen3_moe_2.8B_0.7B
+    "lfm2.5-vl-450m",  # LiquidAI/LFM2.5-VL-450M
 )
 
 # Lowercase substrings for models that require transformers 5.5.0 (checked first).
 TRANSFORMERS_550_MODEL_SUBSTRINGS: tuple[str, ...] = (
     "gemma-4",  # Gemma-4 (E2B-it, E4B-it, 31B-it, 26B-A4B-it)
     "gemma4",  # Gemma-4 alternate naming
+    "qwen3.6",
 )
 
 # Architecture classes / model_type values that require transformers 5.5.0.
@@ -88,9 +104,11 @@ TRANSFORMERS_DEFAULT_VERSION = "4.57.6"
 # Consumers should prefer TRANSFORMERS_530_VERSION / TRANSFORMERS_550_VERSION.
 TRANSFORMERS_5_VERSION = TRANSFORMERS_550_VERSION
 
-# Pre-installed directories — created by setup.sh / setup.ps1
-_VENV_T5_530_DIR = str(Path.home() / ".unsloth" / "studio" / ".venv_t5_530")
-_VENV_T5_550_DIR = str(Path.home() / ".unsloth" / "studio" / ".venv_t5_550")
+# Pre-installed directories — created by setup.sh / setup.ps1.
+from utils.paths.storage_roots import studio_root as _studio_root  # noqa: E402
+
+_VENV_T5_530_DIR = str(_studio_root() / ".venv_t5_530")
+_VENV_T5_550_DIR = str(_studio_root() / ".venv_t5_550")
 # Backwards-compat alias
 _VENV_T5_DIR = _VENV_T5_550_DIR
 
@@ -233,6 +251,11 @@ def _check_tokenizer_config_needs_v5(model_name: str) -> bool:
         except Exception as exc:
             logger.debug("Could not read %s: %s", local_tc, exc)
 
+    # Offline: skip the 10s urllib fetch (fail-open to lower tier).
+    if _env_offline():
+        _tokenizer_class_cache[model_name] = False
+        return False
+
     # --- Fall back to fetching from HuggingFace ----------------------------
     import urllib.request
 
@@ -298,6 +321,11 @@ def _check_config_needs_550(model_name: str) -> bool:
             return result
         except Exception as exc:
             logger.debug("Could not read %s: %s", local_cfg, exc)
+
+    # Offline: skip the 10s urllib fetch (fail-open to lower tier).
+    if _env_offline():
+        _config_needs_550_cache[model_name] = False
+        return False
 
     # --- Fall back to fetching from HuggingFace ---------------------------
     import urllib.request
@@ -498,6 +526,8 @@ def _install_to_dir(pkg: str, target_dir: str) -> bool:
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
             text = True,
+            env = child_env_without_native_path_secret(),
+            **_windows_hidden_subprocess_kwargs(),
         )
         if result.returncode == 0:
             return True
@@ -519,6 +549,8 @@ def _install_to_dir(pkg: str, target_dir: str) -> bool:
         stdout = subprocess.PIPE,
         stderr = subprocess.STDOUT,
         text = True,
+        env = child_env_without_native_path_secret(),
+        **_windows_hidden_subprocess_kwargs(),
     )
     if result.returncode != 0:
         logger.error("install failed:\n%s", result.stdout)

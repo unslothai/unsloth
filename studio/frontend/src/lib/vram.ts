@@ -57,7 +57,12 @@ export type VramFitStatus = "fits" | "tight" | "exceeds";
  */
 export const FP16_LOADING_BYTES = 2.0;
 
-export type TrainingMethod = "qlora" | "lora" | "full";
+export type TrainingMethod = "qlora" | "lora" | "full" | "cpt";
+
+function usesQuantizedLoading(method: TrainingMethod, modelId?: string): boolean {
+  if (method === "qlora") return true;
+  return method === "cpt" && (modelId ?? "").toLowerCase().includes("4bit");
+}
 
 /**
  * Estimate VRAM (GB) needed to load a model with Unsloth.
@@ -66,15 +71,18 @@ export type TrainingMethod = "qlora" | "lora" | "full";
  *   - QLoRA  : 4-bit quantized via bnb  -> 0.90 bytes/param (calibrated)
  *   - LoRA   : fp16                      -> 2.0  bytes/param (theoretical)
  *   - Full   : fp16                      -> 2.0  bytes/param (theoretical)
+ *   - CPT    : fp16 LoRA (16-bit base)   -> 2.0  bytes/param (theoretical)
  *
  * Formula:  totalParams * bytesPerParam + 1.4 GB overhead
  */
 export function estimateLoadingVram(
   totalParams: number,
   method: TrainingMethod = "qlora",
+  modelId?: string,
 ): number {
-  const bytesPerParam =
-    method === "qlora" ? BNB_4BIT_LOADING_BYTES : FP16_LOADING_BYTES;
+  const bytesPerParam = usesQuantizedLoading(method, modelId)
+    ? BNB_4BIT_LOADING_BYTES
+    : FP16_LOADING_BYTES;
   const gb = (totalParams / 1e9) * bytesPerParam + LOADING_OVERHEAD_GB;
   return Math.round(gb * 10) / 10;
 }
@@ -119,7 +127,7 @@ export function buildModelVramMap(
       continue;
     }
 
-    const est = estimateLoadingVram(model.totalParams, method);
+    const est = estimateLoadingVram(model.totalParams, method, model.id);
     const status = gpu.available ? checkVramFit(est, gpu.memoryTotalGb) : null;
     map.set(model.id, { est, status });
   }

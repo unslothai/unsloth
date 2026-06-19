@@ -22,6 +22,9 @@ const initialState: TrainingRuntimeState = {
   hasHydrated: false,
   isStarting: false,
   startError: null,
+  startModelName: null,
+  startDatasetName: null,
+  startFromResume: false,
   sseConnected: false,
   firstStepReceived: false,
   lastEventId: null,
@@ -35,12 +38,15 @@ const initialState: TrainingRuntimeState = {
   etaSeconds: null,
   currentGradNorm: null,
   currentNumTokens: null,
+  outputDir: null,
   lossHistory: [],
   lrHistory: [],
   gradNormHistory: [],
   evalLossHistory: [],
   resetGeneration: 0,
   stopRequested: false,
+  selectedHistoryRunId: null,
+  currentRunViewActive: false,
 };
 
 function sortSeries(points: TrainingSeriesPoint[]): TrainingSeriesPoint[] {
@@ -119,6 +125,8 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()((set) => (
   setHasHydrated: (value) => set({ hasHydrated: value }),
   setStarting: (value) => set({ isStarting: value }),
   setStartError: (value) => set({ startError: value }),
+  setStartResources: (startModelName, startDatasetName, startFromResume = false) =>
+    set({ startModelName, startDatasetName, startFromResume }),
   setSseConnected: (value) => set({ sseConnected: value }),
   setLastEventId: (value) => set({ lastEventId: value }),
 
@@ -155,6 +163,7 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()((set) => (
       etaSeconds: null,
       currentGradNorm: null,
       currentNumTokens: null,
+      outputDir: null,
       lossHistory: [],
       lrHistory: [],
       gradNormHistory: [],
@@ -170,6 +179,12 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()((set) => (
       startError: null,
       sseConnected: false,
     }),
+
+  setSelectedHistoryRunId: (selectedHistoryRunId) =>
+    set({ selectedHistoryRunId }),
+
+  setCurrentRunViewActive: (currentRunViewActive) =>
+    set({ currentRunViewActive }),
 
   applyStatus: (payload) =>
     set((state) => {
@@ -203,6 +218,7 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()((set) => (
           typeof detailLr === "number" ? detailLr : state.currentLearningRate,
         currentEpoch:
           typeof detailEpoch === "number" ? detailEpoch : state.currentEpoch,
+        outputDir: payload.details?.output_dir ?? state.outputDir,
         lossHistory: metricHistory.lossHistory ?? state.lossHistory,
         lrHistory: metricHistory.lrHistory ?? state.lrHistory,
         gradNormHistory: metricHistory.gradNormHistory ?? state.gradNormHistory,

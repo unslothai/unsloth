@@ -399,7 +399,7 @@ function RecipeGraphNodeBase({
 
     return (
       <BaseNode
-        className="corner-squircle relative w-full min-w-0 overflow-visible rounded-lg border-border/60 shadow-sm"
+        className="corner-squircle relative w-full min-w-0 overflow-visible rounded-4xl border-border/60 shadow-sm"
         style={noteStyle}
       >
         <NodeResizer
@@ -465,7 +465,7 @@ function RecipeGraphNodeBase({
   return (
     <BaseNode
       className={cn(
-        "corner-squircle relative w-full min-w-0 overflow-visible rounded-lg border-border/60 shadow-sm",
+        "corner-squircle relative w-full min-w-0 overflow-visible rounded-4xl border-border/60 shadow-sm",
         runtimeNodeTone,
         hasConnectionIssue &&
           runtimeState === "idle" &&

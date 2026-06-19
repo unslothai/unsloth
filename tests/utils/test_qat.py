@@ -70,6 +70,11 @@ def _test_linear_is_fake_quantized(linear: torch.nn.Linear, qat_scheme: str):
         weight_fq_class = IntxFakeQuantizer
         min_in_features = 128
         weight_only = True
+    elif qat_scheme == "cactus":
+        act_fq_class = None
+        weight_fq_class = IntxFakeQuantizer
+        min_in_features = 32
+        weight_only = True
     else:
         raise ValueError(f"Unknown qat_scheme: {qat_scheme}")
 
@@ -106,7 +111,7 @@ def _test_fake_quantizers_are_called(
     """
     Verify that the fake quantizers are actually called when the model is called.
     """
-    weight_only = qat_scheme == "int8"
+    weight_only = qat_scheme in ["int8", "cactus"]
 
     def _swap_fake_quantizers(model: torch.nn.Module):
         for name, child in model.named_children():
@@ -167,11 +172,11 @@ def _test_model_fake_quantize(qat_scheme: str, full_finetuning: bool):
 
 # TODO: there are bad interactions across tests right now, need to figure out
 # how to disable model caching before re-enabling this test
-@pytest.mark.parametrize("qat_scheme", ["fp8-int4", "fp8-fp8", "int8"])
+@pytest.mark.parametrize("qat_scheme", ["fp8-int4", "fp8-fp8", "int8", "cactus"])
 def _test_full_model_fake_quantize(qat_scheme: str):
     _test_model_fake_quantize(qat_scheme, full_finetuning = True)
 
 
-@pytest.mark.parametrize("qat_scheme", ["fp8-int4", "fp8-fp8", "int8"])
+@pytest.mark.parametrize("qat_scheme", ["fp8-int4", "fp8-fp8", "int8", "cactus"])
 def test_lora_model_fake_quantize(qat_scheme: str):
     _test_model_fake_quantize(qat_scheme, full_finetuning = False)

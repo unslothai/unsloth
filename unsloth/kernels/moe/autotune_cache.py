@@ -71,7 +71,7 @@ def load_cached_config(cache_key: str) -> Optional[Dict[str, Any]]:
         return None
 
     try:
-        with open(cache_file, "r") as f:
+        with open(cache_file, "r", encoding = "utf-8") as f:
             cached_data = json.load(f)
 
         # Verify cache is still valid (same device, etc.)
@@ -118,7 +118,7 @@ def save_cached_config(
     }
 
     try:
-        with open(cache_file, "w") as f:
+        with open(cache_file, "w", encoding = "utf-8") as f:
             json.dump(cache_data, f, indent = 2)
         logger.info(f"Saved MoE kernel config cache: {cache_key}")
     except Exception as e:
