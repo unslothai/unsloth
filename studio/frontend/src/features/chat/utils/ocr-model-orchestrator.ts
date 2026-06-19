@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { confirmRemoteCodeIfNeeded } from "@/features/security";
 import { toast } from "sonner";
 import {
   getDocumentSupport,
@@ -231,6 +232,8 @@ function identityFromStore(): OcrIdentity {
 function buildOcrLoadPayload(
   target: OcrModelTarget,
   snapshot: ChatModelSnapshot,
+  trustRemoteCode: boolean,
+  approvedRemoteCodeFingerprint: string | null,
 ): LoadModelRequest {
   const hfToken = useChatRuntimeStore.getState().hfToken;
   return {
@@ -240,7 +243,8 @@ function buildOcrLoadPayload(
     load_in_4bit: snapshot.loadIn4Bit,
     is_lora: false,
     gguf_variant: target.ggufVariant,
-    trust_remote_code: snapshot.trustRemoteCode,
+    trust_remote_code: trustRemoteCode,
+    approved_remote_code_fingerprint: approvedRemoteCodeFingerprint,
   };
 }
 
@@ -514,8 +518,16 @@ async function runUnlocked<T>({
       );
     throwIfAborted(signal);
 
+    let loadTrustRemoteCode = false;
+    let approvedRemoteCodeFingerprint: string | null = null;
+
     const validation = await validateModel(
-      buildOcrLoadPayload(target, snapshot),
+      buildOcrLoadPayload(
+        target,
+        snapshot,
+        loadTrustRemoteCode,
+        approvedRemoteCodeFingerprint,
+      ),
       signal,
     );
     if (!validation.valid) {
@@ -526,11 +538,24 @@ async function runUnlocked<T>({
     if (validation.is_vision === false) {
       throw new Error(`${target.label} is not vision-capable.`);
     }
-    if (validation.requires_trust_remote_code && !snapshot.trustRemoteCode) {
-      throw new Error(
-        `${target.label} requires "Enable custom code". Turn it on under ` +
-          "Inference settings before scanning.",
-      );
+    // Custom-code OCR models load like any other model: consent is gathered per
+    // model via the load-time review dialog (there is no persistent toggle).
+    if (
+      validation.requires_trust_remote_code ||
+      validation.requires_security_review
+    ) {
+      const approved = await confirmRemoteCodeIfNeeded({
+        modelName: target.modelId,
+        hfToken: useChatRuntimeStore.getState().hfToken || null,
+        requiresTrustRemoteCode: true,
+        onApprove: (fp) => {
+          loadTrustRemoteCode = true;
+          approvedRemoteCodeFingerprint = fp;
+        },
+      });
+      if (!approved) {
+        throw new Error(`${target.label} needs custom code approval to load.`);
+      }
     }
 
     if (!alreadyActive) {
@@ -548,7 +573,12 @@ async function runUnlocked<T>({
       throwIfAborted(signal);
       lease.assertActive();
       const loaded = await loadModel(
-        buildOcrLoadPayload(target, snapshot),
+        buildOcrLoadPayload(
+          target,
+          snapshot,
+          loadTrustRemoteCode,
+          approvedRemoteCodeFingerprint,
+        ),
         signal,
       );
       lease.assertActive();

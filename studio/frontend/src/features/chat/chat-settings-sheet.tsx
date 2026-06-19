@@ -2030,9 +2030,6 @@ function DocumentExtractionSection() {
   const docExtract = useChatRuntimeStore((s) => s.docExtract);
   const setDocExtract = useChatRuntimeStore((s) => s.setDocExtract);
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
-  const trustRemoteCode = useChatRuntimeStore(
-    (s) => s.params.trustRemoteCode ?? false,
-  );
   const ocrPhase = useChatRuntimeStore((s) => s.ocrPhase);
   const modelLoading = useChatRuntimeStore((s) => s.modelLoading);
   const allModels = useChatRuntimeStore((s) => s.models);
@@ -2103,12 +2100,9 @@ function DocumentExtractionSection() {
   // Scanned mode is normally gated on a vision-capable chat model, but a
   // selected dedicated OCR model satisfies that requirement at extract time.
   const ocrControlsDisabled = modelLoading || ocrPhase !== "idle";
-  const trcMissing =
-    ocrSelected &&
-    (ocrTarget?.requiresTrustRemoteCode ?? false) &&
-    !trustRemoteCode;
-  const visionReadyForExtraction =
-    visionAvailableForExtraction && !trcMissing;
+  // Custom-code OCR models load like any other model (consent is gathered at
+  // load time via the review dialog), so selecting one is enough to scan.
+  const visionReadyForExtraction = visionAvailableForExtraction;
   const canScan = extractorReady && visionReadyForExtraction;
   const activeMode = deriveDocExtractMode(docExtract);
 
@@ -2325,11 +2319,6 @@ function DocumentExtractionSection() {
                 <span className="flex-1 truncate text-left font-medium">
                   {selectedOcrLabel}
                 </span>
-                {ocrTarget?.requiresTrustRemoteCode && (
-                  <span className="shrink-0 rounded bg-amber-500/15 px-1 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-amber-600 dark:text-amber-400">
-                    TRC
-                  </span>
-                )}
                 <HugeiconsIcon
                   icon={ArrowDown01Icon}
                   className="size-3.5 shrink-0 text-muted-foreground"
@@ -2428,12 +2417,6 @@ function DocumentExtractionSection() {
                   : "Default resolves to None until a vision model is loaded."
                 : "No dedicated OCR model is selected."}
           </p>
-          {trcMissing && (
-            <p className="text-[11px] text-amber-500">
-              {ocrTarget?.label} requires <em>Enable custom code</em>. Turn it
-              on under Inference settings before scanning.
-            </p>
-          )}
         </div>
 
         {/* Mode segmented — matches theme-segmented idiom */}
@@ -2559,7 +2542,7 @@ function DocumentExtractionSection() {
                         onCheckedChange={(v) =>
                           setDocExtract({ useVlmOcr: !!v })
                         }
-                        disabled={!extractorReady || trcMissing}
+                        disabled={!extractorReady}
                       />
                     </div>
 
