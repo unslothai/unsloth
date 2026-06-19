@@ -275,6 +275,23 @@ def _load_registry_module():
     return mod
 
 
+def _load_same_task_response_module():
+    for n in _TREE.body:
+        if isinstance(n, ast.ClassDef) and n.name == "_SameTaskStreamingResponse":
+            source = ast.get_source_segment(SRC, n)
+            break
+    else:
+        raise AssertionError("_SameTaskStreamingResponse missing")
+    mod = {}
+    exec(
+        "class StreamingResponse: pass\n"
+        "class ClientDisconnect(Exception): pass\n"
+        + source,
+        mod,
+    )
+    return mod
+
+
 def _make_stream(tracker, raise_exc):
     async def gen():
         try:
@@ -377,6 +394,39 @@ def test_finally_cleanup_on_aclose():
     asyncio.run(run())
     assert "cid-abort" not in m["_CANCEL_REGISTRY"]
     assert "sid-abort" not in m["_CANCEL_REGISTRY"]
+
+
+def test_same_task_response_closes_body_iterator_on_send_disconnect():
+    m = _load_same_task_response_module()
+    closed = False
+
+    async def body():
+        nonlocal closed
+        try:
+            yield "data: first\n\n"
+        finally:
+            closed = True
+
+    async def run():
+        agen = body()
+        await agen.__anext__()
+        response = m["_SameTaskStreamingResponse"].__new__(m["_SameTaskStreamingResponse"])
+        response.body_iterator = agen
+        response.background = None
+
+        async def stream_response(_send):
+            raise OSError("client disconnected")
+
+        response.stream_response = stream_response
+        try:
+            await response({}, None, lambda _message: None)
+        except m["ClientDisconnect"]:
+            pass
+        else:
+            raise AssertionError("expected ClientDisconnect")
+
+    asyncio.run(run())
+    assert closed
 
 
 def test_preset_cancel_event_exits_cleanly_with_done():

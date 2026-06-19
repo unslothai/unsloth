@@ -16,6 +16,7 @@ import re
 _TOOL_CLOSED_PATS = [
     re.compile(r"<tool_call>.*?</tool_call>", re.DOTALL),
     re.compile(r"<\|tool_call>.*?<tool_call\|>", re.DOTALL),
+    re.compile(r"<tool_call\|>"),
     re.compile(r"<function=[\w-]+>.*?</function>", re.DOTALL),
 ]
 _TOOL_ALL_PATS = _TOOL_CLOSED_PATS + [
@@ -38,13 +39,13 @@ _PARAM_CLOSE_TAG = "</parameter>"
 _FUNC_CLOSE_TAG = "</function>"
 
 
-def _balanced_brace_end(content: str, brace_start: int) -> int:
+def _balanced_brace_end(content: str, brace_start: int, *, gemma_quotes: bool = False) -> int:
     depth = 0
     i = brace_start
     in_string = False
     in_gemma_string = False
     while i < len(content):
-        if content.startswith(_GEMMA_QUOTE, i):
+        if gemma_quotes and not in_string and content.startswith(_GEMMA_QUOTE, i):
             in_gemma_string = not in_gemma_string
             i += len(_GEMMA_QUOTE)
             continue
@@ -203,7 +204,7 @@ def parse_tool_calls_from_text(
 
     for m in _TC_GEMMA_START_RE.finditer(content):
         brace_start = m.end() - 1
-        i = _balanced_brace_end(content, brace_start)
+        i = _balanced_brace_end(content, brace_start, gemma_quotes = True)
         if i < 0:
             continue
         if not allow_incomplete:

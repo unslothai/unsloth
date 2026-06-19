@@ -752,6 +752,9 @@ class _SameTaskStreamingResponse(StreamingResponse):
         try:
             await self.stream_response(send)
         except OSError:
+            aclose = getattr(self.body_iterator, "aclose", None)
+            if aclose is not None:
+                await aclose()
             raise ClientDisconnect()
         if self.background is not None:
             await self.background()
@@ -5136,6 +5139,21 @@ async def openai_chat_completions(
                     _stream_usage = None
                     _stream_timings = None
                     _stream_finish = None
+
+                    def _flush_reasoning_extractor():
+                        final_reasoning, final_visible = reasoning_extractor.finish()
+                        chunks = []
+                        if final_reasoning:
+                            chunks.append(
+                                _gguf_chat_delta_line(
+                                    ChoiceDelta(reasoning_content = final_reasoning)
+                                )
+                            )
+                        if final_visible:
+                            api_monitor.append_reply(monitor_id, final_visible)
+                            chunks.append(_gguf_chat_delta_line(ChoiceDelta(content = final_visible)))
+                        return chunks
+
                     while True:
                         if cancel_event.is_set():
                             break
@@ -5154,6 +5172,8 @@ async def openai_chat_completions(
                             # cumulative cursor so the next assistant turn
                             # streams cleanly.
                             if not event["text"]:
+                                for chunk in _flush_reasoning_extractor():
+                                    yield chunk
                                 prev_text = ""
                                 reasoning_extractor = _new_chat_reasoning_extractor()
                             # Emit tool status as a custom SSE event (including
@@ -5169,6 +5189,8 @@ async def openai_chat_completions(
 
                         if event["type"] in ("tool_start", "tool_end"):
                             if event["type"] == "tool_start":
+                                for chunk in _flush_reasoning_extractor():
+                                    yield chunk
                                 prev_text = ""
                                 reasoning_extractor = _new_chat_reasoning_extractor()
                             yield f"data: {json.dumps(event)}\n\n"
@@ -5201,12 +5223,8 @@ async def openai_chat_completions(
                             api_monitor.append_reply(monitor_id, visible_delta)
                             yield _gguf_chat_delta_line(ChoiceDelta(content = visible_delta))
 
-                    final_reasoning, final_visible = reasoning_extractor.finish()
-                    if final_reasoning:
-                        yield _gguf_chat_delta_line(ChoiceDelta(reasoning_content = final_reasoning))
-                    if final_visible:
-                        api_monitor.append_reply(monitor_id, final_visible)
-                        yield _gguf_chat_delta_line(ChoiceDelta(content = final_visible))
+                    for chunk in _flush_reasoning_extractor():
+                        yield chunk
 
                     final_chunk = ChatCompletionChunk(
                         id = completion_id,

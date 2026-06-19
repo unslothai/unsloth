@@ -1565,6 +1565,33 @@ class TestGgufVisionToolRouting:
         [entry] = result.monitor.snapshot()
         assert entry["reply"] == "visible "
 
+    def test_gguf_tool_stream_flushes_held_text_before_status_reset(self, monkeypatch):
+        def _tools(**_kwargs):
+            yield {"type": "content", "text": "answer <"}
+            yield {"type": "status", "text": ""}
+            yield {
+                "type": "metadata",
+                "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5},
+                "finish_reason": "stop",
+            }
+
+        result = self._run_gguf_case(
+            monkeypatch,
+            tool_generate = _tools,
+            payload_kwargs = {
+                "stream": True,
+                "enable_tools": True,
+                "enabled_tools": ["terminal"],
+                "messages": [{"role": "user", "content": "say literal"}],
+            },
+        )
+        deltas = [p["choices"][0].get("delta", {}) for p in result.payloads if p.get("choices")]
+
+        combined_content = "".join(d.get("content", "") for d in deltas)
+        assert combined_content == "answer <"
+        [entry] = result.monitor.snapshot()
+        assert entry["reply"] == "answer <"
+
     def test_non_streaming_gguf_splits_reasoning_content(self, monkeypatch):
         def _generate(**_kwargs):
             yield "<think>plan</think>visible"
