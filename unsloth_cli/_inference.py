@@ -266,7 +266,6 @@ def _local_studio_install_id() -> Optional[str]:
     try:
         ensure_studio_backend_path()
         from utils.paths import studio_root
-
         token = (studio_root() / "share" / "studio_install_id").read_text().strip()
     except (OSError, ValueError, ImportError):
         return None
