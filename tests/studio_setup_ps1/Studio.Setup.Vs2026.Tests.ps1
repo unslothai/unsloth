@@ -39,6 +39,19 @@ Describe 'Find-VsBuildTools (VS 2026 generator discovery)' {
     # helpers) so the v180 path + CMake guard cannot be reachable in routing while
     # discovery stays dead. Windows-only: Find-VsBuildTools builds candidate paths
     # with backslash separators, which only resolve as real directories on Windows.
+    BeforeAll {
+        # Define the helper in BeforeAll (not the Describe body) so it is visible
+        # inside the It blocks: Pester 5 runs the Describe body only during
+        # discovery, where functions do not persist into the run-phase It scope
+        # (the body-level definition raised CommandNotFoundException on Windows,
+        # the only platform where these discovery tests actually run).
+        function New-FakeVsTree {
+            param([string]$Root, [string]$VersionDir, [string]$Edition = 'BuildTools')
+            $clDir = Join-Path $Root "Microsoft Visual Studio\$VersionDir\$Edition\VC\Tools\MSVC\14.50.00000\bin\Hostx64\x64"
+            New-Item -ItemType Directory -Path $clDir -Force | Out-Null
+            New-Item -ItemType File -Path (Join-Path $clDir 'cl.exe') -Force | Out-Null
+        }
+    }
     BeforeEach {
         $script:OrigPF    = ${env:ProgramFiles}
         $script:OrigPFx86 = ${env:ProgramFiles(x86)}
@@ -46,13 +59,6 @@ Describe 'Find-VsBuildTools (VS 2026 generator discovery)' {
     AfterEach {
         ${env:ProgramFiles}      = $script:OrigPF
         ${env:ProgramFiles(x86)} = $script:OrigPFx86
-    }
-
-    function New-FakeVsTree {
-        param([string]$Root, [string]$VersionDir, [string]$Edition = 'BuildTools')
-        $clDir = Join-Path $Root "Microsoft Visual Studio\$VersionDir\$Edition\VC\Tools\MSVC\14.50.00000\bin\Hostx64\x64"
-        New-Item -ItemType Directory -Path $clDir -Force | Out-Null
-        New-Item -ItemType File -Path (Join-Path $clDir 'cl.exe') -Force | Out-Null
     }
 
     It 'detects a filesystem-only VS 2026 BuildTools install (dir "18")' -Skip:(-not $IsWindows) {
