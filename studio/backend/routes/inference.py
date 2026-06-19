@@ -15,7 +15,6 @@ from fastapi.responses import StreamingResponse, JSONResponse, Response
 from typing import Any, List, Optional, Union
 import json
 import httpx
-import structlog
 from loggers import get_logger
 import asyncio
 import threading
@@ -926,11 +925,9 @@ from models.inference import (
     ImageContentPart,
     ImageUrl,
     ResponsesRequest,
-    ResponsesInputMessage,
     ResponsesInputTextPart,
     ResponsesInputImagePart,
     ResponsesOutputTextPart,
-    ResponsesUnknownContentPart,
     ResponsesUnknownInputItem,
     ResponsesFunctionCallInputItem,
     ResponsesFunctionCallOutputInputItem,
@@ -968,14 +965,13 @@ from state.tool_approvals import resolve_tool_decision
 from core.inference.key_exchange import decrypt_api_key
 from core.inference.api_monitor import api_monitor
 from core.inference.llama_http import nonstreaming_client
-from core.inference.providers import get_provider_info, get_base_url
+from core.inference.providers import get_base_url
 from core.inference.external_provider import ExternalProviderClient
 from core.inference.chat_templates import resolve_effective_chat_template_override
 from storage import providers_db
 from utils.utils import safe_error_detail, log_and_http_error
 
 import io
-import wave
 import base64
 import numpy as np
 from datetime import date as _date
@@ -3524,7 +3520,6 @@ async def generate_audio(
 
 def _decode_audio_base64(b64: str) -> np.ndarray:
     """Decode base64 audio (any format) → float32 numpy array at 16kHz."""
-    import torch
     import torchaudio
     import tempfile
     import os

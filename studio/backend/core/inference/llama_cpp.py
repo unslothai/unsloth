@@ -13,7 +13,6 @@ import json
 import os
 import re
 import struct
-import structlog
 from loggers import get_logger
 import shutil
 import signal
@@ -40,15 +39,7 @@ from core.inference.llama_server_args import (
     strip_split_mode_only,
 )
 from core.tool_healing import (
-    _TC_END_TAG_RE,
-    _TC_FUNC_CLOSE_RE,
-    _TC_FUNC_START_RE,
-    _TC_JSON_START_RE,
-    _TC_PARAM_CLOSE_RE,
-    _TC_PARAM_START_RE,
     _TOOL_ALL_PATS,
-    _TOOL_CLOSED_PATS,
-    parse_tool_calls_from_text,
     strip_tool_call_markup,
 )
 from utils.native_path_leases import child_env_without_native_path_secret
