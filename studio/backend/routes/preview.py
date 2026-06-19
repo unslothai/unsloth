@@ -43,21 +43,20 @@ def _resolve_or_4xx(run: str, checkpoint: str | None):
 
 def _without_tools(payload: ChatCompletionRequest) -> ChatCompletionRequest:
     # Tools run shell/python on the host; this surface is public, so force them off.
-    return payload.model_copy(update = {
-        "tools": None,
-        "enable_tools": False,
-        "enabled_tools": None,
-        "bypass_permissions": False,
-        "openai_code_exec_container_id": None,
-        "anthropic_code_exec_container_id": None,
-    })
+    return payload.model_copy(
+        update = {
+            "tools": None,
+            "enable_tools": False,
+            "enabled_tools": None,
+            "bypass_permissions": False,
+            "openai_code_exec_container_id": None,
+            "anthropic_code_exec_container_id": None,
+        }
+    )
 
 
 async def _serve_chat(
-    run: str,
-    checkpoint: str | None,
-    payload: ChatCompletionRequest,
-    request: Request,
+    run: str, checkpoint: str | None, payload: ChatCompletionRequest, request: Request
 ):
     path = _resolve_or_4xx(run, checkpoint)
     payload = _without_tools(payload)
@@ -77,20 +76,13 @@ async def list_previews(request: Request, current_subject: str = Depends(get_cur
 
 
 @router.post("/{run}/v1/chat/completions")
-async def preview_chat_latest(
-    run: str,
-    payload: ChatCompletionRequest,
-    request: Request,
-):
+async def preview_chat_latest(run: str, payload: ChatCompletionRequest, request: Request):
     return await _serve_chat(run, None, payload, request)
 
 
 @router.post("/{run}/{checkpoint}/v1/chat/completions")
 async def preview_chat_checkpoint(
-    run: str,
-    checkpoint: str,
-    payload: ChatCompletionRequest,
-    request: Request,
+    run: str, checkpoint: str, payload: ChatCompletionRequest, request: Request
 ):
     return await _serve_chat(run, checkpoint, payload, request)
 

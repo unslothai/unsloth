@@ -153,8 +153,7 @@ def resolve_preview_checkpoint(run: str, checkpoint: Optional[str] = None) -> Pa
     path = resolve_output_dir(relative)
     if not path.is_dir() or not _is_model_dir(path):
         raise FileNotFoundError(
-            f"No trained checkpoint at '{relative}'. "
-            "Check the run/checkpoint name (see GET /p)."
+            f"No trained checkpoint at '{relative}'. Check the run/checkpoint name (see GET /p)."
         )
     return path
 
