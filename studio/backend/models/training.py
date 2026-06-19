@@ -51,10 +51,14 @@ class TrainingStartRequest(BaseModel):
         0.00, description = "Fraction of total steps between evals (0-1)"
     )
     dataset_slice_start: Optional[int] = Field(
-        None, description = "Inclusive start row index for dataset slicing"
+        None,
+        ge = 0,
+        description = "Inclusive start row index for dataset slicing",
     )
     dataset_slice_end: Optional[int] = Field(
-        None, description = "Inclusive end row index for dataset slicing"
+        None,
+        ge = 0,
+        description = "Inclusive end row index for dataset slicing",
     )
 
     @model_validator(mode = "before")
@@ -64,6 +68,23 @@ class TrainingStartRequest(BaseModel):
         if isinstance(values, dict) and "split" in values:
             values.setdefault("train_split", values.pop("split"))
         return values
+
+    @model_validator(mode = "after")
+    def _validate_dataset_slice(self) -> "TrainingStartRequest":
+        # Only the ordering is validated here. No upper bound is enforced on the
+        # indices: the trainer slices via datasets `.take()` / `.select()`, which
+        # clamp gracefully when the end index exceeds the dataset length.
+        # start == end is intentionally allowed (deliberate single-row slice,
+        # e.g. for debugging); the trainer logs a warning for that 1-row case.
+        if (
+            self.dataset_slice_start is not None
+            and self.dataset_slice_end is not None
+            and self.dataset_slice_end < self.dataset_slice_start
+        ):
+            raise ValueError(
+                "dataset_slice_end must be greater than or equal to dataset_slice_start"
+            )
+        return self
 
     custom_format_mapping: Optional[Dict[str, Any]] = Field(
         None,

@@ -5,6 +5,7 @@ import { DEFAULT_HYPERPARAMS, LR_DEFAULT_FULL, LR_DEFAULT_LORA, STEPS } from "@/
 import { authFetch } from "@/features/auth";
 import { isAdapterMethod } from "@/types/training";
 import type { ModelType, StepNumber, TrainingMethod } from "@/types/training";
+import { toast } from "sonner";
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { checkDatasetFormat } from "../api/datasets-api";
@@ -155,6 +156,49 @@ function canProceedForStep(state: TrainingConfigState): boolean {
     default:
       return false;
   }
+}
+
+// Single source of truth for the "streaming + eval needs a distinct split"
+// rule. Shared between the store's compatibility patch and the UI gate
+// (DatasetSection) so the two never drift apart.
+export function hasSeparateStreamingEvalSplit(
+  state: Pick<
+    TrainingConfigState,
+    "evalSteps" | "datasetSplit" | "datasetEvalSplit"
+  >,
+): boolean {
+  if (state.evalSteps <= 0) return true;
+  const trainSplit = state.datasetSplit || "train";
+  return !!state.datasetEvalSplit && state.datasetEvalSplit !== trainSplit;
+}
+
+function streamingCompatiblePatch(
+  state: TrainingConfigState,
+): Partial<TrainingConfigState> {
+  const patch: Partial<TrainingConfigState> = {};
+
+  if (state.datasetStreaming && state.maxSteps <= 0) {
+    patch.datasetStreaming = false;
+  }
+
+  // Evaluate the remaining streaming constraints against the *post-patch*
+  // streaming value. If streaming is being turned off in this same patch
+  // (e.g. maxSteps dropped to 0), its other constraints are moot and we must
+  // NOT clobber unrelated user preferences like trainOnCompletions/evalSteps.
+  const willStream =
+    patch.datasetStreaming !== undefined
+      ? patch.datasetStreaming
+      : state.datasetStreaming;
+
+  if (willStream && state.trainOnCompletions) {
+    patch.trainOnCompletions = false;
+  }
+
+  if (willStream && !hasSeparateStreamingEvalSplit(state)) {
+    patch.evalSteps = 0;
+  }
+
+  return patch;
 }
 
 export const useTrainingConfigStore = create<TrainingConfigStore>()(
@@ -482,15 +526,17 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           });
         },
         setDatasetSplit: (datasetSplit) => {
+          const state = get();
+          const nextState = { ...state, datasetSplit };
           set({
             datasetSplit,
             datasetManualMapping: emptyManualMapping(),
             isDatasetImage: null,
             isDatasetAudio: false,
             isCheckingDataset: false,
+            ...streamingCompatiblePatch(nextState),
           });
 
-          const state = get();
           const datasetName =
             state.datasetSource === "huggingface"
               ? state.dataset
@@ -514,12 +560,48 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           runDatasetCheck(datasetName, split);
         },
         setDatasetEvalSplit: (datasetEvalSplit) => {
+          const state = get();
+          const evalSteps = datasetEvalSplit ? 0.1 : 0;
           set({
             datasetEvalSplit,
-            evalSteps: datasetEvalSplit ? 0.1 : 0,
+            evalSteps,
+            ...streamingCompatiblePatch({ ...state, datasetEvalSplit, evalSteps }),
           });
         },
-        setDatasetStreaming: (datasetStreaming) => set({datasetStreaming}),
+        setDatasetStreaming: (datasetStreaming) => {
+          if (!datasetStreaming) {
+            set({ datasetStreaming: false });
+            return;
+          }
+
+          const state = get();
+          if (state.maxSteps <= 0) {
+            set({ datasetStreaming: false });
+            toast.warning(
+              "Streaming needs a fixed Max Steps (streaming datasets have no known length). Set Max Steps > 0 first.",
+            );
+            return;
+          }
+
+          const dropsTrainOnCompletions = state.trainOnCompletions;
+          const dropsEval = !hasSeparateStreamingEvalSplit(state);
+
+          set({
+            datasetStreaming: true,
+            trainOnCompletions: false,
+            evalSteps: dropsEval ? 0 : state.evalSteps,
+          });
+
+          if (dropsTrainOnCompletions || dropsEval) {
+            const disabled = [
+              dropsTrainOnCompletions && "assistant-completions-only",
+              dropsEval && "evaluation (needs a separate eval split)",
+            ].filter(Boolean);
+            toast.info(
+              `Streaming enabled. Disabled incompatible options: ${disabled.join(", ")}.`,
+            );
+          }
+        },
         setDatasetManualMapping: (datasetManualMapping) =>
           set({ datasetManualMapping }),
         setDatasetAdvisorFields: (fields) =>
@@ -579,13 +661,29 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           set({ gradientAccumulation }),
         setWeightDecay: (weightDecay) => set({ weightDecay }),
         setWarmupSteps: (warmupSteps) => set({ warmupSteps }),
-        setMaxSteps: (maxSteps) => set({ maxSteps }),
+        setMaxSteps: (maxSteps) => {
+          const state = get();
+          set({
+            maxSteps,
+            ...(maxSteps > 0 ? {} : { datasetStreaming: false }),
+            ...streamingCompatiblePatch({ ...state, maxSteps }),
+          });
+        },
         setSaveSteps: (saveSteps) => set({ saveSteps }),
-        setEvalSteps: (evalSteps) => set({ evalSteps }),
+        setEvalSteps: (evalSteps) => {
+          const state = get();
+          set({
+            evalSteps,
+            ...streamingCompatiblePatch({ ...state, evalSteps }),
+          });
+        },
         setPacking: (packing) => set({ packing }),
         setTrainOnCompletions: (trainOnCompletions) => {
           _trainOnCompletionsManuallySet = true;
-          set({ trainOnCompletions });
+          set({
+            trainOnCompletions,
+            ...(trainOnCompletions ? { datasetStreaming: false } : {}),
+          });
         },
         setGradientCheckpointing: (gradientCheckpointing) =>
           set({ gradientCheckpointing }),
@@ -673,6 +771,19 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         return s as unknown as TrainingConfigStore;
       },
       partialize: partializePersistedState,
+      onRehydrateStorage: () => (state) => {
+        // datasetStreaming is persisted, but constraint-coupled fields like
+        // trainOnCompletions / maxSteps / evalSteps are NON_PERSISTED and
+        // rehydrate to defaults. That can resurrect an invalid combo (e.g.
+        // streaming=true with a default trainOnCompletions) that the backend
+        // rejects with 422. Reconcile immediately on load instead of relying
+        // on a post-mount effect.
+        if (!state) return;
+        const patch = streamingCompatiblePatch(state);
+        if (Object.keys(patch).length > 0) {
+          useTrainingConfigStore.setState(patch);
+        }
+      },
     },
   ),
 );

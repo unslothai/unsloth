@@ -61,6 +61,7 @@ from datasets import Dataset, IterableDataset, load_dataset
 from utils.models import is_vision_model, detect_audio_type
 from utils.datasets import format_and_template_dataset
 from utils.datasets import MODEL_TO_TEMPLATE_MAPPER, TEMPLATE_TO_RESPONSES_MAPPER
+from utils.datasets.iterable import is_streaming_dataset as detect_streaming_dataset
 from utils.paths import (
     ensure_dir,
     resolve_dataset_path,
@@ -2420,6 +2421,14 @@ class UnslothTrainer:
                             f"[{slice_start}, {dataset_slice_end}]; actual yield "
                             f"may be smaller if the dataset has fewer rows."
                         )
+                        if take_count == 1:
+                            # start == end is a valid slice but produces a single
+                            # training row, which is almost always user error.
+                            logger.warning(
+                                "Dataset slice resolves to a single row "
+                                f"(start == end == {slice_start}); training on 1 "
+                                "sample is likely unintended."
+                            )
 
                     logger.info(
                         f"Loaded Hugging Face dataset in streaming mode: {dataset_source}\n"
@@ -3385,7 +3394,7 @@ class UnslothTrainer:
 
                     # ── Safety net: check if all samples were filtered out ──
                     # Skip post-filter length checks for streaming datasets.
-                    if isinstance(self.trainer.train_dataset, IterableDataset):
+                    if detect_streaming_dataset(self.trainer.train_dataset):
                         logger.info(
                             "Skipping post-filter length check for streaming dataset\n"
                         )
@@ -3442,7 +3451,7 @@ class UnslothTrainer:
             train_dataset_obj = (
                 dataset["dataset"] if isinstance(dataset, dict) else dataset
             )
-            is_streaming_dataset = isinstance(train_dataset_obj, IterableDataset)
+            is_streaming_dataset = detect_streaming_dataset(train_dataset_obj)
 
             max_steps_value = training_args.get("max_steps")
             max_steps = 0 if max_steps_value is None else int(max_steps_value)

@@ -45,6 +45,7 @@ import {
   useTrainingConfigStore,
 } from "@/features/training";
 import { listLocalDatasets } from "@/features/training/api/datasets-api";
+import { hasSeparateStreamingEvalSplit } from "@/features/training/stores/training-config-store";
 import type { LocalDatasetInfo } from "@/features/training/types/datasets";
 import { useNavigate } from "@tanstack/react-router";
 import {
@@ -120,6 +121,9 @@ export function DatasetSection() {
     setDatasetEvalSplit,
     datasetStreaming,
     setDatasetStreaming,
+    trainOnCompletions,
+    maxSteps,
+    evalSteps,
     isVisionModel,
     isAudioModel,
     isDatasetImage,
@@ -149,6 +153,9 @@ export function DatasetSection() {
       setDatasetEvalSplit: s.setDatasetEvalSplit,
       datasetStreaming: s.datasetStreaming,
       setDatasetStreaming: s.setDatasetStreaming,
+      trainOnCompletions: s.trainOnCompletions,
+      maxSteps: s.maxSteps,
+      evalSteps: s.evalSteps,
       isVisionModel: s.isVisionModel,
       isAudioModel: s.isAudioModel,
       isDatasetImage: s.isDatasetImage,
@@ -171,6 +178,9 @@ export function DatasetSection() {
   // requires random access and would crash on an IterableDataset.
   const isStreamingSupported =
     datasetSource === "huggingface" &&
+    maxSteps > 0 &&
+    !trainOnCompletions &&
+    hasSeparateStreamingEvalSplit({ evalSteps, datasetSplit, datasetEvalSplit }) &&
     !isVisionModel &&
     !isAudioModel &&
     !isDatasetImage &&

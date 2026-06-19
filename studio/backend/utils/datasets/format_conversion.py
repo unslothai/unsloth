@@ -10,7 +10,7 @@ This module contains functions for converting between dataset formats
 
 import os
 
-from datasets import IterableDataset
+from .iterable import is_streaming_dataset
 from loggers import get_logger
 
 logger = get_logger(__name__)
@@ -41,8 +41,6 @@ def standardize_chat_format(
     """
     import collections
     import itertools
-    from datasets import IterableDataset
-
     # Check if vision tokenizer is used
     is_vlm = False
     if tokenizer is not None:
@@ -126,7 +124,7 @@ def standardize_chat_format(
         "batch_size": batch_size,
     }
 
-    if not isinstance(dataset, IterableDataset):
+    if not is_streaming_dataset(dataset):
         from utils.hardware import dataset_map_num_proc
 
         if num_proc is None or type(num_proc) is not int:
@@ -149,12 +147,7 @@ def convert_chatml_to_alpaca(dataset, batch_size = 1000, num_proc = None):
     - "messages" or "conversations" column
     - "role"/"content" (standard) or "from"/"value" (ShareGPT)
     """
-    try:
-        from torch.utils.data import IterableDataset
-
-        _is_torch_iterable = isinstance(dataset, IterableDataset)
-    except ImportError:
-        _is_torch_iterable = False
+    is_iterable = is_streaming_dataset(dataset)
 
     def _convert(examples):
         # Auto-detect which column name is used
@@ -201,7 +194,7 @@ def convert_chatml_to_alpaca(dataset, batch_size = 1000, num_proc = None):
         "batch_size": batch_size,
     }
 
-    if not _is_torch_iterable:
+    if not is_iterable:
         from utils.hardware import dataset_map_num_proc
 
         if num_proc is None or type(num_proc) is not int:
@@ -221,12 +214,7 @@ def convert_alpaca_to_chatml(dataset, batch_size = 1000, num_proc = None):
 
     Output format: Uses 'conversations' column with standard 'role'/'content' structure.
     """
-    try:
-        from torch.utils.data import IterableDataset
-
-        _is_torch_iterable = isinstance(dataset, IterableDataset)
-    except ImportError:
-        _is_torch_iterable = False
+    is_iterable = is_streaming_dataset(dataset)
 
     def _convert(examples):
         conversations = []
@@ -256,7 +244,7 @@ def convert_alpaca_to_chatml(dataset, batch_size = 1000, num_proc = None):
         "batch_size": batch_size,
     }
 
-    if not _is_torch_iterable:
+    if not is_iterable:
         from utils.hardware import dataset_map_num_proc
 
         if num_proc is None or type(num_proc) is not int:

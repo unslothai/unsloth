@@ -907,11 +907,22 @@ export function ParamsSection(): ReactElement {
                       <Checkbox
                         id="trainOnCompletions"
                         checked={store.trainOnCompletions}
+                        disabled={store.datasetStreaming}
                         onCheckedChange={(v) => store.setTrainOnCompletions(!!v)}
                       />
                       <label
                         htmlFor="trainOnCompletions"
-                        className="text-xs cursor-pointer text-muted-foreground"
+                        aria-disabled={store.datasetStreaming || undefined}
+                        title={
+                          store.datasetStreaming
+                            ? "Not available while dataset streaming is enabled."
+                            : undefined
+                        }
+                        className={`text-xs text-muted-foreground ${
+                          store.datasetStreaming
+                            ? "cursor-not-allowed opacity-60"
+                            : "cursor-pointer"
+                        }`}
                       >
                         Assistant completions only
                       </label>

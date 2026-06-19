@@ -171,6 +171,18 @@ async def start_training(
                     status_code = 422,
                     detail = "dataset_streaming requires max_steps > 0 because streaming datasets have no known length.",
                 )
+            if request.train_on_completions:
+                raise HTTPException(
+                    status_code = 422,
+                    detail = "dataset_streaming is not supported with train_on_completions yet.",
+                )
+            if request.eval_steps > 0:
+                train_split = request.train_split or "train"
+                if not request.eval_split or request.eval_split == train_split:
+                    raise HTTPException(
+                        status_code = 422,
+                        detail = "dataset_streaming with evaluation requires a separate eval_split.",
+                    )
 
         # Convert request to kwargs for backend
         training_kwargs = {
@@ -298,6 +310,8 @@ async def start_training(
             error = None,
         )
 
+    except HTTPException:
+        raise
     except ValueError as e:
         logger.warning("Rejected training GPU selection: %s", e)
         raise HTTPException(status_code = 400, detail = str(e))
