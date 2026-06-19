@@ -1502,9 +1502,7 @@ class TestGgufVisionToolRouting:
         [entry] = monitor.snapshot()
         assert entry["reply"] == "visible"
 
-    def test_reasoning_capable_gguf_stream_sanitizes_think_tags_when_disabled(
-        self, monkeypatch
-    ):
+    def test_reasoning_capable_gguf_stream_sanitizes_think_tags_when_disabled(self, monkeypatch):
         import routes.inference as inf_mod
 
         reset_tool_policy()

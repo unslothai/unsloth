@@ -425,7 +425,6 @@ def test_tool_healing_strip_handles_hyphenated_function_names():
 
 def test_tool_healing_strip_handles_gemma_native_tool_call():
     from core.tool_healing import strip_tool_call_markup
-
     out = strip_tool_call_markup(
         'before <|tool_call>call:mcp__srv__list-issues{repo:"octocat/hello"}<tool_call|> after'
     )
@@ -441,9 +440,7 @@ def test_tool_healing_parser_handles_gemma_native_windows_path():
     )
     assert len(calls) == 1
     assert calls[0]["function"]["name"] == "ls"
-    assert _json.loads(calls[0]["function"]["arguments"]) == {
-        "path": r"C:\Users\wasim\repo"
-    }
+    assert _json.loads(calls[0]["function"]["arguments"]) == {"path": r"C:\Users\wasim\repo"}
 
 
 def test_gguf_allow_list_blocks_unadvertised_tool(monkeypatch):

@@ -5099,9 +5099,7 @@ async def openai_chat_completions(
 
                     final_reasoning, final_visible = reasoning_extractor.finish()
                     if final_reasoning:
-                        yield _gguf_chat_delta_line(
-                            ChoiceDelta(reasoning_content = final_reasoning)
-                        )
+                        yield _gguf_chat_delta_line(ChoiceDelta(reasoning_content = final_reasoning))
                     if final_visible:
                         api_monitor.append_reply(monitor_id, final_visible)
                         yield _gguf_chat_delta_line(ChoiceDelta(content = final_visible))
@@ -5264,9 +5262,7 @@ async def openai_chat_completions(
 
                     final_reasoning, final_visible = reasoning_extractor.finish()
                     if final_reasoning:
-                        yield _gguf_chat_delta_line(
-                            ChoiceDelta(reasoning_content = final_reasoning)
-                        )
+                        yield _gguf_chat_delta_line(ChoiceDelta(reasoning_content = final_reasoning))
                     if final_visible:
                         api_monitor.append_reply(monitor_id, final_visible)
                         yield _gguf_chat_delta_line(ChoiceDelta(content = final_visible))

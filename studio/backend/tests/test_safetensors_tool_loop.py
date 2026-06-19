@@ -83,9 +83,7 @@ class TestParser:
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
         assert result[0]["function"]["name"] == "ls"
-        assert json.loads(result[0]["function"]["arguments"]) == {
-            "path": r"C:\Users\wasim\repo"
-        }
+        assert json.loads(result[0]["function"]["arguments"]) == {"path": r"C:\Users\wasim\repo"}
 
     def test_gemma_native_tool_call_hyphenated_argument_name(self):
         text = '<|tool_call>call:mcp__srv__create-issue{issue-title:"Bug report"}<tool_call|>'
@@ -99,9 +97,7 @@ class TestParser:
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
         assert result[0]["function"]["name"] == "terminal"
-        assert json.loads(result[0]["function"]["arguments"]) == {
-            "command": "echo {foo:bar}"
-        }
+        assert json.loads(result[0]["function"]["arguments"]) == {"command": "echo {foo:bar}"}
 
     def test_xml_function_call(self):
         text = "<function=python><parameter=code>print('hi')</parameter></function>"
