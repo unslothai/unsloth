@@ -851,6 +851,23 @@ def _auto_mode_drops_mtp(
     return req_mode == "auto" and size_b is not None and size_b < _MTP_MIN_SIZE_B
 
 
+def _mla_mtp_auto_enabled() -> bool:
+    """Whether Auto may pick embedded MTP for an MLA model (GLM-5.2/DeepSeek/Kimi).
+
+    Off by default: llama.cpp's MLA/DSA MTP path keeps a duplicated full target-KV
+    context and recomputes the sparse-attention indexer every draft step, so it runs
+    ~2x slower than no speculation (GLM-5.2 bench: 27 vs 45 tok/s, flat across draft
+    depth and 96-100% acceptance) -- the opposite of the vLLM/SGLang speedup on the
+    same model. Set UNSLOTH_MLA_MTP_ENABLED=1 to let Auto promote MLA MTP again once
+    that path is optimized upstream. Forced mtp / mtp+ngram ignore this gate."""
+    return os.environ.get("UNSLOTH_MLA_MTP_ENABLED", "0").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
 def _extra_args_set_spec_type(extra_args: Optional[Iterable[str]]) -> bool:
     """User passed --spec-type / --spec-default? llama-server takes one
     --spec-type (comma-separated to chain), so suppress auto-emit."""
@@ -6169,6 +6186,17 @@ class LlamaCppBackend:
         _mtp_too_small = (
             _mtp_size_b is not None and _mtp_size_b < _MTP_MIN_SIZE_B and not bool(mtp_draft_path)
         )
+        # Embedded MTP head on an MLA model (GLM-5.2/DeepSeek/Kimi, detected by
+        # kv_lora_rank): llama.cpp's MLA/DSA MTP path is ~2x slower than no spec,
+        # so Auto drops it (override via the Settings dropdown / forced mtp, or
+        # UNSLOTH_MLA_MTP_ENABLED=1). Separate drafters (Gemma, mtp_draft_path) and
+        # non-MLA embedded heads (Qwen, no kv_lora_rank) are unaffected.
+        _auto_mla_embedded_mtp = (
+            bool(self._nextn_predict_layers)
+            and self._kv_lora_rank is not None
+            and not bool(mtp_draft_path)
+            and not _mla_mtp_auto_enabled()
+        )
 
         if user_owns_spec_type:
             # User --spec-type wins outright; suppress auto-emit to avoid a
@@ -6312,7 +6340,30 @@ class LlamaCppBackend:
 
         # effective_mode == "auto": the promotion path. llama.cpp #22673:
         # MTP is compatible with mmproj, so there's no vision gate.
-        if is_mtp_model and not _mtp_too_small:
+        if _auto_mla_embedded_mtp:
+            # MLA embedded-MTP (GLM-5.2 et al.): the MTP path regresses vs spec-off
+            # on llama.cpp today, so Auto drops it and falls back to ngram-mod (or
+            # spec-off if unsupported), mirroring the sub-3B branch. Forced mtp /
+            # mtp+ngram (handled above) still engage; UNSLOTH_MLA_MTP_ENABLED=1
+            # re-enables this promotion once upstream optimizes the path.
+            self._spec_fallback_reason = "mla_mtp_disabled"
+            _mla_caps = self.probe_server_capabilities(binary)
+            if _mla_caps.get("supports_ngram_mod"):
+                logger.info(
+                    "Auto: MLA embedded-MTP model detected; llama.cpp's MLA/DSA "
+                    "MTP path is slower than no speculation, so using ngram-mod "
+                    "instead. Override via the Studio Speculative Decoding "
+                    "dropdown or UNSLOTH_MLA_MTP_ENABLED=1."
+                )
+                _emit_ngram_mod()
+            else:
+                logger.info(
+                    "Auto: MLA embedded-MTP model detected; disabling speculative "
+                    "decoding (this llama-server does not advertise ngram-mod). "
+                    "Override via the dropdown or UNSLOTH_MLA_MTP_ENABLED=1."
+                )
+                # spec-off: emit nothing, mirroring the sub-3B no-ngram path.
+        elif is_mtp_model and not _mtp_too_small:
             # GPU: MTP-only. CPU/Mac: chain ngram-mod + MTP.
             _emit_mtp(chain_ngram = not gpus)
         elif is_mtp_model and _mtp_too_small:
