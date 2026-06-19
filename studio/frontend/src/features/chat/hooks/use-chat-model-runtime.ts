@@ -527,6 +527,7 @@ export function useChatModelRuntime() {
               ggufVariant,
               customContextLength: preUnloadState.customContextLength,
               ggufContextLength: preUnloadState.ggufContextLength,
+              ggufLaunchContextLength: preUnloadState.ggufLaunchContextLength,
               currentCheckpoint,
               activeGgufVariant: preUnloadState.activeGgufVariant,
               maxSeqLength,
