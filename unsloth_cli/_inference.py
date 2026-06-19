@@ -270,6 +270,32 @@ def find_studio_server(timeout: float = 3.0) -> Optional[str]:
         return None
 
 
+def is_loopback_url(base: str) -> bool:
+    """True only when *base* resolves to this machine's loopback interface.
+
+    find_studio_server() returns a base URL after only an unauthenticated
+    /api/health probe, so the server's identity is never verified: an
+    attacker-controlled UNSLOTH_STUDIO_URL, or a process that preempts the
+    default port, both pass that check. Sending a credential (a cached API key
+    or a self-issued JWT) to such a server discloses it. We can't prove a
+    server's identity without a signed handshake, but we can refuse to
+    auto-send credentials anywhere except loopback, which is the only target
+    the automatic flows were meant for (a local Studio, or one reached through
+    an SSH tunnel that also lands on 127.0.0.1).
+    """
+    from urllib.parse import urlparse
+
+    host = (urlparse(base).hostname or "").lower()
+    if host in ("localhost", "127.0.0.1", "::1"):
+        return True
+    try:
+        import ipaddress
+
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
 def _studio_token() -> Optional[str]:
     """Self-issue a JWT: the CLI runs as the same OS user as the server, so it
     signs with the same stored secret the server validates against."""
@@ -413,6 +439,12 @@ def connect_studio_server(model: str, *, hf_token, max_seq_length, load_in_4bit)
     """Backend on a running Studio server, or None (caller loads locally)."""
     base_url = find_studio_server()
     if not base_url:
+        return None
+    # The self-issued JWT is a bearer token signed with the local Studio
+    # secret; only ever hand it to a loopback server. A remote/attacker URL is
+    # unverified (so disclosing it would be a credential leak), and a genuine
+    # remote Studio signs with a different secret and would reject it anyway.
+    if not is_loopback_url(base_url):
         return None
     token = _studio_token()
     if not token:

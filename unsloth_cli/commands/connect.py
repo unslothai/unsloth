@@ -19,9 +19,9 @@ import typer
 
 from unsloth_cli._inference import (
     _USER_AGENT,
-    _studio_token,
     ensure_studio_backend_path,
     find_studio_server,
+    is_loopback_url,
 )
 
 connect_app = typer.Typer(
@@ -46,7 +46,11 @@ _KEY_OPTION = typer.Option(
     None,
     "--api-key",
     envvar = "UNSLOTH_API_KEY",
-    help = "Studio API key; minted automatically when omitted. Keys are remembered, so passing one once is enough.",
+    help = (
+        "Studio API key. For a local Studio it is minted automatically and "
+        "remembered per server. For a remote server, pass one with --api-key "
+        "(or UNSLOTH_API_KEY); it is remembered for next time."
+    ),
 )
 _LAUNCH_OPTION = typer.Option(
     True,
@@ -117,18 +121,24 @@ def _key_cache_path() -> Path:
     return auth_root() / "agent_api_key.json"
 
 
-def _cached_keys(cache: Path) -> list:
+def _read_cache(cache: Path) -> dict:
     try:
         data = json.loads(cache.read_text())
     except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _cached_keys(cache: Path, base: str) -> list:
+    # Keys are scoped to the exact server they were minted/used against, so a
+    # key is only ever replayed to that same server. Pre-scoping caches
+    # (flat "keys"/"key") had no server binding, so we deliberately ignore
+    # them rather than risk sending one server's key to another; the worst
+    # case is one extra automatic mint on the next local launch.
+    servers = _read_cache(cache).get("servers")
+    if not isinstance(servers, dict):
         return []
-    if not isinstance(data, dict):
-        return []
-    keys = [k for k in data.get("keys", []) if isinstance(k, str)]
-    legacy = data.get("key")  # pre-multi-key cache format
-    if isinstance(legacy, str) and legacy not in keys:
-        keys.append(legacy)
-    return keys
+    return [k for k in servers.get(base, []) if isinstance(k, str)]
 
 
 def _write_private_json(path: Path, data: dict) -> None:
@@ -159,59 +169,91 @@ def _subdict(parent: dict, key: str) -> dict:
     return child
 
 
-def _remember_key(cache: Path, key: str) -> None:
-    existing = _cached_keys(cache)
+def _remember_key(cache: Path, base: str, key: str) -> None:
+    data = _read_cache(cache)
+    servers = data.get("servers")
+    if not isinstance(servers, dict):
+        servers = data["servers"] = {}
+    existing = [k for k in servers.get(base, []) if isinstance(k, str)]
     keys = ([key] + [k for k in existing if k != key])[:8]
     if keys == existing:
         return
+    servers[base] = keys
+    # Collapse any pre-scoping fields so the file carries one schema.
+    data.pop("keys", None)
+    data.pop("key", None)
     try:
-        _write_private_json(cache, {"keys": keys})
+        _write_private_json(cache, data)
     except OSError:
         pass  # worst case the next launch mints another key
+
+
+def _mint_local_api_key() -> Optional[str]:
+    """Create a Studio API key directly in the local auth DB the server reads.
+
+    Minting locally (instead of POSTing a self-issued JWT to the discovered
+    base URL) means no bearer token ever crosses the network, so an
+    unverified or preempted endpoint can't capture one. Works only when the
+    CLI runs as the same OS user as the server (the desktop case); returns
+    None otherwise.
+    """
+    try:
+        import studio.backend.core  # noqa: F401  puts studio/backend on sys.path
+        from studio.backend.auth import storage
+
+        conn = storage.get_connection()
+        try:
+            row = conn.execute("SELECT username FROM auth_user LIMIT 1").fetchone()
+        finally:
+            conn.close()
+        if not row:
+            return None
+        raw_key, _ = storage.create_api_key(
+            username = row[0],
+            name = "Coding agents (unsloth connect)",
+        )
+        return raw_key
+    except Exception:
+        return None
 
 
 def _agent_api_key(base: str, explicit: Optional[str]) -> str:
     cache = _key_cache_path()
     if explicit:
-        _remember_key(cache, explicit)
+        _remember_key(cache, base, explicit)
         return explicit
 
-    # Keys are per-server, so when switching between Studios (local one day,
-    # an SSH-tunnelled remote the next) the right key is whichever validates.
-    for key in _cached_keys(cache):
+    # find_studio_server() trusts a base URL after only an unauthenticated
+    # health check, so a non-loopback target (a malicious UNSLOTH_STUDIO_URL,
+    # say) is unverified. Never auto-send a credential there: require the user
+    # to name the key explicitly so they choose both what to send and where.
+    if not is_loopback_url(base):
+        _fail(
+            f"Refusing to send a Studio credential to {base}: it was discovered "
+            "only by URL and an unauthenticated health check, so its identity "
+            "can't be verified. Create an API key in Studio → Settings → API and "
+            "pass it with --api-key (it is remembered per server), or set "
+            "UNSLOTH_API_KEY."
+        )
+
+    # Loopback only. Replay a key already minted for *this* server (never one
+    # cached for a different server), then fall back to minting locally.
+    for key in _cached_keys(cache, base):
         try:
             _http_json("GET", f"{base}/v1/models", key)
         except Exception:
             continue
-        _remember_key(cache, key)
+        _remember_key(cache, base, key)
         return key
 
-    token = _studio_token()
-    auth_help = (
-        "Couldn't authenticate with the Studio server automatically (it may be "
-        "remote, or running as a different OS user). Create an API key in "
-        "Studio → Settings → API and pass it once with --api-key; it is "
-        "remembered for next time."
-    )
-    if token is None:
-        _fail(auth_help)
-    try:
-        key = _http_json(
-            "POST",
-            f"{base}/api/auth/api-keys",
-            token,
-            {"name": "Coding agents (unsloth connect)"},
-        )["key"]
-    except urllib.error.HTTPError as exc:
-        # A self-issued token only validates against a local, same-OS-user
-        # server; a remote Studio signs with a different secret and rejects it
-        # (401/403). Point at --api-key instead of the raw "expired token".
-        if exc.code in (401, 403):
-            _fail(auth_help)
-        _fail(f"Couldn't create an API key: {_http_error_detail(exc)}")
-    except (urllib.error.URLError, TimeoutError) as exc:
-        _fail(f"Couldn't create an API key: {getattr(exc, 'reason', None) or exc}")
-    _remember_key(cache, key)
+    key = _mint_local_api_key()
+    if key is None:
+        _fail(
+            "Couldn't mint a Studio API key locally (the server may be remote, "
+            "or running as a different OS user). Create one in Studio → Settings "
+            "→ API and pass it with --api-key; it is remembered for next time."
+        )
+    _remember_key(cache, base, key)
     return key
 
 

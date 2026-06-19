@@ -173,7 +173,9 @@ def fake_studio(tmp_path, monkeypatch, claude_settings):
         raise AssertionError(f"unexpected request: {method} {url}")
 
     monkeypatch.setattr(connect, "find_studio_server", lambda: BASE)
-    monkeypatch.setattr(connect, "_studio_token", lambda: "jwt-token")
+    # Keys are now minted locally (no JWT crosses the network); stand in for
+    # the auth-DB write so tests stay offline.
+    monkeypatch.setattr(connect, "_mint_local_api_key", lambda: "sk-unsloth-feedfacefeedface")
     monkeypatch.setattr(connect, "_http_json", http_json)
     monkeypatch.setattr(connect, "_key_cache_path", lambda: tmp_path / "agent_api_key.json")
     # No `claude` on PATH, so _claude_cache_flags never probes the real binary.
@@ -286,13 +288,20 @@ def test_connect_codex_no_launch(fake_studio, tmp_path):
     assert (tmp_path / "codex" / "unsloth_api.config.toml").exists()
 
 
-def test_connect_key_minted_once_then_cached(fake_studio, tmp_path):
+def test_connect_key_minted_once_then_cached(fake_studio, tmp_path, monkeypatch):
+    mints = {"n": 0}
+
+    def mint():
+        mints["n"] += 1
+        return "sk-unsloth-feedfacefeedface"
+
+    monkeypatch.setattr(connect, "_mint_local_api_key", mint)
     CliRunner().invoke(connect.connect_app, ["claude", "--no-launch"])
     CliRunner().invoke(connect.connect_app, ["claude", "--no-launch"])
-    mints = [c for c in fake_studio if c[1].endswith("/api/auth/api-keys")]
-    assert len(mints) == 1
+    # First run mints; second reuses the key cached for this server.
+    assert mints["n"] == 1
     cached = json.loads((tmp_path / "agent_api_key.json").read_text())
-    assert cached["keys"] == ["sk-unsloth-feedfacefeedface"]
+    assert cached["servers"][BASE] == ["sk-unsloth-feedfacefeedface"]
 
 
 def test_connect_explicit_key_remembered_for_keyless_runs(fake_studio, tmp_path):
@@ -302,14 +311,17 @@ def test_connect_explicit_key_remembered_for_keyless_runs(fake_studio, tmp_path)
     )
     result = CliRunner().invoke(connect.connect_app, ["claude", "--no-launch"])
     assert result.exit_code == 0, result.output
+    # Reused, not re-minted (a mint would return the feedface stand-in).
     assert "export ANTHROPIC_AUTH_TOKEN=sk-unsloth-deadbeefdeadbeef" in result.output
-    mints = [c for c in fake_studio if c[1].endswith("/api/auth/api-keys")]
-    assert mints == []
+    cached = json.loads((tmp_path / "agent_api_key.json").read_text())
+    assert cached["servers"][BASE] == ["sk-unsloth-deadbeefdeadbeef"]
 
 
 def test_connect_skips_cached_keys_the_server_rejects(fake_studio, tmp_path, monkeypatch):
     cache = tmp_path / "agent_api_key.json"
-    cache.write_text(json.dumps({"keys": ["sk-unsloth-stale", "sk-unsloth-feedfacefeedface"]}))
+    cache.write_text(
+        json.dumps({"servers": {BASE: ["sk-unsloth-stale", "sk-unsloth-feedfacefeedface"]}})
+    )
     inner = connect._http_json
 
     def http_json(
@@ -328,20 +340,22 @@ def test_connect_skips_cached_keys_the_server_rejects(fake_studio, tmp_path, mon
     result = CliRunner().invoke(connect.connect_app, ["claude", "--no-launch"])
     assert result.exit_code == 0, result.output
     assert "export ANTHROPIC_AUTH_TOKEN=sk-unsloth-feedfacefeedface" in result.output
-    mints = [c for c in fake_studio if c[1].endswith("/api/auth/api-keys")]
-    assert mints == []
     # The working key moves to the front so the next run tries it first.
     cached = json.loads(cache.read_text())
-    assert cached["keys"] == ["sk-unsloth-feedfacefeedface", "sk-unsloth-stale"]
+    assert cached["servers"][BASE] == ["sk-unsloth-feedfacefeedface", "sk-unsloth-stale"]
 
 
-def test_connect_reads_legacy_single_key_cache(fake_studio, tmp_path):
+def test_connect_legacy_unscoped_cache_not_replayed(fake_studio, tmp_path):
+    # Pre-scoping caches have no server binding, so replaying them could leak a
+    # key to a different server. They're ignored: a key is re-minted and stored
+    # scoped to the server it was minted for.
     (tmp_path / "agent_api_key.json").write_text(json.dumps({"key": "sk-unsloth-oldformat"}))
     result = CliRunner().invoke(connect.connect_app, ["claude", "--no-launch"])
     assert result.exit_code == 0, result.output
-    assert "export ANTHROPIC_AUTH_TOKEN=sk-unsloth-oldformat" in result.output
-    mints = [c for c in fake_studio if c[1].endswith("/api/auth/api-keys")]
-    assert mints == []
+    assert "export ANTHROPIC_AUTH_TOKEN=sk-unsloth-feedfacefeedface" in result.output
+    cached = json.loads((tmp_path / "agent_api_key.json").read_text())
+    assert cached["servers"][BASE] == ["sk-unsloth-feedfacefeedface"]
+    assert "key" not in cached  # legacy field collapsed away
 
 
 def test_connect_model_flag_loads_on_server(fake_studio):
@@ -452,28 +466,49 @@ def test_connect_codex_rejects_non_gguf_model(fake_studio, monkeypatch):
     assert result.exit_code == 0, result.output
 
 
-def test_connect_remote_token_rejected_points_at_api_key(fake_studio, monkeypatch):
-    # A self-issued token is invalid against a remote Studio (different secret);
-    # the auto-mint 401 should become actionable --api-key guidance.
-    inner = connect._http_json
-
-    def http_json(
-        method,
-        url,
-        token,
-        payload = None,
-        timeout = 30,
-        error = None,
-    ):
-        if url.endswith("/api/auth/api-keys"):
-            raise urllib.error.HTTPError(url, 401, "Invalid or expired token", None, None)
-        return inner(method, url, token, payload, timeout, error)
-
-    monkeypatch.setattr(connect, "_http_json", http_json)
+def test_connect_nonloopback_keyless_refuses_to_send_credential(fake_studio, monkeypatch):
+    # A server discovered only by URL + health check is unverified. Keyless
+    # connect must refuse rather than auto-send a cached/minted credential, and
+    # it must not touch the network or the local auth DB to do so.
+    monkeypatch.setattr(connect, "find_studio_server", lambda: "http://studio.evil.example:8888")
+    minted = {"n": 0}
+    monkeypatch.setattr(
+        connect, "_mint_local_api_key", lambda: (minted.__setitem__("n", minted["n"] + 1), "sk-x")[1]
+    )
     result = CliRunner().invoke(connect.connect_app, ["opencode", "--no-launch"])
     assert result.exit_code == 1
     assert "Settings → API" in result.output
     assert "--api-key" in result.output
+    assert minted["n"] == 0  # never minted
+    assert fake_studio == []  # no HTTP request of any kind
+
+
+def test_connect_nonloopback_explicit_key_is_allowed(fake_studio, monkeypatch):
+    # The user explicitly named both the server and the key, so this is their
+    # choice; only the unattended auto-send paths are blocked.
+    monkeypatch.setattr(connect, "find_studio_server", lambda: "http://studio.example:8888")
+    result = CliRunner().invoke(
+        connect.connect_app,
+        ["opencode", "--no-launch", "--api-key", "sk-unsloth-deadbeefdeadbeef"],
+    )
+    assert result.exit_code == 0, result.output
+
+
+@pytest.mark.parametrize(
+    "url, loopback",
+    [
+        ("http://127.0.0.1:8888", True),
+        ("http://localhost:8888", True),
+        ("http://[::1]:8888", True),
+        ("http://127.0.0.5:9001", True),  # SSH tunnels can land anywhere in 127/8
+        ("http://0.0.0.0:8888", False),
+        ("http://10.0.0.5:8888", False),
+        ("http://studio.evil.example:8888", False),
+        ("https://studio.example.com", False),
+    ],
+)
+def test_is_loopback_url(url, loopback):
+    assert connect.is_loopback_url(url) is loopback
 
 
 def test_connect_no_studio_errors(fake_studio, monkeypatch):
