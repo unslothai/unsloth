@@ -83,7 +83,6 @@ if _IS_MLX:
         from unsloth_zoo.mlx.trainer import (
             MLXTrainer,
             MLXTrainingConfig,
-            _normalize_mlx_optimizer_name,
         )
         from unsloth_zoo.mlx.loader import FastMLXModel
     except ImportError as _e:
@@ -221,10 +220,40 @@ if _IS_MLX:
         "completion_only_loss",
     ))
 
+    def _normalize_mlx_training_optimizer_name(value):
+        """Normalize notebook optimizer aliases before MLX trainer validation."""
+        if hasattr(value, "value"):
+            value = value.value
+        optim = str(value or "adamw").strip().lower()
+        optim = optim.rsplit(".", 1)[-1].replace("-", "_")
+        if optim in (
+            "adamw_8bit",
+            "paged_adamw_8bit",
+            "adamw_bnb_8bit",
+            "paged_adamw_32bit",
+            "adamw_torch",
+            "adamw_torch_fused",
+            "paged_adamw",
+            "adamw_32bit",
+            "adamw_hf",
+            "adamw_anyprecision",
+            "adamw_apex_fused",
+        ):
+            return "adamw"
+        return optim
+
+    def _is_mlx_no_save_strategy(value):
+        """Return whether a Transformers save strategy disables checkpointing."""
+        if hasattr(value, "value"):
+            value = value.value
+        strategy = str(value or "").strip().lower()
+        strategy = strategy.rsplit(".", 1)[-1]
+        return strategy in ("no", "none", "false")
+
     def _normalize_mlx_training_value(key, value):
         """Normalize TRL/Transformers argument values to MLX-compatible values."""
         if key == "optim":
-            return _normalize_mlx_optimizer_name(value)
+            return _normalize_mlx_training_optimizer_name(value)
         return value
 
     def _mlx_training_argument_values(args):
@@ -247,6 +276,8 @@ if _IS_MLX:
                 value = getattr(args, name)
                 if value is not None and value is not False:
                     values[name] = value
+        if _is_mlx_no_save_strategy(values.get("save_strategy", None)):
+            values["save_steps"] = 0
         return values
 
     def _split_mlx_trainer_kwargs(kwargs):
@@ -401,6 +432,18 @@ if _IS_MLX:
             return None
         return length
 
+    def _positive_mlx_training_number(value):
+        """Return a positive training scalar or None."""
+        if value is None or isinstance(value, bool):
+            return None
+        try:
+            number = float(value)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if number <= 0:
+            return None
+        return number
+
     def _set_mlx_cuda_style_context_length(args, length):
         """Set both MLX and TRL context length names after CUDA-style resolution."""
         args.max_seq_length = length
@@ -424,7 +467,6 @@ if _IS_MLX:
                 )
 
             max_length_value = kwargs.get("max_length", None)
-            max_length_explicit = "max_length" in kwargs and max_length_value is not None
             max_seq_length_explicit = (
                 _positive_mlx_context_length(kwargs.get("max_seq_length", None))
                 is not None
@@ -437,6 +479,10 @@ if _IS_MLX:
             dataset_order_explicit = (
                 "dataset_order" in kwargs
                 or bool(kwargs.get("preserve_dataset_order", False))
+            )
+            grad_clip_explicit = any(
+                name in kwargs
+                for name in ("max_grad_norm", "max_grad_value", "max_grad_leaf_norm")
             )
             warmup_ratio = kwargs.get("warmup_ratio", None)
             warmup_steps_explicit = (
@@ -464,6 +510,8 @@ if _IS_MLX:
             _raise_unknown_mlx_training_args(extra_kwargs)
 
             if warmup_ratio is not None and "warmup_steps" not in filtered_kwargs:
+                import math as _math
+
                 max_steps = filtered_kwargs.get(
                     "max_steps",
                     getattr(MLXTrainingConfig, "max_steps", 60),
@@ -472,7 +520,7 @@ if _IS_MLX:
                     if int(max_steps) > 0:
                         filtered_kwargs["warmup_steps"] = max(
                             0,
-                            int(int(max_steps) * float(warmup_ratio)),
+                            _math.ceil(int(max_steps) * float(warmup_ratio)),
                         )
                 except (TypeError, ValueError):
                     pass
@@ -480,10 +528,10 @@ if _IS_MLX:
             super().__init__(**filtered_kwargs)
             self._unsloth_mlx_dataset_order_explicit = dataset_order_explicit
             self._unsloth_mlx_max_seq_length_explicit = max_seq_length_explicit
-            self._unsloth_mlx_max_length_explicit = max_length_explicit
             self._unsloth_mlx_max_length_value = max_length_value
             if "max_length" in kwargs:
                 self.max_length = max_length_value
+            self._unsloth_mlx_grad_clip_explicit = grad_clip_explicit
             self._unsloth_mlx_warmup_steps_explicit = warmup_steps_explicit
             self._unsloth_mlx_extra_args = extra_kwargs
             for key, value in extra_kwargs.items():
@@ -569,6 +617,26 @@ if _IS_MLX:
             if getattr(args, "dataset_order", default_order) in (None, default_order):
                 args.dataset_order = "torch_randperm"
 
+        if (
+            isinstance(args, UnslothTrainingArguments)
+            and not getattr(args, "_unsloth_mlx_grad_clip_explicit", False)
+        ):
+            max_grad_norm = _positive_mlx_training_number(
+                getattr(args, "max_grad_norm", None),
+            )
+            max_grad_value = _positive_mlx_training_number(
+                getattr(args, "max_grad_value", None),
+            )
+            max_grad_leaf_norm = _positive_mlx_training_number(
+                getattr(args, "max_grad_leaf_norm", None),
+            )
+            if (
+                max_grad_norm is None
+                and max_grad_value is None
+                and max_grad_leaf_norm is None
+            ):
+                args.max_grad_norm = 1.0
+
         if not max_seq_length_explicit:
             _resolve_mlx_cuda_style_max_seq_length(args, model=model)
         return args
@@ -580,8 +648,8 @@ if _IS_MLX:
             return args
         dataset_order_explicit = None
         max_seq_length_explicit = None
-        max_length_explicit = None
         max_length_value = None
+        grad_clip_explicit = None
         if args is None:
             values = {}
         elif isinstance(args, dict):
@@ -599,15 +667,15 @@ if _IS_MLX:
                 "_unsloth_mlx_max_seq_length_explicit",
                 None,
             )
-            max_length_explicit = getattr(
-                args,
-                "_unsloth_mlx_max_length_explicit",
-                None,
-            )
             max_length_value = getattr(
                 args,
                 "_unsloth_mlx_max_length_value",
                 getattr(args, "max_length", None),
+            )
+            grad_clip_explicit = getattr(
+                args,
+                "_unsloth_mlx_grad_clip_explicit",
+                None,
             )
             values = _mlx_training_argument_values(args)
             if hasattr(args, "max_length"):
@@ -626,11 +694,16 @@ if _IS_MLX:
             and "max_length" not in overrides
         ):
             coerced._unsloth_mlx_max_seq_length_explicit = max_seq_length_explicit
-        if max_length_explicit is not None and "max_length" not in overrides:
-            coerced._unsloth_mlx_max_length_explicit = max_length_explicit
+        if max_length_value is not None and "max_length" not in overrides:
             coerced._unsloth_mlx_max_length_value = max_length_value
-            if max_length_value is not None:
-                coerced.max_length = max_length_value
+            coerced.max_length = max_length_value
+        if (
+            grad_clip_explicit is not None
+            and "max_grad_norm" not in overrides
+            and "max_grad_value" not in overrides
+            and "max_grad_leaf_norm" not in overrides
+        ):
+            coerced._unsloth_mlx_grad_clip_explicit = grad_clip_explicit
         return coerced
 
     _MLX_TRAINER_POSITIONAL_KWARGS = (

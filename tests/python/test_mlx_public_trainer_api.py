@@ -85,7 +85,6 @@ def test_mlx_training_arguments_accept_trl_style_kwargs():
     assert args.bf16 is True
     assert args.warmup_ratio == 0.2
     assert args._unsloth_mlx_max_seq_length_explicit is False
-    assert args._unsloth_mlx_max_length_explicit is True
     assert args._unsloth_mlx_warmup_steps_explicit is False
 
 
@@ -207,11 +206,15 @@ def test_mlx_training_arguments_normalize_optim_and_object_aliases():
     class ArgsObject:
         optim = "adamw_8bit"
         max_length = 321
+        save_steps = 500
+        save_strategy = "no"
 
-    args = unsloth._coerce_mlx_training_args(ArgsObject())
+    with pytest.warns(RuntimeWarning, match="save_strategy"):
+        args = unsloth._coerce_mlx_training_args(ArgsObject())
 
     assert args.optim == "adamw"
     assert args.max_seq_length == 321
+    assert args.save_steps == 0
 
 
 def test_mlx_training_arguments_accept_supported_notebook_kwargs():
@@ -296,6 +299,7 @@ def test_mlx_trainer_accepts_common_sft_kwargs():
     assert trainer.args.max_steps == 1
     assert trainer.args.dataset_num_proc == 8
     assert trainer.args.max_seq_length == 456
+    assert trainer.args.max_grad_norm == 1.0
     assert trainer.args.optim == "adamw"
     assert trainer.args.dataset_order == "torch_randperm"
     assert trainer._unsloth_mlx_ignored_trainer_kwargs == {}
@@ -331,10 +335,21 @@ def test_mlx_trainer_preserves_explicit_dataset_order():
         args=unsloth.UnslothTrainingArguments(max_steps=1),
         dataset_num_proc=4,
     )
+    explicit_no_clip = unsloth.UnslothTrainer(
+        model=_DummyModel(),
+        tokenizer=None,
+        train_dataset=[],
+        args=unsloth.UnslothTrainingArguments(
+            max_steps=1,
+            max_grad_norm=0.0,
+        ),
+    )
 
     assert explicit_default.args.dataset_order == "default"
     assert explicit_sequential.args.dataset_order == "sequential"
     assert implicit_with_override.args.dataset_order == "torch_randperm"
+    assert implicit_with_override.args.max_grad_norm == 1.0
+    assert explicit_no_clip.args.max_grad_norm == 0.0
 
 
 def test_mlx_trainer_uses_model_context_length_when_implicit():
