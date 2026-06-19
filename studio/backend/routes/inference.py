@@ -3127,6 +3127,8 @@ async def generate_stream(
                 log = logger,
             )
 
+    cancel_event = threading.Event()
+
     async def stream():
         gen = None
         try:
@@ -3139,6 +3141,7 @@ async def generate_stream(
                 top_k = request.top_k,
                 max_new_tokens = request.max_new_tokens,
                 repetition_penalty = request.repetition_penalty,
+                cancel_event = cancel_event,
             )
             _DONE = object()
             while True:
@@ -3148,7 +3151,12 @@ async def generate_stream(
                 yield f"data: {json.dumps({'content': chunk})}\n\n"
             yield "data: [DONE]\n\n"
 
+        except asyncio.CancelledError:
+            cancel_event.set()
+            backend.reset_generation_state()
+            raise
         except Exception as e:
+            cancel_event.set()
             backend.reset_generation_state()
             logger.error(f"Error during generation: {e}", exc_info = True)
             yield f"data: {json.dumps({'error': _friendly_error(e)})}\n\n"

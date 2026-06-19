@@ -502,6 +502,57 @@ def test_generate_stream_offloads_blocking_next_to_thread():
     )
 
 
+def test_generate_stream_cancels_backend_on_stream_cancelled_error():
+    outer = None
+    for fn in ast.walk(_TREE):
+        if isinstance(fn, ast.AsyncFunctionDef) and fn.name == "generate_stream":
+            outer = fn
+            break
+    assert outer is not None, "generate_stream handler missing"
+
+    outer_src = ast.unparse(outer)
+    assert "cancel_event = threading.Event()" in outer_src
+
+    inner = None
+    for sub in ast.walk(outer):
+        if isinstance(sub, ast.AsyncFunctionDef) and sub.name == "stream":
+            inner = sub
+            break
+    assert inner is not None, "generate_stream inner stream() generator missing"
+
+    found_cancel_kwarg = False
+    found_cancel_handler = False
+    for sub in ast.walk(inner):
+        if isinstance(sub, ast.Call):
+            call_src = ast.unparse(sub.func)
+            if call_src.endswith("generate_chat_response"):
+                found_cancel_kwarg = any(
+                    kw.arg == "cancel_event"
+                    and isinstance(kw.value, ast.Name)
+                    and kw.value.id == "cancel_event"
+                    for kw in sub.keywords
+                )
+        if isinstance(sub, ast.ExceptHandler):
+            exc_src = ast.unparse(sub.type) if sub.type is not None else ""
+            if exc_src != "asyncio.CancelledError":
+                continue
+            body_src = "\n".join(ast.unparse(stmt) for stmt in sub.body)
+            found_cancel_handler = (
+                "cancel_event.set()" in body_src
+                and "backend.reset_generation_state()" in body_src
+                and any(isinstance(stmt, ast.Raise) and stmt.exc is None for stmt in sub.body)
+            )
+
+    assert found_cancel_kwarg, (
+        "generate_stream must pass cancel_event into backend.generate_chat_response "
+        "so cancelled streams can stop backend generation"
+    )
+    assert found_cancel_handler, (
+        "generate_stream must catch asyncio.CancelledError, set cancel_event, "
+        "reset backend state, and re-raise"
+    )
+
+
 def test_stream_chunks_cancel_branch_resets_backend_state():
     # The cancel branch must call backend.reset_generation_state() to flush
     # GPU/KV-cache state, else cancel-via-POST leaves the subprocess dirty.
