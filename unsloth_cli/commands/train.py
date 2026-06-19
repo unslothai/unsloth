@@ -30,6 +30,23 @@ def train(
         "--dry-run",
         help = "Show resolved config and exit without training.",
     ),
+    export: Optional[str] = typer.Option(
+        None,
+        "--export",
+        "-e",
+        help = "After training, export the saved checkpoint to this format "
+        "(merged-16bit, merged-4bit, gguf, lora).",
+    ),
+    export_dir: Optional[Path] = typer.Option(
+        None,
+        "--export-dir",
+        help = "Where to write the export. Defaults to <checkpoint>/<format>.",
+    ),
+    quantization: str = typer.Option(
+        "q4_k_m",
+        "--quantization",
+        help = "GGUF quantization method, used only with --export gguf.",
+    ),
     config_overrides: dict = None,
 ):
     """Launch training using the existing Unsloth training backend."""
@@ -67,6 +84,18 @@ def train(
     if not cfg.data.dataset and not cfg.data.local_dataset:
         typer.echo("Error: provide --dataset or --local-dataset (or via --config)", err = True)
         raise typer.Exit(code = 2)
+
+    # Validate the export format up front so a typo fails now, not after training.
+    if export is not None:
+        from unsloth_cli.commands.export import EXPORT_FORMATS
+
+        if export not in EXPORT_FORMATS:
+            typer.echo(
+                f"Error: Invalid --export format '{export}'. "
+                f"Choose from: {', '.join(EXPORT_FORMATS)}",
+                err = True,
+            )
+            raise typer.Exit(code = 2)
 
     # A LoRA adapter dir has adapter_config.json
     model_path = Path(cfg.model) if cfg.model else None
@@ -136,3 +165,20 @@ def train(
     if getattr(final, "error", None):
         typer.echo(f"Training error: {final.error}", err = True)
         raise typer.Exit(code = 1)
+
+    if export is not None:
+        from studio.backend.utils.paths.storage_roots import resolve_output_dir
+        from unsloth_cli.commands.export import export_checkpoint
+
+        # Trainer saved the model under the resolved output dir; export from there.
+        checkpoint_dir = resolve_output_dir(str(cfg.training.output_dir))
+        out = export_dir if export_dir is not None else checkpoint_dir / export
+        export_checkpoint(
+            checkpoint = checkpoint_dir,
+            output_dir = out,
+            format = export,
+            quantization = quantization,
+            hf_token = hf_token,
+            max_seq_length = cfg.training.max_seq_length,
+            load_in_4bit = cfg.training.load_in_4bit if use_lora else False,
+        )
