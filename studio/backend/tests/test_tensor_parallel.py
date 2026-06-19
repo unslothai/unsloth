@@ -363,10 +363,7 @@ def test_runtime_recovery_reloads_without_mtp(monkeypatch):
     assert captured["n_parallel"] == 4  # snapshot replayed faithfully
     deadline = time.monotonic() + 2
     while time.monotonic() < deadline:
-        if (
-            b._spec_fallback_reason == "runtime_error"
-            and not b._mtp_runtime_fallback_in_progress
-        ):
+        if b._spec_fallback_reason == "runtime_error" and not b._mtp_runtime_fallback_in_progress:
             break
         time.sleep(0.02)
     assert b._spec_fallback_reason == "runtime_error"
