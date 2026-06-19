@@ -5,6 +5,8 @@ import { cn } from "@/lib/utils";
 import { ArrowLeft01Icon, ArrowRight01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
+  type MouseEvent as ReactMouseEvent,
+  type PointerEvent as ReactPointerEvent,
   type ReactNode,
   useCallback,
   useEffect,
@@ -102,13 +104,79 @@ export function CardCarousel<T>({
     [stepPx],
   );
 
+  // Click-and-drag panning (mouse only; touch/pen keep native scrolling).
+  const drag = useRef<{ id: number; x: number; left: number; moved: boolean } | null>(
+    null,
+  );
+  const suppressClick = useRef(false);
+
+  const onPointerDown = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
+    suppressClick.current = false;
+    const el = scrollerRef.current;
+    if (!el || e.pointerType !== "mouse" || e.button !== 0) return;
+    drag.current = { id: e.pointerId, x: e.clientX, left: el.scrollLeft, moved: false };
+  }, []);
+
+  const onPointerMove = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
+    const d = drag.current;
+    const el = scrollerRef.current;
+    if (!d || !el || e.pointerId !== d.id) return;
+    // Primary button no longer held: the press ended off the scroller, so no
+    // pointerup reached us. Drop the stale drag instead of scrolling on hover.
+    if ((e.buttons & 1) === 0) {
+      if (d.moved) el.style.scrollSnapType = "";
+      drag.current = null;
+      return;
+    }
+    const dx = e.clientX - d.x;
+    // Ignore tiny moves so plain clicks still register.
+    if (!d.moved && Math.abs(dx) < 5) return;
+    if (!d.moved) {
+      d.moved = true;
+      // Snap fights the per-frame scrollLeft writes; disable it while dragging.
+      el.style.scrollSnapType = "none";
+      el.setPointerCapture(d.id);
+    }
+    el.scrollLeft = d.left - dx;
+  }, []);
+
+  const endDrag = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
+    const d = drag.current;
+    if (!d || e.pointerId !== d.id) return;
+    if (d.moved) {
+      // A drag just happened: swallow the click it would fire on a card.
+      suppressClick.current = true;
+      const el = scrollerRef.current;
+      // Restore snap so the row settles on a card after the drag.
+      if (el) el.style.scrollSnapType = "";
+      el?.releasePointerCapture?.(d.id);
+    }
+    drag.current = null;
+  }, []);
+
+  const onClickCapture = useCallback((e: ReactMouseEvent<HTMLDivElement>) => {
+    if (!suppressClick.current) return;
+    suppressClick.current = false;
+    e.preventDefault();
+    e.stopPropagation();
+  }, []);
+
   return (
     <div className="relative">
       <div
         ref={scrollerRef}
         onScroll={updateArrows}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={endDrag}
+        onPointerCancel={endDrag}
+        onClickCapture={onClickCapture}
+        // Stop the avatar image from starting a native drag during a pan.
+        onDragStart={(e) => e.preventDefault()}
         aria-label={ariaLabel}
-        className="hub-carousel flex snap-x gap-4 overflow-x-auto pb-4 pt-2"
+        // px-2 + -mx-2 give card shadows room so the edge cards aren't clipped;
+        // scroll-px-2 keeps snap-start aligned with the heading.
+        className="hub-carousel -mx-2 flex cursor-grab snap-x scroll-px-2 gap-4 overflow-x-auto px-2 pb-4 pt-2 select-none active:cursor-grabbing"
       >
         {items.map((item) => (
           <div
