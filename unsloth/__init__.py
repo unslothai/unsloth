@@ -215,11 +215,8 @@ if _IS_MLX:
         "save_safetensors",
         "save_strategy",
         "torch_compile",
-        "warmup_ratio",
     ))
-    _MLX_IMPLEMENTED_EXTRA_ARGUMENTS = frozenset((
-        "warmup_ratio",
-    ))
+    _MLX_IMPLEMENTED_EXTRA_ARGUMENTS = frozenset(())
     _MLX_WARNED_EXTRA_ARGUMENTS = (
         _MLX_COMPAT_EXTRA_ARGUMENTS - _MLX_IMPLEMENTED_EXTRA_ARGUMENTS
     )
@@ -417,6 +414,16 @@ if _IS_MLX:
                 kwargs["max_steps"] = -1
 
             warmup_ratio = kwargs.get("warmup_ratio", None)
+            warmup_steps_explicit = (
+                "warmup_steps" in kwargs
+                and not (
+                    warmup_ratio is not None
+                    and kwargs.get("warmup_steps") in (
+                        0,
+                        getattr(MLXTrainingConfig, "warmup_steps", 5),
+                    )
+                )
+            )
             filtered_kwargs = {}
             extra_kwargs = {}
             for key, value in kwargs.items():
@@ -446,6 +453,7 @@ if _IS_MLX:
                     pass
 
             super().__init__(**filtered_kwargs)
+            self._unsloth_mlx_warmup_steps_explicit = warmup_steps_explicit
             self._unsloth_mlx_extra_args = extra_kwargs
             for key, value in extra_kwargs.items():
                 setattr(self, key, value)

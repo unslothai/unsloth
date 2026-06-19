@@ -82,7 +82,8 @@ def test_mlx_training_arguments_accept_trl_style_kwargs():
     assert args.remove_unused_columns is False
     assert args.dataset_kwargs == {"skip_prepare_dataset": True}
     assert args.bf16 is True
-    assert args._unsloth_mlx_extra_args["warmup_ratio"] == 0.2
+    assert args.warmup_ratio == 0.2
+    assert args._unsloth_mlx_warmup_steps_explicit is False
 
 
 def test_mlx_training_arguments_do_not_warn_for_implemented_or_falsey_extras():
@@ -126,6 +127,8 @@ def test_mlx_training_arguments_preserve_explicit_epoch_training():
 
     assert args.num_train_epochs == 1
     assert args.max_steps == -1
+    assert args.warmup_ratio == 0.1
+    assert args._unsloth_mlx_warmup_steps_explicit is False
     assert default_args.max_steps == unsloth.MLXTrainingConfig.max_steps
 
 
@@ -243,6 +246,7 @@ def test_mlx_training_arguments_accept_supported_notebook_kwargs():
     assert args.per_device_train_batch_size == 1
     assert args.report_to == "none"
     assert args.seed == 123
+    assert args.warmup_ratio == 0.1
     assert args.warmup_steps == 1
     assert args.weight_decay == 0.01
     assert args.dataset_kwargs == {"skip_prepare_dataset": True}
