@@ -106,6 +106,43 @@ class TestParityWithJsonStyle:
         assert json.loads(js[0]["function"]["arguments"]) == {"query": q}
 
 
+class TestGemmaNativeStyle:
+    def test_closed_native_call_with_trailing_prose_is_accepted(self):
+        text = (
+            '<|tool_call>call:terminal{command:"ls -la",workdir:"."}<tool_call|>'
+            " running it now"
+        )
+        calls = parse_tool_calls_from_text(text, allow_incomplete = False)
+        assert len(calls) == 1
+        assert calls[0]["function"]["name"] == "terminal"
+        assert json.loads(calls[0]["function"]["arguments"]) == {
+            "command": "ls -la",
+            "workdir": ".",
+        }
+
+    def test_unclosed_native_call_requires_healing(self):
+        text = '<|tool_call>call:terminal{command:"ls"}'
+        assert parse_tool_calls_from_text(text, allow_incomplete = False) == []
+        calls = parse_tool_calls_from_text(text, allow_incomplete = True)
+        assert len(calls) == 1
+        assert calls[0]["function"]["name"] == "terminal"
+
+    def test_hyphenated_native_argument_name_is_accepted(self):
+        text = '<|tool_call>call:mcp__srv__create-issue{issue-title:"Bug report"}<tool_call|>'
+        calls = parse_tool_calls_from_text(text, allow_incomplete = False)
+        assert len(calls) == 1
+        assert calls[0]["function"]["name"] == "mcp__srv__create-issue"
+        assert json.loads(calls[0]["function"]["arguments"]) == {"issue-title": "Bug report"}
+
+    def test_native_template_quotes_preserve_windows_path(self):
+        text = r'<|tool_call>call:ls{path:<|"|>C:\Users\wasim\repo<|"|>}<tool_call|>'
+        calls = parse_tool_calls_from_text(text, allow_incomplete = False)
+        assert len(calls) == 1
+        assert json.loads(calls[0]["function"]["arguments"]) == {
+            "path": r"C:\Users\wasim\repo"
+        }
+
+
 class TestHealingPathUnaffected:
     def test_auto_heal_still_repairs_unclosed_function(self):
         text = "<function=web_search><parameter=query>cats"

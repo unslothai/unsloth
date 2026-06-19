@@ -40,6 +40,35 @@ def test_stream_first_item_deadline_after_headers():
     asyncio.run(_run())
 
 
+def test_stream_first_item_deadline_does_not_hop_tasks():
+    async def _run():
+        outer_task = asyncio.current_task()
+        seen_tasks = []
+
+        class _One:
+            def __init__(self):
+                self.done = False
+
+            async def __anext__(self):
+                seen_tasks.append(asyncio.current_task())
+                if self.done:
+                    raise StopAsyncIteration
+                self.done = True
+                return "data: {}"
+
+        out = []
+        async for item in inf_mod._aiter_llama_stream_items(
+            _One(),
+            first_token_deadline = time.monotonic() + 1,
+        ):
+            out.append(item)
+
+        assert out == ["data: {}"]
+        assert seen_tasks == [outer_task, outer_task]
+
+    asyncio.run(_run())
+
+
 def test_preheader_send_cleanup_on_disconnect_and_cancel():
     async def _run(cancel_parent):
         state = SimpleNamespace(disconnected = False, closed = False, cancelled = False)

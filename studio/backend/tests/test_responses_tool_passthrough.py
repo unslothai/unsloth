@@ -927,6 +927,38 @@ class TestResponsesNonStreamingAdapter:
         assert [item["type"] for item in body["output"]] == ["message"]
         assert body["output"][0]["content"][0]["text"] == "show <think>x</think> tags"
 
+    def test_reasoning_capable_gguf_parses_think_tags_by_default(self, monkeypatch):
+        body = self._run_with_message(
+            monkeypatch,
+            {"content": "<think>plan</think>answer"},
+            llama_backend = SimpleNamespace(
+                is_loaded = True,
+                reasoning_always_on = False,
+                supports_reasoning = True,
+            ),
+        )
+
+        assert [item["type"] for item in body["output"]] == ["reasoning", "message"]
+        assert body["output"][0]["content"] == [{"type": "reasoning_text", "text": "plan"}]
+        assert body["output"][1]["content"][0]["text"] == "answer"
+
+    def test_reasoning_capable_gguf_sanitizes_think_tags_when_disabled(self, monkeypatch):
+        payload = ResponsesRequest(input = "hi", reasoning = {"effort": "none"})
+        body = self._run_with_message(
+            monkeypatch,
+            {"content": "<think>leaked</think>answer"},
+            payload = payload,
+            llama_backend = SimpleNamespace(
+                is_loaded = True,
+                reasoning_always_on = False,
+                supports_reasoning = True,
+            ),
+        )
+
+        assert [item["type"] for item in body["output"]] == ["reasoning", "message"]
+        assert body["output"][0]["content"] == [{"type": "reasoning_text", "text": "leaked"}]
+        assert body["output"][1]["content"][0]["text"] == "answer"
+
     def test_structured_reasoning_content_extracts_text_parts(self, monkeypatch):
         body = self._run_with_message(
             monkeypatch,
@@ -1332,10 +1364,10 @@ class TestResponsesStreamAdapter:
         assert entry["status"] == "completed"
         assert entry["reply"] == "plan"
 
-    def test_literal_think_tags_stream_as_visible_text_without_reasoning_request(self, monkeypatch):
+    def test_reasoning_capable_gguf_stream_parses_think_tags_by_default(self, monkeypatch):
         chunks = [
-            {"choices": [{"delta": {"content": "show <thi"}}]},
-            {"choices": [{"delta": {"content": "nk>x</think> tags"}}]},
+            {"choices": [{"delta": {"content": "<thi"}}]},
+            {"choices": [{"delta": {"content": "nk>plan</think>answer"}}]},
             {"choices": [], "usage": {"prompt_tokens": 2, "completion_tokens": 3}},
         ]
         self._install_stream_mock(monkeypatch, chunks)
@@ -1350,13 +1382,15 @@ class TestResponsesStreamAdapter:
 
         reasoning_deltas = self._payloads(lines, "response.reasoning_text.delta")
         text_deltas = self._payloads(lines, "response.output_text.delta")
-        assert reasoning_deltas == []
-        assert "".join(event["delta"] for event in text_deltas) == "show <think>x</think> tags"
+        assert "".join(event["delta"] for event in reasoning_deltas) == "plan"
+        assert "".join(event["delta"] for event in text_deltas) == "answer"
         completed = self._payloads(lines, "response.completed")[0]
-        assert [item["type"] for item in completed["response"]["output"]] == ["message"]
-        assert completed["response"]["output"][0]["content"][0]["text"] == (
-            "show <think>x</think> tags"
-        )
+        assert [item["type"] for item in completed["response"]["output"]] == [
+            "reasoning",
+            "message",
+        ]
+        assert completed["response"]["output"][0]["content"][0]["text"] == "plan"
+        assert completed["response"]["output"][1]["content"][0]["text"] == "answer"
 
     def test_non_reasoning_gguf_stream_keeps_literal_think_tags_visible(self, monkeypatch):
         chunks = [

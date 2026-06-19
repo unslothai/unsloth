@@ -1245,6 +1245,24 @@ class TestGgufVisionToolRouting:
 
         return TestGgufVisionToolRouting._drive(_consume())
 
+    @staticmethod
+    def _sse_payloads(chunks):
+        payloads = []
+        for chunk in chunks:
+            if isinstance(chunk, bytes):
+                chunk = chunk.decode()
+            for line in str(chunk).splitlines():
+                if not line.startswith("data: "):
+                    continue
+                data = line.removeprefix("data: ")
+                if data == "[DONE]":
+                    continue
+                try:
+                    payloads.append(json.loads(data))
+                except json.JSONDecodeError:
+                    pass
+        return payloads
+
     def test_image_request_with_enabled_tools_enters_gguf_tool_loop(self, monkeypatch):
         import routes.inference as inf_mod
 
@@ -1389,6 +1407,249 @@ class TestGgufVisionToolRouting:
         assert entry["status"] == "error"
         assert "confirm_tool_calls requires stream=true" in entry["error"]
         assert monitor.active_count() == 0
+
+    def test_standard_gguf_stream_splits_reasoning_content(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        reset_tool_policy()
+
+        def _generate(**_kwargs):
+            yield "<thi"
+            yield "<think>plan"
+            yield "<think>plan</think>vis"
+            yield "<think>plan</think>visible"
+            yield {
+                "type": "metadata",
+                "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5},
+                "finish_reason": "stop",
+            }
+
+        backend = SimpleNamespace(
+            is_loaded = True,
+            is_vision = False,
+            supports_tools = False,
+            supports_reasoning = True,
+            reasoning_always_on = True,
+            _is_audio = False,
+            model_identifier = "test-gguf",
+            context_length = 4096,
+            generate_chat_completion = _generate,
+        )
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
+
+        payload = ChatCompletionRequest(
+            model = "default",
+            stream = True,
+            messages = [{"role": "user", "content": "hi"}],
+        )
+
+        response = self._drive(
+            openai_chat_completions(payload, request = self._Request(), current_subject = "test")
+        )
+        payloads = self._sse_payloads(self._consume_response(response))
+        deltas = [p["choices"][0].get("delta", {}) for p in payloads if p.get("choices")]
+
+        assert "".join(d.get("reasoning_content", "") for d in deltas) == "plan"
+        assert "".join(d.get("content", "") for d in deltas) == "visible"
+        assert all("<think>" not in d.get("content", "") for d in deltas)
+        [entry] = monitor.snapshot()
+        assert entry["reply"] == "visible"
+
+    def test_reasoning_capable_gguf_stream_splits_reasoning_by_default(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        reset_tool_policy()
+
+        def _generate(**_kwargs):
+            yield "<think>plan</think>visible"
+            yield {
+                "type": "metadata",
+                "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5},
+                "finish_reason": "stop",
+            }
+
+        backend = SimpleNamespace(
+            is_loaded = True,
+            is_vision = False,
+            supports_tools = False,
+            supports_reasoning = True,
+            reasoning_always_on = False,
+            _is_audio = False,
+            model_identifier = "test-gguf",
+            context_length = 4096,
+            generate_chat_completion = _generate,
+        )
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
+
+        payload = ChatCompletionRequest(
+            model = "default",
+            stream = True,
+            messages = [{"role": "user", "content": "hi"}],
+        )
+
+        response = self._drive(
+            openai_chat_completions(payload, request = self._Request(), current_subject = "test")
+        )
+        payloads = self._sse_payloads(self._consume_response(response))
+        deltas = [p["choices"][0].get("delta", {}) for p in payloads if p.get("choices")]
+
+        assert "".join(d.get("reasoning_content", "") for d in deltas) == "plan"
+        assert "".join(d.get("content", "") for d in deltas) == "visible"
+        [entry] = monitor.snapshot()
+        assert entry["reply"] == "visible"
+
+    def test_reasoning_capable_gguf_stream_sanitizes_think_tags_when_disabled(
+        self, monkeypatch
+    ):
+        import routes.inference as inf_mod
+
+        reset_tool_policy()
+
+        def _generate(**_kwargs):
+            yield "<think>leaked</think>visible"
+            yield {
+                "type": "metadata",
+                "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5},
+                "finish_reason": "stop",
+            }
+
+        backend = SimpleNamespace(
+            is_loaded = True,
+            is_vision = False,
+            supports_tools = False,
+            supports_reasoning = True,
+            reasoning_always_on = False,
+            _is_audio = False,
+            model_identifier = "test-gguf",
+            context_length = 4096,
+            generate_chat_completion = _generate,
+        )
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
+
+        payload = ChatCompletionRequest(
+            model = "default",
+            stream = True,
+            enable_thinking = False,
+            messages = [{"role": "user", "content": "hi"}],
+        )
+
+        response = self._drive(
+            openai_chat_completions(payload, request = self._Request(), current_subject = "test")
+        )
+        payloads = self._sse_payloads(self._consume_response(response))
+        deltas = [p["choices"][0].get("delta", {}) for p in payloads if p.get("choices")]
+
+        assert "".join(d.get("reasoning_content", "") for d in deltas) == "leaked"
+        assert "".join(d.get("content", "") for d in deltas) == "visible"
+        assert all("<think>" not in d.get("content", "") for d in deltas)
+        [entry] = monitor.snapshot()
+        assert entry["reply"] == "visible"
+
+    def test_gguf_tool_stream_splits_reasoning_and_strips_gemma_tool_marker(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        reset_tool_policy()
+
+        def _plain(**_kwargs):
+            raise AssertionError("plain GGUF path should not be used")
+
+        def _tools(**_kwargs):
+            yield {
+                "type": "content",
+                "text": '<think>plan</think>visible <|tool_call>call:terminal{command:"ls"}<tool_call|>',
+            }
+            yield {
+                "type": "metadata",
+                "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5},
+                "finish_reason": "stop",
+            }
+
+        backend = SimpleNamespace(
+            is_loaded = True,
+            is_vision = False,
+            supports_tools = True,
+            supports_reasoning = True,
+            reasoning_always_on = True,
+            _is_audio = False,
+            model_identifier = "test-gguf",
+            context_length = 4096,
+            generate_chat_completion = _plain,
+            generate_chat_completion_with_tools = _tools,
+        )
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
+
+        payload = ChatCompletionRequest(
+            model = "default",
+            stream = True,
+            enable_tools = True,
+            enabled_tools = ["terminal"],
+            messages = [{"role": "user", "content": "list files"}],
+        )
+
+        response = self._drive(
+            openai_chat_completions(payload, request = self._Request(), current_subject = "test")
+        )
+        payloads = self._sse_payloads(self._consume_response(response))
+        deltas = [p["choices"][0].get("delta", {}) for p in payloads if p.get("choices")]
+
+        assert "".join(d.get("reasoning_content", "") for d in deltas) == "plan"
+        combined_content = "".join(d.get("content", "") for d in deltas)
+        assert combined_content == "visible "
+        assert "<|tool_call>" not in combined_content
+        [entry] = monitor.snapshot()
+        assert entry["reply"] == "visible "
+
+    def test_non_streaming_gguf_splits_reasoning_content(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        reset_tool_policy()
+
+        def _generate(**_kwargs):
+            yield "<think>plan</think>visible"
+            yield {
+                "type": "metadata",
+                "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5},
+                "finish_reason": "stop",
+            }
+
+        backend = SimpleNamespace(
+            is_loaded = True,
+            is_vision = False,
+            supports_tools = False,
+            supports_reasoning = True,
+            reasoning_always_on = True,
+            _is_audio = False,
+            model_identifier = "test-gguf",
+            context_length = 4096,
+            generate_chat_completion = _generate,
+        )
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
+
+        payload = ChatCompletionRequest(
+            model = "default",
+            messages = [{"role": "user", "content": "hi"}],
+        )
+
+        response = self._drive(
+            openai_chat_completions(payload, request = self._Request(), current_subject = "test")
+        )
+        body = json.loads(response.body)
+        message = body["choices"][0]["message"]
+
+        assert message["content"] == "visible"
+        assert message["reasoning_content"] == "plan"
+        [entry] = monitor.snapshot()
+        assert entry["reply"] == "visible"
 
     def test_non_streaming_gguf_n_records_all_monitor_replies(self, monkeypatch):
         import routes.inference as inf_mod

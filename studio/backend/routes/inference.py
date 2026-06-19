@@ -787,7 +787,10 @@ async def _aiter_llama_stream_items(
                     raise httpx.ReadTimeout("The model did not produce a first token in time.")
                 if response is not None:
                     _set_stream_response_read_timeout(response, remaining_s)
-                item = await asyncio.wait_for(async_iter.__anext__(), timeout = remaining_s)
+                # Keep httpx/httpcore's AnyIO cancel scope in this task.
+                # asyncio.wait_for would drive __anext__ in a child task.
+                async with asyncio.timeout(remaining_s):
+                    item = await async_iter.__anext__()
             else:
                 item = await async_iter.__anext__()
         except asyncio.TimeoutError as exc:
@@ -1286,6 +1289,7 @@ _TOOL_XML_RE = _re.compile(
     # Hyphen in the name char-class matches MCP tool names with dashes
     # (mcp__srv__list-issues) that would otherwise leak past this strip.
     r"<(?:tool_call|function=[\w-]+)>.*?(?:</(?:tool_call|function)>|\Z)"
+    r"|<\|tool_call>.*?(?:<tool_call\|>|\Z)"
     r"|</(?:tool_call|function)>"
     r"|</parameter>\s*\Z",
     _re.DOTALL,
@@ -4842,6 +4846,28 @@ async def openai_chat_completions(
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
         created = int(time.time())
 
+        def _new_chat_reasoning_extractor():
+            return _ResponsesReasoningExtractor(
+                parse_think_markers = _responses_should_parse_think_markers(
+                    payload,
+                    llama_backend,
+                )
+            )
+
+        def _gguf_chat_delta_line(delta: ChoiceDelta, finish_reason = None) -> str:
+            chunk = ChatCompletionChunk(
+                id = completion_id,
+                created = created,
+                model = model_name,
+                choices = [
+                    ChunkChoice(
+                        delta = delta,
+                        finish_reason = finish_reason,
+                    )
+                ],
+            )
+            return f"data: {chunk.model_dump_json(exclude_none = True)}\n\n"
+
         # ── Tool-calling path (agentic loop) ──────────────────
         # `_effective_enable_tools` lets `unsloth run --enable-tools/--disable-tools`
         # hard-override the per-request value, else falls back to
@@ -5002,6 +5028,7 @@ async def openai_chat_completions(
                     # stays free for disconnect detection.
                     gen = gguf_generate_with_tools()
                     prev_text = ""
+                    reasoning_extractor = _new_chat_reasoning_extractor()
                     _stream_usage = None
                     _stream_timings = None
                     _stream_finish = None
@@ -5024,6 +5051,7 @@ async def openai_chat_completions(
                             # streams cleanly.
                             if not event["text"]:
                                 prev_text = ""
+                                reasoning_extractor = _new_chat_reasoning_extractor()
                             # Emit tool status as a custom SSE event (including
                             # empty ones to clear UI badges)
                             status_data = json.dumps(
@@ -5038,6 +5066,7 @@ async def openai_chat_completions(
                         if event["type"] in ("tool_start", "tool_end"):
                             if event["type"] == "tool_start":
                                 prev_text = ""
+                                reasoning_extractor = _new_chat_reasoning_extractor()
                             yield f"data: {json.dumps(event)}\n\n"
                             continue
 
@@ -5059,19 +5088,23 @@ async def openai_chat_completions(
                         prev_text = clean_cumulative
                         if not new_text:
                             continue
-                        api_monitor.append_reply(monitor_id, new_text)
-                        chunk = ChatCompletionChunk(
-                            id = completion_id,
-                            created = created,
-                            model = model_name,
-                            choices = [
-                                ChunkChoice(
-                                    delta = ChoiceDelta(content = new_text),
-                                    finish_reason = None,
-                                )
-                            ],
+                        reasoning_delta, visible_delta = reasoning_extractor.feed(new_text)
+                        if reasoning_delta:
+                            yield _gguf_chat_delta_line(
+                                ChoiceDelta(reasoning_content = reasoning_delta)
+                            )
+                        if visible_delta:
+                            api_monitor.append_reply(monitor_id, visible_delta)
+                            yield _gguf_chat_delta_line(ChoiceDelta(content = visible_delta))
+
+                    final_reasoning, final_visible = reasoning_extractor.finish()
+                    if final_reasoning:
+                        yield _gguf_chat_delta_line(
+                            ChoiceDelta(reasoning_content = final_reasoning)
                         )
-                        yield f"data: {chunk.model_dump_json(exclude_none = True)}\n\n"
+                    if final_visible:
+                        api_monitor.append_reply(monitor_id, final_visible)
+                        yield _gguf_chat_delta_line(ChoiceDelta(content = final_visible))
 
                     final_chunk = ChatCompletionChunk(
                         id = completion_id,
@@ -5186,6 +5219,7 @@ async def openai_chat_completions(
                     # stays free for disconnect detection.
                     gen = gguf_generate()
                     prev_text = ""
+                    reasoning_extractor = _new_chat_reasoning_extractor()
                     _stream_usage = None
                     _stream_timings = None
                     _stream_finish = None
@@ -5219,19 +5253,23 @@ async def openai_chat_completions(
                         prev_text = cumulative
                         if not new_text:
                             continue
-                        api_monitor.append_reply(monitor_id, new_text)
-                        chunk = ChatCompletionChunk(
-                            id = completion_id,
-                            created = created,
-                            model = model_name,
-                            choices = [
-                                ChunkChoice(
-                                    delta = ChoiceDelta(content = new_text),
-                                    finish_reason = None,
-                                )
-                            ],
+                        reasoning_delta, visible_delta = reasoning_extractor.feed(new_text)
+                        if reasoning_delta:
+                            yield _gguf_chat_delta_line(
+                                ChoiceDelta(reasoning_content = reasoning_delta)
+                            )
+                        if visible_delta:
+                            api_monitor.append_reply(monitor_id, visible_delta)
+                            yield _gguf_chat_delta_line(ChoiceDelta(content = visible_delta))
+
+                    final_reasoning, final_visible = reasoning_extractor.finish()
+                    if final_reasoning:
+                        yield _gguf_chat_delta_line(
+                            ChoiceDelta(reasoning_content = final_reasoning)
                         )
-                        yield f"data: {chunk.model_dump_json(exclude_none = True)}\n\n"
+                    if final_visible:
+                        api_monitor.append_reply(monitor_id, final_visible)
+                        yield _gguf_chat_delta_line(ChoiceDelta(content = final_visible))
 
                     # Final chunk
                     final_chunk = ChatCompletionChunk(
@@ -5309,14 +5347,24 @@ async def openai_chat_completions(
                             continue
                         full_text = token
 
+                    reasoning_text, visible_text = _extract_responses_reasoning(
+                        full_text,
+                        parse_think_markers = _responses_should_parse_think_markers(
+                            payload,
+                            llama_backend,
+                        ),
+                    )
+                    message_kwargs = {"content": visible_text}
+                    if reasoning_text:
+                        message_kwargs["reasoning_content"] = reasoning_text
                     _choices.append(
                         CompletionChoice(
                             index = _idx,
-                            message = CompletionMessage(content = full_text),
+                            message = CompletionMessage(**message_kwargs),
                             finish_reason = _clamp_finish_reason(completion_finish),
                         )
                     )
-                    _monitor_replies.append(full_text)
+                    _monitor_replies.append(visible_text)
                     if completion_usage:
                         # The prompt is shared across all n choices, so count its
                         # tokens ONCE (OpenAI bills only generated tokens for each
@@ -5338,7 +5386,7 @@ async def openai_chat_completions(
                         prompt_tokens_details = _prompt_tokens_details(_prompt_details),
                     ),
                 )
-                monitor_reply = full_text
+                monitor_reply = _monitor_replies[-1] if _monitor_replies else ""
                 if _n > 1:
                     monitor_reply = "\n\n".join(
                         f"Choice {_idx + 1}:\n{text}" for _idx, text in enumerate(_monitor_replies)
@@ -6686,8 +6734,9 @@ def _responses_should_parse_think_markers(
     if llama_backend is not None and getattr(llama_backend, "is_loaded", False):
         if getattr(llama_backend, "reasoning_always_on", False):
             return True
-        if not getattr(llama_backend, "supports_reasoning", False):
-            return False
+        if getattr(llama_backend, "supports_reasoning", False):
+            return True
+        return False
     if chat_req.enable_thinking is True:
         return True
     return chat_req.enable_thinking is None and chat_req.reasoning_effort not in (None, "none")
