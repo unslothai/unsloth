@@ -39,6 +39,7 @@ import {
   loadUploadLimitSettings,
   updateUploadLimitSettings,
 } from "../api/upload-limit";
+import { ChangePasswordDialog } from "../components/change-password-dialog";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import { StudioVersionSection } from "../components/studio-version-section";
@@ -339,6 +340,17 @@ export function GeneralTab() {
             </button>
           </div>
         </SettingsRow>
+        {/* The desktop app authenticates via desktop auto-auth with a generated
+            secret, so there is no user-entered password to change here (and
+            changing it would clear the desktop secret). Web only. */}
+        {!isTauri ? (
+          <SettingsRow
+            label="Password"
+            description="Change the password for this Studio account."
+          >
+            <ChangePasswordDialog />
+          </SettingsRow>
+        ) : null}
       </SettingsSection>
 
       {modelsFolder ? (
