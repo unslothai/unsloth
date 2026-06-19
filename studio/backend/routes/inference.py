@@ -119,6 +119,9 @@ def _template_raise_message(error_text: str, chat_template: Optional[str]) -> Op
     return candidate if candidate and candidate in chat_template else None
 
 
+_LOST_CONNECTION_MSG = "Lost connection to the model server. It may have crashed -- try reloading the model."
+
+
 def _friendly_error(exc: Exception) -> str:
     """Extract a user-friendly message from known llama-server errors."""
     if isinstance(exc, httpx.ReadTimeout):
@@ -139,9 +142,7 @@ def _friendly_error(exc: Exception) -> str:
     # WriteError, PoolTimeout, ...) means the llama-server subprocess is
     # unreachable -- crashed or still coming up.
     if isinstance(exc, httpx.RequestError):
-        return (
-            "Lost connection to the model server. It may have crashed -- try reloading the model."
-        )
+        return _LOST_CONNECTION_MSG
     msg = str(exc)
     m = _re.search(
         r"request \((\d+) tokens?\) exceeds the available context size \((\d+) tokens?\)",
@@ -154,9 +155,7 @@ def _friendly_error(exc: Exception) -> str:
             f"or shorten the conversation."
         )
     if "Lost connection to llama-server" in msg:
-        return (
-            "Lost connection to the model server. It may have crashed -- try reloading the model."
-        )
+        return _LOST_CONNECTION_MSG
     template_msg = _template_raise_message(msg, _loaded_chat_template())
     if template_msg:
         return f"An internal error occurred: {template_msg}"
@@ -227,6 +226,24 @@ def _raise_unsupported_openai_parameter(param: str, message: str) -> None:
 
 def _raise_unsupported_n(path_label: str) -> None:
     _raise_unsupported_openai_parameter("n", f"n > 1 is not supported for {path_label}.")
+
+
+def _sse_streaming_response(content) -> StreamingResponse:
+    """A ``text/event-stream`` response with the standard SSE headers used by
+    every streaming path here: no client/proxy caching, no proxy buffering, and
+    a one-shot connection. Two callers build their response inline instead: the
+    external-provider proxy omits ``Connection: close``, and the OpenAI
+    passthrough returns an empty ``keep-alive`` stream when the request is
+    cancelled before the upstream response starts."""
+    return StreamingResponse(
+        content,
+        media_type = "text/event-stream",
+        headers = {
+            "Cache-Control": "no-cache",
+            "Connection": "close",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 def _openai_stream_error_chunk(exc) -> dict:
@@ -403,12 +420,11 @@ def _apply_overflow_truncation(body: dict, err_text: str) -> bool:
     if counts:
         n_prompt, n_ctx = counts
         keep_ratio = min(0.95, (_OVERFLOW_PROMPT_TARGET_FRACTION * n_ctx) / max(1, n_prompt))
-        # Scale the server-token target into char-estimate units.
-        target_est = int(total_est * keep_ratio)
     else:
         n_ctx = None
         keep_ratio = 0.6  # no counts in the error; cut conservatively
-        target_est = int(total_est * keep_ratio)
+    # Scale the server-token target into char-estimate units.
+    target_est = int(total_est * keep_ratio)
 
     new_messages, dropped = _truncate_middle_messages(messages, keep_ratio)
     if dropped:
@@ -669,21 +685,11 @@ except ImportError:
 
 
 def _llama_non_streaming_generation_timeout() -> httpx.Timeout:
-    return httpx.Timeout(
-        connect = _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
-        read = _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
-        write = _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
-        pool = _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
-    )
+    return httpx.Timeout(_DEFAULT_FIRST_TOKEN_TIMEOUT_S)
 
 
 def _llama_streaming_generation_timeout() -> httpx.Timeout:
-    return httpx.Timeout(
-        connect = _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
-        read = _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
-        write = _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
-        pool = _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
-    )
+    return httpx.Timeout(_DEFAULT_FIRST_TOKEN_TIMEOUT_S)
 
 
 def _set_stream_response_read_timeout(
@@ -695,6 +701,35 @@ def _set_stream_response_read_timeout(
             timeout_ext["read"] = read_timeout_s
     except Exception:
         pass
+
+
+async def _aclose_stream_resources(*, watchers = (), iterator = None, resp = None, client = None) -> None:
+    """Tear down an httpx streaming generator's resources in the required order:
+    cancel + await each watcher task, then aclose() the byte/line iterator, the
+    response, and the client. Each step swallows its own exceptions so teardown
+    always completes. See _anthropic_passthrough_stream for the ordering rationale."""
+    for watcher in watchers:
+        if watcher is not None:
+            watcher.cancel()
+            try:
+                await watcher
+            except (asyncio.CancelledError, Exception):
+                pass
+    if iterator is not None:
+        try:
+            await iterator.aclose()
+        except Exception:
+            pass
+    if resp is not None:
+        try:
+            await resp.aclose()
+        except Exception:
+            pass
+    if client is not None:
+        try:
+            await client.aclose()
+        except Exception:
+            pass
 
 
 async def _preheader_cancelled(cancel_event = None, request: Optional[Request] = None) -> bool:
@@ -984,6 +1019,26 @@ _ARTIFACT_PREVIEW_FRAME_HTML = """<!doctype html>
 </html>"""
 
 
+async def _authenticate_header_or_query(request: Request, token: Optional[str]) -> str:
+    """Resolve the bearer token from the Authorization header or the ``?token=``
+    query param (needed for <img src> / <iframe>, which can't send custom
+    headers), validate it, and return the subject. Raises 401 when absent."""
+    auth_header = request.headers.get("authorization")
+    if auth_header and auth_header.lower().startswith("bearer "):
+        jwt_token = auth_header[7:]
+    elif token:
+        jwt_token = token
+    else:
+        raise HTTPException(
+            status_code = status.HTTP_401_UNAUTHORIZED,
+            detail = "Missing authentication token",
+        )
+    from fastapi.security import HTTPAuthorizationCredentials
+
+    creds = HTTPAuthorizationCredentials(scheme = "Bearer", credentials = jwt_token)
+    return await get_current_subject(creds)
+
+
 @studio_router.get("/artifact-preview-frame", include_in_schema = False)
 async def artifact_preview_frame(
     request: Request,
@@ -993,20 +1048,7 @@ async def artifact_preview_frame(
     """Serve the opaque sandbox shell used for client-side HTML canvases."""
 
     if allow_network:
-        auth_header = request.headers.get("authorization")
-        if auth_header and auth_header.lower().startswith("bearer "):
-            jwt_token = auth_header[7:]
-        elif token:
-            jwt_token = token
-        else:
-            raise HTTPException(
-                status_code = status.HTTP_401_UNAUTHORIZED,
-                detail = "Missing authentication token",
-            )
-        from fastapi.security import HTTPAuthorizationCredentials
-
-        creds = HTTPAuthorizationCredentials(scheme = "Bearer", credentials = jwt_token)
-        await get_current_subject(creds)
+        await _authenticate_header_or_query(request, token)
 
     csp = (
         _ARTIFACT_PREVIEW_FRAME_NETWORK_CSP if allow_network else _ARTIFACT_PREVIEW_FRAME_STRICT_CSP
@@ -1028,21 +1070,10 @@ def _detect_safetensors_features(backend, chat_template: Optional[str]) -> dict:
     match across backends. gpt-oss is overridden: Harmony routes reasoning and
     tools through tokenizer channels, not template markup."""
     model_id = getattr(backend, "active_model_name", None)
-    flags = (
-        detect_reasoning_flags(
-            chat_template,
-            model_identifier = model_id,
-            log_source = "safetensors",
-        )
-        if chat_template
-        else {
-            "supports_reasoning": False,
-            "reasoning_style": "enable_thinking",
-            "reasoning_always_on": False,
-            "reasoning_effort_levels": [],
-            "supports_preserve_thinking": False,
-            "supports_tools": False,
-        }
+    flags = detect_reasoning_flags(
+        chat_template,
+        model_identifier = model_id,
+        log_source = "safetensors",
     )
     # Our safetensors loop only parses <tool_call>{json}</tool_call> and
     # <function=name>...</function>. Llama uses <|python_tag|>, Mistral uses
@@ -1671,17 +1702,16 @@ def _monitor_anthropic_response(
                     if cancel_event is not None and cancel_event.is_set()
                     else "completed",
                 )
-            _ANTHROPIC_MONITOR_TOOL_BLOCKS.pop(monitor_id, None)
         except asyncio.CancelledError:
             if cancel_event is not None:
                 cancel_event.set()
             api_monitor.finish(monitor_id, "cancelled")
-            _ANTHROPIC_MONITOR_TOOL_BLOCKS.pop(monitor_id, None)
             raise
         except Exception as exc:
             api_monitor.fail(monitor_id, _friendly_error(exc))
-            _ANTHROPIC_MONITOR_TOOL_BLOCKS.pop(monitor_id, None)
             raise
+        finally:
+            _ANTHROPIC_MONITOR_TOOL_BLOCKS.pop(monitor_id, None)
 
     response.body_iterator = _monitored_body()
     return response
@@ -2134,6 +2164,23 @@ def _model_json_response(model, status_code: int = 200) -> Response:
     )
 
 
+_NOT_SUPPORTED_HINTS = (
+    "No config file found",
+    "not yet supported",
+    "is not supported",
+    "does not support",
+)
+
+
+def _maybe_unsupported_message(msg: str) -> str:
+    """Rewrite a load/validate error into the friendly "not supported yet"
+    message when it matches a known unsupported-model signature; otherwise
+    return ``msg`` unchanged."""
+    if any(h.lower() in msg.lower() for h in _NOT_SUPPORTED_HINTS):
+        return f"This model is not supported yet. Try a different model. (Original error: {msg})"
+    return msg
+
+
 @router.post("/load", response_model = LoadResponse)
 async def load_model(
     request: LoadRequest,
@@ -2217,9 +2264,7 @@ async def load_model(
                 )
                 inference_config = load_inference_config(llama_backend.model_identifier)
 
-                _gguf_audio = (
-                    llama_backend._audio_type if hasattr(llama_backend, "_audio_type") else None
-                )
+                _gguf_audio = getattr(llama_backend, "_audio_type", None)
                 _gguf_is_audio = getattr(llama_backend, "_is_audio", False)
                 return LoadResponse(
                     status = "already_loaded",
@@ -2453,7 +2498,6 @@ async def load_model(
                 speculative_type = request.speculative_type,
                 spec_draft_n_max = request.spec_draft_n_max,
                 n_parallel = _n_parallel,
-                extra_args = extra_llama_args,
             )
             if config.gguf_hf_repo:
                 # HF mode: download via huggingface_hub then start llama-server
@@ -2701,12 +2745,6 @@ async def load_model(
         raise HTTPException(status_code = 400, detail = str(e))
     except Exception as e:
         # Friendlier message for models Unsloth cannot load.
-        not_supported_hints = [
-            "No config file found",
-            "not yet supported",
-            "is not supported",
-            "does not support",
-        ]
         if native_grant_backed:
             redacted_msg = redact_native_paths(str(e))
             logger.error(
@@ -2714,17 +2752,13 @@ async def load_model(
                 model_log_label,
                 redacted_msg,
             )
-            msg = redacted_msg
-            if any(h.lower() in msg.lower() for h in not_supported_hints):
-                msg = f"This model is not supported yet. Try a different model. (Original error: {msg})"
+            msg = _maybe_unsupported_message(redacted_msg)
             raise HTTPException(
                 status_code = 500,
                 detail = f"Failed to load native model {model_log_label}: {msg}",
             )
         logger.error(f"Error loading model: {e}", exc_info = True)
-        msg = redact_native_paths(str(e))
-        if any(h.lower() in msg.lower() for h in not_supported_hints):
-            msg = f"This model is not supported yet. Try a different model. (Original error: {msg})"
+        msg = _maybe_unsupported_message(redact_native_paths(str(e)))
         raise HTTPException(status_code = 500, detail = f"Failed to load model: {msg}")
 
 
@@ -2925,12 +2959,6 @@ async def validate_model(
         logger.warning("GGUF runtime missing while validating '%s': %s", request.model_path, e)
         raise HTTPException(status_code = 400, detail = str(e))
     except Exception as e:
-        not_supported_hints = [
-            "No config file found",
-            "not yet supported",
-            "is not supported",
-            "does not support",
-        ]
         if native_grant_backed:
             redacted_msg = redact_native_paths(str(e))
             logger.error(
@@ -2938,9 +2966,7 @@ async def validate_model(
                 model_log_label,
                 redacted_msg,
             )
-            msg = redacted_msg
-            if any(h.lower() in msg.lower() for h in not_supported_hints):
-                msg = f"This model is not supported yet. Try a different model. (Original error: {msg})"
+            msg = _maybe_unsupported_message(redacted_msg)
             raise HTTPException(
                 status_code = 400,
                 detail = f"Invalid native model {model_log_label}: {msg}",
@@ -2957,8 +2983,7 @@ async def validate_model(
         if isinstance(e, (RuntimeError, ValueError)):
             msg = redact_native_paths(str(e)).strip()
             if msg:
-                if any(h.lower() in msg.lower() for h in not_supported_hints):
-                    msg = f"This model is not supported yet. Try a different model. (Original error: {msg})"
+                msg = _maybe_unsupported_message(msg)
                 raise HTTPException(
                     status_code = 400,
                     detail = msg,
@@ -3172,14 +3197,7 @@ async def generate_stream(
                 except (RuntimeError, ValueError):
                     pass
 
-    return StreamingResponse(
-        stream(),
-        media_type = "text/event-stream",
-        headers = {
-            "Cache-Control": "no-cache",
-            "Connection": "close",
-        },
-    )
+    return _sse_streaming_response(stream())
 
 
 @router.get("/status", response_model = InferenceStatusResponse)
@@ -3419,7 +3437,7 @@ async def generate_audio(
         )
 
     try:
-        wav_bytes, sample_rate = await asyncio.get_event_loop().run_in_executor(None, gen)
+        wav_bytes, sample_rate = await asyncio.to_thread(gen)
     except Exception as e:
         logger.error(f"Audio generation error: {e}", exc_info = True)
         raise HTTPException(status_code = 500, detail = safe_error_detail(e))
@@ -3473,11 +3491,9 @@ def _decode_audio_base64(b64: str) -> np.ndarray:
     finally:
         os.unlink(tmp_path)
 
-    # Convert to mono if stereo
     if waveform.shape[0] > 1:
         waveform = waveform.mean(dim = 0, keepdim = True)
 
-    # Resample to 16kHz if needed
     if sr != 16000:
         resampler = torchaudio.transforms.Resample(orig_freq = sr, new_freq = 16000)
         waveform = resampler(waveform)
@@ -3840,6 +3856,25 @@ def _build_external_messages(
             cleaned.append(_stripped)
         return cleaned
 
+    def _openai_responses_part(item: Any) -> Optional[dict[str, Any]]:
+        """Rebuild a forwarded OpenAI Responses assistant part (`reasoning` or
+        `image_generation_call`); returns None for any other part type."""
+        if item.type == "reasoning":
+            reasoning: dict[str, Any] = {
+                "type": "reasoning",
+                "id": item.id,
+                "summary": item.summary,
+            }
+            if item.status:
+                reasoning["status"] = item.status
+            return reasoning
+        if item.type == "image_generation_call":
+            image_ref: dict[str, Any] = {"type": "image_generation_call", "id": item.id}
+            if getattr(item, "response_id", None):
+                image_ref["response_id"] = item.response_id
+            return image_ref
+        return None
+
     result = []
     for msg in messages:
         # Drop role=tool messages whose matching server-builtin tool_call was
@@ -3909,26 +3944,16 @@ def _build_external_messages(
                                 "image_url": {"url": part.image_url.url},
                             }
                         )
-                    elif part.type == "reasoning" and openai and msg.role == "assistant":
-                        reasoning: dict[str, Any] = {
-                            "type": "reasoning",
-                            "id": part.id,
-                            "summary": part.summary,
-                        }
-                        if part.status:
-                            reasoning["status"] = part.status
-                        parts.append(reasoning)
                     elif (
-                        part.type == "image_generation_call" and openai and msg.role == "assistant"
+                        openai
+                        and msg.role == "assistant"
+                        and (_rp := _openai_responses_part(part)) is not None
                     ):
-                        # ExternalProviderClient maps this onto a top-level
-                        # Responses input item after the current user prompt,
-                        # or onto `previous_response_id` when response_id is
-                        # available from the prior turn.
-                        image_ref = {"type": "image_generation_call", "id": part.id}
-                        if getattr(part, "response_id", None):
-                            image_ref["response_id"] = part.response_id
-                        parts.append(image_ref)
+                        # ExternalProviderClient maps image_generation_call onto a
+                        # top-level Responses input item after the current user
+                        # prompt, or onto `previous_response_id` when response_id
+                        # is available from the prior turn.
+                        parts.append(_rp)
                     elif part.type == "input_document" and document_provider:
                         # ExternalProviderClient maps this onto Anthropic's
                         # `document` or OpenAI Responses' `input_file` block;
@@ -3977,20 +4002,12 @@ def _build_external_messages(
                 for p in msg.content:
                     if p.type == "text":
                         preserved.append({"type": "text", "text": p.text})
-                    elif p.type == "reasoning" and openai and msg.role == "assistant":
-                        reasoning: dict[str, Any] = {
-                            "type": "reasoning",
-                            "id": p.id,
-                            "summary": p.summary,
-                        }
-                        if p.status:
-                            reasoning["status"] = p.status
-                        preserved.append(reasoning)
-                    elif p.type == "image_generation_call" and openai and msg.role == "assistant":
-                        image_ref = {"type": "image_generation_call", "id": p.id}
-                        if getattr(p, "response_id", None):
-                            image_ref["response_id"] = p.response_id
-                        preserved.append(image_ref)
+                    elif (
+                        openai
+                        and msg.role == "assistant"
+                        and (_rp := _openai_responses_part(p)) is not None
+                    ):
+                        preserved.append(_rp)
                     elif p.type == "compaction" and anthropic:
                         preserved.append({"type": "compaction", "content": p.content})
                 if msg.role == "assistant" and not preserved:
@@ -4548,7 +4565,6 @@ async def openai_chat_completions(
                 detail = "Whisper models require audio input. Please upload an audio file.",
             )
 
-        monitor_id = None
         if not getattr(request.state, "skip_api_monitor", False):
             monitor_id = api_monitor.start(
                 endpoint = request.url.path,
@@ -4659,15 +4675,7 @@ async def openai_chat_completions(
                     finally:
                         _tracker.__exit__(None, None, None)
 
-                return StreamingResponse(
-                    audio_input_stream(),
-                    media_type = "text/event-stream",
-                    headers = {
-                        "Cache-Control": "no-cache",
-                        "Connection": "close",
-                        "X-Accel-Buffering": "no",
-                    },
-                )
+                return _sse_streaming_response(audio_input_stream())
             else:
                 try:
                     full_text = "".join(audio_input_generate())
@@ -5106,10 +5114,7 @@ async def openai_chat_completions(
                     api_monitor.finish(monitor_id, "cancelled")
                     raise
                 except Exception as e:
-                    import traceback
-
-                    tb = traceback.format_exc()
-                    logger.error(f"Error during GGUF tool streaming: {e}\n{tb}")
+                    logger.error(f"Error during GGUF tool streaming: {e}", exc_info = True)
                     api_monitor.fail(monitor_id, _friendly_error(e))
                     # Recover if an MTP+tensor crash killed the server mid-stream.
                     get_llama_cpp_backend()._maybe_recover_from_mtp_crash(e)
@@ -5123,15 +5128,7 @@ async def openai_chat_completions(
                             pass
                     _tracker.__exit__(None, None, None)
 
-            return StreamingResponse(
-                gguf_tool_stream(),
-                media_type = "text/event-stream",
-                headers = {
-                    "Cache-Control": "no-cache",
-                    "Connection": "close",
-                    "X-Accel-Buffering": "no",
-                },
-            )
+            return _sse_streaming_response(gguf_tool_stream())
 
         # ── Standard GGUF path (no tools) ─────────────────────
 
@@ -5274,15 +5271,7 @@ async def openai_chat_completions(
                 finally:
                     _tracker.__exit__(None, None, None)
 
-            return StreamingResponse(
-                gguf_stream_chunks(),
-                media_type = "text/event-stream",
-                headers = {
-                    "Cache-Control": "no-cache",
-                    "Connection": "close",
-                    "X-Accel-Buffering": "no",
-                },
-            )
+            return _sse_streaming_response(gguf_stream_chunks())
         else:
             try:
                 # ``n`` requests several independent completions; the single
@@ -5713,15 +5702,7 @@ async def openai_chat_completions(
                 _sf_tracker.__exit__(None, None, None)
 
         if payload.stream:
-            return StreamingResponse(
-                sf_tool_stream(),
-                media_type = "text/event-stream",
-                headers = {
-                    "Cache-Control": "no-cache",
-                    "Connection": "close",
-                    "X-Accel-Buffering": "no",
-                },
-            )
+            return _sse_streaming_response(sf_tool_stream())
 
         # Non-streaming JSON: drain the loop, build one ChatCompletion.
         try:
@@ -5922,10 +5903,11 @@ async def openai_chat_completions(
             except Exception as e:
                 backend.reset_generation_state()
                 logger.error(f"Error during OpenAI streaming: {e}", exc_info = True)
-                api_monitor.fail(monitor_id, _friendly_error(e))
+                _msg = _friendly_error(e)
+                api_monitor.fail(monitor_id, _msg)
                 error_chunk = {
                     "error": {
-                        "message": _friendly_error(e),
+                        "message": _msg,
                         "type": "server_error",
                     },
                 }
@@ -5933,15 +5915,7 @@ async def openai_chat_completions(
             finally:
                 _tracker.__exit__(None, None, None)
 
-        return StreamingResponse(
-            stream_chunks(),
-            media_type = "text/event-stream",
-            headers = {
-                "Cache-Control": "no-cache",
-                "Connection": "close",
-                "X-Accel-Buffering": "no",
-            },
-        )
+        return _sse_streaming_response(stream_chunks())
 
     # ── Non-streaming response ────────────────────────────────────
     else:
@@ -6005,20 +5979,7 @@ async def serve_sandbox_file(
     from fastapi.responses import FileResponse
 
     # ── Authentication (header or query param) ──────────────────
-    auth_header = request.headers.get("authorization")
-    if auth_header and auth_header.lower().startswith("bearer "):
-        jwt_token = auth_header[7:]
-    elif token:
-        jwt_token = token
-    else:
-        raise HTTPException(
-            status_code = status.HTTP_401_UNAUTHORIZED,
-            detail = "Missing authentication token",
-        )
-    from fastapi.security import HTTPAuthorizationCredentials
-
-    creds = HTTPAuthorizationCredentials(scheme = "Bearer", credentials = jwt_token)
-    await get_current_subject(creds)
+    await _authenticate_header_or_query(request, token)
 
     # ── Filename sanitization ───────────────────────────────────
     safe_filename = os.path.basename(filename)
@@ -6161,6 +6122,14 @@ async def openai_retrieve_model(model_id: str, current_subject: str = Depends(ge
 # =====================================================================
 
 
+def _flatten_monitor_prompt(value) -> str:
+    """Flatten an OpenAI prompt/input field (str or list) into the single
+    string the api_monitor prompt preview expects."""
+    if isinstance(value, list):
+        return "\n".join(str(part) for part in value)
+    return str(value)
+
+
 @router.post("/completions")
 async def openai_completions(request: Request, current_subject: str = Depends(get_current_subject)):
     """
@@ -6181,11 +6150,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
         body["max_tokens"] = llama_backend.context_length or _DEFAULT_MAX_TOKENS_FLOOR
     target_url = f"{llama_backend.base_url}/v1/completions"
     is_stream = body.get("stream", False)
-    raw_prompt = body.get("prompt", "")
-    if isinstance(raw_prompt, list):
-        prompt_text = "\n".join(str(part) for part in raw_prompt)
-    else:
-        prompt_text = str(raw_prompt)
+    prompt_text = _flatten_monitor_prompt(body.get("prompt", ""))
     monitor_id = api_monitor.start(
         endpoint = request.url.path,
         method = request.method,
@@ -6290,28 +6255,14 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                 yield f"data: {json.dumps(error_chunk)}\n\n".encode("utf-8")
                 return
             finally:
-                if disconnect_watcher is not None:
-                    disconnect_watcher.cancel()
-                    try:
-                        await disconnect_watcher
-                    except (asyncio.CancelledError, Exception):
-                        pass
-                if bytes_iter is not None:
-                    try:
-                        await bytes_iter.aclose()
-                    except Exception:
-                        pass
-                if resp is not None:
-                    try:
-                        await resp.aclose()
-                    except Exception:
-                        pass
-                try:
-                    await client.aclose()
-                except Exception:
-                    pass
+                await _aclose_stream_resources(
+                    watchers = (disconnect_watcher,),
+                    iterator = bytes_iter,
+                    resp = resp,
+                    client = client,
+                )
 
-        return StreamingResponse(_stream(), media_type = "text/event-stream")
+        return _sse_streaming_response(_stream())
     else:
         try:
             resp = await nonstreaming_client().post(
@@ -6366,11 +6317,7 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
 
     body = await request.json()
     target_url = f"{llama_backend.base_url}/v1/embeddings"
-    raw_input = body.get("input", "")
-    if isinstance(raw_input, list):
-        prompt_text = "\n".join(str(part) for part in raw_input)
-    else:
-        prompt_text = str(raw_input)
+    prompt_text = _flatten_monitor_prompt(body.get("input", ""))
     monitor_id = None
     if not getattr(request.state, "skip_api_monitor", False):
         monitor_id = api_monitor.start(
@@ -6732,14 +6679,17 @@ def _normalise_responses_input(payload: ResponsesRequest) -> list[ChatMessage]:
     if payload.instructions:
         system_parts.append(payload.instructions)
 
+    def _with_system(msgs: list[ChatMessage]) -> list[ChatMessage]:
+        if not system_parts:
+            return msgs
+        merged = "\n\n".join(p for p in system_parts if p)
+        return [ChatMessage(role = "system", content = merged), *msgs]
+
     # Simple string input
     if isinstance(payload.input, str):
         if payload.input:
             messages.append(ChatMessage(role = "user", content = payload.input))
-        if system_parts:
-            merged = "\n\n".join(p for p in system_parts if p)
-            return [ChatMessage(role = "system", content = merged), *messages]
-        return messages
+        return _with_system(messages)
 
     for item in payload.input:
         if isinstance(item, ResponsesFunctionCallInputItem):
@@ -6824,10 +6774,7 @@ def _normalise_responses_input(payload: ResponsesRequest) -> list[ChatMessage]:
             else:
                 messages.append(ChatMessage(role = item.role, content = parts))
 
-    if system_parts:
-        merged = "\n\n".join(p for p in system_parts if p)
-        return [ChatMessage(role = "system", content = merged), *messages]
-    return messages
+    return _with_system(messages)
 
 
 def _build_chat_request(
@@ -6951,9 +6898,7 @@ async def _responses_non_streaming(
         result = await openai_chat_completions(chat_req, request)
 
         # openai_chat_completions returns a JSONResponse for non-streaming.
-        if isinstance(result, JSONResponse):
-            body = json.loads(result.body.decode())
-        elif isinstance(result, Response):
+        if isinstance(result, Response):
             body = json.loads(result.body.decode())
         else:
             body = result
@@ -7121,6 +7066,14 @@ async def _responses_stream(
             output_index = next_output_index
             next_output_index += 1
             return output_index
+
+        def _apply_usage(u) -> None:
+            nonlocal input_tokens, output_tokens
+            if not u:
+                return
+            input_tokens = u.get("prompt_tokens", input_tokens)
+            output_tokens = u.get("completion_tokens", output_tokens)
+            _monitor_usage(monitor_id, u, llama_backend.context_length)
 
         def _ensure_reasoning_open() -> list[str]:
             if reasoning_state["opened"]:
@@ -7379,15 +7332,7 @@ async def _responses_stream(
 
                 choices = chunk_data.get("choices", [])
                 if not choices:
-                    usage = chunk_data.get("usage")
-                    if usage:
-                        input_tokens = usage.get("prompt_tokens", input_tokens)
-                        output_tokens = usage.get("completion_tokens", output_tokens)
-                        _monitor_usage(
-                            monitor_id,
-                            usage,
-                            llama_backend.context_length,
-                        )
+                    _apply_usage(chunk_data.get("usage"))
                     continue
 
                 delta = choices[0].get("delta", {}) or {}
@@ -7481,15 +7426,7 @@ async def _responses_stream(
                         # if not, stash).
                         st["arguments"] += arg_delta
 
-                usage = chunk_data.get("usage")
-                if usage:
-                    input_tokens = usage.get("prompt_tokens", input_tokens)
-                    output_tokens = usage.get("completion_tokens", output_tokens)
-                    _monitor_usage(
-                        monitor_id,
-                        usage,
-                        llama_backend.context_length,
-                    )
+                _apply_usage(chunk_data.get("usage"))
         except asyncio.CancelledError:
             api_monitor.finish(monitor_id, "cancelled")
             raise
@@ -7516,26 +7453,12 @@ async def _responses_stream(
             )
             return
         finally:
-            if disconnect_watcher is not None:
-                disconnect_watcher.cancel()
-                try:
-                    await disconnect_watcher
-                except (asyncio.CancelledError, Exception):
-                    pass
-            if lines_iter is not None:
-                try:
-                    await lines_iter.aclose()
-                except Exception:
-                    pass
-            if resp is not None:
-                try:
-                    await resp.aclose()
-                except Exception:
-                    pass
-            try:
-                await client.aclose()
-            except Exception:
-                pass
+            await _aclose_stream_resources(
+                watchers = (disconnect_watcher,),
+                iterator = lines_iter,
+                resp = resp,
+                client = client,
+            )
 
         if disconnect_event.is_set():
             api_monitor.finish(monitor_id, "cancelled")
@@ -7746,15 +7669,7 @@ async def _responses_stream(
         api_monitor.finish(monitor_id)
         yield _sse("response.completed", completed_response)
 
-    return StreamingResponse(
-        event_generator(),
-        media_type = "text/event-stream",
-        headers = {
-            "Cache-Control": "no-cache",
-            "Connection": "close",
-            "X-Accel-Buffering": "no",
-        },
-    )
+    return _sse_streaming_response(event_generator())
 
 
 @router.post("/responses")
@@ -7845,6 +7760,20 @@ def _select_anthropic_server_tools(
     return [tool for tool in all_tools if tool["function"]["name"] in selected_names]
 
 
+def _image_bytes_to_png_b64(raw: bytes) -> str:
+    """Decode raw image bytes and re-encode to a base64-ascii PNG string.
+
+    llama-server's stb_image only handles a few formats (JPEG/PNG/BMP/...); re-
+    encoding to PNG keeps JPEG/WebP/... inputs loadable. Raises on undecodable
+    input; callers wrap the call in ``try`` -> HTTPException(400)."""
+    from PIL import Image
+
+    img = Image.open(io.BytesIO(raw)).convert("RGB")
+    buf = io.BytesIO()
+    img.save(buf, format = "PNG")
+    return base64.b64encode(buf.getvalue()).decode("ascii")
+
+
 def _normalize_anthropic_openai_images(openai_messages: list[dict], is_vision: bool) -> bool:
     """Enforce the vision guard on translated Anthropic messages and normalize
     any base64-data-URL ``image_url`` parts to PNG.
@@ -7859,8 +7788,6 @@ def _normalize_anthropic_openai_images(openai_messages: list[dict], is_vision: b
     when images are present but the active model isn't a vision model, or when
     an image cannot be decoded.
     """
-    from PIL import Image
-
     has_image = False
     for msg in openai_messages:
         content = msg.get("content")
@@ -7886,10 +7813,7 @@ def _normalize_anthropic_openai_images(openai_messages: list[dict], is_vision: b
             try:
                 _, b64data = url.split(",", 1)
                 raw = base64.b64decode(b64data)
-                img = Image.open(io.BytesIO(raw)).convert("RGB")
-                buf = io.BytesIO()
-                img.save(buf, format = "PNG")
-                png_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+                png_b64 = _image_bytes_to_png_b64(raw)
             except Exception:
                 raise HTTPException(
                     status_code = 400,
@@ -8418,15 +8342,7 @@ async def _anthropic_tool_stream(
         for line in emitter.finish(stop_reason = stop_reason, stop_sequence = None):
             yield line
 
-    return StreamingResponse(
-        _stream(),
-        media_type = "text/event-stream",
-        headers = {
-            "Cache-Control": "no-cache",
-            "Connection": "close",
-            "X-Accel-Buffering": "no",
-        },
-    )
+    return _sse_streaming_response(_stream())
 
 
 async def _anthropic_plain_stream(
@@ -8485,15 +8401,7 @@ async def _anthropic_plain_stream(
         for line in emitter.finish(stop_reason = stop_reason, stop_sequence = None):
             yield line
 
-    return StreamingResponse(
-        _stream(),
-        media_type = "text/event-stream",
-        headers = {
-            "Cache-Control": "no-cache",
-            "Connection": "close",
-            "X-Accel-Buffering": "no",
-        },
-    )
+    return _sse_streaming_response(_stream())
 
 
 def _anthropic_map_generation_error(e: Exception) -> HTTPException:
@@ -8520,6 +8428,25 @@ def _collect_anthropic_events(run_gen) -> list:
         raise
     except Exception as e:
         raise _anthropic_map_generation_error(e)
+
+
+def _anthropic_message_json_response(
+    message_id, model_name, content_blocks, stop_reason, usage
+) -> Response:
+    """Assemble the terminal Anthropic non-streaming JSON response shared by the
+    tool / plain / passthrough paths."""
+    return _model_json_response(
+        AnthropicMessagesResponse(
+            id = message_id,
+            model = model_name,
+            content = content_blocks,
+            stop_reason = stop_reason,
+            usage = AnthropicUsage(
+                input_tokens = usage.get("prompt_tokens", 0),
+                output_tokens = usage.get("completion_tokens", 0),
+            ),
+        )
+    )
 
 
 async def _anthropic_tool_non_streaming(
@@ -8614,17 +8541,9 @@ async def _anthropic_tool_non_streaming(
         captured_finish_reason, had_tool_calls = ends_on_tool_use
     )
 
-    resp = AnthropicMessagesResponse(
-        id = message_id,
-        model = model_name,
-        content = content_blocks,
-        stop_reason = stop_reason,
-        usage = AnthropicUsage(
-            input_tokens = usage.get("prompt_tokens", 0),
-            output_tokens = usage.get("completion_tokens", 0),
-        ),
+    return _anthropic_message_json_response(
+        message_id, model_name, content_blocks, stop_reason, usage
     )
-    return _model_json_response(resp)
 
 
 async def _anthropic_plain_non_streaming(run_gen, message_id, model_name):
@@ -8656,17 +8575,9 @@ async def _anthropic_plain_non_streaming(run_gen, message_id, model_name):
 
     stop_reason = openai_finish_to_anthropic_stop(captured_finish_reason, had_tool_calls = False)
 
-    resp = AnthropicMessagesResponse(
-        id = message_id,
-        model = model_name,
-        content = content_blocks,
-        stop_reason = stop_reason,
-        usage = AnthropicUsage(
-            input_tokens = usage.get("prompt_tokens", 0),
-            output_tokens = usage.get("completion_tokens", 0),
-        ),
+    return _anthropic_message_json_response(
+        message_id, model_name, content_blocks, stop_reason, usage
     )
-    return _model_json_response(resp)
 
 
 # =====================================================================
@@ -8884,17 +8795,6 @@ async def _anthropic_passthrough_stream(
                     _drop_parallel_tool_call_deltas(chunk)
                 for line in emitter.feed_chunk(chunk):
                     yield line
-        except (httpx.RemoteProtocolError, httpx.ReadError, httpx.CloseError) as e:
-            if not cancel_event.is_set():
-                logger.error("anthropic_messages passthrough stream error: %s", e)
-                get_llama_cpp_backend()._maybe_recover_from_mtp_crash(e)
-                event = _anthropic_stream_error_event(
-                    e,
-                    force = True,
-                )
-                if event is not None:
-                    yield event
-                return
         except Exception as e:
             if not cancel_event.is_set():
                 logger.error("anthropic_messages passthrough stream error: %s", e)
@@ -8907,46 +8807,18 @@ async def _anthropic_passthrough_stream(
                     yield event
                 return
         finally:
-            if cancel_watcher is not None:
-                cancel_watcher.cancel()
-                try:
-                    await cancel_watcher
-                except (asyncio.CancelledError, Exception):
-                    pass
-            if disconnect_watcher is not None:
-                disconnect_watcher.cancel()
-                try:
-                    await disconnect_watcher
-                except (asyncio.CancelledError, Exception):
-                    pass
-            if lines_iter is not None:
-                try:
-                    await lines_iter.aclose()
-                except Exception:
-                    pass
-            if resp is not None:
-                try:
-                    await resp.aclose()
-                except Exception:
-                    pass
-            try:
-                await client.aclose()
-            except Exception:
-                pass
+            await _aclose_stream_resources(
+                watchers = (cancel_watcher, disconnect_watcher),
+                iterator = lines_iter,
+                resp = resp,
+                client = client,
+            )
             _tracker.__exit__(None, None, None)
 
         for line in emitter.finish():
             yield line
 
-    return StreamingResponse(
-        _stream(),
-        media_type = "text/event-stream",
-        headers = {
-            "Cache-Control": "no-cache",
-            "Connection": "close",
-            "X-Accel-Buffering": "no",
-        },
-    )
+    return _sse_streaming_response(_stream())
 
 
 async def _anthropic_passthrough_non_streaming(
@@ -9029,17 +8901,9 @@ async def _anthropic_passthrough_non_streaming(
     stop_reason = openai_finish_to_anthropic_stop(finish_reason, had_tool_calls = bool(tool_calls))
 
     usage = data.get("usage") or {}
-    resp_obj = AnthropicMessagesResponse(
-        id = message_id,
-        model = model_name,
-        content = content_blocks,
-        stop_reason = stop_reason,
-        usage = AnthropicUsage(
-            input_tokens = usage.get("prompt_tokens", 0),
-            output_tokens = usage.get("completion_tokens", 0),
-        ),
+    return _anthropic_message_json_response(
+        message_id, model_name, content_blocks, stop_reason, usage
     )
-    return _model_json_response(resp_obj)
 
 
 # =====================================================================
@@ -9200,6 +9064,27 @@ def _strip_provider_synthetic_tool_history(messages: list[dict]) -> list[dict]:
     return out
 
 
+def _splice_image_into_last_user(messages: list[dict], image_part: dict) -> None:
+    """Splice an image content part into the last user message, in place.
+
+    String content becomes a text part plus the image; an existing content-part
+    list gets the image appended; any other shape is replaced by the lone image.
+    With no user message present, a new user turn carrying the image is appended."""
+    for msg in reversed(messages):
+        if msg.get("role") != "user":
+            continue
+        existing = msg.get("content")
+        if isinstance(existing, str):
+            msg["content"] = [{"type": "text", "text": existing}, image_part]
+        elif isinstance(existing, list):
+            existing.append(image_part)
+        else:
+            msg["content"] = [image_part]
+        break
+    else:
+        messages.append({"role": "user", "content": [image_part]})
+
+
 def _openai_messages_for_passthrough(payload) -> list[dict]:
     """Build OpenAI-format message dicts for the /v1/chat/completions
     passthrough path.
@@ -9223,15 +9108,8 @@ def _openai_messages_for_passthrough(payload) -> list[dict]:
         return messages
 
     try:
-        import base64 as _b64
-        from io import BytesIO as _BytesIO
-        from PIL import Image as _Image
-
-        raw = _b64.b64decode(payload.image_base64)
-        img = _Image.open(_BytesIO(raw)).convert("RGB")
-        buf = _BytesIO()
-        img.save(buf, format = "PNG")
-        png_b64 = _b64.b64encode(buf.getvalue()).decode("ascii")
+        raw = base64.b64decode(payload.image_base64)
+        png_b64 = _image_bytes_to_png_b64(raw)
     except Exception:
         raise HTTPException(
             status_code = 400,
@@ -9241,19 +9119,7 @@ def _openai_messages_for_passthrough(payload) -> list[dict]:
     data_url = f"data:image/png;base64,{png_b64}"
     image_part = {"type": "image_url", "image_url": {"url": data_url}}
 
-    for msg in reversed(messages):
-        if msg.get("role") != "user":
-            continue
-        existing = msg.get("content")
-        if isinstance(existing, str):
-            msg["content"] = [{"type": "text", "text": existing}, image_part]
-        elif isinstance(existing, list):
-            existing.append(image_part)
-        else:
-            msg["content"] = [image_part]
-        break
-    else:
-        messages.append({"role": "user", "content": [image_part]})
+    _splice_image_into_last_user(messages, image_part)
 
     return messages
 
@@ -9288,19 +9154,7 @@ def _openai_messages_for_gguf_chat(payload, is_vision: bool) -> tuple[list[dict]
                 "url": f"data:image/png;base64,{payload.image_base64}",
             },
         }
-        for msg in reversed(messages):
-            if msg.get("role") != "user":
-                continue
-            existing = msg.get("content")
-            if isinstance(existing, str):
-                msg["content"] = [{"type": "text", "text": existing}, image_part]
-            elif isinstance(existing, list):
-                existing.append(image_part)
-            else:
-                msg["content"] = [image_part]
-            break
-        else:
-            messages.append({"role": "user", "content": [image_part]})
+        _splice_image_into_last_user(messages, image_part)
     has_image = _normalize_anthropic_openai_images(messages, is_vision)
     return messages, has_image
 
@@ -9421,15 +9275,7 @@ async def _openai_passthrough_stream(
                 # llama-server subprocess crashed / starting / unreachable.
                 logger.error("openai passthrough stream: upstream unreachable: %s", e)
                 api_monitor.fail(monitor_id, _friendly_error(e))
-                if resp is not None:
-                    try:
-                        await resp.aclose()
-                    except Exception:
-                        pass
-                try:
-                    await client.aclose()
-                except Exception:
-                    pass
+                await _aclose_stream_resources(resp = resp, client = client)
                 raise HTTPException(
                     status_code = 502,
                     detail = _friendly_error(e),
@@ -9549,40 +9395,15 @@ async def _openai_passthrough_stream(
                 err = _openai_stream_error_chunk(e)
                 yield f"data: {json.dumps(err)}\n\n"
             finally:
-                cancel_watcher.cancel()
-                try:
-                    await cancel_watcher
-                except (asyncio.CancelledError, Exception):
-                    pass
-                disconnect_watcher.cancel()
-                try:
-                    await disconnect_watcher
-                except (asyncio.CancelledError, Exception):
-                    pass
-                if lines_iter is not None:
-                    try:
-                        await lines_iter.aclose()
-                    except Exception:
-                        pass
-                try:
-                    await resp.aclose()
-                except Exception:
-                    pass
-                try:
-                    await client.aclose()
-                except Exception:
-                    pass
+                await _aclose_stream_resources(
+                    watchers = (cancel_watcher, disconnect_watcher),
+                    iterator = lines_iter,
+                    resp = resp,
+                    client = client,
+                )
                 _tracker.__exit__(None, None, None)
 
-        return StreamingResponse(
-            _stream(),
-            media_type = "text/event-stream",
-            headers = {
-                "Cache-Control": "no-cache",
-                "Connection": "close",
-                "X-Accel-Buffering": "no",
-            },
-        )
+        return _sse_streaming_response(_stream())
     except BaseException:
         _tracker.__exit__(None, None, None)
         raise
@@ -9696,12 +9517,10 @@ async def _openai_passthrough_non_streaming(
             msg["content"] = f"```json\n{stripped}\n```"
             changed = True
 
-    # Nothing mutated: relay the upstream bytes verbatim, skipping a redundant
-    # parse + re-serialize round-trip.
-    if not changed:
-        _monitor_openai_chunk(monitor_id, data, llama_backend.context_length)
-        api_monitor.finish(monitor_id)
-        return Response(content = resp.content, media_type = "application/json")
     _monitor_openai_chunk(monitor_id, data, llama_backend.context_length)
     api_monitor.finish(monitor_id)
+    if not changed:
+        # Nothing mutated: relay the upstream bytes verbatim, skipping a
+        # redundant parse + re-serialize round-trip.
+        return Response(content = resp.content, media_type = "application/json")
     return JSONResponse(content = data)
