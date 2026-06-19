@@ -15,6 +15,8 @@ import {
 import { RemoteCodeConsentDialog } from "@/features/security";
 import { useTrainingUnloadGuard } from "@/features/training";
 import { useExportRuntimeLifecycle } from "@/features/export";
+import { hasAuthToken } from "@/features/auth";
+import { usePersonalizationSync } from "@/features/profile/hooks/use-personalization-sync";
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
 import { useT, type TranslationKey } from "@/i18n";
 import {
@@ -135,6 +137,10 @@ function RootLayout() {
   // Global export driver: streams worker logs and tracks status from any route
   // so an export keeps running and stays visible while training / chatting.
   useExportRuntimeLifecycle();
+  // Mirror profile + appearance to the server (when signed in) so they follow
+  // the account across browsers and devices instead of living only in this
+  // browser's localStorage.
+  usePersonalizationSync(hasAuthToken());
 
   const matchedTitle = useMatches({
     select: (matches) => {

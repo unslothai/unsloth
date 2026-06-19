@@ -1,12 +1,20 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+from typing import Literal, Optional
+
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from auth.authentication import get_current_subject
 from loggers import get_logger
 from utils.utils import safe_error_detail, log_and_http_error
+from utils.personalization_settings import (
+    MAX_AVATAR_DATA_URL_BYTES,
+    PERSONALIZATION_VERSION,
+    get_personalization,
+    set_personalization,
+)
 from utils.upload_limits import (
     MAX_UPLOAD_LIMIT_MB,
     MIN_UPLOAD_LIMIT_MB,
@@ -111,3 +119,80 @@ def update_helper_precache(
             log = logger,
         ) from exc
     return _helper_precache_response(enabled)
+
+
+# --- Personalization (profile + appearance), persisted server-side ----------
+# Field names are camelCase to match the frontend stores 1:1; extra keys are
+# ignored so the client can add prefs without a backend change.
+
+
+class PersonalizationProfile(BaseModel):
+    model_config = ConfigDict(extra = "ignore")
+
+    displayName: str = Field("", max_length = 200)
+    nickname: str = Field("", max_length = 200)
+    avatarDataUrl: Optional[str] = Field(None)
+    avatarShape: Literal["circle", "rounded"] = "circle"
+
+    @field_validator("avatarDataUrl")
+    @classmethod
+    def _validate_avatar(cls, value: Optional[str]) -> Optional[str]:
+        if not value:
+            return value
+        if not value.startswith("data:image/"):
+            raise ValueError("avatarDataUrl must be an image data URL.")
+        if len(value) > MAX_AVATAR_DATA_URL_BYTES:
+            raise ValueError("Avatar image is too large.")
+        return value
+
+
+class PersonalizationAppearance(BaseModel):
+    model_config = ConfigDict(extra = "ignore")
+
+    theme: Literal["light", "dark", "system"] = "system"
+    language: Optional[str] = Field(None, max_length = 20)
+
+
+class PersonalizationPayload(BaseModel):
+    model_config = ConfigDict(extra = "ignore")
+
+    version: int = PERSONALIZATION_VERSION
+    profile: PersonalizationProfile = Field(default_factory = PersonalizationProfile)
+    appearance: PersonalizationAppearance = Field(default_factory = PersonalizationAppearance)
+
+
+class PersonalizationResponse(PersonalizationPayload):
+    # Whether a blob was ever saved. The client uses this to decide between
+    # hydrating from the server and migrating existing local settings up, so a
+    # never-saved account does not overwrite the browser's values with defaults.
+    saved: bool = False
+
+
+@router.get("/personalization", response_model = PersonalizationResponse)
+def get_personalization_settings(
+    current_subject: str = Depends(get_current_subject),
+) -> PersonalizationResponse:
+    # Normalize the stored blob through the model so the client always gets a
+    # complete, validated shape (defaults fill any missing fields).
+    stored = get_personalization()
+    response = PersonalizationResponse.model_validate(stored or {})
+    response.saved = bool(stored)
+    return response
+
+
+@router.put("/personalization", response_model = PersonalizationPayload)
+def update_personalization_settings(
+    payload: PersonalizationPayload,
+    current_subject: str = Depends(get_current_subject),
+) -> PersonalizationPayload:
+    try:
+        set_personalization(payload.model_dump())
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_error_detail(exc, fallback = "Invalid personalization settings."),
+            event = "settings.update_personalization_failed",
+            log = logger,
+        ) from exc
+    return payload
