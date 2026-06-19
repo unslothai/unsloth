@@ -290,6 +290,18 @@ class TestLaunchContextLength:
         inst = _backend(requested_n_ctx = 0, launch_context_length = 8192)
         assert inst.launch_context_length == 8192
 
+    def test_auto_launch_does_not_flag_fit_reduction(self):
+        """When launch_ctx is None (Auto -c), do not compare against pre-fit ctx."""
+        inst = _backend()
+        inst._apply_runtime_context_probe(
+            2048,
+            launch_ctx = None,
+            use_fit = True,
+            n_parallel = 4,
+        )
+        assert inst._effective_context_length == 2048
+        assert inst.requested_context_length is None
+
 
 class TestReloadMaxSeqLengthContract:
     """Document reload semantics: per-slot context_length must not shrink total -c."""

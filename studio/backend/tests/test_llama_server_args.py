@@ -412,6 +412,7 @@ def test_is_managed_flag_false_for_mtp_pass_through():
         (["-c", "128000"], 128000),
         (["-c=128000"], 128000),
         (["-c", "4096", "--ctx-size", "128000"], 128000),
+        (["-c", "8192", "--ctx-size", "0"], 0),
     ],
 )
 def test_parse_ctx_override(args, expected):

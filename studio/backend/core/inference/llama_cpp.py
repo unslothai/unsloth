@@ -5662,6 +5662,15 @@ class LlamaCppBackend:
                 # Determine the kv-unified flag from the command that actually started.
                 self._launch_kv_unified = parse_kv_unified(_llama_cmd_used) or False
 
+                # Honor last-wins -c in the command that actually started.
+                # Pass-through ``--ctx-size 0`` appended after Studio's -c
+                # enables Auto; keep None as the launch sentinel in that case.
+                final_ctx_override = parse_ctx_override(_llama_cmd_used)
+                if final_ctx_override is not None:
+                    self._launch_context_length = (
+                        final_ctx_override if final_ctx_override > 0 else None
+                    )
+
                 # Resolve fit from the command that actually started (covers
                 # --fit off retry and pass-through overrides). llama-server
                 # defaults --fit on when the flag is omitted.

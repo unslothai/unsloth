@@ -64,6 +64,11 @@ import { KnowledgeBaseComposerButton } from "@/features/rag/components/knowledge
 import { NewProjectDialog } from "./components/new-project-dialog";
 import { useChatProjects } from "./hooks/use-chat-projects";
 import { loadModel, validateModel } from "./api/chat-api";
+import { clampLocalReasoningEffort } from "./lib/apply-inference-status-to-store";
+import {
+  mergeBackendRecommendedInference,
+  resolveLoadMaxSeqLength,
+} from "./presets/preset-policy";
 import {
   getExternalProviderApiKey,
   isCustomProviderType,
@@ -1064,6 +1069,25 @@ export function SharedComposer({
         }
 
         const currentStore = useChatRuntimeStore.getState();
+        const {
+          customContextLength,
+          ggufContextLength,
+          ggufLaunchContextLength,
+          activePresetSource,
+          activeGgufVariant,
+          kvCacheDtype,
+        } = currentStore;
+        const effectiveMaxSeqLength = resolveLoadMaxSeqLength({
+          modelId: sel.id,
+          ggufVariant: sel.ggufVariant,
+          customContextLength,
+          ggufContextLength,
+          ggufLaunchContextLength,
+          currentCheckpoint: currentStore.params.checkpoint,
+          activeGgufVariant,
+          maxSeqLength,
+          presetSource: activePresetSource,
+        });
         const isAlreadyActive =
           currentStore.params.checkpoint === sel.id &&
           (currentStore.activeGgufVariant ?? null) ===
@@ -1072,7 +1096,7 @@ export function SharedComposer({
           const validation = await validateModel({
             model_path: sel.id,
             hf_token: currentStore.hfToken || null,
-            max_seq_length: maxSeqLength,
+            max_seq_length: effectiveMaxSeqLength,
             load_in_4bit: true,
             is_lora: sel.isLora,
             gguf_variant: sel.ggufVariant ?? null,
@@ -1088,12 +1112,13 @@ export function SharedComposer({
         const resp = await loadModel({
           model_path: sel.id,
           hf_token: useChatRuntimeStore.getState().hfToken || null,
-          max_seq_length: maxSeqLength,
+          max_seq_length: effectiveMaxSeqLength,
           load_in_4bit: true,
           is_lora: sel.isLora,
           gguf_variant: sel.ggufVariant ?? null,
           trust_remote_code: trustRemoteCode,
           chat_template_override: effectiveChatTemplateOverride,
+          cache_type_kv: kvCacheDtype,
           speculative_type: specSettings.speculativeType,
           spec_draft_n_max: specSettings.specDraftNMax,
           // Honor the Tensor Parallelism toggle on compare loads too.
@@ -1108,6 +1133,26 @@ export function SharedComposer({
         store.setModelRequiresTrustRemoteCode(
           resp.requires_trust_remote_code ?? false,
         );
+        store.setParams(
+          mergeBackendRecommendedInference({
+            current: store.params,
+            response: resp,
+            modelId: sel.id,
+            presetSource: activePresetSource,
+          }),
+        );
+        let reasoningDefault = resp.supports_reasoning ?? false;
+        if (reasoningDefault) {
+          const mid = sel.id.toLowerCase();
+          if (mid.includes("qwen3.5") || mid.includes("qwen3.6")) {
+            const sizeMatch = mid.match(/(\d+\.?\d*)\s*b/);
+            if (sizeMatch && parseFloat(sizeMatch[1]) < 9) {
+              reasoningDefault = false;
+            }
+          }
+        }
+        const reasoningAlwaysOn = resp.reasoning_always_on ?? false;
+        const reasoningStyle = resp.reasoning_style ?? "enable_thinking";
         useChatRuntimeStore.setState({
           ggufContextLength: resp.context_length ?? null,
           ggufMaxContextLength:
@@ -1116,8 +1161,15 @@ export function SharedComposer({
           ggufRequestedContextLength: resp.requested_context_length ?? null,
           ggufLaunchContextLength: resp.launch_context_length ?? null,
           supportsReasoning: resp.supports_reasoning ?? false,
-          reasoningAlwaysOn: resp.reasoning_always_on ?? false,
-          reasoningStyle: resp.reasoning_style ?? "enable_thinking",
+          reasoningAlwaysOn,
+          reasoningStyle,
+          supportsReasoningOff: reasoningStyle !== "reasoning_effort",
+          reasoningEffort: clampLocalReasoningEffort(store.reasoningEffort),
+          reasoningEnabled: reasoningAlwaysOn
+            ? true
+            : reasoningStyle === "reasoning_effort"
+              ? true
+              : reasoningDefault,
           supportsPreserveThinking: resp.supports_preserve_thinking ?? false,
           supportsTools: resp.supports_tools ?? false,
           supportsBuiltinWebSearch: false,
@@ -1128,6 +1180,7 @@ export function SharedComposer({
           tensorParallel: resp.tensor_parallel ?? false,
           loadedTensorParallel: resp.tensor_parallel ?? false,
           loadedIsMultimodal: isMultimodalResponse(resp),
+          loadedIsDiffusion: resp.is_diffusion ?? false,
           ...resolveLoadedSpeculativeSettings(resp),
         });
         // Sync the models[] entry with the load response so attach/send gates
