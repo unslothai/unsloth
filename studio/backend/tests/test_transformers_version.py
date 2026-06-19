@@ -1131,10 +1131,12 @@ class TestResolveBaseModelNameOrPathFallback:
         d = tmp_path / "my-qwen35-finetune"
         d.mkdir()
         (d / "config.json").write_text(
-            json.dumps({
-                "model_name": str(d),
-                "_name_or_path": "Qwen/Qwen3.5-7B",
-            })
+            json.dumps(
+                {
+                    "model_name": str(d),
+                    "_name_or_path": "Qwen/Qwen3.5-7B",
+                }
+            )
         )
         assert _resolve_base_model(str(d)) == "Qwen/Qwen3.5-7B"
 
@@ -1142,10 +1144,12 @@ class TestResolveBaseModelNameOrPathFallback:
         d = tmp_path / "adapter"
         d.mkdir()
         (d / "config.json").write_text(
-            json.dumps({
-                "model_name": "unsloth/Qwen3.5-7B-bnb-4bit",
-                "_name_or_path": "Qwen/Qwen3.5-7B",
-            })
+            json.dumps(
+                {
+                    "model_name": "unsloth/Qwen3.5-7B-bnb-4bit",
+                    "_name_or_path": "Qwen/Qwen3.5-7B",
+                }
+            )
         )
         # model_name is not the local path, so it wins
         assert _resolve_base_model(str(d)) == "unsloth/Qwen3.5-7B-bnb-4bit"
@@ -1156,10 +1160,12 @@ class TestResolveBaseModelNameOrPathFallback:
         d = tmp_path / "my-custom-finetune"
         d.mkdir()
         (d / "config.json").write_text(
-            json.dumps({
-                "model_type": "future_unknown_type",
-                "model_name": str(d),
-                "_name_or_path": "Qwen/Qwen3.5-7B",
-            })
+            json.dumps(
+                {
+                    "model_type": "future_unknown_type",
+                    "model_name": str(d),
+                    "_name_or_path": "Qwen/Qwen3.5-7B",
+                }
+            )
         )
         assert get_transformers_tier(str(d)) == "530"
