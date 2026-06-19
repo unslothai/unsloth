@@ -1344,7 +1344,11 @@ _GLM_MLA_MODEL = "unsloth/GLM-5.2-GGUF"
 
 
 def _mla_resolver_backend(
-    monkeypatch, *, ngram_supported = True, kv_lora_rank = 512, nextn = 1
+    monkeypatch,
+    *,
+    ngram_supported = True,
+    kv_lora_rank = 512,
+    nextn = 1,
 ):
     """Resolver backend posing as an embedded-MTP MLA model (kv_lora_rank set)."""
     backend = _resolver_backend(monkeypatch, ngram_supported = ngram_supported)
@@ -1463,9 +1467,7 @@ def test_auto_non_mtp_mla_model_unaffected(monkeypatch):
         ("mtp+ngram", "ngram-mod,draft-mtp", "2"),
     ],
 )
-def test_forced_mtp_on_mla_still_engages(
-    monkeypatch, mode, expect_spec_type, expect_n_max
-):
+def test_forced_mtp_on_mla_still_engages(monkeypatch, mode, expect_spec_type, expect_n_max):
     # Explicit override engages the deliberately-slower MTP route on MLA models,
     # regardless of the Auto gate. No policy downgrade reason.
     backend = _mla_resolver_backend(monkeypatch)
