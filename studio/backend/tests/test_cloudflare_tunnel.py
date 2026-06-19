@@ -11,6 +11,7 @@ checked by AST so we never import its heavy deps (uvicorn/structlog).
 import ast
 import importlib.util
 import io
+import os
 import sys
 import tarfile
 import types
@@ -136,7 +137,12 @@ def test_ensure_downloads_and_chmods_when_missing(monkeypatch, tmp_path):
     path = ct.ensure_cloudflared()
     assert path == str(cached)
     assert cached.exists()
-    assert cached.stat().st_mode & 0o111  # executable bit set
+    # Windows has no POSIX executable bit and the production code skips chmod
+    # there, so only assert it on a POSIX host. The test monkeypatches
+    # sys.platform globally (ct.sys is sys), so use os.name -- the real,
+    # never-monkeypatched host indicator -- to detect Windows.
+    if os.name != "nt":
+        assert cached.stat().st_mode & 0o111  # executable bit set
 
 
 def test_ensure_returns_none_on_download_failure(monkeypatch, tmp_path):
@@ -238,7 +244,8 @@ def test_ensure_macos_extracts_tgz_and_chmods(monkeypatch, tmp_path):
     path = ct.ensure_cloudflared()
     assert path == str(cached)
     assert cached.read_bytes() == b"mach-o"
-    assert cached.stat().st_mode & 0o111  # chmod applied on posix
+    if os.name != "nt":  # POSIX host only; Windows has no execute bit
+        assert cached.stat().st_mode & 0o111  # chmod applied on posix
     assert not cached.with_suffix(".tgz").exists()  # temp archive cleaned up
 
 
@@ -710,9 +717,17 @@ def test_run_server_gates_tunnel_on_wildcard():
     assert 'host == "0.0.0.0"' in source
 
 
-def _run_print_cloudflare_line(monkeypatch, *, cloudflare_url, public_reachable):
+def _run_print_cloudflare_line(
+    monkeypatch,
+    *,
+    cloudflare_url,
+    public_reachable,
+    cloudflare_requested = False,
+    cloudflare_flag = True,
+    secure = False,
+):
     """Exec the real _print_cloudflare_line source in isolation (run.py has heavy
-    deps), with the two module globals injected and startup_banner stubbed."""
+    deps), with the module globals injected and startup_banner stubbed."""
     src = _RUN_PY.read_text()
     tree = ast.parse(src)
     func_src = next(
@@ -727,10 +742,12 @@ def _run_print_cloudflare_line(monkeypatch, *, cloudflare_url, public_reachable)
     ns = {
         "_cloudflare_url": cloudflare_url,
         "_public_reachable": public_reachable,
+        "_cloudflare_requested": cloudflare_requested,
+        "_cloudflare_flag": cloudflare_flag,
         "print": lambda *a, **k: captured.append(" ".join(str(x) for x in a)),
     }
     exec(compile(func_src, "<print_cloudflare_line>", "exec"), ns)
-    ns["_print_cloudflare_line"]()
+    ns["_print_cloudflare_line"](secure = secure)
     return "\n".join(captured)
 
 
@@ -759,5 +776,90 @@ def test_cloudflare_line_default_wording_when_unknown(monkeypatch):
 
 
 def test_cloudflare_line_prints_nothing_without_tunnel(monkeypatch):
+    # Flag on but tunnel not started (Colab / api-only / loopback) stays silent.
     out = _run_print_cloudflare_line(monkeypatch, cloudflare_url = None, public_reachable = False)
     assert out == ""
+
+
+def test_cloudflare_line_warns_when_public_url_up(monkeypatch):
+    # A 0.0.0.0 bind with the tunnel up must warn that the URL is public.
+    out = _run_print_cloudflare_line(
+        monkeypatch,
+        cloudflare_url = "https://x.trycloudflare.com",
+        public_reachable = True,
+        cloudflare_requested = True,
+    )
+    assert "Secure link access via Cloudflare: https://x.trycloudflare.com" in out
+    assert "Cloudflare tunnel: ON" in out
+    assert "PUBLIC" in out
+    assert "--no-cloudflare" in out
+
+
+def test_cloudflare_line_secure_mode_suppresses_public_warning(monkeypatch):
+    # Secure mode is intentional authenticated exposure; --no-cloudflare is invalid
+    # there, so do not nag about it.
+    out = _run_print_cloudflare_line(
+        monkeypatch,
+        cloudflare_url = "https://x.trycloudflare.com",
+        public_reachable = True,
+        cloudflare_requested = True,
+        secure = True,
+    )
+    assert "Secure link access via Cloudflare: https://x.trycloudflare.com" in out
+    assert "Cloudflare tunnel: ON" not in out
+
+
+def test_cloudflare_line_states_disabled_when_off(monkeypatch):
+    # --no-cloudflare on a wildcard bind: explicitly confirm Studio is local-only.
+    out = _run_print_cloudflare_line(
+        monkeypatch,
+        cloudflare_url = None,
+        public_reachable = None,
+        cloudflare_requested = False,
+        cloudflare_flag = False,
+    )
+    assert "Cloudflare tunnel: OFF" in out
+    assert "local network only" in out
+
+
+def test_cloudflare_line_states_failed_when_requested_but_no_url(monkeypatch):
+    # Tunnel was requested (flag on, gate passed) but did not come up.
+    out = _run_print_cloudflare_line(
+        monkeypatch,
+        cloudflare_url = None,
+        public_reachable = None,
+        cloudflare_requested = True,
+        cloudflare_flag = True,
+    )
+    assert "requested but failed to start" in out
+    assert "local network only" in out
+
+
+def test_cloudflare_line_off_does_not_claim_local_only_when_publicly_reachable(monkeypatch):
+    # --no-cloudflare but the reachability probe confirmed the raw port is public:
+    # the OFF notice must not contradict it by claiming "local network only".
+    out = _run_print_cloudflare_line(
+        monkeypatch,
+        cloudflare_url = None,
+        public_reachable = True,
+        cloudflare_requested = False,
+        cloudflare_flag = False,
+    )
+    assert "Cloudflare tunnel: OFF" in out
+    assert "reachable from the public internet" in out
+    assert "local network only" not in out
+
+
+def test_cloudflare_line_failed_does_not_claim_local_only_when_publicly_reachable(monkeypatch):
+    # Tunnel requested but failed, yet the raw port is publicly reachable: warn
+    # about the public raw port instead of claiming local-only.
+    out = _run_print_cloudflare_line(
+        monkeypatch,
+        cloudflare_url = None,
+        public_reachable = True,
+        cloudflare_requested = True,
+        cloudflare_flag = True,
+    )
+    assert "requested but failed to start" in out
+    assert "reachable from the public internet" in out
+    assert "local network only" not in out

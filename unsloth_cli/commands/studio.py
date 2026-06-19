@@ -666,7 +666,9 @@ def studio_default(
     cloudflare: bool = typer.Option(
         True,
         "--cloudflare/--no-cloudflare",
-        help = "Auto-create a free Cloudflare HTTPS tunnel when bound to 0.0.0.0 (default on).",
+        help = "Auto-create a free Cloudflare HTTPS tunnel when bound to 0.0.0.0, exposing "
+        "Studio on a PUBLIC internet URL (default on). Pass --no-cloudflare to keep Studio "
+        "on the local network only; the startup banner always states whether it is on or off.",
     ),
     secure: bool = typer.Option(
         False,
@@ -1030,7 +1032,9 @@ def run(
     cloudflare: bool = typer.Option(
         True,
         "--cloudflare/--no-cloudflare",
-        help = "Auto-create a free Cloudflare HTTPS tunnel when bound to 0.0.0.0 (default on).",
+        help = "Auto-create a free Cloudflare HTTPS tunnel when bound to 0.0.0.0, exposing "
+        "Studio on a PUBLIC internet URL (default on). Pass --no-cloudflare to keep Studio "
+        "on the local network only; the startup banner always states whether it is on or off.",
     ),
     secure: bool = typer.Option(
         False,
@@ -1313,8 +1317,12 @@ def run(
             typer.echo(f"  On this machine only: {base_url}")
         else:
             typer.echo(f"  Unsloth Studio running at {base_url}")
-            if _cf_url:
-                typer.echo(f"  Secure link access via Cloudflare: {_cf_url}")
+            # Surface the tunnel state (ON + public-exposure warning, OFF, or
+            # FAILED) on the run banner too. run_server set the module-level
+            # cloudflare state in-process above; reusing _print_cloudflare_line
+            # keeps this consistent with the default banner instead of only
+            # echoing the URL when a tunnel happens to be up.
+            run_mod._print_cloudflare_line(secure = secure)
         typer.echo(f"  Model loaded: {loaded_model}{display_variant}")
         if context_length_line:
             typer.echo(context_length_line)
