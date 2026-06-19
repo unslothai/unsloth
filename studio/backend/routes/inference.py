@@ -4697,6 +4697,9 @@ async def openai_chat_completions(
                 _tracker.__enter__()
 
                 async def audio_input_stream():
+                    disconnect_watcher = asyncio.create_task(
+                        _await_disconnect_then_cancel(request, cancel_event)
+                    )
                     try:
                         first_chunk = ChatCompletionChunk(
                             id = completion_id,
@@ -4758,6 +4761,7 @@ async def openai_chat_completions(
                         api_monitor.fail(monitor_id, _friendly_error(e))
                         yield f"data: {json.dumps({'error': {'message': _friendly_error(e), 'type': 'server_error'}})}\n\n"
                     finally:
+                        await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
                         _tracker.__exit__(None, None, None)
 
                 return _SameTaskStreamingResponse(

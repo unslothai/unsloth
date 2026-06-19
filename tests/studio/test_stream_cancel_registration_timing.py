@@ -211,6 +211,33 @@ def test_direct_llama_server_streams_install_disconnect_watcher():
     )
 
 
+def test_audio_input_stream_installs_disconnect_watcher():
+    audio = _async_function("audio_input_stream")
+    has_watcher = False
+    has_cleanup = False
+    for sub in ast.walk(audio):
+        if isinstance(sub, ast.Call):
+            fn = sub.func
+            if (
+                isinstance(fn, ast.Attribute)
+                and fn.attr == "create_task"
+                and isinstance(fn.value, ast.Name)
+                and fn.value.id == "asyncio"
+                and sub.args
+                and isinstance(sub.args[0], ast.Call)
+                and isinstance(sub.args[0].func, ast.Name)
+                and sub.args[0].func.id == "_await_disconnect_then_cancel"
+            ):
+                has_watcher = True
+            if isinstance(fn, ast.Name) and fn.id == "_stop_local_disconnect_cancel_watcher":
+                has_cleanup = True
+    assert has_watcher, (
+        "audio_input_stream must install a disconnect watcher so client "
+        "disconnects set cancel_event while asyncio.to_thread(next, ...) is blocked"
+    )
+    assert has_cleanup, "audio_input_stream must stop its disconnect watcher in finally"
+
+
 # ── Behavioral helpers ───────────────────────────────────────
 
 _WANTED = {
