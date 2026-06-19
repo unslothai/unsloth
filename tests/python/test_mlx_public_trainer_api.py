@@ -84,6 +84,7 @@ def test_mlx_training_arguments_accept_trl_style_kwargs():
     assert args.dataset_kwargs == {"skip_prepare_dataset": True}
     assert args.bf16 is True
     assert args.warmup_ratio == 0.2
+    assert args._unsloth_mlx_max_seq_length_explicit is True
     assert args._unsloth_mlx_warmup_steps_explicit is False
 
 
@@ -117,6 +118,8 @@ def test_mlx_training_arguments_prefer_canonical_max_seq_length():
 
     assert args.max_seq_length == 456
     assert dict_args.max_seq_length == 456
+    assert args._unsloth_mlx_max_seq_length_explicit is True
+    assert dict_args._unsloth_mlx_max_seq_length_explicit is True
 
 
 def test_mlx_training_arguments_preserve_explicit_epoch_training():
@@ -145,6 +148,7 @@ def test_mlx_training_arguments_keep_mlx_dataset_order_default():
 
     assert args.dataset_order == "default"
     assert args._unsloth_mlx_dataset_order_explicit is False
+    assert args._unsloth_mlx_max_seq_length_explicit is False
     assert explicit_default.dataset_order == "default"
     assert explicit_default._unsloth_mlx_dataset_order_explicit is True
 
@@ -330,6 +334,41 @@ def test_mlx_trainer_preserves_explicit_dataset_order():
     assert explicit_default.args.dataset_order == "default"
     assert explicit_sequential.args.dataset_order == "sequential"
     assert implicit_with_override.args.dataset_order == "torch_randperm"
+
+
+def test_mlx_trainer_uses_model_context_length_when_implicit():
+    """UnslothTrainer should inherit the loaded notebook model context length."""
+    unsloth = _import_mlx_unsloth()
+    model = _DummyModel()
+    model.max_seq_length = 321
+    explicit_model = _DummyModel()
+    explicit_model.max_seq_length = 321
+    trainer_override_model = _DummyModel()
+    trainer_override_model.max_seq_length = 321
+
+    implicit = unsloth.UnslothTrainer(
+        model=model,
+        tokenizer=None,
+        train_dataset=[],
+        args=unsloth.UnslothTrainingArguments(max_steps=1),
+    )
+    explicit_args = unsloth.UnslothTrainer(
+        model=explicit_model,
+        tokenizer=None,
+        train_dataset=[],
+        args=unsloth.UnslothTrainingArguments(max_steps=1, max_length=123),
+    )
+    trainer_override = unsloth.UnslothTrainer(
+        model=trainer_override_model,
+        tokenizer=None,
+        train_dataset=[],
+        args=unsloth.UnslothTrainingArguments(max_steps=1),
+        max_seq_length=654,
+    )
+
+    assert implicit.args.max_seq_length == 321
+    assert explicit_args.args.max_seq_length == 123
+    assert trainer_override.args.max_seq_length == 654
 
 
 def test_mlx_trainer_processing_class_overrides_explicit_none_tokenizer():

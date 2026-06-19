@@ -404,6 +404,10 @@ if _IS_MLX:
                     "a dict, or a single positional output_dir."
                 )
 
+            max_seq_length_explicit = (
+                "max_seq_length" in kwargs
+                or "max_length" in kwargs
+            )
             if "max_length" in kwargs and "max_seq_length" not in kwargs:
                 kwargs["max_seq_length"] = kwargs["max_length"]
             if "num_train_epochs" in kwargs and "max_steps" not in kwargs:
@@ -454,21 +458,87 @@ if _IS_MLX:
 
             super().__init__(**filtered_kwargs)
             self._unsloth_mlx_dataset_order_explicit = dataset_order_explicit
+            self._unsloth_mlx_max_seq_length_explicit = max_seq_length_explicit
             self._unsloth_mlx_warmup_steps_explicit = warmup_steps_explicit
             self._unsloth_mlx_extra_args = extra_kwargs
             for key, value in extra_kwargs.items():
                 setattr(self, key, value)
             _warn_ignored_mlx_training_args(extra_kwargs)
 
-    def _apply_unsloth_trainer_mlx_defaults(args):
+    def _valid_mlx_context_length(value):
+        """Return an int context length when metadata contains a real limit."""
+        if value is None or isinstance(value, bool):
+            return None
+        try:
+            length = int(value)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if length <= 0 or length >= 10_000_000:
+            return None
+        return length
+
+    def _infer_mlx_trainer_max_seq_length(model=None, tokenizer=None, processor=None):
+        """Infer the notebook-requested MLX context length from loaded objects."""
+        objects = (
+            model,
+            getattr(model, "config", None),
+            processor,
+            getattr(processor, "tokenizer", None),
+            tokenizer,
+        )
+        attribute_names = (
+            "max_seq_length",
+            "_max_seq_length",
+            "max_position_embeddings",
+            "context_length",
+            "model_max_length",
+        )
+        for obj in objects:
+            if obj is None:
+                continue
+            for name in attribute_names:
+                length = _valid_mlx_context_length(getattr(obj, name, None))
+                if length is not None:
+                    return length
+        return None
+
+    def _apply_unsloth_trainer_mlx_defaults(
+        args,
+        model=None,
+        tokenizer=None,
+        processor=None,
+        max_seq_length_explicit=False,
+    ):
         """Apply notebook-compatible MLX defaults used only by UnslothTrainer."""
-        if getattr(args, "preserve_dataset_order", False):
-            return args
-        if getattr(args, "_unsloth_mlx_dataset_order_explicit", False):
-            return args
-        default_order = getattr(MLXTrainingConfig, "dataset_order", "default")
-        if getattr(args, "dataset_order", default_order) in (None, default_order):
-            args.dataset_order = "torch_randperm"
+        if (
+            not getattr(args, "preserve_dataset_order", False)
+            and not getattr(args, "_unsloth_mlx_dataset_order_explicit", False)
+        ):
+            default_order = getattr(MLXTrainingConfig, "dataset_order", "default")
+            if getattr(args, "dataset_order", default_order) in (None, default_order):
+                args.dataset_order = "torch_randperm"
+
+        default_max_seq_length = getattr(MLXTrainingConfig, "max_seq_length", 2048)
+        existing_max_seq_length = getattr(
+            args,
+            "max_seq_length",
+            default_max_seq_length,
+        )
+        args_explicit = getattr(
+            args,
+            "_unsloth_mlx_max_seq_length_explicit",
+            None,
+        )
+        if args_explicit is None:
+            args_explicit = existing_max_seq_length != default_max_seq_length
+        if not max_seq_length_explicit and not args_explicit:
+            inferred = _infer_mlx_trainer_max_seq_length(
+                model=model,
+                tokenizer=tokenizer,
+                processor=processor,
+            )
+            if inferred is not None:
+                args.max_seq_length = inferred
         return args
 
     def _coerce_mlx_training_args(args, overrides=None):
@@ -477,6 +547,7 @@ if _IS_MLX:
         if isinstance(args, MLXTrainingConfig) and not overrides:
             return args
         dataset_order_explicit = None
+        max_seq_length_explicit = None
         if args is None:
             values = {}
         elif isinstance(args, dict):
@@ -489,6 +560,11 @@ if _IS_MLX:
                 "_unsloth_mlx_dataset_order_explicit",
                 False,
             )
+            max_seq_length_explicit = getattr(
+                args,
+                "_unsloth_mlx_max_seq_length_explicit",
+                None,
+            )
             values = _mlx_training_argument_values(args)
         values.update(overrides)
         coerced = UnslothTrainingArguments(**values)
@@ -498,6 +574,12 @@ if _IS_MLX:
             and "preserve_dataset_order" not in overrides
         ):
             coerced._unsloth_mlx_dataset_order_explicit = dataset_order_explicit
+        if (
+            max_seq_length_explicit is not None
+            and "max_seq_length" not in overrides
+            and "max_length" not in overrides
+        ):
+            coerced._unsloth_mlx_max_seq_length_explicit = max_seq_length_explicit
         return coerced
 
     _MLX_TRAINER_POSITIONAL_KWARGS = (
@@ -583,6 +665,12 @@ if _IS_MLX:
             )
             trainer_kwargs["args"] = _apply_unsloth_trainer_mlx_defaults(
                 trainer_kwargs["args"],
+                model=trainer_kwargs.get("model"),
+                tokenizer=trainer_kwargs.get("tokenizer"),
+                processor=trainer_kwargs.get("processor"),
+                max_seq_length_explicit=(
+                    trainer_kwargs.get("max_seq_length") is not None
+                ),
             )
 
             super().__init__(**trainer_kwargs)
