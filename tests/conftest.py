@@ -3,13 +3,10 @@
 
 """GPU-free test harness.
 
-unsloth's import chain hits unsloth_zoo.device_type, which calls
-get_device_type() at import time and raises NotImplementedError on CI
-runners with no CUDA / XPU / HIP visible. Pre-load the real
-unsloth_zoo.device_type under a temporarily-mocked
-torch.cuda.is_available() so its @cache permanently captures "cuda".
-On a real accelerator the pre-load is skipped and detection runs
-normally.
+unsloth_zoo.device_type calls get_device_type() at import time and raises
+NotImplementedError on CI runners with no CUDA/XPU/HIP. Pre-load it under a
+mocked torch.cuda.is_available()==True so its @cache permanently captures
+"cuda"; on a real accelerator the pre-load is skipped.
 
 Mirrors the conftest harness in unslothai/unsloth-zoo PR #624.
 """
@@ -41,12 +38,9 @@ def _has_real_accelerator() -> bool:
 
 
 def _preload_device_type(package: str, prereqs: tuple[str, ...] = ()) -> bool:
-    """Pre-load <package>.device_type under a mocked
-    torch.cuda.is_available() == True so its @cache permanently
-    captures "cuda". prereqs lists submodule names of <package> that
-    must be loaded first (e.g. 'utils' for unsloth_zoo). Returns False
-    if the package or any prerequisite cannot be imported, in which
-    case the caller falls back to a stub."""
+    """Pre-load <package>.device_type under a mocked is_available()==True so its
+    @cache captures "cuda"; prereqs are submodules to load first (e.g. 'utils').
+    Returns False if anything is unimportable, so the caller falls back to a stub."""
     target = f"{package}.device_type"
     if target in sys.modules:
         return True
@@ -98,11 +92,9 @@ def _preload_device_type(package: str, prereqs: tuple[str, ...] = ()) -> bool:
 
 
 def _patch_torch_cuda_for_import() -> None:
-    """Stub torch.cuda.* probes that fire at IMPORT time of unsloth /
-    unsloth_zoo when DEVICE_TYPE was forced to "cuda" above. These are
-    queries, not real GPU work, so returning plausible Ampere values
-    lets the import chain finish; tests that touch real tensors run on
-    CPU like normal."""
+    """Stub the torch.cuda.* probes fired at import time once DEVICE_TYPE is
+    forced to "cuda"; returning plausible Ampere values lets the import finish
+    (real-tensor tests still run on CPU)."""
     try:
         import torch.cuda.memory as _cuda_memory  # type: ignore
         _cuda_memory.mem_get_info = lambda *a, **k: (0, 80 * 1024**3)
@@ -140,11 +132,9 @@ if not _has_real_accelerator():
 
 
 # ---------------------------------------------------------------------------
-# Apply upstream-drift fixes (vllm/triton/peft) by triggering ``import
-# unsloth``; they live in ``unsloth/import_fixes.py`` and run at import time.
-# The GPU-free harness above lets ``import unsloth`` survive CPU-only runners.
-# Suites without unsloth keep passing -- the ImportError is swallowed and the
-# drift detectors surface anything the missing patches would have hidden.
+# Apply upstream-drift fixes (vllm/triton/peft) by triggering ``import unsloth``
+# (they run at import time in unsloth/import_fixes.py). The harness above lets
+# the import survive CPU-only runners; the ImportError is swallowed otherwise.
 # ---------------------------------------------------------------------------
 
 

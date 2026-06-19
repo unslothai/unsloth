@@ -42,6 +42,10 @@ class LoadRequest(BaseModel):
         False,
         description = "Allow loading models with custom code (e.g. NVIDIA Nemotron). Only enable for repos you trust.",
     )
+    approved_remote_code_fingerprint: Optional[str] = Field(
+        None,
+        description = "sha256 fingerprint from the remote-code scan, pinning user approval of this exact custom-code version.",
+    )
     chat_template_override: Optional[str] = Field(
         None,
         description = "Custom Jinja2 chat template to use instead of the model's default",
@@ -125,6 +129,11 @@ class ValidateModelRequest(BaseModel):
     gguf_variant: Optional[str] = Field(
         None, description = "GGUF quantization variant (e.g. 'Q4_K_M')"
     )
+    # Intended load settings so validate's coexistence check matches the follow-up
+    # /load; defaults preserve old behavior for callers that omit them.
+    max_seq_length: int = Field(0, ge = 0, le = 1048576)
+    load_in_4bit: bool = Field(True)
+    gpu_ids: Optional[List[int]] = Field(None)
     include_context_length: bool = Field(
         False,
         description = "Also read the native context length from the local GGUF header. "
@@ -148,6 +157,11 @@ class ValidateModelResponse(BaseModel):
     requires_trust_remote_code: bool = Field(
         False,
         description = "Whether the model defaults require trust_remote_code to be enabled for loading.",
+    )
+    requires_security_review: bool = Field(
+        False,
+        description = "Whether Hugging Face's security scan flagged unsafe files (e.g. a "
+        "malicious pickle), so the load is hard-blocked pending review.",
     )
     context_length: Optional[int] = Field(
         None,
@@ -206,9 +220,15 @@ class LoadResponse(BaseModel):
         False,
         description = "Whether model supports thinking/reasoning mode (enable_thinking or reasoning_effort)",
     )
-    reasoning_style: Literal["enable_thinking", "reasoning_effort"] = Field(
-        "enable_thinking",
-        description = "Reasoning control style: 'enable_thinking' (boolean) or 'reasoning_effort' (low|medium|high)",
+    reasoning_style: Literal["enable_thinking", "reasoning_effort", "enable_thinking_effort"] = (
+        Field(
+            "enable_thinking",
+            description = "Reasoning control style: 'enable_thinking' (boolean), 'reasoning_effort' (low|medium|high), or 'enable_thinking_effort' (on/off gate plus an effort level, e.g. GLM-5.2 high|max)",
+        )
+    )
+    reasoning_effort_levels: List[str] = Field(
+        default_factory = list,
+        description = "Discrete reasoning_effort levels the template offers when reasoning_style is 'enable_thinking_effort' (e.g. ['high', 'max']); empty otherwise",
     )
     reasoning_always_on: bool = Field(
         False,
@@ -318,9 +338,15 @@ class InferenceStatusResponse(BaseModel):
     supports_reasoning: bool = Field(
         False, description = "Whether the active model supports reasoning/thinking mode"
     )
-    reasoning_style: Literal["enable_thinking", "reasoning_effort"] = Field(
-        "enable_thinking",
-        description = "Reasoning control style: 'enable_thinking' (boolean) or 'reasoning_effort' (low|medium|high)",
+    reasoning_style: Literal["enable_thinking", "reasoning_effort", "enable_thinking_effort"] = (
+        Field(
+            "enable_thinking",
+            description = "Reasoning control style: 'enable_thinking' (boolean), 'reasoning_effort' (low|medium|high), or 'enable_thinking_effort' (on/off gate plus an effort level, e.g. GLM-5.2 high|max)",
+        )
+    )
+    reasoning_effort_levels: List[str] = Field(
+        default_factory = list,
+        description = "Discrete reasoning_effort levels the template offers when reasoning_style is 'enable_thinking_effort' (e.g. ['high', 'max']); empty otherwise",
     )
     reasoning_always_on: bool = Field(
         False, description = "Whether reasoning is always on (not toggleable)"

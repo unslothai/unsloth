@@ -281,6 +281,7 @@ def test_kill_process_records_timestamp_on_actual_kill():
     backend = LlamaCppBackend.__new__(LlamaCppBackend)
     backend._process = None
     backend._healthy = False
+    backend._stats_logger = None  # _kill_process stops it in finally
     backend._stdout_thread = None
     backend._llama_log_fh = None
     backend._last_kill_monotonic = 0.0
@@ -306,6 +307,26 @@ def test_kill_process_records_timestamp_on_actual_kill():
     backend._kill_process()
     after = time.monotonic()
     assert before <= backend._last_kill_monotonic <= after
+
+
+def test_kill_process_tolerates_partially_constructed_backend():
+    # Teardown must not AttributeError on a __new__-built backend that never ran
+    # __init__: _stats_logger / _stdout_thread / _llama_log_fh are left unset.
+    backend = LlamaCppBackend.__new__(LlamaCppBackend)
+
+    class _FakeProcess:
+        def terminate(self):
+            pass
+
+        def wait(self, timeout = None):
+            return 0
+
+        def kill(self):
+            pass
+
+    backend._process = _FakeProcess()
+    backend._kill_process()
+    assert backend._process is None
 
 
 def test_helper_is_static_method_callable_off_class():
@@ -385,3 +406,206 @@ def test_startup_reaper_arms_settle_timestamp():
     assert (
         backend_cold._last_kill_monotonic == 0.0
     ), "no reap must leave the cold-start sentinel so the wait is skipped"
+
+
+# ---------------------------------------------------------------------------
+# Cross-session backstop: a server PID recorded at spawn is reaped on the next
+# startup even when parent-death cleanup did not run (macOS, a best-effort
+# PR_SET_PDEATHSIG / Job Object failure, or a pre-existing orphan), but ONLY when
+# it is a true orphan (its parent is gone), it still is a llama-server, and its
+# start-time identity matches. A live server (parent still running) is spared so a
+# helper backend built in-process can never kill the active chat server.
+# ---------------------------------------------------------------------------
+
+
+class _FakeKillProc:
+    def terminate(self):
+        pass
+
+    def wait(self, timeout = None):
+        return 0
+
+    def kill(self):
+        pass
+
+    def poll(self):
+        return 0
+
+
+def test_kill_process_clears_pidfile(tmp_path):
+    """A real kill removes the recorded pidfile so a clean eject leaves no orphan marker."""
+    pidfile = tmp_path / "llama-server.pid"
+    pidfile.write_text("12345")
+    backend = LlamaCppBackend.__new__(LlamaCppBackend)
+    backend._process = _FakeKillProc()
+    backend._healthy = False
+    backend._stdout_thread = None
+    backend._llama_log_fh = None
+    backend._last_kill_monotonic = 0.0
+    backend._stats_logger = None
+    with patch.object(LlamaCppBackend, "_server_pidfile_path", staticmethod(lambda: pidfile)):
+        backend._kill_process()
+    assert not pidfile.exists()
+
+
+def test_reap_recorded_pid_kills_recorded_server(tmp_path):
+    """An orphaned recorded PID (parent gone) is killed and the pidfile cleared
+    when it is still a llama-server."""
+    import subprocess
+
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    pidfile = tmp_path / "llama-server.pid"
+    pidfile.write_text(str(proc.pid))
+    try:
+        with (
+            patch.object(LlamaCppBackend, "_server_pidfile_path", staticmethod(lambda: pidfile)),
+            patch.object(LlamaCppBackend, "_pid_parent_is_alive", staticmethod(lambda pid: False)),
+            patch.object(
+                LlamaCppBackend,
+                "_pid_is_llama_server",
+                staticmethod(lambda pid: pid == proc.pid),
+            ),
+        ):
+            n = LlamaCppBackend._reap_recorded_pid()
+        assert n == 1
+        assert not pidfile.exists()
+        proc.wait(timeout = 5)
+        assert proc.poll() is not None
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout = 5)
+
+
+def test_record_then_reap_round_trip_identity_matches(tmp_path):
+    """Full round trip: _record_server_pid writes pid:starttime, and an orphaned
+    reap whose recorded identity still matches DOES kill it."""
+    import subprocess
+
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    pidfile = tmp_path / "llama-server.pid"
+    try:
+        with patch.object(LlamaCppBackend, "_server_pidfile_path", staticmethod(lambda: pidfile)):
+            LlamaCppBackend._record_server_pid(proc.pid)
+        assert ":" in pidfile.read_text(), "a start-time identity must be recorded"
+        with (
+            patch.object(LlamaCppBackend, "_server_pidfile_path", staticmethod(lambda: pidfile)),
+            patch.object(LlamaCppBackend, "_pid_parent_is_alive", staticmethod(lambda pid: False)),
+            patch.object(LlamaCppBackend, "_pid_is_llama_server", staticmethod(lambda pid: True)),
+        ):
+            n = LlamaCppBackend._reap_recorded_pid()
+        assert n == 1, "a matching identity on a true orphan must be reaped"
+        proc.wait(timeout = 5)
+        assert proc.poll() is not None
+        assert not pidfile.exists()
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout = 5)
+
+
+def test_reap_recorded_pid_spares_live_server(tmp_path):
+    """A recorded server whose parent is still alive (the running Studio) is NEVER
+    reaped, and its pidfile is kept. This is the finding-3 guard: a helper backend
+    constructed in-process must not kill the active chat server. Uses the REAL
+    _pid_parent_is_alive (the child's parent is this live test process)."""
+    import subprocess
+
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    pidfile = tmp_path / "llama-server.pid"
+    pidfile.write_text(str(proc.pid))
+    try:
+        with (
+            patch.object(LlamaCppBackend, "_server_pidfile_path", staticmethod(lambda: pidfile)),
+            # Force the name check True so ONLY the parent-alive guard can spare it.
+            patch.object(LlamaCppBackend, "_pid_is_llama_server", staticmethod(lambda pid: True)),
+        ):
+            n = LlamaCppBackend._reap_recorded_pid()
+        assert n == 0, "a live server with a running parent must not be reaped"
+        assert proc.poll() is None, "the live server must still be running"
+        assert pidfile.exists(), "the record is kept so a later orphan reap still works"
+    finally:
+        proc.kill()
+        proc.wait(timeout = 5)
+
+
+def test_reap_recorded_pid_skips_pid_reuse(tmp_path):
+    """A recorded PID recycled to a non-llama-server must NOT be killed (only the
+    stale pidfile is cleaned), so the user's vllm/games are never touched."""
+    import subprocess
+
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    pidfile = tmp_path / "llama-server.pid"
+    pidfile.write_text(str(proc.pid))
+    try:
+        with (
+            patch.object(LlamaCppBackend, "_server_pidfile_path", staticmethod(lambda: pidfile)),
+            patch.object(LlamaCppBackend, "_pid_parent_is_alive", staticmethod(lambda pid: False)),
+            patch.object(LlamaCppBackend, "_pid_is_llama_server", staticmethod(lambda pid: False)),
+        ):
+            n = LlamaCppBackend._reap_recorded_pid()
+        assert n == 0
+        assert proc.poll() is None, "an unrelated reused PID must not be killed"
+        assert not pidfile.exists(), "stale pidfile is cleaned up"
+    finally:
+        proc.kill()
+        proc.wait(timeout = 5)
+
+
+def test_reap_recorded_pid_skips_identity_mismatch(tmp_path):
+    """An orphaned PID whose recorded start-time identity no longer matches has been
+    recycled; it must NOT be killed even if it now looks like a llama-server."""
+    import subprocess
+
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    pidfile = tmp_path / "llama-server.pid"
+    pidfile.write_text(f"{proc.pid}:0.0")  # stale identity that cannot match
+    try:
+        with (
+            patch.object(LlamaCppBackend, "_server_pidfile_path", staticmethod(lambda: pidfile)),
+            patch.object(LlamaCppBackend, "_pid_parent_is_alive", staticmethod(lambda pid: False)),
+            patch.object(LlamaCppBackend, "_pid_is_llama_server", staticmethod(lambda pid: True)),
+        ):
+            n = LlamaCppBackend._reap_recorded_pid()
+        assert n == 0, "a PID whose start-time identity changed must not be killed"
+        assert proc.poll() is None, "the recycled process must survive"
+        assert not pidfile.exists(), "stale pidfile is cleaned up"
+    finally:
+        proc.kill()
+        proc.wait(timeout = 5)
+
+
+def test_reap_recorded_pid_windows_sigkill_fallback(tmp_path, monkeypatch):
+    """On Windows signal.SIGKILL is undefined; the reaper must fall back to SIGTERM
+    (os.kill -> TerminateProcess) instead of crashing and leaving the orphan."""
+    import os as _os
+    import signal as _signal
+
+    monkeypatch.delattr(_signal, "SIGKILL", raising = False)
+    captured = {}
+
+    def _fake_kill(pid, sig):
+        captured["pid"] = pid
+        captured["sig"] = sig  # recorded; do not actually signal anything
+
+    pidfile = tmp_path / "llama-server.pid"
+    pidfile.write_text("424242")
+    with (
+        patch.object(LlamaCppBackend, "_server_pidfile_path", staticmethod(lambda: pidfile)),
+        patch.object(LlamaCppBackend, "_pid_parent_is_alive", staticmethod(lambda pid: False)),
+        patch.object(LlamaCppBackend, "_pid_is_llama_server", staticmethod(lambda pid: True)),
+        patch.object(_os, "kill", _fake_kill),
+    ):
+        n = LlamaCppBackend._reap_recorded_pid()
+    assert n == 1
+    assert (
+        captured.get("sig") == _signal.SIGTERM
+    ), "must fall back to SIGTERM when SIGKILL is absent"
+    assert not pidfile.exists()
+
+
+def test_reap_recorded_pid_no_pidfile(tmp_path):
+    """No pidfile -> nothing reaped, no error."""
+    pidfile = tmp_path / "llama-server.pid"  # never created
+    with patch.object(LlamaCppBackend, "_server_pidfile_path", staticmethod(lambda: pidfile)):
+        assert LlamaCppBackend._reap_recorded_pid() == 0

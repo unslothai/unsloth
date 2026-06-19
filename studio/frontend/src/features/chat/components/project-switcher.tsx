@@ -12,7 +12,8 @@ import { Folder01Icon } from "@hugeicons/core-free-icons";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import type { ReactElement } from "react";
+import { type ReactElement, useState } from "react";
+import { useChatActive } from "../runtime-provider";
 import type { ProjectRecord } from "../types";
 
 export function ProjectSwitcher({
@@ -32,8 +33,12 @@ export function ProjectSwitcher({
   const showEmptyRow = !isLoading && projects.length === 0;
   const label = currentProject?.name ?? (isLoading ? "Project" : "Projects");
 
+  // Controlled so the body-portaled dropdown can't linger over another tab off-route.
+  const active = useChatActive();
+  const [open, setOpen] = useState(false);
+
   return (
-    <DropdownMenu>
+    <DropdownMenu open={active && open} onOpenChange={(o) => setOpen(active && o)}>
       <DropdownMenuTrigger asChild={true}>
         <button
           type="button"
