@@ -1829,6 +1829,16 @@ def _request_matches_loaded_settings(
     backend_mode = llama_backend.requested_spec_mode or "auto"
     if req_mode != backend_mode:
         return False
+    # A prior HF load fell back with drafter_not_found (the separate Gemma
+    # drafter did not resolve). The UI asks the user to fix access and reload,
+    # so a same-settings reload must retry the download rather than dedupe to
+    # the stale fallback. Skipped when the request now owns --spec-type.
+    if (
+        llama_backend.spec_fallback_reason == "drafter_not_found"
+        and req_mode in ("auto", "mtp", "mtp+ngram")
+        and not _extra_args_set_spec_type(effective_extra)
+    ):
+        return False
     # spec_draft_n_max only matters with an MTP variant; None means "platform
     # default" and matches whatever the backend chose.
     if backend_mode in ("mtp", "mtp+ngram") and request.spec_draft_n_max is not None:

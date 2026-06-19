@@ -1925,3 +1925,33 @@ def test_local_gemma_gguf_without_identifier_falls_back(monkeypatch):
     parsed = _flags_dict(flags)
     assert parsed.get("--spec-type") == "ngram-mod"
     assert backend.spec_fallback_reason == "drafter_not_found"
+
+
+def _drafter_not_found_kwargs():
+    return dict(
+        model_identifier = "unsloth/gemma-4-E4B-it-GGUF",
+        hf_variant = "Q4_K_M",
+        n_ctx = 8192,
+        cache_type_kv = None,
+        speculative_type = "auto",
+        chat_template_override = None,
+        extra_args = None,
+        is_vision = False,
+        gguf_path = None,  # HF load: drafter resolves inside load_model
+    )
+
+
+def test_already_in_target_state_retries_after_hf_drafter_not_found():
+    # A recoverable HF drafter_not_found fallback must NOT dedupe a reload;
+    # load_model has to re-attempt the separate-drafter download.
+    backend = _mtp_backend(
+        _model_identifier = "unsloth/gemma-4-E4B-it-GGUF",
+        _speculative_type = "ngram-mod",
+        _spec_fallback_reason = "drafter_not_found",
+        _mtp_draft_path = None,
+        _gguf_path = None,
+    )
+    assert backend._already_in_target_state(**_drafter_not_found_kwargs()) is False
+    # Sanity: with no fallback reason the same request still dedupes (matches).
+    ok = _mtp_backend(_model_identifier = "unsloth/gemma-4-E4B-it-GGUF", _gguf_path = None)
+    assert ok._already_in_target_state(**_drafter_not_found_kwargs()) is True

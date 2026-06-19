@@ -829,6 +829,20 @@ class TestExtraArgsMtpDetection:
             "request.tensor_parallel,llama_backend.tensor_parallel)" in body
         )
 
+    def test_route_matcher_retries_after_drafter_not_found(self):
+        # A recoverable HF drafter_not_found fallback must not be reported as
+        # already loaded, or the reload the UI asks for never retries the
+        # drafter download (#6459). Read from disk (importing routes.inference
+        # drags in heavy deps).
+        routes_src = (
+            Path(__file__).resolve().parent.parent / "routes" / "inference.py"
+        ).read_text()
+        start = routes_src.index("def _request_matches_loaded_settings")
+        end = routes_src.index("\ndef ", start + 1)
+        body = "".join(routes_src[start:end].split())
+        assert 'llama_backend.spec_fallback_reason=="drafter_not_found"' in body
+        assert "not_extra_args_set_spec_type(effective_extra)" in body
+
     def test_extra_args_main_cache_type_heavier_axis(self):
         # Asymmetric --cache-type-k/-v must budget the heavier axis (extras win
         # per axis at launch), not the last-wins single type that under-reserves.

@@ -6544,6 +6544,19 @@ class LlamaCppBackend:
         if req_mode != backend_mode:
             return False
 
+        # A prior HF load fell back with drafter_not_found (the separate Gemma
+        # drafter did not resolve, e.g. a transient HF/network failure). The UI
+        # asks the user to fix access and reload, so a same-settings reload must
+        # retry the download in load_model instead of deduping to the stale
+        # fallback. HF loads resolve the drafter there (gguf_path is None here);
+        # req_mode already excludes the user-owns-spec-type case (None).
+        if (
+            self._spec_fallback_reason == "drafter_not_found"
+            and gguf_path is None
+            and req_mode in ("auto", "mtp", "mtp+ngram")
+        ):
+            return False
+
         # spec_draft_n_max only matters when an MTP variant is engaged. Compare
         # on the resolved spec so an Auto request promoted to draft-mtp still
         # bounces a reload when n_max changes.
