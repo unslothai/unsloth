@@ -1181,11 +1181,13 @@ class TestResolveBaseModelNameOrPathFallback:
         d = tmp_path / "my-finetuned-model"
         d.mkdir()
         (d / "config.json").write_text(
-            json.dumps({
-                "model_type": "qwen3_5",
-                "model_name": str(d),
-                "_name_or_path": "my-org/private-custom-id",
-            })
+            json.dumps(
+                {
+                    "model_type": "qwen3_5",
+                    "model_name": str(d),
+                    "_name_or_path": "my-org/private-custom-id",
+                }
+            )
         )
         # get_transformers_tier reads config.json directly and returns 530
         # without needing to probe the private HF ID.
