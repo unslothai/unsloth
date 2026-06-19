@@ -200,7 +200,10 @@ export interface InferenceStatusResponse {
   /**
    * Why MTP was disabled on the loaded model despite being requested.
    * "binary_no_mtp" / "binary_outdated" -> updating llama.cpp would re-enable
-   * it; "runtime_error" -> the current build could not run it. Null otherwise.
+   * it; "runtime_error" -> the current build could not run it;
+   * "mla_mtp_disabled" -> an Auto-mode policy downgrade for MLA models
+   * (GLM-5.2 et al.) whose llama.cpp MTP path is slower than no speculation
+   * (updating won't help; choose MTP in Settings to force it). Null otherwise.
    */
   spec_fallback_reason?: string | null;
 }
