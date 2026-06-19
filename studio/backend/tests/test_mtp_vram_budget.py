@@ -864,8 +864,10 @@ class TestExtraArgsMtpDetection:
         # f16/f16 on the layer fallback) (#6312).
         load = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
         assert "_tensor_dropped_extra_args=list(extra_args)" in load
-        # All three tensor->layer downgrade points restore the saved originals.
-        assert load.count("strip_split_mode_only(_tensor_dropped_extra_argsif") == 3
+        # The original extras are restored via one shared closure, called at all
+        # three tensor->layer downgrade points.
+        assert "strip_split_mode_only(_tensor_dropped_extra_argsif" in load
+        assert load.count("_restore_after_tensor_downgrade()") >= 3
 
     def test_load_model_tensor_skips_reserve_for_cpu_drafter(self):
         # A separate CPU-offloaded drafter (no embedded head) uses no GPU, so the
