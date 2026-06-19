@@ -161,7 +161,14 @@ def activate_transformers_for_subprocess(model_name: str) -> None:
     ``sys.path``, and propagates it via ``PYTHONPATH`` for child processes
     (e.g. GGUF converter). Used by training, inference, and export workers.
     """
-    resolved = _resolve_base_model(model_name)
+    # Only pre-resolve for LoRA adapters (adapter_config.json present).
+    # Full checkpoints go directly to get_transformers_tier, which reads
+    # their local config.json for model_type — more reliable than resolving
+    # to a private/offline HF ID that can't be probed and may lack tier substrings.
+    if (Path(model_name) / "adapter_config.json").is_file():
+        resolved = _resolve_base_model(model_name)
+    else:
+        resolved = model_name
     tier = get_transformers_tier(resolved)
 
     if tier == "510":
@@ -940,8 +947,11 @@ def ensure_transformers_version(model_name: str) -> None:
     NOTE: Training and inference use subprocess isolation instead. Used only by
     the export path (routes/export.py).
     """
-    # Resolve LoRA adapters to their base model for accurate detection.
-    resolved = _resolve_base_model(model_name)
+    # Only pre-resolve for LoRA adapters; see activate_transformers_for_subprocess.
+    if (Path(model_name) / "adapter_config.json").is_file():
+        resolved = _resolve_base_model(model_name)
+    else:
+        resolved = model_name
     tier = get_transformers_tier(resolved)
 
     if tier == "510":

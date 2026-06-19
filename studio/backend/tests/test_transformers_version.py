@@ -1169,3 +1169,24 @@ class TestResolveBaseModelNameOrPathFallback:
             )
         )
         assert get_transformers_tier(str(d)) == "530"
+
+    def test_local_config_tier_not_bypassed_by_private_name_or_path(self, tmp_path: Path):
+        """Full checkpoint with model_type: qwen3_5 must still route to 530 even
+        when _name_or_path is a private HF ID with no recognisable tier substring.
+
+        Regression guard: before the adapter-only pre-resolve fix,
+        activate_transformers_for_subprocess would resolve to the private HF ID
+        and then fail to probe it offline, returning default instead of 530.
+        """
+        d = tmp_path / "my-finetuned-model"
+        d.mkdir()
+        (d / "config.json").write_text(
+            json.dumps({
+                "model_type": "qwen3_5",
+                "model_name": str(d),
+                "_name_or_path": "my-org/private-custom-id",
+            })
+        )
+        # get_transformers_tier reads config.json directly and returns 530
+        # without needing to probe the private HF ID.
+        assert get_transformers_tier(str(d)) == "530"
