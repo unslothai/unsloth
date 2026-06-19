@@ -290,7 +290,6 @@ def is_loopback_url(base: str) -> bool:
         return True
     try:
         import ipaddress
-
         return ipaddress.ip_address(host).is_loopback
     except ValueError:
         return False

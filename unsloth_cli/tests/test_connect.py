@@ -473,7 +473,9 @@ def test_connect_nonloopback_keyless_refuses_to_send_credential(fake_studio, mon
     monkeypatch.setattr(connect, "find_studio_server", lambda: "http://studio.evil.example:8888")
     minted = {"n": 0}
     monkeypatch.setattr(
-        connect, "_mint_local_api_key", lambda: (minted.__setitem__("n", minted["n"] + 1), "sk-x")[1]
+        connect,
+        "_mint_local_api_key",
+        lambda: (minted.__setitem__("n", minted["n"] + 1), "sk-x")[1],
     )
     result = CliRunner().invoke(connect.connect_app, ["opencode", "--no-launch"])
     assert result.exit_code == 1
