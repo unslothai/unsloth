@@ -391,11 +391,15 @@ function findPromptQueueEntry(
   return null;
 }
 
-function canMutatePromptQueueItem(itemIndex: number, item: PromptQueueItem) {
+function canEditPromptQueueItem(itemIndex: number, item: PromptQueueItem) {
   if (item.dispatched) {
     return false;
   }
   return promptQueueIndex < 0 || itemIndex !== promptQueueIndex;
+}
+
+function canRemovePromptQueueItem(item: PromptQueueItem) {
+  return !item.dispatched;
 }
 
 function syncPromptQueueUI() {
@@ -426,15 +430,14 @@ function syncPromptQueueUI() {
             ? "waiting"
             : "next"
           : "queued";
-      const canMutate = canMutatePromptQueueItem(index, item);
       return {
         id: item.id,
         prompt: item.prompt,
         position: index + 1,
         total,
         status,
-        canEdit: canMutate,
-        canRemove: canMutate,
+        canEdit: canEditPromptQueueItem(index, item),
+        canRemove: canRemovePromptQueueItem(item),
       };
     })
     .filter((item): item is PromptQueueUIItem => Boolean(item));
@@ -507,7 +510,7 @@ function editPromptQueueItem(itemId: string, prompt: string) {
     return false;
   }
   const item = promptQueueItems[itemIndex];
-  if (!canMutatePromptQueueItem(itemIndex, item)) {
+  if (!canEditPromptQueueItem(itemIndex, item)) {
     return false;
   }
   item.prompt = nextPrompt;
@@ -529,7 +532,7 @@ function removePromptQueueItem(itemId: string) {
     return false;
   }
   const item = promptQueueItems[itemIndex];
-  if (!canMutatePromptQueueItem(itemIndex, item)) {
+  if (!canRemovePromptQueueItem(item)) {
     return false;
   }
 
@@ -1147,7 +1150,24 @@ const ThreadComposerDock: FC<{
   onHeightChange?: (height: number | null) => void;
 }> = ({ disabled, threadId, onHeightChange }) => {
   const { overlay } = useGeneratedImageOverlay();
-  const queueVisible = usePromptQueueUI((s) => s.items.length > 0);
+  const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
+  const threadListItemId = useAuiState(
+    ({ threadListItem }) => threadListItem.id,
+  );
+  const threadListItemRemoteId = useAuiState(
+    ({ threadListItem }) => threadListItem.remoteId,
+  );
+  const promptQueueThreadIds = compactIds([
+    threadListItemId,
+    threadListItemRemoteId,
+    threadId,
+    activeThreadId,
+  ]);
+  const queueVisible = usePromptQueueUI(
+    (s) =>
+      Boolean(findPromptQueueEntry(s, promptQueueThreadIds)) &&
+      s.items.length > 0,
+  );
 
   // Report dock height so the viewport reserves matching scroll space when
   // attachments or multiline input grow the composer.
@@ -1878,7 +1898,7 @@ const Composer: FC<{
       aria-disabled={disabled}
       onSubmit={handleSubmit}
     >
-      <PromptQueueStack />
+      <PromptQueueStack queueThreadIds={promptQueueThreadIds} />
       {isTauri ? (
         // Phase 1 native model owns Tauri local-path drops. Restore browser
         // attachment drops in Tauri once Phase 1d adds token bridging.
@@ -3144,11 +3164,13 @@ function promptQueueStatusLabel(status: PromptQueueUIItemStatus) {
   }
 }
 
-const PromptQueueStack: FC = () => {
-  const current = usePromptQueueUI((s) => s.current);
-  const total = usePromptQueueUI((s) => s.total);
+const PromptQueueStack: FC<{ queueThreadIds: string[] }> = ({
+  queueThreadIds,
+}) => {
+  const queueEntry = usePromptQueueUI((s) =>
+    findPromptQueueEntry(s, queueThreadIds),
+  );
   const items = usePromptQueueUI((s) => s.items);
-  const isRunning = usePromptQueueUI((s) => s.isRunning);
   const [editingItemId, setEditingItemId] = useState<string | null>(null);
   const [draftPrompt, setDraftPrompt] = useState("");
   const editInputRef = useRef<HTMLInputElement>(null);
@@ -3172,9 +3194,11 @@ const PromptQueueStack: FC = () => {
     setDraftPrompt("");
   }, [editingItemCanEdit, editingItemId]);
 
-  if (!isRunning || items.length === 0) {
+  if (!queueEntry || items.length === 0) {
     return null;
   }
+
+  const { current, total } = queueEntry;
 
   const startEditing = (item: PromptQueueUIItem) => {
     if (!item.canEdit) {
