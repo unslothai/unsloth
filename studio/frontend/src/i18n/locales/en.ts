@@ -726,6 +726,9 @@ export const en = {
         running: "Training in progress",
         errored: "Training errored",
       },
+      copyPreviewLink: "Copy preview link",
+      previewLinkCopied: "Preview link copied",
+      previewLinkCopyFailed: "Couldn't copy the link",
     },
     charts: {
       settings: "Chart Settings",

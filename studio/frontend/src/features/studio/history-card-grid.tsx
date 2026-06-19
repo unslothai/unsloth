@@ -24,7 +24,10 @@ import {
   useTrainingRuntimeStore,
 } from "@/features/training";
 import { formatDuration } from "@/features/studio/sections/progress-section-lib";
+import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { cn } from "@/lib/utils";
+import { copyToClipboard } from "@/lib/copy-to-clipboard";
+import { toast } from "@/lib/toast";
 import { Delete02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactElement, useCallback, useEffect, useRef, useState } from "react";
@@ -194,6 +197,24 @@ export function HistoryCardGrid({
   const [manualFetchInFlight, setManualFetchInFlight] = useState(false);
   const { resumeTrainingRunFromHistory } = useTrainingActions();
   const isStarting = useTrainingRuntimeStore((state) => state.isStarting);
+  // Shareable base for the copy-link: Cloudflare tunnel > LAN host:port > origin.
+  // The tunnel registers shortly after startup, so poll (bounded) until it shows.
+  const cloudflareUrl = usePlatformStore((s) => s.cloudflareUrl);
+  const serverUrl = usePlatformStore((s) => s.serverUrl);
+  useEffect(() => {
+    if (cloudflareUrl) return;
+    let cancelled = false;
+    void (async () => {
+      for (let attempt = 0; attempt < 12 && !cancelled; attempt++) {
+        await fetchDeviceType({ force: true });
+        if (cancelled || usePlatformStore.getState().cloudflareUrl) return;
+        await new Promise((r) => setTimeout(r, 2500));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [cloudflareUrl]);
 
   const userControllerRef = useRef<AbortController | null>(null);
   const pollControllerRef = useRef<AbortController | null>(null);
@@ -362,6 +383,9 @@ export function HistoryCardGrid({
           const isRunning = run.status === "running";
           const canResume = run.can_resume && !wasContinued;
           const isResuming = resumeTarget === run.id;
+          const canCopyPreview =
+            !!run.output_dir &&
+            (run.status === "completed" || run.status === "stopped");
           return (
             <div
               role="button"
@@ -409,6 +433,37 @@ export function HistoryCardGrid({
                   }}
                 >
                   {isResuming ? t("studio.history.resuming") : t("studio.history.resumeTraining")}
+                </Button>
+              )}
+              {canCopyPreview && (
+                <Button
+                  type="button"
+                  size="xs"
+                  variant="outline"
+                  className="absolute bottom-3 right-4 h-6 rounded-full px-2.5 text-[11px] leading-none shadow-sm"
+                  onClick={async (e) => {
+                    e.stopPropagation();
+                    const runName = (run.output_dir ?? "")
+                      .replace(/[\\/]+$/, "")
+                      .split(/[\\/]/)
+                      .pop();
+                    const base = (
+                      cloudflareUrl ??
+                      serverUrl ??
+                      window.location.origin
+                    ).replace(/\/+$/, "");
+                    const url = `${base}/p/${encodeURIComponent(runName ?? "")}`;
+                    const ok = await copyToClipboard(url);
+                    toast[ok ? "success" : "error"](
+                      t(
+                        ok
+                          ? "studio.history.previewLinkCopied"
+                          : "studio.history.previewLinkCopyFailed",
+                      ),
+                    );
+                  }}
+                >
+                  {t("studio.history.copyPreviewLink")}
                 </Button>
               )}
               <div className="min-w-0">

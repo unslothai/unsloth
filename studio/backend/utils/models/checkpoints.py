@@ -133,3 +133,37 @@ def scan_checkpoints(
     except Exception as e:
         logger.error(f"Error scanning checkpoints: {e}")
         return []
+
+
+def _is_model_dir(path: Path) -> bool:
+    return (path / "config.json").exists() or (path / "adapter_config.json").exists()
+
+
+def resolve_preview_checkpoint(run: str, checkpoint: Optional[str] = None) -> Path:
+    relative = run if not checkpoint else f"{run}/{checkpoint}"
+    path = resolve_output_dir(relative)
+    if not path.is_dir() or not _is_model_dir(path):
+        raise FileNotFoundError(
+            f"No trained checkpoint at '{relative}'. "
+            "Check the run/checkpoint name (see GET /p)."
+        )
+    return path
+
+
+def list_preview_targets(outputs_dir: str = str(outputs_root())) -> List[dict]:
+    targets: List[dict] = []
+    for run_name, checkpoints, metadata in scan_checkpoints(outputs_dir):
+        for display_name, path, loss in checkpoints:
+            is_latest = display_name == run_name
+            checkpoint = None if is_latest else Path(path).name
+            targets.append(
+                {
+                    "run": run_name,
+                    "checkpoint": checkpoint,
+                    "ref": run_name if is_latest else f"{run_name}/{checkpoint}",
+                    "is_latest": is_latest,
+                    "loss": loss,
+                    "base_model": metadata.get("base_model"),
+                }
+            )
+    return targets
