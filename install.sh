@@ -1593,7 +1593,9 @@ _maybe_reroute_strixhalo_to_2404() {
     fi
     _rr_ver=""
     [ -r /etc/os-release ] && _rr_ver=$(. /etc/os-release 2>/dev/null; printf '%s' "${VERSION_ID:-}")
-    [ "$_rr_ver" = "24.04" ] && return 0
+    # AMD supports ROCm-on-WSL on both Ubuntu 24.04 and 22.04 (Radeon/Ryzen docs),
+    # so leave the user on either; only reroute newer/unsupported distros (e.g. 26.04).
+    case "$_rr_ver" in 24.04|22.04) return 0 ;; esac
     command -v wsl.exe >/dev/null 2>&1 || return 0
     # Route only to an already-installed 24.04.
     wsl.exe -l -q 2>/dev/null | tr -d '\000\r' | grep -qiF "Ubuntu-24.04" || return 0
@@ -1602,7 +1604,9 @@ _maybe_reroute_strixhalo_to_2404() {
     substep "ROCm-on-WSL (GPU) needs Ubuntu 24.04; this distro is Ubuntu ${_rr_ver:-unknown}." "$C_WARN"
     substep "Found an existing Ubuntu-24.04 distro -- continuing the GPU install there." "$C_OK"
     _rr_cmd="${UNSLOTH_WSL_REROUTE_CMD:-curl -fsSL https://unsloth.ai/install.sh | sh}"
-    if wsl.exe -d "Ubuntu-24.04" -- bash -lc "export UNSLOTH_WSL_REROUTED=1; $_rr_cmd"; then
+    # pipefail so a failed curl in the `curl | sh` reroute isn't masked by sh exiting 0
+    # on empty input (which would wrongly report success and exit 0 the parent installer).
+    if wsl.exe -d "Ubuntu-24.04" -- bash -lc "set -o pipefail; export UNSLOTH_WSL_REROUTED=1; $_rr_cmd"; then
         exit 0
     fi
     substep "Could not auto-continue in Ubuntu-24.04; run it yourself:" "$C_WARN"

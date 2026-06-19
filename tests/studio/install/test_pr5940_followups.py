@@ -545,5 +545,114 @@ def test_install_ps1_installs_rocm_torch_for_known_arch():
     )
 
 
+# ── PR #6296 follow-ups (review-bot findings) ────────────────────────────────
+
+
+def test_external_hipinfo_strips_quoted_path_entries(tmp_path):
+    # Windows PATH entries can carry surrounding double quotes; the scan must strip
+    # them before os.path.join, else a real HIP SDK in a quoted dir is missed and a
+    # genuine AMD box silently loses amd-smi VRAM polling.
+    sdk_bin = tmp_path / "hip sdk" / "bin"
+    sdk_bin.mkdir(parents = True)
+    (sdk_bin / "hipinfo.exe").write_text("")
+    quoted = '"' + str(sdk_bin) + '"'  # the literal quotes Windows can leave on PATH
+    with (
+        patch.object(prebuilt.platform, "system", return_value = "Windows"),
+        patch.object(prebuilt.sys, "prefix", str(tmp_path / "venv")),
+        patch.dict(prebuilt.os.environ, {"PATH": quoted}, clear = True),
+    ):
+        assert prebuilt._external_hipinfo_on_path() is True
+        assert prebuilt._amd_smi_allowed() is True
+
+
+def test_python_hipinfo_strips_quotes_in_all_copies():
+    # All three copies of the PATH scan must strip surrounding quotes from entries.
+    for src in (_PREBUILT_PATH, _AMD_PY, _PYSTACK_PY):
+        text = src.read_text(encoding = "utf-8")
+        assert "strip('\"')" in text, f"{src.name} must strip quotes from PATH entries"
+
+
+@pytest.mark.parametrize("ps", [_INSTALL_PS1, _SETUP_PS1], ids = ["install.ps1", "setup.ps1"])
+def test_ps_venv_probe_skips_drive_root(ps):
+    # A non-venv UNSLOTH_SETUP_PYTHON like C:\Python311\python.exe yields a bare
+    # drive root (C:) as a venv root; without a guard it matches every path on that
+    # drive and misclassifies a real HIP SDK as venv-internal, disabling amd-smi.
+    text = ps.read_text(encoding = "utf-8")
+    assert "'^[a-zA-Z]:$'" in text, (
+        f"{ps.name} venv-internal probe must skip bare drive roots so a non-venv "
+        "UNSLOTH_SETUP_PYTHON doesn't match the whole drive"
+    )
+
+
+@pytest.mark.parametrize("ps", [_INSTALL_PS1, _SETUP_PS1], ids = ["install.ps1", "setup.ps1"])
+def test_ps_env_fallback_iterates_all_hip_roots(ps):
+    # The HIP_PATH/ROCM_PATH fallback must iterate every env root (incl. HIP_PATH_57)
+    # and take the first non-venv hipinfo, so a venv-internal HIP_PATH can't mask a
+    # real SDK in ROCM_PATH (single-root selection would bail on the venv copy).
+    text = ps.read_text(encoding = "utf-8")
+    assert 'foreach ($hipEnvLabel in @("HIP_PATH", "HIP_PATH_57", "ROCM_PATH"))' in text, (
+        f"{ps.name} must iterate HIP_PATH/HIP_PATH_57/ROCM_PATH in the env fallback, "
+        "not pick a single root"
+    )
+
+
+def test_install_ps1_clears_rocm_index_after_cpu_fallback():
+    # After the ROCm->CPU fallback, $ROCmIndexUrl must be cleared so the later
+    # flavor-repair block doesn't retry the just-failed index and Exit-InstallFailure
+    # (the fallback is meant to let install complete; setup.ps1 retries ROCm).
+    text = _INSTALL_PS1.read_text(encoding = "utf-8")
+    i = text.find("ROCm PyTorch install failed")
+    assert i != -1, "ROCm->CPU fallback block not found in install.ps1"
+    window = text[i : i + 1300]
+    assert "$ROCmIndexUrl = $null" in window, (
+        "install.ps1 must clear $ROCmIndexUrl after the CPU fallback so the repair "
+        "block does not re-trigger the failed ROCm index and abort the install"
+    )
+
+
+def test_install_ps1_rocm_repair_pins_companions():
+    # The flavor-repair ROCm reinstall must use the pinned companion specs (like the
+    # fresh ROCm install), not bare torchvision/torchaudio, which can resolve an
+    # ABI-incompatible trio on AMD's per-arch index.
+    text = _INSTALL_PS1.read_text(encoding = "utf-8")
+    i = text.find("PyTorch flavor mismatch (installed $installedTorchTag, need ROCm)")
+    assert i != -1, "ROCm flavor-repair block not found in install.ps1"
+    window = text[i : i + 400]
+    assert "$rocmSpec $visionSpec $audioSpec" in window, (
+        "the ROCm repair reinstall must pass the pinned $visionSpec/$audioSpec, not "
+        "bare torchvision/torchaudio"
+    )
+
+
+def test_install_sh_wsl_reroute_uses_pipefail():
+    # The `curl | sh` reroute runs via `bash -lc`; without pipefail a failed curl is
+    # masked by sh exiting 0 on empty input, so the reroute would wrongly report
+    # success and exit 0 the parent installer.
+    text = _INSTALL_SH.read_text(encoding = "utf-8")
+    i = text.find('wsl.exe -d "Ubuntu-24.04"')
+    assert i != -1, "WSL reroute command not found in install.sh"
+    line = text[text.rfind("\n", 0, i) + 1 : text.find("\n", i)]
+    assert "set -o pipefail" in line, (
+        "install.sh WSL reroute `bash -lc` must enable pipefail so a failed curl "
+        "isn't masked by sh exiting 0"
+    )
+
+
+def test_uninstall_sh_preserves_shared_icon_for_surviving_shortcut():
+    # The WSL uninstall shares %LOCALAPPDATA%\Unsloth Studio\unsloth.ico with the
+    # native install and other WSL distros; both removal paths must keep it while any
+    # "Unsloth Studio*.lnk" shortcut survives (reciprocal of uninstall.ps1's
+    # _RemoveDataDirKeepingWslIcon), not delete it unconditionally.
+    text = (PACKAGE_ROOT / "scripts" / "uninstall.sh").read_text(encoding = "utf-8")
+    assert "_drop_shared_icon_if_unused" in text, (
+        "uninstall.sh drvfs path must gate the shared-icon deletion behind a "
+        "shortcut-in-use check, not delete unconditionally"
+    )
+    assert "iconInUse" in text, (
+        "uninstall.sh powershell-interop path must keep the icon when an Unsloth "
+        "shortcut still uses it"
+    )
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

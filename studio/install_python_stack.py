@@ -254,6 +254,7 @@ def _external_hipinfo_on_path() -> bool:
     shutil.which returns only the first hit, so the venv hipInfo could shadow a
     real HIP SDK's; scan every PATH entry and skip the venv copy."""
     for _dir in os.environ.get("PATH", "").split(os.pathsep):
+        _dir = _dir.strip('"')  # PATH entries can be quoted on Windows
         if not _dir:
             continue
         _candidate = os.path.join(_dir, "hipinfo.exe")

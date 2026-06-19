@@ -171,6 +171,14 @@ _out=$(run_func "$_d" UNSLOTH_WSL_REROUTE_CMD='echo flag=[$UNSLOTH_WSL_REROUTED]
 assert_contains "reroute exports loop-guard flag"       "$_out" "flag=[1]"
 rm -rf "$_d"
 
+# 12) Already on 22.04 -> NO route. AMD supports ROCm-on-WSL on both 24.04 and
+#     22.04 (Radeon/Ryzen docs), so a supported 22.04 distro must not be displaced.
+_d=$(make_fixture 1 strix 0 22.04 1)
+_out=$(run_func "$_d")
+assert_contains "on 22.04 (AMD-supported) -> no route"  "$_out" "__NOROUTE__"
+assert_absent   "on 22.04 -> reroute not attempted"     "$_out" "__ROUTED__"
+rm -rf "$_d"
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ] || exit 1

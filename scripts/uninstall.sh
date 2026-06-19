@@ -302,13 +302,42 @@ case "$_os" in
                             } catch { }
                         }
                     }
-                    # Drop the shared icon we wrote + the dir if empty (a native
-                    # install keeps its launcher here, so the empty-dir guard spares it).
+                    # Keep the shared icon if any Unsloth shortcut still uses it (a
+                    # native install or another WSL distro); only drop it with the last one.
+                    $iconInUse = $false;
+                    foreach ($d in $dirs) {
+                        if (-not $d -or -not (Test-Path -LiteralPath $d)) { continue }
+                        if (Get-ChildItem -LiteralPath $d -Filter "Unsloth Studio*.lnk" -ErrorAction SilentlyContinue) { $iconInUse = $true; break }
+                    }
                     $iconDir = Join-Path $env:LOCALAPPDATA "Unsloth Studio";
                     $ico = Join-Path $iconDir "unsloth.ico";
-                    if (Test-Path -LiteralPath $ico) { Remove-Item -LiteralPath $ico -Force -ErrorAction SilentlyContinue }
+                    if ((-not $iconInUse) -and (Test-Path -LiteralPath $ico)) { Remove-Item -LiteralPath $ico -Force -ErrorAction SilentlyContinue }
                     if ((Test-Path -LiteralPath $iconDir) -and -not (Get-ChildItem -LiteralPath $iconDir -Force -ErrorAction SilentlyContinue)) { Remove-Item -LiteralPath $iconDir -Recurse -Force -ErrorAction SilentlyContinue }' >/dev/null 2>&1 || true
             fi
+            # Remove $1's shared unsloth.ico, but only if no Unsloth shortcut (a native
+            # install or another WSL distro) still uses it; then drop the dir if empty.
+            # Reciprocal of uninstall.ps1's _RemoveDataDirKeepingWslIcon (which keeps
+            # the icon for a surviving WSL shortcut when the native side is removed).
+            _drop_shared_icon_if_unused() {
+                _du="$1"
+                _icodir="$_du/AppData/Local/Unsloth Studio"
+                _icon_in_use=0
+                for _sd in \
+                    "$_du/Desktop" \
+                    "$_du/OneDrive/Desktop" \
+                    "$_du"/OneDrive*/Desktop \
+                    "$_du/AppData/Roaming/Microsoft/Windows/Start Menu/Programs"; do
+                    [ -d "$_sd" ] || continue
+                    for _any in "$_sd"/"Unsloth Studio"*.lnk; do
+                        [ -e "$_any" ] && { _icon_in_use=1; break; }
+                    done
+                    [ "$_icon_in_use" = "1" ] && break
+                done
+                if [ "$_icon_in_use" = "0" ]; then
+                    [ -f "$_icodir/unsloth.ico" ] && rm -f "$_icodir/unsloth.ico" 2>/dev/null || true
+                fi
+                [ -d "$_icodir" ] && rmdir "$_icodir" 2>/dev/null || true
+            }
             # Fallback when powershell.exe can't run (interop disabled): remove the
             # WSL .lnk files via drvfs. The "Unsloth Studio (WSL..." name is
             # WSL-specific, so a native install's "Unsloth Studio.lnk" never matches.
@@ -334,10 +363,8 @@ case "$_os" in
                                 done
                             fi
                         done
-                        # Drop the shared icon this installer wrote + the dir if empty.
-                        _icodir="$_udir/AppData/Local/Unsloth Studio"
-                        [ -f "$_icodir/unsloth.ico" ] && rm -f "$_icodir/unsloth.ico" 2>/dev/null || true
-                        [ -d "$_icodir" ] && rmdir "$_icodir" 2>/dev/null || true
+                        # Drop the shared icon only when no shortcut still needs it.
+                        _drop_shared_icon_if_unused "$_udir"
                     done
                 done
             fi

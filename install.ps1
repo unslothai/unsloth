@@ -1653,6 +1653,9 @@ exit 0
             foreach ($root in $venvRoots) {
                 if ([string]::IsNullOrWhiteSpace($root)) { continue }
                 try { $r = [System.IO.Path]::GetFullPath($root).TrimEnd('\', '/') } catch { continue }
+                # Skip a bare drive root (e.g. a non-venv UNSLOTH_SETUP_PYTHON like
+                # C:\Python311\python.exe yields C:) -- it would match every path on that drive.
+                if ($r -match '^[a-zA-Z]:$') { continue }
                 if ($hip.Equals($r, [System.StringComparison]::OrdinalIgnoreCase) -or
                     $hip.StartsWith($r + [System.IO.Path]::DirectorySeparatorChar, [System.StringComparison]::OrdinalIgnoreCase)) {
                     return $true
@@ -1666,22 +1669,28 @@ exit 0
             Where-Object { -not (Test-HipinfoIsVenvInternal $_.Source) } |
             Select-Object -First 1
         if (-not $hipinfoExe) {
-            $hipRoot     = if ($env:HIP_PATH) { $env:HIP_PATH } elseif ($env:ROCM_PATH) { $env:ROCM_PATH } else { $null }
-            $hipEnvLabel = if ($env:HIP_PATH) { "HIP_PATH"    } else                    { "ROCM_PATH"    }
-            if ($hipRoot) {
+            # Iterate the env roots (mirrors the Python list) and take the first non-venv
+            # bin\hipinfo.exe, so a venv-internal HIP_PATH can't mask a real SDK in ROCM_PATH.
+            $hipMissingLabel = $null; $hipMissingRoot = $null; $hipMissingCandidate = $null
+            foreach ($hipEnvLabel in @("HIP_PATH", "HIP_PATH_57", "ROCM_PATH")) {
+                $hipRoot = [Environment]::GetEnvironmentVariable($hipEnvLabel)
+                if ([string]::IsNullOrWhiteSpace($hipRoot)) { continue }
                 $hipinfoCandidate = Join-Path $hipRoot "bin\hipinfo.exe"
-                if ((Test-Path $hipinfoCandidate) -and (Test-HipinfoIsVenvInternal $hipinfoCandidate)) {
-                    # ${hipEnvLabel} points into the venv (AMD wheel): not a HIP SDK.
-                } elseif (Test-Path $hipinfoCandidate) {
-                    Write-Host "  [WARN] hipinfo not on PATH -- located via ${hipEnvLabel}: $hipinfoCandidate" -ForegroundColor Yellow
-                    Write-Host "         Add '$(Join-Path $hipRoot 'bin')' to your PATH to suppress this warning" -ForegroundColor Yellow
-                    Write-Host "         Quick fix: [Environment]::SetEnvironmentVariable('PATH',`$env:PATH+';$(Join-Path $hipRoot 'bin')','User')" -ForegroundColor Yellow
-                    $hipinfoExe = [PSCustomObject]@{ Source = $hipinfoCandidate }
-                } else {
-                    Write-Host "  [WARN] ${hipEnvLabel}=$hipRoot is set but hipinfo.exe not found at $hipinfoCandidate" -ForegroundColor Yellow
-                    Write-Host "         HIP SDK install may be incomplete -- re-install from:" -ForegroundColor Yellow
-                    Write-Host "         https://rocm.docs.amd.com/en/latest/deploy/windows/index.html" -ForegroundColor Yellow
+                if (-not (Test-Path $hipinfoCandidate)) {
+                    if (-not $hipMissingLabel) { $hipMissingLabel = $hipEnvLabel; $hipMissingRoot = $hipRoot; $hipMissingCandidate = $hipinfoCandidate }
+                    continue
                 }
+                if (Test-HipinfoIsVenvInternal $hipinfoCandidate) { continue }   # venv copy (AMD wheel): not a HIP SDK
+                Write-Host "  [WARN] hipinfo not on PATH -- located via ${hipEnvLabel}: $hipinfoCandidate" -ForegroundColor Yellow
+                Write-Host "         Add '$(Join-Path $hipRoot 'bin')' to your PATH to suppress this warning" -ForegroundColor Yellow
+                Write-Host "         Quick fix: [Environment]::SetEnvironmentVariable('PATH',`$env:PATH+';$(Join-Path $hipRoot 'bin')','User')" -ForegroundColor Yellow
+                $hipinfoExe = [PSCustomObject]@{ Source = $hipinfoCandidate }
+                break
+            }
+            if ((-not $hipinfoExe) -and $hipMissingLabel) {
+                Write-Host "  [WARN] ${hipMissingLabel}=$hipMissingRoot is set but hipinfo.exe not found at $hipMissingCandidate" -ForegroundColor Yellow
+                Write-Host "         HIP SDK install may be incomplete -- re-install from:" -ForegroundColor Yellow
+                Write-Host "         https://rocm.docs.amd.com/en/latest/deploy/windows/index.html" -ForegroundColor Yellow
             }
         }
         if ($hipinfoExe) {
@@ -2189,6 +2198,11 @@ exit 0
                     Write-Host "[ERROR] Failed to install PyTorch (ROCm and CPU base both failed, exit code $torchInstallExit)" -ForegroundColor Red
                     return (Exit-InstallFailure "Failed to install PyTorch (exit code $torchInstallExit)" $torchInstallExit)
                 }
+                # CPU base is in place; drop the ROCm expectation so the flavor-repair
+                # block below doesn't retry the just-failed index and abort. setup.ps1
+                # reinstalls ROCm afterwards (it recomputes its own index URL).
+                $ROCmIndexUrl = $null
+                $ROCmTorchFloor = $null
             }
         } else {
             Write-TauriLog "STEP" "Installing PyTorch"
@@ -2287,8 +2301,12 @@ exit 0
                     # AMD: a migrated venv can keep a stale CPU torch the fresh ROCm path
                     # would have force-reinstalled. Repair from the same repo.amd.com index.
                     $rocmSpec = if ($ROCmTorchFloor) { $ROCmTorchFloor } else { "torch" }
+                    # Pin companions like the fresh ROCm path; bare names can resolve an
+                    # ABI-incompatible torchvision/torchaudio on AMD's per-arch index.
+                    $visionSpec = if ($ROCmGfxArch -and $torchvisionFloorMap.ContainsKey($ROCmGfxArch)) { $torchvisionFloorMap[$ROCmGfxArch] } else { "torchvision" }
+                    $audioSpec = if ($ROCmGfxArch -and $torchaudioFloorMap.ContainsKey($ROCmGfxArch)) { $torchaudioFloorMap[$ROCmGfxArch] } else { "torchaudio" }
                     substep "PyTorch flavor mismatch (installed $installedTorchTag, need ROCm) -- reinstalling correct build..." "Yellow"
-                    $torchFixExit = Invoke-InstallCommand { uv pip install --python $VenvPython --force-reinstall --index-url $ROCmIndexUrl $rocmSpec torchvision torchaudio }
+                    $torchFixExit = Invoke-InstallCommand { uv pip install --python $VenvPython --force-reinstall --index-url $ROCmIndexUrl $rocmSpec $visionSpec $audioSpec }
                     if ($torchFixExit -ne 0) {
                         Write-Host "[ERROR] Failed to reinstall PyTorch with the correct ROCm build (exit code $torchFixExit)" -ForegroundColor Red
                         return (Exit-InstallFailure "Failed to reinstall PyTorch (ROCm) (exit code $torchFixExit)" $torchFixExit)

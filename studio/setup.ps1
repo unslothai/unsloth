@@ -832,6 +832,9 @@ if (-not $HasNvidiaSmi) {
         foreach ($root in $venvRoots) {
             if ([string]::IsNullOrWhiteSpace($root)) { continue }
             try { $r = [System.IO.Path]::GetFullPath($root).TrimEnd('\', '/') } catch { continue }
+            # Skip a bare drive root (e.g. a non-venv UNSLOTH_SETUP_PYTHON like
+            # C:\Python311\python.exe yields C:) -- it would match every path on that drive.
+            if ($r -match '^[a-zA-Z]:$') { continue }
             if ($hip.Equals($r, [System.StringComparison]::OrdinalIgnoreCase) -or
                 $hip.StartsWith($r + [System.IO.Path]::DirectorySeparatorChar, [System.StringComparison]::OrdinalIgnoreCase)) {
                 return $true
@@ -845,22 +848,28 @@ if (-not $HasNvidiaSmi) {
         Where-Object { -not (Test-HipinfoIsVenvInternal $_.Source) } |
         Select-Object -First 1
     if (-not $hipinfoExe) {
-        $hipRoot     = if ($env:HIP_PATH) { $env:HIP_PATH } elseif ($env:ROCM_PATH) { $env:ROCM_PATH } else { $null }
-        $hipEnvLabel = if ($env:HIP_PATH) { "HIP_PATH"    } else                    { "ROCM_PATH"    }
-        if ($hipRoot) {
+        # Iterate the env roots (mirrors the Python list) and take the first non-venv
+        # bin\hipinfo.exe, so a venv-internal HIP_PATH can't mask a real SDK in ROCM_PATH.
+        $hipMissingLabel = $null; $hipMissingRoot = $null; $hipMissingCandidate = $null
+        foreach ($hipEnvLabel in @("HIP_PATH", "HIP_PATH_57", "ROCM_PATH")) {
+            $hipRoot = [Environment]::GetEnvironmentVariable($hipEnvLabel)
+            if ([string]::IsNullOrWhiteSpace($hipRoot)) { continue }
             $hipinfoCandidate = Join-Path $hipRoot "bin\hipinfo.exe"
-            if ((Test-Path $hipinfoCandidate) -and (Test-HipinfoIsVenvInternal $hipinfoCandidate)) {
-                # ${hipEnvLabel} points into the venv (AMD wheel): not a HIP SDK.
-            } elseif (Test-Path $hipinfoCandidate) {
-                substep "[WARN] hipinfo not on PATH -- located via ${hipEnvLabel}: $hipinfoCandidate" "Yellow"
-                substep "       Add '$(Join-Path $hipRoot 'bin')' to your PATH to suppress this warning" "Yellow"
-                substep "       Quick fix: [Environment]::SetEnvironmentVariable('PATH',`$env:PATH+';$(Join-Path $hipRoot 'bin')','User')" "Yellow"
-                $hipinfoExe = [PSCustomObject]@{ Source = $hipinfoCandidate }
-            } else {
-                substep "[WARN] ${hipEnvLabel}=$hipRoot is set but hipinfo.exe not found at $hipinfoCandidate" "Yellow"
-                substep "       HIP SDK install may be incomplete -- re-install from:" "Yellow"
-                substep "       https://rocm.docs.amd.com/en/latest/deploy/windows/index.html" "Yellow"
+            if (-not (Test-Path $hipinfoCandidate)) {
+                if (-not $hipMissingLabel) { $hipMissingLabel = $hipEnvLabel; $hipMissingRoot = $hipRoot; $hipMissingCandidate = $hipinfoCandidate }
+                continue
             }
+            if (Test-HipinfoIsVenvInternal $hipinfoCandidate) { continue }   # venv copy (AMD wheel): not a HIP SDK
+            substep "[WARN] hipinfo not on PATH -- located via ${hipEnvLabel}: $hipinfoCandidate" "Yellow"
+            substep "       Add '$(Join-Path $hipRoot 'bin')' to your PATH to suppress this warning" "Yellow"
+            substep "       Quick fix: [Environment]::SetEnvironmentVariable('PATH',`$env:PATH+';$(Join-Path $hipRoot 'bin')','User')" "Yellow"
+            $hipinfoExe = [PSCustomObject]@{ Source = $hipinfoCandidate }
+            break
+        }
+        if ((-not $hipinfoExe) -and $hipMissingLabel) {
+            substep "[WARN] ${hipMissingLabel}=$hipMissingRoot is set but hipinfo.exe not found at $hipMissingCandidate" "Yellow"
+            substep "       HIP SDK install may be incomplete -- re-install from:" "Yellow"
+            substep "       https://rocm.docs.amd.com/en/latest/deploy/windows/index.html" "Yellow"
         }
     }
     if ($hipinfoExe) {
