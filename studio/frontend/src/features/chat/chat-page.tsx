@@ -94,6 +94,7 @@ import {
   RegisterCompareHandle,
   SharedComposer,
 } from "./shared-composer";
+import { BypassPermissionsConfirmDialog } from "./bypass-permissions-menu-item";
 import {
   CHAT_CODE_TOOLS_ENABLED_KEY,
   CHAT_IMAGE_TOOLS_ENABLED_KEY,
@@ -2235,6 +2236,12 @@ export function ChatPage({
       {/* Portaled surfaces render to document.body, escaping the parent's hidden
           wrapper, so gate them on `active` to keep them off other tabs. */}
       {active && <GuidedTour {...tour.tourProps} />}
+      {/* Single app-level mount for the Bypass permissions warning. It is driven
+          by global store state, so it must live at one stable root (not inside a
+          Composer) -- otherwise Compare mode's multiple composers would each
+          render their own copy and the shared-composer menu would have none. It
+          also portals to body, so gate it on `active` like the tour above. */}
+      {active && <BypassPermissionsConfirmDialog />}
       <div className="relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
         <NativeModelDropOverlay state={nativeModelDropState} />
         {/* Fade under the top bar so messages dissolve as they scroll

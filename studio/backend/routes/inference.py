@@ -1039,6 +1039,7 @@ def _detect_safetensors_features(backend, chat_template: Optional[str]) -> dict:
             "supports_reasoning": False,
             "reasoning_style": "enable_thinking",
             "reasoning_always_on": False,
+            "reasoning_effort_levels": [],
             "supports_preserve_thinking": False,
             "supports_tools": False,
         }
@@ -2243,6 +2244,7 @@ async def load_model(
                     native_context_length = llama_backend.native_context_length,
                     supports_reasoning = llama_backend.supports_reasoning,
                     reasoning_style = llama_backend.reasoning_style,
+                    reasoning_effort_levels = llama_backend.reasoning_effort_levels,
                     reasoning_always_on = llama_backend.reasoning_always_on,
                     supports_preserve_thinking = llama_backend.supports_preserve_thinking,
                     supports_tools = llama_backend.supports_tools,
@@ -2289,6 +2291,7 @@ async def load_model(
                     ),
                     supports_reasoning = _sf_supports_reasoning,
                     reasoning_style = _sf_reasoning_style,
+                    reasoning_effort_levels = _sf_flags.get("reasoning_effort_levels", []),
                     reasoning_always_on = _sf_flags["reasoning_always_on"],
                     supports_preserve_thinking = _sf_flags["supports_preserve_thinking"],
                     supports_tools = _sf_flags["supports_tools"],
@@ -2553,6 +2556,7 @@ async def load_model(
                 native_context_length = llama_backend.native_context_length,
                 supports_reasoning = llama_backend.supports_reasoning,
                 reasoning_style = llama_backend.reasoning_style,
+                reasoning_effort_levels = llama_backend.reasoning_effort_levels,
                 reasoning_always_on = llama_backend.reasoning_always_on,
                 supports_preserve_thinking = llama_backend.supports_preserve_thinking,
                 supports_tools = llama_backend.supports_tools,
@@ -2669,6 +2673,7 @@ async def load_model(
             requires_trust_remote_code = _requires_rc,
             supports_reasoning = _sf_flags["supports_reasoning"],
             reasoning_style = _sf_flags["reasoning_style"],
+            reasoning_effort_levels = _sf_flags.get("reasoning_effort_levels", []),
             reasoning_always_on = _sf_flags["reasoning_always_on"],
             supports_preserve_thinking = _sf_flags["supports_preserve_thinking"],
             supports_tools = _sf_flags["supports_tools"],
@@ -3122,9 +3127,13 @@ async def generate_stream(
                 log = logger,
             )
 
+    cancel_event = threading.Event()
+
     async def stream():
+        gen = None
+        completed = False
         try:
-            for chunk in backend.generate_chat_response(
+            gen = backend.generate_chat_response(
                 messages = request.messages,
                 system_prompt = request.system_prompt,
                 image = image,
@@ -3133,14 +3142,35 @@ async def generate_stream(
                 top_k = request.top_k,
                 max_new_tokens = request.max_new_tokens,
                 repetition_penalty = request.repetition_penalty,
-            ):
+                cancel_event = cancel_event,
+            )
+            _DONE = object()
+            while True:
+                chunk = await asyncio.to_thread(next, gen, _DONE)
+                if chunk is _DONE:
+                    break
                 yield f"data: {json.dumps({'content': chunk})}\n\n"
+            completed = True
             yield "data: [DONE]\n\n"
 
+        except asyncio.CancelledError:
+            cancel_event.set()
+            backend.reset_generation_state()
+            raise
         except Exception as e:
+            cancel_event.set()
             backend.reset_generation_state()
             logger.error(f"Error during generation: {e}", exc_info = True)
             yield f"data: {json.dumps({'error': _friendly_error(e)})}\n\n"
+        finally:
+            if not completed and not cancel_event.is_set():
+                cancel_event.set()
+                backend.reset_generation_state()
+            if gen is not None:
+                try:
+                    await asyncio.to_thread(gen.close)
+                except (RuntimeError, ValueError):
+                    pass
 
     return StreamingResponse(
         stream(),
@@ -3226,6 +3256,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 requires_trust_remote_code = False,
                 supports_reasoning = llama_backend.supports_reasoning,
                 reasoning_style = llama_backend.reasoning_style,
+                reasoning_effort_levels = llama_backend.reasoning_effort_levels,
                 reasoning_always_on = llama_backend.reasoning_always_on,
                 supports_preserve_thinking = llama_backend.supports_preserve_thinking,
                 supports_tools = llama_backend.supports_tools,
@@ -3286,6 +3317,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
             ),
             supports_reasoning = _sf_flags["supports_reasoning"],
             reasoning_style = _sf_flags["reasoning_style"],
+            reasoning_effort_levels = _sf_flags.get("reasoning_effort_levels", []),
             reasoning_always_on = _sf_flags["reasoning_always_on"],
             supports_preserve_thinking = _sf_flags["supports_preserve_thinking"],
             supports_tools = _sf_flags["supports_tools"],

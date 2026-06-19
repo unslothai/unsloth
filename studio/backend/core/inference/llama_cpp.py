@@ -552,6 +552,27 @@ _TOOL_TEMPLATE_MARKERS = (
 )
 
 
+# Canonical reasoning_effort levels, weakest -> strongest. Used to read the
+# discrete set a template branches on (e.g. GLM-5.2 uses 'high' | 'max') so we
+# only ever offer levels the template actually understands.
+_REASONING_EFFORT_SCALE = ("minimal", "low", "medium", "high", "max")
+
+
+def _extract_reasoning_effort_levels(chat_template: str) -> list:
+    """Return the reasoning_effort levels a template references, in canonical
+    (weakest -> strongest) order.
+
+    Looks for the quoted literals (e.g. ``'high'`` / ``"max"``) the template
+    compares ``reasoning_effort`` against, so we surface exactly the levels it
+    branches on and nothing else.
+    """
+    return [
+        level
+        for level in _REASONING_EFFORT_SCALE
+        if f"'{level}'" in chat_template or f'"{level}"' in chat_template
+    ]
+
+
 def detect_reasoning_flags(
     chat_template: Optional[str],
     model_identifier: Optional[str] = None,
@@ -571,6 +592,7 @@ def detect_reasoning_flags(
         "supports_reasoning": False,
         "reasoning_style": "enable_thinking",
         "reasoning_always_on": False,
+        "reasoning_effort_levels": [],
         "supports_preserve_thinking": False,
         "supports_tools": False,
     }
@@ -579,7 +601,25 @@ def detect_reasoning_flags(
     tpl = chat_template
     prefix = f"{log_source}: " if log_source else ""
 
-    if "enable_thinking" in tpl:
+    effort_levels = (
+        _extract_reasoning_effort_levels(tpl)
+        if ("reasoning_effort" in tpl and "enable_thinking" in tpl)
+        else []
+    )
+    if "enable_thinking" in tpl and "reasoning_effort" in tpl and effort_levels:
+        # GLM-5.2-style: an enable_thinking on/off gate PLUS a reasoning_effort
+        # level among a discrete set (e.g. 'high' | 'max'). Distinct from
+        # gpt-oss (reasoning_effort only, no on/off gate) and Qwen
+        # (enable_thinking only). Disabling is enable_thinking=false; the levels
+        # are the quoted effort literals the template actually branches on.
+        flags["supports_reasoning"] = True
+        flags["reasoning_style"] = "enable_thinking_effort"
+        flags["reasoning_effort_levels"] = effort_levels
+        logger.info(
+            f"{prefix}model supports reasoning "
+            f"(enable_thinking + reasoning_effort: {effort_levels})"
+        )
+    elif "enable_thinking" in tpl:
         flags["supports_reasoning"] = True
         flags["reasoning_style"] = "enable_thinking"
         logger.info(f"{prefix}model supports reasoning (enable_thinking)")
@@ -809,6 +849,23 @@ def _auto_mode_drops_mtp(
     if has_separate_drafter:
         return False
     return req_mode == "auto" and size_b is not None and size_b < _MTP_MIN_SIZE_B
+
+
+def _mla_mtp_auto_enabled() -> bool:
+    """Whether Auto may pick embedded MTP for an MLA model (GLM-5.2/DeepSeek/Kimi).
+
+    Off by default: llama.cpp's MLA/DSA MTP path keeps a duplicated full target-KV
+    context and recomputes the sparse-attention indexer every draft step, so it runs
+    ~2x slower than no speculation (GLM-5.2 bench: 27 vs 45 tok/s, flat across draft
+    depth and 96-100% acceptance) -- the opposite of the vLLM/SGLang speedup on the
+    same model. Set UNSLOTH_MLA_MTP_ENABLED=1 to let Auto promote MLA MTP again once
+    that path is optimized upstream. Forced mtp / mtp+ngram ignore this gate."""
+    return os.environ.get("UNSLOTH_MLA_MTP_ENABLED", "0").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
 
 
 def _extra_args_set_spec_type(extra_args: Optional[Iterable[str]]) -> bool:
@@ -1185,6 +1242,7 @@ class LlamaCppBackend:
         self._supports_reasoning: bool = False
         self._reasoning_always_on: bool = False
         self._reasoning_style: str = "enable_thinking"
+        self._reasoning_effort_levels: list = []
         self._supports_preserve_thinking: bool = False
         self._supports_tools: bool = False
         self._cache_type_kv: Optional[str] = None
@@ -1469,6 +1527,12 @@ class LlamaCppBackend:
         return self._reasoning_style
 
     @property
+    def reasoning_effort_levels(self) -> list:
+        """Discrete reasoning_effort levels the template offers (e.g. GLM-5.2's
+        ['high', 'max']). Empty unless reasoning_style == 'enable_thinking_effort'."""
+        return self._reasoning_effort_levels
+
+    @property
     def supports_preserve_thinking(self) -> bool:
         return self._supports_preserve_thinking
 
@@ -1477,6 +1541,10 @@ class LlamaCppBackend:
         return self._reasoning_default
 
     def _reasoning_kwargs(self, enable_thinking: bool) -> dict:
+        if self._reasoning_style == "enable_thinking_effort":
+            # GLM-5.2-style: enable_thinking is the on/off gate; when on, leave
+            # the template's default effort (max) in place.
+            return {"enable_thinking": enable_thinking}
         if self._reasoning_style == "reasoning_effort":
             return {"reasoning_effort": "high" if enable_thinking else "low"}
         return {"enable_thinking": enable_thinking}
@@ -1497,7 +1565,20 @@ class LlamaCppBackend:
         # Always-on reasoning models hardcode <think> tags and don't consume
         # enable_thinking / reasoning_effort -- skip.
         if self._supports_reasoning and not self._reasoning_always_on:
-            if self._reasoning_style == "reasoning_effort":
+            if self._reasoning_style == "enable_thinking_effort":
+                # GLM-5.2-style: enable_thinking gates thinking on/off, and the
+                # reasoning_effort level (e.g. 'high' | 'max') is only meaningful
+                # while thinking is on. Disabling is enable_thinking=false; a raw
+                # API caller can also disable via the OpenAI-style
+                # reasoning_effort="none" sentinel. We never coerce off into a
+                # 'low' effort the way gpt-oss does (those models genuinely
+                # cannot disable).
+                thinking_off = enable_thinking is False or reasoning_effort == "none"
+                if enable_thinking is not None or reasoning_effort == "none":
+                    kwargs["enable_thinking"] = not thinking_off
+                if not thinking_off and reasoning_effort in self._reasoning_effort_levels:
+                    kwargs["reasoning_effort"] = reasoning_effort
+            elif self._reasoning_style == "reasoning_effort":
                 if reasoning_effort in ("none", "low", "medium", "high"):
                     kwargs["reasoning_effort"] = reasoning_effort
                 elif reasoning_effort == "minimal":
@@ -1746,6 +1827,7 @@ class LlamaCppBackend:
                 [bin_path, "--help"],
                 capture_output = True,
                 text = True,
+                errors = "replace",
                 timeout = 10,
                 check = False,
                 env = probe_env,
@@ -2758,11 +2840,16 @@ class LlamaCppBackend:
         drafter_path: Optional[str] = None,
         draft_weights_bytes: int = 0,
         n_parallel: int = 1,
+        mtp_keeps_target_ctx: bool = True,
     ) -> Optional[int]:
         """MTP draft reserve at ``n_ctx`` = draft KV (grows with ctx) + separate-
-        drafter weights. The verify buffer rides in the ctx-fit headroom (no tuned
-        constant). None when the draft KV can't be sized (caller keeps the flat
-        fallback). ``draft_weights_bytes`` is the drafter file size (0 for embedded)."""
+        drafter weights + (MTP + MLA only) a duplicated target KV context. The
+        verify buffer rides in the ctx-fit headroom (no tuned constant). None when
+        the draft KV can't be sized (caller keeps the flat fallback).
+        ``draft_weights_bytes`` is the drafter file size (0 for embedded).
+        ``mtp_keeps_target_ctx`` is True for MTP draft modes (which keep the
+        duplicated target context) and False for separate-drafter spec modes
+        (draft-simple/draft-eagle3), which do not."""
         draft_kv = self._mtp_draft_kv_bytes(
             n_ctx,
             drafter_path = drafter_path,
@@ -2771,13 +2858,28 @@ class LlamaCppBackend:
             n_parallel = n_parallel,
         )
         weights = max(0, draft_weights_bytes)
+        # MLA models (GLM-5.x, DeepSeek, Kimi-K2) under MTP keep a *second* full copy
+        # of the target model's KV context for draft verification -- llama.cpp's
+        # `ctx_tgt=yes` -- allocated at f16 regardless of the main cache type. It is
+        # ~the main KV again and dwarfs the embedded draft head (GLM-5.2 @ 1M ctx:
+        # a ~2 GiB head next to a ~89 GiB target copy), so omitting it lets auto-fit
+        # pick a context that fits on paper but OOMs cublasCreate at the first
+        # decode. Gated on both MLA (kv_lora_rank present) and the engaged mode
+        # actually being MTP: non-MLA MTP (Qwen/Gemma) keeps no such copy, and the
+        # separate-drafter spec modes (draft-simple/draft-eagle3) load a small
+        # distinct drafter with its own KV -- already counted in draft_kv/weights --
+        # rather than duplicating the target, so they must not be charged for it.
+        target_ctx_copy = 0
+        if mtp_keeps_target_ctx and self._kv_lora_rank is not None:
+            target_ctx_copy = self._estimate_kv_cache_bytes(n_ctx, "f16", n_parallel = n_parallel)
         if draft_kv is None:
-            # KV unsized (exotic/remote drafter): still reserve known weights so a
-            # large drafter can't launch over budget (the small unsized KV rides in
-            # the cushion). Nothing known -> None, so the caller keeps the flat
-            # fallback.
-            return weights if weights > 0 else None
-        return draft_kv + weights
+            # KV unsized (exotic/remote drafter): still reserve known weights + any
+            # MLA target copy so a large config can't launch over budget (the small
+            # unsized draft KV rides in the cushion). Nothing known -> None, so the
+            # caller keeps the flat fallback.
+            total = weights + target_ctx_copy
+            return total if total > 0 else None
+        return draft_kv + weights + target_ctx_copy
 
     _DEFAULT_N_UBATCH = 512  # llama.cpp --ubatch default; Studio does not override it
     _COMPUTE_BUFFER_SAFETY = 1.15  # upper-bound margin on the compute-buffer estimate
@@ -2882,7 +2984,7 @@ class LlamaCppBackend:
         if model_footprint + kv + _mtp_at(requested_ctx) <= budget_bytes:
             return requested_ctx
 
-        # Weights alone exceed budget -- reducing ctx can't help; --fit handles it.
+        # Weights + compute buffer alone exceed budget -- reducing ctx can't help.
         if model_footprint >= budget_bytes:
             logger.debug(
                 "Model footprint exceeds GPU budget before KV cache",
@@ -3071,6 +3173,7 @@ class LlamaCppBackend:
         self._supports_reasoning = False
         self._reasoning_always_on = False
         self._reasoning_style = "enable_thinking"
+        self._reasoning_effort_levels = []
         self._reasoning_default = True
         self._supports_preserve_thinking = False
         self._supports_tools = False
@@ -3290,6 +3393,7 @@ class LlamaCppBackend:
                 )
                 self._supports_reasoning = flags["supports_reasoning"]
                 self._reasoning_style = flags["reasoning_style"]
+                self._reasoning_effort_levels = flags.get("reasoning_effort_levels", [])
                 self._reasoning_always_on = flags["reasoning_always_on"]
                 self._supports_preserve_thinking = flags["supports_preserve_thinking"]
                 self._supports_tools = flags["supports_tools"]
@@ -4729,6 +4833,7 @@ class LlamaCppBackend:
                         or bool(mtp_draft_path)
                     )
                     _mtp_binary_ok = True
+                    _mtp_probe_raised = False
                     if not _user_mtp_via_extras:
                         try:
                             _mtp_binary_ok = bool(
@@ -4736,19 +4841,32 @@ class LlamaCppBackend:
                             )
                         except Exception:
                             _mtp_binary_ok = False
-                    _mtp_will_engage = bool(
-                        _user_mtp_via_extras
-                        or _user_draft_via_extras
-                        or (
-                            not _extra_args_set_spec_type(extra_args)
-                            and _mtp_binary_ok
-                            and _mtp_model_for_fit
-                            and (
-                                _mtp_effective in ("mtp", "mtp+ngram")
-                                or (_mtp_effective == "auto" and not _mtp_sub_3b_for_fit)
-                            )
+                            _mtp_probe_raised = True
+                    _auto_studio_mtp = (
+                        not _extra_args_set_spec_type(extra_args)
+                        and _mtp_model_for_fit
+                        and (
+                            _mtp_effective in ("mtp", "mtp+ngram")
+                            or (_mtp_effective == "auto" and not _mtp_sub_3b_for_fit)
+                        )
+                        and (
+                            _mtp_binary_ok
+                            # Reserve on a raised (uncached) probe too: it re-probes in
+                            # _build_speculative_flags and may still engage MTP (embedded
+                            # head or separate drafter -- _mtp_model_for_fit covers both).
+                            or _mtp_probe_raised
                         )
                     )
+                    _mtp_will_engage = bool(
+                        _user_mtp_via_extras or _user_draft_via_extras or _auto_studio_mtp
+                    )
+                    # The duplicated full target-KV copy (ctx_tgt) is an MTP-only
+                    # cost: the MTP head runs a second context over the target
+                    # model's own KV geometry. The separate-drafter spec modes
+                    # (draft-simple/draft-eagle3, reached via _user_draft_via_extras)
+                    # load a small distinct drafter with its own KV and keep no such
+                    # copy, so only charge it when the engaged mode is truly MTP.
+                    _engaged_is_mtp = bool(_user_mtp_via_extras or _auto_studio_mtp)
 
                     # Effective draft depth: extras win (last-wins at launch), else
                     # the field, else the platform default (2 GPU / 3 CPU).
@@ -4817,6 +4935,7 @@ class LlamaCppBackend:
                                 drafter_path = _mtp_draft_for_budget,
                                 draft_weights_bytes = _mtp_draft_weights,
                                 n_parallel = n_parallel,
+                                mtp_keeps_target_ctx = _engaged_is_mtp,
                             )
                             is not None
                         ):
@@ -4832,6 +4951,7 @@ class LlamaCppBackend:
                                 _dp: Optional[str] = _mtp_draft_for_budget,
                                 _w: int = _mtp_draft_weights,
                                 _np: int = n_parallel,
+                                _mtp: bool = _engaged_is_mtp,
                             ) -> int:
                                 v = self._estimate_mtp_overhead_bytes(
                                     ctx,
@@ -4841,6 +4961,7 @@ class LlamaCppBackend:
                                     drafter_path = _dp,
                                     draft_weights_bytes = _w,
                                     n_parallel = _np,
+                                    mtp_keeps_target_ctx = _mtp,
                                 )
                                 return v if v is not None else 0
 
@@ -4902,6 +5023,22 @@ class LlamaCppBackend:
                         else 0.0
                     )
                     _pin_fraction = self._GPU_PIN_VRAM_FRACTION - _flat_mtp_reserve
+
+                    if tensor_parallel and effective_is_vision:
+                        logger.info(
+                            "Tensor parallelism skipped for vision model: "
+                            "--split-mode tensor is incompatible with --mmproj "
+                            "in the current llama.cpp build; using layer split."
+                        )
+                        tensor_parallel = False
+                        if _tensor_dropped_cache_type_kv is not None:
+                            cache_type_kv = _tensor_dropped_cache_type_kv
+                            _cache_type_from_env = False
+                        extra_args = strip_split_mode_only(
+                            _tensor_dropped_extra_args
+                            if _tensor_dropped_extra_args is not None
+                            else extra_args
+                        )
 
                     # Tensor mode replicates a compute buffer on every GPU, so drop
                     # GPUs below that reserve from the set up front (gpu_indices
@@ -5399,6 +5536,7 @@ class LlamaCppBackend:
                     )
                     self._supports_reasoning = flags["supports_reasoning"]
                     self._reasoning_style = flags["reasoning_style"]
+                    self._reasoning_effort_levels = flags.get("reasoning_effort_levels", [])
                     self._reasoning_always_on = flags["reasoning_always_on"]
                     self._supports_preserve_thinking = flags["supports_preserve_thinking"]
                     self._supports_tools = flags["supports_tools"]
@@ -6064,6 +6202,17 @@ class LlamaCppBackend:
         _mtp_too_small = (
             _mtp_size_b is not None and _mtp_size_b < _MTP_MIN_SIZE_B and not bool(mtp_draft_path)
         )
+        # Embedded MTP head on an MLA model (GLM-5.2/DeepSeek/Kimi, detected by
+        # kv_lora_rank): llama.cpp's MLA/DSA MTP path is ~2x slower than no spec,
+        # so Auto drops it (override via the Settings dropdown / forced mtp, or
+        # UNSLOTH_MLA_MTP_ENABLED=1). Separate drafters (Gemma, mtp_draft_path) and
+        # non-MLA embedded heads (Qwen, no kv_lora_rank) are unaffected.
+        _auto_mla_embedded_mtp = (
+            bool(self._nextn_predict_layers)
+            and self._kv_lora_rank is not None
+            and not bool(mtp_draft_path)
+            and not _mla_mtp_auto_enabled()
+        )
 
         if user_owns_spec_type:
             # User --spec-type wins outright; suppress auto-emit to avoid a
@@ -6207,7 +6356,30 @@ class LlamaCppBackend:
 
         # effective_mode == "auto": the promotion path. llama.cpp #22673:
         # MTP is compatible with mmproj, so there's no vision gate.
-        if is_mtp_model and not _mtp_too_small:
+        if _auto_mla_embedded_mtp:
+            # MLA embedded-MTP (GLM-5.2 et al.): the MTP path regresses vs spec-off
+            # on llama.cpp today, so Auto drops it and falls back to ngram-mod (or
+            # spec-off if unsupported), mirroring the sub-3B branch. Forced mtp /
+            # mtp+ngram (handled above) still engage; UNSLOTH_MLA_MTP_ENABLED=1
+            # re-enables this promotion once upstream optimizes the path.
+            self._spec_fallback_reason = "mla_mtp_disabled"
+            _mla_caps = self.probe_server_capabilities(binary)
+            if _mla_caps.get("supports_ngram_mod"):
+                logger.info(
+                    "Auto: MLA embedded-MTP model detected; llama.cpp's MLA/DSA "
+                    "MTP path is slower than no speculation, so using ngram-mod "
+                    "instead. Override via the Studio Speculative Decoding "
+                    "dropdown or UNSLOTH_MLA_MTP_ENABLED=1."
+                )
+                _emit_ngram_mod()
+            else:
+                logger.info(
+                    "Auto: MLA embedded-MTP model detected; disabling speculative "
+                    "decoding (this llama-server does not advertise ngram-mod). "
+                    "Override via the dropdown or UNSLOTH_MLA_MTP_ENABLED=1."
+                )
+                # spec-off: emit nothing, mirroring the sub-3B no-ngram path.
+        elif is_mtp_model and not _mtp_too_small:
             # GPU: MTP-only. CPU/Mac: chain ngram-mod + MTP.
             _emit_mtp(chain_ngram = not gpus)
         elif is_mtp_model and _mtp_too_small:
@@ -6388,6 +6560,7 @@ class LlamaCppBackend:
             self._supports_reasoning = False
             self._reasoning_always_on = False
             self._reasoning_style = "enable_thinking"
+            self._reasoning_effort_levels = []
             self._reasoning_default = True
             self._supports_preserve_thinking = False
             self._supports_tools = False

@@ -137,7 +137,8 @@ export interface LoadModelResponse {
   max_context_length?: number | null;
   native_context_length?: number | null;
   supports_reasoning?: boolean;
-  reasoning_style?: "enable_thinking" | "reasoning_effort";
+  reasoning_style?: "enable_thinking" | "reasoning_effort" | "enable_thinking_effort";
+  reasoning_effort_levels?: string[];
   reasoning_always_on?: boolean;
   supports_preserve_thinking?: boolean;
   supports_tools?: boolean;
@@ -176,7 +177,8 @@ export interface InferenceStatusResponse {
   } | null;
   requires_trust_remote_code?: boolean;
   supports_reasoning?: boolean;
-  reasoning_style?: "enable_thinking" | "reasoning_effort";
+  reasoning_style?: "enable_thinking" | "reasoning_effort" | "enable_thinking_effort";
+  reasoning_effort_levels?: string[];
   reasoning_always_on?: boolean;
   supports_preserve_thinking?: boolean;
   supports_tools?: boolean;
@@ -194,7 +196,10 @@ export interface InferenceStatusResponse {
   /**
    * Why MTP was disabled on the loaded model despite being requested.
    * "binary_no_mtp" / "binary_outdated" -> updating llama.cpp would re-enable
-   * it; "runtime_error" -> the current build could not run it. Null otherwise.
+   * it; "runtime_error" -> the current build could not run it;
+   * "mla_mtp_disabled" -> an Auto-mode policy downgrade for MLA models
+   * (GLM-5.2 et al.) whose llama.cpp MTP path is slower than no speculation
+   * (updating won't help; choose MTP in Settings to force it). Null otherwise.
    */
   spec_fallback_reason?: string | null;
 }
