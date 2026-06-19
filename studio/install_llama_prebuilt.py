@@ -2873,12 +2873,14 @@ def _nvidia_smi_capture(
     CPU-only hosts never incur this wait.
     """
     last_exc: Exception | None = None
-    for _attempt in range(max(1, attempts)):
+    _attempts = max(1, attempts)
+    for _attempt in range(_attempts):
         try:
             return run_capture(command, timeout = timeout)
         except subprocess.TimeoutExpired as exc:
             last_exc = exc
-            time.sleep(2)
+            if _attempt + 1 < _attempts:  # don't sleep after the final attempt
+                time.sleep(2)
     raise last_exc if last_exc is not None else RuntimeError("nvidia-smi capture failed")
 
 
