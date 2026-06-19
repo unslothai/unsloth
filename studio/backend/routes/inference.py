@@ -3161,9 +3161,10 @@ async def generate_stream(
             logger.error(f"Error during generation: {e}", exc_info = True)
             yield f"data: {json.dumps({'error': _friendly_error(e)})}\n\n"
         finally:
+            cancel_event.set()
             if gen is not None:
                 try:
-                    gen.close()
+                    await asyncio.to_thread(gen.close)
                 except (RuntimeError, ValueError):
                     pass
 

@@ -520,8 +520,36 @@ def test_generate_stream_cancels_backend_on_stream_cancelled_error():
             break
     assert inner is not None, "generate_stream inner stream() generator missing"
 
+    def _awaits_to_thread_gen_close(node: ast.AST) -> bool:
+        for sub in ast.walk(node):
+            if not isinstance(sub, ast.Await):
+                continue
+            call = sub.value
+            if not isinstance(call, ast.Call):
+                continue
+            fn_expr = call.func
+            if not (
+                isinstance(fn_expr, ast.Attribute)
+                and fn_expr.attr == "to_thread"
+                and isinstance(fn_expr.value, ast.Name)
+                and fn_expr.value.id == "asyncio"
+            ):
+                continue
+            if not call.args:
+                continue
+            close_expr = call.args[0]
+            if (
+                isinstance(close_expr, ast.Attribute)
+                and close_expr.attr == "close"
+                and isinstance(close_expr.value, ast.Name)
+                and close_expr.value.id == "gen"
+            ):
+                return True
+        return False
+
     found_cancel_kwarg = False
     found_cancel_handler = False
+    found_finally_cleanup = False
     for sub in ast.walk(inner):
         if isinstance(sub, ast.Call):
             call_src = ast.unparse(sub.func)
@@ -542,6 +570,11 @@ def test_generate_stream_cancels_backend_on_stream_cancelled_error():
                 and "backend.reset_generation_state()" in body_src
                 and any(isinstance(stmt, ast.Raise) and stmt.exc is None for stmt in sub.body)
             )
+        if isinstance(sub, ast.Try) and sub.finalbody:
+            final_src = "\n".join(ast.unparse(stmt) for stmt in sub.finalbody)
+            found_finally_cleanup = (
+                "cancel_event.set()" in final_src and _awaits_to_thread_gen_close(sub)
+            )
 
     assert found_cancel_kwarg, (
         "generate_stream must pass cancel_event into backend.generate_chat_response "
@@ -550,6 +583,10 @@ def test_generate_stream_cancels_backend_on_stream_cancelled_error():
     assert found_cancel_handler, (
         "generate_stream must catch asyncio.CancelledError, set cancel_event, "
         "reset backend state, and re-raise"
+    )
+    assert found_finally_cleanup, (
+        "generate_stream cleanup must set cancel_event and offload gen.close() "
+        "with asyncio.to_thread so backend joins cannot block the event loop"
     )
 
 
