@@ -121,6 +121,21 @@ def _clean_state(monkeypatch, tmp_path):
     monkeypatch.delenv("UNSLOTH_LLAMA_CPP_PATH", raising = False)
     # Never hit the network in these tests.
     monkeypatch.setattr(freshness, "_fetch_latest_release_tag", lambda repo, timeout = 5.0: None)
+    # Default to no live inference backend: on a fully-installed host
+    # `from routes.inference import get_llama_cpp_backend` (inside _run_update)
+    # imports a real Studio singleton and blocks on its load lock, making the
+    # worker tests hang/flake by host. This is the CI/fail-open path; the
+    # load-coordination tests inject their own backend over this default.
+    _routes_pkg = ModuleType("routes")
+    _routes_pkg.__path__ = []
+    _inference_mod = ModuleType("routes.inference")
+
+    def _no_backend_in_tests():
+        raise RuntimeError("no inference backend in unit tests")
+
+    _inference_mod.get_llama_cpp_backend = _no_backend_in_tests
+    monkeypatch.setitem(sys.modules, "routes", _routes_pkg)
+    monkeypatch.setitem(sys.modules, "routes.inference", _inference_mod)
     yield
     freshness.reset_caches()
     upd._reset_job_for_tests()
