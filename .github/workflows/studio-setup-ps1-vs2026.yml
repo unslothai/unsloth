@@ -1,0 +1,74 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+# Pure-logic unit tests for studio/setup.ps1 Visual Studio 2026 support on the
+# free windows-latest runner. No Visual Studio, CUDA, or GPU required - the
+# functions under test are pure:
+#   - Get-VcBuildCustomizationsDir : VC MSBuild folder derivation (v160/v170/v180)
+#   - Test-CmakeSupportsGenerator  : CMake >= 4.2 gate for the VS 2026 generator
+# Individual functions are extracted from setup.ps1 and dot-sourced (the script
+# is a top-level installer and cannot be loaded wholesale).
+
+name: Windows Studio setup.ps1 unit tests
+
+on:
+  pull_request:
+    paths:
+      - 'studio/setup.ps1'
+      - 'tests/studio_setup_ps1/**'
+      - '.github/workflows/studio-setup-ps1-vs2026.yml'
+  push:
+    branches: [main, pip]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  pester:
+    name: setup.ps1 unit tests (VS 2026 / CMake guard)
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install Pester v5
+        shell: pwsh
+        run: |
+          Set-PSRepository PSGallery -InstallationPolicy Trusted
+          Install-Module Pester -MinimumVersion 5.5.0 -Force -SkipPublisherCheck -Scope CurrentUser
+          Import-Module Pester -MinimumVersion 5.5.0
+          Get-Module Pester | Select-Object Name, Version | Format-Table
+
+      - name: Run Pester suite
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $testDir = Join-Path $env:GITHUB_WORKSPACE 'tests/studio_setup_ps1'
+          if (-not (Test-Path $testDir)) {
+              Write-Error "Test directory not found: $testDir"
+              exit 1
+          }
+          $cfg = New-PesterConfiguration
+          $cfg.Run.Path                = $testDir
+          $cfg.Run.Exit                = $true   # non-zero exit => job fails
+          $cfg.Run.Throw               = $true   # also throw on test failure / 0 tests
+          $cfg.TestResult.Enabled      = $true
+          $cfg.TestResult.OutputFormat = 'NUnitXml'
+          $cfg.TestResult.OutputPath   = Join-Path $env:GITHUB_WORKSPACE 'pester-results.xml'
+          $cfg.Output.Verbosity        = 'Detailed'
+          Invoke-Pester -Configuration $cfg
+
+      - name: Upload Pester results
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: pester-results-setup-ps1
+          path: pester-results.xml
+          if-no-files-found: warn

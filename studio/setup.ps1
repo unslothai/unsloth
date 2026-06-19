@@ -389,6 +389,49 @@ function Get-PytorchCudaTag {
     return "cu126"
 }
 
+# Derive the MSBuild VC "BuildCustomizations" directory for a Visual Studio
+# generator. The VC toolset folder tracks the VS major: VS 2026 (generator major
+# 18) -> v180, VS 2022 -> v170, VS 2019 -> v160. Falls back to v170 (VS 2022)
+# when the major cannot be parsed, preserving prior behavior.
+function Get-VcBuildCustomizationsDir {
+    param(
+        [Parameter(Mandatory)][string]$VsInstallPath,
+        [string]$Generator
+    )
+    $toolset = 'v170'
+    if ($Generator -and ($Generator -match 'Visual Studio (\d+)\b')) {
+        $toolset = "v$($Matches[1])0"
+    }
+    return (Join-Path $VsInstallPath "MSBuild\Microsoft\VC\$toolset\BuildCustomizations")
+}
+
+# Parse the installed CMake version (e.g. "cmake version 4.2.1" -> [version]4.2.1).
+# Returns $null when cmake is absent or its version is unparseable.
+function Get-CmakeVersion {
+    $raw = & cmake --version 2>$null | Select-Object -First 1
+    if ($raw -and ($raw -match '(\d+)\.(\d+)(?:\.(\d+))?')) {
+        $patch = if ($Matches[3]) { $Matches[3] } else { '0' }
+        return [version]"$($Matches[1]).$($Matches[2]).$patch"
+    }
+    return $null
+}
+
+# CMake version gate for a Visual Studio generator. The "Visual Studio 18 2026"
+# generator was added in CMake 4.2; an older cmake cannot drive a VS 2026
+# toolchain. Always true (no-op) for VS 2022/2019/2017 generators.
+function Test-CmakeSupportsGenerator {
+    param(
+        [Parameter(Mandatory)][string]$CmakeVersion,
+        [Parameter(Mandatory)][string]$Generator
+    )
+    if ($Generator -match 'Visual Studio 18\b') {
+        $clean = ($CmakeVersion -replace '[^0-9.].*$', '').TrimEnd('.')
+        try { $v = [version]$clean } catch { return $false }
+        return ($v -ge [version]'4.2')
+    }
+    return $true
+}
+
 # Find Visual Studio Build Tools for cmake -G flag.
 # Strategy: (1) vswhere, (2) scan filesystem (handles broken vswhere registration).
 # Returns @{ Generator = "Visual Studio 17 2022"; InstallPath = "C:\..."; Source = "..." } or $null.
@@ -1188,6 +1231,31 @@ if ($vsResult) {
     exit 1
 }
 
+# -- CMake version guard for the Visual Studio 2026 generator --
+# The "Visual Studio 18 2026" cmake generator needs CMake 4.2+. Upgrade via
+# winget if possible, else fail clearly. No-op for VS 2022/2019/2017.
+if ($CmakeGenerator -eq 'Visual Studio 18 2026') {
+    $cmakeVerObj = Get-CmakeVersion
+    $cmakeVerStr = if ($cmakeVerObj) { $cmakeVerObj.ToString() } else { '0.0' }
+    if (-not (Test-CmakeSupportsGenerator -CmakeVersion $cmakeVerStr -Generator $CmakeGenerator)) {
+        substep "CMake $cmakeVerStr too old for Visual Studio 2026 (need 4.2+) -- upgrading via winget..." "Yellow"
+        if ($null -ne (Get-Command winget -ErrorAction SilentlyContinue)) {
+            try {
+                Invoke-SetupCommand { winget upgrade Kitware.CMake --source winget --accept-package-agreements --accept-source-agreements } | Out-Null
+                Refresh-Environment
+            } catch { }
+            $cmakeVerObj = Get-CmakeVersion
+            $cmakeVerStr = if ($cmakeVerObj) { $cmakeVerObj.ToString() } else { '0.0' }
+        }
+        if (-not (Test-CmakeSupportsGenerator -CmakeVersion $cmakeVerStr -Generator $CmakeGenerator)) {
+            Write-Host "[ERROR] CMake 4.2+ is required for Visual Studio 2026." -ForegroundColor Red
+            Write-Host "        Upgrade CMake from https://cmake.org/download/ and re-run." -ForegroundColor Red
+            exit 1
+        }
+    }
+    step "cmake" "$cmakeVerStr (Visual Studio 2026 generator supported)"
+}
+
 # ============================================
 # 1e. CUDA Toolkit (nvcc for llama.cpp build + env vars)
 # ============================================
@@ -1428,7 +1496,7 @@ if (Add-ToUserPath -Directory $nvccBinDir -Position 'Prepend') {
 # the MSBuild .targets/.props files that let VS compile .cu files are missing.
 # cmake fails with "No CUDA toolset found". Fix: copy from CUDA extras dir.
 if ($VsInstallPath -and $CudaToolkitRoot) {
-    $vsCustomizations = Join-Path $VsInstallPath "MSBuild\Microsoft\VC\v170\BuildCustomizations"
+    $vsCustomizations = Get-VcBuildCustomizationsDir -VsInstallPath $VsInstallPath -Generator $CmakeGenerator
     $cudaExtras = Join-Path $CudaToolkitRoot "extras\visual_studio_integration\MSBuildExtensions"
     if ((Test-Path $cudaExtras) -and (Test-Path $vsCustomizations)) {
         $hasTargets = Get-ChildItem $vsCustomizations -Filter "CUDA *.targets" -ErrorAction SilentlyContinue
@@ -3339,7 +3407,8 @@ if (-not $NeedLlamaSourceBuild) {
                 Write-Host "   Copy contents of:" -ForegroundColor Yellow
                 Write-Host "     <CUDA_PATH>\extras\visual_studio_integration\MSBuildExtensions" -ForegroundColor Yellow
                 Write-Host "   into:" -ForegroundColor Yellow
-                Write-Host "     <VS_PATH>\MSBuild\Microsoft\VC\v170\BuildCustomizations" -ForegroundColor Yellow
+                $hintCustomizations = if ($VsInstallPath) { Get-VcBuildCustomizationsDir -VsInstallPath $VsInstallPath -Generator $CmakeGenerator } else { "<VS_PATH>\MSBuild\Microsoft\VC\v170\BuildCustomizations" }
+                Write-Host "     $hintCustomizations" -ForegroundColor Yellow
             }
         }
     }
