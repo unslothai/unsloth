@@ -1576,6 +1576,42 @@ if ! command -v uv >/dev/null 2>&1 || ! _uv_version_ok uv; then
     export PATH="$HOME/.local/bin:$PATH"
 fi
 
+# Strix Halo WSL GPU (ROCm-on-WSL) only targets Ubuntu 24.04. If this distro is
+# newer (e.g. 26.04) but a 24.04 distro exists, re-run the install there and stop;
+# else fall through to CPU + the `wsl --install` hint below (never auto-create a
+# distro). Runs before the STUDIO_HOME mkdir/venv so the origin distro is untouched.
+_maybe_reroute_strixhalo_to_2404() {
+    [ "${OS:-}" = "wsl" ] || return 0
+    [ "${SKIP_TORCH:-false}" = "false" ] || return 0
+    [ "${UNSLOTH_SKIP_ROCM_WSL_SETUP:-0}" = "1" ] && return 0
+    [ "${UNSLOTH_WSL_REROUTED:-0}" = "1" ] && return 0
+    [ -e /dev/dxg ] || return 0
+    grep -qiE 'Ryzen AI Max|Radeon 80[0-9]0S|Strix Halo' /proc/cpuinfo 2>/dev/null || return 0
+    # Already ROCm-on-WSL? leave a working GPU alone, whatever the version.
+    if [ -e /opt/rocm/lib/librocdxg.so ] || [ -e /opt/rocm/lib64/librocdxg.so ]; then
+        return 0
+    fi
+    _rr_ver=""
+    [ -r /etc/os-release ] && _rr_ver=$(. /etc/os-release 2>/dev/null; printf '%s' "${VERSION_ID:-}")
+    [ "$_rr_ver" = "24.04" ] && return 0
+    command -v wsl.exe >/dev/null 2>&1 || return 0
+    # Route only to an already-installed 24.04.
+    wsl.exe -l -q 2>/dev/null | tr -d '\000\r' | grep -qiF "Ubuntu-24.04" || return 0
+
+    echo ""
+    substep "ROCm-on-WSL (GPU) needs Ubuntu 24.04; this distro is Ubuntu ${_rr_ver:-unknown}." "$C_WARN"
+    substep "Found an existing Ubuntu-24.04 distro -- continuing the GPU install there." "$C_OK"
+    _rr_cmd="${UNSLOTH_WSL_REROUTE_CMD:-curl -fsSL https://unsloth.ai/install.sh | sh}"
+    if wsl.exe -d "Ubuntu-24.04" -- bash -lc "export UNSLOTH_WSL_REROUTED=1; $_rr_cmd"; then
+        exit 0
+    fi
+    substep "Could not auto-continue in Ubuntu-24.04; run it yourself:" "$C_WARN"
+    substep "  wsl -d Ubuntu-24.04 -- bash -lc 'curl -fsSL https://unsloth.ai/install.sh | sh'"
+    substep "Continuing CPU-only in Ubuntu ${_rr_ver:-this distro} for now." "$C_WARN"
+    return 0
+}
+_maybe_reroute_strixhalo_to_2404 || true
+
 # ── Create venv (migrate old layout if possible, otherwise fresh) ──
 tauri_log "STEP" "Creating virtual environment"
 mkdir -p "$STUDIO_HOME"
@@ -1646,42 +1682,6 @@ if [ "$SKIP_TORCH" = true ] && [ "$MAC_INTEL" = true ] && [ -z "$_USER_PYTHON" ]
         rm -rf "$VENV_DIR"
     fi
 fi
-
-# Strix Halo WSL GPU (ROCm-on-WSL) only targets Ubuntu 24.04. If this distro is
-# newer (e.g. 26.04) but a 24.04 distro exists, re-run the install there and stop;
-# else fall through to CPU + the `wsl --install` hint below (never auto-create a
-# distro). Runs before venv so the wrong distro is left untouched.
-_maybe_reroute_strixhalo_to_2404() {
-    [ "${OS:-}" = "wsl" ] || return 0
-    [ "${SKIP_TORCH:-false}" = "false" ] || return 0
-    [ "${UNSLOTH_SKIP_ROCM_WSL_SETUP:-0}" = "1" ] && return 0
-    [ "${UNSLOTH_WSL_REROUTED:-0}" = "1" ] && return 0
-    [ -e /dev/dxg ] || return 0
-    grep -qiE 'Ryzen AI Max|Radeon 80[0-9]0S|Strix Halo' /proc/cpuinfo 2>/dev/null || return 0
-    # Already ROCm-on-WSL? leave a working GPU alone, whatever the version.
-    if [ -e /opt/rocm/lib/librocdxg.so ] || [ -e /opt/rocm/lib64/librocdxg.so ]; then
-        return 0
-    fi
-    _rr_ver=""
-    [ -r /etc/os-release ] && _rr_ver=$(. /etc/os-release 2>/dev/null; printf '%s' "${VERSION_ID:-}")
-    [ "$_rr_ver" = "24.04" ] && return 0
-    command -v wsl.exe >/dev/null 2>&1 || return 0
-    # Route only to an already-installed 24.04.
-    wsl.exe -l -q 2>/dev/null | tr -d '\000\r' | grep -qiF "Ubuntu-24.04" || return 0
-
-    echo ""
-    substep "ROCm-on-WSL (GPU) needs Ubuntu 24.04; this distro is Ubuntu ${_rr_ver:-unknown}." "$C_WARN"
-    substep "Found an existing Ubuntu-24.04 distro -- continuing the GPU install there." "$C_OK"
-    _rr_cmd="${UNSLOTH_WSL_REROUTE_CMD:-curl -fsSL https://unsloth.ai/install.sh | sh}"
-    if wsl.exe -d "Ubuntu-24.04" -- bash -lc "export UNSLOTH_WSL_REROUTED=1; $_rr_cmd"; then
-        exit 0
-    fi
-    substep "Could not auto-continue in Ubuntu-24.04; run it yourself:" "$C_WARN"
-    substep "  wsl -d Ubuntu-24.04 -- bash -lc 'curl -fsSL https://unsloth.ai/install.sh | sh'"
-    substep "Continuing CPU-only in Ubuntu ${_rr_ver:-this distro} for now." "$C_WARN"
-    return 0
-}
-_maybe_reroute_strixhalo_to_2404 || true
 
 if [ ! -x "$VENV_DIR/bin/python" ]; then
     step "venv" "creating Python ${PYTHON_VERSION} virtual environment"
