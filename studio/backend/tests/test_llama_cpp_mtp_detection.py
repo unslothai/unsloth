@@ -1584,14 +1584,14 @@ def test_spec_fallback_reason_drafter_not_found(monkeypatch):
     # to ngram-mod and set drafter_not_found.
     backend = _resolver_backend(monkeypatch)
     flags = backend._build_speculative_flags(
-        speculative_type="auto",
-        spec_draft_n_max=None,
-        extra_args=None,
-        model_identifier="unsloth/gemma-4-E4B-it-GGUF",
-        model_path=None,
-        gpus=True,
-        binary="/fake/llama-server",
-        mtp_draft_path=None,  # Drafter download failed
+        speculative_type = "auto",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = "unsloth/gemma-4-E4B-it-GGUF",
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+        mtp_draft_path = None,  # Drafter download failed
     )
     parsed = _flags_dict(flags)
     assert parsed.get("--spec-type") == "ngram-mod"

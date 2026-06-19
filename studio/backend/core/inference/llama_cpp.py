@@ -658,9 +658,7 @@ def detect_reasoning_flags(
 
 
 # Gemma model families known to ship separate MTP drafters.
-_GEMMA_MTP_FAMILY_RE = re.compile(
-    r"gemma[-_]?(?:3n|4)[-_]", re.IGNORECASE
-)
+_GEMMA_MTP_FAMILY_RE = re.compile(r"gemma[-_]?(?:3n|4)[-_]", re.IGNORECASE)
 
 
 def _is_gemma_mtp_family(name: str) -> bool:
@@ -6336,7 +6334,7 @@ class LlamaCppBackend:
             _has_mtp_capability = True
             if _is_gemma_mtp_family(model_identifier) and not mtp_draft_path:
                 _has_mtp_capability = False
-            
+
             if _has_mtp_capability:
                 # GPU: MTP-only. CPU/Mac: chain ngram-mod + MTP.
                 _emit_mtp(chain_ngram = not gpus)
@@ -6362,7 +6360,7 @@ class LlamaCppBackend:
             _has_mtp_capability = True
             if _is_gemma_mtp_family(model_identifier) and not mtp_draft_path:
                 _has_mtp_capability = False
-            
+
             _small_caps = self.probe_server_capabilities(binary)
             if not _has_mtp_capability:
                 logger.warning(
