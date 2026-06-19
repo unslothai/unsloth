@@ -40,7 +40,24 @@ def _split_scope(split_name: str | None) -> str:
 def _drop_invalid_text_rows(
     dataset: Dataset, *, mode_title: str, split_scope: str
 ) -> tuple[Dataset, list[RawTextNotice]]:
+    # Lazy filter — drops rows whose 'text' is null/non-string before they reach
+    # the tokenizer. Works on both Dataset and streaming IterableDataset.
     filtered_dataset = dataset.filter(lambda ex: isinstance(ex["text"], str))
+
+    # Streaming datasets (IterableDataset) have no __len__, so we can't count the
+    # dropped rows or verify the result is non-empty without consuming the whole
+    # stream. Keep the filter, skip only the len()-based diagnostics.
+    if not hasattr(dataset, "__len__"):
+        return filtered_dataset, [
+            RawTextNotice(
+                message = (
+                    f"{mode_title}: streaming dataset — rows with null or "
+                    f"non-string 'text' in {split_scope} are dropped on the fly."
+                ),
+                level = "info",
+            )
+        ]
+
     dropped_rows = len(dataset) - len(filtered_dataset)
     if not dropped_rows:
         return filtered_dataset, []

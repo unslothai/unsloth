@@ -3,6 +3,7 @@
 
 import { SectionCard } from "@/components/section-card";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Collapsible,
   CollapsibleContent,
@@ -175,6 +176,7 @@ export function DatasetSection() {
     evalSteps,
     isVisionModel,
     isAudioModel,
+    isEmbeddingModel,
     isDatasetImage,
     isDatasetAudio,
     uploadedFile,
@@ -208,6 +210,7 @@ export function DatasetSection() {
       evalSteps: s.evalSteps,
       isVisionModel: s.isVisionModel,
       isAudioModel: s.isAudioModel,
+      isEmbeddingModel: s.isEmbeddingModel,
       isDatasetImage: s.isDatasetImage,
       isDatasetAudio: s.isDatasetAudio,
       uploadedFile: s.uploadedFile,
@@ -222,25 +225,41 @@ export function DatasetSection() {
     })),
   );
 
-  // Streaming is only supported for Hugging Face text datasets.
-  // Hide the toggle for vision/audio models or datasets detected as multimodal,
-  // since downstream preprocessing (convert_to_vlm_format, audio collators)
-  // requires random access and would crash on an IterableDataset.
-  const isStreamingSupported =
-    datasetSource === "huggingface" &&
-    maxSteps > 0 &&
-    !trainOnCompletions &&
-    hasSeparateStreamingEvalSplit({ evalSteps, datasetSplit, datasetEvalSplit }) &&
-    // Raw-text / CPT mode preprocesses via a finite-length code path
-    // (prepare_raw_text_dataset -> len(dataset)) that crashes on an
-    // IterableDataset, so streaming is unsupported there. CPT always forces
-    // datasetFormat="raw", so this single check covers both cases; the backend
-    // also rejects format_type=="raw" / Continued Pretraining defensively.
-    datasetFormat !== "raw" &&
-    !isVisionModel &&
-    !isAudioModel &&
-    !isDatasetImage &&
-    !isDatasetAudio;
+  // Streaming is only supported for Hugging Face text datasets. Rather than
+  // hiding the toggle when a constraint isn't met, keep it visible but disabled
+  // and list the exact unmet requirement(s) in its tooltip — a control that
+  // silently disappears is confusing. Downstream preprocessing
+  // (convert_to_vlm_format, audio collators) needs random access and would
+  // crash on an IterableDataset, hence the constraints below.
+  const streamingBlockers: string[] = [];
+  if (datasetSource !== "huggingface")
+    streamingBlockers.push(
+      "Use a Hugging Face dataset (not a local upload or S3 source).",
+    );
+  if (maxSteps <= 0)
+    streamingBlockers.push(
+      "Set Max Steps > 0 — streaming datasets have no known length.",
+    );
+  if (trainOnCompletions)
+    streamingBlockers.push('Turn off "Assistant completions only".');
+  if (!hasSeparateStreamingEvalSplit({ evalSteps, datasetSplit, datasetEvalSplit }))
+    streamingBlockers.push(
+      "Pick a separate eval split — evaluation is on but no distinct eval split is set.",
+    );
+  if (isVisionModel)
+    streamingBlockers.push("Vision models don't support streaming.");
+  if (isAudioModel)
+    streamingBlockers.push("Audio models don't support streaming.");
+  if (isEmbeddingModel)
+    streamingBlockers.push(
+      "Embedding models don't support streaming (training needs the full dataset).",
+    );
+  if (isDatasetImage)
+    streamingBlockers.push("This dataset looks like images, which can't stream.");
+  if (isDatasetAudio)
+    streamingBlockers.push("This dataset looks like audio, which can't stream.");
+
+  const isStreamingSupported = streamingBlockers.length === 0;
 
   // If streaming was previously enabled but the config became incompatible
   // (model switched to vision, dataset detected as image, etc.), clear it so
@@ -1162,43 +1181,56 @@ export function DatasetSection() {
                     </SelectContent>
                   </Select>
                 </div>
-                {isStreamingSupported && (
-                  <div className="flex flex-col gap-2">
-                    <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                      Streaming Mode
-                      <Tooltip>
-                        <TooltipTrigger asChild={true}>
-                          <button
-                            type="button"
-                            className="text-foreground/70 hover:text-foreground"
-                          >
-                            <HugeiconsIcon
-                              icon={InformationCircleIcon}
-                              className="size-3"
-                            />
-                          </button>
-                        </TooltipTrigger>
-                        <TooltipContent>
-                          Load Hugging Face datasets using streaming mode. Requires max_steps &gt; 0 and a separate eval split when evaluation is enabled.
-                        </TooltipContent>
-                      </Tooltip>
-                    </span>
-
-                    <label className="flex items-center gap-2 rounded-lg border bg-muted/20 px-3 py-2 text-sm">
-                      <input
-                        type="checkbox"
-                        checked={datasetStreaming}
-                        onChange={(e) => setDatasetStreaming(e.target.checked)}
-                        className="h-4 w-4"
-                      />
-                      <span>Enable streaming</span>
-                    </label>
-
-                    <p className="text-[10px] text-muted-foreground/80">
-                      Only applies to Hugging Face text datasets.
-                    </p>
-                  </div>
-                )}
+                <div className="flex items-center gap-2">
+                  <Checkbox
+                    id="datasetStreaming"
+                    checked={datasetStreaming}
+                    disabled={!isStreamingSupported}
+                    onCheckedChange={(v) => setDatasetStreaming(!!v)}
+                  />
+                  <label
+                    htmlFor="datasetStreaming"
+                    className={`text-xs text-muted-foreground ${
+                      isStreamingSupported
+                        ? "cursor-pointer"
+                        : "cursor-not-allowed opacity-60"
+                    }`}
+                  >
+                    Enable streaming
+                  </label>
+                  <Tooltip>
+                    <TooltipTrigger asChild={true}>
+                      <button
+                        type="button"
+                        className="text-foreground/70 hover:text-foreground"
+                      >
+                        <HugeiconsIcon
+                          icon={InformationCircleIcon}
+                          className="size-3"
+                        />
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      {isStreamingSupported ? (
+                        <span>
+                          Stream Hugging Face text datasets instead of
+                          downloading them.
+                        </span>
+                      ) : (
+                        <div className="max-w-xs">
+                          <p className="font-medium">
+                            Streaming unavailable. To enable:
+                          </p>
+                          <ul className="mt-1 list-disc space-y-0.5 pl-4">
+                            {streamingBlockers.map((reason) => (
+                              <li key={reason}>{reason}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                    </TooltipContent>
+                  </Tooltip>
+                </div>
                 <div className="grid grid-cols-2 gap-3">
                   <div className="flex flex-col gap-1.5">
                     <span className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">

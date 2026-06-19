@@ -2619,11 +2619,19 @@ class UnslothTrainer:
                 }
 
                 if has_separate_eval_source and eval_dataset is not None:
+                    eval_rows = (
+                        f"{len(eval_dataset):,} rows"
+                        if hasattr(eval_dataset, "__len__")
+                        else "streaming"
+                    )
                     logger.info(
                         f"{_raw_mode_label().capitalize()}: eval dataset "
-                        f"({len(eval_dataset)} rows) kept as raw text\n"
+                        f"({eval_rows}) kept as raw text\n"
                     )
-                elif eval_enabled and not has_separate_eval_source:
+                elif eval_enabled and not has_separate_eval_source and not dataset_streaming:
+                    # _resolve_eval_split_from_dataset does a train_test_split (needs
+                    # len/random access). Streaming always provides a separate eval
+                    # split (route-enforced), so this auto-split is non-streaming only.
                     split_result = self._resolve_eval_split_from_dataset(dataset)
                     if split_result is not None:
                         train_portion, eval_dataset = split_result
