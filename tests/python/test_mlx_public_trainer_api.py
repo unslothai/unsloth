@@ -132,6 +132,22 @@ def test_mlx_training_arguments_preserve_explicit_epoch_training():
     assert default_args.max_steps == unsloth.MLXTrainingConfig.max_steps
 
 
+def test_mlx_training_arguments_keep_mlx_dataset_order_default():
+    """Training arguments alone should not override MLX's native data order."""
+    unsloth = _import_mlx_unsloth()
+
+    args = unsloth.UnslothTrainingArguments(max_steps=1)
+    explicit_default = unsloth.UnslothTrainingArguments(
+        max_steps=1,
+        dataset_order="default",
+    )
+
+    assert args.dataset_order == "default"
+    assert args._unsloth_mlx_dataset_order_explicit is False
+    assert explicit_default.dataset_order == "default"
+    assert explicit_default._unsloth_mlx_dataset_order_explicit is True
+
+
 def test_mlx_training_arguments_warn_on_meaningful_inert_kwargs():
     """Unsupported TrainingArguments knobs should not be silently ignored."""
     unsloth = _import_mlx_unsloth()
@@ -275,8 +291,44 @@ def test_mlx_trainer_accepts_common_sft_kwargs():
     assert trainer.args.dataset_num_proc == 8
     assert trainer.args.max_seq_length == 456
     assert trainer.args.optim == "adamw"
+    assert trainer.args.dataset_order == "torch_randperm"
     assert trainer._unsloth_mlx_ignored_trainer_kwargs == {}
     assert caught == []
+
+
+def test_mlx_trainer_preserves_explicit_dataset_order():
+    """UnslothTrainer should only set torch_randperm when order is implicit."""
+    unsloth = _import_mlx_unsloth()
+
+    explicit_default = unsloth.UnslothTrainer(
+        model=_DummyModel(),
+        tokenizer=None,
+        train_dataset=[],
+        args=unsloth.UnslothTrainingArguments(
+            max_steps=1,
+            dataset_order="default",
+        ),
+    )
+    explicit_sequential = unsloth.UnslothTrainer(
+        model=_DummyModel(),
+        tokenizer=None,
+        train_dataset=[],
+        args=unsloth.UnslothTrainingArguments(
+            max_steps=1,
+            dataset_order="sequential",
+        ),
+    )
+    implicit_with_override = unsloth.UnslothTrainer(
+        model=_DummyModel(),
+        tokenizer=None,
+        train_dataset=[],
+        args=unsloth.UnslothTrainingArguments(max_steps=1),
+        dataset_num_proc=4,
+    )
+
+    assert explicit_default.args.dataset_order == "default"
+    assert explicit_sequential.args.dataset_order == "sequential"
+    assert implicit_with_override.args.dataset_order == "torch_randperm"
 
 
 def test_mlx_trainer_processing_class_overrides_explicit_none_tokenizer():

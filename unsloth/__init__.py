@@ -216,10 +216,6 @@ if _IS_MLX:
         "save_strategy",
         "torch_compile",
     ))
-    _MLX_IMPLEMENTED_EXTRA_ARGUMENTS = frozenset(())
-    _MLX_WARNED_EXTRA_ARGUMENTS = (
-        _MLX_COMPAT_EXTRA_ARGUMENTS - _MLX_IMPLEMENTED_EXTRA_ARGUMENTS
-    )
     _MLX_UNSUPPORTED_TASK_ARGUMENTS = frozenset((
         "assistant_only_loss",
         "completion_only_loss",
@@ -344,7 +340,7 @@ if _IS_MLX:
         names = sorted(
             key for key, value in extra_kwargs.items()
             if (
-                key in _MLX_WARNED_EXTRA_ARGUMENTS
+                key in _MLX_COMPAT_EXTRA_ARGUMENTS
                 and _is_meaningful_mlx_extra_value(value)
             )
         )
@@ -413,6 +409,10 @@ if _IS_MLX:
             if "num_train_epochs" in kwargs and "max_steps" not in kwargs:
                 kwargs["max_steps"] = -1
 
+            dataset_order_explicit = (
+                "dataset_order" in kwargs
+                or bool(kwargs.get("preserve_dataset_order", False))
+            )
             warmup_ratio = kwargs.get("warmup_ratio", None)
             warmup_steps_explicit = (
                 "warmup_steps" in kwargs
@@ -453,17 +453,30 @@ if _IS_MLX:
                     pass
 
             super().__init__(**filtered_kwargs)
+            self._unsloth_mlx_dataset_order_explicit = dataset_order_explicit
             self._unsloth_mlx_warmup_steps_explicit = warmup_steps_explicit
             self._unsloth_mlx_extra_args = extra_kwargs
             for key, value in extra_kwargs.items():
                 setattr(self, key, value)
             _warn_ignored_mlx_training_args(extra_kwargs)
 
+    def _apply_unsloth_trainer_mlx_defaults(args):
+        """Apply notebook-compatible MLX defaults used only by UnslothTrainer."""
+        if getattr(args, "preserve_dataset_order", False):
+            return args
+        if getattr(args, "_unsloth_mlx_dataset_order_explicit", False):
+            return args
+        default_order = getattr(MLXTrainingConfig, "dataset_order", "default")
+        if getattr(args, "dataset_order", default_order) in (None, default_order):
+            args.dataset_order = "torch_randperm"
+        return args
+
     def _coerce_mlx_training_args(args, overrides=None):
         """Return an MLXTrainingConfig from None, dicts, or trainer args objects."""
         overrides = overrides or {}
         if isinstance(args, MLXTrainingConfig) and not overrides:
             return args
+        dataset_order_explicit = None
         if args is None:
             values = {}
         elif isinstance(args, dict):
@@ -471,9 +484,21 @@ if _IS_MLX:
         elif isinstance(args, (str, os.PathLike)):
             values = {"output_dir": os.fspath(args)}
         else:
+            dataset_order_explicit = getattr(
+                args,
+                "_unsloth_mlx_dataset_order_explicit",
+                False,
+            )
             values = _mlx_training_argument_values(args)
         values.update(overrides)
-        return UnslothTrainingArguments(**values)
+        coerced = UnslothTrainingArguments(**values)
+        if (
+            dataset_order_explicit is not None
+            and "dataset_order" not in overrides
+            and "preserve_dataset_order" not in overrides
+        ):
+            coerced._unsloth_mlx_dataset_order_explicit = dataset_order_explicit
+        return coerced
 
     _MLX_TRAINER_POSITIONAL_KWARGS = (
         "model",
@@ -555,6 +580,9 @@ if _IS_MLX:
             trainer_kwargs["args"] = _coerce_mlx_training_args(
                 trainer_kwargs.get("args"),
                 config_kwargs,
+            )
+            trainer_kwargs["args"] = _apply_unsloth_trainer_mlx_defaults(
+                trainer_kwargs["args"],
             )
 
             super().__init__(**trainer_kwargs)
