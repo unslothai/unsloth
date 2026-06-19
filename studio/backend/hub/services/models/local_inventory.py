@@ -177,6 +177,17 @@ def _scan_models_dir(
     return found
 
 
+def _safe_is_dir(path: Path) -> bool:
+    """``Path.is_dir()`` treating an unreadable path (``PermissionError`` /
+    ``OSError`` on a restricted ``~/.cache/huggingface/hub``) as "not a
+    directory", so the inventory skips that source instead of 500ing the Hub page.
+    """
+    try:
+        return path.is_dir()
+    except OSError:
+        return False
+
+
 def _hf_repo_dir_has_content(repo_dir: Path) -> bool:
     blobs_dir = repo_dir / "blobs"
     if not blobs_dir.is_dir():
@@ -191,7 +202,7 @@ def _hf_repo_dir_has_content(repo_dir: Path) -> bool:
 
 
 def _scan_hf_cache(cache_dir: Path, *, entry_limit: int | None = None) -> List[LocalModelInfo]:
-    if not cache_dir.exists() or not cache_dir.is_dir():
+    if not _safe_is_dir(cache_dir):
         return []
 
     discovered: List[tuple[Path, str, Optional[float]]] = []
@@ -502,11 +513,11 @@ async def _collect_models_from_default_sources(
     local_models = await _scan_source("models directory", _scan_models_dir, models_root)
     local_models += await _scan_source("HF cache", _scan_hf_cache, hf_cache_dir)
 
-    if legacy_hf.is_dir() and legacy_hf.resolve() != hf_cache_dir.resolve():
+    if _safe_is_dir(legacy_hf) and legacy_hf.resolve() != hf_cache_dir.resolve():
         local_models += await _scan_source("legacy HF cache", _scan_hf_cache, legacy_hf)
 
     if (
-        hf_default.is_dir()
+        _safe_is_dir(hf_default)
         and hf_default.resolve() != hf_cache_dir.resolve()
         and hf_default.resolve() != legacy_hf.resolve()
     ):
@@ -621,9 +632,9 @@ async def list_local_models_response(models_dir: str = "./models") -> LocalModel
     ollama_dirs = ollama_model_dirs()
 
     allowed_roots: list[Path] = [Path("./models").resolve(), hf_cache_dir]
-    if legacy_hf.is_dir():
+    if _safe_is_dir(legacy_hf):
         allowed_roots.append(legacy_hf)
-    if hf_default.is_dir():
+    if _safe_is_dir(hf_default):
         allowed_roots.append(hf_default)
     allowed_roots.extend([studio_root(), outputs_root()])
 

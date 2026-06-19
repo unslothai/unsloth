@@ -229,11 +229,24 @@ class TrainingBackend:
     # Public API (called by routes/training.py)
     # ------------------------------------------------------------------
 
-    def start_training(self, job_id: str, **kwargs) -> bool:
+    def start_training(
+        self,
+        job_id: str,
+        *,
+        before_spawn = None,
+        **kwargs,
+    ) -> bool:
         """Spawn a subprocess to run the full training pipeline.
 
         All kwargs are serialized into a config dict and sent to the worker.
         Returns True if the subprocess started successfully.
+
+        ``before_spawn`` is an optional no-arg callable run after synchronous
+        validation (start guards, config build, explicit gpu_ids) passes but
+        before VRAM-dependent auto GPU-selection and the spawn -- used to free
+        VRAM (e.g. unload chat) without tearing it down on a refused start, while
+        still letting auto-selection place training against the freed memory.
+        Hook failures never block the start.
         """
         with self._lock:
             if self._proc is not None and self._proc.is_alive():
@@ -326,26 +339,50 @@ class TrainingBackend:
         if config["training_type"] == "Full Finetuning":
             config["load_in_4bit"] = False
 
-        # Spawn into locals so state is untouched on failure.
+        # Split GPU validation from placement around the VRAM hook:
+        #   * Explicit gpu_ids are validated here (raises -> the route returns 400
+        #     before any teardown) and their placement is VRAM-independent, so it
+        #     stays correct after the hook frees memory.
+        #   * Auto-selection ranks GPUs by *free* VRAM, so it is deferred until
+        #     after the hook frees export/chat -- otherwise it could pin training
+        #     onto a GPU the hook is about to clear (and onto a kept chat model).
         from utils.hardware import hardware as _hw
 
+        gpu_ids = kwargs.get("gpu_ids")
+        gpu_selection_kwargs = dict(
+            model_name = config["model_name"],
+            hf_token = config["hf_token"] or None,
+            training_type = config["training_type"],
+            load_in_4bit = config["load_in_4bit"],
+            batch_size = config.get("batch_size", 4),
+            max_seq_length = config.get("max_seq_length", 2048),
+            lora_rank = config.get("lora_r", 16),
+            target_modules = config.get("target_modules"),
+            gradient_checkpointing = config.get("gradient_checkpointing", "unsloth"),
+            optimizer = config.get("optim", "adamw_8bit"),
+        )
+
+        defer_auto_selection = False
         if _hw.DEVICE == _hw.DeviceType.MLX:
             config["resolved_gpu_ids"] = None
             config["gpu_selection"] = None
+        elif gpu_ids:
+            resolved_gpu_ids, gpu_selection = prepare_gpu_selection(gpu_ids, **gpu_selection_kwargs)
+            config["resolved_gpu_ids"] = resolved_gpu_ids
+            config["gpu_selection"] = gpu_selection
         else:
-            resolved_gpu_ids, gpu_selection = prepare_gpu_selection(
-                kwargs.get("gpu_ids"),
-                model_name = config["model_name"],
-                hf_token = config["hf_token"] or None,
-                training_type = config["training_type"],
-                load_in_4bit = config["load_in_4bit"],
-                batch_size = config.get("batch_size", 4),
-                max_seq_length = config.get("max_seq_length", 2048),
-                lora_rank = config.get("lora_r", 16),
-                target_modules = config.get("target_modules"),
-                gradient_checkpointing = config.get("gradient_checkpointing", "unsloth"),
-                optimizer = config.get("optim", "adamw_8bit"),
-            )
+            defer_auto_selection = True
+
+        # Synchronous validation passed -> free VRAM (export + chat) now, before
+        # auto-selection and the spawn, so placement sees the freed memory.
+        if before_spawn is not None:
+            try:
+                before_spawn()
+            except Exception:
+                logger.warning("before_spawn hook failed; continuing", exc_info = True)
+
+        if defer_auto_selection:
+            resolved_gpu_ids, gpu_selection = prepare_gpu_selection(None, **gpu_selection_kwargs)
             config["resolved_gpu_ids"] = resolved_gpu_ids
             config["gpu_selection"] = gpu_selection
 
