@@ -844,7 +844,8 @@ if (-not $HasNvidiaSmi) {
     }
     # Get-Command returns only the first hipinfo; the venv copy (bnb fix) could
     # shadow a real HIP SDK's. Scan all, keep the first non-venv one.
-    $hipinfoExe = Get-Command hipinfo -All -ErrorAction SilentlyContinue |
+    # -CommandType Application so only real executables match (not a user alias/function named hipinfo).
+    $hipinfoExe = Get-Command hipinfo -CommandType Application -All -ErrorAction SilentlyContinue |
         Where-Object { -not (Test-HipinfoIsVenvInternal $_.Source) } |
         Select-Object -First 1
     if (-not $hipinfoExe) {

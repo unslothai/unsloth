@@ -1439,6 +1439,73 @@ elif [ "$OS" = "macos" ]; then
 fi
 tauri_diag_marker "$_TAURI_INITIAL_GPU_BRANCH" "none"
 
+# Strix Halo WSL GPU (ROCm-on-WSL) only targets Ubuntu 24.04. If this distro is
+# newer (e.g. 26.04) but a 24.04 distro exists, re-run the install there and stop;
+# else fall through to CPU + the `wsl --install` hint below (never auto-create a
+# distro). Runs before the STUDIO_HOME mkdir/venv so the origin distro is untouched.
+_maybe_reroute_strixhalo_to_2404() {
+    [ "${OS:-}" = "wsl" ] || return 0
+    [ "${SKIP_TORCH:-false}" = "false" ] || return 0
+    [ "${UNSLOTH_SKIP_ROCM_WSL_SETUP:-0}" = "1" ] && return 0
+    [ "${UNSLOTH_WSL_REROUTED:-0}" = "1" ] && return 0
+    [ -e /dev/dxg ] || return 0
+    grep -qiE 'Ryzen AI Max|Radeon 80[0-9]0S|Strix Halo' /proc/cpuinfo 2>/dev/null || return 0
+    # Already ROCm-on-WSL? leave a working GPU alone, whatever the version.
+    if [ -e /opt/rocm/lib/librocdxg.so ] || [ -e /opt/rocm/lib64/librocdxg.so ]; then
+        return 0
+    fi
+    _rr_ver=""
+    [ -r /etc/os-release ] && _rr_ver=$(. /etc/os-release 2>/dev/null; printf '%s' "${VERSION_ID:-}")
+    # AMD supports ROCm-on-WSL on both Ubuntu 24.04 and 22.04 (Radeon/Ryzen docs),
+    # so leave the user on either; only reroute newer/unsupported distros (e.g. 26.04).
+    case "$_rr_ver" in 24.04|22.04) return 0 ;; esac
+    command -v wsl.exe >/dev/null 2>&1 || return 0
+    # Route only to an already-installed 24.04.
+    wsl.exe -l -q 2>/dev/null | tr -d '\000\r' | grep -qiF "Ubuntu-24.04" || return 0
+
+    echo ""
+    substep "ROCm-on-WSL (GPU) needs Ubuntu 24.04; this distro is Ubuntu ${_rr_ver:-unknown}." "$C_WARN"
+    substep "Found an existing Ubuntu-24.04 distro -- continuing the GPU install there." "$C_OK"
+    # A --local checkout can't be replayed via curl|sh (the repo isn't in the target
+    # distro), so don't silently run a different install; tell the user to re-run there.
+    if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
+        substep "This is a --local install; re-run it from Ubuntu-24.04 instead:" "$C_WARN"
+        substep "  wsl -d Ubuntu-24.04 -- bash -lc 'cd <your checkout> && ./install.sh --local'" "$C_WARN"
+        substep "Continuing CPU-only in Ubuntu ${_rr_ver:-this distro} for now." "$C_WARN"
+        return 0
+    fi
+    # Forward the caller's options/env so the rerouted install matches what was asked
+    # for, instead of silently running a default install (custom package/python/home).
+    _rr_q() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
+    _rr_exports="set -o pipefail; export UNSLOTH_WSL_REROUTED=1"
+    [ "$_STUDIO_HOME_REDIRECT" = "env" ] && _rr_exports="$_rr_exports; export UNSLOTH_STUDIO_HOME=$(_rr_q "$STUDIO_HOME")"
+    _rr_args=""
+    [ "$PACKAGE_NAME" != "unsloth" ] && _rr_args="$_rr_args --package $(_rr_q "$PACKAGE_NAME")"
+    [ -n "$_USER_PYTHON" ] && _rr_args="$_rr_args --python $(_rr_q "$_USER_PYTHON")"
+    [ "$_VERBOSE" = true ] && _rr_args="$_rr_args --verbose"
+    [ "$TAURI_MODE" = true ] && _rr_args="$_rr_args --tauri"
+    if [ -n "${UNSLOTH_WSL_REROUTE_CMD:-}" ]; then
+        _rr_cmd="$UNSLOTH_WSL_REROUTE_CMD"               # user took full control
+    elif [ -n "$_rr_args" ]; then
+        _rr_cmd="curl -fsSL https://unsloth.ai/install.sh | sh -s --$_rr_args"
+    else
+        _rr_cmd="curl -fsSL https://unsloth.ai/install.sh | sh"
+    fi
+    # pipefail so a failed curl in the `curl | sh` reroute isn't masked by sh exiting 0
+    # on empty input (which would wrongly report success and exit 0 the parent installer).
+    if wsl.exe -d "Ubuntu-24.04" -- bash -lc "$_rr_exports; $_rr_cmd"; then
+        exit 0
+    fi
+    substep "Could not auto-continue in Ubuntu-24.04; run it yourself:" "$C_WARN"
+    substep "  wsl -d Ubuntu-24.04 -- bash -lc 'curl -fsSL https://unsloth.ai/install.sh | sh'"
+    substep "Continuing CPU-only in Ubuntu ${_rr_ver:-this distro} for now." "$C_WARN"
+    # The reroute to a supported distro failed; don't let the later ROCm-on-WSL
+    # bootstrap install ROCm into this unsupported distro -- stay CPU-only.
+    UNSLOTH_SKIP_ROCM_WSL_SETUP=1
+    return 0
+}
+_maybe_reroute_strixhalo_to_2404 || true
+
 # ── Check system dependencies ──
 # cmake and git are needed by unsloth studio setup to build the GGUF inference
 # engine (llama.cpp). build-essential and libcurl-dev are also needed on Linux.
@@ -1575,46 +1642,6 @@ if ! command -v uv >/dev/null 2>&1 || ! _uv_version_ok uv; then
     fi
     export PATH="$HOME/.local/bin:$PATH"
 fi
-
-# Strix Halo WSL GPU (ROCm-on-WSL) only targets Ubuntu 24.04. If this distro is
-# newer (e.g. 26.04) but a 24.04 distro exists, re-run the install there and stop;
-# else fall through to CPU + the `wsl --install` hint below (never auto-create a
-# distro). Runs before the STUDIO_HOME mkdir/venv so the origin distro is untouched.
-_maybe_reroute_strixhalo_to_2404() {
-    [ "${OS:-}" = "wsl" ] || return 0
-    [ "${SKIP_TORCH:-false}" = "false" ] || return 0
-    [ "${UNSLOTH_SKIP_ROCM_WSL_SETUP:-0}" = "1" ] && return 0
-    [ "${UNSLOTH_WSL_REROUTED:-0}" = "1" ] && return 0
-    [ -e /dev/dxg ] || return 0
-    grep -qiE 'Ryzen AI Max|Radeon 80[0-9]0S|Strix Halo' /proc/cpuinfo 2>/dev/null || return 0
-    # Already ROCm-on-WSL? leave a working GPU alone, whatever the version.
-    if [ -e /opt/rocm/lib/librocdxg.so ] || [ -e /opt/rocm/lib64/librocdxg.so ]; then
-        return 0
-    fi
-    _rr_ver=""
-    [ -r /etc/os-release ] && _rr_ver=$(. /etc/os-release 2>/dev/null; printf '%s' "${VERSION_ID:-}")
-    # AMD supports ROCm-on-WSL on both Ubuntu 24.04 and 22.04 (Radeon/Ryzen docs),
-    # so leave the user on either; only reroute newer/unsupported distros (e.g. 26.04).
-    case "$_rr_ver" in 24.04|22.04) return 0 ;; esac
-    command -v wsl.exe >/dev/null 2>&1 || return 0
-    # Route only to an already-installed 24.04.
-    wsl.exe -l -q 2>/dev/null | tr -d '\000\r' | grep -qiF "Ubuntu-24.04" || return 0
-
-    echo ""
-    substep "ROCm-on-WSL (GPU) needs Ubuntu 24.04; this distro is Ubuntu ${_rr_ver:-unknown}." "$C_WARN"
-    substep "Found an existing Ubuntu-24.04 distro -- continuing the GPU install there." "$C_OK"
-    _rr_cmd="${UNSLOTH_WSL_REROUTE_CMD:-curl -fsSL https://unsloth.ai/install.sh | sh}"
-    # pipefail so a failed curl in the `curl | sh` reroute isn't masked by sh exiting 0
-    # on empty input (which would wrongly report success and exit 0 the parent installer).
-    if wsl.exe -d "Ubuntu-24.04" -- bash -lc "set -o pipefail; export UNSLOTH_WSL_REROUTED=1; $_rr_cmd"; then
-        exit 0
-    fi
-    substep "Could not auto-continue in Ubuntu-24.04; run it yourself:" "$C_WARN"
-    substep "  wsl -d Ubuntu-24.04 -- bash -lc 'curl -fsSL https://unsloth.ai/install.sh | sh'"
-    substep "Continuing CPU-only in Ubuntu ${_rr_ver:-this distro} for now." "$C_WARN"
-    return 0
-}
-_maybe_reroute_strixhalo_to_2404 || true
 
 # ── Create venv (migrate old layout if possible, otherwise fresh) ──
 tauri_log "STEP" "Creating virtual environment"

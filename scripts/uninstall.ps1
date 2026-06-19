@@ -56,8 +56,16 @@ function Uninstall-UnslothStudio {
         # $null = not passed (use defaults); honor an explicit @(), so test $null
         # not truthiness (-not @() is $true).
         if ($null -eq $ShortcutDirs) {
-            $ShortcutDirs = @(Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs")
-            try { $ShortcutDirs += [Environment]::GetFolderPath("Desktop") } catch {}
+            # Guard $env:APPDATA: it can be unset in service/CI Windows contexts, where
+            # an unguarded Join-Path emits a noisy parameter-binding error.
+            $ShortcutDirs = @()
+            if (-not [string]::IsNullOrWhiteSpace($env:APPDATA)) {
+                $ShortcutDirs += Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs"
+            }
+            try {
+                $desktop = [Environment]::GetFolderPath("Desktop")
+                if (-not [string]::IsNullOrWhiteSpace($desktop)) { $ShortcutDirs += $desktop }
+            } catch {}
         }
         $wslShortcuts = @()
         foreach ($d in $ShortcutDirs) {

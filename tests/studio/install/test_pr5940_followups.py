@@ -405,8 +405,8 @@ def test_ps_installers_gate_amd_smi_on_windows():
         # Get-Command returns only the first hipinfo; scan -All and skip the venv
         # copy so a real SDK hipinfo later on PATH is not shadowed (codex P2).
         assert (
-            "Get-Command hipinfo -All" in text
-        ), f"{ps.name} must enumerate all hipinfo on PATH (-All), not just the first"
+            "Get-Command hipinfo -CommandType Application -All" in text
+        ), f"{ps.name} must enumerate all hipinfo executables on PATH (-CommandType Application -All)"
         assert (
             "Test-HipinfoIsVenvInternal $_.Source" in text
         ), f"{ps.name} must run the venv exclusion while scanning hipinfo candidates"
@@ -629,12 +629,14 @@ def test_install_sh_wsl_reroute_uses_pipefail():
     # masked by sh exiting 0 on empty input, so the reroute would wrongly report
     # success and exit 0 the parent installer.
     text = _INSTALL_SH.read_text(encoding = "utf-8")
+    assert "set -o pipefail" in text, "reroute must enable pipefail"
     i = text.find('wsl.exe -d "Ubuntu-24.04"')
     assert i != -1, "WSL reroute command not found in install.sh"
+    # pipefail is set in the exports prefix the reroute bash -lc runs; the wsl.exe
+    # call must wire that prefix in (a failed curl is otherwise masked by sh exit 0).
     line = text[text.rfind("\n", 0, i) + 1 : text.find("\n", i)]
-    assert "set -o pipefail" in line, (
-        "install.sh WSL reroute `bash -lc` must enable pipefail so a failed curl "
-        "isn't masked by sh exiting 0"
+    assert "$_rr_exports" in line, (
+        "install.sh WSL reroute `bash -lc` must run the pipefail exports prefix"
     )
 
 

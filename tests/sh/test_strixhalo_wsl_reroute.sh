@@ -74,10 +74,13 @@ make_fixture() {
 #!/bin/sh
 case "\$1" in
     -l) cat "$_d/distros" ;;
-    -d) shift; shift; shift; exec "\$@" ;;
+    -d) shift; shift; shift; printf '__CMD__ %s\n' "\$*"; exec "\$@" ;;
 esac
 MOCK
     chmod +x "$_d/bin/wsl.exe"
+    # Harmless curl stub so the default reroute (curl | sh) never hits the network.
+    printf '#!/bin/sh\nexit 0\n' > "$_d/bin/curl"
+    chmod +x "$_d/bin/curl"
     echo "$_d"
 }
 
@@ -92,7 +95,7 @@ run_func() {
         UNSLOTH_SKIP_ROCM_WSL_SETUP=0 UNSLOTH_WSL_REROUTED=0 \
         UNSLOTH_WSL_REROUTE_CMD='echo __ROUTED__' \
         "$@" \
-        bash -c ". '$_func'; _maybe_reroute_strixhalo_to_2404; echo __NOROUTE__" 2>&1
+        bash -c ". '$_func'; _maybe_reroute_strixhalo_to_2404; echo SKIP_ROCM=\$UNSLOTH_SKIP_ROCM_WSL_SETUP; echo __NOROUTE__" 2>&1
     rm -f "$_func"
 }
 
@@ -177,6 +180,49 @@ _d=$(make_fixture 1 strix 0 22.04 1)
 _out=$(run_func "$_d")
 assert_contains "on 22.04 (AMD-supported) -> no route"  "$_out" "__NOROUTE__"
 assert_absent   "on 22.04 -> reroute not attempted"     "$_out" "__ROUTED__"
+rm -rf "$_d"
+
+# 13) --local install -> NO auto-reroute (a local checkout can't be replayed via
+#     curl|sh); prints guidance and continues locally instead of a different install.
+_d=$(make_fixture 1 strix 0 26.04 1)
+_out=$(run_func "$_d" STUDIO_LOCAL_INSTALL=true)
+assert_contains "--local -> no auto-reroute"            "$_out" "__NOROUTE__"
+assert_contains "--local -> prints re-run guidance"     "$_out" "re-run it from Ubuntu-24.04"
+assert_absent   "--local -> reroute command not run"    "$_out" "__ROUTED__"
+rm -rf "$_d"
+
+# 14) Custom UNSLOTH_STUDIO_HOME (env mode) is forwarded as an export into the reroute.
+_d=$(make_fixture 1 strix 0 26.04 1)
+_out=$(run_func "$_d" _STUDIO_HOME_REDIRECT=env STUDIO_HOME=/custom/studio \
+        UNSLOTH_WSL_REROUTE_CMD='echo home=[$UNSLOTH_STUDIO_HOME]')
+assert_contains "custom STUDIO_HOME forwarded to reroute" "$_out" "home=[/custom/studio]"
+rm -rf "$_d"
+
+# 15) --package / --python are forwarded onto the default reroute command (curl|sh -s --).
+_d=$(make_fixture 1 strix 0 26.04 1)
+_out=$(run_func "$_d" PACKAGE_NAME=unsloth-zoo _USER_PYTHON=3.13 UNSLOTH_WSL_REROUTE_CMD=)
+assert_contains "forwards --package to reroute"          "$_out" "--package 'unsloth-zoo'"
+assert_contains "forwards --python to reroute"           "$_out" "--python '3.13'"
+rm -rf "$_d"
+
+# 16) --tauri is forwarded onto the default reroute command.
+_d=$(make_fixture 1 strix 0 26.04 1)
+_out=$(run_func "$_d" PACKAGE_NAME=unsloth TAURI_MODE=true UNSLOTH_WSL_REROUTE_CMD=)
+assert_contains "forwards --tauri to reroute"            "$_out" "--tauri"
+rm -rf "$_d"
+
+# 17) A FAILED reroute sets the ROCm-bootstrap skip guard so _maybe_bootstrap_rocm_wsl
+#     does not later install ROCm into the unsupported origin distro.
+_d=$(make_fixture 1 strix 0 26.04 1)
+_out=$(run_func "$_d" UNSLOTH_WSL_REROUTE_CMD='exit 1')
+assert_contains "failed reroute -> sets ROCm-bootstrap skip guard" "$_out" "SKIP_ROCM=1"
+assert_contains "failed reroute -> continues locally"             "$_out" "__NOROUTE__"
+rm -rf "$_d"
+
+# 18) A successful reroute (no failure) does NOT set the skip guard prematurely.
+_d=$(make_fixture 1 strix 0 24.04 1)
+_out=$(run_func "$_d")
+assert_absent   "supported 24.04 -> skip guard not forced"        "$_out" "SKIP_ROCM=1"
 rm -rf "$_d"
 
 echo ""
