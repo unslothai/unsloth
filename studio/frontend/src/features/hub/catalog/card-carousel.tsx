@@ -121,6 +121,13 @@ export function CardCarousel<T>({
     const d = drag.current;
     const el = scrollerRef.current;
     if (!d || !el || e.pointerId !== d.id) return;
+    // Primary button no longer held: the press ended off the scroller, so no
+    // pointerup reached us. Drop the stale drag instead of scrolling on hover.
+    if ((e.buttons & 1) === 0) {
+      if (d.moved) el.style.scrollSnapType = "";
+      drag.current = null;
+      return;
+    }
     const dx = e.clientX - d.x;
     // Ignore tiny moves so plain clicks still register.
     if (!d.moved && Math.abs(dx) < 5) return;
