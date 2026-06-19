@@ -1260,9 +1260,7 @@ def _normalize_mlx_studio_optimizer(value):
         from unsloth_zoo.mlx.trainer import _normalize_mlx_optimizer_name
         return _normalize_mlx_optimizer_name(value or "adamw_8bit")
     except ValueError as exc:
-        raise ValueError(
-            f"Unsupported optimizer for MLX training: {value!r}."
-        ) from exc
+        raise ValueError(f"Unsupported optimizer for MLX training: {value!r}.") from exc
 
 
 def _normalize_mlx_studio_scheduler(value):
