@@ -453,6 +453,54 @@ def test_audio_input_stream_offloads_blocking_next_to_thread():
     )
 
 
+def test_generate_stream_offloads_blocking_next_to_thread():
+    outer = None
+    for fn in ast.walk(_TREE):
+        if isinstance(fn, ast.AsyncFunctionDef) and fn.name == "generate_stream":
+            outer = fn
+            break
+    assert outer is not None, "generate_stream handler missing"
+
+    inner = None
+    for sub in ast.walk(outer):
+        if isinstance(sub, ast.AsyncFunctionDef) and sub.name == "stream":
+            inner = sub
+            break
+    assert inner is not None, "generate_stream inner stream() generator missing"
+
+    for sub in ast.walk(inner):
+        if isinstance(sub, (ast.For, ast.AsyncFor)):
+            it_src = ast.unparse(sub.iter)
+            assert "generate_chat_response" not in it_src, (
+                "generate_stream's inner stream() must not iterate "
+                "backend.generate_chat_response() directly -- that blocks the event "
+                "loop on every blocking subprocess read between tokens. Use "
+                "`await asyncio.to_thread(next, gen, _DONE)` inside a `while True` "
+                "loop instead"
+            )
+
+    found_to_thread_next = False
+    for sub in ast.walk(inner):
+        if not isinstance(sub, ast.Call):
+            continue
+        fn_expr = sub.func
+        if not (
+            isinstance(fn_expr, ast.Attribute)
+            and fn_expr.attr == "to_thread"
+            and isinstance(fn_expr.value, ast.Name)
+            and fn_expr.value.id == "asyncio"
+        ):
+            continue
+        if sub.args and isinstance(sub.args[0], ast.Name) and sub.args[0].id == "next":
+            found_to_thread_next = True
+            break
+    assert found_to_thread_next, (
+        "generate_stream's inner stream() must call "
+        "`asyncio.to_thread(next, gen, _DONE)` to keep the event loop free while the "
+        "worker subprocess produces the next token"
+    )
+
+
 def test_stream_chunks_cancel_branch_resets_backend_state():
     # The cancel branch must call backend.reset_generation_state() to flush
     # GPU/KV-cache state, else cancel-via-POST leaves the subprocess dirty.

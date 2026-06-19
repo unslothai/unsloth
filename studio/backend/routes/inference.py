@@ -3129,7 +3129,7 @@ async def generate_stream(
 
     async def stream():
         try:
-            for chunk in backend.generate_chat_response(
+            gen = backend.generate_chat_response(
                 messages = request.messages,
                 system_prompt = request.system_prompt,
                 image = image,
@@ -3138,7 +3138,12 @@ async def generate_stream(
                 top_k = request.top_k,
                 max_new_tokens = request.max_new_tokens,
                 repetition_penalty = request.repetition_penalty,
-            ):
+            )
+            _DONE = object()
+            while True:
+                chunk = await asyncio.to_thread(next, gen, _DONE)
+                if chunk is _DONE:
+                    break
                 yield f"data: {json.dumps({'content': chunk})}\n\n"
             yield "data: [DONE]\n\n"
 
