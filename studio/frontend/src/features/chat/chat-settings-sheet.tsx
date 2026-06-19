@@ -1005,7 +1005,9 @@ export function ChatSettingsPanel({
                     speculativeType === "mtp+ngram") && (
                     <div className="rounded-lg bg-amber-500/[0.08] px-3 py-2 text-[12px] leading-[1.4] text-nav-fg/80">
                       <p>
-                        {specFallbackReason === "runtime_error"
+                        {specFallbackReason === "mla_mtp_disabled"
+                          ? "MTP is disabled by default for this model architecture because it currently runs slower than standard decoding. Select MTP above to force it."
+                          : specFallbackReason === "runtime_error"
                           ? "MTP could not start for this model on the installed llama.cpp build, so it is running without speculative decoding."
                           : "MTP is not available in the installed llama.cpp build, so this model is running without it." +
                             (llamaUpdateStatus?.update_available
@@ -1762,7 +1764,7 @@ function ConfirmToolCallsToggle() {
         </div>
         {bypassPermissions ? (
           <span className="text-[11px] text-muted-foreground">
-            Overridden by Bypass Permissions
+            Overridden by Bypass permissions
           </span>
         ) : null}
       </div>
@@ -1788,7 +1790,7 @@ function BypassPermissionsToggle() {
       <div className="flex items-center justify-between gap-3">
         <div className="flex min-w-0 items-center gap-1.5">
           <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
-            Bypass Permissions
+            Bypass permissions
           </span>
           <InfoHint>
             Dangerous. Runs every tool call with no confirmation and disables
@@ -1806,16 +1808,16 @@ function BypassPermissionsToggle() {
         />
       </div>
       {bypassPermissions ? (
-        <span className="text-[11px] text-destructive">
+        <span className="text-[11px] text-bypass">
           Tool calls run with no confirmation and no sandbox.
         </span>
       ) : null}
       <AlertDialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <AlertDialogContent size="sm">
           <AlertDialogHeader>
-            <AlertDialogTitle>Enable Bypass Permissions?</AlertDialogTitle>
+            <AlertDialogTitle>Enable Bypass permissions?</AlertDialogTitle>
             <AlertDialogDescription>
-              Bypass Permissions is dangerous since the AI model might delete,
+              Bypass permissions is dangerous since the AI model might delete,
               corrupt your machine, and or cause real world damage to you or the
               world - only accept if you are certain
             </AlertDialogDescription>
