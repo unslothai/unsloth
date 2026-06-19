@@ -1008,7 +1008,7 @@ export function ChatSettingsPanel({
                         {specFallbackReason === "runtime_error"
                           ? "MTP could not start for this model on the installed llama.cpp build, so it is running without speculative decoding."
                           : specFallbackReason === "drafter_not_found"
-                            ? "This model supports MTP but the drafter file could not be downloaded. Running with ngram-mod fallback. Check your network connection and try reloading."
+                            ? "This model supports MTP but its drafter file could not be downloaded, so it is running without MTP. Check your network connection or Hugging Face access, then reload the model."
                             : "MTP is not available in the installed llama.cpp build, so this model is running without it." +
                               (llamaUpdateStatus?.update_available
                                 ? " Update llama.cpp to enable it."

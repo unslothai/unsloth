@@ -1597,3 +1597,54 @@ def test_spec_fallback_reason_drafter_not_found(monkeypatch):
     assert parsed.get("--spec-type") == "ngram-mod"
     assert backend.speculative_type == "ngram-mod"
     assert backend.spec_fallback_reason == "drafter_not_found"
+
+
+def test_is_gemma_mtp_name_none_safe():
+    # Local GGUF loads pass model_identifier=None; must not raise, and the
+    # family must be recognised from the file name too.
+    from core.inference.llama_cpp import _is_gemma_mtp_family, _is_gemma_mtp_name
+
+    assert _is_gemma_mtp_family(None) is False
+    assert _is_gemma_mtp_name(None, "/models/gemma-4-E4B-it-Q4_K_M.gguf") is True
+    assert _is_gemma_mtp_name("unsloth/Qwen3.5-4B-MTP-GGUF", None) is False
+
+
+@pytest.mark.parametrize("mode", ["mtp", "mtp+ngram"])
+def test_forced_mtp_gemma_without_drafter_falls_back(monkeypatch, mode):
+    # Forcing MTP on a Gemma whose drafter did not resolve must not emit
+    # draft-mtp without --model-draft (llama-server aborts); fall back to
+    # ngram-mod and record drafter_not_found.
+    backend = _resolver_backend(monkeypatch)
+    flags = backend._build_speculative_flags(
+        speculative_type = mode,
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = "unsloth/gemma-4-E4B-it-GGUF",
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+        mtp_draft_path = None,
+    )
+    parsed = _flags_dict(flags)
+    assert parsed.get("--spec-type") == "ngram-mod"
+    assert "--model-draft" not in parsed
+    assert backend.spec_fallback_reason == "drafter_not_found"
+
+
+def test_local_gemma_gguf_without_identifier_falls_back(monkeypatch):
+    # A local Gemma GGUF (no repo id, family only in the file name) must not
+    # crash and must fall back when no drafter resolved.
+    backend = _resolver_backend(monkeypatch)
+    flags = backend._build_speculative_flags(
+        speculative_type = "auto",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = None,
+        model_path = "/models/gemma-4-E4B-it-Q4_K_M.gguf",
+        gpus = True,
+        binary = "/fake/llama-server",
+        mtp_draft_path = None,
+    )
+    parsed = _flags_dict(flags)
+    assert parsed.get("--spec-type") == "ngram-mod"
+    assert backend.spec_fallback_reason == "drafter_not_found"

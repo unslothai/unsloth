@@ -412,8 +412,9 @@ class InferenceStatusResponse(BaseModel):
             "(auto on an MTP model, or forced mtp / mtp+ngram). "
             "'binary_no_mtp' / 'binary_outdated' -> a newer prebuilt would "
             "re-enable it (show the update affordance); 'runtime_error' -> the "
-            "current build could not run it. None when MTP engaged or was not "
-            "requested."
+            "current build could not run it; 'drafter_not_found' -> the model's "
+            "separate MTP drafter could not be resolved. None when MTP engaged "
+            "or was not requested."
         ),
     )
     llama_cpp_prebuilt_stale: bool = Field(

@@ -661,9 +661,16 @@ def detect_reasoning_flags(
 _GEMMA_MTP_FAMILY_RE = re.compile(r"gemma[-_]?(?:3n|4)[-_]", re.IGNORECASE)
 
 
-def _is_gemma_mtp_family(name: str) -> bool:
+def _is_gemma_mtp_family(name: Optional[str]) -> bool:
     """True if the name matches a Gemma family known to ship MTP drafters."""
-    return bool(_GEMMA_MTP_FAMILY_RE.search(name))
+    return bool(name) and bool(_GEMMA_MTP_FAMILY_RE.search(name))
+
+
+def _is_gemma_mtp_name(model_identifier: Optional[str], gguf_path: Optional[str] = None) -> bool:
+    """Gemma separate-drafter family via the model id or the GGUF filename."""
+    return _is_gemma_mtp_family(model_identifier) or _is_gemma_mtp_family(
+        Path(gguf_path).name if gguf_path else None
+    )
 
 
 def _is_mtp_model_name(model_identifier: Optional[str], gguf_path: Optional[str] = None) -> bool:
@@ -1883,7 +1890,7 @@ class LlamaCppBackend:
             # PR #22673 used draft-mtp; later renamed to mtp.
             if "draft-mtp" in spec_line:
                 mtp_token = "draft-mtp"
-            elif re.search(r"\bmtp\b", spec_line):
+            elif re.search(r"[|,\[]mtp[|,\]]", spec_line):
                 mtp_token = "mtp"
 
             # ngram-mod flag flavor. Post-rename builds advertise both new
@@ -4822,6 +4829,13 @@ class LlamaCppBackend:
                         self._nextn_predict_layers
                         or _is_mtp_model_name(model_identifier, model_path)
                         or bool(mtp_draft_path)
+                    ) and not (
+                        # Mirror the launch resolver: a Gemma recognised only by
+                        # name with no drafter/head falls back to ngram-mod, so
+                        # do not reserve drafter VRAM for it.
+                        _is_gemma_mtp_name(model_identifier, model_path)
+                        and not mtp_draft_path
+                        and not self._nextn_predict_layers
                     )
                     _mtp_binary_ok = True
                     _mtp_probe_raised = False
@@ -6184,6 +6198,15 @@ class LlamaCppBackend:
         _mtp_too_small = (
             _mtp_size_b is not None and _mtp_size_b < _MTP_MIN_SIZE_B and not bool(mtp_draft_path)
         )
+        # A Gemma 3n/4 recognised only by name (its MTP ships as a separate root
+        # mtp-*.gguf) with no resolved drafter and no embedded head cannot emit
+        # MTP -- llama-server would abort -- so every mode below treats it as
+        # "no usable MTP" and falls back with a drafter_not_found reason.
+        _mtp_drafter_missing = (
+            _is_gemma_mtp_name(model_identifier, model_path)
+            and not mtp_draft_path
+            and not self._nextn_predict_layers
+        )
 
         if user_owns_spec_type:
             # User --spec-type wins outright; suppress auto-emit to avoid a
@@ -6278,6 +6301,21 @@ class LlamaCppBackend:
             logger.info("Spec decoding: ngram-mod")
             return True
 
+        def _fallback_drafter_not_found() -> None:
+            """Gemma MTP recognised by name but no drafter/head resolved: use
+            the zero-VRAM ngram-mod path (or spec-default) and record why."""
+            logger.warning(
+                "Model %s is MTP-capable but no drafter or head was found; "
+                "falling back. Check network or run `unsloth studio update`.",
+                model_identifier,
+            )
+            if self.probe_server_capabilities(binary).get("supports_ngram_mod"):
+                _emit_ngram_mod()
+            else:
+                flags.append("--spec-default")
+                self._speculative_type = "default"
+            self._spec_fallback_reason = "drafter_not_found"
+
         if effective_mode == "off":
             return flags  # nothing to emit
         if effective_mode == "ngram-simple":
@@ -6298,6 +6336,11 @@ class LlamaCppBackend:
                 flags.append("--spec-default")
                 self._speculative_type = "default"
                 return flags
+            if _mtp_drafter_missing:
+                # Name says MTP but no head/drafter: emitting draft-mtp would
+                # abort the server, so fall back like the auto path.
+                _fallback_drafter_not_found()
+                return flags
             if _mtp_too_small:
                 logger.warning(
                     f"Forcing MTP on a {_mtp_size_b:.1f}B model; "
@@ -6316,6 +6359,10 @@ class LlamaCppBackend:
                 )
                 _emit_ngram_mod()
                 return flags
+            if _mtp_drafter_missing:
+                # No head/drafter: keep ngram-mod, drop the draft-mtp chain.
+                _fallback_drafter_not_found()
+                return flags
             if _mtp_too_small:
                 logger.warning(
                     f"Forcing MTP+Ngram on a {_mtp_size_b:.1f}B model; "
@@ -6328,54 +6375,19 @@ class LlamaCppBackend:
         # effective_mode == "auto": the promotion path. llama.cpp #22673:
         # MTP is compatible with mmproj, so there's no vision gate.
         if is_mtp_model and not _mtp_too_small:
-            # Can we actually emit MTP? Need either an embedded head or a
-            # separate drafter. A Gemma name match with no drafter means
-            # the download failed — fall back to ngram-mod with a reason.
-            _has_mtp_capability = True
-            if _is_gemma_mtp_family(model_identifier) and not mtp_draft_path:
-                _has_mtp_capability = False
-
-            if _has_mtp_capability:
+            if _mtp_drafter_missing:
+                # Name says MTP but no head/drafter resolved (download failed
+                # or the repo lacks a root mtp-*.gguf).
+                _fallback_drafter_not_found()
+            else:
                 # GPU: MTP-only. CPU/Mac: chain ngram-mod + MTP.
                 _emit_mtp(chain_ngram = not gpus)
-            else:
-                # Name says MTP but no head/drafter resolved. The download
-                # silently failed or the repo lacks a root-level mtp-*.gguf.
-                logger.warning(
-                    "Model is recognised as MTP-capable (%s) but no MTP head "
-                    "or drafter was found; falling back to ngram-mod. Check "
-                    "network connectivity or run `unsloth studio update`.",
-                    model_identifier,
-                )
-                _small_caps = self.probe_server_capabilities(binary)
-                if _small_caps.get("supports_ngram_mod"):
-                    _emit_ngram_mod()
-                else:
-                    flags.append("--spec-default")
-                    self._speculative_type = "default"
-                self._spec_fallback_reason = "drafter_not_found"
         elif is_mtp_model and _mtp_too_small:
             # Sub-3B fallback: drop the MTP draft head, keep ngram-mod when
             # the binary supports it.
-            _has_mtp_capability = True
-            if _is_gemma_mtp_family(model_identifier) and not mtp_draft_path:
-                _has_mtp_capability = False
-
-            _small_caps = self.probe_server_capabilities(binary)
-            if not _has_mtp_capability:
-                logger.warning(
-                    "Model is recognised as MTP-capable (%s) but no MTP head "
-                    "or drafter was found; falling back to ngram-mod. Check "
-                    "network connectivity or run `unsloth studio update`.",
-                    model_identifier,
-                )
-                if _small_caps.get("supports_ngram_mod"):
-                    _emit_ngram_mod()
-                else:
-                    flags.append("--spec-default")
-                    self._speculative_type = "default"
-                self._spec_fallback_reason = "drafter_not_found"
-            elif _small_caps.get("supports_ngram_mod"):
+            if _mtp_drafter_missing:
+                _fallback_drafter_not_found()
+            elif self.probe_server_capabilities(binary).get("supports_ngram_mod"):
                 logger.info(
                     f"MTP GGUF detected but model size {_mtp_size_b:.1f}B "
                     "is below the 3B speedup threshold; using ngram-mod "
