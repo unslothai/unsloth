@@ -32,7 +32,6 @@ from torch import LongTensor, FloatTensor
 from transformers.models.llama.modeling_llama import logger
 import os
 import shutil
-from .tokenizer_utils import *
 import re
 from .ollama_template_mappers import OLLAMA_TEMPLATES
 from unsloth_zoo.dataset_utils import (
@@ -1961,6 +1960,7 @@ def get_chat_template(
                 pass
 
                 # Must fix the sentence piece tokenizer since there's no tokenizer.model file!
+                from .tokenizer_utils import fix_sentencepiece_tokenizer
                 tokenizer = fix_sentencepiece_tokenizer(tokenizer, new_tokenizer, token_mapping,)
             else:
                 pass
@@ -2006,6 +2006,7 @@ def get_chat_template(
 
             # Must fix the sentence piece tokenizer since there's no tokenizer.model file!
             token_mapping = { old_eos_token : stop_word, }
+            from .tokenizer_utils import fix_sentencepiece_tokenizer
             tokenizer = fix_sentencepiece_tokenizer(tokenizer, new_tokenizer, token_mapping,)
         pass
 
@@ -2758,6 +2759,8 @@ extra_eos_tokens = None,
 
 
 def create_stopping_criteria(tokenizer, stop_word = "eos_token"):
+    import torch
+
     class StoppingCriteriaSub(StoppingCriteria):
         __slots__ = "stop_token", "single_match", "length",
 
@@ -2837,10 +2840,10 @@ def test_chat_templates():
     for j in range(len(messages)-1):
         correct_prompt.append_message(correct_prompt.roles[j%2==1], messages[j+1]["content"])
     correct_prompt.append_message(correct_prompt.roles[1], "")
-    correct_prompt = tokenizer.bos_token + correct_prompt.get_prompt()
 
     template = vicuna_template
     correct_tokenizer = AutoTokenizer.from_pretrained("lmsys/vicuna-7b-v1.5")
+    correct_prompt = correct_tokenizer.bos_token + correct_prompt.get_prompt()
     correct_tokenizer.chat_template = template
     our_prompt = correct_tokenizer.apply_chat_template(messages[1:], tokenize = False, add_generation_prompt = True)
     assert(correct_prompt == our_prompt)
@@ -2854,10 +2857,10 @@ def test_chat_templates():
     for j in range(len(messages)-1):
         correct_prompt.append_message(correct_prompt.roles[j%2==1], messages[j+1]["content"])
     correct_prompt.append_message(correct_prompt.roles[1], "")
-    correct_prompt = tokenizer.bos_token + correct_prompt.get_prompt()
 
     template = vicuna_old_template
     correct_tokenizer = AutoTokenizer.from_pretrained("lmsys/vicuna-7b-v1.5")
+    correct_prompt = correct_tokenizer.bos_token + correct_prompt.get_prompt()
     correct_tokenizer.chat_template = template
     our_prompt = correct_tokenizer.apply_chat_template(messages[1:], tokenize = False, add_generation_prompt = True)
     # We add </s> ourselves

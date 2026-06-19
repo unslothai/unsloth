@@ -677,7 +677,7 @@ def test_mlx_compatibility_shims_are_installed():
     assert trainer_module.UnslothTrainer is unsloth.UnslothTrainer
     assert trainer_module.UnslothVisionDataCollator is unsloth.UnslothVisionDataCollator
     assert chat_templates.train_on_responses_only is dataset_utils.train_on_responses_only
-    assert unsloth.train_on_responses_only is dataset_utils.train_on_responses_only
+    assert callable(unsloth.train_on_responses_only)
 
 
 def test_mlx_trl_shim_preserves_existing_trl_module(monkeypatch):

@@ -214,6 +214,8 @@ if _IS_MLX:
             "torch_compile",
         )
     )
+    _MLX_IMPLEMENTED_EXTRA_ARGUMENTS = frozenset(("warmup_ratio",))
+    _MLX_ALLOWED_EXTRA_ARGUMENTS = _MLX_COMPAT_EXTRA_ARGUMENTS | _MLX_IMPLEMENTED_EXTRA_ARGUMENTS
     _MLX_UNSUPPORTED_TASK_ARGUMENTS = frozenset(
         (
             "assistant_only_loss",
@@ -269,7 +271,7 @@ if _IS_MLX:
         for alias, target in _MLX_TRAINING_ARGUMENT_ALIASES.items():
             if target not in values and hasattr(args, alias):
                 values[alias] = getattr(args, alias)
-        for name in _MLX_COMPAT_EXTRA_ARGUMENTS:
+        for name in _MLX_ALLOWED_EXTRA_ARGUMENTS:
             if hasattr(args, name):
                 values[name] = getattr(args, name)
         for name in _MLX_UNSUPPORTED_TASK_ARGUMENTS:
@@ -291,7 +293,7 @@ if _IS_MLX:
                 trainer_kwargs[key] = value
                 continue
             target = _MLX_TRAINING_ARGUMENT_ALIASES.get(key, key)
-            if target in _MLX_TRAINING_CONFIG_FIELDS or key in _MLX_COMPAT_EXTRA_ARGUMENTS:
+            if target in _MLX_TRAINING_CONFIG_FIELDS or key in _MLX_ALLOWED_EXTRA_ARGUMENTS:
                 config_kwargs[key] = value
             else:
                 ignored_kwargs[key] = value
@@ -401,7 +403,7 @@ if _IS_MLX:
 
     def _raise_unknown_mlx_training_args(extra_kwargs):
         """Fail on unknown TrainingArguments/SFTConfig kwargs on MLX."""
-        names = sorted(key for key in extra_kwargs if key not in _MLX_COMPAT_EXTRA_ARGUMENTS)
+        names = sorted(key for key in extra_kwargs if key not in _MLX_ALLOWED_EXTRA_ARGUMENTS)
         if not names:
             return
         raise NotImplementedError(
@@ -794,17 +796,29 @@ if _IS_MLX:
                 "vision batching internally."
             )
 
-    from . import chat_templates
-    from .chat_templates import (
-        apply_chat_template,
-        get_chat_template,
-    )
-    from unsloth_zoo.dataset_utils import (
-        standardize_data_formats,
-        train_on_responses_only,
-    )
+    def get_chat_template(*args, **kwargs):
+        """Apply an Unsloth chat template through a lazy MLX-safe import."""
+        from .chat_templates import get_chat_template as _get_chat_template
+        return _get_chat_template(*args, **kwargs)
 
-    standardize_sharegpt = standardize_data_formats
+    def apply_chat_template(*args, **kwargs):
+        """Format a dataset with an Unsloth chat template through a lazy import."""
+        from .chat_templates import apply_chat_template as _apply_chat_template
+        return _apply_chat_template(*args, **kwargs)
+
+    def standardize_data_formats(*args, **kwargs):
+        """Normalize ShareGPT-style datasets through the shared zoo helper."""
+        from unsloth_zoo.dataset_utils import standardize_data_formats as _standardize_data_formats
+        return _standardize_data_formats(*args, **kwargs)
+
+    def standardize_sharegpt(*args, **kwargs):
+        """Alias ShareGPT standardization to the shared dataset-format helper."""
+        return standardize_data_formats(*args, **kwargs)
+
+    def train_on_responses_only(*args, **kwargs):
+        """Mask non-response tokens through the shared zoo dataset helper."""
+        from unsloth_zoo.dataset_utils import train_on_responses_only as _train_on_responses_only
+        return _train_on_responses_only(*args, **kwargs)
 
     def _install_mlx_trl_sft_shim():
         """Expose SFTTrainer/SFTConfig aliases for old notebooks after importing unsloth."""
