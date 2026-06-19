@@ -1327,7 +1327,12 @@ def test_confirm_tool_calls_deny_skips_gguf_tool_and_retry_can_execute(monkeypat
     assert calls == [("python", {"code": "print(1)"})]
 
 
-def _streamed_structured_tool_call(tool_name: str, arguments: dict, call_id: str, frag: int = 24) -> list[str]:
+def _streamed_structured_tool_call(
+    tool_name: str,
+    arguments: dict,
+    call_id: str,
+    frag: int = 24,
+) -> list[str]:
     """A structured tool call whose arguments arrive token-by-token across many
     deltas (id + name on the first delta), mirroring how llama-server streams a
     large tool-call argument such as a full HTML/code file."""
@@ -1348,9 +1353,7 @@ def _streamed_structured_tool_call(tool_name: str, arguments: dict, call_id: str
         )
     ]
     for fragment in fragments[1:]:
-        chunks.append(
-            _sse({"tool_calls": [{"index": 0, "function": {"arguments": fragment}}]})
-        )
+        chunks.append(_sse({"tool_calls": [{"index": 0, "function": {"arguments": fragment}}]}))
     chunks.append(_done())
     return chunks
 
@@ -1498,9 +1501,7 @@ def test_parallel_large_tool_calls_each_emit_provisional_start(monkeypatch):
         )
     )
 
-    provisional = [
-        e for e in events if e.get("type") == "tool_start" and not e.get("arguments")
-    ]
+    provisional = [e for e in events if e.get("type") == "tool_start" and not e.get("arguments")]
     assert sorted(e["tool_call_id"] for e in provisional) == ["call_py", "call_term"]
     assert all(e["provenance"].get("provisional") is True for e in provisional)
     # Both calls actually executed (parallel tool use is enabled by default).
@@ -1545,17 +1546,13 @@ def test_parallel_disabled_suppresses_provisional_for_later_calls(monkeypatch):
         )
     )
 
-    provisional = [
-        e for e in events if e.get("type") == "tool_start" and not e.get("arguments")
-    ]
+    provisional = [e for e in events if e.get("type") == "tool_start" and not e.get("arguments")]
     assert [e["tool_call_id"] for e in provisional] == ["call_py"]
     # Only the first call executes when parallel use is disabled.
     assert calls == [("python", {"code": big_code})]
     # The lone provisional is closed exactly once (no dangling card).
     closing = [
-        e
-        for e in events
-        if e.get("type") == "tool_end" and e.get("tool_call_id") == "call_py"
+        e for e in events if e.get("type") == "tool_end" and e.get("tool_call_id") == "call_py"
     ]
     assert len(closing) == 1
 
@@ -1597,9 +1594,7 @@ def test_connect_error_during_tool_call_closes_provisional_card(monkeypatch):
         assert "Lost connection" in str(exc)
 
     assert raised
-    provisional = [
-        e for e in collected if e.get("type") == "tool_start" and not e.get("arguments")
-    ]
+    provisional = [e for e in collected if e.get("type") == "tool_start" and not e.get("arguments")]
     assert len(provisional) == 1
     assert provisional[0]["tool_call_id"] == "call_py_err"
     # The provisional card is closed before the error propagates.
@@ -1646,9 +1641,7 @@ def test_empty_tool_call_id_does_not_emit_provisional_card(monkeypatch):
     )
 
     # No provisional card (empty-args tool_start) was surfaced for the empty id.
-    provisional = [
-        e for e in events if e.get("type") == "tool_start" and not e.get("arguments")
-    ]
+    provisional = [e for e in events if e.get("type") == "tool_start" and not e.get("arguments")]
     assert provisional == []
     # The real call still executes despite the missing id.
     assert calls == [("python", {"code": big_code})]

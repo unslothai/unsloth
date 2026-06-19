@@ -399,9 +399,7 @@ class TestLoopBasic:
         approval) would show the tool 'running' before the user approves. The
         gated real tool_start is the first signal the UI receives instead."""
         monkeypatch.setattr(safetensors_agentic, "new_approval_id", lambda: "approval-rh")
-        monkeypatch.setattr(
-            safetensors_agentic, "begin_tool_decision", lambda *_a, **_k: object()
-        )
+        monkeypatch.setattr(safetensors_agentic, "begin_tool_decision", lambda *_a, **_k: object())
         monkeypatch.setattr(safetensors_agentic, "wait_tool_decision", lambda *_a, **_k: "allow")
 
         exec_fn = FakeExecuteTool(["Rendered HTML canvas."])
@@ -514,9 +512,7 @@ class TestLoopBasic:
 
         assert raised
         provisional = [
-            e
-            for e in collected
-            if e["type"] == "tool_start" and e.get("arguments") == {}
+            e for e in collected if e["type"] == "tool_start" and e.get("arguments") == {}
         ]
         assert len(provisional) == 1
         # The provisional card is closed (as an error) before the exception
@@ -524,8 +520,7 @@ class TestLoopBasic:
         closing = [
             e
             for e in collected
-            if e["type"] == "tool_end"
-            and e.get("tool_call_id") == provisional[0]["tool_call_id"]
+            if e["type"] == "tool_end" and e.get("tool_call_id") == provisional[0]["tool_call_id"]
         ]
         assert len(closing) == 1
         assert "Error" in (closing[0].get("result") or "")

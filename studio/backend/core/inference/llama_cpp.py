@@ -8035,7 +8035,9 @@ class LlamaCppBackend:
                                             # a provisional card keyed by "" would not reconcile
                                             # with the real tool_start (the frontend mints its own
                                             # id per event), leaving a duplicate/dangling card.
-                                            has_real_id = bool(current_id) and current_id != fallback_id
+                                            has_real_id = (
+                                                bool(current_id) and current_id != fallback_id
+                                            )
                                             # Surface an early provisional tool_start
                                             # for ANY enabled tool the model starts
                                             # calling, not just render_html, so the UI
@@ -8085,9 +8087,7 @@ class LlamaCppBackend:
                                             # payloads (a full HTML/code file) whose
                                             # generation would otherwise freeze the UI.
                                             _args_len = len(
-                                                tool_calls_acc[idx]["function"].get(
-                                                    "arguments", ""
-                                                )
+                                                tool_calls_acc[idx]["function"].get("arguments", "")
                                             )
                                             _payload_is_large = (
                                                 current_name == "render_html"
@@ -8095,10 +8095,7 @@ class LlamaCppBackend:
                                             )
                                             if (
                                                 current_name
-                                                and (
-                                                    idx == 0
-                                                    or not disable_parallel_tool_use
-                                                )
+                                                and (idx == 0 or not disable_parallel_tool_use)
                                                 and has_real_id
                                                 and not already_started
                                                 and not _is_completed_one_shot
