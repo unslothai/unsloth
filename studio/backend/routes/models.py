@@ -673,6 +673,94 @@ def _scan_ollama_dir(ollama_dir: Path, limit: Optional[int] = None) -> List[Loca
     return found
 
 
+def collect_local_models(models_root: Path) -> List[LocalModelInfo]:
+    """Scan ``models_root``, the HF caches, LM Studio dirs, and user scan folders,
+    returning a deduplicated, hidden-filtered list of discovered local models.
+
+    Shared by ``GET /models/local`` (the model picker) and the OpenAI-compatible
+    catalog (``GET /v1/models``) so the UI and the API never drift. ``models_root``
+    must already be validated/trusted by the caller.
+    """
+    from storage.studio_db import list_scan_folders
+    from utils.paths import (
+        hf_default_cache_dir,
+        legacy_hf_cache_dir,
+        lmstudio_model_dirs,
+    )
+
+    hf_cache_dir = _resolve_hf_cache_dir()
+    legacy_hf = legacy_hf_cache_dir()
+    hf_default = hf_default_cache_dir()
+    lm_dirs = lmstudio_model_dirs()
+
+    local_models = _scan_models_dir(models_root) + _scan_hf_cache(hf_cache_dir)
+
+    # Resolve once; an inaccessible aux cache must skip that scan, not 500.
+    hf_cache_real = _safe_resolve(hf_cache_dir)
+    legacy_real = _safe_resolve(legacy_hf)
+    default_real = _safe_resolve(hf_default)
+
+    # Scan legacy Unsloth HF cache for backward compatibility.
+    if _safe_is_dir(legacy_hf) and legacy_real != hf_cache_real:
+        local_models += _scan_hf_cache(legacy_hf)
+
+    # Scan HF system default cache (may differ under env overrides).
+    if _safe_is_dir(hf_default) and default_real != hf_cache_real and default_real != legacy_real:
+        local_models += _scan_hf_cache(hf_default)
+
+    # Scan LM Studio directories.
+    for lm_dir in lm_dirs:
+        local_models += _scan_lmstudio_dir(lm_dir)
+
+    # Scan user-added custom folders (per-folder cap).
+    _MAX_MODELS_PER_FOLDER = 200
+    try:
+        custom_folders = list_scan_folders()
+    except Exception as e:
+        logger.warning("Could not load custom scan folders: %s", e)
+        custom_folders = []
+    for folder in custom_folders:
+        folder_path = Path(folder["path"])
+        try:
+            # Filter Ollama .studio_links/ from generic scanners to
+            # avoid duplicates and leaking internal paths into the UI.
+            _generic = [
+                m
+                for m in (
+                    _scan_models_dir(folder_path, limit = _MAX_MODELS_PER_FOLDER)
+                    + _scan_hf_cache(folder_path)
+                    + _scan_lmstudio_dir(folder_path)
+                )
+                if not any(p in (".studio_links", "ollama_links") for p in Path(m.path).parts)
+            ]
+            custom_models = _generic
+            if len(custom_models) < _MAX_MODELS_PER_FOLDER:
+                custom_models += _scan_ollama_dir(
+                    folder_path,
+                    limit = _MAX_MODELS_PER_FOLDER - len(custom_models),
+                )
+        except OSError as e:
+            logger.warning("Skipping unreadable scan folder %s: %s", folder_path, e)
+            continue
+        local_models += [m.model_copy(update = {"source": "custom"}) for m in custom_models]
+
+    # Deduplicate, but always keep custom folder entries (keyed by
+    # (id, source)) so they show in the "Custom Folders" UI section
+    # even when the model is also in the HF cache.
+    deduped: dict[str, LocalModelInfo] = {}
+    for model in local_models:
+        key = f"{model.id}\x00custom" if model.source == "custom" else model.id
+        if key not in deduped:
+            deduped[key] = model
+
+    models = sorted(
+        deduped.values(),
+        key = lambda item: (item.updated_at or 0),
+        reverse = True,
+    )
+    return [m for m in models if not _is_hidden_model(m.id, m.path)]
+
+
 @router.get("/local", response_model = LocalModelListResponse)
 async def list_local_models(
     models_dir: str = Query(
@@ -721,78 +809,7 @@ async def list_local_models(
         )
 
     try:
-        local_models = _scan_models_dir(models_root) + _scan_hf_cache(hf_cache_dir)
-
-        # Resolve once; an inaccessible aux cache must skip that scan, not 500.
-        hf_cache_real = _safe_resolve(hf_cache_dir)
-        legacy_real = _safe_resolve(legacy_hf)
-        default_real = _safe_resolve(hf_default)
-
-        # Scan legacy Unsloth HF cache for backward compatibility.
-        if _safe_is_dir(legacy_hf) and legacy_real != hf_cache_real:
-            local_models += _scan_hf_cache(legacy_hf)
-
-        # Scan HF system default cache (may differ under env overrides).
-        if (
-            _safe_is_dir(hf_default)
-            and default_real != hf_cache_real
-            and default_real != legacy_real
-        ):
-            local_models += _scan_hf_cache(hf_default)
-
-        # Scan LM Studio directories.
-        for lm_dir in lm_dirs:
-            local_models += _scan_lmstudio_dir(lm_dir)
-
-        # Scan user-added custom folders (per-folder cap).
-        from storage.studio_db import list_scan_folders
-
-        _MAX_MODELS_PER_FOLDER = 200
-        try:
-            custom_folders = list_scan_folders()
-        except Exception as e:
-            logger.warning("Could not load custom scan folders: %s", e)
-            custom_folders = []
-        for folder in custom_folders:
-            folder_path = Path(folder["path"])
-            try:
-                # Filter Ollama .studio_links/ from generic scanners to
-                # avoid duplicates and leaking internal paths into the UI.
-                _generic = [
-                    m
-                    for m in (
-                        _scan_models_dir(folder_path, limit = _MAX_MODELS_PER_FOLDER)
-                        + _scan_hf_cache(folder_path)
-                        + _scan_lmstudio_dir(folder_path)
-                    )
-                    if not any(p in (".studio_links", "ollama_links") for p in Path(m.path).parts)
-                ]
-                custom_models = _generic
-                if len(custom_models) < _MAX_MODELS_PER_FOLDER:
-                    custom_models += _scan_ollama_dir(
-                        folder_path,
-                        limit = _MAX_MODELS_PER_FOLDER - len(custom_models),
-                    )
-            except OSError as e:
-                logger.warning("Skipping unreadable scan folder %s: %s", folder_path, e)
-                continue
-            local_models += [m.model_copy(update = {"source": "custom"}) for m in custom_models]
-
-        # Deduplicate, but always keep custom folder entries (keyed by
-        # (id, source)) so they show in the "Custom Folders" UI section
-        # even when the model is also in the HF cache.
-        deduped: dict[str, LocalModelInfo] = {}
-        for model in local_models:
-            key = f"{model.id}\x00custom" if model.source == "custom" else model.id
-            if key not in deduped:
-                deduped[key] = model
-
-        models = sorted(
-            deduped.values(),
-            key = lambda item: (item.updated_at or 0),
-            reverse = True,
-        )
-        models = [m for m in models if not _is_hidden_model(m.id, m.path)]
+        models = collect_local_models(models_root)
 
         return LocalModelListResponse(
             models_dir = str(models_root),
