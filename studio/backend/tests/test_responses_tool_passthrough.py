@@ -59,6 +59,7 @@ from models.inference import (
     ResponsesUsage,
 )
 from routes.inference import (
+    _SameTaskStreamingResponse,
     _build_chat_request,
     _chat_tool_calls_to_responses_output,
     _extract_responses_reasoning,
@@ -1074,6 +1075,36 @@ class TestResponsesStreamAdapter:
                 ),
             ),
         )
+
+    def test_stream_response_avoids_legacy_receive_watcher(self, monkeypatch):
+        self._install_stream_mock(
+            monkeypatch,
+            [{"choices": [{"delta": {"content": "33"}}]}],
+        )
+        payload = ResponsesRequest(input = "hi", stream = True)
+        messages = [ChatMessage(role = "user", content = "hi")]
+
+        async def run():
+            response = await _responses_stream(payload, messages, self._Request())
+            assert isinstance(response, _SameTaskStreamingResponse)
+
+            sent = []
+
+            async def receive():
+                raise AssertionError("Responses streams poll disconnects in the generator")
+
+            async def send(message):
+                sent.append(message)
+
+            await response({"type": "http", "asgi": {"spec_version": "2.3"}}, receive, send)
+            return sent
+
+        sent = asyncio.run(run())
+
+        assert sent[0]["type"] == "http.response.start"
+        body = b"".join(message.get("body", b"") for message in sent).decode()
+        assert "response.output_text.delta" in body
+        assert '"delta":"33"' in body.replace(" ", "")
 
     def test_split_think_markers_stream_as_reasoning_and_visible_text(self, monkeypatch):
         chunks = [

@@ -12,6 +12,7 @@ import uuid
 from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse, JSONResponse, Response
+from starlette.requests import ClientDisconnect
 from typing import Any, List, Optional, Union
 import json
 import httpx
@@ -742,6 +743,18 @@ def _same_task_timeout(timeout_s: float):
     if timeout_ctx is not None:
         return timeout_ctx(timeout_s)
     return _CompatSameTaskTimeout(timeout_s)
+
+
+class _SameTaskStreamingResponse(StreamingResponse):
+    """StreamingResponse without Starlette's legacy AnyIO task-group wrapper."""
+
+    async def __call__(self, scope, receive, send) -> None:
+        try:
+            await self.stream_response(send)
+        except OSError:
+            raise ClientDisconnect()
+        if self.background is not None:
+            await self.background()
 
 
 async def _preheader_cancelled(cancel_event = None, request: Optional[Request] = None) -> bool:
@@ -7839,7 +7852,7 @@ async def _responses_stream(
         api_monitor.finish(monitor_id)
         yield _sse("response.completed", completed_response)
 
-    return StreamingResponse(
+    return _SameTaskStreamingResponse(
         event_generator(),
         media_type = "text/event-stream",
         headers = {
