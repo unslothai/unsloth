@@ -101,38 +101,59 @@ def test_stream_first_item_deadline_uses_compat_timeout_without_task_hop(monkeyp
     asyncio.run(_run())
 
 
-def test_stream_wait_polls_disconnect_without_background_watcher():
+def test_stream_wait_stops_on_known_disconnect_before_read():
     async def _run():
         state = SimpleNamespace(disconnect_checks = 0)
         cancel_event = threading.Event()
-        response = SimpleNamespace(request = SimpleNamespace(extensions = {"timeout": {}}))
 
         class _Request:
             async def is_disconnected(self):
                 state.disconnect_checks += 1
-                return state.disconnect_checks >= 2
+                return True
 
-        class _SlowFirstItem:
+        class _Unread:
             async def __anext__(self):
-                await asyncio.sleep(0.02)
-                raise inf_mod.httpx.ReadTimeout("poll")
+                raise AssertionError("stream should stop before reading upstream")
 
-        started = time.monotonic()
         async for _ in inf_mod._aiter_llama_stream_items(
-            _SlowFirstItem(),
+            _Unread(),
             cancel_event = cancel_event,
             request = _Request(),
-            response = response,
-            first_token_deadline = started + 1,
+            first_token_deadline = time.monotonic() + 1,
         ):
             raise AssertionError("stream should stop after disconnect")
 
         assert cancel_event.is_set()
-        assert state.disconnect_checks >= 2
-        assert time.monotonic() - started < 0.5
-        assert response.request.extensions["timeout"]["read"] <= (
-            inf_mod._STREAM_DISCONNECT_POLL_TIMEOUT_S
-        )
+        assert state.disconnect_checks == 1
+
+    asyncio.run(_run())
+
+
+def test_stream_wait_does_not_shorten_upstream_read_for_disconnect_poll():
+    async def _run():
+        response = SimpleNamespace(request = SimpleNamespace(extensions = {"timeout": {}}))
+        seen_read_timeouts = []
+
+        class _Request:
+            async def is_disconnected(self):
+                return False
+
+        class _NoItem:
+            async def __anext__(self):
+                seen_read_timeouts.append(response.request.extensions["timeout"]["read"])
+                raise StopAsyncIteration
+
+        async for _ in inf_mod._aiter_llama_stream_items(
+            _NoItem(),
+            cancel_event = threading.Event(),
+            request = _Request(),
+            response = response,
+            first_token_deadline = time.monotonic() + 1,
+        ):
+            raise AssertionError("stream should end")
+
+        assert seen_read_timeouts
+        assert seen_read_timeouts[0] > inf_mod._STREAM_DISCONNECT_POLL_TIMEOUT_S
 
     asyncio.run(_run())
 

@@ -845,11 +845,8 @@ async def _aiter_llama_stream_items(
                 remaining_s = first_token_deadline - time.monotonic()
                 if remaining_s <= 0:
                     raise httpx.ReadTimeout("The model did not produce a first token in time.")
-                read_timeout_s = remaining_s
-                if request is not None:
-                    read_timeout_s = min(read_timeout_s, _STREAM_DISCONNECT_POLL_TIMEOUT_S)
                 if response is not None:
-                    _set_stream_response_read_timeout(response, read_timeout_s)
+                    _set_stream_response_read_timeout(response, remaining_s)
                 # Keep httpx/httpcore's AnyIO cancel scope in this task.
                 # asyncio.wait_for would drive __anext__ in a child task.
                 async with _same_task_timeout(remaining_s):
@@ -866,10 +863,7 @@ async def _aiter_llama_stream_items(
                     )
                     if stall_remaining_s <= 0:
                         raise httpx.ReadTimeout("The model stopped producing tokens mid-response.")
-                    _set_stream_response_read_timeout(
-                        response,
-                        min(stall_remaining_s, _STREAM_DISCONNECT_POLL_TIMEOUT_S),
-                    )
+                    _set_stream_response_read_timeout(response, stall_remaining_s)
                 item = await async_iter.__anext__()
         except asyncio.TimeoutError as exc:
             if waiting_first_item:
