@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import builtins
 import importlib
 import importlib.util
 import sys
@@ -651,6 +652,43 @@ def test_mlx_train_on_responses_only_returns_shared_mask_function():
     assert last_masked == {
         "labels": [[-100, -100, -100, -100, -100, -100, -100, 30]],
     }
+
+
+def test_mlx_get_chat_template_uses_light_tokenizer_patch(monkeypatch):
+    """MLX notebooks should not import CUDA-heavy tokenizer/save helpers."""
+    _import_mlx_unsloth()
+    from unsloth.chat_templates import get_chat_template
+    import unsloth_zoo.tokenizer_utils as tokenizer_utils
+
+    class Tokenizer:
+        is_fast = True
+        padding_side = "right"
+        eos_token = "<eos>"
+        bos_token = "<bos>"
+        unk_token = "<unk>"
+        pad_token = "<pad>"
+        added_tokens_decoder = {}
+
+    def fake_patch_tokenizer(model, tokenizer):
+        return model, tokenizer
+
+    real_import = builtins.__import__
+
+    def guarded_import(name, *args, **kwargs):
+        if name.startswith("unsloth.models") or name.startswith("unsloth.save"):
+            raise AssertionError(f"unexpected CUDA-heavy import: {name}")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(tokenizer_utils, "patch_tokenizer", fake_patch_tokenizer)
+    monkeypatch.setattr(builtins, "__import__", guarded_import)
+
+    tokenizer = get_chat_template(
+        Tokenizer(),
+        chat_template=("{{ messages }}", "<eos>"),
+    )
+
+    assert tokenizer.chat_template == "{{ messages }}"
+    assert tokenizer.padding_side == "right"
 
 
 def test_mlx_gpu_memory_stats_helper_shape():

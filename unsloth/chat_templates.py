@@ -1846,6 +1846,10 @@ def get_chat_template(
     use_zoo_tokenizer_patch = False,
 ):
     assert(type(map_eos_token) is bool)
+    import sys
+    is_mlx_backend = getattr(sys.modules.get("unsloth"), "DEVICE_TYPE", None) == "mlx"
+    if not use_zoo_tokenizer_patch:
+        use_zoo_tokenizer_patch = is_mlx_backend
     old_tokenizer = tokenizer
 
     IS_GEMMA = False
@@ -2062,7 +2066,7 @@ def get_chat_template(
     # stopping_criteria = create_stopping_criteria(tokenizer, stop_word)
 
     # Patch saving functions
-    if patch_saving:
+    if patch_saving and not is_mlx_backend:
         from .save import patch_saving_functions
         tokenizer = patch_saving_functions(tokenizer)
 
