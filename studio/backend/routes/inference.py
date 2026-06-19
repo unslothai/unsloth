@@ -670,6 +670,12 @@ except ImportError:
     )
 
 
+def _is_llama_server_not_found(exc: BaseException) -> bool:
+    # importlib-loaded route modules can see a different class object than the
+    # test/runtime copy when llama_cpp was reloaded; match by name + base type.
+    return isinstance(exc, RuntimeError) and type(exc).__name__ == "LlamaServerNotFoundError"
+
+
 def _llama_non_streaming_generation_timeout() -> httpx.Timeout:
     return httpx.Timeout(
         connect = _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
@@ -2704,6 +2710,9 @@ async def load_model(
         logger.warning("GGUF runtime missing while loading '%s': %s", model_log_label, e)
         raise HTTPException(status_code = 400, detail = str(e))
     except Exception as e:
+        if _is_llama_server_not_found(e):
+            logger.warning("GGUF runtime missing while loading '%s': %s", model_log_label, e)
+            raise HTTPException(status_code = 400, detail = str(e))
         # Friendlier message for models Unsloth cannot load.
         not_supported_hints = [
             "No config file found",
@@ -2927,6 +2936,9 @@ async def validate_model(
         logger.warning("GGUF runtime missing while validating '%s': %s", request.model_path, e)
         raise HTTPException(status_code = 400, detail = str(e))
     except Exception as e:
+        if _is_llama_server_not_found(e):
+            logger.warning("GGUF runtime missing while validating '%s': %s", request.model_path, e)
+            raise HTTPException(status_code = 400, detail = str(e))
         not_supported_hints = [
             "No config file found",
             "not yet supported",
