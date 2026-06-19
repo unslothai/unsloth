@@ -1224,9 +1224,10 @@ class TestScannerCoversAllExecutableCode:
             configs = consent._load_remote_code_configs("some/gated-repo")
         assert configs is None
 
-    def test_gguf_repo_auto_map_is_ignored(self):
-        # A GGUF repo with a vestigial auto_map loads via llama.cpp, which never runs it,
-        # so _config_has_auto_map must return False and skip the consent flow.
+    def test_gguf_repo_auto_map_is_scanned_for_non_file_load_paths(self, tmp_path):
+        # A GGUF-only repo id can still be passed to non-llama.cpp load paths (export uses
+        # transformers/Unsloth). Those paths can execute auto_map before failing on the
+        # weight shape, so only an explicit .gguf file reference is inert.
         def _dl(
             repo_id = None,
             filename = None,
@@ -1234,10 +1235,9 @@ class TestScannerCoversAllExecutableCode:
             **kw,
         ):
             import json
-            import tempfile
 
             if filename == "config.json":
-                p = Path(tempfile.mkdtemp()) / "config.json"
+                p = tmp_path / "config.json"
                 p.write_text(
                     json.dumps({"auto_map": {"AutoModelForCausalLM": "modeling_decilm.X"}})
                 )
@@ -1251,7 +1251,82 @@ class TestScannerCoversAllExecutableCode:
                 return_value = ["config.json", "model-00001-of-00097.gguf"],
             ),
         ):
-            assert consent._config_has_auto_map("unsloth/Some-Model-GGUF") is False
+            assert consent._config_has_auto_map("unsloth/Some-Model-GGUF") is True
+
+    def test_gguf_only_repo_with_python_is_scanned_and_blocked(self, tmp_path):
+        # Regression: the GGUF-only repo short-circuit must not skip scanning auto_map
+        # Python for export/non-GGUF loaders that pass trust_remote_code=True.
+        def _dl(
+            repo_id = None,
+            filename = None,
+            token = None,
+            **kw,
+        ):
+            import json
+
+            p = tmp_path / filename
+            if filename == "config.json":
+                p.write_text(json.dumps({"auto_map": {"AutoModel": "modeling_evil.X"}}))
+                return str(p)
+            if filename == "modeling_evil.py":
+                p.write_text("import subprocess\nsubprocess.Popen(['id'])\n")
+                return str(p)
+            raise EntryNotFoundError(filename)
+
+        with (
+            patch("huggingface_hub.hf_hub_download", side_effect = _dl),
+            patch(
+                "huggingface_hub.list_repo_files",
+                return_value = ["config.json", "modeling_evil.py", "model.Q4_K_M.gguf"],
+            ),
+        ):
+            d = evaluate_remote_code_consent_for_targets(
+                ["evil/GGUF-Only"],
+                trust_remote_code = True,
+            )
+
+        assert d.has_remote_code is True
+        assert d.blocked is True
+        assert d.max_severity == HIGH
+        assert d.fingerprint
+
+    def test_transformers_style_repo_auto_map_is_scanned_and_blocked(self, tmp_path):
+        # The GGUF change must not weaken transformers-style loads: a non-GGUF repo
+        # (safetensors, or MLX-style .npz with no .safetensors/.gguf) that declares an
+        # auto_map is still scanned and blocked through the real consent gate.
+        def _dl(
+            repo_id = None,
+            filename = None,
+            token = None,
+            **kw,
+        ):
+            import json
+
+            p = tmp_path / filename
+            if filename == "config.json":
+                p.write_text(json.dumps({"auto_map": {"AutoModel": "modeling_evil.X"}}))
+                return str(p)
+            if filename == "modeling_evil.py":
+                p.write_text("import subprocess\nsubprocess.Popen(['id'])\n")
+                return str(p)
+            raise EntryNotFoundError(filename)
+
+        for weights in (["model.safetensors"], ["weights.npz"]):
+            with (
+                patch("huggingface_hub.hf_hub_download", side_effect = _dl),
+                patch(
+                    "huggingface_hub.list_repo_files",
+                    return_value = ["config.json", "modeling_evil.py", *weights],
+                ),
+            ):
+                d = evaluate_remote_code_consent_for_targets(
+                    ["org/Transformers-Style"],
+                    trust_remote_code = True,
+                )
+            assert d.has_remote_code is True, weights
+            assert d.blocked is True, weights
+            assert d.max_severity == HIGH, weights
+            assert d.fingerprint, weights
 
     def test_direct_gguf_file_reference_has_no_auto_map(self):
         # A direct .gguf file reference (repo id + filename, >=3 segments) is a GGUF load: no remote code, no Hub call.
