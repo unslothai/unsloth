@@ -5440,10 +5440,19 @@ class LlamaCppBackend:
                     "iq4_nl",
                     # TurboQuant 4-bit KV cache. Requires a turboquant-capable
                     # llama.cpp build; flash-attn (forced on above) covers the
-                    # quantized-V requirement.
+                    # quantized-V requirement. TCQ options are CUDA-only.
                     "turbo4",
                     "turbo3",
+                    "turbo3_tcq",
                     "turbo2",
+                    "turbo2_tcq",
+                    # Experimental KVarN pseudo types
+                    "kvarn8",
+                    "kvarn6",
+                    "kvarn5",
+                    "kvarn4",
+                    "kvarn3",
+                    "kvarn2",
                     "f32",
                 }
                 if (

@@ -30,7 +30,7 @@ This fork uses experimental features; some things may break.
 Follow the setup from [Advanced Installation](https://github.com/lukasdim/unsloth-turboquant#-advanced-installation). Beellama.cpp will automatically build for your machine.
 A few notes:
 - **CUDA:** Run as is
-- **ROCm/HIP:** You may need to enable `UNSLOTH_BEELLAMA_HIP_ROCWMMA_FATTN=1` before running installation
+- **ROCm/HIP:** You may need to set `UNSLOTH_BEELLAMA_HIP_ROCWMMA_FATTN=1` before running installation
 - **Metal/CPU:** TurboQuant not supported but beellama still works. Recommended to use upstream repo.
 
 Unsloth uses precompiled llamacpp binaries while this fork does not. Expect installation and build times to be ~10-30 minutes.
@@ -38,14 +38,17 @@ Unsloth uses precompiled llamacpp binaries while this fork does not. Expect inst
 If beellama.cpp fails to build, unsloth will still be installed. You will need to manually build beellama.cpp by following [these](https://github.com/Anbeeld/beellama.cpp/tree/v0.3.2#installation) instructions. For windows, move binaries to `<instal-dir>/llama.cpp/build/bin/Release`. For Linux/mac, move binaries to `<install-dir>/llama.cpp/build/bin`
 ### Additional Notes
 
-For CUDA, `GGML_CUDA_FA_HALF_QUANTS` only allows K >= V and V <= 2 tiers below K. For instance, `K=turbo4, V=q8_0/f16` is not supported.
+- For CUDA, `GGML_CUDA_FA_HALF_QUANTS` only allows K >= V and V <= 2 tiers below K. For instance, `K=turbo4, V=q8_0/f16` is not supported.
 If you would like to do that, set `UNSLOTH_BEELLAMA_FA_QUANTS=all`. This will likely increase build time significantly.
 
-For HIP, setting `UNSLOTH_BEELLAMA_FA_QUANTS=all` may work, but it's untested.
+- For HIP, setting `UNSLOTH_BEELLAMA_FA_QUANTS=all` may work, but it's untested.
 
-Memory estimates for turboquant kv-cache are not accurate and default to f16. This means memory estimates will (most likely) be more than what is used.
+- Memory estimates for turboquant kv-cache are not accurate and default to f16. This means memory estimates will (most likely) be more than what is used.
+
 
 *Note: This fork is purposefully minimal to avoid upstream merge conflicts*
+
+***Next up:*** *dflash support*
 
 ## ⚡ Get started
 

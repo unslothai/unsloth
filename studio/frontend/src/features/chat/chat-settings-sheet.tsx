@@ -959,7 +959,15 @@ export function ChatSettingsPanel({
                         <SelectItem value="q4_1">q4_1</SelectItem>
                         <SelectItem value="turbo4">turbo4</SelectItem>
                         <SelectItem value="turbo3">turbo3</SelectItem>
+                        <SelectItem value="turbo3_tcq">turbo3_tcq</SelectItem>
                         <SelectItem value="turbo2">turbo2</SelectItem>
+                        <SelectItem value="turbo2_tcq">turbo2_tcq</SelectItem>
+                        <SelectItem value="kvarn8">kvarn8</SelectItem>
+                        <SelectItem value="kvarn6">kvarn6</SelectItem>
+                        <SelectItem value="kvarn5">kvarn5</SelectItem>
+                        <SelectItem value="kvarn4">kvarn4</SelectItem>
+                        <SelectItem value="kvarn3">kvarn3</SelectItem>
+                        <SelectItem value="kvarn2">kvarn2</SelectItem>
                       </SelectContent>
                     </Select>
                   </div>
@@ -1000,7 +1008,15 @@ export function ChatSettingsPanel({
                         <SelectItem value="q4_1">q4_1</SelectItem>
                         <SelectItem value="turbo4">turbo4</SelectItem>
                         <SelectItem value="turbo3">turbo3</SelectItem>
+                        <SelectItem value="turbo3_tcq">turbo3_tcq</SelectItem>
                         <SelectItem value="turbo2">turbo2</SelectItem>
+                        <SelectItem value="turbo2_tcq">turbo2_tcq</SelectItem>
+                        <SelectItem value="kvarn8">kvarn8</SelectItem>
+                        <SelectItem value="kvarn6">kvarn6</SelectItem>
+                        <SelectItem value="kvarn5">kvarn5</SelectItem>
+                        <SelectItem value="kvarn4">kvarn4</SelectItem>
+                        <SelectItem value="kvarn3">kvarn3</SelectItem>
+                        <SelectItem value="kvarn2">kvarn2</SelectItem>
                       </SelectContent>
                     </Select>
                   </div>
