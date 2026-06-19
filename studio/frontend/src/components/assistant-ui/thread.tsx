@@ -187,6 +187,7 @@ type PromptQueueUIItem = {
   position: number;
   total: number;
   status: PromptQueueUIItemStatus;
+  threadIds: string[];
   canEdit: boolean;
   canRemove: boolean;
 };
@@ -391,15 +392,19 @@ function findPromptQueueEntry(
   return null;
 }
 
-function canEditPromptQueueItem(itemIndex: number, item: PromptQueueItem) {
-  if (item.dispatched) {
-    return false;
-  }
-  return promptQueueIndex < 0 || itemIndex !== promptQueueIndex;
+function canEditPromptQueueItem(item: PromptQueueItem) {
+  return !item.dispatched;
 }
 
 function canRemovePromptQueueItem(item: PromptQueueItem) {
   return !item.dispatched;
+}
+
+function promptQueueItemMatchesThreadIds(
+  item: PromptQueueUIItem,
+  threadIds: string[],
+) {
+  return item.threadIds.some((threadId) => threadIds.includes(threadId));
 }
 
 function syncPromptQueueUI() {
@@ -422,6 +427,7 @@ function syncPromptQueueUI() {
       if (index < activeItemIndex || item.dispatched) {
         return null;
       }
+      const threadIds = getPromptQueueTargetIds(item.target);
       const isActive = promptQueueIndex >= 0 && index === activeItemIndex;
       const status: PromptQueueUIItemStatus = item.dispatched
         ? "running"
@@ -436,7 +442,8 @@ function syncPromptQueueUI() {
         position: index + 1,
         total,
         status,
-        canEdit: canEditPromptQueueItem(index, item),
+        threadIds,
+        canEdit: canEditPromptQueueItem(item),
         canRemove: canRemovePromptQueueItem(item),
       };
     })
@@ -510,7 +517,7 @@ function editPromptQueueItem(itemId: string, prompt: string) {
     return false;
   }
   const item = promptQueueItems[itemIndex];
-  if (!canEditPromptQueueItem(itemIndex, item)) {
+  if (!canEditPromptQueueItem(item)) {
     return false;
   }
   item.prompt = nextPrompt;
@@ -1166,7 +1173,9 @@ const ThreadComposerDock: FC<{
   const queueVisible = usePromptQueueUI(
     (s) =>
       Boolean(findPromptQueueEntry(s, promptQueueThreadIds)) &&
-      s.items.length > 0,
+      s.items.some((item) =>
+        promptQueueItemMatchesThreadIds(item, promptQueueThreadIds),
+      ),
   );
 
   // Report dock height so the viewport reserves matching scroll space when
@@ -3173,8 +3182,11 @@ const PromptQueueStack: FC<{ queueThreadIds: string[] }> = ({
   const items = usePromptQueueUI((s) => s.items);
   const [editingItemId, setEditingItemId] = useState<string | null>(null);
   const [draftPrompt, setDraftPrompt] = useState("");
-  const editInputRef = useRef<HTMLInputElement>(null);
-  const editingItem = items.find((item) => item.id === editingItemId);
+  const editInputRef = useRef<HTMLTextAreaElement>(null);
+  const visibleItems = items.filter((item) =>
+    promptQueueItemMatchesThreadIds(item, queueThreadIds),
+  );
+  const editingItem = visibleItems.find((item) => item.id === editingItemId);
   const editingItemCanEdit = editingItem?.canEdit ?? false;
   const activeEditingItemId = editingItem ? editingItemId : null;
 
@@ -3194,7 +3206,7 @@ const PromptQueueStack: FC<{ queueThreadIds: string[] }> = ({
     setDraftPrompt("");
   }, [editingItemCanEdit, editingItemId]);
 
-  if (!queueEntry || items.length === 0) {
+  if (!queueEntry || visibleItems.length === 0) {
     return null;
   }
 
@@ -3223,28 +3235,33 @@ const PromptQueueStack: FC<{ queueThreadIds: string[] }> = ({
 
   return (
     <div
-      className="relative z-0 mx-7 mb-[-8px] max-h-[28vh] overflow-y-auto rounded-[18px] border border-border/45 bg-background/90 px-5 py-2 text-muted-foreground shadow-none backdrop-blur-md dark:bg-card/85"
+      className="relative z-0 mx-7 mb-[-8px] max-h-[28vh] overflow-y-auto rounded-t-[18px] rounded-b-none border border-border/45 bg-background/90 px-5 py-2 text-muted-foreground shadow-none backdrop-blur-md dark:bg-card/85"
       aria-label={`Prompt queue, ${current} of ${total}`}
     >
       <div className="divide-y divide-border/25">
-        {items.map((item) => {
+        {visibleItems.map((item, visibleIndex) => {
           const isEditing = item.id === activeEditingItemId;
+          const visiblePosition = visibleIndex + 1;
           return (
             <div
               key={item.id}
-              className="h-10"
-              aria-label={`${promptQueueStatusLabel(item.status)} prompt ${item.position} of ${item.total}: ${item.prompt}`}
+              className={cn("min-h-10", isEditing ? "h-auto" : "h-10")}
+              aria-label={`${promptQueueStatusLabel(item.status)} prompt ${visiblePosition} of ${visibleItems.length}: ${item.prompt}`}
             >
               {isEditing ? (
-                <div className="grid h-10 grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-2.5">
-                  <input
+                <div className="grid min-h-10 grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-2.5 py-1">
+                  <textarea
                     ref={editInputRef}
                     value={draftPrompt}
+                    rows={1}
                     onChange={(event) =>
                       setDraftPrompt(event.currentTarget.value)
                     }
                     onKeyDown={(event) => {
-                      if (event.key === "Enter") {
+                      if (
+                        event.key === "Enter" &&
+                        (event.metaKey || event.ctrlKey)
+                      ) {
                         event.preventDefault();
                         saveEditing();
                       } else if (event.key === "Escape") {
@@ -3252,8 +3269,8 @@ const PromptQueueStack: FC<{ queueThreadIds: string[] }> = ({
                         cancelEditing();
                       }
                     }}
-                    className="h-8 min-w-0 rounded-md border border-border/45 bg-transparent px-2 text-sm text-foreground outline-none transition-colors focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/35"
-                    aria-label={`Edit queued prompt ${item.position}`}
+                    className="max-h-20 min-h-8 min-w-0 resize-none rounded-md border border-border/45 bg-transparent px-2 py-1.5 text-sm leading-5 text-foreground outline-none transition-colors focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/35"
+                    aria-label={`Edit queued prompt ${visiblePosition}`}
                   />
                   <Button
                     type="button"
@@ -3301,7 +3318,7 @@ const PromptQueueStack: FC<{ queueThreadIds: string[] }> = ({
                     variant="ghost"
                     size="icon"
                     className="col-start-3 size-7 justify-self-center text-muted-foreground/70 hover:text-destructive"
-                    aria-label={`Remove queued prompt ${item.position}`}
+                    aria-label={`Remove queued prompt ${visiblePosition}`}
                     disabled={!item.canRemove}
                     onClick={() => removePromptQueueItem(item.id)}
                   >
