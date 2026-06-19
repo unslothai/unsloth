@@ -1264,6 +1264,61 @@ class TestGgufVisionToolRouting:
                     pass
         return payloads
 
+    def _run_gguf_case(
+        self,
+        monkeypatch,
+        *,
+        generate = None,
+        tool_generate = None,
+        payload_kwargs = None,
+        backend_kwargs = None,
+    ):
+        import routes.inference as inf_mod
+
+        reset_tool_policy()
+
+        def _plain(**_kwargs):
+            raise AssertionError("plain GGUF path should not be used")
+
+        backend_data = {
+            "is_loaded": True,
+            "is_vision": False,
+            "supports_tools": tool_generate is not None,
+            "supports_reasoning": True,
+            "reasoning_always_on": True,
+            "_is_audio": False,
+            "model_identifier": "test-gguf",
+            "context_length": 4096,
+            "generate_chat_completion": generate or _plain,
+        }
+        if tool_generate is not None:
+            backend_data["generate_chat_completion_with_tools"] = tool_generate
+        if backend_kwargs:
+            backend_data.update(backend_kwargs)
+        backend = SimpleNamespace(**backend_data)
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
+
+        request_data = {
+            "model": "default",
+            "messages": [{"role": "user", "content": "hi"}],
+        }
+        if payload_kwargs:
+            request_data.update(payload_kwargs)
+        payload = ChatCompletionRequest(**request_data)
+        response = self._drive(
+            openai_chat_completions(payload, request = self._Request(), current_subject = "test")
+        )
+        result = SimpleNamespace(response = response, monitor = monitor, backend = backend)
+        if request_data.get("stream"):
+            result.chunks = self._consume_response(response)
+            result.payloads = self._sse_payloads(result.chunks)
+        else:
+            result.body = json.loads(response.body)
+        return result
+
     def test_image_request_with_enabled_tools_enters_gguf_tool_loop(self, monkeypatch):
         import routes.inference as inf_mod
 
@@ -1410,10 +1465,6 @@ class TestGgufVisionToolRouting:
         assert monitor.active_count() == 0
 
     def test_standard_gguf_stream_splits_reasoning_content(self, monkeypatch):
-        import routes.inference as inf_mod
-
-        reset_tool_policy()
-
         def _generate(**_kwargs):
             yield "<thi"
             yield "<think>plan"
@@ -1425,44 +1476,20 @@ class TestGgufVisionToolRouting:
                 "finish_reason": "stop",
             }
 
-        backend = SimpleNamespace(
-            is_loaded = True,
-            is_vision = False,
-            supports_tools = False,
-            supports_reasoning = True,
-            reasoning_always_on = True,
-            _is_audio = False,
-            model_identifier = "test-gguf",
-            context_length = 4096,
-            generate_chat_completion = _generate,
+        result = self._run_gguf_case(
+            monkeypatch,
+            generate = _generate,
+            payload_kwargs = {"stream": True},
         )
-        monitor = ApiMonitor(max_entries = 3)
-        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
-        monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
-
-        payload = ChatCompletionRequest(
-            model = "default",
-            stream = True,
-            messages = [{"role": "user", "content": "hi"}],
-        )
-
-        response = self._drive(
-            openai_chat_completions(payload, request = self._Request(), current_subject = "test")
-        )
-        payloads = self._sse_payloads(self._consume_response(response))
-        deltas = [p["choices"][0].get("delta", {}) for p in payloads if p.get("choices")]
+        deltas = [p["choices"][0].get("delta", {}) for p in result.payloads if p.get("choices")]
 
         assert "".join(d.get("reasoning_content", "") for d in deltas) == "plan"
         assert "".join(d.get("content", "") for d in deltas) == "visible"
         assert all("<think>" not in d.get("content", "") for d in deltas)
-        [entry] = monitor.snapshot()
+        [entry] = result.monitor.snapshot()
         assert entry["reply"] == "visible"
 
     def test_reasoning_capable_gguf_stream_splits_reasoning_by_default(self, monkeypatch):
-        import routes.inference as inf_mod
-
-        reset_tool_policy()
-
         def _generate(**_kwargs):
             yield "<think>plan</think>visible"
             yield {
@@ -1471,43 +1498,20 @@ class TestGgufVisionToolRouting:
                 "finish_reason": "stop",
             }
 
-        backend = SimpleNamespace(
-            is_loaded = True,
-            is_vision = False,
-            supports_tools = False,
-            supports_reasoning = True,
-            reasoning_always_on = False,
-            _is_audio = False,
-            model_identifier = "test-gguf",
-            context_length = 4096,
-            generate_chat_completion = _generate,
+        result = self._run_gguf_case(
+            monkeypatch,
+            generate = _generate,
+            payload_kwargs = {"stream": True},
+            backend_kwargs = {"reasoning_always_on": False},
         )
-        monitor = ApiMonitor(max_entries = 3)
-        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
-        monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
-
-        payload = ChatCompletionRequest(
-            model = "default",
-            stream = True,
-            messages = [{"role": "user", "content": "hi"}],
-        )
-
-        response = self._drive(
-            openai_chat_completions(payload, request = self._Request(), current_subject = "test")
-        )
-        payloads = self._sse_payloads(self._consume_response(response))
-        deltas = [p["choices"][0].get("delta", {}) for p in payloads if p.get("choices")]
+        deltas = [p["choices"][0].get("delta", {}) for p in result.payloads if p.get("choices")]
 
         assert "".join(d.get("reasoning_content", "") for d in deltas) == "plan"
         assert "".join(d.get("content", "") for d in deltas) == "visible"
-        [entry] = monitor.snapshot()
+        [entry] = result.monitor.snapshot()
         assert entry["reply"] == "visible"
 
     def test_reasoning_capable_gguf_stream_sanitizes_think_tags_when_disabled(self, monkeypatch):
-        import routes.inference as inf_mod
-
-        reset_tool_policy()
-
         def _generate(**_kwargs):
             yield "<think>leaked</think>visible"
             yield {
@@ -1516,48 +1520,21 @@ class TestGgufVisionToolRouting:
                 "finish_reason": "stop",
             }
 
-        backend = SimpleNamespace(
-            is_loaded = True,
-            is_vision = False,
-            supports_tools = False,
-            supports_reasoning = True,
-            reasoning_always_on = False,
-            _is_audio = False,
-            model_identifier = "test-gguf",
-            context_length = 4096,
-            generate_chat_completion = _generate,
+        result = self._run_gguf_case(
+            monkeypatch,
+            generate = _generate,
+            payload_kwargs = {"stream": True, "enable_thinking": False},
+            backend_kwargs = {"reasoning_always_on": False},
         )
-        monitor = ApiMonitor(max_entries = 3)
-        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
-        monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
-
-        payload = ChatCompletionRequest(
-            model = "default",
-            stream = True,
-            enable_thinking = False,
-            messages = [{"role": "user", "content": "hi"}],
-        )
-
-        response = self._drive(
-            openai_chat_completions(payload, request = self._Request(), current_subject = "test")
-        )
-        payloads = self._sse_payloads(self._consume_response(response))
-        deltas = [p["choices"][0].get("delta", {}) for p in payloads if p.get("choices")]
+        deltas = [p["choices"][0].get("delta", {}) for p in result.payloads if p.get("choices")]
 
         assert "".join(d.get("reasoning_content", "") for d in deltas) == "leaked"
         assert "".join(d.get("content", "") for d in deltas) == "visible"
         assert all("<think>" not in d.get("content", "") for d in deltas)
-        [entry] = monitor.snapshot()
+        [entry] = result.monitor.snapshot()
         assert entry["reply"] == "visible"
 
     def test_gguf_tool_stream_splits_reasoning_and_strips_gemma_tool_marker(self, monkeypatch):
-        import routes.inference as inf_mod
-
-        reset_tool_policy()
-
-        def _plain(**_kwargs):
-            raise AssertionError("plain GGUF path should not be used")
-
         def _tools(**_kwargs):
             yield {
                 "type": "content",
@@ -1569,48 +1546,26 @@ class TestGgufVisionToolRouting:
                 "finish_reason": "stop",
             }
 
-        backend = SimpleNamespace(
-            is_loaded = True,
-            is_vision = False,
-            supports_tools = True,
-            supports_reasoning = True,
-            reasoning_always_on = True,
-            _is_audio = False,
-            model_identifier = "test-gguf",
-            context_length = 4096,
-            generate_chat_completion = _plain,
-            generate_chat_completion_with_tools = _tools,
+        result = self._run_gguf_case(
+            monkeypatch,
+            tool_generate = _tools,
+            payload_kwargs = {
+                "stream": True,
+                "enable_tools": True,
+                "enabled_tools": ["terminal"],
+                "messages": [{"role": "user", "content": "list files"}],
+            },
         )
-        monitor = ApiMonitor(max_entries = 3)
-        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
-        monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
-
-        payload = ChatCompletionRequest(
-            model = "default",
-            stream = True,
-            enable_tools = True,
-            enabled_tools = ["terminal"],
-            messages = [{"role": "user", "content": "list files"}],
-        )
-
-        response = self._drive(
-            openai_chat_completions(payload, request = self._Request(), current_subject = "test")
-        )
-        payloads = self._sse_payloads(self._consume_response(response))
-        deltas = [p["choices"][0].get("delta", {}) for p in payloads if p.get("choices")]
+        deltas = [p["choices"][0].get("delta", {}) for p in result.payloads if p.get("choices")]
 
         assert "".join(d.get("reasoning_content", "") for d in deltas) == "plan"
         combined_content = "".join(d.get("content", "") for d in deltas)
         assert combined_content == "visible "
         assert "<|tool_call>" not in combined_content
-        [entry] = monitor.snapshot()
+        [entry] = result.monitor.snapshot()
         assert entry["reply"] == "visible "
 
     def test_non_streaming_gguf_splits_reasoning_content(self, monkeypatch):
-        import routes.inference as inf_mod
-
-        reset_tool_policy()
-
         def _generate(**_kwargs):
             yield "<think>plan</think>visible"
             yield {
@@ -1619,35 +1574,13 @@ class TestGgufVisionToolRouting:
                 "finish_reason": "stop",
             }
 
-        backend = SimpleNamespace(
-            is_loaded = True,
-            is_vision = False,
-            supports_tools = False,
-            supports_reasoning = True,
-            reasoning_always_on = True,
-            _is_audio = False,
-            model_identifier = "test-gguf",
-            context_length = 4096,
-            generate_chat_completion = _generate,
-        )
-        monitor = ApiMonitor(max_entries = 3)
-        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
-        monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: backend)
-
-        payload = ChatCompletionRequest(
-            model = "default",
-            messages = [{"role": "user", "content": "hi"}],
-        )
-
-        response = self._drive(
-            openai_chat_completions(payload, request = self._Request(), current_subject = "test")
-        )
-        body = json.loads(response.body)
+        result = self._run_gguf_case(monkeypatch, generate = _generate)
+        body = result.body
         message = body["choices"][0]["message"]
 
         assert message["content"] == "visible"
         assert message["reasoning_content"] == "plan"
-        [entry] = monitor.snapshot()
+        [entry] = result.monitor.snapshot()
         assert entry["reply"] == "visible"
 
     def test_non_streaming_gguf_n_records_all_monitor_replies(self, monkeypatch):
@@ -1811,6 +1744,61 @@ class TestApiMonitorProviderAndCompletionStreams:
 
         async def is_disconnected(self):
             return False
+
+    async def _run_passthrough_stream(self, monkeypatch, lines):
+        import routes.inference as inf_mod
+
+        class Request:
+            async def is_disconnected(self):
+                return False
+
+        async def fake_send(*_args, **_kwargs):
+            return httpx.Response(200, content = b"")
+
+        async def fake_items(*_args, **_kwargs):
+            for line in lines:
+                yield line
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
+        monkeypatch.setattr(inf_mod, "_aiter_llama_stream_items", fake_items)
+        monitor_id = monitor.start(
+            endpoint = "/v1/chat/completions",
+            method = "POST",
+            model = "gguf",
+            prompt = "hi",
+        )
+        payload = ChatCompletionRequest(
+            model = "default",
+            messages = [ChatMessage(role = "user", content = "hi")],
+            stream = True,
+            tools = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "lookup",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                }
+            ],
+        )
+
+        response = await _openai_passthrough_stream(
+            Request(),
+            threading.Event(),
+            SimpleNamespace(
+                base_url = "http://llama.test",
+                context_length = 4096,
+                _request_reasoning_kwargs = lambda *_args, **_kwargs: None,
+            ),
+            payload,
+            "gguf",
+            "chatcmpl-test",
+            monitor_id = monitor_id,
+        )
+        chunks = [chunk async for chunk in response.body_iterator]
+        return SimpleNamespace(chunks = chunks, body = "".join(chunks), monitor = monitor)
 
     def test_external_non_streaming_json_updates_monitor(self, monkeypatch):
         async def _run():
@@ -2260,131 +2248,44 @@ class TestApiMonitorProviderAndCompletionStreams:
 
     def test_passthrough_stream_synthesizes_missing_finish_reason(self, monkeypatch):
         async def _run():
-            import routes.inference as inf_mod
-
-            class Request:
-                async def is_disconnected(self):
-                    return False
-
-            async def fake_send(*_args, **_kwargs):
-                return httpx.Response(200, content = b"")
-
-            async def fake_items(*_args, **_kwargs):
-                yield 'data: {"id":"upstream","created":123,"model":"gguf","choices":[{"index":0,"delta":{"content":"hello"}}]}'
-                yield "data: [DONE]"
-
-            monitor = ApiMonitor(max_entries = 3)
-            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
-            monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
-            monkeypatch.setattr(inf_mod, "_aiter_llama_stream_items", fake_items)
-            monitor_id = monitor.start(
-                endpoint = "/v1/chat/completions",
-                method = "POST",
-                model = "gguf",
-                prompt = "hi",
-            )
-            payload = ChatCompletionRequest(
-                model = "default",
-                messages = [ChatMessage(role = "user", content = "hi")],
-                stream = True,
-                tools = [
-                    {
-                        "type": "function",
-                        "function": {
-                            "name": "lookup",
-                            "parameters": {"type": "object", "properties": {}},
-                        },
-                    }
+            result = await self._run_passthrough_stream(
+                monkeypatch,
+                [
+                    (
+                        'data: {"id":"upstream","created":123,"model":"gguf",'
+                        '"choices":[{"index":0,"delta":{"content":"hello"}}]}'
+                    ),
+                    "data: [DONE]",
                 ],
             )
-
-            response = await _openai_passthrough_stream(
-                Request(),
-                threading.Event(),
-                SimpleNamespace(
-                    base_url = "http://llama.test",
-                    context_length = 4096,
-                    _request_reasoning_kwargs = lambda *_args, **_kwargs: None,
-                ),
-                payload,
-                "gguf",
-                "chatcmpl-test",
-                monitor_id = monitor_id,
-            )
-            chunks = [chunk async for chunk in response.body_iterator]
-            body = "".join(chunks)
+            body = result.body
 
             assert '"finish_reason":"stop"' in body.replace(" ", "")
             assert "data: [DONE]" in body
-            assert monitor.active_count() == 0
+            assert result.monitor.active_count() == 0
 
         asyncio.run(_run())
 
     def test_passthrough_stream_synthesizes_tool_call_finish_reason(self, monkeypatch):
         async def _run():
-            import routes.inference as inf_mod
-
-            class Request:
-                async def is_disconnected(self):
-                    return False
-
-            async def fake_send(*_args, **_kwargs):
-                return httpx.Response(200, content = b"")
-
-            async def fake_items(*_args, **_kwargs):
-                yield (
-                    'data: {"id":"upstream","created":123,"model":"gguf",'
-                    '"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,'
-                    '"id":"call_1","type":"function","function":{"name":"lookup",'
-                    '"arguments":"{}"}}]}}]}'
-                )
-                yield "data: [DONE]"
-
-            monitor = ApiMonitor(max_entries = 3)
-            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
-            monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
-            monkeypatch.setattr(inf_mod, "_aiter_llama_stream_items", fake_items)
-            monitor_id = monitor.start(
-                endpoint = "/v1/chat/completions",
-                method = "POST",
-                model = "gguf",
-                prompt = "hi",
-            )
-            payload = ChatCompletionRequest(
-                model = "default",
-                messages = [ChatMessage(role = "user", content = "hi")],
-                stream = True,
-                tools = [
-                    {
-                        "type": "function",
-                        "function": {
-                            "name": "lookup",
-                            "parameters": {"type": "object", "properties": {}},
-                        },
-                    }
+            result = await self._run_passthrough_stream(
+                monkeypatch,
+                [
+                    (
+                        'data: {"id":"upstream","created":123,"model":"gguf",'
+                        '"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,'
+                        '"id":"call_1","type":"function","function":{"name":"lookup",'
+                        '"arguments":"{}"}}]}}]}'
+                    ),
+                    "data: [DONE]",
                 ],
             )
-
-            response = await _openai_passthrough_stream(
-                Request(),
-                threading.Event(),
-                SimpleNamespace(
-                    base_url = "http://llama.test",
-                    context_length = 4096,
-                    _request_reasoning_kwargs = lambda *_args, **_kwargs: None,
-                ),
-                payload,
-                "gguf",
-                "chatcmpl-test",
-                monitor_id = monitor_id,
-            )
-            body = "".join([chunk async for chunk in response.body_iterator])
-            compact = body.replace(" ", "")
+            compact = result.body.replace(" ", "")
 
             assert '"finish_reason":"tool_calls"' in compact
             assert '"finish_reason":"stop"' not in compact
-            assert "data: [DONE]" in body
-            assert monitor.active_count() == 0
+            assert "data: [DONE]" in result.body
+            assert result.monitor.active_count() == 0
 
         asyncio.run(_run())
 
@@ -2449,68 +2350,20 @@ class TestApiMonitorProviderAndCompletionStreams:
 
     def test_passthrough_clean_eof_finalizes_monitor(self, monkeypatch):
         async def _run():
-            import routes.inference as inf_mod
-
-            class Request:
-                async def is_disconnected(self):
-                    return False
-
-            async def fake_send(*_args, **_kwargs):
-                return httpx.Response(200, content = b"")
-
-            async def fake_items(*_args, **_kwargs):
-                yield 'data: {"choices":[{"delta":{"content":"hello"}}]}'
-
-            monitor = ApiMonitor(max_entries = 3)
-            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
-            monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
-            monkeypatch.setattr(inf_mod, "_aiter_llama_stream_items", fake_items)
-            monitor_id = monitor.start(
-                endpoint = "/v1/chat/completions",
-                method = "POST",
-                model = "gguf",
-                prompt = "hi",
+            result = await self._run_passthrough_stream(
+                monkeypatch,
+                ['data: {"choices":[{"delta":{"content":"hello"}}]}'],
             )
-            payload = ChatCompletionRequest(
-                model = "default",
-                messages = [ChatMessage(role = "user", content = "hi")],
-                stream = True,
-                tools = [
-                    {
-                        "type": "function",
-                        "function": {
-                            "name": "lookup",
-                            "parameters": {"type": "object", "properties": {}},
-                        },
-                    }
-                ],
-            )
-
-            response = await _openai_passthrough_stream(
-                Request(),
-                threading.Event(),
-                SimpleNamespace(
-                    base_url = "http://llama.test",
-                    context_length = 4096,
-                    _request_reasoning_kwargs = lambda *_args, **_kwargs: None,
-                ),
-                payload,
-                "gguf",
-                "chatcmpl-test",
-                monitor_id = monitor_id,
-            )
-            chunks = []
-            async for chunk in response.body_iterator:
-                chunks.append(chunk)
+            chunks = result.chunks
 
             assert chunks[0] == 'data: {"choices":[{"delta":{"content":"hello"}}]}\n\n'
             compact = "".join(chunks).replace(" ", "")
             assert '"finish_reason":"stop"' in compact
             assert chunks[-1] == "data: [DONE]\n\n"
-            [entry] = monitor.snapshot()
+            [entry] = result.monitor.snapshot()
             assert entry["status"] == "completed"
             assert entry["reply"] == "hello"
-            assert monitor.active_count() == 0
+            assert result.monitor.active_count() == 0
 
         asyncio.run(_run())
 

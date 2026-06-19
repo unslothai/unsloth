@@ -1313,6 +1313,14 @@ async def _await_disconnect_then_cancel(request, cancel_event) -> None:
         return
 
 
+async def _stop_local_disconnect_cancel_watcher(watcher) -> None:
+    watcher.cancel()
+    try:
+        await watcher
+    except (asyncio.CancelledError, Exception):
+        pass
+
+
 # Centralized local/server tool nudge. Keep render_html guidance gated to turns
 # where the canvas tool is actually present in the tool schema; otherwise
 # small local models can hallucinate a missing tool call instead of following
@@ -5245,11 +5253,7 @@ async def openai_chat_completions(
                     error_chunk = _openai_stream_error_chunk(e)
                     yield f"data: {json.dumps(error_chunk)}\n\n"
                 finally:
-                    disconnect_watcher.cancel()
-                    try:
-                        await disconnect_watcher
-                    except (asyncio.CancelledError, Exception):
-                        pass
+                    await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
                     if gen is not None:
                         try:
                             gen.close()
@@ -5412,11 +5416,7 @@ async def openai_chat_completions(
                     error_chunk = _openai_stream_error_chunk(e)
                     yield f"data: {json.dumps(error_chunk)}\n\n"
                 finally:
-                    disconnect_watcher.cancel()
-                    try:
-                        await disconnect_watcher
-                    except (asyncio.CancelledError, Exception):
-                        pass
+                    await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
                     _tracker.__exit__(None, None, None)
 
             return _SameTaskStreamingResponse(
@@ -5863,11 +5863,7 @@ async def openai_chat_completions(
                 }
                 yield f"data: {json.dumps(error_chunk)}\n\n"
             finally:
-                disconnect_watcher.cancel()
-                try:
-                    await disconnect_watcher
-                except (asyncio.CancelledError, Exception):
-                    pass
+                await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
                 if gen is not None:
                     try:
                         gen.close()
@@ -6097,11 +6093,7 @@ async def openai_chat_completions(
                 }
                 yield f"data: {json.dumps(error_chunk)}\n\n"
             finally:
-                disconnect_watcher.cancel()
-                try:
-                    await disconnect_watcher
-                except (asyncio.CancelledError, Exception):
-                    pass
+                await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
                 _tracker.__exit__(None, None, None)
 
         return _SameTaskStreamingResponse(

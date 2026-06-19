@@ -29,10 +29,13 @@ _TC_JSON_START_RE = re.compile(r"<tool_call>\s*\{")
 _TC_GEMMA_START_RE = re.compile(r"<\|tool_call>call:([\w-]+)\s*\{")
 _TC_FUNC_START_RE = re.compile(r"<function=([\w-]+)>\s*")
 _TC_END_TAG_RE = re.compile(r"</tool_call>")
+_TC_GEMMA_END_TAG_RE = re.compile(r"<tool_call\|>")
 _TC_FUNC_CLOSE_RE = re.compile(r"\s*</function>\s*$")
 _TC_PARAM_START_RE = re.compile(r"<parameter=([\w-]+)>\s*")
 _TC_PARAM_CLOSE_RE = re.compile(r"\s*</parameter>\s*$")
 _GEMMA_QUOTE = '<|"|>'
+_PARAM_CLOSE_TAG = "</parameter>"
+_FUNC_CLOSE_TAG = "</function>"
 
 
 def _balanced_brace_end(content: str, brace_start: int) -> int:
@@ -145,52 +148,72 @@ def _gemma_arguments_to_json(args_src: str) -> dict:
     return json.loads(src)
 
 
-def parse_tool_calls_from_text(content: str) -> list[dict]:
-    """
-    Parse tool calls from XML markup in content text.
+def _inside_open_parameter(content: str, pos: int) -> bool:
+    """Return True when ``pos`` falls inside an unclosed parameter value."""
+    last_param_start = -1
+    for match in _TC_PARAM_START_RE.finditer(content, 0, pos):
+        last_param_start = match.start()
+    if last_param_start < 0:
+        return False
+    last_param_close = content.rfind(_PARAM_CLOSE_TAG, 0, pos)
+    last_func_close = content.rfind(_FUNC_CLOSE_TAG, 0, pos)
+    return last_param_start > max(last_param_close, last_func_close)
+
+
+def parse_tool_calls_from_text(
+    content: str,
+    *,
+    id_offset: int = 0,
+    allow_incomplete: bool = True,
+) -> list[dict]:
+    """Parse OpenAI-format tool calls from model text.
 
     Handles formats like:
       <tool_call>{"name":"web_search","arguments":{"query":"..."}}</tool_call>
       <|tool_call>call:web_search{query:"..."}<tool_call|>
       <tool_call><function=web_search><parameter=query>...</parameter></function></tool_call>
-    Closing tags (</tool_call>, </function>, </parameter>) are all
-    optional since models frequently omit them.
     """
-    tool_calls = []
+    tool_calls: list[dict] = []
 
-    # Pattern 1: JSON inside <tool_call> tags. Balanced-brace extraction that
-    # skips braces inside JSON strings.
     for m in _TC_JSON_START_RE.finditer(content):
-        brace_start = m.end() - 1  # position of the opening {
+        brace_start = m.end() - 1
         i = _balanced_brace_end(content, brace_start)
-        if i >= 0:
-            json_str = content[brace_start : i + 1]
-            try:
-                obj = json.loads(json_str)
-                tc = {
-                    "id": f"call_{len(tool_calls)}",
-                    "type": "function",
-                    "function": {
-                        "name": obj.get("name", ""),
-                        "arguments": obj.get("arguments", {}),
-                    },
-                }
-                if isinstance(tc["function"]["arguments"], dict):
-                    tc["function"]["arguments"] = json.dumps(tc["function"]["arguments"])
-                tool_calls.append(tc)
-            except (json.JSONDecodeError, ValueError):
-                pass
+        if i < 0:
+            continue
+        if not allow_incomplete:
+            tail_after_json = content[i + 1 :].lstrip()
+            if _TC_END_TAG_RE.match(tail_after_json) is None:
+                continue
+        json_str = content[brace_start : i + 1]
+        try:
+            obj = json.loads(json_str)
+            tc = {
+                "id": f"call_{id_offset + len(tool_calls)}",
+                "type": "function",
+                "function": {
+                    "name": obj.get("name", ""),
+                    "arguments": obj.get("arguments", {}),
+                },
+            }
+            if isinstance(tc["function"]["arguments"], dict):
+                tc["function"]["arguments"] = json.dumps(tc["function"]["arguments"])
+            tool_calls.append(tc)
+        except (json.JSONDecodeError, ValueError):
+            pass
 
-    # Pattern 1b: Gemma 4 native <|tool_call>call:name{key:value}<tool_call|>.
     for m in _TC_GEMMA_START_RE.finditer(content):
         brace_start = m.end() - 1
         i = _balanced_brace_end(content, brace_start)
         if i < 0:
             continue
+        if not allow_incomplete:
+            tail_after_json = content[i + 1 :].lstrip()
+            if _TC_GEMMA_END_TAG_RE.match(tail_after_json) is None:
+                continue
         try:
             tool_calls.append(
                 {
-                    "id": f"call_{len(tool_calls)}",
+                    "id": f"call_{id_offset + len(tool_calls)}",
                     "type": "function",
                     "function": {
                         "name": m.group(1),
@@ -201,17 +224,15 @@ def parse_tool_calls_from_text(content: str) -> list[dict]:
         except (json.JSONDecodeError, ValueError):
             pass
 
-    # Pattern 2: XML-style <function=name><parameter=key>value</parameter></function>
-    # All closing tags optional; models frequently omit them.
     if not tool_calls:
-        # Step 1: Find <function=name> positions and extract bodies. Use only
-        # </tool_call> or the next <function= as hard boundaries (</function>
-        # can appear in code values); trim a trailing </function> afterwards.
-        func_starts = list(_TC_FUNC_START_RE.finditer(content))
+        func_starts = [
+            fm
+            for fm in _TC_FUNC_START_RE.finditer(content)
+            if not _inside_open_parameter(content, fm.start())
+        ]
         for idx, fm in enumerate(func_starts):
             func_name = fm.group(1)
             body_start = fm.end()
-            # Boundaries: next <function= tag or </tool_call>
             next_func = func_starts[idx + 1].start() if idx + 1 < len(func_starts) else len(content)
             end_tag = _TC_END_TAG_RE.search(content[body_start:])
             if end_tag:
@@ -220,36 +241,52 @@ def parse_tool_calls_from_text(content: str) -> list[dict]:
                 body_end = len(content)
             body_end = min(body_end, next_func)
             body = content[body_start:body_end]
-            body = _TC_FUNC_CLOSE_RE.sub("", body)  # trim closing </function>
+            if not allow_incomplete:
+                close_idx = body.rfind(_FUNC_CLOSE_TAG)
+                if close_idx < 0:
+                    continue
+                body = body[:close_idx]
+            else:
+                body = _TC_FUNC_CLOSE_RE.sub("", body)
 
-            # Step 2: Extract parameters from body. For single-parameter
-            # functions, use body end as the only boundary to avoid matching
-            # </parameter> inside code strings.
-            arguments = {}
+            arguments: dict = {}
             param_starts = list(_TC_PARAM_START_RE.finditer(body))
             if len(param_starts) == 1:
-                # Value is everything after the tag to end of body, less a
-                # trailing </parameter>.
                 pm = param_starts[0]
                 val = body[pm.end() :]
-                val = _TC_PARAM_CLOSE_RE.sub("", val)
+                if not allow_incomplete:
+                    stripped_val = val.rstrip()
+                    if not stripped_val.endswith(_PARAM_CLOSE_TAG):
+                        continue
+                    val = stripped_val[: -len(_PARAM_CLOSE_TAG)]
+                else:
+                    val = _TC_PARAM_CLOSE_RE.sub("", val)
                 arguments[pm.group(1)] = val.strip()
             else:
+                valid_params = True
                 for pidx, pm in enumerate(param_starts):
                     param_name = pm.group(1)
                     val_start = pm.end()
-                    # Value ends at next <parameter= or end of body
                     next_param = (
                         param_starts[pidx + 1].start()
                         if pidx + 1 < len(param_starts)
                         else len(body)
                     )
                     val = body[val_start:next_param]
-                    val = _TC_PARAM_CLOSE_RE.sub("", val)  # trim trailing </parameter>
+                    if not allow_incomplete:
+                        stripped_val = val.rstrip()
+                        if not stripped_val.endswith(_PARAM_CLOSE_TAG):
+                            valid_params = False
+                            break
+                        val = stripped_val[: -len(_PARAM_CLOSE_TAG)]
+                    else:
+                        val = _TC_PARAM_CLOSE_RE.sub("", val)
                     arguments[param_name] = val.strip()
+                if not valid_params:
+                    continue
 
             tc = {
-                "id": f"call_{len(tool_calls)}",
+                "id": f"call_{id_offset + len(tool_calls)}",
                 "type": "function",
                 "function": {
                     "name": func_name,
