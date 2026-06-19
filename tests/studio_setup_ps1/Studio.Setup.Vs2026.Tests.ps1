@@ -27,10 +27,57 @@ BeforeAll {
     if (-not $script:SetupPs1) { throw "Could not locate studio/setup.ps1 (set SETUP_PS1_PATH)." }
     Write-Host "setup.ps1 under test: $script:SetupPs1"
 
-    foreach ($fn in @('Get-VcBuildCustomizationsDir', 'Test-CmakeSupportsGenerator')) {
+    foreach ($fn in @('Find-VsBuildTools', 'Get-VcBuildCustomizationsDir', 'Test-CmakeSupportsGenerator')) {
         $src = Get-FunctionSource -Path $script:SetupPs1 -Name $fn
         if (-not $src) { throw "Function '$fn' not found in $script:SetupPs1 - cannot test the real code." }
         . ([scriptblock]::Create($src))
+    }
+}
+
+Describe 'Find-VsBuildTools (VS 2026 generator discovery)' {
+    # Exercises the production discovery entry point (not just the downstream
+    # helpers) so the v180 path + CMake guard cannot be reachable in routing while
+    # discovery stays dead. Windows-only: Find-VsBuildTools builds candidate paths
+    # with backslash separators, which only resolve as real directories on Windows.
+    BeforeEach {
+        $script:OrigPF    = ${env:ProgramFiles}
+        $script:OrigPFx86 = ${env:ProgramFiles(x86)}
+    }
+    AfterEach {
+        ${env:ProgramFiles}      = $script:OrigPF
+        ${env:ProgramFiles(x86)} = $script:OrigPFx86
+    }
+
+    function New-FakeVsTree {
+        param([string]$Root, [string]$VersionDir, [string]$Edition = 'BuildTools')
+        $clDir = Join-Path $Root "Microsoft Visual Studio\$VersionDir\$Edition\VC\Tools\MSVC\14.50.00000\bin\Hostx64\x64"
+        New-Item -ItemType Directory -Path $clDir -Force | Out-Null
+        New-Item -ItemType File -Path (Join-Path $clDir 'cl.exe') -Force | Out-Null
+    }
+
+    It 'detects a filesystem-only VS 2026 BuildTools install (dir "18")' -Skip:(-not $IsWindows) {
+        $root = Join-Path $TestDrive 'PF'
+        New-FakeVsTree -Root $root -VersionDir '18'
+        ${env:ProgramFiles}      = $root
+        ${env:ProgramFiles(x86)} = Join-Path $TestDrive 'PFx86'   # no vswhere here -> filesystem fallback
+        $r = Find-VsBuildTools
+        $r.Generator | Should -Be 'Visual Studio 18 2026'
+    }
+
+    It 'detects a filesystem-only VS 2026 install under the year dir ("2026")' -Skip:(-not $IsWindows) {
+        $root = Join-Path $TestDrive 'PF2026'
+        New-FakeVsTree -Root $root -VersionDir '2026'
+        ${env:ProgramFiles}      = $root
+        ${env:ProgramFiles(x86)} = Join-Path $TestDrive 'PFx86b'
+        (Find-VsBuildTools).Generator | Should -Be 'Visual Studio 18 2026'
+    }
+
+    It 'still detects VS 2022 (no regression)' -Skip:(-not $IsWindows) {
+        $root = Join-Path $TestDrive 'PF2022'
+        New-FakeVsTree -Root $root -VersionDir '2022'
+        ${env:ProgramFiles}      = $root
+        ${env:ProgramFiles(x86)} = Join-Path $TestDrive 'PFx86c'
+        (Find-VsBuildTools).Generator | Should -Be 'Visual Studio 17 2022'
     }
 }
 

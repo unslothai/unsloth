@@ -436,7 +436,24 @@ function Test-CmakeSupportsGenerator {
 # Strategy: (1) vswhere, (2) scan filesystem (handles broken vswhere registration).
 # Returns @{ Generator = "Visual Studio 17 2022"; InstallPath = "C:\..."; Source = "..." } or $null.
 function Find-VsBuildTools {
-    $map = @{ '2022' = '17'; '2019' = '16'; '2017' = '15' }
+    # vswhere reports catalog_productLineVersion as the YEAR label (e.g. "2026").
+    $yearToGenerator = @{
+        '2026' = 'Visual Studio 18 2026'
+        '2022' = 'Visual Studio 17 2022'
+        '2019' = 'Visual Studio 16 2019'
+        '2017' = 'Visual Studio 15 2017'
+    }
+    # VS 2026 changed its install-dir convention to the internal major ("18");
+    # earlier versions use the year. Accept both so the filesystem fallback works
+    # regardless of which convention an install used. (VS 2026 detection adapted
+    # from @LeoBorcherding's #6038.)
+    $dirToGenerator = @{
+        '18'   = 'Visual Studio 18 2026'
+        '2026' = 'Visual Studio 18 2026'
+        '2022' = 'Visual Studio 17 2022'
+        '2019' = 'Visual Studio 16 2019'
+        '2017' = 'Visual Studio 15 2017'
+    }
 
     # --- Try vswhere first (works when VS is properly registered) ---
     $vsw = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
@@ -444,33 +461,40 @@ function Find-VsBuildTools {
         $info = & $vsw -latest -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property catalog_productLineVersion 2>$null
         $path = & $vsw -latest -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2>$null
         if ($info -and $path) {
-            $y = $info.Trim()
-            $n = $map[$y]
-            if ($n) {
-                return @{ Generator = "Visual Studio $n $y"; InstallPath = $path.Trim(); Source = 'vswhere' }
+            $gen = $yearToGenerator[$info.Trim()]
+            if ($gen) {
+                return @{ Generator = $gen; InstallPath = $path.Trim(); Source = 'vswhere' }
             }
         }
     }
 
     # --- Scan filesystem (handles broken vswhere registration after winget cycles) ---
-    $roots = @($env:ProgramFiles, ${env:ProgramFiles(x86)})
-    $editions = @('BuildTools', 'Community', 'Professional', 'Enterprise')
-    $years = @('2022', '2019', '2017')
+    $roots = @($env:ProgramFiles, ${env:ProgramFiles(x86)}) | Where-Object { $_ }
+    $knownEditions = @('BuildTools', 'Community', 'Professional', 'Enterprise')
+    # VS 2026+ uses the internal version dir ("18"); older versions use the year.
+    $dirs = @('18', '2026', '2022', '2019', '2017')
 
-    foreach ($y in $years) {
+    foreach ($d in $dirs) {
+        $gen = $dirToGenerator[$d]
+        if (-not $gen) { continue }
         foreach ($r in $roots) {
-            foreach ($ed in $editions) {
-                $candidate = Join-Path $r "Microsoft Visual Studio\$y\$ed"
-                if (Test-Path $candidate) {
-                    $vcDir = Join-Path $candidate "VC\Tools\MSVC"
-                    if (Test-Path $vcDir) {
-                        $cl = Get-ChildItem -Path $vcDir -Filter "cl.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
-                        if ($cl) {
-                            $n = $map[$y]
-                            if ($n) {
-                                return @{ Generator = "Visual Studio $n $y"; InstallPath = $candidate; Source = "filesystem ($ed)"; ClExe = $cl.FullName }
-                            }
-                        }
+            $vsBase = Join-Path $r "Microsoft Visual Studio\$d"
+            if (-not (Test-Path $vsBase)) { continue }
+            # VS 2026 (dir "18") may use non-standard edition names (e.g. Preview);
+            # scan every subdir. Older versions use the stable edition names only.
+            if ($d -eq '18' -or $d -eq '2026') {
+                $editionCandidates = Get-ChildItem -Path $vsBase -Directory -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName }
+            } else {
+                $editionCandidates = $knownEditions | ForEach-Object { Join-Path $vsBase $_ }
+            }
+            foreach ($candidate in $editionCandidates) {
+                if (-not (Test-Path $candidate)) { continue }
+                $vcDir = Join-Path $candidate "VC\Tools\MSVC"
+                if (Test-Path $vcDir) {
+                    $cl = Get-ChildItem -Path $vcDir -Filter "cl.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+                    if ($cl) {
+                        $ed = Split-Path $candidate -Leaf
+                        return @{ Generator = $gen; InstallPath = $candidate; Source = "filesystem ($ed)"; ClExe = $cl.FullName }
                     }
                 }
             }
@@ -1229,31 +1253,6 @@ if ($vsResult) {
     Write-Host '        1. winget install Microsoft.VisualStudio.2022.BuildTools --source winget' -ForegroundColor Yellow
     Write-Host '        2. Open Visual Studio Installer -> Modify -> check "Desktop development with C++"' -ForegroundColor Yellow
     exit 1
-}
-
-# -- CMake version guard for the Visual Studio 2026 generator --
-# The "Visual Studio 18 2026" cmake generator needs CMake 4.2+. Upgrade via
-# winget if possible, else fail clearly. No-op for VS 2022/2019/2017.
-if ($CmakeGenerator -eq 'Visual Studio 18 2026') {
-    $cmakeVerObj = Get-CmakeVersion
-    $cmakeVerStr = if ($cmakeVerObj) { $cmakeVerObj.ToString() } else { '0.0' }
-    if (-not (Test-CmakeSupportsGenerator -CmakeVersion $cmakeVerStr -Generator $CmakeGenerator)) {
-        substep "CMake $cmakeVerStr too old for Visual Studio 2026 (need 4.2+) -- upgrading via winget..." "Yellow"
-        if ($null -ne (Get-Command winget -ErrorAction SilentlyContinue)) {
-            try {
-                Invoke-SetupCommand { winget upgrade Kitware.CMake --source winget --accept-package-agreements --accept-source-agreements } | Out-Null
-                Refresh-Environment
-            } catch { }
-            $cmakeVerObj = Get-CmakeVersion
-            $cmakeVerStr = if ($cmakeVerObj) { $cmakeVerObj.ToString() } else { '0.0' }
-        }
-        if (-not (Test-CmakeSupportsGenerator -CmakeVersion $cmakeVerStr -Generator $CmakeGenerator)) {
-            Write-Host "[ERROR] CMake 4.2+ is required for Visual Studio 2026." -ForegroundColor Red
-            Write-Host "        Upgrade CMake from https://cmake.org/download/ and re-run." -ForegroundColor Red
-            exit 1
-        }
-    }
-    step "cmake" "$cmakeVerStr (Visual Studio 2026 generator supported)"
 }
 
 # ============================================
@@ -3056,6 +3055,47 @@ if (-not $NeedLlamaSourceBuild) {
     # resolve (and winget-install if needed) it lazily, failing fast if no
     # driver-compatible toolkit exists. The prebuilt path never reaches this.
     if ($HasNvidiaSmi) { Resolve-CudaToolkit -RequireOrExit }
+
+    # CMake version gate for the Visual Studio 2026 generator. The
+    # "Visual Studio 18 2026" cmake generator was added in CMake 4.2; an older
+    # cmake cannot drive a VS 2026 source build. This is checked ONLY here, in
+    # the committed-source-build path -- the preferred prebuilt llama.cpp path
+    # never reaches this, so a VS 2026 host on cmake < 4.2 is not blocked from
+    # using the prebuilt. No-op for VS 2022/2019/2017 generators.
+    if ($CmakeGenerator -eq 'Visual Studio 18 2026') {
+        $cmakeVerObj = Get-CmakeVersion
+        $cmakeVerStr = if ($cmakeVerObj) { $cmakeVerObj.ToString() } else { '0.0' }
+        if (-not (Test-CmakeSupportsGenerator -CmakeVersion $cmakeVerStr -Generator $CmakeGenerator)) {
+            substep "CMake $cmakeVerStr too old for the Visual Studio 2026 generator (need 4.2+) -- updating via winget..." "Yellow"
+            if ($null -ne (Get-Command winget -ErrorAction SilentlyContinue)) {
+                # Try upgrade first (fast when Kitware.CMake is already a winget app).
+                try {
+                    Invoke-SetupCommand { winget upgrade Kitware.CMake --source winget --accept-package-agreements --accept-source-agreements } | Out-Null
+                    Refresh-Environment
+                } catch { substep "CMake winget upgrade failed: $($_.Exception.Message)" "Yellow" }
+                $cmakeVerObj = Get-CmakeVersion
+                $cmakeVerStr = if ($cmakeVerObj) { $cmakeVerObj.ToString() } else { '0.0' }
+                # winget upgrade is a no-op when the on-PATH cmake came from
+                # Scoop/Chocolatey/VS rather than the Kitware winget package; in
+                # that case install the package so a 4.2+ cmake is available.
+                if (-not (Test-CmakeSupportsGenerator -CmakeVersion $cmakeVerStr -Generator $CmakeGenerator)) {
+                    try {
+                        Invoke-SetupCommand { winget install Kitware.CMake --source winget --accept-package-agreements --accept-source-agreements } | Out-Null
+                        Refresh-Environment
+                    } catch { substep "CMake winget install failed: $($_.Exception.Message)" "Yellow" }
+                    $cmakeVerObj = Get-CmakeVersion
+                    $cmakeVerStr = if ($cmakeVerObj) { $cmakeVerObj.ToString() } else { '0.0' }
+                }
+            }
+            if (-not (Test-CmakeSupportsGenerator -CmakeVersion $cmakeVerStr -Generator $CmakeGenerator)) {
+                Write-Host "[ERROR] CMake 4.2+ is required to build llama.cpp with the Visual Studio 2026 generator." -ForegroundColor Red
+                Write-Host "        Upgrade CMake from https://cmake.org/download/ and re-run, or use a prebuilt llama.cpp bundle." -ForegroundColor Red
+                exit 1
+            }
+        }
+        substep "CMake $cmakeVerStr supports the Visual Studio 2026 generator"
+    }
+
     Write-Host ""
     if ($HasNvidiaSmi) {
         substep "building llama.cpp with CUDA support..."
