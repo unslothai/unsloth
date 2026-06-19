@@ -115,14 +115,19 @@ export async function checkVisionModel(
   return data.is_vision;
 }
 
-/** GET /api/models/check-embedding; pass the token for gated/private repos. */
+/** Check embedding capability via POST /api/models/check-embedding so HF tokens never enter URLs. */
 export async function checkEmbeddingModel(
   modelName: string,
   hfToken?: string | null,
 ): Promise<boolean> {
-  const encoded = encodeURIComponent(modelName);
-  const query = hfToken?.trim() ? `?hf_token=${encodeURIComponent(hfToken.trim())}` : "";
-  const response = await authFetch(`/api/models/check-embedding/${encoded}${query}`);
+  const response = await authFetch("/api/models/check-embedding", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model_name: modelName,
+      hf_token: hfToken || null,
+    }),
+  });
   if (!response.ok) {
     // If the check fails (e.g. network error), default to non-embedding
     return false;
