@@ -534,12 +534,14 @@ def _is_fstring(tok_string: str) -> bool:
     return q > 0 and "f" in tok_string[:q].lower()
 
 
-def _strip_noncode(content: str) -> str:
+def _strip_noncode(content: str, blank_comments: bool = True) -> str:
     """Blank comments and bare docstrings so IOC patterns see code only.
 
     Removed regions become spaces (newlines kept) so line numbers stay exact for
     _extract_evidence. Fails open on tokenizer errors (the raw text is still
-    fully scanned, so a real detection is never lost).
+    fully scanned, so a real detection is never lost). ``blank_comments=False``
+    keeps comments (only strings/docstrings blanked) to isolate the span that
+    exec() could actually run.
     """
     try:
         toks = list(tokenize.generate_tokens(io.StringIO(content).readline))
@@ -552,8 +554,9 @@ def _strip_noncode(content: str) -> str:
     for i, tok in enumerate(toks):
         ttype = tok.type
         if ttype == tokenize.COMMENT:
-            spans.append((*tok.start, *tok.end))
-            continue  # do not advance prev_significant; comments are transparent
+            if blank_comments:
+                spans.append((*tok.start, *tok.end))
+            continue  # transparent; never advances prev_significant
         if (
             ttype == tokenize.STRING
             and prev_significant in _LINE_START_TOKENS
@@ -619,18 +622,44 @@ def _hidden_payload_findings(
     scanning yet ``exec(__doc__)`` / ``exec(<str>)`` could still run it."""
     if not RE_EXEC_EVAL.search(stripped):
         return []
+    # Only docstrings/strings run via exec(__doc__)/exec(<str>); comments cannot.
+    # Isolate that span: keep comments as real code, take what string-blanking
+    # removed (length-preserved, so offsets stay exact for _extract_evidence).
+    code = _strip_noncode(original, blank_comments = False)
+    removed = "".join(o if o != s else " " for o, s in zip(original, code))
     out = []
+
+    def _hidden(pat):
+        # Carrier present in a blanked region but NOT in real code. A carrier in
+        # real code is already caught by the normal check, so restricting to
+        # blanked-only avoids re-flagging legitimate in-code constants.
+        return bool(pat.search(removed)) and not pat.search(stripped)
+
     for pat, label in _HIDDEN_PAYLOAD_PATTERNS:
-        if pat.search(original) and not pat.search(stripped):
+        if _hidden(pat):
             out.append(
                 Finding(
                     HIGH,
                     package,
                     filename,
                     "exec/eval with payload hidden in a docstring/string",
-                    f"{label}: {_extract_evidence(original, pat)}",
+                    f"{label}: {_extract_evidence(removed, pat)}",
                 )
             )
+    # Fetch-then-run dropper: a network call AND an os/subprocess exec that both
+    # live in the blanked region. Search the removed span directly (not "absent
+    # from real code") so a benign visible network/subprocess call cannot mask
+    # the docstring payload.
+    if RE_NETWORK.search(removed) and RE_SUBPROCESS.search(removed):
+        out.append(
+            Finding(
+                HIGH,
+                package,
+                filename,
+                "exec/eval with hidden network+exec payload",
+                f"network+exec: {_extract_evidence(removed, RE_SUBPROCESS)}",
+            )
+        )
     return out
 
 
@@ -1560,6 +1589,9 @@ _RE_PKG_NAME_SANITIZE = re.compile(r"[^A-Za-z0-9._-]")
 # no build, same no-exec guarantee. Transport failures are still exit 2; only
 # "no wheel" is downgraded to a direct fetch.
 
+# How many levels of indirect-dep recovery to chase (a wheel dep whose own child
+# is sdist-only, and so on). Bounded with dedup so recovery always terminates.
+_MAX_DEP_FOLLOWUP_DEPTH = 2
 _SDIST_DOWNLOAD_TIMEOUT = 180
 # Never fetch an archive larger than we would be willing to scan (iter_archive_files cap).
 _MAX_SDIST_BYTES = HARD_MAX_TOTAL_BYTES
@@ -1573,9 +1605,14 @@ def _spec_pin_version(spec: str) -> str | None:
     return m.group(1) if m else None
 
 
-def _pypi_json(name: str) -> dict | None:
-    """Fetch a project's PyPI metadata JSON (read-only HTTPS GET, no exec); None on error."""
-    url = "https://pypi.org/pypi/" + urllib.parse.quote(name, safe = "") + "/json"
+def _pypi_json(name: str, version: str | None = None) -> dict | None:
+    """Fetch PyPI metadata JSON (read-only HTTPS GET, no exec); None on error.
+    With ``version`` it fetches that release's document, whose ``requires_dist``
+    is accurate for the pin (the project-level doc describes only the latest)."""
+    url = "https://pypi.org/pypi/" + urllib.parse.quote(name, safe = "")
+    if version:
+        url += "/" + urllib.parse.quote(version, safe = "")
+    url += "/json"
     try:
         req = urllib.request.Request(url, headers = {"Accept": "application/json"})
         with urllib.request.urlopen(req, timeout = 30) as resp:
@@ -1588,11 +1625,11 @@ def _pypi_json(name: str) -> dict | None:
 
 
 def _release_files(meta: dict, version: str | None) -> list[dict]:
-    """Distribution files for a specific version, or the latest release's files."""
-    if version:
-        files = meta.get("releases", {}).get(version)
-        if files:
-            return files
+    """Files for a pinned version, else the latest release's. A pin that is
+    absent or empty returns [] (never the latest) so a yanked/bad pin fails
+    closed instead of a different artifact being scanned in its place."""
+    if version is not None:
+        return meta.get("releases", {}).get(version) or []
     return meta.get("urls", []) or []
 
 
@@ -1610,10 +1647,50 @@ def _is_trusted_pypi_url(url: str) -> bool:
     return parsed.scheme == "https" and parsed.hostname in _TRUSTED_PYPI_HOSTS
 
 
-def _requires_dist_names(meta: dict, version: str | None) -> list[str]:
+_MARKER_ENV_VARS = (
+    "sys_platform",
+    "platform_system",
+    "platform_machine",
+    "platform_release",
+    "platform_version",
+    "platform_python_implementation",
+    "os_name",
+    "python_version",
+    "python_full_version",
+    "implementation_name",
+    "implementation_version",
+)
+
+
+def _marker_holds_by_default(marker: str) -> bool:
+    """Keep (scan) a dep unless its marker is purely ``extra``-gated. The scanner
+    runs on one OS/Python but a package may be installed on another, so a marker
+    that can be true on a different target (``sys_platform == 'win32'``,
+    ``python_version == '3.13'``) is always kept; only a marker depending solely
+    on ``extra`` and false with no extra requested is dropped. Conservative: on
+    any uncertainty, keep (over-scan, never silently skip)."""
+    m = marker.strip()
+    if not m or "extra" not in m:
+        return True  # no extra gate: installed by default on some target -> scan
+    if any(v in m for v in _MARKER_ENV_VARS):
+        return True  # also platform/python gated: true on some target -> scan
+    # Pure extra marker: decide by evaluating with no extra requested.
+    try:
+        from packaging.markers import Marker, default_environment
+
+        env = default_environment()
+        env["extra"] = ""
+        return bool(Marker(m).evaluate(env))
+    except Exception:
+        # packaging missing/unparseable: drop only a pure positive extra-equality.
+        return re.fullmatch(r"\s*extra\s*==\s*['\"][^'\"]+['\"]\s*", m) is None
+
+
+def _requires_dist_names(meta: dict) -> list[str]:
     """Transitive dep specs (name + version specifier) from metadata, to recover
     a sdist-only package's tree. The specifier is kept so a pinned malicious
-    version is fetched, not latest. Skips ``extra``-gated deps."""
+    version is fetched, not latest. Drops deps whose marker cannot hold for a
+    default install."""
     info = meta.get("info", {}) or {}
     reqs = info.get("requires_dist") or []
     specs: list[str] = []
@@ -1623,13 +1700,37 @@ def _requires_dist_names(meta: dict, version: str | None) -> list[str]:
         head = r
         if ";" in r:
             head, marker = r.split(";", 1)
-            if "extra" in marker:
-                continue  # optional extra; default install would not pull it
+            if not _marker_holds_by_default(marker):
+                continue
         if not _RE_NAME.match(head.strip()):
             continue
         # "torch (>=1.10)" / "torch >=1.10" -> "torch>=1.10" (pip-friendly).
         specs.append(re.sub(r"\s+", "", head).replace("(", "").replace(")", ""))
     return specs
+
+
+def _requires_dist_for(
+    name: str,
+    version: str | None,
+    project_meta: dict,
+    errors: list[str] | None = None,
+) -> list[str]:
+    """Declared deps for the pinned version, read from that release's metadata
+    (its ``requires_dist`` can differ from latest). Unpinned uses the
+    project-level (latest) document. A pinned version whose own metadata cannot
+    be fetched returns [] (never latest's deps) and, when ``errors`` is given,
+    records an incomplete-scan error so a partial tree is not read as "no deps"."""
+    if not version:
+        return _requires_dist_names(project_meta)
+    vmeta = _pypi_json(name, version)
+    if vmeta is None:
+        msg = f"metadata fetch failed for pinned {name}=={version}; dependency scan incomplete"
+        if errors is None:
+            print(f"  [WARN] {msg}", file = sys.stderr)
+        else:
+            errors.append(msg)
+        return []
+    return _requires_dist_names(vmeta)
 
 
 def _download_sdist_direct(
@@ -1751,7 +1852,7 @@ def _resolve_per_spec_with_deps(
             if fpath is None:
                 download_errors.append(serr or f"sdist fetch failed for {name}")
                 continue
-            sdist_dep_followups.extend(_requires_dist_names(meta, version))
+            sdist_dep_followups.extend(_requires_dist_for(name, version, meta, download_errors))
             continue
         # Has a wheel but the full transitive tree won't co-resolve
         # (ResolutionImpossible) -- typically a package the requirement file
@@ -1785,7 +1886,7 @@ def _resolve_per_spec_with_deps(
             # which --no-deps skips. Recover the declared deps so that class is
             # still scanned (each is fetched as a wheel or direct sdist below).
             if meta is not None:
-                sdist_dep_followups.extend(_requires_dist_names(meta, version))
+                sdist_dep_followups.extend(_requires_dist_for(name, version, meta, download_errors))
             continue
         # --no-deps also failed: last-ditch sdist fetch at the pinned version.
         if meta is not None:
@@ -1796,15 +1897,21 @@ def _resolve_per_spec_with_deps(
             f"per-spec failed for {spec} (with-deps and --no-deps): " f"{nd.stderr.strip()[:240]}"
         )
 
-    # Recover the transitive deps of sdist-only packages (deduped, one level).
-    # `dep` carries the declared version specifier so a pinned version is fetched.
+    # Recover the transitive deps of sdist-only packages. A depth-bounded,
+    # deduped worklist so a wheel dep whose own child is sdist-only is itself
+    # fetched (--no-deps) and scanned -- not silently dropped -- and that child
+    # is then recovered in turn. `dep` carries the version specifier so a pinned
+    # version is fetched.
     seen: set[str] = set()
-    for dep in sdist_dep_followups:
+    worklist: list[tuple[str, int]] = [(d, 0) for d in sdist_dep_followups]
+    while worklist:
+        dep, depth = worklist.pop()
         dep_name = _extract_pkg_name(dep)
         key = _norm_pkg(dep_name)
         if key in seen:
             continue
         seen.add(key)
+        dep_ver = _spec_pin_version(dep)
         cmd = [
             sys.executable,
             "-m",
@@ -1822,14 +1929,44 @@ def _resolve_per_spec_with_deps(
             continue
         if proc.returncode == 0:
             continue
-        dep_ver = _spec_pin_version(dep)
         meta = _pypi_json(dep_name)
-        if meta is not None and not _release_has_wheel(meta, dep_ver):
+        if meta is None:
+            print(f"  [WARN] could not resolve indirect dep {dep}; skipping", file = sys.stderr)
+            continue
+        if not _release_has_wheel(meta, dep_ver):
             fpath, serr = _download_sdist_direct(dep_name, dep_ver, dest, meta = meta)
             if fpath is None:
                 print(f"  [WARN] could not fetch sdist dep {dep}: {serr}", file = sys.stderr)
-        else:
+            elif depth < _MAX_DEP_FOLLOWUP_DEPTH:
+                worklist.extend((d, depth + 1) for d in _requires_dist_for(dep_name, dep_ver, meta))
+            continue
+        # Wheel published but its tree won't co-resolve (a sdist-only child).
+        # Fetch the dep alone so it is scanned, then chase its own declared deps.
+        nd_cmd = [
+            sys.executable,
+            "-m",
+            "pip",
+            "download",
+            "--no-deps",
+            *_PIP_DOWNLOAD_PIN_FLAGS,
+            "--dest",
+            dest,
+            dep,
+        ]
+        try:
+            nd = subprocess.run(nd_cmd, capture_output = True, text = True, timeout = 180, env = env)
+        except subprocess.TimeoutExpired:
+            print(f"  [WARN] dep --no-deps timed out for {dep}", file = sys.stderr)
+            continue
+        if nd.returncode == 0:
+            if depth < _MAX_DEP_FOLLOWUP_DEPTH:
+                worklist.extend((d, depth + 1) for d in _requires_dist_for(dep_name, dep_ver, meta))
+            continue
+        fpath, _serr = _download_sdist_direct(dep_name, dep_ver, dest, meta = meta)
+        if fpath is None:
             print(f"  [WARN] could not resolve indirect dep {dep}; skipping", file = sys.stderr)
+        elif depth < _MAX_DEP_FOLLOWUP_DEPTH:
+            worklist.extend((d, depth + 1) for d in _requires_dist_for(dep_name, dep_ver, meta))
 
 
 def download_packages(
@@ -2154,8 +2291,10 @@ def find_safe_version(
         scan_dir = os.path.join(tmpdir, f"{name}_{ver}")
         os.makedirs(scan_dir, exist_ok = True)
 
-        downloaded = download_packages([spec], scan_dir)
+        downloaded, download_errors = download_packages([spec], scan_dir)
         if not downloaded:
+            for err in download_errors:
+                print(f"    [WARN] {err}", file = sys.stderr)
             continue
 
         clean = True
@@ -2288,9 +2427,12 @@ def _run_fix(critical_pkgs: set[str], entries: list[dict], max_search: int) -> N
                 # If no pinned version, download to find what pip resolves
                 dl_dir = os.path.join(tmpdir, f"resolve_{pkg_name}")
                 os.makedirs(dl_dir, exist_ok = True)
-                downloaded = download_packages([pkg_name], dl_dir)
+                downloaded, download_errors = download_packages([pkg_name], dl_dir)
                 if downloaded:
                     current_ver = get_downloaded_version(downloaded[0][1])
+                else:
+                    for err in download_errors:
+                        print(f"  [WARN] {err}", file = sys.stderr)
                 shutil.rmtree(dl_dir, ignore_errors = True)
 
             if not current_ver:

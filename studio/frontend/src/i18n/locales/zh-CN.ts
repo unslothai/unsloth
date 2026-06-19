@@ -32,6 +32,7 @@ export const zhCN = {
     },
     navigation: {
       newChat: "新聊天",
+      returnToChat: "返回聊天",
       compare: "对比",
       search: "搜索",
       hub: "Hub",
