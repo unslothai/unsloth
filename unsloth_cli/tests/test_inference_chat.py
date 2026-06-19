@@ -260,6 +260,131 @@ def test_find_studio_server_none_when_not_running(monkeypatch):
     assert _inference.find_studio_server() is None
 
 
+class _FakeHealth:
+    """Minimal urlopen() return value carrying a canned /api/health body."""
+
+    def __init__(self, body: bytes):
+        self._body = body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def read(self, limit = None):
+        return self._body if limit is None else self._body[:limit]
+
+
+def _healthy_body(root_id = None) -> bytes:
+    import json
+
+    body = {
+        "status": "healthy",
+        "service": "Unsloth UI Backend",
+        "supports_desktop_auth": True,
+    }
+    if root_id is not None:
+        body["studio_root_id"] = root_id
+    return json.dumps(body).encode()
+
+
+def test_find_studio_server_matches_local_install_id(monkeypatch):
+    import urllib.request
+
+    from unsloth_cli import _inference
+
+    root_id = "a" * 64
+    monkeypatch.delenv("UNSLOTH_STUDIO_URL", raising = False)
+    monkeypatch.setattr(_inference, "_local_studio_install_id", lambda: root_id)
+    monkeypatch.setattr(
+        urllib.request, "urlopen", lambda *a, **k: _FakeHealth(_healthy_body(root_id))
+    )
+    assert _inference.find_studio_server() == "http://127.0.0.1:8888"
+
+
+def test_find_studio_server_rejects_mismatched_install_id(monkeypatch):
+    import urllib.request
+
+    from unsloth_cli import _inference
+
+    monkeypatch.delenv("UNSLOTH_STUDIO_URL", raising = False)
+    monkeypatch.setattr(_inference, "_local_studio_install_id", lambda: "a" * 64)
+    monkeypatch.setattr(
+        urllib.request, "urlopen", lambda *a, **k: _FakeHealth(_healthy_body("b" * 64))
+    )
+    assert _inference.find_studio_server() is None
+
+
+def test_find_studio_server_rejects_non_studio_responder(monkeypatch):
+    import urllib.request
+
+    from unsloth_cli import _inference
+
+    monkeypatch.delenv("UNSLOTH_STUDIO_URL", raising = False)
+    monkeypatch.setattr(_inference, "_local_studio_install_id", lambda: None)
+    monkeypatch.setattr(
+        urllib.request,
+        "urlopen",
+        lambda *a, **k: _FakeHealth(b'{"status":"evil","studio_root_id":"spoof"}'),
+    )
+    assert _inference.find_studio_server() is None
+
+
+def test_find_studio_server_dev_install_accepts_loopback_studio(monkeypatch):
+    import urllib.request
+
+    from unsloth_cli import _inference
+
+    # No installer id to match against: a real loopback Studio is still adopted.
+    monkeypatch.delenv("UNSLOTH_STUDIO_URL", raising = False)
+    monkeypatch.setattr(_inference, "_local_studio_install_id", lambda: None)
+    monkeypatch.setattr(
+        urllib.request, "urlopen", lambda *a, **k: _FakeHealth(_healthy_body("c" * 64))
+    )
+    assert _inference.find_studio_server() == "http://127.0.0.1:8888"
+
+
+def test_find_studio_server_honors_explicit_remote_url(monkeypatch):
+    import urllib.request
+
+    from unsloth_cli import _inference
+
+    # Explicit URL = user intent (e.g. RunPod proxy); a remote id won't match a
+    # local one, so the install-id gate must not apply.
+    monkeypatch.setenv("UNSLOTH_STUDIO_URL", "https://studio.example.com")
+    monkeypatch.setattr(_inference, "_local_studio_install_id", lambda: "a" * 64)
+    monkeypatch.setattr(
+        urllib.request, "urlopen", lambda *a, **k: _FakeHealth(_healthy_body("b" * 64))
+    )
+    assert _inference.find_studio_server() == "https://studio.example.com"
+
+
+def test_connect_studio_server_does_not_issue_token_for_unverified_health(monkeypatch):
+    import urllib.request
+
+    from unsloth_cli import _inference
+
+    monkeypatch.delenv("UNSLOTH_STUDIO_URL", raising = False)
+    monkeypatch.setattr(_inference, "_local_studio_install_id", lambda: "a" * 64)
+    monkeypatch.setattr(
+        urllib.request,
+        "urlopen",
+        lambda *a, **k: _FakeHealth(_healthy_body("b" * 64)),
+    )
+
+    def boom():
+        raise AssertionError("must not self-issue a token for an unverified backend")
+
+    monkeypatch.setattr(_inference, "_studio_token", boom)
+    assert (
+        _inference.connect_studio_server(
+            "model", hf_token = "hf_secret", max_seq_length = 2048, load_in_4bit = True
+        )
+        is None
+    )
+
+
 class _FakeSSEResponse:
     def __init__(self, lines):
         self._lines = lines

@@ -258,16 +258,49 @@ def load_chat_backend(
     return ChatBackend("unsloth", backend)
 
 
+_STUDIO_INSTALL_ID_RE = re.compile(r"^[0-9a-f]{64}$")
+_HEALTH_BODY_LIMIT = 64 * 1024
+
+
+def _local_studio_install_id() -> Optional[str]:
+    try:
+        ensure_studio_backend_path()
+        from utils.paths import studio_root
+
+        token = (studio_root() / "share" / "studio_install_id").read_text().strip()
+    except (OSError, ValueError, ImportError):
+        return None
+    return token if _STUDIO_INSTALL_ID_RE.fullmatch(token) else None
+
+
+def _is_studio_health(body) -> bool:
+    return (
+        isinstance(body, dict)
+        and body.get("status") == "healthy"
+        and body.get("service") == "Unsloth UI Backend"
+        and body.get("supports_desktop_auth") is True
+    )
+
+
 def find_studio_server(timeout: float = 3.0) -> Optional[str]:
+    import json
     import urllib.request
 
-    base = os.environ.get("UNSLOTH_STUDIO_URL", "http://127.0.0.1:8888").rstrip("/")
+    url_override = os.environ.get("UNSLOTH_STUDIO_URL")
+    base = (url_override or "http://127.0.0.1:8888").rstrip("/")
     request = urllib.request.Request(f"{base}/api/health", headers = {"User-Agent": _USER_AGENT})
     try:
-        with urllib.request.urlopen(request, timeout = timeout):
-            return base
+        with urllib.request.urlopen(request, timeout = timeout) as response:
+            body = json.loads(response.read(_HEALTH_BODY_LIMIT).decode("utf-8", "replace"))
     except Exception:
         return None
+    if not _is_studio_health(body):
+        return None
+    if url_override is None:
+        install_id = _local_studio_install_id()
+        if install_id is not None and body.get("studio_root_id") != install_id:
+            return None
+    return base
 
 
 def _studio_token() -> Optional[str]:
