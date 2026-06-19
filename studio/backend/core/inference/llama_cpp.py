@@ -1982,7 +1982,6 @@ class LlamaCppBackend:
         on the ordinal->physical mapping."""
         try:
             import torch
-
             is_rocm = getattr(torch.version, "hip", None) is not None
         except Exception:
             is_rocm = False
@@ -7697,7 +7696,9 @@ class LlamaCppBackend:
                 _mt["predicted_ms"] = _mt.get("predicted_ms", 0) + _accumulated_predicted_ms
                 _mt["predicted_n"] = _mt.get("predicted_n", 0) + _accumulated_predicted_n
                 if _mt["predicted_ms"] > 0:
-                    _mt["predicted_per_second"] = _mt["predicted_n"] / (_mt["predicted_ms"] / 1000.0)
+                    _mt["predicted_per_second"] = _mt["predicted_n"] / (
+                        _mt["predicted_ms"] / 1000.0
+                    )
             return {
                 "type": "metadata",
                 "usage": {
@@ -7900,13 +7901,11 @@ class LlamaCppBackend:
                                             tool_calls_acc[idx]["id"] = tc_d["id"]
                                         func = tc_d.get("function", {})
                                         if func.get("name"):
-                                            tool_calls_acc[idx]["function"]["name"] += func[
-                                                "name"
-                                            ]
+                                            tool_calls_acc[idx]["function"]["name"] += func["name"]
                                         if func.get("arguments"):
-                                            tool_calls_acc[idx]["function"]["arguments"] += (
-                                                func["arguments"]
-                                            )
+                                            tool_calls_acc[idx]["function"]["arguments"] += func[
+                                                "arguments"
+                                            ]
                                         current_name = tool_calls_acc[idx]["function"].get(
                                             "name", ""
                                         )
@@ -7930,9 +7929,7 @@ class LlamaCppBackend:
                                             and not provisional_render_html_tool_call_ids
                                             and has_real_id
                                         ):
-                                            provisional_render_html_tool_call_ids.add(
-                                                current_id
-                                            )
+                                            provisional_render_html_tool_call_ids.add(current_id)
                                             yield {
                                                 "type": "tool_start",
                                                 "tool_name": "render_html",
@@ -7978,9 +7975,7 @@ class LlamaCppBackend:
                                             cumulative_display += "</think>"
                                             in_thinking = False
                                         cumulative_display += token
-                                        cleaned = _strip_tool_markup_streaming(
-                                            cumulative_display
-                                        )
+                                        cleaned = _strip_tool_markup_streaming(cumulative_display)
                                         if len(cleaned) > len(_last_emitted):
                                             _last_emitted = cleaned
                                             if not _suppress_visible_output:
@@ -8023,9 +8018,7 @@ class LlamaCppBackend:
                                                         "text": cleaned,
                                                     }
                                             detect_state = _S_DRAINING
-                                        elif (
-                                            is_prefix and len(stripped_buf) < _MAX_BUFFER_CHARS
-                                        ):
+                                        elif is_prefix and len(stripped_buf) < _MAX_BUFFER_CHARS:
                                             pass  # keep buffering
                                         else:
                                             # Not a tool -- flush buffer
@@ -8840,7 +8833,9 @@ class LlamaCppBackend:
         if need_ids:
             payload["n_probs"] = 1
 
-        with httpx.Client(timeout = httpx.Timeout(300, connect = 10), headers = self._auth_headers) as client:
+        with httpx.Client(
+            timeout = httpx.Timeout(300, connect = 10), headers = self._auth_headers
+        ) as client:
             resp = client.post(f"{self.base_url}/completion", json = payload)
             if resp.status_code != 200:
                 raise RuntimeError(f"llama-server returned {resp.status_code}: {resp.text}")

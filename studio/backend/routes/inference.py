@@ -119,7 +119,9 @@ def _template_raise_message(error_text: str, chat_template: Optional[str]) -> Op
     return candidate if candidate and candidate in chat_template else None
 
 
-_LOST_CONNECTION_MSG = "Lost connection to the model server. It may have crashed -- try reloading the model."
+_LOST_CONNECTION_MSG = (
+    "Lost connection to the model server. It may have crashed -- try reloading the model."
+)
 
 
 def _friendly_error(exc: Exception) -> str:
@@ -554,24 +556,33 @@ def _chat_chunk_sse(completion_id, created, model_name, *, delta, finish_reason)
 def _chat_role_chunk(completion_id, created, model_name) -> str:
     """Opening assistant-role chunk for a chat stream."""
     return _chat_chunk_sse(
-        completion_id, created, model_name,
-        delta = ChoiceDelta(role = "assistant"), finish_reason = None,
+        completion_id,
+        created,
+        model_name,
+        delta = ChoiceDelta(role = "assistant"),
+        finish_reason = None,
     )
 
 
 def _chat_content_chunk(completion_id, created, model_name, text) -> str:
     """A content-delta chunk carrying ``text``."""
     return _chat_chunk_sse(
-        completion_id, created, model_name,
-        delta = ChoiceDelta(content = text), finish_reason = None,
+        completion_id,
+        created,
+        model_name,
+        delta = ChoiceDelta(content = text),
+        finish_reason = None,
     )
 
 
 def _chat_final_chunk(completion_id, created, model_name, finish_reason) -> str:
     """Terminal stop chunk (empty delta) carrying the finish reason."""
     return _chat_chunk_sse(
-        completion_id, created, model_name,
-        delta = ChoiceDelta(), finish_reason = finish_reason,
+        completion_id,
+        created,
+        model_name,
+        delta = ChoiceDelta(),
+        finish_reason = finish_reason,
     )
 
 
@@ -740,7 +751,13 @@ def _set_stream_response_read_timeout(
         pass
 
 
-async def _aclose_stream_resources(*, watchers = (), iterator = None, resp = None, client = None) -> None:
+async def _aclose_stream_resources(
+    *,
+    watchers = (),
+    iterator = None,
+    resp = None,
+    client = None,
+) -> None:
     """Tear down an httpx streaming generator's resources in the required order:
     cancel + await each watcher task, then aclose() the byte/line iterator, the
     response, and the client. Each step swallows its own exceptions so teardown
@@ -5071,7 +5088,9 @@ async def openai_chat_completions(
                         yield _chat_content_chunk(completion_id, created, model_name, new_text)
 
                     yield _chat_final_chunk(
-                        completion_id, created, model_name,
+                        completion_id,
+                        created,
+                        model_name,
                         _clamp_finish_reason(_stream_finish),
                     )
                     usage_line = _openai_stream_usage_chunk(
@@ -5189,7 +5208,9 @@ async def openai_chat_completions(
                         yield _chat_content_chunk(completion_id, created, model_name, new_text)
 
                     yield _chat_final_chunk(
-                        completion_id, created, model_name,
+                        completion_id,
+                        created,
+                        model_name,
                         _clamp_finish_reason(_stream_finish),
                     )
                     usage_line = _openai_stream_usage_chunk(
