@@ -9640,6 +9640,7 @@ async def _openai_passthrough_stream(
             monitor_done = False
             saw_finish_reason = False
             saw_done = False
+            saw_stream_error = False
             saw_tool_call_delta = False
             last_chunk_id = completion_id
             last_chunk_model = model_name
@@ -9676,7 +9677,11 @@ async def _openai_passthrough_stream(
                     data_text = raw_line[6:].strip()
                     if data_text == "[DONE]":
                         saw_done = True
-                        if not saw_finish_reason and not cancel_event.is_set():
+                        if (
+                            not saw_finish_reason
+                            and not saw_stream_error
+                            and not cancel_event.is_set()
+                        ):
                             finish_line = _synthetic_finish_line()
                             _monitor_openai_sse_line(
                                 monitor_id,
@@ -9725,13 +9730,20 @@ async def _openai_passthrough_stream(
                         raw_line,
                         llama_backend.context_length,
                     )
+                    if monitor_event == "error":
+                        saw_stream_error = True
                     # Relay verbatim to preserve llama-server's native id,
                     # finish_reason, delta.tool_calls, and usage chunks.
                     yield raw_line + "\n\n"
                     if monitor_event == "done":
                         monitor_done = True
                         break
-                if not saw_done and not saw_finish_reason and not cancel_event.is_set():
+                if (
+                    not saw_done
+                    and not saw_finish_reason
+                    and not saw_stream_error
+                    and not cancel_event.is_set()
+                ):
                     finish_line = _synthetic_finish_line()
                     _monitor_openai_sse_line(
                         monitor_id,

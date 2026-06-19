@@ -2289,6 +2289,45 @@ class TestApiMonitorProviderAndCompletionStreams:
 
         asyncio.run(_run())
 
+    def test_passthrough_stream_error_done_skips_synthetic_finish_reason(self, monkeypatch):
+        async def _run():
+            result = await self._run_passthrough_stream(
+                monkeypatch,
+                [
+                    'data: {"error":{"message":"boom","type":"server_error"}}',
+                    "data: [DONE]",
+                ],
+            )
+            compact = result.body.replace(" ", "")
+
+            assert '"error":{"message":"boom","type":"server_error"}' in compact
+            assert '"finish_reason"' not in compact
+            assert "data: [DONE]" in result.body
+            [entry] = result.monitor.snapshot()
+            assert entry["status"] == "error"
+            assert entry["error"] == "boom"
+            assert result.monitor.active_count() == 0
+
+        asyncio.run(_run())
+
+    def test_passthrough_stream_error_eof_skips_synthetic_finish_reason(self, monkeypatch):
+        async def _run():
+            result = await self._run_passthrough_stream(
+                monkeypatch,
+                ['data: {"error":{"message":"boom","type":"server_error"}}'],
+            )
+            compact = result.body.replace(" ", "")
+
+            assert '"error":{"message":"boom","type":"server_error"}' in compact
+            assert '"finish_reason"' not in compact
+            assert "data: [DONE]" not in result.body
+            [entry] = result.monitor.snapshot()
+            assert entry["status"] == "error"
+            assert entry["error"] == "boom"
+            assert result.monitor.active_count() == 0
+
+        asyncio.run(_run())
+
     def test_passthrough_non_streaming_cancel_finalizes_monitor(self, monkeypatch):
         async def _run():
             import routes.inference as inf_mod
