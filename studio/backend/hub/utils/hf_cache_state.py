@@ -19,6 +19,16 @@ TRANSPORT_MARKER_NAME = ".transport"
 INCOMPLETE_SUFFIX = ".incomplete"
 
 
+def _safe_is_dir(path: Path) -> bool:
+    """``Path.is_dir()`` returning False instead of raising when the path or a
+    parent is unreadable (e.g. a restricted ``~/.cache/huggingface/hub``), so
+    cache enumeration skips that root rather than 500ing."""
+    try:
+        return path.is_dir()
+    except OSError:
+        return False
+
+
 def hf_cache_root(*, create: bool = False) -> Optional[Path]:
     try:
         from huggingface_hub import constants as hf_constants
@@ -31,7 +41,7 @@ def hf_cache_root(*, create: bool = False) -> Optional[Path]:
         except OSError:
             return None
         return root
-    return root if root.is_dir() else None
+    return root if _safe_is_dir(root) else None
 
 
 def hf_cache_roots() -> list[Path]:
@@ -41,7 +51,7 @@ def hf_cache_roots() -> list[Path]:
     seen: set[str] = set()
 
     def _add(path: Optional[Path]) -> None:
-        if path is None or not path.is_dir():
+        if path is None or not _safe_is_dir(path):
             return
         try:
             key = str(path.resolve())

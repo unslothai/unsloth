@@ -72,6 +72,7 @@ def _install_lightweight_backend_stubs(monkeypatch):
     fastapi.APIRouter = lambda: _Router()
     fastapi.Body = lambda default = None, **_kwargs: default
     fastapi.Depends = lambda dependency = None, **_kwargs: dependency
+    fastapi.Header = lambda default = None, **_kwargs: default
     fastapi.HTTPException = _HTTPException
     fastapi.Query = lambda default = None, **_kwargs: default
     fastapi.Request = object
@@ -191,6 +192,7 @@ def _install_lightweight_backend_stubs(monkeypatch):
     for name in (
         "BrowseEntry",
         "BrowseFoldersResponse",
+        "ExportSizeResponse",
         "GgufVariantDetail",
         "GgufVariantsResponse",
         "ScanFolderInfo",

@@ -108,6 +108,10 @@ class TrainingStartRequest(BaseModel):
         False,
         description = "Allow loading models with custom code (e.g. NVIDIA Nemotron). Only enable for repos you trust.",
     )
+    approved_remote_code_fingerprint: Optional[str] = Field(
+        None,
+        description = "sha256 fingerprint from the remote-code scan, pinning user approval of this exact custom-code version.",
+    )
 
     # Dataset parameters
     hf_dataset: Optional[str] = Field(None, description = "HuggingFace dataset identifier")

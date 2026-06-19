@@ -10,11 +10,9 @@ from unittest import mock
 
 import pytest
 
-# Add the studio directory so we can import install_python_stack.
 STUDIO_DIR = Path(__file__).resolve().parents[2] / "studio"
 sys.path.insert(0, str(STUDIO_DIR))
 
-# Import after path setup.
 import install_python_stack as ips
 
 

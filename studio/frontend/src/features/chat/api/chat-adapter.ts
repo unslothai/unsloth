@@ -20,8 +20,11 @@ import {
   supportsProviderPromptCaching,
   toExternalBackendProviderType,
 } from "../external-providers";
-import { tryAdoptServerActiveModel } from "../lib/apply-inference-status-to-store";
 import { pickFriendlyContainerName } from "../lib/friendly-names";
+import {
+  reasoningCapsFromLoad,
+  tryAdoptServerActiveModel,
+} from "../lib/apply-inference-status-to-store";
 import {
   clampReasoningEffortToLevels,
   getExternalMaxOutputTokens,
@@ -1308,7 +1311,12 @@ async function autoLoadSmallestModel(abortSignal?: AbortSignal): Promise<{
       load_in_4bit: true,
       trust_remote_code: trustRemoteCode,
     });
-    if (validation.requires_trust_remote_code && !trustRemoteCode) {
+    // Background auto-load never runs a repo's custom code or loads Hub-flagged unsafe
+    // files on its own; both are deferred to the explicit consent dialog instead.
+    if (
+      validation.requires_trust_remote_code ||
+      validation.requires_security_review
+    ) {
       blockedByTrustRemoteCode = true;
       return false;
     }
@@ -1390,7 +1398,7 @@ async function autoLoadSmallestModel(abortSignal?: AbortSignal): Promise<{
               supportsReasoning: loadResp.supports_reasoning ?? false,
               reasoningAlwaysOn: loadResp.reasoning_always_on ?? false,
               reasoningEnabled: loadResp.supports_reasoning ?? false,
-              reasoningStyle: loadResp.reasoning_style ?? "enable_thinking",
+              ...reasoningCapsFromLoad(loadResp),
               supportsPreserveThinking:
                 loadResp.supports_preserve_thinking ?? false,
               supportsTools: loadResp.supports_tools ?? false,
@@ -1458,7 +1466,7 @@ async function autoLoadSmallestModel(abortSignal?: AbortSignal): Promise<{
             supportsReasoning: sfLoadResp.supports_reasoning ?? false,
             reasoningAlwaysOn: sfLoadResp.reasoning_always_on ?? false,
             reasoningEnabled: sfLoadResp.supports_reasoning ?? false,
-            reasoningStyle: sfLoadResp.reasoning_style ?? "enable_thinking",
+            ...reasoningCapsFromLoad(sfLoadResp),
             supportsPreserveThinking:
               sfLoadResp.supports_preserve_thinking ?? false,
             supportsTools: sfLoadResp.supports_tools ?? false,
@@ -1562,7 +1570,7 @@ async function autoLoadSmallestModel(abortSignal?: AbortSignal): Promise<{
         supportsReasoning: loadResp.supports_reasoning ?? false,
         reasoningAlwaysOn: loadResp.reasoning_always_on ?? false,
         reasoningEnabled: loadResp.supports_reasoning ?? false,
-        reasoningStyle: loadResp.reasoning_style ?? "enable_thinking",
+        ...reasoningCapsFromLoad(loadResp),
         supportsPreserveThinking: loadResp.supports_preserve_thinking ?? false,
         supportsTools: loadResp.supports_tools ?? false,
         ...resolveToolsEnabledOnLoad(loadResp.supports_tools ?? false),
@@ -1660,11 +1668,11 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
         if (!loaded) {
           toast.error(
             blockedByTrustRemoteCode
-              ? "Enable custom code to auto-load this model"
+              ? "This model needs custom code approval"
               : "No model loaded",
             {
               description: blockedByTrustRemoteCode
-                ? 'Turn on "Enable custom code" in Chat Settings, or pick another model in the top bar.'
+                ? "Select it from the top bar to review and approve its custom code, or pick another model."
                 : "Pick a model in the top bar, then retry.",
             },
           );
@@ -2269,6 +2277,13 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
       // Colab-style proxies can swallow fetch aborts, so also POST
       // /inference/cancel explicitly on abort.
       const onAbortCancel = () => {
+        // assistant-ui aborts with AbortError(detach=true) when a thread's runtime
+        // unmounts (navigation / background thread switch) and detach=false for an
+        // explicit Stop. Only a real Stop cancels the backend run; a detach must
+        // leave a backgrounded generation streaming.
+        if ((abortSignal.reason as { detach?: boolean } | undefined)?.detach) {
+          return;
+        }
         const body: Record<string, string> = { cancel_id: cancelId };
         if (sandboxSessionId) body.session_id = sandboxSessionId;
         // Plain fetch, not authFetch: authFetch redirects to login on
@@ -2299,6 +2314,7 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
           reasoningEnabled,
           reasoningStyle,
           reasoningEffort,
+          reasoningEffortLevels,
           supportsPreserveThinking,
           preserveThinking,
         } = runtime;
@@ -2339,12 +2355,15 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             reasoningEffort,
             externalReasoningCaps.reasoningEffortLevels,
           ) as RequestReasoningEffort;
-        const localReasoningEffort =
-          reasoningEffort === "low" ||
-          reasoningEffort === "medium" ||
-          reasoningEffort === "high"
-            ? reasoningEffort
-            : "low";
+        // Clamp to the loaded local model's advertised levels so a stale value
+        // (e.g. "max" carried over from an external model, or a level this model
+        // lacks) becomes one the backend will honor instead of being dropped:
+        // gpt-oss-style reasoning_effort gets low|medium|high, GLM-style
+        // enable_thinking_effort gets high|max.
+        const localReasoningEffort = clampReasoningEffortToLevels(
+          reasoningEffort,
+          reasoningEffortLevels,
+        );
         const externalReasoningEnabled =
           !externalReasoningCaps.supportsReasoningOff ? true : reasoningEnabled;
         const buildRequestPayload = async (
@@ -2587,11 +2606,25 @@ export function createOpenAIStreamAdapter(): ChatModelAdapter {
             ...(sandboxSessionId ? { session_id: sandboxSessionId } : {}),
             ...(useAdapter === undefined ? {} : { use_adapter: useAdapter }),
             ...(supportsReasoning
-              ? reasoningStyle === "reasoning_effort"
-                ? reasoningEnabled
-                  ? { reasoning_effort: localReasoningEffort }
-                  : {}
-                : { thinking: { type: reasoningEnabled ? "enabled" : "disabled" } }
+              ? reasoningStyle === "enable_thinking_effort"
+                ? // GLM-5.2-style: on/off gate plus an effort level. Disabling
+                  // sends enable_thinking=false (a real disable); enabling sends
+                  // the chosen level (e.g. high|max).
+                  reasoningEnabled
+                  ? {
+                      enable_thinking: true,
+                      reasoning_effort: localReasoningEffort,
+                    }
+                  : { enable_thinking: false }
+                : reasoningStyle === "reasoning_effort"
+                  ? reasoningEnabled
+                    ? { reasoning_effort: localReasoningEffort }
+                    : {}
+                  : {
+                      thinking: {
+                        type: reasoningEnabled ? "enabled" : "disabled",
+                      },
+                    }
               : {}),
             ...(supportsPreserveThinking
               ? { preserve_thinking: preserveThinking }
