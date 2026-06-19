@@ -2316,6 +2316,75 @@ class TestApiMonitorProviderAndCompletionStreams:
 
             assert '"finish_reason":"stop"' in body.replace(" ", "")
             assert "data: [DONE]" in body
+            assert monitor.active_count() == 0
+
+        asyncio.run(_run())
+
+    def test_passthrough_stream_synthesizes_tool_call_finish_reason(self, monkeypatch):
+        async def _run():
+            import routes.inference as inf_mod
+
+            class Request:
+                async def is_disconnected(self):
+                    return False
+
+            async def fake_send(*_args, **_kwargs):
+                return httpx.Response(200, content = b"")
+
+            async def fake_items(*_args, **_kwargs):
+                yield (
+                    'data: {"id":"upstream","created":123,"model":"gguf",'
+                    '"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,'
+                    '"id":"call_1","type":"function","function":{"name":"lookup",'
+                    '"arguments":"{}"}}]}}]}'
+                )
+                yield "data: [DONE]"
+
+            monitor = ApiMonitor(max_entries = 3)
+            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
+            monkeypatch.setattr(inf_mod, "_aiter_llama_stream_items", fake_items)
+            monitor_id = monitor.start(
+                endpoint = "/v1/chat/completions",
+                method = "POST",
+                model = "gguf",
+                prompt = "hi",
+            )
+            payload = ChatCompletionRequest(
+                model = "default",
+                messages = [ChatMessage(role = "user", content = "hi")],
+                stream = True,
+                tools = [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "lookup",
+                            "parameters": {"type": "object", "properties": {}},
+                        },
+                    }
+                ],
+            )
+
+            response = await _openai_passthrough_stream(
+                Request(),
+                threading.Event(),
+                SimpleNamespace(
+                    base_url = "http://llama.test",
+                    context_length = 4096,
+                    _request_reasoning_kwargs = lambda *_args, **_kwargs: None,
+                ),
+                payload,
+                "gguf",
+                "chatcmpl-test",
+                monitor_id = monitor_id,
+            )
+            body = "".join([chunk async for chunk in response.body_iterator])
+            compact = body.replace(" ", "")
+
+            assert '"finish_reason":"tool_calls"' in compact
+            assert '"finish_reason":"stop"' not in compact
+            assert "data: [DONE]" in body
+            assert monitor.active_count() == 0
 
         asyncio.run(_run())
 
@@ -2434,7 +2503,10 @@ class TestApiMonitorProviderAndCompletionStreams:
             async for chunk in response.body_iterator:
                 chunks.append(chunk)
 
-            assert chunks == ['data: {"choices":[{"delta":{"content":"hello"}}]}\n\n']
+            assert chunks[0] == 'data: {"choices":[{"delta":{"content":"hello"}}]}\n\n'
+            compact = "".join(chunks).replace(" ", "")
+            assert '"finish_reason":"stop"' in compact
+            assert chunks[-1] == "data: [DONE]\n\n"
             [entry] = monitor.snapshot()
             assert entry["status"] == "completed"
             assert entry["reply"] == "hello"

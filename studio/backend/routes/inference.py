@@ -1303,6 +1303,16 @@ async def _await_disconnect_then_close(request, resp, cancel_event) -> None:
         return
 
 
+async def _await_disconnect_then_cancel(request, cancel_event) -> None:
+    """Set ``cancel_event`` when a same-task local stream disconnects."""
+    try:
+        while not await request.is_disconnected():
+            await asyncio.sleep(0.1)
+        cancel_event.set()
+    except asyncio.CancelledError:
+        return
+
+
 # Centralized local/server tool nudge. Keep render_html guidance gated to turns
 # where the canvas tool is actually present in the tool schema; otherwise
 # small local models can hallucinate a missing tool call instead of following
@@ -5095,6 +5105,9 @@ async def openai_chat_completions(
 
             async def gguf_tool_stream():
                 gen = None
+                disconnect_watcher = asyncio.create_task(
+                    _await_disconnect_then_cancel(request, cancel_event)
+                )
                 try:
                     first_chunk = ChatCompletionChunk(
                         id = completion_id,
@@ -5232,6 +5245,11 @@ async def openai_chat_completions(
                     error_chunk = _openai_stream_error_chunk(e)
                     yield f"data: {json.dumps(error_chunk)}\n\n"
                 finally:
+                    disconnect_watcher.cancel()
+                    try:
+                        await disconnect_watcher
+                    except (asyncio.CancelledError, Exception):
+                        pass
                     if gen is not None:
                         try:
                             gen.close()
@@ -5283,6 +5301,9 @@ async def openai_chat_completions(
             _tracker.__enter__()
 
             async def gguf_stream_chunks():
+                disconnect_watcher = asyncio.create_task(
+                    _await_disconnect_then_cancel(request, cancel_event)
+                )
                 try:
                     # First chunk: role
                     first_chunk = ChatCompletionChunk(
@@ -5391,6 +5412,11 @@ async def openai_chat_completions(
                     error_chunk = _openai_stream_error_chunk(e)
                     yield f"data: {json.dumps(error_chunk)}\n\n"
                 finally:
+                    disconnect_watcher.cancel()
+                    try:
+                        await disconnect_watcher
+                    except (asyncio.CancelledError, Exception):
+                        pass
                     _tracker.__exit__(None, None, None)
 
             return _SameTaskStreamingResponse(
@@ -5710,6 +5736,9 @@ async def openai_chat_completions(
 
         async def sf_tool_stream():
             gen = None
+            disconnect_watcher = asyncio.create_task(
+                _await_disconnect_then_cancel(request, cancel_event)
+            )
             try:
                 first_chunk = ChatCompletionChunk(
                     id = completion_id,
@@ -5834,6 +5863,11 @@ async def openai_chat_completions(
                 }
                 yield f"data: {json.dumps(error_chunk)}\n\n"
             finally:
+                disconnect_watcher.cancel()
+                try:
+                    await disconnect_watcher
+                except (asyncio.CancelledError, Exception):
+                    pass
                 if gen is not None:
                     try:
                         gen.close()
@@ -5952,6 +5986,9 @@ async def openai_chat_completions(
         _tracker.__enter__()
 
         async def stream_chunks():
+            disconnect_watcher = asyncio.create_task(
+                _await_disconnect_then_cancel(request, cancel_event)
+            )
             try:
                 first_chunk = ChatCompletionChunk(
                     id = completion_id,
@@ -6060,6 +6097,11 @@ async def openai_chat_completions(
                 }
                 yield f"data: {json.dumps(error_chunk)}\n\n"
             finally:
+                disconnect_watcher.cancel()
+                try:
+                    await disconnect_watcher
+                except (asyncio.CancelledError, Exception):
+                    pass
                 _tracker.__exit__(None, None, None)
 
         return _SameTaskStreamingResponse(
@@ -7115,8 +7157,6 @@ async def _responses_non_streaming(
         # the model produced content, so clients expecting a pure tool-call turn
         # (finish_reason="tool_calls") don't see a spurious empty message item.
         output_items: list[dict] = []
-        if reasoning_text and not text and not tool_calls:
-            text = reasoning_text
         if reasoning_text:
             output_items.append(_responses_reasoning_output_item(reasoning_text))
         if text:
@@ -7421,6 +7461,7 @@ async def _responses_stream(
         client = httpx.AsyncClient(timeout = _llama_streaming_generation_timeout())
         resp = None
         lines_iter = None
+        disconnect_watcher = None
         disconnect_event = threading.Event()
         try:
             req = client.build_request(
@@ -7482,6 +7523,9 @@ async def _responses_stream(
                 return
 
             lines_iter = resp.aiter_lines()
+            disconnect_watcher = asyncio.create_task(
+                _await_disconnect_then_close(request, resp, disconnect_event)
+            )
             async for raw_line in _aiter_llama_stream_items(
                 lines_iter,
                 cancel_event = disconnect_event,
@@ -7643,6 +7687,12 @@ async def _responses_stream(
             )
             return
         finally:
+            if disconnect_watcher is not None:
+                disconnect_watcher.cancel()
+                try:
+                    await disconnect_watcher
+                except (asyncio.CancelledError, Exception):
+                    pass
             if lines_iter is not None:
                 try:
                     await lines_iter.aclose()
@@ -9600,11 +9650,13 @@ async def _openai_passthrough_stream(
             monitor_done = False
             saw_finish_reason = False
             saw_done = False
+            saw_tool_call_delta = False
             last_chunk_id = completion_id
             last_chunk_model = model_name
             last_chunk_created = int(time.time())
 
             def _synthetic_finish_line() -> str:
+                finish_reason = "tool_calls" if saw_tool_call_delta else "stop"
                 chunk = ChatCompletionChunk(
                     id = last_chunk_id,
                     created = last_chunk_created,
@@ -9612,7 +9664,7 @@ async def _openai_passthrough_stream(
                     choices = [
                         ChunkChoice(
                             delta = ChoiceDelta(),
-                            finish_reason = "stop",
+                            finish_reason = finish_reason,
                         )
                     ],
                 )
@@ -9643,9 +9695,21 @@ async def _openai_passthrough_stream(
                             )
                             yield finish_line + "\n\n"
                             saw_finish_reason = True
+                        _monitor_openai_sse_line(
+                            monitor_id,
+                            raw_line,
+                            llama_backend.context_length,
+                        )
                         yield raw_line + "\n\n"
                         monitor_done = True
                         break
+                    # Honor parallel_tool_calls=false (best-effort): drop tool_call
+                    # deltas with index>=1 so only the first call streams. Only
+                    # lines carrying tool_calls are reparsed; everything else is
+                    # relayed byte-for-byte.
+                    if payload.parallel_tool_calls is False and '"tool_calls"' in raw_line:
+                        raw_line = _cap_parallel_tool_calls_sse_line(raw_line)
+                        data_text = raw_line[6:].strip()
                     try:
                         chunk_data = json.loads(data_text)
                     except json.JSONDecodeError:
@@ -9660,14 +9724,12 @@ async def _openai_passthrough_stream(
                         choices = chunk_data.get("choices")
                         if isinstance(choices, list) and choices:
                             choice = choices[0]
-                            if isinstance(choice, dict) and choice.get("finish_reason"):
-                                saw_finish_reason = True
-                    # Honor parallel_tool_calls=false (best-effort): drop tool_call
-                    # deltas with index>=1 so only the first call streams. Only
-                    # lines carrying tool_calls are reparsed; everything else is
-                    # relayed byte-for-byte.
-                    if payload.parallel_tool_calls is False and '"tool_calls"' in raw_line:
-                        raw_line = _cap_parallel_tool_calls_sse_line(raw_line)
+                            if isinstance(choice, dict):
+                                if choice.get("finish_reason"):
+                                    saw_finish_reason = True
+                                delta = choice.get("delta")
+                                if isinstance(delta, dict) and delta.get("tool_calls"):
+                                    saw_tool_call_delta = True
                     monitor_event = _monitor_openai_sse_line(
                         monitor_id,
                         raw_line,
@@ -9687,7 +9749,13 @@ async def _openai_passthrough_stream(
                         llama_backend.context_length,
                     )
                     yield finish_line + "\n\n"
-                    yield "data: [DONE]\n\n"
+                    done_line = "data: [DONE]"
+                    _monitor_openai_sse_line(
+                        monitor_id,
+                        done_line,
+                        llama_backend.context_length,
+                    )
+                    yield done_line + "\n\n"
                     monitor_done = True
                 if not monitor_done:
                     api_monitor.finish(

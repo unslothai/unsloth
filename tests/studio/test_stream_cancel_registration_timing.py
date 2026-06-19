@@ -184,6 +184,14 @@ def test_openai_passthrough_stream_avoids_starlette_task_group():
     assert same_task_calls >= 2
 
 
+def test_local_chat_streams_install_same_task_disconnect_watcher():
+    top = _async_function("openai_chat_completions")
+    assert _calls_name(top, "_await_disconnect_then_cancel"), (
+        "Local same-task streams must watch request disconnects themselves; "
+        "do not restore Starlette's task-group StreamingResponse for this."
+    )
+
+
 def test_direct_llama_server_streams_install_disconnect_watcher():
     required = {
         "openai_completions",

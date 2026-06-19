@@ -992,7 +992,7 @@ class TestResponsesNonStreamingAdapter:
         assert [item["type"] for item in body["output"]] == ["message"]
         assert body["output"][0]["content"][0]["text"] == "33"
 
-    def test_reasoning_only_is_also_visible_message_text(self, monkeypatch):
+    def test_reasoning_only_stays_out_of_visible_message_text(self, monkeypatch):
         payload = ResponsesRequest(input = "hi", reasoning = {"effort": "high"})
         body = self._run_with_message(
             monkeypatch,
@@ -1000,9 +1000,8 @@ class TestResponsesNonStreamingAdapter:
             payload = payload,
         )
 
-        assert [item["type"] for item in body["output"]] == ["reasoning", "message"]
+        assert [item["type"] for item in body["output"]] == ["reasoning"]
         assert body["output"][0]["content"][0]["text"] == "plan"
-        assert body["output"][1]["content"][0]["text"] == "plan"
 
 
 # =====================================================================
