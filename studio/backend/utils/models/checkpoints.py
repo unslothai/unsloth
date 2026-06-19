@@ -139,6 +139,15 @@ def _is_model_dir(path: Path) -> bool:
     return (path / "config.json").exists() or (path / "adapter_config.json").exists()
 
 
+def has_preview_model(output_dir: Optional[str]) -> bool:
+    """True when ``output_dir`` holds a previewable root model (what ``/p/{run}``
+    resolves). A cancelled run keeps ``output_dir`` but saves no root adapter."""
+    if not output_dir:
+        return False
+    path = Path(output_dir)
+    return path.is_dir() and _is_model_dir(path)
+
+
 def resolve_preview_checkpoint(run: str, checkpoint: Optional[str] = None) -> Path:
     relative = run if not checkpoint else f"{run}/{checkpoint}"
     path = resolve_output_dir(relative)

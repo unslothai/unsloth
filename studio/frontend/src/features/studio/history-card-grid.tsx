@@ -383,9 +383,7 @@ export function HistoryCardGrid({
           const isRunning = run.status === "running";
           const canResume = run.can_resume && !wasContinued;
           const isResuming = resumeTarget === run.id;
-          const canCopyPreview =
-            !!run.output_dir &&
-            (run.status === "completed" || run.status === "stopped");
+          const canCopyPreview = !!run.output_dir && run.has_preview_model;
           return (
             <div
               role="button"

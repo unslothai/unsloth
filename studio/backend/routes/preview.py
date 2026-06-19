@@ -5,11 +5,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import html
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from loggers import get_logger
 
 from auth.authentication import get_current_subject
@@ -25,6 +27,10 @@ router = APIRouter()
 # Public (no key) so a shared link opens in any browser; resolve_preview_checkpoint
 # pins `run` under outputs_root, so this only ever serves your own checkpoints.
 
+# Serialize load+generate: the backend holds one model at a time, so concurrent
+# previews for different checkpoints could otherwise run against the wrong one.
+_preview_lock = asyncio.Lock()
+
 
 def _resolve_or_4xx(run: str, checkpoint: str | None):
     try:
@@ -35,6 +41,18 @@ def _resolve_or_4xx(run: str, checkpoint: str | None):
         raise HTTPException(status_code = 404, detail = str(exc))
 
 
+def _without_tools(payload: ChatCompletionRequest) -> ChatCompletionRequest:
+    # Tools run shell/python on the host; this surface is public, so force them off.
+    return payload.model_copy(update = {
+        "tools": None,
+        "enable_tools": False,
+        "enabled_tools": None,
+        "bypass_permissions": False,
+        "openai_code_exec_container_id": None,
+        "anthropic_code_exec_container_id": None,
+    })
+
+
 async def _serve_chat(
     run: str,
     checkpoint: str | None,
@@ -42,8 +60,10 @@ async def _serve_chat(
     request: Request,
 ):
     path = _resolve_or_4xx(run, checkpoint)
-    await load_model(LoadRequest(model_path = str(path)), request, DEFAULT_ADMIN_USERNAME)
-    return await openai_chat_completions(payload, request, DEFAULT_ADMIN_USERNAME)
+    payload = _without_tools(payload)
+    async with _preview_lock:
+        await load_model(LoadRequest(model_path = str(path)), request, DEFAULT_ADMIN_USERNAME)
+        return await openai_chat_completions(payload, request, DEFAULT_ADMIN_USERNAME)
 
 
 @router.get("")
@@ -51,7 +71,8 @@ async def list_previews(request: Request, current_subject: str = Depends(get_cur
     base = str(request.base_url)
     previews = []
     for target in list_preview_targets():
-        previews.append({**target, "url": f"{base}p/{target['ref']}/v1"})
+        ref = quote(target["ref"], safe = "/")
+        previews.append({**target, "url": f"{base}p/{ref}/v1"})
     return {"object": "list", "data": previews}
 
 
@@ -98,6 +119,25 @@ async def preview_models_latest(run: str):
 @router.get("/{run}/{checkpoint}/v1/models")
 async def preview_models_checkpoint(run: str, checkpoint: str):
     return _models_response(run, checkpoint)
+
+
+# Serve the page's logo/fonts here too; the frontend static mount is absent in
+# --api-only mode (Tauri), where they would otherwise 404.
+_FRONTEND_DIST = (Path(__file__).resolve().parents[2] / "frontend" / "dist").resolve()
+_PREVIEW_ASSET_MEDIA_TYPES = {
+    ".png": "image/png",
+    ".woff": "font/woff",
+    ".woff2": "font/woff2",
+}
+
+
+@router.get("/_assets/{asset_path:path}")
+async def preview_asset(asset_path: str):
+    target = (_FRONTEND_DIST / asset_path).resolve()
+    media_type = _PREVIEW_ASSET_MEDIA_TYPES.get(target.suffix.lower())
+    if media_type is None or _FRONTEND_DIST not in target.parents or not target.is_file():
+        raise HTTPException(status_code = 404, detail = "Not found")
+    return FileResponse(target, media_type = media_type)
 
 
 # Self-contained public page (not the auth-gated SPA); only the title is interpolated.

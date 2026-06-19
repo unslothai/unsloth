@@ -7,13 +7,13 @@
     <style>
       @font-face {
         font-family: "Hellix";
-        src: url("/fonts/Hellix-Medium.woff") format("woff");
+        src: url("/p/_assets/fonts/Hellix-Medium.woff") format("woff");
         font-weight: 500;
         font-display: swap;
       }
       @font-face {
         font-family: "Hellix";
-        src: url("/fonts/Hellix-SemiBold.woff2") format("woff2");
+        src: url("/p/_assets/fonts/Hellix-SemiBold.woff2") format("woff2");
         font-weight: 600;
         font-display: swap;
       }
@@ -243,7 +243,7 @@
   </head>
   <body>
     <header>
-      <img src="/circle-logo-small.png" alt="" /><span class="brand"
+      <img src="/p/_assets/circle-logo-small.png" alt="" /><span class="brand"
         >Unsloth</span
       ><span class="model">__TITLE__</span>
     </header>
@@ -300,6 +300,7 @@
       }
       input.addEventListener("input", autosize);
       input.addEventListener("keydown", (e) => {
+        if (e.isComposing || e.keyCode === 229) return;
         if (e.key === "Enter" && !e.shiftKey) {
           e.preventDefault();
           form.requestSubmit();
@@ -338,6 +339,7 @@
           if (!r.ok) {
             out.textContent =
               "Error " + r.status + ": " + (await r.text()).slice(0, 300);
+            msgs.pop();
             btn.disabled = false;
             return;
           }
@@ -374,6 +376,7 @@
           msgs.push({ role: "assistant", content: acc });
         } catch (err) {
           out.textContent = "Error: " + err;
+          msgs.pop();
         }
         btn.disabled = false;
         input.focus();
