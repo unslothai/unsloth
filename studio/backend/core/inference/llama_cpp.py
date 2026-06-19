@@ -1868,7 +1868,7 @@ class LlamaCppBackend:
             # PR #22673 used draft-mtp; later renamed to mtp.
             if "draft-mtp" in spec_line:
                 mtp_token = "draft-mtp"
-            elif re.search(r"[|,\[]mtp[|,\]]", spec_line):
+            elif re.search(r"\bmtp\b", spec_line):
                 mtp_token = "mtp"
 
             # ngram-mod flag flavor. Post-rename builds advertise both new
