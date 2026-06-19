@@ -163,13 +163,13 @@ _nvcc_meets_llama_minimum() {
 # PTX-only CUDA binary that fails at runtime on a driver older than the toolkit
 # ("the provided PTX was compiled with an unsupported toolchain"; #5854).
 _resolve_cuda_archs() {
-    _raw_caps=$1
-    _arch_override=$2
+    local _raw_caps=$1
+    local _arch_override=$2
     if [ -n "$_arch_override" ]; then
         printf '%s' "$_arch_override"
         return 0
     fi
-    _archs=""
+    local _archs="" _cap _arch
     while IFS= read -r _cap; do
         _cap=$(printf '%s' "$_cap" | tr -d '[:space:]')
         if [[ "$_cap" =~ ^([0-9]+)\.([0-9]+)$ ]]; then
@@ -1488,8 +1488,19 @@ else
                         # unsupported toolchain"; #5854). An explicit override
                         # (UNSLOTH_LLAMA_CUDA_ARCHS) wins; otherwise probe nvidia-smi.
                         _raw_caps=""
-                        if command -v nvidia-smi &>/dev/null; then
-                            _raw_caps=$(_setup_run_smi nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null || true)
+                        # Resolve nvidia-smi the same way _setup_has_usable_nvidia_gpu
+                        # does (PATH, then /usr/bin fallback). A GPU host can be
+                        # classified usable via that fallback while nvidia-smi is off
+                        # PATH; probing only `command -v nvidia-smi` here would leave
+                        # the arch empty and drop an otherwise CUDA-capable build to CPU.
+                        _smi_bin=""
+                        if command -v nvidia-smi >/dev/null 2>&1; then
+                            _smi_bin="nvidia-smi"
+                        elif [ -x "/usr/bin/nvidia-smi" ]; then
+                            _smi_bin="/usr/bin/nvidia-smi"
+                        fi
+                        if [ -n "$_smi_bin" ]; then
+                            _raw_caps=$(_setup_run_smi "$_smi_bin" --query-gpu=compute_cap --format=csv,noheader 2>/dev/null || true)
                         fi
                         CUDA_ARCHS="$(_resolve_cuda_archs "$_raw_caps" "${UNSLOTH_LLAMA_CUDA_ARCHS:-}")"
 
