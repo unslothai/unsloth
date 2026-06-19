@@ -413,6 +413,8 @@ if _IS_MLX:
 
             if "max_length" in kwargs and "max_seq_length" not in kwargs:
                 kwargs["max_seq_length"] = kwargs["max_length"]
+            if "num_train_epochs" in kwargs and "max_steps" not in kwargs:
+                kwargs["max_steps"] = -1
 
             warmup_ratio = kwargs.get("warmup_ratio", None)
             filtered_kwargs = {}

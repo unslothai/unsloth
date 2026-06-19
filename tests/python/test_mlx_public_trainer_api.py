@@ -117,6 +117,18 @@ def test_mlx_training_arguments_prefer_canonical_max_seq_length():
     assert dict_args.max_seq_length == 456
 
 
+def test_mlx_training_arguments_preserve_explicit_epoch_training():
+    """Epoch-based configs should not inherit the MLX max_steps default."""
+    unsloth = _import_mlx_unsloth()
+
+    args = unsloth.UnslothTrainingArguments(num_train_epochs=1, warmup_ratio=0.1)
+    default_args = unsloth.UnslothTrainingArguments()
+
+    assert args.num_train_epochs == 1
+    assert args.max_steps == -1
+    assert default_args.max_steps == unsloth.MLXTrainingConfig.max_steps
+
+
 def test_mlx_training_arguments_warn_on_meaningful_inert_kwargs():
     """Unsupported TrainingArguments knobs should not be silently ignored."""
     unsloth = _import_mlx_unsloth()
@@ -175,6 +187,67 @@ def test_mlx_training_arguments_normalize_optim_and_object_aliases():
 
     assert args.optim == "adamw"
     assert args.max_seq_length == 321
+
+
+def test_mlx_training_arguments_accept_supported_notebook_kwargs():
+    """Supported SFT notebooks should be able to pass their current args."""
+    unsloth = _import_mlx_unsloth()
+
+    with pytest.warns(
+        RuntimeWarning,
+        match="bf16.*dataset_kwargs.*gradient_checkpointing_kwargs.*save_strategy",
+    ):
+        args = unsloth.UnslothTrainingArguments(
+            bf16=True,
+            dataset_kwargs={"skip_prepare_dataset": True},
+            dataset_num_proc=4,
+            dataset_text_field="text",
+            embedding_learning_rate=5e-5,
+            fp16=False,
+            gradient_accumulation_steps=8,
+            gradient_checkpointing=True,
+            gradient_checkpointing_kwargs={"use_reentrant": False},
+            learning_rate=1e-4,
+            logging_steps=2,
+            lr_scheduler_type="cosine",
+            max_grad_norm=0.3,
+            max_length=1024,
+            max_steps=10,
+            num_train_epochs=1,
+            optim="paged_adamw_8bit",
+            output_dir="outputs",
+            padding_free=False,
+            per_device_train_batch_size=1,
+            remove_unused_columns=False,
+            report_to="none",
+            save_strategy="steps",
+            seed=123,
+            warmup_ratio=0.1,
+            weight_decay=0.01,
+        )
+
+    assert args.dataset_num_proc == 4
+    assert args.dataset_text_field == "text"
+    assert args.embedding_learning_rate == 5e-5
+    assert args.gradient_accumulation_steps == 8
+    assert args.gradient_checkpointing is True
+    assert args.learning_rate == 1e-4
+    assert args.logging_steps == 2
+    assert args.lr_scheduler_type == "cosine"
+    assert args.max_grad_norm == 0.3
+    assert args.max_seq_length == 1024
+    assert args.max_steps == 10
+    assert args.num_train_epochs == 1
+    assert args.optim == "adamw"
+    assert args.output_dir == "outputs"
+    assert args.per_device_train_batch_size == 1
+    assert args.report_to == "none"
+    assert args.seed == 123
+    assert args.warmup_steps == 1
+    assert args.weight_decay == 0.01
+    assert args.dataset_kwargs == {"skip_prepare_dataset": True}
+    assert args.gradient_checkpointing_kwargs == {"use_reentrant": False}
+    assert args.save_strategy == "steps"
 
 
 def test_mlx_trainer_accepts_common_sft_kwargs():
