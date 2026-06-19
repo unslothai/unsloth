@@ -1189,7 +1189,7 @@ def run(
         args.extend(["--parallel", str(parallel)])
         # Forward the explicit polarity (same rationale as --load-in-4bit above).
         args.append("--cloudflare" if cloudflare else "--no-cloudflare")
-        args.append("--secure" if secure else "--no-secure")
+        args.append("--secure" if secure else "--not-secure")
         args.append("--tensor-parallel" if tensor_parallel else "--no-tensor-parallel")
         if verbose:
             args.append("--verbose")
