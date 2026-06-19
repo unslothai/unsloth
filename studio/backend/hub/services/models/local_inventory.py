@@ -670,6 +670,31 @@ async def list_local_models_response(models_dir: str = "./models") -> LocalModel
         )
 
 
+def get_models_folder_response() -> dict:
+    """Return the directory where downloaded models are stored.
+
+    This is the active HF hub cache (honors ``HF_HOME`` / ``HF_HUB_CACHE``);
+    the desktop app reveals it in the OS file manager.
+    """
+    path = _resolve_hf_cache_dir()
+    # Create it if missing so "Open folder" works before the first download:
+    # HF builds the cache lazily, and studio only pre-creates the *default*
+    # dir, not a user's explicit HF_HOME / HF_HUB_CACHE.
+    try:
+        path.mkdir(parents = True, exist_ok = True)
+    except OSError as e:
+        raise HTTPException(
+            status_code = 500,
+            detail = f"Failed to create models folder: {path}: {e}",
+        ) from e
+    if not path.is_dir():
+        raise HTTPException(
+            status_code = 500,
+            detail = f"Models folder path is not a directory: {path}",
+        )
+    return {"path": str(path)}
+
+
 def get_scan_folders_response() -> dict:
     return {"folders": list_scan_folders()}
 

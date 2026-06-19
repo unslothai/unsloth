@@ -20,6 +20,7 @@ import subprocess
 import sys
 import sysconfig
 import tempfile
+import textwrap
 import urllib.request
 from pathlib import Path
 
@@ -1401,6 +1402,7 @@ VERBOSE: bool = os.environ.get("UNSLOTH_VERBOSE", "0") == "1"
 # Update _TOTAL if you add/remove steps in install_python_stack().
 _STEP: int = 0
 _TOTAL: int = 0  # set at runtime in install_python_stack() based on platform
+_PROGRESS_LINE_ACTIVE: bool = False
 
 # -- Paths --------------------------------------------------------------
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -1486,6 +1488,7 @@ _HAS_COLOR = _stdout_supports_color()
 #   2-space indent, 15-char label (dim), then value.
 _LABEL = "deps"
 _COL = 15
+_INDENT = 2
 
 
 def _green(msg: str) -> str:
@@ -1517,15 +1520,38 @@ def _step(
     color_fn = None,
 ) -> None:
     """Print a single step line in the column format."""
+    global _PROGRESS_LINE_ACTIVE
     if color_fn is None:
         color_fn = _green
     padded = label[:_COL]
-    _safe_print(f"  {_dim(padded)}{' ' * (_COL - len(padded))}{color_fn(value)}")
+    plain_prefix_width = _INDENT + _COL
+    prefix = f"{' ' * _INDENT}{_dim(padded)}{' ' * (_COL - len(padded))}"
+    wrap_width = max(
+        24,
+        shutil.get_terminal_size((100, 20)).columns - plain_prefix_width,
+    )
+    lines = textwrap.wrap(
+        value,
+        width = wrap_width,
+        break_long_words = False,
+        break_on_hyphens = False,
+    ) or [""]
+    if _PROGRESS_LINE_ACTIVE and not VERBOSE:
+        try:
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+        except OSError:
+            pass
+        _PROGRESS_LINE_ACTIVE = False
+    _safe_print(f"{prefix}{color_fn(lines[0])}")
+    continuation_prefix = " " * plain_prefix_width
+    for line in lines[1:]:
+        _safe_print(f"{continuation_prefix}{color_fn(line)}")
 
 
 def _progress(label: str) -> None:
     """Print an in-place progress bar aligned to the step column layout."""
-    global _STEP
+    global _STEP, _PROGRESS_LINE_ACTIVE
     _STEP += 1
     if VERBOSE:
         return
@@ -1537,6 +1563,7 @@ def _progress(label: str) -> None:
     try:
         sys.stdout.write(f"\r  {_dim(_LABEL)}{pad}[{bar}] {_STEP:2}/{_TOTAL}  {label:<20}{end}")
         sys.stdout.flush()
+        _PROGRESS_LINE_ACTIVE = end == ""
     except OSError:
         pass
 
