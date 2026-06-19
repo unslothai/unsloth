@@ -473,7 +473,9 @@ if _IS_MLX:
                 value = _normalize_mlx_training_value(target, value)
                 if target in _MLX_TRAINING_CONFIG_FIELDS:
                     filtered_kwargs[target] = value
-                elif key in _MLX_UNSUPPORTED_TASK_ARGUMENTS and not _is_meaningful_mlx_extra_value(value):
+                elif key in _MLX_UNSUPPORTED_TASK_ARGUMENTS and not _is_meaningful_mlx_extra_value(
+                    value
+                ):
                     continue
                 else:
                     extra_kwargs[key] = value
