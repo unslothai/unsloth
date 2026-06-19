@@ -68,14 +68,14 @@ def test_mlx_training_arguments_accept_trl_style_kwargs():
     """TRL/SFTConfig-style kwargs should normalize without breaking MLX config."""
     unsloth = _import_mlx_unsloth()
 
-    with pytest.warns(RuntimeWarning, match="bf16.*dataset_kwargs"):
+    with pytest.warns(RuntimeWarning, match = "bf16.*dataset_kwargs"):
         args = unsloth.UnslothTrainingArguments(
-            max_length=123,
-            max_steps=10,
-            warmup_ratio=0.2,
-            remove_unused_columns=False,
-            dataset_kwargs={"skip_prepare_dataset": True},
-            bf16=True,
+            max_length = 123,
+            max_steps = 10,
+            warmup_ratio = 0.2,
+            remove_unused_columns = False,
+            dataset_kwargs = {"skip_prepare_dataset": True},
+            bf16 = True,
         )
 
     assert args.max_seq_length == 123
@@ -92,13 +92,13 @@ def test_mlx_training_arguments_do_not_warn_for_implemented_or_falsey_extras():
     """Implemented and falsey inert compatibility kwargs should stay quiet."""
     unsloth = _import_mlx_unsloth()
 
-    with warnings.catch_warnings(record=True) as caught:
+    with warnings.catch_warnings(record = True) as caught:
         warnings.simplefilter("always")
         args = unsloth.UnslothTrainingArguments(
-            warmup_ratio=0.2,
-            max_steps=10,
-            padding_free=False,
-            remove_unused_columns=False,
+            warmup_ratio = 0.2,
+            max_steps = 10,
+            padding_free = False,
+            remove_unused_columns = False,
         )
 
     assert args.warmup_steps == 2
@@ -111,7 +111,7 @@ def test_mlx_training_arguments_prefer_canonical_max_seq_length():
     """Canonical MLX config fields should win over compatibility aliases."""
     unsloth = _import_mlx_unsloth()
 
-    args = unsloth.UnslothTrainingArguments(max_seq_length=456, max_length=123)
+    args = unsloth.UnslothTrainingArguments(max_seq_length = 456, max_length = 123)
     dict_args = unsloth.UnslothTrainingArguments(
         {"max_length": 123, "max_seq_length": 456},
     )
@@ -126,7 +126,7 @@ def test_mlx_training_arguments_preserve_explicit_epoch_training():
     """Epoch-based configs should not inherit the MLX max_steps default."""
     unsloth = _import_mlx_unsloth()
 
-    args = unsloth.UnslothTrainingArguments(num_train_epochs=1, warmup_ratio=0.1)
+    args = unsloth.UnslothTrainingArguments(num_train_epochs = 1, warmup_ratio = 0.1)
     default_args = unsloth.UnslothTrainingArguments()
 
     assert args.num_train_epochs == 1
@@ -140,10 +140,10 @@ def test_mlx_training_arguments_keep_mlx_dataset_order_default():
     """Training arguments alone should not override MLX's native data order."""
     unsloth = _import_mlx_unsloth()
 
-    args = unsloth.UnslothTrainingArguments(max_steps=1)
+    args = unsloth.UnslothTrainingArguments(max_steps = 1)
     explicit_default = unsloth.UnslothTrainingArguments(
-        max_steps=1,
-        dataset_order="default",
+        max_steps = 1,
+        dataset_order = "default",
     )
 
     assert args.dataset_order == "default"
@@ -157,11 +157,11 @@ def test_mlx_training_arguments_warn_on_meaningful_inert_kwargs():
     """Unsupported TrainingArguments knobs should not be silently ignored."""
     unsloth = _import_mlx_unsloth()
 
-    with pytest.warns(RuntimeWarning, match="push_to_hub.*save_strategy"):
+    with pytest.warns(RuntimeWarning, match = "push_to_hub.*save_strategy"):
         args = unsloth.UnslothTrainingArguments(
-            save_strategy="steps",
-            push_to_hub=True,
-            padding_free=False,
+            save_strategy = "steps",
+            push_to_hub = True,
+            padding_free = False,
         )
 
     assert args.save_strategy == "steps"
@@ -173,8 +173,8 @@ def test_mlx_training_arguments_reject_unknown_kwargs():
     """Unknown SFTConfig flags should fail instead of becoming inert attributes."""
     unsloth = _import_mlx_unsloth()
 
-    with pytest.raises(NotImplementedError, match="assistant_only_loss"):
-        unsloth.UnslothTrainingArguments(assistant_only_loss=True)
+    with pytest.raises(NotImplementedError, match = "assistant_only_loss"):
+        unsloth.UnslothTrainingArguments(assistant_only_loss = True)
 
 
 def test_mlx_training_arguments_reject_unsupported_object_flags():
@@ -185,7 +185,7 @@ def test_mlx_training_arguments_reject_unsupported_object_flags():
         max_steps = 1
         assistant_only_loss = True
 
-    with pytest.raises(NotImplementedError, match="assistant_only_loss"):
+    with pytest.raises(NotImplementedError, match = "assistant_only_loss"):
         unsloth._coerce_mlx_training_args(ArgsObject())
 
 
@@ -193,7 +193,7 @@ def test_mlx_training_arguments_accept_output_dir_positional():
     """A single positional output_dir should match TrainingArguments behavior."""
     unsloth = _import_mlx_unsloth()
 
-    args = unsloth.UnslothTrainingArguments("custom-outputs", max_steps=3)
+    args = unsloth.UnslothTrainingArguments("custom-outputs", max_steps = 3)
 
     assert args.output_dir == "custom-outputs"
     assert args.max_steps == 3
@@ -209,7 +209,7 @@ def test_mlx_training_arguments_normalize_optim_and_object_aliases():
         save_steps = 500
         save_strategy = "no"
 
-    with pytest.warns(RuntimeWarning, match="save_strategy"):
+    with pytest.warns(RuntimeWarning, match = "save_strategy"):
         args = unsloth._coerce_mlx_training_args(ArgsObject())
 
     assert args.optim == "adamw"
@@ -223,35 +223,35 @@ def test_mlx_training_arguments_accept_supported_notebook_kwargs():
 
     with pytest.warns(
         RuntimeWarning,
-        match="bf16.*dataset_kwargs.*gradient_checkpointing_kwargs.*save_strategy",
+        match = "bf16.*dataset_kwargs.*gradient_checkpointing_kwargs.*save_strategy",
     ):
         args = unsloth.UnslothTrainingArguments(
-            bf16=True,
-            dataset_kwargs={"skip_prepare_dataset": True},
-            dataset_num_proc=4,
-            dataset_text_field="text",
-            embedding_learning_rate=5e-5,
-            fp16=False,
-            gradient_accumulation_steps=8,
-            gradient_checkpointing=True,
-            gradient_checkpointing_kwargs={"use_reentrant": False},
-            learning_rate=1e-4,
-            logging_steps=2,
-            lr_scheduler_type="cosine",
-            max_grad_norm=0.3,
-            max_length=1024,
-            max_steps=10,
-            num_train_epochs=1,
-            optim="paged_adamw_8bit",
-            output_dir="outputs",
-            padding_free=False,
-            per_device_train_batch_size=1,
-            remove_unused_columns=False,
-            report_to="none",
-            save_strategy="steps",
-            seed=123,
-            warmup_ratio=0.1,
-            weight_decay=0.01,
+            bf16 = True,
+            dataset_kwargs = {"skip_prepare_dataset": True},
+            dataset_num_proc = 4,
+            dataset_text_field = "text",
+            embedding_learning_rate = 5e-5,
+            fp16 = False,
+            gradient_accumulation_steps = 8,
+            gradient_checkpointing = True,
+            gradient_checkpointing_kwargs = {"use_reentrant": False},
+            learning_rate = 1e-4,
+            logging_steps = 2,
+            lr_scheduler_type = "cosine",
+            max_grad_norm = 0.3,
+            max_length = 1024,
+            max_steps = 10,
+            num_train_epochs = 1,
+            optim = "paged_adamw_8bit",
+            output_dir = "outputs",
+            padding_free = False,
+            per_device_train_batch_size = 1,
+            remove_unused_columns = False,
+            report_to = "none",
+            save_strategy = "steps",
+            seed = 123,
+            warmup_ratio = 0.1,
+            weight_decay = 0.01,
         )
 
     assert args.dataset_num_proc == 4
@@ -283,17 +283,17 @@ def test_mlx_trainer_accepts_common_sft_kwargs():
     """UnslothTrainer should accept common SFTTrainer kwargs on MLX."""
     unsloth = _import_mlx_unsloth()
 
-    with warnings.catch_warnings(record=True) as caught:
+    with warnings.catch_warnings(record = True) as caught:
         warnings.simplefilter("always")
         trainer = unsloth.UnslothTrainer(
-            model=_DummyModel(),
-            tokenizer=None,
-            train_dataset=[],
-            args={"max_steps": 1},
-            dataset_num_proc=8,
-            max_length=456,
-            optim="adamw_bnb_8bit",
-            processing_class=object(),
+            model = _DummyModel(),
+            tokenizer = None,
+            train_dataset = [],
+            args = {"max_steps": 1},
+            dataset_num_proc = 8,
+            max_length = 456,
+            optim = "adamw_bnb_8bit",
+            processing_class = object(),
         )
 
     assert trainer.args.max_steps == 1
@@ -311,37 +311,37 @@ def test_mlx_trainer_preserves_explicit_dataset_order():
     unsloth = _import_mlx_unsloth()
 
     explicit_default = unsloth.UnslothTrainer(
-        model=_DummyModel(),
-        tokenizer=None,
-        train_dataset=[],
-        args=unsloth.UnslothTrainingArguments(
-            max_steps=1,
-            dataset_order="default",
+        model = _DummyModel(),
+        tokenizer = None,
+        train_dataset = [],
+        args = unsloth.UnslothTrainingArguments(
+            max_steps = 1,
+            dataset_order = "default",
         ),
     )
     explicit_sequential = unsloth.UnslothTrainer(
-        model=_DummyModel(),
-        tokenizer=None,
-        train_dataset=[],
-        args=unsloth.UnslothTrainingArguments(
-            max_steps=1,
-            dataset_order="sequential",
+        model = _DummyModel(),
+        tokenizer = None,
+        train_dataset = [],
+        args = unsloth.UnslothTrainingArguments(
+            max_steps = 1,
+            dataset_order = "sequential",
         ),
     )
     implicit_with_override = unsloth.UnslothTrainer(
-        model=_DummyModel(),
-        tokenizer=None,
-        train_dataset=[],
-        args=unsloth.UnslothTrainingArguments(max_steps=1),
-        dataset_num_proc=4,
+        model = _DummyModel(),
+        tokenizer = None,
+        train_dataset = [],
+        args = unsloth.UnslothTrainingArguments(max_steps = 1),
+        dataset_num_proc = 4,
     )
     explicit_no_clip = unsloth.UnslothTrainer(
-        model=_DummyModel(),
-        tokenizer=None,
-        train_dataset=[],
-        args=unsloth.UnslothTrainingArguments(
-            max_steps=1,
-            max_grad_norm=0.0,
+        model = _DummyModel(),
+        tokenizer = None,
+        train_dataset = [],
+        args = unsloth.UnslothTrainingArguments(
+            max_steps = 1,
+            max_grad_norm = 0.0,
         ),
     )
 
@@ -375,59 +375,59 @@ def test_mlx_trainer_uses_model_context_length_when_implicit():
     trainer_override_model.max_seq_length = 321
 
     implicit = unsloth.UnslothTrainer(
-        model=model,
-        tokenizer=None,
-        train_dataset=[],
-        args=unsloth.UnslothTrainingArguments(max_steps=1),
+        model = model,
+        tokenizer = None,
+        train_dataset = [],
+        args = unsloth.UnslothTrainingArguments(max_steps = 1),
     )
     max_length_args = unsloth.UnslothTrainer(
-        model=max_length_model,
-        tokenizer=None,
-        train_dataset=[],
-        args=unsloth.UnslothTrainingArguments(max_steps=1, max_length=123),
+        model = max_length_model,
+        tokenizer = None,
+        train_dataset = [],
+        args = unsloth.UnslothTrainingArguments(max_steps = 1, max_length = 123),
     )
     none_args = unsloth.UnslothTrainer(
-        model=none_model,
-        tokenizer=None,
-        train_dataset=[],
-        args=unsloth.UnslothTrainingArguments(max_steps=1, max_seq_length=None),
+        model = none_model,
+        tokenizer = None,
+        train_dataset = [],
+        args = unsloth.UnslothTrainingArguments(max_steps = 1, max_seq_length = None),
     )
     explicit_seq = unsloth.UnslothTrainer(
-        model=explicit_seq_model,
-        tokenizer=None,
-        train_dataset=[],
-        args=unsloth.UnslothTrainingArguments(max_steps=1, max_seq_length=123),
+        model = explicit_seq_model,
+        tokenizer = None,
+        train_dataset = [],
+        args = unsloth.UnslothTrainingArguments(max_steps = 1, max_seq_length = 123),
     )
     clamped_seq = unsloth.UnslothTrainer(
-        model=clamped_seq_model,
-        tokenizer=None,
-        train_dataset=[],
-        args=unsloth.UnslothTrainingArguments(max_steps=1, max_seq_length=654),
+        model = clamped_seq_model,
+        tokenizer = None,
+        train_dataset = [],
+        args = unsloth.UnslothTrainingArguments(max_steps = 1, max_seq_length = 654),
     )
     model_max_length_only = unsloth.UnslothTrainer(
-        model=model_max_length,
-        tokenizer=None,
-        train_dataset=[],
-        args=unsloth.UnslothTrainingArguments(max_steps=1),
+        model = model_max_length,
+        tokenizer = None,
+        train_dataset = [],
+        args = unsloth.UnslothTrainingArguments(max_steps = 1),
     )
     metadata_ignored = unsloth.UnslothTrainer(
-        model=metadata_model,
-        tokenizer=metadata_tokenizer,
-        train_dataset=[],
-        args=unsloth.UnslothTrainingArguments(max_steps=1),
+        model = metadata_model,
+        tokenizer = metadata_tokenizer,
+        train_dataset = [],
+        args = unsloth.UnslothTrainingArguments(max_steps = 1),
     )
     explicit_max_length = unsloth.UnslothTrainer(
-        model=explicit_max_length_no_model,
-        tokenizer=None,
-        train_dataset=[],
-        args=unsloth.UnslothTrainingArguments(max_steps=1, max_length=123),
+        model = explicit_max_length_no_model,
+        tokenizer = None,
+        train_dataset = [],
+        args = unsloth.UnslothTrainingArguments(max_steps = 1, max_length = 123),
     )
     trainer_override = unsloth.UnslothTrainer(
-        model=trainer_override_model,
-        tokenizer=None,
-        train_dataset=[],
-        args=unsloth.UnslothTrainingArguments(max_steps=1),
-        max_seq_length=654,
+        model = trainer_override_model,
+        tokenizer = None,
+        train_dataset = [],
+        args = unsloth.UnslothTrainingArguments(max_steps = 1),
+        max_seq_length = 654,
     )
 
     assert implicit.args.max_seq_length == 321
@@ -462,11 +462,11 @@ def test_mlx_trainer_processing_class_overrides_explicit_none_tokenizer():
     processor.tokenizer = tokenizer
 
     trainer = unsloth.UnslothTrainer(
-        model=_DummyModel(),
-        tokenizer=None,
-        train_dataset=[],
-        args={"max_steps": 1},
-        processing_class=processor,
+        model = _DummyModel(),
+        tokenizer = None,
+        train_dataset = [],
+        args = {"max_steps": 1},
+        processing_class = processor,
     )
 
     assert trainer.processor is processor
@@ -486,12 +486,12 @@ def test_mlx_trainer_vision_collator_processor_overrides_processing_class():
     collator = unsloth.UnslothVisionDataCollator(_DummyModel(), processor)
 
     trainer = unsloth.UnslothTrainer(
-        model=_DummyModel(),
-        tokenizer=None,
-        train_dataset=[],
-        args={"max_steps": 1},
-        processing_class=tokenizer,
-        data_collator=collator,
+        model = _DummyModel(),
+        tokenizer = None,
+        train_dataset = [],
+        args = {"max_steps": 1},
+        processing_class = tokenizer,
+        data_collator = collator,
     )
 
     assert trainer.processor is processor
@@ -512,13 +512,13 @@ def test_mlx_trainer_preserves_explicit_processor_over_vision_collator():
     collator = unsloth.UnslothVisionDataCollator(_DummyModel(), collator_processor)
 
     trainer = unsloth.UnslothTrainer(
-        model=_DummyModel(),
-        tokenizer=None,
-        train_dataset=[],
-        args={"max_steps": 1},
-        processor=explicit_processor,
-        processing_class=tokenizer,
-        data_collator=collator,
+        model = _DummyModel(),
+        tokenizer = None,
+        train_dataset = [],
+        args = {"max_steps": 1},
+        processor = explicit_processor,
+        processing_class = tokenizer,
+        data_collator = collator,
     )
 
     assert trainer.processor is explicit_processor
@@ -529,12 +529,12 @@ def test_mlx_trainer_rejects_unsafe_unsupported_sft_kwargs():
     """Unsupported kwargs that change training semantics should fail on MLX."""
     unsloth = _import_mlx_unsloth()
 
-    with pytest.raises(NotImplementedError, match="peft_config"):
+    with pytest.raises(NotImplementedError, match = "peft_config"):
         unsloth.UnslothTrainer(
-            model=_DummyModel(),
-            tokenizer=None,
-            train_dataset=[],
-            peft_config=object(),
+            model = _DummyModel(),
+            tokenizer = None,
+            train_dataset = [],
+            peft_config = object(),
         )
 
 
@@ -542,19 +542,19 @@ def test_mlx_trainer_rejects_metrics_and_callbacks():
     """Trainer hooks should fail because MLXTrainer cannot honor them yet."""
     unsloth = _import_mlx_unsloth()
 
-    with pytest.raises(NotImplementedError, match="callbacks"):
+    with pytest.raises(NotImplementedError, match = "callbacks"):
         unsloth.UnslothTrainer(
-            model=_DummyModel(),
-            tokenizer=None,
-            train_dataset=[],
-            callbacks=[object()],
+            model = _DummyModel(),
+            tokenizer = None,
+            train_dataset = [],
+            callbacks = [object()],
         )
-    with pytest.raises(NotImplementedError, match="compute_metrics"):
+    with pytest.raises(NotImplementedError, match = "compute_metrics"):
         unsloth.UnslothTrainer(
-            model=_DummyModel(),
-            tokenizer=None,
-            train_dataset=[],
-            compute_metrics=lambda *_: None,
+            model = _DummyModel(),
+            tokenizer = None,
+            train_dataset = [],
+            compute_metrics = lambda *_: None,
         )
 
 
@@ -562,12 +562,12 @@ def test_mlx_trainer_rejects_custom_data_collator():
     """MLXTrainer owns batching; custom SFT data collators must not be ignored."""
     unsloth = _import_mlx_unsloth()
 
-    with pytest.raises(NotImplementedError, match="data_collator"):
+    with pytest.raises(NotImplementedError, match = "data_collator"):
         unsloth.UnslothTrainer(
-            model=_DummyModel(),
-            tokenizer=None,
-            train_dataset=[],
-            data_collator=object(),
+            model = _DummyModel(),
+            tokenizer = None,
+            train_dataset = [],
+            data_collator = object(),
         )
 
 
@@ -575,12 +575,12 @@ def test_mlx_trainer_accepts_trl_style_positional_args():
     """TRL-style positional `(model, args, ...)` should not be read as tokenizer."""
     unsloth = _import_mlx_unsloth()
 
-    args = unsloth.UnslothTrainingArguments("trl-outputs", max_steps=2)
+    args = unsloth.UnslothTrainingArguments("trl-outputs", max_steps = 2)
     trainer = unsloth.UnslothTrainer(
         _DummyModel(),
         args,
-        train_dataset=[],
-        tokenizer=None,
+        train_dataset = [],
+        tokenizer = None,
     )
 
     assert trainer.args is args
@@ -634,7 +634,7 @@ def test_mlx_trainer_accepts_short_trl_placeholders_with_keyword_dataset():
         _DummyModel(),
         None,
         None,
-        train_dataset=dataset,
+        train_dataset = dataset,
     )
 
     assert trainer.train_dataset is dataset
@@ -701,7 +701,7 @@ def test_mlx_trl_shim_installs_real_trl_or_stub(monkeypatch):
     """The MLX TRL shim should prefer real TRL and stub only if unavailable."""
     unsloth = _import_mlx_unsloth()
     real_trl_available = importlib.util.find_spec("trl") is not None
-    monkeypatch.delitem(sys.modules, "trl", raising=False)
+    monkeypatch.delitem(sys.modules, "trl", raising = False)
 
     unsloth._install_mlx_trl_sft_shim()
     trl = importlib.import_module("trl")
@@ -719,7 +719,7 @@ def test_mlx_vision_collator_is_constructor_compatible():
     """Vision notebooks should be able to instantiate the collator placeholder."""
     unsloth = _import_mlx_unsloth()
 
-    collator = unsloth.UnslothVisionDataCollator("model", "processor", flag=True)
+    collator = unsloth.UnslothVisionDataCollator("model", "processor", flag = True)
 
     assert collator.model == "model"
     assert collator.processor == "processor"
@@ -731,45 +731,51 @@ def test_mlx_train_on_responses_only_returns_shared_mask_function():
     unsloth = _import_mlx_unsloth()
 
     class Tokenizer:
-        def __call__(self, text, add_special_tokens=False):
-            return types.SimpleNamespace(input_ids={
-                "<user>": [1],
-                "<assistant>": [2],
-            }[text])
+        def __call__(
+            self,
+            text,
+            add_special_tokens = False,
+        ):
+            return types.SimpleNamespace(
+                input_ids = {
+                    "<user>": [1],
+                    "<assistant>": [2],
+                }[text]
+            )
 
         def convert_tokens_to_ids(self, token):
             return token
 
     mask_fn = unsloth.train_on_responses_only(
         None,
-        instruction_part="<user>",
-        response_part="<assistant>",
-        tokenizer=Tokenizer(),
-        return_function=True,
+        instruction_part = "<user>",
+        response_part = "<assistant>",
+        tokenizer = Tokenizer(),
+        return_function = True,
     )
-    masked = mask_fn({
-        "input_ids": [[1, 10, 2, 20, 21, 1, 11]],
-    })
+    masked = mask_fn(
+        {
+            "input_ids": [[1, 10, 2, 20, 21, 1, 11]],
+        }
+    )
 
-    assert masked == {
-        "labels": [[-100, -100, -100, 20, 21, -100, -100]],
-    }
+    assert masked == {"labels": [[-100, -100, -100, 20, 21, -100, -100]]}
 
     last_mask_fn = unsloth.train_on_responses_only(
         None,
-        instruction_part="<user>",
-        response_part="<assistant>",
-        tokenizer=Tokenizer(),
-        return_function=True,
-        last_response_only=True,
+        instruction_part = "<user>",
+        response_part = "<assistant>",
+        tokenizer = Tokenizer(),
+        return_function = True,
+        last_response_only = True,
     )
-    last_masked = last_mask_fn({
-        "input_ids": [[1, 10, 2, 20, 1, 11, 2, 30]],
-    })
+    last_masked = last_mask_fn(
+        {
+            "input_ids": [[1, 10, 2, 20, 1, 11, 2, 30]],
+        }
+    )
 
-    assert last_masked == {
-        "labels": [[-100, -100, -100, -100, -100, -100, -100, 30]],
-    }
+    assert last_masked == {"labels": [[-100, -100, -100, -100, -100, -100, -100, 30]]}
 
 
 def test_mlx_get_chat_template_uses_light_tokenizer_patch(monkeypatch):
@@ -802,7 +808,7 @@ def test_mlx_get_chat_template_uses_light_tokenizer_patch(monkeypatch):
 
     tokenizer = get_chat_template(
         Tokenizer(),
-        chat_template=("{{ messages }}", "<eos>"),
+        chat_template = ("{{ messages }}", "<eos>"),
     )
 
     assert tokenizer.chat_template == "{{ messages }}"

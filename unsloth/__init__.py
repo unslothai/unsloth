@@ -36,7 +36,11 @@ if platform.system() == "Windows":
 class _UnslothDeviceStats:
     """Portable device metadata used by notebook memory-reporting cells."""
 
-    def __init__(self, name, total_memory=0):
+    def __init__(
+        self,
+        name,
+        total_memory = 0,
+    ):
         """Store a display name and total memory in bytes."""
         self.name = name
         self.total_memory = int(total_memory or 0)
@@ -169,11 +173,7 @@ if _IS_MLX:
         import mlx.core as mx
 
         info = mx.device_info()
-        total = (
-            info.get("memory_size")
-            or info.get("max_recommended_working_set_size")
-            or 0
-        )
+        total = info.get("memory_size") or info.get("max_recommended_working_set_size") or 0
         peak = mx.get_peak_memory() if hasattr(mx, "get_peak_memory") else 0
         stats = _UnslothDeviceStats(info.get("device_name", "Apple GPU"), total)
         max_memory = _bytes_to_gb(total) or 1.0
@@ -182,43 +182,44 @@ if _IS_MLX:
     def clear_gpu_memory():
         """Clear MLX's cached GPU memory for notebook cleanup cells."""
         import mlx.core as mx
-
         if hasattr(mx, "clear_cache"):
             mx.clear_cache()
 
-    _MLX_TRAINING_CONFIG_FIELDS = {
-        _field.name for _field in _dataclasses.fields(MLXTrainingConfig)
-    }
+    _MLX_TRAINING_CONFIG_FIELDS = {_field.name for _field in _dataclasses.fields(MLXTrainingConfig)}
     _MLX_TRAINING_ARGUMENT_ALIASES = {
         "max_length": "max_seq_length",
     }
-    _MLX_COMPAT_EXTRA_ARGUMENTS = frozenset((
-        "bf16",
-        "dataloader_num_workers",
-        "dataloader_pin_memory",
-        "dataset_kwargs",
-        "disable_tqdm",
-        "eval_strategy",
-        "fp16",
-        "full_determinism",
-        "gradient_checkpointing_kwargs",
-        "hub_model_id",
-        "hub_token",
-        "logging_strategy",
-        "neftune_noise_alpha",
-        "optim_args",
-        "padding_free",
-        "push_to_hub",
-        "remove_unused_columns",
-        "save_on_each_node",
-        "save_safetensors",
-        "save_strategy",
-        "torch_compile",
-    ))
-    _MLX_UNSUPPORTED_TASK_ARGUMENTS = frozenset((
-        "assistant_only_loss",
-        "completion_only_loss",
-    ))
+    _MLX_COMPAT_EXTRA_ARGUMENTS = frozenset(
+        (
+            "bf16",
+            "dataloader_num_workers",
+            "dataloader_pin_memory",
+            "dataset_kwargs",
+            "disable_tqdm",
+            "eval_strategy",
+            "fp16",
+            "full_determinism",
+            "gradient_checkpointing_kwargs",
+            "hub_model_id",
+            "hub_token",
+            "logging_strategy",
+            "neftune_noise_alpha",
+            "optim_args",
+            "padding_free",
+            "push_to_hub",
+            "remove_unused_columns",
+            "save_on_each_node",
+            "save_safetensors",
+            "save_strategy",
+            "torch_compile",
+        )
+    )
+    _MLX_UNSUPPORTED_TASK_ARGUMENTS = frozenset(
+        (
+            "assistant_only_loss",
+            "completion_only_loss",
+        )
+    )
 
     def _normalize_mlx_training_optimizer_name(value):
         """Normalize notebook optimizer aliases before MLX trainer validation."""
@@ -319,18 +320,13 @@ if _IS_MLX:
             return True
         # TRL callers often pass explicit defaults:
         # SFTTrainer(model, None, None, train_dataset, ...)
-        return (
-            len(args) >= 3
-            and args[1] is None
-            and (args[2] is None or callable(args[2]))
-        )
+        return len(args) >= 3 and args[1] is None and (args[2] is None or callable(args[2]))
 
     def _assign_mlx_positional_kwarg(kwargs, name, value):
         """Assign a positional trainer argument while preserving Python errors."""
         if name in kwargs:
             raise TypeError(
-                f"UnslothTrainer.__init__() got multiple values for argument "
-                f"{name!r}"
+                f"UnslothTrainer.__init__() got multiple values for argument " f"{name!r}"
             )
         kwargs[name] = value
 
@@ -342,9 +338,7 @@ if _IS_MLX:
 
         use_trl_schema = _should_use_trl_positional_schema(args)
         positional_names = (
-            _TRL_SFT_TRAINER_POSITIONAL_KWARGS
-            if use_trl_schema
-            else _MLX_TRAINER_POSITIONAL_KWARGS
+            _TRL_SFT_TRAINER_POSITIONAL_KWARGS if use_trl_schema else _MLX_TRAINER_POSITIONAL_KWARGS
         )
         if len(args) > len(positional_names):
             raise TypeError(
@@ -369,11 +363,9 @@ if _IS_MLX:
     def _warn_ignored_mlx_training_args(extra_kwargs):
         """Warn when TrainingArguments kwargs are accepted but inert on MLX."""
         names = sorted(
-            key for key, value in extra_kwargs.items()
-            if (
-                key in _MLX_COMPAT_EXTRA_ARGUMENTS
-                and _is_meaningful_mlx_extra_value(value)
-            )
+            key
+            for key, value in extra_kwargs.items()
+            if (key in _MLX_COMPAT_EXTRA_ARGUMENTS and _is_meaningful_mlx_extra_value(value))
         )
         if not names:
             return
@@ -383,7 +375,7 @@ if _IS_MLX:
             f"{', '.join(names)}. These options are not implemented by "
             "MLXTrainer yet.",
             RuntimeWarning,
-            stacklevel=3,
+            stacklevel = 3,
         )
 
     def _is_meaningful_mlx_trainer_kwarg(key, value):
@@ -395,7 +387,8 @@ if _IS_MLX:
     def _raise_unsupported_mlx_trainer_kwargs(ignored_kwargs):
         """Fail on unsupported trainer kwargs that would change training semantics."""
         names = sorted(
-            key for key, value in ignored_kwargs.items()
+            key
+            for key, value in ignored_kwargs.items()
             if _is_meaningful_mlx_trainer_kwarg(key, value)
         )
         if not names:
@@ -408,10 +401,7 @@ if _IS_MLX:
 
     def _raise_unknown_mlx_training_args(extra_kwargs):
         """Fail on unknown TrainingArguments/SFTConfig kwargs on MLX."""
-        names = sorted(
-            key for key in extra_kwargs
-            if key not in _MLX_COMPAT_EXTRA_ARGUMENTS
-        )
+        names = sorted(key for key in extra_kwargs if key not in _MLX_COMPAT_EXTRA_ARGUMENTS)
         if not names:
             return
         raise NotImplementedError(
@@ -468,31 +458,26 @@ if _IS_MLX:
 
             max_length_value = kwargs.get("max_length", None)
             max_seq_length_explicit = (
-                _positive_mlx_context_length(kwargs.get("max_seq_length", None))
-                is not None
+                _positive_mlx_context_length(kwargs.get("max_seq_length", None)) is not None
             )
             if "max_length" in kwargs and "max_seq_length" not in kwargs:
                 kwargs["max_seq_length"] = kwargs["max_length"]
             if "num_train_epochs" in kwargs and "max_steps" not in kwargs:
                 kwargs["max_steps"] = -1
 
-            dataset_order_explicit = (
-                "dataset_order" in kwargs
-                or bool(kwargs.get("preserve_dataset_order", False))
+            dataset_order_explicit = "dataset_order" in kwargs or bool(
+                kwargs.get("preserve_dataset_order", False)
             )
             grad_clip_explicit = any(
-                name in kwargs
-                for name in ("max_grad_norm", "max_grad_value", "max_grad_leaf_norm")
+                name in kwargs for name in ("max_grad_norm", "max_grad_value", "max_grad_leaf_norm")
             )
             warmup_ratio = kwargs.get("warmup_ratio", None)
-            warmup_steps_explicit = (
-                "warmup_steps" in kwargs
-                and not (
-                    warmup_ratio is not None
-                    and kwargs.get("warmup_steps") in (
-                        0,
-                        getattr(MLXTrainingConfig, "warmup_steps", 5),
-                    )
+            warmup_steps_explicit = "warmup_steps" in kwargs and not (
+                warmup_ratio is not None
+                and kwargs.get("warmup_steps")
+                in (
+                    0,
+                    getattr(MLXTrainingConfig, "warmup_steps", 5),
                 )
             )
             filtered_kwargs = {}
@@ -511,7 +496,6 @@ if _IS_MLX:
 
             if warmup_ratio is not None and "warmup_steps" not in filtered_kwargs:
                 import math as _math
-
                 max_steps = filtered_kwargs.get(
                     "max_steps",
                     getattr(MLXTrainingConfig, "max_steps", 60),
@@ -538,7 +522,7 @@ if _IS_MLX:
                 setattr(self, key, value)
             _warn_ignored_mlx_training_args(extra_kwargs)
 
-    def _resolve_mlx_cuda_style_max_seq_length(args, model=None):
+    def _resolve_mlx_cuda_style_max_seq_length(args, model = None):
         """Mirror Unsloth CUDA SFTTrainer's max_length/max_seq_length bridge."""
         model_max_seq_length = _positive_mlx_context_length(
             getattr(model, "max_seq_length", None),
@@ -554,8 +538,7 @@ if _IS_MLX:
         if args_max_seq_length_explicit is None:
             default_max_seq_length = getattr(MLXTrainingConfig, "max_seq_length", 2048)
             args_max_seq_length_explicit = (
-                args_max_seq_length is not None
-                and args_max_seq_length != default_max_seq_length
+                args_max_seq_length is not None and args_max_seq_length != default_max_seq_length
             )
         if not args_max_seq_length_explicit:
             args_max_seq_length = None
@@ -605,21 +588,19 @@ if _IS_MLX:
 
     def _apply_unsloth_trainer_mlx_defaults(
         args,
-        model=None,
-        max_seq_length_explicit=False,
+        model = None,
+        max_seq_length_explicit = False,
     ):
         """Apply notebook-compatible MLX defaults used only by UnslothTrainer."""
-        if (
-            not getattr(args, "preserve_dataset_order", False)
-            and not getattr(args, "_unsloth_mlx_dataset_order_explicit", False)
+        if not getattr(args, "preserve_dataset_order", False) and not getattr(
+            args, "_unsloth_mlx_dataset_order_explicit", False
         ):
             default_order = getattr(MLXTrainingConfig, "dataset_order", "default")
             if getattr(args, "dataset_order", default_order) in (None, default_order):
                 args.dataset_order = "torch_randperm"
 
-        if (
-            isinstance(args, UnslothTrainingArguments)
-            and not getattr(args, "_unsloth_mlx_grad_clip_explicit", False)
+        if isinstance(args, UnslothTrainingArguments) and not getattr(
+            args, "_unsloth_mlx_grad_clip_explicit", False
         ):
             max_grad_norm = _positive_mlx_training_number(
                 getattr(args, "max_grad_norm", None),
@@ -630,18 +611,14 @@ if _IS_MLX:
             max_grad_leaf_norm = _positive_mlx_training_number(
                 getattr(args, "max_grad_leaf_norm", None),
             )
-            if (
-                max_grad_norm is None
-                and max_grad_value is None
-                and max_grad_leaf_norm is None
-            ):
+            if max_grad_norm is None and max_grad_value is None and max_grad_leaf_norm is None:
                 args.max_grad_norm = 1.0
 
         if not max_seq_length_explicit:
-            _resolve_mlx_cuda_style_max_seq_length(args, model=model)
+            _resolve_mlx_cuda_style_max_seq_length(args, model = model)
         return args
 
-    def _coerce_mlx_training_args(args, overrides=None):
+    def _coerce_mlx_training_args(args, overrides = None):
         """Return an MLXTrainingConfig from None, dicts, or trainer args objects."""
         overrides = overrides or {}
         if isinstance(args, MLXTrainingConfig) and not overrides:
@@ -766,12 +743,8 @@ if _IS_MLX:
                         "trainer's native batching path."
                     )
                 collator_processor = getattr(data_collator, "processor", None)
-                if (
-                    collator_processor is not None
-                    and (
-                        kwargs.get("processor", None) is None
-                        or processor_from_processing_class
-                    )
+                if collator_processor is not None and (
+                    kwargs.get("processor", None) is None or processor_from_processing_class
                 ):
                     kwargs["processor"] = collator_processor
                     if kwargs.get("tokenizer", None) is None:
@@ -789,10 +762,8 @@ if _IS_MLX:
             )
             trainer_kwargs["args"] = _apply_unsloth_trainer_mlx_defaults(
                 trainer_kwargs["args"],
-                model=trainer_kwargs.get("model"),
-                max_seq_length_explicit=(
-                    trainer_kwargs.get("max_seq_length") is not None
-                ),
+                model = trainer_kwargs.get("model"),
+                max_seq_length_explicit = (trainer_kwargs.get("max_seq_length") is not None),
             )
 
             super().__init__(**trainer_kwargs)
@@ -804,7 +775,13 @@ if _IS_MLX:
             self._unsloth_mlx_ignored_trainer_kwargs = ignored_kwargs
 
     class UnslothVisionDataCollator:
-        def __init__(self, model=None, processor=None, *args, **kwargs):
+        def __init__(
+            self,
+            model = None,
+            processor = None,
+            *args,
+            **kwargs,
+        ):
             self.model = model
             self.processor = processor
             self.args = args
@@ -826,6 +803,7 @@ if _IS_MLX:
         standardize_data_formats,
         train_on_responses_only,
     )
+
     standardize_sharegpt = standardize_data_formats
 
     def _install_mlx_trl_sft_shim():
@@ -839,7 +817,7 @@ if _IS_MLX:
                 _trl.__version__ = "0.0.0+unsloth-mlx"
                 _trl.__package__ = "trl"
                 _trl.__path__ = []
-                _trl.__spec__ = _machinery.ModuleSpec("trl", loader=None, is_package=True)
+                _trl.__spec__ = _machinery.ModuleSpec("trl", loader = None, is_package = True)
                 _sys.modules["trl"] = _trl
 
         _trl.SFTTrainer = UnslothTrainer
@@ -851,7 +829,7 @@ if _IS_MLX:
         module_name = f"{__name__}.trainer"
         _trainer = _types.ModuleType(module_name)
         _trainer.__package__ = __name__
-        _trainer.__spec__ = _machinery.ModuleSpec(module_name, loader=None)
+        _trainer.__spec__ = _machinery.ModuleSpec(module_name, loader = None)
         _trainer.MLXTrainer = MLXTrainer
         _trainer.MLXTrainingConfig = MLXTrainingConfig
         _trainer.UnslothTrainer = UnslothTrainer
