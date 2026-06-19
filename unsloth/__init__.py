@@ -389,6 +389,25 @@ if _IS_MLX:
             "by MLXTrainingConfig."
         )
 
+    def _positive_mlx_context_length(value):
+        """Return a positive integer context length or None."""
+        if value is None or isinstance(value, bool):
+            return None
+        try:
+            length = int(value)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if length <= 0:
+            return None
+        return length
+
+    def _set_mlx_cuda_style_context_length(args, length):
+        """Set both MLX and TRL context length names after CUDA-style resolution."""
+        args.max_seq_length = length
+        args.max_length = length
+        args._unsloth_mlx_max_length_value = length
+        return args
+
     class UnslothTrainingArguments(MLXTrainingConfig):
         """MLX-compatible public training arguments for Unsloth notebooks."""
 
@@ -404,9 +423,11 @@ if _IS_MLX:
                     "a dict, or a single positional output_dir."
                 )
 
+            max_length_value = kwargs.get("max_length", None)
+            max_length_explicit = "max_length" in kwargs and max_length_value is not None
             max_seq_length_explicit = (
-                "max_seq_length" in kwargs
-                or "max_length" in kwargs
+                _positive_mlx_context_length(kwargs.get("max_seq_length", None))
+                is not None
             )
             if "max_length" in kwargs and "max_seq_length" not in kwargs:
                 kwargs["max_seq_length"] = kwargs["max_length"]
@@ -459,54 +480,84 @@ if _IS_MLX:
             super().__init__(**filtered_kwargs)
             self._unsloth_mlx_dataset_order_explicit = dataset_order_explicit
             self._unsloth_mlx_max_seq_length_explicit = max_seq_length_explicit
+            self._unsloth_mlx_max_length_explicit = max_length_explicit
+            self._unsloth_mlx_max_length_value = max_length_value
+            if "max_length" in kwargs:
+                self.max_length = max_length_value
             self._unsloth_mlx_warmup_steps_explicit = warmup_steps_explicit
             self._unsloth_mlx_extra_args = extra_kwargs
             for key, value in extra_kwargs.items():
                 setattr(self, key, value)
             _warn_ignored_mlx_training_args(extra_kwargs)
 
-    def _valid_mlx_context_length(value):
-        """Return an int context length when metadata contains a real limit."""
-        if value is None or isinstance(value, bool):
-            return None
-        try:
-            length = int(value)
-        except (TypeError, ValueError, OverflowError):
-            return None
-        if length <= 0 or length >= 10_000_000:
-            return None
-        return length
+    def _resolve_mlx_cuda_style_max_seq_length(args, model=None):
+        """Mirror Unsloth CUDA SFTTrainer's max_length/max_seq_length bridge."""
+        model_max_seq_length = _positive_mlx_context_length(
+            getattr(model, "max_seq_length", None),
+        )
+        args_max_seq_length = _positive_mlx_context_length(
+            getattr(args, "max_seq_length", None),
+        )
+        args_max_seq_length_explicit = getattr(
+            args,
+            "_unsloth_mlx_max_seq_length_explicit",
+            None,
+        )
+        if args_max_seq_length_explicit is None:
+            default_max_seq_length = getattr(MLXTrainingConfig, "max_seq_length", 2048)
+            args_max_seq_length_explicit = (
+                args_max_seq_length is not None
+                and args_max_seq_length != default_max_seq_length
+            )
+        if not args_max_seq_length_explicit:
+            args_max_seq_length = None
 
-    def _infer_mlx_trainer_max_seq_length(model=None, tokenizer=None, processor=None):
-        """Infer the notebook-requested MLX context length from loaded objects."""
-        objects = (
-            model,
-            getattr(model, "config", None),
-            processor,
-            getattr(processor, "tokenizer", None),
-            tokenizer,
+        if args_max_seq_length is None and model_max_seq_length is not None:
+            args_max_seq_length = model_max_seq_length
+        elif (
+            args_max_seq_length is not None
+            and model_max_seq_length is not None
+            and args_max_seq_length > model_max_seq_length
+        ):
+            print(
+                "Unsloth: You set `max_seq_length` as "
+                f"{args_max_seq_length} but the maximum the model supports is "
+                f"{model_max_seq_length}. We shall reduce it."
+            )
+            args_max_seq_length = model_max_seq_length
+
+        if args_max_seq_length is not None:
+            _set_mlx_cuda_style_context_length(args, args_max_seq_length)
+            return args
+
+        model_max_length = model_max_seq_length
+        if model_max_length is None:
+            model_max_length = _positive_mlx_context_length(
+                getattr(model, "max_length", None),
+            )
+        if model_max_length is not None:
+            _set_mlx_cuda_style_context_length(args, model_max_length)
+            return args
+
+        args_max_length = _positive_mlx_context_length(
+            getattr(args, "max_length", None),
         )
-        attribute_names = (
-            "max_seq_length",
-            "_max_seq_length",
-            "max_position_embeddings",
-            "context_length",
-            "model_max_length",
-        )
-        for obj in objects:
-            if obj is None:
-                continue
-            for name in attribute_names:
-                length = _valid_mlx_context_length(getattr(obj, name, None))
-                if length is not None:
-                    return length
-        return None
+        if args_max_length is None:
+            args_max_length = _positive_mlx_context_length(
+                getattr(args, "_unsloth_mlx_max_length_value", None),
+            )
+        if args_max_length is not None:
+            _set_mlx_cuda_style_context_length(args, args_max_length)
+            if model is not None:
+                setattr(model, "max_seq_length", args_max_length)
+            return args
+
+        _set_mlx_cuda_style_context_length(args, 1024)
+        return args
 
     def _apply_unsloth_trainer_mlx_defaults(
         args,
         model=None,
-        tokenizer=None,
-        processor=None,
         max_seq_length_explicit=False,
     ):
         """Apply notebook-compatible MLX defaults used only by UnslothTrainer."""
@@ -518,27 +569,8 @@ if _IS_MLX:
             if getattr(args, "dataset_order", default_order) in (None, default_order):
                 args.dataset_order = "torch_randperm"
 
-        default_max_seq_length = getattr(MLXTrainingConfig, "max_seq_length", 2048)
-        existing_max_seq_length = getattr(
-            args,
-            "max_seq_length",
-            default_max_seq_length,
-        )
-        args_explicit = getattr(
-            args,
-            "_unsloth_mlx_max_seq_length_explicit",
-            None,
-        )
-        if args_explicit is None:
-            args_explicit = existing_max_seq_length != default_max_seq_length
-        if not max_seq_length_explicit and not args_explicit:
-            inferred = _infer_mlx_trainer_max_seq_length(
-                model=model,
-                tokenizer=tokenizer,
-                processor=processor,
-            )
-            if inferred is not None:
-                args.max_seq_length = inferred
+        if not max_seq_length_explicit:
+            _resolve_mlx_cuda_style_max_seq_length(args, model=model)
         return args
 
     def _coerce_mlx_training_args(args, overrides=None):
@@ -548,6 +580,8 @@ if _IS_MLX:
             return args
         dataset_order_explicit = None
         max_seq_length_explicit = None
+        max_length_explicit = None
+        max_length_value = None
         if args is None:
             values = {}
         elif isinstance(args, dict):
@@ -565,7 +599,19 @@ if _IS_MLX:
                 "_unsloth_mlx_max_seq_length_explicit",
                 None,
             )
+            max_length_explicit = getattr(
+                args,
+                "_unsloth_mlx_max_length_explicit",
+                None,
+            )
+            max_length_value = getattr(
+                args,
+                "_unsloth_mlx_max_length_value",
+                getattr(args, "max_length", None),
+            )
             values = _mlx_training_argument_values(args)
+            if hasattr(args, "max_length"):
+                values["max_length"] = getattr(args, "max_length")
         values.update(overrides)
         coerced = UnslothTrainingArguments(**values)
         if (
@@ -580,6 +626,11 @@ if _IS_MLX:
             and "max_length" not in overrides
         ):
             coerced._unsloth_mlx_max_seq_length_explicit = max_seq_length_explicit
+        if max_length_explicit is not None and "max_length" not in overrides:
+            coerced._unsloth_mlx_max_length_explicit = max_length_explicit
+            coerced._unsloth_mlx_max_length_value = max_length_value
+            if max_length_value is not None:
+                coerced.max_length = max_length_value
         return coerced
 
     _MLX_TRAINER_POSITIONAL_KWARGS = (
@@ -666,14 +717,17 @@ if _IS_MLX:
             trainer_kwargs["args"] = _apply_unsloth_trainer_mlx_defaults(
                 trainer_kwargs["args"],
                 model=trainer_kwargs.get("model"),
-                tokenizer=trainer_kwargs.get("tokenizer"),
-                processor=trainer_kwargs.get("processor"),
                 max_seq_length_explicit=(
                     trainer_kwargs.get("max_seq_length") is not None
                 ),
             )
 
             super().__init__(**trainer_kwargs)
+            if trainer_kwargs.get("max_seq_length") is not None:
+                _set_mlx_cuda_style_context_length(
+                    self.args,
+                    self.args.max_seq_length,
+                )
             self._unsloth_mlx_ignored_trainer_kwargs = ignored_kwargs
 
     class UnslothVisionDataCollator:

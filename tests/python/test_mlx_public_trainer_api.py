@@ -84,7 +84,8 @@ def test_mlx_training_arguments_accept_trl_style_kwargs():
     assert args.dataset_kwargs == {"skip_prepare_dataset": True}
     assert args.bf16 is True
     assert args.warmup_ratio == 0.2
-    assert args._unsloth_mlx_max_seq_length_explicit is True
+    assert args._unsloth_mlx_max_seq_length_explicit is False
+    assert args._unsloth_mlx_max_length_explicit is True
     assert args._unsloth_mlx_warmup_steps_explicit is False
 
 
@@ -337,12 +338,24 @@ def test_mlx_trainer_preserves_explicit_dataset_order():
 
 
 def test_mlx_trainer_uses_model_context_length_when_implicit():
-    """UnslothTrainer should inherit the loaded notebook model context length."""
+    """UnslothTrainer should mirror CUDA's max_length bridge precedence."""
     unsloth = _import_mlx_unsloth()
     model = _DummyModel()
     model.max_seq_length = 321
-    explicit_model = _DummyModel()
-    explicit_model.max_seq_length = 321
+    max_length_model = _DummyModel()
+    max_length_model.max_seq_length = 321
+    none_model = _DummyModel()
+    none_model.max_seq_length = 321
+    explicit_seq_model = _DummyModel()
+    explicit_seq_model.max_seq_length = 321
+    clamped_seq_model = _DummyModel()
+    clamped_seq_model.max_seq_length = 321
+    model_max_length = _DummyModel()
+    model_max_length.max_length = 777
+    metadata_model = _DummyModel()
+    metadata_model.config = type("Config", (), {"max_position_embeddings": 888})()
+    metadata_tokenizer = type("Tokenizer", (), {"model_max_length": 999})()
+    explicit_max_length_no_model = _DummyModel()
     trainer_override_model = _DummyModel()
     trainer_override_model.max_seq_length = 321
 
@@ -352,8 +365,44 @@ def test_mlx_trainer_uses_model_context_length_when_implicit():
         train_dataset=[],
         args=unsloth.UnslothTrainingArguments(max_steps=1),
     )
-    explicit_args = unsloth.UnslothTrainer(
-        model=explicit_model,
+    max_length_args = unsloth.UnslothTrainer(
+        model=max_length_model,
+        tokenizer=None,
+        train_dataset=[],
+        args=unsloth.UnslothTrainingArguments(max_steps=1, max_length=123),
+    )
+    none_args = unsloth.UnslothTrainer(
+        model=none_model,
+        tokenizer=None,
+        train_dataset=[],
+        args=unsloth.UnslothTrainingArguments(max_steps=1, max_seq_length=None),
+    )
+    explicit_seq = unsloth.UnslothTrainer(
+        model=explicit_seq_model,
+        tokenizer=None,
+        train_dataset=[],
+        args=unsloth.UnslothTrainingArguments(max_steps=1, max_seq_length=123),
+    )
+    clamped_seq = unsloth.UnslothTrainer(
+        model=clamped_seq_model,
+        tokenizer=None,
+        train_dataset=[],
+        args=unsloth.UnslothTrainingArguments(max_steps=1, max_seq_length=654),
+    )
+    model_max_length_only = unsloth.UnslothTrainer(
+        model=model_max_length,
+        tokenizer=None,
+        train_dataset=[],
+        args=unsloth.UnslothTrainingArguments(max_steps=1),
+    )
+    metadata_ignored = unsloth.UnslothTrainer(
+        model=metadata_model,
+        tokenizer=metadata_tokenizer,
+        train_dataset=[],
+        args=unsloth.UnslothTrainingArguments(max_steps=1),
+    )
+    explicit_max_length = unsloth.UnslothTrainer(
+        model=explicit_max_length_no_model,
         tokenizer=None,
         train_dataset=[],
         args=unsloth.UnslothTrainingArguments(max_steps=1, max_length=123),
@@ -367,8 +416,23 @@ def test_mlx_trainer_uses_model_context_length_when_implicit():
     )
 
     assert implicit.args.max_seq_length == 321
-    assert explicit_args.args.max_seq_length == 123
+    assert implicit.args.max_length == 321
+    assert max_length_args.args.max_seq_length == 321
+    assert max_length_args.args.max_length == 321
+    assert none_args.args.max_seq_length == 321
+    assert none_args.args.max_length == 321
+    assert explicit_seq.args.max_seq_length == 123
+    assert explicit_seq.args.max_length == 123
+    assert clamped_seq.args.max_seq_length == 321
+    assert clamped_seq.args.max_length == 321
+    assert model_max_length_only.args.max_seq_length == 777
+    assert model_max_length_only.args.max_length == 777
+    assert metadata_ignored.args.max_seq_length == 1024
+    assert metadata_ignored.args.max_length == 1024
+    assert explicit_max_length.args.max_seq_length == 123
+    assert explicit_max_length.args.max_length == 123
     assert trainer_override.args.max_seq_length == 654
+    assert trainer_override.args.max_length == 654
 
 
 def test_mlx_trainer_processing_class_overrides_explicit_none_tokenizer():
