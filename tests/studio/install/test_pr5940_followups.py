@@ -635,9 +635,9 @@ def test_install_sh_wsl_reroute_uses_pipefail():
     # pipefail is set in the exports prefix the reroute bash -lc runs; the wsl.exe
     # call must wire that prefix in (a failed curl is otherwise masked by sh exit 0).
     line = text[text.rfind("\n", 0, i) + 1 : text.find("\n", i)]
-    assert "$_rr_exports" in line, (
-        "install.sh WSL reroute `bash -lc` must run the pipefail exports prefix"
-    )
+    assert (
+        "$_rr_exports" in line
+    ), "install.sh WSL reroute `bash -lc` must run the pipefail exports prefix"
 
 
 def test_uninstall_sh_preserves_shared_icon_for_surviving_shortcut():
