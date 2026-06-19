@@ -573,7 +573,11 @@ def test_generate_stream_cancels_backend_on_stream_cancelled_error():
         if isinstance(sub, ast.Try) and sub.finalbody:
             final_src = "\n".join(ast.unparse(stmt) for stmt in sub.finalbody)
             found_finally_cleanup = (
-                "cancel_event.set()" in final_src and _awaits_to_thread_gen_close(sub)
+                "not completed" in final_src
+                and "not cancel_event.is_set()" in final_src
+                and "cancel_event.set()" in final_src
+                and "backend.reset_generation_state()" in final_src
+                and _awaits_to_thread_gen_close(sub)
             )
 
     assert found_cancel_kwarg, (
@@ -585,8 +589,9 @@ def test_generate_stream_cancels_backend_on_stream_cancelled_error():
         "reset backend state, and re-raise"
     )
     assert found_finally_cleanup, (
-        "generate_stream cleanup must set cancel_event and offload gen.close() "
-        "with asyncio.to_thread so backend joins cannot block the event loop"
+        "generate_stream cleanup must cancel/reset incomplete streams and "
+        "offload gen.close() with asyncio.to_thread so backend joins cannot "
+        "block the event loop"
     )
 
 
