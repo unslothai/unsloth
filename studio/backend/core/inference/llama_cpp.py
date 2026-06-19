@@ -235,6 +235,14 @@ _MAX_REPROMPTS = 1
 # enough for reasoning-heavy GGUFs and max_tokens-omitting API clients.
 _DEFAULT_MAX_TOKENS_FLOOR = 32768
 _DEFAULT_FIRST_TOKEN_TIMEOUT_S = 1200.0  # 20 min
+
+# A streamed tool call only surfaces an early "provisional" tool card once its
+# accumulated arguments exceed this many characters (render_html is exempt and
+# always surfaces). Small-argument tools (e.g. a web_search query) finish
+# streaming well under this, so they keep their existing behavior; only large
+# payloads (a full HTML/code file) -- whose token-by-token generation can take
+# tens of seconds -- get an immediate card so the UI never looks frozen.
+_PROVISIONAL_ARGS_MIN_CHARS = 256
 _DEFAULT_STREAM_STALL_TIMEOUT_S = 120.0  # 2 min
 _REPROMPT_MAX_CHARS = 2000
 _FORCED_REPEAT_PLAN_SIGNAL = re.compile(
@@ -7890,7 +7898,12 @@ class LlamaCppBackend:
                 _iter_finish_reason = None
                 _stream_done = False
                 _last_emitted = ""
-                provisional_render_html_tool_call_ids = set()
+                # tool_call_id -> tool_name for every call we surfaced an early
+                # "provisional" tool_start card for. Generalizes the former
+                # render_html-only set so ANY enabled tool shows immediate
+                # progress while its arguments stream. Reconciled downstream by id.
+                provisional_started_tool_calls: dict[str, str] = {}
+                resolved_provisional_tool_call_ids: set[str] = set()
                 _suppress_visible_output = _forced_tool_call_pending
 
                 stream_timeout = httpx.Timeout(
@@ -8014,29 +8027,96 @@ class LlamaCppBackend:
                                             fallback_id = f"call_{idx}"
                                             current_id = tool_calls_acc[idx].get("id", fallback_id)
                                             already_started = (
-                                                current_id in provisional_render_html_tool_call_ids
+                                                current_id in provisional_started_tool_calls
                                             )
-                                            has_real_id = current_id != fallback_id
-                                            if (
+                                            # Require a non-empty explicit id distinct from the
+                                            # synthetic fallback. llama.cpp can stream tool calls
+                                            # with an empty id (ggml-org/llama.cpp#11992); emitting
+                                            # a provisional card keyed by "" would not reconcile
+                                            # with the real tool_start (the frontend mints its own
+                                            # id per event), leaving a duplicate/dangling card.
+                                            has_real_id = bool(current_id) and current_id != fallback_id
+                                            # Surface an early provisional tool_start
+                                            # for ANY enabled tool the model starts
+                                            # calling, not just render_html, so the UI
+                                            # shows a live tool card while a long
+                                            # arguments payload (e.g. a full HTML/code
+                                            # file) streams instead of a frozen
+                                            # "Generating..." with zero progress.
+                                            # Guards: emit once per tool_call_id; wait
+                                            # for a real id so it reconciles with the
+                                            # real tool_start emitted downstream; never
+                                            # re-surface a one-shot tool that already
+                                            # succeeded (preserves render_html).
+                                            _is_completed_one_shot = (
                                                 current_name == "render_html"
-                                                and not _tool_succeeded("render_html")
+                                                and _tool_succeeded("render_html")
+                                            )
+                                            # render_html is one-shot: never surface a
+                                            # second provisional for it in the same turn
+                                            # (the duplicate is a downstream no-op).
+                                            _one_shot_already_provisional = (
+                                                current_name == "render_html"
+                                                and "render_html"
+                                                in provisional_started_tool_calls.values()
+                                            )
+                                            # Surface a card for the first streamed call,
+                                            # and for later parallel calls only when
+                                            # parallel execution is enabled (when
+                                            # disable_parallel_tool_use is set the
+                                            # downstream truncates to the first call, so a
+                                            # card for idx >= 1 could never be reconciled).
+                                            # Also skip when human confirmation is required
+                                            # -- the real tool_start there is keyed by
+                                            # approval id (awaiting_confirmation), so an
+                                            # early card keyed by tool_call_id would not
+                                            # merge and would show "running" before the
+                                            # user approves.
+                                            _confirm_gated = (
+                                                confirm_tool_calls and not bypass_permissions
+                                            )
+                                            # render_html always surfaces a card (its
+                                            # payload is an artifact we want shown); every
+                                            # other tool only once its arguments have
+                                            # grown past a threshold, so small-argument
+                                            # tools (e.g. a web_search query) keep their
+                                            # existing no-early-card behavior and we only
+                                            # pay a provisional card for genuinely large
+                                            # payloads (a full HTML/code file) whose
+                                            # generation would otherwise freeze the UI.
+                                            _args_len = len(
+                                                tool_calls_acc[idx]["function"].get(
+                                                    "arguments", ""
+                                                )
+                                            )
+                                            _payload_is_large = (
+                                                current_name == "render_html"
+                                                or _args_len >= _PROVISIONAL_ARGS_MIN_CHARS
+                                            )
+                                            if (
+                                                current_name
+                                                and (
+                                                    idx == 0
+                                                    or not disable_parallel_tool_use
+                                                )
+                                                and has_real_id
+                                                and not already_started
+                                                and not _is_completed_one_shot
+                                                and not _one_shot_already_provisional
+                                                and not _confirm_gated
+                                                and _payload_is_large
                                                 and any(
-                                                    (
-                                                        (tool.get("function") or {}).get("name")
-                                                        == "render_html"
-                                                    )
+                                                    (tool.get("function") or {}).get("name")
+                                                    == current_name
                                                     for tool in active_tools
                                                 )
-                                                and not already_started
-                                                and not provisional_render_html_tool_call_ids
-                                                and has_real_id
                                             ):
-                                                provisional_render_html_tool_call_ids.add(
-                                                    current_id
+                                                provisional_started_tool_calls[current_id] = (
+                                                    current_name
                                                 )
                                                 yield {
                                                     "type": "tool_start",
-                                                    "tool_name": "render_html",
+                                                    "tool_name": current_name,
                                                     "tool_call_id": current_id,
                                                     "arguments": {},
                                                     "provenance": tool_event_provenance(
@@ -8414,20 +8494,30 @@ class LlamaCppBackend:
                 for tc in tool_calls or []:
                     func = tc.get("function", {})
                     tool_name = func.get("name", "")
-                    provisional_render_html_match = (
-                        tool_name == "render_html"
-                        and tc.get("id") in provisional_render_html_tool_call_ids
-                    )
+                    provisional_match = tc.get("id") in provisional_started_tool_calls
                     decision = tool_controller.prepare_call(
                         tc,
                         forced = _forced_tool_call_pending,
-                        provisional = provisional_render_html_match,
+                        provisional = provisional_match,
                     )
 
                     if not decision.should_execute:
                         if content_text and not assistant_appended:
                             conversation.append(assistant_msg)
                             assistant_appended = True
+                        if provisional_match:
+                            # A provisional tool card is already on screen for this
+                            # id; close it so it never dangles when the controller
+                            # turns the call into an internal no-op (duplicate /
+                            # disabled / render_html_repeat).
+                            resolved_provisional_tool_call_ids.add(decision.tool_call_id)
+                            yield {
+                                "type": "tool_end",
+                                "tool_name": decision.tool_name,
+                                "tool_call_id": decision.tool_call_id,
+                                "result": "",
+                                "provenance": decision.provenance,
+                            }
                         completion = tool_controller.record_noop(decision)
                         conversation.append(completion.model_message())
                         if _forced_tool_call_pending:
@@ -8472,6 +8562,7 @@ class LlamaCppBackend:
                             == "deny"
                         ):
                             decision_slot = None
+                            resolved_provisional_tool_call_ids.add(decision.tool_call_id)
                             yield {
                                 "type": "tool_end",
                                 "tool_name": decision.tool_name,
@@ -8515,11 +8606,27 @@ class LlamaCppBackend:
                         if decision.tool_name == "search_knowledge_base":
                             _kb_search_count += 1
                     completion = tool_controller.record_result(decision, result)
+                    resolved_provisional_tool_call_ids.add(decision.tool_call_id)
                     yield completion.tool_end_event()
                     conversation.append(completion.tool_message())
 
                     if _forced_tool_call_pending:
                         _forced_tool_call_pending = False
+
+                # Close any provisional tool card that streamed but was never
+                # executed or explicitly closed -- e.g. a parallel call dropped by
+                # disable_parallel_tool_use, or a no-op `break` before later calls
+                # were processed. Without this sweep the card would spin forever.
+                for _pid, _pname in provisional_started_tool_calls.items():
+                    if _pid not in resolved_provisional_tool_call_ids:
+                        resolved_provisional_tool_call_ids.add(_pid)
+                        yield {
+                            "type": "tool_end",
+                            "tool_name": _pname,
+                            "tool_call_id": _pid,
+                            "result": "",
+                            "provenance": tool_event_provenance(provisional = True),
+                        }
 
                 # Clear tool status badge before next generation/final pass.
                 yield {"type": "status", "text": ""}
@@ -8529,10 +8636,36 @@ class LlamaCppBackend:
                 continue
 
             except httpx.ConnectError:
+                # Close any provisional card that streamed but was not yet
+                # resolved before surfacing the error, so the UI never leaves a
+                # tool card spinning after the turn fails. Mark it as errored
+                # (not an empty success) so the card renders as failed.
+                for _pid, _pname in provisional_started_tool_calls.items():
+                    if _pid not in resolved_provisional_tool_call_ids:
+                        resolved_provisional_tool_call_ids.add(_pid)
+                        yield {
+                            "type": "tool_end",
+                            "tool_name": _pname,
+                            "tool_call_id": _pid,
+                            "result": "Error: lost connection to llama-server before the tool call completed.",
+                            "provenance": tool_event_provenance(provisional = True),
+                        }
                 raise RuntimeError("Lost connection to llama-server")
             except Exception as e:
                 if cancel_event is not None and cancel_event.is_set():
                     return
+                # Same provisional cleanup on any other mid-iteration failure,
+                # surfacing the card as errored rather than an empty success.
+                for _pid, _pname in provisional_started_tool_calls.items():
+                    if _pid not in resolved_provisional_tool_call_ids:
+                        resolved_provisional_tool_call_ids.add(_pid)
+                        yield {
+                            "type": "tool_end",
+                            "tool_name": _pname,
+                            "tool_call_id": _pid,
+                            "result": "Error: the tool call was interrupted before it completed.",
+                            "provenance": tool_event_provenance(provisional = True),
+                        }
                 raise
 
         # ── Tool iteration cap reached -- synthesize final answer ──
