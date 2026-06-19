@@ -433,7 +433,6 @@ def test_tool_healing_strip_handles_gemma_native_tool_call():
 
 def test_tool_healing_strip_handles_gemma_close_only_marker():
     from core.tool_healing import strip_tool_call_markup
-
     assert strip_tool_call_markup("before <tool_call|> after") == "before  after"
     assert strip_tool_call_markup("before <tool_call|> after", final = True) == "before  after"
 
@@ -454,9 +453,11 @@ def test_tool_healing_json_parser_preserves_literal_gemma_quote_token():
     from core.tool_healing import parse_tool_calls_from_text
     import json as _json
 
-    text = "<tool_call>" + _json.dumps(
-        {"name": "python", "arguments": {"code": "print('<|\"|>')"}}
-    ) + "</tool_call>"
+    text = (
+        "<tool_call>"
+        + _json.dumps({"name": "python", "arguments": {"code": "print('<|\"|>')"}})
+        + "</tool_call>"
+    )
     calls = parse_tool_calls_from_text(text, allow_incomplete = False)
     assert len(calls) == 1
     assert _json.loads(calls[0]["function"]["arguments"]) == {"code": "print('<|\"|>')"}

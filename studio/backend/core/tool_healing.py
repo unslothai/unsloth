@@ -39,7 +39,12 @@ _PARAM_CLOSE_TAG = "</parameter>"
 _FUNC_CLOSE_TAG = "</function>"
 
 
-def _balanced_brace_end(content: str, brace_start: int, *, gemma_quotes: bool = False) -> int:
+def _balanced_brace_end(
+    content: str,
+    brace_start: int,
+    *,
+    gemma_quotes: bool = False,
+) -> int:
     depth = 0
     i = brace_start
     in_string = False

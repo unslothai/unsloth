@@ -284,9 +284,7 @@ def _load_same_task_response_module():
         raise AssertionError("_SameTaskStreamingResponse missing")
     mod = {}
     exec(
-        "class StreamingResponse: pass\n"
-        "class ClientDisconnect(Exception): pass\n"
-        + source,
+        "class StreamingResponse: pass\nclass ClientDisconnect(Exception): pass\n" + source,
         mod,
     )
     return mod
