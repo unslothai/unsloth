@@ -43,9 +43,7 @@ class _Tokenizer:
     ):
         assert tokenize is False
         assert add_generation_prompt is False
-        return "\n".join(
-            f"{message['role']}: {message['content']}" for message in conversation
-        )
+        return "\n".join(f"{message['role']}: {message['content']}" for message in conversation)
 
 
 def _iterable_dataset(rows):
@@ -223,9 +221,7 @@ def test_streaming_start_rejects_train_on_completions_before_backend_start():
 
     with patch.object(training_route, "get_training_backend", return_value = backend):
         with pytest.raises(HTTPException) as exc_info:
-            asyncio.run(
-                training_route.start_training(request, current_subject = "test-user")
-            )
+            asyncio.run(training_route.start_training(request, current_subject = "test-user"))
 
     assert exc_info.value.status_code == 422
     assert "train_on_completions" in exc_info.value.detail
@@ -257,9 +253,7 @@ def test_streaming_start_requires_separate_eval_split(eval_split):
 
     with patch.object(training_route, "get_training_backend", return_value = backend):
         with pytest.raises(HTTPException) as exc_info:
-            asyncio.run(
-                training_route.start_training(request, current_subject = "test-user")
-            )
+            asyncio.run(training_route.start_training(request, current_subject = "test-user"))
 
     assert exc_info.value.status_code == 422
     assert "separate eval_split" in exc_info.value.detail
@@ -287,9 +281,7 @@ def test_streaming_start_rejects_missing_max_steps():
 
     with patch.object(training_route, "get_training_backend", return_value = backend):
         with pytest.raises(HTTPException) as exc_info:
-            asyncio.run(
-                training_route.start_training(request, current_subject = "test-user")
-            )
+            asyncio.run(training_route.start_training(request, current_subject = "test-user"))
 
     assert exc_info.value.status_code == 422
     assert "max_steps" in exc_info.value.detail

@@ -8,7 +8,6 @@ def is_streaming_dataset(dataset) -> bool:
     """Return True for iterable datasets that do not support eager map kwargs."""
     try:
         from datasets import IterableDataset as HfIterableDataset
-
         if isinstance(dataset, HfIterableDataset):
             return True
     except ImportError:
@@ -16,7 +15,6 @@ def is_streaming_dataset(dataset) -> bool:
 
     try:
         from torch.utils.data import IterableDataset as TorchIterableDataset
-
         return isinstance(dataset, TorchIterableDataset)
     except ImportError:
         return False

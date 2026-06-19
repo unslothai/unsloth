@@ -128,16 +128,12 @@ class TrainingStartRequest(BaseModel):
     format_type: str = Field(..., description = "Dataset format type")
     subset: Optional[str] = None
     train_split: Optional[str] = Field("train", description = "Training split name")
-    eval_split: Optional[str] = Field(
-        None, description = "Eval split name. None = auto-detect"
-    )
+    eval_split: Optional[str] = Field(None, description = "Eval split name. None = auto-detect")
     dataset_streaming: bool = Field(
         False,
         description = "Whether to load the Hugging Face dataset in streaming mode",
     )
-    eval_steps: float = Field(
-        0.00, description = "Fraction of total steps between evals (0-1)"
-    )
+    eval_steps: float = Field(0.00, description = "Fraction of total steps between evals (0-1)")
     dataset_slice_start: Optional[int] = Field(
         None,
         ge = 0,
@@ -194,9 +190,7 @@ class TrainingStartRequest(BaseModel):
         if ".." in v:
             raise ValueError("hf_dataset must not contain '..'")
         if not re.fullmatch(r"[A-Za-z0-9._\-/]+", v):
-            raise ValueError(
-                "hf_dataset may only contain letters, digits, '_', '-', '.', '/'"
-            )
+            raise ValueError("hf_dataset may only contain letters, digits, '_', '-', '.', '/'")
         return v
 
     @field_validator("subset")

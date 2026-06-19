@@ -2395,9 +2395,7 @@ class UnslothTrainer:
                     load_kwargs["name"] = subset
 
                 if dataset_streaming:
-                    self._update_progress(
-                        status_message = f"Streaming dataset: {dataset_source}..."
-                    )
+                    self._update_progress(status_message = f"Streaming dataset: {dataset_source}...")
                     dataset = load_dataset(**load_kwargs, streaming = True)
 
                     # Optional iterable slicing
@@ -2494,9 +2492,7 @@ class UnslothTrainer:
                             if subset:
                                 probe_kwargs["config_name"] = subset
                             try:
-                                available_splits = get_dataset_split_names(
-                                    **probe_kwargs
-                                )
+                                available_splits = get_dataset_split_names(**probe_kwargs)
                             except Exception as probe_err:
                                 raise ValueError(
                                     f"Could not list splits for '{dataset_source}' "
@@ -2508,9 +2504,7 @@ class UnslothTrainer:
                                     f"dataset '{dataset_source}'. Available splits: "
                                     f"{available_splits}"
                                 )
-                            eval_dataset = load_dataset(
-                                **eval_load_kwargs, streaming = True
-                            )
+                            eval_dataset = load_dataset(**eval_load_kwargs, streaming = True)
                         else:
                             eval_dataset = load_dataset(**eval_load_kwargs)
 
@@ -2520,9 +2514,7 @@ class UnslothTrainer:
                                 f"Loaded eval split '{eval_split}' with {len(eval_dataset)} rows\n"
                             )
                         else:
-                            logger.info(
-                                f"Loaded eval split '{eval_split}' in streaming mode\n"
-                            )
+                            logger.info(f"Loaded eval split '{eval_split}' in streaming mode\n")
                     elif eval_split and eval_split == effective_train:
                         if dataset_streaming:
                             raise ValueError(
@@ -2708,9 +2700,7 @@ class UnslothTrainer:
                 )
                 eval_dataset = eval_info["dataset"]
                 logger.info("Eval dataset formatted successfully\n")
-            elif (
-                eval_enabled and not has_separate_eval_source and not dataset_streaming
-            ):
+            elif eval_enabled and not has_separate_eval_source and not dataset_streaming:
                 # No separate eval source — split the already-formatted dataset
                 formatted_dataset = dataset_info["dataset"]
                 split_result = self._resolve_eval_split_from_dataset(formatted_dataset)
@@ -3402,9 +3392,7 @@ class UnslothTrainer:
                 # Audio VLM (e.g. Gemma 3N + audio): raw Dataset from _format_audio_vlm_dataset
                 # Notebook uses processing_class=processor.tokenizer (text tokenizer only)
                 # Raw-text runs are routed to the text path below.
-                train_dataset = (
-                    dataset["dataset"] if isinstance(dataset, dict) else dataset
-                )
+                train_dataset = dataset["dataset"] if isinstance(dataset, dict) else dataset
                 processing_class = (
                     self.tokenizer.tokenizer
                     if hasattr(self.tokenizer, "tokenizer")
@@ -3445,9 +3433,7 @@ class UnslothTrainer:
                 if isinstance(self.tokenizer, ProcessorMixin) and hasattr(
                     self.tokenizer, "tokenizer"
                 ):
-                    logger.info(
-                        "Unwrapping Processor → raw tokenizer for text-only SFTTrainer"
-                    )
+                    logger.info("Unwrapping Processor → raw tokenizer for text-only SFTTrainer")
                     sft_tokenizer = self.tokenizer.tokenizer
 
                 if is_cpt:
@@ -3581,9 +3567,7 @@ class UnslothTrainer:
                     # every sample becomes all -100, and Unsloth drops them, leaving
                     # 0 usable samples. Skip this len()-based check for streaming.
                     if detect_streaming_dataset(self.trainer.train_dataset):
-                        logger.info(
-                            "Skipping post-filter length check for streaming dataset\n"
-                        )
+                        logger.info("Skipping post-filter length check for streaming dataset\n")
                     else:
                         filtered_len = len(self.trainer.train_dataset)
                         original_dataset_obj = (
@@ -3591,11 +3575,7 @@ class UnslothTrainer:
                         )
                         original_len = len(original_dataset_obj)
                         dropped = original_len - filtered_len
-                        drop_pct = (
-                            round(100 * dropped / original_len, 1)
-                            if original_len > 0
-                            else 0
-                        )
+                        drop_pct = round(100 * dropped / original_len, 1) if original_len > 0 else 0
 
                         if filtered_len == 0 or drop_pct > 30:
                             max_seq = training_args.get("max_seq_length", 2048)
@@ -3618,9 +3598,7 @@ class UnslothTrainer:
                                 f"({drop_pct}%) were dropped (all labels "
                                 f"masked). {filtered_len} samples remain.\n"
                             )
-                        logger.info(
-                            f"Post-filter dataset size: {filtered_len} samples\n"
-                        )
+                        logger.info(f"Post-filter dataset size: {filtered_len} samples\n")
 
                 except Exception as e:
                     logger.warning(f"Failed to apply train on responses only: {e}")
@@ -3634,9 +3612,7 @@ class UnslothTrainer:
             # ========== PROGRESS TRACKING ==========
             self.trainer.add_callback(self._create_progress_callback())
 
-            train_dataset_obj = (
-                dataset["dataset"] if isinstance(dataset, dict) else dataset
-            )
+            train_dataset_obj = dataset["dataset"] if isinstance(dataset, dict) else dataset
             is_streaming_dataset = detect_streaming_dataset(train_dataset_obj)
 
             max_steps_value = training_args.get("max_steps")
