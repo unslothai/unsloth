@@ -248,6 +248,78 @@ function buildOcrLoadPayload(
   };
 }
 
+// Session-scoped record of OCR models whose custom code the user approved (the
+// value is the consent fingerprint). A select-time approval carries over to the
+// scan-time load so there is no second prompt. Not persisted: custom code is
+// re-consented each session.
+const approvedOcrRemoteCode = new Map<string, string | null>();
+
+function ocrApprovalKey(identity: OcrIdentity): string {
+  return `${identity.checkpoint}\u0000${identity.ggufVariant ?? ""}`;
+}
+
+/**
+ * Pre-flight the custom-code consent for the OCR model in `settings` at
+ * selection time, mirroring how loading a normal chat model prompts up front.
+ * Returns false only when the user declines the dialog; a transient validate
+ * failure resolves true and defers to the scan-time check. On approval the
+ * fingerprint is cached so the scan-time load does not prompt again.
+ */
+export async function ensureOcrModelRemoteCodeApproved(
+  settings: DocExtractSettings,
+): Promise<boolean> {
+  const target = resolveOcrModelTarget(settings);
+  if (target === null) {
+    return true;
+  }
+  const identity: OcrIdentity = {
+    checkpoint: target.modelId,
+    ggufVariant: target.ggufVariant,
+  };
+  if (approvedOcrRemoteCode.has(ocrApprovalKey(identity))) {
+    return true;
+  }
+  const snapshot = captureSnapshot();
+  // Already the loaded chat model: it was consented when it loaded.
+  if (
+    snapshot.checkpoint.length > 0 &&
+    sameIdentity(
+      { checkpoint: snapshot.checkpoint, ggufVariant: snapshot.ggufVariant },
+      identity,
+    )
+  ) {
+    return true;
+  }
+  const validation = await validateModel(
+    buildOcrLoadPayload(target, snapshot, false, null),
+  ).catch(() => null);
+  if (
+    validation === null ||
+    !validation.valid ||
+    !(
+      validation.requires_trust_remote_code ||
+      validation.requires_security_review
+    )
+  ) {
+    // No custom code required, or a transient failure: defer to scan-time.
+    return true;
+  }
+  let fingerprint: string | null = null;
+  const approved = await confirmRemoteCodeIfNeeded({
+    modelName: target.modelId,
+    hfToken: useChatRuntimeStore.getState().hfToken || null,
+    requiresTrustRemoteCode: true,
+    onApprove: (fp) => {
+      fingerprint = fp;
+    },
+  });
+  if (!approved) {
+    return false;
+  }
+  approvedOcrRemoteCode.set(ocrApprovalKey(identity), fingerprint);
+  return true;
+}
+
 function buildRestorePayload(snapshot: ChatModelSnapshot): LoadModelRequest {
   const hfToken = useChatRuntimeStore.getState().hfToken;
   const isGguf =
@@ -538,27 +610,39 @@ async function runUnlocked<T>({
     if (validation.is_vision === false) {
       throw new Error(`${target.label} is not vision-capable.`);
     }
-    // Custom-code OCR models load like any other model: consent is gathered per
-    // model via the load-time review dialog (there is no persistent toggle).
-    if (
-      validation.requires_trust_remote_code ||
-      validation.requires_security_review
-    ) {
-      const approved = await confirmRemoteCodeIfNeeded({
-        modelName: target.modelId,
-        hfToken: useChatRuntimeStore.getState().hfToken || null,
-        requiresTrustRemoteCode: true,
-        onApprove: (fp) => {
-          loadTrustRemoteCode = true;
-          approvedRemoteCodeFingerprint = fp;
-        },
-      });
-      if (!approved) {
-        throw new Error(`${target.label} needs custom code approval to load.`);
-      }
-    }
-
     if (!alreadyActive) {
+      // Custom-code OCR models load like any other model: consent is gathered
+      // per model via the review dialog (there is no persistent toggle). A
+      // select-time approval is cached, so this only prompts the first time a
+      // model is approved this session.
+      if (
+        validation.requires_trust_remote_code ||
+        validation.requires_security_review
+      ) {
+        const approvalKey = ocrApprovalKey(ocrIdentity);
+        if (approvedOcrRemoteCode.has(approvalKey)) {
+          loadTrustRemoteCode = true;
+          approvedRemoteCodeFingerprint =
+            approvedOcrRemoteCode.get(approvalKey) ?? null;
+        } else {
+          const approved = await confirmRemoteCodeIfNeeded({
+            modelName: target.modelId,
+            hfToken: useChatRuntimeStore.getState().hfToken || null,
+            requiresTrustRemoteCode: true,
+            onApprove: (fp) => {
+              loadTrustRemoteCode = true;
+              approvedRemoteCodeFingerprint = fp;
+            },
+          });
+          if (!approved) {
+            throw new Error(
+              `${target.label} needs custom code approval to load.`,
+            );
+          }
+          approvedOcrRemoteCode.set(approvalKey, approvedRemoteCodeFingerprint);
+        }
+      }
+
       lease.assertActive();
       if (snapshot.checkpoint) {
         setOcrPhase("unloading");

@@ -104,7 +104,11 @@ import {
   supportsProviderPromptCaching,
   supportsProviderPromptCacheTtl,
 } from "./external-providers";
-import { isPendingGguf, useChatRuntimeStore } from "./stores/chat-runtime-store";
+import {
+  type DocExtractSettings,
+  isPendingGguf,
+  useChatRuntimeStore,
+} from "./stores/chat-runtime-store";
 import type { DocumentSupport } from "./types";
 import {
   BUILTIN_PRESETS,
@@ -133,6 +137,7 @@ import {
   OCR_MODEL_PRESETS,
   resolveOcrModelTarget,
 } from "./utils/ocr-model-presets";
+import { ensureOcrModelRemoteCodeApproved } from "./utils/ocr-model-orchestrator";
 
 export { defaultInferenceParams, type Preset } from "./presets/preset-policy";
 export type { InferenceParams } from "./types/runtime";
@@ -2133,24 +2138,34 @@ function DocumentExtractionSection() {
   );
 
   const handleOcrSelect = useCallback(
-    (id: string, meta: ModelSelectorChangeMeta) => {
+    async (id: string, meta: ModelSelectorChangeMeta) => {
       const matchedPreset = OCR_MODEL_PRESETS.find((p) => p.modelId === id);
-      if (matchedPreset) {
-        setDocExtract({
-          ocrModel: matchedPreset.id,
-          customOcrModelId: "",
-          customOcrGgufVariant: null,
-        });
-      } else {
-        setDocExtract({
-          ocrModel: "custom",
-          customOcrModelId: id,
-          customOcrGgufVariant: meta.ggufVariant ?? null,
-        });
+      const nextSettings: Partial<DocExtractSettings> = matchedPreset
+        ? {
+            ocrModel: matchedPreset.id,
+            customOcrModelId: "",
+            customOcrGgufVariant: null,
+          }
+        : {
+            ocrModel: "custom",
+            customOcrModelId: id,
+            customOcrGgufVariant: meta.ggufVariant ?? null,
+          };
+      // Gather custom-code consent now (like loading a normal model) so the
+      // review dialog appears at selection rather than on the first scan. Keep
+      // the previous selection if the user declines.
+      const approved = await ensureOcrModelRemoteCodeApproved({
+        ...docExtract,
+        ...nextSettings,
+      });
+      if (!approved) {
+        setOcrPickerOpen(false);
+        return;
       }
+      setDocExtract(nextSettings);
       setOcrPickerOpen(false);
     },
-    [setDocExtract],
+    [docExtract, setDocExtract],
   );
 
   const handleOcrDefault = useCallback(() => {
