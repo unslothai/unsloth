@@ -1,11 +1,10 @@
 #!/usr/bin/env pwsh
 # Unit test for _RemoveDataDirKeepingWslIcon in scripts/uninstall.ps1.
 #
-# install.sh reuses %LOCALAPPDATA%\Unsloth Studio for the WSL shortcut's icon, so
-# a native uninstall must NOT delete unsloth.ico while a WSL shortcut still points
-# at it (else that shortcut goes blank). This extracts the helper via AST and runs
-# it against a temp data dir with a controlled ShortcutDirs list (no real Desktop
-# / Start Menu dependence), covering both the dual-install and native-only cases.
+# A native uninstall must NOT delete the shared unsloth.ico while a WSL shortcut
+# still points at it (else that shortcut blanks). Extracts the helper via AST and
+# runs it on a temp data dir with a controlled ShortcutDirs list (no real Desktop
+# / Start Menu), covering the dual-install and native-only cases.
 #
 # Run: pwsh -NoProfile -File tests/studio/test_uninstall_dual_install_icon.ps1
 

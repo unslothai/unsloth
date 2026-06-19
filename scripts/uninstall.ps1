@@ -30,10 +30,9 @@ function Uninstall-UnslothStudio {
                 _Substep "could not remove: $Path ($($_.Exception.Message))" "Yellow"
                 return
             }
-            # Remove-Item -Recurse can report success yet leave a child behind when
-            # a file is transiently held open (e.g. unsloth.ico locked by Explorer's
-            # icon cache while a shortcut still references it). Verify and retry so
-            # we neither claim "removed" falsely nor orphan the directory.
+            # Remove-Item -Recurse can report success yet leave a transiently-locked
+            # child (e.g. unsloth.ico held by Explorer's icon cache). Verify + retry
+            # so we never falsely claim "removed" or orphan the dir.
             if (-not (Test-Path -LiteralPath $Path)) {
                 _Substep "removed: $Path" "Green"
                 return
@@ -43,24 +42,19 @@ function Uninstall-UnslothStudio {
         }
     }
 
-    # Remove the shared data dir, but in a dual native+WSL install keep unsloth.ico
-    # when a WSL shortcut still points at it -- else removing the dir blanks that
-    # shortcut's icon. install.sh reuses LOCALAPPDATA\Unsloth Studio for the WSL
-    # shortcut's icon; uninstall.sh drops the leftover icon + empty dir when WSL is
-    # later removed. (The old code relied on Explorer holding the icon open, which
-    # is unreliable -- preserve it explicitly.)
+    # Remove the shared data dir, but keep unsloth.ico if a WSL shortcut still uses
+    # it (install.sh points the WSL icon here) -- else that shortcut blanks.
+    # uninstall.sh drops the icon + empty dir when WSL is later removed.
     function _RemoveDataDirKeepingWslIcon {
         param(
             [string]$DataDir,
-            # Dirs to scan for a surviving WSL shortcut. Defaults to the Start Menu
-            # + Desktop install.sh writes to; overridable so tests stay hermetic.
+            # WSL-shortcut search dirs; default Start Menu + Desktop, overridable for tests.
             [string[]]$ShortcutDirs = $null
         )
         if ([string]::IsNullOrWhiteSpace($DataDir)) { return }
         if (-not (Test-Path -LiteralPath $DataDir)) { return }
-        # $null = caller passed nothing (use defaults); an explicit @() means
-        # "no dirs to scan" and must be honored (-not @() is $true, so test it
-        # against $null rather than truthiness).
+        # $null = not passed (use defaults); honor an explicit @(), so test $null
+        # not truthiness (-not @() is $true).
         if ($null -eq $ShortcutDirs) {
             $ShortcutDirs = @(Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs")
             try { $ShortcutDirs += [Environment]::GetFolderPath("Desktop") } catch {}
@@ -413,12 +407,9 @@ function Uninstall-UnslothStudio {
         }
     } catch { }
 
-    # Re-sweep the data dir: unsloth.ico lives there and Explorer/StartMenuExperience
-    # Host may have held it open while the native shortcut above referenced it as its
-    # icon, leaving the dir behind on the first pass. Now that the native shortcut
-    # (and SMEH) are gone, the handle is released. A dual native+WSL install keeps
-    # the icon for the surviving WSL shortcut (uninstall.sh removes it with the dir
-    # when WSL is later uninstalled).
+    # Re-sweep: Explorer/SMEH may have held unsloth.ico open for the native shortcut
+    # on the first pass; now the shortcut is gone the handle is freed. (A surviving
+    # WSL shortcut still keeps the icon -- see the helper.)
     if ($defaultDataDir -and (Test-Path -LiteralPath $defaultDataDir)) { _RemoveDataDirKeepingWslIcon $defaultDataDir }
 
     # ── Clean user PATH and registry backup ──

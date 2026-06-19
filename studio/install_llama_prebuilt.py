@@ -55,15 +55,12 @@ if platform.system() == "Windows":
 
 
 def _path_inside_venv(path: str) -> bool:
-    """True if ``path`` lives inside the active virtual environment (sys.prefix).
+    """True if ``path`` is inside the active venv (sys.prefix).
 
-    The AMD torch wheel ships hipInfo.exe inside the venv (Scripts/ and
-    _rocm_sdk_core/bin/), and the bnb fix prepends the venv Scripts dir to PATH.
-    That venv-internal hipInfo is NOT a HIP SDK and must not be mistaken for one
-    (see _amd_smi_allowed)."""
+    The AMD torch wheel ships hipInfo.exe in the venv and the bnb fix puts it on
+    PATH, but it is NOT a HIP SDK; don't mistake it for one (_amd_smi_allowed)."""
     try:
-        # realpath (not abspath): resolve symlinks/junctions/8.3 names so a venv
-        # reached through an aliased path still matches sys.prefix.
+        # realpath (not abspath): resolve symlinks/8.3 names so an aliased venv matches.
         _root = os.path.normcase(os.path.realpath(sys.prefix))
         return os.path.normcase(os.path.commonpath([os.path.realpath(path), _root])) == _root
     except (ValueError, OSError):
@@ -72,11 +69,10 @@ def _path_inside_venv(path: str) -> bool:
 
 
 def _external_hipinfo_on_path() -> bool:
-    """True if a hipinfo outside the venv is reachable on PATH.
+    """True if a hipinfo OUTSIDE the venv is on PATH.
 
-    shutil.which returns only the first hit, so the venv-internal hipInfo the bnb
-    fix prepends to PATH would shadow a real HIP SDK's hipinfo later on it; scan
-    every PATH entry and skip the venv copy (see _path_inside_venv)."""
+    shutil.which returns only the first hit, so the venv hipInfo could shadow a
+    real HIP SDK's; scan every PATH entry and skip the venv copy."""
     for _dir in os.environ.get("PATH", "").split(os.pathsep):
         if not _dir:
             continue
@@ -102,10 +98,9 @@ def _amd_smi_allowed() -> bool:
         return True
     if flag in ("0", "false", "no", "off"):
         return False
-    # A genuine HIP SDK registers amd-smi's runtime so it runs un-elevated;
-    # hipinfo-on-PATH is the proxy. But ignore the venv-internal hipInfo.exe the
-    # AMD torch wheel ships (which the bnb fix puts on PATH) -- it is not a HIP
-    # SDK and does NOT stop amd-smi from popping the DiskPart UAC.
+    # A real HIP SDK lets amd-smi run un-elevated; hipinfo-on-PATH is the proxy.
+    # Ignore the venv hipInfo.exe (AMD wheel, put on PATH by the bnb fix): not a
+    # HIP SDK, and it does NOT stop amd-smi's DiskPart UAC.
     if _external_hipinfo_on_path():
         return True
     for _var in ("HIP_PATH", "HIP_PATH_57", "ROCM_PATH"):

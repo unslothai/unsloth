@@ -1647,14 +1647,10 @@ if [ "$SKIP_TORCH" = true ] && [ "$MAC_INTEL" = true ] && [ -z "$_USER_PYTHON" ]
     fi
 fi
 
-# ── Strix Halo WSL: route to an existing Ubuntu 24.04 before building anything ──
-# ROCm-on-WSL (the GPU runtime for Strix Halo) only targets Ubuntu 24.04; the
-# default WSL distro is often newer (e.g. 26.04) and is not a ROCm target, so a
-# build here would silently fall back to CPU. If a 24.04 distro already exists,
-# continue the install there and stop in this one. Per maintainer choice we only
-# auto-route to an EXISTING 24.04 -- when none exists we just print the
-# `wsl --install` command via the CPU-fallback notes later, never auto-download a
-# distro. Runs before venv creation so the wrong distro is left untouched.
+# Strix Halo WSL GPU (ROCm-on-WSL) only targets Ubuntu 24.04. If this distro is
+# newer (e.g. 26.04) but a 24.04 distro exists, re-run the install there and stop;
+# else fall through to CPU + the `wsl --install` hint below (never auto-create a
+# distro). Runs before venv so the wrong distro is left untouched.
 _maybe_reroute_strixhalo_to_2404() {
     [ "${OS:-}" = "wsl" ] || return 0
     [ "${SKIP_TORCH:-false}" = "false" ] || return 0
@@ -1662,7 +1658,7 @@ _maybe_reroute_strixhalo_to_2404() {
     [ "${UNSLOTH_WSL_REROUTED:-0}" = "1" ] && return 0
     [ -e /dev/dxg ] || return 0
     grep -qiE 'Ryzen AI Max|Radeon 80[0-9]0S|Strix Halo' /proc/cpuinfo 2>/dev/null || return 0
-    # Already a ROCm-on-WSL distro? leave it (covers a working GPU on any version).
+    # Already ROCm-on-WSL? leave a working GPU alone, whatever the version.
     if [ -e /opt/rocm/lib/librocdxg.so ] || [ -e /opt/rocm/lib64/librocdxg.so ]; then
         return 0
     fi
@@ -1670,7 +1666,7 @@ _maybe_reroute_strixhalo_to_2404() {
     [ -r /etc/os-release ] && _rr_ver=$(. /etc/os-release 2>/dev/null; printf '%s' "${VERSION_ID:-}")
     [ "$_rr_ver" = "24.04" ] && return 0
     command -v wsl.exe >/dev/null 2>&1 || return 0
-    # Only auto-route to a 24.04 that already exists; never create one here.
+    # Route only to an already-installed 24.04.
     wsl.exe -l -q 2>/dev/null | tr -d '\000\r' | grep -qiF "Ubuntu-24.04" || return 0
 
     echo ""

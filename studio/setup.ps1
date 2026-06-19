@@ -801,15 +801,14 @@ $script:ROCmGfxArch = $null
 if (-not $HasNvidiaSmi) {
     # hipinfo: PATH first, then HIP_PATH/ROCM_PATH bin fallback (mirrors NVIDIA smi path resolution).
     # AMD HIP SDK sets HIP_PATH but may not add the bin dir to PATH depending on install type.
-    # Ignore the venv-internal hipInfo.exe the AMD torch wheel puts on PATH: it is
-    # not a HIP SDK, so amd-smi would still auto-elevate. Cf. _path_inside_venv().
+    # Ignore the venv hipInfo.exe (AMD wheel, on PATH): not a HIP SDK, so amd-smi
+    # would still auto-elevate. Cf. _path_inside_venv().
     function Test-HipinfoIsVenvInternal {
         param([AllowNull()][string]$HipinfoPath)
         if ([string]::IsNullOrWhiteSpace($HipinfoPath)) { return $false }
-        # VenvDir/VIRTUAL_ENV can be unset this early (the update flow probes long
-        # before VenvDir is set), so also derive the venv from the setup python
-        # and the default Studio home; else the venv hipInfo is not recognized and
-        # the amd-smi/DiskPart gate reopens.
+        # VenvDir/VIRTUAL_ENV can be unset this early (the update flow probes before
+        # VenvDir is set), so also derive the venv from the setup python + default
+        # Studio home; else the venv hipInfo isn't caught.
         $venvRoots = @()
         if ($env:VIRTUAL_ENV) { $venvRoots += $env:VIRTUAL_ENV }
         $vd = Get-Variable -Name VenvDir -ValueOnly -ErrorAction SilentlyContinue
@@ -823,8 +822,7 @@ if (-not $HasNvidiaSmi) {
         $studioHomeEnv = if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_STUDIO_HOME)) { $env:UNSLOTH_STUDIO_HOME.Trim() } elseif (-not [string]::IsNullOrWhiteSpace($env:STUDIO_HOME)) { $env:STUDIO_HOME.Trim() } else { $null }
         if ($studioHomeEnv) {
             # Expand a leading ~ like the canonical resolver below; else GetFullPath
-            # keeps the literal ~ (relative to cwd) and the custom-home hipInfo
-            # escapes the filter, reopening the amd-smi/DiskPart gate.
+            # keeps the literal ~ (cwd-relative) and the hipInfo escapes the filter.
             if ($studioHomeEnv -eq "~" -or $studioHomeEnv -like "~/*" -or $studioHomeEnv -like "~\*") {
                 $studioHomeEnv = (Join-Path $env:USERPROFILE $studioHomeEnv.Substring(1).TrimStart('/', '\'))
             }
@@ -841,9 +839,8 @@ if (-not $HasNvidiaSmi) {
         }
         return $false
     }
-    # Get-Command returns only the first hipinfo on PATH; the venv-internal
-    # hipInfo.exe (prepended by the bnb fix) would shadow a real HIP SDK's
-    # hipinfo later on PATH. Scan all and keep the first non-venv one.
+    # Get-Command returns only the first hipinfo; the venv copy (bnb fix) could
+    # shadow a real HIP SDK's. Scan all, keep the first non-venv one.
     $hipinfoExe = Get-Command hipinfo -All -ErrorAction SilentlyContinue |
         Where-Object { -not (Test-HipinfoIsVenvInternal $_.Source) } |
         Select-Object -First 1
@@ -2326,9 +2323,8 @@ if ($script:UnslothVerbose) {
 # of whether the CUDA Toolkit is installed yet.
 # The CUDA tag is chosen based on the driver's max supported CUDA version.
 
-# Triton/inductor filenames are long, so Windows MAX_PATH (260) can break
-# compilation. With long paths enabled, keep the cache under Studio home (off the
-# C:\ root); otherwise fall back to a short drive-root dir to keep MAX_PATH headroom.
+# Triton/inductor filenames are long and can hit Windows MAX_PATH (260). With long
+# paths on, cache under Studio home; else use a short drive-root dir for headroom.
 if ($LongPathsEnabled) {
     $TorchCacheDir = Join-Path $StudioHome "TORCHINDUCTOR_CACHE_DIR"
 } else {
@@ -2486,18 +2482,12 @@ if (-not $ROCmIndexUrl -and $CuTag -eq "cpu") {
     }
 }
 
-# No unsloth.exe rename needed -- the rename never worked anyway. setup.ps1 runs
-# *via* unsloth.exe, so renaming our own running uv-trampoline launcher always
-# failed with a sharing violation (WinError 32) and only printed a scary warning.
-#
-# It is not needed either. In the install.ps1 flow SKIP_STUDIO_BASE=1 means the
-# base packages are never reinstalled, so unsloth.exe is not rewritten. In the
-# 'studio update' flow install_python_stack upgrades unsloth via uv
-# (--upgrade-package); if uv cannot replace the locked launcher it falls back to
-# pip, but the pip fallback drops --upgrade-package and base.txt lists only bare
-# unsloth/unsloth-zoo, so pip finds them already satisfied and no-ops. Either way
-# unsloth.exe is left intact. (In-place self-upgrade of the running launcher is
-# unreliable on Windows; the supported upgrade path is the installer one-liner.)
+# No unsloth.exe rename needed. The rename never worked: setup.ps1 runs *via*
+# unsloth.exe, so renaming the running uv-trampoline launcher failed with a
+# sharing violation (WinError 32) and only printed a scary warning. Nor is it
+# needed -- install.ps1 sets SKIP_STUDIO_BASE=1 (base never reinstalled), and
+# 'studio update' upgrades via uv (--upgrade-package), whose pip fallback no-ops
+# on the already-satisfied bare unsloth/unsloth-zoo. Either way unsloth.exe stays.
 
 # Ordered heavy dependency installation -- shared cross-platform script
 substep "running ordered dependency installation..."

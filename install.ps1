@@ -1623,14 +1623,13 @@ exit 0
     if (-not $HasNvidiaSmi) {
         # hipinfo: PATH first, then HIP_PATH/ROCM_PATH bin fallback (mirrors NVIDIA smi path resolution).
         # AMD HIP SDK sets HIP_PATH but may not add the bin dir to PATH depending on install type.
-        # Ignore the venv-internal hipInfo.exe the AMD torch wheel puts on PATH: it
-        # is not a HIP SDK, so amd-smi would still auto-elevate. Cf. _path_inside_venv().
+        # Ignore the venv hipInfo.exe (AMD wheel, on PATH): not a HIP SDK, so
+        # amd-smi would still auto-elevate. Cf. _path_inside_venv().
         function Test-HipinfoIsVenvInternal {
             param([AllowNull()][string]$HipinfoPath)
             if ([string]::IsNullOrWhiteSpace($HipinfoPath)) { return $false }
-            # Also derive the venv from the setup python and the default Studio
-            # home so the venv hipInfo is recognized even when VenvDir/VIRTUAL_ENV
-            # are unset (keeps the amd-smi/DiskPart gate closed).
+            # Also derive the venv from the setup python + default Studio home, so
+            # its hipInfo is caught even when VenvDir/VIRTUAL_ENV are unset.
             $venvRoots = @()
             if ($env:VIRTUAL_ENV) { $venvRoots += $env:VIRTUAL_ENV }
             $vd = Get-Variable -Name VenvDir -ValueOnly -ErrorAction SilentlyContinue
@@ -1644,8 +1643,7 @@ exit 0
             $studioHomeEnv = if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_STUDIO_HOME)) { $env:UNSLOTH_STUDIO_HOME.Trim() } elseif (-not [string]::IsNullOrWhiteSpace($env:STUDIO_HOME)) { $env:STUDIO_HOME.Trim() } else { $null }
             if ($studioHomeEnv) {
                 # Expand a leading ~ like the canonical resolver; else GetFullPath
-                # keeps the literal ~ (relative to cwd) and the custom-home hipInfo
-                # escapes the filter, reopening the amd-smi/DiskPart gate.
+                # keeps the literal ~ (cwd-relative) and the hipInfo escapes the filter.
                 if ($studioHomeEnv -eq "~" -or $studioHomeEnv -like "~/*" -or $studioHomeEnv -like "~\*") {
                     $studioHomeEnv = (Join-Path $env:USERPROFILE $studioHomeEnv.Substring(1).TrimStart('/', '\'))
                 }
@@ -1662,9 +1660,8 @@ exit 0
             }
             return $false
         }
-        # Get-Command returns only the first hipinfo on PATH; the venv-internal
-        # hipInfo.exe (prepended by the bnb fix) would shadow a real HIP SDK's
-        # hipinfo later on PATH. Scan all and keep the first non-venv one.
+        # Get-Command returns only the first hipinfo; the venv copy (bnb fix) could
+        # shadow a real HIP SDK's. Scan all, keep the first non-venv one.
         $hipinfoExe = Get-Command hipinfo -All -ErrorAction SilentlyContinue |
             Where-Object { -not (Test-HipinfoIsVenvInternal $_.Source) } |
             Select-Object -First 1
@@ -1770,10 +1767,9 @@ exit 0
             } catch {}
         }
         # ── Arch resolution: env-var override → name inference ──────────────
-        # Runs even when the hipinfo/amd-smi probe could NOT confirm a runtime
-        # ($HasROCm false): the gfx arch inferred from the WMI GPU name drives
-        # both the GPU-accelerated ROCm llama.cpp and the PyTorch ROCm wheels.
-        # repo.amd.com wheels bundle their own runtime (no HIP SDK needed), so a
+        # Runs even when the probe can't confirm a runtime ($HasROCm false): the
+        # gfx arch from the WMI GPU name drives both ROCm llama.cpp and the torch
+        # wheels. repo.amd.com wheels bundle their own runtime (no HIP SDK), so a
         # mapped arch installs ROCm torch directly below -- no wasted CPU base.
         if (-not $ROCmGfxArch) {
             # 1. Manual override: set UNSLOTH_ROCM_GFX_ARCH=gfx1151 before running.
@@ -2041,11 +2037,10 @@ exit 0
             "gfx1201" = "torch>=2.11.0,<2.12.0"; "gfx1200" = "torch>=2.11.0,<2.12.0"
             "gfx1151" = "torch>=2.11.0,<2.12.0"; "gfx1150" = "torch>=2.11.0,<2.12.0"
         }
-        # Companion ranges for torchvision/torchaudio -- must track the torch
-        # ceiling so pip resolves a consistent trio on AMD's per-arch index, which
-        # publishes each independently and may ship torchvision 0.27 (torch 2.12)
-        # before removing 0.26. Mirrors setup.ps1 and the rocm7.2 spec in
-        # install_python_stack.py; bump all three together when 2.12.x is validated.
+        # torchvision/torchaudio companion ranges -- track the torch ceiling so
+        # pip resolves a consistent trio on AMD's per-arch index (which publishes
+        # each independently). Mirrors setup.ps1 / install_python_stack.py; bump
+        # all three together when 2.12.x is validated.
         $torchvisionFloorMap = @{
             "gfx1201" = "torchvision>=0.26.0,<0.27.0"; "gfx1200" = "torchvision>=0.26.0,<0.27.0"
             "gfx1151" = "torchvision>=0.26.0,<0.27.0"; "gfx1150" = "torchvision>=0.26.0,<0.27.0"
@@ -2082,9 +2077,8 @@ exit 0
     if (-not $SkipTorch -and -not $ROCmIndexUrl -and $TorchIndexUrl -like "*/cpu") {
         Write-Host ""
         if ($ROCmGfxArch) {
-            # Only an unmapped arch reaches here: a mapped one set $ROCmIndexUrl
-            # above and installs ROCm directly. No ROCm PyTorch wheels exist for
-            # this arch (e.g. RDNA2 gfx103X), so PyTorch stays on CPU.
+            # Only an unmapped arch reaches here (a mapped one set $ROCmIndexUrl
+            # above). No ROCm torch wheels for this arch (e.g. RDNA2 gfx103X) -> CPU.
             substep "Installing CPU PyTorch -- no ROCm PyTorch wheels are available for $ROCmGfxArch." "Yellow"
             substep "PyTorch (training and Transformers inference) runs on CPU on this GPU." "Yellow"
         } else {

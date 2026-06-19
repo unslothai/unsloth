@@ -272,12 +272,9 @@ def test_amd_smi_opt_out_overrides_hip_sdk():
 
 
 def test_amd_smi_skipped_when_hipinfo_is_venv_internal(tmp_path):
-    # The AMD torch wheel ships hipInfo.exe inside the venv (Scripts/), and the
-    # bnb fix prepends that dir to PATH. That venv-internal hipInfo is NOT a HIP
-    # SDK and must NOT re-open the amd-smi gate -- otherwise amd-smi pops the
-    # DiskPart UAC mid-install on Strix Halo boxes with no real HIP SDK (the bug
-    # snapcast3r/UBER6 hit: arch came from the GPU-name table, hipInfo could not
-    # run, so the probe fell through to `amd-smi list`).
+    # The venv hipInfo.exe (AMD wheel, on PATH via the bnb fix) is NOT a HIP SDK
+    # and must NOT re-open the gate -- else amd-smi pops the DiskPart UAC mid-install
+    # on Strix Halo with no real HIP SDK (the snapcast3r/UBER6 bug).
     venv_root = tmp_path / "venv"
     venv_scripts = venv_root / "Scripts"
     venv_scripts.mkdir(parents = True)
@@ -305,11 +302,9 @@ def test_amd_smi_allowed_when_hipinfo_outside_venv(tmp_path):
 
 
 def test_amd_smi_allowed_when_external_hipinfo_shadowed_by_venv(tmp_path):
-    # codex P2: the venv-internal hipInfo.exe is first on PATH (the bnb fix
-    # prepends the venv Scripts dir), but a real HIP SDK's hipinfo sits later on
-    # PATH with HIP_PATH/ROCM_PATH unset. A first-hit shutil.which/Get-Command
-    # would stop at the venv copy and wrongly close the gate; scanning every PATH
-    # entry must still find the external SDK and keep amd-smi available.
+    # Venv hipInfo first on PATH (bnb fix), real SDK's later, HIP_PATH/ROCM_PATH
+    # unset. A first-hit which/Get-Command stops at the venv copy and wrongly
+    # closes the gate; scanning every PATH entry must still find the external SDK.
     venv_root = tmp_path / "venv"
     venv_scripts = venv_root / "Scripts"
     venv_scripts.mkdir(parents = True)
@@ -434,10 +429,9 @@ def test_ps_installers_gate_amd_smi_on_windows():
 
 @pytest.mark.parametrize("ps", [_INSTALL_PS1, _SETUP_PS1], ids = ["install.ps1", "setup.ps1"])
 def test_ps_venv_probe_expands_tilde_for_custom_studio_home(ps):
-    # Both installers' venv-internal hipInfo probe seed the venv root from a
-    # custom Studio home; a tilde form (~\studio) must be expanded to USERPROFILE
-    # like the canonical resolver, else [IO.Path]::GetFullPath keeps the literal
-    # ~ (relative to cwd) and the custom-home hipInfo escapes the filter.
+    # The probe seeds the venv root from a custom Studio home; a ~\studio form
+    # must expand to USERPROFILE like the canonical resolver, else GetFullPath
+    # keeps the literal ~ (cwd-relative) and the hipInfo escapes the filter.
     text = ps.read_text(encoding = "utf-8")
     i = text.find("$studioHomeEnv = ")
     j = text.find('Join-Path $studioHomeEnv "unsloth_studio"', i)
@@ -455,10 +449,9 @@ def _ps_floor_map(text, prefix):
 
 
 def test_install_setup_ps_rocm_torch_floors_in_sync():
-    # install.ps1 and setup.ps1 pull from AMD's per-arch index; their torch and
-    # companion (torchvision/torchaudio) floor maps must match so both resolve
-    # the same ABI-consistent trio. install.ps1 once left the companions bare,
-    # which can resolve an incompatible set and fall back to CPU.
+    # install.ps1/setup.ps1 pull from AMD's per-arch index; their torch and
+    # companion floor maps must match so both resolve the same ABI-consistent
+    # trio (install.ps1 once left companions bare -> incompatible set -> CPU).
     it = _INSTALL_PS1.read_text(encoding = "utf-8")
     st = _SETUP_PS1.read_text(encoding = "utf-8")
     for prefix in ("torch>=", "torchvision>=", "torchaudio>="):
@@ -477,9 +470,8 @@ def test_install_setup_ps_rocm_torch_floors_in_sync():
 
 
 def test_install_ps1_rocm_cpu_fallback_uses_retry():
-    # The ROCm->CPU fallback is the recovery path most likely to hit a transient
-    # index issue, yet it once used the non-retrying helper. It must retry like
-    # every other torch install in the file.
+    # The ROCm->CPU fallback (likeliest to hit a transient index issue) once used
+    # the non-retrying helper; it must retry like every other torch install here.
     text = _INSTALL_PS1.read_text(encoding = "utf-8")
     i = text.find("ROCm PyTorch install failed")
     assert i != -1, "ROCm->CPU fallback block not found in install.ps1"
@@ -537,9 +529,8 @@ def test_install_python_stack_gates_every_amd_smi_spawn():
 
 def test_install_ps1_installs_rocm_torch_for_known_arch():
     # A known AMD arch (even name-inferred, $HasROCm false) must select the ROCm
-    # torch index directly instead of laying down a CPU base that setup.ps1 then
-    # force-reinstalls as ROCm (wasted download). The bundled-runtime
-    # repo.amd.com wheels need no HIP SDK, so the gate is $ROCmGfxArch-based.
+    # index directly, not a CPU base setup.ps1 then force-reinstalls as ROCm. The
+    # repo.amd.com wheels bundle their runtime (no HIP SDK), so gate on $ROCmGfxArch.
     text = _INSTALL_PS1.read_text(encoding = "utf-8")
     gates = [
         ln

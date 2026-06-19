@@ -302,10 +302,8 @@ case "$_os" in
                             } catch { }
                         }
                     }
-                    # Drop the shared Unsloth icon this installer wrote, and the dir
-                    # if it is now empty. A native install also stores its launcher
-                    # there, so the empty-dir guard leaves that case intact (its own
-                    # uninstall.ps1 owns it).
+                    # Drop the shared icon we wrote + the dir if empty (a native
+                    # install keeps its launcher here, so the empty-dir guard spares it).
                     $iconDir = Join-Path $env:LOCALAPPDATA "Unsloth Studio";
                     $ico = Join-Path $iconDir "unsloth.ico";
                     if (Test-Path -LiteralPath $ico) { Remove-Item -LiteralPath $ico -Force -ErrorAction SilentlyContinue }

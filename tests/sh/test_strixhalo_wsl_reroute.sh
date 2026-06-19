@@ -1,13 +1,11 @@
 #!/bin/bash
 # Unit tests for _maybe_reroute_strixhalo_to_2404() from install.sh.
 #
-# ROCm-on-WSL (the Strix Halo GPU runtime) only targets Ubuntu 24.04. When the
-# installer runs in a newer default WSL distro (e.g. 26.04) but an Ubuntu-24.04
-# distro already exists, it must re-run the install there and stop; otherwise it
-# must leave the current distro alone and let the CPU-fallback path print the
-# `wsl --install` guidance. This exercises that decision matrix hermetically:
-# the function is extracted from install.sh and its hardcoded absolute paths are
-# rewritten to per-test fixtures, with a mock wsl.exe on PATH (no real WSL).
+# ROCm-on-WSL only targets Ubuntu 24.04: from a newer default distro (e.g. 26.04)
+# with a 24.04 distro present, re-run the install there and stop; otherwise leave
+# the distro alone and let CPU-fallback print the `wsl --install` hint. Tests that
+# decision matrix hermetically -- the function is extracted from install.sh, its
+# absolute paths rewritten to per-test fixtures, with a mock wsl.exe (no real WSL).
 #
 # Follows the extract-via-sed pattern of test_get_torch_index_url.sh.
 set -e
