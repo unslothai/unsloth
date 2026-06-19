@@ -2855,6 +2855,33 @@ def _pick_rocm_gfx_target(out: str) -> str | None:
     return _tokens[0]
 
 
+def _nvidia_smi_capture(
+    command: list[str],
+    *,
+    attempts: int = 2,
+    timeout: int = 60,
+) -> subprocess.CompletedProcess[str]:
+    """run_capture for nvidia-smi probes, hardened against transient slowness.
+
+    nvidia-smi normally answers in well under a second, but under WSL2 GPU-PV it
+    can take far longer when the host is under heavy CPU load -- e.g. the
+    concurrent pip / frontend / cmake work during an `unsloth studio` install.
+    A single short timeout then raises TimeoutExpired, detect_host treats the
+    GPU as ABSENT, and the host is misrouted to a CPU prebuilt / slow source
+    build instead of the CUDA bundle it can actually use. Retry with a generous
+    per-attempt timeout. Only ever reached when nvidia-smi exists on PATH, so
+    CPU-only hosts never incur this wait.
+    """
+    last_exc: Exception | None = None
+    for _attempt in range(max(1, attempts)):
+        try:
+            return run_capture(command, timeout = timeout)
+        except subprocess.TimeoutExpired as exc:
+            last_exc = exc
+            time.sleep(2)
+    raise last_exc if last_exc is not None else RuntimeError("nvidia-smi capture failed")
+
+
 def detect_host() -> HostInfo:
     system = platform.system()
     machine = platform.machine().lower()
@@ -2880,7 +2907,7 @@ def detect_host() -> HostInfo:
         # container leftovers), which would otherwise misclassify an AMD
         # ROCm host as NVIDIA and short-circuit the ROCm path.
         try:
-            listing = run_capture([nvidia_smi, "-L"], timeout = 20)
+            listing = _nvidia_smi_capture([nvidia_smi, "-L"])
             gpu_lines = [line for line in listing.stdout.splitlines() if line.startswith("GPU ")]
             if gpu_lines:
                 has_physical_nvidia = True
@@ -2889,7 +2916,7 @@ def detect_host() -> HostInfo:
             pass
 
         try:
-            result = run_capture([nvidia_smi], timeout = 20)
+            result = _nvidia_smi_capture([nvidia_smi])
             merged = "\n".join(part for part in (result.stdout, result.stderr) if part)
             # Newer NVIDIA drivers (e.g. 610.x on Windows) print
             # "CUDA UMD Version: X.Y" instead of the legacy
@@ -2907,13 +2934,12 @@ def detect_host() -> HostInfo:
             pass
 
         try:
-            caps = run_capture(
+            caps = _nvidia_smi_capture(
                 [
                     nvidia_smi,
                     "--query-gpu=index,uuid,compute_cap",
                     "--format=csv,noheader",
                 ],
-                timeout = 20,
             )
             visible_gpu_rows: list[tuple[str, str, str]] = []
             for raw in caps.stdout.splitlines():
