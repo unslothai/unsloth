@@ -175,7 +175,10 @@ if _IS_MLX:
 
         info = mx.device_info()
         total = info.get("memory_size") or info.get("max_recommended_working_set_size") or 0
-        peak = mx.get_peak_memory() if hasattr(mx, "get_peak_memory") else 0
+        get_peak_memory = getattr(mx, "get_peak_memory", None)
+        if get_peak_memory is None and hasattr(mx, "metal"):
+            get_peak_memory = getattr(mx.metal, "get_peak_memory", None)
+        peak = get_peak_memory() if callable(get_peak_memory) else 0
         stats = _UnslothDeviceStats(info.get("device_name", "Apple GPU"), total)
         max_memory = _bytes_to_gb(total) or 1.0
         return stats, _bytes_to_gb(peak), max_memory
@@ -453,14 +456,14 @@ if _IS_MLX:
                 name in kwargs for name in ("max_grad_norm", "max_grad_value", "max_grad_leaf_norm")
             )
             warmup_ratio = kwargs.get("warmup_ratio", None)
-            warmup_steps_explicit = "warmup_steps" in kwargs and not (
-                warmup_ratio is not None
-                and kwargs.get("warmup_steps")
-                in (
-                    0,
-                    getattr(MLXTrainingConfig, "warmup_steps", 5),
-                )
-            )
+            warmup_steps_supplied = "warmup_steps" in kwargs
+            warmup_steps_value = kwargs.get("warmup_steps", None)
+            warmup_steps_explicit = False
+            if warmup_steps_supplied:
+                try:
+                    warmup_steps_explicit = int(warmup_steps_value) > 0
+                except (TypeError, ValueError):
+                    warmup_steps_explicit = True
             filtered_kwargs = {}
             extra_kwargs = {}
             for key, value in kwargs.items():
@@ -470,12 +473,17 @@ if _IS_MLX:
                 value = _normalize_mlx_training_value(target, value)
                 if target in _MLX_TRAINING_CONFIG_FIELDS:
                     filtered_kwargs[target] = value
+                elif key in _MLX_UNSUPPORTED_TASK_ARGUMENTS and not _is_meaningful_mlx_extra_value(value):
+                    continue
                 else:
                     extra_kwargs[key] = value
 
             _raise_unknown_mlx_training_args(extra_kwargs)
 
-            if warmup_ratio is not None and "warmup_steps" not in filtered_kwargs:
+            if _is_mlx_no_save_strategy(extra_kwargs.get("save_strategy", None)):
+                filtered_kwargs["save_steps"] = 0
+
+            if warmup_ratio is not None and not warmup_steps_explicit:
                 import math as _math
                 max_steps = filtered_kwargs.get(
                     "max_steps",

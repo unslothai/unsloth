@@ -99,6 +99,8 @@ def test_mlx_training_arguments_do_not_warn_for_implemented_or_falsey_extras():
             max_steps = 10,
             padding_free = False,
             remove_unused_columns = False,
+            assistant_only_loss = False,
+            completion_only_loss = False,
         )
 
     assert args.warmup_steps == 2
@@ -120,6 +122,20 @@ def test_mlx_training_arguments_prefer_canonical_max_seq_length():
     assert dict_args.max_seq_length == 456
     assert args._unsloth_mlx_max_seq_length_explicit is True
     assert dict_args._unsloth_mlx_max_seq_length_explicit is True
+
+
+def test_mlx_training_arguments_preserve_explicit_positive_warmup_steps():
+    """Explicit warmup_steps should take precedence over warmup_ratio."""
+    unsloth = _import_mlx_unsloth()
+
+    args = unsloth.UnslothTrainingArguments(
+        max_steps = 10,
+        warmup_steps = 5,
+        warmup_ratio = 0.1,
+    )
+
+    assert args.warmup_steps == 5
+    assert args._unsloth_mlx_warmup_steps_explicit is True
 
 
 def test_mlx_training_arguments_preserve_explicit_epoch_training():
@@ -206,8 +222,11 @@ def test_mlx_training_arguments_normalize_optim_and_object_aliases():
     class ArgsObject:
         optim = "adamw_8bit"
         max_length = 321
+        max_steps = 10
         save_steps = 500
         save_strategy = "no"
+        warmup_ratio = 0.1
+        warmup_steps = 0
 
     with pytest.warns(RuntimeWarning, match = "save_strategy"):
         args = unsloth._coerce_mlx_training_args(ArgsObject())
@@ -215,6 +234,8 @@ def test_mlx_training_arguments_normalize_optim_and_object_aliases():
     assert args.optim == "adamw"
     assert args.max_seq_length == 321
     assert args.save_steps == 0
+    assert args.warmup_steps == 1
+    assert args._unsloth_mlx_warmup_steps_explicit is False
 
 
 def test_mlx_training_arguments_accept_supported_notebook_kwargs():
@@ -277,6 +298,19 @@ def test_mlx_training_arguments_accept_supported_notebook_kwargs():
     assert args.dataset_kwargs == {"skip_prepare_dataset": True}
     assert args.gradient_checkpointing_kwargs == {"use_reentrant": False}
     assert args.save_strategy == "steps"
+
+
+def test_mlx_training_arguments_honor_direct_no_save_strategy():
+    """Direct kwargs should map save_strategy=no to save_steps=0."""
+    unsloth = _import_mlx_unsloth()
+
+    with pytest.warns(RuntimeWarning, match = "save_strategy"):
+        args = unsloth.UnslothTrainingArguments(
+            save_strategy = "no",
+            save_steps = 500,
+        )
+
+    assert args.save_steps == 0
 
 
 def test_mlx_trainer_accepts_common_sft_kwargs():

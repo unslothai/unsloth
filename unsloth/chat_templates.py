@@ -28,8 +28,12 @@ __all__ = [
 ]
 
 from transformers import StoppingCriteria, StoppingCriteriaList
-from torch import LongTensor, FloatTensor
-from transformers.models.llama.modeling_llama import logger
+from transformers.utils import logging
+try:
+    from torch import LongTensor, FloatTensor
+except ImportError:
+    LongTensor = FloatTensor = None
+logger = logging.get_logger(__name__)
 import os
 import shutil
 import re
