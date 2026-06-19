@@ -232,15 +232,13 @@ let promptQueuePrevStoreRunning = false;
 let promptQueueWaitingForTargetIdle = false;
 let promptQueueStoreUnsub: (() => void) | null = null;
 let promptQueueRetryTimer: ReturnType<typeof setTimeout> | null = null;
-let promptQueueItemSequence = 0;
 
 function compactIds(ids: Array<string | null | undefined>) {
   return Array.from(new Set(ids.filter((id): id is string => Boolean(id))));
 }
 
 function createPromptQueueItemId() {
-  promptQueueItemSequence += 1;
-  return `prompt-queue-${Date.now()}-${promptQueueItemSequence}`;
+  return `prompt-queue-${crypto.randomUUID()}`;
 }
 
 function stopPromptQueueSubscription({
@@ -3139,6 +3137,10 @@ function promptQueueStatusLabel(status: PromptQueueUIItemStatus) {
       return "Next";
     case "queued":
       return "Queued";
+    default: {
+      const exhaustiveStatus: never = status;
+      throw new Error(`Unhandled prompt queue status: ${exhaustiveStatus}`);
+    }
   }
 }
 
