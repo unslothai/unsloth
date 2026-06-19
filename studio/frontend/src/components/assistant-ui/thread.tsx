@@ -57,6 +57,8 @@ import {
   getForkCount,
 } from "@/features/chat/api/chat-api";
 import { sentAudioNames } from "@/features/chat/api/chat-adapter";
+import { TTS_AUDIO_TYPES, useTtsPlayer } from "@/features/chat/hooks/use-tts-player";
+import { VoiceOrb } from "@/components/assistant-ui/voice-orb";
 import {
   PromptStorageDialog,
   exportConversationShareGPT,
@@ -143,6 +145,7 @@ import {
   RefreshCwIcon,
   SquareIcon,
   TerminalIcon,
+  Volume2Icon,
   XIcon,
 } from "lucide-react";
 import {
@@ -891,6 +894,7 @@ export const Thread: FC<{
             hideComposer={hideComposer}
             bottomOffsetPx={footerBottomPx}
           />
+          <VoiceOrb />
 
           {!hideComposer && (
             <AuiIf condition={({ thread }) => hideWelcome || !thread.isEmpty}>
@@ -1018,6 +1022,7 @@ const ThreadComposerDock: FC<{
   onHeightChange?: (height: number | null) => void;
 }> = ({ disabled, threadId, onHeightChange }) => {
   const { overlay } = useGeneratedImageOverlay();
+  const voiceOrbActive = useChatRuntimeStore((s) => s.voiceOrbState !== null);
 
   // Report dock height so the viewport reserves matching scroll space when
   // attachments or multiline input grow the composer.
@@ -1040,7 +1045,7 @@ const ThreadComposerDock: FC<{
       ref={dockRef}
       className={cn(
         "aui-thread-composer-dock pointer-events-none absolute bottom-0 left-0 right-0 md:right-[10px]",
-        overlay ? "z-40" : "z-20",
+        overlay || voiceOrbActive ? "z-40" : "z-20",
       )}
     >
       {/* Fade the top edge so scrolling text is not cut off by a hard line. */}
@@ -2412,6 +2417,219 @@ const ImagesToggle: FC = () => {
   );
 };
 
+// Module-level value: survives the ThreadWelcome → ThreadComposerDock remount
+// that occurs when the first message is sent.
+let _voiceMode: "off" | "configuring" | "active" = "off";
+// Registered by the mounted VoiceEngine so the plus-menu Voice item can drive
+// the toggle (and its in-gesture primeAudio) from a different component.
+let _voiceToggle: (() => void) | null = null;
+
+const VoiceEngine: FC = () => {
+  const aui = useAui();
+  const [voiceMode, setVoiceModeState] = useState(_voiceMode);
+  const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const prevRunningRef = useRef(false);
+  // voiceModeRef is only written in toggle/activate — never in the render body.
+  const voiceModeRef = useRef(_voiceMode);
+  const isSpeakingRef = useRef(false);
+  const auiRef = useRef(aui);
+  auiRef.current = aui;
+
+  const isThreadRunning = useAuiState(({ thread }) => thread.isRunning);
+  const dictationStatusType = useAuiState(
+    ({ composer }) => composer.dictation?.status.type,
+  );
+  const dictationTranscript = useAuiState(
+    ({ composer }) => composer.dictation?.transcript ?? "",
+  );
+  const activeAudioType = useChatRuntimeStore((s) => {
+    const m = s.models.find((m) => m.id === s.params.checkpoint);
+    return m?.audioType ?? null;
+  });
+  const selectedVoiceModelId = useChatRuntimeStore((s) => s.selectedVoiceModelId);
+  const voiceSlotLoaded = voiceMode === "active" && selectedVoiceModelId !== null;
+
+  // Called after speaking ends (or immediately if there's nothing to speak).
+  const resumeListen = useCallback(() => {
+    if (voiceModeRef.current === "active") {
+      if (!auiRef.current.composer().getState().dictation) {
+        document
+          .querySelector<HTMLButtonElement>('button[aria-label="Dictate"]')
+          ?.click();
+      }
+    }
+  }, []);
+
+  const { isSpeaking, speak, stop, primeAudio } = useTtsPlayer(activeAudioType, resumeListen, voiceSlotLoaded);
+  isSpeakingRef.current = isSpeaking;
+  const speakRef = useRef(speak);
+  speakRef.current = speak;
+
+  // Sync derived orb state to the store so VoiceOrb can read it without prop-drilling.
+  const setVoiceOrbState = useChatRuntimeStore((s) => s.setVoiceOrbState);
+  useEffect(() => {
+    if (voiceMode !== "active") { setVoiceOrbState(null); return; }
+    if (isThreadRunning)        { setVoiceOrbState("thinking"); return; }
+    if (isSpeaking)             { setVoiceOrbState("speaking"); return; }
+    setVoiceOrbState("listening");
+  }, [voiceMode, isThreadRunning, isSpeaking, setVoiceOrbState]);
+
+  // Helper: transition to "active" and start the mic.
+  const activateLoop = useCallback(() => {
+    _voiceMode = "active";
+    voiceModeRef.current = "active";
+    setVoiceModeState("active");
+    if (!auiRef.current.thread().getState().isRunning && !isSpeakingRef.current) {
+      document
+        .querySelector<HTMLButtonElement>('button[aria-label="Dictate"]')
+        ?.click();
+    }
+  }, []);
+
+  // On remount: restore "active" only — "configuring" stays as-is (no mic).
+  useEffect(() => {
+    if (_voiceMode !== "active" || isThreadRunning) return;
+    document
+      .querySelector<HTMLButtonElement>('button[aria-label="Dictate"]')
+      ?.click();
+  }, []); // mount only
+
+  // Watch the store: when it transitions from "configuring" → "active"
+  // (triggered externally by the voice-model dropdown pick), activate the loop.
+  const storeVoiceMode = useChatRuntimeStore((s) => s.voiceMode);
+  useEffect(() => {
+    if (
+      storeVoiceMode === "active" &&
+      voiceModeRef.current === "configuring"
+    ) {
+      activateLoop();
+    }
+  }, [storeVoiceMode, activateLoop]);
+
+  // Run lifecycle: stop dictation when model starts; speak + resume mic when done.
+  useEffect(() => {
+    if (isThreadRunning) {
+      prevRunningRef.current = true;
+      if (voiceModeRef.current === "active") {
+        if (silenceTimerRef.current) {
+          clearTimeout(silenceTimerRef.current);
+          silenceTimerRef.current = null;
+        }
+        const composer = auiRef.current.composer();
+        if (composer.getState().dictation) composer.stopDictation();
+      }
+      return;
+    }
+    if (!prevRunningRef.current) return;
+    prevRunningRef.current = false;
+
+    if (voiceModeRef.current !== "active" || isSpeakingRef.current) return;
+
+    const messages = auiRef.current.thread().getState().messages;
+    let text = "";
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const msg = messages[i];
+      if (msg.role !== "assistant") continue;
+      for (const part of msg.content as Array<{
+        type: string;
+        text?: string;
+      }>) {
+        if (part.type === "text" && part.text) text += part.text;
+      }
+      break;
+    }
+    if (!text) {
+      resumeListen();
+      return;
+    }
+    speakRef.current(text);
+    // Start dictation during TTS so barge-in can fire on transcript updates.
+    // TODO: the mic hears the speaker output — model voice can trigger spurious
+    // transcript updates and barge itself in. Proper fix is echo cancellation or
+    // matching transcripts against the TTS text. Leaving as follow-up.
+    if (!auiRef.current.composer().getState().dictation) {
+      document
+        .querySelector<HTMLButtonElement>('button[aria-label="Dictate"]')
+        ?.click();
+    }
+  }, [isThreadRunning, resumeListen]);
+
+  // Silence timer: only fires in "active" state.
+  useEffect(() => {
+    if (dictationStatusType !== "running") return;
+    if (voiceModeRef.current !== "active") return;
+
+    // Barge-in: new non-empty transcript fragment while TTS is playing → interrupt immediately.
+    if (isSpeakingRef.current && dictationTranscript.trim()) {
+      stop();
+    }
+
+    if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+    silenceTimerRef.current = setTimeout(() => {
+      silenceTimerRef.current = null;
+      if (voiceModeRef.current !== "active") return;
+      const composer = auiRef.current.composer();
+      composer.stopDictation();
+      if (composer.getState().isEditing && composer.getState().text.trim()) {
+        composer.send();
+      }
+    }, 1500);
+
+    return () => {
+      if (silenceTimerRef.current) {
+        clearTimeout(silenceTimerRef.current);
+        silenceTimerRef.current = null;
+      }
+    };
+  }, [dictationTranscript, dictationStatusType, stop]);
+
+  const toggle = useCallback(() => {
+    // OFF → CONFIGURING (show dropdown, don't start mic)
+    // CONFIGURING → OFF (user cancelled before picking)
+    // ACTIVE → OFF (turn off the loop)
+    const next: "off" | "configuring" =
+      voiceModeRef.current === "off" ? "configuring" : "off";
+    _voiceMode = next;
+    voiceModeRef.current = next;
+    setVoiceModeState(next);
+    useChatRuntimeStore.getState().setVoiceMode(next);
+
+    if (next === "configuring") {
+      primeAudio();
+    }
+
+    if (next === "off") {
+      if (silenceTimerRef.current) {
+        clearTimeout(silenceTimerRef.current);
+        silenceTimerRef.current = null;
+      }
+      stop();
+      const composer = auiRef.current.composer();
+      if (composer.getState().dictation) composer.stopDictation();
+    }
+    // "configuring": dropdown appears via store; mic stays off.
+  }, [stop, primeAudio]);
+
+  useEffect(() => {
+    return () => {
+      if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
+    };
+  }, []);
+
+  // Expose the toggle so the plus-menu Voice item can drive it (and run
+  // primeAudio inside that click gesture) from a different component.
+  useEffect(() => {
+    _voiceToggle = toggle;
+    return () => {
+      if (_voiceToggle === toggle) _voiceToggle = null;
+    };
+  }, [toggle]);
+
+  // Headless: the visible control now lives in the plus menu (ComposerToolsMenu).
+  // This component stays mounted only to keep the voice loop's hooks/effects alive.
+  return null;
+};
+
 const ArtifactsToggle: FC = () => {
   const artifactsEnabled = useChatRuntimeStore((s) => s.artifactsEnabled);
   const setArtifactsEnabled = useChatRuntimeStore((s) => s.setArtifactsEnabled);
@@ -2546,6 +2764,14 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
   side = "bottom",
 }) => {
   const navigate = useNavigate();
+  const voiceMode = useChatRuntimeStore((s) => s.voiceMode);
+  const voiceActiveAudioType = useChatRuntimeStore((s) => {
+    const m = s.models.find((mm) => mm.id === s.params.checkpoint);
+    return m?.audioType ?? null;
+  });
+  const voiceAvailable =
+    (typeof window !== "undefined" && "speechSynthesis" in window) ||
+    TTS_AUDIO_TYPES.has(voiceActiveAudioType ?? "");
   const toolsEnabled = useChatRuntimeStore((s) => s.toolsEnabled);
   const setToolsEnabled = useChatRuntimeStore((s) => s.setToolsEnabled);
   const codeToolsEnabled = useChatRuntimeStore((s) => s.codeToolsEnabled);
@@ -2964,6 +3190,27 @@ const ComposerToolsMenu: FC<{ side?: "top" | "bottom" }> = ({
             ) : null}
           </DropdownMenuItem>
         )}
+        {voiceAvailable && (
+          <DropdownMenuItem
+            className={voiceMode !== "off" ? "text-primary font-medium" : undefined}
+            onSelect={() => _voiceToggle?.()}
+          >
+            <MicIcon className="size-[18px]" />
+            Voice
+            {voiceMode === "active" ? (
+              <HugeiconsIcon
+                icon={Tick02Icon}
+                strokeWidth={2}
+                className="ml-auto"
+              />
+            ) : voiceMode === "configuring" ? (
+              <span
+                className="ml-auto size-2 rounded-full bg-amber-500"
+                aria-hidden
+              />
+            ) : null}
+          </DropdownMenuItem>
+        )}
         <DropdownMenuSeparator />
         {pinnedPlusItems.map((id) => (
           <Fragment key={id}>{plusMenuNodes[id]}</Fragment>
@@ -3019,6 +3266,7 @@ const ComposerRightControls: FC<{
   return (
     <div className="aui-composer-action-wrapper flex shrink-0 items-center gap-1.5">
       <ReasoningToggle side={menuSide} />
+      <VoiceEngine />
       <ComposerPrimitive.If dictation={false}>
         <ComposerPrimitive.Dictate asChild={true}>
           <TooltipIconButton
@@ -3549,6 +3797,44 @@ const EditAssistantMessageButton: FC = () => {
   );
 };
 
+const SpeakButton: FC = () => {
+  const aui = useAui();
+  const activeAudioType = useChatRuntimeStore((s) => {
+    const m = s.models.find((m) => m.id === s.params.checkpoint);
+    return m?.audioType ?? null;
+  });
+  const voiceSlotLoaded = useChatRuntimeStore(
+    (s) => s.voiceMode === "active" && s.selectedVoiceModelId !== null,
+  );
+  const { isSpeaking, speak, stop } = useTtsPlayer(activeAudioType, undefined, voiceSlotLoaded);
+
+  const handleSpeak = () => {
+    if (isSpeaking) {
+      stop();
+      return;
+    }
+    const text = aui.message().getCopyText();
+    if (!text) return;
+    speak(text);
+  };
+
+  return (
+    <TooltipIconButton
+      tooltip={isSpeaking ? "Stop speaking" : "Speak"}
+      onClick={handleSpeak}
+    >
+      {isSpeaking ? (
+        <SquareIcon
+          strokeWidth={1.75}
+          className="size-icon animate-pulse fill-current"
+        />
+      ) : (
+        <Volume2Icon strokeWidth={1.75} className="size-icon" />
+      )}
+    </TooltipIconButton>
+  );
+};
+
 const AssistantActionBar: FC = () => {
   const { forkMessage, forkDisabled } = useForkMessageAction();
 
@@ -3557,6 +3843,7 @@ const AssistantActionBar: FC = () => {
       hideWhenRunning={true}
       className="aui-assistant-action-bar-root col-start-3 row-start-2 flex items-center gap-1 text-chat-icon-fg [&_button:not([data-slot=message-timing-trigger])]:size-8 [&_button]:!rounded-full [&_button:hover]:bg-chat-icon-bg-hover [&_button:hover]:text-chat-icon-fg-hover"
     >
+      <SpeakButton />
       <CopyButton />
       <EditAssistantMessageButton />
       <ActionBarPrimitive.Reload asChild={true}>

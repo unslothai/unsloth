@@ -24,6 +24,7 @@ export interface BackendLoraInfo {
   base_model?: string | null;
   source?: "training" | "exported" | null;
   export_type?: "lora" | "merged" | "gguf" | null;
+  audio_type?: string | null;
 }
 
 export interface ListLorasResponse {
