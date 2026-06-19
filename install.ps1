@@ -1644,7 +1644,7 @@ exit 0
             if ($studioHomeEnv) {
                 # Expand a leading ~ like the canonical resolver; else GetFullPath
                 # keeps the literal ~ (cwd-relative) and the hipInfo escapes the filter.
-                if ($studioHomeEnv -eq "~" -or $studioHomeEnv -like "~/*" -or $studioHomeEnv -like "~\*") {
+                if (($studioHomeEnv -eq "~" -or $studioHomeEnv -like "~/*" -or $studioHomeEnv -like "~\*") -and -not [string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
                     $studioHomeEnv = (Join-Path $env:USERPROFILE $studioHomeEnv.Substring(1).TrimStart('/', '\'))
                 }
                 $venvRoots += (Join-Path $studioHomeEnv "unsloth_studio")

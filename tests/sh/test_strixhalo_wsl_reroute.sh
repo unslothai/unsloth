@@ -15,6 +15,11 @@ INSTALL_SH="$SCRIPT_DIR/../../install.sh"
 PASS=0
 FAIL=0
 
+# All fixtures/temp files live under one root removed on exit, so a set -e abort
+# (or a failed assertion that stops the script) can't leak dirs into $TMPDIR.
+_TMP_ROOT=$(mktemp -d)
+trap 'rm -rf "$_TMP_ROOT"' EXIT
+
 assert_contains() {
     _label="$1"; _hay="$2"; _needle="$3"
     case "$_hay" in
@@ -35,7 +40,7 @@ assert_absent() {
 # fixture dir $1, plus stub substep()/colors. The mock wsl.exe lives in $1/bin.
 build_func() {
     _fix="$1"
-    _f=$(mktemp)
+    _f=$(mktemp -p "$_TMP_ROOT")
     {
         echo 'substep() { printf "  %s\n" "$1"; }'
         echo 'C_WARN=""; C_OK=""'
@@ -53,7 +58,7 @@ build_func() {
 # make_fixture DXG CPU LIBROCDXG VER HAS2404
 #   DXG/LIBROCDXG/HAS2404 = 1|0 ; CPU = strix|other ; VER = e.g. 26.04|24.04
 make_fixture() {
-    _d=$(mktemp -d)
+    _d=$(mktemp -d -p "$_TMP_ROOT")
     mkdir -p "$_d/bin" "$_d/rocm-lib" "$_d/rocm-lib64"
     [ "$1" = 1 ] && : > "$_d/dxg"
     if [ "$2" = strix ]; then
@@ -122,11 +127,13 @@ assert_contains "librocdxg present -> no route"         "$_out" "__NOROUTE__"
 assert_absent   "librocdxg present -> not rerouted"     "$_out" "__ROUTED__"
 rm -rf "$_d"
 
-# 4) 26.04 but no Ubuntu-24.04 distro -> NO route (install-only-on-prompt path)
+# 4) 26.04 but no Ubuntu-24.04 distro -> NO route (install-only-on-prompt path).
+#    Unsupported distro with no reroute target must also skip the origin ROCm bootstrap.
 _d=$(make_fixture 1 strix 0 26.04 0)
 _out=$(run_func "$_d")
 assert_contains "26.04 + no 24.04 distro -> no route"   "$_out" "__NOROUTE__"
 assert_absent   "26.04 + no 24.04 -> not rerouted"      "$_out" "__ROUTED__"
+assert_contains "26.04 + no 24.04 -> skip ROCm bootstrap" "$_out" "SKIP_ROCM=1"
 rm -rf "$_d"
 
 # 5) No /dev/dxg (no WSL GPU passthrough) -> NO route
@@ -189,6 +196,7 @@ _out=$(run_func "$_d" STUDIO_LOCAL_INSTALL=true)
 assert_contains "--local -> no auto-reroute"            "$_out" "__NOROUTE__"
 assert_contains "--local -> prints re-run guidance"     "$_out" "re-run it from Ubuntu-24.04"
 assert_absent   "--local -> reroute command not run"    "$_out" "__ROUTED__"
+assert_contains "--local -> skip ROCm bootstrap"        "$_out" "SKIP_ROCM=1"
 rm -rf "$_d"
 
 # 14) Custom UNSLOTH_STUDIO_HOME (env mode) is forwarded as an export into the reroute.
@@ -223,6 +231,24 @@ rm -rf "$_d"
 _d=$(make_fixture 1 strix 0 24.04 1)
 _out=$(run_func "$_d")
 assert_absent   "supported 24.04 -> skip guard not forced"        "$_out" "SKIP_ROCM=1"
+rm -rf "$_d"
+
+# 19) No wsl.exe on an unsupported distro -> can't reach a 24.04 target, so stay
+#     CPU-only AND set the skip guard (don't bootstrap ROCm into 26.04 etc.).
+_d=$(make_fixture 1 strix 0 26.04 1)
+rm -f "$_d/bin/wsl.exe"
+_out=$(run_func "$_d")
+assert_contains "no wsl.exe -> no route"                          "$_out" "__NOROUTE__"
+assert_absent   "no wsl.exe -> not rerouted"                      "$_out" "__ROUTED__"
+assert_contains "no wsl.exe -> skip ROCm bootstrap"               "$_out" "SKIP_ROCM=1"
+rm -rf "$_d"
+
+# 20) UNSLOTH_ROCM_WSL_AUTO=1 consent is forwarded as an export into the reroute so
+#     the child auto-enables the GPU bootstrap instead of the desktop-app prompt.
+_d=$(make_fixture 1 strix 0 26.04 1)
+_out=$(run_func "$_d" UNSLOTH_ROCM_WSL_AUTO=1 \
+        UNSLOTH_WSL_REROUTE_CMD='echo auto=[$UNSLOTH_ROCM_WSL_AUTO]')
+assert_contains "UNSLOTH_ROCM_WSL_AUTO forwarded to reroute"      "$_out" "auto=[1]"
 rm -rf "$_d"
 
 echo ""

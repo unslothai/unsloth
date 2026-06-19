@@ -16,13 +16,18 @@ UNINSTALL_SH="$SCRIPT_DIR/../../scripts/uninstall.sh"
 PASS=0
 FAIL=0
 
+# All fixtures/temp files live under one root removed on exit, so a set -e abort
+# (or a failed assertion that stops the script) can't leak dirs into $TMPDIR.
+_TMP_ROOT=$(mktemp -d)
+trap 'rm -rf "$_TMP_ROOT"' EXIT
+
 assert_file()   { _l="$1"; [ -f "$2" ] && { echo "  PASS: $_l"; PASS=$((PASS+1)); } || { echo "  FAIL: $_l (missing $2)"; FAIL=$((FAIL+1)); }; }
 assert_nofile() { _l="$1"; [ -f "$2" ] && { echo "  FAIL: $_l (unexpected $2)"; FAIL=$((FAIL+1)); } || { echo "  PASS: $_l"; PASS=$((PASS+1)); }; }
 assert_dir()    { _l="$1"; [ -d "$2" ] && { echo "  PASS: $_l"; PASS=$((PASS+1)); } || { echo "  FAIL: $_l (missing dir $2)"; FAIL=$((FAIL+1)); }; }
 assert_nodir()  { _l="$1"; [ -d "$2" ] && { echo "  FAIL: $_l (unexpected dir $2)"; FAIL=$((FAIL+1)); } || { echo "  PASS: $_l"; PASS=$((PASS+1)); }; }
 
 # Extract just the function definition (12-space indented in the WSL branch).
-FUNC_FILE=$(mktemp)
+FUNC_FILE=$(mktemp -p "$_TMP_ROOT")
 sed -n '/_drop_shared_icon_if_unused() {/,/^            }/p' "$UNINSTALL_SH" > "$FUNC_FILE"
 # shellcheck disable=SC1090
 . "$FUNC_FILE"
@@ -30,7 +35,7 @@ sed -n '/_drop_shared_icon_if_unused() {/,/^            }/p' "$UNINSTALL_SH" > "
 # make_user [shortcut_relpath] : a fresh fake Windows user dir with unsloth.ico,
 # optionally placing an "Unsloth Studio*.lnk" at the given relative path.
 make_user() {
-    _u=$(mktemp -d)
+    _u=$(mktemp -d -p "$_TMP_ROOT")
     mkdir -p "$_u/AppData/Local/Unsloth Studio"
     : > "$_u/AppData/Local/Unsloth Studio/unsloth.ico"
     if [ -n "${1:-}" ]; then
@@ -78,7 +83,7 @@ assert_nofile "no shortcut -> icon removed (non-empty dir)" "$u/$ICO"
 assert_dir    "non-empty dir kept" "$u/$DIR"
 
 # 7. Missing data dir is a safe no-op (no error, exit 0).
-u=$(mktemp -d)
+u=$(mktemp -d -p "$_TMP_ROOT")
 if _drop_shared_icon_if_unused "$u"; then
     echo "  PASS: missing data dir -> no-op"; PASS=$((PASS+1))
 else

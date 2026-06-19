@@ -441,6 +441,13 @@ def test_ps_venv_probe_expands_tilde_for_custom_studio_home(ps):
         f"{ps.name}: the venv-internal probe must expand a leading ~ in the custom "
         "Studio home before seeding the venv root (mirroring the canonical resolver)"
     )
+    # The ~ expansion must be guarded on a non-empty USERPROFILE; otherwise
+    # Join-Path $env:USERPROFILE throws on a service/SYSTEM account with no profile,
+    # aborting the whole probe (and the install).
+    assert "IsNullOrWhiteSpace($env:USERPROFILE)" in block, (
+        f"{ps.name}: the ~ expansion must guard against an empty $env:USERPROFILE "
+        "before Join-Path (else it throws on a profile-less account)"
+    )
 
 
 def _ps_floor_map(text, prefix):

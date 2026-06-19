@@ -1459,9 +1459,17 @@ _maybe_reroute_strixhalo_to_2404() {
     # AMD supports ROCm-on-WSL on both Ubuntu 24.04 and 22.04 (Radeon/Ryzen docs),
     # so leave the user on either; only reroute newer/unsupported distros (e.g. 26.04).
     case "$_rr_ver" in 24.04|22.04) return 0 ;; esac
-    command -v wsl.exe >/dev/null 2>&1 || return 0
+    # Past here the distro is unsupported for ROCm-on-WSL. If we can't reroute to a
+    # 24.04 target, stay CPU-only AND skip the later origin-distro ROCm bootstrap (it
+    # ignores distro version, so it would otherwise install ROCm into 26.04 etc.).
+    command -v wsl.exe >/dev/null 2>&1 || { UNSLOTH_SKIP_ROCM_WSL_SETUP=1; return 0; }
     # Route only to an already-installed 24.04.
-    wsl.exe -l -q 2>/dev/null | tr -d '\000\r' | grep -qiF "Ubuntu-24.04" || return 0
+    wsl.exe -l -q 2>/dev/null | tr -d '\000\r' | grep -qiF "Ubuntu-24.04" || {
+        substep "ROCm-on-WSL (GPU) needs Ubuntu 24.04; this distro is Ubuntu ${_rr_ver:-unknown}." "$C_WARN"
+        substep "No Ubuntu-24.04 distro found; staying CPU-only. Install it and re-run there for GPU." "$C_WARN"
+        UNSLOTH_SKIP_ROCM_WSL_SETUP=1
+        return 0
+    }
 
     echo ""
     substep "ROCm-on-WSL (GPU) needs Ubuntu 24.04; this distro is Ubuntu ${_rr_ver:-unknown}." "$C_WARN"
@@ -1472,6 +1480,8 @@ _maybe_reroute_strixhalo_to_2404() {
         substep "This is a --local install; re-run it from Ubuntu-24.04 instead:" "$C_WARN"
         substep "  wsl -d Ubuntu-24.04 -- bash -lc 'cd <your checkout> && ./install.sh --local'" "$C_WARN"
         substep "Continuing CPU-only in Ubuntu ${_rr_ver:-this distro} for now." "$C_WARN"
+        # Unsupported distro, can't reroute a --local checkout: skip the origin ROCm bootstrap.
+        UNSLOTH_SKIP_ROCM_WSL_SETUP=1
         return 0
     fi
     # Forward the caller's options/env so the rerouted install matches what was asked
@@ -1479,6 +1489,9 @@ _maybe_reroute_strixhalo_to_2404() {
     _rr_q() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
     _rr_exports="set -o pipefail; export UNSLOTH_WSL_REROUTED=1"
     [ "$_STUDIO_HOME_REDIRECT" = "env" ] && _rr_exports="$_rr_exports; export UNSLOTH_STUDIO_HOME=$(_rr_q "$STUDIO_HOME")"
+    # Forward an explicit ROCm-bootstrap consent (e.g. Tauri) so the child auto-enables
+    # the GPU instead of falling back to the desktop-app prompt path.
+    [ "${UNSLOTH_ROCM_WSL_AUTO:-0}" = "1" ] && _rr_exports="$_rr_exports; export UNSLOTH_ROCM_WSL_AUTO=1"
     _rr_args=""
     [ "$PACKAGE_NAME" != "unsloth" ] && _rr_args="$_rr_args --package $(_rr_q "$PACKAGE_NAME")"
     [ -n "$_USER_PYTHON" ] && _rr_args="$_rr_args --python $(_rr_q "$_USER_PYTHON")"
