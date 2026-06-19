@@ -3128,6 +3128,7 @@ async def generate_stream(
             )
 
     async def stream():
+        gen = None
         try:
             gen = backend.generate_chat_response(
                 messages = request.messages,
@@ -3151,6 +3152,12 @@ async def generate_stream(
             backend.reset_generation_state()
             logger.error(f"Error during generation: {e}", exc_info = True)
             yield f"data: {json.dumps({'error': _friendly_error(e)})}\n\n"
+        finally:
+            if gen is not None:
+                try:
+                    gen.close()
+                except (RuntimeError, ValueError):
+                    pass
 
     return StreamingResponse(
         stream(),
