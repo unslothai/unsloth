@@ -225,7 +225,8 @@ jobs:
               tests/sh/test_nvcc_meets_llama_minimum.sh \
               tests/sh/test_tauri_install_exit_order.sh \
               tests/sh/test_torch_constraint.sh \
-              tests/sh/test_torch_flavor.sh; do
+              tests/sh/test_torch_flavor.sh \
+              tests/sh/test_with_llama_cpp_dir_flag.sh; do
               echo "::group::$s"
               bash "$s"
               echo "::endgroup::"
