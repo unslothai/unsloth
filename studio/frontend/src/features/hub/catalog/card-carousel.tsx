@@ -108,7 +108,9 @@ export function CardCarousel<T>({
         ref={scrollerRef}
         onScroll={updateArrows}
         aria-label={ariaLabel}
-        className="hub-carousel flex snap-x gap-4 overflow-x-auto pb-4 pt-2"
+        // px-2 + -mx-2 give card shadows room so the edge cards aren't clipped;
+        // scroll-px-2 keeps snap-start aligned with the heading.
+        className="hub-carousel -mx-2 flex snap-x scroll-px-2 gap-4 overflow-x-auto px-2 pb-4 pt-2"
       >
         {items.map((item) => (
           <div
