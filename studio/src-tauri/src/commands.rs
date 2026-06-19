@@ -321,17 +321,29 @@ pub fn get_server_logs(state: tauri::State<'_, BackendState>) -> Vec<String> {
     }
 }
 
-/// Open the Unsloth Studio directory in the system file manager.
-#[tauri::command]
-pub fn open_logs_dir() -> Result<(), String> {
-    let home = dirs::home_dir().ok_or("Could not determine home directory")?;
-    let dir = home.join(".unsloth").join("studio");
-
-    if !dir.exists() {
+/// Open an existing directory in the system file manager. Validates the path
+/// up front so callers get a clean error instead of a raw OS failure.
+fn open_existing_dir(dir: &std::path::Path) -> Result<(), String> {
+    if !dir.is_dir() {
         return Err(format!("Directory does not exist: {}", dir.display()));
     }
+    open::that(dir).map_err(|e| format!("Failed to open directory: {}", e))
+}
 
-    open::that(&dir).map_err(|e| format!("Failed to open directory: {}", e))
+/// Open the Unsloth Studio directory in the system file manager.
+#[tauri::command]
+pub fn open_logs_dir(window: tauri::WebviewWindow) -> Result<(), String> {
+    crate::native_intents::ensure_main_window(&window)?;
+    let home = dirs::home_dir().ok_or("Could not determine home directory")?;
+    open_existing_dir(&home.join(".unsloth").join("studio"))
+}
+
+/// Open a models directory (resolved by the backend, e.g. the HF cache) in the
+/// system file manager.
+#[tauri::command]
+pub fn open_models_dir(window: tauri::WebviewWindow, path: String) -> Result<(), String> {
+    crate::native_intents::ensure_main_window(&window)?;
+    open_existing_dir(std::path::Path::new(&path))
 }
 
 /// Start the first-launch installation process.
