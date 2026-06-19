@@ -51,6 +51,7 @@ import {
   PackageIcon,
   Search01Icon,
 } from "@hugeicons/core-free-icons";
+import { useSearch } from "@tanstack/react-router";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
@@ -209,6 +210,23 @@ export function ExportPage() {
     };
   }, []);
 
+  // Apply the ?run= deep link (e.g. from a finished run's "Export to GGUF"
+  // button) once its run appears in the checkpoint list: select the run and
+  // default to GGUF. The main checkpoint is auto-selected further below, after
+  // the model-change effect that clears the checkpoint.
+  const { run: preselectRun } = useSearch({ from: "/export" });
+  const appliedRunRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!preselectRun || models.length === 0) return;
+    if (appliedRunRef.current === preselectRun) return;
+    const match = models.find((m) => m.name === preselectRun);
+    if (!match) return;
+    appliedRunRef.current = preselectRun;
+    setSourceMode("checkpoint");
+    setSelectedModelIdx(match.name);
+    setExportMethod("gguf");
+  }, [preselectRun, models]);
+
   // ---- Fetch local models for direct export ----
   useEffect(() => {
     const controller = new AbortController();
@@ -243,6 +261,15 @@ export function ExportPage() {
     () => selectedModelData?.checkpoints ?? [],
     [selectedModelData],
   );
+
+  // For a ?run= deep link, default to the run's main checkpoint once its
+  // checkpoints load (runs after the model-change effect clears the checkpoint).
+  useEffect(() => {
+    if (appliedRunRef.current == null) return;
+    if (appliedRunRef.current !== selectedModelIdx) return;
+    if (checkpoint != null || checkpointsForModel.length === 0) return;
+    setCheckpoint(checkpointsForModel[0].display_name);
+  }, [selectedModelIdx, checkpoint, checkpointsForModel]);
 
   // Derive training info from selected model's API metadata
   const baseModelName = selectedModelData?.base_model ?? "—";

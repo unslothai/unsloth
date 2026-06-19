@@ -783,6 +783,7 @@ export const en = {
     progress: {
       title: "Training Progress",
       liveMetrics: "Live training metrics",
+      exportGguf: "Export to GGUF",
       openConfig: "Open training config",
       configLabel: "Training Config",
       hyperparams: "Hyperparams",
