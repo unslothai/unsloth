@@ -1842,12 +1842,12 @@ def get_chat_template(
     map_eos_token = True,
     system_message = None,
     patch_saving = True,
-    use_zoo_tokenizer_patch = False,
+    use_zoo_tokenizer_patch = None,
 ):
     assert(type(map_eos_token) is bool)
     import sys
     is_mlx_backend = getattr(sys.modules.get("unsloth"), "DEVICE_TYPE", None) == "mlx"
-    if not use_zoo_tokenizer_patch:
+    if use_zoo_tokenizer_patch is None:
         use_zoo_tokenizer_patch = is_mlx_backend
     old_tokenizer = tokenizer
 
@@ -2759,7 +2759,13 @@ extra_eos_tokens = None,
 
 
 def create_stopping_criteria(tokenizer, stop_word = "eos_token"):
-    import torch
+    try:
+        import torch
+    except ImportError as exc:
+        raise ImportError(
+            "Unsloth: create_stopping_criteria requires PyTorch and is only "
+            "supported on Torch backends."
+        ) from exc
 
     class StoppingCriteriaSub(StoppingCriteria):
         __slots__ = "stop_token", "single_match", "length",
