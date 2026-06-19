@@ -395,32 +395,76 @@ def _verify_global_reachability(display_host: str, port: int) -> None:
         pass
 
 
-def _emit_startup_output(host: str, port: int, display_host: str) -> None:
-    """Print the access banner plus any post-startup warnings.
+def _tool_policy_notice(host: str, secure: bool, enable_tools: "Optional[bool]") -> str:
+    """One-line tool-policy summary for the plain-server startup banner, so a
+    network-reachable launch is never silent about code execution."""
+    if enable_tools is False:
+        return "Server-side tools are DISABLED (--disable-tools)."
+    state = (
+        "ENABLED (--enable-tools)"
+        if enable_tools
+        else "ENABLED by default (per-request setting honored)"
+    )
+    if secure:
+        return (
+            f"Server-side tools are {state}, reachable via the authenticated "
+            "Cloudflare HTTPS tunnel. Anyone with the API key can run code on "
+            "this machine. Do not share the API key. Pass --disable-tools to turn off."
+        )
+    from utils.host_policy import is_external_host
 
-    Extracted from ``_run`` so the banner/warning wiring is testable. The
-    ``localhost``-to-::1 mismatch warning and the wildcard reachability
-    check are mutually exclusive (the mismatch helper returns None for any
-    non-127.0.0.1 bind, and wildcard binds are never 127.0.0.1), so the
-    trailing stop hint is emitted exactly once.
-    """
+    if host in ("0.0.0.0", "::") or is_external_host(host):
+        return (
+            f"Server-side tools are {state} and this port is network-reachable. "
+            "Anyone who can reach it with the API key can run code on this "
+            "machine. Do not share the API key. Pass --disable-tools to turn off."
+        )
+    return f"Server-side tools are {state} for loopback. Pass --disable-tools to turn off."
+
+
+def _emit_tool_policy_notice(host: str, secure: bool, enable_tools: "Optional[bool]") -> None:
+    print(_tool_policy_notice(host, secure, enable_tools), flush = True)
+
+
+def _emit_secure_startup_output(port: int, enable_tools: "Optional[bool]" = None) -> None:
+    """Secure-mode banner: only the Cloudflare link (loopback has no public raw URL)."""
+    print("")
+    print("🦥 Unsloth Studio is running (secure)")
+    print("─" * 52)
+    _print_cloudflare_line()
+    print(f"  On this machine only: http://127.0.0.1:{port}/")
+    print("─" * 52)
+    _emit_tool_policy_notice("127.0.0.1", True, enable_tools)
+    print_studio_stop_hint()
+
+
+def _emit_startup_output(
+    host: str,
+    port: int,
+    display_host: str,
+    secure: bool = False,
+    enable_tools: "Optional[bool]" = None,
+) -> None:
+    """Print the access banner, post-startup warnings, the tool-policy notice,
+    then a single stop hint. Extracted from ``_run`` so the wiring is testable."""
+    if secure:
+        _emit_secure_startup_output(port, enable_tools)
+        return
     wildcard_bind = host in ("0.0.0.0", "::")
     localhost_mismatch_url = _localhost_ipv6_mismatch_url(host, port)
-    # For wildcard binds, run the reachability check between the URL
-    # section and the stop hint so the stop hint stays last.
     print_studio_access_banner(
         port = port,
         bind_host = host,
         display_host = display_host,
-        include_stop_hint = not wildcard_bind and not localhost_mismatch_url,
+        include_stop_hint = False,
     )
     if localhost_mismatch_url:
         _print_localhost_ipv6_mismatch_warning(localhost_mismatch_url, port)
-        print_studio_stop_hint()
     elif wildcard_bind:
         _verify_global_reachability(display_host, port)
         _print_cloudflare_line()
-        print_studio_stop_hint()
+    _emit_tool_policy_notice(host, False, enable_tools)
+    print_studio_stop_hint()
 
 
 def _print_cloudflare_line() -> None:
@@ -623,6 +667,13 @@ def _graceful_shutdown(server = None):
     except Exception as e:
         logger.warning("Error stopping Cloudflare tunnel: %s", e)
 
+    # 7. Backstop sweep for any adopted child the steps above missed.
+    try:
+        from utils.process_lifetime import terminate_all
+        terminate_all()
+    except Exception as e:
+        logger.warning("Error in process-lifetime sweep: %s", e)
+
     logger.info("All subprocesses cleaned up")
 
 
@@ -811,6 +862,25 @@ def _setup_server_disk_logging():
     return log_path
 
 
+def _cloudflare_tunnel_should_start(
+    *, cloudflare: bool, host: str, secure: bool, api_only: bool, is_colab: bool
+) -> bool:
+    """Whether to start the Cloudflare tunnel. --secure tunnels a loopback bind too;
+    non-secure keeps the 0.0.0.0-only rule. Colab/api-only never tunnel."""
+    return cloudflare and (host == "0.0.0.0" or secure) and not api_only and not is_colab
+
+
+def _apply_cli_tool_policy(enable_tools: "Optional[bool]") -> None:
+    """Honor an explicit --enable-tools/--disable-tools; None leaves the policy
+    unset (tools default on, per-request enable_tools honored). Host is never
+    inspected here."""
+    if enable_tools is None:
+        return
+    from state.tool_policy import set_tool_policy
+
+    set_tool_policy(enable_tools)
+
+
 def run_server(
     host: str = "127.0.0.1",
     port: int = 8888,
@@ -819,6 +889,8 @@ def run_server(
     api_only: bool = False,
     llama_parallel_slots: int = 1,
     cloudflare: bool = True,
+    secure: bool = False,
+    enable_tools: "Optional[bool]" = None,
 ):
     """
     Start the FastAPI server.
@@ -830,12 +902,32 @@ def run_server(
         silent: Suppress startup messages
         api_only: API server only, no frontend (for Tauri desktop app)
         llama_parallel_slots: parallel slots for llama-server
+        enable_tools: explicit --enable-tools/--disable-tools policy; None leaves
+            the default (tools on, per-request enable_tools honored)
 
     Note:
         Signal handlers are NOT registered here so embedders (e.g. Colab) keep
         their own interrupt semantics; standalone callers register them after.
     """
     global _server, _shutdown_event
+
+    # Reap every child if the parent dies abnormally (terminal close, Task
+    # Manager kill, SIGKILL); must run before any child can spawn.
+    from utils.process_lifetime import initialize_parent_lifetime
+
+    initialize_parent_lifetime()
+
+    # --secure exposes only the Cloudflare link: force a loopback bind so the raw
+    # port is never public (even with -H 0.0.0.0), and reject the contradictory combo.
+    if secure and not cloudflare:
+        raise SystemExit(
+            "A secure Cloudflare link is not allowed, use --not-secure which provides a 0.0.0.0 link"
+        )
+    if secure:
+        host = "127.0.0.1"
+
+    # `unsloth studio run` installs its own resolved policy and passes None here.
+    _apply_cli_tool_policy(enable_tools)
 
     # Windows cp1252 can't encode emoji; reconfigure stdout to UTF-8.
     if sys.platform == "win32" and hasattr(sys.stdout, "reconfigure"):
@@ -975,6 +1067,13 @@ def run_server(
     # backend, not whatever a proxy/tunnel exposed. For ephemeral binds (port==0)
     # leave it unset so handlers fall back to the request scope / base_url.
     app.state.server_port = port if port and port > 0 else None
+    # Direct (non-tunnel) base for the API panel; resolve 0.0.0.0 to the LAN IP.
+    if port and port > 0:
+        _direct_host = _resolve_external_ip() if host == "0.0.0.0" else host
+        app.state.server_url = f"http://{_direct_host}:{port}"
+    else:
+        app.state.server_url = None
+    app.state.secure = secure
     app.state.llama_parallel_slots = llama_parallel_slots
 
     # Expose a shutdown callable before the server accepts requests so
@@ -1025,6 +1124,9 @@ def run_server(
     import atexit
 
     atexit.register(_remove_pid_file)
+    from utils.process_lifetime import terminate_all
+
+    atexit.register(terminate_all)
 
     # Output port for Tauri (api-only), only after sockets bind and startup done.
     if api_only:
@@ -1036,7 +1138,13 @@ def run_server(
     global _cloudflare_url
     _cloudflare_url = None
     app.state.cloudflare_url = None
-    _cloudflare_enabled = cloudflare and host == "0.0.0.0" and not api_only and not _IS_COLAB
+    _cloudflare_enabled = _cloudflare_tunnel_should_start(
+        cloudflare = cloudflare,
+        host = host,
+        secure = secure,
+        api_only = api_only,
+        is_colab = _IS_COLAB,
+    )
     if _cloudflare_enabled:
         try:  # best-effort: any failure must not block startup
             from cloudflare_tunnel import start_studio_tunnel, stop_studio_tunnel
@@ -1049,8 +1157,19 @@ def run_server(
         except Exception as e:
             logger.debug("Cloudflare tunnel skipped: %s", e)
 
+    # --secure fails closed: no tunnel means no public link, so exit rather than
+    # silently fall back to a raw port.
+    if secure and not _cloudflare_url:
+        print(
+            "A secure Cloudflare link is not allowed, use --not-secure which provides a 0.0.0.0 link",
+            file = sys.stderr,
+            flush = True,
+        )
+        _graceful_shutdown(_server)
+        sys.exit(1)
+
     if not silent:
-        _emit_startup_output(host, port, display_host)
+        _emit_startup_output(host, port, display_host, secure = secure, enable_tools = enable_tools)
 
     return app
 
@@ -1094,6 +1213,31 @@ if __name__ == "__main__":
         help = "Auto-create a free Cloudflare HTTPS tunnel when bound to 0.0.0.0 "
         "(default on; --no-cloudflare to disable)",
     )
+    parser.add_argument(
+        "--secure",
+        action = argparse.BooleanOptionalAction,
+        default = False,
+        help = "Expose ONLY a Cloudflare HTTPS link: bind localhost and fail closed "
+        "if the tunnel can't start. Without it, --not-secure also serves the raw "
+        "0.0.0.0 port, which is reachable from anywhere on the network",
+    )
+    # Tri-state tool policy: no flag -> None (tools on, per-request honored);
+    # --enable-tools/--disable-tools force on/off.
+    parser.add_argument(
+        "--enable-tools",
+        dest = "enable_tools",
+        action = "store_true",
+        default = None,
+        help = "Force server-side tools (web search, code execution) on for "
+        "every request. Default: on for every bind, per-request setting honored.",
+    )
+    parser.add_argument(
+        "--disable-tools",
+        dest = "enable_tools",
+        action = "store_false",
+        default = None,
+        help = "Force server-side tools off for every request.",
+    )
     # Mirror unsloth_cli/commands/studio.py's _PARALLEL_*. Default 1 is for direct
     # backend launches; `unsloth studio run` always passes its own value (4).
     _PARALLEL_MIN = 1
@@ -1113,6 +1257,10 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if not _PARALLEL_MIN <= args.parallel <= _PARALLEL_MAX:
         parser.error(f"--parallel must be between {_PARALLEL_MIN} and {_PARALLEL_MAX}")
+    if args.secure and not args.cloudflare:
+        parser.error(
+            "--secure requires the Cloudflare tunnel; do not combine it with --no-cloudflare"
+        )
 
     kwargs = dict(
         host = args.host,
@@ -1121,6 +1269,8 @@ if __name__ == "__main__":
         api_only = args.api_only,
         llama_parallel_slots = args.parallel,
         cloudflare = args.cloudflare,
+        secure = args.secure,
+        enable_tools = args.enable_tools,
     )
     if args.frontend is not None:
         kwargs["frontend_path"] = Path(args.frontend)

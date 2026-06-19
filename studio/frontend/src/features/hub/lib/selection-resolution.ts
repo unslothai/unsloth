@@ -124,22 +124,6 @@ export function resolveDownloadedSelection({
       filteredCachedIds,
       filteredLocalIds,
       localRows,
-    ) ??
-    resolveDownloadedId(
-      filteredCachedRows[0]?.id ?? null,
-      cachedById,
-      localById,
-      filteredCachedIds,
-      filteredLocalIds,
-      localRows,
-    ) ??
-    resolveDownloadedId(
-      filteredLocalRows[0]?.id ?? null,
-      cachedById,
-      localById,
-      filteredCachedIds,
-      filteredLocalIds,
-      localRows,
     ) ?? { selectedId: null, hiddenByFilters: false }
   );
 }

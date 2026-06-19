@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { LoaderCircleIcon, XIcon } from "lucide-react";
+import { XIcon } from "lucide-react";
+import { Spinner } from "@/components/ui/spinner";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { File02Icon } from "@hugeicons/core-free-icons";
 import { Badge } from "@/components/assistant-ui/badge";
@@ -40,11 +41,7 @@ export function DocumentStatusChip({
       <span className="truncate">{filename}</span>
       {/* spinner while indexing, else close button */}
       {processing ? (
-        <LoaderCircleIcon
-          className="shrink-0 animate-spin size-3.5 text-muted-foreground"
-          role="status"
-          aria-label="Loading"
-        />
+        <Spinner className="shrink-0 size-3.5 text-muted-foreground" />
       ) : onRemove ? (
         <button
           type="button"

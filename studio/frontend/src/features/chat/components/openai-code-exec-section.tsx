@@ -45,7 +45,7 @@ import {
 import { CHAT_HISTORY_UPDATED_EVENT } from "../api/chat-api";
 import type { ExternalProviderConfig } from "../external-providers";
 import { ensureThreadRecord } from "../runtime-provider";
-import { InfoHint } from "../chat-settings-sheet";
+import { InfoHint } from "@/components/ui/info-hint";
 import {
   getStoredChatThread,
   listStoredChatThreads,

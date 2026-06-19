@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
+import { consumeNativePathToken } from "@/features/native-intents/api";
 import { formatFastApiDetail } from "@/lib/format-fastapi-error";
 import type {
   MessageRecord,
@@ -10,7 +11,9 @@ import type {
   ThreadRecord,
 } from "../types";
 import type {
+  ApiMonitorEntry,
   AudioGenerationResponse,
+  ApiMonitorResponse,
   GgufVariantsResponse,
   InferenceStatusResponse,
   ListLorasResponse,
@@ -70,6 +73,18 @@ export async function getInferenceStatus(): Promise<InferenceStatusResponse> {
   return parseJsonOrThrow<InferenceStatusResponse>(response);
 }
 
+export async function getApiMonitor(): Promise<ApiMonitorResponse> {
+  const response = await authFetch("/api/inference/monitor");
+  return parseJsonOrThrow<ApiMonitorResponse>(response);
+}
+
+export async function getApiMonitorEntry(id: string): Promise<ApiMonitorEntry> {
+  const response = await authFetch(
+    `/api/inference/monitor/${encodeURIComponent(id)}`,
+  );
+  return parseJsonOrThrow<ApiMonitorEntry>(response);
+}
+
 export async function loadModel(
   payload: LoadModelRequest,
 ): Promise<LoadModelResponse> {
@@ -96,9 +111,52 @@ export async function validateModel(
       native_path_lease: payload.nativePathLease ?? null,
       hf_token: payload.hf_token,
       gguf_variant: payload.gguf_variant ?? null,
+      // Send the intended load settings so validate's VRAM check matches the
+      // follow-up /load and doesn't unload for a load /load would then reject.
+      max_seq_length: payload.max_seq_length,
+      load_in_4bit: payload.load_in_4bit,
     }),
   });
   return parseJsonOrThrow<ValidateModelResponse>(response);
+}
+
+/**
+ * Read a GGUF's native context length from its local header (no GPU load, no
+ * download). Returns null when the file isn't downloaded yet, the model isn't a
+ * GGUF, or it's gated. For a native (drag-drop / picked) file, pass
+ * `nativePathToken` so the backend reads the granted local path. Used by the
+ * deferred-load staging flow to fill the context slider before the single load.
+ */
+export async function fetchGgufContextLength(payload: {
+  model_path: string;
+  gguf_variant?: string | null;
+  hf_token?: string | null;
+  nativePathToken?: string | null;
+}): Promise<number | null> {
+  let nativePathLease: string | null = null;
+  if (payload.nativePathToken) {
+    try {
+      nativePathLease = (
+        await consumeNativePathToken(payload.nativePathToken, "validate-model")
+      ).nativePathLease;
+    } catch {
+      // Lease expired / revoked: degrade to no context (the load can re-mint).
+      return null;
+    }
+  }
+  const response = await authFetch("/api/inference/validate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model_path: payload.model_path,
+      gguf_variant: payload.gguf_variant ?? null,
+      hf_token: payload.hf_token ?? null,
+      native_path_lease: nativePathLease,
+      include_context_length: true,
+    }),
+  });
+  const res = await parseJsonOrThrow<ValidateModelResponse>(response);
+  return res.context_length ?? null;
 }
 
 export async function unloadModel(payload: UnloadModelRequest): Promise<void> {
@@ -377,6 +435,45 @@ export async function updateChatThread(
   const thread = await parseJsonOrThrow<ThreadRecord>(response);
   notifyChatHistoryUpdated();
   return thread;
+}
+
+export interface ForkChatThreadResult {
+  thread: ThreadRecord;
+  messages: MessageRecord[];
+  containerSnapshotWarning: string | null;
+}
+
+export async function forkChatThread(
+  threadId: string,
+  args: { messageId: string; newThreadId: string; createdAt: number },
+): Promise<ForkChatThreadResult> {
+  const response = await authFetch(
+    `/api/chat/threads/${encodeURIComponent(threadId)}/fork`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(args),
+    },
+  );
+  const data = await parseJsonOrThrow<{
+    thread: ThreadRecord;
+    messages: MessageRecord[];
+    containerSnapshotWarning: string | null;
+  }>(response);
+  notifyChatHistoryUpdated();
+  return data;
+}
+
+export async function getForkCount(
+  threadId: string,
+  messageId: string,
+): Promise<number> {
+  const response = await authFetch(
+    `/api/chat/threads/${encodeURIComponent(threadId)}/messages/${encodeURIComponent(messageId)}/forks`,
+  );
+  if (response.status === 404) return 0;
+  const data = await parseJsonOrThrow<{ count: number }>(response);
+  return data.count;
 }
 
 export async function deleteChatThreads(threadIds: string[]): Promise<void> {

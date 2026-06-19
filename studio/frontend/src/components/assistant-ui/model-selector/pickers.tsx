@@ -272,10 +272,22 @@ function ListLabel({
 
 /** Format bytes to a human-readable size string. */
 function formatBytes(bytes: number): string {
-  if (bytes === 0) return "0 B";
+  // Guard non-positive / non-finite sizes (0, missing -> NaN, Infinity) so we
+  // never render "NaN undefined" or a negative unit index.
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
+  // Decimal (base-1000) units to match what Hugging Face reports for a repo's
+  // file sizes -- e.g. 217 GB, not the 201.8 GiB a base-1024 divide would show.
+  // (GPU-fit math below stays base-1024 since VRAM is binary.)
+  // Divide iteratively rather than via Math.log, which has float error at exact
+  // powers of 1000 (log(1e12)/log(1000) = 3.9999... would mislabel 1 TB as
+  // "1000 GB"); the loop also can't run off the end of units.
   const units = ["B", "KB", "MB", "GB", "TB"];
-  const i = Math.floor(Math.log(bytes) / Math.log(1024));
-  const value = bytes / 1024 ** i;
+  let i = 0;
+  let value = bytes;
+  while (value >= 1000 && i < units.length - 1) {
+    value /= 1000;
+    i += 1;
+  }
   return `${value.toFixed(value < 10 ? 1 : 0)} ${units[i]}`;
 }
 
@@ -1357,15 +1369,14 @@ export function HubModelPicker({
             <>
               <ListLabel>LM Studio</ListLabel>
               {lmStudioModels.map((m) => {
+                const isGgufFile = m.path.toLowerCase().endsWith(".gguf");
                 const isGguf = isGgufRepo(m.id) || isGgufRepo(m.display_name);
                 const optionKey = makeModelOptionKey("lm-studio", m.id);
                 return (
                   <div key={m.id}>
                     <ModelRow
                       label={m.model_id ?? m.display_name}
-                      meta={
-                        isGguf || m.path.toLowerCase().endsWith(".gguf") ? "GGUF" : "Local"
-                      }
+                      meta={isGguf || isGgufFile ? "GGUF" : "Local"}
                       selected={value === m.id}
                       optionProps={hubModelList.getOptionProps(
                         optionKey,
@@ -1381,6 +1392,7 @@ export function HubModelPicker({
                             source: "local",
                             isLora: false,
                             isDownloaded: true,
+                            isGguf: isGgufFile,
                           });
                         }
                       }}
@@ -1594,6 +1606,7 @@ export function HubModelPicker({
                             source: "local",
                             isLora: false,
                             isDownloaded: true,
+                            isGguf: true,
                           });
                         } else if (isGguf) {
                           setExpandedGguf((prev) =>

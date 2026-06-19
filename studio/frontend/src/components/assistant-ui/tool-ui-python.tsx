@@ -7,8 +7,10 @@ import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { getAuthToken } from "@/features/auth/session";
 import type { ToolCallMessagePartComponent } from "@assistant-ui/react";
 import { code as codePlugin } from "@streamdown/code";
-import { CheckIcon, CodeIcon, CopyIcon } from "lucide-react";
-import { ToolCallSpinner } from "@/components/assistant-ui/tool-call-spinner";
+import { CodeIcon, CopyIcon } from "lucide-react";
+import { Tick02Icon } from "@/lib/tick-icon";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { Spinner } from "@/components/ui/spinner";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Streamdown } from "streamdown";
 import {
@@ -63,7 +65,7 @@ function CopyBtn({ text }: { text: string }) {
       aria-label="Copy to clipboard"
     >
       {copied ? (
-        <CheckIcon className="size-3" />
+        <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="size-3" />
       ) : (
         <CopyIcon className="size-3" />
       )}
@@ -149,7 +151,7 @@ const PythonToolUIImpl: ToolCallMessagePartComponent = ({
           {/* Output */}
           {isRunning ? (
             <div className="mt-2 flex items-center gap-2 text-sm text-muted-foreground">
-              <ToolCallSpinner className="size-3.5" />
+              <Spinner className="size-3.5" />
               <span>Running&hellip;</span>
             </div>
           ) : output ? (
