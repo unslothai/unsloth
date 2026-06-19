@@ -7337,7 +7337,6 @@ async def _responses_stream(
         resp = None
         lines_iter = None
         disconnect_event = threading.Event()
-        disconnect_watcher = None
         try:
             req = client.build_request(
                 "POST", target_url, json = body, headers = {"Connection": "close"}
@@ -7397,14 +7396,10 @@ async def _responses_stream(
                 )
                 return
 
-            disconnect_watcher = asyncio.create_task(
-                _await_disconnect_then_close(request, resp, disconnect_event)
-            )
             lines_iter = resp.aiter_lines()
             async for raw_line in _aiter_llama_stream_items(
                 lines_iter,
                 cancel_event = disconnect_event,
-                request = request,
                 first_token_deadline = first_token_deadline,
                 response = resp,
             ):
@@ -7536,6 +7531,7 @@ async def _responses_stream(
                         llama_backend.context_length,
                     )
         except asyncio.CancelledError:
+            disconnect_event.set()
             api_monitor.finish(monitor_id, "cancelled")
             raise
         except (httpx.RemoteProtocolError, httpx.ReadError, httpx.CloseError) as e:
@@ -7561,12 +7557,6 @@ async def _responses_stream(
             )
             return
         finally:
-            if disconnect_watcher is not None:
-                disconnect_watcher.cancel()
-                try:
-                    await disconnect_watcher
-                except (asyncio.CancelledError, Exception):
-                    pass
             if lines_iter is not None:
                 try:
                     await lines_iter.aclose()
