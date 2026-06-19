@@ -251,20 +251,30 @@ def _resolve_base_model(model_name: str) -> str:
         try:
             with open(config_json_path) as f:
                 cfg = json.load(f)
-            # Unsloth writes "model_name"; HF writes "_name_or_path"
-            base = cfg.get("model_name") or cfg.get("_name_or_path")
-            if base and base != str(local_path):
-                logger.info(
-                    "Resolved checkpoint '%s' → base model '%s' (via config.json)",
-                    model_name,
-                    base,
-                )
-                return base
+            # Unsloth writes "model_name"; HF writes "_name_or_path". Try both:
+            # if "model_name" is self-referential (equals the local path), the
+            # useful base id may still live in "_name_or_path".
+            for _key in ("model_name", "_name_or_path"):
+                base = cfg.get(_key)
+                if base and base != str(local_path):
+                    logger.info(
+                        "Resolved checkpoint '%s' → base model '%s' (via config.json)",
+                        model_name,
+                        base,
+                    )
+                    return base
         except Exception as exc:
             logger.debug("Could not read %s: %s", config_json_path, exc)
 
-    # --- Only try the heavier fallback for local directories ----------------
-    if local_path.is_dir():
+    # --- Only try the heavier fallback for genuine LoRA adapters ------------
+    # ``get_base_model_from_lora`` returns None for anything that isn't a LoRA
+    # adapter, so the only effect of taking this branch for a full checkpoint is
+    # the side effect of importing ``utils.models``, which eagerly imports
+    # ``transformers``. During subprocess activation that pins the *default*
+    # transformers into ``sys.modules`` BEFORE the correct sidecar venv is
+    # prepended to ``sys.path``, so the worker then loads the wrong version.
+    # Gate on a real adapter_config.json to keep activation import-clean.
+    if adapter_cfg_path.is_file():
         try:
             from utils.models import get_base_model_from_lora
             base = get_base_model_from_lora(model_name)
@@ -504,6 +514,12 @@ def _check_config_needs_510(model_name: str) -> bool:
     return result
 
 
+def _norm_separators(s: str) -> str:
+    """Collapse ``_``, ``.`` and whitespace to ``-`` so underscore/dot aliases
+    (e.g. ``Qwen3_5``, ``Qwen3_Next``) match the canonical hyphen/dot substrings."""
+    return "".join("-" if ch in "_. \t" else ch for ch in s)
+
+
 def _tier_from_name(name: str) -> tuple[str, str] | None:
     """Return ``(tier, matched_reason)`` from name-based substring rules, or
     ``None`` if nothing matches.
@@ -513,19 +529,23 @@ def _tier_from_name(name: str) -> tuple[str, str] | None:
     Used both for direct model-name checks and as a fallback when a local
     checkpoint's ``config.json`` architectures aren't yet enumerated in the
     config sets.
+
+    Matching is separator-insensitive: a name is matched both verbatim and with
+    ``_ . whitespace`` collapsed to ``-``, so ``Qwen3_5-MoE`` resolves the same
+    as ``Qwen3.5-MoE``.
     """
     lowered = name.lower()
-    if "assistant" in lowered and ("gemma-4" in lowered or "gemma4" in lowered):
+    norm = _norm_separators(lowered)
+    if "assistant" in lowered and ("gemma-4" in norm or "gemma4" in norm):
         return "510", "gemma-4 assistant variant"
-    for s in TRANSFORMERS_510_MODEL_SUBSTRINGS:
-        if s in lowered:
-            return "510", s
-    for s in TRANSFORMERS_550_MODEL_SUBSTRINGS:
-        if s in lowered:
-            return "550", s
-    for s in TRANSFORMERS_5_MODEL_SUBSTRINGS:
-        if s in lowered:
-            return "530", s
+    for substrings, tier in (
+        (TRANSFORMERS_510_MODEL_SUBSTRINGS, "510"),
+        (TRANSFORMERS_550_MODEL_SUBSTRINGS, "550"),
+        (TRANSFORMERS_5_MODEL_SUBSTRINGS, "530"),
+    ):
+        for s in substrings:
+            if s in lowered or _norm_separators(s) in norm:
+                return tier, s
     return None
 
 

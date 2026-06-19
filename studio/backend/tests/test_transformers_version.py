@@ -36,6 +36,7 @@ from utils.transformers_version import (
     _check_config_needs_530,
     _check_config_needs_550,
     _config_needs_530,
+    _norm_separators,
     _tier_from_name,
     _config_json_cache,
     _tokenizer_class_cache,
@@ -1057,3 +1058,108 @@ class TestCheckConfigNeeds530:
             _check_config_needs_530("cached-model")
             _check_config_needs_530("cached-model")
             assert mock_load.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# _norm_separators
+# ---------------------------------------------------------------------------
+
+
+class TestNormSeparators:
+    def test_underscore_to_hyphen(self):
+        assert _norm_separators("qwen3_5") == "qwen3-5"
+
+    def test_dot_to_hyphen(self):
+        assert _norm_separators("qwen3.5") == "qwen3-5"
+
+    def test_hyphen_unchanged(self):
+        assert _norm_separators("gemma-4") == "gemma-4"
+
+    def test_mixed(self):
+        assert _norm_separators("Qwen3_5.MoE") == "Qwen3-5-MoE"
+
+    def test_whitespace_to_hyphen(self):
+        assert _norm_separators("some model") == "some-model"
+
+    def test_empty(self):
+        assert _norm_separators("") == ""
+
+
+# ---------------------------------------------------------------------------
+# _tier_from_name — separator-insensitive matching
+# ---------------------------------------------------------------------------
+
+
+class TestTierFromNameSeparatorNorm:
+    """Verify that underscore/dot aliases in model IDs resolve to the same
+    tier as their canonical hyphen/dot counterparts."""
+
+    def test_qwen3_underscore_5_returns_530(self):
+        tier, _ = _tier_from_name("Qwen/Qwen3_5-7B")
+        assert tier == "530"
+
+    def test_qwen3_next_underscore_returns_530(self):
+        tier, _ = _tier_from_name("org/Qwen3_Next-14B")
+        assert tier == "530"
+
+    def test_gemma_4_underscore_returns_550(self):
+        tier, _ = _tier_from_name("google/gemma_4_E2B_it")
+        assert tier == "550"
+
+    def test_gemma_4_12b_underscore_returns_510(self):
+        tier, _ = _tier_from_name("unsloth/gemma_4_12b_it")
+        assert tier == "510"
+
+    def test_canonical_dot_still_works(self):
+        tier, _ = _tier_from_name("Qwen/Qwen3.5-7B")
+        assert tier == "530"
+
+    def test_unrelated_underscores_not_promoted(self):
+        assert _tier_from_name("meta_llama/Llama_3_8B") is None
+
+
+# ---------------------------------------------------------------------------
+# _resolve_base_model — model_name-then-_name_or_path fallback
+# ---------------------------------------------------------------------------
+
+
+class TestResolveBaseModelNameOrPathFallback:
+    """When config.json has both 'model_name' (self-referential local path) and
+    '_name_or_path' (original HF ID), _resolve_base_model must use _name_or_path."""
+
+    def test_name_or_path_used_when_model_name_is_self_ref(self, tmp_path: Path):
+        d = tmp_path / "my-qwen35-finetune"
+        d.mkdir()
+        (d / "config.json").write_text(
+            json.dumps({
+                "model_name": str(d),
+                "_name_or_path": "Qwen/Qwen3.5-7B",
+            })
+        )
+        assert _resolve_base_model(str(d)) == "Qwen/Qwen3.5-7B"
+
+    def test_model_name_used_when_not_self_ref(self, tmp_path: Path):
+        d = tmp_path / "adapter"
+        d.mkdir()
+        (d / "config.json").write_text(
+            json.dumps({
+                "model_name": "unsloth/Qwen3.5-7B-bnb-4bit",
+                "_name_or_path": "Qwen/Qwen3.5-7B",
+            })
+        )
+        # model_name is not the local path, so it wins
+        assert _resolve_base_model(str(d)) == "unsloth/Qwen3.5-7B-bnb-4bit"
+
+    def test_tier_resolved_via_name_or_path_when_model_name_self_refs(self, tmp_path: Path):
+        """End-to-end: get_transformers_tier picks up the sidecar tier from
+        _name_or_path even when model_name is set to the checkpoint's own path."""
+        d = tmp_path / "my-custom-finetune"
+        d.mkdir()
+        (d / "config.json").write_text(
+            json.dumps({
+                "model_type": "future_unknown_type",
+                "model_name": str(d),
+                "_name_or_path": "Qwen/Qwen3.5-7B",
+            })
+        )
+        assert get_transformers_tier(str(d)) == "530"
