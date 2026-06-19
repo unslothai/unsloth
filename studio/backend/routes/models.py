@@ -93,6 +93,8 @@ try:
         _extract_quant_label,
         _is_big_endian_gguf_path,
         is_audio_input_type,
+        detect_audio_type,
+        detect_audio_type_from_local,
     )
     from core.inference import get_inference_backend
     from utils.paths import (
@@ -125,6 +127,8 @@ except ImportError:
         _extract_quant_label,
         _is_big_endian_gguf_path,
         is_audio_input_type,
+        detect_audio_type,
+        detect_audio_type_from_local,
     )
     from core.inference import get_inference_backend
     from utils.paths import (
@@ -1771,6 +1775,29 @@ async def discard_remote_code_download(
         return {"deleted": False, "reason": "error"}
 
 
+def _detect_lora_audio_type(
+    model_path: str, model_type: str, base_model: Optional[str]
+) -> Optional[str]:
+    """Return the audio_type for a training output or export, or None on failure.
+
+    For LoRA adapters the base model (an HF repo ID) holds the tokenizer, so we
+    use the cache-aware detect_audio_type on that.  For merged / full-finetune
+    outputs we read tokenizer_config.json directly from the local path.
+    GGUF exports have no tokenizer on disk, so they always return None.
+    """
+    try:
+        if model_type == "gguf":
+            return None
+        if model_type == "lora":
+            if base_model and "/" in base_model and not base_model.startswith("/"):
+                return detect_audio_type(base_model)
+            return None
+        # merged / full-finetune: read local tokenizer
+        return detect_audio_type_from_local(model_path)
+    except Exception:
+        return None
+
+
 @router.get("/loras")
 async def scan_loras(
     outputs_dir: str = Query(
@@ -1794,6 +1821,7 @@ async def scan_loras(
         trained_models = scan_trained_models(outputs_dir = resolved_outputs_dir)
         for display_name, model_path, model_type in trained_models:
             base_model = get_base_model_from_checkpoint(model_path)
+            audio_type = _detect_lora_audio_type(model_path, model_type, base_model)
             lora_list.append(
                 LoRAInfo(
                     display_name = display_name,
@@ -1801,12 +1829,14 @@ async def scan_loras(
                     base_model = base_model,
                     source = "training",
                     export_type = model_type,
+                    audio_type = audio_type,
                 )
             )
 
         # Scan exported models (merged, LoRA, base — skips GGUF)
         exported = scan_exported_models(exports_dir = resolved_exports_dir)
         for display_name, model_path, export_type, base_model in exported:
+            audio_type = _detect_lora_audio_type(model_path, export_type or "", base_model)
             lora_list.append(
                 LoRAInfo(
                     display_name = display_name,
@@ -1814,6 +1844,7 @@ async def scan_loras(
                     base_model = base_model,
                     source = "exported",
                     export_type = export_type,
+                    audio_type = audio_type,
                 )
             )
 

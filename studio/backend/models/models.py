@@ -114,6 +114,9 @@ class LoRAInfo(BaseModel):
     export_type: Optional[str] = Field(
         None, description = "'lora', 'merged', or 'gguf' (for exports)"
     )
+    audio_type: Optional[str] = Field(
+        None, description = "Audio codec type if this is a TTS model (snac, csm, bicodec, dac)"
+    )
 
 
 class LoRAScanResponse(BaseModel):
