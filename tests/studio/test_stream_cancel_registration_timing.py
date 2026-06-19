@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import json
 import threading
 import time
 from pathlib import Path
@@ -587,6 +588,110 @@ def test_unsloth_stream_loop_breaks_on_external_cancel_event():
     assert reset_calls[0] == 1, (
         f"backend.reset_generation_state() must be called exactly once on "
         f"cancel-via-POST, got {reset_calls[0]}"
+    )
+
+
+def test_generate_stream_stays_responsive_under_blocking_next():
+    # Same sync-generator shape as generate_stream, with resp_queue.get modeled
+    # by sleep. The output must stay unchanged while next() moves off-loop.
+    chunks = ["alpha", "beta", "gamma", "delta"]
+
+    def _generate_chat_response():
+        for chunk in chunks:
+            time.sleep(0.08)
+            yield chunk
+
+    def _sse(chunk):
+        return f"data: {json.dumps({'content': chunk})}\n\n"
+
+    async def _direct_loop():
+        out = []
+        for chunk in _generate_chat_response():
+            out.append(_sse(chunk))
+        out.append("data: [DONE]\n\n")
+        return out
+
+    async def _to_thread_loop():
+        _DONE = object()
+        gen = _generate_chat_response()
+        out = []
+        try:
+            while True:
+                chunk = await asyncio.to_thread(next, gen, _DONE)
+                if chunk is _DONE:
+                    break
+                out.append(_sse(chunk))
+            out.append("data: [DONE]\n\n")
+            return out
+        finally:
+            try:
+                gen.close()
+            except (RuntimeError, ValueError):
+                pass
+
+    async def _run_with_heartbeat(loop_coro):
+        ticks = 0
+        max_gap = 0.0
+
+        async def _heartbeat():
+            nonlocal ticks, max_gap
+            last = time.monotonic()
+            while True:
+                await asyncio.sleep(0.01)
+                now = time.monotonic()
+                max_gap = max(max_gap, now - last)
+                last = now
+                ticks += 1
+
+        heartbeat = asyncio.create_task(_heartbeat())
+        await asyncio.sleep(0)
+        try:
+            out = await loop_coro()
+        finally:
+            heartbeat.cancel()
+            try:
+                await heartbeat
+            except asyncio.CancelledError:
+                pass
+        return out, ticks, max_gap
+
+    async def _main():
+        direct_out, direct_ticks, direct_max_gap = await _run_with_heartbeat(_direct_loop)
+        threaded_out, threaded_ticks, threaded_max_gap = await _run_with_heartbeat(
+            _to_thread_loop
+        )
+        return (
+            direct_out,
+            direct_ticks,
+            direct_max_gap,
+            threaded_out,
+            threaded_ticks,
+            threaded_max_gap,
+        )
+
+    (
+        direct_out,
+        direct_ticks,
+        direct_max_gap,
+        threaded_out,
+        threaded_ticks,
+        threaded_max_gap,
+    ) = asyncio.run(_main())
+
+    assert threaded_out == direct_out == [_sse(chunk) for chunk in chunks] + [
+        "data: [DONE]\n\n"
+    ]
+    assert direct_ticks == 0, (
+        f"direct generate_stream loop should block the event loop; "
+        f"got {direct_ticks} heartbeat ticks and max gap {direct_max_gap:.3f}s"
+    )
+    assert threaded_ticks >= 8, (
+        f"to_thread generate_stream loop should let the event loop run; "
+        f"got {threaded_ticks} heartbeat ticks"
+    )
+    assert threaded_max_gap < 0.06, (
+        f"to_thread generate_stream loop should avoid long heartbeat gaps; "
+        f"got {threaded_max_gap:.3f}s"
     )
 
 
