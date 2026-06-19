@@ -7,25 +7,27 @@ Tolerates missing closing tags in either ``<tool_call>{json}</tool_call>``
 or ``<function=name><parameter=k>v...`` shape.
 """
 
-from core.tool_healing import (
-    _TC_END_TAG_RE,
-    _TC_FUNC_CLOSE_RE,
-    _TC_FUNC_START_RE,
-    _TC_GEMMA_END_TAG_RE,
-    _TC_GEMMA_START_RE,
-    _TC_JSON_START_RE,
-    _TC_PARAM_CLOSE_RE,
-    _TC_PARAM_START_RE,
-    _TOOL_ALL_PATS,
-    _TOOL_CLOSED_PATS,
-    _FUNC_CLOSE_TAG,
-    _PARAM_CLOSE_TAG,
-    _balanced_brace_end,
-    _gemma_arguments_to_json,
-    _inside_open_parameter,
-    parse_tool_calls_from_text,
-    strip_tool_call_markup as strip_tool_markup,
-)
+from core import tool_healing as _tool_healing
+
+
+_TOOL_ALL_PATS = _tool_healing._TOOL_ALL_PATS
+
+
+def parse_tool_calls_from_text(
+    content: str,
+    *,
+    id_offset: int = 0,
+    allow_incomplete: bool = True,
+) -> list[dict]:
+    return _tool_healing.parse_tool_calls_from_text(
+        content,
+        id_offset = id_offset,
+        allow_incomplete = allow_incomplete,
+    )
+
+
+def strip_tool_markup(text: str, *, final: bool = False) -> str:
+    return _tool_healing.strip_tool_call_markup(text, final = final)
 
 
 # Prefixes the streaming buffer watches for to gate in-progress text.
