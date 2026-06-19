@@ -365,6 +365,11 @@ def test_runtime_recovery_reloads_without_mtp(monkeypatch):
     while b._spec_fallback_reason != "runtime_error" and time.monotonic() < deadline:
         time.sleep(0.02)
     assert b._spec_fallback_reason == "runtime_error"
+    # The reload thread clears the single-flight flag in its finally, a beat after
+    # it sets the fallback reason -- wait for that instead of racing the thread.
+    deadline = time.monotonic() + 2
+    while b._mtp_runtime_fallback_in_progress and time.monotonic() < deadline:
+        time.sleep(0.02)
     assert b._mtp_runtime_fallback_in_progress is False
 
 
