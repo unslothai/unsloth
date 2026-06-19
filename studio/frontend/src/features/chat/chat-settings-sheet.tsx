@@ -530,9 +530,6 @@ export function ChatSettingsPanel({
   const loadedSpecDraftNMax = useChatRuntimeStore(
     (s) => s.loadedSpecDraftNMax,
   );
-  const modelRequiresTrustRemoteCode = useChatRuntimeStore(
-    (s) => s.modelRequiresTrustRemoteCode,
-  );
   const currentCheckpoint = params.checkpoint;
   const ggufContextLength = useChatRuntimeStore((s) => s.ggufContextLength);
   const ggufLaunchContextLength = useChatRuntimeStore(
@@ -640,10 +637,6 @@ export function ChatSettingsPanel({
     [activePreset, hasUnsavedPresetChanges, presetNameInput, presets],
   );
   const systemPromptEditorDirty = systemPromptDraft !== params.systemPrompt;
-  const trustRemoteCodeMissing =
-    Boolean(currentCheckpoint) &&
-    modelRequiresTrustRemoteCode &&
-    !(params.trustRemoteCode ?? false);
   const showPromptCacheTtlControl = Boolean(
     activeExternalProvider &&
       supportsProviderPromptCacheTtl(activeExternalProvider.providerType),
@@ -1099,38 +1092,8 @@ export function ChatSettingsPanel({
                 </div>
               </>
             )}
-            {!isGguf && params.checkpoint && (
-              <>
-                <div className="flex items-center justify-between gap-3">
-                  <div className="flex min-w-0 items-center gap-1.5">
-                    <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
-                      Enable custom code
-                    </span>
-                    <InfoHint>
-                      Run custom Python from the model repo (e.g. Nemotron).
-                      Only enable for trusted sources.
-                    </InfoHint>
-                  </div>
-                  <Switch
-                    className="panel-switch shrink-0"
-                    checked={params.trustRemoteCode ?? false}
-                    onCheckedChange={set("trustRemoteCode")}
-                  />
-                </div>
-                {trustRemoteCodeMissing && (
-                  <Alert className="rounded-[14px] border-amber-200/70 bg-amber-50/70 px-3 py-2 text-amber-950 dark:border-amber-900/70 dark:bg-amber-950/35 dark:text-amber-100">
-                    <AlertTitle className="text-[12px] font-medium">
-                      Keep custom code enabled for this model
-                    </AlertTitle>
-                    <AlertDescription className="text-[11.5px] leading-[1.45] text-amber-800 dark:text-amber-200">
-                      This model requires custom code to load. You can edit the
-                      toggle, but loading will stay blocked until it is turned
-                      back on.
-                    </AlertDescription>
-                  </Alert>
-                )}
-              </>
-            )}
+            {/* No persistent "enable custom code" toggle: it is consented per model
+                via the load-time review dialog. */}
             {/* Apply/Reset belongs to the model-reload settings above (context
                 length, KV cache, speculative decoding). Render it here, before
                 the Chat Template row, so it never reads as attached to Chat
@@ -1804,7 +1767,7 @@ function ConfirmToolCallsToggle() {
         </div>
         {bypassPermissions ? (
           <span className="text-[11px] text-muted-foreground">
-            Overridden by Bypass Permissions
+            Overridden by Bypass permissions
           </span>
         ) : null}
       </div>
@@ -1830,7 +1793,7 @@ function BypassPermissionsToggle() {
       <div className="flex items-center justify-between gap-3">
         <div className="flex min-w-0 items-center gap-1.5">
           <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
-            Bypass Permissions
+            Bypass permissions
           </span>
           <InfoHint>
             Dangerous. Runs every tool call with no confirmation and disables
@@ -1848,16 +1811,16 @@ function BypassPermissionsToggle() {
         />
       </div>
       {bypassPermissions ? (
-        <span className="text-[11px] text-destructive">
+        <span className="text-[11px] text-bypass">
           Tool calls run with no confirmation and no sandbox.
         </span>
       ) : null}
       <AlertDialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <AlertDialogContent size="sm">
           <AlertDialogHeader>
-            <AlertDialogTitle>Enable Bypass Permissions?</AlertDialogTitle>
+            <AlertDialogTitle>Enable Bypass permissions?</AlertDialogTitle>
             <AlertDialogDescription>
-              Bypass Permissions is dangerous since the AI model might delete,
+              Bypass permissions is dangerous since the AI model might delete,
               corrupt your machine, and or cause real world damage to you or the
               world - only accept if you are certain
             </AlertDialogDescription>

@@ -1445,13 +1445,19 @@ def scan_one(pkg: PackageEntry, workspace: Path) -> tuple[list[Finding], str | N
 # ─────────────────────────────────────────────────────────────────────
 # Baseline allowlist: triaged known-good HIGH/CRITICAL findings so the gate
 # can enforce without red-failing on rare legitimate-library behavior.
-# Matched on ``(normalized package, basename(filename), pattern)`` -- not
+# Matched on ``(normalized package, package-relative path, pattern)`` -- not
 # evidence text -- so a version bump does not reopen a finding, but a *new*
 # kind of finding in a listed file is a different pattern and still fails.
 # Mirrors scan_packages.py. Regenerate with ``--write-baseline``.
 # ─────────────────────────────────────────────────────────────────────
 
 _DEFAULT_BASELINE_PATH = str(Path(__file__).resolve().parent / "scan_npm_packages_baseline.json")
+
+# Bumped when the entry-key semantics change. v2 keys on the package-relative
+# path; v1 stored only a basename, so a v1 entry could suppress a same-named file
+# in a different directory. A pre-v2 baseline with entries is ignored (fail
+# closed) rather than mis-applied.
+_BASELINE_SCHEMA_VERSION = 2
 
 
 def _norm_pkg_name(display: str) -> str:
@@ -1468,9 +1474,21 @@ def _norm_pkg_name(display: str) -> str:
     return s.lower()
 
 
+_NPM_TARBALL_ROOT = "package/"
+
+
+def _relpath_in_package(filename: str) -> str:
+    """Path within the published package, stable across version bumps. npm
+    tarballs root every file at ``package/``; strip it so the key is the real
+    source path (``dist/index.js``) and a new file with the same basename in a
+    different directory is not silently suppressed."""
+    f = (filename or "").replace("\\", "/")
+    return f[len(_NPM_TARBALL_ROOT) :] if f.startswith(_NPM_TARBALL_ROOT) else f
+
+
 def _finding_key(f: Finding) -> tuple[str, str, str]:
-    """Stable allowlist key: normalized package, file basename, pattern."""
-    return (_norm_pkg_name(f.package), os.path.basename(f.filename), f.pattern)
+    """Stable allowlist key: normalized package, package-relative path, pattern."""
+    return (_norm_pkg_name(f.package), _relpath_in_package(f.filename), f.pattern)
 
 
 def _load_baseline(path: str) -> set[tuple[str, str, str]]:
@@ -1483,10 +1501,18 @@ def _load_baseline(path: str) -> set[tuple[str, str, str]]:
     except (OSError, json.JSONDecodeError) as exc:
         print(f"  [WARN] could not read baseline {path}: {exc}", file = sys.stderr)
         return set()
+    entries = data.get("entries", [])
+    if entries and data.get("version") != _BASELINE_SCHEMA_VERSION:
+        print(
+            f"  [WARN] baseline schema v{data.get('version')} predates package-relative "
+            f"keys; ignoring {len(entries)} entr(y/ies). Regenerate with --write-baseline.",
+            file = sys.stderr,
+        )
+        return set()
     keys: set[tuple[str, str, str]] = set()
-    for e in data.get("entries", []):
+    for e in entries:
         try:
-            keys.add((_norm_pkg_name(e["package"]), os.path.basename(e["file"]), e["pattern"]))
+            keys.add((_norm_pkg_name(e["package"]), _relpath_in_package(e["file"]), e["pattern"]))
         except (KeyError, TypeError):
             continue
     return keys
@@ -1506,7 +1532,7 @@ def _write_baseline(path: str, findings: list[Finding], threshold_rank: int) -> 
         entries.append(
             {
                 "package": _norm_pkg_name(f.package),
-                "file": os.path.basename(f.filename),
+                "file": _relpath_in_package(f.filename),
                 "pattern": f.pattern,
                 "severity": f.severity,
                 "evidence": (f.evidence or f.detail)[:240],
@@ -1516,10 +1542,10 @@ def _write_baseline(path: str, findings: list[Finding], threshold_rank: int) -> 
         "_comment": (
             "scan_npm_packages.py allowlist. Each entry is a HIGH/CRITICAL "
             "finding manually judged benign. Matched on (package, "
-            "basename(file), pattern); evidence/severity are for review only. "
-            "Regenerate with --write-baseline AFTER reviewing every line."
+            "package-relative path, pattern); evidence/severity are for review "
+            "only. Regenerate with --write-baseline AFTER reviewing every line."
         ),
-        "version": 1,
+        "version": _BASELINE_SCHEMA_VERSION,
         "entries": entries,
     }
     with open(path, "w", encoding = "utf-8") as fh:
