@@ -152,10 +152,15 @@ if not UNSLOTH_ENABLE_LOGGING:
     sys.stderr.add_filter("CUTE_INVALID_CONTROL_PATH")
     # CUTLASS TMA-related errors when not targeting correct architecture
     sys.stderr.add_filter("Trying to use tma without CUTE_ARCH_TMA")
-    # Skipping import of cpp extensions due to incompatible torch version 2.9.0+cu128 for torchao version 0.15.0
-    logging.getLogger("torchao").setLevel(logging.ERROR)
-    # Also filter torchao print to stderr about cpp extensions
-    sys.stderr.add_filter("Skipping import of cpp extensions")
+    # torchao logs a cosmetic WARNING on torch < 2.11 (torchao/__init__.py:
+    # `logger.warning("Skipping import of cpp extensions due to incompatible
+    # torch version. Please upgrade to torch >= 2.11.0 (found ...).")`). The
+    # bnb-4bit / Unsloth paths do not use torchao's cpp kernels, so drop only
+    # this record and keep every other torchao log instead of raising the whole
+    # logger to ERROR.
+    logging.getLogger("torchao").addFilter(
+        HideLoggingMessage("Skipping import of cpp extensions due to incompatible torch version")
+    )
     # SyntaxWarning: invalid escape sequence '\.'
     warnings.filterwarnings("ignore", message = "invalid escape sequence", category = SyntaxWarning)
     # PYTORCH_CUDA_ALLOC_CONF is deprecated warning from torch
