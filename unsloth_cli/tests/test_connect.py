@@ -487,19 +487,77 @@ def test_connect_nonloopback_explicit_key_is_allowed(fake_studio, monkeypatch):
     assert result.exit_code == 0, result.output
 
 
-def test_connect_unverified_loopback_refuses_to_send_credential(fake_studio, tmp_path, monkeypatch):
-    # A process squatting the loopback port passes discovery but can't prove it
-    # is our Studio. Keyless connect must refuse and send nothing, even with a
-    # key already cached for this base.
-    cache = tmp_path / "agent_api_key.json"
-    cache.write_text(json.dumps({"servers": {BASE: ["sk-unsloth-feedfacefeedface"]}}))
+def test_connect_nonloopback_replays_saved_key(fake_studio, tmp_path, monkeypatch):
+    # A key explicitly saved for a remote (non-loopback) Studio is reused on
+    # keyless runs. Auto-minting is still blocked for non-loopback; only the
+    # key the user already saved for this exact base is replayed.
+    remote = "http://studio.example:8888"
+    monkeypatch.setattr(connect, "find_studio_server", lambda: remote)
+    (tmp_path / "agent_api_key.json").write_text(
+        json.dumps({"servers": {remote: ["sk-unsloth-deadbeefdeadbeef"]}})
+    )
+    result = CliRunner().invoke(connect.connect_app, ["claude", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    assert "export ANTHROPIC_AUTH_TOKEN=sk-unsloth-deadbeefdeadbeef" in result.output
+    assert not any(c[1].endswith("/api/auth/api-keys") for c in fake_studio)  # never minted
+
+
+def test_connect_studio_server_errors_on_explicit_remote(monkeypatch):
+    # A user who pointed UNSLOTH_STUDIO_URL at a remote Studio should get an
+    # error, not a silent local model load (which they did not ask for).
+    import typer
+
+    import unsloth_cli._inference as inference
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_URL", "http://studio.example:8888")
+    monkeypatch.setattr(inference, "find_studio_server", lambda *a, **k: "http://studio.example:8888")
+    with pytest.raises(typer.Exit):
+        inference.connect_studio_server(
+            "m", hf_token = None, max_seq_length = 4096, load_in_4bit = False
+        )
+
+
+def test_connect_studio_server_falls_back_locally_on_default_discovery(monkeypatch):
+    # Opportunistic local discovery (no UNSLOTH_STUDIO_URL): if the loopback
+    # server can't be verified, fall back to a local load rather than erroring.
+    import unsloth_cli._inference as inference
+
+    monkeypatch.delenv("UNSLOTH_STUDIO_URL", raising = False)
+    monkeypatch.setattr(inference, "find_studio_server", lambda *a, **k: "http://127.0.0.1:8888")
+    monkeypatch.setattr(inference, "verify_studio_identity", lambda *a, **k: False)
+    assert (
+        inference.connect_studio_server(
+            "m", hf_token = None, max_seq_length = 4096, load_in_4bit = False
+        )
+        is None
+    )
+
+
+def test_connect_unverified_loopback_without_cached_key_refuses_to_mint(
+    fake_studio, tmp_path, monkeypatch
+):
+    # With no saved key, the next step would auto-mint (self-issue a JWT). A
+    # process squatting the loopback port can't prove it is our Studio, so
+    # minting must be refused and nothing sent.
     monkeypatch.setattr(connect, "verify_studio_identity", lambda base: False)
     result = CliRunner().invoke(connect.connect_app, ["claude", "--no-launch"])
     assert result.exit_code == 1
     assert "--api-key" in result.output
-    # Neither the cached key nor a mint request is ever sent.
-    assert not any(c[1].endswith("/v1/models") for c in fake_studio)
-    assert not any(c[1].endswith("/api/auth/api-keys") for c in fake_studio)
+    assert not any(c[1].endswith("/api/auth/api-keys") for c in fake_studio)  # never minted
+
+
+def test_connect_replays_saved_key_without_identity_check(fake_studio, tmp_path, monkeypatch):
+    # A key the user explicitly saved for *this* base (e.g. an SSH-tunnelled
+    # remote Studio, whose identity secret the local handshake can't match) is
+    # replayed on keyless runs without requiring the handshake. It is scoped to
+    # this base, so it is only ever sent back to the server it was saved for.
+    cache = tmp_path / "agent_api_key.json"
+    cache.write_text(json.dumps({"servers": {BASE: ["sk-unsloth-deadbeefdeadbeef"]}}))
+    monkeypatch.setattr(connect, "verify_studio_identity", lambda base: False)
+    result = CliRunner().invoke(connect.connect_app, ["claude", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    assert "export ANTHROPIC_AUTH_TOKEN=sk-unsloth-deadbeefdeadbeef" in result.output
+    assert not any(c[1].endswith("/api/auth/api-keys") for c in fake_studio)  # reused, not minted
 
 
 def test_connect_explicit_key_skips_identity_check(fake_studio, monkeypatch):

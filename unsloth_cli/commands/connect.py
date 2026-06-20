@@ -125,7 +125,7 @@ def _key_cache_path() -> Path:
 
 def _read_cache(cache: Path) -> dict:
     try:
-        data = json.loads(cache.read_text())
+        data = json.loads(cache.read_text(encoding = "utf-8"))
     except Exception:
         return {}
     return data if isinstance(data, dict) else {}
@@ -140,7 +140,12 @@ def _cached_keys(cache: Path, base: str) -> list:
     servers = _read_cache(cache).get("servers")
     if not isinstance(servers, dict):
         return []
-    return [k for k in servers.get(base, []) if isinstance(k, str)]
+    keys = servers.get(base)
+    # Tolerate a hand-edited or corrupt cache: a bare string where a list is
+    # expected would otherwise iterate into single characters.
+    if not isinstance(keys, list):
+        return []
+    return [k for k in keys if isinstance(k, str)]
 
 
 def _write_private_json(path: Path, data: dict) -> None:
@@ -176,7 +181,8 @@ def _remember_key(cache: Path, base: str, key: str) -> None:
     servers = data.get("servers")
     if not isinstance(servers, dict):
         servers = data["servers"] = {}
-    existing = [k for k in servers.get(base, []) if isinstance(k, str)]
+    raw = servers.get(base)
+    existing = [k for k in raw if isinstance(k, str)] if isinstance(raw, list) else []
     keys = ([key] + [k for k in existing if k != key])[:8]
     if keys == existing:
         return
@@ -196,32 +202,12 @@ def _agent_api_key(base: str, explicit: Optional[str]) -> str:
         _remember_key(cache, base, explicit)
         return explicit
 
-    # find_studio_server() trusts a base URL after only an unauthenticated
-    # health check, so a non-loopback target (a malicious UNSLOTH_STUDIO_URL,
-    # say) is unverified. Never auto-send a credential there: require the user
-    # to name the key explicitly so they choose both what to send and where.
-    if not is_loopback_url(base):
-        _fail(
-            f"Refusing to send a Studio credential to {base}: it was discovered "
-            "only by URL and an unauthenticated health check, so its identity "
-            "can't be verified. Create an API key in Studio → Settings → API and "
-            "pass it with --api-key (it is remembered per server), or set "
-            "UNSLOTH_API_KEY."
-        )
-
-    # Even on loopback the responder could be a process that preempted the
-    # port. Prove it holds this install's identity secret (challenge-response)
-    # before sending or minting any credential against it.
-    if not verify_studio_identity(base):
-        _fail(
-            f"Couldn't verify that {base} is your Studio (it may be remote, "
-            "running as a different OS user, or another process on that port). "
-            "Create an API key in Studio → Settings → API and pass it with "
-            "--api-key, or set UNSLOTH_API_KEY."
-        )
-
-    # Loopback only, identity verified. Replay a key already minted for *this*
-    # server (never one cached for a different server), then mint a new one.
+    # Replay a key already saved for *this exact* server first. Keys are scoped
+    # per base URL, so a saved key is only ever sent back to the server it was
+    # saved for -- including a remote or SSH-tunnelled Studio the user passed
+    # --api-key to once (its base, e.g. 127.0.0.1:<forwarded-port>, won't match
+    # the local identity secret below, so this is the only way it can be
+    # reused). A key the server no longer accepts is skipped.
     for key in _cached_keys(cache, base):
         try:
             _http_json("GET", f"{base}/v1/models", key)
@@ -230,9 +216,27 @@ def _agent_api_key(base: str, explicit: Optional[str]) -> str:
         _remember_key(cache, base, key)
         return key
 
-    # No cached key worked. The handshake already proved this loopback server is
-    # our Studio, so self-issue a JWT (signed with the same local secret the
-    # server validates against) and mint a key through it.
+    # No saved key, so the next step would auto-mint: self-issue a JWT and
+    # create a brand-new credential. find_studio_server() trusts a base after
+    # only an unauthenticated health check, so only ever mint against a local
+    # server we can cryptographically confirm is really our Studio.
+    if not is_loopback_url(base):
+        _fail(
+            f"No saved API key for {base} and automatic minting only runs against "
+            "a local Studio. Create an API key in Studio → Settings → API and "
+            "pass it with --api-key (it is remembered per server), or set "
+            "UNSLOTH_API_KEY."
+        )
+    if not verify_studio_identity(base):
+        _fail(
+            f"Couldn't verify that {base} is your Studio (it may be running as a "
+            "different OS user, or another process took the port). Create an API "
+            "key in Studio → Settings → API and pass it with --api-key, or set "
+            "UNSLOTH_API_KEY."
+        )
+
+    # Loopback, identity verified. Self-issue a JWT (signed with the same local
+    # secret the server validates against) and mint a key through it.
     token = _studio_token()
     if token is None:
         _fail(

@@ -482,19 +482,38 @@ def connect_studio_server(model: str, *, hf_token, max_seq_length, load_in_4bit)
     base_url = find_studio_server()
     if not base_url:
         return None
-    # The self-issued JWT is a bearer token signed with the local Studio
-    # secret; only ever hand it to a loopback server. A remote/attacker URL is
-    # unverified (so disclosing it would be a credential leak), and a genuine
-    # remote Studio signs with a different secret and would reject it anyway.
+
+    # Did the user explicitly point us at a server, or did we just discover the
+    # local default? If they asked for a specific server and we can't safely
+    # attach, fail loudly rather than silently loading a (possibly large) model
+    # on this machine, which they did not ask for.
+    explicit = bool(os.environ.get("UNSLOTH_STUDIO_URL"))
+
+    def _refuse(reason: str):
+        if not explicit:
+            return None  # opportunistic local discovery: just load locally
+        typer.echo(
+            f"Can't attach to the Studio server at {base_url}: {reason} Run Studio "
+            "on this machine, or unset UNSLOTH_STUDIO_URL to load the model locally.",
+            err = True,
+        )
+        raise typer.Exit(code = 1)
+
+    # The self-issued JWT is a bearer token signed with the local Studio secret;
+    # only ever hand it to a loopback server. A remote URL is unverified (so
+    # disclosing it would be a credential leak), and a genuine remote Studio
+    # signs with a different secret and would reject it anyway.
     if not is_loopback_url(base_url):
-        return None
-    # Cryptographically confirm the loopback responder is really our Studio
+        return _refuse("it isn't a local Studio, so a self-issued token can't "
+                       "authenticate to it and must not be sent to it.")
+    # Cryptographically confirm the loopback responder really is our Studio
     # (not a process squatting the port) before handing it the token.
     if not verify_studio_identity(base_url):
-        return None
+        return _refuse("its identity couldn't be verified (it may be running as a "
+                       "different OS user, or another process took the port).")
     token = _studio_token()
     if not token:
-        return None
+        return _refuse("couldn't self-issue a Studio token (is Studio set up here?).")
     backend = HttpChatBackend(base_url, token)
     backend.ensure_loaded(
         model, hf_token = hf_token, max_seq_length = max_seq_length, load_in_4bit = load_in_4bit
