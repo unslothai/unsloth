@@ -86,3 +86,18 @@ def test_non_model_files_is_false(tmp_path):
     junk.mkdir()
     (junk / "readme.txt").write_text("hi")
     assert has_downloaded_model(junk) is False
+
+
+def test_hidden_subtree_does_not_starve_the_budget(tmp_path):
+    # A real model dir that also holds a huge hidden subtree (e.g. a .git or
+    # .cache). The hidden entries must not exhaust max_entries before the walk
+    # reaches the actual weights, which would falsely report "no model".
+    models = tmp_path / "models"
+    git = models / ".git" / "objects"
+    git.mkdir(parents = True)
+    for i in range(50):
+        (git / f"obj{i}").write_bytes(b"x")
+    repo = models / "repo"
+    repo.mkdir()
+    (repo / "model.safetensors").write_bytes(b"x")
+    assert has_downloaded_model(models, max_entries = 10) is True

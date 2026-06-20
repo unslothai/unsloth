@@ -897,20 +897,30 @@ def _dir_has_downloaded_model(directory: Path, max_entries: int = 4000) -> bool:
                     return True
     except OSError:
         pass
-    # Generic weights: any GGUF/safetensors in a bounded walk.
+    # Generic weights: any GGUF/safetensors in a bounded BFS that skips hidden
+    # directories (``.git``/``.cache``/venvs). ``rglob`` walks in arbitrary order
+    # and counts every entry, so a large hidden subtree could exhaust the budget
+    # before reaching real weights and falsely report "no model".
+    queue = [directory]
     visited = 0
-    try:
-        for f in directory.rglob("*"):
+    while queue:
+        current = queue.pop(0)
+        try:
+            entries = list(current.iterdir())
+        except OSError:
+            continue
+        for entry in entries:
             visited += 1
             if visited > max_entries:
-                break
+                return False
             try:
-                if f.is_file() and f.name.lower().endswith((".gguf", ".safetensors")):
+                if entry.is_dir():
+                    if not entry.name.startswith("."):
+                        queue.append(entry)
+                elif entry.name.lower().endswith((".gguf", ".safetensors")):
                     return True
             except OSError:
                 continue
-    except OSError:
-        pass
     return False
 
 
