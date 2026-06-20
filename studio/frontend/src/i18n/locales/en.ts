@@ -32,6 +32,7 @@ export const en = {
     },
     navigation: {
       newChat: "New Chat",
+      returnToChat: "Return to Chat",
       compare: "Compare",
       search: "Search",
       hub: "Hub",
@@ -148,6 +149,17 @@ export const en = {
         maxUploadSize: "Training dataset upload cap",
         maxUploadSizeDescription:
           "Default is {defaultSize} MB.",
+      },
+      storage: {
+        sectionTitle: "Storage",
+        modelsFolder: "Models folder",
+        modelsFolderDescription:
+          "Where downloaded models are stored.",
+        openAction: "Open",
+        copyAction: "Copy path",
+        copied: "Path copied",
+        openError: "Couldn't open the folder",
+        copyError: "Couldn't copy the path",
       },
       resetPreferences: {
         sectionTitle: "Danger zone",

@@ -60,22 +60,77 @@ def test_run_server_accepts_secure_kwarg():
     assert inspect.signature(run.run_server).parameters["secure"].default is False
 
 
-def test_plain_network_launch_forces_tools_off():
-    # Network-reachable launches (0.0.0.0 or --secure) must force server-side tools off.
+def test_run_server_accepts_enable_tools_kwarg():
+    import inspect
+
+    import run
+
+    params = inspect.signature(run.run_server).parameters
+    assert "enable_tools" in params
+    assert params["enable_tools"].default is None  # default: leave policy unset
+
+
+def test_tool_policy_not_auto_disabled_by_bind():
+    # Tools default on for every bind; the backend only changes the policy from
+    # an explicit --enable-tools/--disable-tools, never from host/secure.
     import run
     from state.tool_policy import get_tool_policy, reset_tool_policy
 
-    reset_tool_policy()
-    run._apply_default_tool_policy("127.0.0.1", False)
-    assert get_tool_policy() is None  # loopback: untouched (per-request honored)
-
-    run._apply_default_tool_policy("0.0.0.0", False)
-    assert get_tool_policy() is False  # network bind: forced off
+    for host in ("127.0.0.1", "localhost", "0.0.0.0"):
+        reset_tool_policy()
+        run._apply_cli_tool_policy(None)  # no flag, on any bind
+        assert get_tool_policy() is None, host  # untouched: per-request honored
 
     reset_tool_policy()
-    run._apply_default_tool_policy("127.0.0.1", True)  # --secure (public tunnel)
+    run._apply_cli_tool_policy(True)  # --enable-tools: forced on
+    assert get_tool_policy() is True
+
+    reset_tool_policy()
+    run._apply_cli_tool_policy(False)  # --disable-tools: forced off
     assert get_tool_policy() is False
     reset_tool_policy()
+
+
+def test_tool_policy_notice_wording():
+    # The plain-server startup banner states the resolved policy for every bind.
+    import run
+
+    loopback = run._tool_policy_notice("127.0.0.1", False, None)
+    assert "ENABLED by default" in loopback and "loopback" in loopback
+
+    network = run._tool_policy_notice("0.0.0.0", False, None)
+    assert "ENABLED by default" in network and "network-reachable" in network
+
+    secure = run._tool_policy_notice("127.0.0.1", True, None)
+    assert "Cloudflare HTTPS tunnel" in secure
+
+    assert run._tool_policy_notice("0.0.0.0", False, False) == (
+        "Server-side tools are DISABLED (--disable-tools)."
+    )
+    assert "ENABLED (--enable-tools)" in run._tool_policy_notice("0.0.0.0", False, True)
+
+
+def test_startup_output_emits_tool_notice_on_network_bind(capsys, monkeypatch):
+    # Plain `unsloth studio -H 0.0.0.0` must not be silent about tools now.
+    import run
+
+    monkeypatch.setattr(run, "_verify_global_reachability", lambda *a, **k: None)
+    monkeypatch.setattr(run, "_print_cloudflare_line", lambda: None)
+    monkeypatch.setattr(run, "_localhost_ipv6_mismatch_url", lambda *a, **k: None)
+
+    run._emit_startup_output("0.0.0.0", 8000, "0.0.0.0", secure = False, enable_tools = None)
+    out = capsys.readouterr().out
+    assert "Server-side tools" in out
+    assert "network-reachable" in out
+
+
+def test_startup_output_emits_disabled_notice(capsys, monkeypatch):
+    import run
+
+    monkeypatch.setattr(run, "_localhost_ipv6_mismatch_url", lambda *a, **k: None)
+    run._emit_startup_output("127.0.0.1", 8000, "127.0.0.1", secure = False, enable_tools = False)
+    out = capsys.readouterr().out
+    assert "Server-side tools are DISABLED" in out
 
 
 def test_run_server_rejects_secure_without_cloudflare():
