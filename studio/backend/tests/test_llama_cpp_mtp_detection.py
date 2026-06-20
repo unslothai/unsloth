@@ -1857,8 +1857,7 @@ def test_is_gemma_mtp_family():
 
 
 def test_spec_fallback_reason_drafter_not_found(monkeypatch):
-    # A Gemma MTP model that fails to resolve its drafter should fall back
-    # to ngram-mod and set drafter_not_found.
+    # Drafterless Gemma should fall back to ngram-mod + drafter_not_found.
     backend = _resolver_backend(monkeypatch)
     flags = backend._build_speculative_flags(
         speculative_type = "auto",
@@ -1877,8 +1876,7 @@ def test_spec_fallback_reason_drafter_not_found(monkeypatch):
 
 
 def test_is_gemma_mtp_name_none_safe():
-    # Local GGUF loads pass model_identifier=None; must not raise, and the
-    # family must be recognised from the file name too.
+    # model_identifier=None (local load) must not raise; recognise via filename.
     from core.inference.llama_cpp import _is_gemma_mtp_family, _is_gemma_mtp_name
 
     assert _is_gemma_mtp_family(None) is False
@@ -1888,9 +1886,7 @@ def test_is_gemma_mtp_name_none_safe():
 
 @pytest.mark.parametrize("mode", ["mtp", "mtp+ngram"])
 def test_forced_mtp_gemma_without_drafter_falls_back(monkeypatch, mode):
-    # Forcing MTP on a Gemma whose drafter did not resolve must not emit
-    # draft-mtp without --model-draft (llama-server aborts); fall back to
-    # ngram-mod and record drafter_not_found.
+    # Forced MTP on a drafterless Gemma must fall back, not emit draft-mtp.
     backend = _resolver_backend(monkeypatch)
     flags = backend._build_speculative_flags(
         speculative_type = mode,
@@ -1909,8 +1905,7 @@ def test_forced_mtp_gemma_without_drafter_falls_back(monkeypatch, mode):
 
 
 def test_local_gemma_gguf_without_identifier_falls_back(monkeypatch):
-    # A local Gemma GGUF (no repo id, family only in the file name) must not
-    # crash and must fall back when no drafter resolved.
+    # Local Gemma GGUF (family only in filename) must not crash; falls back.
     backend = _resolver_backend(monkeypatch)
     flags = backend._build_speculative_flags(
         speculative_type = "auto",
@@ -1942,8 +1937,7 @@ def _drafter_not_found_kwargs():
 
 
 def test_already_in_target_state_retries_after_hf_drafter_not_found():
-    # A recoverable HF drafter_not_found fallback must NOT dedupe a reload;
-    # load_model has to re-attempt the separate-drafter download.
+    # Recoverable drafter_not_found must not dedupe; reload re-attempts download.
     backend = _mtp_backend(
         _model_identifier = "unsloth/gemma-4-E4B-it-GGUF",
         _speculative_type = "ngram-mod",

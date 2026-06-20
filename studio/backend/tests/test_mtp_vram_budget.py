@@ -830,10 +830,8 @@ class TestExtraArgsMtpDetection:
         )
 
     def test_route_matcher_retries_after_drafter_not_found(self):
-        # A recoverable HF drafter_not_found fallback must not be reported as
-        # already loaded, or the reload the UI asks for never retries the
-        # drafter download (#6459). Read from disk (importing routes.inference
-        # drags in heavy deps).
+        # drafter_not_found must not report "already loaded" or the reload never
+        # retries the download (#6459). Read source: importing routes pulls deps.
         routes_src = (
             Path(__file__).resolve().parent.parent / "routes" / "inference.py"
         ).read_text()
@@ -842,9 +840,7 @@ class TestExtraArgsMtpDetection:
         body = "".join(routes_src[start:end].split())
         assert 'llama_backend.spec_fallback_reason=="drafter_not_found"' in body
         assert "not_extra_args_set_spec_type(effective_extra)" in body
-        # HF-only: gated on hf_repo, so local/native loads (single file or a
-        # directory + gguf_variant) have no download to retry and fall through
-        # to the drafter-path compare instead of forcing a reload.
+        # HF-only (hf_repo): local/native loads have no download to retry.
         assert "llama_backend.hf_repo" in body
 
     def test_extra_args_main_cache_type_heavier_axis(self):

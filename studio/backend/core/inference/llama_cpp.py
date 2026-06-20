@@ -657,17 +657,17 @@ def detect_reasoning_flags(
     return flags
 
 
-# Gemma model families known to ship separate MTP drafters.
+# Gemma 3n/4 ship MTP as a separate drafter (no "-mtp" in the name).
 _GEMMA_MTP_FAMILY_RE = re.compile(r"gemma[-_]?(?:3n|4)[-_]", re.IGNORECASE)
 
 
 def _is_gemma_mtp_family(name: Optional[str]) -> bool:
-    """True if the name matches a Gemma family known to ship MTP drafters."""
+    """Match Gemma 3n/4 by name."""
     return bool(name) and bool(_GEMMA_MTP_FAMILY_RE.search(name))
 
 
 def _is_gemma_mtp_name(model_identifier: Optional[str], gguf_path: Optional[str] = None) -> bool:
-    """Gemma separate-drafter family via the model id or the GGUF filename."""
+    """Match Gemma 3n/4 by id or GGUF filename."""
     return _is_gemma_mtp_family(model_identifier) or _is_gemma_mtp_family(
         Path(gguf_path).name if gguf_path else None
     )
@@ -678,10 +678,8 @@ def _is_mtp_model_name(model_identifier: Optional[str], gguf_path: Optional[str]
     for cand in (model_identifier, Path(gguf_path).name if gguf_path else None):
         if cand and "-mtp" in cand.lower():
             return True
-        # Gemma 3n/4 families ship MTP via a separate drafter (mtp-*.gguf)
-        # and don't embed "-mtp" in the main model name. Recognise them so
-        # is_mtp_model stays True even when the drafter download fails,
-        # allowing the user to see a fallback reason instead of silent default.
+        # Recognise Gemma 3n/4 too, so a failed drafter download surfaces a
+        # fallback reason instead of silently defaulting.
         if cand and _is_gemma_mtp_family(cand):
             return True
     return False
@@ -3842,8 +3840,7 @@ class LlamaCppBackend:
         target: Optional[str] = None
         from huggingface_hub import list_repo_files
 
-        # Retry a transient listing blip (like the download step); a permanent
-        # repo/auth error is not retried.
+        # Retry a transient listing blip; permanent repo/auth errors are not.
         for attempt in range(3):
             if self._cancel_event.is_set():
                 return None
@@ -4878,9 +4875,8 @@ class LlamaCppBackend:
                         or _is_mtp_model_name(model_identifier, model_path)
                         or bool(mtp_draft_path)
                     ) and not (
-                        # Mirror the launch resolver: a Gemma recognised only by
-                        # name with no drafter/head falls back to ngram-mod, so
-                        # do not reserve drafter VRAM for it.
+                        # Drafterless Gemma falls back to ngram-mod; reserve no
+                        # drafter VRAM for it (mirrors the launch resolver).
                         _is_gemma_mtp_name(model_identifier, model_path)
                         and not mtp_draft_path
                         and not self._nextn_predict_layers
@@ -6255,10 +6251,8 @@ class LlamaCppBackend:
         _mtp_too_small = (
             _mtp_size_b is not None and _mtp_size_b < _MTP_MIN_SIZE_B and not bool(mtp_draft_path)
         )
-        # A Gemma 3n/4 recognised only by name (its MTP ships as a separate root
-        # mtp-*.gguf) with no resolved drafter and no embedded head cannot emit
-        # MTP -- llama-server would abort -- so every mode below treats it as
-        # "no usable MTP" and falls back with a drafter_not_found reason.
+        # Drafterless Gemma (name-only MTP, no embedded head): emitting MTP
+        # would abort llama-server, so every mode below falls back instead.
         _mtp_drafter_missing = (
             _is_gemma_mtp_name(model_identifier, model_path)
             and not mtp_draft_path
@@ -6370,8 +6364,7 @@ class LlamaCppBackend:
             return True
 
         def _fallback_drafter_not_found() -> None:
-            """Gemma MTP recognised by name but no drafter/head resolved: use
-            the zero-VRAM ngram-mod path (or spec-default) and record why."""
+            """Drafterless Gemma: use ngram-mod (or spec-default) and record why."""
             logger.warning(
                 "Model %s is MTP-capable but no drafter or head was found; "
                 "falling back. Check network or run `unsloth studio update`.",
@@ -6405,8 +6398,7 @@ class LlamaCppBackend:
                 self._speculative_type = "default"
                 return flags
             if _mtp_drafter_missing:
-                # Name says MTP but no head/drafter: emitting draft-mtp would
-                # abort the server, so fall back like the auto path.
+                # Drafterless: draft-mtp would abort llama-server, so fall back.
                 _fallback_drafter_not_found()
                 return flags
             if _mtp_too_small:
@@ -6467,8 +6459,7 @@ class LlamaCppBackend:
                 # spec-off: emit nothing, mirroring the sub-3B no-ngram path.
         elif is_mtp_model and not _mtp_too_small:
             if _mtp_drafter_missing:
-                # Name says MTP but no head/drafter resolved (download failed
-                # or the repo lacks a root mtp-*.gguf).
+                # Name-only MTP, drafter did not resolve (download failed/absent).
                 _fallback_drafter_not_found()
             else:
                 # GPU: MTP-only. CPU/Mac: chain ngram-mod + MTP.
@@ -6568,12 +6559,9 @@ class LlamaCppBackend:
         if req_mode != backend_mode:
             return False
 
-        # A prior HF load fell back with drafter_not_found (the separate Gemma
-        # drafter did not resolve, e.g. a transient HF/network failure). The UI
-        # asks the user to fix access and reload, so a same-settings reload must
-        # retry the download in load_model instead of deduping to the stale
-        # fallback. HF loads resolve the drafter there (gguf_path is None here);
-        # req_mode already excludes the user-owns-spec-type case (None).
+        # Prior HF load fell back with drafter_not_found; a same-settings reload
+        # must retry the download in load_model, not dedupe to the stale fallback
+        # (HF loads resolve the drafter there, so gguf_path is None here).
         if (
             self._spec_fallback_reason == "drafter_not_found"
             and gguf_path is None

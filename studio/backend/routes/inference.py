@@ -1829,13 +1829,9 @@ def _request_matches_loaded_settings(
     backend_mode = llama_backend.requested_spec_mode or "auto"
     if req_mode != backend_mode:
         return False
-    # A prior HF load fell back with drafter_not_found (the separate Gemma
-    # drafter did not resolve). The UI asks the user to fix access and reload,
-    # so a same-settings reload must retry the download rather than dedupe to
-    # the stale fallback. HF only (`hf_repo` set): a local/native load has no
-    # download to retry -- including a local directory + gguf_variant whose
-    # identifier does not end in .gguf -- and its companion change is handled by
-    # the drafter-path compare below. Skipped when the request owns --spec-type.
+    # Prior HF load fell back with drafter_not_found: a same-settings reload must
+    # retry the download, not dedupe to the stale fallback. HF only (hf_repo set);
+    # local/native loads have no download to retry (handled by the path compare).
     if (
         llama_backend.hf_repo
         and llama_backend.spec_fallback_reason == "drafter_not_found"
