@@ -22,7 +22,6 @@ def get_personalization() -> dict:
     """The stored personalization blob, or an empty dict when none is saved."""
     try:
         from storage.studio_db import get_app_setting
-
         stored = get_app_setting(PERSONALIZATION_SETTING_KEY, None)
     except Exception:
         stored = None

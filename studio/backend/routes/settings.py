@@ -182,8 +182,7 @@ def get_personalization_settings(
 
 @router.put("/personalization", response_model = PersonalizationPayload)
 def update_personalization_settings(
-    payload: PersonalizationPayload,
-    current_subject: str = Depends(get_current_subject),
+    payload: PersonalizationPayload, current_subject: str = Depends(get_current_subject)
 ) -> PersonalizationPayload:
     try:
         set_personalization(payload.model_dump())

@@ -64,7 +64,7 @@ def test_valid_avatar_and_shape():
 
 def test_get_set_roundtrip(monkeypatch):
     store: dict = {}
-    monkeypatch.setattr("storage.studio_db.get_app_setting", lambda k, d=None: store.get(k, d))
+    monkeypatch.setattr("storage.studio_db.get_app_setting", lambda k, d = None: store.get(k, d))
     monkeypatch.setattr("storage.studio_db.upsert_app_settings", lambda d: store.update(d))
 
     assert pers.get_personalization() == {}
