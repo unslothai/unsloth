@@ -1009,10 +1009,12 @@ export function ChatSettingsPanel({
                           ? "MTP is disabled by default for this model architecture because it currently runs slower than standard decoding. Select MTP above to force it."
                           : specFallbackReason === "runtime_error"
                           ? "MTP could not start for this model on the installed llama.cpp build, so it is running without speculative decoding."
-                          : "MTP is not available in the installed llama.cpp build, so this model is running without it." +
-                            (llamaUpdateStatus?.update_available
-                              ? " Update llama.cpp to enable it."
-                              : "")}
+                          : specFallbackReason === "drafter_not_found"
+                            ? "This model supports MTP, but its drafter file could not be downloaded, so MTP is off and it falls back to n-gram speculative decoding where the llama.cpp build supports it. Check your network connection or Hugging Face access, then reload the model to retry the drafter."
+                            : "MTP is not available in the installed llama.cpp build, so this model is running without it." +
+                              (llamaUpdateStatus?.update_available
+                                ? " Update llama.cpp to enable it."
+                                : "")}
                       </p>
                       {mtpUpdatable && llamaUpdateStatus?.update_available && (
                         <Button
