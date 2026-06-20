@@ -335,7 +335,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
 
 export function AppProvider({ children }: AppProviderProps) {
   return (
-    <ThemeProvider attribute="class" defaultTheme="light">
+    <ThemeProvider attribute="class" defaultTheme="system" enableSystem>
       <TooltipProvider>
         <TauriWrapper>
           {children}

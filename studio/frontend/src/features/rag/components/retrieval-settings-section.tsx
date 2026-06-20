@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import type { ReactNode } from "react";
 import {
   Select,
   SelectContent,
@@ -10,22 +9,20 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
-import {
-  ToggleGroup,
-  ToggleGroupItem,
-} from "@/components/ui/toggle-group";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { InfoIcon } from "lucide-react";
-import { cn } from "@/lib/utils";
 import {
   type RagAutoInject,
   type RagMode,
   useChatRuntimeStore,
 } from "@/features/chat/stores/chat-runtime-store";
+import { cn } from "@/lib/utils";
+import { InfoIcon } from "lucide-react";
+import type { ReactNode } from "react";
 
 const MODE_LABEL: Record<RagMode, string> = {
   hybrid: "Hybrid",
@@ -92,6 +89,7 @@ function SliderRow({
         disabled={disabled}
         onValueChange={([v]) => onChange(v)}
         aria-label={label}
+        className="panel-slider"
       />
     </div>
   );
@@ -152,6 +150,7 @@ export function RetrievalSettingsSection() {
           step={1}
           onValueChange={([value]) => setRagTopK(value)}
           aria-label="Number of passages to retrieve"
+          className="panel-slider"
         />
       </div>
 
@@ -175,7 +174,9 @@ export function RetrievalSettingsSection() {
           value={ragAutoInject}
           onValueChange={(value) => {
             // Radix clears on re-click; ignore empty so one stays selected.
-            if (value) setRagAutoInject(value as RagAutoInject);
+            if (value) {
+              setRagAutoInject(value as RagAutoInject);
+            }
           }}
           className="w-full"
           aria-label="Auto-retrieve documents"

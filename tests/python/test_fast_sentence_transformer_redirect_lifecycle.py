@@ -1,10 +1,7 @@
-"""FastSentenceTransformer constructor-redirect lifecycle:
-- AutoModel/AutoProcessor/AutoTokenizer.from_pretrained are restored even
-  when the Transformer constructor raises (try/finally invariant).
-- The closure that decides whether to substitute the pre-loaded objects
-  (`is_requested_model_name`) handles HF repo IDs, local paths, trailing
-  slashes, pathlib.Path objects, and missing identifiers correctly.
-"""
+"""FastSentenceTransformer constructor-redirect lifecycle: Auto*.from_pretrained
+are restored even when the Transformer constructor raises (try/finally), and
+`is_requested_model_name` matches HF IDs, local paths, trailing slashes, Path
+objects, and missing identifiers."""
 
 from __future__ import annotations
 
@@ -18,8 +15,7 @@ import pytest
 
 
 def _stub_module(name: str) -> types.ModuleType:
-    # __spec__ set so find_spec(name) doesn't raise if a later test imports
-    # the real package.
+    # __spec__ set so find_spec(name) doesn't raise if a later test imports the real package.
     mod = types.ModuleType(name)
     mod.__spec__ = importlib.util.spec_from_loader(name, loader = None)
     return mod
@@ -34,9 +30,8 @@ _STUB_KEYS = (
 
 @pytest.fixture(autouse = True)
 def _restore_sys_modules():
-    """Snapshot the entries we shadow with stubs and restore them after each
-    test so a downstream test that does `import transformers` for real does
-    not pick up our non-package stub."""
+    """Snapshot the stubbed module entries and restore them after each test so a
+    downstream real `import transformers` doesn't pick up our stub."""
     saved = {k: sys.modules.get(k) for k in _STUB_KEYS}
     try:
         yield

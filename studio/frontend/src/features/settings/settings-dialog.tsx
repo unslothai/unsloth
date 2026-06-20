@@ -51,15 +51,15 @@ const TABS: TabDef[] = [
   },
   { id: "chat", labelKey: "settings.tabs.chat", icon: Message01Icon },
   {
-    id: "connections",
-    labelKey: "settings.tabs.connections",
-    icon: CloudIcon,
-    badgeKey: "common.new",
-  },
-  {
     id: "api-keys",
     labelKey: "settings.tabs.apiKeys",
     icon: Globe02Icon,
+    badgeKey: "common.new",
+  },
+  {
+    id: "connections",
+    labelKey: "settings.tabs.connections",
+    icon: CloudIcon,
     badgeKey: "common.new",
   },
   { id: "about", labelKey: "settings.tabs.about", icon: HelpCircleIcon },
@@ -114,7 +114,7 @@ export function SettingsDialog() {
     <Dialog open={open} onOpenChange={(o) => !o && closeDialog()}>
       <DialogContent
         showCloseButton={false}
-        overlayClassName="bg-background/40"
+        overlayClassName="bg-black/30 supports-backdrop-filter:backdrop-blur-[2px]"
         onCloseAutoFocus={(e) => {
           // Restore focus to the element that triggered openDialog(). Radix's
           // FocusScope races our rAF-scheduled tab focus and loses the

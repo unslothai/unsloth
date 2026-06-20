@@ -33,10 +33,24 @@ Examples:
     python scan_packages.py --fix -r requirements.txt
     python scan_packages.py --fix --max-search 20 -r requirements.txt
 
+    # Triage to a baseline once, then gate on anything NEW
+    python scan_packages.py -r requirements.txt --write-baseline scripts/scan_packages_baseline.json
+    python scan_packages.py -r requirements.txt   # auto-loads the baseline, exits 0 if only baselined findings remain
+
+False positives:
+    .py files are scanned code-only: comments and bare docstrings/doctests are
+    blanked before pattern matching (line numbers preserved), so prose, usage
+    examples and `>>>` doctests cannot trip a finding. Residual findings that
+    are genuine library behavior (a HTTP client reading HF_TOKEN, a vendored
+    test fixture) are suppressed via a reviewed baseline allowlist, matched on
+    (package, basename(file), check). A NEW kind of finding in an already-listed
+    file is a different check and still fails. This mirrors the Hugging Face Hub
+    approach (ClamAV/picklescan: low-FP, signature/structural, surface status).
+
 Exit codes:
-    0 -- no CRITICAL or HIGH findings
-    1 -- CRITICAL or HIGH findings detected
-    2 -- no packages specified
+    0 -- no non-baselined CRITICAL or HIGH findings (or --write-baseline)
+    1 -- non-baselined CRITICAL or HIGH findings detected
+    2 -- no packages specified, or scan incomplete (pip download failure)
 """
 
 import argparse
@@ -50,6 +64,8 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import tokenize
+import urllib.parse
 import urllib.request
 import zipfile
 from dataclasses import dataclass, field
@@ -213,17 +229,26 @@ RE_ARCHIVE_STAGING = re.compile(
 )
 
 # Anti-analysis / sandbox evasion / debugger detection
+# NB: deliberately does NOT include a bare ``platform.system() ... Linux/Windows
+# /Darwin`` branch. Under re.DOTALL that matched across the whole file -- any
+# cross-platform library (typer, packaging, pandas, pymupdf, ...) trips it -- so
+# it had ~zero precision and only generated false positives. OS detection alone
+# is not an anti-analysis signal; the debugger/VM/long-sleep signals below are.
 RE_ANTI_ANALYSIS = re.compile(
     r"\bptrace\b"
     r"|\bsys\s*\.\s*gettrace\s*\("
     r"|\bsys\s*\.\s*settrace\b"
     r"|\bTracerPid\b"
-    r"|\b/proc/self/status\b"
+    # /proc/self/status is read to scrape TracerPid for anti-debug. A leading
+    # \b here is unsatisfiable (\b never holds between a non-word boundary and
+    # "/"), so the old pattern was dead; a lookbehind that only forbids a
+    # preceding word char or path separator lets `open("/proc/self/status")`
+    # and `cat /proc/self/status` match while avoiding mid-path partials.
+    r"|(?<![\w/])/proc/self/status\b"
     r"|\bIsDebuggerPresent\b"
     r"|\bvirtualbox\b.*\bhardware\b"
     r"|\bvmware\b.*\bdetect\b"
-    r"|\btime\.sleep\s*\(\s*(?:[3-9]\d{2,}|[1-9]\d{3,})\s*\)"  # long sleep (anti-sandbox)
-    r"|\bplatform\.\s*system\b.*\bif\b.*\b(?:Linux|Windows|Darwin)\b",
+    r"|\btime\.sleep\s*\(\s*(?:[3-9]\d{2,}|[1-9]\d{3,})\s*\)",  # long sleep (anti-sandbox)
     re.IGNORECASE | re.DOTALL,
 )
 
@@ -493,9 +518,159 @@ def check_pth_file(content: str, filename: str, package: str) -> list[Finding]:
     return findings
 
 
+# A STRING after one of these tokens (and before a NEWLINE) is a bare
+# docstring/doctest/prose statement -- the dominant FP source -- so we blank it.
+# A string after `=` or `(` is real code and is never blanked.
+_LINE_START_TOKENS = frozenset({tokenize.NEWLINE, tokenize.NL, tokenize.INDENT, tokenize.DEDENT})
+
+
+def _is_fstring(tok_string: str) -> bool:
+    """True if a STRING token is an f-string (3.10/3.11 emit one STRING token).
+
+    A bare f-string statement evaluates its expressions at import, so unlike an
+    inert docstring it must never be blanked.
+    """
+    q = min((tok_string.find(c) for c in "'\"" if c in tok_string), default = -1)
+    return q > 0 and "f" in tok_string[:q].lower()
+
+
+def _strip_noncode(content: str, blank_comments: bool = True) -> str:
+    """Blank comments and bare docstrings so IOC patterns see code only.
+
+    Removed regions become spaces (newlines kept) so line numbers stay exact for
+    _extract_evidence. Fails open on tokenizer errors (the raw text is still
+    fully scanned, so a real detection is never lost). ``blank_comments=False``
+    keeps comments (only strings/docstrings blanked) to isolate the span that
+    exec() could actually run.
+    """
+    try:
+        toks = list(tokenize.generate_tokens(io.StringIO(content).readline))
+    except (tokenize.TokenError, IndentationError, SyntaxError, ValueError):
+        return content
+
+    spans: list[tuple[int, int, int, int]] = []  # (srow, scol, erow, ecol)
+    prev_significant = tokenize.NEWLINE  # start-of-file behaves like a new line
+    n = len(toks)
+    for i, tok in enumerate(toks):
+        ttype = tok.type
+        if ttype == tokenize.COMMENT:
+            if blank_comments:
+                spans.append((*tok.start, *tok.end))
+            continue  # transparent; never advances prev_significant
+        if (
+            ttype == tokenize.STRING
+            and prev_significant in _LINE_START_TOKENS
+            and not _is_fstring(tok.string)  # f-strings execute; never blank them
+        ):
+            # Bare string only if it is the whole statement: next significant
+            # token must close the logical line.
+            j = i + 1
+            while j < n and toks[j].type in (tokenize.COMMENT, tokenize.NL):
+                j += 1
+            if j < n and toks[j].type == tokenize.NEWLINE:
+                spans.append((*tok.start, *tok.end))
+                prev_significant = ttype
+                continue
+        if ttype in (
+            tokenize.NL,
+            tokenize.NEWLINE,
+            tokenize.INDENT,
+            tokenize.DEDENT,
+            tokenize.ENCODING,
+        ):
+            prev_significant = ttype
+            continue
+        prev_significant = ttype
+
+    if not spans:
+        return content
+
+    buf = content.splitlines(keepends = True)
+    for srow, scol, erow, ecol in spans:
+        for row in range(srow, erow + 1):
+            line = buf[row - 1]
+            if line.endswith("\n"):
+                body, nl = line[:-1], "\n"
+            elif line.endswith("\r"):
+                body, nl = line[:-1], "\r"
+            else:
+                body, nl = line, ""
+            start = scol if row == srow else 0
+            end = ecol if row == erow else len(body)
+            end = min(end, len(body))
+            if start < end:
+                body = body[:start] + (" " * (end - start)) + body[end:]
+            buf[row - 1] = body + nl
+    return "".join(buf)
+
+
+# Payload carriers that are suspicious when hidden in a blanked region (a
+# docstring/string) of a file that can dynamically execute strings.
+_HIDDEN_PAYLOAD_PATTERNS = (
+    (RE_LARGE_BLOB, "large base64 blob"),
+    (RE_EMBEDDED_KEYS, "embedded key material"),
+    (RE_MAY12_IOC, "Shai-Hulud IOC string"),
+    (RE_OBFUSCATION, "marshal/compile/obfuscation"),
+)
+
+
+def _hidden_payload_findings(
+    original: str, stripped: str, filename: str, package: str
+) -> list[Finding]:
+    """Flag payloads that live only in the blanked (docstring/string) region of
+    a file that contains exec/eval. Such a string is invisible to code-only
+    scanning yet ``exec(__doc__)`` / ``exec(<str>)`` could still run it."""
+    if not RE_EXEC_EVAL.search(stripped):
+        return []
+    # Only docstrings/strings run via exec(__doc__)/exec(<str>); comments cannot.
+    # Isolate that span: keep comments as real code, take what string-blanking
+    # removed (length-preserved, so offsets stay exact for _extract_evidence).
+    code = _strip_noncode(original, blank_comments = False)
+    removed = "".join(o if o != s else " " for o, s in zip(original, code))
+    out = []
+
+    def _hidden(pat):
+        # Carrier present in a blanked region but NOT in real code. A carrier in
+        # real code is already caught by the normal check, so restricting to
+        # blanked-only avoids re-flagging legitimate in-code constants.
+        return bool(pat.search(removed)) and not pat.search(stripped)
+
+    for pat, label in _HIDDEN_PAYLOAD_PATTERNS:
+        if _hidden(pat):
+            out.append(
+                Finding(
+                    HIGH,
+                    package,
+                    filename,
+                    "exec/eval with payload hidden in a docstring/string",
+                    f"{label}: {_extract_evidence(removed, pat)}",
+                )
+            )
+    # Fetch-then-run dropper: a network call AND an os/subprocess exec that both
+    # live in the blanked region. Search the removed span directly (not "absent
+    # from real code") so a benign visible network/subprocess call cannot mask
+    # the docstring payload.
+    if RE_NETWORK.search(removed) and RE_SUBPROCESS.search(removed):
+        out.append(
+            Finding(
+                HIGH,
+                package,
+                filename,
+                "exec/eval with hidden network+exec payload",
+                f"network+exec: {_extract_evidence(removed, RE_SUBPROCESS)}",
+            )
+        )
+    return out
+
+
 def check_py_file(content: str, filename: str, package: str) -> list[Finding]:
     """Run all .py-specific checks."""
-    findings = []
+    # Code-only scanning: strip comments/docstrings up front so prose, doctests
+    # and usage examples cannot manufacture false positives. Aligns with the
+    # Hugging Face Hub model (ClamAV/picklescan: low-FP, signature/structural).
+    original = content
+    content = _strip_noncode(content)
+    findings = _hidden_payload_findings(original, content, filename, package)
     basename = os.path.basename(filename)
     is_setup = basename in ("setup.py", "setup.cfg")
     is_init = basename == "__init__.py"
@@ -937,7 +1112,13 @@ def _extract_evidence(
     pattern: re.Pattern,
     max_matches: int = 3,
 ) -> str:
-    """Pull matching lines as evidence snippets."""
+    """Pull matching lines as evidence snippets.
+
+    Falls back to a whole-content search when the pattern only matches across
+    line boundaries (several IOC regexes use ``re.DOTALL``). Without this an
+    anti-analysis / archive-staging finding could report empty evidence, making
+    the baseline entry impossible to review.
+    """
     lines = content.splitlines()
     matches = []
     for i, line in enumerate(lines, 1):
@@ -948,7 +1129,17 @@ def _extract_evidence(
             matches.append(f"L{i}: {snippet}")
             if len(matches) >= max_matches:
                 break
-    return " | ".join(matches) if matches else ""
+    if matches:
+        return " | ".join(matches)
+    # Multiline (DOTALL) match: report the line where the match begins.
+    m = pattern.search(content)
+    if m:
+        line_no = content.count("\n", 0, m.start()) + 1
+        snippet = lines[line_no - 1].strip() if line_no - 1 < len(lines) else ""
+        if len(snippet) > 160:
+            snippet = snippet[:160] + "..."
+        return f"L{line_no}: {snippet}" if snippet else f"L{line_no}: <multiline match>"
+    return ""
 
 
 # Non-Python checkers
@@ -1390,6 +1581,394 @@ _PIP_DOWNLOAD_PIN_FLAGS = [
 _RE_PKG_NAME_SANITIZE = re.compile(r"[^A-Za-z0-9._-]")
 
 
+# sdist fallback. `--only-binary :all:` never builds an sdist (no setup.py
+# exec), but a wheel-less project then can't be fetched at all and one such
+# package fails the whole --with-deps resolve (exit 2) -- a coverage hole. So on
+# resolve failure we drop to per-spec and fetch any sdist-only package's raw
+# tarball from the PyPI JSON API for scan_archive() to read statically: no pip,
+# no build, same no-exec guarantee. Transport failures are still exit 2; only
+# "no wheel" is downgraded to a direct fetch.
+
+# How many levels of indirect-dep recovery to chase (a wheel dep whose own child
+# is sdist-only, and so on). Bounded with dedup so recovery always terminates.
+_MAX_DEP_FOLLOWUP_DEPTH = 2
+_SDIST_DOWNLOAD_TIMEOUT = 180
+# Never fetch an archive larger than we would be willing to scan (iter_archive_files cap).
+_MAX_SDIST_BYTES = HARD_MAX_TOTAL_BYTES
+# Direct sdist bytes only ever come from PyPI's own CDN; refuse anything else.
+_TRUSTED_PYPI_HOSTS = frozenset({"files.pythonhosted.org", "pypi.org", "pypi.python.org"})
+
+
+def _spec_pin_version(spec: str) -> str | None:
+    """Return the ``==X.Y.Z`` pin from a spec, or None if unpinned."""
+    m = _RE_PYPI_SPEC_VERSION.search(spec)
+    return m.group(1) if m else None
+
+
+def _pypi_json(name: str, version: str | None = None) -> dict | None:
+    """Fetch PyPI metadata JSON (read-only HTTPS GET, no exec); None on error.
+    With ``version`` it fetches that release's document, whose ``requires_dist``
+    is accurate for the pin (the project-level doc describes only the latest)."""
+    url = "https://pypi.org/pypi/" + urllib.parse.quote(name, safe = "")
+    if version:
+        url += "/" + urllib.parse.quote(version, safe = "")
+    url += "/json"
+    try:
+        req = urllib.request.Request(url, headers = {"Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout = 30) as resp:
+            if getattr(resp, "status", 200) != 200:
+                return None
+            data = resp.read(16 * 1024 * 1024)  # metadata is small; cap regardless
+        return json.loads(data.decode("utf-8", errors = "replace"))
+    except Exception:
+        return None
+
+
+def _release_files(meta: dict, version: str | None) -> list[dict]:
+    """Files for a pinned version, else the latest release's. A pin that is
+    absent or empty returns [] (never the latest) so a yanked/bad pin fails
+    closed instead of a different artifact being scanned in its place."""
+    if version is not None:
+        return meta.get("releases", {}).get(version) or []
+    return meta.get("urls", []) or []
+
+
+def _release_has_wheel(meta: dict, version: str | None) -> bool:
+    """True if the (pinned or latest) release publishes any bdist_wheel."""
+    return any(f.get("packagetype") == "bdist_wheel" for f in _release_files(meta, version))
+
+
+def _is_trusted_pypi_url(url: str) -> bool:
+    """Only download sdist bytes from PyPI's own hosts, over HTTPS."""
+    try:
+        parsed = urllib.parse.urlparse(url)
+    except Exception:
+        return False
+    return parsed.scheme == "https" and parsed.hostname in _TRUSTED_PYPI_HOSTS
+
+
+_MARKER_ENV_VARS = (
+    "sys_platform",
+    "platform_system",
+    "platform_machine",
+    "platform_release",
+    "platform_version",
+    "platform_python_implementation",
+    "os_name",
+    "python_version",
+    "python_full_version",
+    "implementation_name",
+    "implementation_version",
+)
+
+
+def _marker_holds_by_default(marker: str) -> bool:
+    """Keep (scan) a dep unless its marker is purely ``extra``-gated. The scanner
+    runs on one OS/Python but a package may be installed on another, so a marker
+    that can be true on a different target (``sys_platform == 'win32'``,
+    ``python_version == '3.13'``) is always kept; only a marker depending solely
+    on ``extra`` and false with no extra requested is dropped. Conservative: on
+    any uncertainty, keep (over-scan, never silently skip)."""
+    m = marker.strip()
+    if not m or "extra" not in m:
+        return True  # no extra gate: installed by default on some target -> scan
+    if any(v in m for v in _MARKER_ENV_VARS):
+        return True  # also platform/python gated: true on some target -> scan
+    # Pure extra marker: decide by evaluating with no extra requested.
+    try:
+        from packaging.markers import Marker, default_environment
+
+        env = default_environment()
+        env["extra"] = ""
+        return bool(Marker(m).evaluate(env))
+    except Exception:
+        # packaging missing/unparseable: drop only a pure positive extra-equality.
+        return re.fullmatch(r"\s*extra\s*==\s*['\"][^'\"]+['\"]\s*", m) is None
+
+
+def _requires_dist_names(meta: dict) -> list[str]:
+    """Transitive dep specs (name + version specifier) from metadata, to recover
+    a sdist-only package's tree. The specifier is kept so a pinned malicious
+    version is fetched, not latest. Drops deps whose marker cannot hold for a
+    default install."""
+    info = meta.get("info", {}) or {}
+    reqs = info.get("requires_dist") or []
+    specs: list[str] = []
+    for r in reqs:
+        if not isinstance(r, str):
+            continue
+        head = r
+        if ";" in r:
+            head, marker = r.split(";", 1)
+            if not _marker_holds_by_default(marker):
+                continue
+        if not _RE_NAME.match(head.strip()):
+            continue
+        # "torch (>=1.10)" / "torch >=1.10" -> "torch>=1.10" (pip-friendly).
+        specs.append(re.sub(r"\s+", "", head).replace("(", "").replace(")", ""))
+    return specs
+
+
+def _requires_dist_for(
+    name: str,
+    version: str | None,
+    project_meta: dict,
+    errors: list[str] | None = None,
+) -> list[str]:
+    """Declared deps for the pinned version, read from that release's metadata
+    (its ``requires_dist`` can differ from latest). Unpinned uses the
+    project-level (latest) document. A pinned version whose own metadata cannot
+    be fetched returns [] (never latest's deps) and, when ``errors`` is given,
+    records an incomplete-scan error so a partial tree is not read as "no deps"."""
+    if not version:
+        return _requires_dist_names(project_meta)
+    vmeta = _pypi_json(name, version)
+    if vmeta is None:
+        msg = f"metadata fetch failed for pinned {name}=={version}; dependency scan incomplete"
+        if errors is None:
+            print(f"  [WARN] {msg}", file = sys.stderr)
+        else:
+            errors.append(msg)
+        return []
+    return _requires_dist_names(vmeta)
+
+
+def _download_sdist_direct(
+    name: str,
+    version: str | None,
+    dest: str,
+    *,
+    meta: dict | None = None,
+) -> tuple[str | None, str | None]:
+    """Fetch a project's sdist tarball directly from PyPI (no pip, no build).
+
+    Returns ``(filepath, error)``, one non-None. Suffix preserved for the archive
+    reader; bounded by ``_MAX_SDIST_BYTES`` and restricted to PyPI's CDN.
+    """
+    if meta is None:
+        meta = _pypi_json(name)
+    if meta is None:
+        return None, f"PyPI metadata fetch failed for {name}"
+    picked: tuple[str, str] | None = None
+    for f in _release_files(meta, version):
+        if f.get("packagetype") == "sdist" and f.get("url") and f.get("filename"):
+            picked = (f["filename"], f["url"])
+            break
+    if picked is None:
+        return None, f"no sdist published for {name} (version={version or 'latest'})"
+    fname, url = picked
+    if not _is_trusted_pypi_url(url):
+        return None, f"refusing non-PyPI sdist URL for {name}: {url[:80]}"
+    # basename + sanitize keeps the path inside dest; the char class preserves
+    # the real `.tar.gz` / `.zip` suffix so the archive reader picks the format.
+    safe_fname = _RE_PKG_NAME_SANITIZE.sub("_", os.path.basename(fname)) or "sdist.tar.gz"
+    out = os.path.join(dest, safe_fname)
+    try:
+        req = urllib.request.Request(url, headers = {"Accept": "application/octet-stream"})
+        with urllib.request.urlopen(req, timeout = _SDIST_DOWNLOAD_TIMEOUT) as resp:
+            if getattr(resp, "status", 200) != 200:
+                return None, f"sdist HTTP {getattr(resp, 'status', '?')} for {name}"
+            data = resp.read(_MAX_SDIST_BYTES + 1)
+        if len(data) > _MAX_SDIST_BYTES:
+            return None, f"sdist for {name} exceeds {_MAX_SDIST_BYTES} byte cap"
+        with open(out, "wb") as fh:
+            fh.write(data)
+        print(
+            f"  [INFO] fetched sdist directly (no build) for {name}: {safe_fname}",
+            file = sys.stderr,
+        )
+        return out, None
+    except Exception as exc:
+        return None, f"sdist download failed for {name}: {type(exc).__name__}: {str(exc)[:120]}"
+
+
+def _pip_download_with_deps(
+    specs: list[str],
+    dest: str,
+    env: dict,
+    *,
+    timeout: int = 600,
+) -> tuple[int, str]:
+    """One `pip download --with-deps --only-binary :all:` call. Returns (rc, stderr)."""
+    cmd = [
+        sys.executable,
+        "-m",
+        "pip",
+        "download",
+        *_PIP_DOWNLOAD_PIN_FLAGS,
+        "--dest",
+        dest,
+    ] + list(specs)
+    try:
+        proc = subprocess.run(cmd, capture_output = True, text = True, timeout = timeout, env = env)
+        return proc.returncode, proc.stderr or ""
+    except subprocess.TimeoutExpired:
+        return 124, "pip download (with deps) timed out"
+
+
+def _collect_flat_dir(dest: str, results: list[tuple[str, str]]) -> None:
+    """Append every archive in a flat dest dir as (pkg_name, path)."""
+    for fname in sorted(os.listdir(dest)):
+        fpath = os.path.join(dest, fname)
+        if os.path.isfile(fpath):
+            pkg_name = fname.split("-")[0].replace("_", "-").lower()
+            results.append((pkg_name, fpath))
+
+
+def _resolve_per_spec_with_deps(
+    specs: list[str], dest: str, env: dict, download_errors: list[str]
+) -> None:
+    """Fallback when the bulk --with-deps resolve fails: resolve each spec alone.
+
+    A still-failing spec is probed against PyPI: sdist-only -> direct fetch (deps
+    recovered one level); wheel-present but tree-unresolvable -> a --no-deps fetch
+    of just that package. Only a genuine fetch failure errors (caller exits 2);
+    unfetchable indirect deps are warned, since the named package is still scanned.
+    """
+    sdist_dep_followups: list[str] = []
+    for spec in specs:
+        name = _extract_pkg_name(spec)
+        version = _spec_pin_version(spec)
+        cmd = [
+            sys.executable,
+            "-m",
+            "pip",
+            "download",
+            *_PIP_DOWNLOAD_PIN_FLAGS,
+            "--dest",
+            dest,
+            spec,
+        ]
+        try:
+            proc = subprocess.run(cmd, capture_output = True, text = True, timeout = 300, env = env)
+        except subprocess.TimeoutExpired:
+            download_errors.append(f"per-spec --with-deps timed out for {spec}")
+            continue
+        if proc.returncode == 0:
+            continue  # archives landed in dest; collected by the caller
+        meta = _pypi_json(name)
+        if meta is not None and not _release_has_wheel(meta, version):
+            fpath, serr = _download_sdist_direct(name, version, dest, meta = meta)
+            if fpath is None:
+                download_errors.append(serr or f"sdist fetch failed for {name}")
+                continue
+            sdist_dep_followups.extend(_requires_dist_for(name, version, meta, download_errors))
+            continue
+        # Has a wheel but the full transitive tree won't co-resolve
+        # (ResolutionImpossible) -- typically a package the requirement file
+        # installs with --no-deps by design (e.g. descript-audio-codec, whose
+        # own pins conflict). Fetch just the package itself with --no-deps so it
+        # is still scanned; its conflicting deps are out of scope here (the file
+        # excludes them on purpose). Only a genuine fetch failure is an error.
+        nd_cmd = [
+            sys.executable,
+            "-m",
+            "pip",
+            "download",
+            "--no-deps",
+            *_PIP_DOWNLOAD_PIN_FLAGS,
+            "--dest",
+            dest,
+            spec,
+        ]
+        try:
+            nd = subprocess.run(nd_cmd, capture_output = True, text = True, timeout = 180, env = env)
+        except subprocess.TimeoutExpired:
+            download_errors.append(f"per-spec --no-deps timed out for {spec}")
+            continue
+        if nd.returncode == 0:
+            print(
+                f"  [INFO] {name}: full tree unresolvable; scanned the package "
+                f"alone (--no-deps), recovering deps individually.",
+                file = sys.stderr,
+            )
+            # The --with-deps failure may have been a sdist-only TRANSITIVE dep,
+            # which --no-deps skips. Recover the declared deps so that class is
+            # still scanned (each is fetched as a wheel or direct sdist below).
+            if meta is not None:
+                sdist_dep_followups.extend(_requires_dist_for(name, version, meta, download_errors))
+            continue
+        # --no-deps also failed: last-ditch sdist fetch at the pinned version.
+        if meta is not None:
+            fpath, _serr = _download_sdist_direct(name, version, dest, meta = meta)
+            if fpath is not None:
+                continue
+        download_errors.append(
+            f"per-spec failed for {spec} (with-deps and --no-deps): " f"{nd.stderr.strip()[:240]}"
+        )
+
+    # Recover the transitive deps of sdist-only packages. A depth-bounded,
+    # deduped worklist so a wheel dep whose own child is sdist-only is itself
+    # fetched (--no-deps) and scanned -- not silently dropped -- and that child
+    # is then recovered in turn. `dep` carries the version specifier so a pinned
+    # version is fetched.
+    seen: set[str] = set()
+    worklist: list[tuple[str, int]] = [(d, 0) for d in sdist_dep_followups]
+    while worklist:
+        dep, depth = worklist.pop()
+        dep_name = _extract_pkg_name(dep)
+        key = _norm_pkg(dep_name)
+        if key in seen:
+            continue
+        seen.add(key)
+        dep_ver = _spec_pin_version(dep)
+        cmd = [
+            sys.executable,
+            "-m",
+            "pip",
+            "download",
+            *_PIP_DOWNLOAD_PIN_FLAGS,
+            "--dest",
+            dest,
+            dep,
+        ]
+        try:
+            proc = subprocess.run(cmd, capture_output = True, text = True, timeout = 300, env = env)
+        except subprocess.TimeoutExpired:
+            print(f"  [WARN] dep download timed out for {dep}", file = sys.stderr)
+            continue
+        if proc.returncode == 0:
+            continue
+        meta = _pypi_json(dep_name)
+        if meta is None:
+            print(f"  [WARN] could not resolve indirect dep {dep}; skipping", file = sys.stderr)
+            continue
+        if not _release_has_wheel(meta, dep_ver):
+            fpath, serr = _download_sdist_direct(dep_name, dep_ver, dest, meta = meta)
+            if fpath is None:
+                print(f"  [WARN] could not fetch sdist dep {dep}: {serr}", file = sys.stderr)
+            elif depth < _MAX_DEP_FOLLOWUP_DEPTH:
+                worklist.extend((d, depth + 1) for d in _requires_dist_for(dep_name, dep_ver, meta))
+            continue
+        # Wheel published but its tree won't co-resolve (a sdist-only child).
+        # Fetch the dep alone so it is scanned, then chase its own declared deps.
+        nd_cmd = [
+            sys.executable,
+            "-m",
+            "pip",
+            "download",
+            "--no-deps",
+            *_PIP_DOWNLOAD_PIN_FLAGS,
+            "--dest",
+            dest,
+            dep,
+        ]
+        try:
+            nd = subprocess.run(nd_cmd, capture_output = True, text = True, timeout = 180, env = env)
+        except subprocess.TimeoutExpired:
+            print(f"  [WARN] dep --no-deps timed out for {dep}", file = sys.stderr)
+            continue
+        if nd.returncode == 0:
+            if depth < _MAX_DEP_FOLLOWUP_DEPTH:
+                worklist.extend((d, depth + 1) for d in _requires_dist_for(dep_name, dep_ver, meta))
+            continue
+        fpath, _serr = _download_sdist_direct(dep_name, dep_ver, dest, meta = meta)
+        if fpath is None:
+            print(f"  [WARN] could not resolve indirect dep {dep}; skipping", file = sys.stderr)
+        elif depth < _MAX_DEP_FOLLOWUP_DEPTH:
+            worklist.extend((d, depth + 1) for d in _requires_dist_for(dep_name, dep_ver, meta))
+
+
 def download_packages(
     specs: list[str],
     dest: str,
@@ -1403,49 +1982,36 @@ def download_packages(
     summaries. A non-empty ``download_errors`` MUST make the caller exit
     non-zero so a partial scan can't masquerade as "0 findings, all clean".
 
-    with_deps=True downloads the full transitive tree in one pip call (flat dir);
-    with_deps=False (default) downloads each spec individually with --no-deps.
+    with_deps=True downloads the full transitive tree (flat dir); a bulk resolve
+    failure (sdist-only package or version conflict) degrades to per-spec
+    resolution + direct sdist fetch rather than blanking the shard.
+    with_deps=False (default) downloads each spec individually with --no-deps,
+    also falling back to a direct sdist fetch when no wheel exists.
     """
     results: list[tuple[str, str]] = []
     download_errors: list[str] = []
     env = _pip_download_env()
 
     if with_deps:
-        # Single pip download for all specs + transitive deps. `--only-binary
-        # :all:` refuses sdists so we never execute setup.py for metadata.
         os.makedirs(dest, exist_ok = True)
-        cmd = [
-            sys.executable,
-            "-m",
-            "pip",
-            "download",
-            *_PIP_DOWNLOAD_PIN_FLAGS,
-            "--dest",
-            dest,
-        ] + specs
-        try:
-            proc = subprocess.run(
-                cmd,
-                capture_output = True,
-                text = True,
-                timeout = 600,  # transitive resolution is slow
-                env = env,
+        # Fast path: resolve + download the whole transitive tree in one call.
+        # `--only-binary :all:` refuses sdists so we never build for metadata.
+        rc, stderr = _pip_download_with_deps(specs, dest, env)
+        if rc != 0:
+            # Atomic resolve failed -- a sdist-only package, or a cross-package
+            # version conflict (ResolutionImpossible). Degrade to per-spec
+            # resolution so one bad spec can't blank the shard, then direct-fetch
+            # any sdist-only holdouts (no build). Genuine failures still record an
+            # error so the caller exits 2.
+            print(
+                f"  [INFO] bulk --with-deps resolve failed "
+                f"({stderr.strip()[:160]}); falling back to per-spec resolution "
+                f"for {len(specs)} spec(s).",
+                file = sys.stderr,
             )
-            if proc.returncode != 0:
-                msg = f"pip download (with deps) failed: " f"{proc.stderr.strip()[:500]}"
-                print(f"  [ERROR] {msg}", file = sys.stderr)
-                download_errors.append(msg)
-        except subprocess.TimeoutExpired:
-            msg = "pip download (with deps) timed out"
-            print(f"  [ERROR] {msg}", file = sys.stderr)
-            download_errors.append(msg)
-
-        # Collect every archive that landed in dest
-        for fname in sorted(os.listdir(dest)):
-            fpath = os.path.join(dest, fname)
-            if os.path.isfile(fpath):
-                pkg_name = fname.split("-")[0].replace("_", "-").lower()
-                results.append((pkg_name, fpath))
+            _resolve_per_spec_with_deps(specs, dest, env, download_errors)
+        # Collect everything that landed (bulk OR per-spec OR direct sdist).
+        _collect_flat_dir(dest, results)
     else:
         for spec in specs:
             raw_name = _extract_pkg_name(spec)
@@ -1465,22 +2031,25 @@ def download_packages(
                 spec,
             ]
             try:
-                proc = subprocess.run(
-                    cmd,
-                    capture_output = True,
-                    text = True,
-                    timeout = 120,
-                    env = env,
-                )
-                if proc.returncode != 0:
-                    msg = f"pip download failed for {spec}: " f"{proc.stderr.strip()[:500]}"
-                    print(f"  [ERROR] {msg}", file = sys.stderr)
-                    download_errors.append(msg)
-                    continue
+                proc = subprocess.run(cmd, capture_output = True, text = True, timeout = 120, env = env)
             except subprocess.TimeoutExpired:
-                msg = f"pip download timed out for {spec}"
-                print(f"  [ERROR] {msg}", file = sys.stderr)
-                download_errors.append(msg)
+                download_errors.append(f"pip download timed out for {spec}")
+                continue
+            if proc.returncode != 0:
+                # No wheel? Direct-fetch the sdist (no build) before erroring.
+                name = _extract_pkg_name(spec)
+                version = _spec_pin_version(spec)
+                meta = _pypi_json(name)
+                if meta is not None and not _release_has_wheel(meta, version):
+                    fpath, serr = _download_sdist_direct(name, version, pkg_dir, meta = meta)
+                    if fpath is not None:
+                        results.append((spec, fpath))
+                        continue
+                    download_errors.append(serr or f"sdist fetch failed for {name}")
+                    continue
+                download_errors.append(
+                    f"pip download failed for {spec}: {proc.stderr.strip()[:300]}"
+                )
                 continue
 
             for fname in os.listdir(pkg_dir):
@@ -1722,8 +2291,10 @@ def find_safe_version(
         scan_dir = os.path.join(tmpdir, f"{name}_{ver}")
         os.makedirs(scan_dir, exist_ok = True)
 
-        downloaded = download_packages([spec], scan_dir)
+        downloaded, download_errors = download_packages([spec], scan_dir)
         if not downloaded:
+            for err in download_errors:
+                print(f"    [WARN] {err}", file = sys.stderr)
             continue
 
         clean = True
@@ -1856,9 +2427,12 @@ def _run_fix(critical_pkgs: set[str], entries: list[dict], max_search: int) -> N
                 # If no pinned version, download to find what pip resolves
                 dl_dir = os.path.join(tmpdir, f"resolve_{pkg_name}")
                 os.makedirs(dl_dir, exist_ok = True)
-                downloaded = download_packages([pkg_name], dl_dir)
+                downloaded, download_errors = download_packages([pkg_name], dl_dir)
                 if downloaded:
                     current_ver = get_downloaded_version(downloaded[0][1])
+                else:
+                    for err in download_errors:
+                        print(f"  [WARN] {err}", file = sys.stderr)
                 shutil.rmtree(dl_dir, ignore_errors = True)
 
             if not current_ver:
@@ -1940,6 +2514,113 @@ def _find_requirements_files(root: str) -> list[str]:
     return sorted(results)
 
 
+# Baseline allowlist: triaged known-good CRITICAL/HIGH findings so the gate can
+# enforce without drowning in legitimate-library noise. Matched on
+# ``(package, basename(filename), check)`` -- not evidence text -- so a version
+# bump does not reopen a finding, but a *new* kind of finding in a listed file
+# is a different check and still fails. Regenerate with ``--write-baseline``.
+
+_DEFAULT_BASELINE_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "scan_packages_baseline.json"
+)
+
+
+def _norm_pkg(name: str) -> str:
+    """PEP 503-style normalization so requests/Requests/req_uests collapse."""
+    return re.sub(r"[-_.]+", "-", (name or "").strip().lower())
+
+
+# Leading "<name>-<version>/" archive root of an sdist member, which carries the
+# version. Stripping it (but keeping the rest of the path) gives a key that is
+# stable across version bumps yet still distinguishes same-named files.
+_RE_SDIST_ROOT = re.compile(r"^[^/]+-\d[^/]*/")
+
+
+def _relpath_in_package(filename: str) -> str:
+    """Package-relative path: drop an sdist's version-carrying archive root.
+
+    Wheel members are already package-relative (``numba/cuda/utils.py``); sdist
+    members sit under ``numba-0.60.0/...``, so strip that one leading segment.
+    """
+    return _RE_SDIST_ROOT.sub("", filename, count = 1)
+
+
+def _finding_key(f: Finding) -> tuple[str, str, str]:
+    """Stable allowlist key: normalized package, package-relative path, check.
+
+    The package-relative path (not just basename) keeps the key stable across
+    version bumps while still distinguishing same-named files like ``utils.py``.
+    """
+    return (_norm_pkg(f.package), _relpath_in_package(f.filename), f.check)
+
+
+def _load_baseline(path: str) -> set[tuple[str, str, str]]:
+    """Load an allowlist JSON into a set of match keys. Missing file -> empty."""
+    try:
+        with open(path, "r", encoding = "utf-8") as fh:
+            data = json.load(fh)
+    except FileNotFoundError:
+        return set()
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"  [WARN] could not read baseline {path}: {exc}", file = sys.stderr)
+        return set()
+    keys: set[tuple[str, str, str]] = set()
+    for e in data.get("entries", []):
+        try:
+            keys.add((_norm_pkg(e["package"]), _relpath_in_package(e["file"]), e["check"]))
+        except (KeyError, TypeError):
+            continue
+    return keys
+
+
+def _write_baseline(path: str, findings: list[Finding]) -> None:
+    """Persist CRITICAL/HIGH findings as an allowlist for human triage."""
+    entries = []
+    seen: set[tuple[str, str, str]] = set()
+    for f in sorted(findings, key = lambda f: SEVERITY_ORDER.get(f.severity, 99)):
+        if f.severity not in (CRITICAL, HIGH):
+            continue
+        key = _finding_key(f)
+        if key in seen:
+            continue
+        seen.add(key)
+        entries.append(
+            {
+                "package": f.package,
+                "file": _relpath_in_package(f.filename),
+                "check": f.check,
+                "severity": f.severity,
+                "evidence": f.evidence[:240],
+            }
+        )
+    doc = {
+        "_comment": (
+            "scan_packages.py allowlist. Each entry is a CRITICAL/HIGH finding "
+            "manually judged benign. Matched on (package, package-relative file, "
+            "check); evidence/severity are for review only. Regenerate with "
+            "--write-baseline AFTER reviewing every line."
+        ),
+        "version": 1,
+        "entries": entries,
+    }
+    with open(path, "w", encoding = "utf-8") as fh:
+        json.dump(doc, fh, indent = 2, sort_keys = False)
+        fh.write("\n")
+    print(f"  Wrote {len(entries)} baseline entr(y/ies) to {path}")
+
+
+def _partition_baseline(
+    findings: list[Finding], baseline: set[tuple[str, str, str]]
+) -> tuple[list[Finding], list[Finding]]:
+    """Split findings into (active, suppressed) by allowlist membership."""
+    if not baseline:
+        return list(findings), []
+    active, suppressed = [], []
+    for f in findings:
+        (suppressed if _finding_key(f) in baseline else active).append(f)
+    return active, suppressed
+
+
 # Main
 
 
@@ -1985,6 +2666,30 @@ def main() -> int:
         default = 10,
         metavar = "N",
         help = "Max older versions to scan when searching for safe version (default: 10)",
+    )
+    parser.add_argument(
+        "--baseline",
+        metavar = "FILE",
+        default = None,
+        help = (
+            "Allowlist JSON of triaged known-good findings to suppress. "
+            f"Defaults to {os.path.basename(_DEFAULT_BASELINE_PATH)} next to this "
+            "script if present."
+        ),
+    )
+    parser.add_argument(
+        "--no-baseline",
+        action = "store_true",
+        help = "Ignore the auto-discovered baseline allowlist.",
+    )
+    parser.add_argument(
+        "--write-baseline",
+        metavar = "FILE",
+        default = None,
+        help = (
+            "Write the current CRITICAL/HIGH findings to FILE as an allowlist, "
+            "then exit 0. Review every entry before committing it."
+        ),
     )
     args = parser.parse_args()
 
@@ -2066,11 +2771,34 @@ def main() -> int:
     finally:
         shutil.rmtree(tmpdir, ignore_errors = True)
 
-    print_findings(all_findings)
+    # Baseline allowlist: suppress triaged, known-good findings so the CI gate
+    # can be enforcing without red-failing on legitimate-library noise.
+    if args.no_baseline:
+        baseline_path = None
+    elif args.baseline:
+        baseline_path = args.baseline
+    elif os.path.isfile(_DEFAULT_BASELINE_PATH):
+        baseline_path = _DEFAULT_BASELINE_PATH
+    else:
+        baseline_path = None
+    baseline = _load_baseline(baseline_path) if baseline_path else set()
 
-    # --fix mode: auto-search for safe versions
-    if args.fix and all_findings:
-        critical_pkgs = {f.package for f in all_findings if f.severity == CRITICAL}
+    active, suppressed = _partition_baseline(all_findings, baseline)
+
+    print_findings(active)
+    if suppressed:
+        crit_s = sum(1 for f in suppressed if f.severity == CRITICAL)
+        high_s = sum(1 for f in suppressed if f.severity == HIGH)
+        med_s = sum(1 for f in suppressed if f.severity == MEDIUM)
+        print(
+            f"\n  {len(suppressed)} finding(s) suppressed by baseline "
+            f"{baseline_path} "
+            f"({crit_s} CRITICAL, {high_s} HIGH, {med_s} MEDIUM)."
+        )
+
+    # --fix mode: auto-search for safe versions (only real, non-baselined ones)
+    if args.fix and active:
+        critical_pkgs = {f.package for f in active if f.severity == CRITICAL}
         if critical_pkgs:
             print(
                 f"\n  --fix: Searching for safe versions of {len(critical_pkgs)} CRITICAL package(s)..."
@@ -2079,6 +2807,7 @@ def main() -> int:
 
     # Surface pip-download failures BEFORE the exit code so a partial download
     # can't masquerade as "0 findings, all clean" (silent-failure hardening 4).
+    # Also keeps us from writing a baseline from an incomplete scan.
     if download_errors:
         print(
             f"\n  {'=' * 72}\n"
@@ -2095,8 +2824,16 @@ def main() -> int:
         )
         return 2
 
-    # Exit code: 1 if any CRITICAL or HIGH
-    if any(f.severity in (CRITICAL, HIGH) for f in all_findings):
+    # --write-baseline: persist the full current CRITICAL/HIGH set as the new
+    # allowlist (ignoring any loaded baseline), then exit 0. Only reached once
+    # the scan is known complete.
+    if args.write_baseline:
+        _write_baseline(args.write_baseline, all_findings)
+        return 0
+
+    # Exit code: 1 only if a NON-baselined CRITICAL or HIGH remains. This is the
+    # signal CI gates on once the baseline reaches a clean run.
+    if any(f.severity in (CRITICAL, HIGH) for f in active):
         return 1
     return 0
 

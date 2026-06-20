@@ -8,18 +8,20 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import { InfoHint } from "@/components/ui/info-hint";
+import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { usePlatformStore } from "@/config/env";
 import { isCustomProviderType } from "@/features/chat/external-providers";
 import { cn } from "@/lib/utils";
 import {
-  ArrowDown01Icon,
   CloudIcon,
   DashboardSquare01Icon,
   FolderSearchIcon,
   RemoveCircleIcon,
   Search01Icon,
 } from "@hugeicons/core-free-icons";
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type KeyboardEvent, useMemo, useState } from "react";
 import { Input } from "../ui/input";
@@ -108,6 +110,11 @@ interface ModelSelectorProps {
   activeGgufVariant?: string | null;
   onValueChange?: (value: string, meta: ModelSelectorChangeMeta) => void;
   onEject?: () => void;
+  /** When provided, renders a persisted "Load on selection" toggle in the
+   *  popover. Off → picking a model stages it for a deferred, configured load
+   *  instead of loading immediately. */
+  loadOnSelection?: boolean;
+  onLoadOnSelectionChange?: (value: boolean) => void;
   onFoldersChange?: () => void;
   onPickLocalModel?: () => void | Promise<void>;
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
@@ -151,9 +158,11 @@ function ModelSelectorTrigger({
           "rounded-full border border-border/60 hover:bg-[#ececec] dark:hover:bg-[#2d2e32]",
           variant === "ghost" && "rounded-full hover:bg-[#ececec] dark:hover:bg-[#2d2e32]",
           variant === "muted" && "rounded-full bg-muted hover:bg-muted/80",
-          size === "sm" && "h-8 px-2.5 text-xs",
-          size === "default" && "h-9 px-3 text-sm",
-          size === "lg" && "h-10 px-3.5 text-sm",
+          // More left padding than right; the chevron is pulled close to the
+          // label (below) so the trigger reads balanced around the text.
+          size === "sm" && "h-8 pl-3 pr-1.5 text-xs",
+          size === "default" && "h-9 pl-4 pr-2 text-sm",
+          size === "lg" && "h-10 pl-4.5 pr-2.5 text-sm",
           className,
         )}
       >
@@ -185,9 +194,9 @@ function ModelSelectorTrigger({
             </span>
           )}
         </span>
-        <span className="flex size-4 shrink-0 items-center justify-center">
+        <span className="-ml-1 flex size-4 shrink-0 items-center justify-center">
           <HugeiconsIcon
-            icon={ArrowDown01Icon}
+            icon={ChevronDownStandardIcon}
             strokeWidth={1.75}
             className="size-3.5 text-muted-foreground"
           />
@@ -208,6 +217,8 @@ function ModelSelectorContent({
   onPickLocalModel,
   onModelsChange,
   deleteDisabled,
+  loadOnSelection,
+  onLoadOnSelectionChange,
   className,
   dataTour,
 }: {
@@ -221,6 +232,8 @@ function ModelSelectorContent({
   onPickLocalModel?: () => void;
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
   deleteDisabled?: boolean;
+  loadOnSelection?: boolean;
+  onLoadOnSelectionChange?: (value: boolean) => void;
   className?: string;
   dataTour?: string;
 }) {
@@ -376,6 +389,37 @@ function ModelSelectorContent({
           </button>
         </div>
       ) : null}
+      {onLoadOnSelectionChange ? (
+        <div className="mt-1.5 border-t border-border/70 pt-1.5">
+          <div className="flex w-full items-center justify-between gap-2 rounded-md px-2 py-1.5 text-xs text-muted-foreground">
+            <div className="flex min-w-0 flex-col gap-0.5">
+              <div className="flex min-w-0 items-center gap-1.5">
+                <span>Load on selection</span>
+                <InfoHint>
+                  <div className="space-y-1">
+                    <div>
+                      <span className="font-medium">On:</span> load the model
+                      immediately after selection.
+                    </div>
+                    <div>
+                      <span className="font-medium">Off:</span> configure options
+                      first, then click Load model.
+                    </div>
+                  </div>
+                </InfoHint>
+              </div>
+              <span className="text-[10px] leading-none text-muted-foreground/70">
+                Local GGUF models only
+              </span>
+            </div>
+            <Switch
+              className="panel-switch shrink-0"
+              checked={loadOnSelection ?? true}
+              onCheckedChange={onLoadOnSelectionChange}
+            />
+          </div>
+        </div>
+      ) : null}
     </PopoverContent>
   );
 }
@@ -393,6 +437,8 @@ export function ModelSelector({
   onPickLocalModel,
   onModelsChange,
   deleteDisabled,
+  loadOnSelection,
+  onLoadOnSelectionChange,
   variant = "outline",
   size = "default",
   className,
@@ -511,6 +557,8 @@ export function ModelSelector({
         onPickLocalModel={onPickLocalModel ? handlePickLocalModel : undefined}
         onModelsChange={onModelsChange}
         deleteDisabled={deleteDisabled}
+        loadOnSelection={loadOnSelection}
+        onLoadOnSelectionChange={onLoadOnSelectionChange}
         className={contentClassName}
         dataTour={contentDataTour}
       />

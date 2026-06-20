@@ -12,6 +12,8 @@ export interface TrainingStartRequest {
   vision_image_size?: number | null;
   /** Allow loading models with custom code. Only enable for repos you trust. */
   trust_remote_code?: boolean;
+  /** sha256 fingerprint pinning user approval of this exact custom-code version. */
+  approved_remote_code_fingerprint?: string | null;
   hf_dataset: string | null;
   subset: string | null;
   train_split: string | null;
@@ -37,6 +39,7 @@ export interface TrainingStartRequest {
   eval_steps: number;
   weight_decay: number;
   max_grad_norm: number;
+  max_grad_value?: number | null;
   random_seed: number;
   packing: boolean;
   optim: string;

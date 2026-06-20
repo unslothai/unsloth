@@ -129,6 +129,8 @@
 	--accent: oklch(0.9596 0.0275 167.8295);
 	--accent-foreground: oklch(0.2868 0.0649 159.9823);
 	--destructive: oklch(0.6368 0.2078 25.3313);
+	/* Bypass permissions accent: bright, saturated yellow (not dark gold). */
+	--bypass: #c99d00;
 	--border: oklch(0.9208 0.0101 164.8536);
 	--input: oklch(0.9208 0.0101 164.8536);
 	--ring: #17b88b;
@@ -251,6 +253,8 @@
 	--accent: #3a3d43;
 	--accent-foreground: #ececee;
 	--destructive: oklch(0.6368 0.2078 25.3313);
+	/* Bypass permissions accent: bright, saturated neon yellow on dark. */
+	--bypass: #ffd60a;
 	/* --border / --input one step lighter than --muted so outlines and form
 	   borders stay visible on muted surfaces (right config panel, export
 	   tiles, quant chips) and keep subtle contrast on card. */
@@ -344,6 +348,7 @@
 	--color-input: var(--input);
 	--color-border: var(--border);
 	--color-destructive: var(--destructive);
+	--color-bypass: var(--bypass);
 	--color-accent-foreground: var(--accent-foreground);
 	--color-accent: var(--accent);
 	--color-muted-foreground: var(--muted-foreground);
@@ -578,6 +583,11 @@
 	.sidebar-row-action-glyph {
 		@apply inline-flex size-6 items-center justify-center rounded-full text-sidebar-foreground/55;
 	}
+	/* Secondary row action (the pinned-chat unpin button) sits just left of
+	   the primary "…" options button. */
+	.sidebar-row-action.is-unpin-action {
+		right: 1.875rem;
+	}
 
 	/* Branch picker chevron buttons sit beside action bar icon buttons
 	   (size-8, rounded-full). Height + radius match for visual
@@ -744,7 +754,7 @@
 	}
 
 	.tooltip-compact {
-		@apply rounded-[9px] border-transparent bg-black px-2.5 py-1.5 text-[11px] font-medium leading-snug text-white shadow-md;
+		@apply rounded-[11px] border-transparent bg-black px-2.5 py-1.5 text-[11px] font-medium leading-snug text-white shadow-md;
 	}
 
 	/* Dialog popups: borderless; chatbox shadow in light, flat card
@@ -901,8 +911,9 @@
 		border: none;
 		/* Pin to the dark --radius so rounded-3xl corners stay consistent. */
 		--radius: 0.625rem;
-		/* Match the chat box: soft elevation. */
-		box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
+		/* Prominent, wide ChatGPT-style elevation. */
+		box-shadow: 0 24px 70px -16px rgba(0, 0, 0, 0.28),
+			0 8px 24px -12px rgba(0, 0, 0, 0.18);
 	}
 
 	/* Dark: page-bg shadow so the dialog does not merge into same-color
@@ -1040,6 +1051,19 @@
 
 	.composer-pill-btn[data-active="true"] {
 		color: var(--primary);
+	}
+	/* Bypass permissions badge: bright yellow text, no resting fill; the
+	   rounded hover pill picks up the yellow accent like other toggles. */
+	.composer-pill-btn[data-variant="danger"] {
+		background-color: transparent;
+		color: var(--bypass);
+	}
+	.composer-pill-btn[data-variant="danger"]:hover {
+		background-color: color-mix(in oklab, var(--bypass) 7%, transparent);
+	}
+	/* Match the hover-X circle to the yellow accent instead of the green primary. */
+	.composer-pill-btn[data-variant="danger"] .composer-pill-x {
+		background-color: color-mix(in oklab, var(--bypass) 13%, transparent);
 	}
 
 	/* With more than 4 tools on, drop pill labels to icons only to cut clutter.
@@ -1782,6 +1806,12 @@
 [data-sonner-toast][data-styled='true'].chat-model-loaded-toast {
 	padding-top: 14px !important;
 	padding-bottom: 14px !important;
+}
+
+/* Downloading state shows a progress bar as the last row; give it a little
+   extra breathing room below the bar. */
+[data-sonner-toast][data-styled='true'].chat-model-load-toast:has([role='progressbar']) {
+	padding-bottom: 18px !important;
 }
 
 [data-sonner-toast][data-styled='true'].chat-model-loaded-toast [data-close-button] {

@@ -30,6 +30,7 @@ import {
   downloadChatExport,
   importConversationsFromFile,
   useChatRuntimeStore,
+  useChatPreferencesStore,
   type PlusMenuItemId,
   usePlusMenuPrefsStore,
 } from "@/features/chat";
@@ -42,6 +43,7 @@ import {
   Folder01Icon,
   McpServerIcon,
   PencilRulerIcon,
+  ShieldBanIcon,
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -50,6 +52,8 @@ import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
+import { ArchivedChatsDialog } from "../components/archived-chats-dialog";
+import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 
 // Adjustable "+" menu items shown in settings, in display order. Icons mirror
 // the ones used in the composer + menu itself.
@@ -127,6 +131,17 @@ const PLUS_MENU_SETTINGS: { id: PlusMenuItemId; label: string; icon: ReactNode }
         />
       ),
     },
+    {
+      id: "bypassPermissions",
+      label: "Bypass permissions",
+      icon: (
+        <HugeiconsIcon
+          icon={ShieldBanIcon}
+          strokeWidth={2}
+          className={PLUS_MENU_ICON_CLASS}
+        />
+      ),
+    },
   ];
 
 export function ChatTab() {
@@ -134,7 +149,21 @@ export function ChatTab() {
   const plusPins = usePlusMenuPrefsStore((state) => state.pins);
   const togglePlusPin = usePlusMenuPrefsStore((state) => state.togglePin);
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [archivedOpen, setArchivedOpen] = useState(false);
   const [count, setCount] = useState<number | null>(null);
+  const archivedChatsRequested = useSettingsDialogStore(
+    (s) => s.archivedChatsRequested,
+  );
+  const consumeArchivedChatsRequest = useSettingsDialogStore(
+    (s) => s.consumeArchivedChatsRequest,
+  );
+
+  // Open the archived list when the archive toast asked to jump here.
+  useEffect(() => {
+    if (!archivedChatsRequested) return;
+    setArchivedOpen(true);
+    consumeArchivedChatsRequest();
+  }, [archivedChatsRequested, consumeArchivedChatsRequest]);
   const [exporting, setExporting] = useState(false);
   const [clearing, setClearing] = useState(false);
   const collapseHtmlArtifacts = useChatRuntimeStore(
@@ -151,6 +180,18 @@ export function ChatTab() {
   );
   const hydratePersistedSettings = useChatRuntimeStore(
     (state) => state.hydratePersistedSettings,
+  );
+  const confirmDeleteChats = useChatPreferencesStore(
+    (state) => state.confirmDeleteChats,
+  );
+  const setConfirmDeleteChats = useChatPreferencesStore(
+    (state) => state.setConfirmDeleteChats,
+  );
+  const showModelDisclaimer = useChatPreferencesStore(
+    (state) => state.showModelDisclaimer,
+  );
+  const setShowModelDisclaimer = useChatPreferencesStore(
+    (state) => state.setShowModelDisclaimer,
   );
 
   useEffect(() => {
@@ -275,6 +316,15 @@ export function ChatTab() {
             />
           </SettingsRow>
         ))}
+        <SettingsRow
+          label={t("settings.chat.modelDisclaimer")}
+          description={t("settings.chat.modelDisclaimerDescription")}
+        >
+          <Switch
+            checked={showModelDisclaimer}
+            onCheckedChange={setShowModelDisclaimer}
+          />
+        </SettingsRow>
       </SettingsSection>
 
       <SettingsSection title={t("settings.chat.artifacts.title")}>
@@ -303,6 +353,29 @@ export function ChatTab() {
       </SettingsSection>
 
       <SettingsSection title={t("settings.chat.data")}>
+        <SettingsRow
+          label="Archived chats"
+          description="View and manage chats you have archived."
+        >
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setArchivedOpen(true)}
+          >
+            Manage
+          </Button>
+        </SettingsRow>
+
+        <SettingsRow
+          label="Confirm before deleting"
+          description="Ask for confirmation before a chat is deleted. Turn off to delete instantly."
+        >
+          <Switch
+            checked={confirmDeleteChats}
+            onCheckedChange={setConfirmDeleteChats}
+          />
+        </SettingsRow>
+
         <SettingsRow
           label={t("settings.chat.exportHistory")}
           description={t("settings.chat.exportHistoryDescription")}
@@ -405,6 +478,8 @@ export function ChatTab() {
 
         <SettingsRow
           destructive
+          // divide-y already draws the row separator; drop the extra border.
+          className="border-t-0 mt-0 pt-3"
           label={t("settings.chat.clearAllChats")}
           description={
             count === null
@@ -428,6 +503,8 @@ export function ChatTab() {
           </Button>
         </SettingsRow>
       </SettingsSection>
+
+      <ArchivedChatsDialog open={archivedOpen} onOpenChange={setArchivedOpen} />
 
       <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
         <DialogContent className="max-w-md">

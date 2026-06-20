@@ -108,6 +108,10 @@ class TrainingStartRequest(BaseModel):
         False,
         description = "Allow loading models with custom code (e.g. NVIDIA Nemotron). Only enable for repos you trust.",
     )
+    approved_remote_code_fingerprint: Optional[str] = Field(
+        None,
+        description = "sha256 fingerprint from the remote-code scan, pinning user approval of this exact custom-code version.",
+    )
 
     # Dataset parameters
     hf_dataset: Optional[str] = Field(None, description = "HuggingFace dataset identifier")
@@ -325,7 +329,37 @@ class TrainingStartRequest(BaseModel):
         ge = 0,
         description = "Global gradient norm clipping threshold. Set 0 to disable.",
     )
-    random_seed: int = Field(42, description = "Random seed")
+    max_grad_value: Optional[float] = Field(
+        None,
+        ge = 0,
+        description = (
+            "MLX-only elementwise gradient value clipping threshold. "
+            "If unset, MLX uses its runtime default."
+        ),
+    )
+    max_grad_leaf_norm: Optional[float] = Field(
+        None,
+        ge = 0,
+        description = (
+            "MLX-only proportional per-parameter gradient norm cap. "
+            "Preserves each tensor's gradient direction without global norm "
+            "clipping's memory overhead."
+        ),
+    )
+    cast_norm_output_to_input_dtype: bool = Field(
+        True,
+        description = (
+            "MLX-only: keep norm parameters in fp32 but cast norm outputs "
+            "back to the incoming activation dtype."
+        ),
+    )
+    random_seed: int = Field(
+        3407,
+        description = (
+            "Random seed; matches the Studio backend / MLX worker default "
+            "and unsloth's historical recommended value."
+        ),
+    )
     packing: bool = Field(False, description = "Enable sequence packing")
     optim: str = Field("adamw_8bit", description = "Optimizer")
     lr_scheduler_type: str = Field("linear", description = "Learning rate scheduler type")

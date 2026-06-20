@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-__version__ = "2026.6.6"
+__version__ = "2026.6.8"
 
 __all__ = [
     "SUPPORTS_BFLOAT16",
@@ -1015,18 +1015,44 @@ except:
 from transformers.modeling_utils import logger as transformers_logger
 
 
+def _all_missing_keys_are_position_ids(record_str):
+    """True only when EVERY key in the 'newly initialized: [...]' list is a position_ids
+    buffer.
+
+    transformers reports all missing keys in a single record, so a substring test would
+    wrongly suppress the warning when a real missing weight is listed alongside a benign
+    position_ids buffer. position_ids is a deterministic arange buffer that transformers
+    itself lists in _keys_to_ignore_on_load_missing (some VLMs, e.g. DeepSeek-OCR, ship it
+    non-persistently), so a record listing ONLY position_ids keys is safe to ignore;
+    anything else must still raise.
+    """
+    import ast
+    import re
+
+    match = re.search(r"newly initialized:\s*(\[[^\]]*\])", record_str)
+    if not match:
+        return False
+    try:
+        keys = ast.literal_eval(match.group(1))
+    except Exception:
+        return False
+    return bool(keys) and all("position_ids" in str(key) for key in keys)
+
+
 class _RaiseUninitialized(logging.Handler):
     def __init__(self):
         super().__init__()
 
     def emit(self, record):
-        record_lower = str(record).lower()
+        record_str = str(record)
+        record_lower = record_str.lower()
         if (
             ("some weights of" in record_lower)
             and ("score.weight" not in record_lower)
             and ("classifier.weight" not in record_lower)
             and ("cls.predictions" not in record_lower)
             and ("predictions.decoder" not in record_lower)
+            and not _all_missing_keys_are_position_ids(record_str)
             and (os.environ.get("UNSLOTH_WARN_UNINITIALIZED", "1") == "1")
         ):
             raise Exception(

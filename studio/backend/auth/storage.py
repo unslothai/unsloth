@@ -4,9 +4,11 @@
 """SQLite storage for auth data (user credentials + JWT secret)."""
 
 import hashlib
+import hmac
 import os
 import secrets
 import sqlite3
+import threading
 from datetime import datetime, timezone
 from typing import Optional, Tuple
 
@@ -234,6 +236,29 @@ def _pbkdf2_api_key(raw_key: str) -> str:
 
 def _pbkdf2_desktop_secret(raw_secret: str) -> str:
     return _pbkdf2_api_key(raw_secret)
+
+
+# Memoize the deterministic raw-key -> PBKDF2-hash derivation so the 100k-round
+# KDF runs once per key instead of on every authenticated request. Keyed by a
+# salted HMAC of the key (not the key itself); revocation/expiry are still
+# enforced by the SQLite read on every call, so a cache hit only skips the KDF.
+# Only keys present in the DB are cached, so unknown-key spam can't grow it.
+_api_key_hash_cache: dict[str, str] = {}
+_API_KEY_HASH_CACHE_MAX = 4096
+_api_key_hash_cache_lock = threading.Lock()
+
+
+def _api_key_cache_id(raw_key: str) -> str:
+    """Cache id for a raw key: salted HMAC-SHA256 (not the key itself)."""
+    return hmac.new(
+        _get_or_create_api_key_pbkdf2_salt(), raw_key.encode("utf-8"), hashlib.sha256
+    ).hexdigest()
+
+
+def _reset_api_key_hash_cache() -> None:
+    """Drop memoized derivations (tests / salt change)."""
+    with _api_key_hash_cache_lock:
+        _api_key_hash_cache.clear()
 
 
 def is_initialized() -> bool:
@@ -704,7 +729,9 @@ def validate_api_key(raw_key: str) -> Optional[str]:
 
     Also updates ``last_used_at`` on success.
     """
-    key_hash = _pbkdf2_api_key(raw_key)
+    cache_id = _api_key_cache_id(raw_key)
+    cached_hash = _api_key_hash_cache.get(cache_id)
+    key_hash = cached_hash if cached_hash is not None else _pbkdf2_api_key(raw_key)
     conn = get_connection()
     try:
         cur = conn.execute(
@@ -714,6 +741,12 @@ def validate_api_key(raw_key: str) -> Optional[str]:
         row = cur.fetchone()
         if row is None:
             return None
+        # Real key: memoize so later requests skip the KDF. Bounded; clear on overflow.
+        if cached_hash is None:
+            with _api_key_hash_cache_lock:
+                if len(_api_key_hash_cache) >= _API_KEY_HASH_CACHE_MAX:
+                    _api_key_hash_cache.clear()
+                _api_key_hash_cache[cache_id] = key_hash
         if not row["is_active"]:
             return None
         if row["expires_at"] is not None:

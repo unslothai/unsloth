@@ -41,6 +41,8 @@ export interface LoadModelRequest {
   gguf_variant?: string | null;
   /** Allow loading models with custom code (e.g. NVIDIA Nemotron). Only enable for repos you trust. */
   trust_remote_code?: boolean;
+  /** sha256 fingerprint pinning user approval of this exact custom-code version. */
+  approved_remote_code_fingerprint?: string | null;
   chat_template_override?: string | null;
   cache_type_kv?: string | null;
   /**
@@ -72,6 +74,10 @@ export interface ValidateModelResponse {
   is_lora?: boolean;
   is_vision?: boolean;
   requires_trust_remote_code?: boolean;
+  // HF flagged unsafe files, so the load is hard-blocked pending dialog review.
+  requires_security_review?: boolean;
+  /** Native context length from the local GGUF header; null until downloaded. */
+  context_length?: number | null;
 }
 
 export interface GgufVariantDetail {
@@ -131,7 +137,8 @@ export interface LoadModelResponse {
   max_context_length?: number | null;
   native_context_length?: number | null;
   supports_reasoning?: boolean;
-  reasoning_style?: "enable_thinking" | "reasoning_effort";
+  reasoning_style?: "enable_thinking" | "reasoning_effort" | "enable_thinking_effort";
+  reasoning_effort_levels?: string[];
   reasoning_always_on?: boolean;
   supports_preserve_thinking?: boolean;
   supports_tools?: boolean;
@@ -170,7 +177,8 @@ export interface InferenceStatusResponse {
   } | null;
   requires_trust_remote_code?: boolean;
   supports_reasoning?: boolean;
-  reasoning_style?: "enable_thinking" | "reasoning_effort";
+  reasoning_style?: "enable_thinking" | "reasoning_effort" | "enable_thinking_effort";
+  reasoning_effort_levels?: string[];
   reasoning_always_on?: boolean;
   supports_preserve_thinking?: boolean;
   supports_tools?: boolean;
@@ -188,9 +196,44 @@ export interface InferenceStatusResponse {
   /**
    * Why MTP was disabled on the loaded model despite being requested.
    * "binary_no_mtp" / "binary_outdated" -> updating llama.cpp would re-enable
-   * it; "runtime_error" -> the current build could not run it. Null otherwise.
+   * it; "runtime_error" -> the current build could not run it;
+   * "mla_mtp_disabled" -> an Auto-mode policy downgrade for MLA models
+   * (GLM-5.2 et al.) whose llama.cpp MTP path is slower than no speculation
+   * (updating won't help; choose MTP in Settings to force it). Null otherwise.
    */
   spec_fallback_reason?: string | null;
+}
+
+export interface ApiMonitorEntry {
+  id: string;
+  endpoint: string;
+  method: string;
+  model: string;
+  prompt?: string;
+  reply?: string;
+  prompt_preview: string;
+  reply_preview: string;
+  prompt_truncated: boolean;
+  reply_truncated: boolean;
+  status: "running" | "completed" | "cancelled" | "error";
+  started_at: number;
+  updated_at: number;
+  finished_at?: number | null;
+  duration_ms?: number | null;
+  context_length?: number | null;
+  context_usage?: number | null;
+  prompt_tokens?: number | null;
+  completion_tokens?: number | null;
+  total_tokens?: number | null;
+  error?: string | null;
+}
+
+export interface ApiMonitorResponse {
+  status: "idle" | "ready" | "generating";
+  active_model?: string | null;
+  context_length?: number | null;
+  active_requests: number;
+  entries: ApiMonitorEntry[];
 }
 
 export interface AudioGenerationResponse {
@@ -289,6 +332,7 @@ export interface OpenAIChatCompletionsRequest {
     | "xhigh"
     | null;
   preserve_thinking?: boolean | null;
+  thinking?: {type: "disabled" | "enabled";} | null;
   enable_tools?: boolean | null;
   enabled_tools?: string[];
   /** Local models + enable_tools only. */
