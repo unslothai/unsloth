@@ -467,8 +467,13 @@ class TestValidateRefusesDuringTraining(unittest.TestCase):
         self.assertEqual(captured[0]["load_in_4bit"], False)
         self.assertEqual(captured[0]["max_seq_length"], 4096)
 
-    def test_rejects_gguf_with_gpu_ids_before_guard(self):
-        # /validate must mirror /load's GGUF + gpu_ids 400, before the VRAM guard.
+    def test_validates_gguf_gpu_ids_before_guard(self):
+        # gpu_ids is now SUPPORTED for GGUF (the GPU picker); /validate must
+        # mirror /load by validating the pick before the VRAM guard, so a bad
+        # pick is a clean 400 (not the removed "not supported for GGUF") and the
+        # guard is never reached. Patch the validator so the test is
+        # deterministic regardless of the host's GPU env.
+        import utils.hardware.hardware as hardware_mod
         from models.inference import ValidateModelRequest
 
         request = ValidateModelRequest(model_path = "x.gguf", gpu_ids = [0])
@@ -490,12 +495,18 @@ class TestValidateRefusesDuringTraining(unittest.TestCase):
             ),
             patch.object(self.route.ModelConfig, "from_identifier", return_value = cfg),
             patch.object(self.route, "load_inference_config", return_value = {}),
+            patch.object(
+                hardware_mod,
+                "resolve_requested_gpu_ids",
+                side_effect = ValueError("Invalid gpu_ids [0]: rejected by test"),
+            ),
             _stub_guard_deps(training_active = True, decision = (True, {}), captured = captured),
         ):
             with self.assertRaises(HTTPException) as exc:
                 asyncio.run(self.route.validate_model(request, current_subject = "u"))
         self.assertEqual(exc.exception.status_code, 400)
-        self.assertIn("gpu_ids is not supported for GGUF", exc.exception.detail)
+        self.assertIn("gpu_ids", exc.exception.detail.lower())
+        self.assertNotIn("not supported", exc.exception.detail.lower())
         self.assertEqual(captured, [])  # guard never reached
 
 

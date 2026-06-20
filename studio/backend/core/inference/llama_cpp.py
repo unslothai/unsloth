@@ -4619,6 +4619,14 @@ class LlamaCppBackend:
             "speculative_type": speculative_type,
             "spec_draft_n_max": spec_draft_n_max,
             "tensor_parallel": tensor_parallel,
+            # GPU-memory placement: replayed on respawn so a server SIGKILL'd by
+            # GPU/RAM pressure reloads onto the same devices with the same
+            # offload, not the auto defaults.
+            "gpu_memory_mode": gpu_memory_mode,
+            "gpu_layers": gpu_layers,
+            "n_cpu_moe": n_cpu_moe,
+            "tensor_split": list(tensor_split) if tensor_split is not None else None,
+            "gpu_ids": list(gpu_ids) if gpu_ids is not None else None,
             "n_threads": n_threads,
             "n_gpu_layers": n_gpu_layers,
             "n_parallel": n_parallel,

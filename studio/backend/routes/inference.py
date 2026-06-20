@@ -2348,12 +2348,15 @@ async def load_model(
         # Normalize gpu_ids: empty list means auto-selection, same as None
         effective_gpu_ids = request.gpu_ids if request.gpu_ids else None
 
-        # Reject GGUF + gpu_ids first so the guard can't mask it with a VRAM 409.
+        # GGUF supports gpu_ids: validate the pick up front (before the training
+        # guard) so a bad pick is a clean 400, not masked by a VRAM 409. Rejects
+        # negative / out-of-range / duplicate ids and UUID/MIG parents.
         if config.is_gguf and effective_gpu_ids is not None:
-            raise HTTPException(
-                status_code = 400,
-                detail = "gpu_ids is not supported for GGUF models yet.",
-            )
+            from utils.hardware.hardware import resolve_requested_gpu_ids
+            try:
+                resolve_requested_gpu_ids(effective_gpu_ids)
+            except ValueError as exc:
+                raise HTTPException(status_code = 400, detail = str(exc)) from exc
 
         # Effective quantization (LoRA can flip 4-bit -> 16-bit); guard + load reuse it.
         effective_load_in_4bit = _effective_load_in_4bit(config, request.load_in_4bit)
@@ -2379,16 +2382,6 @@ async def load_model(
 
         # ── GGUF path: load via llama-server ──────────────────────
         if config.is_gguf:
-            # Reuse the standard path's GPU-id validation (rejects negative /
-            # out-of-range / duplicate ids and UUID/MIG parents) so a bad pick
-            # is a clean 400, not a silent CPU fallback.
-            if effective_gpu_ids is not None:
-                from utils.hardware.hardware import resolve_requested_gpu_ids
-                try:
-                    resolve_requested_gpu_ids(effective_gpu_ids)
-                except ValueError as exc:
-                    raise HTTPException(status_code = 400, detail = str(exc)) from exc
-
             llama_backend = get_llama_cpp_backend()
             unsloth_backend = get_inference_backend()
 
@@ -2887,12 +2880,14 @@ async def validate_model(
         # Refuse early (before the frontend unloads to load this) if it can't fit
         # alongside training, using the same settings /load uses so they agree.
         effective_gpu_ids = request.gpu_ids if request.gpu_ids else None
-        # Mirror /load: reject GGUF + gpu_ids before the guard so both return 400.
+        # Mirror /load: GGUF supports gpu_ids, so validate the pick (a bad one is
+        # a clean 400) before the guard sizes the model against training VRAM.
         if config.is_gguf and effective_gpu_ids is not None:
-            raise HTTPException(
-                status_code = 400,
-                detail = "gpu_ids is not supported for GGUF models yet.",
-            )
+            from utils.hardware.hardware import resolve_requested_gpu_ids
+            try:
+                resolve_requested_gpu_ids(effective_gpu_ids)
+            except ValueError as exc:
+                raise HTTPException(status_code = 400, detail = str(exc)) from exc
         effective_load_in_4bit = _effective_load_in_4bit(config, request.load_in_4bit)
         # Off-loop: guard does sync nvidia-smi / HF work.
         await asyncio.to_thread(
