@@ -122,6 +122,7 @@ You can use the same Docker image as Unsloth Studio.
 
 #### AMD, Intel:
 For RTX 50x, B200, 6000 GPUs: `uv pip install unsloth --torch-backend=auto`. Read our guides for: [Blackwell](https://unsloth.ai/docs/blog/fine-tuning-llms-with-blackwell-rtx-50-series-and-unsloth) and [DGX Spark](https://unsloth.ai/docs/blog/fine-tuning-llms-with-nvidia-dgx-spark-and-unsloth). <br>
+**Windows + RTX 50-Series (Blackwell) tips:** if a kernel fails to build with `RuntimeError: Failed to find C compiler`, install the Visual Studio Build Tools 2022 (Desktop development with C++) and run from the x64 Native Tools Command Prompt. If you hit `no kernel image is available` or torch reports a `+cpu` build, reinstall with `uv pip install unsloth --torch-backend=auto` and clear `%USERPROFILE%\.triton\cache`. <br>
 To install Unsloth on **AMD** and **Intel** GPUs, follow our [AMD Guide](https://unsloth.ai/docs/get-started/install/amd) and [Intel Guide](https://unsloth.ai/docs/get-started/install/intel).
 
 ## 📒 Free Notebooks
