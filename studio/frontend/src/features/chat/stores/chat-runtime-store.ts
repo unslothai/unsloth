@@ -494,6 +494,7 @@ export function rebalanceSplit(
 // Store fields derived from a load/status response's GPU-memory settings.
 // Shared by every load path so the manual-knob round-trip can't drift.
 export function loadedGpuMemoryFields(resp: {
+  is_gguf?: boolean;
   gpu_memory_mode?: "auto" | "fit" | "manual";
   gpu_layers?: number;
   n_cpu_moe?: number;
@@ -502,30 +503,37 @@ export function loadedGpuMemoryFields(resp: {
   n_moe_layers?: number;
   gpu_ids?: number[] | null;
 }) {
-  // gpu_memory_mode is GGUF-only; a non-GGUF response omits it. Don't touch the
-  // standing preference or the GGUF baselines on those loads.
-  if (resp.gpu_memory_mode === undefined) return {};
-  const mode = resp.gpu_memory_mode;
+  // GPU-memory state is meaningful only for a GGUF chat load. A non-GGUF response
+  // still carries gpu_memory_mode (its default "auto" is serialized), so gate on
+  // the authoritative is_gguf flag, not the field's presence -- otherwise loading
+  // a transformers model would reset the standing fit/manual preference.
+  if (!resp.is_gguf) return {};
+  const mode = resp.gpu_memory_mode ?? "auto";
   const gpuIds = resp.gpu_ids ?? null;
+  // Layer/MoE/split knobs apply (and are reported) only in manual mode; in
+  // auto/fit the server ignores them, so don't seed the loaded baseline or the
+  // editable knobs with values it never applied.
+  const manualKnobs =
+    mode === "manual"
+      ? {
+          loadedGpuLayers: resp.gpu_layers ?? null,
+          loadedNCpuMoe: resp.n_cpu_moe ?? null,
+          loadedSplitRatio: resp.tensor_split ?? null,
+          gpuLayers: resp.gpu_layers ?? GPU_LAYERS_ALL,
+          nCpuMoe: resp.n_cpu_moe ?? 0,
+          splitRatio: resp.tensor_split ?? null,
+        }
+      : { loadedGpuLayers: null, loadedNCpuMoe: null, loadedSplitRatio: null };
   return {
     gpuMemoryMode: mode,
     loadedGpuMemoryMode: mode,
-    loadedGpuLayers: resp.gpu_layers ?? null,
-    loadedNCpuMoe: resp.n_cpu_moe ?? null,
-    loadedSplitRatio: resp.tensor_split ?? null,
     ggufLayerCount: resp.n_layers ?? null,
     // MoE expert-layer count: the n_cpu_moe slider max, and 0 hides the slider.
     moeLayerCount: resp.n_moe_layers ?? null,
     // The picker reflects what loaded (the request sent the user's pick).
     selectedGpuIds: gpuIds,
     loadedGpuIds: gpuIds,
-    // Sync the editable knobs only from a manual load; otherwise keep the
-    // user's pending choice for when they switch to Manual.
-    ...(mode === "manual" && {
-      gpuLayers: resp.gpu_layers ?? GPU_LAYERS_ALL,
-      nCpuMoe: resp.n_cpu_moe ?? 0,
-      splitRatio: resp.tensor_split ?? null,
-    }),
+    ...manualKnobs,
   };
 }
 

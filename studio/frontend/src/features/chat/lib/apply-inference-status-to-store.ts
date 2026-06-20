@@ -220,8 +220,7 @@ export function applyActiveModelStatusToStore(
         tensorParallel: status.tensor_parallel,
         loadedTensorParallel: status.tensor_parallel,
       }),
-    ...(status.gpu_memory_mode !== undefined &&
-      prevState.loadedGpuMemoryMode === null &&
+    ...(prevState.loadedGpuMemoryMode === null &&
       loadedGpuMemoryFields(status)),
     ...(status.chat_template_override !== undefined &&
       prevState.loadedChatTemplateOverride === null &&

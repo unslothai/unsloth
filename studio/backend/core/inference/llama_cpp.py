@@ -4850,9 +4850,18 @@ class LlamaCppBackend:
                 # response. 'fit'/'manual' have no fallback, so the request
                 # value is the value actually applied.
                 self._gpu_memory_mode = gpu_memory_mode
-                self._gpu_layers = gpu_layers
-                self._n_cpu_moe = n_cpu_moe
-                self._tensor_split = tensor_split
+                # The layer/MoE/split knobs are applied only in manual mode; in
+                # auto/fit the launch ignores them, so record defaults rather than
+                # the request's unused values -- else /status and /load report
+                # Manual-only knobs (and a stale split) for a non-Manual server.
+                if gpu_memory_mode == "manual":
+                    self._gpu_layers = gpu_layers
+                    self._n_cpu_moe = n_cpu_moe
+                    self._tensor_split = tensor_split
+                else:
+                    self._gpu_layers = -1
+                    self._n_cpu_moe = 0
+                    self._tensor_split = None
                 self._gpu_ids = sorted(gpu_ids) if gpu_ids else None
                 # Manual mode skips the TP planner but still emits --split-mode
                 # tensor at launch; drop it when fewer than 2 GPUs are in use
