@@ -2549,6 +2549,9 @@ elif case "$TORCH_INDEX_URL" in */rocm*|*/gfx*) true ;; *) false ;; esac; then
     substep "ROCm: $_rocm_root"
     [ -n "$_gpu_rocm_ver" ] && substep "hipconfig: $_gpu_rocm_ver"
     [ -n "$_gpu_disp_mkt" ] && [ -n "$_gpu_disp_gfx" ] && substep "GPU: $_gpu_disp_mkt"
+elif [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; then
+    # Apple Silicon: PyTorch gets Metal (MPS) acceleration over unified memory, so not CPU-only.
+    step "gpu" "Apple Silicon (Metal, unified memory)"
 else
     step "gpu" "none (CPU-only)" "$C_WARN"
 fi
