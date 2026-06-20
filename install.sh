@@ -1465,14 +1465,17 @@ _maybe_reroute_strixhalo_to_2404() {
     command -v wsl.exe >/dev/null 2>&1 || { UNSLOTH_SKIP_ROCM_WSL_SETUP=1; return 0; }
     # Route only to an already-installed supported distro. Prefer Ubuntu 24.04
     # (AMD's primary ROCm-on-WSL target); fall back to 22.04, also documented as
-    # supported, so a box that only has 22.04 still reaches the GPU.
+    # supported, so a box that only has 22.04 still reaches the GPU. Match whole
+    # lines (not substrings) and reuse the matched name, so a custom distro like
+    # "Ubuntu-24.04-test" can't masquerade as the real Ubuntu-24.04 and then fail
+    # `wsl -d`. wsl.exe -l -q prints one distro name per line.
     _rr_distros=$(wsl.exe -l -q 2>/dev/null | tr -d '\000\r')
     _rr_target=""
-    if printf '%s\n' "$_rr_distros" | grep -qiF "Ubuntu-24.04"; then
-        _rr_target="Ubuntu-24.04"
-    elif printf '%s\n' "$_rr_distros" | grep -qiF "Ubuntu-22.04"; then
-        _rr_target="Ubuntu-22.04"
-    fi
+    for _rr_want in "Ubuntu-24.04" "Ubuntu-22.04"; do
+        # || true: no match is expected, not an error (script runs under set -e).
+        _rr_match=$(printf '%s\n' "$_rr_distros" | grep -ixF "$_rr_want" | head -n1) || true
+        [ -n "$_rr_match" ] && { _rr_target="$_rr_match"; break; }
+    done
     [ -n "$_rr_target" ] || {
         substep "ROCm-on-WSL (GPU) needs Ubuntu 24.04 or 22.04; this distro is Ubuntu ${_rr_ver:-unknown}." "$C_WARN"
         substep "No supported Ubuntu WSL distro found; staying CPU-only. Install Ubuntu-24.04 and re-run there for GPU." "$C_WARN"

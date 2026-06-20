@@ -277,6 +277,24 @@ assert_contains "no supported target -> no route"                 "$_out" "__NOR
 assert_contains "no supported target -> skip ROCm bootstrap"      "$_out" "SKIP_ROCM=1"
 rm -rf "$_d"
 
+# 24) A custom distro that merely CONTAINS the name (Ubuntu-24.04-test) but has no
+#     exact Ubuntu-24.04/22.04 must NOT be picked (substring match would fail wsl -d).
+_d=$(make_fixture 1 strix 0 26.04 0)
+printf 'Ubuntu\nUbuntu-24.04-test\n' > "$_d/distros"
+_out=$(run_func "$_d")
+assert_contains "substring-only distro -> no route"               "$_out" "__NOROUTE__"
+assert_absent   "substring-only distro -> not rerouted"           "$_out" "__ROUTED__"
+assert_contains "substring-only distro -> skip ROCm bootstrap"    "$_out" "SKIP_ROCM=1"
+rm -rf "$_d"
+
+# 25) Exact Ubuntu-24.04 alongside a custom Ubuntu-24.04-test -> route to the exact one.
+_d=$(make_fixture 1 strix 0 26.04 0)
+printf 'Ubuntu\nUbuntu-24.04-test\nUbuntu-24.04\n' > "$_d/distros"
+_out=$(run_func "$_d")
+assert_contains "exact + custom -> routes"                        "$_out" "__ROUTED__"
+assert_contains "exact + custom -> targets the exact 24.04"       "$_out" "-d Ubuntu-24.04 --"
+rm -rf "$_d"
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ] || exit 1
