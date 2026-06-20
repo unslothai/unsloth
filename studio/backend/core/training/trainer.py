@@ -2666,9 +2666,7 @@ class UnslothTrainer:
                 # falls back to features/first-row probing.
                 train_columns = resolve_column_names(train_dataset)
                 if "text" not in train_columns:
-                    raise ValueError(
-                        f"Raw-text dataset missing 'text' column: {train_columns}"
-                    )
+                    raise ValueError(f"Raw-text dataset missing 'text' column: {train_columns}")
                 return (dataset_info, eval_dataset)
 
             elif self.is_audio_vlm:

@@ -313,9 +313,7 @@ def test_streaming_start_rejects_embedding_models():
 
     with patch.object(training_route, "get_training_backend", return_value = backend):
         with pytest.raises(HTTPException) as exc_info:
-            asyncio.run(
-                training_route.start_training(request, current_subject = "test-user")
-            )
+            asyncio.run(training_route.start_training(request, current_subject = "test-user"))
 
     assert exc_info.value.status_code == 400
     assert "embedding" in exc_info.value.detail
@@ -482,14 +480,14 @@ def test_drop_invalid_text_rows_from_generator_none_column_names():
 
     def _gen():
         yield {"text": "valid row"}
-        yield {"text": None}          # invalid, should be dropped
+        yield {"text": None}  # invalid, should be dropped
         yield {"text": "another row"}
 
     stream = datasets.IterableDataset.from_generator(_gen)
     # Precondition: column_names is None on a raw from_generator dataset.
-    assert stream.column_names is None, (
-        "precondition failed: expected column_names=None for from_generator dataset"
-    )
+    assert (
+        stream.column_names is None
+    ), "precondition failed: expected column_names=None for from_generator dataset"
 
     filtered, notices = _drop_invalid_text_rows(
         stream, mode_title = "Raw text", split_scope = "test split"
@@ -520,9 +518,7 @@ def test_preflight_first_batch_returns_error_on_empty_stream():
             return _EmptyLoader()
 
     # Load UnslothTrainer class from trainer.py via importlib to avoid heavy imports.
-    trainer_path = (
-        _BACKEND_ROOT / "core" / "training" / "trainer.py"
-    )
+    trainer_path = _BACKEND_ROOT / "core" / "training" / "trainer.py"
     spec = importlib.util.spec_from_file_location("trainer_module", trainer_path)
     trainer_mod = importlib.util.module_from_spec(spec)
     # Provide a minimal sys.modules shim so top-level imports in trainer.py don't
@@ -543,9 +539,7 @@ def test_preflight_first_batch_returns_error_on_empty_stream():
             break
 
     if trainer_cls is None:
-        pytest.skip(
-            "Could not load trainer module (missing optional deps: torch/unsloth)."
-        )
+        pytest.skip("Could not load trainer module (missing optional deps: torch/unsloth).")
 
     # Build a bare instance without calling __init__ (avoids needing real deps).
     instance = object.__new__(trainer_cls)
