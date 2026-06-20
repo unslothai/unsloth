@@ -66,6 +66,11 @@ class DeviceType(str, Enum):
 
 DEVICE: Optional[DeviceType] = None
 CHAT_ONLY: bool = True  # No CUDA GPU -> GGUF chat only (Mac, CPU-only, etc.)
+# Why CHAT_ONLY is True (Train/Export disabled). None when training is enabled.
+# "mlx_unavailable": Apple Silicon but `import mlx.core` failed (the usual cause of
+# "Train/Export greyed out" on Macs after a reinstall dropped MLX);
+# "intel_mac": Intel Mac (no PyTorch/MLX); "no_gpu": CPU-only non-Mac host.
+CHAT_ONLY_REASON: Optional[str] = None
 IS_ROCM: bool = False  # True when running on AMD ROCm (HIP) -- routes GPU monitoring to amd.py
 
 
@@ -151,8 +156,9 @@ def detect_hardware() -> DeviceType:
       2. MLX   (Apple Silicon via MLX framework)
       3. CPU   (fallback)
     """
-    global DEVICE, CHAT_ONLY, IS_ROCM
-    CHAT_ONLY = True  # reset -- only CUDA/ROCm sets it to False
+    global DEVICE, CHAT_ONLY, CHAT_ONLY_REASON, IS_ROCM
+    CHAT_ONLY = True  # reset -- only CUDA/ROCm/XPU/MLX sets it to False
+    CHAT_ONLY_REASON = None
     IS_ROCM = False
 
     # --- CUDA / ROCm: try PyTorch ---
@@ -201,6 +207,23 @@ def detect_hardware() -> DeviceType:
 
     # --- Fallback ---
     DEVICE = DeviceType.CPU
+    # CHAT_ONLY is still True here (every training-capable branch returned early),
+    # so record WHY so the UI can explain the greyed-out Train/Export instead of
+    # silently disabling them.
+    if is_apple_silicon():
+        # Reached the CPU fallback on Apple Silicon => `import mlx.core` failed, so
+        # MLX training is unavailable. Almost always an environment problem (a
+        # reinstall/update that dropped mlx), recoverable with `unsloth studio update`.
+        CHAT_ONLY_REASON = "mlx_unavailable"
+        logger.warning(
+            "Apple Silicon detected but MLX (mlx.core) is not importable; "
+            "Train/Export disabled (chat-only). Run `unsloth studio update` to "
+            "restore MLX training."
+        )
+    elif platform.system() == "Darwin":
+        CHAT_ONLY_REASON = "intel_mac"  # Intel Mac: no PyTorch/MLX -> GGUF-only by design.
+    else:
+        CHAT_ONLY_REASON = "no_gpu"
     print("Hardware detected: CPU (no GPU backend available)")
     return DEVICE
 

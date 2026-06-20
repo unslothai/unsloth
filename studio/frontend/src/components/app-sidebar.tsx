@@ -211,6 +211,7 @@ function NavItem({
   dataTour,
   className,
   spinner,
+  tooltip,
 }: {
   icon: typeof ZapIcon;
   label: string;
@@ -221,12 +222,15 @@ function NavItem({
   dataTour?: string;
   className?: string;
   spinner?: boolean;
+  // Overrides the hover tooltip (defaults to `label`). Used to explain why a
+  // disabled item (e.g. Train/Export on a chat-only host) is greyed out.
+  tooltip?: string;
 }) {
   return (
     <SidebarMenuItem className={className}>
       <div className="relative">
         <SidebarMenuButton
-          tooltip={label}
+          tooltip={tooltip ?? label}
           disabled={disabled}
           onClick={onClick}
           isActive={active}
@@ -267,6 +271,19 @@ export function AppSidebar() {
   };
 
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
+  const chatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);
+  // When Train/Export are greyed out (chat-only host), explain why on hover
+  // instead of disabling them silently. mlx_unavailable is the common macOS case
+  // after a reinstall/update dropped MLX and is recoverable via `unsloth studio update`.
+  const trainExportDisabledHint: string | undefined = !chatOnly
+    ? undefined
+    : chatOnlyReason === "mlx_unavailable"
+      ? "Training needs MLX. Run `unsloth studio update` to enable Train and Export."
+      : chatOnlyReason === "intel_mac"
+        ? "Training needs Apple Silicon or a GPU. Intel Macs are chat-only."
+        : chatOnlyReason === "no_gpu"
+          ? "Training needs an NVIDIA or AMD GPU."
+          : undefined;
   const [shutdownOpen, setShutdownOpen] = useState(false);
 
   const isChatRoute = pathname.startsWith("/chat");
@@ -1105,6 +1122,7 @@ export function AppSidebar() {
                   pathname === "/studio" || pathname.startsWith("/studio/")
                 }
                 disabled={chatOnly}
+                tooltip={trainExportDisabledHint}
                 spinner={trainingInProgress}
                 onClick={() => {
                   if (chatOnly) return;
@@ -1133,6 +1151,7 @@ export function AppSidebar() {
                     label={t("shell.navigation.train")}
                     active={pathname === "/studio" || pathname.startsWith("/studio/")}
                     disabled={chatOnly}
+                    tooltip={trainExportDisabledHint}
                     spinner={trainingInProgress}
                     onClick={() => {
                       if (chatOnly) return;
@@ -1154,6 +1173,7 @@ export function AppSidebar() {
                     label={t("shell.navigation.export")}
                     active={pathname === "/export" || pathname.startsWith("/export/")}
                     disabled={chatOnly}
+                    tooltip={trainExportDisabledHint}
                     spinner={exportInProgress}
                     onClick={() => {
                       if (chatOnly) return;
