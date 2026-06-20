@@ -235,9 +235,7 @@ def activate_transformers_for_subprocess(model_name: str) -> None:
 def _has_adapter_weights(path: Path) -> bool:
     """True if *path* holds LoRA adapter weight files (``adapter_model.*``)."""
     try:
-        return any(path.glob("adapter_model*.safetensors")) or any(
-            path.glob("adapter_model*.bin")
-        )
+        return any(path.glob("adapter_model*.safetensors")) or any(path.glob("adapter_model*.bin"))
     except OSError:
         return False
 
