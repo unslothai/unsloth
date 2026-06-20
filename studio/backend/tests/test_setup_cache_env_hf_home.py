@@ -21,7 +21,7 @@ if _BACKEND_DIR not in sys.path:
 _STORAGE_ROOTS_PATH = Path(__file__).resolve().parent.parent / "utils/paths/storage_roots.py"
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture(autouse = True)
 def _isolate_studio_home(monkeypatch, tmp_path):
     # Keep _setup_cache_env's UV/VLLM mkdirs out of the real ~/.unsloth/studio.
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
