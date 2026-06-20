@@ -657,17 +657,18 @@ def detect_reasoning_flags(
     return flags
 
 
-# Gemma 3n/4 ship MTP as a separate drafter (no "-mtp" in the name).
-_GEMMA_MTP_FAMILY_RE = re.compile(r"gemma[-_]?(?:3n|4)[-_]", re.IGNORECASE)
+# Gemma 4 ships MTP as a separate drafter (no "-mtp" in the name). Gemma 3n
+# ships no drafter, so it is excluded -- it takes the normal non-MTP path.
+_GEMMA_MTP_FAMILY_RE = re.compile(r"gemma[-_]?4[-_]", re.IGNORECASE)
 
 
 def _is_gemma_mtp_family(name: Optional[str]) -> bool:
-    """Match Gemma 3n/4 by name."""
+    """Match Gemma 4 by name."""
     return bool(name) and bool(_GEMMA_MTP_FAMILY_RE.search(name))
 
 
 def _is_gemma_mtp_name(model_identifier: Optional[str], gguf_path: Optional[str] = None) -> bool:
-    """Match Gemma 3n/4 by id or GGUF filename."""
+    """Match Gemma 4 by id or GGUF filename."""
     return _is_gemma_mtp_family(model_identifier) or _is_gemma_mtp_family(
         Path(gguf_path).name if gguf_path else None
     )
@@ -678,7 +679,7 @@ def _is_mtp_model_name(model_identifier: Optional[str], gguf_path: Optional[str]
     for cand in (model_identifier, Path(gguf_path).name if gguf_path else None):
         if cand and "-mtp" in cand.lower():
             return True
-        # Recognise Gemma 3n/4 too, so a failed drafter download surfaces a
+        # Recognise Gemma 4 too, so a failed drafter download surfaces a
         # fallback reason instead of silently defaulting.
         if cand and _is_gemma_mtp_family(cand):
             return True
@@ -3840,7 +3841,8 @@ class LlamaCppBackend:
         target: Optional[str] = None
         from huggingface_hub import list_repo_files
 
-        # Retry a transient listing blip; permanent repo/auth errors are not.
+        # Retry a transient listing blip; permanent repo/auth errors and offline
+        # mode are not retried (offline raises at once -> fall through to cache).
         for attempt in range(3):
             if self._cancel_event.is_set():
                 return None
@@ -3853,6 +3855,7 @@ class LlamaCppBackend:
                     "GatedRepoError",
                     "RevisionNotFoundError",
                     "EntryNotFoundError",
+                    "OfflineModeIsEnabled",
                 ):
                     logger.debug(f"Could not list repo files for {label}: {e}")
                     break

@@ -1851,9 +1851,28 @@ def test_is_gemma_mtp_family():
     from core.inference.llama_cpp import _is_gemma_mtp_family
 
     assert _is_gemma_mtp_family("unsloth/gemma-4-E4B-it-GGUF") is True
-    assert _is_gemma_mtp_family("unsloth/gemma-3n-E2B-it-GGUF") is True
+    assert _is_gemma_mtp_family("unsloth/gemma-4-12b-it-GGUF") is True
+    # gemma-3n ships no separate drafter, so it is not a drafter family.
+    assert _is_gemma_mtp_family("unsloth/gemma-3n-E2B-it-GGUF") is False
     assert _is_gemma_mtp_family("unsloth/Qwen3.5-35B-A3B-MTP-GGUF") is False
     assert _is_gemma_mtp_family("unsloth/llama-3-8b") is False
+
+
+def test_gemma_3n_without_drafter_is_not_mtp(monkeypatch):
+    # gemma-3n ships no drafter; it must take the normal non-MTP path, not
+    # drafter_not_found (which would make every reload retry a missing drafter).
+    backend = _resolver_backend(monkeypatch)
+    backend._build_speculative_flags(
+        speculative_type = "auto",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = "unsloth/gemma-3n-E4B-it-GGUF",
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+        mtp_draft_path = None,
+    )
+    assert backend.spec_fallback_reason is None
 
 
 def test_spec_fallback_reason_drafter_not_found(monkeypatch):
