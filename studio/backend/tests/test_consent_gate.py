@@ -1235,7 +1235,6 @@ class TestScannerCoversAllExecutableCode:
             **kw,
         ):
             import json
-
             if filename == "config.json":
                 p = tmp_path / "config.json"
                 p.write_text(
