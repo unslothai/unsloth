@@ -1456,35 +1456,31 @@ _maybe_reroute_strixhalo_to_2404() {
     fi
     _rr_ver=""
     [ -r /etc/os-release ] && _rr_ver=$(. /etc/os-release 2>/dev/null; printf '%s' "${VERSION_ID:-}")
-    # AMD supports ROCm-on-WSL on both Ubuntu 24.04 and 22.04 (Radeon/Ryzen docs),
-    # so leave the user on either; only reroute newer/unsupported distros (e.g. 26.04).
-    case "$_rr_ver" in 24.04|22.04) return 0 ;; esac
+    # The ROCm-on-WSL bootstrap (scripts/install_rocm_wsl_strixhalo.sh) only supports
+    # Ubuntu 24.04: it dies on any other VERSION_ID and pins the noble repo. So 24.04
+    # is the sole GPU-supported target; leave a 24.04 user alone. (An already-working
+    # ROCm on any other version was caught by the librocdxg check above.)
+    case "$_rr_ver" in 24.04) return 0 ;; esac
     # Past here the distro is unsupported for ROCm-on-WSL. If we can't reroute to a
     # 24.04 target, stay CPU-only AND skip the later origin-distro ROCm bootstrap (it
     # ignores distro version, so it would otherwise install ROCm into 26.04 etc.).
     command -v wsl.exe >/dev/null 2>&1 || { UNSLOTH_SKIP_ROCM_WSL_SETUP=1; return 0; }
-    # Route only to an already-installed supported distro. Prefer Ubuntu 24.04
-    # (AMD's primary ROCm-on-WSL target); fall back to 22.04, also documented as
-    # supported, so a box that only has 22.04 still reaches the GPU. Match whole
-    # lines (not substrings) and reuse the matched name, so a custom distro like
-    # "Ubuntu-24.04-test" can't masquerade as the real Ubuntu-24.04 and then fail
-    # `wsl -d`. wsl.exe -l -q prints one distro name per line.
+    # Route only to an already-installed Ubuntu-24.04 (the bootstrap's only target).
+    # Match the whole line (not a substring) and reuse the matched name, so a custom
+    # distro like "Ubuntu-24.04-test" can't masquerade as the real Ubuntu-24.04 and
+    # then fail `wsl -d`. wsl.exe -l -q prints one distro name per line.
+    # || true: no match is expected, not an error (script runs under set -e).
     _rr_distros=$(wsl.exe -l -q 2>/dev/null | tr -d '\000\r')
-    _rr_target=""
-    for _rr_want in "Ubuntu-24.04" "Ubuntu-22.04"; do
-        # || true: no match is expected, not an error (script runs under set -e).
-        _rr_match=$(printf '%s\n' "$_rr_distros" | grep -ixF "$_rr_want" | head -n1) || true
-        [ -n "$_rr_match" ] && { _rr_target="$_rr_match"; break; }
-    done
+    _rr_target=$(printf '%s\n' "$_rr_distros" | grep -ixF "Ubuntu-24.04" | head -n1) || true
     [ -n "$_rr_target" ] || {
-        substep "ROCm-on-WSL (GPU) needs Ubuntu 24.04 or 22.04; this distro is Ubuntu ${_rr_ver:-unknown}." "$C_WARN"
-        substep "No supported Ubuntu WSL distro found; staying CPU-only. Install Ubuntu-24.04 and re-run there for GPU." "$C_WARN"
+        substep "ROCm-on-WSL (GPU) needs Ubuntu 24.04; this distro is Ubuntu ${_rr_ver:-unknown}." "$C_WARN"
+        substep "No Ubuntu-24.04 WSL distro found; staying CPU-only. Install Ubuntu-24.04 and re-run there for GPU." "$C_WARN"
         UNSLOTH_SKIP_ROCM_WSL_SETUP=1
         return 0
     }
 
     echo ""
-    substep "ROCm-on-WSL (GPU) needs Ubuntu 24.04 or 22.04; this distro is Ubuntu ${_rr_ver:-unknown}." "$C_WARN"
+    substep "ROCm-on-WSL (GPU) needs Ubuntu 24.04; this distro is Ubuntu ${_rr_ver:-unknown}." "$C_WARN"
     substep "Found an existing $_rr_target distro -- continuing the GPU install there." "$C_OK"
     # A --local checkout can't be replayed via curl|sh (the repo isn't in the target
     # distro), so don't silently run a different install; tell the user to re-run there.
