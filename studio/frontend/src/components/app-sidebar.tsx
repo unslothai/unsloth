@@ -108,7 +108,7 @@ import {
 } from "@/features/chat";
 import { useSettingsDialogStore } from "@/features/settings";
 import { useEffectiveProfile, UserAvatar } from "@/features/profile";
-import { usePlatformStore } from "@/config/env";
+import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { clearAuthTokens, logout } from "@/features/auth";
 import { TOUR_OPEN_EVENT } from "@/features/tour";
 import {
@@ -284,6 +284,20 @@ export function AppSidebar() {
         : chatOnlyReason === "no_gpu"
           ? "Training needs an NVIDIA or AMD GPU."
           : undefined;
+
+  // The backend MLX self-heal (utils/mlx_repair) can reinstall MLX in the
+  // background and flip chat_only false without a restart. The platform store
+  // cached the initial /api/health, so re-poll while we are chat-only for the
+  // recoverable mlx_unavailable case; the effect stops once Train/Export become
+  // available (chatOnly flips false and this effect's guard returns early).
+  useEffect(() => {
+    if (!chatOnly || chatOnlyReason !== "mlx_unavailable") return;
+    const id = window.setInterval(() => {
+      void fetchDeviceType({ force: true }).catch(() => undefined);
+    }, 15000);
+    return () => window.clearInterval(id);
+  }, [chatOnly, chatOnlyReason]);
+
   const [shutdownOpen, setShutdownOpen] = useState(false);
 
   const isChatRoute = pathname.startsWith("/chat");
