@@ -210,6 +210,62 @@ def _get_or_create_api_key_pbkdf2_salt() -> bytes:
     return salt
 
 
+# ── Server identity secret (proves "this is really Studio") ────────────
+#
+# A dedicated server-wide secret used only to answer the /api/auth/identity
+# challenge: a caller sends a random nonce and gets back HMAC(secret, nonce).
+# The secret never leaves the process and lives in this same-user database, so
+# a process that cannot read it (a different OS user squatting the port, or a
+# remote/fake server) cannot forge a valid proof. Kept separate from the
+# per-user JWT secret so signing keys stay single-purpose.
+_IDENTITY_SECRET_DB_KEY = "studio_identity_secret"
+_identity_secret_cache: Optional[bytes] = None
+
+
+def get_or_create_identity_secret() -> bytes:
+    """Return the server identity secret, generating it once if missing.
+
+    Hex-encoded 32-byte random value in ``app_secrets`` (same get-or-create
+    pattern as the API-key salt). Regenerated only when the row is missing.
+    """
+    global _identity_secret_cache
+    if _identity_secret_cache is not None:
+        return _identity_secret_cache
+
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT value FROM app_secrets WHERE key = ?",
+            (_IDENTITY_SECRET_DB_KEY,),
+        ).fetchone()
+        if row is None:
+            conn.execute(
+                "INSERT OR IGNORE INTO app_secrets (key, value) VALUES (?, ?)",
+                (_IDENTITY_SECRET_DB_KEY, secrets.token_hex(32)),
+            )
+            conn.commit()
+            row = conn.execute(
+                "SELECT value FROM app_secrets WHERE key = ?",
+                (_IDENTITY_SECRET_DB_KEY,),
+            ).fetchone()
+        secret = bytes.fromhex(row["value"])
+    finally:
+        conn.close()
+
+    _identity_secret_cache = secret
+    return secret
+
+
+def compute_identity_proof(nonce: bytes) -> str:
+    """HMAC-SHA256 proof that the caller holds this install's identity secret.
+
+    The nonce is opaque and the proof reveals nothing about the secret, so a
+    client can use this to confirm an endpoint is the real local Studio before
+    sending it any credential.
+    """
+    return hmac.new(get_or_create_identity_secret(), nonce, hashlib.sha256).hexdigest()
+
+
 _API_KEY_PBKDF2_ITERATIONS = 100_000
 DESKTOP_SECRET_PREFIX = "desktop-"
 _DESKTOP_SECRET_HASH_KEY = "desktop_secret_hash"

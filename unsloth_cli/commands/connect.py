@@ -22,6 +22,7 @@ from unsloth_cli._inference import (
     ensure_studio_backend_path,
     find_studio_server,
     is_loopback_url,
+    verify_studio_identity,
 )
 
 connect_app = typer.Typer(
@@ -236,8 +237,19 @@ def _agent_api_key(base: str, explicit: Optional[str]) -> str:
             "UNSLOTH_API_KEY."
         )
 
-    # Loopback only. Replay a key already minted for *this* server (never one
-    # cached for a different server), then fall back to minting locally.
+    # Even on loopback the responder could be a process that preempted the
+    # port. Prove it holds this install's identity secret (challenge-response)
+    # before sending or minting any credential against it.
+    if not verify_studio_identity(base):
+        _fail(
+            f"Couldn't verify that {base} is your Studio (it may be remote, "
+            "running as a different OS user, or another process on that port). "
+            "Create an API key in Studio → Settings → API and pass it with "
+            "--api-key, or set UNSLOTH_API_KEY."
+        )
+
+    # Loopback only, identity verified. Replay a key already minted for *this*
+    # server (never one cached for a different server), then mint locally.
     for key in _cached_keys(cache, base):
         try:
             _http_json("GET", f"{base}/v1/models", key)

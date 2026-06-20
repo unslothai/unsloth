@@ -173,6 +173,9 @@ def fake_studio(tmp_path, monkeypatch, claude_settings):
         raise AssertionError(f"unexpected request: {method} {url}")
 
     monkeypatch.setattr(connect, "find_studio_server", lambda: BASE)
+    # The server identity handshake is exercised in its own tests; here the
+    # discovered loopback server is trusted so the rest of the flow runs.
+    monkeypatch.setattr(connect, "verify_studio_identity", lambda base: True)
     # Keys are now minted locally (no JWT crosses the network); stand in for
     # the auth-DB write so tests stay offline.
     monkeypatch.setattr(connect, "_mint_local_api_key", lambda: "sk-unsloth-feedfacefeedface")
@@ -494,6 +497,94 @@ def test_connect_nonloopback_explicit_key_is_allowed(fake_studio, monkeypatch):
         ["opencode", "--no-launch", "--api-key", "sk-unsloth-deadbeefdeadbeef"],
     )
     assert result.exit_code == 0, result.output
+
+
+def test_connect_unverified_loopback_refuses_to_send_credential(fake_studio, tmp_path, monkeypatch):
+    # A process squatting the loopback port passes discovery but can't prove it
+    # is our Studio. Keyless connect must refuse and send nothing, even with a
+    # key already cached for this base.
+    cache = tmp_path / "agent_api_key.json"
+    cache.write_text(json.dumps({"servers": {BASE: ["sk-unsloth-feedfacefeedface"]}}))
+    monkeypatch.setattr(connect, "verify_studio_identity", lambda base: False)
+    minted = {"n": 0}
+    monkeypatch.setattr(
+        connect, "_mint_local_api_key", lambda: (minted.__setitem__("n", minted["n"] + 1), "sk-x")[1]
+    )
+    result = CliRunner().invoke(connect.connect_app, ["claude", "--no-launch"])
+    assert result.exit_code == 1
+    assert "--api-key" in result.output
+    assert minted["n"] == 0  # never minted
+    assert not any(c[1].endswith("/v1/models") for c in fake_studio)  # cached key never sent
+
+
+def test_connect_explicit_key_skips_identity_check(fake_studio, monkeypatch):
+    # An explicit key is the user's deliberate choice, so it does not require
+    # the automatic identity handshake.
+    monkeypatch.setattr(connect, "verify_studio_identity", lambda base: False)
+    result = CliRunner().invoke(
+        connect.connect_app,
+        ["claude", "--no-launch", "--api-key", "sk-unsloth-deadbeefdeadbeef"],
+    )
+    assert result.exit_code == 0, result.output
+    assert "export ANTHROPIC_AUTH_TOKEN=sk-unsloth-deadbeefdeadbeef" in result.output
+
+
+def _serve_identity(proof_for):
+    """Start a localhost HTTP server answering /api/auth/identity with
+    proof_for(nonce_bytes). Returns (base_url, shutdown)."""
+    import base64
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    from urllib.parse import parse_qs, urlparse
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            parsed = urlparse(self.path)
+            if parsed.path != "/api/auth/identity":
+                self.send_response(404)
+                self.end_headers()
+                return
+            nonce = base64.urlsafe_b64decode(parse_qs(parsed.query)["nonce"][0])
+            body = json.dumps({"proof": proof_for(nonce)}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *a):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target = server.serve_forever, daemon = True).start()
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    return base, server.shutdown
+
+
+def test_verify_studio_identity_end_to_end(tmp_path, monkeypatch):
+    # Faithful client + server crypto: the real verify_studio_identity reads
+    # the install identity secret from an isolated auth DB; a "good" server
+    # proves knowledge of that same secret and a spoofing server cannot.
+    import unsloth_cli._inference as inference
+
+    inference.ensure_studio_backend_path()
+    try:
+        from studio.backend.auth import storage
+    except Exception as exc:  # backend not importable here (e.g. missing deps)
+        pytest.skip(f"studio backend not importable: {exc}")
+
+    monkeypatch.setattr(storage, "DB_PATH", tmp_path / "auth.db")
+    monkeypatch.setattr(storage, "_identity_secret_cache", None)
+
+    good = lambda nonce: storage.compute_identity_proof(nonce)  # holds the real secret
+    bad = lambda nonce: "00" * 32  # spoofer without the secret
+    base_ok, stop_ok = _serve_identity(good)
+    base_bad, stop_bad = _serve_identity(bad)
+    try:
+        assert inference.verify_studio_identity(base_ok) is True
+        assert inference.verify_studio_identity(base_bad) is False
+    finally:
+        stop_ok()
+        stop_bad()
 
 
 @pytest.mark.parametrize(

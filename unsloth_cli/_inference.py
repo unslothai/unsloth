@@ -295,6 +295,49 @@ def is_loopback_url(base: str) -> bool:
         return False
 
 
+def verify_studio_identity(base: str, timeout: float = 3.0) -> bool:
+    """Confirm `base` is really this machine's Studio before sending a secret.
+
+    Challenge-response: send a fresh random nonce to /api/auth/identity and
+    check the returned HMAC against one computed from the local same-user
+    identity secret. A server that doesn't hold that secret (a different OS
+    user that preempted the port, or a remote/fake endpoint) can't produce a
+    matching proof. Reading the local secret is the same same-OS-user
+    capability the auto-mint path already needs. Fails closed: any error
+    (endpoint missing, secret unreadable, mismatch) returns False so callers
+    refuse rather than leak.
+    """
+    import base64
+    import hmac as _hmac
+    import json
+    import secrets as _secrets
+    import urllib.request
+
+    try:
+        import studio.backend.core  # noqa: F401  puts studio/backend on sys.path
+        from studio.backend.auth import storage
+    except Exception:
+        return False
+
+    nonce = _secrets.token_bytes(32)
+    query = base64.urlsafe_b64encode(nonce).decode()
+    request = urllib.request.Request(
+        f"{base}/api/auth/identity?nonce={query}", headers = {"User-Agent": _USER_AGENT}
+    )
+    try:
+        with urllib.request.urlopen(request, timeout = timeout) as response:
+            proof = json.loads(response.read().decode() or "{}").get("proof")
+    except Exception:
+        return False
+    if not isinstance(proof, str):
+        return False
+    try:
+        expected = storage.compute_identity_proof(nonce)
+    except Exception:
+        return False
+    return _hmac.compare_digest(proof, expected)
+
+
 def _studio_token() -> Optional[str]:
     """Self-issue a JWT: the CLI runs as the same OS user as the server, so it
     signs with the same stored secret the server validates against."""
@@ -444,6 +487,10 @@ def connect_studio_server(model: str, *, hf_token, max_seq_length, load_in_4bit)
     # unverified (so disclosing it would be a credential leak), and a genuine
     # remote Studio signs with a different secret and would reject it anyway.
     if not is_loopback_url(base_url):
+        return None
+    # Cryptographically confirm the loopback responder is really our Studio
+    # (not a process squatting the port) before handing it the token.
+    if not verify_studio_identity(base_url):
         return None
     token = _studio_token()
     if not token:

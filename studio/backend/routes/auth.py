@@ -5,6 +5,7 @@
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 
+import base64
 import ipaddress
 import os
 import shlex
@@ -212,6 +213,29 @@ def _clear_login_bucket(key: tuple[str, str]) -> None:
     with _LOGIN_BUCKETS_LOCK:
         _LOGIN_BUCKETS.pop(key, None)
         _LOGIN_IP_BUCKETS.pop(ip, None)
+
+
+@router.get("/identity")
+async def identity(nonce: str) -> dict:
+    """Prove this responder is the real local Studio (challenge-response).
+
+    Unauthenticated and side-effect free: the caller sends a fresh random
+    nonce and gets back HMAC(install identity secret, nonce). A process that
+    can't read this same-user install (a different OS user that preempted the
+    port, or a remote/fake server) can't produce a matching proof, so a client
+    can verify the server before sending it any credential. The nonce is opaque
+    to us and the proof leaks nothing about the secret, so answering is safe.
+    """
+    try:
+        raw = base64.urlsafe_b64decode(nonce)
+    except Exception:
+        raise HTTPException(status_code = status.HTTP_400_BAD_REQUEST, detail = "nonce must be base64url")
+    # Bound the work and require enough entropy to make the proof meaningful.
+    if not 16 <= len(raw) <= 128:
+        raise HTTPException(
+            status_code = status.HTTP_400_BAD_REQUEST, detail = "nonce must decode to 16-128 bytes"
+        )
+    return {"proof": storage.compute_identity_proof(raw)}
 
 
 @router.get("/status", response_model = AuthStatusResponse)
