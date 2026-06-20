@@ -146,7 +146,7 @@ function winBody(model: string, variant: Variant): string {
     body.enabled_tools = TOOLS;
   }
   body.stream = true;
-  // Alterado para incluir formatação de 2 espaços para evitar strings gigantes em uma linha só
+  // Formatted with 2 spaces to avoid single-line giant strings
   return JSON.stringify(body, null, 2);
 }
 
