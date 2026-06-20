@@ -3841,6 +3841,7 @@ class LlamaCppBackend:
 
         target: Optional[str] = None
         from huggingface_hub import list_repo_files
+
         # Retry a transient listing blip (like the download step); a permanent
         # repo/auth error is not retried.
         for attempt in range(3):
@@ -3859,8 +3860,7 @@ class LlamaCppBackend:
                     logger.debug(f"Could not list repo files for {label}: {e}")
                     break
                 logger.debug(
-                    f"Could not list repo files for {label} "
-                    f"(attempt {attempt + 1}/3): {e}"
+                    f"Could not list repo files for {label} " f"(attempt {attempt + 1}/3): {e}"
                 )
                 if attempt < 2:
                     self._cancel_event.wait(2**attempt)
