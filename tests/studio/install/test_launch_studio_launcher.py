@@ -1,9 +1,7 @@
-"""Guard install.ps1's Studio launcher against re-introducing the AV-heuristic
-shape: a WScript .vbs that spawns a hidden, ExecutionPolicy-Bypass PowerShell
-(Kaspersky HEUR:Trojan.VBS.Agent.gen). The shortcut must stay windowless via
-powershell.exe -WindowStyle Hidden over launch-studio.ps1 -- never a .vbs /
-WScript.Shell.Run wrapper. Any pre-existing .vbs from an older install must be
-deleted, not merely left behind."""
+"""Guard install.ps1's Studio launcher against the AV-heuristic shape (Kaspersky
+HEUR:Trojan.VBS.Agent.gen): a WScript .vbs spawning a hidden ExecutionPolicy-Bypass PowerShell.
+The shortcut must stay windowless via powershell.exe -WindowStyle Hidden over launch-studio.ps1,
+never a .vbs/WScript.Shell.Run wrapper, and any pre-existing .vbs must be deleted on upgrade."""
 
 import re
 from pathlib import Path
@@ -24,8 +22,7 @@ def test_install_ps1_present():
 
 def test_no_vbs_launcher_generated():
     text = _text()
-    # No here-string that builds a .vbs body, and no .vbs file written. (A
-    # Remove-Item cleanup of the legacy .vbs is allowed and checked separately.)
+    # No here-string building a .vbs body, no .vbs written (legacy cleanup checked separately).
     assert "$vbsContent" not in text, (
         "install.ps1 must not generate a launch-studio.vbs: a WScript.Shell .vbs "
         "spawning a hidden ExecutionPolicy-Bypass PowerShell is the exact shape "
@@ -38,8 +35,8 @@ def test_no_vbs_launcher_generated():
 
 
 def test_legacy_vbs_removed_on_upgrade():
-    # The whole point: an upgrade must DELETE a pre-existing launch-studio.vbs,
-    # not just stop generating it, or AV keeps flagging the stale file.
+    # An upgrade must DELETE a pre-existing launch-studio.vbs, not just stop generating it,
+    # or AV keeps flagging the stale file.
     text = _text()
     assert re.search(
         r"Remove-Item\s+-LiteralPath\s+\$legacyLauncherVbs", text
@@ -47,13 +44,13 @@ def test_legacy_vbs_removed_on_upgrade():
 
 
 def test_shortcut_target_is_not_wscript():
-    # The .lnk must not be launched through wscript.exe (the VBS script host).
+    # The .lnk must not launch through wscript.exe (the VBS script host).
     text = _text()
     assert "wscript.exe" not in text.lower()
 
 
 def test_launcher_is_windowless_powershell():
-    # The shortcut runs powershell.exe with a hidden window over launch-studio.ps1.
+    # The shortcut runs powershell.exe -WindowStyle Hidden over launch-studio.ps1.
     text = _text()
     assert re.search(
         r"-WindowStyle\s+Hidden", text
