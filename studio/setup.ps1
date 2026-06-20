@@ -432,6 +432,84 @@ function Test-CmakeSupportsGenerator {
     return $true
 }
 
+function Test-CmakeListsGenerator {
+    # Authoritative check: does the cmake on PATH actually advertise the generator?
+    # VS-bundled cmake (e.g. the 4.1.x shipped with VS 2026) can drive the VS 2026
+    # generator below the 4.2 version floor, so probe `cmake --help` rather than
+    # gating on the version number alone (issue #6473 review).
+    param([Parameter(Mandatory)][string]$Generator)
+    $help = & cmake --help 2>$null | Out-String
+    if (-not $help) { return $false }
+    $haystack = ($help -replace '\s+', ' ')
+    $needle = ($Generator -replace '\s+', ' ')
+    return $haystack.Contains($needle)
+}
+
+function Test-CmakeCanDriveGenerator {
+    # True when the cmake on PATH can drive $Generator: it either lists the
+    # generator (covers a VS-bundled cmake below the 4.2 floor) or satisfies the
+    # version requirement.
+    param([Parameter(Mandatory)][string]$Generator)
+    if (Test-CmakeListsGenerator -Generator $Generator) { return $true }
+    $verObj = Get-CmakeVersion
+    $verStr = if ($verObj) { $verObj.ToString() } else { '0.0' }
+    return (Test-CmakeSupportsGenerator -CmakeVersion $verStr -Generator $Generator)
+}
+
+function Add-DefaultCmakeToPath {
+    # Prepend the default CMake install dir so a freshly winget-installed cmake is
+    # found even when an older cmake (Chocolatey/Scoop/VS) is earlier on PATH; a
+    # bare re-check would keep resolving the old exe (issue #6473 review). Returns
+    # $true when a cmake.exe is located in a default location.
+    $cmakeDefaults = @(
+        "$env:ProgramFiles\CMake\bin",
+        "${env:ProgramFiles(x86)}\CMake\bin",
+        "$env:LOCALAPPDATA\CMake\bin"
+    )
+    foreach ($d in $cmakeDefaults) {
+        if (Test-Path (Join-Path $d "cmake.exe")) {
+            $env:Path = "$d;$env:Path"
+            Add-ToUserPath -Directory $d -Position 'Prepend' | Out-Null
+            return $true
+        }
+    }
+    return $false
+}
+
+function Get-FallbackVsGenerator {
+    # Find the newest installed VS *older* than 2026 whose generator the current
+    # cmake can actually drive. Used when the detected VS 2026 generator is unusable
+    # by the available cmake (old cmake, offline/winget-disabled host) but a viable
+    # older toolchain is installed -- so a VS 2022 + old-cmake host keeps building
+    # as it did before VS 2026 detection landed (issue #6473 review). Returns
+    # @{ Generator = "..."; InstallPath = "..." } or $null.
+    $roots = @($env:ProgramFiles, ${env:ProgramFiles(x86)}) | Where-Object { $_ }
+    $knownEditions = @('BuildTools', 'Community', 'Professional', 'Enterprise')
+    $older = @(
+        @{ Dir = '2022'; Generator = 'Visual Studio 17 2022' },
+        @{ Dir = '2019'; Generator = 'Visual Studio 16 2019' },
+        @{ Dir = '2017'; Generator = 'Visual Studio 15 2017' }
+    )
+    foreach ($entry in $older) {
+        if (-not (Test-CmakeListsGenerator -Generator $entry.Generator)) { continue }
+        foreach ($r in $roots) {
+            $vsBase = Join-Path $r "Microsoft Visual Studio\$($entry.Dir)"
+            if (-not (Test-Path $vsBase)) { continue }
+            foreach ($ed in $knownEditions) {
+                $candidate = Join-Path $vsBase $ed
+                if (-not (Test-Path $candidate)) { continue }
+                $vcDir = Join-Path $candidate "VC\Tools\MSVC"
+                if (-not (Test-Path $vcDir)) { continue }
+                $cl = Get-ChildItem -Path $vcDir -Filter "cl.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+                if ($cl) {
+                    return @{ Generator = $entry.Generator; InstallPath = $candidate }
+                }
+            }
+        }
+    }
+    return $null
+}
+
 # Find Visual Studio Build Tools for cmake -G flag.
 # Strategy: (1) vswhere, (2) scan filesystem (handles broken vswhere registration).
 # Returns @{ Generator = "Visual Studio 17 2022"; InstallPath = "C:\..."; Source = "..." } or $null.
@@ -3062,38 +3140,50 @@ if (-not $NeedLlamaSourceBuild) {
     # the committed-source-build path -- the preferred prebuilt llama.cpp path
     # never reaches this, so a VS 2026 host on cmake < 4.2 is not blocked from
     # using the prebuilt. No-op for VS 2022/2019/2017 generators.
-    if ($CmakeGenerator -eq 'Visual Studio 18 2026') {
-        $cmakeVerObj = Get-CmakeVersion
-        $cmakeVerStr = if ($cmakeVerObj) { $cmakeVerObj.ToString() } else { '0.0' }
-        if (-not (Test-CmakeSupportsGenerator -CmakeVersion $cmakeVerStr -Generator $CmakeGenerator)) {
-            substep "CMake $cmakeVerStr too old for the Visual Studio 2026 generator (need 4.2+) -- updating via winget..." "Yellow"
+    if ($CmakeGenerator -match 'Visual Studio 18\b') {
+        if (-not (Test-CmakeCanDriveGenerator -Generator $CmakeGenerator)) {
+            $cmakeVerObj = Get-CmakeVersion
+            $cmakeVerStr = if ($cmakeVerObj) { $cmakeVerObj.ToString() } else { '0.0' }
+            substep "CMake $cmakeVerStr cannot drive the Visual Studio 2026 generator (need 4.2+ or a VS-bundled cmake) -- updating via winget..." "Yellow"
             if ($null -ne (Get-Command winget -ErrorAction SilentlyContinue)) {
-                # Try upgrade first (fast when Kitware.CMake is already a winget app).
+                # Try upgrade first (fast when Kitware.CMake is already a winget app),
+                # then prepend the default install dir so the new cmake wins over an
+                # older one earlier on PATH before re-probing.
                 try {
                     Invoke-SetupCommand { winget upgrade Kitware.CMake --source winget --accept-package-agreements --accept-source-agreements } | Out-Null
                     Refresh-Environment
                 } catch { substep "CMake winget upgrade failed: $($_.Exception.Message)" "Yellow" }
-                $cmakeVerObj = Get-CmakeVersion
-                $cmakeVerStr = if ($cmakeVerObj) { $cmakeVerObj.ToString() } else { '0.0' }
+                Add-DefaultCmakeToPath | Out-Null
                 # winget upgrade is a no-op when the on-PATH cmake came from
                 # Scoop/Chocolatey/VS rather than the Kitware winget package; in
                 # that case install the package so a 4.2+ cmake is available.
-                if (-not (Test-CmakeSupportsGenerator -CmakeVersion $cmakeVerStr -Generator $CmakeGenerator)) {
+                if (-not (Test-CmakeCanDriveGenerator -Generator $CmakeGenerator)) {
                     try {
                         Invoke-SetupCommand { winget install Kitware.CMake --source winget --accept-package-agreements --accept-source-agreements } | Out-Null
                         Refresh-Environment
                     } catch { substep "CMake winget install failed: $($_.Exception.Message)" "Yellow" }
-                    $cmakeVerObj = Get-CmakeVersion
-                    $cmakeVerStr = if ($cmakeVerObj) { $cmakeVerObj.ToString() } else { '0.0' }
+                    Add-DefaultCmakeToPath | Out-Null
                 }
             }
-            if (-not (Test-CmakeSupportsGenerator -CmakeVersion $cmakeVerStr -Generator $CmakeGenerator)) {
-                Write-Host "[ERROR] CMake 4.2+ is required to build llama.cpp with the Visual Studio 2026 generator." -ForegroundColor Red
-                Write-Host "        Upgrade CMake from https://cmake.org/download/ and re-run, or use a prebuilt llama.cpp bundle." -ForegroundColor Red
-                exit 1
+            if (-not (Test-CmakeCanDriveGenerator -Generator $CmakeGenerator)) {
+                # The available cmake still cannot drive VS 2026. Before failing,
+                # fall back to an older installed VS whose generator this cmake CAN
+                # drive, so a host with a viable older toolchain (e.g. VS 2022 + an
+                # old cmake on an offline box) keeps building as it did before VS
+                # 2026 detection landed.
+                $fallback = Get-FallbackVsGenerator
+                if ($fallback) {
+                    substep "CMake cannot drive $CmakeGenerator; falling back to $($fallback.Generator)" "Yellow"
+                    $CmakeGenerator = $fallback.Generator
+                    $VsInstallPath = $fallback.InstallPath
+                } else {
+                    Write-Host "[ERROR] CMake 4.2+ is required to build llama.cpp with the Visual Studio 2026 generator, and no older Visual Studio toolchain was found to fall back to." -ForegroundColor Red
+                    Write-Host "        Upgrade CMake from https://cmake.org/download/ and re-run, or use a prebuilt llama.cpp bundle." -ForegroundColor Red
+                    exit 1
+                }
             }
         }
-        substep "CMake $cmakeVerStr supports the Visual Studio 2026 generator"
+        substep "CMake can drive the $CmakeGenerator generator"
     }
 
     Write-Host ""

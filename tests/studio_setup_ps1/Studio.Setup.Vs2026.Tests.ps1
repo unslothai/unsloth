@@ -27,7 +27,9 @@ BeforeAll {
     if (-not $script:SetupPs1) { throw "Could not locate studio/setup.ps1 (set SETUP_PS1_PATH)." }
     Write-Host "setup.ps1 under test: $script:SetupPs1"
 
-    foreach ($fn in @('Find-VsBuildTools', 'Get-VcBuildCustomizationsDir', 'Test-CmakeSupportsGenerator')) {
+    foreach ($fn in @('Find-VsBuildTools', 'Get-VcBuildCustomizationsDir', 'Test-CmakeSupportsGenerator',
+                      'Get-CmakeVersion', 'Test-CmakeListsGenerator', 'Test-CmakeCanDriveGenerator',
+                      'Get-FallbackVsGenerator')) {
         $src = Get-FunctionSource -Path $script:SetupPs1 -Name $fn
         if (-not $src) { throw "Function '$fn' not found in $script:SetupPs1 - cannot test the real code." }
         . ([scriptblock]::Create($src))
@@ -142,5 +144,98 @@ Describe 'Test-CmakeSupportsGenerator (CMake 4.2 guard for VS 2026)' {
 
     It 'is a no-op (accepts any CMake) for the VS 2019 generator' {
         Test-CmakeSupportsGenerator -CmakeVersion '3.10.0' -Generator 'Visual Studio 16 2019' | Should -BeTrue
+    }
+}
+
+Describe 'Test-CmakeListsGenerator (probe cmake --help)' {
+    # Mock the `cmake` command rather than dropping a fake on PATH: PowerShell
+    # caches its application-path table, so mutating $env:Path mid-session does not
+    # reliably re-point `& cmake` at a shim (a real cmake on the runner -- present
+    # on GitHub windows-latest -- wins). A function mock is resolved before any
+    # on-PATH executable, so it intercepts `& cmake` inside the helper regardless.
+
+    It 'returns true when cmake --help lists the generator' {
+        Mock cmake { "Generators`n  Visual Studio 18 2026        = Generates VS 2026 project files.`n  Visual Studio 17 2022        = Generates VS 2022 project files." }
+        Test-CmakeListsGenerator -Generator 'Visual Studio 18 2026' | Should -BeTrue
+    }
+
+    It 'returns false when cmake --help does not list the generator' {
+        Mock cmake { "Generators`n  Visual Studio 17 2022        = Generates VS 2022 project files." }
+        Test-CmakeListsGenerator -Generator 'Visual Studio 18 2026' | Should -BeFalse
+    }
+
+    It 'returns false when cmake produces no help output' {
+        Mock cmake { $null }
+        Test-CmakeListsGenerator -Generator 'Visual Studio 18 2026' | Should -BeFalse
+    }
+}
+
+Describe 'Test-CmakeCanDriveGenerator (probe OR version floor)' {
+    It 'accepts a sub-4.2 cmake that lists the VS 2026 generator (bundled cmake)' {
+        # cmake reports version 3.31.0 (below the 4.2 floor) but DOES list the
+        # generator, so the help-probe branch must accept it.
+        Mock cmake {
+            if ($args -contains '--version') { 'cmake version 3.31.0' }
+            else { "Generators`n  Visual Studio 18 2026        = Generates VS 2026 project files." }
+        }
+        Test-CmakeCanDriveGenerator -Generator 'Visual Studio 18 2026' | Should -BeTrue
+    }
+
+    It 'accepts a 4.2 cmake via the version floor when the help probe misses it' {
+        # Help omits the generator, but version 4.2.0 satisfies the floor, so the
+        # version branch must accept it.
+        Mock cmake {
+            if ($args -contains '--version') { 'cmake version 4.2.0' }
+            else { 'Generators' }
+        }
+        Test-CmakeCanDriveGenerator -Generator 'Visual Studio 18 2026' | Should -BeTrue
+    }
+
+    It 'rejects a sub-4.2 cmake that does not list the VS 2026 generator' {
+        Mock cmake {
+            if ($args -contains '--version') { 'cmake version 3.31.0' }
+            else { "Generators`n  Visual Studio 17 2022        = Generates VS 2022 project files." }
+        }
+        Test-CmakeCanDriveGenerator -Generator 'Visual Studio 18 2026' | Should -BeFalse
+    }
+}
+
+Describe 'Get-FallbackVsGenerator (older VS the cmake can drive)' {
+    BeforeAll {
+        function New-FakeVsTree2 {
+            param([string]$Root, [string]$VersionDir, [string]$Edition = 'BuildTools')
+            $clDir = Join-Path $Root "Microsoft Visual Studio\$VersionDir\$Edition\VC\Tools\MSVC\14.39.00000\bin\Hostx64\x64"
+            New-Item -ItemType Directory -Path $clDir -Force | Out-Null
+            New-Item -ItemType File -Path (Join-Path $clDir 'cl.exe') -Force | Out-Null
+        }
+    }
+    BeforeEach {
+        $script:OrigPF = ${env:ProgramFiles}
+        $script:OrigPFx86 = ${env:ProgramFiles(x86)}
+    }
+    AfterEach {
+        ${env:ProgramFiles} = $script:OrigPF
+        ${env:ProgramFiles(x86)} = $script:OrigPFx86
+    }
+
+    It 'returns the VS 2022 generator when VS 2022 is installed and cmake lists it' -Skip:(-not $IsWindows) {
+        $root = Join-Path $TestDrive 'PF_fb'
+        New-FakeVsTree2 -Root $root -VersionDir '2022'
+        ${env:ProgramFiles} = $root
+        ${env:ProgramFiles(x86)} = Join-Path $TestDrive 'PFx86_fb'
+        Mock cmake { "Generators`n  Visual Studio 17 2022        = Generates VS 2022 project files." }
+        $r = Get-FallbackVsGenerator
+        $r.Generator | Should -Be 'Visual Studio 17 2022'
+    }
+
+    It 'returns null when the cmake cannot drive any installed older VS' -Skip:(-not $IsWindows) {
+        $root = Join-Path $TestDrive 'PF_none'
+        New-FakeVsTree2 -Root $root -VersionDir '2022'
+        ${env:ProgramFiles} = $root
+        ${env:ProgramFiles(x86)} = Join-Path $TestDrive 'PFx86_none'
+        # cmake lists only VS 2026 (not 2022/2019/2017), so no older fallback is usable.
+        Mock cmake { "Generators`n  Visual Studio 18 2026        = Generates VS 2026 project files." }
+        $r = Get-FallbackVsGenerator
+        $r | Should -BeNullOrEmpty
     }
 }
