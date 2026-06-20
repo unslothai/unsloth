@@ -526,21 +526,41 @@ export function useChatModelRuntime() {
             const validateNativePathLease = nativePathToken
               ? (await consumeNativePathToken(nativePathToken, "validate-model")).nativePathLease
               : undefined;
-            // Validate with the same effective context /load uses: a GGUF native
-            // context can exceed maxSeqLength, so sizing on raw maxSeqLength could
-            // pass, unload, then have /load refuse it. Read pre-unload state; load
-            // recomputes its own value, so this leaves loading untouched.
             const preUnloadState = useChatRuntimeStore.getState();
-            const validateMaxSeqLength = resolveLoadMaxSeqLength({
-              modelId,
-              ggufVariant,
-              customContextLength: preUnloadState.customContextLength,
-              ggufContextLength: preUnloadState.ggufContextLength,
-              currentCheckpoint,
-              activeGgufVariant: preUnloadState.activeGgufVariant,
-              maxSeqLength,
-              presetSource: preUnloadState.activePresetSource,
-            });
+            // Size validation with the exact context /load uses below, or the
+            // preflight (GGUF native context can exceed maxSeqLength; the
+            // training guard) checks a different footprint than the load that
+            // follows -- passing here, unloading, then having /load refuse it.
+            // Two things /load does that this must mirror: it clears a per-model
+            // fit context pin on a cross-model switch (the reset below, which runs
+            // after this), and it sizes through resolveFitMaxSeqLength. The fit
+            // gpuMemoryMode is a standing preference kept across the switch, so the
+            // pre-unload value is the one /load uses. /load recomputes from the
+            // post-reset store, so this leaves the load itself untouched.
+            // Shared with the reset below (a cross-model, non-staged switch) so the
+            // sizing and the reset can't drift apart.
+            const resetsPerModelSettings = Boolean(
+              currentCheckpoint && currentCheckpoint !== modelId && !keepSpeculative,
+            );
+            const validateCustomContextLength = resetsPerModelSettings
+              ? null
+              : preUnloadState.customContextLength;
+            const validateMaxSeqLength = resolveFitMaxSeqLength(
+              isGguf,
+              preUnloadState.gpuMemoryMode,
+              validateCustomContextLength,
+              resolveLoadMaxSeqLength({
+                modelId,
+                ggufVariant,
+                isGguf,
+                customContextLength: validateCustomContextLength,
+                ggufContextLength: preUnloadState.ggufContextLength,
+                currentCheckpoint,
+                activeGgufVariant: preUnloadState.activeGgufVariant,
+                maxSeqLength,
+                presetSource: preUnloadState.activePresetSource,
+              }),
+            );
             const validation = await validateModel({
               model_path: modelId,
               nativePathLease: validateNativePathLease,
@@ -589,7 +609,7 @@ export function useChatModelRuntime() {
             // keepSpeculative skips this for a staged Load: the user picked the
             // mode for this model on the sidebar, so honor it (the backend still
             // falls back at runtime if the model has no MTP head).
-            if (currentCheckpoint && currentCheckpoint !== modelId && !keepSpeculative) {
+            if (resetsPerModelSettings) {
               const persistedSpeculativeType = readPersistedSpeculativeType();
               useChatRuntimeStore.setState({
                 speculativeType: persistedSpeculativeType,
