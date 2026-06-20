@@ -23,6 +23,7 @@ import platform
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 
 import structlog
@@ -59,10 +60,32 @@ def _pip_install_cmd(*args: str) -> list[str]:
     return [sys.executable, "-m", "pip", "install", *args]
 
 
+def _transformers_constraint_args() -> tuple[list[str], str | None]:
+    """Pin transformers to the running version for the mlx install.
+
+    mlx-lm / mlx-vlm declare transformers>=5, but the single-env install pins
+    transformers==4.57.6 (see requirements/single-env/overrides-darwin-arm64.txt).
+    Without a constraint, `--upgrade` could move transformers in the live venv
+    and break the rest of Studio just to satisfy mlx. Pinning it means the
+    resolver either finds an mlx build compatible with the installed transformers
+    or fails (we stay chat-only) -- it must never upgrade transformers underneath
+    a running Studio. Returns (pip args, temp file path to clean up)."""
+    try:
+        import transformers  # already a hard Studio dependency
+    except Exception:
+        return [], None
+    fd, path = tempfile.mkstemp(prefix = "mlx_repair_", suffix = ".txt")
+    with os.fdopen(fd, "w") as fh:
+        fh.write(f"transformers=={transformers.__version__}\n")
+    return ["--constraint", path], path
+
+
 def attempt_mlx_repair(*, timeout: int = _REPAIR_TIMEOUT_S) -> bool:
     """Install mlx + mlx-lm + mlx-vlm by name into the running venv. Best-effort;
-    returns True iff `import mlx.core` works afterwards."""
-    cmd = _pip_install_cmd("--upgrade", *MLX_PACKAGES)
+    returns True iff `import mlx.core` works afterwards. transformers is pinned so
+    the install can never upgrade it underneath the rest of Studio."""
+    constraint_args, constraint_path = _transformers_constraint_args()
+    cmd = _pip_install_cmd("--upgrade", *constraint_args, *MLX_PACKAGES)
     logger.info("MLX self-heal: installing %s", ", ".join(MLX_PACKAGES))
     try:
         result = subprocess.run(
@@ -78,6 +101,12 @@ def attempt_mlx_repair(*, timeout: int = _REPAIR_TIMEOUT_S) -> bool:
     except Exception as exc:  # pragma: no cover - environment dependent
         logger.warning("MLX self-heal could not start: %s", exc)
         return False
+    finally:
+        if constraint_path and os.path.exists(constraint_path):
+            try:
+                os.remove(constraint_path)
+            except OSError:
+                pass
     if result.returncode != 0:
         tail = (result.stdout or "")[-2000:]
         logger.warning("MLX self-heal failed (staying chat-only):\n%s", tail)

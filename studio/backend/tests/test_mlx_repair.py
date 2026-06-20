@@ -41,6 +41,54 @@ def test_uv_path_used_when_available(monkeypatch):
     assert cmd[:5] == ["uv", "pip", "install", "--python", sys.executable]
 
 
+def test_constraint_pins_installed_transformers(monkeypatch):
+    transformers = pytest.importorskip("transformers")
+    args, path = mr._transformers_constraint_args()
+    try:
+        assert args[:1] == ["--constraint"]
+        assert args[1] == path
+        assert Path(path).read_text().strip() == f"transformers=={transformers.__version__}"
+    finally:
+        if path:
+            Path(path).unlink(missing_ok = True)
+
+
+def test_repair_install_pins_transformers_and_cleans_up(monkeypatch):
+    pytest.importorskip("transformers")
+    captured = {}
+    created_paths = []
+    real_args = mr._transformers_constraint_args
+
+    def _spy_args():
+        args, path = real_args()
+        if path:
+            created_paths.append(path)
+        return args, path
+
+    monkeypatch.setattr(mr, "_transformers_constraint_args", _spy_args)
+
+    class _Result:
+        returncode = 0
+        stdout = ""
+
+    def _fake_run(cmd, **_kwargs):
+        captured["cmd"] = cmd
+        return _Result()
+
+    monkeypatch.setattr(mr.subprocess, "run", _fake_run)
+    monkeypatch.setattr(mr, "mlx_available", lambda: True)
+
+    assert mr.attempt_mlx_repair() is True
+    cmd = captured["cmd"]
+    # transformers is pinned via a constraint file so the mlx install cannot
+    # upgrade it underneath Studio, and the temp constraint file is cleaned up.
+    assert "--constraint" in cmd
+    assert "--upgrade" in cmd
+    for pkg in mr.MLX_PACKAGES:
+        assert pkg in cmd
+    assert created_paths and not Path(created_paths[0]).exists()
+
+
 def test_no_op_off_apple_silicon(monkeypatch):
     monkeypatch.setattr(mr, "is_apple_silicon", lambda: False)
     called = {"n": 0}
