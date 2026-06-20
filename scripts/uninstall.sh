@@ -309,10 +309,14 @@ case "$_os" in
                         if (-not $d -or -not (Test-Path -LiteralPath $d)) { continue }
                         if (Get-ChildItem -LiteralPath $d -Filter "Unsloth Studio*.lnk" -ErrorAction SilentlyContinue) { $iconInUse = $true; break }
                     }
-                    $iconDir = Join-Path $env:LOCALAPPDATA "Unsloth Studio";
-                    $ico = Join-Path $iconDir "unsloth.ico";
-                    if ((-not $iconInUse) -and (Test-Path -LiteralPath $ico)) { Remove-Item -LiteralPath $ico -Force -ErrorAction SilentlyContinue }
-                    if ((Test-Path -LiteralPath $iconDir) -and -not (Get-ChildItem -LiteralPath $iconDir -Force -ErrorAction SilentlyContinue)) { Remove-Item -LiteralPath $iconDir -Recurse -Force -ErrorAction SilentlyContinue }' >/dev/null 2>&1 || true
+                    # Guard LOCALAPPDATA: empty on a service/SYSTEM account makes
+                    # Join-Path throw, aborting the icon cleanup (mirror uninstall.ps1).
+                    if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+                        $iconDir = Join-Path $env:LOCALAPPDATA "Unsloth Studio";
+                        $ico = Join-Path $iconDir "unsloth.ico";
+                        if ((-not $iconInUse) -and (Test-Path -LiteralPath $ico)) { Remove-Item -LiteralPath $ico -Force -ErrorAction SilentlyContinue }
+                        if ((Test-Path -LiteralPath $iconDir) -and -not (Get-ChildItem -LiteralPath $iconDir -Force -ErrorAction SilentlyContinue)) { Remove-Item -LiteralPath $iconDir -Recurse -Force -ErrorAction SilentlyContinue }
+                    }' >/dev/null 2>&1 || true
             fi
             # Remove $1's shared unsloth.ico, but only if no Unsloth shortcut (a native
             # install or another WSL distro) still uses it; then drop the dir if empty.

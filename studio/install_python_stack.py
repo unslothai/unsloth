@@ -87,6 +87,18 @@ _ROCM_TORCH_PKG_SPECS: dict[str, tuple[str, str, str]] = {
         "torchaudio>=2.4,<2.11.0",
     ),
 }
+# Windows AMD per-arch companion pins for the repo.amd.com index. Mirrors the
+# floor maps in install.ps1 / setup.ps1 (gfx120X and Strix Halo/Point use the
+# rocm7.2 torch 2.11 trio). Pinning torchvision/torchaudio alongside torch keeps
+# AMD's per-arch index -- which publishes each independently -- from resolving an
+# ABI-mismatched companion. Arches not listed here have no published floor, so
+# they stay bare like the PowerShell side. Bump with the PS maps when 2.12.x lands.
+_WINDOWS_ROCM_TORCH_PKG_SPECS: dict[str, tuple[str, str, str]] = {
+    "gfx1201": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
+    "gfx1200": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
+    "gfx1151": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
+    "gfx1150": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
+}
 _PYTORCH_WHL_BASE = (
     os.environ.get("UNSLOTH_PYTORCH_MIRROR") or "https://download.pytorch.org/whl"
 ).rstrip("/")
@@ -243,6 +255,10 @@ def _path_inside_venv(path: str) -> bool:
     try:
         # realpath (not abspath): resolve symlinks/8.3 names so an aliased venv matches.
         _root = os.path.normcase(os.path.realpath(sys.prefix))
+        # A root-dir prefix (C:\ or /) would make commonpath match every path on it;
+        # never treat that as "inside the venv" (defensive: a venv is never at root).
+        if os.path.dirname(_root) == _root:
+            return False
         return os.path.normcase(os.path.commonpath([os.path.realpath(path), _root])) == _root
     except (ValueError, OSError):
         # Different drive / unresolvable -> treat as outside the venv.
@@ -1131,16 +1147,32 @@ def _ensure_rocm_torch() -> None:
                 print(f"   No AMD Windows torch index for GPU arch {gfx_arch} -- skipping")
                 return
             print(f"   {gfx_arch} (Windows) -- installing torch from {index_url}")
-            pip_install(
+            # Pin companions for the arches install.ps1/setup.ps1 pin (gfx120X /
+            # Strix) so AMD's per-arch index resolves an ABI-consistent trio; other
+            # arches stay bare (no published floor), matching the PowerShell side.
+            _torch_pkg, _vision_pkg, _audio_pkg = _WINDOWS_ROCM_TORCH_PKG_SPECS.get(
+                gfx_arch, ("torch", "torchvision", "torchaudio")
+            )
+            # Nonfatal: a transient AMD-index failure must NOT abort the whole
+            # install when the PowerShell side already fell back to CPU torch.
+            # --force-reinstall resolves before uninstalling, so a failed index
+            # leaves the existing build intact; keep it and let the user retry.
+            if not pip_install_try(
                 f"ROCm torch (Windows, {gfx_arch})",
                 "--force-reinstall",
                 "--index-url",
                 index_url,
-                "torch",
-                "torchvision",
-                "torchaudio",
+                _torch_pkg,
+                _vision_pkg,
+                _audio_pkg,
                 constrain = False,
-            )
+            ):
+                print(
+                    f"   Warning: AMD Windows ROCm torch install failed for {gfx_arch}; "
+                    "keeping the existing torch build. Re-run 'unsloth studio update' "
+                    "later to retry ROCm."
+                )
+                return
         # ROCm torch is installed (or already was); flag it so later phases
         # do not overwrite it with the generic CPU torch wheel. BNB is a
         # separate dependency -- a BNB install failure must NOT roll back the

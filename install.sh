@@ -1463,22 +1463,31 @@ _maybe_reroute_strixhalo_to_2404() {
     # 24.04 target, stay CPU-only AND skip the later origin-distro ROCm bootstrap (it
     # ignores distro version, so it would otherwise install ROCm into 26.04 etc.).
     command -v wsl.exe >/dev/null 2>&1 || { UNSLOTH_SKIP_ROCM_WSL_SETUP=1; return 0; }
-    # Route only to an already-installed 24.04.
-    wsl.exe -l -q 2>/dev/null | tr -d '\000\r' | grep -qiF "Ubuntu-24.04" || {
-        substep "ROCm-on-WSL (GPU) needs Ubuntu 24.04; this distro is Ubuntu ${_rr_ver:-unknown}." "$C_WARN"
-        substep "No Ubuntu-24.04 distro found; staying CPU-only. Install it and re-run there for GPU." "$C_WARN"
+    # Route only to an already-installed supported distro. Prefer Ubuntu 24.04
+    # (AMD's primary ROCm-on-WSL target); fall back to 22.04, also documented as
+    # supported, so a box that only has 22.04 still reaches the GPU.
+    _rr_distros=$(wsl.exe -l -q 2>/dev/null | tr -d '\000\r')
+    _rr_target=""
+    if printf '%s\n' "$_rr_distros" | grep -qiF "Ubuntu-24.04"; then
+        _rr_target="Ubuntu-24.04"
+    elif printf '%s\n' "$_rr_distros" | grep -qiF "Ubuntu-22.04"; then
+        _rr_target="Ubuntu-22.04"
+    fi
+    [ -n "$_rr_target" ] || {
+        substep "ROCm-on-WSL (GPU) needs Ubuntu 24.04 or 22.04; this distro is Ubuntu ${_rr_ver:-unknown}." "$C_WARN"
+        substep "No supported Ubuntu WSL distro found; staying CPU-only. Install Ubuntu-24.04 and re-run there for GPU." "$C_WARN"
         UNSLOTH_SKIP_ROCM_WSL_SETUP=1
         return 0
     }
 
     echo ""
-    substep "ROCm-on-WSL (GPU) needs Ubuntu 24.04; this distro is Ubuntu ${_rr_ver:-unknown}." "$C_WARN"
-    substep "Found an existing Ubuntu-24.04 distro -- continuing the GPU install there." "$C_OK"
+    substep "ROCm-on-WSL (GPU) needs Ubuntu 24.04 or 22.04; this distro is Ubuntu ${_rr_ver:-unknown}." "$C_WARN"
+    substep "Found an existing $_rr_target distro -- continuing the GPU install there." "$C_OK"
     # A --local checkout can't be replayed via curl|sh (the repo isn't in the target
     # distro), so don't silently run a different install; tell the user to re-run there.
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-        substep "This is a --local install; re-run it from Ubuntu-24.04 instead:" "$C_WARN"
-        substep "  wsl -d Ubuntu-24.04 -- bash -lc 'cd <your checkout> && ./install.sh --local'" "$C_WARN"
+        substep "This is a --local install; re-run it from $_rr_target instead:" "$C_WARN"
+        substep "  wsl -d $_rr_target -- bash -lc 'cd <your checkout> && ./install.sh --local'" "$C_WARN"
         substep "Continuing CPU-only in Ubuntu ${_rr_ver:-this distro} for now." "$C_WARN"
         # Unsupported distro, can't reroute a --local checkout: skip the origin ROCm bootstrap.
         UNSLOTH_SKIP_ROCM_WSL_SETUP=1
@@ -1506,11 +1515,11 @@ _maybe_reroute_strixhalo_to_2404() {
     fi
     # pipefail so a failed curl in the `curl | sh` reroute isn't masked by sh exiting 0
     # on empty input (which would wrongly report success and exit 0 the parent installer).
-    if wsl.exe -d "Ubuntu-24.04" -- bash -lc "$_rr_exports; $_rr_cmd"; then
+    if wsl.exe -d "$_rr_target" -- bash -lc "$_rr_exports; $_rr_cmd"; then
         exit 0
     fi
-    substep "Could not auto-continue in Ubuntu-24.04; run it yourself:" "$C_WARN"
-    substep "  wsl -d Ubuntu-24.04 -- bash -lc 'curl -fsSL https://unsloth.ai/install.sh | sh'"
+    substep "Could not auto-continue in $_rr_target; run it yourself:" "$C_WARN"
+    substep "  wsl -d $_rr_target -- bash -lc 'curl -fsSL https://unsloth.ai/install.sh | sh'"
     substep "Continuing CPU-only in Ubuntu ${_rr_ver:-this distro} for now." "$C_WARN"
     # The reroute to a supported distro failed; don't let the later ROCm-on-WSL
     # bootstrap install ROCm into this unsupported distro -- stay CPU-only.

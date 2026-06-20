@@ -448,6 +448,13 @@ def test_ps_venv_probe_expands_tilde_for_custom_studio_home(ps):
         f"{ps.name}: the ~ expansion must guard against an empty $env:USERPROFILE "
         "before Join-Path (else it throws on a profile-less account)"
     )
+    # A bare "~" leaves an empty child path; Join-Path rejects an empty -ChildPath
+    # on PS 5.1, so the expansion must fall back to USERPROFILE directly (only
+    # joining a non-empty remainder) instead of calling Join-Path with "".
+    assert "$studioHomeRest" in block and "else { $env:USERPROFILE }" in block, (
+        f"{ps.name}: the ~ expansion must handle a bare ~ without passing an empty "
+        "child path to Join-Path (PS 5.1 rejects it)"
+    )
 
 
 def _ps_floor_map(text, prefix):
@@ -579,6 +586,30 @@ def test_python_hipinfo_strips_quotes_in_all_copies():
         assert "strip('\"')" in text, f"{src.name} must strip quotes from PATH entries"
 
 
+def test_python_path_inside_venv_guards_root_prefix_in_all_copies():
+    # If sys.prefix ever resolves to a bare root (C:\ or /), commonpath would match
+    # every path on that filesystem and classify a real external hipinfo as
+    # venv-internal, silently disabling amd-smi. All three copies must guard it.
+    for src in (_PREBUILT_PATH, _AMD_PY, _PYSTACK_PY):
+        text = src.read_text(encoding = "utf-8")
+        assert "os.path.dirname(" in text and ") == " in text and "return False" in text, (
+            f"{src.name} _path_inside_venv must guard a root-dir sys.prefix"
+        )
+
+
+def test_path_inside_venv_returns_false_for_root_prefix():
+    # Behavioral: with sys.prefix realpath == a bare root, no external path counts as
+    # inside the venv (so a real HIP SDK on the same drive still opens the gate).
+    root = "C:\\" if os.name == "nt" else "/"
+    real = os.path.realpath
+    with patch.object(
+        prebuilt.os.path, "realpath",
+        side_effect = lambda p: root if p == prebuilt.sys.prefix else real(p),
+    ):
+        ext = os.path.join(root, "hip", "bin", "hipinfo.exe")
+        assert prebuilt._path_inside_venv(ext) is False
+
+
 @pytest.mark.parametrize("ps", [_INSTALL_PS1, _SETUP_PS1], ids = ["install.ps1", "setup.ps1"])
 def test_ps_venv_probe_skips_drive_root(ps):
     # A non-venv UNSLOTH_SETUP_PYTHON like C:\Python311\python.exe yields a bare
@@ -637,7 +668,9 @@ def test_install_sh_wsl_reroute_uses_pipefail():
     # success and exit 0 the parent installer.
     text = _INSTALL_SH.read_text(encoding = "utf-8")
     assert "set -o pipefail" in text, "reroute must enable pipefail"
-    i = text.find('wsl.exe -d "Ubuntu-24.04"')
+    # The reroute targets the selected distro ($_rr_target: 24.04 preferred, 22.04
+    # fallback) via bash -lc; find that exec line.
+    i = text.find('wsl.exe -d "$_rr_target" -- bash -lc')
     assert i != -1, "WSL reroute command not found in install.sh"
     # pipefail is set in the exports prefix the reroute bash -lc runs; the wsl.exe
     # call must wire that prefix in (a failed curl is otherwise masked by sh exit 0).
@@ -661,6 +694,99 @@ def test_uninstall_sh_preserves_shared_icon_for_surviving_shortcut():
         "uninstall.sh powershell-interop path must keep the icon when an Unsloth "
         "shortcut still uses it"
     )
+    # An empty $env:LOCALAPPDATA (service/SYSTEM account) makes Join-Path throw and
+    # aborts the icon cleanup; the interop snippet must guard it like uninstall.ps1.
+    assert "IsNullOrWhiteSpace($env:LOCALAPPDATA)" in text, (
+        "uninstall.sh powershell-interop path must guard an empty $env:LOCALAPPDATA "
+        "before Join-Path (else cleanup throws on a profile-less account)"
+    )
+
+
+def test_install_python_stack_windows_rocm_repair_pins_and_is_nonfatal():
+    # The Windows AMD ROCm repair path in _ensure_rocm_torch() must mirror the
+    # PowerShell installer: (1) pin torchvision/torchaudio for the arches the PS
+    # side pins so AMD's per-arch index resolves an ABI-consistent trio, and
+    # (2) be nonfatal so a transient AMD-index failure does not abort the whole
+    # install after the PowerShell side already fell back to CPU torch.
+    text = _PYSTACK_PY.read_text(encoding = "utf-8")
+    assert "_WINDOWS_ROCM_TORCH_PKG_SPECS" in text, (
+        "install_python_stack.py must define a Windows per-arch ROCm companion pin map"
+    )
+    for gfx in ("gfx1201", "gfx1200", "gfx1151", "gfx1150"):
+        assert re.search(r'"' + gfx + r'":\s*_ROCM_TORCH_PKG_SPECS\["rocm7\.2"\]', text), (
+            f"{gfx} must pin to the rocm7.2 trio like install.ps1/setup.ps1"
+        )
+    i = text.find('f"ROCm torch (Windows, {gfx_arch})"')
+    assert i != -1, "Windows ROCm repair pip call not found"
+    # The nearest preceding call must be the nonfatal pip_install_try, not pip_install.
+    j = text.rfind("pip_install_try(", 0, i)
+    k = text.rfind("pip_install(", 0, i)
+    assert j != -1 and (k == -1 or j > k), (
+        "Windows ROCm repair must use the nonfatal pip_install_try wrapping the trio"
+    )
+    window = text[i : i + 700]
+    assert "_torch_pkg" in window and "_vision_pkg" in window and "_audio_pkg" in window, (
+        "Windows ROCm repair must pass the pinned companion trio, not bare names"
+    )
+    assert "keeping the existing torch build" in window, (
+        "Windows ROCm repair must keep the existing build (nonfatal) when the index fails"
+    )
+
+
+def _load_pystack():
+    # install_python_stack.py imports from backend.*, so put studio/ on sys.path.
+    import importlib.util
+    studio_dir = str(PACKAGE_ROOT / "studio")
+    if studio_dir not in sys.path:
+        sys.path.insert(0, studio_dir)
+    spec = importlib.util.spec_from_file_location("pystack_pr6296", _PYSTACK_PY)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_windows_rocm_repair_nonfatal_keeps_cpu_torch_on_index_failure(monkeypatch):
+    # Behavioral: with a Windows AMD box whose per-arch index is down, the repair
+    # must attempt the pinned trio via the nonfatal helper, NOT call the fatal
+    # pip_install, and NOT proceed to bitsandbytes -- so the overall install
+    # survives the index failure with the existing (CPU) torch intact.
+    try:
+        ps = _load_pystack()
+    except Exception as exc:  # minimal CI without backend deps
+        pytest.skip(f"install_python_stack deps unavailable: {exc}")
+    calls = {"try": [], "fatal": 0, "bnb": 0}
+    monkeypatch.setattr(ps, "IS_WINDOWS", True)
+    monkeypatch.setattr(ps, "IS_MACOS", False)
+    monkeypatch.setattr(ps, "_TORCH_BACKEND", "rocm", raising = False)
+    monkeypatch.setattr(ps, "_has_usable_nvidia_gpu", lambda: False)
+    monkeypatch.setattr(ps, "_detect_windows_gfx_arch", lambda: "gfx1151")
+    monkeypatch.setattr(
+        ps, "_windows_rocm_index_url", lambda a: "https://repo.amd.com/rocm/whl/gfx1151/"
+    )
+    # torch is not already a ROCm build -> the version probe prints nothing.
+    monkeypatch.setattr(
+        ps.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 0, b"", b"")
+    )
+
+    def fake_try(label, *args, **kw):
+        calls["try"].append((label, args, kw))
+        return False  # simulate the AMD index being unreachable
+
+    monkeypatch.setattr(ps, "pip_install_try", fake_try)
+    monkeypatch.setattr(ps, "pip_install", lambda *a, **k: calls.__setitem__("fatal", calls["fatal"] + 1))
+    monkeypatch.setattr(ps, "_install_bnb_windows_rocm", lambda *a, **k: calls.__setitem__("bnb", calls["bnb"] + 1) or True)
+    monkeypatch.delenv("UNSLOTH_ROCM_TORCH_INSTALLED", raising = False)
+
+    ps._ensure_rocm_torch()  # must not raise / SystemExit
+
+    assert calls["fatal"] == 0, "Windows ROCm repair must not use the fatal pip_install"
+    assert len(calls["try"]) == 1, "expected one nonfatal ROCm torch install attempt"
+    _, args, _ = calls["try"][0]
+    assert "torch>=2.11.0,<2.12.0" in args, "torch must be pinned to the rocm7.2 floor"
+    assert "torchvision>=0.26.0,<0.27.0" in args, "torchvision companion must be pinned"
+    assert "torchaudio>=2.11.0,<2.12.0" in args, "torchaudio companion must be pinned"
+    assert calls["bnb"] == 0, "a failed ROCm torch install must not proceed to bitsandbytes"
 
 
 if __name__ == "__main__":

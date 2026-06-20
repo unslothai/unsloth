@@ -79,7 +79,7 @@ make_fixture() {
 #!/bin/sh
 case "\$1" in
     -l) cat "$_d/distros" ;;
-    -d) shift; shift; shift; printf '__CMD__ %s\n' "\$*"; exec "\$@" ;;
+    -d) _td="\$2"; shift; shift; shift; printf '__CMD__ -d %s -- %s\n' "\$_td" "\$*"; exec "\$@" ;;
 esac
 MOCK
     chmod +x "$_d/bin/wsl.exe"
@@ -249,6 +249,32 @@ _d=$(make_fixture 1 strix 0 26.04 1)
 _out=$(run_func "$_d" UNSLOTH_ROCM_WSL_AUTO=1 \
         UNSLOTH_WSL_REROUTE_CMD='echo auto=[$UNSLOTH_ROCM_WSL_AUTO]')
 assert_contains "UNSLOTH_ROCM_WSL_AUTO forwarded to reroute"      "$_out" "auto=[1]"
+rm -rf "$_d"
+
+# 21) Both 24.04 and 22.04 installed -> prefer 24.04 (AMD's primary target).
+_d=$(make_fixture 1 strix 0 26.04 1)
+printf 'Ubuntu\nUbuntu-22.04\nUbuntu-24.04\n' > "$_d/distros"
+_out=$(run_func "$_d")
+assert_contains "both present -> routes"                          "$_out" "__ROUTED__"
+assert_contains "both present -> targets 24.04"                   "$_out" "-d Ubuntu-24.04"
+assert_absent   "both present -> does not target 22.04"           "$_out" "-d Ubuntu-22.04"
+rm -rf "$_d"
+
+# 22) Only 22.04 installed -> reroute to 22.04 (also AMD-supported), not CPU-only.
+_d=$(make_fixture 1 strix 0 26.04 0)
+printf 'Ubuntu\nUbuntu-22.04\n' > "$_d/distros"
+_out=$(run_func "$_d")
+assert_contains "only 22.04 -> routes"                            "$_out" "__ROUTED__"
+assert_contains "only 22.04 -> targets 22.04"                     "$_out" "-d Ubuntu-22.04"
+assert_absent   "only 22.04 -> stops current distro"              "$_out" "__NOROUTE__"
+rm -rf "$_d"
+
+# 23) Neither 24.04 nor 22.04 present -> stay CPU-only and skip the ROCm bootstrap.
+_d=$(make_fixture 1 strix 0 26.04 0)
+printf 'Ubuntu\nUbuntu-20.04\n' > "$_d/distros"
+_out=$(run_func "$_d")
+assert_contains "no supported target -> no route"                 "$_out" "__NOROUTE__"
+assert_contains "no supported target -> skip ROCm bootstrap"      "$_out" "SKIP_ROCM=1"
 rm -rf "$_d"
 
 echo ""
