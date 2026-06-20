@@ -2156,6 +2156,14 @@ def unsloth_fast_generate(self, *args, **kwargs):
 
     # For newer HF
     kwargs["cache_implementation"] = "dynamic"
+    # Gemma 4 E-series (E2B / E4B) share KV across layers and their KV cache
+    # generation path is broken in transformers 5.5.0
+    # (huggingface/transformers#45242): a cached forward diverges from the
+    # cache-free forward, so default greedy decode emits garbage. Default to the
+    # correct cache-free path unless the caller explicitly opts into a cache.
+    if "use_cache" not in kwargs and is_gemma4_shared_kv_model(self):
+        kwargs["use_cache"] = False
+        kwargs["cache_implementation"] = None
     # transformers 4.50 renamed num_logits_to_keep -> logits_to_keep; pop both,
     # re-emit under the spelling forward() accepts.
     _provided_num = kwargs.pop("num_logits_to_keep", None)

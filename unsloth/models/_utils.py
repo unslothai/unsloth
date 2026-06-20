@@ -82,6 +82,7 @@ __all__ = [
     "_get_inference_mode_context_manager",
     "hf_login",
     "is_moe_model",
+    "is_gemma4_shared_kv_model",
     "get_moe_target_parameters",
     "make_fast_generate_wrapper",
 ]
@@ -3278,6 +3279,30 @@ def is_moe_model(model) -> bool:
                 break
 
     return num_experts is not None and num_experts > 0
+pass
+
+
+def is_gemma4_shared_kv_model(model) -> bool:
+    """
+    Detect Gemma 4 E-series models (E2B / E4B) that share KV across layers.
+
+    These have num_kv_shared_layers > 0, and in transformers 5.5.0 their
+    KV cache generation path is broken (huggingface/transformers#45242):
+    generating with a KV cache (use_cache=True / cache_implementation set)
+    yields different, garbled logits to the cache-free path. Gemma 4 31B /
+    26B-A4B have num_kv_shared_layers == 0 and are unaffected.
+    """
+    config = getattr(model, "config", model)
+    text_config = getattr(config, "text_config", None) or config
+    model_type = getattr(config, "model_type", "") or ""
+    text_model_type = getattr(text_config, "model_type", "") or ""
+    if not (
+        (isinstance(model_type, str) and model_type.startswith("gemma4")) or
+        (isinstance(text_model_type, str) and text_model_type.startswith("gemma4"))
+    ):
+        return False
+    return (getattr(text_config, "num_kv_shared_layers", 0) or 0) > 0
+pass
 
 
 def _resolve_moe_parameter_name(model, default_name: str, alternate_name: str) -> str:

@@ -405,6 +405,15 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
     if do_bfloat16_mixed_precision:
         cache_implementation = None
 
+    # Gemma 4 E-series (E2B / E4B) share KV across layers and their KV cache
+    # generation path is broken in transformers 5.5.0
+    # (huggingface/transformers#45242): a cached forward diverges from the
+    # cache-free forward, so default greedy decode emits garbage. Default to the
+    # correct cache-free path unless the caller explicitly opts into a cache.
+    if "use_cache" not in kwargs and is_gemma4_shared_kv_model(self):
+        kwargs["use_cache"] = False
+        cache_implementation = None
+
     if "generation_config" in kwargs:
         kwargs["generation_config"].cache_implementation = cache_implementation
         if cache_implementation is not None:
