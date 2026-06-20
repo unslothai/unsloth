@@ -488,6 +488,129 @@ def fix_vllm_lora_tokenizer_module():
     )
 
 
+# vLLM v1 (>= 0.21) added a dummy-LoRA warmup hook: maybe_setup_dummy_loras()
+# calls lora_manager.get_dummy_lora_warmup_rank(default_rank). An older
+# unsloth_zoo swaps in LoRA-manager ports that lack it, so fast_inference LoRA
+# warmup crashes with AttributeError (issue #6114). Wrap maybe_setup_dummy_loras
+# to add the identity default (return default_rank) on the live manager class.
+# One-shot post-import hook so vLLM isn't imported early, like the shim above.
+_VLLM_LORA_MIXIN_MODULE = "vllm.v1.worker.lora_model_runner_mixin"
+_VLLM_LORA_WARMUP_RANK_METHOD = "get_dummy_lora_warmup_rank"
+_VLLM_LORA_WARMUP_SHIM_SENTINEL = "__unsloth_vllm_lora_warmup_rank_shim__"
+
+
+def _unsloth_identity_lora_warmup_rank(self, default_rank):
+    # vLLM's no-op contract: keep the warmup rank vLLM already picked.
+    return default_rank
+
+
+def _unsloth_ensure_lora_warmup_rank(manager):
+    """Backfill the identity warmup-rank hook on ``manager``'s class if absent."""
+    if manager is None:
+        return
+    manager_cls = type(manager)
+    if not hasattr(manager_cls, _VLLM_LORA_WARMUP_RANK_METHOD):
+        try:
+            setattr(
+                manager_cls,
+                _VLLM_LORA_WARMUP_RANK_METHOD,
+                _unsloth_identity_lora_warmup_rank,
+            )
+        except Exception:
+            pass
+
+
+def _unsloth_wrap_maybe_setup_dummy_loras(original):
+    @functools.wraps(original)
+    def maybe_setup_dummy_loras(self, *args, **kwargs):
+        # Add the hook to the live manager class before the body calls it.
+        _unsloth_ensure_lora_warmup_rank(getattr(self, "lora_manager", None))
+        return original(self, *args, **kwargs)
+
+    setattr(maybe_setup_dummy_loras, _VLLM_LORA_WARMUP_SHIM_SENTINEL, True)
+    return maybe_setup_dummy_loras
+
+
+def _unsloth_patch_lora_model_runner_mixin(module):
+    mixin = getattr(module, "LoRAModelRunnerMixin", None)
+    if mixin is None:
+        return
+    # Only wrap a method defined directly on the mixin, and only once.
+    method = mixin.__dict__.get("maybe_setup_dummy_loras", None)
+    if method is None or getattr(method, _VLLM_LORA_WARMUP_SHIM_SENTINEL, False):
+        return
+    mixin.maybe_setup_dummy_loras = _unsloth_wrap_maybe_setup_dummy_loras(method)
+    logger.info(
+        "Unsloth: Backfilled vLLM dummy-LoRA warmup-rank hook for older "
+        "unsloth_zoo LoRA managers"
+    )
+
+
+class _VllmLoraWarmupPostImportLoader(importlib.abc.Loader):
+    """Run the real loader, then patch the module; delegate everything else."""
+
+    __slots__ = ("_real_loader",)
+
+    def __init__(self, real_loader):
+        self._real_loader = real_loader
+
+    def create_module(self, spec):
+        return self._real_loader.create_module(spec)
+
+    def exec_module(self, module):
+        self._real_loader.exec_module(module)
+        try:
+            _unsloth_patch_lora_model_runner_mixin(module)
+        except Exception as e:
+            logger.info(f"Unsloth: Failed backfilling vLLM warmup-rank hook = {str(e)}")
+
+    def __getattr__(self, name):
+        return getattr(self._real_loader, name)
+
+
+class _VllmLoraWarmupPostImportFinder(importlib.abc.MetaPathFinder):
+    __slots__ = (_VLLM_LORA_WARMUP_SHIM_SENTINEL,)
+
+    def __init__(self):
+        setattr(self, _VLLM_LORA_WARMUP_SHIM_SENTINEL, True)
+
+    def find_spec(
+        self,
+        fullname,
+        path = None,
+        target = None,
+    ):
+        if fullname != _VLLM_LORA_MIXIN_MODULE:
+            return None
+        # Get the real spec from the other finders, then wrap its loader.
+        for finder in sys.meta_path:
+            if finder is self or getattr(finder, _VLLM_LORA_WARMUP_SHIM_SENTINEL, False):
+                continue
+            try:
+                spec = finder.find_spec(fullname, path, target)
+            except Exception:
+                spec = None
+            if spec is not None and spec.loader is not None:
+                spec.loader = _VllmLoraWarmupPostImportLoader(spec.loader)
+                return spec
+        return None
+
+
+def fix_vllm_lora_warmup_rank():
+    if importlib.util.find_spec("vllm") is None:
+        return
+    # vLLM already imported (loaded before us): patch the module in place.
+    existing = sys.modules.get(_VLLM_LORA_MIXIN_MODULE)
+    if existing is not None:
+        _unsloth_patch_lora_model_runner_mixin(existing)
+        return
+    for finder in sys.meta_path:
+        if getattr(finder, _VLLM_LORA_WARMUP_SHIM_SENTINEL, False):
+            return
+    # Front of meta_path so we see the import first; the load still delegates.
+    sys.meta_path.insert(0, _VllmLoraWarmupPostImportFinder())
+
+
 def fix_vllm_guided_decoding_params():
     def _maybe_raise_vllm_transformers_mismatch(error):
         error_text = str(error)

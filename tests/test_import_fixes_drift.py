@@ -406,6 +406,41 @@ def test_vllm_aimv2_ovis_config_is_past_fix_version():
         )
 
 
+def test_vllm_lora_dummy_warmup_rank_hook_present():
+    """``fix_vllm_lora_warmup_rank``: vLLM's v1 engine (>= 0.21) added
+    ``LoRAModelRunnerMixin.maybe_setup_dummy_loras`` -> ``lora_manager
+    .get_dummy_lora_warmup_rank(default_rank)``; older unsloth_zoo LoRA-manager
+    ports don't implement it (#6114), so the shim backfills an identity default
+    on the live manager. If upstream drops the hook or renames the entry point,
+    the shim is mis-targeted -- fail so the maintainer re-points or removes it."""
+    pytest.importorskip("vllm")
+    try:
+        mixin_mod = importlib.import_module("vllm.v1.worker.lora_model_runner_mixin")
+        worker_mgr_mod = importlib.import_module("vllm.lora.worker_manager")
+    except Exception as exc:
+        pytest.skip(f"vllm LoRA worker modules unimportable: {exc!r}")
+    mixin = getattr(mixin_mod, "LoRAModelRunnerMixin", None)
+    entry = getattr(mixin, "maybe_setup_dummy_loras", None)
+    if entry is None:
+        pytest.skip("this vllm has no LoRAModelRunnerMixin.maybe_setup_dummy_loras")
+    # Gate on the call site actually using the hook, so the assertion can't
+    # false-fire on a vllm whose maybe_setup_dummy_loras predates it. (This
+    # test doesn't import unsloth, so the method is the genuine, un-wrapped one.)
+    try:
+        uses_hook = "get_dummy_lora_warmup_rank" in inspect.getsource(entry)
+    except (OSError, TypeError):
+        uses_hook = False
+    if not uses_hook:
+        pytest.skip("this vllm's maybe_setup_dummy_loras doesn't use the hook")
+    worker_mgr = getattr(worker_mgr_mod, "WorkerLoRAManager", None)
+    assert worker_mgr is not None and hasattr(worker_mgr, "get_dummy_lora_warmup_rank"), (
+        "DRIFT DETECTED: vLLM's maybe_setup_dummy_loras calls "
+        "lora_manager.get_dummy_lora_warmup_rank but WorkerLoRAManager no longer "
+        "defines it; fix_vllm_lora_warmup_rank backfills the wrong name -- "
+        "re-point or remove it."
+    )
+
+
 # huggingface_hub
 
 
