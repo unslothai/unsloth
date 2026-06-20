@@ -84,6 +84,7 @@ import { useShallow } from "zustand/react/shallow";
 import { DocumentUploadRedirectDialog } from "./document-upload-redirect-dialog";
 import { translate, useT } from "@/i18n";
 import { S3ConfigForm } from "./s3-config-form";
+import { usePlatformStore } from "@/config/env";
 
 const TRAINING_UPLOAD_EXTENSIONS = [
   ".csv",
@@ -225,6 +226,8 @@ export function DatasetSection() {
     })),
   );
 
+  const platformDeviceType = usePlatformStore((s) => s.deviceType);
+
   // Streaming is only supported for Hugging Face text datasets. Rather than
   // hiding the toggle when a constraint isn't met, keep it visible but disabled
   // and list the exact unmet requirement(s) in its tooltip — a control that
@@ -258,6 +261,10 @@ export function DatasetSection() {
     streamingBlockers.push("This dataset looks like images, which can't stream.");
   if (isDatasetAudio)
     streamingBlockers.push("This dataset looks like audio, which can't stream.");
+  if (platformDeviceType === "mac")
+    streamingBlockers.push(
+      "Streaming isn't supported on Apple Silicon (MLX) yet.",
+    );
 
   const isStreamingSupported = streamingBlockers.length === 0;
 

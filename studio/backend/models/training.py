@@ -494,6 +494,24 @@ class TrainingStartRequest(BaseModel):
     )
 
     @model_validator(mode = "after")
+    def _validate_streaming_splits(self) -> "TrainingStartRequest":
+        # Streaming load_dataset does not accept HF slice syntax (e.g. "train[:50%]"
+        # or "train[:20]"). Probe-confirmed: raises ValueError: Bad split. Reject
+        # early with a clear message so the user knows to use a plain split name.
+        if self.dataset_streaming:
+            for field_name, split_val in (
+                ("train_split", self.train_split),
+                ("eval_split", self.eval_split),
+            ):
+                if split_val is not None and "[" in split_val:
+                    raise ValueError(
+                        f"dataset_streaming does not support HF slice syntax in {field_name} "
+                        f"(got {split_val!r}); streaming load_dataset raises 'Bad split' on "
+                        "bracket expressions. Use a plain split name (e.g. 'train', 'validation')."
+                    )
+        return self
+
+    @model_validator(mode = "after")
     def _check_steps_or_epochs(self) -> "TrainingStartRequest":
         # Each accepts 0 as "use the other"; both 0 means nothing to train.
         if (self.max_steps is None or self.max_steps == 0) and self.num_epochs == 0:

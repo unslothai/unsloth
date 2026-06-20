@@ -22,10 +22,36 @@ class RawTextPreparationResult:
     notices: list[RawTextNotice]
 
 
+def resolve_column_names(dataset) -> list[str]:
+    """Return the column names for *dataset*, guarding against None.
+
+    IterableDataset.column_names is None until HF datasets>=X materialises
+    it from the first batch; .map() also keeps it None.  Resolution order:
+      1. dataset.column_names if truthy (regular Dataset or HF>=4.4)
+      2. keys of dataset.features if available
+      3. bounded first-row probe, consumes one element, safe on IterableDataset
+         because HF re-iterates from the generator on the next pass
+      4. [] as a last resort so callers never see None
+    """
+    col_names = getattr(dataset, "column_names", None)
+    if col_names:
+        return list(col_names)
+
+    features = getattr(dataset, "features", None)
+    if features:
+        return list(features.keys())
+
+    try:
+        first_row = next(iter(dataset))
+        return list(first_row.keys())
+    except Exception:
+        return []
+
+
 def _string_columns(dataset: Dataset) -> list[str]:
     feature_map = getattr(dataset, "features", {}) or {}
     string_cols: list[str] = []
-    for col in dataset.column_names:
+    for col in resolve_column_names(dataset):
         feature = feature_map.get(col)
         dtype = str(getattr(feature, "dtype", ""))
         if dtype in {"string", "large_string"}:
@@ -92,12 +118,13 @@ def prepare_raw_text_dataset(
     mode_title = mode_label.capitalize()
     split_scope = _split_scope(split_name)
 
-    if "text" not in dataset.column_names:
+    col_names = resolve_column_names(dataset)
+    if "text" not in col_names:
         string_cols = _string_columns(dataset)
         if not string_cols:
             raise ValueError(
                 f"{mode_title} training requires a string 'text' column but none "
-                f"was found in {split_scope} (columns: {dataset.column_names})."
+                f"was found in {split_scope} (columns: {col_names})."
             )
 
         renamed_col = string_cols[0]

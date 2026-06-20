@@ -227,6 +227,25 @@ async def start_training(
                         status_code = 422,
                         detail = "dataset_streaming with evaluation requires a separate eval_split.",
                     )
+            # Streaming is HF-only: reject when the request also carries a local
+            # dataset path or an S3 config; those sources cannot be streamed via
+            # HF's streaming loader.
+            if request.local_datasets:
+                raise HTTPException(
+                    status_code = 400,
+                    detail = (
+                        "dataset_streaming is HF-only; remove local_datasets / S3 source. "
+                        "Streaming is not supported with local file paths."
+                    ),
+                )
+            if request.s3_config is not None:
+                raise HTTPException(
+                    status_code = 400,
+                    detail = (
+                        "dataset_streaming is HF-only; remove local_datasets / S3 source. "
+                        "Streaming is not supported with S3 datasets."
+                    ),
+                )
 
         # Convert request to backend kwargs.
         training_kwargs = {

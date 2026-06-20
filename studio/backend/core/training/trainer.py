@@ -123,7 +123,7 @@ from utils.models.model_config import _env_offline
 from utils.datasets import format_and_template_dataset
 from utils.datasets import MODEL_TO_TEMPLATE_MAPPER, TEMPLATE_TO_RESPONSES_MAPPER
 from utils.datasets.iterable import is_streaming_dataset as detect_streaming_dataset
-from utils.datasets.raw_text import prepare_raw_text_dataset
+from utils.datasets.raw_text import prepare_raw_text_dataset, resolve_column_names
 from utils.paths import (
     ensure_dir,
     resolve_dataset_path,
@@ -138,6 +138,11 @@ from utils.subprocess_compat import (
 )
 
 logger = get_logger(__name__)
+
+# A streaming eval dataset has no __len__, so a streaming evaluation would
+# iterate the entire (potentially unbounded) source on every eval step. Cap it
+# to a fixed sample count so each evaluation terminates predictably.
+STREAMING_EVAL_MAX_SAMPLES = 500
 
 
 def _build_report_targets(training_args) -> list[str] | str:
@@ -2435,8 +2440,14 @@ class UnslothTrainer:
                     # rows and materialize them (avoids downloading the whole dataset);
                     # the eager [start, end] trim happens further below.
                     _slice_start = dataset_slice_start or 0
+                    # streaming=True rejects HF slice syntax (e.g. "train[:50%]")
+                    # with "Bad split", so the streaming shortcut is unusable when
+                    # train_split already carries a slice expression, so fall back to
+                    # the regular download path, which handles HF slice syntax.
+                    _split_has_slice = (train_split or "").find("[") != -1
                     if (
-                        dataset_slice_end is not None
+                        not _split_has_slice
+                        and dataset_slice_end is not None
                         and dataset_slice_end >= 0
                         and dataset_slice_end >= _slice_start
                     ):
@@ -2498,17 +2509,26 @@ class UnslothTrainer:
                                     f"Could not list splits for '{dataset_source}' "
                                     f"to validate eval_split='{eval_split}': {probe_err}"
                                 )
-                            # HF split slicing (e.g. "validation[:1000]") is a
-                            # valid split expression; validate the base split name,
-                            # not the whole slice expression.
-                            base_eval_split = eval_split.split("[", 1)[0]
-                            if base_eval_split not in available_splits:
+                            # Streaming rejects HF slice syntax, and the request
+                            # validator already blocks bracketed streaming splits,
+                            # so eval_split here is always a bare split name.
+                            if eval_split not in available_splits:
                                 raise ValueError(
                                     f"Requested eval split '{eval_split}' not found in "
                                     f"dataset '{dataset_source}'. Available splits: "
                                     f"{available_splits}"
                                 )
                             eval_dataset = load_dataset(**eval_load_kwargs, streaming = True)
+                            # A streaming eval dataset has no __len__; bound it so
+                            # each evaluation terminates instead of consuming the
+                            # whole stream. .take() stays lazy and survives the
+                            # later format/raw-text .map() passes.
+                            if not hasattr(eval_dataset, "__len__"):
+                                eval_dataset = eval_dataset.take(STREAMING_EVAL_MAX_SAMPLES)
+                                logger.info(
+                                    f"Streaming eval split capped to "
+                                    f"{STREAMING_EVAL_MAX_SAMPLES} samples\n"
+                                )
                         else:
                             eval_dataset = load_dataset(**eval_load_kwargs)
 
@@ -2641,9 +2661,13 @@ class UnslothTrainer:
                 )
                 logger.info(f"Raw-text dataset ready ({n_display} samples)\n")
 
-                if "text" not in train_dataset.column_names:
+                # Streaming datasets can report column_names as None, which would
+                # make "text" not in None raise TypeError; resolve_column_names
+                # falls back to features/first-row probing.
+                train_columns = resolve_column_names(train_dataset)
+                if "text" not in train_columns:
                     raise ValueError(
-                        f"Raw-text dataset missing 'text' column: {train_dataset.column_names}"
+                        f"Raw-text dataset missing 'text' column: {train_columns}"
                     )
                 return (dataset_info, eval_dataset)
 
@@ -2905,7 +2929,11 @@ class UnslothTrainer:
             loader = self.trainer.get_train_dataloader()
             batch = next(iter(loader))
         except StopIteration:
-            return None
+            return (
+                "Cannot start training: the dataset produced no training rows. "
+                "This usually means a split/slice or streaming filter removed every "
+                "row. Check your train split, slice range, and dataset filters."
+            )
         except Exception as e:
             model = self.model_name or "this model"
             return (

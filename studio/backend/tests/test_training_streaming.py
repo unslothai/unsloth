@@ -406,3 +406,158 @@ def test_streaming_start_happy_path_reaches_backend():
     assert captured["dataset_streaming"] is True
     assert captured["max_steps"] == 10
     assert captured["eval_split"] == "validation"
+
+
+# streaming rejects HF slice syntax in train_split / eval_split
+
+
+@pytest.mark.parametrize(
+    "field, value",
+    [
+        ("train_split", "train[:50%]"),
+        ("train_split", "train[:20]"),
+        ("eval_split", "validation[:1000]"),
+    ],
+)
+def test_streaming_rejects_bracketed_split_syntax(field, value):
+    # The model_validator _validate_streaming_splits raises ValidationError when
+    # dataset_streaming=True and a split contains "[" (HF slice syntax).
+    kwargs = {
+        "model_name": "unsloth/test",
+        "training_type": "LoRA/QLoRA",
+        "hf_dataset": "org/dataset",
+        "format_type": "chatml",
+        "dataset_streaming": True,
+        "max_steps": 10,
+        field: value,
+    }
+    with pytest.raises(ValidationError) as exc_info:
+        TrainingStartRequest(**kwargs)
+    detail = str(exc_info.value)
+    assert "slice" in detail.lower() or "bracket" in detail.lower() or "[" in detail
+
+
+# streaming rejects mixed sources (local_datasets)
+
+
+def test_streaming_start_rejects_local_datasets():
+    # dataset_streaming + local_datasets -> 400, 'local' in detail
+    training_route = _load_route_module(
+        "training_route_module_for_streaming_local_datasets_test",
+        "routes/training.py",
+    )
+    request = TrainingStartRequest(
+        model_name = "unsloth/test",
+        training_type = "LoRA/QLoRA",
+        hf_dataset = "org/dataset",
+        format_type = "chatml",
+        dataset_streaming = True,
+        max_steps = 10,
+    )
+    # Bypass Pydantic's local-path validation by injecting directly after construction.
+    object.__setattr__(request, "local_datasets", ["/some/local/file.jsonl"])
+
+    backend = SimpleNamespace(
+        current_job_id = None,
+        is_training_active = lambda: False,
+        start_training = lambda **kwargs: pytest.fail("backend should not start"),
+    )
+
+    with patch.object(training_route, "get_training_backend", return_value = backend):
+        with pytest.raises(HTTPException) as exc_info:
+            asyncio.run(training_route.start_training(request, current_subject = "test-user"))
+
+    assert exc_info.value.status_code == 400
+    assert "local" in exc_info.value.detail.lower() or "hf-only" in exc_info.value.detail.lower()
+
+
+# _drop_invalid_text_rows handles from_generator with column_names=None
+
+
+def test_drop_invalid_text_rows_from_generator_none_column_names():
+    # from_generator IterableDatasets have column_names=None; resolve_column_names
+    # must fall back to first-row probe. _drop_invalid_text_rows must not raise
+    # TypeError and must filter correctly.
+    from utils.datasets.raw_text import _drop_invalid_text_rows
+
+    def _gen():
+        yield {"text": "valid row"}
+        yield {"text": None}          # invalid, should be dropped
+        yield {"text": "another row"}
+
+    stream = datasets.IterableDataset.from_generator(_gen)
+    # Precondition: column_names is None on a raw from_generator dataset.
+    assert stream.column_names is None, (
+        "precondition failed: expected column_names=None for from_generator dataset"
+    )
+
+    filtered, notices = _drop_invalid_text_rows(
+        stream, mode_title = "Raw text", split_scope = "test split"
+    )
+
+    rows = list(filtered)
+    assert [r["text"] for r in rows] == ["valid row", "another row"]
+    # At least one info/warning notice about dropped rows.
+    assert len(notices) >= 1
+
+
+# _preflight_first_batch returns error string on empty dataloader
+
+
+def test_preflight_first_batch_returns_error_on_empty_stream():
+    # StopIteration from an empty dataloader must return a clear
+    # error string (not None). Test via a minimal stub, no real model needed.
+    import types
+    import sys
+
+    # Minimal stub trainer whose get_train_dataloader() yields nothing.
+    class _EmptyLoader:
+        def __iter__(self):
+            return iter([])
+
+    class _StubTrainer:
+        def get_train_dataloader(self):
+            return _EmptyLoader()
+
+    # Load UnslothTrainer class from trainer.py via importlib to avoid heavy imports.
+    trainer_path = (
+        _BACKEND_ROOT / "core" / "training" / "trainer.py"
+    )
+    spec = importlib.util.spec_from_file_location("trainer_module", trainer_path)
+    trainer_mod = importlib.util.module_from_spec(spec)
+    # Provide a minimal sys.modules shim so top-level imports in trainer.py don't
+    # crash when optional heavy deps (torch, unsloth) are absent.
+    _orig_import = __builtins__.__import__ if hasattr(__builtins__, "__import__") else __import__
+
+    try:
+        spec.loader.exec_module(trainer_mod)
+    except Exception:
+        # trainer.py has optional heavy imports; access _preflight_first_batch directly.
+        pass
+
+    # If we successfully loaded the module, find the trainer class.
+    trainer_cls = None
+    for name, obj in vars(trainer_mod).items() if "trainer_mod" in dir() else []:
+        if hasattr(obj, "_preflight_first_batch"):
+            trainer_cls = obj
+            break
+
+    if trainer_cls is None:
+        pytest.skip(
+            "Could not load trainer module (missing optional deps: torch/unsloth)."
+        )
+
+    # Build a bare instance without calling __init__ (avoids needing real deps).
+    instance = object.__new__(trainer_cls)
+    instance.trainer = _StubTrainer()
+    instance.model_name = "stub-model"
+
+    result = instance._preflight_first_batch()
+
+    assert result is not None, (
+        "_preflight_first_batch must return an error string (not None) when the "
+        "training dataloader is empty."
+    )
+    assert isinstance(result, str)
+    # The message should indicate there are no training rows / empty dataset.
+    assert any(kw in result.lower() for kw in ("empty", "no training", "no rows", "stream"))

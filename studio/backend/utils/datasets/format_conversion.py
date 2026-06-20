@@ -161,7 +161,20 @@ def standardize_chat_format(
         dataset_map_kwargs["num_proc"] = num_proc
         dataset_map_kwargs["desc"] = "Standardizing chat format"
 
-    return dataset.map(_standardize_dataset, **dataset_map_kwargs)
+    result = dataset.map(_standardize_dataset, **dataset_map_kwargs)
+
+    # For streaming, force the first mapped row through now so any
+    # column/format errors surface before training begins (not mid-iteration).
+    # IterableDataset re-iterates from the generator source, so this is safe.
+    if is_streaming_dataset(dataset):
+        try:
+            next(iter(result))
+        except Exception as exc:
+            raise ValueError(
+                f"Streaming chat-format standardization failed on the first row: {exc}"
+            ) from exc
+
+    return result
 
 
 def convert_chatml_to_alpaca(
@@ -232,7 +245,20 @@ def convert_chatml_to_alpaca(
         dataset_map_kwargs["num_proc"] = num_proc
         dataset_map_kwargs["desc"] = "Converting ChatML to Alpaca format"
 
-    return dataset.map(_convert, **dataset_map_kwargs)
+    result = dataset.map(_convert, **dataset_map_kwargs)
+
+    # For streaming, force the first mapped row through now so any
+    # column/format errors surface before training begins (not mid-iteration).
+    # IterableDataset re-iterates from the generator source, so this is safe.
+    if is_iterable:
+        try:
+            next(iter(result))
+        except Exception as exc:
+            raise ValueError(
+                f"Streaming ChatML-to-Alpaca conversion failed on the first row: {exc}"
+            ) from exc
+
+    return result
 
 
 def convert_alpaca_to_chatml(
@@ -285,7 +311,20 @@ def convert_alpaca_to_chatml(
         dataset_map_kwargs["num_proc"] = num_proc
         dataset_map_kwargs["desc"] = "Converting Alpaca to ChatML format"
 
-    return dataset.map(_convert, **dataset_map_kwargs)
+    result = dataset.map(_convert, **dataset_map_kwargs)
+
+    # For streaming, force the first mapped row through now so any
+    # column/format errors surface before training begins (not mid-iteration).
+    # IterableDataset re-iterates from the generator source, so this is safe.
+    if is_iterable:
+        try:
+            next(iter(result))
+        except Exception as exc:
+            raise ValueError(
+                f"Streaming Alpaca-to-ChatML conversion failed on the first row: {exc}"
+            ) from exc
+
+    return result
 
 
 def _format_eta(seconds):
