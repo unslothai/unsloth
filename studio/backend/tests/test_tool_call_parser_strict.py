@@ -141,7 +141,9 @@ class TestGemmaNativeStyle:
 
     def test_bare_unquoted_string_values_are_accepted(self):
         # Gemma can emit enum/string args unquoted; bare JSON scalars stay typed.
-        text = '<|tool_call>call:get_weather{location:Tokyo,unit:celsius,days:3,live:true}<tool_call|>'
+        text = (
+            "<|tool_call>call:get_weather{location:Tokyo,unit:celsius,days:3,live:true}<tool_call|>"
+        )
         calls = parse_tool_calls_from_text(text, allow_incomplete = False)
         assert len(calls) == 1
         assert json.loads(calls[0]["function"]["arguments"]) == {

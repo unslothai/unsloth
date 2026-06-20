@@ -100,7 +100,7 @@ class TestParser:
         assert json.loads(result[0]["function"]["arguments"]) == {"command": "echo {foo:bar}"}
 
     def test_gemma_native_tool_call_bare_string_values(self):
-        text = '<|tool_call>call:get_weather{location:Tokyo,unit:celsius}<tool_call|>'
+        text = "<|tool_call>call:get_weather{location:Tokyo,unit:celsius}<tool_call|>"
         result = parse_tool_calls_from_text(text)
         assert len(result) == 1
         assert json.loads(result[0]["function"]["arguments"]) == {
