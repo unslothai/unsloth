@@ -2781,6 +2781,74 @@ class UnslothTrainer:
             logger.error(f"Failed to start training thread: {e}")
             return False
 
+    def _chat_template_renders_empty(self) -> bool:
+        """True when the chat template renders a sample to empty text (base-model signature)."""
+        try:
+            ds = getattr(self.trainer, "train_dataset", None)
+            if ds is None or len(ds) == 0:
+                return False
+            row = ds[0]
+            messages = row.get("messages") if isinstance(row, dict) else None
+            if not messages:
+                return False
+            tok = self.tokenizer
+            if not hasattr(tok, "apply_chat_template"):
+                return False
+            rendered = tok.apply_chat_template(
+                messages, tokenize = False, add_generation_prompt = False
+            )
+            return not (isinstance(rendered, str) and rendered.strip())
+        except Exception:
+            return False
+
+    def _preflight_first_batch(self) -> Optional[str]:
+        """Validate the first real batch before train(). A base model whose chat
+        template renders empty yields empty float32 input_ids that crash the
+        embedding on step 1; catch it here. Returns None for a valid batch."""
+        try:
+            loader = self.trainer.get_train_dataloader()
+            batch = next(iter(loader))
+        except StopIteration:
+            return None
+        except Exception as e:
+            model = self.model_name or "this model"
+            return (
+                f"Cannot start training: failed to build the first training batch "
+                f"for '{model}': {e}"
+            )
+
+        try:
+            input_ids = batch["input_ids"] if "input_ids" in batch else None
+        except Exception:
+            input_ids = getattr(batch, "input_ids", None)
+        if input_ids is None:
+            return None  # some collators omit input_ids
+
+        seq_len = input_ids.shape[-1] if input_ids.ndim > 0 else 0
+        if not (input_ids.is_floating_point() or input_ids.numel() == 0 or seq_len == 0):
+            return None
+
+        model = self.model_name or "this model"
+        if self._chat_template_renders_empty():
+            low = model.lower()
+            suffix = (
+                f" such as '{model}-Instruct'"
+                if not any(t in low for t in ("instruct", "chat", "-it", "_it"))
+                else ""
+            )
+            return (
+                f"Cannot start training: the chat template for '{model}' produced "
+                f"no text for your dataset, so the first batch had empty token IDs. "
+                f"'{model}' looks like a base (pretrained) model without a chat "
+                f"template suited to conversational fine-tuning. Use the "
+                f"instruction-tuned variant{suffix} or provide a chat template."
+            )
+        return (
+            f"Cannot start training: the first batch produced invalid token IDs "
+            f"(dtype={input_ids.dtype}, length={seq_len}). Check that your dataset "
+            f"columns are mapped correctly for '{model}'."
+        )
+
     def _train_worker(self, dataset: Dataset, **training_args):
         """Worker function for training (runs in separate thread)"""
         try:
@@ -3474,6 +3542,13 @@ class UnslothTrainer:
                 training_args.get("max_steps", 0),
             )
             # ========== START TRAINING ==========
+            # Fail fast on an invalid first batch (empty/float input_ids) vs a step-1 crash.
+            preflight_error = self._preflight_first_batch()
+            if preflight_error:
+                logger.error(preflight_error)
+                self._update_progress(error = preflight_error, is_training = False)
+                return
+
             self._update_progress(total_steps = total_steps, status_message = "Starting training...")
             logger.info("Starting training...\n")
             self.trainer.train(resume_from_checkpoint = training_args.get("resume_from_checkpoint"))

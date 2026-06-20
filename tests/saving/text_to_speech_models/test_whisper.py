@@ -169,8 +169,7 @@ transcribed_text = whisper(audio_file)
 # transcribed_text = model.generate(input_features=input_features)
 print(f"📝 Transcribed Text: {transcribed_text['text']}")
 
-## assert that transcribed_text contains The birch canoe slid on the smooth planks. Glued the sheet to the dark blue background. It's easy to tell the depth of a well. Four hours of steady work faced us.
-
+# Assert the transcription contains the expected reference phrases.
 expected_phrases = [
     "birch canoe slid on the smooth planks",
     "sheet to the dark blue background",
