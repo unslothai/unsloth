@@ -953,18 +953,26 @@ export function SharedComposer({
         if (isAlreadyActive) {
           return "ready";
         }
+        // Size validation exactly as the load below, so the training-guard
+        // preflight checks the footprint that actually loads (in fit mode the
+        // load sends 0 / the pinned context, not raw maxSeqLength).
+        const compareMaxSeqLength = resolveFitMaxSeqLength(
+          sel.id.toLowerCase().endsWith(".gguf") || sel.ggufVariant != null,
+          currentStore.gpuMemoryMode,
+          currentStore.customContextLength,
+          maxSeqLength,
+        );
         const validation = await validateModel({
           model_path: sel.id,
           hf_token: currentStore.hfToken || null,
-          max_seq_length: maxSeqLength,
+          max_seq_length: compareMaxSeqLength,
           load_in_4bit: true,
           is_lora: sel.isLora,
           gguf_variant: sel.ggufVariant ?? null,
           trust_remote_code: loadTrustRemoteCode,
           chat_template_override: effectiveChatTemplateOverride,
-          // Lets the backend skip its training-coexistence check for a fit load
-          // (which spills to RAM); the guard ignores max_seq_length for fit.
-          gpu_memory_mode: currentStore.gpuMemoryMode,
+          // Size the guard against the GPUs the compare load will use.
+          gpu_ids: currentStore.selectedGpuIds ?? undefined,
         });
         if (
           validation.requires_trust_remote_code ||
@@ -988,14 +996,7 @@ export function SharedComposer({
         const resp = await loadModel({
           model_path: sel.id,
           hf_token: useChatRuntimeStore.getState().hfToken || null,
-          // Fit mode hands context sizing to llama.cpp's --fit (send 0 unless a
-          // length is pinned); other modes pass maxSeqLength through.
-          max_seq_length: resolveFitMaxSeqLength(
-            sel.id.toLowerCase().endsWith(".gguf") || sel.ggufVariant != null,
-            currentStore.gpuMemoryMode,
-            currentStore.customContextLength,
-            maxSeqLength,
-          ),
+          max_seq_length: compareMaxSeqLength,
           load_in_4bit: true,
           is_lora: sel.isLora,
           gguf_variant: sel.ggufVariant ?? null,

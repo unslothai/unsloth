@@ -692,35 +692,5 @@ class TestLoadModelGuardIntegration(unittest.TestCase):
         llama.unload_model.assert_not_called()
 
 
-class TestFitGgufSpillsToRam(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        cls.route = _load_inference_route()
-
-    def test_fit_gguf_spills(self):
-        cfg = SimpleNamespace(is_gguf = True)
-        self.assertTrue(self.route._fit_gguf_spills_to_ram(cfg, "fit", None))
-        self.assertTrue(self.route._fit_gguf_spills_to_ram(cfg, "fit", ["--verbose"]))
-
-    def test_offload_override_keeps_guard(self):
-        # Extras that disable --fit or pin GPU offload defeat the spill, so the
-        # guard must still run (fit's no-OOM guarantee no longer holds).
-        cfg = SimpleNamespace(is_gguf = True)
-        for extras in (["--fit", "off"], ["-ngl", "999"], ["--gpu-layers=10"]):
-            with self.subTest(extras = extras):
-                self.assertFalse(self.route._fit_gguf_spills_to_ram(cfg, "fit", extras))
-
-    def test_non_fit_and_non_gguf_keep_guard(self):
-        self.assertFalse(
-            self.route._fit_gguf_spills_to_ram(SimpleNamespace(is_gguf = True), "auto", None)
-        )
-        self.assertFalse(
-            self.route._fit_gguf_spills_to_ram(SimpleNamespace(is_gguf = True), "manual", None)
-        )
-        self.assertFalse(
-            self.route._fit_gguf_spills_to_ram(SimpleNamespace(is_gguf = False), "fit", None)
-        )
-
-
 if __name__ == "__main__":
     unittest.main()

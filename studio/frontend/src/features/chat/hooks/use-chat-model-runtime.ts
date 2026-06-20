@@ -545,6 +545,11 @@ export function useChatModelRuntime() {
             const validateCustomContextLength = resetsPerModelSettings
               ? null
               : preUnloadState.customContextLength;
+            // Same parity for the GPU pick: the guard must size against the GPUs
+            // /load will use (the reset below clears the pick on a cross switch).
+            const validateGpuIds = resetsPerModelSettings
+              ? null
+              : preUnloadState.selectedGpuIds;
             const validateMaxSeqLength = resolveFitMaxSeqLength(
               isGguf,
               preUnloadState.gpuMemoryMode,
@@ -569,8 +574,7 @@ export function useChatModelRuntime() {
               load_in_4bit: true,
               is_lora: isLora,
               gguf_variant: ggufVariant ?? null,
-              // Standing preference, kept across the switch -- the mode /load uses.
-              gpu_memory_mode: preUnloadState.gpuMemoryMode,
+              gpu_ids: validateGpuIds ?? undefined,
             });
             // Open the consent dialog when the model needs custom-code consent or has a
             // flagged unsafe file. Fires even when trustRemoteCode is preset on, since the

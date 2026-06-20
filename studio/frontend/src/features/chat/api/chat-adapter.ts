@@ -1220,9 +1220,8 @@ async function autoLoadSmallestModel(): Promise<{
       hf_token: hfToken,
       load_in_4bit: true,
       trust_remote_code: trustRemoteCode,
-      // Match the auto-load below: a fit load spills to RAM, so the backend skips
-      // its training-coexistence check for it.
-      gpu_memory_mode: useChatRuntimeStore.getState().gpuMemoryMode,
+      // Size the guard against the GPUs the auto-load will use.
+      gpu_ids: useChatRuntimeStore.getState().selectedGpuIds ?? undefined,
     });
     // Background auto-load never runs a repo's custom code or loads Hub-flagged unsafe
     // files on its own; both are deferred to the explicit consent dialog instead.
