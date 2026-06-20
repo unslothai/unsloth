@@ -83,4 +83,7 @@ def build_tokenized_answer(self, prompt, answer):
 """
     rewritten = rewriter("build_tokenized_answer", source)
     assert "self.processing_class(prompt" not in rewritten
-    assert 'tokenizer = getattr(self.processing_class, "tokenizer", self.processing_class)' in rewritten
+    assert (
+        'tokenizer = getattr(self.processing_class, "tokenizer", self.processing_class)'
+        in rewritten
+    )
