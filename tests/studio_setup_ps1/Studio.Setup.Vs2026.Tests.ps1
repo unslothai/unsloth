@@ -87,6 +87,16 @@ Describe 'Find-VsBuildTools (VS 2026 generator discovery)' {
         ${env:ProgramFiles(x86)} = Join-Path $TestDrive 'PFx86c'
         (Find-VsBuildTools).Generator | Should -Be 'Visual Studio 17 2022'
     }
+
+    It 'detects an older VS installed under the Preview edition dir' -Skip:(-not $IsWindows) {
+        # Preview channels install under a "Preview" edition folder; the older-version
+        # filesystem fallback must include it, not just BuildTools/Community/etc.
+        $root = Join-Path $TestDrive 'PF2022prev'
+        New-FakeVsTree -Root $root -VersionDir '2022' -Edition 'Preview'
+        ${env:ProgramFiles}      = $root
+        ${env:ProgramFiles(x86)} = Join-Path $TestDrive 'PFx86d'
+        (Find-VsBuildTools).Generator | Should -Be 'Visual Studio 17 2022'
+    }
 }
 
 Describe 'Get-VcBuildCustomizationsDir (CUDA to VS MSBuild integration path)' {
@@ -237,5 +247,14 @@ Describe 'Get-FallbackVsGenerator (older VS the cmake can drive)' {
         Mock cmake { "Generators`n  Visual Studio 18 2026        = Generates VS 2026 project files." }
         $r = Get-FallbackVsGenerator
         $r | Should -BeNullOrEmpty
+    }
+
+    It 'falls back to an older VS installed under the Preview edition dir' -Skip:(-not $IsWindows) {
+        $root = Join-Path $TestDrive 'PF_prev'
+        New-FakeVsTree2 -Root $root -VersionDir '2022' -Edition 'Preview'
+        ${env:ProgramFiles} = $root
+        ${env:ProgramFiles(x86)} = Join-Path $TestDrive 'PFx86_prev'
+        Mock cmake { "Generators`n  Visual Studio 17 2022        = Generates VS 2022 project files." }
+        (Get-FallbackVsGenerator).Generator | Should -Be 'Visual Studio 17 2022'
     }
 }

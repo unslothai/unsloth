@@ -484,7 +484,7 @@ function Get-FallbackVsGenerator {
     # as it did before VS 2026 detection landed (issue #6473 review). Returns
     # @{ Generator = "..."; InstallPath = "..." } or $null.
     $roots = @($env:ProgramFiles, ${env:ProgramFiles(x86)}) | Where-Object { $_ }
-    $knownEditions = @('BuildTools', 'Community', 'Professional', 'Enterprise')
+    $knownEditions = @('BuildTools', 'Community', 'Professional', 'Enterprise', 'Preview')
     $older = @(
         @{ Dir = '2022'; Generator = 'Visual Studio 17 2022' },
         @{ Dir = '2019'; Generator = 'Visual Studio 16 2019' },
@@ -548,7 +548,7 @@ function Find-VsBuildTools {
 
     # --- Scan filesystem (handles broken vswhere registration after winget cycles) ---
     $roots = @($env:ProgramFiles, ${env:ProgramFiles(x86)}) | Where-Object { $_ }
-    $knownEditions = @('BuildTools', 'Community', 'Professional', 'Enterprise')
+    $knownEditions = @('BuildTools', 'Community', 'Professional', 'Enterprise', 'Preview')
     # VS 2026+ uses the internal version dir ("18"); older versions use the year.
     $dirs = @('18', '2026', '2022', '2019', '2017')
 
@@ -558,8 +558,8 @@ function Find-VsBuildTools {
         foreach ($r in $roots) {
             $vsBase = Join-Path $r "Microsoft Visual Studio\$d"
             if (-not (Test-Path $vsBase)) { continue }
-            # VS 2026 (dir "18") may use non-standard edition names (e.g. Preview);
-            # scan every subdir. Older versions use the stable edition names only.
+            # VS 2026 (dir "18") may use non-standard edition names; scan every
+            # subdir. Older versions use the known edition names (incl. Preview).
             if ($d -eq '18' -or $d -eq '2026') {
                 $editionCandidates = Get-ChildItem -Path $vsBase -Directory -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName }
             } else {
