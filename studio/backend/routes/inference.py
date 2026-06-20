@@ -1787,6 +1787,7 @@ def _request_matches_loaded_settings(
     request: LoadRequest,
     llama_backend: LlamaCppBackend,
     effective_chat_template_override: Optional[str] = None,
+    is_direct_gguf_request: bool = False,
 ) -> bool:
     """True iff every runtime setting on the request matches the loaded server.
     Caller has already checked model+variant+is_loaded. See #5401.
@@ -1832,9 +1833,13 @@ def _request_matches_loaded_settings(
     # A prior HF load fell back with drafter_not_found (the separate Gemma
     # drafter did not resolve). The UI asks the user to fix access and reload,
     # so a same-settings reload must retry the download rather than dedupe to
-    # the stale fallback. Skipped when the request now owns --spec-type.
+    # the stale fallback. HF only (a direct .gguf has no download to retry and
+    # its companion change is handled by the drafter-path compare below);
+    # mirrors _already_in_target_state's gguf_path-is-None gate. Skipped when
+    # the request now owns --spec-type.
     if (
-        llama_backend.spec_fallback_reason == "drafter_not_found"
+        not is_direct_gguf_request
+        and llama_backend.spec_fallback_reason == "drafter_not_found"
         and req_mode in ("auto", "mtp", "mtp+ngram")
         and not _extra_args_set_spec_type(effective_extra)
     ):
@@ -2216,7 +2221,8 @@ async def load_model(
                 and llama_backend.model_identifier.lower() == model_identifier.lower()
                 # Match runtime settings so Apply isn't dropped (#5401).
                 and _request_matches_loaded_settings(
-                    request, llama_backend, effective_chat_template_override
+                    request, llama_backend, effective_chat_template_override,
+                    is_direct_gguf_request = is_direct_gguf_request,
                 )
                 # Skip if a prior audio probe failed -- let load_model retry.
                 and getattr(llama_backend, "_audio_probed", True)
