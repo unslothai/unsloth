@@ -136,6 +136,17 @@ export const en = {
         maxUploadSizeDescription:
           "Default is {defaultSize} MB.",
       },
+      storage: {
+        sectionTitle: "Storage",
+        modelsFolder: "Models folder",
+        modelsFolderDescription:
+          "Where downloaded models are stored.",
+        openAction: "Open",
+        copyAction: "Copy path",
+        copied: "Path copied",
+        openError: "Couldn't open the folder",
+        copyError: "Couldn't copy the path",
+      },
       resetPreferences: {
         sectionTitle: "Danger zone",
         label: "Reset all local preferences",
@@ -197,6 +208,9 @@ export const en = {
     chat: {
       title: "Chat",
       description: "Manage chat history stored on this device.",
+      modelDisclaimer: "Show model disclaimer",
+      modelDisclaimerDescription:
+        'Show "LLMs can make mistakes" under the chat box.',
       artifacts: {
         title: "Canvas",
         collapseHtmlBlocks: "Collapse HTML blocks",
