@@ -2221,7 +2221,9 @@ async def load_model(
                 and llama_backend.model_identifier.lower() == model_identifier.lower()
                 # Match runtime settings so Apply isn't dropped (#5401).
                 and _request_matches_loaded_settings(
-                    request, llama_backend, effective_chat_template_override,
+                    request,
+                    llama_backend,
+                    effective_chat_template_override,
                     is_direct_gguf_request = is_direct_gguf_request,
                 )
                 # Skip if a prior audio probe failed -- let load_model retry.
