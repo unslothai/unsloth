@@ -163,11 +163,17 @@ Read our [guide](https://unsloth.ai/docs/get-started/fine-tuning-llms-guide). Ad
 ## 📥 Advanced Installation
 The below advanced instructions are for Unsloth Studio. For Unsloth Core advanced installation, [view our docs](https://unsloth.ai/docs/get-started/install/pip-install#advanced-pip-installation).
 #### Developer installs: macOS, Linux, WSL:
+The developer install builds from the `main` branch, which is the latest (nightly) source.
 ```bash
 git clone https://github.com/unslothai/unsloth
 cd unsloth
 ./install.sh --local
 unsloth studio -p 8888
+```
+To install into an isolated location (its own virtual env, `auth/`, `studio.db`, cache and llama.cpp build), set `UNSLOTH_STUDIO_HOME` and pass it again at launch:
+```bash
+UNSLOTH_STUDIO_HOME="$PWD/.studio" ./install.sh --local
+UNSLOTH_STUDIO_HOME="$PWD/.studio" unsloth studio -p 8888
 ```
 Then to update :
 ```bash
@@ -177,47 +183,39 @@ unsloth studio -p 8888
 ```
 
 #### Developer installs: Windows PowerShell:
+The developer install builds from the `main` branch, which is the latest (nightly) source.
 ```powershell
 git clone https://github.com/unslothai/unsloth.git
 cd unsloth
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\install.ps1 --local
 unsloth studio -p 8888
+```
+To install into an isolated location (its own virtual env, `auth/`, `studio.db`, cache and llama.cpp build), set `UNSLOTH_STUDIO_HOME` and pass it again at launch:
+```powershell
+$env:UNSLOTH_STUDIO_HOME="$PWD\.studio"; .\install.ps1 --local
+$env:UNSLOTH_STUDIO_HOME="$PWD\.studio"; unsloth studio -p 8888
 ```
 Then to update :
-```bash
-cd unsloth && git pull
-./install.sh --local
-unsloth studio -p 8888
-```
-
-#### Nightly: MacOS, Linux, WSL:
-```bash
-git clone https://github.com/unslothai/unsloth
-cd unsloth
-git checkout nightly
-./install.sh --local
-unsloth studio -p 8888
-```
-Then to launch every time:
-```bash
-unsloth studio -p 8888
-```
-
-#### Nightly: Windows:
-Run in Windows Powershell:
 ```powershell
-git clone https://github.com/unslothai/unsloth.git
-cd unsloth
-git checkout nightly
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+cd unsloth; git pull
 .\install.ps1 --local
 unsloth studio -p 8888
 ```
-Then to launch every time:
+
+#### Remote access: `--secure` (HTTPS tunnel) vs raw port
+By default `unsloth studio` binds to `127.0.0.1` (this machine only). To reach it from another device, pick one of:
+
+- `--secure` (recommended): serve **only** through a free Cloudflare HTTPS link. Studio stays bound to localhost and the tunnel provides the public URL; it fails closed (does not start) if the tunnel can't come up, so the raw port is never exposed.
 ```bash
-unsloth studio -p 8888
+unsloth studio --secure -p 8888
 ```
+- `-H 0.0.0.0`: bind the raw port on all network interfaces, reachable from anywhere on the network. Only use this on a trusted network.
+```bash
+unsloth studio -H 0.0.0.0 -p 8888
+```
+
+Server-side tools (web search, Python and terminal code execution) run as your user and are on by default. Anyone who can reach the server with the API key can run code on this machine, so keep your API key private and pass `--disable-tools` when exposing Studio.
 
 #### Advanced launch options
 Installer options can be passed as environment variables. On macOS, Linux and WSL place the variable after the pipe so the shell passes it to `sh`; on Windows set it with `$env:` before piping to `iex`.
