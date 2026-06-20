@@ -1003,12 +1003,23 @@ async def get_system_info(current_subject: str = Depends(get_current_subject)):
 
     # CPU | Memory| Disk
     memory = psutil.virtual_memory()
+  try:
     cpu_freq = psutil.cpu_freq()
-    # os.path.abspath(os.sep) ('/' Linux, 'C:\\' Windows)
-    disk = psutil.disk_usage(os.path.abspath(os.sep))
+  except Exception as e:
+    logger.debug(f"Failed to get CPU frequency: {e}")
+    cpu_freq = None
 
-    # Specific usage of the current processor (good for checking if the server has a memory leak)
+  try:
+    disk = psutil.disk_usage(os.path.abspath(os.sep))
+  except Exception as e:
+    logger.debug(f"Failed to get disk usage: {e}")
+    disk = None
+
+  try:
     current_process = psutil.Process(os.getpid())
+  except Exception as e:
+    logger.debug(f"Failed to get current process: {e}")
+    current_process = None
 
     # Secure extraction of ML package versions (as promised in the docstring)
     ml_packages = {}
