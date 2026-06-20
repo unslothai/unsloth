@@ -31,7 +31,7 @@ def _no_torch(monkeypatch):
 
 def test_apple_silicon_without_mlx_is_chat_only_with_reason(monkeypatch):
     monkeypatch.setattr(hw, "is_apple_silicon", lambda: True)
-    monkeypatch.setattr(hw, "_has_mlx", lambda: False)
+    monkeypatch.setattr(hw, "_has_usable_mlx_stack", lambda: False)
     hw.detect_hardware()
     assert hw.CHAT_ONLY is True
     assert hw.CHAT_ONLY_REASON == "mlx_unavailable"
@@ -39,10 +39,22 @@ def test_apple_silicon_without_mlx_is_chat_only_with_reason(monkeypatch):
 
 def test_apple_silicon_with_mlx_enables_training(monkeypatch):
     monkeypatch.setattr(hw, "is_apple_silicon", lambda: True)
-    monkeypatch.setattr(hw, "_has_mlx", lambda: True)
+    monkeypatch.setattr(hw, "_has_usable_mlx_stack", lambda: True)
     hw.detect_hardware()
     assert hw.CHAT_ONLY is False
     assert hw.CHAT_ONLY_REASON is None
+
+
+def test_apple_silicon_with_incomplete_mlx_stack_stays_chat_only(monkeypatch):
+    # Bare `import mlx.core` works but the full mlx/mlx-lm/mlx-vlm stack does not
+    # (e.g. a backtracked/old mlx-vlm). The training gate must match the self-heal
+    # validator and stay chat-only so the UI does not enable a broken Train/Export.
+    monkeypatch.setattr(hw, "is_apple_silicon", lambda: True)
+    monkeypatch.setattr(hw, "_has_mlx", lambda: True)
+    monkeypatch.setattr(hw, "_has_usable_mlx_stack", lambda: False)
+    assert hw.detect_hardware() == hw.DeviceType.CPU
+    assert hw.CHAT_ONLY is True
+    assert hw.CHAT_ONLY_REASON == "mlx_unavailable"
 
 
 def test_intel_mac_reason(monkeypatch):

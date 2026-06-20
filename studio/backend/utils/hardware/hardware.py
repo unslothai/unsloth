@@ -111,6 +111,24 @@ def _has_mlx() -> bool:
         return False
 
 
+def _has_usable_mlx_stack() -> bool:
+    """True only when the FULL Studio MLX training/export stack is usable
+    (mlx + mlx-lm + mlx-vlm at the minimum versions unsloth-zoo requires), not
+    just a bare ``import mlx.core``. A backtracked/old mlx-vlm still imports but
+    breaks VLM Train/Export, so the training gate must match the self-heal's own
+    criterion (utils.mlx_repair.mlx_stack_available) -- otherwise detect_hardware
+    would enable Train/Export on exactly the inadequate stack the MLX self-heal
+    is trying to repair, leaving the user with greyed-in-but-broken buttons."""
+    try:
+        from utils.mlx_repair import mlx_stack_available
+        return mlx_stack_available()
+    except Exception as exc:
+        # mlx_repair should always import; if it somehow cannot, fall back to the
+        # bare import check rather than forcing a working host into chat-only.
+        logger.debug("MLX stack availability check failed, using bare import: %s", exc)
+        return _has_mlx()
+
+
 def _print_cuda_device_list(is_rocm: bool) -> None:
     """List every visible CUDA/ROCm GPU with its index at startup.
 
@@ -196,7 +214,10 @@ def detect_hardware() -> DeviceType:
             return DEVICE
 
     # --- MLX: Apple Silicon ---
-    if is_apple_silicon() and _has_mlx():
+    # Require the full mlx/mlx-lm/mlx-vlm stack (not a bare `import mlx.core`) so
+    # the gate matches utils.mlx_repair: a partial/backtracked stack stays
+    # chat-only (reason "mlx_unavailable") and the background self-heal repairs it.
+    if is_apple_silicon() and _has_usable_mlx_stack():
         DEVICE = DeviceType.MLX
         CHAT_ONLY = False
         # Use platform.machine() ("arm64"); platform.processor() returns "i386"
