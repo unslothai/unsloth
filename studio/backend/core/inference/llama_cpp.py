@@ -1397,6 +1397,11 @@ class LlamaCppBackend:
         return self._gguf_path
 
     @property
+    def hf_repo(self) -> Optional[str]:
+        """HF repo of the loaded model, or None for local/native file loads."""
+        return self._hf_repo
+
+    @property
     def mtp_draft_path(self) -> Optional[str]:
         return self._mtp_draft_path
 

@@ -842,10 +842,10 @@ class TestExtraArgsMtpDetection:
         body = "".join(routes_src[start:end].split())
         assert 'llama_backend.spec_fallback_reason=="drafter_not_found"' in body
         assert "not_extra_args_set_spec_type(effective_extra)" in body
-        # HF-only: a direct .gguf load has no download to retry (mirrors the
-        # backend guard's gguf_path-is-None gate); local companion changes are
-        # handled by the drafter-path compare.
-        assert "notis_direct_gguf_request" in body
+        # HF-only: gated on hf_repo, so local/native loads (single file or a
+        # directory + gguf_variant) have no download to retry and fall through
+        # to the drafter-path compare instead of forcing a reload.
+        assert "llama_backend.hf_repo" in body
 
     def test_extra_args_main_cache_type_heavier_axis(self):
         # Asymmetric --cache-type-k/-v must budget the heavier axis (extras win
