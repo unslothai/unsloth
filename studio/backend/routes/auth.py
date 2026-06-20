@@ -229,7 +229,9 @@ async def identity(nonce: str) -> dict:
     try:
         raw = base64.urlsafe_b64decode(nonce)
     except Exception:
-        raise HTTPException(status_code = status.HTTP_400_BAD_REQUEST, detail = "nonce must be base64url")
+        raise HTTPException(
+            status_code = status.HTTP_400_BAD_REQUEST, detail = "nonce must be base64url"
+        )
     # Bound the work and require enough entropy to make the proof meaningful.
     if not 16 <= len(raw) <= 128:
         raise HTTPException(

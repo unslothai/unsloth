@@ -508,7 +508,9 @@ def test_connect_unverified_loopback_refuses_to_send_credential(fake_studio, tmp
     monkeypatch.setattr(connect, "verify_studio_identity", lambda base: False)
     minted = {"n": 0}
     monkeypatch.setattr(
-        connect, "_mint_local_api_key", lambda: (minted.__setitem__("n", minted["n"] + 1), "sk-x")[1]
+        connect,
+        "_mint_local_api_key",
+        lambda: (minted.__setitem__("n", minted["n"] + 1), "sk-x")[1],
     )
     result = CliRunner().invoke(connect.connect_app, ["claude", "--no-launch"])
     assert result.exit_code == 1
