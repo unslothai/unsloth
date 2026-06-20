@@ -29,7 +29,8 @@ BeforeAll {
 
     foreach ($fn in @('Resolve-VsGeneratorFromLabel', 'Find-VsBuildTools', 'Get-VcBuildCustomizationsDir',
                       'Test-CmakeSupportsGenerator', 'Get-CmakeVersion', 'Test-CmakeListsGenerator',
-                      'Test-CmakeCanDriveGenerator', 'Get-FallbackVsGenerator')) {
+                      'Test-CmakeCanDriveGenerator', 'Get-FallbackVsGenerator',
+                      'Ensure-BuildToolsForLlamaSourceBuild')) {
         $src = Get-FunctionSource -Path $script:SetupPs1 -Name $fn
         if (-not $src) { throw "Function '$fn' not found in $script:SetupPs1 - cannot test the real code." }
         . ([scriptblock]::Create($src))
@@ -286,5 +287,44 @@ Describe 'Get-FallbackVsGenerator (older VS the cmake can drive)' {
         ${env:ProgramFiles(x86)} = Join-Path $TestDrive 'PFx86_prev'
         Mock cmake { "Generators`n  Visual Studio 17 2022        = Generates VS 2022 project files." }
         (Get-FallbackVsGenerator).Generator | Should -Be 'Visual Studio 17 2022'
+    }
+}
+
+Describe 'Deferred build tools (prebuilt path needs no VS/CMake)' {
+    # VS + CMake are only installed when a llama.cpp SOURCE build is the last
+    # resort. The early Phase-1 detection must be non-fatal (so the prebuilt path
+    # is never blocked), and the deferred installer must no-op when VS was already
+    # detected. The full winget-install + exit-1 path is covered end-to-end by the
+    # studio-windows-no-vs-smoke.yml CI job (it cannot be exercised cross-platform).
+    BeforeEach {
+        $script:OrigPF    = ${env:ProgramFiles}
+        $script:OrigPFx86 = ${env:ProgramFiles(x86)}
+    }
+    AfterEach {
+        ${env:ProgramFiles}      = $script:OrigPF
+        ${env:ProgramFiles(x86)} = $script:OrigPFx86
+        $script:VsInstallPath = $null
+        $script:CmakeGenerator = $null
+    }
+
+    It 'Find-VsBuildTools returns null when no VS is present (probe stays non-fatal)' {
+        # Redirect the discovery roots to empty dirs so neither vswhere nor the
+        # filesystem scan can find a VS -- the detector the early probe relies on
+        # must simply return null (the probe then logs and continues, never exits).
+        ${env:ProgramFiles}      = (Join-Path $TestDrive 'EmptyPF')
+        ${env:ProgramFiles(x86)} = (Join-Path $TestDrive 'EmptyPFx86')
+        New-Item -ItemType Directory -Force -Path ${env:ProgramFiles}, ${env:ProgramFiles(x86)} | Out-Null
+        Find-VsBuildTools | Should -BeNullOrEmpty
+    }
+
+    It 'Ensure-BuildToolsForLlamaSourceBuild no-ops when VS is already detected' {
+        # When the early probe already populated $VsInstallPath, the deferred
+        # installer must not re-scan/winget-install VS or exit -- it returns,
+        # leaving the detected values intact.
+        $script:VsInstallPath  = 'C:\Program Files\Microsoft Visual Studio\2022\BuildTools'
+        $script:CmakeGenerator = 'Visual Studio 17 2022'
+        { Ensure-BuildToolsForLlamaSourceBuild } | Should -Not -Throw
+        $script:VsInstallPath  | Should -Be 'C:\Program Files\Microsoft Visual Studio\2022\BuildTools'
+        $script:CmakeGenerator | Should -Be 'Visual Studio 17 2022'
     }
 }

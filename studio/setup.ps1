@@ -581,6 +581,74 @@ function Find-VsBuildTools {
     return $null
 }
 
+# Install the build tools that the prebuilt llama.cpp path intentionally skips:
+# CMake and Visual Studio Build Tools. Called ONLY when a from-source llama.cpp
+# build is actually committed (the last resort), so the common prebuilt install
+# never pays for a multi-GB Visual Studio / CMake install. Mirrors how the CUDA
+# toolkit (Resolve-CudaToolkit) and OpenSSL are already deferred to source builds.
+#   - CMake: best-effort install; if it still cannot be found the existing
+#     graceful-degrade path (build skipped) downstream handles it.
+#   - VS Build Tools: a hard requirement for a source build, so install and
+#     exit 1 with guidance if it cannot be found. Idempotent: no-ops for VS when
+#     the early probe already detected it ($script:VsInstallPath is set).
+function Ensure-BuildToolsForLlamaSourceBuild {
+    # --- CMake ---
+    if ($null -eq (Get-Command cmake -ErrorAction SilentlyContinue)) {
+        Write-Host "CMake not found -- installing via winget (needed for the llama.cpp source build)..." -ForegroundColor Yellow
+        if ($null -ne (Get-Command winget -ErrorAction SilentlyContinue)) {
+            try {
+                Invoke-SetupCommand { winget install Kitware.CMake --source winget --accept-package-agreements --accept-source-agreements } | Out-Null
+                Refresh-Environment
+            } catch { }
+        }
+        # winget may succeed but cmake isn't on PATH yet (MSI PATH changes need a
+        # new shell). Try the default install location as a fallback.
+        if ($null -eq (Get-Command cmake -ErrorAction SilentlyContinue)) {
+            $cmakeDefaults = @(
+                "$env:ProgramFiles\CMake\bin",
+                "${env:ProgramFiles(x86)}\CMake\bin",
+                "$env:LOCALAPPDATA\CMake\bin"
+            )
+            foreach ($d in $cmakeDefaults) {
+                if (Test-Path (Join-Path $d "cmake.exe")) {
+                    $env:Path = "$d;$env:Path"
+                    Add-ToUserPath -Directory $d -Position 'Prepend' | Out-Null
+                    break
+                }
+            }
+        }
+        if ($null -ne (Get-Command cmake -ErrorAction SilentlyContinue)) { step "cmake" "installed" }
+    }
+
+    # --- Visual Studio Build Tools ---
+    if ($script:VsInstallPath) { return }   # already detected by the early probe
+    $vsResult = Find-VsBuildTools
+    if (-not $vsResult) {
+        Write-Host "Visual Studio Build Tools not found -- installing via winget..." -ForegroundColor Yellow
+        Write-Host "   (Needed only for the llama.cpp source build; may take several minutes)" -ForegroundColor Gray
+        if ($null -ne (Get-Command winget -ErrorAction SilentlyContinue)) {
+            $prevEAPTemp = $ErrorActionPreference
+            $ErrorActionPreference = "Continue"
+            winget install Microsoft.VisualStudio.2022.BuildTools --source winget --accept-package-agreements --accept-source-agreements --override "--add Microsoft.VisualStudio.Workload.VCTools --includeRecommended --passive --wait"
+            $ErrorActionPreference = $prevEAPTemp
+            # Re-scan after install (don't trust vswhere catalog)
+            $vsResult = Find-VsBuildTools
+        }
+    }
+    if ($vsResult) {
+        $script:CmakeGenerator = $vsResult.Generator
+        $script:VsInstallPath = $vsResult.InstallPath
+        step "vs" "$($vsResult.Generator) ($($vsResult.Source))"
+        if ($vsResult.ClExe) { substep "cl.exe: $($vsResult.ClExe)" }
+    } else {
+        Write-Host "[ERROR] Visual Studio Build Tools are required for the llama.cpp source build but could not be found or installed." -ForegroundColor Red
+        Write-Host "        Manual install:" -ForegroundColor Red
+        Write-Host '        1. winget install Microsoft.VisualStudio.2022.BuildTools --source winget' -ForegroundColor Yellow
+        Write-Host '        2. Open Visual Studio Installer -> Modify -> check "Desktop development with C++"' -ForegroundColor Yellow
+        exit 1
+    }
+}
+
 # ─────────────────────────────────────────────
 # Output style (aligned with studio/setup.sh: step / substep)
 # ─────────────────────────────────────────────
@@ -1253,83 +1321,37 @@ if (-not $HasGit) {
 }
 
 # ============================================
-# 1c. CMake (required for llama.cpp build)
+# 1c. CMake (only needed for a llama.cpp SOURCE build -- detection only)
 # ============================================
+# The preferred path installs a prebuilt llama.cpp (no compiler needed), so do
+# NOT winget-install CMake or exit here. If a from-source build becomes the last
+# resort, Ensure-BuildToolsForLlamaSourceBuild installs it then. This keeps the
+# common prebuilt install fast and unblocked on hosts without build tools.
 $HasCmake = $null -ne (Get-Command cmake -ErrorAction SilentlyContinue)
-if (-not $HasCmake) {
-    Write-Host "CMake not found -- installing via winget..." -ForegroundColor Yellow
-    $HasWinget = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
-    if ($HasWinget) {
-        try {
-            Invoke-SetupCommand { winget install Kitware.CMake --source winget --accept-package-agreements --accept-source-agreements } | Out-Null
-            Refresh-Environment
-            $HasCmake = $null -ne (Get-Command cmake -ErrorAction SilentlyContinue)
-        } catch { }
-    }
-    # winget may succeed but cmake isn't on PATH yet (MSI PATH changes need a
-    # new shell). Try the default install location as a fallback.
-    if (-not $HasCmake) {
-        $cmakeDefaults = @(
-            "$env:ProgramFiles\CMake\bin",
-            "${env:ProgramFiles(x86)}\CMake\bin",
-            "$env:LOCALAPPDATA\CMake\bin"
-        )
-        foreach ($d in $cmakeDefaults) {
-            if (Test-Path (Join-Path $d "cmake.exe")) {
-                $env:Path = "$d;$env:Path"
-                # Persist to user PATH (Prepend so this cmake wins over older ones).
-                Add-ToUserPath -Directory $d -Position 'Prepend' | Out-Null
-                $HasCmake = $null -ne (Get-Command cmake -ErrorAction SilentlyContinue)
-                if ($HasCmake) {
-                    Write-Host "   Found cmake at $d (added to PATH)" -ForegroundColor Gray
-                    break
-                }
-            }
-        }
-    }
-    if ($HasCmake) {
-        step "cmake" "installed"
-    } else {
-        Write-Host "[ERROR] CMake is required but could not be installed." -ForegroundColor Red
-        Write-Host "        Install CMake from https://cmake.org/download/ and re-run." -ForegroundColor Red
-        exit 1
-    }
-} else {
+if ($HasCmake) {
     step "cmake" "$(cmake --version | Select-Object -First 1)"
+} else {
+    step "cmake" "not detected (only needed if a llama.cpp source build is required)" "Yellow"
 }
 
 # ============================================
-# 1d. Visual Studio Build Tools (C++ compiler for llama.cpp)
+# 1d. Visual Studio Build Tools (only needed for a llama.cpp SOURCE build -- detection only)
 # ============================================
+# Detect VS so a source build can reuse it, but never winget-install or exit
+# here -- the prebuilt llama.cpp path needs no C++ compiler. Installation is
+# deferred to Ensure-BuildToolsForLlamaSourceBuild (called only if a source
+# build is committed).
 $CmakeGenerator = $null
 $VsInstallPath = $null
 $vsResult = Find-VsBuildTools
 
-if (-not $vsResult) {
-    Write-Host "Visual Studio Build Tools not found -- installing via winget..." -ForegroundColor Yellow
-    Write-Host "   (This is a one-time install, may take several minutes)" -ForegroundColor Gray
-    $HasWinget = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
-    if ($HasWinget) {
-        $prevEAPTemp = $ErrorActionPreference
-        $ErrorActionPreference = "Continue"
-        winget install Microsoft.VisualStudio.2022.BuildTools --source winget --accept-package-agreements --accept-source-agreements --override "--add Microsoft.VisualStudio.Workload.VCTools --includeRecommended --passive --wait"
-        $ErrorActionPreference = $prevEAPTemp
-        # Re-scan after install (don't trust vswhere catalog)
-        $vsResult = Find-VsBuildTools
-    }
-}
-
 if ($vsResult) {
     $CmakeGenerator = $vsResult.Generator
     $VsInstallPath = $vsResult.InstallPath
-    step "vs" "$CmakeGenerator ($($vsResult.Source))"
+    step "vs" "$CmakeGenerator ($($vsResult.Source)) (only used if a source build is needed)"
     if ($vsResult.ClExe) { substep "cl.exe: $($vsResult.ClExe)" }
 } else {
-    Write-Host "[ERROR] Visual Studio Build Tools could not be found or installed." -ForegroundColor Red
-    Write-Host "        Manual install:" -ForegroundColor Red
-    Write-Host '        1. winget install Microsoft.VisualStudio.2022.BuildTools --source winget' -ForegroundColor Yellow
-    Write-Host '        2. Open Visual Studio Installer -> Modify -> check "Desktop development with C++"' -ForegroundColor Yellow
-    exit 1
+    step "vs" "not detected (only needed if a llama.cpp source build is required)" "Yellow"
 }
 
 # ============================================
@@ -3104,6 +3126,19 @@ if (Test-Path -LiteralPath $LlamaServerBin) {
             $NeedRebuild = $true
         }
     }
+}
+
+# Build tools (CMake + Visual Studio) are only needed when we actually compile
+# llama.cpp from source. Install them now -- as the last resort -- instead of
+# eagerly in Phase 1, so the common prebuilt path stays fast and unblocked. This
+# mirrors the conditions of the if/elseif chain below: a source build runs only
+# when one is needed and a usable binary isn't already present.
+$WillBuildLlamaFromSource = $NeedLlamaSourceBuild -and `
+    -not ((Test-Path -LiteralPath $LlamaServerBin) -and -not $NeedRebuild -and $RequestedLlamaTag -ne "master")
+if ($WillBuildLlamaFromSource) {
+    Ensure-BuildToolsForLlamaSourceBuild
+    # Refresh after a possible install so the chain below sees the new cmake.
+    $HasCmakeForBuild = $null -ne (Get-Command cmake -ErrorAction SilentlyContinue)
 }
 
 if (-not $NeedLlamaSourceBuild) {
