@@ -592,7 +592,12 @@ class _VllmLoraWarmupPostImportFinder(importlib.abc.MetaPathFinder):
     def __init__(self):
         setattr(self, _VLLM_LORA_WARMUP_SHIM_SENTINEL, True)
 
-    def find_spec(self, fullname, path = None, target = None):
+    def find_spec(
+        self,
+        fullname,
+        path = None,
+        target = None,
+    ):
         if fullname != _VLLM_LORA_MIXIN_MODULE:
             return None
         # Resolve the real spec via the other finders (skipping ourselves to

@@ -433,9 +433,7 @@ def test_vllm_lora_dummy_warmup_rank_hook_present():
     if not uses_hook:
         pytest.skip("this vllm's maybe_setup_dummy_loras doesn't use the hook")
     worker_mgr = getattr(worker_mgr_mod, "WorkerLoRAManager", None)
-    assert worker_mgr is not None and hasattr(
-        worker_mgr, "get_dummy_lora_warmup_rank"
-    ), (
+    assert worker_mgr is not None and hasattr(worker_mgr, "get_dummy_lora_warmup_rank"), (
         "DRIFT DETECTED: vLLM's maybe_setup_dummy_loras calls "
         "lora_manager.get_dummy_lora_warmup_rank but WorkerLoRAManager no longer "
         "defines it; fix_vllm_lora_warmup_rank backfills the wrong name -- "

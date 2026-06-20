@@ -44,9 +44,7 @@ def _load_import_fixes():
     accelerator). The module itself is dependency-light and patches vLLM
     lazily, so load it directly from source for a GPU-free unit test."""
     path = pathlib.Path(__file__).resolve().parents[1] / "unsloth" / "import_fixes.py"
-    spec = importlib.util.spec_from_file_location(
-        "unsloth_import_fixes_under_test", path
-    )
+    spec = importlib.util.spec_from_file_location("unsloth_import_fixes_under_test", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -77,7 +75,11 @@ def _make_classes():
             self.removed = True
 
     class Cfg:
-        def __init__(self, max_loras=1, max_lora_rank=16):
+        def __init__(
+            self,
+            max_loras = 1,
+            max_lora_rank = 16,
+        ):
             self.max_loras = max_loras
             self.max_lora_rank = max_lora_rank
 
@@ -89,19 +91,21 @@ def _make_classes():
             self.lora_manager = PortManager()
 
         @contextmanager
-        def maybe_setup_dummy_loras(self, lora_config, remove_lora=True):
+        def maybe_setup_dummy_loras(
+            self,
+            lora_config,
+            remove_lora = True,
+        ):
             if lora_config is None:
                 yield
                 return
             assert self.lora_manager is not None, "LoRA is not enabled"
-            warmup_rank = (
-                lora_config.max_lora_rank if lora_config.max_lora_rank < 8 else 8
-            )
+            warmup_rank = lora_config.max_lora_rank if lora_config.max_lora_rank < 8 else 8
             # The call that AttributeErrors on older unsloth_zoo ports (#6114):
             warmup_rank = self.lora_manager.get_dummy_lora_warmup_rank(warmup_rank)
             with self.lora_manager.dummy_lora_cache():
                 for lora_id in range(1, lora_config.max_loras + 1):
-                    self.lora_manager.add_dummy_lora(lora_id, rank=warmup_rank)
+                    self.lora_manager.add_dummy_lora(lora_id, rank = warmup_rank)
                 yield
             if remove_lora:
                 self.lora_manager.remove_all_adapters()
@@ -118,8 +122,8 @@ def _fake_module(mixin_cls):
 def test_unpatched_mixin_reproduces_issue_6114():
     Mixin, _Manager, Cfg = _make_classes()
     inst = Mixin()
-    with pytest.raises(AttributeError, match="get_dummy_lora_warmup_rank"):
-        with inst.maybe_setup_dummy_loras(Cfg(max_loras=2, max_lora_rank=16)):
+    with pytest.raises(AttributeError, match = "get_dummy_lora_warmup_rank"):
+        with inst.maybe_setup_dummy_loras(Cfg(max_loras = 2, max_lora_rank = 16)):
             pass
 
 
@@ -128,7 +132,7 @@ def test_patch_backfills_identity_default_on_live_manager():
     IMPORT_FIXES._unsloth_patch_lora_model_runner_mixin(_fake_module(Mixin))
 
     inst = Mixin()
-    with inst.maybe_setup_dummy_loras(Cfg(max_loras=2, max_lora_rank=16)):
+    with inst.maybe_setup_dummy_loras(Cfg(max_loras = 2, max_lora_rank = 16)):
         pass
 
     # min(max_lora_rank=16, 8) == 8, returned unchanged by the identity hook.
@@ -149,7 +153,7 @@ def test_patch_preserves_a_manager_that_already_has_the_hook():
     IMPORT_FIXES._unsloth_patch_lora_model_runner_mixin(_fake_module(Mixin))
 
     inst = Mixin()
-    with inst.maybe_setup_dummy_loras(Cfg(max_loras=1, max_lora_rank=16)):
+    with inst.maybe_setup_dummy_loras(Cfg(max_loras = 1, max_lora_rank = 16)):
         pass
 
     # The shim must not clobber a manager that implements its own hook.
@@ -182,14 +186,12 @@ def test_lora_disabled_path_is_untouched():
 
 def _count_sentinel_finders():
     return sum(
-        1
-        for f in sys.meta_path
-        if getattr(f, IMPORT_FIXES._VLLM_LORA_WARMUP_SHIM_SENTINEL, False)
+        1 for f in sys.meta_path if getattr(f, IMPORT_FIXES._VLLM_LORA_WARMUP_SHIM_SENTINEL, False)
     )
 
 
 @contextmanager
-def _faked_vllm(extra_modules=()):
+def _faked_vllm(extra_modules = ()):
     """Put a stand-in ``vllm`` (and optional submodules) in ``sys.modules`` so
     the shim's ``find_spec("vllm")`` guard passes, then restore on exit."""
     if importlib.util.find_spec("vllm") is not None:
@@ -200,9 +202,7 @@ def _faked_vllm(extra_modules=()):
     fake_vllm = types.ModuleType("vllm")
     fake_vllm.__path__ = []  # mark as a package
     # find_spec("vllm") reads __spec__ for an already-imported module.
-    fake_vllm.__spec__ = importlib.machinery.ModuleSpec(
-        "vllm", loader=None, is_package=True
-    )
+    fake_vllm.__spec__ = importlib.machinery.ModuleSpec("vllm", loader = None, is_package = True)
     sys.modules["vllm"] = fake_vllm
     try:
         yield
@@ -232,7 +232,7 @@ def test_fix_installs_one_post_import_finder_and_is_idempotent():
 def test_fix_patches_in_place_when_mixin_already_imported():
     Mixin, _Manager, Cfg = _make_classes()
     mod_name = IMPORT_FIXES._VLLM_LORA_MIXIN_MODULE
-    with _faked_vllm(extra_modules=(mod_name,)):
+    with _faked_vllm(extra_modules = (mod_name,)):
         # vLLM (and the mixin module) already imported before us -> patch in
         # place, no finder needed.
         sys.modules[mod_name] = _fake_module(Mixin)
@@ -240,6 +240,6 @@ def test_fix_patches_in_place_when_mixin_already_imported():
         assert _count_sentinel_finders() == 0
 
         inst = Mixin()
-        with inst.maybe_setup_dummy_loras(Cfg(max_loras=1, max_lora_rank=4)):
+        with inst.maybe_setup_dummy_loras(Cfg(max_loras = 1, max_lora_rank = 4)):
             pass
         assert inst.lora_manager.added_ranks == [4]  # min(4, 8) == 4
