@@ -43,7 +43,13 @@
 		inset-inline: 0;
 		bottom: 0;
 		height: 40px;
-		background: linear-gradient(to top, var(--sidebar), transparent);
+		/* Fade to sidebar colour at 0 alpha, not `transparent` (transparent
+		   black), which shows a grey midtone in Safari 27 Liquid Glass. */
+		background: linear-gradient(
+			to top,
+			var(--sidebar),
+			rgb(from var(--sidebar) r g b / 0)
+		);
 	}
 	/* RAG chip strip: sidebar-style bottom fade while more chips sit below
 	   the scroll fold (JS-toggled). */
