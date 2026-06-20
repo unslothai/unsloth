@@ -1909,6 +1909,16 @@ def _request_matches_loaded_settings(
     backend_mode = llama_backend.requested_spec_mode or "auto"
     if req_mode != backend_mode:
         return False
+    # Prior HF load fell back with drafter_not_found: a same-settings reload must
+    # retry the download, not dedupe to the stale fallback. HF only (hf_repo set);
+    # local/native loads have no download to retry (handled by the path compare).
+    if (
+        llama_backend.hf_repo
+        and llama_backend.spec_fallback_reason == "drafter_not_found"
+        and req_mode in ("auto", "mtp", "mtp+ngram")
+        and not _extra_args_set_spec_type(effective_extra)
+    ):
+        return False
     # spec_draft_n_max only matters with an MTP variant; None means "platform
     # default" and matches whatever the backend chose.
     if backend_mode in ("mtp", "mtp+ngram") and request.spec_draft_n_max is not None:
@@ -2303,7 +2313,9 @@ async def load_model(
                 and llama_backend.model_identifier.lower() == model_identifier.lower()
                 # Match runtime settings so Apply isn't dropped (#5401).
                 and _request_matches_loaded_settings(
-                    request, llama_backend, effective_chat_template_override
+                    request,
+                    llama_backend,
+                    effective_chat_template_override,
                 )
                 # Skip if a prior audio probe failed -- let load_model retry.
                 and getattr(llama_backend, "_audio_probed", True)
