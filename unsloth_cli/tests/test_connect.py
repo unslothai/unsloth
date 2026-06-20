@@ -40,7 +40,7 @@ def test_claude_settings_created_when_missing(claude_settings):
 
 
 def test_claude_settings_merge_preserves_existing(claude_settings):
-    claude_settings.parent.mkdir(parents=True)
+    claude_settings.parent.mkdir(parents = True)
     claude_settings.write_text(
         json.dumps({"effortLevel": "high", "env": {"CLAUDE_CODE_ENABLE_TELEMETRY": "0"}})
     )
@@ -52,7 +52,7 @@ def test_claude_settings_merge_preserves_existing(claude_settings):
 
 
 def test_claude_settings_already_set_untouched(claude_settings):
-    claude_settings.parent.mkdir(parents=True)
+    claude_settings.parent.mkdir(parents = True)
     original = json.dumps({"env": {"CLAUDE_CODE_ATTRIBUTION_HEADER": "0"}})
     claude_settings.write_text(original)
     connect.ensure_claude_attribution_header()
@@ -60,7 +60,7 @@ def test_claude_settings_already_set_untouched(claude_settings):
 
 
 def test_claude_settings_bad_json_left_alone(claude_settings, capsys):
-    claude_settings.parent.mkdir(parents=True)
+    claude_settings.parent.mkdir(parents = True)
     claude_settings.write_text("{not json")
     connect.ensure_claude_attribution_header()
     assert claude_settings.read_text() == "{not json"
@@ -72,7 +72,7 @@ def _fake_claude(monkeypatch, version_output: str) -> None:
     monkeypatch.setattr(
         connect.subprocess,
         "run",
-        lambda *args, **kwargs: SimpleNamespace(stdout=version_output),
+        lambda *args, **kwargs: SimpleNamespace(stdout = version_output),
     )
 
 
@@ -156,9 +156,9 @@ def fake_studio(tmp_path, monkeypatch, claude_settings):
         method,
         url,
         token,
-        payload=None,
-        timeout=30,
-        error=None,
+        payload = None,
+        timeout = 30,
+        error = None,
     ):
         calls.append((method, url, payload))
         if url.endswith("/v1/models"):
@@ -179,7 +179,7 @@ def fake_studio(tmp_path, monkeypatch, claude_settings):
     # No `claude` on PATH, so _claude_cache_flags never probes the real binary.
     monkeypatch.setattr(connect.shutil, "which", lambda _: None)
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex"))
-    monkeypatch.delenv("UNSLOTH_API_KEY", raising=False)
+    monkeypatch.delenv("UNSLOTH_API_KEY", raising = False)
     return calls
 
 
@@ -208,7 +208,7 @@ def test_connect_claude_launch_scrubs_conflicting_auth_env(fake_studio, monkeypa
     def run(command, env):
         captured["command"] = command
         captured["env"] = env
-        return SimpleNamespace(returncode=0)
+        return SimpleNamespace(returncode = 0)
 
     monkeypatch.setattr(connect.subprocess, "run", run)
     result = CliRunner().invoke(connect.connect_app, ["claude"])
@@ -235,7 +235,7 @@ def test_connect_claude_windows_shim_from_wsl_bridges_env(fake_studio, monkeypat
     def run(command, env):
         captured["command"] = command
         captured["env"] = env
-        return SimpleNamespace(returncode=0)
+        return SimpleNamespace(returncode = 0)
 
     monkeypatch.setattr(connect.subprocess, "run", run)
     result = CliRunner().invoke(connect.connect_app, ["claude"])
@@ -316,9 +316,9 @@ def test_connect_skips_cached_keys_the_server_rejects(fake_studio, tmp_path, mon
         method,
         url,
         token,
-        payload=None,
-        timeout=30,
-        error=None,
+        payload = None,
+        timeout = 30,
+        error = None,
     ):
         if url.endswith("/v1/models") and token == "sk-unsloth-stale":
             raise urllib.error.HTTPError(url, 401, "Unauthorized", None, None)
@@ -368,9 +368,9 @@ def test_connect_model_flag_matches_canonical_id(fake_studio, monkeypatch):
         method,
         url,
         token,
-        payload=None,
-        timeout=30,
-        error=None,
+        payload = None,
+        timeout = 30,
+        error = None,
     ):
         if url.endswith("/api/inference/load"):
             return {"model": canonical, "display_name": canonical}
@@ -391,7 +391,7 @@ def test_connect_no_model_loaded_errors(fake_studio, monkeypatch):
     monkeypatch.setattr(
         connect,
         "_http_json",
-        lambda method, url, token, payload=None, timeout=30, error=None: (
+        lambda method, url, token, payload = None, timeout = 30, error = None: (
             {"key": "sk-unsloth-feedfacefeedface"}
             if url.endswith("/api/auth/api-keys")
             else {"object": "list", "data": []}
@@ -411,9 +411,9 @@ def test_connect_requested_model_not_loaded_fails(fake_studio, monkeypatch):
         method,
         url,
         token,
-        payload=None,
-        timeout=30,
-        error=None,
+        payload = None,
+        timeout = 30,
+        error = None,
     ):
         if url.endswith("/api/inference/load"):
             return {}
@@ -436,9 +436,9 @@ def test_connect_codex_rejects_non_gguf_model(fake_studio, monkeypatch):
         method,
         url,
         token,
-        payload=None,
-        timeout=30,
-        error=None,
+        payload = None,
+        timeout = 30,
+        error = None,
     ):
         if url.endswith("/api/inference/status"):
             return {"is_gguf": False, "model_identifier": "unsloth/Qwen3-0.6B"}
@@ -461,9 +461,9 @@ def test_connect_remote_token_rejected_points_at_api_key(fake_studio, monkeypatc
         method,
         url,
         token,
-        payload=None,
-        timeout=30,
-        error=None,
+        payload = None,
+        timeout = 30,
+        error = None,
     ):
         if url.endswith("/api/auth/api-keys"):
             raise urllib.error.HTTPError(url, 401, "Invalid or expired token", None, None)

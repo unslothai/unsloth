@@ -27,14 +27,14 @@ async def _collect(agen):
 
 def _mock_http_client(monkeypatch, handler):
     transport = httpx.MockTransport(handler)
-    monkeypatch.setattr(ep_mod, "_http_client", httpx.AsyncClient(transport=transport))
+    monkeypatch.setattr(ep_mod, "_http_client", httpx.AsyncClient(transport = transport))
 
 
 def _make_client() -> ExternalProviderClient:
     return ExternalProviderClient(
-        provider_type="anthropic",
-        base_url="https://api.anthropic.com/v1",
-        api_key="sk-ant-test",
+        provider_type = "anthropic",
+        base_url = "https://api.anthropic.com/v1",
+        api_key = "sk-ant-test",
     )
 
 
@@ -73,8 +73,8 @@ def test_code_execution_tool_appended_to_request_body(monkeypatch):
         captured["headers"] = dict(request.headers)
         return httpx.Response(
             200,
-            content=_anthropic_sse([{"type": "message_stop"}]),
-            headers={"content-type": "text/event-stream"},
+            content = _anthropic_sse([{"type": "message_stop"}]),
+            headers = {"content-type": "text/event-stream"},
         )
 
     _mock_http_client(monkeypatch, handler)
@@ -82,12 +82,12 @@ def test_code_execution_tool_appended_to_request_body(monkeypatch):
     async def run():
         client = _make_client()
         async for _ in client._stream_anthropic(
-            messages=[{"role": "user", "content": "compute 2 + 2"}],
-            model="claude-opus-4-7",
-            temperature=0.7,
-            top_p=0.95,
-            max_tokens=4096,
-            enabled_tools=["code_execution"],
+            messages = [{"role": "user", "content": "compute 2 + 2"}],
+            model = "claude-opus-4-7",
+            temperature = 0.7,
+            top_p = 0.95,
+            max_tokens = 4096,
+            enabled_tools = ["code_execution"],
         ):
             pass
         await client.close()
@@ -113,8 +113,8 @@ def test_code_execution_with_web_search_sends_both_tools(monkeypatch):
         captured["headers"] = dict(request.headers)
         return httpx.Response(
             200,
-            content=_anthropic_sse([{"type": "message_stop"}]),
-            headers={"content-type": "text/event-stream"},
+            content = _anthropic_sse([{"type": "message_stop"}]),
+            headers = {"content-type": "text/event-stream"},
         )
 
     _mock_http_client(monkeypatch, handler)
@@ -122,12 +122,12 @@ def test_code_execution_with_web_search_sends_both_tools(monkeypatch):
     async def run():
         client = _make_client()
         async for _ in client._stream_anthropic(
-            messages=[{"role": "user", "content": "look it up and chart it"}],
-            model="claude-opus-4-7",
-            temperature=0.7,
-            top_p=0.95,
-            max_tokens=4096,
-            enabled_tools=["web_search", "code_execution"],
+            messages = [{"role": "user", "content": "look it up and chart it"}],
+            model = "claude-opus-4-7",
+            temperature = 0.7,
+            top_p = 0.95,
+            max_tokens = 4096,
+            enabled_tools = ["web_search", "code_execution"],
         ):
             pass
         await client.close()
@@ -150,8 +150,8 @@ def test_no_code_execution_tool_when_pill_off(monkeypatch):
         captured["headers"] = dict(request.headers)
         return httpx.Response(
             200,
-            content=_anthropic_sse([{"type": "message_stop"}]),
-            headers={"content-type": "text/event-stream"},
+            content = _anthropic_sse([{"type": "message_stop"}]),
+            headers = {"content-type": "text/event-stream"},
         )
 
     _mock_http_client(monkeypatch, handler)
@@ -159,11 +159,11 @@ def test_no_code_execution_tool_when_pill_off(monkeypatch):
     async def run():
         client = _make_client()
         async for _ in client._stream_anthropic(
-            messages=[{"role": "user", "content": "hi"}],
-            model="claude-opus-4-7",
-            temperature=0.7,
-            top_p=0.95,
-            max_tokens=4096,
+            messages = [{"role": "user", "content": "hi"}],
+            model = "claude-opus-4-7",
+            temperature = 0.7,
+            top_p = 0.95,
+            max_tokens = 4096,
         ):
             pass
         await client.close()
@@ -219,8 +219,8 @@ def test_bash_code_execution_emits_tool_start_and_end(monkeypatch):
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
-            content=_anthropic_sse(sse_events),
-            headers={"content-type": "text/event-stream"},
+            content = _anthropic_sse(sse_events),
+            headers = {"content-type": "text/event-stream"},
         )
 
     _mock_http_client(monkeypatch, handler)
@@ -229,12 +229,12 @@ def test_bash_code_execution_emits_tool_start_and_end(monkeypatch):
         client = _make_client()
         return await _collect(
             client._stream_anthropic(
-                messages=[{"role": "user", "content": "list files"}],
-                model="claude-opus-4-7",
-                temperature=0.7,
-                top_p=0.95,
-                max_tokens=4096,
-                enabled_tools=["code_execution"],
+                messages = [{"role": "user", "content": "list files"}],
+                model = "claude-opus-4-7",
+                temperature = 0.7,
+                top_p = 0.95,
+                max_tokens = 4096,
+                enabled_tools = ["code_execution"],
             )
         )
 
@@ -298,8 +298,8 @@ def test_text_editor_create_emits_kind_and_status(monkeypatch):
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
-            content=_anthropic_sse(sse_events),
-            headers={"content-type": "text/event-stream"},
+            content = _anthropic_sse(sse_events),
+            headers = {"content-type": "text/event-stream"},
         )
 
     _mock_http_client(monkeypatch, handler)
@@ -308,12 +308,12 @@ def test_text_editor_create_emits_kind_and_status(monkeypatch):
         client = _make_client()
         return await _collect(
             client._stream_anthropic(
-                messages=[{"role": "user", "content": "write a file"}],
-                model="claude-opus-4-7",
-                temperature=0.7,
-                top_p=0.95,
-                max_tokens=4096,
-                enabled_tools=["code_execution"],
+                messages = [{"role": "user", "content": "write a file"}],
+                model = "claude-opus-4-7",
+                temperature = 0.7,
+                top_p = 0.95,
+                max_tokens = 4096,
+                enabled_tools = ["code_execution"],
             )
         )
 
@@ -368,8 +368,8 @@ def test_code_execution_error_renders_error_code(monkeypatch):
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
-            content=_anthropic_sse(sse_events),
-            headers={"content-type": "text/event-stream"},
+            content = _anthropic_sse(sse_events),
+            headers = {"content-type": "text/event-stream"},
         )
 
     _mock_http_client(monkeypatch, handler)
@@ -378,12 +378,12 @@ def test_code_execution_error_renders_error_code(monkeypatch):
         client = _make_client()
         return await _collect(
             client._stream_anthropic(
-                messages=[{"role": "user", "content": "run it"}],
-                model="claude-opus-4-7",
-                temperature=0.7,
-                top_p=0.95,
-                max_tokens=4096,
-                enabled_tools=["code_execution"],
+                messages = [{"role": "user", "content": "run it"}],
+                model = "claude-opus-4-7",
+                temperature = 0.7,
+                top_p = 0.95,
+                max_tokens = 4096,
+                enabled_tools = ["code_execution"],
             )
         )
 

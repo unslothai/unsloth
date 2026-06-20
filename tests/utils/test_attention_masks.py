@@ -24,11 +24,11 @@ from unsloth.utils import packing as packing_utils
 
 
 def _make_seq_info(lengths):
-    lengths = torch.tensor(lengths, dtype=torch.int32)
+    lengths = torch.tensor(lengths, dtype = torch.int32)
     cu = torch.cat(
         [
-            torch.zeros(1, dtype=torch.int32),
-            torch.cumsum(lengths, dim=0, dtype=torch.int32),
+            torch.zeros(1, dtype = torch.int32),
+            torch.cumsum(lengths, dim = 0, dtype = torch.int32),
         ]
     )
     max_len = int(lengths.max().item())
@@ -39,15 +39,15 @@ def test_sdpa_packed_attention_mask_sliding_window():
     seq_info = _make_seq_info([5, 3])
     mask = packing_utils.build_sdpa_packed_attention_mask(
         seq_info,
-        dtype=torch.float32,
-        device=torch.device("cpu"),
-        sliding_window=3,
+        dtype = torch.float32,
+        device = torch.device("cpu"),
+        sliding_window = 3,
     )
 
     assert mask.shape == (1, 1, 8, 8)
 
     block_first = mask[0, 0, :5, :5]
-    upper = torch.triu(torch.ones_like(block_first), diagonal=1).bool()
+    upper = torch.triu(torch.ones_like(block_first), diagonal = 1).bool()
     assert torch.all(block_first[upper] == float("-inf"))
     assert block_first[3, 0].item() == float("-inf")
     assert block_first[4, 1].item() == float("-inf")
@@ -60,7 +60,7 @@ def test_xformers_block_mask_sliding_window(monkeypatch):
         def __init__(
             self,
             lengths,
-            window=None,
+            window = None,
         ):
             self.lengths = lengths
             self.window = window
@@ -70,14 +70,14 @@ def test_xformers_block_mask_sliding_window(monkeypatch):
             return cls(tuple(lengths))
 
         def make_local_attention(self, window_size):
-            return _FakeMask(self.lengths, window=window_size)
+            return _FakeMask(self.lengths, window = window_size)
 
-    monkeypatch.setattr(packing_utils, "_XFormersBlockMask", _FakeMask, raising=False)
+    monkeypatch.setattr(packing_utils, "_XFormersBlockMask", _FakeMask, raising = False)
 
     seq_info = _make_seq_info([4, 4])
     mask = packing_utils.build_xformers_block_causal_mask(
         seq_info,
-        sliding_window=2,
+        sliding_window = 2,
     )
 
     assert isinstance(mask, _FakeMask)
@@ -96,14 +96,14 @@ def test_run_attention_sdpa_passes_sliding_window(monkeypatch):
         *,
         dtype,
         device,
-        sliding_window=None,
+        sliding_window = None,
     ):
         captured["window"] = sliding_window
         return original_builder(
             seq_info_arg,
-            dtype=dtype,
-            device=device,
-            sliding_window=sliding_window,
+            dtype = dtype,
+            device = device,
+            sliding_window = sliding_window,
         )
 
     monkeypatch.setattr(
@@ -119,22 +119,22 @@ def test_run_attention_sdpa_passes_sliding_window(monkeypatch):
     monkeypatch.setattr(attention_dispatch, "scaled_dot_product_attention", _fake_sdpa)
 
     config = attention_dispatch.AttentionConfig(
-        backend=attention_dispatch.SDPA,
-        n_kv_heads=1,
-        n_groups=1,
+        backend = attention_dispatch.SDPA,
+        n_kv_heads = 1,
+        n_groups = 1,
     )
 
     context = attention_dispatch.AttentionContext(
-        bsz=1,
-        q_len=5,
-        kv_seq_len=5,
-        n_heads=1,
-        head_dim=1,
-        requires_grad=False,
-        seq_info=seq_info,
-        attention_mask=None,
-        causal_mask=None,
-        sliding_window=sliding_window,
+        bsz = 1,
+        q_len = 5,
+        kv_seq_len = 5,
+        n_heads = 1,
+        head_dim = 1,
+        requires_grad = False,
+        seq_info = seq_info,
+        attention_mask = None,
+        causal_mask = None,
+        sliding_window = sliding_window,
     )
 
     Q = torch.zeros(1, 1, 5, 1)
@@ -142,11 +142,11 @@ def test_run_attention_sdpa_passes_sliding_window(monkeypatch):
     V = torch.zeros_like(Q)
 
     attention_dispatch.run_attention(
-        config=config,
-        context=context,
-        Q=Q,
-        K=K,
-        V=V,
+        config = config,
+        context = context,
+        Q = Q,
+        K = K,
+        V = V,
     )
 
     assert captured["window"] == sliding_window
@@ -167,8 +167,8 @@ def test_run_attention_xformers_passes_sliding_window(monkeypatch):
     def _fake_builder(
         seq_info_arg,
         *,
-        sliding_window=None,
-        base_mask=None,
+        sliding_window = None,
+        base_mask = None,
     ):
         captured["window"] = sliding_window
         captured["base"] = base_mask
@@ -178,33 +178,33 @@ def test_run_attention_xformers_passes_sliding_window(monkeypatch):
         Q,
         K,
         V,
-        attn_bias=None,
+        attn_bias = None,
         **_,
     ):
         captured["bias"] = attn_bias
         return torch.zeros_like(Q)
 
     monkeypatch.setattr(attention_dispatch, "build_xformers_block_causal_mask", _fake_builder)
-    monkeypatch.setattr(attention_dispatch, "xformers_attention", _fake_attention, raising=False)
-    monkeypatch.setattr(attention_dispatch, "XFORMERS_BLOCK_DIAG_CLS", _FakeBias, raising=False)
+    monkeypatch.setattr(attention_dispatch, "xformers_attention", _fake_attention, raising = False)
+    monkeypatch.setattr(attention_dispatch, "XFORMERS_BLOCK_DIAG_CLS", _FakeBias, raising = False)
 
     config = attention_dispatch.AttentionConfig(
-        backend=attention_dispatch.XFORMERS,
-        n_kv_heads=1,
-        n_groups=1,
+        backend = attention_dispatch.XFORMERS,
+        n_kv_heads = 1,
+        n_groups = 1,
     )
 
     context = attention_dispatch.AttentionContext(
-        bsz=1,
-        q_len=4,
-        kv_seq_len=4,
-        n_heads=1,
-        head_dim=1,
-        requires_grad=False,
-        seq_info=seq_info,
-        attention_mask=None,
-        causal_mask=None,
-        sliding_window=sliding_window,
+        bsz = 1,
+        q_len = 4,
+        kv_seq_len = 4,
+        n_heads = 1,
+        head_dim = 1,
+        requires_grad = False,
+        seq_info = seq_info,
+        attention_mask = None,
+        causal_mask = None,
+        sliding_window = sliding_window,
     )
 
     Q = torch.zeros(1, 1, 4, 1)
@@ -212,11 +212,11 @@ def test_run_attention_xformers_passes_sliding_window(monkeypatch):
     V = torch.zeros_like(Q)
 
     attention_dispatch.run_attention(
-        config=config,
-        context=context,
-        Q=Q,
-        K=K,
-        V=V,
+        config = config,
+        context = context,
+        Q = Q,
+        K = K,
+        V = V,
     )
 
     assert captured["window"] == sliding_window
@@ -243,10 +243,10 @@ def test_run_attention_flash_varlen_receives_window_and_softcap(monkeypatch):
     monkeypatch.setattr(attention_dispatch, "HAS_FLASH_ATTENTION", True)
 
     config = attention_dispatch.AttentionConfig(
-        backend=attention_dispatch.FLASH_VARLEN,
-        n_kv_heads=1,
-        n_groups=1,
-        flash_varlen_kwargs={
+        backend = attention_dispatch.FLASH_VARLEN,
+        n_kv_heads = 1,
+        n_groups = 1,
+        flash_varlen_kwargs = {
             "dropout_p": 0.0,
             "softmax_scale": 1.0,
             "causal": True,
@@ -256,16 +256,16 @@ def test_run_attention_flash_varlen_receives_window_and_softcap(monkeypatch):
     )
 
     context = attention_dispatch.AttentionContext(
-        bsz=1,
-        q_len=4,
-        kv_seq_len=4,
-        n_heads=1,
-        head_dim=2,
-        requires_grad=False,
-        seq_info=seq_info,
-        attention_mask=None,
-        causal_mask=None,
-        sliding_window=sliding_window,
+        bsz = 1,
+        q_len = 4,
+        kv_seq_len = 4,
+        n_heads = 1,
+        head_dim = 2,
+        requires_grad = False,
+        seq_info = seq_info,
+        attention_mask = None,
+        causal_mask = None,
+        sliding_window = sliding_window,
     )
 
     Q = torch.zeros(1, 1, 4, 2)
@@ -273,11 +273,11 @@ def test_run_attention_flash_varlen_receives_window_and_softcap(monkeypatch):
     V = torch.zeros_like(Q)
 
     attention_dispatch.run_attention(
-        config=config,
-        context=context,
-        Q=Q,
-        K=K,
-        V=V,
+        config = config,
+        context = context,
+        Q = Q,
+        K = K,
+        V = V,
     )
 
     assert captured["kwargs"]["softcap"] == softcap

@@ -23,13 +23,12 @@ os.environ["UNSLOTH_IS_PRESENT"] = "1"
 # guarantees we never crash on an unencodable glyph.
 if platform.system() == "Windows":
     import sys as _sys
-
     for _name in ("stdout", "stderr"):
         _s = getattr(_sys, _name, None)
         try:
             _enc = (getattr(_s, "encoding", None) or "").lower()
             if _s is not None and hasattr(_s, "reconfigure") and "utf" not in _enc:
-                _s.reconfigure(encoding="utf-8", errors="replace")
+                _s.reconfigure(encoding = "utf-8", errors = "replace")
         except Exception:
             pass
 
@@ -135,7 +134,6 @@ if _IS_MLX:
     def is_bfloat16_supported():
         try:
             import mlx.core as mx
-
             name = mx.device_info().get("device_name", "") or ""
             return not name.startswith(("Apple M1", "Apple M2"))
         except Exception:

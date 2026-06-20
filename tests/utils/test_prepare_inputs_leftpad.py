@@ -83,7 +83,7 @@ def _is_kwargs_position_ids_target(target):
     )
 
 
-def _walk_with_paths(node, path=()):
+def _walk_with_paths(node, path = ()):
     yield node, path
     for child in ast.iter_child_nodes(node):
         yield from _walk_with_paths(child, path + (node,))
@@ -113,7 +113,7 @@ def test_mask_derived_position_ids_branch_exists():
     for stmt in branch.body:
         body_names |= _names_in(stmt)
     assert "cumsum" in body_names and _mentions_attention_mask(
-        ast.Module(body=branch.body, type_ignores=[])
+        ast.Module(body = branch.body, type_ignores = [])
     ), (
         "the attention-mask branch must compute position_ids via "
         "attention_mask.cumsum(...); reintroducing cache_position-based "
@@ -125,7 +125,7 @@ def test_mask_derived_position_ids_branch_exists():
     assigns_kwargs = any(
         isinstance(stmt, ast.Assign)
         and any(_is_kwargs_position_ids_target(t) for t in stmt.targets)
-        for stmt in ast.walk(ast.Module(body=branch.body, type_ignores=[]))
+        for stmt in ast.walk(ast.Module(body = branch.body, type_ignores = []))
     )
     assert (
         assigns_kwargs
@@ -229,7 +229,7 @@ MASK = torch.tensor(
         [1, 1, 1, 1, 1],
         [0, 1, 1, 1, 1],
     ],
-    dtype=torch.long,
+    dtype = torch.long,
 )
 BS, SEQ = MASK.shape
 
@@ -240,7 +240,7 @@ EXPECTED_PREFILL_POSITIONS = torch.tensor(
         [0, 1, 2, 3, 4],
         [1, 0, 1, 2, 3],
     ],
-    dtype=torch.long,
+    dtype = torch.long,
 )
 
 
@@ -279,8 +279,8 @@ class FakeModelWith4DMask(FakeModel):
         device,
         cache_position,
         batch_size,
-        config=None,
-        past_key_values=None,
+        config = None,
+        past_key_values = None,
     ):
         self.mask_calls.append(
             {
@@ -290,14 +290,13 @@ class FakeModelWith4DMask(FakeModel):
                 "batch_size": batch_size,
             }
         )
-        return torch.zeros((batch_size, 1, sequence_length, target_length), dtype=dtype)
+        return torch.zeros((batch_size, 1, sequence_length, target_length), dtype = dtype)
 
 
 def _prepare(model, input_ids, attention_mask, **kwargs):
     from unsloth.models import llama as llama_mod
-
     return llama_mod._fast_prepare_inputs_for_generation(
-        model, input_ids, attention_mask=attention_mask, **kwargs
+        model, input_ids, attention_mask = attention_mask, **kwargs
     )
 
 
@@ -335,7 +334,7 @@ def test_cached_decode_position_ids_ignore_left_padding(pass_cache_position):
     ), "cached decode must slice input_ids to the last token only"
     position_ids = result.get("position_ids", None)
     assert position_ids is not None
-    expected = torch.tensor([[2], [4], [3]], dtype=torch.long)
+    expected = torch.tensor([[2], [4], [3]], dtype = torch.long)
     assert torch.equal(position_ids.long().cpu().reshape(BS, 1), expected), (
         "left-padded cached decode must derive per-row position_ids from the "
         "attention mask, not from cache_position which counts pad tokens; got "
@@ -348,7 +347,7 @@ def test_cached_decode_does_not_truncate_2d_attention_mask():
     # Without a 4D mask builder the original 2D mask must survive untouched.
     # The historical bug replaced it with attention_mask[:, [-1]].
     input_ids = torch.arange(BS * SEQ).reshape(BS, SEQ)
-    result = _prepare(FakeModel(), input_ids, MASK, past_key_values=FakeDynamicCache(PAST_LEN))
+    result = _prepare(FakeModel(), input_ids, MASK, past_key_values = FakeDynamicCache(PAST_LEN))
     mask_out = result["attention_mask"]
     assert mask_out is not None
     assert mask_out.dim() != 2 or mask_out.shape[-1] == SEQ, (
@@ -361,7 +360,7 @@ def test_cached_decode_does_not_truncate_2d_attention_mask():
 def test_cached_decode_4d_mask_builder_receives_full_target_length():
     model = FakeModelWith4DMask()
     input_ids = torch.arange(BS * SEQ).reshape(BS, SEQ)
-    result = _prepare(model, input_ids, MASK, past_key_values=FakeDynamicCache(PAST_LEN))
+    result = _prepare(model, input_ids, MASK, past_key_values = FakeDynamicCache(PAST_LEN))
     assert len(model.mask_calls) == 1
     call = model.mask_calls[0]
     assert call["mask_shape"] == (BS, SEQ), (
@@ -378,8 +377,8 @@ def test_cached_decode_4d_mask_builder_receives_full_target_length():
 
 def test_caller_supplied_position_ids_are_passed_through():
     input_ids = torch.arange(BS * SEQ).reshape(BS, SEQ)
-    custom = torch.full((BS, SEQ), 7, dtype=torch.long)
-    result = _prepare(FakeModel(), input_ids, MASK, position_ids=custom)
+    custom = torch.full((BS, SEQ), 7, dtype = torch.long)
+    result = _prepare(FakeModel(), input_ids, MASK, position_ids = custom)
     assert torch.equal(
         result["position_ids"], custom
     ), "caller-supplied position_ids must not be overwritten"
@@ -390,7 +389,7 @@ def test_legacy_tuple_cache_still_takes_cached_decode_path():
     k = torch.zeros((BS, 1, PAST_LEN, 8))
     legacy_cache = ((k, k.clone()),)
     input_ids = torch.arange(BS * SEQ).reshape(BS, SEQ)
-    result = _prepare(FakeModel(), input_ids, MASK, past_key_values=legacy_cache)
+    result = _prepare(FakeModel(), input_ids, MASK, past_key_values = legacy_cache)
     assert result["input_ids"].shape == (BS, 1)
-    expected = torch.tensor([[2], [4], [3]], dtype=torch.long)
+    expected = torch.tensor([[2], [4], [3]], dtype = torch.long)
     assert torch.equal(result["position_ids"].long().cpu().reshape(BS, 1), expected)

@@ -13,7 +13,7 @@ INSTALL_PS1 = REPO_ROOT / "install.ps1"
 
 
 def _text() -> str:
-    return INSTALL_PS1.read_text(encoding="utf-8")
+    return INSTALL_PS1.read_text(encoding = "utf-8")
 
 
 def test_install_ps1_present():

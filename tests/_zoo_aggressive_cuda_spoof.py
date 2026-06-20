@@ -94,7 +94,7 @@ def apply() -> None:
     # torch.{get,set}_rng_state (those touch the CPU RNG).
     import torch as _t
 
-    _empty_rng_state = _t.empty(0, dtype=_t.uint8)
+    _empty_rng_state = _t.empty(0, dtype = _t.uint8)
     torch.cuda.get_rng_state = lambda *a, **k: _empty_rng_state.clone()  # type: ignore[assignment]
     torch.cuda.set_rng_state = lambda *a, **k: None  # type: ignore[assignment]
     torch.cuda.get_rng_state_all = lambda *a, **k: [_empty_rng_state.clone()]  # type: ignore[attr-defined]
@@ -152,7 +152,7 @@ def apply() -> None:
 
         def _wrap(
             *args: Any,
-            _orig=_orig,
+            _orig = _orig,
             **kwargs: Any,
         ):
             kwargs.pop("pin_memory", None)

@@ -123,8 +123,8 @@ def Gemma2Attention_fast_forward(
         Q, K = fast_rope_embedding(Q, K, cos, sin)
 
     if past_key_value is not None:
-        K = torch.cat([past_key_value[0], K], dim=2)
-        V = torch.cat([past_key_value[1], V], dim=2)
+        K = torch.cat([past_key_value[0], K], dim = 2)
+        V = torch.cat([past_key_value[1], V], dim = 2)
     past_key_value = (K, V) if use_cache else None
 
     # Only enable if the attention_mask is True
@@ -150,16 +150,16 @@ def Gemma2Attention_fast_forward(
         use_varlen = seq_info is not None and past_key_value is None
 
         attention_config = AttentionConfig(
-            backend=select_attention_backend(use_varlen),
-            n_kv_heads=n_kv_heads,
-            n_groups=n_groups,
-            flash_dense_kwargs={
+            backend = select_attention_backend(use_varlen),
+            n_kv_heads = n_kv_heads,
+            n_groups = n_groups,
+            flash_dense_kwargs = {
                 "causal": True,
                 "softcap": self.config.attn_logit_softcapping,
                 "softmax_scale": self._flash_attention_softmax_scale,
                 "window_size": window,
             },
-            flash_varlen_kwargs={
+            flash_varlen_kwargs = {
                 "dropout_p": 0.0,
                 "softmax_scale": self._flash_attention_softmax_scale,
                 "causal": True,
@@ -169,19 +169,19 @@ def Gemma2Attention_fast_forward(
         )
 
         context = AttentionContext(
-            bsz=bsz,
-            q_len=q_len,
-            kv_seq_len=kv_seq_len,
-            n_heads=n_heads,
-            head_dim=head_dim,
-            requires_grad=hidden_states.requires_grad,
-            seq_info=seq_info,
-            attention_mask=attention_mask,
-            causal_mask=causal_mask,
-            sliding_window=sliding_window,
+            bsz = bsz,
+            q_len = q_len,
+            kv_seq_len = kv_seq_len,
+            n_heads = n_heads,
+            head_dim = head_dim,
+            requires_grad = hidden_states.requires_grad,
+            seq_info = seq_info,
+            attention_mask = attention_mask,
+            causal_mask = causal_mask,
+            sliding_window = sliding_window,
         )
 
-        A = run_attention(config=attention_config, context=context, Q=Q, K=K, V=V)
+        A = run_attention(config = attention_config, context = context, Q = Q, K = K, V = V)
         A = A.reshape(bsz, q_len, n_heads * head_dim)
     else:
         fx = (
@@ -211,8 +211,8 @@ def Gemma2DecoderLayer_fast_forward(
     if use_cache and hasattr(self, "_flag_for_generation"):  # past_key_value is not None:
         out_weight = torch.empty(
             self.input_layernorm.weight.shape,
-            dtype=torch.float32,
-            device=f"{DEVICE_TYPE_TORCH}:0",
+            dtype = torch.float32,
+            device = f"{DEVICE_TYPE_TORCH}:0",
         )
 
         # Self Attention
@@ -221,15 +221,15 @@ def Gemma2DecoderLayer_fast_forward(
             self.input_layernorm, hidden_states, out_weight
         )
         hidden_states, self_attn_weights, present_key_value = self.self_attn(
-            hidden_states=hidden_states,
-            causal_mask=causal_mask,
-            attention_mask=attention_mask,
-            position_ids=position_ids,
-            past_key_value=past_key_value,
-            output_attentions=output_attentions,
-            use_cache=use_cache,
-            padding_mask=padding_mask,
-            _flag_for_generation=self._flag_for_generation,
+            hidden_states = hidden_states,
+            causal_mask = causal_mask,
+            attention_mask = attention_mask,
+            position_ids = position_ids,
+            past_key_value = past_key_value,
+            output_attentions = output_attentions,
+            use_cache = use_cache,
+            padding_mask = padding_mask,
+            _flag_for_generation = self._flag_for_generation,
             **kwargs,
         )
         hidden_states = fast_rms_layernorm_inference_gemma(
@@ -249,29 +249,29 @@ def Gemma2DecoderLayer_fast_forward(
         hidden_states += residual
     else:
         residual = hidden_states
-        hidden_states = fast_rms_layernorm(self.input_layernorm, hidden_states, gemma=True)
+        hidden_states = fast_rms_layernorm(self.input_layernorm, hidden_states, gemma = True)
         hidden_states, self_attn_weights, present_key_value = self.self_attn(
-            hidden_states=hidden_states,
-            causal_mask=causal_mask,
-            attention_mask=attention_mask,
-            position_ids=position_ids,
-            past_key_value=past_key_value,
-            output_attentions=output_attentions,
-            use_cache=use_cache,
-            padding_mask=padding_mask,
+            hidden_states = hidden_states,
+            causal_mask = causal_mask,
+            attention_mask = attention_mask,
+            position_ids = position_ids,
+            past_key_value = past_key_value,
+            output_attentions = output_attentions,
+            use_cache = use_cache,
+            padding_mask = padding_mask,
             **kwargs,
         )
-        hidden_states = fast_rms_layernorm(self.post_attention_layernorm, hidden_states, gemma=True)
+        hidden_states = fast_rms_layernorm(self.post_attention_layernorm, hidden_states, gemma = True)
         hidden_states = residual + hidden_states
 
         # Fully Connected
         residual = hidden_states
         hidden_states = fast_rms_layernorm(
-            self.pre_feedforward_layernorm, hidden_states, gemma=True
+            self.pre_feedforward_layernorm, hidden_states, gemma = True
         )
         hidden_states = self.mlp(hidden_states)
         hidden_states = fast_rms_layernorm(
-            self.post_feedforward_layernorm, hidden_states, gemma=True
+            self.post_feedforward_layernorm, hidden_states, gemma = True
         )
         hidden_states = residual + hidden_states
 
@@ -296,9 +296,9 @@ def Gemma2Attention_fast_forward_inference(
     hidden_states: torch.Tensor,
     past_key_value: Optional[Tuple[torch.Tensor]],
     position_ids,
-    do_prefill=False,
-    attention_mask=None,
-    use_sliding_window=False,
+    do_prefill = False,
+    attention_mask = None,
+    use_sliding_window = False,
     **kwargs,
 ):
     Xn = hidden_states
@@ -323,20 +323,20 @@ def Gemma2Attention_fast_forward_inference(
     if do_prefill:
         self.paged_attention = torch.empty(
             (KV_CACHE_INCREMENT + seq_len + 1, 2, bsz, n_kv_heads, head_dim),
-            dtype=dtype,
-            device=device,
+            dtype = dtype,
+            device = device,
         )
         self.paged_attention_K = self.paged_attention[:, 0]
         self.paged_attention_V = self.paged_attention[:, 1]
         self.paged_attention_K[:seq_len] = K1.permute(2, 0, 1, 3)
         self.paged_attention_V[:seq_len] = V1.permute(2, 0, 1, 3)
-        self.temp_QA = torch.empty((2, bsz, 1, attention_size), dtype=dtype, device=device)
-        self.temp_KV = torch.empty((2, bsz, 1, n_kv_heads * head_dim), dtype=dtype, device=device)
-        self.RH_Q = torch.empty((bsz, n_heads, 1, head_dim), dtype=dtype, device=device)
+        self.temp_QA = torch.empty((2, bsz, 1, attention_size), dtype = dtype, device = device)
+        self.temp_KV = torch.empty((2, bsz, 1, n_kv_heads * head_dim), dtype = dtype, device = device)
+        self.RH_Q = torch.empty((bsz, n_heads, 1, head_dim), dtype = dtype, device = device)
         # Only for Gemma2
-        self.temp_O = torch.empty((bsz, 1, hidden_size), dtype=dtype, device=device)
+        self.temp_O = torch.empty((bsz, 1, hidden_size), dtype = dtype, device = device)
         self.attention = torch.empty(
-            (bsz, n_heads, 1, KV_CACHE_INCREMENT + seq_len), dtype=dtype, device=device
+            (bsz, n_heads, 1, KV_CACHE_INCREMENT + seq_len), dtype = dtype, device = device
         )
 
         # See https://github.com/google/gemma_pytorch/commit/03e657582d17cb5a8617ebf333c1c16f3694670e
@@ -362,9 +362,9 @@ def Gemma2Attention_fast_forward_inference(
         self.paged_attention_V = self.paged_attention[:, 1]
         self.attention.resize_((bsz, n_heads, 1, self.attention.shape[-1] + KV_CACHE_INCREMENT))
 
-    Qn = fast_linear_forward(self.q_proj, Xn, out=self.temp_QA[0])
-    Kn = fast_linear_forward(self.k_proj, Xn, out=self.temp_KV[0])
-    Vn = fast_linear_forward(self.v_proj, Xn, out=self.temp_KV[1])
+    Qn = fast_linear_forward(self.q_proj, Xn, out = self.temp_QA[0])
+    Kn = fast_linear_forward(self.k_proj, Xn, out = self.temp_KV[0])
+    Vn = fast_linear_forward(self.v_proj, Xn, out = self.temp_KV[1])
     Qn = Qn.view(bsz, 1, n_heads, head_dim).transpose(1, 2)
     Kn = Kn.view(bsz, 1, n_kv_heads, head_dim).transpose(1, 2)
     Vn = Vn.view(bsz, 1, n_kv_heads, head_dim).transpose(1, 2)
@@ -428,7 +428,7 @@ def Gemma2Attention_fast_forward_inference(
         self.scalar
     )  # See https://github.com/ggerganov/llama.cpp/issues/7805#issuecomment-2153349963
     # It seems like doing (Q * scalar) @ K is better than (Q @ K) * scalar to stop overflows
-    A = torch_matmul(Qn, Knn.transpose(2, 3), out=self.attention[:, :, :, :cached_len])
+    A = torch_matmul(Qn, Knn.transpose(2, 3), out = self.attention[:, :, :, :cached_len])
 
     # Softcapping must happen BEFORE the mask is applied.
     # Reference: google-deepmind/gemma _modules.py and transformers gemma2 eager_attention_forward
@@ -442,11 +442,11 @@ def Gemma2Attention_fast_forward_inference(
             attention_mask = attention_mask[:, :, :, -A.shape[-1] :]
         A += attention_mask
 
-    A[:] = torch_nn_functional_softmax(A, dim=-1, dtype=torch.float32)  # .to(A.dtype)
-    A = torch_matmul(A, Vnn, out=Qn)
+    A[:] = torch_nn_functional_softmax(A, dim = -1, dtype = torch.float32)  # .to(A.dtype)
+    A = torch_matmul(A, Vnn, out = Qn)
     A = A.transpose(1, 2)
     A = A.reshape(bsz, 1, attention_size)
-    A = fast_linear_forward(self.o_proj, A, out=self.temp_O)
+    A = fast_linear_forward(self.o_proj, A, out = self.temp_O)
     return A, (Kn, Vn)
 
 
@@ -457,14 +457,14 @@ def Gemma2Model_fast_forward_inference(
     input_ids,
     past_key_values,
     position_ids,
-    attention_mask=None,
+    attention_mask = None,
     **kwargs,
 ):
     out_weights = tuple(
         torch.empty_like(
             self.model.layers[0].input_layernorm.weight,
-            dtype=torch.float32,
-            device=torch.device(x),
+            dtype = torch.float32,
+            device = torch.device(x),
         )
         for x in range(DEVICE_COUNT)
     )
@@ -473,7 +473,7 @@ def Gemma2Model_fast_forward_inference(
     hidden_states = hidden_states.to(_get_dtype(dtype_from_config(self.config)))
     # 3072**0.5 = 55.5000 in bfloat16, whilst 55.4256 in float32
     # 2048**0.5 = 45.2500 in bfloat16, whilst 45.2548 in float32
-    hidden_states *= torch.tensor(math_sqrt(self.config.hidden_size), dtype=hidden_states.dtype)
+    hidden_states *= torch.tensor(math_sqrt(self.config.hidden_size), dtype = hidden_states.dtype)
 
     bsz, q_len, hd = hidden_states.shape
     seq_len = past_key_values[0][0].shape[-2]
@@ -487,7 +487,7 @@ def Gemma2Model_fast_forward_inference(
                 (bsz, q_len),
                 hidden_states,
                 seq_len,
-                sliding_window=self.config.sliding_window,
+                sliding_window = self.config.sliding_window,
             )
             GA = _prepare_4d_causal_attention_mask_for_sdpa(
                 attention_mask,
@@ -513,12 +513,12 @@ def Gemma2Model_fast_forward_inference(
         )
         hidden_states, present_key_value = Gemma2Attention_fast_forward_inference(
             decoder_layer.self_attn,
-            hidden_states=hidden_states,
-            past_key_value=past_key_values[idx],
-            position_ids=position_ids,
-            attention_mask=SWA if use_sliding_window else GA,
-            do_prefill=not hasattr(decoder_layer.self_attn, "paged_attention"),
-            use_sliding_window=use_sliding_window,
+            hidden_states = hidden_states,
+            past_key_value = past_key_values[idx],
+            position_ids = position_ids,
+            attention_mask = SWA if use_sliding_window else GA,
+            do_prefill = not hasattr(decoder_layer.self_attn, "paged_attention"),
+            use_sliding_window = use_sliding_window,
         )
         hidden_states = fast_rms_layernorm_inference_gemma(
             decoder_layer.post_attention_layernorm,
@@ -547,10 +547,10 @@ def Gemma2Model_fast_forward_inference(
     )
 
     return BaseModelOutputWithPast(
-        last_hidden_state=hidden_states,
-        past_key_values=next_decoder_cache,
-        hidden_states=[],
-        attentions=[],
+        last_hidden_state = hidden_states,
+        past_key_values = next_decoder_cache,
+        hidden_states = [],
+        attentions = [],
     )
 
 
@@ -558,10 +558,10 @@ class FastGemma2Model(FastLlamaModel):
     @staticmethod
     def pre_patch():
         init_name, function = patch_linear_scaling(
-            model_name="gemma2",
-            rope_module=GemmaFixedRotaryEmbedding,
-            scaled_rope_module=GemmaFixedLinearScalingRotaryEmbedding,
-            attention_module=Gemma2Attention,
+            model_name = "gemma2",
+            rope_module = GemmaFixedRotaryEmbedding,
+            scaled_rope_module = GemmaFixedLinearScalingRotaryEmbedding,
+            attention_module = Gemma2Attention,
         )
         if init_name is not None:
             exec(function, globals())
@@ -589,11 +589,11 @@ class FastGemma2Model(FastLlamaModel):
     def post_patch(
         model,
         tokenizer,
-        correct_dtype=None,
+        correct_dtype = None,
     ):
         # Gemma does not downcast RoPE
         model, tokenizer = patch_model_and_tokenizer(
-            model, tokenizer, downcast_rope=False, correct_dtype=correct_dtype
+            model, tokenizer, downcast_rope = False, correct_dtype = correct_dtype
         )
 
         # Add 1 to weight

@@ -19,25 +19,25 @@ from core.inference.llama_cpp import LlamaCppBackend
 def _fake_torch(
     names,
     *,
-    hip=None,
-    cuda_ok=True,
+    hip = None,
+    cuda_ok = True,
 ):
     """torch stub: version.hip, cuda.is_available/device_count, get_device_properties(i).name."""
     t = types.ModuleType("torch")
-    t.version = types.SimpleNamespace(hip=hip)
+    t.version = types.SimpleNamespace(hip = hip)
     t.cuda = types.SimpleNamespace(
-        is_available=lambda: cuda_ok,
-        device_count=lambda: len(names),
-        get_device_properties=lambda i: types.SimpleNamespace(name=names[i]),
+        is_available = lambda: cuda_ok,
+        device_count = lambda: len(names),
+        get_device_properties = lambda i: types.SimpleNamespace(name = names[i]),
     )
     return t
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture(autouse = True)
 def _clear_cuda_visible_devices(monkeypatch):
     """Detection reads CUDA_VISIBLE_DEVICES, so clear it by default (run unmasked,
     physical id == ordinal) regardless of host; masked tests set it explicitly."""
-    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
 
 
 # ---------------------------------------------------------------------------
@@ -150,13 +150,13 @@ def test_is_datacenter_gpu_rocm_is_false(monkeypatch):
     monkeypatch.setitem(
         sys.modules,
         "torch",
-        _fake_torch(["AMD Instinct MI300X"], hip="6.2.0"),
+        _fake_torch(["AMD Instinct MI300X"], hip = "6.2.0"),
     )
     assert LlamaCppBackend._is_datacenter_gpu() is False
 
 
 def test_is_datacenter_gpu_no_cuda_is_false(monkeypatch):
-    monkeypatch.setitem(sys.modules, "torch", _fake_torch([], cuda_ok=False))
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch([], cuda_ok = False))
     assert LlamaCppBackend._is_datacenter_gpu() is False
 
 
@@ -183,7 +183,7 @@ def test_effective_gpu_count_none_uses_visible(monkeypatch):
 
 
 def test_effective_gpu_count_no_cuda_is_zero(monkeypatch):
-    monkeypatch.setitem(sys.modules, "torch", _fake_torch([], cuda_ok=False))
+    monkeypatch.setitem(sys.modules, "torch", _fake_torch([], cuda_ok = False))
     assert LlamaCppBackend._effective_gpu_count(None) == 0
 
 
@@ -198,7 +198,7 @@ def test_effective_gpu_count_missing_torch_is_zero(monkeypatch):
 
 
 def test_apply_env_single_dc_gpu_sets_only_fp32(monkeypatch):
-    monkeypatch.delenv("UNSLOTH_DISABLE_DC_TUNING", raising=False)
+    monkeypatch.delenv("UNSLOTH_DISABLE_DC_TUNING", raising = False)
     monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA B200"]))
     env: dict = {}
     assert LlamaCppBackend._apply_datacenter_env(env, [0]) is True
@@ -208,7 +208,7 @@ def test_apply_env_single_dc_gpu_sets_only_fp32(monkeypatch):
 
 
 def test_apply_env_multi_dc_gpu_sets_all(monkeypatch):
-    monkeypatch.delenv("UNSLOTH_DISABLE_DC_TUNING", raising=False)
+    monkeypatch.delenv("UNSLOTH_DISABLE_DC_TUNING", raising = False)
     monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA B200"] * 4))
     env: dict = {}
     assert LlamaCppBackend._apply_datacenter_env(env, [0, 1]) is True
@@ -219,7 +219,7 @@ def test_apply_env_multi_dc_gpu_sets_all(monkeypatch):
 
 def test_apply_env_none_indices_uses_visible_count(monkeypatch):
     # None on a 2x DC box -> multi-GPU flags applied.
-    monkeypatch.delenv("UNSLOTH_DISABLE_DC_TUNING", raising=False)
+    monkeypatch.delenv("UNSLOTH_DISABLE_DC_TUNING", raising = False)
     monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA H100", "NVIDIA H100"]))
     env: dict = {}
     assert LlamaCppBackend._apply_datacenter_env(env, None) is True
@@ -228,7 +228,7 @@ def test_apply_env_none_indices_uses_visible_count(monkeypatch):
 
 
 def test_apply_env_consumer_gpu_is_noop(monkeypatch):
-    monkeypatch.delenv("UNSLOTH_DISABLE_DC_TUNING", raising=False)
+    monkeypatch.delenv("UNSLOTH_DISABLE_DC_TUNING", raising = False)
     monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA GeForce RTX 4090"] * 2))
     env: dict = {}
     assert LlamaCppBackend._apply_datacenter_env(env, [0, 1]) is False
@@ -236,7 +236,7 @@ def test_apply_env_consumer_gpu_is_noop(monkeypatch):
 
 
 def test_apply_env_user_value_wins(monkeypatch):
-    monkeypatch.delenv("UNSLOTH_DISABLE_DC_TUNING", raising=False)
+    monkeypatch.delenv("UNSLOTH_DISABLE_DC_TUNING", raising = False)
     monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA B200"] * 2))
     env = {
         "GGML_CUDA_FORCE_CUBLAS_COMPUTE_32F": "0",  # user explicitly disabled
@@ -258,7 +258,7 @@ def test_apply_env_disable_flag_respected(monkeypatch):
 
 
 def test_apply_env_fail_open_on_detection_error(monkeypatch):
-    monkeypatch.delenv("UNSLOTH_DISABLE_DC_TUNING", raising=False)
+    monkeypatch.delenv("UNSLOTH_DISABLE_DC_TUNING", raising = False)
     monkeypatch.setitem(sys.modules, "torch", None)  # detection raises -> False
     env: dict = {}
     assert LlamaCppBackend._apply_datacenter_env(env, [0]) is False
@@ -268,7 +268,7 @@ def test_apply_env_fail_open_on_detection_error(monkeypatch):
 def test_apply_env_masked_host_multi_dc(monkeypatch):
     # End-to-end masked host (mask 4,5,6,7, physical selection [4,5]): pre-fix
     # applied no tuning; now all three multi-GPU flags must be set.
-    monkeypatch.delenv("UNSLOTH_DISABLE_DC_TUNING", raising=False)
+    monkeypatch.delenv("UNSLOTH_DISABLE_DC_TUNING", raising = False)
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "4,5,6,7")
     monkeypatch.setitem(sys.modules, "torch", _fake_torch(["NVIDIA B200"] * 4))
     env: dict = {}

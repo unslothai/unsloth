@@ -38,9 +38,9 @@ class RawTextDataLoader:
     def __init__(
         self,
         tokenizer,
-        chunk_size=2048,
-        stride=512,
-        return_tokenized=True,
+        chunk_size = 2048,
+        stride = 512,
+        return_tokenized = True,
     ):
         if chunk_size <= 0:
             raise ValueError(f"chunk_size must be positive, got {chunk_size}")
@@ -59,7 +59,7 @@ class RawTextDataLoader:
     def load_from_file(
         self,
         file_path,
-        return_tokenized=None,
+        return_tokenized = None,
     ):
         """Load raw text and convert to dataset"""
         if return_tokenized is None:
@@ -74,7 +74,7 @@ class RawTextDataLoader:
     def load_from_files(
         self,
         file_paths,
-        return_tokenized=None,
+        return_tokenized = None,
     ):
         """Load multiple text files"""
         if return_tokenized is None:
@@ -92,7 +92,7 @@ class RawTextDataLoader:
     def chunk_text(
         self,
         text,
-        return_tokenized=None,
+        return_tokenized = None,
     ):
         """Split text into overlapping chunks"""
         if return_tokenized is None:
@@ -123,7 +123,7 @@ class RawTextDataLoader:
         text,
         chunk_size,
         stride,
-        return_tokenized=True,
+        return_tokenized = True,
     ):
         """
         Intelligent chunking that:
@@ -133,7 +133,7 @@ class RawTextDataLoader:
         4. Returns tokenized chunks directly (more efficient) or text chunks
         """
         # Tokenize the whole text once for accurate token counts
-        tokenized = self.tokenizer(text, return_tensors="pt", add_special_tokens=False)
+        tokenized = self.tokenizer(text, return_tensors = "pt", add_special_tokens = False)
         tokens = tokenized["input_ids"]
 
         # Normalise tokenizer return formats
@@ -181,7 +181,7 @@ class RawTextDataLoader:
                 chunks.append({"input_ids": chunk_tokens_list, "attention_mask": attention_mask})
             else:
                 # Decode back to text (backward compatibility)
-                chunk_text = self.tokenizer.decode(chunk_tokens, skip_special_tokens=True)
+                chunk_text = self.tokenizer.decode(chunk_tokens, skip_special_tokens = True)
 
                 # Append EOS on the last or a full chunk
                 if end_idx == len(tokens) or len(chunk_tokens) == chunk_size:
@@ -199,7 +199,7 @@ class RawTextDataLoader:
 
     def _read_file_by_format(self, file_path, file_format):
         """Read file content based on detected format."""
-        with open(file_path, "r", encoding="utf-8") as f:
+        with open(file_path, "r", encoding = "utf-8") as f:
             if file_format == "plain_text" or file_format == "markdown":
                 return f.read()
             elif file_format == "json_lines":
@@ -261,10 +261,10 @@ class TextPreprocessor:
 
     def add_structure_tokens(self, text):
         """Add special tokens for structure (chapters, sections)"""
-        text = re.sub(r"^# (.+)$", r"<|chapter|>\1<|/chapter|>", text, flags=re.MULTILINE)
-        text = re.sub(r"^## (.+)$", r"<|section|>\1<|/section|>", text, flags=re.MULTILINE)
-        text = re.sub(r"^### (.+)$", r"<|subsection|>\1<|/subsection|>", text, flags=re.MULTILINE)
-        text = re.sub(r"```(\w*)\n(.*?)\n```", r"<|code|\1|>\2<|/code|>", text, flags=re.DOTALL)
+        text = re.sub(r"^# (.+)$", r"<|chapter|>\1<|/chapter|>", text, flags = re.MULTILINE)
+        text = re.sub(r"^## (.+)$", r"<|section|>\1<|/section|>", text, flags = re.MULTILINE)
+        text = re.sub(r"^### (.+)$", r"<|subsection|>\1<|/subsection|>", text, flags = re.MULTILINE)
+        text = re.sub(r"```(\w*)\n(.*?)\n```", r"<|code|\1|>\2<|/code|>", text, flags = re.DOTALL)
         return text
 
     def validate_dataset(self, dataset):

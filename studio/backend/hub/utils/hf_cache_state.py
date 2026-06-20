@@ -37,7 +37,7 @@ def hf_cache_root(*, create: bool = False) -> Optional[Path]:
     root = Path(hf_constants.HF_HUB_CACHE)
     if create:
         try:
-            root.mkdir(parents=True, exist_ok=True)
+            root.mkdir(parents = True, exist_ok = True)
         except OSError:
             return None
         return root
@@ -121,7 +121,7 @@ def _windows_allocated_size(path: Path) -> Optional[int]:
         import ctypes
         from ctypes import wintypes
 
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
         get_compressed_file_size = kernel32.GetCompressedFileSizeW
         get_compressed_file_size.argtypes = [
             wintypes.LPCWSTR,
@@ -152,7 +152,7 @@ def latest_snapshot_dir(repo_dir: Path) -> Optional[Path]:
         snapshots = [entry for entry in snapshots_dir.iterdir() if entry.is_dir()]
         if not snapshots:
             return None
-        return max(snapshots, key=lambda entry: entry.stat().st_mtime)
+        return max(snapshots, key = lambda entry: entry.stat().st_mtime)
     except OSError:
         return None
 
@@ -256,8 +256,8 @@ def _prune_empty_dirs(root: Path) -> bool:
     try:
         dirs = sorted(
             (path for path in root.rglob("*") if path.is_dir()),
-            key=lambda path: len(path.parts),
-            reverse=True,
+            key = lambda path: len(path.parts),
+            reverse = True,
         )
     except OSError:
         dirs = []

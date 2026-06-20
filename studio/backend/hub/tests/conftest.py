@@ -18,14 +18,14 @@ class _BaseModel:
     def model_dump(self):
         return dict(self.__dict__)
 
-    def model_copy(self, update=None):
+    def model_copy(self, update = None):
         data = self.model_dump()
         if update:
             data.update(update)
         return self.__class__(**data)
 
 
-def _field(default=..., **kwargs):
+def _field(default = ..., **kwargs):
     if "default_factory" in kwargs:
         return kwargs["default_factory"]()
     return None if default is ... else default
@@ -42,7 +42,7 @@ class _HTTPException(Exception):
     def __init__(
         self,
         status_code: int,
-        detail=None,
+        detail = None,
     ):
         super().__init__(detail)
         self.status_code = status_code
@@ -61,7 +61,7 @@ class _APIRouter:
 
 
 def _fastapi_marker(
-    default=None,
+    default = None,
     *args,
     **kwargs,
 ):
@@ -76,31 +76,31 @@ class _DummyLogger:
 sys.modules.setdefault(
     "pydantic",
     types.SimpleNamespace(
-        BaseModel=_BaseModel,
-        Field=_field,
-        model_validator=_model_validator,
+        BaseModel = _BaseModel,
+        Field = _field,
+        model_validator = _model_validator,
     ),
 )
 sys.modules.setdefault(
     "fastapi",
     types.SimpleNamespace(
-        APIRouter=_APIRouter,
-        Body=_fastapi_marker,
-        Depends=_fastapi_marker,
-        Header=_fastapi_marker,
-        HTTPException=_HTTPException,
-        Query=_fastapi_marker,
-        UploadFile=object,
+        APIRouter = _APIRouter,
+        Body = _fastapi_marker,
+        Depends = _fastapi_marker,
+        Header = _fastapi_marker,
+        HTTPException = _HTTPException,
+        Query = _fastapi_marker,
+        UploadFile = object,
     ),
 )
 sys.modules.setdefault(
     "loggers",
-    types.SimpleNamespace(get_logger=lambda *args, **kwargs: _DummyLogger()),
+    types.SimpleNamespace(get_logger = lambda *args, **kwargs: _DummyLogger()),
 )
 sys.modules.setdefault(
     "structlog",
     types.SimpleNamespace(
-        BoundLogger=_DummyLogger,
-        get_logger=lambda *args, **kwargs: _DummyLogger(),
+        BoundLogger = _DummyLogger,
+        get_logger = lambda *args, **kwargs: _DummyLogger(),
     ),
 )

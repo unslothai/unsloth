@@ -9,7 +9,7 @@ REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 RL_PATH = os.path.join(REPO_ROOT, "unsloth", "models", "rl_replacements.py")
 
 
-def _load_orpo_rewriter(name="orpo_trainer_text_tokenizer"):
+def _load_orpo_rewriter(name = "orpo_trainer_text_tokenizer"):
     src = open(RL_PATH).read()
     tree = ast.parse(src)
     ns = {"re": re}
@@ -36,7 +36,7 @@ class _Tokenizer:
     def __call__(
         self,
         text,
-        add_special_tokens=False,
+        add_special_tokens = False,
         **kwargs,
     ):
         self.calls.append((text, add_special_tokens, kwargs))
@@ -67,7 +67,7 @@ class _Trainer:
 def _exec_rewritten(
     function_name,
     source,
-    extra_ns=None,
+    extra_ns = None,
 ):
     rewriter = _load_orpo_rewriter()
     rewritten = rewriter(function_name, source)

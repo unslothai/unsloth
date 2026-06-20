@@ -48,7 +48,7 @@ def _extract_sh_function_body(source: str, name: str) -> str:
 
 class TestInstallShBoundedProbe:
     def _src(self) -> str:
-        return INSTALL_SH.read_text(encoding="utf-8")
+        return INSTALL_SH.read_text(encoding = "utf-8")
 
     def test_run_bounded_helper_defined(self):
         body = _extract_sh_function_body(self._src(), "_run_bounded")
@@ -103,7 +103,7 @@ class TestInstallShBoundedProbe:
 class TestPowerShellBoundedProbe:
     @pytest.mark.parametrize("path", [INSTALL_PS1, SETUP_PS1])
     def test_bounded_helper_present(self, path):
-        src = path.read_text(encoding="utf-8")
+        src = path.read_text(encoding = "utf-8")
         assert (
             "function Invoke-NvidiaSmiBounded" in src
         ), f"{path.name} must define Invoke-NvidiaSmiBounded"
@@ -117,7 +117,7 @@ class TestPowerShellBoundedProbe:
 
     @pytest.mark.parametrize("path", [INSTALL_PS1, SETUP_PS1])
     def test_probe_requires_gpu_row(self, path):
-        src = path.read_text(encoding="utf-8")
+        src = path.read_text(encoding = "utf-8")
         assert (
             "function Test-NvidiaSmiHasGpu" in src
         ), f"{path.name} must define Test-NvidiaSmiHasGpu"
@@ -128,7 +128,7 @@ class TestPowerShellBoundedProbe:
 
     @pytest.mark.parametrize("path", [INSTALL_PS1, SETUP_PS1])
     def test_detection_uses_validated_probe(self, path):
-        src = path.read_text(encoding="utf-8")
+        src = path.read_text(encoding = "utf-8")
         # The exit-code-only probe must be gone from the detection block.
         assert (
             "& $nvSmiCmd.Source *> $null" not in src
@@ -148,15 +148,15 @@ def _have_timeout() -> bool:
     return shutil.which("timeout") is not None
 
 
-@pytest.mark.skipif(not _have_timeout(), reason="`timeout` binary not available")
+@pytest.mark.skipif(not _have_timeout(), reason = "`timeout` binary not available")
 def test_has_usable_nvidia_gpu_returns_under_timeout():
     """Point _has_usable_nvidia_gpu at a fake nvidia-smi that sleeps 30s; the probe must return early."""
-    src = INSTALL_SH.read_text(encoding="utf-8")
+    src = INSTALL_SH.read_text(encoding = "utf-8")
     helper = _extract_sh_function_body(src, "_run_bounded")
     fn = _extract_sh_function_body(src, "_has_usable_nvidia_gpu")
     assert helper and fn
 
-    workdir = tempfile.mkdtemp(prefix="pr6174_timeout_", dir=str(PACKAGE_ROOT.parent))
+    workdir = tempfile.mkdtemp(prefix = "pr6174_timeout_", dir = str(PACKAGE_ROOT.parent))
     try:
         fake_dir = Path(workdir, "bin")
         fake_dir.mkdir()
@@ -175,13 +175,13 @@ def test_has_usable_nvidia_gpu_returns_under_timeout():
         )
         proc = subprocess.run(
             ["sh", "-c", script],
-            env={"PATH": path_env},
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            text=True,
-            timeout=20,  # generous: the internal timeout is 10s, sleep is 30s
+            env = {"PATH": path_env},
+            stdout = subprocess.PIPE,
+            stderr = subprocess.DEVNULL,
+            text = True,
+            timeout = 20,  # generous: the internal timeout is 10s, sleep is 30s
         )
         # The probe must have returned (not hung): NONE without /proc, DETECTED via /proc fallback.
         assert proc.stdout.strip() in {"NONE", "DETECTED"}
     finally:
-        shutil.rmtree(workdir, ignore_errors=True)
+        shutil.rmtree(workdir, ignore_errors = True)

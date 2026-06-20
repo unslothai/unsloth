@@ -1007,7 +1007,7 @@ async def get_system_info(current_subject: str = Depends(get_current_subject)):
 
     # CPU | Memory| Disk
     memory = psutil.virtual_memory()
-    
+
     try:
         cpu_freq = psutil.cpu_freq()
     except Exception as e:
@@ -1046,21 +1046,23 @@ async def get_system_info(current_subject: str = Depends(get_current_subject)):
         "device_backend": _backend_label(get_device()),
         "uptime_seconds": round(time.time() - psutil.boot_time()),
         "cpu": {
-        "logical_count": psutil.cpu_count(logical=True),
-        "physical_count": psutil.cpu_count(logical=False),
-        "usage_percent": psutil.cpu_percent(interval=None),
-        "frequency_mhz": round(cpu_freq.current, 2) if cpu_freq else None,
+            "logical_count": psutil.cpu_count(logical = True),
+            "physical_count": psutil.cpu_count(logical = False),
+            "usage_percent": psutil.cpu_percent(interval = None),
+            "frequency_mhz": round(cpu_freq.current, 2) if cpu_freq else None,
         },
         "memory": {
-        "total_gb": memory.total / 1024**3,
-        "available_gb": memory.available / 1024**3,
-        "percent_used": memory.percent,
-        "process_used_mb": round(current_process.memory_info().rss / 1024**2) if current_process else 0,
+            "total_gb": memory.total / 1024**3,
+            "available_gb": memory.available / 1024**3,
+            "percent_used": memory.percent,
+            "process_used_mb": round(current_process.memory_info().rss / 1024**2)
+            if current_process
+            else 0,
         },
         "disk": {
-        "total_gb": round(disk.total / 1e9, 2) if disk else 0,
-        "free_gb": round(disk.free / 1e9, 2) if disk else 0,
-        "percent_used": disk.percent if disk else 0,
+            "total_gb": round(disk.total / 1e9, 2) if disk else 0,
+            "free_gb": round(disk.free / 1e9, 2) if disk else 0,
+            "percent_used": disk.percent if disk else 0,
         },
         "gpu": gpu_info,
         "ml_packages": ml_packages,

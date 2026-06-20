@@ -77,8 +77,8 @@ class UnslothVisionDataCollator(_UnslothVisionDataCollatorBase):
 
         check_dataset_for_missing_videos(
             examples,
-            raise_error=True,
-            checked=self._checked_video_paths,
+            raise_error = True,
+            checked = self._checked_video_paths,
         )
 
         if formatting_func is None:
@@ -209,7 +209,7 @@ def _create_unsloth_optimizer(
     model,
     optimizer_cls,
     optimizer_kwargs,
-    embedding_lr=5e-5,
+    embedding_lr = 5e-5,
 ):
     lr = optimizer_kwargs["lr"]
     weight_decay = optimizer_kwargs.get("weight_decay", 0.0)
@@ -274,7 +274,7 @@ class UnslothTrainer(SFTTrainer):
     def _create_q_galore_optimizer(
         self,
         config: "QGaloreConfig",
-        embedding_lr=None,
+        embedding_lr = None,
     ):
         """Build the Q-GaLore optimizer from a QGaloreConfig."""
         from unsloth.optimizers.q_galore_adamw import (
@@ -288,21 +288,21 @@ class UnslothTrainer(SFTTrainer):
 
         param_groups = make_q_galore_param_groups(
             self.model,
-            lr=lr,
-            weight_decay=weight_decay,
-            rank=config.rank,
-            update_proj_gap=config.update_proj_gap,
-            scale=config.scale,
-            proj_quant=config.proj_quant,
-            proj_quant_group_size=config.proj_quant_group_size,
-            proj_quant_n_bit=config.proj_quant_n_bit,
-            weight_quant=config.weight_quant,
-            stochastic_round=config.stochastic_round,
-            weight_group_size=config.weight_group_size,
-            cos_threshold=config.cos_threshold,
-            gamma_proj=config.gamma_proj,
-            queue_size=config.queue_size,
-            target_modules=config.target_modules,
+            lr = lr,
+            weight_decay = weight_decay,
+            rank = config.rank,
+            update_proj_gap = config.update_proj_gap,
+            scale = config.scale,
+            proj_quant = config.proj_quant,
+            proj_quant_group_size = config.proj_quant_group_size,
+            proj_quant_n_bit = config.proj_quant_n_bit,
+            weight_quant = config.weight_quant,
+            stochastic_round = config.stochastic_round,
+            weight_group_size = config.weight_group_size,
+            cos_threshold = config.cos_threshold,
+            gamma_proj = config.gamma_proj,
+            queue_size = config.queue_size,
+            target_modules = config.target_modules,
         )
 
         # --- Split embedding params with custom LR (Fix #2) ---
@@ -344,18 +344,18 @@ class UnslothTrainer(SFTTrainer):
         # --- Forward optimizer hyperparameters (Fix #3) ---
         self.optimizer = QGaLoreAdamW8bit(
             param_groups,
-            lr=lr,
-            weight_decay=weight_decay,
-            betas=(self.args.adam_beta1, self.args.adam_beta2),
-            eps=self.args.adam_epsilon,
+            lr = lr,
+            weight_decay = weight_decay,
+            betas = (self.args.adam_beta1, self.args.adam_beta2),
+            eps = self.args.adam_epsilon,
         )
 
         if config.weight_quant:
             QGaLoreAdamW8bit.init_weight_quantization(
                 self.model,
                 param_groups,
-                group_size=config.weight_group_size,
-                stochastic=config.stochastic_round,
+                group_size = config.weight_group_size,
+                stochastic = config.stochastic_round,
             )
             # Pre-hooks dequantize INT8 weights to float before each forward,
             # letting the optimizer free float weight memory between steps.

@@ -168,13 +168,13 @@ def test_download_sets_user_agent(monkeypatch, tmp_path):
         def __exit__(self, *a):
             return False
 
-        def read(self, n=-1):
+        def read(self, n = -1):
             if self._sent:
                 return b""
             self._sent = True
             return b"payload"
 
-    def fake_urlopen(req, timeout=None):
+    def fake_urlopen(req, timeout = None):
         captured["ua"] = req.get_header("User-agent")
         return _Resp()
 
@@ -229,7 +229,7 @@ def test_ensure_macos_extracts_tgz_and_chmods(monkeypatch, tmp_path):
         assert url.endswith("/cloudflared-darwin-arm64.tgz")
         with tarfile.open(dest, "w:gz") as tar:
             data = b"mach-o"
-            info = tarfile.TarInfo(name="cloudflared")
+            info = tarfile.TarInfo(name = "cloudflared")
             info.size = len(data)
             tar.addfile(info, io.BytesIO(data))
         return True
@@ -248,11 +248,11 @@ def test_ensure_macos_extracts_tgz_and_chmods(monkeypatch, tmp_path):
 def _make_tgz(
     tmp_path,
     member_name,
-    data=b"bin",
+    data = b"bin",
 ):
     tgz = tmp_path / "cf.tgz"
     with tarfile.open(tgz, "w:gz") as tar:
-        info = tarfile.TarInfo(name=member_name)
+        info = tarfile.TarInfo(name = member_name)
         info.size = len(data)
         tar.addfile(info, io.BytesIO(data))
     return tgz
@@ -294,9 +294,9 @@ class _FakePopen:
         self.terminated = True
         self._alive = False
 
-    def wait(self, timeout=None):
+    def wait(self, timeout = None):
         if self._alive:
-            raise ct.subprocess.TimeoutExpired(cmd="cloudflared", timeout=timeout)
+            raise ct.subprocess.TimeoutExpired(cmd = "cloudflared", timeout = timeout)
         return 0
 
     def kill(self):
@@ -337,11 +337,11 @@ def test_start_after_stop_does_not_spawn(monkeypatch):
 
 def test_wait_for_ready_times_out_without_blocking():
     t = ct.CloudflareTunnel(8080, "/bin/cloudflared")
-    assert t.wait_for_ready(timeout=0.05) is None
+    assert t.wait_for_ready(timeout = 0.05) is None
 
 
 def _fake_proc(text):
-    return types.SimpleNamespace(stdout=io.StringIO(text))
+    return types.SimpleNamespace(stdout = io.StringIO(text))
 
 
 def test_reader_captures_url_and_registration():
@@ -379,7 +379,7 @@ def test_reader_handles_none_stdout():
     # Popen.stdout can be None; _reader must not crash and must leave the tunnel
     # un-ready so wait_for_ready returns None.
     t = ct.CloudflareTunnel(8080, "/bin/cloudflared")
-    t._reader(types.SimpleNamespace(stdout=None))
+    t._reader(types.SimpleNamespace(stdout = None))
     assert t.url is None
     assert t.ready is False
     assert t.wait_for_ready(0) is None
@@ -414,7 +414,7 @@ def test_start_studio_tunnel_registers_before_wait(monkeypatch):
             self,
             port,
             binary,
-            protocol=None,
+            protocol = None,
         ):
             self.url = None
 
@@ -446,7 +446,7 @@ def test_start_studio_tunnel_clears_and_stops_on_no_url(monkeypatch):
             self,
             port,
             binary,
-            protocol=None,
+            protocol = None,
         ):
             self.url = None
 
@@ -472,7 +472,7 @@ def test_start_studio_tunnel_returns_url(monkeypatch):
             self,
             port,
             binary,
-            protocol=None,
+            protocol = None,
         ):
             self.url = None
 
@@ -503,7 +503,7 @@ def test_start_studio_tunnel_falls_back_to_http2(monkeypatch):
             self,
             port,
             binary,
-            protocol=None,
+            protocol = None,
         ):
             self.protocol = protocol
             self.url = None
@@ -539,7 +539,7 @@ def test_start_studio_tunnel_no_retry_when_shutdown_between_attempts(monkeypatch
             self,
             port,
             binary,
-            protocol=None,
+            protocol = None,
         ):
             self.url = None
             attempts.append(protocol)
@@ -570,7 +570,7 @@ def test_start_studio_tunnel_no_http2_retry_when_no_url(monkeypatch):
             self,
             port,
             binary,
-            protocol=None,
+            protocol = None,
         ):
             self.url = None
             attempts.append(protocol)
@@ -600,7 +600,7 @@ def test_start_studio_tunnel_both_protocols_fail_registration(monkeypatch):
             self,
             port,
             binary,
-            protocol=None,
+            protocol = None,
         ):
             self.url = None
             attempts.append(protocol)
@@ -632,7 +632,7 @@ def test_start_studio_tunnel_aborts_retry_on_concurrent_shutdown(monkeypatch):
             self,
             port,
             binary,
-            protocol=None,
+            protocol = None,
         ):
             self.url = None
             attempts.append(protocol)
@@ -736,14 +736,14 @@ def _run_print_cloudflare_line(monkeypatch, *, cloudflare_url, public_reachable)
 
 def test_cloudflare_line_reworded_when_public_unreachable(monkeypatch):
     out = _run_print_cloudflare_line(
-        monkeypatch, cloudflare_url="https://x.trycloudflare.com", public_reachable=False
+        monkeypatch, cloudflare_url = "https://x.trycloudflare.com", public_reachable = False
     )
     assert "Use the secure link access via Cloudflare instead: https://x.trycloudflare.com" in out
 
 
 def test_cloudflare_line_default_wording_when_reachable(monkeypatch):
     out = _run_print_cloudflare_line(
-        monkeypatch, cloudflare_url="https://x.trycloudflare.com", public_reachable=True
+        monkeypatch, cloudflare_url = "https://x.trycloudflare.com", public_reachable = True
     )
     assert "Secure link access via Cloudflare: https://x.trycloudflare.com" in out
     assert "Use the secure link" not in out
@@ -752,12 +752,12 @@ def test_cloudflare_line_default_wording_when_reachable(monkeypatch):
 def test_cloudflare_line_default_wording_when_unknown(monkeypatch):
     # Probe did not run / could not decide -> keep the existing wording.
     out = _run_print_cloudflare_line(
-        monkeypatch, cloudflare_url="https://x.trycloudflare.com", public_reachable=None
+        monkeypatch, cloudflare_url = "https://x.trycloudflare.com", public_reachable = None
     )
     assert "Secure link access via Cloudflare: https://x.trycloudflare.com" in out
     assert "Use the secure link" not in out
 
 
 def test_cloudflare_line_prints_nothing_without_tunnel(monkeypatch):
-    out = _run_print_cloudflare_line(monkeypatch, cloudflare_url=None, public_reachable=False)
+    out = _run_print_cloudflare_line(monkeypatch, cloudflare_url = None, public_reachable = False)
     assert out == ""

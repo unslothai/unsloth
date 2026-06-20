@@ -31,7 +31,7 @@ NoopReason = Literal["duplicate", "disabled", "render_html_repeat"]
 ToolAction = Literal["execute", "duplicate", "disabled", "render_html_repeat"]
 
 
-@dataclass(frozen=True)
+@dataclass(frozen = True)
 class CoercedArguments:
     """Normalized tool arguments plus whether healing changed the shape."""
 
@@ -39,7 +39,7 @@ class CoercedArguments:
     healed: bool = False
 
 
-@dataclass(frozen=True)
+@dataclass(frozen = True)
 class ToolCallDecision:
     """Decision made before any visible tool event is emitted."""
 
@@ -48,7 +48,7 @@ class ToolCallDecision:
     arguments: dict[str, Any]
     tool_call_id: str = ""
     key: str = ""
-    provenance: dict[str, Any] = field(default_factory=dict)
+    provenance: dict[str, Any] = field(default_factory = dict)
     status_text: str = ""
     noop_result: str = ""
 
@@ -88,9 +88,9 @@ class ToolCallDecision:
                 "name": self.tool_name,
                 "arguments": json.dumps(
                     self.arguments,
-                    ensure_ascii=False,
-                    sort_keys=True,
-                    separators=(",", ":"),
+                    ensure_ascii = False,
+                    sort_keys = True,
+                    separators = (",", ":"),
                 ),
             },
         }
@@ -99,7 +99,7 @@ class ToolCallDecision:
         return tool_call
 
 
-@dataclass(frozen=True)
+@dataclass(frozen = True)
 class ToolCallCompletion:
     """Result/nudge that should be fed back to the next model turn."""
 
@@ -151,7 +151,7 @@ class ToolCallCompletion:
         return message
 
 
-@dataclass(frozen=True)
+@dataclass(frozen = True)
 class _ToolCallRecord:
     key: str
     is_error: bool
@@ -167,10 +167,10 @@ def canonical_tool_call_key(tool_name: str, arguments: Mapping[str, Any]) -> str
     """Return a stable key for duplicate detection."""
     canonical_args = json.dumps(
         dict(arguments),
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        default=_json_default,
+        ensure_ascii = False,
+        sort_keys = True,
+        separators = (",", ":"),
+        default = _json_default,
     )
     return f"{tool_name}:{canonical_args}"
 
@@ -332,14 +332,14 @@ class ToolLoopController:
         tool_name = str(function.get("name") or "").strip()
         coerced = coerce_tool_arguments(
             function.get("arguments", {}),
-            heal=self._auto_heal_tool_calls,
-            tool_name=tool_name,
+            heal = self._auto_heal_tool_calls,
+            tool_name = tool_name,
         )
         key = canonical_tool_call_key(tool_name, coerced.arguments)
         provenance = tool_event_provenance(
-            healed=coerced.healed,
-            forced=forced,
-            provisional=provisional,
+            healed = coerced.healed,
+            forced = forced,
+            provisional = provisional,
         )
         action: ToolAction = "execute"
         noop = ""
@@ -354,14 +354,14 @@ class ToolLoopController:
             noop = _noop_result("duplicate", tool_name)
 
         return ToolCallDecision(
-            action=action,
-            tool_name=tool_name,
-            arguments=coerced.arguments,
-            tool_call_id=str(tool_call.get("id") or ""),
-            key=key,
-            provenance=provenance,
-            status_text=status_for_tool(tool_name, coerced.arguments),
-            noop_result=noop,
+            action = action,
+            tool_name = tool_name,
+            arguments = coerced.arguments,
+            tool_call_id = str(tool_call.get("id") or ""),
+            key = key,
+            provenance = provenance,
+            status_text = status_for_tool(tool_name, coerced.arguments),
+            noop_result = noop,
         )
 
     def record_result(self, decision: ToolCallDecision, result: Any) -> ToolCallCompletion:
@@ -370,10 +370,10 @@ class ToolLoopController:
         failed = is_tool_error(result_text)
         self._history.append(
             _ToolCallRecord(
-                key=decision.key,
-                is_error=failed,
-                executed=True,
-                action=decision.action,
+                key = decision.key,
+                is_error = failed,
+                executed = True,
+                action = decision.action,
             )
         )
         if not failed:
@@ -381,20 +381,20 @@ class ToolLoopController:
             if decision.tool_name in self._one_shot_tools:
                 self._completed_one_shot_tools.add(decision.tool_name)
         return ToolCallCompletion(
-            decision=decision,
-            result=result_text,
-            is_error=failed,
-            executed=True,
+            decision = decision,
+            result = result_text,
+            is_error = failed,
+            executed = True,
         )
 
     def record_noop(self, decision: ToolCallDecision) -> ToolCallCompletion:
         """Record a controller no-op without creating visible tool output."""
         self._history.append(
             _ToolCallRecord(
-                key=decision.key,
-                is_error=False,
-                executed=False,
-                action=decision.action,
+                key = decision.key,
+                is_error = False,
+                executed = False,
+                action = decision.action,
             )
         )
         if decision.action == "duplicate":
@@ -405,8 +405,8 @@ class ToolLoopController:
         elif decision.action in ("disabled", "render_html_repeat"):
             self._force_final_answer = True
         return ToolCallCompletion(
-            decision=decision,
-            result=decision.noop_result,
-            is_error=False,
-            executed=False,
+            decision = decision,
+            result = decision.noop_result,
+            is_error = False,
+            executed = False,
         )

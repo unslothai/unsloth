@@ -11,7 +11,7 @@ def ppl_model(model, tokenizer, dataset):
     max_length = 2048
     stride = 512
     for s in tqdm(range(len(dataset["text"]))):
-        encodings = tokenizer(dataset["text"][s], return_tensors="pt")
+        encodings = tokenizer(dataset["text"][s], return_tensors = "pt")
         seq_len = encodings.input_ids.size(1)
         prev_end_loc = 0
         for begin_loc in range(0, seq_len, stride):
@@ -23,7 +23,7 @@ def ppl_model(model, tokenizer, dataset):
             pad_token_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 0
             attention_mask = (input_ids != pad_token_id).long()
             with torch.no_grad():
-                outputs = model(input_ids, labels=target_ids, attention_mask=attention_mask)
+                outputs = model(input_ids, labels = target_ids, attention_mask = attention_mask)
                 neg_log_likelihood = outputs.loss
             nlls.append(neg_log_likelihood)
             prev_end_loc = end_loc
@@ -61,4 +61,4 @@ def print_model_comparison():
     )
 
     print("\nComparison Table:")
-    print(comparison_df.to_string(index=False))
+    print(comparison_df.to_string(index = False))

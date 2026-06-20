@@ -22,10 +22,10 @@ def safe_remove_directory(path):
 
 print("🔥 Loading the 16-bit merged model from disk...")
 merged_model, merged_tokenizer = FastLanguageModel.from_pretrained(
-    model_name="./gpt-oss-finetuned-merged",
-    max_seq_length=1024,
-    load_in_4bit=True,
-    load_in_8bit=False,
+    model_name = "./gpt-oss-finetuned-merged",
+    max_seq_length = 1024,
+    load_in_4bit = True,
+    load_in_8bit = False,
 )
 print("✅ Merged model loaded successfully.")
 
@@ -36,13 +36,13 @@ messages = [
 ]
 inputs = merged_tokenizer.apply_chat_template(
     messages,
-    add_generation_prompt=True,
-    return_tensors="pt",
-    return_dict=True,
-    reasoning_effort="low",  # low, medium or high
+    add_generation_prompt = True,
+    return_tensors = "pt",
+    return_dict = True,
+    reasoning_effort = "low",  # low, medium or high
 ).to(merged_model.device)
 
-_ = merged_model.generate(**inputs, max_new_tokens=512, streamer=TextStreamer(merged_tokenizer))
+_ = merged_model.generate(**inputs, max_new_tokens = 512, streamer = TextStreamer(merged_tokenizer))
 print("\n✅ Inference complete.")
 
 # --- Final Cleanup ---

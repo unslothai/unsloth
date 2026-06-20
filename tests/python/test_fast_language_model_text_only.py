@@ -115,7 +115,7 @@ def test_text_only_helper_rejects_configs_without_text_submodel():
     class VisionOnlyConfig:
         vision_config = object()
 
-    with pytest.raises(ValueError, match="Cannot load vision-only as text-only"):
+    with pytest.raises(ValueError, match = "Cannot load vision-only as text-only"):
         helper(VisionOnlyConfig(), "vision-only")
 
 
@@ -340,28 +340,28 @@ def test_gemma3_text_only_loads_real_language_weights_from_vlm_checkpoint(tmp_pa
 
     sentinel = 0.1234
     text_cfg = transformers.Gemma3TextConfig(
-        hidden_size=32,
-        intermediate_size=64,
-        num_hidden_layers=1,
-        num_attention_heads=2,
-        num_key_value_heads=1,
-        head_dim=16,
-        vocab_size=128,
-        max_position_embeddings=128,
-        sliding_window=64,
+        hidden_size = 32,
+        intermediate_size = 64,
+        num_hidden_layers = 1,
+        num_attention_heads = 2,
+        num_key_value_heads = 1,
+        head_dim = 16,
+        vocab_size = 128,
+        max_position_embeddings = 128,
+        sliding_window = 64,
     )
     vision_cfg = transformers.SiglipVisionConfig(
-        hidden_size=32,
-        intermediate_size=64,
-        num_hidden_layers=1,
-        num_attention_heads=2,
-        image_size=16,
-        patch_size=8,
-        num_channels=3,
+        hidden_size = 32,
+        intermediate_size = 64,
+        num_hidden_layers = 1,
+        num_attention_heads = 2,
+        image_size = 16,
+        patch_size = 8,
+        num_channels = 3,
     )
     full_config = transformers.Gemma3Config(
-        text_config=text_cfg.to_dict(),
-        vision_config=vision_cfg.to_dict(),
+        text_config = text_cfg.to_dict(),
+        vision_config = vision_cfg.to_dict(),
     )
     full_model = transformers.Gemma3ForConditionalGeneration(full_config)
 
@@ -379,7 +379,7 @@ def test_gemma3_text_only_loads_real_language_weights_from_vlm_checkpoint(tmp_pa
             state[k].fill_(sentinel)
 
     save_dir = tmp_path / "vlm"
-    full_model.save_pretrained(save_dir, safe_serialization=True)
+    full_model.save_pretrained(save_dir, safe_serialization = True)
 
     # tf >=5 saves under an outer "model." prefix; strip it to reproduce the
     # language_model.model.* layout the published Gemma 3 checkpoints use.
@@ -389,7 +389,7 @@ def test_gemma3_text_only_loads_real_language_weights_from_vlm_checkpoint(tmp_pa
     for f in save_dir.glob("*.safetensors"):
         weights.update(load_file(str(f)))
     for f in save_dir.glob("*.bin"):
-        weights.update(torch.load(f, map_location="cpu", weights_only=True))
+        weights.update(torch.load(f, map_location = "cpu", weights_only = True))
     weights = {
         (k[len("model.") :] if k.startswith("model.") else k): v.contiguous()
         for k, v in weights.items()
@@ -406,9 +406,9 @@ def test_gemma3_text_only_loads_real_language_weights_from_vlm_checkpoint(tmp_pa
         load_kwargs["key_mapping"] = key_mapping
     model = transformers.AutoModelForCausalLM.from_pretrained(
         real_dir,
-        config=text_config,
-        dtype=torch.float32,
-        local_files_only=True,
+        config = text_config,
+        dtype = torch.float32,
+        local_files_only = True,
         **load_kwargs,
     )
 

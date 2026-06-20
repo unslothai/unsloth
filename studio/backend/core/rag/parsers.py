@@ -18,7 +18,7 @@ from html.parser import HTMLParser
 logger = logging.getLogger(__name__)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen = True)
 class Page:
     """A unit of extracted text. ``page_number`` is 1-based (None if N/A)."""
 
@@ -27,7 +27,7 @@ class Page:
     char_count: int = 0
 
 
-@dataclass(frozen=True)
+@dataclass(frozen = True)
 class ParsedImage:
     """A raster image embedded in a document (PDF only)."""
 
@@ -37,7 +37,7 @@ class ParsedImage:
 
 
 def _page(text: str, page_number: int | None) -> Page:
-    return Page(text=text, page_number=page_number, char_count=len(text))
+    return Page(text = text, page_number = page_number, char_count = len(text))
 
 
 class _Stripper(HTMLParser):
@@ -78,7 +78,7 @@ def _pdf(path: str, want_images: bool) -> tuple[list[Page], list[ParsedImage]]:
             text = page.get_text("text") or ""
             pages.append(_page(text, i + 1))
             if want_images:
-                for img in page.get_images(full=True):
+                for img in page.get_images(full = True):
                     xref = img[0]
                     try:
                         extracted = doc.extract_image(xref)
@@ -89,9 +89,9 @@ def _pdf(path: str, want_images: bool) -> tuple[list[Page], list[ParsedImage]]:
                     if image_bytes:
                         images.append(
                             ParsedImage(
-                                image_bytes=image_bytes,
-                                page_number=i + 1,
-                                xref=xref,
+                                image_bytes = image_bytes,
+                                page_number = i + 1,
+                                xref = xref,
                             )
                         )
     finally:
@@ -106,7 +106,7 @@ def _merge_rects(boxes: list) -> list:
     rects = [pymupdf.Rect(b) for b in boxes]
     rects = [r for r in rects if r.width > 5 and r.height > 5]
     merged: list = []
-    for box in sorted(rects, key=lambda r: -r.get_area()):
+    for box in sorted(rects, key = lambda r: -r.get_area()):
         placed = False
         for m in merged:
             if m.intersects(box):
@@ -163,12 +163,12 @@ def render_pdf_figures(
                     and box.height >= min_side
                 ):
                     try:
-                        pix = page.get_pixmap(dpi=dpi, clip=box)
+                        pix = page.get_pixmap(dpi = dpi, clip = box)
                         out.append(
                             ParsedImage(
-                                image_bytes=pix.tobytes("png"),
-                                page_number=i + 1,
-                                xref=0,
+                                image_bytes = pix.tobytes("png"),
+                                page_number = i + 1,
+                                xref = 0,
                             )
                         )
                     except Exception:
@@ -203,7 +203,7 @@ def parse(path: str, *, want_images: bool = False):
         return (pages, []) if want_images else pages
 
     if ext in (".html", ".htm", ".txt", ".md", ".markdown"):
-        with open(path, encoding="utf-8", errors="replace") as f:
+        with open(path, encoding = "utf-8", errors = "replace") as f:
             raw = f.read()
         pages = _html(raw) if ext in (".html", ".htm") else [_page(raw, None)]
         return (pages, []) if want_images else pages

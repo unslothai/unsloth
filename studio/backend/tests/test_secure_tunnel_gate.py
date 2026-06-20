@@ -41,11 +41,11 @@ from run import _cloudflare_tunnel_should_start as should_start  # noqa: E402
 def test_cloudflare_gate(cloudflare, host, secure, api_only, is_colab, expected):
     assert (
         should_start(
-            cloudflare=cloudflare,
-            host=host,
-            secure=secure,
-            api_only=api_only,
-            is_colab=is_colab,
+            cloudflare = cloudflare,
+            host = host,
+            secure = secure,
+            api_only = api_only,
+            is_colab = is_colab,
         )
         is expected
     )
@@ -118,7 +118,7 @@ def test_startup_output_emits_tool_notice_on_network_bind(capsys, monkeypatch):
     monkeypatch.setattr(run, "_print_cloudflare_line", lambda: None)
     monkeypatch.setattr(run, "_localhost_ipv6_mismatch_url", lambda *a, **k: None)
 
-    run._emit_startup_output("0.0.0.0", 8000, "0.0.0.0", secure=False, enable_tools=None)
+    run._emit_startup_output("0.0.0.0", 8000, "0.0.0.0", secure = False, enable_tools = None)
     out = capsys.readouterr().out
     assert "Server-side tools" in out
     assert "network-reachable" in out
@@ -128,7 +128,7 @@ def test_startup_output_emits_disabled_notice(capsys, monkeypatch):
     import run
 
     monkeypatch.setattr(run, "_localhost_ipv6_mismatch_url", lambda *a, **k: None)
-    run._emit_startup_output("127.0.0.1", 8000, "127.0.0.1", secure=False, enable_tools=False)
+    run._emit_startup_output("127.0.0.1", 8000, "127.0.0.1", secure = False, enable_tools = False)
     out = capsys.readouterr().out
     assert "Server-side tools are DISABLED" in out
 
@@ -136,15 +136,14 @@ def test_startup_output_emits_disabled_notice(capsys, monkeypatch):
 def test_run_server_rejects_secure_without_cloudflare():
     # Direct backend callers (not just the CLI) must reject the contradictory combo.
     import run
-
     with pytest.raises(SystemExit) as exc:
-        run.run_server(secure=True, cloudflare=False)
+        run.run_server(secure = True, cloudflare = False)
     assert "A secure Cloudflare link is not allowed" in str(exc.value)
 
 
 def test_failclosed_message_present_in_source():
     # The exact, user-facing fail-closed message must not drift.
-    src = (_BACKEND / "run.py").read_text(encoding="utf-8")
+    src = (_BACKEND / "run.py").read_text(encoding = "utf-8")
     assert (
         "A secure Cloudflare link is not allowed, use --not-secure which provides a 0.0.0.0 link"
         in src

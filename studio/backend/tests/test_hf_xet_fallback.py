@@ -53,7 +53,7 @@ def hf_cache(tmp_path, monkeypatch):
 
 def _blobs_dir(root: Path, repo_id: str = REPO) -> Path:
     d = root / f"models--{repo_id.replace('/', '--')}" / "blobs"
-    d.mkdir(parents=True, exist_ok=True)
+    d.mkdir(parents = True, exist_ok = True)
     return d
 
 
@@ -76,11 +76,11 @@ def test_constant_incomplete_fires_stall(hf_cache):
 
     calls: list[str] = []
     stop = xf.start_watchdog(
-        repo_ids=[REPO], on_stall=calls.append, interval=0.05, stall_timeout=0.3
+        repo_ids = [REPO], on_stall = calls.append, interval = 0.05, stall_timeout = 0.3
     )
     try:
         assert _wait(
-            lambda: len(calls) >= 1, timeout=3.0
+            lambda: len(calls) >= 1, timeout = 3.0
         ), "watchdog never fired on a constant-size .incomplete"
     finally:
         stop.set()
@@ -100,12 +100,12 @@ def test_growing_incomplete_never_stalls(hf_cache):
             size += 4096
             part.write_bytes(b"\0" * size)
 
-    grower = threading.Thread(target=_grow, daemon=True)
+    grower = threading.Thread(target = _grow, daemon = True)
     grower.start()
 
     calls: list[str] = []
     stop = xf.start_watchdog(
-        repo_ids=[REPO], on_stall=calls.append, interval=0.05, stall_timeout=0.3
+        repo_ids = [REPO], on_stall = calls.append, interval = 0.05, stall_timeout = 0.3
     )
     try:
         time.sleep(1.0)  # well past stall_timeout, but bytes keep growing
@@ -121,7 +121,7 @@ def test_no_incomplete_never_stalls(hf_cache):
 
     calls: list[str] = []
     stop = xf.start_watchdog(
-        repo_ids=[REPO], on_stall=calls.append, interval=0.05, stall_timeout=0.3
+        repo_ids = [REPO], on_stall = calls.append, interval = 0.05, stall_timeout = 0.3
     )
     try:
         time.sleep(0.8)
@@ -136,10 +136,10 @@ def test_stall_fires_at_most_once(hf_cache):
 
     calls: list[str] = []
     stop = xf.start_watchdog(
-        repo_ids=[REPO], on_stall=calls.append, interval=0.05, stall_timeout=0.2
+        repo_ids = [REPO], on_stall = calls.append, interval = 0.05, stall_timeout = 0.2
     )
     try:
-        assert _wait(lambda: len(calls) >= 1, timeout=3.0)
+        assert _wait(lambda: len(calls) >= 1, timeout = 3.0)
         time.sleep(0.6)  # keep ticking; must not fire again
         assert len(calls) == 1, f"on_stall fired {len(calls)} times, expected exactly 1"
     finally:
@@ -180,7 +180,7 @@ def test_get_state_sparse_aware(hf_cache):
 DL_REPO, FILE = "ztest/xet-dl", "model-Q4_K_XL.gguf"
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture(autouse = True)
 def _no_real_cache_hit(monkeypatch):
     """Default: the cached probe misses; tests override it to force a hit."""
     monkeypatch.setattr(huggingface_hub, "try_to_load_from_cache", lambda *a, **k: None)
@@ -209,10 +209,10 @@ class _FakeAttempt:
     ):
         self.calls.append(
             _types.SimpleNamespace(
-                repo_id=repo_id,
-                filename=filename,
-                disable_xet=disable_xet,
-                repo_type=repo_type,
+                repo_id = repo_id,
+                filename = filename,
+                disable_xet = disable_xet,
+                repo_type = repo_type,
             )
         )
         return self._results[len(self.calls) - 1]
@@ -239,14 +239,14 @@ def test_cancel_before_start_raises_no_attempt(monkeypatch):
     fake = _install(monkeypatch, [])
     ev = threading.Event()
     ev.set()
-    with pytest.raises(RuntimeError, match="Cancelled"):
-        xf.hf_hub_download_with_xet_fallback(DL_REPO, FILE, None, cancel_event=ev)
+    with pytest.raises(RuntimeError, match = "Cancelled"):
+        xf.hf_hub_download_with_xet_fallback(DL_REPO, FILE, None, cancel_event = ev)
     assert fake.calls == []
 
 
 def test_nonstall_error_propagates_without_fallback(monkeypatch):
     fake = _install(monkeypatch, [("error", "RepositoryNotFoundError: 404 not found")])
-    with pytest.raises(RuntimeError, match="RepositoryNotFoundError"):
+    with pytest.raises(RuntimeError, match = "RepositoryNotFoundError"):
         xf.hf_hub_download_with_xet_fallback(DL_REPO, FILE, None)
     assert len(fake.calls) == 1, "deterministic error must not trigger an HTTP fallback"
     assert fake.calls[0].disable_xet is False
@@ -293,7 +293,7 @@ def test_second_stall_raises_download_stall_error(monkeypatch):
 
 def test_cancelled_midattempt_raises_no_fallback(monkeypatch):
     fake = _install(monkeypatch, [("cancelled", None)])
-    with pytest.raises(RuntimeError, match="Cancelled"):
+    with pytest.raises(RuntimeError, match = "Cancelled"):
         xf.hf_hub_download_with_xet_fallback(DL_REPO, FILE, None)
     assert len(fake.calls) == 1
 
@@ -315,7 +315,6 @@ def test_per_file_independent_fallback(monkeypatch):
 # --------------------------------------------------------------------------- #
 def _safe_path() -> str:
     import os
-
     return os.environ.get("PATH", "")
 
 
@@ -326,9 +325,9 @@ def test_disable_xet_constant_set_in_fresh_interpreter():
     )
     proc = subprocess.run(
         [sys.executable, "-c", code],
-        env={"HF_HUB_DISABLE_XET": "1", "PATH": _safe_path()},
-        capture_output=True,
-        text=True,
+        env = {"HF_HUB_DISABLE_XET": "1", "PATH": _safe_path()},
+        capture_output = True,
+        text = True,
     )
     assert proc.returncode == 0, (
         f"HF_HUB_DISABLE_XET=1 did not set constants.HF_HUB_DISABLE_XET=True "
@@ -343,9 +342,9 @@ def test_default_leaves_xet_enabled():
     )
     proc = subprocess.run(
         [sys.executable, "-c", code],
-        env={"PATH": _safe_path()},  # no HF_HUB_DISABLE_XET
-        capture_output=True,
-        text=True,
+        env = {"PATH": _safe_path()},  # no HF_HUB_DISABLE_XET
+        capture_output = True,
+        text = True,
     )
     assert proc.returncode == 0, (
         f"without the env var, constants.HF_HUB_DISABLE_XET was not False "

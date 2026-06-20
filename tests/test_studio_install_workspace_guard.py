@@ -60,30 +60,30 @@ def _run_install_guard(
     create_venv_marker: bool = False,
 ) -> subprocess.CompletedProcess:
     venv_dir = studio_home / "unsloth_studio"
-    (venv_dir / "bin").mkdir(parents=True, exist_ok=True)
+    (venv_dir / "bin").mkdir(parents = True, exist_ok = True)
     py = venv_dir / "bin" / "python"
     py.write_text("#!/bin/sh\nexit 0\n")
     py.chmod(0o755)
     if create_share_conf:
-        (studio_home / "share").mkdir(parents=True, exist_ok=True)
+        (studio_home / "share").mkdir(parents = True, exist_ok = True)
         (studio_home / "share" / "studio.conf").write_text("")
     if create_bin_shim:
-        (studio_home / "bin").mkdir(parents=True, exist_ok=True)
+        (studio_home / "bin").mkdir(parents = True, exist_ok = True)
         (studio_home / "bin" / "unsloth").write_text("")
     if create_venv_marker:
         (venv_dir / ".unsloth-studio-owned").write_text("")
     script = _build_install_guard_script(studio_home, redirect)
     return subprocess.run(
         ["bash", "-c", script],
-        env={"PATH": "/usr/bin:/bin"},
-        text=True,
-        capture_output=True,
+        env = {"PATH": "/usr/bin:/bin"},
+        text = True,
+        capture_output = True,
     )
 
 
 def test_env_mode_blocks_unsloth_studio_without_sentinels(tmp_path):
     studio_home = tmp_path / "ws"
-    res = _run_install_guard(studio_home, redirect="env")
+    res = _run_install_guard(studio_home, redirect = "env")
     assert res.returncode != 0, (
         "env-mode without sentinels must refuse to rm -rf $VENV_DIR; "
         f"stdout={res.stdout!r} stderr={res.stderr!r}"
@@ -94,7 +94,7 @@ def test_env_mode_blocks_unsloth_studio_without_sentinels(tmp_path):
 
 def test_env_mode_passes_when_share_studio_conf_present(tmp_path):
     studio_home = tmp_path / "ws"
-    res = _run_install_guard(studio_home, redirect="env", create_share_conf=True)
+    res = _run_install_guard(studio_home, redirect = "env", create_share_conf = True)
     assert res.returncode == 0, (
         f"share/studio.conf sentinel must allow cleanup;"
         f" stdout={res.stdout!r} stderr={res.stderr!r}"
@@ -105,14 +105,14 @@ def test_env_mode_passes_when_share_studio_conf_present(tmp_path):
 
 def test_env_mode_passes_when_bin_unsloth_shim_present(tmp_path):
     studio_home = tmp_path / "ws"
-    res = _run_install_guard(studio_home, redirect="env", create_bin_shim=True)
+    res = _run_install_guard(studio_home, redirect = "env", create_bin_shim = True)
     assert res.returncode == 0, res.stderr
     assert not (studio_home / "unsloth_studio").exists()
 
 
 def test_default_mode_skips_sentinel_check(tmp_path):
     studio_home = tmp_path / "ws"
-    res = _run_install_guard(studio_home, redirect="default")
+    res = _run_install_guard(studio_home, redirect = "default")
     assert res.returncode == 0, res.stderr
     assert "RESULT=ok" in res.stdout
     assert not (studio_home / "unsloth_studio").exists()
@@ -146,18 +146,18 @@ def test_env_mode_blocks_when_bin_unsloth_is_a_directory(tmp_path):
     """A bare directory at bin/unsloth must NOT pass the sentinel (regression: `-e` accepted any type)."""
     studio_home = tmp_path / "ws"
     venv = studio_home / "unsloth_studio"
-    (venv / "bin").mkdir(parents=True)
+    (venv / "bin").mkdir(parents = True)
     py = venv / "bin" / "python"
     py.write_text("#!/bin/sh\nexit 0\n")
     py.chmod(0o755)
     (venv / "important.txt").write_text("keep me")
-    (studio_home / "bin" / "unsloth").mkdir(parents=True)
+    (studio_home / "bin" / "unsloth").mkdir(parents = True)
     script = _build_install_guard_script(studio_home, "env")
     res = subprocess.run(
         ["bash", "-c", script],
-        env={"PATH": "/usr/bin:/bin"},
-        text=True,
-        capture_output=True,
+        env = {"PATH": "/usr/bin:/bin"},
+        text = True,
+        capture_output = True,
     )
     assert res.returncode != 0, (
         "directory at bin/unsloth must NOT satisfy the Studio sentinel; "
@@ -170,11 +170,11 @@ def test_env_mode_passes_when_bin_unsloth_is_a_symlink(tmp_path):
     """A symlink at bin/unsloth (real installer artefact) must still satisfy the sentinel."""
     studio_home = tmp_path / "ws"
     venv = studio_home / "unsloth_studio"
-    (venv / "bin").mkdir(parents=True)
+    (venv / "bin").mkdir(parents = True)
     py = venv / "bin" / "python"
     py.write_text("#!/bin/sh\nexit 0\n")
     py.chmod(0o755)
-    (studio_home / "bin").mkdir(parents=True)
+    (studio_home / "bin").mkdir(parents = True)
     target = studio_home / "bin" / "unsloth-real"
     target.write_text("#!/bin/sh\nexit 0\n")
     target.chmod(0o755)
@@ -182,9 +182,9 @@ def test_env_mode_passes_when_bin_unsloth_is_a_symlink(tmp_path):
     script = _build_install_guard_script(studio_home, "env")
     res = subprocess.run(
         ["bash", "-c", script],
-        env={"PATH": "/usr/bin:/bin"},
-        text=True,
-        capture_output=True,
+        env = {"PATH": "/usr/bin:/bin"},
+        text = True,
+        capture_output = True,
     )
     assert res.returncode == 0, res.stderr
     assert "RESULT=ok" in res.stdout
@@ -257,7 +257,7 @@ def test_setup_ps1_prebuilt_llama_cpp_has_ownership_guard():
 def test_env_mode_passes_when_venv_marker_present(tmp_path):
     """install.sh env-mode guard must accept the in-VENV .unsloth-studio-owned marker as a sentinel."""
     studio_home = tmp_path / "ws"
-    res = _run_install_guard(studio_home, redirect="env", create_venv_marker=True)
+    res = _run_install_guard(studio_home, redirect = "env", create_venv_marker = True)
     assert res.returncode == 0, (
         f"in-VENV marker must allow cleanup; " f"stdout={res.stdout!r} stderr={res.stderr!r}"
     )
@@ -269,21 +269,21 @@ def test_env_mode_blocks_when_bin_unsloth_is_symlink_to_directory(tmp_path):
     """install.sh guard must reject a symlink-to-directory at bin/unsloth; only -f (file/symlink-to-file) counts."""
     studio_home = tmp_path / "ws"
     venv = studio_home / "unsloth_studio"
-    (venv / "bin").mkdir(parents=True)
+    (venv / "bin").mkdir(parents = True)
     py = venv / "bin" / "python"
     py.write_text("#!/bin/sh\nexit 0\n")
     py.chmod(0o755)
     (venv / "important.txt").write_text("keep me")
-    (studio_home / "bin").mkdir(parents=True)
+    (studio_home / "bin").mkdir(parents = True)
     target_dir = studio_home / "bin" / "unsloth-target-dir"
     target_dir.mkdir()
     (studio_home / "bin" / "unsloth").symlink_to(target_dir)
     script = _build_install_guard_script(studio_home, "env")
     res = subprocess.run(
         ["bash", "-c", script],
-        env={"PATH": "/usr/bin:/bin"},
-        text=True,
-        capture_output=True,
+        env = {"PATH": "/usr/bin:/bin"},
+        text = True,
+        capture_output = True,
     )
     assert res.returncode != 0, (
         "symlink-to-directory at bin/unsloth must NOT pass; "
@@ -296,19 +296,19 @@ def test_env_mode_blocks_when_bin_unsloth_is_broken_symlink(tmp_path):
     """install.sh guard must reject a broken symlink at bin/unsloth."""
     studio_home = tmp_path / "ws"
     venv = studio_home / "unsloth_studio"
-    (venv / "bin").mkdir(parents=True)
+    (venv / "bin").mkdir(parents = True)
     py = venv / "bin" / "python"
     py.write_text("#!/bin/sh\nexit 0\n")
     py.chmod(0o755)
     (venv / "important.txt").write_text("keep me")
-    (studio_home / "bin").mkdir(parents=True)
+    (studio_home / "bin").mkdir(parents = True)
     (studio_home / "bin" / "unsloth").symlink_to(studio_home / "bin" / "does-not-exist")
     script = _build_install_guard_script(studio_home, "env")
     res = subprocess.run(
         ["bash", "-c", script],
-        env={"PATH": "/usr/bin:/bin"},
-        text=True,
-        capture_output=True,
+        env = {"PATH": "/usr/bin:/bin"},
+        text = True,
+        capture_output = True,
     )
     assert res.returncode != 0, (
         "broken symlink at bin/unsloth must NOT pass; "
@@ -422,9 +422,9 @@ def _run_check_health(expected_root_id: str, response_json: str) -> int:
     )
     res = subprocess.run(
         ["bash", "-c", script],
-        env={"PATH": "/usr/bin:/bin"},
-        text=True,
-        capture_output=True,
+        env = {"PATH": "/usr/bin:/bin"},
+        text = True,
+        capture_output = True,
     )
     rc_lines = [l for l in res.stdout.splitlines() if l.startswith("rc=")]
     return int(rc_lines[0].split("=")[1]) if rc_lines else res.returncode
@@ -607,7 +607,7 @@ def test_install_sh_create_shortcuts_seeds_id_from_csprng_with_python_fallback(t
 
     # Behavioral check: run the generation block twice to confirm idempotence.
     studio_home = tmp_path / "studio"
-    (studio_home / "share").mkdir(parents=True)
+    (studio_home / "share").mkdir(parents = True)
     gen_script = (
         f'STUDIO_HOME="{studio_home}"\n'
         '_css_id_dir="$STUDIO_HOME/share"\n'
@@ -626,7 +626,7 @@ def test_install_sh_create_shortcuts_seeds_id_from_csprng_with_python_fallback(t
         'echo "ID=$a"\n'
         'echo "LEN=${#a}"\n'
     )
-    res = subprocess.run(["bash", "-c", gen_script], text=True, capture_output=True)
+    res = subprocess.run(["bash", "-c", gen_script], text = True, capture_output = True)
     assert res.returncode == 0, res.stderr
     out = dict(line.split("=", 1) for line in res.stdout.strip().splitlines() if "=" in line)
     assert out.get("LEN") == "64", f"id must be 64 hex chars, got LEN={out.get('LEN')!r}"
@@ -695,9 +695,9 @@ def test_install_sh_launcher_gates_port_file_on_baked_flag_not_runtime_env():
         env.update(runtime_env)
         res = subprocess.run(
             ["bash", "-c", script],
-            text=True,
-            capture_output=True,
-            env=env,
+            text = True,
+            capture_output = True,
+            env = env,
         )
         for line in res.stdout.splitlines():
             if line.startswith("PORT_FILE="):
@@ -746,7 +746,7 @@ def test_main_py_read_studio_install_id_validates_hex_and_handles_missing(tmp_pa
         return token if pattern.fullmatch(token) else ""
 
     root = tmp_path / "studio"
-    (root / "share").mkdir(parents=True)
+    (root / "share").mkdir(parents = True)
 
     # Missing file -> empty
     assert _read(root) == ""
@@ -798,7 +798,7 @@ def test_install_sh_install_id_survives_symlinked_studio_home(tmp_path):
     link = tmp_path / "linkhome"
     link.symlink_to(real)
     studio_home = real / ".unsloth" / "studio"
-    (studio_home / "share").mkdir(parents=True)
+    (studio_home / "share").mkdir(parents = True)
     valid_id = "ab12" * 16
     (studio_home / "share" / "studio_install_id").write_text(valid_id)
     # Canonical and symlinked paths must see the SAME content (cat and read_text agree).
@@ -809,7 +809,7 @@ def test_install_sh_install_id_survives_symlinked_studio_home(tmp_path):
     # install.sh's `cat` sees the same.
     import subprocess as _sp
 
-    res = _sp.run(["cat", str(raw_via_link)], capture_output=True, text=True)
+    res = _sp.run(["cat", str(raw_via_link)], capture_output = True, text = True)
     assert res.returncode == 0
     assert res.stdout == valid_id
 
@@ -851,7 +851,7 @@ _sed_safe=$(printf '%s' "$_sq_escaped" | sed 's/[\\\\&|]/\\\\&/g')
 sed "s|@@DATA_DIR@@|$_sed_safe|g" "{launcher_path}" > "{launcher_path}.tmp" \\
     && mv "{launcher_path}.tmp" "{launcher_path}"
 """
-    subprocess.run(["bash", "-c", script], check=True)
+    subprocess.run(["bash", "-c", script], check = True)
     final = launcher_path.read_text()
     assert (
         f"DATA_DIR='{weird_data_dir}'" in final

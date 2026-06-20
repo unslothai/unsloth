@@ -49,7 +49,7 @@ def _fourcc(key: str) -> int:
 
 
 def _fourcc_str(value: int) -> str:
-    return value.to_bytes(4, "big").decode("ascii", errors="replace")
+    return value.to_bytes(4, "big").decode("ascii", errors = "replace")
 
 
 def _watts(energy: int, unit: str, elapsed_s: float) -> Optional[float]:
@@ -213,7 +213,7 @@ def _from_cfstr(cf: ctypes.CDLL, ref: Optional[int]) -> str:
     buf = ctypes.create_string_buffer(128)
     if not cf.CFStringGetCString(ref, buf, len(buf), _CF_STRING_ENCODING_UTF8):
         return ""
-    return buf.value.decode("utf-8", errors="replace").strip()
+    return buf.value.decode("utf-8", errors = "replace").strip()
 
 
 # ========== SMC connection (GPU temperature) ==========
@@ -282,7 +282,7 @@ class _SMCConnection:
         cached = self._key_info_cache.get(key_id)
         if cached is not None:
             return cached
-        oval = self._call(_SMCKeyData(key=key_id, data8=_SMC_CMD_KEY_INFO))
+        oval = self._call(_SMCKeyData(key = key_id, data8 = _SMC_CMD_KEY_INFO))
         self._key_info_cache[key_id] = oval.key_info
         return oval.key_info
 
@@ -290,7 +290,7 @@ class _SMCConnection:
         try:
             key_id = _fourcc(key)
             info = self._read_key_info(key_id)
-            oval = self._call(_SMCKeyData(key=key_id, data8=_SMC_CMD_READ_BYTES, key_info=info))
+            oval = self._call(_SMCKeyData(key = key_id, data8 = _SMC_CMD_READ_BYTES, key_info = info))
             return bytes(oval.bytes[: info.data_size])
         except OSError:
             return None
@@ -309,7 +309,7 @@ class _SMCConnection:
 
     def _key_name_at(self, index: int) -> Optional[str]:
         try:
-            oval = self._call(_SMCKeyData(data8=_SMC_CMD_KEY_AT_INDEX, data32=index))
+            oval = self._call(_SMCKeyData(data8 = _SMC_CMD_KEY_AT_INDEX, data32 = index))
             return oval.key.to_bytes(4, "big").decode("ascii")
         except (OSError, UnicodeDecodeError):
             return None
