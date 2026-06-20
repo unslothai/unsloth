@@ -106,7 +106,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           . (Join-Path $env:GITHUB_WORKSPACE 'tests/studio_setup_ps1/Get-FunctionSource.ps1')
           $setup = Join-Path $env:GITHUB_WORKSPACE 'studio/setup.ps1'
-          foreach ($fn in @('Get-VcBuildCustomizationsDir', 'Find-VsBuildTools')) {
+          foreach ($fn in @('Resolve-VsGeneratorFromLabel', 'Get-VcBuildCustomizationsDir', 'Find-VsBuildTools')) {
               . ([scriptblock]::Create((Get-FunctionSource -Path $setup -Name $fn)))
           }
 
