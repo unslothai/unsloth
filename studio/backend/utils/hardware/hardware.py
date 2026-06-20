@@ -678,7 +678,7 @@ def get_gpu_utilization() -> list[Dict[str, Any]]:
 
     if device == DeviceType.CUDA:
         parent_visible_spec = _get_parent_visible_gpu_spec()
-    # Changed to query multiple GPUs
+        # Changed to query multiple GPUs
         result = _smi_query(
             "get_visible_gpu_utilization",
             parent_visible_spec["numeric_ids"],
