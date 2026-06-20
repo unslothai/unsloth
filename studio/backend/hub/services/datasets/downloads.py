@@ -157,7 +157,8 @@ async def download_dataset_response(
     repo_id = await asyncio.to_thread(resolve_cached_repo_id_case, repo_id, repo_type = "dataset")
     key = _download_job_key(repo_id)
 
-    transport = download_lifecycle.resolve_transport(body.use_xet)
+    use_xet = download_lifecycle.resolve_effective_use_xet(body.use_xet)
+    transport = download_lifecycle.resolve_transport(use_xet)
 
     claimed, claim_state = _registry.claim(
         key,
@@ -183,7 +184,7 @@ async def download_dataset_response(
         spawn = lambda: download_lifecycle.spawn_worker(
             ["--repo-id", repo_id, "--dataset"],
             hf_token,
-            use_xet = body.use_xet,
+            use_xet = use_xet,
         ),
         hf_token = hf_token,
         label = repo_id,

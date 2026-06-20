@@ -82,6 +82,7 @@ export function buildTrainingStartPayload(
         ? config.visionImageSize
         : null,
     trust_remote_code: config.trustRemoteCode ?? false,
+    approved_remote_code_fingerprint: config.approvedRemoteCodeFingerprint ?? null,
     hf_dataset: hfDataset,
     subset: hfDataset ? config.datasetSubset : null,
     train_split: hfDataset ? config.datasetSplit : null,
@@ -111,6 +112,7 @@ export function buildTrainingStartPayload(
     eval_steps: config.evalSteps,
     weight_decay: config.weightDecay,
     max_grad_norm: 0.0,
+    max_grad_value: null,
     random_seed: config.randomSeed,
     packing: isEmbedding ? false : config.packing,
     optim: config.optimizerType,

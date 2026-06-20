@@ -47,6 +47,7 @@ import {
   Image03Icon,
   McpServerIcon,
   PencilRulerIcon,
+  ShieldBanIcon,
 } from "@hugeicons/core-free-icons";
 import { useNavigate } from "@tanstack/react-router";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -59,9 +60,12 @@ import {
 } from "./prompt-storage/prompt-storage-dialog";
 import { listPromptEntries, type PromptEntry } from "./api/prompts-api";
 import { McpComposerButton } from "./mcp-composer-button";
+import { BypassPermissionsMenuItem } from "./bypass-permissions-menu-item";
+import { reasoningCapsFromLoad } from "./lib/apply-inference-status-to-store";
 import { KnowledgeBaseComposerButton } from "@/features/rag/components/knowledge-base-composer-button";
 import { NewProjectDialog } from "./components/new-project-dialog";
 import { useChatProjects } from "./hooks/use-chat-projects";
+import { confirmRemoteCodeIfNeeded } from "@/features/security";
 import { loadModel, validateModel } from "./api/chat-api";
 import {
   parseExternalModelId,
@@ -533,6 +537,10 @@ export function SharedComposer({
   const setWebFetchToolsEnabled = useChatRuntimeStore(
     (s) => s.setWebFetchToolsEnabled,
   );
+  const bypassPermissions = useChatRuntimeStore((s) => s.bypassPermissions);
+  const setBypassPermissions = useChatRuntimeStore(
+    (s) => s.setBypassPermissions,
+  );
   const ragEnabled = useChatRuntimeStore((s) => s.ragEnabled);
   const setRagEnabled = useChatRuntimeStore((s) => s.setRagEnabled);
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
@@ -610,7 +618,11 @@ export function SharedComposer({
   const reasoningDisabled = !modelLoaded || !effectiveSupportsReasoning;
   const showReasoningControl =
     effectiveSupportsReasoning || effectiveReasoningAlwaysOn;
-  const isEffort = effectiveReasoningStyle === "reasoning_effort";
+  // enable_thinking_effort (GLM-5.2: high|max + disable) reuses the effort
+  // dropdown; it just also carries an Off row via supportsReasoningOff.
+  const isEffort =
+    effectiveReasoningStyle === "reasoning_effort" ||
+    effectiveReasoningStyle === "enable_thinking_effort";
   const thinkingActiveLook = isEffort
     ? reasoningLockedOn || (effectiveReasoningVisualEnabled && !reasoningDisabled)
     : reasoningLockedOn || (effectiveReasoningEnabled && !reasoningDisabled);
@@ -741,7 +753,7 @@ export function SharedComposer({
       queueIndexRef.current = 0;
       setQueueProgress({ current: 0, total: 0 });
       toast.error("Prompt queue stopped", {
-        description: "A compare step failed — remaining prompts were not sent.",
+        description: "A compare step failed; remaining prompts were not sent.",
       });
       return;
     }
@@ -927,24 +939,43 @@ export function SharedComposer({
         sel: CompareModelSelection,
       ): Promise<string> {
         const currentStore = useChatRuntimeStore.getState();
+        let loadTrustRemoteCode = trustRemoteCode;
+        let approvedRemoteCodeFingerprint: string | null = null;
         const isAlreadyActive =
           currentStore.params.checkpoint === sel.id &&
           (currentStore.activeGgufVariant ?? null) ===
             (sel.ggufVariant ?? null);
-        if (!isAlreadyActive) {
-          const validation = await validateModel({
-            model_path: sel.id,
-            hf_token: currentStore.hfToken || null,
-            max_seq_length: maxSeqLength,
-            load_in_4bit: true,
-            is_lora: sel.isLora,
-            gguf_variant: sel.ggufVariant ?? null,
-            trust_remote_code: trustRemoteCode,
-            chat_template_override: effectiveChatTemplateOverride,
+        // Already loaded (gate passed at first load): skip a redundant reload that would
+        // re-trigger the gate without the approval fingerprint and fail for HIGH custom code.
+        if (isAlreadyActive) {
+          return "ready";
+        }
+        const validation = await validateModel({
+          model_path: sel.id,
+          hf_token: currentStore.hfToken || null,
+          max_seq_length: maxSeqLength,
+          load_in_4bit: true,
+          is_lora: sel.isLora,
+          gguf_variant: sel.ggufVariant ?? null,
+          trust_remote_code: loadTrustRemoteCode,
+          chat_template_override: effectiveChatTemplateOverride,
+        });
+        if (
+          validation.requires_trust_remote_code ||
+          validation.requires_security_review
+        ) {
+          const approved = await confirmRemoteCodeIfNeeded({
+            modelName: sel.id,
+            hfToken: currentStore.hfToken || null,
+            requiresTrustRemoteCode: true,
+            onApprove: (fp) => {
+              loadTrustRemoteCode = true;
+              approvedRemoteCodeFingerprint = fp;
+            },
           });
-          if (validation.requires_trust_remote_code && !trustRemoteCode) {
+          if (!approved) {
             throw new Error(
-              `${modelDisplayName(sel.id)} needs custom code enabled to load. Turn on "Enable custom code" in Chat Settings, then try again.`,
+              `${modelDisplayName(sel.id)} needs custom code approval to load.`,
             );
           }
         }
@@ -955,7 +986,8 @@ export function SharedComposer({
           load_in_4bit: true,
           is_lora: sel.isLora,
           gguf_variant: sel.ggufVariant ?? null,
-          trust_remote_code: trustRemoteCode,
+          trust_remote_code: loadTrustRemoteCode,
+          approved_remote_code_fingerprint: approvedRemoteCodeFingerprint,
           chat_template_override: effectiveChatTemplateOverride,
           speculative_type: specSettings.speculativeType,
           spec_draft_n_max: specSettings.specDraftNMax,
@@ -974,7 +1006,7 @@ export function SharedComposer({
         useChatRuntimeStore.setState({
           supportsReasoning: resp.supports_reasoning ?? false,
           reasoningAlwaysOn: resp.reasoning_always_on ?? false,
-          reasoningStyle: resp.reasoning_style ?? "enable_thinking",
+          ...reasoningCapsFromLoad(resp),
           supportsPreserveThinking: resp.supports_preserve_thinking ?? false,
           supportsTools: resp.supports_tools ?? false,
           tensorParallel: resp.tensor_parallel ?? false,
@@ -1108,6 +1140,20 @@ export function SharedComposer({
       refreshStuckImeTimer();
       return;
     }
+    // Non-IME key while composingRef is stuck; mirrors the fix in thread.tsx.
+    // On macOS, switching input methods without composing can leave composingRef
+    // pinned; clear it immediately on the first non-IME keystroke.
+    if (composingRef.current) {
+      // Candidate-confirming Enter can arrive as non-composing; keep it gated.
+      if (e.key === "Enter") {
+        if (!e.shiftKey) {
+          e.preventDefault();
+        }
+        refreshStuckImeTimer();
+        return;
+      }
+      setCompositionState(false);
+    }
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       if (!busy) {
@@ -1240,6 +1286,7 @@ export function SharedComposer({
         ) : null}
       </DropdownMenuItem>
     ),
+    bypassPermissions: <BypassPermissionsMenuItem />,
     projects: (
       <DropdownMenuSub>
         <DropdownMenuSubTrigger>
@@ -1390,6 +1437,12 @@ export function SharedComposer({
           setText(e.currentTarget.value);
         }}
         onKeyDown={onKeyDown}
+        onBlur={() => {
+          // Mac: switching input methods can fire compositionstart without a
+          // matching compositionend, leaving composingRef pinned. The OS always
+          // commits or cancels composition before the element loses focus.
+          setCompositionState(false);
+        }}
         placeholder="Send to both models..."
         className="composer-input"
         rows={1}
@@ -1546,7 +1599,7 @@ export function SharedComposer({
                     <MoreHorizontalIcon className="size-4" />
                     More
                   </DropdownMenuSubTrigger>
-                  <DropdownMenuSubContent className="unsloth-plus-menu w-[232px]">
+                  <DropdownMenuSubContent className="unsloth-plus-menu w-[248px]">
                     {overflowPlusItems.map((id) => (
                       <Fragment key={id}>{plusMenuNodes[id]}</Fragment>
                     ))}
@@ -1569,6 +1622,29 @@ export function SharedComposer({
             </PillGlyph>
             <span>Compare</span>
           </button>
+          {/* Bypass sits immediately after Compare and ahead of every other
+              tool pill (Search, Code, ...) so the active danger state reads
+              first; only Compare outranks it. */}
+          {bypassPermissions && (
+            <button
+              type="button"
+              onClick={() => setBypassPermissions(false)}
+              className="composer-pill-btn"
+              data-active="true"
+              data-variant="danger"
+              aria-label="Disable Bypass permissions"
+              title="Bypass permissions is on (no confirmation, no sandbox). Click to turn off."
+            >
+              <PillGlyph>
+                <HugeiconsIcon
+                  icon={ShieldBanIcon}
+                  strokeWidth={2}
+                  className="size-[15px]"
+                />
+              </PillGlyph>
+              <span>Bypass permissions</span>
+            </button>
+          )}
           <button
             type="button"
             disabled={searchDisabled}

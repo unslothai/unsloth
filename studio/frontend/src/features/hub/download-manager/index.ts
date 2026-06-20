@@ -20,6 +20,7 @@ export {
 } from "./constants";
 export {
   __resetDownloadManagerForTests,
+  cancelStagedModelDownload,
   clearCompletedInventoryHint,
   downloadManager,
   hydrateDownloadManager,

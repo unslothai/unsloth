@@ -24,7 +24,7 @@ export type ResourceTypeFilter = "models" | "datasets";
 
 export type HubModelType = "text" | "vision" | "audio" | "embeddings";
 
-export type ModelFormatFilter = "all" | "gguf" | "checkpoint";
+export type ModelFormatFilter = "all" | "gguf" | "checkpoint" | "mlx";
 
 export type CapabilityFilter = "all" | CapabilityKey;
 
@@ -86,12 +86,16 @@ export interface SelectedModelView {
   license: string | null;
   pipelineTag?: string;
   libraryName?: string;
+  gated?: false | "auto" | "manual";
+  private?: boolean;
   downloads?: number;
+  downloadsAllTime?: number;
   likes?: number;
   totalParams?: number;
   estimatedSizeBytes?: number;
   cachedBytes?: number;
   updatedAt?: string;
+  createdAt?: string;
   localUpdatedAt?: number | null;
   tags?: string[];
   quantMethod?: string;

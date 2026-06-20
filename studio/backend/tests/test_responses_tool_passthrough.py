@@ -36,9 +36,11 @@ import json
 
 import httpx
 import pytest
+from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
+from core.inference.api_monitor import ApiMonitor
 from models.inference import (
     ChatMessage,
     ResponsesFunctionCallInputItem,
@@ -60,7 +62,7 @@ from routes.inference import (
     _build_chat_request,
     _chat_tool_calls_to_responses_output,
     _normalise_responses_input,
-    _responses_tool_output_text,
+    _responses_tool_output_content,
     _responses_non_streaming,
     _responses_stream,
     _translate_responses_tool_choice_to_chat,
@@ -435,20 +437,144 @@ class TestNormaliseResponsesInputWithTools:
         assert sum(1 for m in msgs if m.role == "system") == 1
         assert "A" in msgs[0].content and "B" in msgs[0].content
 
-    def test_content_array_output_serialised_to_json_string(self):
+    def test_content_array_text_output_flattens_to_tool_text(self):
         payload = ResponsesRequest(
             input = [
                 {
                     "type": "function_call_output",
                     "call_id": "call_1",
-                    "output": [{"type": "output_text", "text": "ok"}],
+                    "output": [{"type": "input_text", "text": "ok"}],
                 }
             ],
         )
         msgs = _normalise_responses_input(payload)
         assert msgs[0].role == "tool"
-        # Content is serialised so llama-server sees a string.
-        assert json.loads(msgs[0].content) == [{"type": "output_text", "text": "ok"}]
+        assert msgs[0].content == "ok"
+
+    def test_content_array_image_output_becomes_multimodal_tool_content(self):
+        payload = ResponsesRequest(
+            input = [
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_1",
+                    "output": [
+                        {"type": "input_text", "text": "see image"},
+                        {
+                            "type": "input_image",
+                            "image_url": "data:image/png;base64,AAA",
+                            "detail": "high",
+                        },
+                    ],
+                }
+            ],
+        )
+        msgs = _normalise_responses_input(payload)
+        assert msgs[0].role == "tool"
+        assert msgs[0].tool_call_id == "call_1"
+        assert msgs[0].model_dump(exclude_none = True)["content"] == [
+            {"type": "text", "text": "see image"},
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": "data:image/png;base64,AAA",
+                    "detail": "high",
+                },
+            },
+        ]
+
+        chat_req = _build_chat_request(payload, msgs, stream = False)
+        assert chat_req.model_dump(exclude_none = True)["messages"][0]["content"] == [
+            {"type": "text", "text": "see image"},
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": "data:image/png;base64,AAA",
+                    "detail": "high",
+                },
+            },
+        ]
+
+    def test_content_array_image_output_allows_original_detail(self):
+        payload = ResponsesRequest(
+            input = [
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_1",
+                    "output": [
+                        {
+                            "type": "input_image",
+                            "image_url": "https://example.com/screenshot.png",
+                            "detail": "original",
+                        },
+                    ],
+                }
+            ],
+        )
+        msgs = _normalise_responses_input(payload)
+        assert msgs[0].model_dump(exclude_none = True)["content"] == [
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": "https://example.com/screenshot.png",
+                    "detail": "original",
+                },
+            },
+        ]
+
+    def test_content_array_file_id_image_output_rejected_clearly(self):
+        payload = ResponsesRequest(
+            input = [
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_1",
+                    "output": [
+                        {"type": "input_text", "text": "see image"},
+                        {"type": "input_image", "file_id": "file_abc"},
+                    ],
+                }
+            ],
+        )
+        with pytest.raises(HTTPException) as exc:
+            _normalise_responses_input(payload)
+        assert exc.value.status_code == 400
+        assert "file_id" in str(exc.value.detail)
+
+    def test_content_array_file_output_rejected_clearly(self):
+        payload = ResponsesRequest(
+            input = [
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_1",
+                    "output": [
+                        {"type": "input_text", "text": "see file"},
+                        {
+                            "type": "input_file",
+                            "file_data": "data:application/pdf;base64,AAA",
+                            "filename": "report.pdf",
+                        },
+                    ],
+                }
+            ],
+        )
+        with pytest.raises(HTTPException) as exc:
+            _normalise_responses_input(payload)
+        assert exc.value.status_code == 400
+        assert "input_file" in str(exc.value.detail)
+
+    def test_content_array_malformed_image_output_rejected_clearly(self):
+        payload = ResponsesRequest(
+            input = [
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_1",
+                    "output": [{"type": "input_image", "detail": "high"}],
+                }
+            ],
+        )
+        with pytest.raises(HTTPException) as exc:
+            _normalise_responses_input(payload)
+        assert exc.value.status_code == 400
+        assert "image_url" in str(exc.value.detail)
 
     def test_empty_function_call_output_gets_no_output_sentinel(self):
         payload = ResponsesRequest(
@@ -541,8 +667,8 @@ class TestNormaliseResponsesInputWithTools:
         assert msgs[0].content == "(no output)"
 
     def test_tool_output_serializer_preserves_non_empty_text(self):
-        assert _responses_tool_output_text("done") == "done"
-        assert _responses_tool_output_text("  done  ") == "  done  "
+        assert _responses_tool_output_content("done") == "done"
+        assert _responses_tool_output_content("  done  ") == "  done  "
 
 
 # =====================================================================
@@ -655,6 +781,129 @@ class TestResponsesNonStreamingAdapter:
         assert body["output"][1]["content"][0]["text"] == "33"
         assert "<think>" not in body["output"][1]["content"][0]["text"]
         assert "</think>" not in body["output"][1]["content"][0]["text"]
+
+    def test_monitor_records_translated_visible_text(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        async def fake_chat_completions(chat_req, request):
+            assert request.state.skip_api_monitor is True
+            return JSONResponse(
+                content = {
+                    "model": "test-model",
+                    "choices": [{"message": {"content": "<think>plan</think>answer"}}],
+                    "usage": {"prompt_tokens": 2, "completion_tokens": 3},
+                }
+            )
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monkeypatch.setattr(inf_mod, "openai_chat_completions", fake_chat_completions)
+        payload = ResponsesRequest(input = "hi", reasoning = {"effort": "high"})
+        messages = [ChatMessage(role = "user", content = "hi")]
+        request = SimpleNamespace(
+            state = SimpleNamespace(),
+            url = SimpleNamespace(path = "/v1/responses"),
+            method = "POST",
+        )
+
+        async def run():
+            response = await _responses_non_streaming(payload, messages, request)
+            return json.loads(response.body.decode())
+
+        body = asyncio.run(run())
+
+        assert body["output"][0]["content"] == [{"type": "reasoning_text", "text": "plan"}]
+        assert body["output"][1]["content"][0]["text"] == "answer"
+        [entry] = monitor.snapshot()
+        assert entry["status"] == "completed"
+        assert entry["reply"] == "answer"
+        assert entry["prompt_tokens"] == 2
+        assert entry["completion_tokens"] == 3
+        assert request.state.skip_api_monitor is False
+
+    def test_monitor_records_tool_only_reply(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        async def fake_chat_completions(chat_req, request):
+            assert request.state.skip_api_monitor is True
+            return JSONResponse(
+                content = {
+                    "model": "test-model",
+                    "choices": [
+                        {
+                            "message": {
+                                "content": "",
+                                "tool_calls": [
+                                    {
+                                        "id": "call_1",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "lookup",
+                                            "arguments": '{"query":"weather"}',
+                                        },
+                                    }
+                                ],
+                            }
+                        }
+                    ],
+                    "usage": {"prompt_tokens": 2, "completion_tokens": 3},
+                }
+            )
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monkeypatch.setattr(inf_mod, "openai_chat_completions", fake_chat_completions)
+        payload = ResponsesRequest(
+            input = "hi",
+            tools = [{"type": "function", "name": "lookup"}],
+        )
+        messages = [ChatMessage(role = "user", content = "hi")]
+        request = SimpleNamespace(
+            state = SimpleNamespace(),
+            url = SimpleNamespace(path = "/v1/responses"),
+            method = "POST",
+        )
+
+        async def run():
+            response = await _responses_non_streaming(payload, messages, request)
+            return json.loads(response.body.decode())
+
+        body = asyncio.run(run())
+
+        assert body["output"][0]["type"] == "function_call"
+        [entry] = monitor.snapshot()
+        assert entry["status"] == "completed"
+        assert entry["reply"] == 'Tool call: lookup({"query":"weather"})'
+        assert request.state.skip_api_monitor is False
+
+    def test_cancelled_chat_completion_finalizes_monitor(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        async def fake_chat_completions(chat_req, request):
+            assert request.state.skip_api_monitor is True
+            raise asyncio.CancelledError()
+
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monkeypatch.setattr(inf_mod, "openai_chat_completions", fake_chat_completions)
+        payload = ResponsesRequest(input = "hi")
+        messages = [ChatMessage(role = "user", content = "hi")]
+        request = SimpleNamespace(
+            state = SimpleNamespace(),
+            url = SimpleNamespace(path = "/v1/responses"),
+            method = "POST",
+        )
+
+        async def run():
+            with pytest.raises(asyncio.CancelledError):
+                await _responses_non_streaming(payload, messages, request)
+
+        asyncio.run(run())
+
+        [entry] = monitor.snapshot()
+        assert entry["status"] == "cancelled"
+        assert monitor.active_count() == 0
+        assert request.state.skip_api_monitor is False
 
     def test_literal_think_tags_remain_visible_without_reasoning_request(self, monkeypatch):
         body = self._run_with_message(monkeypatch, {"content": "show <think>x</think> tags"})
@@ -813,6 +1062,275 @@ class TestResponsesStreamAdapter:
         ]
         assert completed["response"]["output"][0]["content"][0]["text"] == "plan"
         assert completed["response"]["output"][1]["content"][0]["text"] == "33"
+
+    def test_usage_only_chunk_updates_monitor(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        chunks = [
+            {"choices": [{"delta": {"content": "33"}}]},
+            {"choices": [], "usage": {"prompt_tokens": 2, "completion_tokens": 3}},
+        ]
+        self._install_stream_mock(monkeypatch, chunks)
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monitor_id = monitor.start(
+            endpoint = "/v1/responses",
+            method = "POST",
+            model = "m",
+            prompt = "hi",
+        )
+        payload = ResponsesRequest(input = "hi", stream = True)
+        messages = [ChatMessage(role = "user", content = "hi")]
+
+        async def run():
+            response = await _responses_stream(
+                payload,
+                messages,
+                self._Request(),
+                monitor_id = monitor_id,
+            )
+            return await self._collect(response)
+
+        asyncio.run(run())
+
+        [entry] = monitor.snapshot()
+        assert entry["status"] == "completed"
+        assert entry["reply"] == "33"
+        assert entry["prompt_tokens"] == 2
+        assert entry["completion_tokens"] == 3
+        assert entry["total_tokens"] == 5
+        assert entry["context_length"] == 4096
+
+    def test_function_call_chunk_updates_monitor_reply(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        chunks = [
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_1",
+                                    "function": {
+                                        "name": "lookup",
+                                        "arguments": '{"query":"weather"}',
+                                    },
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+        ]
+        self._install_stream_mock(monkeypatch, chunks)
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monitor_id = monitor.start(
+            endpoint = "/v1/responses",
+            method = "POST",
+            model = "m",
+            prompt = "hi",
+        )
+        payload = ResponsesRequest(input = "hi", stream = True)
+        messages = [ChatMessage(role = "user", content = "hi")]
+
+        async def run():
+            response = await _responses_stream(
+                payload,
+                messages,
+                self._Request(),
+                monitor_id = monitor_id,
+            )
+            return await self._collect(response)
+
+        lines = asyncio.run(run())
+
+        assert self._payloads(lines, "response.output_item.done")[-1]["item"]["name"] == "lookup"
+        [entry] = monitor.snapshot()
+        assert entry["status"] == "completed"
+        assert entry["reply"] == 'Tool call: lookup({"query":"weather"})'
+
+    def test_preheader_cancel_finalizes_monitor(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        self._install_stream_mock(monkeypatch, [])
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monitor_id = monitor.start(
+            endpoint = "/v1/responses",
+            method = "POST",
+            model = "m",
+            prompt = "hi",
+        )
+
+        async def fake_send(*_args, **_kwargs):
+            return None
+
+        monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
+        payload = ResponsesRequest(input = "hi", stream = True)
+        messages = [ChatMessage(role = "user", content = "hi")]
+
+        async def run():
+            response = await _responses_stream(
+                payload,
+                messages,
+                self._Request(),
+                monitor_id = monitor_id,
+            )
+            return await self._collect(response)
+
+        asyncio.run(run())
+
+        [entry] = monitor.snapshot()
+        assert entry["status"] == "cancelled"
+        assert monitor.active_count() == 0
+
+    def test_stream_task_cancel_finalizes_monitor(self, monkeypatch):
+        async def _run():
+            import routes.inference as inf_mod
+
+            async def fake_send(*_args, **_kwargs):
+                return httpx.Response(200, content = b"")
+
+            async def fake_items(*_args, **_kwargs):
+                yield 'data: {"choices":[{"delta":{"content":"hello"}}]}'
+                await asyncio.sleep(3600)
+
+            self._install_stream_mock(monkeypatch, [])
+            monitor = ApiMonitor(max_entries = 3)
+            monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            monkeypatch.setattr(inf_mod, "_send_stream_with_preheader_cancel", fake_send)
+            monkeypatch.setattr(inf_mod, "_aiter_llama_stream_items", fake_items)
+            monitor_id = monitor.start(
+                endpoint = "/v1/responses",
+                method = "POST",
+                model = "m",
+                prompt = "hi",
+            )
+            payload = ResponsesRequest(input = "hi", stream = True)
+            messages = [ChatMessage(role = "user", content = "hi")]
+
+            response = await _responses_stream(
+                payload,
+                messages,
+                self._Request(),
+                monitor_id = monitor_id,
+            )
+            iterator = response.body_iterator
+            first = ""
+            for _ in range(8):
+                first = await anext(iterator)
+                if "hello" in first:
+                    break
+            else:
+                pytest.fail("stream did not emit text delta")
+
+            pending = asyncio.create_task(anext(iterator))
+            await asyncio.sleep(0)
+            pending.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await pending
+
+            [entry] = monitor.snapshot()
+            assert entry["status"] == "cancelled"
+            assert entry["reply"] == "hello"
+            assert monitor.active_count() == 0
+
+        asyncio.run(_run())
+
+    def test_final_visible_text_updates_monitor(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        class FakeExtractor:
+            def __init__(self, **_kwargs):
+                pass
+
+            def feed(
+                self,
+                _content,
+                _reasoning_content = None,
+            ):
+                return "", ""
+
+            def finish(self):
+                return "", "tail"
+
+        self._install_stream_mock(monkeypatch, [{"choices": [{"delta": {"content": "<tai"}}]}])
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monkeypatch.setattr(inf_mod, "_ResponsesReasoningExtractor", FakeExtractor)
+        monitor_id = monitor.start(
+            endpoint = "/v1/responses",
+            method = "POST",
+            model = "m",
+            prompt = "hi",
+        )
+        payload = ResponsesRequest(input = "hi", stream = True)
+        messages = [ChatMessage(role = "user", content = "hi")]
+
+        async def run():
+            response = await _responses_stream(
+                payload,
+                messages,
+                self._Request(),
+                monitor_id = monitor_id,
+            )
+            return await self._collect(response)
+
+        lines = asyncio.run(run())
+
+        assert self._payloads(lines, "response.output_text.delta")[-1]["delta"] == "tail"
+        [entry] = monitor.snapshot()
+        assert entry["status"] == "completed"
+        assert entry["reply"] == "tail"
+
+    def test_reasoning_only_fallback_updates_monitor(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        class FakeExtractor:
+            def __init__(self, **_kwargs):
+                pass
+
+            def feed(
+                self,
+                _content,
+                _reasoning_content = None,
+            ):
+                return "", ""
+
+            def finish(self):
+                return "plan", ""
+
+        self._install_stream_mock(monkeypatch, [{"choices": [{"delta": {"content": "<think>"}}]}])
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monkeypatch.setattr(inf_mod, "_ResponsesReasoningExtractor", FakeExtractor)
+        monitor_id = monitor.start(
+            endpoint = "/v1/responses",
+            method = "POST",
+            model = "m",
+            prompt = "hi",
+        )
+        payload = ResponsesRequest(input = "hi", stream = True)
+        messages = [ChatMessage(role = "user", content = "hi")]
+
+        async def run():
+            response = await _responses_stream(
+                payload,
+                messages,
+                self._Request(),
+                monitor_id = monitor_id,
+            )
+            return await self._collect(response)
+
+        lines = asyncio.run(run())
+
+        assert self._payloads(lines, "response.output_text.delta")[-1]["delta"] == "plan"
+        [entry] = monitor.snapshot()
+        assert entry["status"] == "completed"
+        assert entry["reply"] == "plan"
 
     def test_literal_think_tags_stream_as_visible_text_without_reasoning_request(self, monkeypatch):
         chunks = [

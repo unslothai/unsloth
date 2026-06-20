@@ -635,6 +635,13 @@ class FastBaseModel:
             # Pure text model requested text-only with a VLM auto class.
             auto_model = AutoModelForCausalLM
         is_vlm = auto_model in [AutoModelForVision2Seq, AutoModelForImageTextToText]
+        # A repo-code VLM may register only AutoModel / AutoModelForCausalLM (e.g.
+        # DeepSeek-OCR, Nemotron-VL), so auto_model is not a VLM class even though the
+        # config is a vision model. Keep is_vlm (auto-class derived) for processor
+        # selection below -- these repos ship no AutoProcessor -- but treat the model as a
+        # VLM on the vLLM path so a vision_config model is never silently loaded/converted
+        # as text-only. text_only resolves the tower away first, so honour that here.
+        is_vlm_config = is_vlm or (not text_only and hasattr(auto_config, "vision_config"))
         is_whisper = whisper_language is not None and whisper_task is not None
         auto_processor = AutoProcessor if (is_vlm or is_whisper) else AutoTokenizer
 
@@ -646,7 +653,7 @@ class FastBaseModel:
 
         vllm_enable_lora = True
 
-        if is_vlm and fast_inference:
+        if is_vlm_config and fast_inference:
             if not any(arch in VLLM_SUPPORTED_VLM for arch in model_types):
                 raise RuntimeError(
                     f"Unsloth: Fast inference is only supported for Language models and Qwen2.5-VL, Gemma3 among vision models. "
@@ -1060,7 +1067,7 @@ class FastBaseModel:
                 disable_log_stats = disable_log_stats,
                 use_bitsandbytes = load_in_4bit,
                 unsloth_vllm_standby = unsloth_vllm_standby,
-                is_vision_model = is_vlm,
+                is_vision_model = is_vlm_config,
                 fp8_mode = fp8_mode,
             )
             for allowed_arg in allowed_args:
@@ -1074,7 +1081,7 @@ class FastBaseModel:
             _, quant_state_dict = get_vllm_state_dict(
                 llm,
                 config = model_config,
-                is_vision_model = is_vlm,
+                is_vision_model = is_vlm_config,
                 load_in_fp8 = load_in_fp8,
             )
             model = convert_vllm_to_huggingface(
@@ -1082,7 +1089,7 @@ class FastBaseModel:
                 model_config,
                 dtype,
                 bnb_config,
-                is_vision_model = is_vlm,
+                is_vision_model = is_vlm_config,
             )
             model.vllm_engine = llm
             llm.shared_weights = True
@@ -1399,6 +1406,25 @@ class FastBaseModel:
             )
         else:
             assert type(target_modules) in (list, tuple, str)
+            if type(target_modules) in (list, tuple) and (
+                not finetune_vision_layers
+                or not finetune_language_layers
+                or not finetune_attention_modules
+                or not finetune_mlp_modules
+            ):
+                print(
+                    "Unsloth: Explicit target_modules are constrained by the "
+                    "finetune_(vision|language|attention|mlp) filters; adapters "
+                    "attach only where both select."
+                )
+                target_modules = get_peft_regex(
+                    model,
+                    finetune_vision_layers = finetune_vision_layers,
+                    finetune_language_layers = finetune_language_layers,
+                    finetune_attention_modules = finetune_attention_modules,
+                    finetune_mlp_modules = finetune_mlp_modules,
+                    target_modules = list(target_modules),
+                )
 
         if hasattr(model, "vllm_engine"):
             if (
