@@ -316,12 +316,9 @@ export function ChatTab() {
             />
           </SettingsRow>
         ))}
-      </SettingsSection>
-
-      <SettingsSection title={t("settings.chat.composer.title")}>
         <SettingsRow
-          label={t("settings.chat.composer.modelDisclaimer")}
-          description={t("settings.chat.composer.modelDisclaimerDescription")}
+          label={t("settings.chat.modelDisclaimer")}
+          description={t("settings.chat.modelDisclaimerDescription")}
         >
           <Switch
             checked={showModelDisclaimer}

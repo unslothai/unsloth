@@ -208,12 +208,9 @@ export const en = {
     chat: {
       title: "Chat",
       description: "Manage chat history stored on this device.",
-      composer: {
-        title: "Composer",
-        modelDisclaimer: "Show model disclaimer",
-        modelDisclaimerDescription:
-          'Show the "LLMs can make mistakes" note under the chat box.',
-      },
+      modelDisclaimer: "Show model disclaimer",
+      modelDisclaimerDescription:
+        'Show "LLMs can make mistakes" under the chat box.',
       artifacts: {
         title: "Canvas",
         collapseHtmlBlocks: "Collapse HTML blocks",
