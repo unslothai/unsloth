@@ -974,8 +974,12 @@ async def get_system_info(current_subject: str = Depends(get_current_subject)):
     import psutil
     import os
     import time
+    import logging
     from utils.hardware import get_device, get_backend_visible_gpu_info, get_visible_gpu_utilization
     from utils.hardware.hardware import _backend_label
+
+    # Instanciando o logger para evitar NameError nos blocos except abaixo
+    logger = logging.getLogger(__name__)
 
     visibility_info = get_backend_visible_gpu_info()
     utilization_info = get_visible_gpu_utilization()
@@ -987,8 +991,8 @@ async def get_system_info(current_subject: str = Depends(get_current_subject)):
         idx = dev.get("index")
         util = util_devices.get(idx, {})
 
-    total_vram = util.get("vram_total_gb") or dev.get("memory_total_gb") or 0
-    used_vram = util.get("vram_used_gb") or 0
+        total_vram = util.get("vram_total_gb") or dev.get("memory_total_gb", 0)
+        used_vram = util.get("vram_used_gb", 0)
 
         enriched_dev = dict(dev)
         enriched_dev["vram_used_gb"] = used_vram
@@ -1003,23 +1007,24 @@ async def get_system_info(current_subject: str = Depends(get_current_subject)):
 
     # CPU | Memory| Disk
     memory = psutil.virtual_memory()
-  try:
-    cpu_freq = psutil.cpu_freq()
-  except Exception as e:
-    logger.debug(f"Failed to get CPU frequency: {e}")
-    cpu_freq = None
+    
+    try:
+        cpu_freq = psutil.cpu_freq()
+    except Exception as e:
+        logger.debug(f"Failed to get CPU frequency: {e}")
+        cpu_freq = None
 
-  try:
-    disk = psutil.disk_usage(os.path.abspath(os.sep))
-  except Exception as e:
-    logger.debug(f"Failed to get disk usage: {e}")
-    disk = None
+    try:
+        disk = psutil.disk_usage(os.path.abspath(os.sep))
+    except Exception as e:
+        logger.debug(f"Failed to get disk usage: {e}")
+        disk = None
 
-  try:
-    current_process = psutil.Process(os.getpid())
-  except Exception as e:
-    logger.debug(f"Failed to get current process: {e}")
-    current_process = None
+    try:
+        current_process = psutil.Process(os.getpid())
+    except Exception as e:
+        logger.debug(f"Failed to get current process: {e}")
+        current_process = None
 
     # Secure extraction of ML package versions (as promised in the docstring)
     ml_packages = {}
@@ -1041,21 +1046,21 @@ async def get_system_info(current_subject: str = Depends(get_current_subject)):
         "device_backend": _backend_label(get_device()),
         "uptime_seconds": round(time.time() - psutil.boot_time()),
         "cpu": {
-            "logical_count": psutil.cpu_count(logical = True),
-            "physical_count": psutil.cpu_count(logical = False),
-            "usage_percent": psutil.cpu_percent(interval = None),
-            "frequency_mhz": round(cpu_freq.current, 2) if cpu_freq else None,
+        "logical_count": psutil.cpu_count(logical=True),
+        "physical_count": psutil.cpu_count(logical=False),
+        "usage_percent": psutil.cpu_percent(interval=None),
+        "frequency_mhz": round(cpu_freq.current, 2) if cpu_freq else None,
         },
         "memory": {
-            "total_gb": memory.total / 1024**3,
-            "available_gb": memory.available / 1024**3,
-            "percent_used": memory.percent,
-      "process_used_mb": round(current_process.memory_info().rss / 1024**2) if current_process else 0,
-    },
-    "disk": {
-      "total_gb": round(disk.total / 1e9, 2) if disk else 0,
-      "free_gb": round(disk.free / 1e9, 2) if disk else 0,
-      "percent_used": disk.percent if disk else 0,
+        "total_gb": memory.total / 1024**3,
+        "available_gb": memory.available / 1024**3,
+        "percent_used": memory.percent,
+        "process_used_mb": round(current_process.memory_info().rss / 1024**2) if current_process else 0,
+        },
+        "disk": {
+        "total_gb": round(disk.total / 1e9, 2) if disk else 0,
+        "free_gb": round(disk.free / 1e9, 2) if disk else 0,
+        "percent_used": disk.percent if disk else 0,
         },
         "gpu": gpu_info,
         "ml_packages": ml_packages,
