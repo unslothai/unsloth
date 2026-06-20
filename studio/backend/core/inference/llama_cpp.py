@@ -2219,8 +2219,7 @@ class LlamaCppBackend:
         binary = binary or LlamaCppBackend._find_llama_server_binary()
         if LlamaCppBackend._is_vulkan_backend(binary):
             return [
-                (idx, free, 0)
-                for idx, free in LlamaCppBackend._get_gpu_free_memory_vulkan(binary)
+                (idx, free, 0) for idx, free in LlamaCppBackend._get_gpu_free_memory_vulkan(binary)
             ]
         # ── NVIDIA via nvidia-smi ────────────────────────────────────
         try:
