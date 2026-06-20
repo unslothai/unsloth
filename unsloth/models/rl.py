@@ -390,9 +390,55 @@ try:
     from unsloth_zoo.gradient_checkpointing import reset_unsloth_gradient_checkpointing_buffers
 except:
     def reset_unsloth_gradient_checkpointing_buffers(): pass
+def _unsloth_reset_stray_compile_cache(self):
+    # A manual forward / forward+backward run under torch.compile BEFORE
+    # trainer.train() (e.g. a pre-train grad-norm probe) compiles and caches the
+    # model's forward and (via AOTAutograd) its backward graph in a one-off
+    # context that does not match the training loop. Reusing that cached graph
+    # poisons training with NaN/zero gradients (loss never moves). If a pre-train
+    # forward was seen and torch.compile is enabled, drop the compiled-graph cache
+    # so training recompiles cleanly. No-op on the normal path.
+    import os
+    model = getattr(self, "model", None)
+    if model is None:
+        return
+    marker = getattr(model, "_unsloth_pretrain_marker", None)
+    seen = bool(marker.get("seen")) if isinstance(marker, dict) else False
+    if seen and os.environ.get("UNSLOTH_COMPILE_DISABLE", "0") != "1":
+        try:
+            import torch._dynamo as _dynamo
+            _dynamo.reset()
+        except Exception:
+            pass
+        try:
+            reset_unsloth_gradient_checkpointing_buffers()
+        except Exception:
+            pass
+        try:
+            model.zero_grad(set_to_none = True)
+        except Exception:
+            pass
+        import warnings
+        warnings.warn(
+            "Unsloth: detected a manual forward/backward run before trainer.train(); "
+            "reset the torch.compile graph cache it poisoned so training starts clean. "
+            "To avoid this, run any pre-train probe under `with torch.no_grad():`."
+        )
+    # Tear down the one-shot detector hook so it never adds per-step cost.
+    if isinstance(marker, dict):
+        hook = marker.pop("hook", None)
+        if hook is not None:
+            try: hook.remove()
+            except Exception: pass
+        marker["seen"] = False
 def prepare_for_training_mode(f):
     @functools.wraps(f)
     def wrapper(self, *args, **kwargs):
+        # Drop any torch.compile graph cache poisoned by a stray pre-train forward.
+        try:
+            _unsloth_reset_stray_compile_cache(self)
+        except Exception:
+            pass
         # Finish the previous W&B run if this is a subsequent train() call.
         # We do this at the START of train() (not the end) so that
         # evaluate() / log() still work after train() completes.

@@ -62,6 +62,7 @@ __all__ = [
     "patch_unsloth_smart_gradient_checkpointing",
     "unpatch_unsloth_smart_gradient_checkpointing",
     "apply_unsloth_gradient_checkpointing",
+    "_unsloth_install_pretrain_detector",
     "patch_compiled_autograd",
     "process_vision_info",
     "unsloth_compile_transformers",
@@ -192,6 +193,33 @@ def resolve_hip_gpu_stats_name(gpu_stats):
 from unsloth_zoo.temporary_patches import (
     TEMPORARY_PATCHES,
 )
+
+
+def _unsloth_install_pretrain_detector(model):
+    """Attach a one-shot forward pre-hook that records whether a forward ran
+    before trainer.train(). Used by prepare_for_training_mode to drop a
+    torch.compile graph cache poisoned by a stray manual forward/backward.
+    Idempotent and a no-op if the model cannot take hooks."""
+    if model is None or not hasattr(model, "register_forward_pre_hook"):
+        return model
+    marker = getattr(model, "_unsloth_pretrain_marker", None)
+    if isinstance(marker, dict):
+        marker["seen"] = False
+        return model
+    marker = {"seen": False}
+    try:
+        model._unsloth_pretrain_marker = marker
+    except Exception:
+        return model
+
+    def _mark(_module, _inp):
+        marker["seen"] = True
+
+    try:
+        marker["hook"] = model.register_forward_pre_hook(_mark)
+    except Exception:
+        pass
+    return model
 
 
 def apply_unsloth_gradient_checkpointing(use_gradient_checkpointing, max_seq_length, dtype):
