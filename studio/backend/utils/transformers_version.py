@@ -166,11 +166,12 @@ def activate_transformers_for_subprocess(model_name: str) -> None:
     ``sys.path``, and propagates it via ``PYTHONPATH`` for child processes
     (e.g. GGUF converter). Used by training, inference, and export workers.
     """
-    # Only pre-resolve for LoRA adapters (adapter_config.json present).
-    # Full checkpoints go directly to get_transformers_tier, which reads
-    # their local config.json for model_type — more reliable than resolving
-    # to a private/offline HF ID that can't be probed and may lack tier substrings.
-    if (Path(model_name) / "adapter_config.json").is_file():
+    # Only pre-resolve for LoRA adapter directories (adapter_config.json present
+    # OR adapter_model-only weights). Full checkpoints go directly to
+    # get_transformers_tier, which reads their local config.json for model_type —
+    # more reliable than resolving to a private/offline HF ID that can't be probed
+    # and may lack tier substrings.
+    if _is_lora_adapter_dir(Path(model_name)):
         resolved = _resolve_base_model(model_name)
     else:
         resolved = model_name
@@ -229,6 +230,32 @@ def activate_transformers_for_subprocess(model_name: str) -> None:
         os.environ["PYTHONPATH"] = _VENV_T5_530_DIR + (os.pathsep + _pp if _pp else "")
     else:
         logger.info("Using default transformers (4.57.x) for %s", model_name)
+
+
+def _has_adapter_weights(path: Path) -> bool:
+    """True if *path* holds LoRA adapter weight files (``adapter_model.*``)."""
+    try:
+        return any(path.glob("adapter_model*.safetensors")) or any(
+            path.glob("adapter_model*.bin")
+        )
+    except OSError:
+        return False
+
+
+def _is_lora_adapter_dir(path: Path) -> bool:
+    """True if *path* is a local LoRA adapter directory.
+
+    Mirrors ``utils.models._looks_like_lora_adapter`` but stays import-light so it
+    can run during subprocess activation without dragging in transformers. Detects
+    both ``adapter_config.json`` adapters and adapter_model-only LoRAs (weights
+    present, config absent) that a config-only check would miss.
+    """
+    try:
+        if not path.is_dir():
+            return False
+    except OSError:
+        return False
+    return (path / "adapter_config.json").is_file() or _has_adapter_weights(path)
 
 
 def _resolve_base_model(model_name: str) -> str:
@@ -304,6 +331,23 @@ def _resolve_base_model(model_name: str) -> str:
                 model_name,
                 exc,
             )
+
+    # --- adapter_model-only LoRA (weights but no adapter_config.json) --------
+    # These can't be resolved from a config, so fall back to the
+    # ``unsloth_<model>_<timestamp>`` directory-name convention (matching
+    # get_base_model_from_lora's last-resort branch). This is a pure string
+    # parse — no transformers import — so subprocess activation ordering is
+    # preserved even though the heavier resolver above is skipped.
+    if local_path.name.startswith("unsloth_") and _has_adapter_weights(local_path):
+        parts = local_path.name.split("_")
+        if len(parts) >= 2:  # unsloth_<model...>_<timestamp>
+            base = "unsloth/" + "_".join(parts[1:-1])
+            logger.info(
+                "Resolved adapter-only LoRA '%s' → base model '%s' (via directory name)",
+                model_name,
+                base,
+            )
+            return base
 
     return model_name
 
@@ -611,8 +655,18 @@ def get_transformers_tier(model_name: str) -> str:
             if _config_needs_530(cfg):
                 # Qwen3.6 reuses Qwen3.5 config ids (qwen3_5 / qwen3_5_moe) but is
                 # a 5.5 model by name; let a higher-tier name match override 530.
+                # Only trust the resolved value as a name hint when it's a real
+                # Hub id — a stale/renamed local path saved in model_name/
+                # _name_or_path (e.g. /old/run/qwen3.6-source) must not flip a
+                # correct 530 config to 550 via arbitrary path substrings. Fall
+                # back to the current folder's basename otherwise.
                 base = _resolve_base_model(model_name)
-                hint = _tier_from_name(base if base != model_name else Path(model_name).name)
+                hint_src = (
+                    base
+                    if (base != model_name and _looks_like_hf_id(base))
+                    else Path(model_name).name
+                )
+                hint = _tier_from_name(hint_src)
                 if hint is not None and hint[0] in ("510", "550"):
                     logger.info(
                         "Transformers tier %s selected for %s (name overrides 530 config)",
@@ -971,14 +1025,15 @@ def ensure_transformers_version(model_name: str) -> None:
       • Need 5.3.0 → prepend .venv_t5_530/ to sys.path, purge modules.
       • Need 4.x  → remove all .venv_t5_*/ from sys.path, purge modules.
 
-    For custom-named LoRA adapters, the base model is resolved from
-    ``adapter_config.json`` before checking.
+    For custom-named LoRA adapters, the base model is resolved before checking
+    (from ``adapter_config.json`` or, for adapter_model-only LoRAs, the directory
+    name).
 
     NOTE: Training and inference use subprocess isolation instead. Used only by
     the export path (routes/export.py).
     """
-    # Only pre-resolve for LoRA adapters; see activate_transformers_for_subprocess.
-    if (Path(model_name) / "adapter_config.json").is_file():
+    # Only pre-resolve for LoRA adapter dirs; see activate_transformers_for_subprocess.
+    if _is_lora_adapter_dir(Path(model_name)):
         resolved = _resolve_base_model(model_name)
     else:
         resolved = model_name

@@ -31,6 +31,8 @@ sys.modules.setdefault("loggers", _loggers_stub)
 
 from utils.transformers_version import (
     _resolve_base_model,
+    _is_lora_adapter_dir,
+    _has_adapter_weights,
     _check_tokenizer_config_needs_v5,
     _check_config_needs_510,
     _check_config_needs_530,
@@ -1274,3 +1276,125 @@ class TestResolveBaseModelNameOrPathFallback:
         # get_transformers_tier reads config.json directly and returns 530
         # without needing to probe the private HF ID.
         assert get_transformers_tier(str(d)) == "530"
+
+
+# ---------------------------------------------------------------------------
+# adapter_model-only LoRA resolution (no adapter_config.json)
+# ---------------------------------------------------------------------------
+
+
+class TestAdapterModelOnlyLoRA:
+    """A LoRA dir with adapter_model*.safetensors but no adapter_config.json must
+    still be detected as an adapter and resolved to its base model so the worker
+    activates the base model's sidecar instead of tiering off the adapter folder."""
+
+    def test_has_adapter_weights_detects_safetensors_and_bin(self, tmp_path: Path):
+        d = tmp_path / "adapter"
+        d.mkdir()
+        assert _has_adapter_weights(d) is False
+        (d / "adapter_model.safetensors").write_text("")
+        assert _has_adapter_weights(d) is True
+        d2 = tmp_path / "adapter_bin"
+        d2.mkdir()
+        (d2 / "adapter_model.bin").write_text("")
+        assert _has_adapter_weights(d2) is True
+
+    def test_is_lora_adapter_dir_for_config_and_weights_only(self, tmp_path: Path):
+        # adapter_config.json present
+        a = tmp_path / "cfg"
+        a.mkdir()
+        (a / "adapter_config.json").write_text("{}")
+        assert _is_lora_adapter_dir(a) is True
+        # adapter_model weights only, no config
+        b = tmp_path / "weights_only"
+        b.mkdir()
+        (b / "adapter_model.safetensors").write_text("")
+        assert _is_lora_adapter_dir(b) is True
+        # plain checkpoint dir (neither)
+        c = tmp_path / "plain"
+        c.mkdir()
+        (c / "config.json").write_text("{}")
+        assert _is_lora_adapter_dir(c) is False
+        # not a directory
+        assert _is_lora_adapter_dir(tmp_path / "missing") is False
+
+    def test_resolve_adapter_only_lora_via_unsloth_dir_name(self, tmp_path: Path):
+        """adapter_model-only LoRA with the unsloth_<model>_<ts> naming resolves to
+        unsloth/<model> through the import-light directory-name parse."""
+        d = tmp_path / "unsloth_Qwen3.5-7B_20260620"
+        d.mkdir()
+        (d / "adapter_model.safetensors").write_text("")
+        assert _resolve_base_model(str(d)) == "unsloth/Qwen3.5-7B"
+
+    def test_activation_pre_resolves_adapter_only_lora(self, tmp_path: Path):
+        """Regression: activate_transformers_for_subprocess must pre-resolve an
+        adapter_model-only LoRA dir (weights present, adapter_config.json absent).
+        Before the gate used _is_lora_adapter_dir, the adapter_config-only check
+        skipped resolution and the worker tiered off the adapter folder itself."""
+        d = tmp_path / "my-custom-lora"
+        d.mkdir()
+        (d / "adapter_model.safetensors").write_text("")
+        snap = (list(sys.path), os.environ.get("PYTHONPATH"))
+        try:
+            with (
+                patch(
+                    "utils.transformers_version._resolve_base_model",
+                    side_effect = lambda m: m,
+                ) as mock_resolve,
+                patch(
+                    "utils.transformers_version.get_transformers_tier",
+                    return_value = "default",
+                ),
+            ):
+                activate_transformers_for_subprocess(str(d))
+        finally:
+            sys.path[:] = snap[0]
+            if snap[1] is None:
+                os.environ.pop("PYTHONPATH", None)
+            else:
+                os.environ["PYTHONPATH"] = snap[1]
+        mock_resolve.assert_called_once_with(str(d))
+
+
+# ---------------------------------------------------------------------------
+# 530-config override must not be flipped by stale local path hints
+# ---------------------------------------------------------------------------
+
+
+class TestConfig530OverrideGuard:
+    """A checkpoint whose config.json correctly matches the 530 set must not be
+    promoted to 550 by an arbitrary 5.5-looking substring in a stale/renamed
+    local path saved in model_name/_name_or_path. Only a real Hub id (or the
+    current folder basename) may override the config tier."""
+
+    def test_stale_local_path_does_not_flip_530_to_550(self, tmp_path: Path):
+        d = tmp_path / "my-qwen35-run"
+        d.mkdir()
+        (d / "config.json").write_text(
+            json.dumps(
+                {
+                    "model_type": "qwen3_5",
+                    "_name_or_path": "/old/run/qwen3.6-source",
+                }
+            )
+        )
+        # qwen3.6 in the stale path would name-match 550, but it is not a Hub id,
+        # so the correct 530 config wins.
+        assert get_transformers_tier(str(d)) == "530"
+
+    def test_current_basename_can_still_override_to_550(self, tmp_path: Path):
+        d = tmp_path / "Qwen3.6-27B"
+        d.mkdir()
+        # Qwen3.6 reuses the qwen3_5 config id but is a 5.5 model by name.
+        (d / "config.json").write_text(
+            json.dumps({"model_type": "qwen3_5", "_name_or_path": str(d)})
+        )
+        assert get_transformers_tier(str(d)) == "550"
+
+    def test_real_hub_id_can_still_override_to_550(self, tmp_path: Path):
+        d = tmp_path / "my-finetune"
+        d.mkdir()
+        (d / "config.json").write_text(
+            json.dumps({"model_type": "qwen3_5", "_name_or_path": "Qwen/Qwen3.6-27B"})
+        )
+        assert get_transformers_tier(str(d)) == "550"
