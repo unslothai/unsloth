@@ -1128,16 +1128,17 @@ def _detect_safetensors_features(backend, chat_template: Optional[str]) -> dict:
             "supports_tools": False,
         }
     )
-    # Our safetensors loop only parses <tool_call>{json}</tool_call> and
-    # <function=name>...</function>. Llama uses <|python_tag|>, Mistral uses
-    # [TOOL_CALLS]; advertising tools for those enables a pill the parser
-    # can't honour. GGUF is unaffected -- llama-server normalises every
-    # format into structured deltas.
+    # Our safetensors loop only parses <tool_call>{json}</tool_call>,
+    # <function=name>...</function>, and Gemma native <|tool_call>...<tool_call|>.
+    # Llama uses <|python_tag|>, Mistral uses [TOOL_CALLS]; advertising tools for
+    # those enables a pill the parser can't honour. GGUF is unaffected --
+    # llama-server normalises every format into structured deltas.
     if (
         flags.get("supports_tools")
         and chat_template
         and "<tool_call>" not in chat_template
         and "<function=" not in chat_template
+        and "<|tool_call>" not in chat_template
     ):
         logger.info(
             "safetensors: template advertises tools but uses an "

@@ -99,6 +99,15 @@ class TestParser:
         assert result[0]["function"]["name"] == "terminal"
         assert json.loads(result[0]["function"]["arguments"]) == {"command": "echo {foo:bar}"}
 
+    def test_gemma_native_tool_call_bare_string_values(self):
+        text = '<|tool_call>call:get_weather{location:Tokyo,unit:celsius}<tool_call|>'
+        result = parse_tool_calls_from_text(text)
+        assert len(result) == 1
+        assert json.loads(result[0]["function"]["arguments"]) == {
+            "location": "Tokyo",
+            "unit": "celsius",
+        }
+
     def test_xml_function_call(self):
         text = "<function=python><parameter=code>print('hi')</parameter></function>"
         result = parse_tool_calls_from_text(text)

@@ -138,6 +138,22 @@ def _quote_gemma_object_keys(src: str) -> str:
             parts.append(src[i:colon_pos])
             parts.append(":")
             i = colon_pos + 1
+            # Gemma may emit bare string values ({unit:celsius}); quote them so
+            # json.loads succeeds. JSON scalars/objects/arrays/quoted stay as-is.
+            ws = i
+            while i < len(src) and src[i].isspace():
+                i += 1
+            parts.append(src[ws:i])
+            if i < len(src) and src[i] not in '"{[':
+                v_start = i
+                while i < len(src) and src[i] not in ",}":
+                    i += 1
+                raw = src[v_start:i]
+                try:
+                    json.loads(raw.strip())
+                    parts.append(raw)
+                except (json.JSONDecodeError, ValueError):
+                    parts.append(json.dumps(raw.strip()) if raw.strip() else raw)
         else:
             parts.append(src[key_start:i])
     return "".join(parts)
