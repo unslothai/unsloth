@@ -57,6 +57,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             scope TEXT NOT NULL,
             kb_id TEXT,
             thread_id TEXT,
+            project_id TEXT,
             filename TEXT NOT NULL,
             sha256 TEXT NOT NULL,
             status TEXT NOT NULL DEFAULT 'pending',
@@ -102,6 +103,10 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         );
         """
     )
+    # Lazy upgrade for databases created before project sources existed.
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(documents)").fetchall()}
+    if "project_id" not in cols:
+        conn.execute("ALTER TABLE documents ADD COLUMN project_id TEXT")
 
 
 def get_connection() -> sqlite3.Connection:

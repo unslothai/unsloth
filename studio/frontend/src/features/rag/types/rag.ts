@@ -20,6 +20,7 @@ export interface RagDocument {
   numChunks?: number | null;
   kbId?: string | null;
   threadId?: string | null;
+  projectId?: string | null;
   createdAt?: string | null;
 }
 

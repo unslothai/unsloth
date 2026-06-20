@@ -12,6 +12,7 @@ import { checkDatasetFormat } from "../api/datasets-api";
 import { checkVisionModel, getModelConfig } from "../api/models-api";
 import { mapBackendModelConfigToTrainingPatch } from "../lib/model-defaults";
 import { isRawTextDatasetFormat } from "../lib/training-methods";
+import { validateS3Source } from "../lib/validation";
 import type { BackendModelConfig } from "../api/models-api";
 import type { TrainingConfigState, TrainingConfigStore } from "../types/config";
 
@@ -124,6 +125,7 @@ const NON_PERSISTED_STATE_KEYS: ReadonlySet<keyof TrainingConfigState> = new Set
   "isDatasetAudio",
   "trainOnCompletions",
   "maxPositionEmbeddings",
+  "s3Config",
 ]);
 
 function partializePersistedState(
@@ -148,9 +150,13 @@ function canProceedForStep(state: TrainingConfigState): boolean {
     case 2:
       return state.selectedModel !== null;
     case 3:
-      return state.datasetSource === "upload"
-        ? state.uploadedFile !== null
-        : state.dataset !== null;
+      if (state.datasetSource === "upload") {
+        return state.uploadedFile !== null;
+      }
+      if (state.datasetSource === "s3") {
+        return validateS3Source(state).ok;
+      }
+      return state.dataset !== null;
     case 4:
     case 5:
       return true;
@@ -384,8 +390,8 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
               visionImageSize: DEFAULT_HYPERPARAMS.visionImageSize,
             });
 
-            // Fallback vision check if config endpoint fails.
-            void checkVisionModel(modelName)
+            // Fallback vision check; pass the token so a gated/private VLM classifies right.
+            void checkVisionModel(modelName, get().hfToken || undefined)
               .then((isVision) => {
                 if (get().selectedModel !== modelName) return;
                 set({
@@ -492,12 +498,23 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           const previousModel = get().selectedModel;
           // Reset vision_image_size on a true switch only; same-model reloads
           // go through the mapper, which preserves the user's choice.
-          const patch: { selectedModel: string | null; modelDefaultsError: null; visionImageSize?: number | null } = {
+          const patch: {
+            selectedModel: string | null;
+            modelDefaultsError: null;
+            visionImageSize?: number | null;
+            trustRemoteCode?: boolean;
+            approvedRemoteCodeFingerprint?: string | null;
+          } = {
             selectedModel,
             modelDefaultsError: null,
           };
           if (selectedModel !== previousModel) {
             patch.visionImageSize = DEFAULT_HYPERPARAMS.visionImageSize;
+            // Clear the prior model's approval so a clean model is not trained with a
+            // stale trust_remote_code=true (disables fused CE). Its own YAML default is
+            // re-applied below, and a custom-code model re-opens the dialog before start.
+            patch.trustRemoteCode = false;
+            patch.approvedRemoteCodeFingerprint = null;
           }
           set(patch);
 
@@ -568,6 +585,17 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           if (uploadedFile) {
             runDatasetCheck(uploadedFile, "train");
           }
+        },
+        selectS3Source: () => {
+          _datasetCheckController?.abort();
+          _datasetCheckController = null;
+          _trainOnCompletionsManuallySet = false;
+          set({
+            datasetSource: "s3",
+            dataset: null,
+            uploadedFile: null,
+            ...resetDatasetState(),
+          });
         },
         setDatasetFormat: (datasetFormat) =>
           set((state) => {
@@ -746,6 +774,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         setFinetuneMLPModules: (finetuneMLPModules) =>
           set({ finetuneMLPModules }),
         setTargetModules: (targetModules) => set({ targetModules }),
+        setS3Config: (s3Config) => set({ s3Config }),
         canProceed: () => canProceedForStep(get()),
         reset: () => {
           _trainOnCompletionsManuallySet = false;

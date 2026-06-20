@@ -41,7 +41,9 @@ class LlamaUpdateStatusResponse(BaseModel):
         False,
         description = "True when the install came from an Unsloth prebuilt (has a marker).",
     )
-    update_available: bool = Field(False, description = "True when installed_tag != latest_tag.")
+    update_available: bool = Field(
+        False, description = "True when the latest release is genuinely newer than the install."
+    )
     stale: bool = Field(
         False, description = "Update available AND install older than the staleness threshold."
     )
@@ -52,6 +54,9 @@ class LlamaUpdateStatusResponse(BaseModel):
     age_days: Optional[int] = None
     source_build: bool = Field(
         False, description = "True when there is no marker (source build) but a prebuilt is offered."
+    )
+    update_size_bytes: Optional[int] = Field(
+        None, description = "Download size of the prebuilt Update would fetch, in bytes."
     )
     job: LlamaUpdateJob = Field(default_factory = LlamaUpdateJob)
 

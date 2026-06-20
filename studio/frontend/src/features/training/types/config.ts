@@ -6,6 +6,7 @@ import type {
   DatasetSource,
   GradientCheckpointing,
   ModelType,
+  S3Config,
   StepNumber,
   TrainingMethod,
 } from "@/types/training";
@@ -76,6 +77,7 @@ export interface TrainingConfigState {
   isDatasetImage: boolean | null;
   isDatasetAudio: boolean;
   trustRemoteCode: boolean;
+  approvedRemoteCodeFingerprint?: string | null;
   finetuneVisionLayers: boolean;
   finetuneLanguageLayers: boolean;
   finetuneAttentionModules: boolean;
@@ -83,6 +85,7 @@ export interface TrainingConfigState {
   targetModules: string[];
   maxPositionEmbeddings: number | null;
   visionImageSize: number | null;
+  s3Config: S3Config | null;
 }
 
 export interface TrainingConfigActions {
@@ -98,6 +101,7 @@ export interface TrainingConfigActions {
   setDatasetSource: (source: DatasetSource) => void;
   selectHfDataset: (dataset: string | null) => void;
   selectLocalDataset: (file: string | null) => void;
+  selectS3Source: () => void;
   setDatasetFormat: (format: DatasetFormat) => void;
   setDataset: (dataset: string | null) => void;
   setDatasetSubset: (subset: string | null) => void;
@@ -147,6 +151,7 @@ export interface TrainingConfigActions {
   setFinetuneAttentionModules: (value: boolean) => void;
   setFinetuneMLPModules: (value: boolean) => void;
   setTargetModules: (value: string[]) => void;
+  setS3Config: (value: S3Config | null) => void;
   canProceed: () => boolean;
   reset: () => void;
   resetToModelDefaults: () => void;

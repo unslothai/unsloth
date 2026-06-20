@@ -25,8 +25,8 @@ class DownloadModelRequest(BaseModel):
         description = "Quantization label (e.g. 'Q4_K_M'). Required for GGUF repos.",
     )
     use_xet: bool = Field(
-        False,
-        description = "Enable Xet parallel chunked transport. Default False uses HTTP Range-resume.",
+        True,
+        description = "Use Xet parallel chunked transport. Default True; set False for HTTP Range-resume.",
     )
 
 
@@ -125,8 +125,8 @@ class DownloadDatasetRequest(BaseModel):
 
     repo_id: str = Field(..., description = "HuggingFace dataset repo ID")
     use_xet: bool = Field(
-        False,
-        description = "Enable Xet parallel chunked transport. Default False uses HTTP Range-resume.",
+        True,
+        description = "Use Xet parallel chunked transport. Default True; set False for HTTP Range-resume.",
     )
 
 

@@ -3,11 +3,11 @@
 
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { useT } from "@/i18n";
+import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
 import {
   ArrowUpRight01Icon,
   Copy01Icon,
-  Tick02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
@@ -187,10 +187,10 @@ function ShellToggleButton({
       onClick={onClick}
       aria-pressed={active}
       className={cn(
-        "rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors",
+        "inline-flex h-8 items-center justify-center rounded-full px-3.5 text-[12px] font-medium transition-colors",
         active
-          ? "bg-foreground/[0.08] text-foreground dark:bg-white/[0.12]"
-          : "text-muted-foreground hover:text-foreground",
+          ? "hub-tab-toggle-pill text-foreground"
+          : "cursor-pointer text-muted-foreground hover:text-foreground",
       )}
     >
       {label}
@@ -265,7 +265,7 @@ export function UpdateStudioInstructions({
             {t("settings.about.update.title")}
           </p>
         ) : null}
-        <div className="flex shrink-0 items-center gap-1.5">
+        <div className="hub-tab-toggle inline-flex h-8 shrink-0 items-center rounded-full">
           <ShellToggleButton
             active={!windows}
             label="MacOS / Linux"

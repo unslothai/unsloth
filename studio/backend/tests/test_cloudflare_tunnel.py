@@ -13,6 +13,7 @@ import importlib.util
 import io
 import sys
 import tarfile
+import types
 from pathlib import Path
 
 import pytest
@@ -49,6 +50,26 @@ def test_url_regex_extracts_and_ignores_noise():
 
 def test_url_regex_no_match_on_unrelated():
     assert ct._URL_RE.search("INF connecting to https://api.cloudflare.com/v4") is None
+
+
+def test_url_regex_ignores_api_endpoint():
+    # cloudflared's failure line names its own API host; it must never be taken
+    # as the tunnel URL (it returns a 404 and is not a quick tunnel).
+    line = (
+        'failed to request quick Tunnel: Post "https://api.trycloudflare.com/tunnel": '
+        "context deadline exceeded"
+    )
+    assert ct._URL_RE.search(line) is None
+
+
+def test_url_regex_skips_api_host_but_matches_real_url():
+    blob = (
+        'ERR failed to request quick Tunnel: Post "https://api.trycloudflare.com/tunnel"\n'
+        "INF |  https://brave-mountain-river-clouds.trycloudflare.com  |\n"
+    )
+    m = ct._URL_RE.search(blob)
+    assert m is not None
+    assert m.group(0) == "https://brave-mountain-river-clouds.trycloudflare.com"
 
 
 # ── asset mapping ────────────────────────────────────────────────────
@@ -294,9 +315,88 @@ def test_stop_terminates_process():
     t.stop()
 
 
-def test_wait_for_url_times_out_without_blocking():
+def test_start_after_stop_does_not_spawn(monkeypatch):
+    # If stop() lands before start() (a concurrent shutdown in the caller's
+    # register->start window), start() must NOT spawn a cloudflared process --
+    # nobody would own it and it would be orphaned.
     t = ct.CloudflareTunnel(8080, "/bin/cloudflared")
-    assert t.wait_for_url(timeout = 0.05) is None
+    spawned = []
+
+    class _FakeProc:
+        stdout = None
+
+        def poll(self):
+            return 0
+
+    monkeypatch.setattr(ct.subprocess, "Popen", lambda *a, **k: (spawned.append(a), _FakeProc())[1])
+    t.stop()  # proc is None -> no-op terminate, but marks the tunnel stopped
+    t.start()  # must short-circuit before Popen
+    assert spawned == []
+    assert t._proc is None
+
+
+def test_wait_for_ready_times_out_without_blocking():
+    t = ct.CloudflareTunnel(8080, "/bin/cloudflared")
+    assert t.wait_for_ready(timeout = 0.05) is None
+
+
+def _fake_proc(text):
+    return types.SimpleNamespace(stdout = io.StringIO(text))
+
+
+def test_reader_captures_url_and_registration():
+    t = ct.CloudflareTunnel(8080, "/bin/cloudflared")
+    t._reader(
+        _fake_proc(
+            "INF Requesting new quick Tunnel on trycloudflare.com...\n"
+            "INF |  https://words-here-abc.trycloudflare.com  |\n"
+            "INF Registered tunnel connection connIndex=0 protocol=http2\n"
+        )
+    )
+    assert t.url == "https://words-here-abc.trycloudflare.com"
+    assert t.ready is True
+    assert t.wait_for_ready(0) == t.url
+    assert t.error is None  # a fully-registered tunnel records no error
+
+
+def test_reader_url_without_registration_is_not_ready():
+    # A URL but no "Registered tunnel connection" (e.g. quic control stream
+    # fails) must not be advertised -- it returns Cloudflare error 1033.
+    t = ct.CloudflareTunnel(8080, "/bin/cloudflared")
+    t._reader(
+        _fake_proc(
+            "INF |  https://words-here-abc.trycloudflare.com  |\n"
+            'ERR failed to serve tunnel connection error="control stream failure"\n'
+        )
+    )
+    assert t.url == "https://words-here-abc.trycloudflare.com"
+    assert t.ready is False
+    assert t.wait_for_ready(0) is None
+    assert t.error == "cloudflared exited before the tunnel connection registered"
+
+
+def test_reader_handles_none_stdout():
+    # Popen.stdout can be None; _reader must not crash and must leave the tunnel
+    # un-ready so wait_for_ready returns None.
+    t = ct.CloudflareTunnel(8080, "/bin/cloudflared")
+    t._reader(types.SimpleNamespace(stdout = None))
+    assert t.url is None
+    assert t.ready is False
+    assert t.wait_for_ready(0) is None
+    assert t.error == "cloudflared exited before emitting a tunnel URL"
+
+
+def test_reader_ignores_api_endpoint_failure_line():
+    t = ct.CloudflareTunnel(8080, "/bin/cloudflared")
+    t._reader(
+        _fake_proc(
+            "ERR failed to request quick Tunnel: Post "
+            '"https://api.trycloudflare.com/tunnel": context deadline exceeded\n'
+        )
+    )
+    assert t.url is None
+    assert t.wait_for_ready(0) is None
+    assert t.error == "cloudflared exited before emitting a tunnel URL"
 
 
 def test_start_studio_tunnel_no_binary(monkeypatch):
@@ -305,18 +405,23 @@ def test_start_studio_tunnel_no_binary(monkeypatch):
 
 
 def test_start_studio_tunnel_registers_before_wait(monkeypatch):
-    # The tunnel must be visible to stop_studio_tunnel() during the URL wait,
-    # else a shutdown in that window orphans cloudflared.
+    # The tunnel must be visible to stop_studio_tunnel() during the readiness
+    # wait, else a shutdown in that window orphans cloudflared.
     seen = {}
 
     class _Stub:
-        def __init__(self, port, binary):
+        def __init__(
+            self,
+            port,
+            binary,
+            protocol = None,
+        ):
             self.url = None
 
         def start(self):
             pass
 
-        def wait_for_url(self, timeout):
+        def wait_for_ready(self, timeout):
             seen["active_during_wait"] = ct._active_tunnel is self
             self.url = "https://x.trycloudflare.com"
             return self.url
@@ -337,13 +442,18 @@ def test_start_studio_tunnel_clears_and_stops_on_no_url(monkeypatch):
     seen = {}
 
     class _Stub:
-        def __init__(self, port, binary):
+        def __init__(
+            self,
+            port,
+            binary,
+            protocol = None,
+        ):
             self.url = None
 
         def start(self):
             pass
 
-        def wait_for_url(self, timeout):
+        def wait_for_ready(self, timeout):
             return None
 
         def stop(self):
@@ -358,13 +468,18 @@ def test_start_studio_tunnel_clears_and_stops_on_no_url(monkeypatch):
 
 def test_start_studio_tunnel_returns_url(monkeypatch):
     class _StubTunnel:
-        def __init__(self, port, binary):
+        def __init__(
+            self,
+            port,
+            binary,
+            protocol = None,
+        ):
             self.url = None
 
         def start(self):
             self.url = "https://stub-xyz.trycloudflare.com"
 
-        def wait_for_url(self, timeout):
+        def wait_for_ready(self, timeout):
             return self.url
 
         def stop(self):
@@ -376,6 +491,169 @@ def test_start_studio_tunnel_returns_url(monkeypatch):
         assert ct.start_studio_tunnel(8080) == "https://stub-xyz.trycloudflare.com"
     finally:
         ct.stop_studio_tunnel()
+
+
+def test_start_studio_tunnel_falls_back_to_http2(monkeypatch):
+    # First attempt mints a URL but never registers (quic blocked); the http2
+    # retry registers and wins.
+    attempts = []
+
+    class _Stub:
+        def __init__(
+            self,
+            port,
+            binary,
+            protocol = None,
+        ):
+            self.protocol = protocol
+            self.url = None
+            attempts.append(protocol)
+
+        def start(self):
+            self.url = "https://words.trycloudflare.com"  # URL always minted
+
+        def wait_for_ready(self, timeout):
+            return self.url if self.protocol == "http2" else None
+
+        def stop(self):
+            pass
+
+    monkeypatch.setattr(ct, "ensure_cloudflared", lambda: "/bin/cloudflared")
+    monkeypatch.setattr(ct, "CloudflareTunnel", _Stub)
+    try:
+        assert ct.start_studio_tunnel(8080) == "https://words.trycloudflare.com"
+        assert attempts == [None, "http2"]  # default first, then forced http2
+    finally:
+        ct.stop_studio_tunnel()
+
+
+def test_start_studio_tunnel_no_retry_when_shutdown_between_attempts(monkeypatch):
+    # A stop() landing in the gap AFTER the failed first attempt is cleaned up but
+    # BEFORE the http2 retry registers must abort the loop -- not start a second
+    # tunnel that nobody will ever stop (Codex review). Simulated by having the
+    # first attempt's stop() (called during cleanup) trigger the shutdown.
+    attempts = []
+
+    class _Stub:
+        def __init__(
+            self,
+            port,
+            binary,
+            protocol = None,
+        ):
+            self.url = None
+            attempts.append(protocol)
+
+        def start(self):
+            self.url = "https://words.trycloudflare.com"  # URL minted, never ready
+
+        def wait_for_ready(self, timeout):
+            return None
+
+        def stop(self):
+            ct.stop_studio_tunnel()  # a concurrent shutdown lands in the gap
+
+    monkeypatch.setattr(ct, "ensure_cloudflared", lambda: "/bin/cloudflared")
+    monkeypatch.setattr(ct, "CloudflareTunnel", _Stub)
+    assert ct.start_studio_tunnel(8080) is None
+    assert attempts == [None]  # http2 retry aborted after shutdown
+    assert ct._active_tunnel is None
+
+
+def test_start_studio_tunnel_no_http2_retry_when_no_url(monkeypatch):
+    # No URL at all is an API/network failure; the http2 fallback would not help,
+    # so it must be skipped (don't burn a second timeout window).
+    attempts = []
+
+    class _Stub:
+        def __init__(
+            self,
+            port,
+            binary,
+            protocol = None,
+        ):
+            self.url = None
+            attempts.append(protocol)
+
+        def start(self):
+            pass  # never mints a URL
+
+        def wait_for_ready(self, timeout):
+            return None
+
+        def stop(self):
+            pass
+
+    monkeypatch.setattr(ct, "ensure_cloudflared", lambda: "/bin/cloudflared")
+    monkeypatch.setattr(ct, "CloudflareTunnel", _Stub)
+    assert ct.start_studio_tunnel(8080) is None
+    assert attempts == [None]
+
+
+def test_start_studio_tunnel_both_protocols_fail_registration(monkeypatch):
+    # Both quic and http2 mint a URL but neither registers -> both attempts are
+    # exhausted and None is returned (no dead URL advertised).
+    attempts = []
+
+    class _Stub:
+        def __init__(
+            self,
+            port,
+            binary,
+            protocol = None,
+        ):
+            self.url = None
+            attempts.append(protocol)
+
+        def start(self):
+            self.url = "https://words.trycloudflare.com"  # URL minted, never ready
+
+        def wait_for_ready(self, timeout):
+            return None
+
+        def stop(self):
+            pass
+
+    monkeypatch.setattr(ct, "ensure_cloudflared", lambda: "/bin/cloudflared")
+    monkeypatch.setattr(ct, "CloudflareTunnel", _Stub)
+    assert ct.start_studio_tunnel(8080) is None
+    assert attempts == [None, "http2"]
+    assert ct._active_tunnel is None
+
+
+def test_start_studio_tunnel_aborts_retry_on_concurrent_shutdown(monkeypatch):
+    # If a concurrent stop_studio_tunnel() clears _active_tunnel while we wait,
+    # the retry loop must NOT start a second (http2) tunnel: shutdown is already
+    # done, so nothing would ever stop it and it would be orphaned.
+    attempts = []
+
+    class _Stub:
+        def __init__(
+            self,
+            port,
+            binary,
+            protocol = None,
+        ):
+            self.url = None
+            attempts.append(protocol)
+
+        def start(self):
+            self.url = "https://words.trycloudflare.com"  # URL minted (saw_url True)
+
+        def wait_for_ready(self, timeout):
+            # Simulate stop_studio_tunnel() landing during the wait.
+            with ct._active_lock:
+                ct._active_tunnel = None
+            return None  # never registered
+
+        def stop(self):
+            pass
+
+    monkeypatch.setattr(ct, "ensure_cloudflared", lambda: "/bin/cloudflared")
+    monkeypatch.setattr(ct, "CloudflareTunnel", _Stub)
+    assert ct.start_studio_tunnel(8080) is None
+    assert attempts == [None]  # no http2 retry -> no orphaned second tunnel
+    assert ct._active_tunnel is None
 
 
 # ── run.py source-level pins (AST / source, no heavy import) ─────────
@@ -418,8 +696,68 @@ def test_argparse_cloudflare_default_true():
     assert _argparse_default(_RUN_PY.read_text(), "--cloudflare") is True
 
 
+def test_run_server_registers_tunnel_atexit_backstop():
+    # An abnormal exit (exception after startup -> sys.exit) bypasses
+    # _graceful_shutdown; an atexit backstop must still stop the tunnel.
+    src = _RUN_PY.read_text()
+    assert "atexit.register(stop_studio_tunnel)" in src
+
+
 def test_run_server_gates_tunnel_on_wildcard():
     # Guard against accidentally widening the trigger beyond 0.0.0.0.
     source = _RUN_PY.read_text()
     assert "_cloudflare_enabled" in source
     assert 'host == "0.0.0.0"' in source
+
+
+def _run_print_cloudflare_line(monkeypatch, *, cloudflare_url, public_reachable):
+    """Exec the real _print_cloudflare_line source in isolation (run.py has heavy
+    deps), with the two module globals injected and startup_banner stubbed."""
+    src = _RUN_PY.read_text()
+    tree = ast.parse(src)
+    func_src = next(
+        ast.get_source_segment(src, n)
+        for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "_print_cloudflare_line"
+    )
+    stub = types.ModuleType("startup_banner")
+    stub.stdout_supports_color = lambda: False
+    monkeypatch.setitem(sys.modules, "startup_banner", stub)
+    captured: list[str] = []
+    ns = {
+        "_cloudflare_url": cloudflare_url,
+        "_public_reachable": public_reachable,
+        "print": lambda *a, **k: captured.append(" ".join(str(x) for x in a)),
+    }
+    exec(compile(func_src, "<print_cloudflare_line>", "exec"), ns)
+    ns["_print_cloudflare_line"]()
+    return "\n".join(captured)
+
+
+def test_cloudflare_line_reworded_when_public_unreachable(monkeypatch):
+    out = _run_print_cloudflare_line(
+        monkeypatch, cloudflare_url = "https://x.trycloudflare.com", public_reachable = False
+    )
+    assert "Use the secure link access via Cloudflare instead: https://x.trycloudflare.com" in out
+
+
+def test_cloudflare_line_default_wording_when_reachable(monkeypatch):
+    out = _run_print_cloudflare_line(
+        monkeypatch, cloudflare_url = "https://x.trycloudflare.com", public_reachable = True
+    )
+    assert "Secure link access via Cloudflare: https://x.trycloudflare.com" in out
+    assert "Use the secure link" not in out
+
+
+def test_cloudflare_line_default_wording_when_unknown(monkeypatch):
+    # Probe did not run / could not decide -> keep the existing wording.
+    out = _run_print_cloudflare_line(
+        monkeypatch, cloudflare_url = "https://x.trycloudflare.com", public_reachable = None
+    )
+    assert "Secure link access via Cloudflare: https://x.trycloudflare.com" in out
+    assert "Use the secure link" not in out
+
+
+def test_cloudflare_line_prints_nothing_without_tunnel(monkeypatch):
+    out = _run_print_cloudflare_line(monkeypatch, cloudflare_url = None, public_reachable = False)
+    assert out == ""

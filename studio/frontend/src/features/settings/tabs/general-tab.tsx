@@ -13,6 +13,11 @@ import {
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { usePlatformStore } from "@/config/env";
+import { isTauri } from "@/lib/api-base";
+import { openModelsDir } from "@/features/native-intents/api";
+import { copyToClipboard } from "@/lib/copy-to-clipboard";
+import { toast } from "@/lib/toast";
+import { loadModelsFolder, type ModelsFolder } from "../api/models-folder";
 import { resetOnboardingDone } from "@/features/auth";
 import { useChatRuntimeStore } from "@/features/chat";
 import {
@@ -37,6 +42,7 @@ import { useEffect, useRef, useState } from "react";
 import { Eye, EyeOff } from "lucide-react";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
+import { StudioVersionSection } from "../components/studio-version-section";
 
 // Keys cleared by "Reset all local preferences".
 // NEVER include auth/session keys here — clearing them would log the user out
@@ -59,6 +65,7 @@ const PREFS_KEYS: string[] = [
   "unsloth_tool_call_timeout",
   "unsloth_chat_inference_params",
   "unsloth_chat_collapsible_state",
+  "unsloth_chat_preferences",
   // Chat presets
   "unsloth_chat_custom_presets",
   "unsloth_chat_active_preset",
@@ -132,6 +139,7 @@ export function GeneralTab() {
     null,
   );
   const [isSavingHelperPrecache, setIsSavingHelperPrecache] = useState(false);
+  const [modelsFolder, setModelsFolder] = useState<ModelsFolder | null>(null);
 
   const draftRef = useRef(draftToken);
   useEffect(() => {
@@ -197,6 +205,43 @@ export function GeneralTab() {
     };
   }, [t]);
 
+  useEffect(() => {
+    let cancelled = false;
+    void loadModelsFolder()
+      .then((folder) => {
+        if (cancelled) return;
+        setModelsFolder(folder);
+      })
+      .catch(() => {
+        // Non-critical: leave the row hidden if the path can't be resolved.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Desktop opens the folder in the OS file manager; the browser can't, so it
+  // falls back to copying the path (which is the info users actually want).
+  const handleModelsFolder = async () => {
+    const folder = modelsFolder;
+    if (!folder) return;
+    if (isTauri) {
+      try {
+        await openModelsDir(folder.path);
+      } catch (error) {
+        toast.error(t("settings.general.storage.openError"), {
+          description: error instanceof Error ? error.message : undefined,
+        });
+      }
+      return;
+    }
+    if (await copyToClipboard(folder.path)) {
+      toast.success(t("settings.general.storage.copied"));
+    } else {
+      toast.error(t("settings.general.storage.copyError"));
+    }
+  };
+
   const saveHelperPrecache = async (enabled: boolean) => {
     setIsSavingHelperPrecache(true);
     setHelperPrecacheError(null);
@@ -244,13 +289,15 @@ export function GeneralTab() {
   return (
     <div className="flex flex-col gap-6">
       <header className="flex flex-col gap-1">
-        <h1 className="text-lg font-semibold font-heading">
+        <h1 className="text-xl font-semibold font-heading">
           {t("settings.general.title")}
         </h1>
         <p className="text-xs text-muted-foreground">
           {t("settings.general.description")}
         </p>
       </header>
+
+      <StudioVersionSection />
 
       <SettingsSection title={t("settings.general.account")}>
         <SettingsRow
@@ -283,6 +330,33 @@ export function GeneralTab() {
         </SettingsRow>
       </SettingsSection>
 
+      {modelsFolder ? (
+        <SettingsSection title={t("settings.general.storage.sectionTitle")}>
+          <SettingsRow
+            label={t("settings.general.storage.modelsFolder")}
+            description={t("settings.general.storage.modelsFolderDescription")}
+          >
+            <div className="flex items-center gap-2">
+              <span
+                title={modelsFolder.path}
+                className="max-w-[280px] truncate font-mono text-xs text-muted-foreground"
+              >
+                {modelsFolder.path}
+              </span>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => void handleModelsFolder()}
+              >
+                {isTauri
+                  ? t("settings.general.storage.openAction")
+                  : t("settings.general.storage.copyAction")}
+              </Button>
+            </div>
+          </SettingsRow>
+        </SettingsSection>
+      ) : null}
+
       <SettingsSection title={t("settings.general.chatDefaults")}>
         <SettingsRow
           label={t("settings.general.autoTitleNewChats")}
@@ -291,6 +365,8 @@ export function GeneralTab() {
           <Switch checked={autoTitle} onCheckedChange={setAutoTitle} />
         </SettingsRow>
       </SettingsSection>
+
+      <StudioVersionSection />
 
       <SettingsSection title={t("settings.general.helperLlm.sectionTitle")}>
         <SettingsRow

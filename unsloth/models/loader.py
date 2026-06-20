@@ -101,6 +101,7 @@ from ._utils import (
     resolve_model_class,
     _is_family_text_decoder,
     _apply_text_only_key_mapping,
+    set_task_config_attr,
 )
 
 # Single source of truth is unsloth_zoo.model_lists. Re-exported so callers
@@ -131,6 +132,57 @@ def _strip_unsloth_bnb_4bit_suffix(model_name: str) -> str:
         if len(s) >= len(suffix) and s.lower().endswith(suffix.lower()):
             s = s[: -len(suffix)]
     return s
+
+
+def _config_get(
+    config,
+    field_name,
+    default = None,
+):
+    if isinstance(config, dict):
+        return config.get(field_name, default)
+    return getattr(config, field_name, default)
+
+
+def _config_diff(config):
+    if isinstance(config, dict):
+        return config
+    to_diff_dict = getattr(config, "to_diff_dict", None)
+    if callable(to_diff_dict):
+        try:
+            diff = to_diff_dict()
+            if isinstance(diff, dict):
+                return diff
+        except Exception:
+            pass
+    return {}
+
+
+def _has_sequence_classification_architecture(config):
+    architectures = _config_get(config, "architectures", None) or []
+    return any(str(arch).endswith("ForSequenceClassification") for arch in architectures)
+
+
+def _get_user_task_config_attrs(user_config):
+    if user_config is None:
+        return {}
+    diff = _config_diff(user_config)
+    attrs = {}
+    for key in ("id2label", "label2id", "problem_type"):
+        if key in diff:
+            attrs[key] = _config_get(user_config, key, diff.get(key))
+    if isinstance(user_config, dict) and "num_labels" in user_config:
+        attrs["num_labels"] = user_config["num_labels"]
+    elif _has_sequence_classification_architecture(user_config):
+        num_labels = _config_get(user_config, "num_labels", None)
+        if num_labels is not None:
+            attrs["num_labels"] = num_labels
+    elif "id2label" in attrs:
+        try:
+            attrs["num_labels"] = len(attrs["id2label"])
+        except TypeError:
+            pass
+    return attrs
 
 
 DISABLE_COMPILE_MODEL_NAMES = [
@@ -907,6 +959,7 @@ class FastModel(FastBaseModel):
         *args,
         **kwargs,
     ):
+        user_config = kwargs.pop("config", None)
         # Respect user-provided quantization_config (e.g. BitsAndBytesConfig)
         quantization_config = kwargs.get("quantization_config", None)
         if quantization_config is not None:
@@ -1104,13 +1157,15 @@ class FastModel(FastBaseModel):
             )
 
         try:
-            model_config = AutoConfig.from_pretrained(
-                model_name,
-                token = token,
-                revision = revision,
-                trust_remote_code = trust_remote_code,
-                local_files_only = local_files_only,
-            )
+            model_config = user_config
+            if model_config is None:
+                model_config = AutoConfig.from_pretrained(
+                    model_name,
+                    token = token,
+                    revision = revision,
+                    trust_remote_code = trust_remote_code,
+                    local_files_only = local_files_only,
+                )
             is_model = True
         except ImportError:
             raise
@@ -1384,12 +1439,15 @@ class FastModel(FastBaseModel):
                 load_in_fp8 = False
                 load_in_16bit = True
 
-            model_config = AutoConfig.from_pretrained(
-                model_name,
-                token = token,
-                trust_remote_code = trust_remote_code,
-                local_files_only = local_files_only,
-            )
+            if user_config is not None:
+                model_config = user_config
+            else:
+                model_config = AutoConfig.from_pretrained(
+                    model_name,
+                    token = token,
+                    trust_remote_code = trust_remote_code,
+                    local_files_only = local_files_only,
+                )
 
         if not was_disabled:
             enable_progress_bars()
@@ -1469,6 +1527,17 @@ class FastModel(FastBaseModel):
         else:
             tokenizer_name = kwargs.pop("tokenizer_name", None)
 
+        # Capture task intent before text_only can replace a parent VLM config
+        # with its nested text config.
+        task_config_attrs = _get_user_task_config_attrs(user_config)
+        for _cfg_key in ("num_labels", "id2label", "label2id", "problem_type"):
+            _cfg_val = kwargs.get(_cfg_key, None)
+            if _cfg_val is not None:
+                task_config_attrs[_cfg_key] = _cfg_val
+        _num_labels = task_config_attrs.get("num_labels", None)
+        for _cfg_key, _cfg_val in task_config_attrs.items():
+            set_task_config_attr(model_config, _cfg_key, _cfg_val)
+
         # Check if VLM
         architectures = getattr(model_config, "architectures", None)
         if architectures is None:
@@ -1499,19 +1568,31 @@ class FastModel(FastBaseModel):
             else:
                 is_vlm = False
         # If num_labels is set, use AutoModelForSequenceClassification
-        _num_labels = kwargs.get("num_labels", None)
+        for _cfg_key, _cfg_val in task_config_attrs.items():
+            set_task_config_attr(model_config, _cfg_key, _cfg_val)
         if auto_model is None:
             if _num_labels is not None:
                 from transformers import AutoModelForSequenceClassification
                 auto_model = AutoModelForSequenceClassification
             elif is_vlm:
                 # Check if the model's auto_map supports the VLM auto class.
-                # Some VL models (e.g. Nemotron-VL) only register AutoModelForCausalLM
-                # in their auto_map, not AutoModelForImageTextToText/AutoModelForVision2Seq.
+                # Some repo-code VL models register only a generic auto class and not
+                # AutoModelForImageTextToText/AutoModelForVision2Seq: Nemotron-VL uses
+                # AutoModelForCausalLM, DeepSeek-OCR uses AutoModel. Calling the VLM auto
+                # class on those raises "Unrecognized configuration class ... for
+                # AutoModelForImageTextToText", so fall back to whatever generic class the
+                # repo actually registered. Match the CONCRETE class name we would pass
+                # (AutoModelForVision2Seq aliases to AutoModelForImageTextToText on tf>=5),
+                # since transformers resolves remote code by that exact name -- a config
+                # that only registers the legacy key must still take the generic fallback.
                 _auto_map = getattr(model_config, "auto_map", {}) or {}
                 _vlm_class_name = AutoModelForVision2Seq.__name__
-                if "AutoModelForCausalLM" in _auto_map and _vlm_class_name not in _auto_map:
+                _has_vlm_class = _vlm_class_name in _auto_map
+                if not _has_vlm_class and "AutoModelForCausalLM" in _auto_map:
                     auto_model = AutoModelForCausalLM
+                elif not _has_vlm_class and "AutoModel" in _auto_map:
+                    from transformers import AutoModel
+                    auto_model = AutoModel
                 else:
                     auto_model = AutoModelForVision2Seq
             else:

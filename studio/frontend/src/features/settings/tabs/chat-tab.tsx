@@ -30,22 +30,140 @@ import {
   downloadChatExport,
   importConversationsFromFile,
   useChatRuntimeStore,
+  useChatPreferencesStore,
+  type PlusMenuItemId,
+  usePlusMenuPrefsStore,
 } from "@/features/chat";
 import { useT } from "@/i18n";
 import {
+  Bookmark02Icon,
   Delete02Icon,
   Download01Icon,
+  FileDatabaseIcon,
+  Folder01Icon,
+  McpServerIcon,
+  PencilRulerIcon,
+  ShieldBanIcon,
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { Columns2Icon, PlusIcon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
+import { ArchivedChatsDialog } from "../components/archived-chats-dialog";
+import { useSettingsDialogStore } from "../stores/settings-dialog-store";
+
+// Adjustable "+" menu items shown in settings, in display order. Icons mirror
+// the ones used in the composer + menu itself.
+const PLUS_MENU_ICON_CLASS = "size-[18px]";
+const PLUS_MENU_SETTINGS: { id: PlusMenuItemId; label: string; icon: ReactNode }[] =
+  [
+    {
+      id: "chatWithFiles",
+      label: "Chat with Files",
+      icon: (
+        <HugeiconsIcon
+          icon={FileDatabaseIcon}
+          strokeWidth={2}
+          className={PLUS_MENU_ICON_CLASS}
+        />
+      ),
+    },
+    {
+      id: "mcp",
+      label: "MCP",
+      icon: (
+        <HugeiconsIcon
+          icon={McpServerIcon}
+          strokeWidth={2}
+          className={PLUS_MENU_ICON_CLASS}
+        />
+      ),
+    },
+    {
+      id: "savedPrompts",
+      label: "Saved prompts",
+      icon: (
+        <HugeiconsIcon
+          icon={Bookmark02Icon}
+          strokeWidth={2}
+          className={PLUS_MENU_ICON_CLASS}
+        />
+      ),
+    },
+    {
+      id: "compareChat",
+      label: "Compare chat",
+      icon: <Columns2Icon className={PLUS_MENU_ICON_CLASS} />,
+    },
+    {
+      id: "exportChat",
+      label: "Export chat",
+      icon: (
+        <HugeiconsIcon
+          icon={Download01Icon}
+          strokeWidth={2}
+          className={PLUS_MENU_ICON_CLASS}
+        />
+      ),
+    },
+    {
+      id: "canvas",
+      label: "Canvas",
+      icon: (
+        <HugeiconsIcon
+          icon={PencilRulerIcon}
+          strokeWidth={2}
+          className={PLUS_MENU_ICON_CLASS}
+        />
+      ),
+    },
+    {
+      id: "projects",
+      label: "Projects",
+      icon: (
+        <HugeiconsIcon
+          icon={Folder01Icon}
+          strokeWidth={2}
+          className={PLUS_MENU_ICON_CLASS}
+        />
+      ),
+    },
+    {
+      id: "bypassPermissions",
+      label: "Bypass permissions",
+      icon: (
+        <HugeiconsIcon
+          icon={ShieldBanIcon}
+          strokeWidth={2}
+          className={PLUS_MENU_ICON_CLASS}
+        />
+      ),
+    },
+  ];
 
 export function ChatTab() {
   const t = useT();
+  const plusPins = usePlusMenuPrefsStore((state) => state.pins);
+  const togglePlusPin = usePlusMenuPrefsStore((state) => state.togglePin);
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [archivedOpen, setArchivedOpen] = useState(false);
   const [count, setCount] = useState<number | null>(null);
+  const archivedChatsRequested = useSettingsDialogStore(
+    (s) => s.archivedChatsRequested,
+  );
+  const consumeArchivedChatsRequest = useSettingsDialogStore(
+    (s) => s.consumeArchivedChatsRequest,
+  );
+
+  // Open the archived list when the archive toast asked to jump here.
+  useEffect(() => {
+    if (!archivedChatsRequested) return;
+    setArchivedOpen(true);
+    consumeArchivedChatsRequest();
+  }, [archivedChatsRequested, consumeArchivedChatsRequest]);
   const [exporting, setExporting] = useState(false);
   const [clearing, setClearing] = useState(false);
   const collapseHtmlArtifacts = useChatRuntimeStore(
@@ -62,6 +180,18 @@ export function ChatTab() {
   );
   const hydratePersistedSettings = useChatRuntimeStore(
     (state) => state.hydratePersistedSettings,
+  );
+  const confirmDeleteChats = useChatPreferencesStore(
+    (state) => state.confirmDeleteChats,
+  );
+  const setConfirmDeleteChats = useChatPreferencesStore(
+    (state) => state.setConfirmDeleteChats,
+  );
+  const showModelDisclaimer = useChatPreferencesStore(
+    (state) => state.showModelDisclaimer,
+  );
+  const setShowModelDisclaimer = useChatPreferencesStore(
+    (state) => state.setShowModelDisclaimer,
   );
 
   useEffect(() => {
@@ -157,13 +287,45 @@ export function ChatTab() {
   return (
     <div className="flex flex-col gap-6">
       <header className="flex flex-col gap-1">
-        <h1 className="text-lg font-semibold font-heading">
+        <h1 className="text-xl font-semibold font-heading">
           {t("settings.chat.title")}
         </h1>
         <p className="text-xs text-muted-foreground">
           {t("settings.chat.description")}
         </p>
       </header>
+
+      <SettingsSection
+        title="Chat menu"
+        description={
+          <>
+            Choose which items are pinned in chat's{" "}
+            <PlusIcon
+              aria-label="+"
+              className="inline size-3.5 align-[-2px] stroke-[2px]"
+            />{" "}
+            side menu. Unpinned items move into “More”.
+          </>
+        }
+      >
+        {PLUS_MENU_SETTINGS.map((item) => (
+          <SettingsRow key={item.id} label={item.label} icon={item.icon}>
+            <Switch
+              checked={plusPins[item.id]}
+              onCheckedChange={() => togglePlusPin(item.id)}
+            />
+          </SettingsRow>
+        ))}
+        <SettingsRow
+          label={t("settings.chat.modelDisclaimer")}
+          description={t("settings.chat.modelDisclaimerDescription")}
+        >
+          <Switch
+            checked={showModelDisclaimer}
+            onCheckedChange={setShowModelDisclaimer}
+          />
+        </SettingsRow>
+      </SettingsSection>
 
       <SettingsSection title={t("settings.chat.artifacts.title")}>
         <SettingsRow
@@ -191,6 +353,29 @@ export function ChatTab() {
       </SettingsSection>
 
       <SettingsSection title={t("settings.chat.data")}>
+        <SettingsRow
+          label="Archived chats"
+          description="View and manage chats you have archived."
+        >
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setArchivedOpen(true)}
+          >
+            Manage
+          </Button>
+        </SettingsRow>
+
+        <SettingsRow
+          label="Confirm before deleting"
+          description="Ask for confirmation before a chat is deleted. Turn off to delete instantly."
+        >
+          <Switch
+            checked={confirmDeleteChats}
+            onCheckedChange={setConfirmDeleteChats}
+          />
+        </SettingsRow>
+
         <SettingsRow
           label={t("settings.chat.exportHistory")}
           description={t("settings.chat.exportHistoryDescription")}
@@ -293,6 +478,8 @@ export function ChatTab() {
 
         <SettingsRow
           destructive
+          // divide-y already draws the row separator; drop the extra border.
+          className="border-t-0 mt-0 pt-3"
           label={t("settings.chat.clearAllChats")}
           description={
             count === null
@@ -316,6 +503,8 @@ export function ChatTab() {
           </Button>
         </SettingsRow>
       </SettingsSection>
+
+      <ArchivedChatsDialog open={archivedOpen} onOpenChange={setArchivedOpen} />
 
       <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
         <DialogContent className="max-w-md">
