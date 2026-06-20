@@ -1,13 +1,20 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-# Pure-logic unit tests for studio/setup.ps1 Visual Studio 2026 support on the
-# free windows-latest runner. No Visual Studio, CUDA, or GPU required - the
-# functions under test are pure:
-#   - Get-VcBuildCustomizationsDir : VC MSBuild folder derivation (v160/v170/v180)
-#   - Test-CmakeSupportsGenerator  : CMake >= 4.2 gate for the VS 2026 generator
-# Individual functions are extracted from setup.ps1 and dot-sourced (the script
-# is a top-level installer and cannot be loaded wholesale).
+# Tests for studio/setup.ps1 Visual Studio detection + CUDA toolset support.
+#
+# Job 1 (pester): pure-logic unit tests on windows-latest. No real Visual Studio,
+# CUDA, or GPU required - functions are extracted from setup.ps1 and dot-sourced
+# (the script is a top-level installer, not importable wholesale), with
+# vswhere/cmake mocked and fake VS trees on disk. Covers all five versions
+# (2017/2019/2022/2026 + Preview) since those installs cannot be conjured in CI.
+#
+# Job 2 (vs-integration): runs the REAL detection against the actual Visual Studio
+# preinstalled on GitHub-hosted runners, in parallel:
+#   - windows-2022         -> real Visual Studio 2022 (toolset v170)
+#   - windows-2025-vs2026  -> real Visual Studio 2026 (toolset v180)
+# VS 2017/2019/2015 are retired from hosted images, so only 2022 and 2026 can be
+# exercised against a genuine install; the rest stay covered by job 1's mocks.
 
 name: Windows Studio setup.ps1 unit tests
 
@@ -72,3 +79,76 @@ jobs:
           name: pester-results-setup-ps1
           path: pester-results.xml
           if-no-files-found: warn
+
+  vs-integration:
+    # Exercise the real detection logic against the Visual Studio that is actually
+    # installed on the runner image - no mocks. Both versions run in parallel.
+    name: real-VS detection (${{ matrix.label }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-2022,        label: 'VS 2022', expectGen: 'Visual Studio 17 2022', expectToolset: 'v170' }
+          - { os: windows-2025-vs2026, label: 'VS 2026', expectGen: 'Visual Studio 18 2026', expectToolset: 'v180' }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Detect the real Visual Studio with setup.ps1 functions
+        shell: pwsh
+        env:
+          EXPECT_GEN: ${{ matrix.expectGen }}
+          EXPECT_TOOLSET: ${{ matrix.expectToolset }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          . (Join-Path $env:GITHUB_WORKSPACE 'tests/studio_setup_ps1/Get-FunctionSource.ps1')
+          $setup = Join-Path $env:GITHUB_WORKSPACE 'studio/setup.ps1'
+          foreach ($fn in @('Get-VcBuildCustomizationsDir', 'Find-VsBuildTools')) {
+              . ([scriptblock]::Create((Get-FunctionSource -Path $setup -Name $fn)))
+          }
+
+          # Ground truth from the real vswhere (independent of our code), for visibility.
+          $vsw = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (Test-Path $vsw) {
+              $year = (& $vsw -latest -property catalog_productLineVersion 2>$null | Select-Object -First 1)
+              $path = (& $vsw -latest -property installationPath 2>$null | Select-Object -First 1)
+              Write-Host "Real vswhere: productLineVersion='$year'  installPath='$path'"
+          } else {
+              Write-Host "vswhere not present at $vsw (relying on filesystem fallback)"
+          }
+
+          # Our detection must find the real VS and report the expected generator.
+          $r = Find-VsBuildTools
+          if (-not $r) { throw "Find-VsBuildTools returned null on a host with real $env:EXPECT_GEN" }
+          Write-Host "Find-VsBuildTools -> Generator='$($r.Generator)' Source='$($r.Source)' InstallPath='$($r.InstallPath)'"
+          if ($r.Generator -ne $env:EXPECT_GEN) {
+              throw "Detection mismatch: got '$($r.Generator)', expected '$env:EXPECT_GEN'"
+          }
+          if (-not (Test-Path $r.InstallPath)) { throw "Detected InstallPath does not exist: $($r.InstallPath)" }
+
+          # Toolset path derivation must match the expected v-number...
+          $bc = Get-VcBuildCustomizationsDir -VsInstallPath $r.InstallPath -Generator $r.Generator
+          $derived = Split-Path (Split-Path $bc -Parent) -Leaf   # e.g. v170 / v180
+          Write-Host "Get-VcBuildCustomizationsDir -> '$bc' (toolset='$derived')"
+          if ($derived -ne $env:EXPECT_TOOLSET) {
+              throw "Toolset mismatch: derived '$derived', expected '$env:EXPECT_TOOLSET'"
+          }
+
+          # ...and that v-number must be a real folder on the actual VS install
+          # (proves CUDA's BuildCustomizations would land in an existing toolset dir).
+          $vcRoot = Join-Path $r.InstallPath 'MSBuild\Microsoft\VC'
+          if (Test-Path $vcRoot) {
+              $realToolsets = @((Get-ChildItem -Path $vcRoot -Directory -ErrorAction SilentlyContinue).Name)
+              Write-Host "Real VC toolset dirs: $($realToolsets -join ', ')"
+              if ($realToolsets -notcontains $derived) {
+                  throw "Derived toolset '$derived' is not present on the real $env:EXPECT_GEN install (have: $($realToolsets -join ', '))"
+              }
+              Write-Host "OK: toolset '$derived' exists on the real VS install."
+          } else {
+              Write-Warning "VC MSBuild root absent ($vcRoot) - C++ workload not installed; skipping on-disk toolset check."
+          }
+
+          Write-Host "PASS: real $env:EXPECT_GEN detected correctly with toolset '$derived'."
