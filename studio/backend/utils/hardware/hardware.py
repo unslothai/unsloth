@@ -734,7 +734,7 @@ def get_gpu_utilization() -> list[Dict[str, Any]]:
                         "vram_used_gb": _linux_used,
                         "vram_total_gb": _linux_total,
                         "vram_utilization_pct": round((_linux_used / _linux_total) * 100, 1)
-                        if _linux_total > 0
+    # Last resort: torch mem_get_info (process-local) for ALL visible GPUs
                         else None,
                         "power_draw_w": _linux_power,
                         "power_limit_w": None,
