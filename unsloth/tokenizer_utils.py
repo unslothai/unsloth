@@ -631,12 +631,14 @@ def _load_correct_tokenizer(
 # pad_token. Padding with a vision token corrupts text-only training and yields
 # NaN losses/gradients. See https://github.com/unslothai/unsloth/issues/3155
 # and https://github.com/unslothai/unsloth/issues/4104
-_VISION_PAD_TOKENS = frozenset((
-    "<|vision_pad|>",
-    "<|image_pad|>",
-    "<|video_pad|>",
-    "<|audio_pad|>",
-))
+_VISION_PAD_TOKENS = frozenset(
+    (
+        "<|vision_pad|>",
+        "<|image_pad|>",
+        "<|video_pad|>",
+        "<|audio_pad|>",
+    )
+)
 # Safe text replacements, in preference order.
 _SAFE_TEXT_PAD_TOKENS = ("<|endoftext|>", "<pad>", "[PAD]", "<unk>")
 
@@ -647,10 +649,13 @@ def _fix_vision_pad_token(tokenizer):
     Self-heals existing Hub configs without re-uploading them. Vision processors
     (image_processor present) are left untouched.
     """
-    if tokenizer is None: return tokenizer
-    if hasattr(tokenizer, "image_processor"): return tokenizer
+    if tokenizer is None:
+        return tokenizer
+    if hasattr(tokenizer, "image_processor"):
+        return tokenizer
     pad_token = getattr(tokenizer, "pad_token", None)
-    if pad_token is None or pad_token not in _VISION_PAD_TOKENS: return tokenizer
+    if pad_token is None or pad_token not in _VISION_PAD_TOKENS:
+        return tokenizer
 
     vocab = tokenizer.get_vocab()
     new_pad_token = None
@@ -664,7 +669,8 @@ def _fix_vision_pad_token(tokenizer):
         eos_token = getattr(tokenizer, "eos_token", None)
         if eos_token is not None and eos_token != pad_token:
             new_pad_token = eos_token
-    if new_pad_token is None: return tokenizer
+    if new_pad_token is None:
+        return tokenizer
 
     tokenizer.pad_token = new_pad_token
     logger.warning(
