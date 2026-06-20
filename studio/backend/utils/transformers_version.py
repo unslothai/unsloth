@@ -108,13 +108,18 @@ _TRANSFORMERS_550_MODEL_TYPES: set[str] = {
 _TRANSFORMERS_530_ARCHITECTURES: set[str] = {
     "Qwen3_5ForCausalLM",
     "Qwen3_5ForConditionalGeneration",
+    "Qwen3_5MoeForCausalLM",  # Qwen3.5 MoE (e.g. Qwen3.5-35B-A3B / 122B-A10B)
+    "Qwen3_5MoeForConditionalGeneration",
     "Qwen3MoeForCausalLM",
+    "Qwen3NextForCausalLM",  # Qwen3-Next
     "Glm4MoeLiteForCausalLM",
     "Lfm2VlForConditionalGeneration",
 }
 _TRANSFORMERS_530_MODEL_TYPES: set[str] = {
     "qwen3_5",
+    "qwen3_5_moe",
     "qwen3_moe",
+    "qwen3_next",
     "glm4_moe_lite",
     "lfm2_vl",
 }
@@ -522,9 +527,19 @@ def _check_config_needs_510(model_name: str) -> bool:
 
 
 def _norm_separators(s: str) -> str:
-    """Collapse ``_``, ``.`` and whitespace to ``-`` so underscore/dot aliases
-    (e.g. ``Qwen3_5``, ``Qwen3_Next``) match the canonical hyphen/dot substrings."""
-    return "".join("-" if ch in "_. \t" else ch for ch in s)
+    """Collapse ``_`` and whitespace to ``-`` so underscore aliases (e.g.
+    ``Qwen3_Next``) match the canonical hyphen substrings. ``.`` is left intact:
+    version dots (``qwen3.5``) must not be conflated with size separators
+    (``Qwen3-5B`` / ``Qwen3-6B``)."""
+    return "".join("-" if ch in "_ \t" else ch for ch in s)
+
+
+def _looks_like_hf_id(value: str) -> bool:
+    """True if *value* looks like a Hub id (``org/name``) rather than a local
+    filesystem path, so a stale/renamed checkpoint path isn't name-matched."""
+    if os.path.isabs(value) or value.startswith((".", "~")) or "\\" in value:
+        return False
+    return value.count("/") <= 1
 
 
 def _tier_from_name(name: str) -> tuple[str, str] | None:
@@ -537,12 +552,13 @@ def _tier_from_name(name: str) -> tuple[str, str] | None:
     checkpoint's ``config.json`` architectures aren't yet enumerated in the
     config sets.
 
-    Matching is separator-insensitive: a name is matched both verbatim and with
-    ``_ . whitespace`` collapsed to ``-``, so ``Qwen3_5-MoE`` resolves the same
-    as ``Qwen3.5-MoE``.
+    Underscore aliases match (``Qwen3_5`` == ``Qwen3.5``), but a dot-version
+    substring (``qwen3.5``/``qwen3.6``) matches only the dot or underscore form,
+    never a hyphen, so ``Qwen3-5B``/``Qwen3-6B`` size names aren't promoted.
     """
     lowered = name.lower()
     norm = _norm_separators(lowered)
+    dotted = lowered.replace("_", ".")
     if "assistant" in lowered and ("gemma-4" in norm or "gemma4" in norm):
         return "510", "gemma-4 assistant variant"
     for substrings, tier in (
@@ -551,7 +567,10 @@ def _tier_from_name(name: str) -> tuple[str, str] | None:
         (TRANSFORMERS_5_MODEL_SUBSTRINGS, "530"),
     ):
         for s in substrings:
-            if s in lowered or _norm_separators(s) in norm:
+            if "." in s:
+                if s in lowered or s in dotted:
+                    return tier, s
+            elif s in lowered or _norm_separators(s) in norm:
                 return tier, s
     return None
 
@@ -590,6 +609,17 @@ def get_transformers_tier(model_name: str) -> str:
                 )
                 return "550"
             if _config_needs_530(cfg):
+                # Qwen3.6 reuses Qwen3.5 config ids (qwen3_5 / qwen3_5_moe) but is
+                # a 5.5 model by name; let a higher-tier name match override 530.
+                base = _resolve_base_model(model_name)
+                hint = _tier_from_name(base if base != model_name else Path(model_name).name)
+                if hint is not None and hint[0] in ("510", "550"):
+                    logger.info(
+                        "Transformers tier %s selected for %s (name overrides 530 config)",
+                        hint[0],
+                        model_name,
+                    )
+                    return hint[0]
                 logger.info(
                     "Transformers tier 530 selected for %s (local config.json check)",
                     model_name,
@@ -614,7 +644,7 @@ def get_transformers_tier(model_name: str) -> str:
                             resolved,
                         )
                         return tier
-                else:
+                elif _looks_like_hf_id(resolved):
                     result = _tier_from_name(resolved)
                     if result is not None:
                         tier, match = result

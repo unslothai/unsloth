@@ -880,6 +880,17 @@ class TestLocalConfig530Tier:
     def test_config_needs_530_lfm2_vl(self):
         assert _config_needs_530({"model_type": "lfm2_vl"}) is True
 
+    def test_config_needs_530_qwen3_5_moe(self):
+        """Qwen3.5 MoE (Qwen3.5-35B-A3B / 122B-A10B) uses qwen3_5_moe ids."""
+        assert _config_needs_530(
+            {"model_type": "qwen3_5_moe", "architectures": ["Qwen3_5MoeForConditionalGeneration"]}
+        ) is True
+
+    def test_config_needs_530_qwen3_next(self):
+        assert _config_needs_530(
+            {"model_type": "qwen3_next", "architectures": ["Qwen3NextForCausalLM"]}
+        ) is True
+
     def test_config_needs_530_plain_qwen3_is_false(self):
         """Regular Qwen3 (non-MoE, non-3.5) must not be promoted to 5.3.0."""
         assert _config_needs_530({"model_type": "qwen3"}) is False
@@ -919,6 +930,56 @@ class TestLocalConfig530Tier:
             )
         )
         assert get_transformers_tier(str(d)) == "530"
+
+    def test_tier_local_qwen35_moe_config_selects_530(self, tmp_path: Path):
+        """A renamed Qwen3.5 MoE folder (no name hint) routes to 530 via config."""
+        d = tmp_path / "my-custom-moe"
+        d.mkdir()
+        (d / "config.json").write_text(
+            json.dumps(
+                {"model_type": "qwen3_5_moe", "architectures": ["Qwen3_5MoeForConditionalGeneration"]}
+            )
+        )
+        assert get_transformers_tier(str(d)) == "530"
+
+    # --- Qwen3.6 reuses Qwen3.5 config ids but routes to 550 by name ---------
+
+    def test_local_qwen36_config_keeps_550_name_tier(self, tmp_path: Path):
+        """Qwen3.6 config carries qwen3_5 ids; a higher-tier name match wins."""
+        d = tmp_path / "Qwen3.6-27B"
+        d.mkdir()
+        (d / "config.json").write_text(
+            json.dumps({"model_type": "qwen3_5", "architectures": ["Qwen3_5ForConditionalGeneration"]})
+        )
+        assert get_transformers_tier(str(d)) == "550"
+
+    def test_local_qwen36_moe_via_name_or_path_keeps_550(self, tmp_path: Path):
+        """Renamed Qwen3.6 MoE folder: _name_or_path carries the 5.5 name signal."""
+        d = tmp_path / "renamed-q36-moe"
+        d.mkdir()
+        (d / "config.json").write_text(
+            json.dumps(
+                {
+                    "model_type": "qwen3_5_moe",
+                    "architectures": ["Qwen3_5MoeForConditionalGeneration"],
+                    "_name_or_path": "Qwen/Qwen3.6-35B-A3B",
+                }
+            )
+        )
+        assert get_transformers_tier(str(d)) == "550"
+
+    def test_stale_absolute_name_or_path_not_promoted(self, tmp_path: Path):
+        """A non-5.x checkpoint whose _name_or_path is a stale absolute path
+        containing a 5.x substring must not be name-matched into a sidecar."""
+        d = tmp_path / "my-llama-ckpt"
+        d.mkdir()
+        (d / "config.json").write_text(
+            json.dumps({"model_type": "llama", "_name_or_path": "/old/run/qwen3.5-source"})
+        )
+        with patch(
+            "utils.transformers_version._check_tokenizer_config_needs_v5", return_value = False
+        ):
+            assert get_transformers_tier(str(d)) == "default"
 
     # --- _name_or_path fallback ---------------------------------------------
 
@@ -1069,14 +1130,14 @@ class TestNormSeparators:
     def test_underscore_to_hyphen(self):
         assert _norm_separators("qwen3_5") == "qwen3-5"
 
-    def test_dot_to_hyphen(self):
-        assert _norm_separators("qwen3.5") == "qwen3-5"
+    def test_dot_preserved(self):
+        assert _norm_separators("qwen3.5") == "qwen3.5"
 
     def test_hyphen_unchanged(self):
         assert _norm_separators("gemma-4") == "gemma-4"
 
     def test_mixed(self):
-        assert _norm_separators("Qwen3_5.MoE") == "Qwen3-5-MoE"
+        assert _norm_separators("Qwen3_5.MoE") == "Qwen3-5.MoE"
 
     def test_whitespace_to_hyphen(self):
         assert _norm_separators("some model") == "some-model"
@@ -1116,6 +1177,13 @@ class TestTierFromNameSeparatorNorm:
 
     def test_unrelated_underscores_not_promoted(self):
         assert _tier_from_name("meta_llama/Llama_3_8B") is None
+
+    def test_qwen3_hyphen_6_size_not_promoted(self):
+        """Qwen3-6B is a size name, not the qwen3.6 release line."""
+        assert _tier_from_name("Qwen/Qwen3-6B-Instruct") is None
+
+    def test_qwen3_hyphen_5_size_not_promoted(self):
+        assert _tier_from_name("Qwen/Qwen3-5B") is None
 
 
 # ---------------------------------------------------------------------------
