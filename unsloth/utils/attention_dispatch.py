@@ -137,6 +137,18 @@ def run_attention(
     requires_grad = context.requires_grad
     sliding_window = context.sliding_window
 
+    # FlashAttention only supports fp16/bf16. DoRA upcasts its magnitude vector to
+    # fp32 for the optimizer, which promotes the q/k/v_proj output to fp32 and would
+    # raise "FlashAttention only support fp16 and bf16 data type". Downcast here.
+    if backend in (FLASH_DENSE, FLASH_VARLEN) and Q.dtype == torch.float32:
+        flash_dtype = torch.bfloat16 if SUPPORTS_BFLOAT16 else torch.float16
+        if torch.is_autocast_enabled():
+            try:
+                flash_dtype = torch.get_autocast_dtype("cuda")
+            except (AttributeError, TypeError):
+                flash_dtype = torch.get_autocast_gpu_dtype()
+        Q, K, V = Q.to(flash_dtype), K.to(flash_dtype), V.to(flash_dtype)
+
     if backend == FLASH_VARLEN:
         Q_f = Q.transpose(1, 2).reshape(bsz * q_len, n_heads, head_dim)
         K_f = K.transpose(1, 2).reshape(bsz * q_len, config.n_kv_heads, head_dim)
