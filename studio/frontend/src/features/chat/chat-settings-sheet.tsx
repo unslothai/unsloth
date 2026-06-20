@@ -546,6 +546,12 @@ export function ChatSettingsPanel({
   const loadedTensorParallel = useChatRuntimeStore(
     (s) => s.loadedTensorParallel,
   );
+  const chatTemplateOverride = useChatRuntimeStore(
+    (s) => s.chatTemplateOverride,
+  );
+  const loadedChatTemplateOverride = useChatRuntimeStore(
+    (s) => s.loadedChatTemplateOverride,
+  );
   const customContextLength = useChatRuntimeStore((s) => s.customContextLength);
   const setCustomContextLength = useChatRuntimeStore(
     (s) => s.setCustomContextLength,
@@ -584,8 +590,11 @@ export function ChatSettingsPanel({
   const specDirty = speculativeType !== loadedSpeculativeType;
   const specDraftDirty = specDraftNMax !== loadedSpecDraftNMax;
   const tpDirty = tensorParallel !== (loadedTensorParallel ?? false);
+  // A saved chat-template override is a reload-time setting too, so surface
+  // Apply for a template-only edit (otherwise it could never be applied).
+  const templateDirty = chatTemplateOverride !== loadedChatTemplateOverride;
   const modelSettingsDirty =
-    kvDirty || ctxDirty || specDirty || specDraftDirty || tpDirty;
+    kvDirty || ctxDirty || specDirty || specDraftDirty || tpDirty || templateDirty;
   const [presetNameInput, setPresetNameInput] = useState(activePreset);
   const [systemPromptEditorOpen, setSystemPromptEditorOpen] = useState(false);
   const [systemPromptDraft, setSystemPromptDraft] = useState("");
