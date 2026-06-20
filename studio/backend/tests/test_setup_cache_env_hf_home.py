@@ -84,3 +84,20 @@ def test_legacy_huggingface_hub_cache_alias_is_honored(monkeypatch, tmp_path):
     import os
 
     assert os.environ["HF_HUB_CACHE"] == str(legacy)
+
+
+def test_unwritable_hf_home_does_not_crash(monkeypatch, tmp_path):
+    # HF_HOME under a regular file -> mkdir fails; startup must not crash and the
+    # env var is still set (HF surfaces a clear error later, at download time).
+    blocker = tmp_path / "blocker"
+    blocker.write_text("not a dir")
+    unwritable = blocker / "hf"
+    sr = _load_storage_roots()
+    _clear_hf_env(monkeypatch)
+    monkeypatch.setenv("HF_HOME", str(unwritable))
+
+    sr._setup_cache_env()  # must not raise
+
+    import os
+
+    assert os.environ["HF_HUB_CACHE"] == str(unwritable / "hub")

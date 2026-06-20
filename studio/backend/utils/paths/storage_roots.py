@@ -298,7 +298,12 @@ def _setup_cache_env() -> None:
     for key, value in defaults.items():
         if key not in os.environ:
             os.environ[key] = value
-            Path(value).mkdir(parents = True, exist_ok = True)
+            # Best-effort: a non-writable custom HF_HOME must not crash startup;
+            # HF surfaces a clear error at download time instead.
+            try:
+                Path(value).mkdir(parents = True, exist_ok = True)
+            except OSError:
+                pass
 
 
 def ensure_studio_directories() -> None:
