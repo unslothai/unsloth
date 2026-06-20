@@ -3279,7 +3279,8 @@ def is_moe_model(model) -> bool:
                 break
 
     return num_experts is not None and num_experts > 0
-pass
+
+
 
 
 def is_gemma4_shared_kv_model(model) -> bool:
@@ -3297,12 +3298,13 @@ def is_gemma4_shared_kv_model(model) -> bool:
     model_type = getattr(config, "model_type", "") or ""
     text_model_type = getattr(text_config, "model_type", "") or ""
     if not (
-        (isinstance(model_type, str) and model_type.startswith("gemma4")) or
-        (isinstance(text_model_type, str) and text_model_type.startswith("gemma4"))
+        (isinstance(model_type, str) and model_type.startswith("gemma4"))
+        or (isinstance(text_model_type, str) and text_model_type.startswith("gemma4"))
     ):
         return False
     return (getattr(text_config, "num_kv_shared_layers", 0) or 0) > 0
-pass
+
+
 
 
 def _resolve_moe_parameter_name(model, default_name: str, alternate_name: str) -> str:
