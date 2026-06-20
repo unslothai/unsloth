@@ -987,8 +987,8 @@ async def get_system_info(current_subject: str = Depends(get_current_subject)):
         idx = dev.get("index")
         util = util_devices.get(idx, {})
 
-        total_vram = util.get("vram_total_gb") or dev.get("memory_total_gb", 0)
-        used_vram = util.get("vram_used_gb", 0)
+    total_vram = util.get("vram_total_gb") or dev.get("memory_total_gb") or 0
+    used_vram = util.get("vram_used_gb") or 0
 
         enriched_dev = dict(dev)
         enriched_dev["vram_used_gb"] = used_vram
