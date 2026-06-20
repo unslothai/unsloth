@@ -43,6 +43,7 @@ import {
   Folder01Icon,
   McpServerIcon,
   PencilRulerIcon,
+  ShieldBanIcon,
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -130,6 +131,17 @@ const PLUS_MENU_SETTINGS: { id: PlusMenuItemId; label: string; icon: ReactNode }
         />
       ),
     },
+    {
+      id: "bypassPermissions",
+      label: "Bypass permissions",
+      icon: (
+        <HugeiconsIcon
+          icon={ShieldBanIcon}
+          strokeWidth={2}
+          className={PLUS_MENU_ICON_CLASS}
+        />
+      ),
+    },
   ];
 
 export function ChatTab() {
@@ -174,6 +186,12 @@ export function ChatTab() {
   );
   const setConfirmDeleteChats = useChatPreferencesStore(
     (state) => state.setConfirmDeleteChats,
+  );
+  const showModelDisclaimer = useChatPreferencesStore(
+    (state) => state.showModelDisclaimer,
+  );
+  const setShowModelDisclaimer = useChatPreferencesStore(
+    (state) => state.setShowModelDisclaimer,
   );
 
   useEffect(() => {
@@ -298,6 +316,15 @@ export function ChatTab() {
             />
           </SettingsRow>
         ))}
+        <SettingsRow
+          label={t("settings.chat.modelDisclaimer")}
+          description={t("settings.chat.modelDisclaimerDescription")}
+        >
+          <Switch
+            checked={showModelDisclaimer}
+            onCheckedChange={setShowModelDisclaimer}
+          />
+        </SettingsRow>
       </SettingsSection>
 
       <SettingsSection title={t("settings.chat.artifacts.title")}>

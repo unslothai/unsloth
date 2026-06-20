@@ -32,6 +32,7 @@ export const en = {
     },
     navigation: {
       newChat: "New Chat",
+      returnToChat: "Return to Chat",
       compare: "Compare",
       search: "Search",
       hub: "Hub",
@@ -135,6 +136,17 @@ export const en = {
         maxUploadSizeDescription:
           "Default is {defaultSize} MB.",
       },
+      storage: {
+        sectionTitle: "Storage",
+        modelsFolder: "Models folder",
+        modelsFolderDescription:
+          "Where downloaded models are stored.",
+        openAction: "Open",
+        copyAction: "Copy path",
+        copied: "Path copied",
+        openError: "Couldn't open the folder",
+        copyError: "Couldn't copy the path",
+      },
       resetPreferences: {
         sectionTitle: "Danger zone",
         label: "Reset all local preferences",
@@ -196,14 +208,17 @@ export const en = {
     chat: {
       title: "Chat",
       description: "Manage chat history stored on this device.",
+      modelDisclaimer: "Show model disclaimer",
+      modelDisclaimerDescription:
+        'Show "LLMs can make mistakes" under the chat box.',
       artifacts: {
-        title: "Artifacts",
+        title: "Canvas",
         collapseHtmlBlocks: "Collapse HTML blocks",
         collapseHtmlBlocksDescription:
-          "Artifacts mode collapses full HTML automatically. Turn on to also collapse fenced HTML documents when Artifacts is off.",
-        allowNetworkAccess: "Allow artifact network access",
+          "Canvas mode collapses full HTML automatically. Turn this on to also collapse fenced HTML documents when Canvas is off.",
+        allowNetworkAccess: "Allow canvas network access",
         allowNetworkAccessDescription:
-          "Let artifact previews load scripts, styles, fonts, media, and network resources from CDNs. Keep off for fully offline previews.",
+          "Let canvas previews load scripts, styles, fonts, media, and network resources from CDNs. Keep off for fully offline previews.",
       },
       data: "Data",
       exportHistory: "Export chat history",
@@ -288,6 +303,16 @@ export const en = {
       copyNow: "Copy now - this won't be shown again.",
       usageExamples: "Usage examples",
       usageTools: "Tools",
+      exampleCurlTools: "curl + tools",
+      examplePythonTools: "Python + tools",
+      exampleCurlAdvanced: "curl + advanced",
+      examplePythonAdvanced: "Python + advanced",
+      osUnix: "Linux / macOS / WSL",
+      osWindows: "Windows",
+      secureHttps: "Secure HTTPS",
+      secureHttpsHint:
+        "The 0.0.0.0 port is still reachable globally. For full security, launch Unsloth Studio with --secure to expose only this HTTPS link.",
+      copyTunnelUrl: "Copy tunnel URL",
       copySnippet: "Copy snippet",
       copy: "Copy",
       copied: "Copied",
@@ -319,6 +344,11 @@ export const en = {
         "Docs, release notes, feedback, and build info.",
       studioVersion: "Unsloth Version",
       packageVersion: "Package Version",
+      llamaCppVersion: "llama.cpp Version",
+      hardware: "Hardware",
+      gpu: "GPU",
+      cuda: "CUDA",
+      rocm: "ROCm",
       updates: "Update",
       help: "Help",
       documentation: "Documentation",

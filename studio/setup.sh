@@ -439,11 +439,25 @@ _STUDIO_HOME_IS_CUSTOM=false
 if [ "$_studio_home_canon" != "$_LEGACY_STUDIO_HOME" ]; then
     _STUDIO_HOME_IS_CUSTOM=true
 fi
+# Directory-local evidence that Studio created "$1", used to adopt a custom-home
+# llama.cpp predating the .unsloth-studio-owned marker without weakening the guard.
+# Only UNSLOTH_PREBUILT_INFO.json counts (written exclusively by the prebuilt
+# installer). A top-level llama-quantize symlink is NOT trusted: a user may have
+# their own build with one, and this runs right before a destructive rm -rf, so we
+# match Windows and keep markerless source builds strict.
+_studio_owned_adoptable() {
+    [ -f "$1/UNSLOTH_PREBUILT_INFO.json" ] && return 0
+    return 1
+}
 _assert_studio_owned_or_absent() {
     _aso_dir="$1"
     _aso_label="$2"
     [ -d "$_aso_dir" ] || return 0
     if [ "$_STUDIO_HOME_IS_CUSTOM" = true ] && [ ! -f "$_aso_dir/$_STUDIO_OWNED_MARKER" ]; then
+        if _studio_owned_adoptable "$_aso_dir"; then
+            : > "$_aso_dir/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
+            return 0
+        fi
         echo "ERROR: $_aso_dir already exists and is not marked as a Studio-owned $_aso_label." >&2
         echo "       Move it aside or choose an empty UNSLOTH_STUDIO_HOME before re-running." >&2
         exit 1
@@ -954,6 +968,9 @@ elif [ "$_setup_amd_detected" = true ]; then
     substep "ROCm: $_setup_rocm_root"
     [ -n "$_setup_rocm_ver" ] && substep "hipconfig: $_setup_rocm_ver"
     [ -n "$_setup_mkt" ] && [ -n "$_setup_gfx" ] && substep "GPU: $_setup_mkt"
+elif [ "$(uname -s 2>/dev/null)" = "Darwin" ] && [ "$(uname -m 2>/dev/null)" = "arm64" ]; then
+    # Apple Silicon: llama.cpp builds with Metal over unified memory, so not a CPU-only host.
+    step "gpu" "Apple Silicon (Metal, unified memory)"
 else
     step "gpu" "none (chat-only / GGUF)" "$C_WARN"
     substep "Training and GPU inference require an NVIDIA or AMD ROCm GPU."

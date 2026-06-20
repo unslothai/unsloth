@@ -72,6 +72,7 @@ def _install_lightweight_backend_stubs(monkeypatch):
     fastapi.APIRouter = lambda: _Router()
     fastapi.Body = lambda default = None, **_kwargs: default
     fastapi.Depends = lambda dependency = None, **_kwargs: dependency
+    fastapi.Header = lambda default = None, **_kwargs: default
     fastapi.HTTPException = _HTTPException
     fastapi.Query = lambda default = None, **_kwargs: default
     fastapi.Request = object
@@ -156,6 +157,7 @@ def _install_lightweight_backend_stubs(monkeypatch):
     utils_model_config = types.ModuleType("utils.models.model_config")
     utils_model_config._pick_best_gguf = lambda variants: variants[0] if variants else None
     utils_model_config._extract_quant_label = lambda value: value
+    utils_model_config._is_big_endian_gguf_path = lambda *args, **kwargs: False
     utils_model_config.is_audio_input_type = lambda *args, **kwargs: None
     monkeypatch.setitem(
         sys.modules,
@@ -190,6 +192,7 @@ def _install_lightweight_backend_stubs(monkeypatch):
     for name in (
         "BrowseEntry",
         "BrowseFoldersResponse",
+        "ExportSizeResponse",
         "GgufVariantDetail",
         "GgufVariantsResponse",
         "ScanFolderInfo",

@@ -26,7 +26,9 @@ import mammoth from "mammoth";
 import {
   type ReactElement,
   type ReactNode,
+  createContext,
   useCallback,
+  useContext,
   useEffect,
   useMemo,
   useRef,
@@ -69,6 +71,7 @@ import {
 import { isChatThreadDeleted } from "./utils/chat-thread-tombstones";
 import { syncExportedRepositoryToBackend } from "./utils/delete-thread-message";
 import { getImageInputUnavailableReason } from "./utils/image-input-support";
+import { requestPromptQueueStop } from "./utils/prompt-queue-boundary";
 import { isAssistantLocalThreadId } from "./utils/thread-ids";
 
 const pendingHistoryAppendByMessageId = new Map<string, Promise<void>>();
@@ -1047,6 +1050,17 @@ function createRuntimeHook(modelType: ModelType, pairId?: string) {
   };
 }
 
+function stopChatRun(threadId: string | null | undefined) {
+  if (!threadId) {
+    return;
+  }
+  try {
+    useChatRuntimeStore.getState().cancelByThreadId[threadId]?.();
+  } catch {
+    // The run may have ended while navigation was mounting.
+  }
+}
+
 function ThreadAutoSwitch({
   threadId,
   syncActiveThreadId = true,
@@ -1060,6 +1074,10 @@ function ThreadAutoSwitch({
 
   useEffect(() => {
     if (!isLoading && mainThreadId !== threadId) {
+      if (syncActiveThreadId) {
+        requestPromptQueueStop();
+        stopChatRun(mainThreadId);
+      }
       const switchResult = aui.threads().switchToThread(threadId) as unknown;
       if (
         switchResult &&
@@ -1089,11 +1107,16 @@ function ThreadNewChatSwitch({
 }: { nonce: string }): ReactElement | null {
   const aui = useAui();
   const isLoading = useAuiState(({ threads }) => threads.isLoading);
+  const mainThreadId = useAuiState(({ threads }) => threads.mainThreadId);
+  const mainThreadIdRef = useRef(mainThreadId);
+  mainThreadIdRef.current = mainThreadId;
 
   useEffect(() => {
     if (isLoading) {
       return;
     }
+    requestPromptQueueStop();
+    stopChatRun(mainThreadIdRef.current);
     // Switch to a fresh local thread without persisting it yet; persistence
     // still happens on first message append.
     void aui.threads().switchToNewThread();
@@ -1250,6 +1273,15 @@ function ThreadBackendAutosave({
   return null;
 }
 
+// True when the chat tab is visible. While false, ChatPage stays mounted (runtime +
+// autosave alive, so the stream survives) but its views/composers unmount, so no
+// body-portaled surface bleeds over the active tab. Defaults true for use elsewhere.
+export const ChatActiveContext = createContext(true);
+
+export function useChatActive(): boolean {
+  return useContext(ChatActiveContext);
+}
+
 export function ChatRuntimeProvider({
   children,
   modelType = "base",
@@ -1298,6 +1330,9 @@ export function ChatRuntimeProvider({
       {!initialThreadId && newThreadNonce && (
         <ThreadNewChatSwitch nonce={newThreadNonce} />
       )}
+      {/* The view stays mounted (only CSS-hidden by RootLayout) while off-route
+          so assistant-ui keeps the run attached and the stream alive. Unmounting
+          it here aborts the in-flight generation. */}
       {children}
     </AssistantRuntimeProvider>
   );
