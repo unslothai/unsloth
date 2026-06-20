@@ -668,10 +668,31 @@ def detect_reasoning_flags(
     return flags
 
 
+# Gemma 4 ships MTP as a separate drafter (no "-mtp" in the name). Gemma 3n
+# ships no drafter, so it is excluded -- it takes the normal non-MTP path.
+_GEMMA_MTP_FAMILY_RE = re.compile(r"gemma[-_]?4[-_]", re.IGNORECASE)
+
+
+def _is_gemma_mtp_family(name: Optional[str]) -> bool:
+    """Match Gemma 4 by name."""
+    return bool(name) and bool(_GEMMA_MTP_FAMILY_RE.search(name))
+
+
+def _is_gemma_mtp_name(model_identifier: Optional[str], gguf_path: Optional[str] = None) -> bool:
+    """Match Gemma 4 by id or GGUF filename."""
+    return _is_gemma_mtp_family(model_identifier) or _is_gemma_mtp_family(
+        Path(gguf_path).name if gguf_path else None
+    )
+
+
 def _is_mtp_model_name(model_identifier: Optional[str], gguf_path: Optional[str] = None) -> bool:
     """Name-based MTP detector. Fallback for the metadata signal."""
     for cand in (model_identifier, Path(gguf_path).name if gguf_path else None):
         if cand and "-mtp" in cand.lower():
+            return True
+        # Recognise Gemma 4 too, so a failed drafter download surfaces a
+        # fallback reason instead of silently defaulting.
+        if cand and _is_gemma_mtp_family(cand):
             return True
     return False
 
@@ -860,6 +881,23 @@ def _auto_mode_drops_mtp(
     if has_separate_drafter:
         return False
     return req_mode == "auto" and size_b is not None and size_b < _MTP_MIN_SIZE_B
+
+
+def _mla_mtp_auto_enabled() -> bool:
+    """Whether Auto may pick embedded MTP for an MLA model (GLM-5.2/DeepSeek/Kimi).
+
+    Off by default: llama.cpp's MLA/DSA MTP path keeps a duplicated full target-KV
+    context and recomputes the sparse-attention indexer every draft step, so it runs
+    ~2x slower than no speculation (GLM-5.2 bench: 27 vs 45 tok/s, flat across draft
+    depth and 96-100% acceptance) -- the opposite of the vLLM/SGLang speedup on the
+    same model. Set UNSLOTH_MLA_MTP_ENABLED=1 to let Auto promote MLA MTP again once
+    that path is optimized upstream. Forced mtp / mtp+ngram ignore this gate."""
+    return os.environ.get("UNSLOTH_MLA_MTP_ENABLED", "0").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
 
 
 def _extra_args_set_spec_type(extra_args: Optional[Iterable[str]]) -> bool:
@@ -1388,6 +1426,11 @@ class LlamaCppBackend:
         return self._gguf_path
 
     @property
+    def hf_repo(self) -> Optional[str]:
+        """HF repo of the loaded model, or None for local/native file loads."""
+        return self._hf_repo
+
+    @property
     def mtp_draft_path(self) -> Optional[str]:
         return self._mtp_draft_path
 
@@ -1898,6 +1941,7 @@ class LlamaCppBackend:
                 [bin_path, "--help"],
                 capture_output = True,
                 text = True,
+                errors = "replace",
                 timeout = 10,
                 check = False,
                 env = probe_env,
@@ -2912,12 +2956,16 @@ class LlamaCppBackend:
         drafter_path: Optional[str] = None,
         draft_weights_bytes: int = 0,
         n_parallel: int = 1,
+        mtp_keeps_target_ctx: bool = True,
     ) -> Optional[int]:
         """MTP draft reserve at ``n_ctx`` = draft KV (grows with ctx) + separate-
-        drafter weights + (MLA only) a duplicated target KV context. The verify
-        buffer rides in the ctx-fit headroom (no tuned constant). None when the
-        draft KV can't be sized (caller keeps the flat fallback).
-        ``draft_weights_bytes`` is the drafter file size (0 for embedded)."""
+        drafter weights + (MTP + MLA only) a duplicated target KV context. The
+        verify buffer rides in the ctx-fit headroom (no tuned constant). None when
+        the draft KV can't be sized (caller keeps the flat fallback).
+        ``draft_weights_bytes`` is the drafter file size (0 for embedded).
+        ``mtp_keeps_target_ctx`` is True for MTP draft modes (which keep the
+        duplicated target context) and False for separate-drafter spec modes
+        (draft-simple/draft-eagle3), which do not."""
         draft_kv = self._mtp_draft_kv_bytes(
             n_ctx,
             drafter_path = drafter_path,
@@ -2926,16 +2974,19 @@ class LlamaCppBackend:
             n_parallel = n_parallel,
         )
         weights = max(0, draft_weights_bytes)
-        # MLA models (GLM-5.x, DeepSeek, Kimi-K2) keep a *second* full copy of the
-        # target model's KV context for MTP draft verification -- llama.cpp's
+        # MLA models (GLM-5.x, DeepSeek, Kimi-K2) under MTP keep a *second* full copy
+        # of the target model's KV context for draft verification -- llama.cpp's
         # `ctx_tgt=yes` -- allocated at f16 regardless of the main cache type. It is
         # ~the main KV again and dwarfs the embedded draft head (GLM-5.2 @ 1M ctx:
         # a ~2 GiB head next to a ~89 GiB target copy), so omitting it lets auto-fit
         # pick a context that fits on paper but OOMs cublasCreate at the first
-        # decode. Non-MLA MTP (Qwen/Gemma) keeps no such copy, so this is gated
-        # strictly on MLA (kv_lora_rank present) and leaves those models unchanged.
+        # decode. Gated on both MLA (kv_lora_rank present) and the engaged mode
+        # actually being MTP: non-MLA MTP (Qwen/Gemma) keeps no such copy, and the
+        # separate-drafter spec modes (draft-simple/draft-eagle3) load a small
+        # distinct drafter with its own KV -- already counted in draft_kv/weights --
+        # rather than duplicating the target, so they must not be charged for it.
         target_ctx_copy = 0
-        if self._kv_lora_rank is not None:
+        if mtp_keeps_target_ctx and self._kv_lora_rank is not None:
             target_ctx_copy = self._estimate_kv_cache_bytes(n_ctx, "f16", n_parallel = n_parallel)
         if draft_kv is None:
             # KV unsized (exotic/remote drafter): still reserve known weights + any
@@ -3049,7 +3100,7 @@ class LlamaCppBackend:
         if model_footprint + kv + _mtp_at(requested_ctx) <= budget_bytes:
             return requested_ctx
 
-        # Weights alone exceed budget -- reducing ctx can't help; --fit handles it.
+        # Weights + compute buffer alone exceed budget -- reducing ctx can't help.
         if model_footprint >= budget_bytes:
             logger.debug(
                 "Model footprint exceeds GPU budget before KV cache",
@@ -3901,11 +3952,31 @@ class LlamaCppBackend:
             return None
 
         target: Optional[str] = None
-        try:
-            from huggingface_hub import list_repo_files
-            target = pick(list_repo_files(hf_repo, token = hf_token))
-        except Exception as e:
-            logger.debug(f"Could not list repo files for {label}: {e}")
+        from huggingface_hub import list_repo_files
+
+        # Retry a transient listing blip; permanent repo/auth errors and offline
+        # mode are not retried (offline raises at once -> fall through to cache).
+        for attempt in range(3):
+            if self._cancel_event.is_set():
+                return None
+            try:
+                target = pick(list_repo_files(hf_repo, token = hf_token))
+                break
+            except Exception as e:
+                if type(e).__name__ in (
+                    "RepositoryNotFoundError",
+                    "GatedRepoError",
+                    "RevisionNotFoundError",
+                    "EntryNotFoundError",
+                    "OfflineModeIsEnabled",
+                ):
+                    logger.debug(f"Could not list repo files for {label}: {e}")
+                    break
+                logger.debug(
+                    f"Could not list repo files for {label} " f"(attempt {attempt + 1}/3): {e}"
+                )
+                if attempt < 2:
+                    self._cancel_event.wait(2**attempt)
 
         if target is None:
             try:
@@ -5013,8 +5084,15 @@ class LlamaCppBackend:
                         self._nextn_predict_layers
                         or _is_mtp_model_name(model_identifier, model_path)
                         or bool(mtp_draft_path)
+                    ) and not (
+                        # Drafterless Gemma falls back to ngram-mod; reserve no
+                        # drafter VRAM for it (mirrors the launch resolver).
+                        _is_gemma_mtp_name(model_identifier, model_path)
+                        and not mtp_draft_path
+                        and not self._nextn_predict_layers
                     )
                     _mtp_binary_ok = True
+                    _mtp_probe_raised = False
                     if not _user_mtp_via_extras:
                         try:
                             _mtp_binary_ok = bool(
@@ -5022,19 +5100,32 @@ class LlamaCppBackend:
                             )
                         except Exception:
                             _mtp_binary_ok = False
-                    _mtp_will_engage = bool(
-                        _user_mtp_via_extras
-                        or _user_draft_via_extras
-                        or (
-                            not _extra_args_set_spec_type(extra_args)
-                            and _mtp_binary_ok
-                            and _mtp_model_for_fit
-                            and (
-                                _mtp_effective in ("mtp", "mtp+ngram")
-                                or (_mtp_effective == "auto" and not _mtp_sub_3b_for_fit)
-                            )
+                            _mtp_probe_raised = True
+                    _auto_studio_mtp = (
+                        not _extra_args_set_spec_type(extra_args)
+                        and _mtp_model_for_fit
+                        and (
+                            _mtp_effective in ("mtp", "mtp+ngram")
+                            or (_mtp_effective == "auto" and not _mtp_sub_3b_for_fit)
+                        )
+                        and (
+                            _mtp_binary_ok
+                            # Reserve on a raised (uncached) probe too: it re-probes in
+                            # _build_speculative_flags and may still engage MTP (embedded
+                            # head or separate drafter -- _mtp_model_for_fit covers both).
+                            or _mtp_probe_raised
                         )
                     )
+                    _mtp_will_engage = bool(
+                        _user_mtp_via_extras or _user_draft_via_extras or _auto_studio_mtp
+                    )
+                    # The duplicated full target-KV copy (ctx_tgt) is an MTP-only
+                    # cost: the MTP head runs a second context over the target
+                    # model's own KV geometry. The separate-drafter spec modes
+                    # (draft-simple/draft-eagle3, reached via _user_draft_via_extras)
+                    # load a small distinct drafter with its own KV and keep no such
+                    # copy, so only charge it when the engaged mode is truly MTP.
+                    _engaged_is_mtp = bool(_user_mtp_via_extras or _auto_studio_mtp)
 
                     # Effective draft depth: extras win (last-wins at launch), else
                     # the field, else the platform default (2 GPU / 3 CPU).
@@ -5106,6 +5197,7 @@ class LlamaCppBackend:
                                 drafter_path = _mtp_draft_for_budget,
                                 draft_weights_bytes = _mtp_draft_weights,
                                 n_parallel = n_parallel,
+                                mtp_keeps_target_ctx = _engaged_is_mtp,
                             )
                             is not None
                         ):
@@ -5121,6 +5213,7 @@ class LlamaCppBackend:
                                 _dp: Optional[str] = _mtp_draft_for_budget,
                                 _w: int = _mtp_draft_weights,
                                 _np: int = n_parallel,
+                                _mtp: bool = _engaged_is_mtp,
                             ) -> int:
                                 v = self._estimate_mtp_overhead_bytes(
                                     ctx,
@@ -5130,6 +5223,7 @@ class LlamaCppBackend:
                                     drafter_path = _dp,
                                     draft_weights_bytes = _w,
                                     n_parallel = _np,
+                                    mtp_keeps_target_ctx = _mtp,
                                 )
                                 return v if v is not None else 0
 
@@ -5192,6 +5286,22 @@ class LlamaCppBackend:
                         else 0.0
                     )
                     _pin_fraction = self._GPU_PIN_VRAM_FRACTION - _flat_mtp_reserve
+
+                    if tensor_parallel and effective_is_vision:
+                        logger.info(
+                            "Tensor parallelism skipped for vision model: "
+                            "--split-mode tensor is incompatible with --mmproj "
+                            "in the current llama.cpp build; using layer split."
+                        )
+                        tensor_parallel = False
+                        if _tensor_dropped_cache_type_kv is not None:
+                            cache_type_kv = _tensor_dropped_cache_type_kv
+                            _cache_type_from_env = False
+                        extra_args = strip_split_mode_only(
+                            _tensor_dropped_extra_args
+                            if _tensor_dropped_extra_args is not None
+                            else extra_args
+                        )
 
                     # Tensor mode replicates a compute buffer on every GPU, so drop
                     # GPUs below that reserve from the set up front (gpu_indices
@@ -6415,6 +6525,24 @@ class LlamaCppBackend:
         _mtp_too_small = (
             _mtp_size_b is not None and _mtp_size_b < _MTP_MIN_SIZE_B and not bool(mtp_draft_path)
         )
+        # Drafterless Gemma (name-only MTP, no embedded head): emitting MTP
+        # would abort llama-server, so every mode below falls back instead.
+        _mtp_drafter_missing = (
+            _is_gemma_mtp_name(model_identifier, model_path)
+            and not mtp_draft_path
+            and not self._nextn_predict_layers
+        )
+        # Embedded MTP head on an MLA model (GLM-5.2/DeepSeek/Kimi, detected by
+        # kv_lora_rank): llama.cpp's MLA/DSA MTP path is ~2x slower than no spec,
+        # so Auto drops it (override via the Settings dropdown / forced mtp, or
+        # UNSLOTH_MLA_MTP_ENABLED=1). Separate drafters (Gemma, mtp_draft_path) and
+        # non-MLA embedded heads (Qwen, no kv_lora_rank) are unaffected.
+        _auto_mla_embedded_mtp = (
+            bool(self._nextn_predict_layers)
+            and self._kv_lora_rank is not None
+            and not bool(mtp_draft_path)
+            and not _mla_mtp_auto_enabled()
+        )
 
         if user_owns_spec_type:
             # User --spec-type wins outright; suppress auto-emit to avoid a
@@ -6509,6 +6637,20 @@ class LlamaCppBackend:
             logger.info("Spec decoding: ngram-mod")
             return True
 
+        def _fallback_drafter_not_found() -> None:
+            """Drafterless Gemma: use ngram-mod (or spec-default) and record why."""
+            logger.warning(
+                "Model %s is MTP-capable but no drafter or head was found; "
+                "falling back. Check network or run `unsloth studio update`.",
+                model_identifier,
+            )
+            if self.probe_server_capabilities(binary).get("supports_ngram_mod"):
+                _emit_ngram_mod()
+            else:
+                flags.append("--spec-default")
+                self._speculative_type = "default"
+            self._spec_fallback_reason = "drafter_not_found"
+
         if effective_mode == "off":
             return flags  # nothing to emit
         if effective_mode == "ngram-simple":
@@ -6529,6 +6671,10 @@ class LlamaCppBackend:
                 flags.append("--spec-default")
                 self._speculative_type = "default"
                 return flags
+            if _mtp_drafter_missing:
+                # Drafterless: draft-mtp would abort llama-server, so fall back.
+                _fallback_drafter_not_found()
+                return flags
             if _mtp_too_small:
                 logger.warning(
                     f"Forcing MTP on a {_mtp_size_b:.1f}B model; "
@@ -6547,6 +6693,10 @@ class LlamaCppBackend:
                 )
                 _emit_ngram_mod()
                 return flags
+            if _mtp_drafter_missing:
+                # No head/drafter: keep ngram-mod, drop the draft-mtp chain.
+                _fallback_drafter_not_found()
+                return flags
             if _mtp_too_small:
                 logger.warning(
                     f"Forcing MTP+Ngram on a {_mtp_size_b:.1f}B model; "
@@ -6558,14 +6708,42 @@ class LlamaCppBackend:
 
         # effective_mode == "auto": the promotion path. llama.cpp #22673:
         # MTP is compatible with mmproj, so there's no vision gate.
-        if is_mtp_model and not _mtp_too_small:
-            # GPU: MTP-only. CPU/Mac: chain ngram-mod + MTP.
-            _emit_mtp(chain_ngram = not gpus)
+        if _auto_mla_embedded_mtp:
+            # MLA embedded-MTP (GLM-5.2 et al.): the MTP path regresses vs spec-off
+            # on llama.cpp today, so Auto drops it and falls back to ngram-mod (or
+            # spec-off if unsupported), mirroring the sub-3B branch. Forced mtp /
+            # mtp+ngram (handled above) still engage; UNSLOTH_MLA_MTP_ENABLED=1
+            # re-enables this promotion once upstream optimizes the path.
+            self._spec_fallback_reason = "mla_mtp_disabled"
+            _mla_caps = self.probe_server_capabilities(binary)
+            if _mla_caps.get("supports_ngram_mod"):
+                logger.info(
+                    "Auto: MLA embedded-MTP model detected; llama.cpp's MLA/DSA "
+                    "MTP path is slower than no speculation, so using ngram-mod "
+                    "instead. Override via the Studio Speculative Decoding "
+                    "dropdown or UNSLOTH_MLA_MTP_ENABLED=1."
+                )
+                _emit_ngram_mod()
+            else:
+                logger.info(
+                    "Auto: MLA embedded-MTP model detected; disabling speculative "
+                    "decoding (this llama-server does not advertise ngram-mod). "
+                    "Override via the dropdown or UNSLOTH_MLA_MTP_ENABLED=1."
+                )
+                # spec-off: emit nothing, mirroring the sub-3B no-ngram path.
+        elif is_mtp_model and not _mtp_too_small:
+            if _mtp_drafter_missing:
+                # Name-only MTP, drafter did not resolve (download failed/absent).
+                _fallback_drafter_not_found()
+            else:
+                # GPU: MTP-only. CPU/Mac: chain ngram-mod + MTP.
+                _emit_mtp(chain_ngram = not gpus)
         elif is_mtp_model and _mtp_too_small:
             # Sub-3B fallback: drop the MTP draft head, keep ngram-mod when
             # the binary supports it.
-            _small_caps = self.probe_server_capabilities(binary)
-            if _small_caps.get("supports_ngram_mod"):
+            if _mtp_drafter_missing:
+                _fallback_drafter_not_found()
+            elif self.probe_server_capabilities(binary).get("supports_ngram_mod"):
                 logger.info(
                     f"MTP GGUF detected but model size {_mtp_size_b:.1f}B "
                     "is below the 3B speedup threshold; using ngram-mod "
@@ -6673,6 +6851,16 @@ class LlamaCppBackend:
             req_mode = _canonicalize_spec_mode(speculative_type) or "auto"
         backend_mode = self._requested_spec_mode
         if req_mode != backend_mode:
+            return False
+
+        # Prior HF load fell back with drafter_not_found; a same-settings reload
+        # must retry the download in load_model, not dedupe to the stale fallback
+        # (HF loads resolve the drafter there, so gguf_path is None here).
+        if (
+            self._spec_fallback_reason == "drafter_not_found"
+            and gguf_path is None
+            and req_mode in ("auto", "mtp", "mtp+ngram")
+        ):
             return False
 
         # spec_draft_n_max only matters when an MTP variant is engaged. Compare

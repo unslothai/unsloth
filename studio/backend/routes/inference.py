@@ -1840,6 +1840,16 @@ def _request_matches_loaded_settings(
     backend_mode = llama_backend.requested_spec_mode or "auto"
     if req_mode != backend_mode:
         return False
+    # Prior HF load fell back with drafter_not_found: a same-settings reload must
+    # retry the download, not dedupe to the stale fallback. HF only (hf_repo set);
+    # local/native loads have no download to retry (handled by the path compare).
+    if (
+        llama_backend.hf_repo
+        and llama_backend.spec_fallback_reason == "drafter_not_found"
+        and req_mode in ("auto", "mtp", "mtp+ngram")
+        and not _extra_args_set_spec_type(effective_extra)
+    ):
+        return False
     # spec_draft_n_max only matters with an MTP variant; None means "platform
     # default" and matches whatever the backend chose.
     if backend_mode in ("mtp", "mtp+ngram") and request.spec_draft_n_max is not None:
@@ -2217,7 +2227,9 @@ async def load_model(
                 and llama_backend.model_identifier.lower() == model_identifier.lower()
                 # Match runtime settings so Apply isn't dropped (#5401).
                 and _request_matches_loaded_settings(
-                    request, llama_backend, effective_chat_template_override
+                    request,
+                    llama_backend,
+                    effective_chat_template_override,
                 )
                 # Skip if a prior audio probe failed -- let load_model retry.
                 and getattr(llama_backend, "_audio_probed", True)
@@ -3182,9 +3194,13 @@ async def generate_stream(
                 log = logger,
             )
 
+    cancel_event = threading.Event()
+
     async def stream():
+        gen = None
+        completed = False
         try:
-            for chunk in backend.generate_chat_response(
+            gen = backend.generate_chat_response(
                 messages = request.messages,
                 system_prompt = request.system_prompt,
                 image = image,
@@ -3193,14 +3209,35 @@ async def generate_stream(
                 top_k = request.top_k,
                 max_new_tokens = request.max_new_tokens,
                 repetition_penalty = request.repetition_penalty,
-            ):
+                cancel_event = cancel_event,
+            )
+            _DONE = object()
+            while True:
+                chunk = await asyncio.to_thread(next, gen, _DONE)
+                if chunk is _DONE:
+                    break
                 yield f"data: {json.dumps({'content': chunk})}\n\n"
+            completed = True
             yield "data: [DONE]\n\n"
 
+        except asyncio.CancelledError:
+            cancel_event.set()
+            backend.reset_generation_state()
+            raise
         except Exception as e:
+            cancel_event.set()
             backend.reset_generation_state()
             logger.error(f"Error during generation: {e}", exc_info = True)
             yield f"data: {json.dumps({'error': _friendly_error(e)})}\n\n"
+        finally:
+            if not completed and not cancel_event.is_set():
+                cancel_event.set()
+                backend.reset_generation_state()
+            if gen is not None:
+                try:
+                    await asyncio.to_thread(gen.close)
+                except (RuntimeError, ValueError):
+                    pass
 
     return StreamingResponse(
         stream(),
