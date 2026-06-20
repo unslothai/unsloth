@@ -26,6 +26,7 @@ This guards the source so the fused-CE ``not return_dict`` return keeps using
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -35,13 +36,24 @@ _REPO = Path(__file__).resolve().parent.parent
 
 
 def _fused_ce_not_return_dict_return(source: str) -> str:
-    """Return the `output = (...) + outputs[1:]` line from the FIRST
-    `if not return_dict:` that follows an `unsloth_fused_ce_loss(` call."""
-    fused = source.index("unsloth_fused_ce_loss(")
-    guard = source.index("if not return_dict:", fused)
-    after = source.index("output = (", guard)
-    line_end = source.index("\n", after)
-    return source[after:line_end]
+    """Return the `output = (...) + outputs[1:]` assignment from the FIRST
+    `if not return_dict:` that follows an `unsloth_fused_ce_loss(` call.
+
+    Parsed with whitespace-tolerant regexes (not exact string slicing) so the
+    drift detector survives a formatter respacing or rewrapping the assignment
+    across lines. Anchored after the fused guard so it targets the fused-CE
+    branch, not the normal `output = (logits,)` path further down."""
+    fused = re.search(r"unsloth_fused_ce_loss\s*\(", source)
+    if fused is None:
+        raise ValueError("unsloth_fused_ce_loss( call not found")
+    guard = re.search(r"if\s+not\s+return_dict\s*:", source[fused.end() :])
+    if guard is None:
+        raise ValueError("`if not return_dict:` guard not found after fused-CE call")
+    guard_start = fused.end() + guard.start()
+    out = re.search(r"output\s*=\s*\(.*?outputs\s*\[\s*1\s*:\s*\]", source[guard_start:], re.DOTALL)
+    if out is None:
+        raise ValueError("`output = (...) + outputs[1:]` assignment not found")
+    return out.group(0)
 
 
 @pytest.mark.parametrize("rel", ["unsloth/models/llama.py", "unsloth/models/mistral.py"])
