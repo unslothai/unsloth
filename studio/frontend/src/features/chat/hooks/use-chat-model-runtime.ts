@@ -569,6 +569,8 @@ export function useChatModelRuntime() {
               load_in_4bit: true,
               is_lora: isLora,
               gguf_variant: ggufVariant ?? null,
+              // Standing preference, kept across the switch -- the mode /load uses.
+              gpu_memory_mode: preUnloadState.gpuMemoryMode,
             });
             // Open the consent dialog when the model needs custom-code consent or has a
             // flagged unsafe file. Fires even when trustRemoteCode is preset on, since the

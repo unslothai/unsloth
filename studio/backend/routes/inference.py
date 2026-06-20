@@ -2142,6 +2142,20 @@ def _guard_chat_load_against_training(
     raise HTTPException(status_code = 409, detail = detail)
 
 
+def _fit_gguf_spills_to_ram(
+    config: ModelConfig, gpu_memory_mode: str, extra_args: Optional[List[str]]
+) -> bool:
+    """A --fit GGUF sizes to free VRAM and spills the rest to system RAM, so it
+    can't OOM a training run and the coexistence guard can be skipped -- unless
+    the request's extras force offload (-ngl / --gpu-layers / --fit off), which
+    defeats the spill, so keep the guard then."""
+    if not (config.is_gguf and gpu_memory_mode == "fit"):
+        return False
+    from core.inference.llama_cpp import _GPU_OFFLOAD_OVERRIDE_FLAGS, _extra_args_set_any_flag
+
+    return not _extra_args_set_any_flag(extra_args, _GPU_OFFLOAD_OVERRIDE_FLAGS)
+
+
 def _model_json_response(model, status_code: int = 200) -> Response:
     """Serialize a pydantic response once via pydantic-core.
 
@@ -2368,17 +2382,19 @@ async def load_model(
 
         # Refuse a load that would OOM active training, before the unload step below
         # frees the resident model. Off-loop: guard does sync nvidia-smi / HF work.
-        await asyncio.to_thread(
-            _guard_chat_load_against_training,
-            config,
-            model_identifier = model_identifier,
-            hf_token = request.hf_token,
-            load_in_4bit = effective_load_in_4bit,
-            max_seq_length = request.max_seq_length,
-            requested_gpu_ids = effective_gpu_ids,
-            llama_extra_args = extra_llama_args,
-            n_parallel = getattr(fastapi_request.app.state, "llama_parallel_slots", 1),
-        )
+        # A --fit load can't OOM training, so skip it (see _fit_gguf_spills_to_ram).
+        if not _fit_gguf_spills_to_ram(config, request.gpu_memory_mode, extra_llama_args):
+            await asyncio.to_thread(
+                _guard_chat_load_against_training,
+                config,
+                model_identifier = model_identifier,
+                hf_token = request.hf_token,
+                load_in_4bit = effective_load_in_4bit,
+                max_seq_length = request.max_seq_length,
+                requested_gpu_ids = effective_gpu_ids,
+                llama_extra_args = extra_llama_args,
+                n_parallel = getattr(fastapi_request.app.state, "llama_parallel_slots", 1),
+            )
 
         # ── GGUF path: load via llama-server ──────────────────────
         if config.is_gguf:
@@ -2889,16 +2905,18 @@ async def validate_model(
             except ValueError as exc:
                 raise HTTPException(status_code = 400, detail = str(exc)) from exc
         effective_load_in_4bit = _effective_load_in_4bit(config, request.load_in_4bit)
-        # Off-loop: guard does sync nvidia-smi / HF work.
-        await asyncio.to_thread(
-            _guard_chat_load_against_training,
-            config,
-            model_identifier = model_identifier,
-            hf_token = request.hf_token,
-            load_in_4bit = effective_load_in_4bit,
-            max_seq_length = request.max_seq_length,
-            requested_gpu_ids = effective_gpu_ids,
-        )
+        # Off-loop: guard does sync nvidia-smi / HF work. Skip it for a --fit load
+        # (see _fit_gguf_spills_to_ram); validate has no extras, so /load re-checks.
+        if not _fit_gguf_spills_to_ram(config, request.gpu_memory_mode, None):
+            await asyncio.to_thread(
+                _guard_chat_load_against_training,
+                config,
+                model_identifier = model_identifier,
+                hf_token = request.hf_token,
+                load_in_4bit = effective_load_in_4bit,
+                max_seq_length = request.max_seq_length,
+                requested_gpu_ids = effective_gpu_ids,
+            )
 
         # Both checks cover the [adapter, base] set (matching the scan route and workers):
         # either repo can ship auto_map code or a poisoned pickle.

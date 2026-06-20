@@ -971,6 +971,7 @@ export function SharedComposer({
           gguf_variant: sel.ggufVariant ?? null,
           trust_remote_code: loadTrustRemoteCode,
           chat_template_override: effectiveChatTemplateOverride,
+          gpu_memory_mode: currentStore.gpuMemoryMode,
         });
         if (
           validation.requires_trust_remote_code ||

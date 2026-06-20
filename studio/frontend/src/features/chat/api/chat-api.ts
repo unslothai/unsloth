@@ -115,6 +115,9 @@ export async function validateModel(
       // follow-up /load and doesn't unload for a load /load would then reject.
       max_seq_length: payload.max_seq_length,
       load_in_4bit: payload.load_in_4bit,
+      // Fit loads spill to RAM, so the backend skips the training-coexistence
+      // check for them -- send the mode so validate matches the follow-up /load.
+      gpu_memory_mode: payload.gpu_memory_mode,
     }),
   });
   return parseJsonOrThrow<ValidateModelResponse>(response);

@@ -174,6 +174,12 @@ class ValidateModelRequest(BaseModel):
     # /load; defaults preserve old behavior for callers that omit them.
     max_seq_length: int = Field(0, ge = 0, le = 1048576)
     load_in_4bit: bool = Field(True)
+    gpu_memory_mode: Literal["auto", "fit", "manual"] = Field(
+        "auto",
+        description = "Intended GPU memory strategy (GGUF only), so validate's "
+        "training-coexistence check matches the follow-up /load. 'fit' loads spill "
+        "overflow to system RAM, so the check is skipped for them.",
+    )
     gpu_ids: Optional[List[int]] = Field(None)
     include_context_length: bool = Field(
         False,
