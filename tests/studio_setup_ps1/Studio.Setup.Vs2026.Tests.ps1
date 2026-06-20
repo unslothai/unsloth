@@ -27,12 +27,42 @@ BeforeAll {
     if (-not $script:SetupPs1) { throw "Could not locate studio/setup.ps1 (set SETUP_PS1_PATH)." }
     Write-Host "setup.ps1 under test: $script:SetupPs1"
 
-    foreach ($fn in @('Find-VsBuildTools', 'Get-VcBuildCustomizationsDir', 'Test-CmakeSupportsGenerator',
-                      'Get-CmakeVersion', 'Test-CmakeListsGenerator', 'Test-CmakeCanDriveGenerator',
-                      'Get-FallbackVsGenerator')) {
+    foreach ($fn in @('Resolve-VsGeneratorFromLabel', 'Find-VsBuildTools', 'Get-VcBuildCustomizationsDir',
+                      'Test-CmakeSupportsGenerator', 'Get-CmakeVersion', 'Test-CmakeListsGenerator',
+                      'Test-CmakeCanDriveGenerator', 'Get-FallbackVsGenerator')) {
         $src = Get-FunctionSource -Path $script:SetupPs1 -Name $fn
         if (-not $src) { throw "Function '$fn' not found in $script:SetupPs1 - cannot test the real code." }
         . ([scriptblock]::Create($src))
+    }
+}
+
+Describe 'Resolve-VsGeneratorFromLabel (vswhere/dir label -> generator)' {
+    # Pure mapping, runs everywhere. Guards the real-world finding that vswhere
+    # reports catalog_productLineVersion='18' (the internal major) for VS 2026 -
+    # NOT '2026' - so detection must accept both the year and the major form.
+    It 'maps the VS 2026 internal major "18" to the VS 2026 generator' {
+        Resolve-VsGeneratorFromLabel '18' | Should -Be 'Visual Studio 18 2026'
+    }
+    It 'maps the VS 2026 year label "2026" to the VS 2026 generator' {
+        Resolve-VsGeneratorFromLabel '2026' | Should -Be 'Visual Studio 18 2026'
+    }
+    It 'maps the VS 2022 year "2022" and major "17" to the VS 2022 generator' {
+        Resolve-VsGeneratorFromLabel '2022' | Should -Be 'Visual Studio 17 2022'
+        Resolve-VsGeneratorFromLabel '17'   | Should -Be 'Visual Studio 17 2022'
+    }
+    It 'maps 2019/2017 (year and major) to their generators' {
+        Resolve-VsGeneratorFromLabel '2019' | Should -Be 'Visual Studio 16 2019'
+        Resolve-VsGeneratorFromLabel '16'   | Should -Be 'Visual Studio 16 2019'
+        Resolve-VsGeneratorFromLabel '2017' | Should -Be 'Visual Studio 15 2017'
+        Resolve-VsGeneratorFromLabel '15'   | Should -Be 'Visual Studio 15 2017'
+    }
+    It 'trims whitespace (vswhere output can carry a trailing newline)' {
+        Resolve-VsGeneratorFromLabel "  18 `n" | Should -Be 'Visual Studio 18 2026'
+    }
+    It 'returns null for unknown or empty labels' {
+        Resolve-VsGeneratorFromLabel '2015' | Should -BeNullOrEmpty
+        Resolve-VsGeneratorFromLabel ''     | Should -BeNullOrEmpty
+        Resolve-VsGeneratorFromLabel $null  | Should -BeNullOrEmpty
     }
 }
 

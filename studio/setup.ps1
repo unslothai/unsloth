@@ -510,36 +510,35 @@ function Get-FallbackVsGenerator {
     return $null
 }
 
+# Map a Visual Studio version label to its CMake generator. vswhere's
+# catalog_productLineVersion is the marketing YEAR for VS <= 2022 (e.g. "2022"),
+# but the internal MAJOR for VS 2026 (observed as "18" on the real VS 2026 runner
+# image), and install-dir names use either form. Accept both so detection works
+# from vswhere and from the filesystem scan regardless of which label a VS reports.
+# (VS 2026 detection adapted from @LeoBorcherding's #6038.)
+function Resolve-VsGeneratorFromLabel {
+    param([string]$Label)
+    if (-not $Label) { return $null }
+    $map = @{
+        '2026' = 'Visual Studio 18 2026'; '18' = 'Visual Studio 18 2026'
+        '2022' = 'Visual Studio 17 2022'; '17' = 'Visual Studio 17 2022'
+        '2019' = 'Visual Studio 16 2019'; '16' = 'Visual Studio 16 2019'
+        '2017' = 'Visual Studio 15 2017'; '15' = 'Visual Studio 15 2017'
+    }
+    return $map[$Label.Trim()]
+}
+
 # Find Visual Studio Build Tools for cmake -G flag.
 # Strategy: (1) vswhere, (2) scan filesystem (handles broken vswhere registration).
 # Returns @{ Generator = "Visual Studio 17 2022"; InstallPath = "C:\..."; Source = "..." } or $null.
 function Find-VsBuildTools {
-    # vswhere reports catalog_productLineVersion as the YEAR label (e.g. "2026").
-    $yearToGenerator = @{
-        '2026' = 'Visual Studio 18 2026'
-        '2022' = 'Visual Studio 17 2022'
-        '2019' = 'Visual Studio 16 2019'
-        '2017' = 'Visual Studio 15 2017'
-    }
-    # VS 2026 changed its install-dir convention to the internal major ("18");
-    # earlier versions use the year. Accept both so the filesystem fallback works
-    # regardless of which convention an install used. (VS 2026 detection adapted
-    # from @LeoBorcherding's #6038.)
-    $dirToGenerator = @{
-        '18'   = 'Visual Studio 18 2026'
-        '2026' = 'Visual Studio 18 2026'
-        '2022' = 'Visual Studio 17 2022'
-        '2019' = 'Visual Studio 16 2019'
-        '2017' = 'Visual Studio 15 2017'
-    }
-
     # --- Try vswhere first (works when VS is properly registered) ---
     $vsw = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
     if (Test-Path $vsw) {
         $info = & $vsw -latest -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property catalog_productLineVersion 2>$null
         $path = & $vsw -latest -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2>$null
         if ($info -and $path) {
-            $gen = $yearToGenerator[$info.Trim()]
+            $gen = Resolve-VsGeneratorFromLabel $info
             if ($gen) {
                 return @{ Generator = $gen; InstallPath = $path.Trim(); Source = 'vswhere' }
             }
@@ -553,7 +552,7 @@ function Find-VsBuildTools {
     $dirs = @('18', '2026', '2022', '2019', '2017')
 
     foreach ($d in $dirs) {
-        $gen = $dirToGenerator[$d]
+        $gen = Resolve-VsGeneratorFromLabel $d
         if (-not $gen) { continue }
         foreach ($r in $roots) {
             $vsBase = Join-Path $r "Microsoft Visual Studio\$d"
