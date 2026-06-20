@@ -31,8 +31,10 @@ def test_pip_cmd_targets_this_interpreter_with_mlx_packages(monkeypatch):
     cmd = mr._pip_install_cmd("--upgrade", *mr.MLX_PACKAGES)
     assert cmd[0] == sys.executable
     assert cmd[1:4] == ["-m", "pip", "install"]
-    for pkg in ("mlx", "mlx-lm", "mlx-vlm"):
-        assert pkg in cmd
+    assert set(mr.MLX_PACKAGES) <= set(cmd)
+    # Minimum versions are pinned so the resolver cannot backtrack to an old
+    # mlx-vlm that imports but breaks VLM Train/Export.
+    assert "mlx-vlm>=0.4.4" in cmd
 
 
 def test_uv_path_used_when_available(monkeypatch):
@@ -71,12 +73,13 @@ def test_repair_install_pins_transformers_and_cleans_up(monkeypatch):
         returncode = 0
         stdout = ""
 
-    def _fake_run(cmd, **_kwargs):
+    def _fake_run(cmd, **kwargs):
         captured["cmd"] = cmd
+        captured["env"] = kwargs.get("env")
         return _Result()
 
     monkeypatch.setattr(mr.subprocess, "run", _fake_run)
-    monkeypatch.setattr(mr, "mlx_available", lambda: True)
+    monkeypatch.setattr(mr, "mlx_stack_available", lambda: True)
 
     assert mr.attempt_mlx_repair() is True
     cmd = captured["cmd"]
@@ -87,6 +90,28 @@ def test_repair_install_pins_transformers_and_cleans_up(monkeypatch):
     for pkg in mr.MLX_PACKAGES:
         assert pkg in cmd
     assert created_paths and not Path(created_paths[0]).exists()
+    # The install mirrors the main installer by relaxing the transformers pin via
+    # UV_OVERRIDE so a current mlx-vlm can coexist with transformers==4.57.6.
+    env = captured["env"]
+    assert env is not None
+    assert env.get("UV_OVERRIDE", "").endswith("overrides-darwin-arm64.txt")
+
+
+def test_repair_rejects_inadequate_stack(monkeypatch):
+    # A successful pip run that still leaves an old/missing mlx-vlm must NOT clear
+    # chat-only: attempt_mlx_repair returns False so Train/Export stay disabled.
+    class _Result:
+        returncode = 0
+        stdout = ""
+
+    monkeypatch.setattr(mr.subprocess, "run", lambda *a, **k: _Result())
+    monkeypatch.setattr(mr, "mlx_stack_available", lambda: False)
+    assert mr.attempt_mlx_repair() is False
+
+
+def test_stack_unavailable_without_mlx(monkeypatch):
+    monkeypatch.setattr(mr, "mlx_available", lambda: False)
+    assert mr.mlx_stack_available() is False
 
 
 def test_no_op_off_apple_silicon(monkeypatch):
@@ -99,9 +124,9 @@ def test_no_op_off_apple_silicon(monkeypatch):
     assert called["n"] == 0
 
 
-def test_no_op_when_mlx_present(monkeypatch):
+def test_no_op_when_mlx_stack_present(monkeypatch):
     monkeypatch.setattr(mr, "is_apple_silicon", lambda: True)
-    monkeypatch.setattr(mr, "mlx_available", lambda: True)
+    monkeypatch.setattr(mr, "mlx_stack_available", lambda: True)
     started = mr.start_mlx_autorepair_if_needed()
     assert started is False
 
