@@ -25,6 +25,7 @@ import {
   CalendarAdd01Icon,
   Copy01Icon,
   CpuIcon,
+  Cpu,
   CubeIcon,
   Database02Icon,
   Download01Icon,
@@ -714,7 +715,7 @@ export const ModelInspector = memo(function ModelInspector({
             icon={FavouriteIcon}
           />
           {!isDataset && (
-            <StatRow label="Parameters" value={paramsLabel} icon={CpuIcon} />
+            <StatRow label="Parameters" value={paramsLabel} icon={Cpu} />
           )}
           {libraryLabel && (
             <StatRow label="Library" value={libraryLabel} icon={LibraryIcon} />

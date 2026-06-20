@@ -15,7 +15,7 @@ export interface GpuUtilization {
     power_draw_w: number | null;
     power_limit_w: number | null;
     power_utilization_pct: number | null;
-}
+}[]
 
 const DEFAULT: GpuUtilization = {
     available: false,

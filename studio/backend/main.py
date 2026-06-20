@@ -964,40 +964,91 @@ async def shutdown_server(request: Request, current_subject: str = Depends(get_c
 
 @app.get("/api/system")
 async def get_system_info(current_subject: str = Depends(get_current_subject)):
-    """Get system information.
+  """Get system information.
 
-    Auth-gated: the response (platform, Python/GPU, memory, ML packages) can
-    fingerprint a host, which matters in -H 0.0.0.0 / Colab / Tauri-relayed
-    setups where remote callers can reach /api/system.
-    """
-    import platform
-    import psutil
-    from utils.hardware import get_device
-    from utils.hardware.hardware import _backend_label
+  Auth-gated: the response (platform, Python/GPU, memory, ML packages) can
+  fingerprint a host, which matters in -H 0.0.0.0 / Colab / Tauri-relayed
+  setups where remote callers can reach /api/system.
+  """
+  import platform
+  import psutil
+  import os
+  import time
+  from utils.hardware import get_device, get_backend_visible_gpu_info, get_visible_gpu_utilization
+  from utils.hardware.hardware import _backend_label
 
-    visibility_info = get_backend_visible_gpu_info()
-    gpu_info = {
-        "available": visibility_info["available"],
-        "devices": visibility_info["devices"],
-    }
+  visibility_info = get_backend_visible_gpu_info()
+  utilization_info = get_visible_gpu_utilization()
 
-    # CPU & Memory
-    memory = psutil.virtual_memory()
+  util_devices = {d.get("index"): d for d in utilization_info.get("devices", [])}
+  enriched_devices = []
 
-    return {
-        "platform": platform.platform(),
-        "python_version": platform.python_version(),
-        # _backend_label so /api/system reports "rocm" (not "cuda") on AMD,
-        # matching /api/hardware and /api/gpu-visibility.
-        "device_backend": _backend_label(get_device()),
-        "cpu_count": psutil.cpu_count(),
-        "memory": {
-            "total_gb": round(memory.total / 1e9, 2),
-            "available_gb": round(memory.available / 1e9, 2),
-            "percent_used": memory.percent,
-        },
-        "gpu": gpu_info,
-    }
+  for dev in visibility_info.get("devices", []):
+    idx = dev.get("index")
+    util = util_devices.get(idx, {})
+
+    total_vram = util.get("vram_total_gb") or dev.get("memory_total_gb", 0)
+    used_vram = util.get("vram_used_gb", 0)
+
+    enriched_dev = dict(dev)
+    enriched_dev["vram_used_gb"] = used_vram
+    enriched_dev["vram_free_gb"] = round(total_vram - used_vram, 2) if total_vram else 0
+    enriched_dev["vram_utilization_pct"] = util.get("vram_utilization_pct")
+    enriched_devices.append(enriched_dev)
+
+  gpu_info = {
+    "available": visibility_info.get("available", False),
+    "devices": enriched_devices,
+  }
+
+  # CPU | Memory| Disk
+  memory = psutil.virtual_memory()
+  cpu_freq = psutil.cpu_freq()
+  # os.path.abspath(os.sep) ('/' Linux, 'C:\\' Windows)
+  disk = psutil.disk_usage(os.path.abspath(os.sep))
+  
+  # Specific usage of the current processor (good for checking if the server has a memory leak)
+  current_process = psutil.Process(os.getpid())
+
+  # Secure extraction of ML package versions (as promised in the docstring)
+  ml_packages = {}
+  try:
+    import torch
+    ml_packages["torch"] = torch.__version__
+  except ImportError:
+    pass
+
+  try:
+    import transformers
+    ml_packages["transformers"] = transformers.__version__
+  except ImportError:
+    pass
+
+  return {
+    "platform": platform.platform(),
+    "python_version": platform.python_version(),
+    "device_backend": _backend_label(get_device()),
+    "uptime_seconds": round(time.time() - psutil.boot_time()),
+    "cpu": {
+      "logical_count": psutil.cpu_count(logical=True),
+      "physical_count": psutil.cpu_count(logical=False),
+      "usage_percent": psutil.cpu_percent(interval=None),
+      "frequency_mhz": round(cpu_freq.current, 2) if cpu_freq else None,
+    },
+    "memory": {
+      "total_gb": memory.total / 1024**3,
+      "available_gb": memory.available / 1024**3,
+      "percent_used": memory.percent,
+      "process_used_mb": round(current_process.memory_info().rss / 1024**2),
+    },
+    "disk": {
+      "total_gb": round(disk.total / 1e9, 2),
+      "free_gb": round(disk.free / 1e9, 2),
+      "percent_used": disk.percent,
+    },
+    "gpu": gpu_info,
+    "ml_packages": ml_packages,
+  }
 
 
 @app.get("/api/system/gpu-visibility")

@@ -994,8 +994,9 @@ export function ModelsPage() {
     : "Unavailable";
   const ramLabel =
     gpu.systemRamAvailableGb > 0
-      ? `${Math.floor(gpu.systemRamAvailableGb)} GB`
+      ? `${Math.floor(gpu.systemRamTotalGb)} GB`
       : "Unavailable";
+  const coreLabel = `${gpu.cpuCore}/${gpu.cpuThread}`;
 
   const openNewChat = useCallback(() => {
     void navigate({ to: "/chat", search: { new: crypto.randomUUID() } });
@@ -1337,6 +1338,7 @@ export function ModelsPage() {
           isDataset={isDatasetMode}
           gpuLabel={gpuLabel}
           ramLabel={ramLabel}
+          coreLabel={coreLabel}
           activeCheckpoint={activeCheckpoint}
           activeGgufVariant={activeGgufVariant}
           onTitleClick={handleResetToDiscover}
