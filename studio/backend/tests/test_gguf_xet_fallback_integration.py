@@ -80,9 +80,9 @@ def _build_cache(
     sha: str = "a" * 40,
 ) -> Path:
     repo_dir = root / f"models--{repo_id.replace('/', '--')}"
-    (repo_dir / "blobs").mkdir(parents = True, exist_ok = True)
+    (repo_dir / "blobs").mkdir(parents=True, exist_ok=True)
     snap = repo_dir / "snapshots" / sha
-    snap.mkdir(parents = True, exist_ok = True)
+    snap.mkdir(parents=True, exist_ok=True)
     for rel, size in files.items():
         (snap / rel).write_bytes(b"\0" * size)
     return snap
@@ -96,7 +96,7 @@ def test_companion_routes_through_helper(hf_cache):
     def fake_helper(
         repo_id,
         filename,
-        token = None,
+        token=None,
         **kwargs,
     ):
         captured["filename"] = filename
@@ -107,7 +107,7 @@ def test_companion_routes_through_helper(hf_cache):
         patch("huggingface_hub.list_repo_files", lambda *a, **k: ["mmproj-vision-F16.gguf"]),
         patch("core.inference.llama_cpp.hf_hub_download_with_xet_fallback", fake_helper),
     ):
-        out = backend._download_mmproj(hf_repo = REPO, hf_token = None)
+        out = backend._download_mmproj(hf_repo=REPO, hf_token=None)
 
     assert out == "/fake/mmproj-vision-F16.gguf"
     # _cancel_event must be threaded through so /unload can abort the download.
@@ -121,7 +121,7 @@ def test_companion_swallows_terminal_stall_to_none(hf_cache):
     def stalling_helper(
         repo_id,
         filename,
-        token = None,
+        token=None,
         **kwargs,
     ):
         raise DownloadStallError("both transports stalled")
@@ -130,7 +130,7 @@ def test_companion_swallows_terminal_stall_to_none(hf_cache):
         patch("huggingface_hub.list_repo_files", lambda *a, **k: ["mmproj-vision-F16.gguf"]),
         patch("core.inference.llama_cpp.hf_hub_download_with_xet_fallback", stalling_helper),
     ):
-        out = backend._download_mmproj(hf_repo = REPO, hf_token = None)
+        out = backend._download_mmproj(hf_repo=REPO, hf_token=None)
 
     assert out is None, "a companion download is best-effort; a terminal stall must not raise"
 
@@ -144,7 +144,7 @@ def test_companion_cancelled_skips_download(hf_cache):
     def helper(
         repo_id,
         filename,
-        token = None,
+        token=None,
         **kwargs,
     ):
         called["n"] += 1
@@ -154,7 +154,7 @@ def test_companion_cancelled_skips_download(hf_cache):
         patch("huggingface_hub.list_repo_files", lambda *a, **k: ["mmproj-vision-F16.gguf"]),
         patch("core.inference.llama_cpp.hf_hub_download_with_xet_fallback", helper),
     ):
-        out = backend._download_mmproj(hf_repo = REPO, hf_token = None)
+        out = backend._download_mmproj(hf_repo=REPO, hf_token=None)
 
     assert out is None
     assert called["n"] == 0, "a cancelled load must not start a companion download"

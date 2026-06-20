@@ -16,7 +16,7 @@ from storage import studio_db
 def _reset_studio_db(
     tmp_path,
     monkeypatch,
-    projects_home = None,
+    projects_home=None,
 ):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setenv(
@@ -39,12 +39,12 @@ def workspace_projects_home(tmp_path):
     denied = studio_db._denied_path_prefixes()
     if any(check == p or check.startswith(p + os.sep) for p in denied):
         candidate = Path.home() / ".unsloth-studio-tests" / uuid.uuid4().hex
-    candidate.mkdir(parents = True, exist_ok = True)
+    candidate.mkdir(parents=True, exist_ok=True)
     try:
         yield candidate
     finally:
         if ".unsloth-studio-tests" in candidate.parts:
-            shutil.rmtree(candidate, ignore_errors = True)
+            shutil.rmtree(candidate, ignore_errors=True)
 
 
 def _thread(thread_id: str = "thread-1") -> dict:
@@ -95,7 +95,7 @@ def test_sync_chat_messages_upserts_without_pruning(tmp_path, monkeypatch):
             _message("msg-1", 1, "keep me"),
             _message("msg-2", 2, "old text"),
         ],
-        prune_missing = True,
+        prune_missing=True,
     )
 
     messages = studio_db.sync_chat_messages(
@@ -120,7 +120,7 @@ def test_chat_projects_delete_cascades_threads_and_messages(tmp_path, monkeypatc
     studio_db.upsert_chat_thread({**_thread(), "projectId": "project-1"})
     studio_db.upsert_chat_message(_message("msg-1", 1, "delete with project"))
 
-    [thread] = studio_db.list_chat_threads(project_id = "project-1")
+    [thread] = studio_db.list_chat_threads(project_id="project-1")
     assert thread["projectId"] == "project-1"
 
     deleted = studio_db.delete_chat_project("project-1")
@@ -128,7 +128,7 @@ def test_chat_projects_delete_cascades_threads_and_messages(tmp_path, monkeypatc
     assert deleted is not None
     assert deleted["id"] == "project-1"
     assert studio_db.get_chat_project("project-1") is None
-    assert studio_db.list_chat_threads(project_id = "project-1") == []
+    assert studio_db.list_chat_threads(project_id="project-1") == []
     assert studio_db.get_chat_thread("thread-1") is None
     assert studio_db.list_chat_messages("thread-1") == []
     assert (tmp_path / "Projects" / "Research-project").exists()
@@ -137,14 +137,14 @@ def test_chat_projects_delete_cascades_threads_and_messages(tmp_path, monkeypatc
 def test_chat_project_delete_files_removes_workspace(
     tmp_path, monkeypatch, workspace_projects_home
 ):
-    _reset_studio_db(tmp_path, monkeypatch, projects_home = workspace_projects_home)
+    _reset_studio_db(tmp_path, monkeypatch, projects_home=workspace_projects_home)
     project = studio_db.upsert_chat_project(_project())
     # Derive root from the created project so it tracks the projects home.
     root = Path(project["rootPath"])
     marker = root / "sandbox" / "marker.txt"
-    marker.write_text("created by code execution", encoding = "utf-8")
+    marker.write_text("created by code execution", encoding="utf-8")
 
-    deleted = studio_db.delete_chat_project(project["id"], delete_files = True)
+    deleted = studio_db.delete_chat_project(project["id"], delete_files=True)
 
     assert deleted is not None
     assert deleted["rootPath"] == project["rootPath"]
@@ -166,7 +166,7 @@ def test_sync_chat_messages_prunes_when_requested(tmp_path, monkeypatch):
     messages = studio_db.sync_chat_messages(
         "thread-1",
         [_message("msg-2", 2, "keep me")],
-        prune_missing = True,
+        prune_missing=True,
     )
 
     assert [message["id"] for message in messages] == ["msg-2"]
@@ -199,7 +199,7 @@ def test_sync_chat_messages_detects_conflict_before_prune(tmp_path, monkeypatch)
         studio_db.sync_chat_messages(
             "thread-1",
             [_message("conflict", 3, "bad", "thread-1")],
-            prune_missing = True,
+            prune_missing=True,
         )
 
     assert [m["id"] for m in studio_db.list_chat_messages("thread-1")] == ["keep-me"]
@@ -217,8 +217,8 @@ def test_settings_merge_atomic_under_concurrency(tmp_path, monkeypatch):
         barrier.wait()
         studio_db.upsert_chat_settings_merge({"inferenceParams": {key: value}})
 
-    t1 = threading.Thread(target = writer, args = ("temperature", 0.7))
-    t2 = threading.Thread(target = writer, args = ("topP", 0.9))
+    t1 = threading.Thread(target=writer, args=("temperature", 0.7))
+    t2 = threading.Thread(target=writer, args=("topP", 0.9))
     t1.start()
     t2.start()
     t1.join()
@@ -420,12 +420,12 @@ def test_fork_chat_thread_copies_ancestry_with_fresh_ids(tmp_path, monkeypatch):
         return f"new-{counter['i']}"
 
     forked = studio_db.fork_chat_thread(
-        source_thread_id = "src",
-        branch_message_id = "m3",
-        new_thread_id = "fork-1",
-        new_title = "fork · Original",
-        created_at = 99,
-        id_factory = id_factory,
+        source_thread_id="src",
+        branch_message_id="m3",
+        new_thread_id="fork-1",
+        new_title="fork · Original",
+        created_at=99,
+        id_factory=id_factory,
     )
     assert forked is not None
     assert forked["id"] == "fork-1"
@@ -452,17 +452,17 @@ def test_fork_chat_thread_preserves_project_id(tmp_path, monkeypatch):
     studio_db.upsert_chat_message(_msg("m1", None, 1))
 
     forked = studio_db.fork_chat_thread(
-        source_thread_id = "src",
-        branch_message_id = "m1",
-        new_thread_id = "fork-1",
-        new_title = "fork · Original",
-        created_at = 99,
-        id_factory = lambda: "new-1",
+        source_thread_id="src",
+        branch_message_id="m1",
+        new_thread_id="fork-1",
+        new_title="fork · Original",
+        created_at=99,
+        id_factory=lambda: "new-1",
     )
 
     assert forked is not None
     assert forked["projectId"] == "project-1"
-    assert {thread["id"] for thread in studio_db.list_chat_threads(project_id = "project-1")} == {
+    assert {thread["id"] for thread in studio_db.list_chat_threads(project_id="project-1")} == {
         "fork-1",
         "src",
     }
@@ -471,12 +471,12 @@ def test_fork_chat_thread_preserves_project_id(tmp_path, monkeypatch):
 def test_fork_chat_thread_returns_none_for_missing_source(tmp_path, monkeypatch):
     _reset_studio_db(tmp_path, monkeypatch)
     result = studio_db.fork_chat_thread(
-        source_thread_id = "nope",
-        branch_message_id = "m1",
-        new_thread_id = "fork",
-        new_title = "f",
-        created_at = 1,
-        id_factory = lambda: "x",
+        source_thread_id="nope",
+        branch_message_id="m1",
+        new_thread_id="fork",
+        new_title="f",
+        created_at=1,
+        id_factory=lambda: "x",
     )
     assert result is None
 
@@ -494,19 +494,19 @@ def test_count_forks_for_message(tmp_path, monkeypatch):
         return f"id-{counter['i']}"
 
     studio_db.fork_chat_thread(
-        source_thread_id = "src",
-        branch_message_id = "m1",
-        new_thread_id = "f1",
-        new_title = "f1",
-        created_at = 2,
-        id_factory = id_factory,
+        source_thread_id="src",
+        branch_message_id="m1",
+        new_thread_id="f1",
+        new_title="f1",
+        created_at=2,
+        id_factory=id_factory,
     )
     studio_db.fork_chat_thread(
-        source_thread_id = "src",
-        branch_message_id = "m1",
-        new_thread_id = "f2",
-        new_title = "f2",
-        created_at = 3,
-        id_factory = id_factory,
+        source_thread_id="src",
+        branch_message_id="m1",
+        new_thread_id="f2",
+        new_title="f2",
+        created_at=3,
+        id_factory=id_factory,
     )
     assert studio_db.count_forks_for_message("src", "m1") == 2

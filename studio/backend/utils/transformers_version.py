@@ -250,6 +250,7 @@ def _resolve_base_model(model_name: str) -> str:
     if local_path.is_dir():
         try:
             from utils.models import get_base_model_from_lora
+
             base = get_base_model_from_lora(model_name)
             if base:
                 logger.info(
@@ -309,8 +310,8 @@ def _check_tokenizer_config_needs_v5(model_name: str) -> bool:
 
     url = f"https://huggingface.co/{model_name}/raw/main/tokenizer_config.json"
     try:
-        req = urllib.request.Request(url, headers = {"User-Agent": "unsloth-studio"})
-        with urllib.request.urlopen(req, timeout = 10) as resp:
+        req = urllib.request.Request(url, headers={"User-Agent": "unsloth-studio"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
             data = json.loads(resp.read().decode())
         tokenizer_class = data.get("tokenizer_class", "")
         result = tokenizer_class in _TRANSFORMERS_5_TOKENIZER_CLASSES
@@ -365,8 +366,8 @@ def _load_config_json(model_name: str, hf_token: str | None = None) -> dict | No
     if hf_token:
         headers["Authorization"] = f"Bearer {hf_token}"
     try:
-        req = urllib.request.Request(url, headers = headers)
-        with urllib.request.urlopen(req, timeout = 10) as resp:
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=10) as resp:
             cfg = json.loads(resp.read().decode())
         _config_json_cache[cache_key] = cfg
         return cfg
@@ -653,7 +654,7 @@ def _venv_dir_is_valid(venv_dir: str, packages: tuple[str, ...]) -> bool:
             metadata = di / "METADATA"
             if not metadata.is_file():
                 continue
-            for line in metadata.read_text(errors = "replace").splitlines():
+            for line in metadata.read_text(errors="replace").splitlines():
                 if line.startswith("Version:"):
                     installed_ver = line.split(":", 1)[1].strip()
                     if installed_ver != pkg_version:
@@ -696,10 +697,10 @@ def _install_to_dir(pkg: str, target_dir: str) -> bool:
                 "--upgrade",
                 pkg,
             ],
-            stdout = subprocess.PIPE,
-            stderr = subprocess.STDOUT,
-            text = True,
-            env = child_env_without_native_path_secret(),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            env=child_env_without_native_path_secret(),
             **_windows_hidden_subprocess_kwargs(),
         )
         if result.returncode == 0:
@@ -719,10 +720,10 @@ def _install_to_dir(pkg: str, target_dir: str) -> bool:
             "--upgrade",
             pkg,
         ],
-        stdout = subprocess.PIPE,
-        stderr = subprocess.STDOUT,
-        text = True,
-        env = child_env_without_native_path_secret(),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        env=child_env_without_native_path_secret(),
         **_windows_hidden_subprocess_kwargs(),
     )
     if result.returncode != 0:
@@ -737,10 +738,10 @@ def _ensure_venv_dir(venv_dir: str, packages: tuple[str, ...], label: str) -> bo
         return True
 
     logger.warning("%s not found or incomplete at %s -- installing at runtime", label, venv_dir)
-    shutil.rmtree(venv_dir, ignore_errors = True)
-    os.makedirs(venv_dir, exist_ok = True)
+    shutil.rmtree(venv_dir, ignore_errors=True)
+    os.makedirs(venv_dir, exist_ok=True)
     total = len(packages)
-    for idx, pkg in enumerate(packages, start = 1):
+    for idx, pkg in enumerate(packages, start=1):
         logger.info("Installing %s (%d/%d) into %s ...", pkg, idx, total, venv_dir)
         if not _install_to_dir(pkg, venv_dir):
             return False

@@ -122,7 +122,7 @@ def _index_prefixes(load_subdirs) -> tuple:
 def _indexed_shard_paths(
     model_name: str,
     hf_token: Optional[str],
-    load_subdirs = (),
+    load_subdirs=(),
 ):
     """Repo-relative weight paths a load could fetch via weight-index files. Returns a
     set (empty when the repo ships no index files -- a definitive "nothing sharded"), or
@@ -144,7 +144,7 @@ def _indexed_shard_paths(
     for prefix in _index_prefixes(load_subdirs):
         for filename in _TRANSFORMERS_INDEX_FILES:
             try:
-                index_path = hf_hub_download(model_name, prefix + filename, token = hf_token or None)
+                index_path = hf_hub_download(model_name, prefix + filename, token=hf_token or None)
             except EntryNotFoundError:
                 continue  # definitively absent, not an error
             except Exception:
@@ -179,7 +179,7 @@ class FileSecurityDecision:
 
     model_name: str
     blocked: bool
-    unsafe_files: list = field(default_factory = list)  # [{"path", "level"}]
+    unsafe_files: list = field(default_factory=list)  # [{"path", "level"}]
     reason: str = ""
 
     def response_payload(self) -> dict:
@@ -198,7 +198,8 @@ def security_load_subdirs(model_name: str, hf_token: Optional[str] = None) -> tu
     """
     try:
         from utils.models.model_config import detect_audio_type, load_model_defaults
-        if detect_audio_type(model_name, hf_token = hf_token) == "bicodec":
+
+        if detect_audio_type(model_name, hf_token=hf_token) == "bicodec":
             return ("LLM",)
         # Tokenizer detection can fail (network/gated/unresolved alias); the YAML default
         # also pins the audio type, so fall back to it (else a flagged LLM/ pickle is
@@ -218,6 +219,7 @@ def _load_scan_target(model_name: str, load_subdirs: tuple) -> tuple:
     """
     try:
         from utils.paths import is_local_path
+
         if is_local_path(model_name):
             return model_name, load_subdirs
     except Exception:
@@ -228,6 +230,7 @@ def _load_scan_target(model_name: str, load_subdirs: tuple) -> tuple:
     if name.endswith("/LLM") and name.count("/") == 1:
         try:
             from utils.models.model_config import load_model_defaults
+
             if (load_model_defaults(name) or {}).get("audio_type") == "bicodec":
                 parent = name[: -len("/LLM")]
                 return f"unsloth/{parent}", tuple(dict.fromkeys((*load_subdirs, "LLM")))
@@ -248,9 +251,9 @@ def _fetch_security_status(model_name: str, hf_token: Optional[str]):
         try:
             info = hf_model_info(
                 model_name,
-                token = token_arg,
-                securityStatus = True,
-                timeout = timeout,
+                token=token_arg,
+                securityStatus=True,
+                timeout=timeout,
             )
             return getattr(info, "security_repo_status", None)
         except Exception as exc:  # network/offline/gated/404/unsupported-client
@@ -269,7 +272,7 @@ def evaluate_file_security(
     model_name: str,
     hf_token: Optional[str] = None,
     *,
-    load_subdirs = (),
+    load_subdirs=(),
 ) -> FileSecurityDecision:
     """Block a load when HF's security scan flags unsafe serialized files.
 
@@ -289,16 +292,17 @@ def evaluate_file_security(
     # even if named "*.gguf", so a repo cannot dodge the scan via its name.
     try:
         from utils.paths import is_local_path
+
         if is_local_path(model_name):
-            return FileSecurityDecision(model_name, False, reason = "local path; no Hub scan")
+            return FileSecurityDecision(model_name, False, reason="local path; no Hub scan")
     except Exception:
         # Cannot classify the path -> do not block on that account.
-        return FileSecurityDecision(model_name, False, reason = "path check failed; not blocked")
+        return FileSecurityDecision(model_name, False, reason="path check failed; not blocked")
 
     status = _fetch_security_status(model_name, hf_token)
     if not isinstance(status, dict):
         return FileSecurityDecision(
-            model_name, False, reason = "scan unavailable; allowed (fail-open)"
+            model_name, False, reason="scan unavailable; allowed (fail-open)"
         )
 
     # Block a non-``safe`` flagged file scoped to the load-path RCE vector (root-level,
@@ -352,7 +356,7 @@ def evaluate_file_security(
                 model_name,
                 ", ".join(f"{s['path']}({s['level']})" for s in skipped),
             )
-        return FileSecurityDecision(model_name, False, reason = "no unsafe files in the load path")
+        return FileSecurityDecision(model_name, False, reason="no unsafe files in the load path")
 
     names = ", ".join(u["path"] for u in unsafe if u["path"]) or "unknown files"
     logger.warning(
@@ -363,6 +367,6 @@ def evaluate_file_security(
     return FileSecurityDecision(
         model_name,
         True,
-        unsafe_files = unsafe,
-        reason = f"Hugging Face security scan flagged unsafe files: {names}",
+        unsafe_files=unsafe,
+        reason=f"Hugging Face security scan flagged unsafe files: {names}",
     )

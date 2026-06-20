@@ -81,12 +81,12 @@ from models.inference import (
 
 
 def test_load_request_defaults_tensor_parallel_false():
-    req = LoadRequest(model_path = "owner/repo")
+    req = LoadRequest(model_path="owner/repo")
     assert req.tensor_parallel is False
 
 
 def test_load_request_accepts_tensor_parallel():
-    req = LoadRequest(model_path = "owner/repo", tensor_parallel = True)
+    req = LoadRequest(model_path="owner/repo", tensor_parallel=True)
     assert req.tensor_parallel is True
 
 
@@ -102,21 +102,21 @@ def test_response_models_emit_tensor_parallel(model_cls):
     # Default False, and the key is always present in the JSON body.
     if model_cls is LoadResponse:
         default = model_cls(
-            status = "loaded",
-            model = "owner/repo",
-            display_name = "repo",
-            inference = {},
+            status="loaded",
+            model="owner/repo",
+            display_name="repo",
+            inference={},
         )
         on = model_cls(
-            status = "loaded",
-            model = "owner/repo",
-            display_name = "repo",
-            inference = {},
-            tensor_parallel = True,
+            status="loaded",
+            model="owner/repo",
+            display_name="repo",
+            inference={},
+            tensor_parallel=True,
         )
     else:
         default = model_cls()
-        on = model_cls(tensor_parallel = True)
+        on = model_cls(tensor_parallel=True)
     assert default.model_dump()["tensor_parallel"] is False
     assert on.model_dump()["tensor_parallel"] is True
 
@@ -130,7 +130,7 @@ class _FakeProcess:
     def terminate(self):
         pass
 
-    def wait(self, timeout = None):
+    def wait(self, timeout=None):
         return 0
 
     def kill(self):
@@ -180,16 +180,16 @@ def _loaded_backend(tensor_parallel: bool) -> LlamaCppBackend:
 
 def _target_state(backend: LlamaCppBackend, tensor_parallel: bool) -> bool:
     return backend._already_in_target_state(
-        gguf_path = None,
-        model_identifier = "owner/repo",
-        hf_variant = "Q4_K_M",
-        n_ctx = 8192,
-        cache_type_kv = None,
-        speculative_type = "auto",
-        chat_template_override = None,
-        extra_args = None,
-        is_vision = False,
-        tensor_parallel = tensor_parallel,
+        gguf_path=None,
+        model_identifier="owner/repo",
+        hf_variant="Q4_K_M",
+        n_ctx=8192,
+        cache_type_kv=None,
+        speculative_type="auto",
+        chat_template_override=None,
+        extra_args=None,
+        is_vision=False,
+        tensor_parallel=tensor_parallel,
     )
 
 
@@ -211,20 +211,20 @@ def test_already_in_target_state_reloads_on_tensor_parallel_change(loaded, reque
 def test_already_in_target_state_reconciles_split_mode_extras():
     # Tensor engaged via --split-mode in extras (boolean omitted/default False)
     # must match a server already running tensor mode -- no spurious reload.
-    backend = _loaded_backend(tensor_parallel = True)
+    backend = _loaded_backend(tensor_parallel=True)
     backend._extra_args = ["--split-mode", "tensor"]
     assert (
         backend._already_in_target_state(
-            gguf_path = None,
-            model_identifier = "owner/repo",
-            hf_variant = "Q4_K_M",
-            n_ctx = 8192,
-            cache_type_kv = None,
-            speculative_type = "auto",
-            chat_template_override = None,
-            extra_args = ["--split-mode", "tensor"],
-            is_vision = False,
-            tensor_parallel = False,
+            gguf_path=None,
+            model_identifier="owner/repo",
+            hf_variant="Q4_K_M",
+            n_ctx=8192,
+            cache_type_kv=None,
+            speculative_type="auto",
+            chat_template_override=None,
+            extra_args=["--split-mode", "tensor"],
+            is_vision=False,
+            tensor_parallel=False,
         )
         is True
     )
@@ -298,22 +298,22 @@ def test_probe_mtp_decode_returns_false_on_crash(monkeypatch):
             self.status_code = code
 
     backend._process = None  # liveness check skipped; exercise the HTTP result
-    monkeypatch.setattr(llama_cpp_module.httpx, "post", lambda *a, **k: _Resp(200), raising = False)
-    assert backend._probe_mtp_decode(timeout = 1.0) is True
+    monkeypatch.setattr(llama_cpp_module.httpx, "post", lambda *a, **k: _Resp(200), raising=False)
+    assert backend._probe_mtp_decode(timeout=1.0) is True
 
     def _drop(*a, **k):
         raise llama_cpp_module.httpx.RemoteProtocolError("peer closed connection")
 
-    monkeypatch.setattr(llama_cpp_module.httpx, "post", _drop, raising = False)
-    assert backend._probe_mtp_decode(timeout = 1.0) is False
+    monkeypatch.setattr(llama_cpp_module.httpx, "post", _drop, raising=False)
+    assert backend._probe_mtp_decode(timeout=1.0) is False
 
-    monkeypatch.setattr(llama_cpp_module.httpx, "post", lambda *a, **k: _Resp(500), raising = False)
-    assert backend._probe_mtp_decode(timeout = 1.0) is False
+    monkeypatch.setattr(llama_cpp_module.httpx, "post", lambda *a, **k: _Resp(500), raising=False)
+    assert backend._probe_mtp_decode(timeout=1.0) is False
 
     # 200 but the server aborted right after (poll() returns an exit code).
     backend._process = _FakeProcess()
-    monkeypatch.setattr(llama_cpp_module.httpx, "post", lambda *a, **k: _Resp(200), raising = False)
-    assert backend._probe_mtp_decode(timeout = 1.0) is False
+    monkeypatch.setattr(llama_cpp_module.httpx, "post", lambda *a, **k: _Resp(200), raising=False)
+    assert backend._probe_mtp_decode(timeout=1.0) is False
 
 
 # ── generation-time MTP recovery (mid-stream crash) ──────────────────
@@ -357,7 +357,7 @@ def test_runtime_recovery_reloads_without_mtp(monkeypatch):
 
     monkeypatch.setattr(b, "load_model", _fake_load_model)
     assert b._maybe_recover_from_mtp_crash(RuntimeError("peer closed")) is True
-    assert done.wait(timeout = 5)
+    assert done.wait(timeout=5)
     assert captured["speculative_type"] == "off"
     assert captured["model_identifier"] == "owner/repo"
     assert captured["n_parallel"] == 4  # snapshot replayed faithfully
@@ -408,7 +408,7 @@ class _BlockingDeadProc:
     def kill(self):
         self._dead.set()
 
-    def wait(self, timeout = None):
+    def wait(self, timeout=None):
         self._dead.set()
         return 0
 
@@ -431,7 +431,7 @@ def test_runtime_recovery_fires_for_user_env_mtp(monkeypatch):
 
     monkeypatch.setattr(b, "load_model", _fake_load_model)
     assert b._maybe_recover_from_mtp_crash(RuntimeError()) is True
-    assert done.wait(timeout = 5)
+    assert done.wait(timeout=5)
     assert captured["speculative_type"] == "off"
 
 
@@ -439,7 +439,7 @@ def test_runtime_recovery_strips_user_mtp_extra_args(monkeypatch):
     # A user --spec-type draft-mtp in extra_args must be neutralised on the reload
     # (append a last-wins --spec-default) so MTP can't re-engage and loop.
     b = _recovery_backend()
-    b._last_load_kwargs = dict(b._last_load_kwargs, extra_args = ["--spec-type", "draft-mtp"])
+    b._last_load_kwargs = dict(b._last_load_kwargs, extra_args=["--spec-type", "draft-mtp"])
     done = threading.Event()
     captured = {}
 
@@ -450,7 +450,7 @@ def test_runtime_recovery_strips_user_mtp_extra_args(monkeypatch):
 
     monkeypatch.setattr(b, "load_model", _fake_load_model)
     assert b._maybe_recover_from_mtp_crash(RuntimeError()) is True
-    assert done.wait(timeout = 5)
+    assert done.wait(timeout=5)
     assert captured["speculative_type"] == "off"
     assert captured["extra_args"][-1] == "--spec-default"
 
@@ -459,7 +459,7 @@ def test_runtime_recovery_restores_requested_mode(monkeypatch):
     # After the off-reload, /status must show the user's requested mode + the
     # runtime-error note, not a bare "off" (matches the startup MTP fallback).
     b = _recovery_backend()
-    b._last_load_kwargs = dict(b._last_load_kwargs, speculative_type = "mtp")
+    b._last_load_kwargs = dict(b._last_load_kwargs, speculative_type="mtp")
     done = threading.Event()
 
     def _fake_load_model(**kwargs):
@@ -469,7 +469,7 @@ def test_runtime_recovery_restores_requested_mode(monkeypatch):
 
     monkeypatch.setattr(b, "load_model", _fake_load_model)
     assert b._maybe_recover_from_mtp_crash(RuntimeError()) is True
-    assert done.wait(timeout = 5)
+    assert done.wait(timeout=5)
     deadline = time.monotonic() + 2
     while b._requested_spec_mode != "mtp" and time.monotonic() < deadline:
         time.sleep(0.02)
@@ -500,7 +500,7 @@ def test_runtime_recovery_skips_when_snapshot_changed(monkeypatch):
     calls = []
     monkeypatch.setattr(b, "load_model", lambda **k: calls.append(k))
     assert b._maybe_recover_from_mtp_crash(RuntimeError()) is True
-    b._last_load_kwargs = dict(b._last_load_kwargs, model_identifier = "other/model")
+    b._last_load_kwargs = dict(b._last_load_kwargs, model_identifier="other/model")
     p1.release()
     time.sleep(0.6)
     assert calls == []
@@ -514,12 +514,12 @@ def test_runtime_recovery_is_single_flight(monkeypatch):
 
     def _slow_load(**kwargs):
         started.set()
-        release.wait(timeout = 5)
+        release.wait(timeout=5)
         return True
 
     monkeypatch.setattr(b, "load_model", _slow_load)
     assert b._maybe_recover_from_mtp_crash(RuntimeError()) is True
-    assert started.wait(timeout = 5)
+    assert started.wait(timeout=5)
     # Second failure while the first reload is in flight is a no-op.
     assert b._maybe_recover_from_mtp_crash(RuntimeError()) is False
     release.set()
@@ -550,12 +550,12 @@ def test_probe_mtp_decode_uses_api_key_auth(monkeypatch):
         captured.update(k)
         return _Resp()
 
-    monkeypatch.setattr(llama_cpp_module.httpx, "post", _capture, raising = False)
+    monkeypatch.setattr(llama_cpp_module.httpx, "post", _capture, raising=False)
     backend._api_key = "secret"
-    backend._probe_mtp_decode(timeout = 1.0)
+    backend._probe_mtp_decode(timeout=1.0)
     assert captured["headers"] == {"Authorization": "Bearer secret"}
     backend._api_key = None
-    backend._probe_mtp_decode(timeout = 1.0)
+    backend._probe_mtp_decode(timeout=1.0)
     assert captured["headers"] is None
 
 
@@ -574,7 +574,7 @@ class _ToggleProcess:
     def kill(self):
         self._alive = False
 
-    def wait(self, timeout = None):
+    def wait(self, timeout=None):
         self._alive = False
         return 0
 
@@ -593,7 +593,7 @@ def test_crash_watchdog_triggers_recovery_on_death(monkeypatch):
     b._start_mtp_crash_watchdog()
     assert b._mtp_watchdog_thread is not None
     proc.die()
-    assert fired.wait(timeout = 3)
+    assert fired.wait(timeout=3)
 
 
 def test_crash_watchdog_ignores_intentional_termination(monkeypatch):
@@ -607,7 +607,7 @@ def test_crash_watchdog_ignores_intentional_termination(monkeypatch):
     b._start_mtp_crash_watchdog()
     b._stop_mtp_crash_watchdog()  # what _kill_process does first
     proc.die()
-    assert not fired.wait(timeout = 2)
+    assert not fired.wait(timeout=2)
     assert b._mtp_watchdog_thread is None
 
 
@@ -639,7 +639,7 @@ def test_kill_process_stops_crash_watchdog(monkeypatch):
     b._kill_process()
     assert b._mtp_watchdog_thread is None
     assert b._process is None
-    assert not fired.wait(timeout = 2)
+    assert not fired.wait(timeout=2)
 
 
 def test_kill_process_stops_watchdog_before_terminate():
@@ -686,7 +686,7 @@ def test_fit_context_budget_frac_override_is_tighter():
     pool_mib = 24 * 1024  # tight enough that KV capping bites
 
     fit_default = backend._fit_context_to_vram(131072, pool_mib, model_size, "f16")
-    fit_tp = backend._fit_context_to_vram(131072, pool_mib, model_size, "f16", budget_frac = 0.80)
+    fit_tp = backend._fit_context_to_vram(131072, pool_mib, model_size, "f16", budget_frac=0.80)
     assert fit_tp < 131072, "expected the context to be capped at this VRAM tier"
     assert fit_tp <= fit_default, "a tighter budget must not allow MORE context"
     # Omitting the override must reproduce the default budget exactly.
@@ -725,15 +725,15 @@ _SYM = [(0, 24000), (1, 24000)]  # symmetric pool
 
 def _plan(
     model_gb,
-    target = 131072,
-    gpus = _ASYM,
-    mtp = False,
+    target=131072,
+    gpus=_ASYM,
+    mtp=False,
 ):
     b = _kv_seeded_backend()
-    return b, b._plan_tensor_parallel(gpus, int(model_gb * _GB), target, mtp_engaged = mtp)
+    return b, b._plan_tensor_parallel(gpus, int(model_gb * _GB), target, mtp_engaged=mtp)
 
 
-def _kv_budget_b(model_gb, gpus = _ASYM):
+def _kv_budget_b(model_gb, gpus=_ASYM):
     # No totals here, so usable is the legacy free*frac (keeps the 5% cushion).
     reserve = LlamaCppBackend._TENSOR_PARALLEL_BUFFER_RESERVE_MIB
     usable = sum(f * _CTX_FIT_VRAM_FRACTION for _, f in gpus)
@@ -760,7 +760,7 @@ def test_tp_plan_even_split_when_model_fits():
 
 
 def test_tp_plan_symmetric_gpus_use_even_split():
-    _, (ec, mac, gi, ts) = _plan(8, gpus = _SYM)
+    _, (ec, mac, gi, ts) = _plan(8, gpus=_SYM)
     assert ts is None
 
 
@@ -785,19 +785,19 @@ def test_tp_plan_weights_exceed_pool_floors_context():
 def test_tp_plan_floor_never_exceeds_explicit_small_context():
     # An explicit context below the 2048 floor must not be raised: a caller
     # asking for 1024 should not have KV sized for 2048 (avoidable OOM).
-    _, (ec, mac, gi, ts) = _plan(70, target = 1024)  # weights exceed pool -> floor path
+    _, (ec, mac, gi, ts) = _plan(70, target=1024)  # weights exceed pool -> floor path
     assert ec == 1024
-    _, (ec2, *_rest) = _plan(50, target = 1024)  # cap path with a tiny budget
+    _, (ec2, *_rest) = _plan(50, target=1024)  # cap path with a tiny budget
     assert ec2 <= 1024
 
 
 def test_tp_plan_explicit_context_honored_when_it_fits():
-    _, (ec, mac, gi, ts) = _plan(50, target = 8192)
+    _, (ec, mac, gi, ts) = _plan(50, target=8192)
     assert ec == 8192
 
 
 def test_tp_plan_explicit_context_capped_when_too_large():
-    _, (ec, mac, gi, ts) = _plan(50, target = 131072)
+    _, (ec, mac, gi, ts) = _plan(50, target=131072)
     assert 2048 <= ec < 131072
 
 
@@ -805,7 +805,7 @@ def test_tp_plan_max_available_ctx_reports_native_not_explicit_ctx():
     # An explicit small ctx caps effective_ctx but the UI ceiling
     # (max_available_ctx) must reflect the native/hardware cap, not the request.
     b = _kv_seeded_backend()
-    ec, mac, _gi, _ts = b._plan_tensor_parallel(_ASYM, int(50 * _GB), 8192, max_target_ctx = 131072)
+    ec, mac, _gi, _ts = b._plan_tensor_parallel(_ASYM, int(50 * _GB), 8192, max_target_ctx=131072)
     _, native_mac, *_ = b._plan_tensor_parallel(_ASYM, int(50 * _GB), 131072)
     assert ec == 8192  # explicit request honored for the load
     assert mac == native_mac > ec  # ceiling reflects the hardware cap
@@ -813,7 +813,7 @@ def test_tp_plan_max_available_ctx_reports_native_not_explicit_ctx():
 
 def test_tp_plan_mtp_reserves_extra_and_shrinks_context():
     _, (ec_no, *_rest) = _plan(50)
-    _, (ec_mtp, *_rest) = _plan(50, mtp = True)
+    _, (ec_mtp, *_rest) = _plan(50, mtp=True)
     assert ec_mtp < ec_no
 
 
@@ -874,7 +874,7 @@ class _RecordingLoader:
 def test_tensor_fallback_retries_layer_on_crash():
     loader = _RecordingLoader()
     ok = asyncio.run(
-        load_with_tensor_fallback(loader, requested_tensor = True, extra_args = None, label = "m")
+        load_with_tensor_fallback(loader, requested_tensor=True, extra_args=None, label="m")
     )
     assert ok is True
     # tensor first (crashes), then layer split.
@@ -889,7 +889,7 @@ def test_tensor_fallback_no_retry_on_success():
         return True
 
     ok = asyncio.run(
-        load_with_tensor_fallback(_ok, requested_tensor = True, extra_args = None, label = "m")
+        load_with_tensor_fallback(_ok, requested_tensor=True, extra_args=None, label="m")
     )
     assert ok is True
     assert calls == [True]  # no fallback when the tensor load succeeds
@@ -906,7 +906,7 @@ def test_tensor_fallback_retries_when_tensor_returns_false():
 
     ok = asyncio.run(
         load_with_tensor_fallback(
-            _false_on_tensor, requested_tensor = True, extra_args = None, label = "m"
+            _false_on_tensor, requested_tensor=True, extra_args=None, label="m"
         )
     )
     assert ok is True
@@ -923,7 +923,7 @@ def test_tensor_fallback_returns_false_when_both_attempts_fail():
         return False
 
     ok = asyncio.run(
-        load_with_tensor_fallback(_always_false, requested_tensor = True, extra_args = None, label = "m")
+        load_with_tensor_fallback(_always_false, requested_tensor=True, extra_args=None, label="m")
     )
     assert ok is False
     assert calls == [True, False]  # tried tensor, then layer split
@@ -941,10 +941,10 @@ def test_tensor_fallback_skips_layer_retry_when_cancelled():
     ok = asyncio.run(
         load_with_tensor_fallback(
             _false_on_tensor,
-            requested_tensor = True,
-            extra_args = None,
-            label = "m",
-            cancelled = lambda: True,
+            requested_tensor=True,
+            extra_args=None,
+            label="m",
+            cancelled=lambda: True,
         )
     )
     assert ok is False
@@ -966,7 +966,7 @@ def test_tensor_fallback_strips_split_mode_from_extras_on_retry(extras):
     # other flags, else tensor is re-enabled and relaunches the crash.
     loader = _RecordingLoader()
     ok = asyncio.run(
-        load_with_tensor_fallback(loader, requested_tensor = False, extra_args = extras, label = "m")
+        load_with_tensor_fallback(loader, requested_tensor=False, extra_args=extras, label="m")
     )
     assert ok is True
     assert len(loader.calls) == 2
@@ -993,9 +993,9 @@ def test_tensor_fallback_env_tensor_retry_forces_layer(monkeypatch):
     ok = asyncio.run(
         load_with_tensor_fallback(
             _crash_when_effectively_tensor,
-            requested_tensor = False,
-            extra_args = None,
-            label = "m",
+            requested_tensor=False,
+            extra_args=None,
+            label="m",
         )
     )
     assert ok is True
@@ -1008,10 +1008,10 @@ def test_tensor_fallback_propagates_non_tensor_crash():
     async def _always_raise(tensor_parallel, extra_args):
         raise RuntimeError("bad model")
 
-    with pytest.raises(RuntimeError, match = "bad model"):
+    with pytest.raises(RuntimeError, match="bad model"):
         asyncio.run(
             load_with_tensor_fallback(
-                _always_raise, requested_tensor = False, extra_args = None, label = "m"
+                _always_raise, requested_tensor=False, extra_args=None, label="m"
             )
         )
 
@@ -1026,7 +1026,7 @@ def test_tensor_caps_context_to_total_vram_budget():
     gpus = [(0, 20000), (1, 20000)]
     totals = {0: 81920, 1: 81920}
     model = int(18 * _GB)
-    with_total, *_ = b._plan_tensor_parallel(gpus, model, 131072, total_by_idx = totals)
+    with_total, *_ = b._plan_tensor_parallel(gpus, model, 131072, total_by_idx=totals)
     without, *_ = b._plan_tensor_parallel(gpus, model, 131072)
     assert with_total < without  # total cap tightens the chosen context
 
@@ -1048,7 +1048,7 @@ def test_tensor_unknown_total_keeps_fraction_cushion():
     MIB = 1024 * 1024
     reserve = LlamaCppBackend._TENSOR_PARALLEL_BUFFER_RESERVE_MIB
     model = int(18 * _GB)
-    ec_zero, *_ = b._plan_tensor_parallel(gpus, model, 131072, total_by_idx = {0: 0, 1: 0})
+    ec_zero, *_ = b._plan_tensor_parallel(gpus, model, 131072, total_by_idx={0: 0, 1: 0})
     ec_none, *_ = b._plan_tensor_parallel(gpus, model, 131072)
     assert ec_zero == ec_none  # total 0 == total absent: both use free*frac
     pool_free = sum(f for _, f in gpus)
@@ -1062,8 +1062,8 @@ def test_tensor_reserve_scales_with_ubatch():
     b._vocab_size = 152064  # enable the deterministic compute-buffer estimate
     gpus = [(0, 16000), (1, 16000)]
     model = int(18 * _GB)
-    small_ub, *_ = b._plan_tensor_parallel(gpus, model, 131072, n_ubatch = 512)
-    big_ub, *_ = b._plan_tensor_parallel(gpus, model, 131072, n_ubatch = 4096)
+    small_ub, *_ = b._plan_tensor_parallel(gpus, model, 131072, n_ubatch=512)
+    big_ub, *_ = b._plan_tensor_parallel(gpus, model, 131072, n_ubatch=4096)
     assert big_ub < small_ub
 
 
@@ -1080,17 +1080,17 @@ def test_plan_tensor_carries_unsized_mtp_flat_reserve():
         gpus,
         model,
         131072,
-        mtp_engaged = True,
-        mtp_overhead_fn = weights_only,
-        mtp_flat_reserve_bytes = 0,
+        mtp_engaged=True,
+        mtp_overhead_fn=weights_only,
+        mtp_flat_reserve_bytes=0,
     )
     ctx_flat, *_ = b._plan_tensor_parallel(
         gpus,
         model,
         131072,
-        mtp_engaged = True,
-        mtp_overhead_fn = weights_only,
-        mtp_flat_reserve_bytes = 2 * _GB,
+        mtp_engaged=True,
+        mtp_overhead_fn=weights_only,
+        mtp_flat_reserve_bytes=2 * _GB,
     )
     assert 0 < ctx_flat < ctx_no_flat
 
@@ -1103,7 +1103,7 @@ def test_tensor_admission_drops_gpu_below_usable_budget():
     b = _kv_seeded_backend()
     gpus = [(0, 6000), (1, 40000)]
     totals = {0: 81920, 1: 81920}
-    _ec, _mac, gi, ts = b._plan_tensor_parallel(gpus, int(8 * _GB), 8192, total_by_idx = totals)
+    _ec, _mac, gi, ts = b._plan_tensor_parallel(gpus, int(8 * _GB), 8192, total_by_idx=totals)
     assert gi == [1] and ts is None  # GPU 0 excluded on usable budget
     _ec2, _mac2, gi_raw, _ts2 = b._plan_tensor_parallel(gpus, int(8 * _GB), 8192)
     assert gi_raw == [0, 1]  # raw free would have admitted both

@@ -60,6 +60,7 @@ def _hf_hub_cache_roots() -> list[Path]:
 
     try:
         from huggingface_hub.constants import HF_HUB_CACHE
+
         _add(Path(HF_HUB_CACHE))
     except Exception:
         pass
@@ -153,7 +154,7 @@ def _scan_hub_dataset_cache_dirs() -> list[dict]:
                     hf_cache_scan.partial_transport_for(
                         "dataset",
                         repo_id,
-                        repo_cache_dir = entry,
+                        repo_cache_dir=entry,
                     )
                     if snapshot_partial
                     else None
@@ -161,7 +162,7 @@ def _scan_hub_dataset_cache_dirs() -> list[dict]:
             }
             if _prefer_dataset_cache_row(row, existing):
                 seen_lower[key] = row
-    return sorted(seen_lower.values(), key = lambda c: c["repo_id"])
+    return sorted(seen_lower.values(), key=lambda c: c["repo_id"])
 
 
 def _hf_datasets_cache_roots() -> list[Path]:
@@ -186,6 +187,7 @@ def _hf_datasets_cache_roots() -> list[Path]:
 
     try:
         from datasets import config as datasets_config
+
         _add(Path(datasets_config.HF_DATASETS_CACHE))
     except Exception:
         pass
@@ -262,7 +264,7 @@ def _scan_processed_dataset_caches() -> list[dict]:
                     "processed_cache": True,
                     "partial": False,
                 }
-    return sorted(seen_lower.values(), key = lambda c: c["repo_id"])
+    return sorted(seen_lower.values(), key=lambda c: c["repo_id"])
 
 
 def _scan_hf_dataset_caches() -> list[dict]:
@@ -304,7 +306,7 @@ def _scan_hf_dataset_caches() -> list[dict]:
                         hf_cache_scan.partial_transport_for(
                             "dataset",
                             repo_info.repo_id,
-                            repo_cache_dir = cache_dir,
+                            repo_cache_dir=cache_dir,
                         )
                         if snapshot_partial
                         else None
@@ -346,7 +348,7 @@ def _scan_hf_dataset_caches() -> list[dict]:
         inspected,
         len(seen_lower),
     )
-    return sorted(seen_lower.values(), key = lambda c: c["repo_id"])
+    return sorted(seen_lower.values(), key=lambda c: c["repo_id"])
 
 
 async def list_cached_datasets_response() -> dict:
@@ -354,23 +356,23 @@ async def list_cached_datasets_response() -> dict:
     try:
         return {"cached": await asyncio.to_thread(_scan_hf_dataset_caches)}
     except Exception as exc:
-        logger.error("Error listing cached datasets: %s", exc, exc_info = True)
+        logger.error("Error listing cached datasets: %s", exc, exc_info=True)
         raise HTTPException(
-            status_code = 500,
-            detail = "Failed to read the local dataset cache.",
+            status_code=500,
+            detail="Failed to read the local dataset cache.",
         ) from exc
 
 
 async def delete_cached_dataset_response(repo_id: str) -> dict:
     """Remove a cached dataset repo from the HF cache."""
     if not _is_valid_repo_id(repo_id):
-        raise HTTPException(status_code = 400, detail = "Invalid repo_id format")
+        raise HTTPException(status_code=400, detail="Invalid repo_id format")
 
-    repo_key = await asyncio.to_thread(resolve_cached_repo_id_case, repo_id, repo_type = "dataset")
+    repo_key = await asyncio.to_thread(resolve_cached_repo_id_case, repo_id, repo_type="dataset")
     if not downloads.registry.begin_delete(repo_key):
         raise HTTPException(
-            status_code = 400,
-            detail = "Cancel the active download before deleting.",
+            status_code=400,
+            detail="Cancel the active download before deleting.",
         )
     try:
         return await asyncio.to_thread(_delete_cached_dataset_blocking, repo_key)
@@ -392,7 +394,7 @@ def _delete_cached_dataset_blocking(repo_id: str) -> dict:
     matched_repo_ids = resolve_destructive_repo_ids(
         repo_id,
         [str(repo_info.repo_id) for _hf_cache, repo_info in candidate_entries],
-        noun = "datasets",
+        noun="datasets",
     )
 
     deleted = False
@@ -411,15 +413,15 @@ def _delete_cached_dataset_blocking(repo_id: str) -> dict:
                 repo_id,
                 getattr(hf_cache, "cache_dir", "<unknown>"),
                 exc,
-                exc_info = True,
+                exc_info=True,
             )
 
     processed_deleted, processed_failures = _delete_processed_dataset_cache(repo_id)
     failures.extend(processed_failures)
     if failures:
         raise HTTPException(
-            status_code = 500,
-            detail = (
+            status_code=500,
+            detail=(
                 f"Failed to delete dataset from {len(failures)} cache "
                 "location(s). Some files may remain."
             ),
@@ -431,7 +433,7 @@ def _delete_cached_dataset_blocking(repo_id: str) -> dict:
     partial_purged = purge_partial_repo("dataset", repo_id)
     state_purged = download_manifest.purge_all_state_for_repo("dataset", repo_id) > 0
     if not (deleted or processed_deleted or cache_purged or partial_purged or state_purged):
-        raise HTTPException(status_code = 404, detail = "Dataset not found in cache")
+        raise HTTPException(status_code=404, detail="Dataset not found in cache")
     return {"status": "deleted", "repo_id": repo_id}
 
 
@@ -469,6 +471,6 @@ def _delete_processed_dataset_cache(repo_id: str) -> tuple[bool, list[str]]:
                     "Failed deleting processed dataset cache %s: %s",
                     repo_id,
                     exc,
-                    exc_info = True,
+                    exc_info=True,
                 )
     return deleted, failures

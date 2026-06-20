@@ -92,7 +92,7 @@ def _evaluate(name: str, hf_token: Optional[str], verify_remote: bool) -> bool:
     try:
         from huggingface_hub import HfApi
 
-        info = HfApi().model_info(name, token = hf_token)
+        info = HfApi().model_info(name, token=hf_token)
         resolved_id = getattr(info, "id", None) or name
         resolved_ns = _namespace(resolved_id)
         author = getattr(info, "author", None)

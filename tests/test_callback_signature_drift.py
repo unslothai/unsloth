@@ -62,10 +62,11 @@ def _safe_parse(path: pathlib.Path):
         return _PARSE_CACHE[key]
     try:
         import warnings as _w
+
         with _w.catch_warnings():
             # Suppress SyntaxWarning from third-party files with invalid escape sequences.
             _w.simplefilter("ignore", SyntaxWarning)
-            tree = ast.parse(path.read_text(encoding = "utf-8"))
+            tree = ast.parse(path.read_text(encoding="utf-8"))
     except (SyntaxError, UnicodeDecodeError):
         tree = None
     _PARSE_CACHE[key] = tree
@@ -277,6 +278,7 @@ def test_no_callback_signature_drift():
     producers = discover_producers(roots)
     if not producers:
         import pytest
+
         pytest.skip(
             "no callback producer pattern (self._*_callbacks + cb(...)) found in "
             "unsloth or unsloth_zoo. Set UNSLOTH_ZOO_SRC=<path-to-unsloth-zoo-git-checkout> "

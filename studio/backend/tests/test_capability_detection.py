@@ -28,7 +28,7 @@ from utils.models.model_config import (
 )
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _clear_vision_cache():
     _vision_detection_cache.clear()
     yield
@@ -38,7 +38,7 @@ def _clear_vision_cache():
 def _write_model_dir(
     tmp_path,
     cfg,
-    with_evil_module = False,
+    with_evil_module=False,
 ):
     """Write a local model dir, optionally with an auto_map module that writes a sentinel
     on import so accidental code execution during detection shows up on disk."""
@@ -58,7 +58,7 @@ def _write_model_dir(
 class TestLoadModelConfigDefault:
     @patch("transformers.AutoConfig.from_pretrained")
     def test_default_off_with_token(self, fp):
-        load_model_config("org/m", token = "hf_x")
+        load_model_config("org/m", token="hf_x")
         assert fp.call_args.kwargs["trust_remote_code"] is False
 
     @patch("utils.models.model_config.without_hf_auth")
@@ -67,17 +67,17 @@ class TestLoadModelConfigDefault:
         from contextlib import nullcontext
 
         no_auth.return_value = nullcontext()
-        load_model_config("org/m", use_auth = False)
+        load_model_config("org/m", use_auth=False)
         assert fp.call_args.kwargs["trust_remote_code"] is False
 
     @patch("transformers.AutoConfig.from_pretrained")
     def test_default_off_cached_auth(self, fp):
-        load_model_config("org/m", use_auth = True)
+        load_model_config("org/m", use_auth=True)
         assert fp.call_args.kwargs["trust_remote_code"] is False
 
     @patch("transformers.AutoConfig.from_pretrained")
     def test_explicit_true_forwarded(self, fp):
-        load_model_config("org/m", token = "t", trust_remote_code = True)
+        load_model_config("org/m", token="t", trust_remote_code=True)
         assert fp.call_args.kwargs["trust_remote_code"] is True
 
 
@@ -96,67 +96,67 @@ class TestIsVlm:
     def test_deepseek_ocr_vision_via_vision_config(self):
         # auto_map repo-code model; vision-ness is declarative.
         c = _cfg(
-            model_type = "deepseek_vl_v2",
-            architectures = ["DeepseekOCRForCausalLM"],
-            vision_config = {},
-            projector_config = {},
+            model_type="deepseek_vl_v2",
+            architectures=["DeepseekOCRForCausalLM"],
+            vision_config={},
+            projector_config={},
         )
         assert _is_vlm(c) is True
 
     def test_kimi_vision_via_vision_config(self):
         c = _cfg(
-            model_type = "kimi_k25",
-            architectures = ["KimiK25ForConditionalGeneration"],
-            vision_config = {},
+            model_type="kimi_k25",
+            architectures=["KimiK25ForConditionalGeneration"],
+            vision_config={},
         )
         assert _is_vlm(c) is True
 
     def test_glm_flash_text_is_not_vision(self):
-        c = _cfg(model_type = "glm4_moe_lite", architectures = ["Glm4MoeLiteForCausalLM"])
+        c = _cfg(model_type="glm4_moe_lite", architectures=["Glm4MoeLiteForCausalLM"])
         assert _is_vlm(c) is False
 
     def test_gemma4_vision_via_vision_config(self):
         c = _cfg(
-            model_type = "gemma4_unified",
-            architectures = ["Gemma4UnifiedForConditionalGeneration"],
-            vision_config = {},
-            image_token_id = 1,
+            model_type="gemma4_unified",
+            architectures=["Gemma4UnifiedForConditionalGeneration"],
+            vision_config={},
+            image_token_id=1,
         )
         assert _is_vlm(c) is True
 
     def test_t5_not_misclassified_as_vision(self):
         # Regression: ForConditionalGeneration must NOT be a vision signal.
-        c = _cfg(model_type = "t5", architectures = ["T5ForConditionalGeneration"])
+        c = _cfg(model_type="t5", architectures=["T5ForConditionalGeneration"])
         assert _is_vlm(c) is False
 
     def test_bart_not_misclassified_as_vision(self):
-        c = _cfg(model_type = "bart", architectures = ["BartForConditionalGeneration"])
+        c = _cfg(model_type="bart", architectures=["BartForConditionalGeneration"])
         assert _is_vlm(c) is False
 
     def test_whisper_audio_not_vision(self):
-        c = _cfg(model_type = "whisper", architectures = ["WhisperForConditionalGeneration"])
+        c = _cfg(model_type="whisper", architectures=["WhisperForConditionalGeneration"])
         assert _is_vlm(c) is False
 
     def test_csm_audio_not_vision(self):
-        c = _cfg(model_type = "csm", architectures = ["CsmForConditionalGeneration"])
+        c = _cfg(model_type="csm", architectures=["CsmForConditionalGeneration"])
         assert _is_vlm(c) is False
 
     def test_native_vlm_via_registry_model_type(self):
         # llava is in the transformers vision registry.
         assert "llava" in _VLM_MODEL_TYPES
-        c = _cfg(model_type = "llava", architectures = ["LlavaForConditionalGeneration"])
+        c = _cfg(model_type="llava", architectures=["LlavaForConditionalGeneration"])
         assert _is_vlm(c) is True
 
     def test_native_vlm_via_registry_class_name(self):
         # Class-name match works even if model_type were unknown.
         cls = next(iter(_VLM_CLASS_NAMES))
-        c = _cfg(model_type = "something_unlisted", architectures = [cls])
+        c = _cfg(model_type="something_unlisted", architectures=[cls])
         assert _is_vlm(c) is True
 
     def test_omni_audio_plus_vision_is_vision(self):
         # An audio-registry model_type with an explicit vision sub-config is still vision.
         audio_mt = next(iter(_AUDIO_ONLY_MODEL_TYPES - _VLM_MODEL_TYPES))
-        c = _cfg(model_type = audio_mt, architectures = ["X"], vision_config = {})
+        c = _cfg(model_type=audio_mt, architectures=["X"], vision_config={})
         assert _is_vlm(c) is True
 
 
@@ -210,8 +210,8 @@ class TestRawConfigVisionReader:
     def test_reader(self, tmp_path, payload, expected):
         cfg_path = _mock_raw_config(tmp_path, payload)
         with (
-            patch("utils.models.model_config.is_local_path", return_value = False),
-            patch("huggingface_hub.hf_hub_download", return_value = str(cfg_path)),
+            patch("utils.models.model_config.is_local_path", return_value=False),
+            patch("huggingface_hub.hf_hub_download", return_value=str(cfg_path)),
         ):
             assert _raw_config_has_vision_config("org/model") is expected
 
@@ -227,11 +227,11 @@ class TestRawConfigVisionReader:
             },
         )
         with (
-            patch("utils.models.model_config.is_local_path", return_value = False),
-            patch("huggingface_hub.hf_hub_download", return_value = str(cfg_path)),
+            patch("utils.models.model_config.is_local_path", return_value=False),
+            patch("huggingface_hub.hf_hub_download", return_value=str(cfg_path)),
             patch(
                 "transformers.AutoConfig.from_pretrained",
-                side_effect = AssertionError("AutoConfig must not be called"),
+                side_effect=AssertionError("AutoConfig must not be called"),
             ),
         ):
             assert _raw_config_has_vision_config("org/deepseek-ocr") is True
@@ -248,10 +248,10 @@ def test_gpu_estimate_probe_is_code_free():
         "max_position_embeddings": 8192,
     }
     with (
-        patch("utils.transformers_version._load_config_json", return_value = cfg),
+        patch("utils.transformers_version._load_config_json", return_value=cfg),
         patch(
             "transformers.AutoConfig.from_pretrained",
-            side_effect = AssertionError("AutoConfig must not be called"),
+            side_effect=AssertionError("AutoConfig must not be called"),
         ),
     ):
         out = hardware._load_config_for_gpu_estimate("unsloth/GLM-4.7-Flash")
@@ -283,7 +283,7 @@ def test_no_code_execution_on_detection(tmp_path):
         "vision_config": {"image_size": 1024},
         "max_position_embeddings": 4096,
     }
-    path = _write_model_dir(tmp_path, cfg, with_evil_module = True)
+    path = _write_model_dir(tmp_path, cfg, with_evil_module=True)
     sentinel = tmp_path / "PWNED_SENTINEL"
 
     from utils.hardware.hardware import _load_config_for_gpu_estimate

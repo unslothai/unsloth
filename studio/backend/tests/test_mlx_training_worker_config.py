@@ -76,12 +76,12 @@ def test_mlx_studio_optimizer_aliases_are_explicit():
 
 
 def test_mlx_studio_rejects_unknown_optimizer():
-    with pytest.raises(ValueError, match = "Unsupported optimizer for MLX training"):
+    with pytest.raises(ValueError, match="Unsupported optimizer for MLX training"):
         _normalize_mlx_studio_optimizer("adamw_typo")
 
 
 def test_mlx_studio_rejects_unknown_scheduler():
-    with pytest.raises(ValueError, match = "Unsupported LR scheduler for MLX training"):
+    with pytest.raises(ValueError, match="Unsupported LR scheduler for MLX training"):
         _normalize_mlx_studio_scheduler("linear_typo")
 
 
@@ -105,7 +105,7 @@ def test_mlx_vlm_resize_uses_max_dimension_like_torch_trainer():
 
 def test_mlx_vlm_resize_keeps_default_numpy_layout_hwc():
     Image = pytest.importorskip("PIL.Image")
-    image = Image.new("RGB", (320, 200), color = (10, 20, 30))
+    image = Image.new("RGB", (320, 200), color=(10, 20, 30))
 
     resized = _resize_mlx_vlm_image(image, 128)
 
@@ -115,9 +115,9 @@ def test_mlx_vlm_resize_keeps_default_numpy_layout_hwc():
 
 def test_mlx_vlm_resize_uses_requested_chw_numpy_layout():
     Image = pytest.importorskip("PIL.Image")
-    image = Image.new("RGB", (320, 200), color = (10, 20, 30))
+    image = Image.new("RGB", (320, 200), color=(10, 20, 30))
 
-    resized = _resize_mlx_vlm_image(image, 128, image_layout = "chw")
+    resized = _resize_mlx_vlm_image(image, 128, image_layout="chw")
 
     assert resized.shape == (3, 80, 128)
     assert resized.flags.c_contiguous
@@ -125,14 +125,14 @@ def test_mlx_vlm_resize_uses_requested_chw_numpy_layout():
 
 def test_mlx_vlm_resized_image_layout_probes_processor_contract():
     class ChwOnlyImageProcessor:
-        def __call__(self, images = None):
+        def __call__(self, images=None):
             image = images[0]
             if image.shape[0] == 3:
                 return {"pixel_values": image}
             raise ValueError("expected CHW")
 
     class HwcImageProcessor:
-        def __call__(self, images = None):
+        def __call__(self, images=None):
             image = images[0]
             if image.shape[-1] == 3:
                 return {"pixel_values": image}
@@ -140,12 +140,12 @@ def test_mlx_vlm_resized_image_layout_probes_processor_contract():
 
     assert (
         _mlx_vlm_resized_image_layout(
-            types.SimpleNamespace(image_processor = ChwOnlyImageProcessor())
+            types.SimpleNamespace(image_processor=ChwOnlyImageProcessor())
         )
         == "chw"
     )
     assert (
-        _mlx_vlm_resized_image_layout(types.SimpleNamespace(image_processor = HwcImageProcessor()))
+        _mlx_vlm_resized_image_layout(types.SimpleNamespace(image_processor=HwcImageProcessor()))
         is None
     )
 
@@ -155,7 +155,7 @@ def test_mlx_vlm_layout_probe_copies_image_processor():
         def __init__(self):
             self.calls = 0
 
-        def __call__(self, images = None):
+        def __call__(self, images=None):
             self.calls += 1
             image = images[0]
             if image.shape[0] == 3:
@@ -164,7 +164,7 @@ def test_mlx_vlm_layout_probe_copies_image_processor():
 
     image_processor = StatefulImageProcessor()
 
-    layout = _mlx_vlm_resized_image_layout(types.SimpleNamespace(image_processor = image_processor))
+    layout = _mlx_vlm_resized_image_layout(types.SimpleNamespace(image_processor=image_processor))
 
     assert layout == "chw"
     assert image_processor.calls == 0
@@ -191,12 +191,12 @@ def test_mlx_vlm_layout_probe_skips_uncopyable_processors():
         def __deepcopy__(self, _memo):
             raise RuntimeError("no deepcopy")
 
-        def __call__(self, images = None):
+        def __call__(self, images=None):
             raise AssertionError("live processor should not be probed")
 
     assert (
         _mlx_vlm_resized_image_layout(
-            types.SimpleNamespace(image_processor = UncopyableImageProcessor())
+            types.SimpleNamespace(image_processor=UncopyableImageProcessor())
         )
         is None
     )
@@ -204,7 +204,7 @@ def test_mlx_vlm_layout_probe_skips_uncopyable_processors():
 
 def test_mlx_vlm_adapter_applies_chw_layout_to_message_images():
     Image = pytest.importorskip("PIL.Image")
-    image = Image.new("RGB", (320, 200), color = (10, 20, 30))
+    image = Image.new("RGB", (320, 200), color=(10, 20, 30))
     item = {
         "messages": [
             {
@@ -217,7 +217,7 @@ def test_mlx_vlm_adapter_applies_chw_layout_to_message_images():
         ]
     }
 
-    adapted = _adapt_for_mlx_vlm([item], resize = 128, image_layout = "chw")
+    adapted = _adapt_for_mlx_vlm([item], resize=128, image_layout="chw")
 
     assert adapted[0]["image"].shape == (3, 80, 128)
     assert adapted[0]["messages"][0]["content"][0] == {"type": "image"}
@@ -235,7 +235,7 @@ def test_activate_transformers_version_or_warn_logs_on_failure(monkeypatch):
     """
     warnings_logged = []
     fake_logger = types.SimpleNamespace(
-        warning = lambda *a, **k: warnings_logged.append((a, k)),
+        warning=lambda *a, **k: warnings_logged.append((a, k)),
     )
     monkeypatch.setattr(_worker, "logger", fake_logger)
 
@@ -254,7 +254,7 @@ def test_activate_transformers_version_or_warn_logs_on_failure(monkeypatch):
 def test_activate_transformers_version_or_warn_silent_on_success(monkeypatch):
     warnings_logged = []
     fake_logger = types.SimpleNamespace(
-        warning = lambda *a, **k: warnings_logged.append((a, k)),
+        warning=lambda *a, **k: warnings_logged.append((a, k)),
     )
     monkeypatch.setattr(_worker, "logger", fake_logger)
     monkeypatch.setattr(_worker, "_activate_transformers_version", lambda _name: None)

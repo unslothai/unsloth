@@ -31,7 +31,7 @@ from core.inference.tools import (
 from core.inference.safetensors_agentic import run_safetensors_tool_loop
 
 _POSIX_ONLY = pytest.mark.skipif(
-    sys.platform == "win32", reason = "preexec_fn / setsid are POSIX-only"
+    sys.platform == "win32", reason="preexec_fn / setsid are POSIX-only"
 )
 
 
@@ -96,7 +96,7 @@ def test_safe_env_excludes_host_and_secret(monkeypatch, tmp_path):
 class _FakeProc:
     returncode = 0
 
-    def communicate(self, timeout = None):
+    def communicate(self, timeout=None):
         return ("FAKEOUT", None)
 
     def poll(self):
@@ -122,7 +122,7 @@ def captured_popen(monkeypatch):
 @_POSIX_ONLY
 def test_python_sandboxed_uses_sandbox_preexec_and_safe_env(captured_popen, monkeypatch):
     monkeypatch.setenv("HF_TOKEN", "secret-abc")
-    _python_exec("print(1)", None, 5, "t", disable_sandbox = False)
+    _python_exec("print(1)", None, 5, "t", disable_sandbox=False)
     assert captured_popen["kwargs"]["preexec_fn"] is tools._sandbox_preexec
     assert "HF_TOKEN" not in captured_popen["kwargs"]["env"]
 
@@ -131,7 +131,7 @@ def test_python_sandboxed_uses_sandbox_preexec_and_safe_env(captured_popen, monk
 def test_python_bypass_uses_bypass_preexec_and_bypass_env(captured_popen, monkeypatch):
     monkeypatch.setenv("HOSTVAR", "benign-xyz")
     monkeypatch.setenv("HF_TOKEN", "secret-abc")
-    _python_exec("print(1)", None, 5, "t", disable_sandbox = True)
+    _python_exec("print(1)", None, 5, "t", disable_sandbox=True)
     assert captured_popen["kwargs"]["preexec_fn"] is tools._bypass_preexec
     env = captured_popen["kwargs"]["env"]
     assert env.get("HOSTVAR") == "benign-xyz"
@@ -139,20 +139,20 @@ def test_python_bypass_uses_bypass_preexec_and_bypass_env(captured_popen, monkey
 
 
 def test_bash_blocklist_enforced_when_sandboxed(captured_popen):
-    out = _bash_exec("rm -rf /", None, 5, "t", disable_sandbox = False)
+    out = _bash_exec("rm -rf /", None, 5, "t", disable_sandbox=False)
     assert "Blocked" in out
     assert "cmd" not in captured_popen  # never reached Popen
 
 
 def test_bash_blocklist_skipped_when_bypassed(captured_popen):
-    out = _bash_exec("rm -rf /", None, 5, "t", disable_sandbox = True)
+    out = _bash_exec("rm -rf /", None, 5, "t", disable_sandbox=True)
     assert out == "FAKEOUT"  # blocklist skipped -> reached (faked) execution
     assert captured_popen["cmd"][0] in ("bash", "cmd")
 
 
 @_POSIX_ONLY
 def test_bash_bypass_uses_bypass_preexec(captured_popen):
-    _bash_exec("echo hi", None, 5, "t", disable_sandbox = True)
+    _bash_exec("echo hi", None, 5, "t", disable_sandbox=True)
     assert captured_popen["kwargs"]["preexec_fn"] is tools._bypass_preexec
 
 
@@ -168,7 +168,7 @@ def test_python_bypass_real_exec_sees_host_env_but_not_secret(monkeypatch):
         "print('H=' + str(os.environ.get('HOSTVAR')),"
         " 'T=' + str(os.environ.get('HF_TOKEN')))"
     )
-    out = _python_exec(code, None, 30, "test-bypass", disable_sandbox = True)
+    out = _python_exec(code, None, 30, "test-bypass", disable_sandbox=True)
     assert "H=benign-xyz" in out  # unrestricted: real host var visible
     assert "T=None" in out  # ...but the secret was stripped
     assert "secret-pqr" not in out
@@ -199,6 +199,7 @@ def test_bypass_preexec_only_sets_session(monkeypatch):
 
 def test_request_model_bypass_default_false():
     from models.inference import ChatCompletionRequest
+
     assert ChatCompletionRequest.model_fields["bypass_permissions"].default is False
 
 
@@ -250,24 +251,24 @@ def test_loop_forwards_disable_sandbox_and_does_not_gate():
         name,
         arguments,
         *,
-        cancel_event = None,
-        timeout = None,
-        session_id = None,
-        rag_scope = None,
-        disable_sandbox = False,
+        cancel_event=None,
+        timeout=None,
+        session_id=None,
+        rag_scope=None,
+        disable_sandbox=False,
     ):
         seen.append(disable_sandbox)
         return f"RAN[{name}]"
 
     events = list(
         run_safetensors_tool_loop(
-            single_turn = _multi_turn([_tool_call("python", '{"code": "x"}'), "done"]),
-            messages = [{"role": "user", "content": "hi"}],
-            tools = _DEFAULT_TOOLS,
-            execute_tool = fake_exec,
-            session_id = "s",
-            confirm_tool_calls = False,  # route forces this off under bypass
-            bypass_permissions = True,
+            single_turn=_multi_turn([_tool_call("python", '{"code": "x"}'), "done"]),
+            messages=[{"role": "user", "content": "hi"}],
+            tools=_DEFAULT_TOOLS,
+            execute_tool=fake_exec,
+            session_id="s",
+            confirm_tool_calls=False,  # route forces this off under bypass
+            bypass_permissions=True,
         )
     )
     assert seen == [True]  # disable_sandbox threaded through
@@ -283,23 +284,23 @@ def test_loop_bypass_overrides_confirm_for_direct_callers():
         name,
         arguments,
         *,
-        cancel_event = None,
-        timeout = None,
-        session_id = None,
-        rag_scope = None,
-        disable_sandbox = False,
+        cancel_event=None,
+        timeout=None,
+        session_id=None,
+        rag_scope=None,
+        disable_sandbox=False,
     ):
         return f"RAN[{name}]"
 
     events = list(
         run_safetensors_tool_loop(
-            single_turn = _multi_turn([_tool_call("python", '{"code": "x"}'), "done"]),
-            messages = [{"role": "user", "content": "hi"}],
-            tools = _DEFAULT_TOOLS,
-            execute_tool = fake_exec,
-            session_id = "s",
-            confirm_tool_calls = True,  # raw caller leaves this on...
-            bypass_permissions = True,  # ...but bypass must still win
+            single_turn=_multi_turn([_tool_call("python", '{"code": "x"}'), "done"]),
+            messages=[{"role": "user", "content": "hi"}],
+            tools=_DEFAULT_TOOLS,
+            execute_tool=fake_exec,
+            session_id="s",
+            confirm_tool_calls=True,  # raw caller leaves this on...
+            bypass_permissions=True,  # ...but bypass must still win
         )
     )
     starts = [e for e in events if e["type"] == "tool_start"]
@@ -564,9 +565,9 @@ def test_bypass_env_hf_token_resolves_outside_real_cache(monkeypatch, tmp_path):
             "-c",
             "import huggingface_hub.constants as c; print(c.HF_TOKEN_PATH)",
         ],
-        env = env,
-        capture_output = True,
-        text = True,
+        env=env,
+        capture_output=True,
+        text=True,
     ).stdout.strip()
     assert str(real_cache) not in token_path  # never the operator's cache
     assert token_path.startswith(str(workdir))  # resolved under the sandbox
@@ -605,7 +606,7 @@ def test_bash_bypass_does_not_source_bash_env(monkeypatch, tmp_path):
     startup = tmp_path / "startup.sh"
     startup.write_text("export RECOVERED=leaked\n")
     monkeypatch.setenv("BASH_ENV", str(startup))
-    out = _bash_exec("echo R=$RECOVERED", None, 30, "bash-env-test", disable_sandbox = True)
+    out = _bash_exec("echo R=$RECOVERED", None, 30, "bash-env-test", disable_sandbox=True)
     assert "R=leaked" not in out  # BASH_ENV dropped -> startup not sourced
     assert "R=" in out
 
@@ -629,9 +630,9 @@ def test_bypass_env_repoints_windows_profile_vars(monkeypatch, tmp_path):
 def test_bypass_env_does_not_add_unset_windows_profile_vars(monkeypatch, tmp_path):
     # Only repoint Windows profile vars that were actually set (no pollution on
     # Linux/macOS where they are absent).
-    monkeypatch.delenv("USERPROFILE", raising = False)
-    monkeypatch.delenv("APPDATA", raising = False)
-    monkeypatch.delenv("LOCALAPPDATA", raising = False)
+    monkeypatch.delenv("USERPROFILE", raising=False)
+    monkeypatch.delenv("APPDATA", raising=False)
+    monkeypatch.delenv("LOCALAPPDATA", raising=False)
     env = _build_bypass_env(str(tmp_path))
     assert "USERPROFILE" not in env
     assert "APPDATA" not in env
@@ -653,13 +654,13 @@ def test_bypass_exec_hardens_parent_proc_env(monkeypatch, captured_popen):
         return True
 
     monkeypatch.setattr(tools, "_harden_parent_against_proc_env_leak", fake_harden)
-    _python_exec("print(1)", None, 5, "t", disable_sandbox = True)
-    _bash_exec("echo hi", None, 5, "t", disable_sandbox = True)
+    _python_exec("print(1)", None, 5, "t", disable_sandbox=True)
+    _bash_exec("echo hi", None, 5, "t", disable_sandbox=True)
     assert calls["n"] == 2
 
     calls["n"] = 0
-    _python_exec("print(1)", None, 5, "t", disable_sandbox = False)
-    _bash_exec("echo hi", None, 5, "t", disable_sandbox = False)
+    _python_exec("print(1)", None, 5, "t", disable_sandbox=False)
+    _bash_exec("echo hi", None, 5, "t", disable_sandbox=False)
     assert calls["n"] == 0  # never hardened on the sandboxed path
 
 
@@ -667,8 +668,8 @@ def test_bypass_exec_fails_closed_when_hardening_fails(monkeypatch, captured_pop
     # If the parent cannot be hardened (e.g. prctl denied), the unsandboxed
     # child must NOT run - otherwise the parent environ stays readable.
     monkeypatch.setattr(tools, "_harden_parent_against_proc_env_leak", lambda: False)
-    out_py = _python_exec("print(1)", None, 5, "t", disable_sandbox = True)
-    out_sh = _bash_exec("echo hi", None, 5, "t", disable_sandbox = True)
+    out_py = _python_exec("print(1)", None, 5, "t", disable_sandbox=True)
+    out_sh = _bash_exec("echo hi", None, 5, "t", disable_sandbox=True)
     assert "refusing bypass execution" in out_py
     assert "refusing bypass execution" in out_sh
     assert "cmd" not in captured_popen  # never reached Popen
@@ -698,7 +699,7 @@ def test_proc_env_unreadable_after_hardening():
         # cleared the dumpable flag on this process.
         tools._libc.prctl(4, 1, 0, 0, 0)  # PR_SET_DUMPABLE = 1
         before = subprocess.run(
-            [sys.executable, "-c", probe], capture_output = True, text = True
+            [sys.executable, "-c", probe], capture_output=True, text=True
         ).stdout.strip()
         if before != "READABLE":
             pytest.skip("/proc already restricted in this environment")
@@ -707,7 +708,7 @@ def test_proc_env_unreadable_after_hardening():
         assert tools._harden_parent_against_proc_env_leak() is True
 
         after = subprocess.run(
-            [sys.executable, "-c", probe], capture_output = True, text = True
+            [sys.executable, "-c", probe], capture_output=True, text=True
         ).stdout.strip()
         assert after == "DENIED"
     finally:
@@ -728,5 +729,5 @@ def test_anthropic_request_model_bypass_default_false():
     from models.inference import AnthropicMessagesRequest
 
     assert AnthropicMessagesRequest.model_fields["bypass_permissions"].default is False
-    req = AnthropicMessagesRequest(model = "x", messages = [], max_tokens = 8)
+    req = AnthropicMessagesRequest(model="x", messages=[], max_tokens=8)
     assert bool(req.bypass_permissions) is False

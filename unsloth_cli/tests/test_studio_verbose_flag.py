@@ -24,6 +24,7 @@ _BASE = ["--model", "unsloth/Qwen3-1.7B-GGUF"]
 
 def _studio():
     from unsloth_cli.commands import studio as _studio_mod
+
     return _studio_mod
 
 
@@ -88,9 +89,9 @@ def _invoke_run(monkeypatch, args):
     monkeypatch.setattr(studio_mod.os, "execvp", fake_execvp)
     app = _typer.Typer()
     app.command(
-        context_settings = {"allow_extra_args": True, "ignore_unknown_options": True},
+        context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
     )(studio_mod.run)
-    CliRunner().invoke(app, args, catch_exceptions = True)
+    CliRunner().invoke(app, args, catch_exceptions=True)
     return captured
 
 
@@ -98,8 +99,8 @@ def _invoke_run(monkeypatch, args):
 
 
 def test_run_verbose_sets_env_and_forwards_on_reexec(monkeypatch):
-    monkeypatch.delenv(_DEDUP, raising = False)
-    monkeypatch.delenv(_POLL, raising = False)
+    monkeypatch.delenv(_DEDUP, raising=False)
+    monkeypatch.delenv(_POLL, raising=False)
     captured = _invoke_run(monkeypatch, _BASE + ["--verbose"])
     assert len(captured) == 1, captured
     assert "--verbose" in captured[0], captured[0]
@@ -110,8 +111,8 @@ def test_run_verbose_sets_env_and_forwards_on_reexec(monkeypatch):
 
 
 def test_run_without_verbose_leaves_env_unset(monkeypatch):
-    monkeypatch.delenv(_DEDUP, raising = False)
-    monkeypatch.delenv(_POLL, raising = False)
+    monkeypatch.delenv(_DEDUP, raising=False)
+    monkeypatch.delenv(_POLL, raising=False)
     captured = _invoke_run(monkeypatch, _BASE)
     assert len(captured) == 1, captured
     assert "--verbose" not in captured[0], captured[0]
@@ -124,16 +125,16 @@ def test_run_without_verbose_leaves_env_unset(monkeypatch):
 
 def test_run_verbose_preserves_llama_server_verbosity(monkeypatch):
     # Studio consumes --verbose but still forwards llama-server's own verbosity.
-    monkeypatch.delenv(_DEDUP, raising = False)
-    monkeypatch.delenv(_POLL, raising = False)
+    monkeypatch.delenv(_DEDUP, raising=False)
+    monkeypatch.delenv(_POLL, raising=False)
     captured = _invoke_run(monkeypatch, _BASE + ["--verbose"])
     assert len(captured) == 1, captured
     assert "--log-verbose" in captured[0], captured[0]
 
 
 def test_run_verbose_does_not_duplicate_existing_llama_verbose(monkeypatch):
-    monkeypatch.delenv(_DEDUP, raising = False)
-    monkeypatch.delenv(_POLL, raising = False)
+    monkeypatch.delenv(_DEDUP, raising=False)
+    monkeypatch.delenv(_POLL, raising=False)
     captured = _invoke_run(monkeypatch, _BASE + ["--verbose", "--log-verbose"])
     assert len(captured) == 1, captured
     assert captured[0].count("--log-verbose") == 1, captured[0]
@@ -147,7 +148,7 @@ def test_studio_default_rejects_verbose_with_subcommand():
 
     studio_mod = _studio()
     app = _typer.Typer()
-    app.add_typer(studio_mod.studio_app, name = "studio")
+    app.add_typer(studio_mod.studio_app, name="studio")
     result = CliRunner().invoke(app, ["studio", "--verbose", "run", "--model", "X"])
     assert result.exit_code == 2, result.output
     combined = (result.output or "") + (getattr(result, "stderr", "") or "")

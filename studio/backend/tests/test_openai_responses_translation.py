@@ -38,14 +38,14 @@ async def _collect(agen):
 
 def _mock_http_client(monkeypatch, handler):
     transport = httpx.MockTransport(handler)
-    monkeypatch.setattr(ep_mod, "_http_client", httpx.AsyncClient(transport = transport))
+    monkeypatch.setattr(ep_mod, "_http_client", httpx.AsyncClient(transport=transport))
 
 
 def _make_client() -> ExternalProviderClient:
     return ExternalProviderClient(
-        provider_type = "openai",
-        base_url = "https://api.openai.com/v1",
-        api_key = "sk-test",
+        provider_type="openai",
+        base_url="https://api.openai.com/v1",
+        api_key="sk-test",
     )
 
 
@@ -69,8 +69,8 @@ def test_responses_request_body_uses_input_and_instructions(monkeypatch):
         captured["body"] = json.loads(request.content.decode("utf-8"))
         return httpx.Response(
             200,
-            content = _responses_sse([{"type": "response.completed", "response": {}}]),
-            headers = {"content-type": "text/event-stream"},
+            content=_responses_sse([{"type": "response.completed", "response": {}}]),
+            headers={"content-type": "text/event-stream"},
         )
 
     _mock_http_client(monkeypatch, handler)
@@ -78,16 +78,16 @@ def test_responses_request_body_uses_input_and_instructions(monkeypatch):
     async def run():
         client = _make_client()
         async for _ in client._stream_openai_responses(
-            messages = [
+            messages=[
                 {"role": "system", "content": "You are concise."},
                 {"role": "user", "content": "Hi"},
             ],
-            model = "gpt-5.5",
-            temperature = 0.5,
-            top_p = 0.9,
-            max_tokens = 512,
-            enable_thinking = None,
-            reasoning_effort = None,
+            model="gpt-5.5",
+            temperature=0.5,
+            top_p=0.9,
+            max_tokens=512,
+            enable_thinking=None,
+            reasoning_effort=None,
         ):
             pass
         await client.close()
@@ -119,8 +119,8 @@ def test_responses_translates_image_parts(monkeypatch):
         captured["body"] = json.loads(request.content.decode("utf-8"))
         return httpx.Response(
             200,
-            content = _responses_sse([{"type": "response.completed", "response": {}}]),
-            headers = {"content-type": "text/event-stream"},
+            content=_responses_sse([{"type": "response.completed", "response": {}}]),
+            headers={"content-type": "text/event-stream"},
         )
 
     _mock_http_client(monkeypatch, handler)
@@ -128,7 +128,7 @@ def test_responses_translates_image_parts(monkeypatch):
     async def run():
         client = _make_client()
         async for _ in client._stream_openai_responses(
-            messages = [
+            messages=[
                 {
                     "role": "user",
                     "content": [
@@ -140,12 +140,12 @@ def test_responses_translates_image_parts(monkeypatch):
                     ],
                 }
             ],
-            model = "gpt-5.5",
-            temperature = 0.7,
-            top_p = 0.95,
-            max_tokens = None,
-            enable_thinking = None,
-            reasoning_effort = None,
+            model="gpt-5.5",
+            temperature=0.7,
+            top_p=0.95,
+            max_tokens=None,
+            enable_thinking=None,
+            reasoning_effort=None,
         ):
             pass
         await client.close()
@@ -169,8 +169,8 @@ def test_responses_sse_translates_to_chat_completions_chunks(monkeypatch):
         ]
         return httpx.Response(
             200,
-            content = _responses_sse(events),
-            headers = {"content-type": "text/event-stream"},
+            content=_responses_sse(events),
+            headers={"content-type": "text/event-stream"},
         )
 
     _mock_http_client(monkeypatch, handler)
@@ -179,13 +179,13 @@ def test_responses_sse_translates_to_chat_completions_chunks(monkeypatch):
         client = _make_client()
         lines = await _collect(
             client._stream_openai_responses(
-                messages = [{"role": "user", "content": "hi"}],
-                model = "gpt-5.5",
-                temperature = 0.7,
-                top_p = 0.95,
-                max_tokens = None,
-                enable_thinking = None,
-                reasoning_effort = None,
+                messages=[{"role": "user", "content": "hi"}],
+                model="gpt-5.5",
+                temperature=0.7,
+                top_p=0.95,
+                max_tokens=None,
+                enable_thinking=None,
+                reasoning_effort=None,
             )
         )
         await client.close()
@@ -236,8 +236,8 @@ def test_responses_function_call_output_translates_to_delta_tool_calls(monkeypat
         ]
         return httpx.Response(
             200,
-            content = _responses_sse(events),
-            headers = {"content-type": "text/event-stream"},
+            content=_responses_sse(events),
+            headers={"content-type": "text/event-stream"},
         )
 
     _mock_http_client(monkeypatch, handler)
@@ -246,14 +246,14 @@ def test_responses_function_call_output_translates_to_delta_tool_calls(monkeypat
         client = _make_client()
         lines = await _collect(
             client._stream_openai_responses(
-                messages = [{"role": "user", "content": "weather?"}],
-                model = "gpt-5.5",
-                temperature = 0.7,
-                top_p = 0.95,
-                max_tokens = None,
-                enable_thinking = None,
-                reasoning_effort = None,
-                tools = [
+                messages=[{"role": "user", "content": "weather?"}],
+                model="gpt-5.5",
+                temperature=0.7,
+                top_p=0.95,
+                max_tokens=None,
+                enable_thinking=None,
+                reasoning_effort=None,
+                tools=[
                     {
                         "type": "function",
                         "function": {
@@ -331,8 +331,8 @@ def test_responses_parallel_function_calls_get_distinct_indices(monkeypatch):
         ]
         return httpx.Response(
             200,
-            content = _responses_sse(events),
-            headers = {"content-type": "text/event-stream"},
+            content=_responses_sse(events),
+            headers={"content-type": "text/event-stream"},
         )
 
     _mock_http_client(monkeypatch, handler)
@@ -341,14 +341,14 @@ def test_responses_parallel_function_calls_get_distinct_indices(monkeypatch):
         client = _make_client()
         lines = await _collect(
             client._stream_openai_responses(
-                messages = [{"role": "user", "content": "x"}],
-                model = "gpt-5.5",
-                temperature = 0.7,
-                top_p = 0.95,
-                max_tokens = None,
-                enable_thinking = None,
-                reasoning_effort = None,
-                tools = [
+                messages=[{"role": "user", "content": "x"}],
+                model="gpt-5.5",
+                temperature=0.7,
+                top_p=0.95,
+                max_tokens=None,
+                enable_thinking=None,
+                reasoning_effort=None,
+                tools=[
                     {
                         "type": "function",
                         "function": {
@@ -398,13 +398,13 @@ def test_responses_follow_up_tool_result_uses_function_call_output_items(monkeyp
         captured["body"] = json.loads(request.content.decode("utf-8"))
         return httpx.Response(
             200,
-            content = _responses_sse(
+            content=_responses_sse(
                 [
                     {"type": "response.created"},
                     {"type": "response.completed", "response": {}},
                 ]
             ),
-            headers = {"content-type": "text/event-stream"},
+            headers={"content-type": "text/event-stream"},
         )
 
     _mock_http_client(monkeypatch, handler)
@@ -413,7 +413,7 @@ def test_responses_follow_up_tool_result_uses_function_call_output_items(monkeyp
         client = _make_client()
         await _collect(
             client._stream_openai_responses(
-                messages = [
+                messages=[
                     {"role": "user", "content": "weather?"},
                     {
                         "role": "assistant",
@@ -436,12 +436,12 @@ def test_responses_follow_up_tool_result_uses_function_call_output_items(monkeyp
                     },
                     {"role": "user", "content": "thanks"},
                 ],
-                model = "gpt-5.5",
-                temperature = 0.7,
-                top_p = 0.95,
-                max_tokens = None,
-                enable_thinking = None,
-                reasoning_effort = None,
+                model="gpt-5.5",
+                temperature=0.7,
+                top_p=0.95,
+                max_tokens=None,
+                enable_thinking=None,
+                reasoning_effort=None,
             )
         )
         await client.close()
@@ -468,8 +468,8 @@ def test_responses_response_incomplete_maps_to_length_finish_reason(monkeypatch)
         ]
         return httpx.Response(
             200,
-            content = _responses_sse(events),
-            headers = {"content-type": "text/event-stream"},
+            content=_responses_sse(events),
+            headers={"content-type": "text/event-stream"},
         )
 
     _mock_http_client(monkeypatch, handler)
@@ -478,13 +478,13 @@ def test_responses_response_incomplete_maps_to_length_finish_reason(monkeypatch)
         client = _make_client()
         lines = await _collect(
             client._stream_openai_responses(
-                messages = [{"role": "user", "content": "hi"}],
-                model = "gpt-5.5",
-                temperature = 0.7,
-                top_p = 0.95,
-                max_tokens = 4,
-                enable_thinking = None,
-                reasoning_effort = None,
+                messages=[{"role": "user", "content": "hi"}],
+                model="gpt-5.5",
+                temperature=0.7,
+                top_p=0.95,
+                max_tokens=4,
+                enable_thinking=None,
+                reasoning_effort=None,
             )
         )
         await client.close()
@@ -506,8 +506,8 @@ def test_responses_reasoning_effort_included_when_requested(monkeypatch):
         captured["body"] = json.loads(request.content.decode("utf-8"))
         return httpx.Response(
             200,
-            content = _responses_sse([{"type": "response.completed", "response": {}}]),
-            headers = {"content-type": "text/event-stream"},
+            content=_responses_sse([{"type": "response.completed", "response": {}}]),
+            headers={"content-type": "text/event-stream"},
         )
 
     _mock_http_client(monkeypatch, handler)
@@ -515,13 +515,13 @@ def test_responses_reasoning_effort_included_when_requested(monkeypatch):
     async def run():
         client = _make_client()
         async for _ in client._stream_openai_responses(
-            messages = [{"role": "user", "content": "hi"}],
-            model = "gpt-5.5",
-            temperature = 0.7,
-            top_p = 0.95,
-            max_tokens = None,
-            enable_thinking = None,
-            reasoning_effort = "high",
+            messages=[{"role": "user", "content": "hi"}],
+            model="gpt-5.5",
+            temperature=0.7,
+            top_p=0.95,
+            max_tokens=None,
+            enable_thinking=None,
+            reasoning_effort="high",
         ):
             pass
         await client.close()
@@ -537,8 +537,8 @@ def test_responses_reasoning_summary_omitted_for_o3(monkeypatch):
         captured["body"] = json.loads(request.content.decode("utf-8"))
         return httpx.Response(
             200,
-            content = _responses_sse([{"type": "response.completed", "response": {}}]),
-            headers = {"content-type": "text/event-stream"},
+            content=_responses_sse([{"type": "response.completed", "response": {}}]),
+            headers={"content-type": "text/event-stream"},
         )
 
     _mock_http_client(monkeypatch, handler)
@@ -546,13 +546,13 @@ def test_responses_reasoning_summary_omitted_for_o3(monkeypatch):
     async def run():
         client = _make_client()
         async for _ in client._stream_openai_responses(
-            messages = [{"role": "user", "content": "hi"}],
-            model = "o3",
-            temperature = 0.7,
-            top_p = 0.95,
-            max_tokens = None,
-            enable_thinking = None,
-            reasoning_effort = "high",
+            messages=[{"role": "user", "content": "hi"}],
+            model="o3",
+            temperature=0.7,
+            top_p=0.95,
+            max_tokens=None,
+            enable_thinking=None,
+            reasoning_effort="high",
         ):
             pass
         await client.close()
@@ -568,8 +568,8 @@ def test_responses_reasoning_summary_omitted_for_o3_with_enable_thinking(monkeyp
         captured["body"] = json.loads(request.content.decode("utf-8"))
         return httpx.Response(
             200,
-            content = _responses_sse([{"type": "response.completed", "response": {}}]),
-            headers = {"content-type": "text/event-stream"},
+            content=_responses_sse([{"type": "response.completed", "response": {}}]),
+            headers={"content-type": "text/event-stream"},
         )
 
     _mock_http_client(monkeypatch, handler)
@@ -577,13 +577,13 @@ def test_responses_reasoning_summary_omitted_for_o3_with_enable_thinking(monkeyp
     async def run():
         client = _make_client()
         async for _ in client._stream_openai_responses(
-            messages = [{"role": "user", "content": "hi"}],
-            model = "o3",
-            temperature = 0.7,
-            top_p = 0.95,
-            max_tokens = None,
-            enable_thinking = True,
-            reasoning_effort = None,
+            messages=[{"role": "user", "content": "hi"}],
+            model="o3",
+            temperature=0.7,
+            top_p=0.95,
+            max_tokens=None,
+            enable_thinking=True,
+            reasoning_effort=None,
         ):
             pass
         await client.close()
@@ -599,8 +599,8 @@ def test_responses_reasoning_effort_none_omits_summary(monkeypatch):
         captured["body"] = json.loads(request.content.decode("utf-8"))
         return httpx.Response(
             200,
-            content = _responses_sse([{"type": "response.completed", "response": {}}]),
-            headers = {"content-type": "text/event-stream"},
+            content=_responses_sse([{"type": "response.completed", "response": {}}]),
+            headers={"content-type": "text/event-stream"},
         )
 
     _mock_http_client(monkeypatch, handler)
@@ -608,13 +608,13 @@ def test_responses_reasoning_effort_none_omits_summary(monkeypatch):
     async def run():
         client = _make_client()
         async for _ in client._stream_openai_responses(
-            messages = [{"role": "user", "content": "hi"}],
-            model = "gpt-5.5",
-            temperature = 0.7,
-            top_p = 0.95,
-            max_tokens = None,
-            enable_thinking = None,
-            reasoning_effort = "none",
+            messages=[{"role": "user", "content": "hi"}],
+            model="gpt-5.5",
+            temperature=0.7,
+            top_p=0.95,
+            max_tokens=None,
+            enable_thinking=None,
+            reasoning_effort="none",
         ):
             pass
         await client.close()
@@ -630,8 +630,8 @@ def test_responses_reasoning_effort_xhigh_passthrough(monkeypatch):
         captured["body"] = json.loads(request.content.decode("utf-8"))
         return httpx.Response(
             200,
-            content = _responses_sse([{"type": "response.completed", "response": {}}]),
-            headers = {"content-type": "text/event-stream"},
+            content=_responses_sse([{"type": "response.completed", "response": {}}]),
+            headers={"content-type": "text/event-stream"},
         )
 
     _mock_http_client(monkeypatch, handler)
@@ -639,13 +639,13 @@ def test_responses_reasoning_effort_xhigh_passthrough(monkeypatch):
     async def run():
         client = _make_client()
         async for _ in client._stream_openai_responses(
-            messages = [{"role": "user", "content": "hi"}],
-            model = "gpt-5.5",
-            temperature = 0.7,
-            top_p = 0.95,
-            max_tokens = None,
-            enable_thinking = None,
-            reasoning_effort = "xhigh",
+            messages=[{"role": "user", "content": "hi"}],
+            model="gpt-5.5",
+            temperature=0.7,
+            top_p=0.95,
+            max_tokens=None,
+            enable_thinking=None,
+            reasoning_effort="xhigh",
         ):
             pass
         await client.close()
@@ -661,8 +661,8 @@ def test_responses_enable_thinking_false_maps_to_reasoning_none(monkeypatch):
         captured["body"] = json.loads(request.content.decode("utf-8"))
         return httpx.Response(
             200,
-            content = _responses_sse([{"type": "response.completed", "response": {}}]),
-            headers = {"content-type": "text/event-stream"},
+            content=_responses_sse([{"type": "response.completed", "response": {}}]),
+            headers={"content-type": "text/event-stream"},
         )
 
     _mock_http_client(monkeypatch, handler)
@@ -670,13 +670,13 @@ def test_responses_enable_thinking_false_maps_to_reasoning_none(monkeypatch):
     async def run():
         client = _make_client()
         async for _ in client._stream_openai_responses(
-            messages = [{"role": "user", "content": "hi"}],
-            model = "gpt-5.5",
-            temperature = 0.7,
-            top_p = 0.95,
-            max_tokens = None,
-            enable_thinking = False,
-            reasoning_effort = None,
+            messages=[{"role": "user", "content": "hi"}],
+            model="gpt-5.5",
+            temperature=0.7,
+            top_p=0.95,
+            max_tokens=None,
+            enable_thinking=False,
+            reasoning_effort=None,
         ):
             pass
         await client.close()
@@ -700,8 +700,8 @@ def test_responses_reasoning_summary_wrapped_in_think_tags(monkeypatch):
         ]
         return httpx.Response(
             200,
-            content = _responses_sse(events),
-            headers = {"content-type": "text/event-stream"},
+            content=_responses_sse(events),
+            headers={"content-type": "text/event-stream"},
         )
 
     _mock_http_client(monkeypatch, handler)
@@ -710,13 +710,13 @@ def test_responses_reasoning_summary_wrapped_in_think_tags(monkeypatch):
         client = _make_client()
         lines = await _collect(
             client._stream_openai_responses(
-                messages = [{"role": "user", "content": "hi"}],
-                model = "gpt-5.5",
-                temperature = 0.7,
-                top_p = 0.95,
-                max_tokens = None,
-                enable_thinking = None,
-                reasoning_effort = None,
+                messages=[{"role": "user", "content": "hi"}],
+                model="gpt-5.5",
+                temperature=0.7,
+                top_p=0.95,
+                max_tokens=None,
+                enable_thinking=None,
+                reasoning_effort=None,
             )
         )
         await client.close()

@@ -18,27 +18,27 @@ class DownloadModelRequest(BaseModel):
 
     repo_id: str = Field(
         ...,
-        description = "HuggingFace repo ID, e.g. 'unsloth/Qwen3-4B-GGUF'",
+        description="HuggingFace repo ID, e.g. 'unsloth/Qwen3-4B-GGUF'",
     )
     gguf_variant: Optional[str] = Field(
         None,
-        description = "Quantization label (e.g. 'Q4_K_M'). Required for GGUF repos.",
+        description="Quantization label (e.g. 'Q4_K_M'). Required for GGUF repos.",
     )
     use_xet: bool = Field(
         True,
-        description = "Use Xet parallel chunked transport. Default True; set False for HTTP Range-resume.",
+        description="Use Xet parallel chunked transport. Default True; set False for HTTP Range-resume.",
     )
 
 
 class CancelDownloadRequest(BaseModel):
-    repo_id: str = Field(..., description = "HuggingFace repo ID")
+    repo_id: str = Field(..., description="HuggingFace repo ID")
     gguf_variant: Optional[str] = Field(
         None,
-        description = "GGUF variant label; omit for safetensors snapshots",
+        description="GGUF variant label; omit for safetensors snapshots",
     )
     generation: Optional[int] = Field(
         None,
-        description = "Download generation tag from a prior start; passing it scopes the cancel to that exact run.",
+        description="Download generation tag from a prior start; passing it scopes the cancel to that exact run.",
     )
 
 
@@ -47,12 +47,12 @@ class DownloadJobStatus(BaseModel):
 
     state: DownloadJobState = Field(
         ...,
-        description = "Current download job state.",
+        description="Current download job state.",
     )
-    error: Optional[str] = Field(None, description = "Error message if state == 'error'")
+    error: Optional[str] = Field(None, description="Error message if state == 'error'")
     generation: int = Field(
         0,
-        description = "Current run generation; an adopting client stores it so a later cancel is scoped to this exact run.",
+        description="Current run generation; an adopting client stores it so a later cancel is scoped to this exact run.",
     )
 
 
@@ -77,7 +77,7 @@ class ActiveDownload(BaseModel):
     state: str
     generation: int = Field(
         0,
-        description = "Current run generation; an adopting client stores it so a later cancel is scoped to this exact run.",
+        description="Current run generation; an adopting client stores it so a later cancel is scoped to this exact run.",
     )
 
 
@@ -108,7 +108,7 @@ class DownloadProgressResponse(BaseModel):
     completed_bytes: int = 0
     complete_on_disk: bool = Field(
         False,
-        description = (
+        description=(
             "True only when the backend verified a usable completed snapshot/variant on disk."
         ),
     )
@@ -123,16 +123,16 @@ class DownloadDatasetRequest(BaseModel):
     The HuggingFace token travels in the internal Hub token header.
     """
 
-    repo_id: str = Field(..., description = "HuggingFace dataset repo ID")
+    repo_id: str = Field(..., description="HuggingFace dataset repo ID")
     use_xet: bool = Field(
         True,
-        description = "Use Xet parallel chunked transport. Default True; set False for HTTP Range-resume.",
+        description="Use Xet parallel chunked transport. Default True; set False for HTTP Range-resume.",
     )
 
 
 class CancelDatasetDownloadRequest(BaseModel):
-    repo_id: str = Field(..., description = "HuggingFace dataset repo ID")
-    generation: Optional[int] = Field(None, description = "Download generation")
+    repo_id: str = Field(..., description="HuggingFace dataset repo ID")
+    generation: Optional[int] = Field(None, description="Download generation")
 
 
 class DatasetDownloadJobStatus(BaseModel):
@@ -140,12 +140,12 @@ class DatasetDownloadJobStatus(BaseModel):
 
     state: DownloadJobState = Field(
         ...,
-        description = "Current dataset download job state.",
+        description="Current dataset download job state.",
     )
-    error: Optional[str] = Field(None, description = "Error message if state == 'error'")
+    error: Optional[str] = Field(None, description="Error message if state == 'error'")
     generation: int = Field(
         0,
-        description = "Current run generation; an adopting client stores it so a later cancel is scoped to this exact run.",
+        description="Current run generation; an adopting client stores it so a later cancel is scoped to this exact run.",
     )
 
 

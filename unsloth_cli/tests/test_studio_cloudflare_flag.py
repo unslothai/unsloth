@@ -24,6 +24,7 @@ if str(_REPO_ROOT) not in sys.path:
 
 def _studio():
     from unsloth_cli.commands import studio as _studio_mod
+
     return _studio_mod
 
 
@@ -62,7 +63,7 @@ class _ExecCaptured(SystemExit):
         self.argv = list(argv)
 
 
-def _install_run_reexec_capture(monkeypatch, *, platform = "linux"):
+def _install_run_reexec_capture(monkeypatch, *, platform="linux"):
     studio_mod = _studio()
     captured = []
 
@@ -100,9 +101,9 @@ def _invoke_run(monkeypatch, args):
     captured = _install_run_reexec_capture(monkeypatch)
     app = _typer.Typer()
     app.command(
-        context_settings = {"allow_extra_args": True, "ignore_unknown_options": True},
+        context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
     )(studio_mod.run)
-    CliRunner().invoke(app, args, catch_exceptions = True)
+    CliRunner().invoke(app, args, catch_exceptions=True)
     return captured
 
 
@@ -130,7 +131,7 @@ def _invoke_studio_default(
     monkeypatch,
     args,
     *,
-    platform = "linux",
+    platform="linux",
 ):
     import typer as _typer
 
@@ -153,7 +154,7 @@ def _invoke_studio_default(
 
     app = _typer.Typer()
     app.command()(studio_mod.studio_default)
-    CliRunner().invoke(app, args, catch_exceptions = True)
+    CliRunner().invoke(app, args, catch_exceptions=True)
     return captured
 
 
@@ -225,10 +226,10 @@ def test_run_in_venv_passes_cloudflare_to_run_server(monkeypatch, user_flag, exp
 
     app = _typer.Typer()
     app.command(
-        context_settings = {"allow_extra_args": True, "ignore_unknown_options": True},
+        context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
     )(studio_mod.run)
     extras = [user_flag] if user_flag else []
-    CliRunner().invoke(app, _BASE + extras, catch_exceptions = True)
+    CliRunner().invoke(app, _BASE + extras, catch_exceptions=True)
 
     assert captured.get("cloudflare") is expected, captured
 
@@ -243,7 +244,7 @@ def test_studio_default_rejects_no_cloudflare_with_subcommand(monkeypatch):
 
     studio_mod = _studio()
     app = _typer.Typer()
-    app.add_typer(studio_mod.studio_app, name = "studio")
+    app.add_typer(studio_mod.studio_app, name="studio")
     result = CliRunner().invoke(app, ["studio", "--no-cloudflare", "run", "--model", "X"])
     assert result.exit_code == 2, result.output
     combined = (result.output or "") + (getattr(result, "stderr", "") or "")
@@ -297,9 +298,9 @@ def test_run_in_venv_shuts_down_on_startup_abort(monkeypatch):
 
     app = _typer.Typer()
     app.command(
-        context_settings = {"allow_extra_args": True, "ignore_unknown_options": True},
+        context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
     )(studio_mod.run)
-    result = CliRunner().invoke(app, _BASE + ["-H", "0.0.0.0"], catch_exceptions = True)
+    result = CliRunner().invoke(app, _BASE + ["-H", "0.0.0.0"], catch_exceptions=True)
 
     assert result.exit_code == 1, result.output
     assert len(shutdown_calls) == 1, "startup abort must call _graceful_shutdown"
@@ -353,9 +354,9 @@ def test_run_in_venv_sets_tool_policy_before_server_start(monkeypatch):
 
     app = _typer.Typer()
     app.command(
-        context_settings = {"allow_extra_args": True, "ignore_unknown_options": True},
+        context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
     )(studio_mod.run)
-    result = CliRunner().invoke(app, _BASE + ["--disable-tools"], catch_exceptions = True)
+    result = CliRunner().invoke(app, _BASE + ["--disable-tools"], catch_exceptions=True)
 
     assert result.exit_code == 1, result.output
     assert calls[:2] == [("policy", False), ("run_server", None)]

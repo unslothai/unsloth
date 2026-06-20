@@ -45,27 +45,27 @@ def _chat_app():
 
 def test_visible_text_passthrough_when_shown():
     text = "<think>reasoning</think>answer"
-    assert visible_text(text, show_thinking = True) == text
+    assert visible_text(text, show_thinking=True) == text
 
 
 def test_visible_text_strips_closed_think_block():
     text = "<think>step 1\nstep 2</think>The answer is 42."
-    assert visible_text(text, show_thinking = False) == "The answer is 42."
+    assert visible_text(text, show_thinking=False) == "The answer is 42."
 
 
 def test_visible_text_holds_unclosed_think():
     # An open <think> is held back so partial reasoning never leaks mid-stream.
-    assert visible_text("<think>still thinking", show_thinking = False) == ""
-    assert visible_text("done.<think>more thinking", show_thinking = False) == "done."
+    assert visible_text("<think>still thinking", show_thinking=False) == ""
+    assert visible_text("done.<think>more thinking", show_thinking=False) == "done."
 
 
 def test_visible_text_holds_partial_think_prefix():
     # Streams are cumulative, so the opening tag can arrive as "<", "<thi",
     # then "<think>". Hold possible tag prefixes until they are disambiguated.
-    assert visible_text("<", show_thinking = False) == ""
-    assert visible_text("<thi", show_thinking = False) == ""
-    assert visible_text("done.<thi", show_thinking = False) == "done."
-    assert visible_text("2 < 3", show_thinking = False) == "2 < 3"
+    assert visible_text("<", show_thinking=False) == ""
+    assert visible_text("<thi", show_thinking=False) == ""
+    assert visible_text("done.<thi", show_thinking=False) == "done."
+    assert visible_text("2 < 3", show_thinking=False) == "2 < 3"
 
 
 def _option(command_fn, name):
@@ -109,13 +109,13 @@ class _FakeBackend:
 
 
 _STREAM_KWARGS = dict(
-    system_prompt = "",
-    temperature = 0.7,
-    top_p = 0.9,
-    top_k = 40,
-    max_new_tokens = 8,
-    repetition_penalty = 1.1,
-    enable_thinking = False,
+    system_prompt="",
+    temperature=0.7,
+    top_p=0.9,
+    top_k=40,
+    max_new_tokens=8,
+    repetition_penalty=1.1,
+    enable_thinking=False,
 )
 
 
@@ -123,8 +123,8 @@ def test_chatbackend_routes_compare_to_adapter_control():
     fake = _FakeBackend()
     backend = ChatBackend("unsloth", fake)
 
-    list(backend.stream([{"role": "user", "content": "x"}], use_adapter = False, **_STREAM_KWARGS))
-    list(backend.stream([{"role": "user", "content": "x"}], use_adapter = True, **_STREAM_KWARGS))
+    list(backend.stream([{"role": "user", "content": "x"}], use_adapter=False, **_STREAM_KWARGS))
+    list(backend.stream([{"role": "user", "content": "x"}], use_adapter=True, **_STREAM_KWARGS))
 
     assert [(path, flag) for path, flag, _ in fake.calls] == [
         ("adapter", False),
@@ -143,7 +143,7 @@ def test_chatbackend_normal_path_skips_adapter_control():
 
 def test_collect_stream_returns_last_cumulative_think_stripped():
     stream = iter(["<think>r</think>hel", "<think>r</think>hello"])
-    assert collect_stream(stream, show_thinking = False) == "hello"
+    assert collect_stream(stream, show_thinking=False) == "hello"
 
 
 def test_render_columns_emits_both_answers_with_separator(capsys):
@@ -158,20 +158,20 @@ def test_you_prompt_matches_readline_backend(monkeypatch):
     gnu = types.ModuleType("readline")
     gnu.__doc__ = "Importing this module enables command line editing using GNU readline."
     monkeypatch.setitem(sys.modules, "readline", gnu)
-    prompt = chatmod._you_prompt(colors = True)
+    prompt = chatmod._you_prompt(colors=True)
     assert "You: " in prompt and "\001" in prompt
 
     libedit = types.ModuleType("readline")
     libedit.__doc__ = "Importing this module enables command line editing using libedit readline."
     monkeypatch.setitem(sys.modules, "readline", libedit)
-    assert chatmod._you_prompt(colors = True) == "\n\x1b[1;36mYou: \x1b[0m"
-    assert chatmod._you_prompt(colors = False) == "\nYou: "
+    assert chatmod._you_prompt(colors=True) == "\n\x1b[1;36mYou: \x1b[0m"
+    assert chatmod._you_prompt(colors=False) == "\nYou: "
 
     # Windows: no readline module at all; the console's own line editing
     # handles backspace, so plain ANSI color (no markers) is safe.
     monkeypatch.setitem(sys.modules, "readline", None)
-    assert chatmod._you_prompt(colors = True) == "\n\x1b[1;36mYou: \x1b[0m"
-    assert chatmod._you_prompt(colors = False) == "\nYou: "
+    assert chatmod._you_prompt(colors=True) == "\n\x1b[1;36mYou: \x1b[0m"
+    assert chatmod._you_prompt(colors=False) == "\nYou: "
 
 
 def test_chat_registered_on_app():
@@ -200,7 +200,7 @@ def test_chat_exits_cleanly_on_slash_exit(monkeypatch):
     runner = CliRunner()
     for args in (["fake-model"], ["fake-model", "--compare"]):
         closed.clear()
-        result = runner.invoke(_chat_app(), args, input = "hi\n/exit\n")
+        result = runner.invoke(_chat_app(), args, input="hi\n/exit\n")
         assert result.exit_code == 0, result.output
         assert closed == [True]
         assert "Bye." in result.output
@@ -217,10 +217,10 @@ def test_pick_trained_model_lists_and_selects(monkeypatch):
     ]
     monkeypatch.setitem(sys.modules, "utils.models", fake_models)
 
-    monkeypatch.setattr("builtins.input", lambda prompt = "": "2")
+    monkeypatch.setattr("builtins.input", lambda prompt="": "2")
     assert chatmod._pick_trained_model(Console()) == "outputs/run-old"
 
-    monkeypatch.setattr("builtins.input", lambda prompt = "": "")
+    monkeypatch.setattr("builtins.input", lambda prompt="": "")
     assert chatmod._pick_trained_model(Console()) == "outputs/run-new"
 
 
@@ -243,7 +243,7 @@ def test_chat_no_arg_chats_with_picked_trained_model(monkeypatch):
     monkeypatch.setattr(chatmod, "_compare_needs_second_model", lambda: False)
     monkeypatch.setattr(chatmod, "connect_studio_server", lambda *a, **k: None)
 
-    result = CliRunner().invoke(_chat_app(), [], input = "/exit\n")
+    result = CliRunner().invoke(_chat_app(), [], input="/exit\n")
     assert result.exit_code == 0, result.output
     assert resolved == ["outputs/run-42"]
 
@@ -323,7 +323,7 @@ def test_chat_prefers_running_studio_server(monkeypatch):
     monkeypatch.setattr(chatmod, "load_chat_backend", lambda *a, **k: local_loads.append(1))
     monkeypatch.setattr(chatmod, "_compare_needs_second_model", lambda: False)
 
-    result = CliRunner().invoke(_chat_app(), ["fake-model"], input = "hi\n/exit\n")
+    result = CliRunner().invoke(_chat_app(), ["fake-model"], input="hi\n/exit\n")
 
     assert result.exit_code == 0, result.output
     assert local_loads == []
@@ -358,7 +358,7 @@ def test_chat_server_mode_compare_loads_base_locally(monkeypatch):
     monkeypatch.setattr(chatmod, "connect_studio_server", lambda *a, **k: _FakeHttpBackend())
     monkeypatch.setattr(chatmod, "load_chat_backend", fake_local_load)
 
-    result = CliRunner().invoke(_chat_app(), ["tuned-run"], input = "/compare\nhi\n/exit\n")
+    result = CliRunner().invoke(_chat_app(), ["tuned-run"], input="/compare\nhi\n/exit\n")
 
     assert result.exit_code == 0, result.output
     assert "(compare on)" in result.output
@@ -392,7 +392,7 @@ def test_chat_compare_on_mlx_loads_base_model_side_by_side(monkeypatch):
     monkeypatch.setattr(chatmod, "_compare_needs_second_model", lambda: True)
     monkeypatch.setattr(chatmod, "connect_studio_server", lambda *a, **k: None)
 
-    result = CliRunner().invoke(_chat_app(), ["tuned-run", "--compare"], input = "hi\n/exit\n")
+    result = CliRunner().invoke(_chat_app(), ["tuned-run", "--compare"], input="hi\n/exit\n")
 
     assert result.exit_code == 0, result.output
     assert loads == [("tuned-run", False), ("fake/base", True)]

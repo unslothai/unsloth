@@ -30,12 +30,12 @@ class OCRModelEvaluator:
         verbose: bool = True,
     ) -> Tuple[Optional[float], Optional[float]]:
         """Evaluate a model on an OCR dataset."""
-        os.makedirs(output_dir, exist_ok = True)
+        os.makedirs(output_dir, exist_ok=True)
 
         results = []
 
         for i, sample in enumerate(
-            tqdm(dataset, desc = "Evaluating OCR performance", disable = not verbose)
+            tqdm(dataset, desc="Evaluating OCR performance", disable=not verbose)
         ):
             try:
                 messages = sample["messages"]
@@ -151,27 +151,27 @@ class OCRModelEvaluator:
         """Generate response from the model."""
 
         text = processor.apply_chat_template(
-            input_messages, tokenize = False, add_generation_prompt = True
+            input_messages, tokenize=False, add_generation_prompt=True
         )
 
         image_inputs, video_inputs = process_vision_info(input_messages)
 
         inputs = processor(
-            text = [text],
-            images = image_inputs,
-            videos = video_inputs,
-            padding = True,
-            return_tensors = "pt",
+            text=[text],
+            images=image_inputs,
+            videos=video_inputs,
+            padding=True,
+            return_tensors="pt",
         )
         inputs = inputs.to(model.device)
 
         with torch.no_grad():
             generated_ids = model.generate(
                 **inputs,
-                max_new_tokens = max_new_tokens,
-                temperature = temperature,
-                min_p = min_p,
-                use_cache = True,
+                max_new_tokens=max_new_tokens,
+                temperature=temperature,
+                min_p=min_p,
+                use_cache=True,
             )
 
         # Keep only the generated tokens, not the input
@@ -181,8 +181,8 @@ class OCRModelEvaluator:
 
         generated_response = processor.batch_decode(
             generated_ids_trimmed,
-            skip_special_tokens = True,
-            clean_up_tokenization_spaces = False,
+            skip_special_tokens=True,
+            clean_up_tokenization_spaces=False,
         )[0]
 
         return generated_response
@@ -199,7 +199,7 @@ class OCRModelEvaluator:
     ):
         """Save individual sample result to file."""
         output_file = os.path.join(output_dir, f"sample_{sample_idx}.txt")
-        with open(output_file, "w", encoding = "utf-8") as f:
+        with open(output_file, "w", encoding="utf-8") as f:
             f.write(f"Sample {sample_idx}\n")
             f.write(f"Question: {question}\n\n")
             f.write(f"Model output:\n{generated_response.strip()}\n\n")
@@ -224,7 +224,7 @@ class OCRModelEvaluator:
             f.write(f"Average WER: {avg_wer:.4f}\n")
             f.write(f"Average CER: {avg_cer:.4f}\n")
 
-        df.to_csv(os.path.join(output_dir, "detailed_results.csv"), index = False)
+        df.to_csv(os.path.join(output_dir, "detailed_results.csv"), index=False)
 
         if verbose:
             print("\nResults Summary:")
@@ -262,11 +262,11 @@ class OCRModelEvaluator:
         comparison_df = comparison_df.sort_values("WER")
 
         print("\nComparison Table (sorted by WER):")
-        print(comparison_df.to_string(index = False))
+        print(comparison_df.to_string(index=False))
 
         if save_csv:
             comparison_file = "model_comparison_results.csv"
-            comparison_df.to_csv(comparison_file, index = False)
+            comparison_df.to_csv(comparison_file, index=False)
             print(f"\nComparison table saved to {comparison_file}")
 
         if save_plot:
@@ -276,23 +276,23 @@ class OCRModelEvaluator:
 
     def _create_comparison_plot(self, comparison_df: pd.DataFrame):
         """Create and save comparison plot."""
-        plt.figure(figsize = (12, 6))
+        plt.figure(figsize=(12, 6))
 
         # Plot WER
         plt.subplot(1, 2, 1)
-        plt.bar(comparison_df["Model"], comparison_df["WER"], color = "skyblue")
+        plt.bar(comparison_df["Model"], comparison_df["WER"], color="skyblue")
         plt.title("Word Error Rate Comparison")
         plt.ylabel("WER (lower is better)")
-        plt.ylim(bottom = 0)
-        plt.xticks(rotation = 45, ha = "right")
+        plt.ylim(bottom=0)
+        plt.xticks(rotation=45, ha="right")
 
         # Plot CER
         plt.subplot(1, 2, 2)
-        plt.bar(comparison_df["Model"], comparison_df["CER"], color = "lightgreen")
+        plt.bar(comparison_df["Model"], comparison_df["CER"], color="lightgreen")
         plt.title("Character Error Rate Comparison")
         plt.ylabel("CER (lower is better)")
-        plt.ylim(bottom = 0)
-        plt.xticks(rotation = 45, ha = "right")
+        plt.ylim(bottom=0)
+        plt.xticks(rotation=45, ha="right")
 
         plt.tight_layout()
         plt.savefig("ocr_model_comparison.png")
@@ -313,7 +313,7 @@ def evaluate_ocr_model(
     model,
     processor,
     dataset,
-    output_dir = "ocr_evaluation_results",
+    output_dir="ocr_evaluation_results",
     **kwargs,
 ):
     """Convenience wrapper kept for backward compatibility."""

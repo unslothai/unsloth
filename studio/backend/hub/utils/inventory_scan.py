@@ -91,7 +91,7 @@ def all_hf_cache_scans() -> list:
         # began before an intervening invalidation is superseded so
         # post-mutation callers never receive pre-mutation data.
         if flight is None or flight.epoch != start_epoch:
-            flight = _HfCacheScanFlight(event = threading.Event(), epoch = start_epoch)
+            flight = _HfCacheScanFlight(event=threading.Event(), epoch=start_epoch)
             _hf_cache_scans_flight = flight
             owner = True
         else:
@@ -151,7 +151,7 @@ def _compute_all_hf_cache_scans() -> list:
             if resolved in seen:
                 continue
             seen.add(resolved)
-            scans.append(scan_cache_dir(cache_dir = str(extra)))
+            scans.append(scan_cache_dir(cache_dir=str(extra)))
         except Exception as exc:
             logger.warning("Could not scan HF cache %s: %s", extra_fn.__name__, exc)
     return scans
@@ -319,12 +319,12 @@ def _snapshot_legacy_partial(
     if repo_cache_dir is not None:
         return _repo_cache_dir_has_snapshot_legacy_partial(
             repo_cache_dir,
-            ignored_blob_hashes = ignored_hashes,
+            ignored_blob_hashes=ignored_hashes,
         )
     return any(
         _repo_cache_dir_has_snapshot_legacy_partial(
             entry,
-            ignored_blob_hashes = ignored_hashes,
+            ignored_blob_hashes=ignored_hashes,
         )
         for entry in iter_repo_cache_dirs(repo_type, repo_id)
     )
@@ -507,7 +507,7 @@ def is_gguf_repo_partial(repo_id: str, repo_cache_dir: Optional[Path] = None) ->
             repo_id,
             variant,
             snapshot_dir,
-            repo_cache_dir = repo_cache_dir,
+            repo_cache_dir=repo_cache_dir,
         ):
             has_broken = True
         else:

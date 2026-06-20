@@ -61,8 +61,8 @@ def begin_tool_decision(session_id, approval_id) -> dict:
 def wait_tool_decision(
     slot,
     approval_id,
-    cancel_event = None,
-    timeout = _DECISION_TIMEOUT,
+    cancel_event=None,
+    timeout=_DECISION_TIMEOUT,
 ):
     """Block on a slot from ``begin_tool_decision`` until the user decides.
 
@@ -72,7 +72,7 @@ def wait_tool_decision(
     """
     try:
         waited = 0.0
-        while not slot["event"].wait(timeout = 0.5):
+        while not slot["event"].wait(timeout=0.5):
             if cancel_event is not None and cancel_event.is_set():
                 return "deny"
             waited += 0.5
@@ -101,18 +101,18 @@ def abort_tool_decision(slot, approval_id) -> None:
 def request_tool_decision(
     session_id,
     approval_id,
-    cancel_event = None,
-    timeout = _DECISION_TIMEOUT,
+    cancel_event=None,
+    timeout=_DECISION_TIMEOUT,
 ):
     """Register and wait in one call (when the slot is not needed early)."""
     slot = begin_tool_decision(session_id, approval_id)
-    return wait_tool_decision(slot, approval_id, cancel_event = cancel_event, timeout = timeout)
+    return wait_tool_decision(slot, approval_id, cancel_event=cancel_event, timeout=timeout)
 
 
 def resolve_tool_decision(
     approval_id,
     decision,
-    session_id = None,
+    session_id=None,
 ) -> bool:
     """Record the user's "allow"/"deny" decision and unblock the loop.
 

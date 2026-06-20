@@ -16,7 +16,7 @@ _BACKEND_DIR = Path(__file__).resolve().parent.parent
 def _load_module(
     module_name: str,
     relative_path: str,
-    monkeypatch = None,
+    monkeypatch=None,
 ):
     path = _BACKEND_DIR / relative_path
     spec = importlib.util.spec_from_file_location(module_name, path)
@@ -70,11 +70,11 @@ def _identity_decorator(*_args, **_kwargs):
 def _install_lightweight_backend_stubs(monkeypatch):
     fastapi = types.ModuleType("fastapi")
     fastapi.APIRouter = lambda: _Router()
-    fastapi.Body = lambda default = None, **_kwargs: default
-    fastapi.Depends = lambda dependency = None, **_kwargs: dependency
-    fastapi.Header = lambda default = None, **_kwargs: default
+    fastapi.Body = lambda default=None, **_kwargs: default
+    fastapi.Depends = lambda dependency=None, **_kwargs: dependency
+    fastapi.Header = lambda default=None, **_kwargs: default
     fastapi.HTTPException = _HTTPException
-    fastapi.Query = lambda default = None, **_kwargs: default
+    fastapi.Query = lambda default=None, **_kwargs: default
     fastapi.Request = object
     monkeypatch.setitem(sys.modules, "fastapi", fastapi)
 
@@ -86,8 +86,8 @@ def _install_lightweight_backend_stubs(monkeypatch):
         sys.modules,
         "structlog",
         types.SimpleNamespace(
-            BoundLogger = _DummyLogger,
-            get_logger = lambda *args, **kwargs: _DummyLogger(),
+            BoundLogger=_DummyLogger,
+            get_logger=lambda *args, **kwargs: _DummyLogger(),
         ),
     )
     loggers = types.ModuleType("loggers")
@@ -123,7 +123,7 @@ def _install_lightweight_backend_stubs(monkeypatch):
     utils_paths.outputs_root = lambda: Path("outputs")
     utils_paths.exports_root = storage_roots.exports_root
     utils_paths.resolve_cached_repo_id_case = lambda value: value
-    utils_paths.resolve_output_dir = lambda value = None: Path(value or "outputs")
+    utils_paths.resolve_output_dir = lambda value=None: Path(value or "outputs")
     utils_paths.resolve_export_dir = storage_roots.resolve_export_dir
     monkeypatch.setitem(sys.modules, "utils", utils_pkg)
     monkeypatch.setitem(sys.modules, "utils.paths", utils_paths)
@@ -215,7 +215,7 @@ def _install_lightweight_backend_stubs(monkeypatch):
 def _install_pydantic_stub(monkeypatch):
     pydantic = types.ModuleType("pydantic")
     pydantic.BaseModel = object
-    pydantic.Field = lambda default = None, **_kwargs: default
+    pydantic.Field = lambda default=None, **_kwargs: default
     pydantic.field_validator = _identity_decorator
     monkeypatch.setitem(sys.modules, "pydantic", pydantic)
 
@@ -227,22 +227,22 @@ def _install_export_backend_stubs(monkeypatch):
     unsloth.FastLanguageModel = object
     unsloth.FastVisionModel = object
     unsloth._IS_MLX = True
-    unsloth.__spec__ = importlib.machinery.ModuleSpec("unsloth", loader = None)
+    unsloth.__spec__ = importlib.machinery.ModuleSpec("unsloth", loader=None)
     monkeypatch.setitem(sys.modules, "unsloth", unsloth)
 
     unsloth_zoo = types.ModuleType("unsloth_zoo")
     unsloth_zoo.__path__ = []
     unsloth_zoo.__spec__ = importlib.machinery.ModuleSpec(
         "unsloth_zoo",
-        loader = None,
-        is_package = True,
+        loader=None,
+        is_package=True,
     )
     llama_cpp = types.ModuleType("unsloth_zoo.llama_cpp")
     llama_cpp.LLAMA_CPP_DEFAULT_DIR = str(Path("/tmp/llama.cpp"))
     llama_cpp._resolve_local_convert_script = lambda *args, **kwargs: None
     llama_cpp.__spec__ = importlib.machinery.ModuleSpec(
         "unsloth_zoo.llama_cpp",
-        loader = None,
+        loader=None,
     )
     monkeypatch.setitem(sys.modules, "unsloth_zoo", unsloth_zoo)
     monkeypatch.setitem(sys.modules, "unsloth_zoo.llama_cpp", llama_cpp)
@@ -264,9 +264,9 @@ def _install_export_backend_stubs(monkeypatch):
     utils_model_config.detect_audio_type = lambda *args, **kwargs: None
 
     utils_paths = sys.modules["utils.paths"]
-    utils_paths.ensure_dir = lambda path: Path(path).mkdir(parents = True, exist_ok = True)
-    utils_paths.resolve_export_write_dir = lambda value = None: Path(value or "exports")
-    utils_paths.resolve_output_dir = lambda value = None: Path(value or "outputs")
+    utils_paths.ensure_dir = lambda path: Path(path).mkdir(parents=True, exist_ok=True)
+    utils_paths.resolve_export_write_dir = lambda value=None: Path(value or "exports")
+    utils_paths.resolve_output_dir = lambda value=None: Path(value or "outputs")
 
 
 def test_gguf_export_cleans_temp_dir_when_post_processing_fails(tmp_path, monkeypatch):
@@ -286,7 +286,7 @@ def test_gguf_export_cleans_temp_dir_when_post_processing_fails(tmp_path, monkey
 
     class _Model:
         def save_pretrained_gguf(self, model_save_path, tokenizer, quantization_method):
-            Path(model_save_path).mkdir(parents = True)
+            Path(model_save_path).mkdir(parents=True)
             (Path(model_save_path) / "model.safetensors").write_bytes(b"weights")
             (cwd / "converted.gguf").write_bytes(b"gguf")
 
@@ -307,7 +307,7 @@ def test_save_directory_validator_rejects_windows_parent_segments(monkeypatch):
     _install_pydantic_stub(monkeypatch)
     export_models = _load_module("test_models_export", "models/export.py", monkeypatch)
 
-    with pytest.raises(ValueError, match = r"\.\."):
+    with pytest.raises(ValueError, match=r"\.\."):
         export_models._validate_save_directory(r"E:\AI\..\secret")
 
 
@@ -330,7 +330,7 @@ def test_save_directory_validator_rejects_long_path_component(monkeypatch, tmp_p
         "test_models_export_long_component", "models/export.py", monkeypatch
     )
 
-    with pytest.raises(ValueError, match = "path components"):
+    with pytest.raises(ValueError, match="path components"):
         export_models._validate_save_directory(str(tmp_path / ("a" * 256)))
 
 
@@ -348,7 +348,7 @@ def test_export_write_dir_accepts_external_absolute_but_read_dir_rejects(tmp_pat
 
     assert storage_roots.resolve_export_write_dir(str(external)) == external
 
-    with pytest.raises(ValueError, match = "path escapes root"):
+    with pytest.raises(ValueError, match="path escapes root"):
         storage_roots.resolve_export_dir(str(external))
 
 
@@ -377,7 +377,7 @@ def test_resolve_export_write_dir_rejects_backslash_parent_segment():
         "utils/paths/storage_roots.py",
     )
 
-    with pytest.raises(ValueError, match = r"\.\."):
+    with pytest.raises(ValueError, match=r"\.\."):
         storage_roots.resolve_export_write_dir(r"exports\..\outside")
 
 
@@ -411,7 +411,7 @@ def test_export_details_registers_external_absolute_output(tmp_path, monkeypatch
     output = tmp_path / "Gemma4_26B_gguf"
     output.mkdir()
     export_root = tmp_path / "studio" / "exports"
-    export_root.mkdir(parents = True)
+    export_root.mkdir(parents=True)
     registered = []
 
     monkeypatch.setattr(
@@ -444,7 +444,7 @@ def test_export_details_does_not_register_contained_exports(tmp_path, monkeypatc
 
     export_root = tmp_path / "exports"
     output = export_root / "model-gguf"
-    output.mkdir(parents = True)
+    output.mkdir(parents=True)
 
     monkeypatch.setattr(
         export_route,

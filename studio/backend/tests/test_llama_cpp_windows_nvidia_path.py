@@ -69,7 +69,7 @@ def _make_nvidia_layout(prefix: Path, pkgs_with_layout: dict[str, str]):
             d = nv / pkg / "Library" / "bin"
         else:
             raise ValueError(layout)
-        d.mkdir(parents = True, exist_ok = True)
+        d.mkdir(parents=True, exist_ok=True)
         (d / "stub.dll").write_bytes(b"")
 
 
@@ -126,8 +126,8 @@ class TestWindowsPipNvidiaDllDirs:
         # Only nvidia/<pkg>/{bin,Library/bin} and torch/lib are picked up.
         # Unrelated site-packages contents (numpy, scipy, ...) are ignored.
         site = tmp_path / "Lib" / "site-packages"
-        (site / "numpy").mkdir(parents = True)
-        (site / "scipy" / "linalg").mkdir(parents = True)
+        (site / "numpy").mkdir(parents=True)
+        (site / "scipy" / "linalg").mkdir(parents=True)
         result = LlamaCppBackend._windows_pip_nvidia_dll_dirs(str(tmp_path))
         assert result == []
 
@@ -135,7 +135,7 @@ class TestWindowsPipNvidiaDllDirs:
         # PyTorch's Windows CUDA wheel bundles cudart64/cublas64 DLLs under
         # torch/lib/ rather than as nvidia-* wheels; else still hits #5106.
         torch_lib = tmp_path / "Lib" / "site-packages" / "torch" / "lib"
-        torch_lib.mkdir(parents = True)
+        torch_lib.mkdir(parents=True)
         (torch_lib / "cudart64_12.dll").write_bytes(b"")
         result = LlamaCppBackend._windows_pip_nvidia_dll_dirs(str(tmp_path))
         assert len(result) == 1
@@ -151,7 +151,7 @@ class TestWindowsPipNvidiaDllDirs:
             },
         )
         torch_lib = tmp_path / "Lib" / "site-packages" / "torch" / "lib"
-        torch_lib.mkdir(parents = True)
+        torch_lib.mkdir(parents=True)
         (torch_lib / "cudart64_13.dll").write_bytes(b"")
         result = LlamaCppBackend._windows_pip_nvidia_dll_dirs(str(tmp_path))
         assert len(result) == 3
@@ -162,14 +162,14 @@ class TestWindowsPipNvidiaDllDirs:
     def test_torch_lib_must_be_a_directory(self, tmp_path):
         # If torch/lib exists as a file (broken install), it is ignored.
         site = tmp_path / "Lib" / "site-packages" / "torch"
-        site.mkdir(parents = True)
+        site.mkdir(parents=True)
         (site / "lib").write_bytes(b"not a dir")
         result = LlamaCppBackend._windows_pip_nvidia_dll_dirs(str(tmp_path))
         assert result == []
 
     def test_skips_non_directories(self, tmp_path):
         nv = tmp_path / "Lib" / "site-packages" / "nvidia"
-        (nv / "cuda_runtime").mkdir(parents = True)
+        (nv / "cuda_runtime").mkdir(parents=True)
         # Regular file where 'bin' would normally be a dir
         (nv / "cuda_runtime" / "bin").write_bytes(b"not a dir")
         result = LlamaCppBackend._windows_pip_nvidia_dll_dirs(str(tmp_path))
@@ -184,7 +184,7 @@ class TestWindowsPipNvidiaDllDirs:
         # nvidia 13.x Windows wheels ship DLLs under nvidia/cu13/bin/x86_64/
         # not nvidia/<pkg>/bin/; else the new CUDA 13 wheels hit #5106.
         dll_dir = tmp_path / "Lib" / "site-packages" / "nvidia" / "cu13" / "bin" / "x86_64"
-        dll_dir.mkdir(parents = True)
+        dll_dir.mkdir(parents=True)
         for name in ("cudart64_13.dll", "cublas64_13.dll", "cublasLt64_13.dll"):
             (dll_dir / name).write_bytes(b"")
         result = LlamaCppBackend._windows_pip_nvidia_dll_dirs(str(tmp_path))
@@ -194,7 +194,7 @@ class TestWindowsPipNvidiaDllDirs:
         # Some repackaged wheels use ``bin/x64`` (Windows-x64 convention)
         # rather than ``bin/x86_64`` (NVIDIA-internal convention).
         dll_dir = tmp_path / "Lib" / "site-packages" / "nvidia" / "cu13" / "bin" / "x64"
-        dll_dir.mkdir(parents = True)
+        dll_dir.mkdir(parents=True)
         (dll_dir / "cudart64_13.dll").write_bytes(b"")
         result = LlamaCppBackend._windows_pip_nvidia_dll_dirs(str(tmp_path))
         assert str(dll_dir) in result
@@ -205,8 +205,8 @@ class TestWindowsPipNvidiaDllDirs:
         site = tmp_path / "Lib" / "site-packages"
         cu12_bin = site / "nvidia" / "cuda_runtime" / "bin"
         cu13_arch = site / "nvidia" / "cu13" / "bin" / "x86_64"
-        cu12_bin.mkdir(parents = True)
-        cu13_arch.mkdir(parents = True)
+        cu12_bin.mkdir(parents=True)
+        cu13_arch.mkdir(parents=True)
         result = LlamaCppBackend._windows_pip_nvidia_dll_dirs(str(tmp_path))
         result_set = {Path(p) for p in result}
         assert cu12_bin in result_set
@@ -217,7 +217,7 @@ class TestWindowsPipNvidiaDllDirs:
         # read these as a character class. The iterdir impl must handle them.
         prefix = tmp_path / "studio_[gpu]_install"
         dll_dir = prefix / "Lib" / "site-packages" / "nvidia" / "cuda_runtime" / "bin"
-        dll_dir.mkdir(parents = True)
+        dll_dir.mkdir(parents=True)
         (dll_dir / "cudart64_12.dll").write_bytes(b"")
         result = LlamaCppBackend._windows_pip_nvidia_dll_dirs(str(prefix))
         assert str(dll_dir) in result, f"bracket-prefixed path returned empty: {result}"
@@ -228,7 +228,7 @@ class TestWindowsPipNvidiaDllDirs:
         site = tmp_path / "Lib" / "site-packages"
         outer_bin = site / "nvidia" / "cu13" / "bin"
         arch_bin = outer_bin / "x86_64"
-        arch_bin.mkdir(parents = True)
+        arch_bin.mkdir(parents=True)
         (arch_bin / "cudart64_13.dll").write_bytes(b"")
         result = LlamaCppBackend._windows_pip_nvidia_dll_dirs(str(tmp_path))
         # outer_bin exists as a dir (it holds arch_bin); the arch-specific

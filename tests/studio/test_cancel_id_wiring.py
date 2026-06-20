@@ -114,7 +114,7 @@ def test_chat_adapter_sends_cancel_id_in_abort_cancel_post():
     m = re.search(
         r"const\s+onAbortCancel\s*=\s*\(\)\s*=>\s*\{(.*?)\};",
         ADAPTER_SRC,
-        flags = re.DOTALL,
+        flags=re.DOTALL,
     )
     assert m, "onAbortCancel arrow function missing"
     body = m.group(1)

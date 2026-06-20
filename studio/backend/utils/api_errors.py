@@ -75,10 +75,10 @@ ANTHROPIC_TYPE_BY_STATUS = {
 def openai_error_body(
     message,
     *,
-    status = 400,
-    err_type = None,
-    code = None,
-    param = None,
+    status=400,
+    err_type=None,
+    code=None,
+    param=None,
 ) -> dict:
     """Build an OpenAI-style error envelope.
 
@@ -100,8 +100,8 @@ def openai_error_body(
 def anthropic_error_body(
     message,
     *,
-    status = 400,
-    err_type = None,
+    status=400,
+    err_type=None,
 ) -> dict:
     """Build an Anthropic-style error envelope.
 
@@ -130,9 +130,9 @@ def error_body_for_path(
     message,
     *,
     status,
-    err_type = None,
-    code = None,
-    param = None,
+    err_type=None,
+    code=None,
+    param=None,
 ) -> dict:
     """Dispatch to the correct envelope builder based on ``path``.
 
@@ -141,8 +141,8 @@ def error_body_for_path(
     :func:`openai_error_body`.
     """
     if is_anthropic_path(path):
-        return anthropic_error_body(message, status = status, err_type = err_type)
-    return openai_error_body(message, status = status, err_type = err_type, code = code, param = param)
+        return anthropic_error_body(message, status=status, err_type=err_type)
+    return openai_error_body(message, status=status, err_type=err_type, code=code, param=param)
 
 
 def _summarize_validation_errors(errors) -> tuple:
@@ -194,13 +194,13 @@ def install_api_error_handlers(app) -> None:
         if path.startswith("/v1/"):
             summary, param = _summarize_validation_errors(exc.errors())
             return JSONResponse(
-                status_code = 400,
-                content = error_body_for_path(path, summary, status = 400, param = param),
+                status_code=400,
+                content=error_body_for_path(path, summary, status=400, param=param),
             )
         # Default FastAPI behavior for every other path.
         return JSONResponse(
-            status_code = 422,
-            content = {"detail": jsonable_encoder(exc.errors())},
+            status_code=422,
+            content={"detail": jsonable_encoder(exc.errors())},
         )
 
     @app.exception_handler(StarletteHTTPException)
@@ -210,15 +210,15 @@ def install_api_error_handlers(app) -> None:
         # Statuses like 204/304/1xx must not carry a body — mirror FastAPI's
         # default http_exception_handler, which returns a bodiless Response.
         if not is_body_allowed_for_status_code(exc.status_code):
-            return Response(status_code = exc.status_code, headers = headers)
+            return Response(status_code=exc.status_code, headers=headers)
         if path.startswith("/v1/"):
             detail = exc.detail
             # Already a fully-formed envelope: pass through untouched.
             if isinstance(detail, dict) and ("error" in detail or detail.get("type") == "error"):
                 return JSONResponse(
-                    status_code = exc.status_code,
-                    content = detail,
-                    headers = headers,
+                    status_code=exc.status_code,
+                    content=detail,
+                    headers=headers,
                 )
             # A dict carrying our individual fields.
             if isinstance(detail, dict):
@@ -233,20 +233,20 @@ def install_api_error_handlers(app) -> None:
                 code = None
                 param = None
             return JSONResponse(
-                status_code = exc.status_code,
-                content = error_body_for_path(
+                status_code=exc.status_code,
+                content=error_body_for_path(
                     path,
                     message,
-                    status = exc.status_code,
-                    err_type = err_type,
-                    code = code,
-                    param = param,
+                    status=exc.status_code,
+                    err_type=err_type,
+                    code=code,
+                    param=param,
                 ),
-                headers = headers,
+                headers=headers,
             )
         # Default FastAPI behavior for every other path.
         return JSONResponse(
-            status_code = exc.status_code,
-            content = {"detail": exc.detail},
-            headers = headers,
+            status_code=exc.status_code,
+            content={"detail": exc.detail},
+            headers=headers,
         )

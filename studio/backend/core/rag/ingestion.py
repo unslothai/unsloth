@@ -48,7 +48,7 @@ def _remove_upload(stored_path: str | None, *, keep_path: str | None = None) -> 
         if os.path.isfile(target) and os.path.commonpath([uploads, target]) == uploads:
             os.remove(target)
     except Exception:  # noqa: BLE001 - upload cleanup must not block ingestion.
-        logger.warning("failed to remove RAG upload %s", stored_path, exc_info = True)
+        logger.warning("failed to remove RAG upload %s", stored_path, exc_info=True)
 
 
 def _emit(job_id: str, event: dict) -> None:
@@ -80,7 +80,7 @@ def _set_job(
 
 
 def _progress(conn, job_id: str, stage: str, progress: float) -> None:
-    _set_job(conn, job_id, status = "running", stage = stage, progress = progress)
+    _set_job(conn, job_id, status="running", stage=stage, progress=progress)
     _emit(job_id, {"type": "progress", "stage": stage, "progress": progress})
 
 
@@ -89,7 +89,7 @@ def _embed_all(texts: list[str], model_name: str | None):
     vectors: list = []
     for i in range(0, len(texts), _EMBED_BATCH):
         batch = texts[i : i + _EMBED_BATCH]
-        out = embeddings.encode(batch, model_name = model_name, normalize = True)
+        out = embeddings.encode(batch, model_name=model_name, normalize=True)
         vectors.extend(out)
     return vectors
 
@@ -105,10 +105,10 @@ def _run(
             # Caption figures, splice into page text (no-op without a vision model).
             try:
                 figures = parsers.render_pdf_figures(
-                    stored_path, max_figures = config.CAPTION_MAX_IMAGES
+                    stored_path, max_figures=config.CAPTION_MAX_IMAGES
                 )
             except Exception:
-                logger.warning("figure rendering failed for job %s", job_id, exc_info = True)
+                logger.warning("figure rendering failed for job %s", job_id, exc_info=True)
                 figures = []
             if figures:
                 _progress(conn, job_id, "captioning", 0.2)
@@ -119,13 +119,13 @@ def _run(
         count = embeddings.token_counter(model_name)
         chunks = chunking.chunk_pages(
             pages,
-            max_tokens = config.CHUNK_TOKENS,
-            overlap = config.CHUNK_OVERLAP,
-            count = count,
+            max_tokens=config.CHUNK_TOKENS,
+            overlap=config.CHUNK_OVERLAP,
+            count=count,
         )
         if not chunks:
-            store.set_document_status(conn, document_id, "completed", num_chunks = 0)
-            _set_job(conn, job_id, status = "completed", stage = "done", progress = 1.0)
+            store.set_document_status(conn, document_id, "completed", num_chunks=0)
+            _set_job(conn, job_id, status="completed", stage="done", progress=1.0)
             _emit(job_id, {"type": "complete", "num_chunks": 0})
             return
 
@@ -137,22 +137,23 @@ def _run(
         if stored_path.lower().endswith(".pdf"):
             try:
                 from . import locators
+
                 regions = locators.pdf_regions_for_chunks(stored_path, pages, chunks)
             except Exception:
-                logger.warning("pdf region location failed for job %s", job_id, exc_info = True)
+                logger.warning("pdf region location failed for job %s", job_id, exc_info=True)
                 regions = None
 
         _progress(conn, job_id, "storing", 0.9)
         store.add_chunks(conn, scope, document_id, chunks, vectors, regions)
-        store.set_document_status(conn, document_id, "completed", num_chunks = len(chunks))
+        store.set_document_status(conn, document_id, "completed", num_chunks=len(chunks))
 
-        _set_job(conn, job_id, status = "completed", stage = "done", progress = 1.0)
+        _set_job(conn, job_id, status="completed", stage="done", progress=1.0)
         _emit(job_id, {"type": "complete", "num_chunks": len(chunks)})
     except Exception as exc:  # noqa: BLE001 - report any failure to the client
         logger.exception("ingestion job %s failed", job_id)
         try:
-            store.set_document_status(conn, document_id, "failed", error = str(exc))
-            _set_job(conn, job_id, status = "failed", stage = "error", error = str(exc))
+            store.set_document_status(conn, document_id, "failed", error=str(exc))
+            _set_job(conn, job_id, status="failed", stage="error", error=str(exc))
         except Exception:  # noqa: BLE001
             logger.exception("failed to record ingestion failure for job %s", job_id)
         _emit(job_id, {"type": "error", "stage": "error", "error": str(exc)})
@@ -183,7 +184,7 @@ def start_ingestion(
     try:
         existing = store.document_by_hash(conn, scope, sha)
         if existing is not None:
-            job_id = _new_job(conn, existing, scope, status = "completed", progress = 1.0)
+            job_id = _new_job(conn, existing, scope, status="completed", progress=1.0)
             _remove_upload(stored_path)
             with _jobs_lock:
                 _jobs[job_id] = queue.Queue()
@@ -192,18 +193,18 @@ def start_ingestion(
             return existing, job_id
         for failed in store.failed_documents_by_hash(conn, scope, sha):
             store.delete_document(conn, failed["id"])
-            _remove_upload(failed.get("stored_path"), keep_path = stored_path)
+            _remove_upload(failed.get("stored_path"), keep_path=stored_path)
 
         document_id = store.create_document(
             conn,
-            scope = scope,
-            filename = filename,
-            sha256 = sha,
-            kb_id = kb_id,
-            thread_id = thread_id,
-            project_id = project_id,
-            status = "pending",
-            stored_path = stored_path,
+            scope=scope,
+            filename=filename,
+            sha256=sha,
+            kb_id=kb_id,
+            thread_id=thread_id,
+            project_id=project_id,
+            status="pending",
+            stored_path=stored_path,
         )
         job_id = _new_job(conn, document_id, scope)
     finally:
@@ -212,9 +213,9 @@ def start_ingestion(
     with _jobs_lock:
         _jobs[job_id] = queue.Queue()
     threading.Thread(
-        target = _run,
-        args = (job_id, document_id, scope, stored_path, model_name),
-        daemon = True,
+        target=_run,
+        args=(job_id, document_id, scope, stored_path, model_name),
+        daemon=True,
     ).start()
     return document_id, job_id
 

@@ -39,7 +39,7 @@ def _request_completion(monkeypatch, usage):
 
     return TestClient(app).post(
         "/chat/completions",
-        json = {
+        json={
             "messages": [{"role": "user", "content": "Why is the sky blue?"}],
             "stream": False,
         },

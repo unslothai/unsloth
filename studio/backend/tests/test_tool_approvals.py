@@ -28,7 +28,7 @@ from state.tool_approvals import (
 )
 
 
-@pytest.fixture(autouse = True)
+@pytest.fixture(autouse=True)
 def _clear_pending():
     """Each test starts and ends with an empty ``_pending`` map."""
     with tool_approvals._lock:
@@ -45,15 +45,15 @@ class _Waiter:
         self,
         session_id,
         approval_id,
-        cancel_event = None,
-        timeout = None,
+        cancel_event=None,
+        timeout=None,
     ):
         self.session_id = session_id
         self.approval_id = approval_id
         self.cancel_event = cancel_event
         self.timeout = timeout
         self.result = None
-        self._thread = threading.Thread(target = self._run, daemon = True)
+        self._thread = threading.Thread(target=self._run, daemon=True)
 
     def _run(self):
         kwargs = {"cancel_event": self.cancel_event}
@@ -66,8 +66,8 @@ class _Waiter:
         _wait_until(lambda: _has_pending(self.approval_id))
         return self
 
-    def join(self, timeout = 5.0):
-        self._thread.join(timeout = timeout)
+    def join(self, timeout=5.0):
+        self._thread.join(timeout=timeout)
         assert not self._thread.is_alive(), "waiter thread did not finish"
         return self.result
 
@@ -79,8 +79,8 @@ def _has_pending(approval_id) -> bool:
 
 def _wait_until(
     pred,
-    timeout = 2.0,
-    interval = 0.005,
+    timeout=2.0,
+    interval=0.005,
 ) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -96,14 +96,14 @@ def _wait_until(
 def test_allow_decision():
     aid = new_approval_id()
     w = _Waiter("sess", aid).start()
-    assert resolve_tool_decision(aid, "allow", session_id = "sess") is True
+    assert resolve_tool_decision(aid, "allow", session_id="sess") is True
     assert w.join() == "allow"
 
 
 def test_deny_decision():
     aid = new_approval_id()
     w = _Waiter("sess", aid).start()
-    assert resolve_tool_decision(aid, "deny", session_id = "sess") is True
+    assert resolve_tool_decision(aid, "deny", session_id="sess") is True
     assert w.join() == "deny"
 
 
@@ -120,7 +120,7 @@ def test_abort_tool_decision_removes_unwaited_slot():
     slot = begin_tool_decision("sess", aid)
     abort_tool_decision(slot, aid)
     assert not _has_pending(aid)
-    assert resolve_tool_decision(aid, "allow", session_id = "sess") is False
+    assert resolve_tool_decision(aid, "allow", session_id="sess") is False
 
 
 def test_approval_ids_are_unique():
@@ -140,7 +140,7 @@ def test_resolve_before_wait_is_not_lost():
     """
     aid = new_approval_id()
     slot = begin_tool_decision("sess", aid)
-    assert resolve_tool_decision(aid, "allow", session_id = "sess") is True
+    assert resolve_tool_decision(aid, "allow", session_id="sess") is True
     # wait() is only entered now, after the decision already landed.
     assert wait_tool_decision(slot, aid) == "allow"
     assert not _has_pending(aid)
@@ -162,10 +162,10 @@ def test_resolve_wrong_session_scope_returns_false():
     aid = new_approval_id()
     w = _Waiter("sess-a", aid).start()
     # Correct approval_id but the wrong session must not resolve it.
-    assert resolve_tool_decision(aid, "allow", session_id = "sess-b") is False
+    assert resolve_tool_decision(aid, "allow", session_id="sess-b") is False
     assert _has_pending(aid)
     # The right session still works.
-    assert resolve_tool_decision(aid, "allow", session_id = "sess-a") is True
+    assert resolve_tool_decision(aid, "allow", session_id="sess-a") is True
     assert w.join() == "allow"
 
 
@@ -189,9 +189,9 @@ def test_first_decision_is_immutable():
     """
     aid = new_approval_id()
     slot = begin_tool_decision("sess", aid)
-    assert resolve_tool_decision(aid, "allow", session_id = "sess") is True
+    assert resolve_tool_decision(aid, "allow", session_id="sess") is True
     # Second decision, same id, before any waiter consumes/cleans the slot.
-    assert resolve_tool_decision(aid, "deny", session_id = "sess") is False
+    assert resolve_tool_decision(aid, "deny", session_id="sess") is False
     assert slot["decision"] == "allow"
     # The waiter still observes the first (immutable) decision.
     assert wait_tool_decision(slot, aid) == "allow"
@@ -204,16 +204,16 @@ def test_first_decision_is_immutable():
 def test_cancel_event_breaks_wait_as_deny():
     cancel = threading.Event()
     aid = new_approval_id()
-    w = _Waiter("sess", aid, cancel_event = cancel).start()
+    w = _Waiter("sess", aid, cancel_event=cancel).start()
     cancel.set()
-    assert w.join(timeout = 3.0) == "deny"
+    assert w.join(timeout=3.0) == "deny"
     assert _wait_until(lambda: not _has_pending(aid))
 
 
 def test_timeout_returns_deny():
     aid = new_approval_id()
     start = time.monotonic()
-    result = request_tool_decision("sess", aid, timeout = 0.1)
+    result = request_tool_decision("sess", aid, timeout=0.1)
     assert result == "deny"
     assert time.monotonic() - start < 2.0
     assert not _has_pending(aid)
@@ -232,11 +232,11 @@ def test_two_pending_calls_same_session_are_independent():
     w1 = _Waiter("sess", a1).start()
     w2 = _Waiter("sess", a2).start()
 
-    assert resolve_tool_decision(a1, "deny", session_id = "sess") is True
+    assert resolve_tool_decision(a1, "deny", session_id="sess") is True
     assert w1.join() == "deny"
     # w2 is still waiting on its own id.
     assert _has_pending(a2)
-    assert resolve_tool_decision(a2, "allow", session_id = "sess") is True
+    assert resolve_tool_decision(a2, "allow", session_id="sess") is True
     assert w2.join() == "allow"
 
 

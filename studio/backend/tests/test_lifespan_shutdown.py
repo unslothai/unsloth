@@ -24,13 +24,13 @@ def _counter():
 def test_run_lifespan_shutdown_survives_dead_default_executor():
     term_box, terminate = _counter()
     clear_box, clear = _counter()
-    hw = types.SimpleNamespace(DEVICE = "cuda:0")
+    hw = types.SimpleNamespace(DEVICE="cuda:0")
 
     async def _drive():
         loop = asyncio.get_running_loop()
         # Kill the default executor to mimic the teardown race.
         await asyncio.to_thread(lambda: None)
-        loop._default_executor.shutdown(wait = True)
+        loop._default_executor.shutdown(wait=True)
         await run_lifespan_shutdown(terminate, clear, hw)
 
     asyncio.run(_drive())
@@ -45,7 +45,7 @@ def test_run_lifespan_shutdown_survives_shutdown_default_executor():
     'Executor shutdown has been called'; the helper must still recover inline."""
     term_box, terminate = _counter()
     clear_box, clear = _counter()
-    hw = types.SimpleNamespace(DEVICE = "cuda:0")
+    hw = types.SimpleNamespace(DEVICE="cuda:0")
 
     async def _drive():
         await asyncio.get_running_loop().shutdown_default_executor()
@@ -62,7 +62,7 @@ def test_run_lifespan_shutdown_normal_path():
     """Healthy executor: each step runs exactly once."""
     term_box, terminate = _counter()
     clear_box, clear = _counter()
-    hw = types.SimpleNamespace(DEVICE = "cuda:0")
+    hw = types.SimpleNamespace(DEVICE="cuda:0")
 
     asyncio.run(run_lifespan_shutdown(terminate, clear, hw))
 
@@ -74,7 +74,7 @@ def test_run_lifespan_shutdown_normal_path():
 def test_run_lifespan_shutdown_swallows_terminate_errors():
     """A terminate failure must not block later cleanup."""
     clear_box, clear = _counter()
-    hw = types.SimpleNamespace(DEVICE = "cuda:0")
+    hw = types.SimpleNamespace(DEVICE="cuda:0")
 
     def _boom():
         raise ValueError("boom")
@@ -88,7 +88,7 @@ def test_run_lifespan_shutdown_swallows_terminate_errors():
 def test_run_lifespan_shutdown_swallows_clear_errors():
     """A clear failure must not raise out of shutdown."""
     term_box, terminate = _counter()
-    hw = types.SimpleNamespace(DEVICE = "cuda:0")
+    hw = types.SimpleNamespace(DEVICE="cuda:0")
 
     def _boom():
         raise ValueError("boom")
@@ -103,7 +103,7 @@ def test_run_lifespan_shutdown_does_not_retry_body_runtime_error():
     """A body-side RuntimeError (healthy executor) must run terminate once, not retry inline."""
     term_box, _ = _counter()
     clear_box, clear = _counter()
-    hw = types.SimpleNamespace(DEVICE = "cuda:0")
+    hw = types.SimpleNamespace(DEVICE="cuda:0")
 
     def _boom():
         term_box["n"] += 1
@@ -122,7 +122,7 @@ def test_run_lifespan_shutdown_preserves_contextvars():
     cv.set("bound-value")
     seen = []
     clear_box, clear = _counter()
-    hw = types.SimpleNamespace(DEVICE = "cuda:0")
+    hw = types.SimpleNamespace(DEVICE="cuda:0")
 
     def terminate():
         seen.append(cv.get("UNSET"))

@@ -35,17 +35,17 @@ _GGUF_MSG = (
 
 class TestValidateGgufRuntimeMessage(unittest.TestCase):
     def _validate(self, route, model_path, side_effect):
-        request = ValidateModelRequest(model_path = model_path)
+        request = ValidateModelRequest(model_path=model_path)
         with (
             patch.object(
                 route,
                 "_resolve_model_identifier_for_request",
-                return_value = (model_path, model_path, False),
+                return_value=(model_path, model_path, False),
             ),
-            patch.object(route.ModelConfig, "from_identifier", side_effect = side_effect),
+            patch.object(route.ModelConfig, "from_identifier", side_effect=side_effect),
         ):
             with self.assertRaises(HTTPException) as exc:
-                asyncio.run(route.validate_model(request, current_subject = "test-user"))
+                asyncio.run(route.validate_model(request, current_subject="test-user"))
         return exc.exception
 
     def test_missing_llama_server_returns_actionable_message(self):
@@ -72,21 +72,21 @@ class TestLoadGgufRuntimeMessage(unittest.TestCase):
     """/api/inference/load surfaces the same message (not a 500) when the runtime is missing."""
 
     def _load(self, route, model_path, side_effect):
-        request = LoadRequest(model_path = model_path)
-        backend = MagicMock(active_model_name = None)  # no resident model -> reach from_identifier
+        request = LoadRequest(model_path=model_path)
+        backend = MagicMock(active_model_name=None)  # no resident model -> reach from_identifier
         with (
             patch.object(
                 route,
                 "_resolve_model_identifier_for_request",
-                return_value = (model_path, model_path, False),
+                return_value=(model_path, model_path, False),
             ),
-            patch.object(route, "resolve_effective_chat_template_override", return_value = None),
-            patch.object(route, "get_inference_backend", return_value = backend),
-            patch.object(route, "get_llama_cpp_backend", return_value = MagicMock()),
-            patch.object(route.ModelConfig, "from_identifier", side_effect = side_effect),
+            patch.object(route, "resolve_effective_chat_template_override", return_value=None),
+            patch.object(route, "get_inference_backend", return_value=backend),
+            patch.object(route, "get_llama_cpp_backend", return_value=MagicMock()),
+            patch.object(route.ModelConfig, "from_identifier", side_effect=side_effect),
         ):
             with self.assertRaises(HTTPException) as exc:
-                asyncio.run(route.load_model(request, MagicMock(), current_subject = "test-user"))
+                asyncio.run(route.load_model(request, MagicMock(), current_subject="test-user"))
         return exc.exception
 
     def test_missing_llama_server_returns_actionable_message(self):
@@ -109,12 +109,13 @@ class TestLoadPathPropagatesRuntimeError(unittest.TestCase):
 
     def test_tensor_fallback_propagates_missing_runtime(self):
         from core.inference.tensor_fallback import load_with_tensor_fallback
+
         async def _attempt(_tensor, _extra):
             raise LlamaServerNotFoundError(_GGUF_MSG)
 
         with self.assertRaises(LlamaServerNotFoundError):
             asyncio.run(
-                load_with_tensor_fallback(_attempt, requested_tensor = False, extra_args = None)
+                load_with_tensor_fallback(_attempt, requested_tensor=False, extra_args=None)
             )
 
 

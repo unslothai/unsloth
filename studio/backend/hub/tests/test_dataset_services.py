@@ -29,16 +29,16 @@ class _Upload:
 
 def test_dataset_cache_scan_merges_raw_and_processed_rows(monkeypatch):
     raw_repo = SimpleNamespace(
-        repo_id = "Org/Data",
-        repo_type = "dataset",
-        repo_path = "/cache/datasets--Org--Data",
-        size_on_disk = 100,
-        revisions = [SimpleNamespace(files = [], commit_hash = "abc")],
+        repo_id="Org/Data",
+        repo_type="dataset",
+        repo_path="/cache/datasets--Org--Data",
+        size_on_disk=100,
+        revisions=[SimpleNamespace(files=[], commit_hash="abc")],
     )
     monkeypatch.setattr(
         cache_inventory,
         "_collect_hf_cache_scans",
-        lambda: ([SimpleNamespace(repos = [raw_repo])], {"/cache"}),
+        lambda: ([SimpleNamespace(repos=[raw_repo])], {"/cache"}),
     )
     monkeypatch.setattr(
         cache_inventory.hf_cache_scan,
@@ -91,9 +91,9 @@ def test_delete_cached_dataset_attempts_all_roots_before_raising(monkeypatch):
             self.cache_dir = label
             self.repos = [
                 SimpleNamespace(
-                    repo_type = "dataset",
-                    repo_id = "Org/Data",
-                    revisions = [SimpleNamespace(commit_hash = f"{label}-rev")],
+                    repo_type="dataset",
+                    repo_id="Org/Data",
+                    revisions=[SimpleNamespace(commit_hash=f"{label}-rev")],
                 )
             ]
             self.fail = fail
@@ -198,7 +198,7 @@ def test_delete_cached_dataset_absent_everywhere_raises_404(monkeypatch):
 
 def test_check_format_rejects_invalid_path_as_400():
     with pytest.raises(HTTPException) as exc_info:
-        formatting.check_format_response(CheckFormatRequest(dataset_name = "../../etc/passwd"))
+        formatting.check_format_response(CheckFormatRequest(dataset_name="../../etc/passwd"))
 
     assert exc_info.value.status_code == 400
 
@@ -216,14 +216,14 @@ def test_dataset_download_registry_key_is_case_insensitive():
     claimed, state = registry.claim(
         "Org/Data",
         download_registry.TRANSPORT_HTTP,
-        repo_type = "dataset",
-        repo_id = "Org/Data",
+        repo_type="dataset",
+        repo_id="Org/Data",
     )
     duplicate_claimed, duplicate_state = registry.claim(
         "org/data",
         download_registry.TRANSPORT_HTTP,
-        repo_type = "dataset",
-        repo_id = "org/data",
+        repo_type="dataset",
+        repo_id="org/data",
     )
 
     assert claimed is True
@@ -261,7 +261,7 @@ def test_dataset_claim_register_cancel_uses_registry_marker_owner(monkeypatch):
             raise AssertionError("register_process owns pending-cancel markers")
 
         def get_job(self, _key):
-            return SimpleNamespace(state = "cancelled", error = None)
+            return SimpleNamespace(state="cancelled", error=None)
 
     monkeypatch.setattr(downloads, "_registry", _Registry())
     monkeypatch.setattr(
@@ -286,7 +286,7 @@ def test_dataset_claim_register_cancel_uses_registry_marker_owner(monkeypatch):
     )
 
     result = asyncio.run(
-        downloads.download_dataset_response(SimpleNamespace(repo_id = "Org/Data", use_xet = False))
+        downloads.download_dataset_response(SimpleNamespace(repo_id="Org/Data", use_xet=False))
     )
 
     assert result["state"] == "cancelled"
@@ -305,7 +305,7 @@ def test_dataset_cancel_pending_spawn_arms_pending_cancel(monkeypatch):
             return True
 
         def get_job(self, _key):
-            return SimpleNamespace(state = "running")
+            return SimpleNamespace(state="running")
 
     monkeypatch.setattr(downloads, "_registry", _Registry())
     monkeypatch.setattr(
@@ -316,7 +316,7 @@ def test_dataset_cancel_pending_spawn_arms_pending_cancel(monkeypatch):
 
     result = asyncio.run(
         downloads.cancel_dataset_download_response(
-            SimpleNamespace(repo_id = "Org/Data", generation = 5)
+            SimpleNamespace(repo_id="Org/Data", generation=5)
         )
     )
 
@@ -341,10 +341,10 @@ def test_local_dataset_items_expose_recipe_and_upload_source(monkeypatch, tmp_pa
     recipe_root = tmp_path / "recipes"
     upload_root = tmp_path / "uploads"
     parquet_dir = recipe_root / "recipe_alpha" / "parquet-files"
-    parquet_dir.mkdir(parents = True)
+    parquet_dir.mkdir(parents=True)
     (parquet_dir / "part.parquet").write_bytes(b"parquet")
     upload_root.mkdir()
-    (upload_root / "manual.jsonl").write_text('{"text":"hello"}\n', encoding = "utf-8")
+    (upload_root / "manual.jsonl").write_text('{"text":"hello"}\n', encoding="utf-8")
     monkeypatch.setattr(local, "LOCAL_DATASETS_ROOT", recipe_root)
     monkeypatch.setattr(local, "DATASET_UPLOAD_DIR", upload_root)
 

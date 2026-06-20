@@ -125,7 +125,7 @@ def scan_checkpoints(
             logger.debug(f"Found model: {item.name} with {len(checkpoints)} checkpoint(s)")
 
         # Sort by modification time (newest first)
-        models.sort(key = lambda x: Path(x[1][0][1]).stat().st_mtime, reverse = True)
+        models.sort(key=lambda x: Path(x[1][0][1]).stat().st_mtime, reverse=True)
 
         logger.info(f"Found {len(models)} training runs in {outputs_dir}")
         return models

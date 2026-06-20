@@ -92,6 +92,7 @@ def _has_torch() -> bool:
     """True if PyTorch is importable."""
     try:
         import torch
+
         return True
     except ImportError:
         return False
@@ -101,6 +102,7 @@ def _has_mlx() -> bool:
     """True if MLX is importable."""
     try:
         import mlx.core
+
         return True
     except ImportError:
         return False
@@ -158,6 +160,7 @@ def detect_hardware() -> DeviceType:
     # --- CUDA / ROCm: try PyTorch ---
     if _has_torch():
         import torch
+
         if torch.cuda.is_available():
             DEVICE = DeviceType.CUDA
             CHAT_ONLY = False
@@ -182,6 +185,7 @@ def detect_hardware() -> DeviceType:
     # --- XPU: Intel GPU ---
     if _has_torch():
         import torch
+
         if hasattr(torch, "xpu") and torch.xpu.is_available():
             DEVICE = DeviceType.XPU
             CHAT_ONLY = False
@@ -236,6 +240,7 @@ def clear_gpu_cache():
         torch.cuda.ipc_collect()
     elif device == DeviceType.XPU:
         import torch
+
         torch.xpu.synchronize()
         torch.xpu.empty_cache()
     elif device == DeviceType.MLX:
@@ -411,6 +416,7 @@ def get_package_versions() -> Dict[str, Optional[str]]:
     # GPU runtime version bundled with torch
     try:
         import torch
+
         versions["cuda"] = getattr(torch.version, "cuda", None)
         versions["rocm"] = getattr(torch.version, "hip", None)
     except Exception:
@@ -518,10 +524,10 @@ def _read_apple_gpu_stats() -> Dict[str, Any]:
     try:
         result = subprocess.run(
             ["ioreg", "-r", "-c", "AGXAccelerator"],
-            capture_output = True,
-            timeout = 2,
+            capture_output=True,
+            timeout=2,
         )
-        text = result.stdout.decode("utf-8", errors = "replace")
+        text = result.stdout.decode("utf-8", errors="replace")
     except Exception:
         return {}
 
@@ -597,9 +603,9 @@ def _rocm_windows_perf_counter_gpu_util_pct() -> Optional[float]:
         )
         r = subprocess.run(
             ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
-            capture_output = True,
-            text = True,
-            timeout = 5,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         if r.returncode != 0 or not r.stdout.strip():
             return None
@@ -649,9 +655,9 @@ def _rocm_windows_perf_counter_vram_gb() -> tuple[Optional[float], Optional[floa
         )
         r = subprocess.run(
             ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
-            capture_output = True,
-            text = True,
-            timeout = 5,
+            capture_output=True,
+            text=True,
+            timeout=5,
         )
         if r.returncode != 0 or not r.stdout.strip():
             return None, None
@@ -676,7 +682,7 @@ def get_gpu_utilization() -> list[Dict[str, Any]]:
         result = _smi_query(
             "get_visible_gpu_utilization",
             parent_visible_spec["numeric_ids"],
-            parent_cuda_visible_devices = parent_visible_spec["raw"],
+            parent_cuda_visible_devices=parent_visible_spec["raw"],
         )
         if result is not None and "devices" in result:
             devices = result["devices"]
@@ -773,6 +779,7 @@ def get_gpu_utilization() -> list[Dict[str, Any]]:
     if device == DeviceType.MLX:
         try:
             import psutil
+
             agx = _read_apple_gpu_stats()
             total_bytes = psutil.virtual_memory().total
         except Exception as e:
@@ -909,7 +916,7 @@ def get_visible_gpu_utilization() -> Dict[str, Any]:
         result = _smi_query(
             "get_visible_gpu_utilization",
             parent_visible_spec["numeric_ids"],
-            parent_cuda_visible_devices = parent_visible_spec["raw"],
+            parent_cuda_visible_devices=parent_visible_spec["raw"],
         )
         if result is not None:
             result["backend"] = _backend_label(device)
@@ -1130,7 +1137,7 @@ def _resolve_model_identifier_for_gpu_estimate(
     try:
         from utils.models.model_config import ModelConfig
 
-        config = ModelConfig.from_identifier(model_name, hf_token = hf_token)
+        config = ModelConfig.from_identifier(model_name, hf_token=hf_token)
         if config and config.is_lora and config.base_model:
             return config.base_model
         return config.identifier if config else model_name
@@ -1166,7 +1173,7 @@ def _get_hf_safetensors_total_params(
     try:
         from huggingface_hub import model_info as hf_model_info
 
-        info = hf_model_info(model_name, token = hf_token)
+        info = hf_model_info(model_name, token=hf_token)
         safetensors = getattr(info, "safetensors", None)
         if isinstance(safetensors, dict):
             total = safetensors.get("total")
@@ -1184,7 +1191,7 @@ def _load_config_for_gpu_estimate(model_name: str, hf_token: Optional[str] = Non
     try:
         from utils.transformers_version import _load_config_json
 
-        cfg = _load_config_json(model_name, hf_token = hf_token)
+        cfg = _load_config_json(model_name, hf_token=hf_token)
         if cfg is None:
             return None
 
@@ -1236,6 +1243,7 @@ def _determine_attention_impl_for_gpu_estimate(config) -> str:
 
     try:
         import torch.distributed as _td
+
         for _attr, _stub in (
             ("is_initialized", lambda: False),
             ("is_available", lambda: False),
@@ -1298,13 +1306,13 @@ def _estimate_fp16_model_size_bytes_from_vllm_utils(config) -> Optional[int]:
             )
             _, _, _, memory_left_for_kv_cache_gb = _vllm_utils.approximate_vllm_memory_usage(
                 config,
-                load_in_4bit = False,
-                load_in_8bit = False,
-                max_seq_length = 1,
-                gpu_memory_utilization = 1.0,
-                enable_lora = False,
-                account_for_gradients = False,
-                cuda_graph_overhead = False,
+                load_in_4bit=False,
+                load_in_8bit=False,
+                max_seq_length=1,
+                gpu_memory_utilization=1.0,
+                enable_lora=False,
+                account_for_gradients=False,
+                cuda_graph_overhead=False,
             )
         finally:
             _vllm_utils.get_mem_info = original_get_mem_info
@@ -1326,15 +1334,15 @@ def _estimate_fp16_model_size_bytes_from_vllm_utils(config) -> Optional[int]:
 def estimate_fp16_model_size_bytes(
     model_name: str, hf_token: Optional[str] = None
 ) -> tuple[Optional[int], str]:
-    estimate_model = _resolve_model_identifier_for_gpu_estimate(model_name, hf_token = hf_token)
+    estimate_model = _resolve_model_identifier_for_gpu_estimate(model_name, hf_token=hf_token)
 
     total_params = None
     if "/" in estimate_model and not Path(estimate_model).exists():
-        total_params = _get_hf_safetensors_total_params(estimate_model, hf_token = hf_token)
+        total_params = _get_hf_safetensors_total_params(estimate_model, hf_token=hf_token)
     if total_params:
         return int(total_params * 2), "safetensors"
 
-    config = _load_config_for_gpu_estimate(estimate_model, hf_token = hf_token)
+    config = _load_config_for_gpu_estimate(estimate_model, hf_token=hf_token)
     config_bytes: Optional[int] = None
     if config is not None:
         config_bytes = _estimate_fp16_model_size_bytes_from_config(config)
@@ -1385,7 +1393,7 @@ def estimate_required_model_memory_gb(
         DEFAULT_TARGET_MODULES,
     )
 
-    model_size_bytes, source = estimate_fp16_model_size_bytes(model_name, hf_token = hf_token)
+    model_size_bytes, source = estimate_fp16_model_size_bytes(model_name, hf_token=hf_token)
     metadata: Dict[str, Any] = {
         "mode": "inference" if training_type is None else "training",
         "model_size_source": source,
@@ -1411,18 +1419,18 @@ def estimate_required_model_memory_gb(
         "full" if training_type == "Full Finetuning" else ("qlora" if load_in_4bit else "lora")
     )
     vram_config = TrainingVramConfig(
-        training_method = training_method,
-        batch_size = batch_size,
-        max_seq_length = max_seq_length,
-        lora_rank = lora_rank,
-        target_modules = target_modules or list(DEFAULT_TARGET_MODULES),
-        gradient_checkpointing = gradient_checkpointing,
-        optimizer = optimizer,
-        load_in_4bit = load_in_4bit,
+        training_method=training_method,
+        batch_size=batch_size,
+        max_seq_length=max_seq_length,
+        lora_rank=lora_rank,
+        target_modules=target_modules or list(DEFAULT_TARGET_MODULES),
+        gradient_checkpointing=gradient_checkpointing,
+        optimizer=optimizer,
+        load_in_4bit=load_in_4bit,
     )
 
-    estimate_model = _resolve_model_identifier_for_gpu_estimate(model_name, hf_token = hf_token)
-    config = _load_config_for_gpu_estimate(estimate_model, hf_token = hf_token)
+    estimate_model = _resolve_model_identifier_for_gpu_estimate(model_name, hf_token=hf_token)
+    config = _load_config_for_gpu_estimate(estimate_model, hf_token=hf_token)
     if config is not None:
         try:
             vram_config.attention_implementation = _determine_attention_impl_for_gpu_estimate(
@@ -1510,15 +1518,15 @@ def auto_select_gpu_ids(
 
     required_gb, estimate_metadata = estimate_required_model_memory_gb(
         model_name,
-        hf_token = hf_token,
-        training_type = training_type,
-        load_in_4bit = load_in_4bit,
-        batch_size = batch_size,
-        max_seq_length = max_seq_length,
-        lora_rank = lora_rank,
-        target_modules = target_modules,
-        gradient_checkpointing = gradient_checkpointing,
-        optimizer = optimizer,
+        hf_token=hf_token,
+        training_type=training_type,
+        load_in_4bit=load_in_4bit,
+        batch_size=batch_size,
+        max_seq_length=max_seq_length,
+        lora_rank=lora_rank,
+        target_modules=target_modules,
+        gradient_checkpointing=gradient_checkpointing,
+        optimizer=optimizer,
     )
     metadata.update(estimate_metadata)
     parent_visible_spec = _get_parent_visible_gpu_spec()
@@ -1564,7 +1572,7 @@ def auto_select_gpu_ids(
         metadata["selected_gpu_ids"] = parent_ids
         return parent_ids, metadata
 
-    ranked = sorted(gpu_candidates, key = lambda item: (-item["free_gb"], item["index"]))
+    ranked = sorted(gpu_candidates, key=lambda item: (-item["free_gb"], item["index"]))
     free_by_index = {item["index"]: item["free_gb"] for item in ranked}
     selected: list[int] = []
     usable_gb = 0.0
@@ -1603,11 +1611,11 @@ def auto_select_gpu_ids(
             metadata["selected_gpu_ids"] = selected
             logger.debug(
                 "Selected GPUs automatically",
-                model_name = model_name,
-                selected_gpu_ids = selected,
-                usable_gb = metadata["usable_gb"],
-                required_gb = metadata.get("required_gb"),
-                multi_gpu_overhead = multi_gpu_overhead,
+                model_name=model_name,
+                selected_gpu_ids=selected,
+                usable_gb=metadata["usable_gb"],
+                required_gb=metadata.get("required_gb"),
+                multi_gpu_overhead=multi_gpu_overhead,
             )
             return selected, metadata
 
@@ -1624,11 +1632,11 @@ def auto_select_gpu_ids(
     metadata["selected_gpu_ids"] = fallback_all
     logger.warning(
         "Falling back to all visible GPUs -- model may not fit",
-        model_name = model_name,
-        selected_gpu_ids = fallback_all,
-        usable_gb = metadata["usable_gb"],
-        required_gb = metadata.get("required_gb"),
-        multi_gpu_overhead = multi_gpu_overhead,
+        model_name=model_name,
+        selected_gpu_ids=fallback_all,
+        usable_gb=metadata["usable_gb"],
+        required_gb=metadata.get("required_gb"),
+        multi_gpu_overhead=multi_gpu_overhead,
     )
     return fallback_all, metadata
 
@@ -1678,15 +1686,15 @@ def prepare_gpu_selection(
 
     selected_gpu_ids, metadata = auto_select_gpu_ids(
         model_name,
-        hf_token = hf_token,
-        training_type = training_type,
-        load_in_4bit = load_in_4bit,
-        batch_size = batch_size,
-        max_seq_length = max_seq_length,
-        lora_rank = lora_rank,
-        target_modules = target_modules,
-        gradient_checkpointing = gradient_checkpointing,
-        optimizer = optimizer,
+        hf_token=hf_token,
+        training_type=training_type,
+        load_in_4bit=load_in_4bit,
+        batch_size=batch_size,
+        max_seq_length=max_seq_length,
+        lora_rank=lora_rank,
+        target_modules=target_modules,
+        gradient_checkpointing=gradient_checkpointing,
+        optimizer=optimizer,
     )
     return selected_gpu_ids, metadata
 
@@ -1873,6 +1881,7 @@ def get_visible_gpu_count() -> int:
     # No visibility env var set -- try torch, else physical count
     try:
         import torch
+
         if get_device() == DeviceType.XPU and hasattr(torch, "xpu"):
             _visible_gpu_count = torch.xpu.device_count()
         else:
@@ -1912,6 +1921,7 @@ def apply_gpu_ids(gpu_ids) -> None:
         # it unset but encode "rocm" in __version__. Broad except: never crash a worker.
         try:
             import torch as _torch
+
             _is_rocm = (
                 getattr(_torch.version, "hip", None) is not None
                 or "rocm" in getattr(_torch, "__version__", "").lower()

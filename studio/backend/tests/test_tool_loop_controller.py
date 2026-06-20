@@ -51,9 +51,9 @@ def test_canonical_tool_call_key_sorts_arguments():
 
 
 def test_coerce_tool_arguments_parses_json_and_heals_raw_strings():
-    parsed = coerce_tool_arguments('{"query":"gpu prices"}', heal = True)
-    healed = coerce_tool_arguments("print(1)", heal = True, tool_name = "python")
-    raw = coerce_tool_arguments("not-json", heal = False, tool_name = "python")
+    parsed = coerce_tool_arguments('{"query":"gpu prices"}', heal=True)
+    healed = coerce_tool_arguments("print(1)", heal=True, tool_name="python")
+    raw = coerce_tool_arguments("not-json", heal=False, tool_name="python")
 
     assert parsed.arguments == {"query": "gpu prices"}
     assert not parsed.healed
@@ -70,14 +70,14 @@ def test_status_and_provenance_match_local_event_conventions():
         == "Reading: example.com"
     )
     assert status_for_tool("python", {"code": "print(1)\nprint(2)"}) == "Running Python: print(1)"
-    assert tool_event_provenance(healed = True, forced = False, provisional = None) == {
+    assert tool_event_provenance(healed=True, forced=False, provisional=None) == {
         "source": "local",
         "healed": True,
     }
 
 
 def test_prepare_execute_builds_visible_events_and_model_tool_message():
-    controller = ToolLoopController(tools = [_tool("web_search")])
+    controller = ToolLoopController(tools=[_tool("web_search")])
     decision = controller.prepare_call(_call("web_search", {"query": "gpu prices"}))
 
     assert decision.should_execute
@@ -100,7 +100,7 @@ def test_prepare_execute_builds_visible_events_and_model_tool_message():
 
 
 def test_successful_duplicate_is_internal_noop_and_keeps_remaining_tools():
-    controller = ToolLoopController(tools = [_tool("web_search"), _tool("python")])
+    controller = ToolLoopController(tools=[_tool("web_search"), _tool("python")])
     first = controller.prepare_call(_call("web_search", {"query": "gpu prices"}, "call_a"))
     controller.record_result(first, "ok")
 
@@ -122,7 +122,7 @@ def test_successful_duplicate_is_internal_noop_and_keeps_remaining_tools():
 
 
 def test_repeated_successful_duplicate_becomes_terminal_after_one_recovery_nudge():
-    controller = ToolLoopController(tools = [_tool("web_search"), _tool("python")])
+    controller = ToolLoopController(tools=[_tool("web_search"), _tool("python")])
     first = controller.prepare_call(_call("web_search", {"query": "gpu prices"}, "call_a"))
     controller.record_result(first, "ok")
 
@@ -147,7 +147,7 @@ def test_repeated_successful_duplicate_becomes_terminal_after_one_recovery_nudge
 
 
 def test_failed_call_does_not_block_retry():
-    controller = ToolLoopController(tools = [_tool("web_search")])
+    controller = ToolLoopController(tools=[_tool("web_search")])
     first = controller.prepare_call(_call("web_search", {"query": "gpu prices"}))
     controller.record_result(first, "Error: temporary failure")
 
@@ -158,7 +158,7 @@ def test_failed_call_does_not_block_retry():
 
 
 def test_empty_enabled_tool_list_blocks_all_tool_calls():
-    controller = ToolLoopController(tools = [])
+    controller = ToolLoopController(tools=[])
     decision = controller.prepare_call(_call("web_search", {"query": "gpu prices"}))
     completion = controller.record_noop(decision)
 
@@ -171,7 +171,7 @@ def test_empty_enabled_tool_list_blocks_all_tool_calls():
 
 
 def test_disabled_tool_is_internal_noop_not_visible_tool_error():
-    controller = ToolLoopController(tools = [_tool("web_search")])
+    controller = ToolLoopController(tools=[_tool("web_search")])
     decision = controller.prepare_call(_call("python", {"code": "print(1)"}))
     completion = controller.record_noop(decision)
 
@@ -184,7 +184,7 @@ def test_disabled_tool_is_internal_noop_not_visible_tool_error():
 
 
 def test_render_html_success_filters_active_tools_and_repeat_is_internal():
-    controller = ToolLoopController(tools = [_tool("render_html"), _tool("web_search")])
+    controller = ToolLoopController(tools=[_tool("render_html"), _tool("web_search")])
     assert [t["function"]["name"] for t in controller.active_tools()] == [
         "render_html",
         "web_search",
