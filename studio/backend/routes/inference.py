@@ -1356,6 +1356,43 @@ def _build_tool_action_nudge(*, tools: list[dict], model_name: str) -> str:
     )
 
 
+# Nudge appended when the RAG knowledge-base tool is active: ground answers in
+# the attached documents instead of model memory.
+_RAG_GROUNDING_NUDGE = (
+    "The user has attached documents to this conversation. Relevant "
+    "passages are retrieved and provided to you automatically; base "
+    "your answer on them and cite them. You can also call "
+    "search_knowledge_base to look for more. Do not answer from "
+    "memory when the attached documents are relevant."
+)
+
+
+async def _select_request_tools(
+    payload: ChatCompletionRequest, *, tools_on: bool, mcp_allowed: bool
+) -> list[dict]:
+    """Resolve the tool list for a chat request: built-ins filtered by the
+    caller's opt-in (empty when MCP-only), the RAG tool dropped without a
+    retrieval scope, then enabled MCP tools appended. An empty result means the
+    caller should skip the tool loop, so a model-emitted built-in call can't
+    piggy-back on the empty allow-list."""
+    from core.inference.tools import ALL_TOOLS, get_enabled_mcp_tools
+
+    if not tools_on:
+        # MCP-only request: skip built-ins, leave room for MCP tools.
+        tools = []
+    elif payload.enabled_tools is not None:
+        tools = [t for t in ALL_TOOLS if t["function"]["name"] in payload.enabled_tools]
+    else:
+        # Copy so the shared module-global tool list can't be mutated by callers.
+        tools = list(ALL_TOOLS)
+    # Drop the RAG tool without a scope: nothing to search over.
+    if not payload.rag_scope:
+        tools = [t for t in tools if t["function"]["name"] != "search_knowledge_base"]
+    if mcp_allowed:
+        tools = tools + await get_enabled_mcp_tools()
+    return tools
+
+
 # Strip tool-call XML the speculative buffer in core/inference/llama_cpp.py
 # split across the visible/DRAIN boundary. Four leak shapes:
 #   1. well-formed `<tool_call>...</tool_call>` / `<function=...>...</function>`
@@ -4900,27 +4937,9 @@ async def openai_chat_completions(
         use_tools = (_tools_on or _mcp_allowed) and llama_backend.supports_tools
 
         if use_tools:
-            from core.inference.tools import ALL_TOOLS, get_enabled_mcp_tools
-
-            if not _tools_on:
-                # MCP-only request: skip built-ins, leave room for MCP tools.
-                tools_to_use = []
-            elif payload.enabled_tools is not None:
-                tools_to_use = [
-                    t for t in ALL_TOOLS if t["function"]["name"] in payload.enabled_tools
-                ]
-            else:
-                tools_to_use = ALL_TOOLS
-
-            # Drop the RAG tool without a scope: nothing to search over.
-            if not payload.rag_scope:
-                tools_to_use = [
-                    t for t in tools_to_use if t["function"]["name"] != "search_knowledge_base"
-                ]
-
-            if _mcp_allowed:
-                tools_to_use = tools_to_use + await get_enabled_mcp_tools()
-
+            tools_to_use = await _select_request_tools(
+                payload, tools_on = _tools_on, mcp_allowed = _mcp_allowed
+            )
             # Skip the tool loop when no tool survived, so the safetensors
             # loop's "empty = allow all" semantic can't reach built-in tools
             # the caller didn't opt into. Callers who omit enabled_tools still
@@ -4954,16 +4973,13 @@ async def openai_chat_completions(
             _tool_names = {(t.get("function") or {}).get("name") for t in (tools_to_use or [])}
             _rag_active = "search_knowledge_base" in _tool_names and payload.rag_scope
             if _rag_active:
-                _rag_nudge = (
-                    "The user has attached documents to this conversation. Relevant "
-                    "passages are retrieved and provided to you automatically; base "
-                    "your answer on them and cite them. You can also call "
-                    "search_knowledge_base to look for more. Do not answer from "
-                    "memory when the attached documents are relevant."
-                )
                 # Prefix the date when the tool nudge is empty (RAG-only tool set).
                 _date_line = f"The current date is {_date.today().isoformat()}."
-                _nudge = _date_line + " " + _rag_nudge if not _nudge else _nudge + " " + _rag_nudge
+                _nudge = (
+                    _date_line + " " + _RAG_GROUNDING_NUDGE
+                    if not _nudge
+                    else _nudge + " " + _RAG_GROUNDING_NUDGE
+                )
 
             if _nudge:
                 # Append nudge to system prompt (preserve user's prompt)
@@ -5416,26 +5432,9 @@ async def openai_chat_completions(
     )
 
     if _sf_use_tools:
-        from core.inference.tools import ALL_TOOLS, get_enabled_mcp_tools
-
-        if not _sf_tools_on:
-            _sf_tools_to_use = []
-        elif payload.enabled_tools is not None:
-            _sf_tools_to_use = [
-                t for t in ALL_TOOLS if t["function"]["name"] in payload.enabled_tools
-            ]
-        else:
-            _sf_tools_to_use = ALL_TOOLS
-
-        # Drop the RAG tool unless the request carries a retrieval scope.
-        if not payload.rag_scope:
-            _sf_tools_to_use = [
-                t for t in _sf_tools_to_use if t["function"]["name"] != "search_knowledge_base"
-            ]
-
-        if _sf_mcp_allowed:
-            _sf_tools_to_use = _sf_tools_to_use + await get_enabled_mcp_tools()
-
+        _sf_tools_to_use = await _select_request_tools(
+            payload, tools_on = _sf_tools_on, mcp_allowed = _sf_mcp_allowed
+        )
         # Mirror the GGUF path: refuse to enter the tool loop when nothing
         # survived, so a model-emitted built-in call can't piggy-back on the
         # empty allow-list.
@@ -5464,19 +5463,12 @@ async def openai_chat_completions(
         _sf_tool_names = {(t.get("function") or {}).get("name") for t in (_sf_tools_to_use or [])}
         _sf_rag_active = "search_knowledge_base" in _sf_tool_names and payload.rag_scope
         if _sf_rag_active:
-            _sf_rag_nudge = (
-                "The user has attached documents to this conversation. Relevant "
-                "passages are retrieved and provided to you automatically; base "
-                "your answer on them and cite them. You can also call "
-                "search_knowledge_base to look for more. Do not answer from "
-                "memory when the attached documents are relevant."
-            )
             # Prefix the date when the tool nudge is empty (RAG-only tool set).
             _sf_date_line = f"The current date is {_date.today().isoformat()}."
             _sf_nudge = (
-                _sf_date_line + " " + _sf_rag_nudge
+                _sf_date_line + " " + _RAG_GROUNDING_NUDGE
                 if not _sf_nudge
-                else _sf_nudge + " " + _sf_rag_nudge
+                else _sf_nudge + " " + _RAG_GROUNDING_NUDGE
             )
 
         _sf_system_prompt = system_prompt

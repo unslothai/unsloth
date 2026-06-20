@@ -7769,16 +7769,16 @@ class LlamaCppBackend:
                 text = pat.sub("", text)
             return text
 
-        def _build_iter_metadata():
-            """Final usage+timings metadata event for a no-more-tool-calls
-            iteration, merging this iteration's usage/timings with the running
-            accumulators. None when there is nothing to report."""
-            _fu = _backfill_usage_from_timings(_iter_usage, _iter_timings) or {}
+        def _build_metadata_event(usage, timings, finish_reason):
+            """Final usage+timings metadata event for the given pass, merging its
+            usage/timings with the running cross-iteration accumulators. None when
+            there is nothing to report."""
+            _fu = _backfill_usage_from_timings(usage, timings) or {}
             _fp = _fu.get("prompt_tokens", 0)
             _tc = _fu.get("completion_tokens", 0) + _accumulated_completion_tokens
-            if not (_iter_usage or _iter_timings or _accumulated_completion_tokens):
+            if not (usage or timings or _accumulated_completion_tokens or finish_reason):
                 return None
-            _mt = dict(_iter_timings) if _iter_timings else {}
+            _mt = dict(timings) if timings else {}
             if _accumulated_predicted_ms or _accumulated_predicted_n:
                 _mt["predicted_ms"] = _mt.get("predicted_ms", 0) + _accumulated_predicted_ms
                 _mt["predicted_n"] = _mt.get("predicted_n", 0) + _accumulated_predicted_n
@@ -7794,7 +7794,7 @@ class LlamaCppBackend:
                     "total_tokens": _fp + _tc,
                 },
                 "timings": _mt,
-                "finish_reason": _iter_finish_reason,
+                "finish_reason": finish_reason,
             }
 
         def _flush_reasoning_and_buffer():
@@ -8259,7 +8259,9 @@ class LlamaCppBackend:
 
                         # Content was already streamed.  Yield metadata.
                         yield {"type": "status", "text": ""}
-                        _meta = _build_iter_metadata()
+                        _meta = _build_metadata_event(
+                            _iter_usage, _iter_timings, _iter_finish_reason
+                        )
                         if _meta is not None:
                             yield _meta
                         return
@@ -8312,7 +8314,9 @@ class LlamaCppBackend:
                             content_accum = _strip_tool_markup(content_accum, final = True)
                         if content_accum:
                             yield {"type": "content", "text": content_accum}
-                        _meta = _build_iter_metadata()
+                        _meta = _build_metadata_event(
+                            _iter_usage, _iter_timings, _iter_finish_reason
+                        )
                         if _meta is not None:
                             yield _meta
                         return
@@ -8589,35 +8593,11 @@ class LlamaCppBackend:
                             logger.debug(f"Skipping malformed SSE line: {line[:100]}")
                     if _stream_done:
                         break  # exit outer for
-                _final_usage = _metadata_usage or {}
-                _final_completion = _final_usage.get("completion_tokens", 0)
-                _final_prompt = _final_usage.get("prompt_tokens", 0)
-                _total_completion = _final_completion + _accumulated_completion_tokens
-                if _metadata_usage or _metadata_timings or _metadata_finish_reason:
-                    _merged_timings = dict(_metadata_timings) if _metadata_timings else {}
-                    if _accumulated_predicted_ms or _accumulated_predicted_n:
-                        _merged_timings["predicted_ms"] = (
-                            _merged_timings.get("predicted_ms", 0) + _accumulated_predicted_ms
-                        )
-                        _total_predicted_n = (
-                            _merged_timings.get("predicted_n", 0) + _accumulated_predicted_n
-                        )
-                        _merged_timings["predicted_n"] = _total_predicted_n
-                        _total_predicted_ms = _merged_timings["predicted_ms"]
-                        if _total_predicted_ms > 0:
-                            _merged_timings["predicted_per_second"] = _total_predicted_n / (
-                                _total_predicted_ms / 1000.0
-                            )
-                    yield {
-                        "type": "metadata",
-                        "usage": {
-                            "prompt_tokens": _final_prompt,
-                            "completion_tokens": _total_completion,
-                            "total_tokens": _final_prompt + _total_completion,
-                        },
-                        "timings": _merged_timings,
-                        "finish_reason": _metadata_finish_reason,
-                    }
+                _meta = _build_metadata_event(
+                    _metadata_usage, _metadata_timings, _metadata_finish_reason
+                )
+                if _meta is not None:
+                    yield _meta
 
         except httpx.ConnectError:
             raise RuntimeError("Lost connection to llama-server")
