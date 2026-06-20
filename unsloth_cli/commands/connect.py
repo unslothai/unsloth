@@ -19,6 +19,7 @@ import typer
 
 from unsloth_cli._inference import (
     _USER_AGENT,
+    _studio_token,
     ensure_studio_backend_path,
     find_studio_server,
     is_loopback_url,
@@ -189,35 +190,6 @@ def _remember_key(cache: Path, base: str, key: str) -> None:
         pass  # worst case the next launch mints another key
 
 
-def _mint_local_api_key() -> Optional[str]:
-    """Create a Studio API key directly in the local auth DB the server reads.
-
-    Minting locally (instead of POSTing a self-issued JWT to the discovered
-    base URL) means no bearer token ever crosses the network, so an
-    unverified or preempted endpoint can't capture one. Works only when the
-    CLI runs as the same OS user as the server (the desktop case); returns
-    None otherwise.
-    """
-    try:
-        import studio.backend.core  # noqa: F401  puts studio/backend on sys.path
-        from studio.backend.auth import storage
-
-        conn = storage.get_connection()
-        try:
-            row = conn.execute("SELECT username FROM auth_user LIMIT 1").fetchone()
-        finally:
-            conn.close()
-        if not row:
-            return None
-        raw_key, _ = storage.create_api_key(
-            username = row[0],
-            name = "Coding agents (unsloth connect)",
-        )
-        return raw_key
-    except Exception:
-        return None
-
-
 def _agent_api_key(base: str, explicit: Optional[str]) -> str:
     cache = _key_cache_path()
     if explicit:
@@ -249,7 +221,7 @@ def _agent_api_key(base: str, explicit: Optional[str]) -> str:
         )
 
     # Loopback only, identity verified. Replay a key already minted for *this*
-    # server (never one cached for a different server), then mint locally.
+    # server (never one cached for a different server), then mint a new one.
     for key in _cached_keys(cache, base):
         try:
             _http_json("GET", f"{base}/v1/models", key)
@@ -258,13 +230,23 @@ def _agent_api_key(base: str, explicit: Optional[str]) -> str:
         _remember_key(cache, base, key)
         return key
 
-    key = _mint_local_api_key()
-    if key is None:
+    # No cached key worked. The handshake already proved this loopback server is
+    # our Studio, so self-issue a JWT (signed with the same local secret the
+    # server validates against) and mint a key through it.
+    token = _studio_token()
+    if token is None:
         _fail(
-            "Couldn't mint a Studio API key locally (the server may be remote, "
-            "or running as a different OS user). Create one in Studio → Settings "
-            "→ API and pass it with --api-key; it is remembered for next time."
+            "Couldn't authenticate with the Studio server automatically. Create "
+            "an API key in Studio → Settings → API and pass it with --api-key, "
+            "or set UNSLOTH_API_KEY."
         )
+    key = _http_json(
+        "POST",
+        f"{base}/api/auth/api-keys",
+        token,
+        {"name": "Coding agents (unsloth connect)"},
+        error = "Couldn't create an API key",
+    )["key"]
     _remember_key(cache, base, key)
     return key
 

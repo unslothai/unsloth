@@ -176,9 +176,10 @@ def fake_studio(tmp_path, monkeypatch, claude_settings):
     # The server identity handshake is exercised in its own tests; here the
     # discovered loopback server is trusted so the rest of the flow runs.
     monkeypatch.setattr(connect, "verify_studio_identity", lambda base: True)
-    # Keys are now minted locally (no JWT crosses the network); stand in for
-    # the auth-DB write so tests stay offline.
-    monkeypatch.setattr(connect, "_mint_local_api_key", lambda: "sk-unsloth-feedfacefeedface")
+    # A new key is minted through the (identity-verified) server; the fake
+    # /api/auth/api-keys above returns it, and _studio_token stands in for the
+    # self-issued JWT so tests stay offline.
+    monkeypatch.setattr(connect, "_studio_token", lambda: "jwt-token")
     monkeypatch.setattr(connect, "_http_json", http_json)
     monkeypatch.setattr(connect, "_key_cache_path", lambda: tmp_path / "agent_api_key.json")
     # No `claude` on PATH, so _claude_cache_flags never probes the real binary.
@@ -291,18 +292,12 @@ def test_connect_codex_no_launch(fake_studio, tmp_path):
     assert (tmp_path / "codex" / "unsloth_api.config.toml").exists()
 
 
-def test_connect_key_minted_once_then_cached(fake_studio, tmp_path, monkeypatch):
-    mints = {"n": 0}
-
-    def mint():
-        mints["n"] += 1
-        return "sk-unsloth-feedfacefeedface"
-
-    monkeypatch.setattr(connect, "_mint_local_api_key", mint)
+def test_connect_key_minted_once_then_cached(fake_studio, tmp_path):
     CliRunner().invoke(connect.connect_app, ["claude", "--no-launch"])
     CliRunner().invoke(connect.connect_app, ["claude", "--no-launch"])
     # First run mints; second reuses the key cached for this server.
-    assert mints["n"] == 1
+    mints = [c for c in fake_studio if c[1].endswith("/api/auth/api-keys")]
+    assert len(mints) == 1
     cached = json.loads((tmp_path / "agent_api_key.json").read_text())
     assert cached["servers"][BASE] == ["sk-unsloth-feedfacefeedface"]
 
@@ -471,21 +466,14 @@ def test_connect_codex_rejects_non_gguf_model(fake_studio, monkeypatch):
 
 def test_connect_nonloopback_keyless_refuses_to_send_credential(fake_studio, monkeypatch):
     # A server discovered only by URL + health check is unverified. Keyless
-    # connect must refuse rather than auto-send a cached/minted credential, and
-    # it must not touch the network or the local auth DB to do so.
+    # connect must refuse rather than auto-send a credential, and must not make
+    # any request to do so.
     monkeypatch.setattr(connect, "find_studio_server", lambda: "http://studio.evil.example:8888")
-    minted = {"n": 0}
-    monkeypatch.setattr(
-        connect,
-        "_mint_local_api_key",
-        lambda: (minted.__setitem__("n", minted["n"] + 1), "sk-x")[1],
-    )
     result = CliRunner().invoke(connect.connect_app, ["opencode", "--no-launch"])
     assert result.exit_code == 1
     assert "Settings → API" in result.output
     assert "--api-key" in result.output
-    assert minted["n"] == 0  # never minted
-    assert fake_studio == []  # no HTTP request of any kind
+    assert fake_studio == []  # no HTTP request of any kind (no mint, no /v1/models)
 
 
 def test_connect_nonloopback_explicit_key_is_allowed(fake_studio, monkeypatch):
@@ -506,17 +494,12 @@ def test_connect_unverified_loopback_refuses_to_send_credential(fake_studio, tmp
     cache = tmp_path / "agent_api_key.json"
     cache.write_text(json.dumps({"servers": {BASE: ["sk-unsloth-feedfacefeedface"]}}))
     monkeypatch.setattr(connect, "verify_studio_identity", lambda base: False)
-    minted = {"n": 0}
-    monkeypatch.setattr(
-        connect,
-        "_mint_local_api_key",
-        lambda: (minted.__setitem__("n", minted["n"] + 1), "sk-x")[1],
-    )
     result = CliRunner().invoke(connect.connect_app, ["claude", "--no-launch"])
     assert result.exit_code == 1
     assert "--api-key" in result.output
-    assert minted["n"] == 0  # never minted
-    assert not any(c[1].endswith("/v1/models") for c in fake_studio)  # cached key never sent
+    # Neither the cached key nor a mint request is ever sent.
+    assert not any(c[1].endswith("/v1/models") for c in fake_studio)
+    assert not any(c[1].endswith("/api/auth/api-keys") for c in fake_studio)
 
 
 def test_connect_explicit_key_skips_identity_check(fake_studio, monkeypatch):
