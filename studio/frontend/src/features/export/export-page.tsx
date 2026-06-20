@@ -886,7 +886,7 @@ export function ExportPage() {
                                   ) : (
                                     <ComboboxEmpty>No models found</ComboboxEmpty>
                                   )}
-                                  <ComboboxList className="p-1 !max-h-none !overflow-visible">
+                                  <ComboboxList className="p-1 max-h-none! overflow-visible!">
                                     {(id: string) => (
                                       <ComboboxItem key={id} value={id} className="gap-2">
                                         <span className="block min-w-0 flex-1 truncate">

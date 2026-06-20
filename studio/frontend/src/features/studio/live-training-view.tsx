@@ -45,6 +45,7 @@ export function LiveTrainingView(): ReactElement {
   const config = useTrainingConfigStore(
     useShallow((state) => ({
       selectedModel: state.selectedModel,
+      projectName: state.projectName,
       trainingMethod: state.trainingMethod,
     })),
   );
@@ -67,6 +68,7 @@ export function LiveTrainingView(): ReactElement {
     error: runtime.error,
     isTrainingRunning: runtime.isTrainingRunning,
     modelName: config.selectedModel ?? "",
+    projectName: config.projectName.trim() || null,
     trainingMethod: config.trainingMethod ?? "",
     lossHistory: runtime.lossHistory,
     lrHistory: runtime.lrHistory,

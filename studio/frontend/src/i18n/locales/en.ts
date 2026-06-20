@@ -803,6 +803,7 @@ export const en = {
       loss: "Loss",
       lr: "LR",
       gradNorm: "Grad Norm",
+      project: "Project",
       model: "Model",
       method: "Method",
       elapsed: "Elapsed: {value}",

@@ -44,6 +44,7 @@ if sys.platform.startswith("linux") and "HSA_ENABLE_DXG_DETECTION" not in os.env
 
 logger = get_logger(__name__)
 from utils.hardware import apply_gpu_ids
+from utils.training_runs import build_default_output_dir_name
 from utils.wheel_utils import (
     direct_wheel_url,
     flash_attn_wheel_url,
@@ -3015,7 +3016,10 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             resume_from_checkpoint
         )
         if not output_dir:
-            output_dir = f"{default_run_dir_name(model_name)}_{int(time.time())}"
+            output_dir = build_default_output_dir_name(
+                model_name,
+                config.get("project_name"),
+            )
         output_dir = str(resolve_output_dir(output_dir))
         ensure_dir(Path(output_dir))
 
@@ -3491,7 +3495,10 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
         resume_from_checkpoint
     )
     if not output_dir:
-        output_dir = f"{default_run_dir_name(model_name)}_{int(time.time())}"
+        output_dir = build_default_output_dir_name(
+            model_name,
+            config.get("project_name"),
+        )
     output_dir = str(resolve_output_dir(output_dir))
 
     num_epochs = config.get("num_epochs", 2)

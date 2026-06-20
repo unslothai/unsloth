@@ -9,6 +9,8 @@ import re
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from typing import Any, Optional, List, Dict, Literal
 
+from utils.training_runs import normalize_project_name
+
 
 # ASCII integer, optional single sign. Rejects "++512" and Unicode digits
 # ("５１２") that slip through str.isdigit() + int().
@@ -93,6 +95,10 @@ class TrainingStartRequest(BaseModel):
     model_name: str = Field(
         ..., description = "Model identifier (e.g., 'unsloth/llama-3-8b-bnb-4bit')"
     )
+    project_name: Optional[str] = Field(
+        None,
+        description = "Optional user-defined project name appended to run folders and shown in history",
+    )
     training_type: Literal["LoRA/QLoRA", "Full Finetuning", "Continued Pretraining"] = Field(
         ...,
         description = "Training type: 'LoRA/QLoRA', 'Full Finetuning', or 'Continued Pretraining'",
@@ -140,6 +146,11 @@ class TrainingStartRequest(BaseModel):
         if isinstance(values, dict) and "split" in values:
             values.setdefault("train_split", values.pop("split"))
         return values
+
+    @field_validator("project_name")
+    @classmethod
+    def _normalize_project_name(cls, value: Optional[str]) -> Optional[str]:
+        return normalize_project_name(value)
 
     @field_validator("learning_rate", mode = "before")
     @classmethod
@@ -492,6 +503,7 @@ class TrainingRunSummary(BaseModel):
     id: str
     status: Literal["running", "completed", "stopped", "error"]
     model_name: str
+    project_name: Optional[str] = None
     dataset_name: str
     display_name: Optional[str] = None
     started_at: str

@@ -57,6 +57,7 @@ const initialState: TrainingConfigState = {
   currentStep: MIN_STEP,
   modelType: null,
   selectedModel: null,
+  projectName: "",
   trainingMethod: "qlora",
   hfToken: "",
   datasetSource: "huggingface",
@@ -548,6 +549,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           if (state.modelDefaultsAppliedFor === state.selectedModel) return;
           void loadAndApplyModelDefaults(state.selectedModel);
         },
+        setProjectName: (projectName) => set({ projectName }),
         setTrainingMethod: (trainingMethod) => {
           const state = get();
           set(

@@ -746,6 +746,7 @@ export const zhCN = {
       loss: "Loss",
       lr: "LR",
       gradNorm: "梯度范数",
+      project: "项目",
       model: "模型",
       method: "方法",
       elapsed: "已用时间：{value}",

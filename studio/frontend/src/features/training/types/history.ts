@@ -5,6 +5,7 @@ export interface TrainingRunSummary {
   id: string;
   status: "running" | "completed" | "stopped" | "error";
   model_name: string;
+  project_name: string | null;
   dataset_name: string;
   display_name: string | null;
   started_at: string;

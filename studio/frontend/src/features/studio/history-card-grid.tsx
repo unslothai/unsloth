@@ -432,6 +432,14 @@ export function HistoryCardGrid({
                 >
                   {run.dataset_name}
                 </p>
+                {run.project_name && (
+                  <p
+                    className="truncate text-xs text-muted-foreground/80"
+                    title={run.project_name}
+                  >
+                    {run.project_name}
+                  </p>
+                )}
               </div>
               {run.loss_sparkline && run.loss_sparkline.length >= 2 && (
                 <div className={cn(canResume && "h-7 overflow-hidden")}>

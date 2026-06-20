@@ -157,6 +157,7 @@ export interface TrainingViewData {
 
   // Config summary
   modelName: string;
+  projectName: string | null;
   trainingMethod: string;
 
   // Time-series (for ChartsSection)
