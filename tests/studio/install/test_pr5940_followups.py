@@ -592,9 +592,9 @@ def test_python_path_inside_venv_guards_root_prefix_in_all_copies():
     # venv-internal, silently disabling amd-smi. All three copies must guard it.
     for src in (_PREBUILT_PATH, _AMD_PY, _PYSTACK_PY):
         text = src.read_text(encoding = "utf-8")
-        assert "os.path.dirname(" in text and ") == " in text and "return False" in text, (
-            f"{src.name} _path_inside_venv must guard a root-dir sys.prefix"
-        )
+        assert (
+            "os.path.dirname(" in text and ") == " in text and "return False" in text
+        ), f"{src.name} _path_inside_venv must guard a root-dir sys.prefix"
 
 
 def test_path_inside_venv_returns_false_for_root_prefix():
@@ -603,7 +603,8 @@ def test_path_inside_venv_returns_false_for_root_prefix():
     root = "C:\\" if os.name == "nt" else "/"
     real = os.path.realpath
     with patch.object(
-        prebuilt.os.path, "realpath",
+        prebuilt.os.path,
+        "realpath",
         side_effect = lambda p: root if p == prebuilt.sys.prefix else real(p),
     ):
         ext = os.path.join(root, "hip", "bin", "hipinfo.exe")
@@ -709,33 +710,34 @@ def test_install_python_stack_windows_rocm_repair_pins_and_is_nonfatal():
     # (2) be nonfatal so a transient AMD-index failure does not abort the whole
     # install after the PowerShell side already fell back to CPU torch.
     text = _PYSTACK_PY.read_text(encoding = "utf-8")
-    assert "_WINDOWS_ROCM_TORCH_PKG_SPECS" in text, (
-        "install_python_stack.py must define a Windows per-arch ROCm companion pin map"
-    )
+    assert (
+        "_WINDOWS_ROCM_TORCH_PKG_SPECS" in text
+    ), "install_python_stack.py must define a Windows per-arch ROCm companion pin map"
     for gfx in ("gfx1201", "gfx1200", "gfx1151", "gfx1150"):
-        assert re.search(r'"' + gfx + r'":\s*_ROCM_TORCH_PKG_SPECS\["rocm7\.2"\]', text), (
-            f"{gfx} must pin to the rocm7.2 trio like install.ps1/setup.ps1"
-        )
+        assert re.search(
+            r'"' + gfx + r'":\s*_ROCM_TORCH_PKG_SPECS\["rocm7\.2"\]', text
+        ), f"{gfx} must pin to the rocm7.2 trio like install.ps1/setup.ps1"
     i = text.find('f"ROCm torch (Windows, {gfx_arch})"')
     assert i != -1, "Windows ROCm repair pip call not found"
     # The nearest preceding call must be the nonfatal pip_install_try, not pip_install.
     j = text.rfind("pip_install_try(", 0, i)
     k = text.rfind("pip_install(", 0, i)
-    assert j != -1 and (k == -1 or j > k), (
-        "Windows ROCm repair must use the nonfatal pip_install_try wrapping the trio"
-    )
+    assert j != -1 and (
+        k == -1 or j > k
+    ), "Windows ROCm repair must use the nonfatal pip_install_try wrapping the trio"
     window = text[i : i + 700]
-    assert "_torch_pkg" in window and "_vision_pkg" in window and "_audio_pkg" in window, (
-        "Windows ROCm repair must pass the pinned companion trio, not bare names"
-    )
-    assert "keeping the existing torch build" in window, (
-        "Windows ROCm repair must keep the existing build (nonfatal) when the index fails"
-    )
+    assert (
+        "_torch_pkg" in window and "_vision_pkg" in window and "_audio_pkg" in window
+    ), "Windows ROCm repair must pass the pinned companion trio, not bare names"
+    assert (
+        "keeping the existing torch build" in window
+    ), "Windows ROCm repair must keep the existing build (nonfatal) when the index fails"
 
 
 def _load_pystack():
     # install_python_stack.py imports from backend.*, so put studio/ on sys.path.
     import importlib.util
+
     studio_dir = str(PACKAGE_ROOT / "studio")
     if studio_dir not in sys.path:
         sys.path.insert(0, studio_dir)
@@ -774,8 +776,14 @@ def test_windows_rocm_repair_nonfatal_keeps_cpu_torch_on_index_failure(monkeypat
         return False  # simulate the AMD index being unreachable
 
     monkeypatch.setattr(ps, "pip_install_try", fake_try)
-    monkeypatch.setattr(ps, "pip_install", lambda *a, **k: calls.__setitem__("fatal", calls["fatal"] + 1))
-    monkeypatch.setattr(ps, "_install_bnb_windows_rocm", lambda *a, **k: calls.__setitem__("bnb", calls["bnb"] + 1) or True)
+    monkeypatch.setattr(
+        ps, "pip_install", lambda *a, **k: calls.__setitem__("fatal", calls["fatal"] + 1)
+    )
+    monkeypatch.setattr(
+        ps,
+        "_install_bnb_windows_rocm",
+        lambda *a, **k: calls.__setitem__("bnb", calls["bnb"] + 1) or True,
+    )
     monkeypatch.delenv("UNSLOTH_ROCM_TORCH_INSTALLED", raising = False)
 
     ps._ensure_rocm_torch()  # must not raise / SystemExit
