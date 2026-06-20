@@ -732,9 +732,7 @@ def get_run(id: str) -> Optional[dict]:
         if row is None:
             return None
         run = dict(row)
-        run["project_name"] = _extract_project_name_from_config_json(
-            run.get("config_json")
-        )
+        run["project_name"] = _extract_project_name_from_config_json(run.get("config_json"))
         sparkline = run.get("loss_sparkline")
         if sparkline:
             try:
