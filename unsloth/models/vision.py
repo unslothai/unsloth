@@ -449,6 +449,18 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
     return output
 
 
+def _missing_torchvision_error(error = None):
+    """True if a VLM processor failed to load because torchvision is unavailable.
+
+    transformers >= 5.4 hard-requires torchvision for image/video processors. Check
+    both the captured exception text and torchvision availability directly, since the
+    inner fallbacks may swallow the original ImportError (#4202)."""
+    if error is not None and "torchvision" in str(error).lower():
+        return True
+    import importlib.util
+    return importlib.util.find_spec("torchvision") is None
+
+
 def _construct_vlm_processor_fallback(tokenizer_name, model_type, token, trust_remote_code):
     """Construct a VLM processor manually when AutoProcessor.from_pretrained fails.
 
@@ -1148,6 +1160,7 @@ class FastBaseModel:
                     except Exception:
                         pass
 
+        _processor_load_error = None
         if (whisper_language and whisper_task) or auto_model.__name__.endswith(
             "ForConditionalGeneration"
         ):
@@ -1160,7 +1173,8 @@ class FastBaseModel:
                     task = whisper_task,
                     trust_remote_code = trust_remote_code,
                 )
-            except Exception:
+            except Exception as e:
+                _processor_load_error = e
                 tokenizer = None
         else:
             try:
@@ -1170,7 +1184,8 @@ class FastBaseModel:
                     token = token,
                     trust_remote_code = trust_remote_code,
                 )
-            except:
+            except Exception as e:
+                _processor_load_error = e
                 tokenizer = get_auto_processor(
                     tokenizer_name,
                     padding_side = "left",
@@ -1194,7 +1209,19 @@ class FastBaseModel:
             )
             if _fallback is not None:
                 tokenizer = _fallback
-            if tokenizer is None:
+            # Still degraded: transformers >= 5.4 hard-requires torchvision for VLM
+            # image/video processors and no longer falls back to a slow processor, so a
+            # missing torchvision silently degrades the processor to a text-only tokenizer
+            # and later trips the misleading "only for image models" collator error (#4202).
+            # Surface the real cause up front instead.
+            if tokenizer is None or not hasattr(tokenizer, "image_processor"):
+                if _missing_torchvision_error(_processor_load_error):
+                    raise ImportError(
+                        f"Unsloth: Could not load the vision processor for `{tokenizer_name}` "
+                        "because torchvision is not installed. transformers >= 5.4 requires "
+                        "torchvision for vision (image/video) processors. Please install it, "
+                        "e.g. `pip install torchvision`."
+                    )
                 import sys
                 print(
                     f"Unsloth: Warning - VLM processor fallback returned None for model_type={model_type_arch}",
