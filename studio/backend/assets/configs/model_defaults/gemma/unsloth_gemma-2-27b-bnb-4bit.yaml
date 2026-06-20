@@ -2,7 +2,6 @@
 # Based on Gemma2_(9B)-Alpaca.ipynb (same defaults for larger models)
 
 training:
-  trust_remote_code: false
   max_seq_length: 2048
   # num_epochs: 4
   num_epochs: 0
@@ -43,4 +42,3 @@ logging:
   log_frequency: 10
 
 inference:
-  trust_remote_code: false
