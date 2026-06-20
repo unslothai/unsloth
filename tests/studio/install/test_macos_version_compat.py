@@ -246,7 +246,11 @@ class TestMacosReleasePin:
         )
         assert tag == "latest"
         assert plans[0].release_tag == self.TAGS[0]  # newest release
-        assert len(plans) == ILP.DEFAULT_MAX_PREBUILT_RELEASE_FALLBACKS
+        # A known-version macOS host walks back as deep as the fork macOS path so
+        # a pre-26 host can reach a loadable build past a run of macOS-26-only
+        # ones (replaces the removed b9415 pin). A 26 host still gets the newest
+        # first; the extra entries are cheap fallback candidates.
+        assert len(plans) == ILP.DEFAULT_MAX_MACOS_RELEASE_FALLBACKS
 
     def test_unknown_macos_host_uses_default(self, monkeypatch):
         self._patch_releases(monkeypatch)

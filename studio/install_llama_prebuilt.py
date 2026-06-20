@@ -1576,6 +1576,14 @@ def resolve_simple_install_release_plans(
     # backstop (macos_binary_minos_issues / host_supports_macos_minos) handle a
     # too-new macOS build.
     release_limit = max(1, max_release_fallbacks)
+    # A pre-macOS-26 host can sit behind a long run of macOS-26-only upstream
+    # builds before a loadable one. direct_upstream_release_plan builds those
+    # plans optimistically (minos is only checked post-download), so without a
+    # deeper limit the loop collects two too-new plans and gives up before
+    # reaching the loadable older build. Walk back as deep as the fork macOS path
+    # (this replaces the removed b9415 pin with dynamic discovery).
+    if host.is_macos and allow_older_release_fallback and host.macos_version is not None:
+        release_limit = max(release_limit, DEFAULT_MAX_MACOS_RELEASE_FALLBACKS)
     plans: list[InstallReleasePlan] = []
     last_error: PrebuiltFallback | None = None
 
