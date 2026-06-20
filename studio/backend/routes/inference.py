@@ -3222,7 +3222,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
         # _serial_load_lock is threading.RLock (not Lock), which has no
         # .locked() method. Use a non-blocking acquire: returns False only
         # when another thread already holds the lock.
-        _lock_acquired = llama_backend._serial_load_lock.acquire(blocking=False)
+        _lock_acquired = llama_backend._serial_load_lock.acquire(blocking = False)
         if _lock_acquired:
             llama_backend._serial_load_lock.release()
         if not _lock_acquired and not llama_backend.is_loaded:

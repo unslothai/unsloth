@@ -569,8 +569,8 @@ with sync_playwright() as p:
         # Dismiss any llama-server update toast that may intercept pointer events.
         try:
             snooze = page.locator('[data-testid="llama-update-snooze-button"]')
-            if snooze.is_visible(timeout=500):
-                snooze.click(timeout=2_000)
+            if snooze.is_visible(timeout = 500):
+                snooze.click(timeout = 2_000)
         except Exception:
             pass
         composer.click()
