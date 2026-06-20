@@ -390,6 +390,7 @@ function ModelRow({
   hideOwner,
   downloaded,
   showVision,
+  className,
 }: {
   label: string;
   meta?: string | null;
@@ -409,6 +410,7 @@ function ModelRow({
   downloaded?: boolean;
   /** Show a Vision badge on the name (On Device, read from GGUF metadata). */
   showVision?: boolean;
+  className?: string;
 }) {
   const exceeds = vramStatus === "exceeds";
   const showVramTooltip =
@@ -445,6 +447,7 @@ function ModelRow({
       className={cn(
         "flex w-full items-center gap-2 rounded-full px-2 py-1.5 text-left text-sm transition-colors hover:bg-[#ececec] focus-visible:bg-[#ececec] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/45 dark:hover:bg-[var(--sidebar-accent)] dark:focus-visible:bg-[var(--sidebar-accent)]",
         selected && "bg-[#ececec] dark:bg-[var(--sidebar-accent)]",
+        className,
       )}
     >
       <span className="flex min-w-0 flex-1 items-baseline">
@@ -511,6 +514,16 @@ function ModelRow({
             {paramLabel}
           </span>
         ) : null}
+        {parsed.texts.map((text) => (
+          <span key={text} className="text-[10px] text-muted-foreground">
+            {text}
+          </span>
+        ))}
+        {parsed.size !== undefined ? (
+          <span className="text-[10px] text-muted-foreground tabular-nums">
+            {parsed.size}
+          </span>
+        ) : null}
         {parsed.formats.map((f) => (
           <DotTag
             key={f.label}
@@ -520,16 +533,6 @@ function ModelRow({
             dotClassName="size-[5px]"
           />
         ))}
-        {parsed.texts.map((text) => (
-          <span key={text} className="text-[10px] text-muted-foreground">
-            {text}
-          </span>
-        ))}
-        {parsed.size ? (
-          <span className="text-[10px] text-muted-foreground tabular-nums">
-            {parsed.size}
-          </span>
-        ) : null}
       </span>
     </button>
   );
@@ -2174,28 +2177,40 @@ export function HubModelPicker({
   const hasOtherModels =
     otherCachedGguf.length > 0 || otherCachedModelRows.length > 0;
 
+  const downloadedRowButtonClassName =
+    "bg-transparent pr-1 hover:bg-transparent focus-visible:bg-transparent dark:bg-transparent dark:hover:bg-transparent dark:focus-visible:bg-transparent";
+  const downloadedRowShellClassName = (selected: boolean) =>
+    cn(
+      "group flex items-center rounded-full transition-colors hover:bg-[#ececec] focus-within:bg-[#ececec] dark:hover:bg-[var(--sidebar-accent)] dark:focus-within:bg-[var(--sidebar-accent)]",
+      selected && "bg-[#ececec] dark:bg-[var(--sidebar-accent)]",
+    );
+
   // Shared row renderers so Downloaded (Unsloth) and Other models render alike.
   const renderDownloadedGgufRow = (c: (typeof visibleCachedGguf)[number]) => {
     const optionKey = makeModelOptionKey("downloaded-gguf", c.repo_id);
+    const isSelected = value === c.repo_id;
     return (
       <div key={c.repo_id}>
-        <ModelRow
-          label={c.repo_id}
-          meta="GGUF"
-          showVision={c.has_vision ?? visionByRepo[c.repo_id]}
-          selected={value === c.repo_id}
-          optionProps={hubModelList.getOptionProps(
-            optionKey,
-            value === c.repo_id,
-          )}
-          onClick={() => toggleGgufExpanded(c.repo_id)}
-          onArrowDownIntoChildren={
-            isGgufExpanded(c.repo_id)
-              ? () => focusFirstChildOption(optionKey)
-              : undefined
-          }
-          vramStatus={null}
-        />
+        <div className={downloadedRowShellClassName(isSelected)}>
+          <div className="min-w-0 flex-1">
+            <ModelRow
+              label={c.repo_id}
+              meta="GGUF"
+              showVision={c.has_vision ?? visionByRepo[c.repo_id]}
+              selected={isSelected}
+              optionProps={hubModelList.getOptionProps(optionKey, isSelected)}
+              onClick={() => toggleGgufExpanded(c.repo_id)}
+              onArrowDownIntoChildren={
+                isGgufExpanded(c.repo_id)
+                  ? () => focusFirstChildOption(optionKey)
+                  : undefined
+              }
+              vramStatus={null}
+              className={downloadedRowButtonClassName}
+            />
+          </div>
+          <span aria-hidden="true" className="mr-1 h-6 w-[26px] shrink-0" />
+        </div>
         {isGgufExpanded(c.repo_id) && (
           <GgufVariantExpander
             repoId={c.repo_id}
@@ -2220,18 +2235,22 @@ export function HubModelPicker({
     c: (typeof visibleCachedModelRows)[number],
   ) => {
     const optionKey = makeModelOptionKey("downloaded-model", c.repo_id);
+    const isSelected = value === c.repo_id;
     return (
-      <div key={c.repo_id} className="flex items-center gap-0.5">
+      <div
+        key={c.repo_id}
+        className={downloadedRowShellClassName(isSelected)}
+      >
         <div className="min-w-0 flex-1">
           <ModelRow
             label={c.repo_id}
             meta={`${isMlxId(c.repo_id) ? "MLX" : "Safetensors"} · ${formatBytes(
               c.size_bytes,
             )}`}
-            selected={value === c.repo_id}
+            selected={isSelected}
             optionProps={hubModelList.getOptionProps(
               optionKey,
-              value === c.repo_id,
+              isSelected,
             )}
             onClick={() =>
               onSelect(c.repo_id, {
@@ -2241,6 +2260,7 @@ export function HubModelPicker({
               })
             }
             vramStatus={null}
+            className={downloadedRowButtonClassName}
           />
         </div>
         <ModelDeleteAction
@@ -2254,6 +2274,7 @@ export function HubModelPicker({
             </>
           }
           successMessage={`Deleted ${c.repo_id}`}
+          buttonClassName="mr-1"
           onConfirm={() => deleteCachedModel(c.repo_id)}
           onDeleted={refreshCachedLists}
         />

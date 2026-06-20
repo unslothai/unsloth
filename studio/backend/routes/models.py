@@ -242,6 +242,7 @@ def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[Loca
                 display_name = models_dir.name,
                 path = str(models_dir),
                 source = "models_dir",
+                model_format = _dir_model_format(models_dir),
                 updated_at = updated_at,
             ),
         ]

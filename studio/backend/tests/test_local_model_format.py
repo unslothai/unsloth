@@ -85,3 +85,16 @@ def test_scan_models_dir_classifies_gguf_with_config(tmp_path):
     assert fmt["gguf_repo"] == "gguf"
     assert fmt["st_repo"] is None
     assert fmt["loose.gguf"] == "gguf"
+
+
+def test_scan_models_dir_classifies_root_gguf_with_config(tmp_path):
+    # Custom scan folders can point directly at a GGUF repo, not only at a
+    # parent directory that contains model repos.
+    root = tmp_path / "SuffixlessRepo"
+    _touch(root / "config.json")
+    _touch(root / "model-Q4_K_M.gguf")
+
+    [row] = models_route._scan_models_dir(root)
+
+    assert row.path == str(root)
+    assert row.model_format == "gguf"
