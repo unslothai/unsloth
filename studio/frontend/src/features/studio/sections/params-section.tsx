@@ -237,7 +237,7 @@ export function ParamsSection(): ReactElement {
               </span>
             </span>
             <Input
-              value={store.projectName}
+              value={store.projectName || ""}
               onChange={(event) => store.setProjectName(event.target.value)}
               placeholder="customer-support-lora"
               maxLength={80}
@@ -713,7 +713,7 @@ export function ParamsSection(): ReactElement {
                 <TabsList className="w-full">
                   <TabsTrigger
                     value="optimization"
-                    className="flex-1 corner-squircle! text-xs cursor-pointer"
+                    className="flex-1 !corner-squircle text-xs cursor-pointer"
                   >
                     {t("studio.params.optimization")}
                   </TabsTrigger>

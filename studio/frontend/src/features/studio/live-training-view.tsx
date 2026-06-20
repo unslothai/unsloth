@@ -68,7 +68,7 @@ export function LiveTrainingView(): ReactElement {
     error: runtime.error,
     isTrainingRunning: runtime.isTrainingRunning,
     modelName: config.selectedModel ?? "",
-    projectName: config.projectName.trim() || null,
+    projectName: (config.projectName || "").trim() || null,
     trainingMethod: config.trainingMethod ?? "",
     lossHistory: runtime.lossHistory,
     lrHistory: runtime.lrHistory,

@@ -140,7 +140,7 @@ export function HyperparametersStep() {
               </FieldLabel>
             </div>
             <Input
-              value={projectName}
+              value={projectName || ""}
               onChange={(e) => setProjectName(e.target.value)}
               placeholder="customer-support-lora"
               maxLength={80}
