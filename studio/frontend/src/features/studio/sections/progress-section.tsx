@@ -157,7 +157,7 @@ export function ProgressSection({
   // A finished run can be exported to GGUF: deep-link to the Export page with
   // this run preselected (its output-dir basename is the export model name).
   const exportRunName = data.outputDir
-    ? (data.outputDir.split(/[/\\]/).pop() ?? null)
+    ? (data.outputDir.replace(/[/\\]+$/, "").split(/[/\\]/).pop() || null)
     : null;
   const canExportGguf =
     !data.isTrainingRunning &&

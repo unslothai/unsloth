@@ -217,7 +217,13 @@ export function ExportPage() {
   const { run: preselectRun } = useSearch({ from: "/export" });
   const appliedRunRef = useRef<string | null>(null);
   useEffect(() => {
-    if (!preselectRun || models.length === 0) return;
+    if (!preselectRun) {
+      // Deep link cleared (e.g. navigated to /export via the sidebar): stop
+      // treating the previously preselected run specially.
+      appliedRunRef.current = null;
+      return;
+    }
+    if (models.length === 0) return;
     if (appliedRunRef.current === preselectRun) return;
     const match = models.find((m) => m.name === preselectRun);
     if (!match) return;
@@ -261,15 +267,6 @@ export function ExportPage() {
     () => selectedModelData?.checkpoints ?? [],
     [selectedModelData],
   );
-
-  // For a ?run= deep link, default to the run's main checkpoint once its
-  // checkpoints load (runs after the model-change effect clears the checkpoint).
-  useEffect(() => {
-    if (appliedRunRef.current == null) return;
-    if (appliedRunRef.current !== selectedModelIdx) return;
-    if (checkpoint != null || checkpointsForModel.length === 0) return;
-    setCheckpoint(checkpointsForModel[0].display_name);
-  }, [selectedModelIdx, checkpoint, checkpointsForModel]);
 
   // Derive training info from selected model's API metadata
   const baseModelName = selectedModelData?.base_model ?? "—";
@@ -381,6 +378,15 @@ export function ExportPage() {
   useEffect(() => {
     setCheckpoint(null);
   }, [selectedModelIdx]);
+
+  // For a ?run= deep link, default to the run's main checkpoint. Declared after
+  // the reset effect above so it runs last and isn't clobbered back to null.
+  useEffect(() => {
+    if (appliedRunRef.current == null) return;
+    if (appliedRunRef.current !== selectedModelIdx) return;
+    if (checkpoint != null || checkpointsForModel.length === 0) return;
+    setCheckpoint(checkpointsForModel[0].display_name);
+  }, [selectedModelIdx, checkpoint, checkpointsForModel]);
 
   // Auto-reset export method if incompatible with the selected model type
   useEffect(() => {
