@@ -181,6 +181,55 @@ def test_browse_folders_hides_sensitive_dirs(monkeypatch, tmp_path):
     assert ".ssh" not in names
 
 
+def test_get_models_folder_response_creates_and_returns_dir(monkeypatch, tmp_path):
+    # The endpoint creates the cache dir on demand so the desktop "Open folder"
+    # action works even before the first download.
+    target = tmp_path / "hub"
+    monkeypatch.setattr(local_inventory, "_resolve_hf_cache_dir", lambda: target)
+
+    response = local_inventory.get_models_folder_response()
+
+    assert response == {"path": str(target)}
+    assert target.is_dir()
+
+
+def test_get_models_folder_response_reports_create_failure(monkeypatch, tmp_path):
+    target = tmp_path / "hub"
+    target.write_text("not a directory")
+    monkeypatch.setattr(local_inventory, "_resolve_hf_cache_dir", lambda: target)
+
+    with pytest.raises(HTTPException) as exc_info:
+        local_inventory.get_models_folder_response()
+
+    assert exc_info.value.status_code == 500
+    assert "Failed to create models folder" in exc_info.value.detail
+
+
+def test_get_models_folder_response_requires_directory(monkeypatch, tmp_path):
+    class MissingPath:
+        def __init__(self, value: Path):
+            self.value = value
+
+        def mkdir(self, *, parents: bool, exist_ok: bool):
+            assert parents is True
+            assert exist_ok is True
+
+        def is_dir(self):
+            return False
+
+        def __str__(self):
+            return str(self.value)
+
+    target = MissingPath(tmp_path / "hub")
+    monkeypatch.setattr(local_inventory, "_resolve_hf_cache_dir", lambda: target)
+
+    with pytest.raises(HTTPException) as exc_info:
+        local_inventory.get_models_folder_response()
+
+    assert exc_info.value.status_code == 500
+    assert "not a directory" in exc_info.value.detail
+
+
 def test_contained_link_path_confines_to_link_dir(tmp_path):
     link_dir = tmp_path / "ollama" / ".studio_links" / "abc123"
 

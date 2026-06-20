@@ -13,6 +13,11 @@ import {
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { usePlatformStore } from "@/config/env";
+import { isTauri } from "@/lib/api-base";
+import { openModelsDir } from "@/features/native-intents/api";
+import { copyToClipboard } from "@/lib/copy-to-clipboard";
+import { toast } from "@/lib/toast";
+import { loadModelsFolder, type ModelsFolder } from "../api/models-folder";
 import { resetOnboardingDone } from "@/features/auth";
 import { useChatRuntimeStore } from "@/features/chat";
 import {
@@ -134,6 +139,7 @@ export function GeneralTab() {
     null,
   );
   const [isSavingHelperPrecache, setIsSavingHelperPrecache] = useState(false);
+  const [modelsFolder, setModelsFolder] = useState<ModelsFolder | null>(null);
 
   const draftRef = useRef(draftToken);
   useEffect(() => {
@@ -200,6 +206,43 @@ export function GeneralTab() {
       cancelled = true;
     };
   }, [t]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void loadModelsFolder()
+      .then((folder) => {
+        if (cancelled) return;
+        setModelsFolder(folder);
+      })
+      .catch(() => {
+        // Non-critical: leave the row hidden if the path can't be resolved.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Desktop opens the folder in the OS file manager; the browser can't, so it
+  // falls back to copying the path (which is the info users actually want).
+  const handleModelsFolder = async () => {
+    const folder = modelsFolder;
+    if (!folder) return;
+    if (isTauri) {
+      try {
+        await openModelsDir(folder.path);
+      } catch (error) {
+        toast.error(t("settings.general.storage.openError"), {
+          description: error instanceof Error ? error.message : undefined,
+        });
+      }
+      return;
+    }
+    if (await copyToClipboard(folder.path)) {
+      toast.success(t("settings.general.storage.copied"));
+    } else {
+      toast.error(t("settings.general.storage.copyError"));
+    }
+  };
 
   const saveHelperPrecache = async (enabled: boolean) => {
     setIsSavingHelperPrecache(true);
@@ -292,6 +335,33 @@ export function GeneralTab() {
           </div>
         </SettingsRow>
       </SettingsSection>
+
+      {modelsFolder ? (
+        <SettingsSection title={t("settings.general.storage.sectionTitle")}>
+          <SettingsRow
+            label={t("settings.general.storage.modelsFolder")}
+            description={t("settings.general.storage.modelsFolderDescription")}
+          >
+            <div className="flex items-center gap-2">
+              <span
+                title={modelsFolder.path}
+                className="max-w-[280px] truncate font-mono text-xs text-muted-foreground"
+              >
+                {modelsFolder.path}
+              </span>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => void handleModelsFolder()}
+              >
+                {isTauri
+                  ? t("settings.general.storage.openAction")
+                  : t("settings.general.storage.copyAction")}
+              </Button>
+            </div>
+          </SettingsRow>
+        </SettingsSection>
+      ) : null}
 
       <SettingsSection title={t("settings.general.chatDefaults")}>
         <SettingsRow
