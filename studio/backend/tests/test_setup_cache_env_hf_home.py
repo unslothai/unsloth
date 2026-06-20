@@ -16,15 +16,11 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-_STORAGE_ROOTS_PATH = (
-    Path(__file__).resolve().parent.parent / "utils/paths/storage_roots.py"
-)
+_STORAGE_ROOTS_PATH = Path(__file__).resolve().parent.parent / "utils/paths/storage_roots.py"
 
 
 def _load_storage_roots():
-    spec = importlib.util.spec_from_file_location(
-        "storage_roots_under_test", _STORAGE_ROOTS_PATH
-    )
+    spec = importlib.util.spec_from_file_location("storage_roots_under_test", _STORAGE_ROOTS_PATH)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -44,6 +40,7 @@ def test_custom_hf_home_seeds_hub_and_xet(monkeypatch, tmp_path):
     sr._setup_cache_env()
 
     import os
+
     assert os.environ["HF_HUB_CACHE"] == str(custom / "hub")
     assert os.environ["HF_XET_CACHE"] == str(custom / "xet")
 
@@ -56,6 +53,7 @@ def test_default_when_hf_home_unset(monkeypatch, tmp_path):
     sr._setup_cache_env()
 
     import os
+
     expected = tmp_path / "xdg" / "huggingface"
     assert os.environ["HF_HUB_CACHE"] == str(expected / "hub")
 
@@ -70,6 +68,7 @@ def test_explicit_hub_cache_is_not_overridden(monkeypatch, tmp_path):
     sr._setup_cache_env()
 
     import os
+
     assert os.environ["HF_HUB_CACHE"] == str(explicit)
 
 
@@ -83,4 +82,5 @@ def test_legacy_huggingface_hub_cache_alias_is_honored(monkeypatch, tmp_path):
     sr._setup_cache_env()
 
     import os
+
     assert os.environ["HF_HUB_CACHE"] == str(legacy)
