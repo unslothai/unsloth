@@ -2047,6 +2047,16 @@ function DocumentExtractionSection() {
   const [probing, setProbing] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
+  // Debounced, supersedable custom-code consent check for OCR selection.
+  const [ocrChecking, setOcrChecking] = useState(false);
+  const ocrConsentGen = useRef(0);
+  const ocrConsentTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (ocrConsentTimer.current) clearTimeout(ocrConsentTimer.current);
+    },
+    [],
+  );
 
   const probeSupport = useCallback(() => {
     abortRef.current?.abort();
@@ -2140,7 +2150,7 @@ function DocumentExtractionSection() {
   );
 
   const handleOcrSelect = useCallback(
-    async (id: string, meta: ModelSelectorChangeMeta) => {
+    (id: string, meta: ModelSelectorChangeMeta) => {
       const matchedPreset = OCR_MODEL_PRESETS.find((p) => p.modelId === id);
       const nextSettings: Partial<DocExtractSettings> = matchedPreset
         ? {
@@ -2153,19 +2163,40 @@ function DocumentExtractionSection() {
             customOcrModelId: id,
             customOcrGgufVariant: meta.ggufVariant ?? null,
           };
-      // Gather custom-code consent now (like loading a normal model) so the
-      // review dialog appears at selection rather than on the first scan. Keep
-      // the previous selection if the user declines.
-      const approved = await ensureOcrModelRemoteCodeApproved({
-        ...docExtract,
-        ...nextSettings,
-      });
-      if (!approved) {
-        setOcrPickerOpen(false);
-        return;
-      }
+      const prevSettings: Partial<DocExtractSettings> = {
+        ocrModel: docExtract.ocrModel,
+        customOcrModelId: docExtract.customOcrModelId,
+        customOcrGgufVariant: docExtract.customOcrGgufVariant,
+      };
+      // Apply and close immediately so the picker never blocks on the network
+      // custom-code check.
       setDocExtract(nextSettings);
       setOcrPickerOpen(false);
+
+      // Debounce the consent check so clicking through models does not queue a
+      // security scan per click; only the settled selection is verified. The
+      // review dialog still appears up front (before any load), and declining
+      // reverts to the previous model.
+      const gen = ++ocrConsentGen.current;
+      if (ocrConsentTimer.current) clearTimeout(ocrConsentTimer.current);
+      ocrConsentTimer.current = setTimeout(() => {
+        void (async () => {
+          setOcrChecking(true);
+          let approved = true;
+          try {
+            approved = await ensureOcrModelRemoteCodeApproved({
+              ...docExtract,
+              ...nextSettings,
+            });
+          } finally {
+            if (gen === ocrConsentGen.current) setOcrChecking(false);
+          }
+          // Ignore a stale result if a newer selection superseded this one.
+          if (gen === ocrConsentGen.current && !approved) {
+            setDocExtract(prevSettings);
+          }
+        })();
+      }, 300);
     },
     [docExtract, setDocExtract],
   );
@@ -2434,6 +2465,11 @@ function DocumentExtractionSection() {
                   : "Default resolves to None until a vision model is loaded."
                 : "No dedicated OCR model is selected."}
           </p>
+          {ocrChecking && (
+            <p className="text-[11px] text-muted-foreground">
+              Verifying custom code…
+            </p>
+          )}
         </div>
 
         {/* Mode segmented — matches theme-segmented idiom */}
