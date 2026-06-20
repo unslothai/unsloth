@@ -274,15 +274,24 @@ def _setup_cache_env() -> None:
 
     Respects the standard HF cache chain (explicit HF_HOME / HF_HUB_CACHE,
     then XDG_CACHE_HOME, then ~/.cache/huggingface) and only sets vars the
-    user hasn't, so explicit overrides are honored.
+    user hasn't, so explicit overrides are honored. A user-set HF_HOME also
+    seeds HF_HUB_CACHE / HF_XET_CACHE (HF defaults them to $HF_HOME/hub and
+    $HF_HOME/xet); without this, models download to and load from the standard
+    cache even when HF_HOME points elsewhere, and both the Xet and HTTP-fallback
+    download paths inherit the same wrong root.
     """
     root = cache_root()
     xdg_cache = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")).expanduser()
-    hf_default = xdg_cache / "huggingface"
+    # HUGGINGFACE_HUB_CACHE is HF's legacy alias for HF_HUB_CACHE; honor it.
+    if "HF_HUB_CACHE" not in os.environ and os.environ.get("HUGGINGFACE_HUB_CACHE"):
+        os.environ["HF_HUB_CACHE"] = os.environ["HUGGINGFACE_HUB_CACHE"]
+    # Seed the hub/xet caches from HF_HOME when set, else the platform default.
+    hf_home = os.environ.get("HF_HOME")
+    hf_base = Path(hf_home).expanduser() if hf_home else xdg_cache / "huggingface"
     defaults: dict[str, str] = {
-        "HF_HOME": str(hf_default),
-        "HF_HUB_CACHE": str(hf_default / "hub"),
-        "HF_XET_CACHE": str(hf_default / "xet"),
+        "HF_HOME": str(hf_base),
+        "HF_HUB_CACHE": str(hf_base / "hub"),
+        "HF_XET_CACHE": str(hf_base / "xet"),
         "UV_CACHE_DIR": str(root / "uv"),
         "VLLM_CACHE_ROOT": str(root / "vllm"),
     }
