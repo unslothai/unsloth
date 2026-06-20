@@ -566,6 +566,13 @@ with sync_playwright() as p:
         #    this at temp 0), and the old non-empty predicate got stuck
         #    on such bubbles.
         bubbles_before = _bubble_count()
+        # Dismiss any llama-server update toast that may intercept pointer events.
+        try:
+            snooze = page.locator('[data-testid="llama-update-snooze-button"]')
+            if snooze.is_visible(timeout=500):
+                snooze.click(timeout=2_000)
+        except Exception:
+            pass
         composer.click()
         composer.fill(prompt)
         page.locator('button[aria-label="Send message"]').click()

@@ -3194,7 +3194,13 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
         _latest_tag = _freshness.get("latest_tag")
 
         # GGUF load in flight (HF download, subprocess warm-up, health wait).
-        if llama_backend._serial_load_lock.locked() and not llama_backend.is_loaded:
+        # _serial_load_lock is threading.RLock (not Lock), which has no
+        # .locked() method. Use a non-blocking acquire: returns False only
+        # when another thread already holds the lock.
+        _lock_acquired = llama_backend._serial_load_lock.acquire(blocking=False)
+        if _lock_acquired:
+            llama_backend._serial_load_lock.release()
+        if not _lock_acquired and not llama_backend.is_loaded:
             _loading_id = llama_backend._model_identifier or ""
             return InferenceStatusResponse(
                 active_model = None,
