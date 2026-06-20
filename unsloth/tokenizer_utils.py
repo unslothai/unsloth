@@ -626,6 +626,54 @@ def _load_correct_tokenizer(
         return fast_tokenizer
 
 
+# Vision tokens must not be used as pad_token for text-only models. Qwen3 text
+# models share Qwen3-VL's vocab, so their Hub configs ship <|vision_pad|> as
+# pad_token. Padding with a vision token corrupts text-only training and yields
+# NaN losses/gradients. See https://github.com/unslothai/unsloth/issues/3155
+# and https://github.com/unslothai/unsloth/issues/4104
+_VISION_PAD_TOKENS = frozenset((
+    "<|vision_pad|>",
+    "<|image_pad|>",
+    "<|video_pad|>",
+    "<|audio_pad|>",
+))
+# Safe text replacements, in preference order.
+_SAFE_TEXT_PAD_TOKENS = ("<|endoftext|>", "<pad>", "[PAD]", "<unk>")
+
+
+def _fix_vision_pad_token(tokenizer):
+    """Replace a vision pad_token on a text-only tokenizer with a safe text token.
+
+    Self-heals existing Hub configs without re-uploading them. Vision processors
+    (image_processor present) are left untouched.
+    """
+    if tokenizer is None: return tokenizer
+    if hasattr(tokenizer, "image_processor"): return tokenizer
+    pad_token = getattr(tokenizer, "pad_token", None)
+    if pad_token is None or pad_token not in _VISION_PAD_TOKENS: return tokenizer
+
+    vocab = tokenizer.get_vocab()
+    new_pad_token = None
+    for candidate in _SAFE_TEXT_PAD_TOKENS:
+        if candidate in vocab and candidate != getattr(tokenizer, "eos_token", None):
+            new_pad_token = candidate
+            break
+    # Fall back to eos_token only if it differs from pad_token (else the loss
+    # would ignore eos, breaking stop-token learning).
+    if new_pad_token is None:
+        eos_token = getattr(tokenizer, "eos_token", None)
+        if eos_token is not None and eos_token != pad_token:
+            new_pad_token = eos_token
+    if new_pad_token is None: return tokenizer
+
+    tokenizer.pad_token = new_pad_token
+    logger.warning(
+        f"Unsloth: pad_token was a vision token ({pad_token}) on a text-only "
+        f"model. Replaced with {new_pad_token} to avoid NaN losses."
+    )
+    return tokenizer
+
+
 def load_correct_tokenizer(
     tokenizer_name,
     model_max_length = None,
@@ -644,6 +692,9 @@ def load_correct_tokenizer(
         cache_dir = cache_dir,
         fix_tokenizer = fix_tokenizer,
     )
+
+    if fix_tokenizer:
+        _fix_vision_pad_token(tokenizer)
 
     ### 1. Fixup tokenizer's chat_template
     old_chat_template = getattr(tokenizer, "chat_template", None)
