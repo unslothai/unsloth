@@ -690,7 +690,7 @@ def get_gpu_utilization() -> list[Dict[str, Any]]:
             if IS_ROCM and numeric_ids is not None:
                 _reconcile_rocm_unified_memory(result, numeric_ids)
 
-      # Injecting base keys into all array objects
+            # Injecting base keys into all array objects
             for dev in devices:
                 dev["available"] = True
                 dev["backend"] = _backend_label(device)
