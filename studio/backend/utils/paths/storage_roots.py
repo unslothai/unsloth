@@ -286,7 +286,8 @@ def _setup_cache_env() -> None:
     if "HF_HUB_CACHE" not in os.environ and os.environ.get("HUGGINGFACE_HUB_CACHE"):
         os.environ["HF_HUB_CACHE"] = os.environ["HUGGINGFACE_HUB_CACHE"]
     # Seed the hub/xet caches from HF_HOME when set, else the platform default.
-    hf_home = os.environ.get("HF_HOME")
+    # Strip so a blank/whitespace HF_HOME falls back instead of making " /hub".
+    hf_home = (os.environ.get("HF_HOME") or "").strip()
     hf_base = Path(hf_home).expanduser() if hf_home else xdg_cache / "huggingface"
     defaults: dict[str, str] = {
         "HF_HOME": str(hf_base),

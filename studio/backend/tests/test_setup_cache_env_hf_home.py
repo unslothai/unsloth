@@ -12,11 +12,19 @@ import importlib.util
 import sys
 from pathlib import Path
 
+import pytest
+
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
 _STORAGE_ROOTS_PATH = Path(__file__).resolve().parent.parent / "utils/paths/storage_roots.py"
+
+
+@pytest.fixture(autouse=True)
+def _isolate_studio_home(monkeypatch, tmp_path):
+    # Keep _setup_cache_env's UV/VLLM mkdirs out of the real ~/.unsloth/studio.
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
 
 
 def _load_storage_roots():
@@ -84,6 +92,20 @@ def test_legacy_huggingface_hub_cache_alias_is_honored(monkeypatch, tmp_path):
     import os
 
     assert os.environ["HF_HUB_CACHE"] == str(legacy)
+
+
+def test_whitespace_hf_home_falls_back_to_default(monkeypatch, tmp_path):
+    # A blank/whitespace HF_HOME must not become " /hub"; fall back to default.
+    sr = _load_storage_roots()
+    _clear_hf_env(monkeypatch)
+    monkeypatch.setenv("HF_HOME", "   ")
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg"))
+
+    sr._setup_cache_env()
+
+    import os
+
+    assert os.environ["HF_HUB_CACHE"] == str(tmp_path / "xdg" / "huggingface" / "hub")
 
 
 def test_unwritable_hf_home_does_not_crash(monkeypatch, tmp_path):
