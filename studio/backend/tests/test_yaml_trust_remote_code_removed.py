@@ -27,7 +27,9 @@ def test_no_model_default_yaml_sets_trust_remote_code():
             continue
         for section, body in doc.items():
             if isinstance(body, dict) and "trust_remote_code" in body:
-                offenders.append(f"{f.relative_to(_CONFIGS)} [{section}={body['trust_remote_code']}]")
+                offenders.append(
+                    f"{f.relative_to(_CONFIGS)} [{section}={body['trust_remote_code']}]"
+                )
     assert not offenders, (
         "trust_remote_code must not be pre-set in model defaults; it is enabled only via "
         f"the consent dialog. Remove it from: {offenders}"
@@ -45,7 +47,6 @@ def test_loader_defaults_trust_remote_code_off_for_formerly_flagged_models():
     # The 4 models that used to ship trust_remote_code: true. The loader must now report
     # no default (auto_map models get the dialog; GLM-4.7-Flash loads natively TRC=False).
     from utils.models.model_config import load_model_defaults
-
     for model in (
         "unsloth/GLM-4.7-Flash",
         "unsloth/Nemotron-3-Nano-30B-A3B",
@@ -54,6 +55,6 @@ def test_loader_defaults_trust_remote_code_off_for_formerly_flagged_models():
     ):
         d = load_model_defaults(model)
         for section in ("training", "inference"):
-            assert not (d.get(section) or {}).get("trust_remote_code", False), (
-                f"{model} [{section}] still carries a trust_remote_code default"
-            )
+            assert not (d.get(section) or {}).get(
+                "trust_remote_code", False
+            ), f"{model} [{section}] still carries a trust_remote_code default"
