@@ -162,7 +162,7 @@ Read our [guide](https://unsloth.ai/docs/get-started/fine-tuning-llms-guide). Ad
 
 ## 📥 Advanced Installation
 The below advanced instructions are for Unsloth Studio. For Unsloth Core advanced installation, [view our docs](https://unsloth.ai/docs/get-started/install/pip-install#advanced-pip-installation).
-#### Developer installs: macOS, Linux, WSL:
+#### Developer / Nightly / Experimental installs: macOS, Linux, WSL:
 The developer install builds from the `main` branch, which is the latest (nightly) source.
 ```bash
 git clone https://github.com/unslothai/unsloth
@@ -182,7 +182,7 @@ cd unsloth && git pull
 unsloth studio -p 8888
 ```
 
-#### Developer installs: Windows PowerShell:
+#### Developer / Nightly / Experimental installs: Windows PowerShell:
 The developer install builds from the `main` branch, which is the latest (nightly) source.
 ```powershell
 git clone https://github.com/unslothai/unsloth.git
