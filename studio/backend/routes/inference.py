@@ -3137,9 +3137,13 @@ async def generate_stream(
                 log = logger,
             )
 
+    cancel_event = threading.Event()
+
     async def stream():
+        gen = None
+        completed = False
         try:
-            for chunk in backend.generate_chat_response(
+            gen = backend.generate_chat_response(
                 messages = request.messages,
                 system_prompt = request.system_prompt,
                 image = image,
@@ -3148,14 +3152,35 @@ async def generate_stream(
                 top_k = request.top_k,
                 max_new_tokens = request.max_new_tokens,
                 repetition_penalty = request.repetition_penalty,
-            ):
+                cancel_event = cancel_event,
+            )
+            _DONE = object()
+            while True:
+                chunk = await asyncio.to_thread(next, gen, _DONE)
+                if chunk is _DONE:
+                    break
                 yield f"data: {json.dumps({'content': chunk})}\n\n"
+            completed = True
             yield "data: [DONE]\n\n"
 
+        except asyncio.CancelledError:
+            cancel_event.set()
+            backend.reset_generation_state()
+            raise
         except Exception as e:
+            cancel_event.set()
             backend.reset_generation_state()
             logger.error(f"Error during generation: {e}", exc_info = True)
             yield f"data: {json.dumps({'error': _friendly_error(e)})}\n\n"
+        finally:
+            if not completed and not cancel_event.is_set():
+                cancel_event.set()
+                backend.reset_generation_state()
+            if gen is not None:
+                try:
+                    await asyncio.to_thread(gen.close)
+                except (RuntimeError, ValueError):
+                    pass
 
     return StreamingResponse(
         stream(),
