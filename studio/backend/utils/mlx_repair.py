@@ -58,7 +58,6 @@ def is_apple_silicon() -> bool:
 def mlx_available() -> bool:
     try:
         import mlx.core  # noqa: F401
-
         return True
     except Exception:
         return False
@@ -184,7 +183,6 @@ def _run_repair_and_redetect() -> None:
         return
     try:
         from utils.hardware import hardware as hw
-
         hw.detect_hardware()  # flips CHAT_ONLY / DEVICE now that mlx imports
         logger.info(
             "MLX self-heal succeeded; Train/Export enabled (reload the page). chat_only=%s",
