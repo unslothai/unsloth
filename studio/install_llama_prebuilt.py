@@ -3843,10 +3843,18 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
 
     if host.is_windows and host.is_x86_64:
         if host.has_usable_nvidia:
-            attempts = resolve_windows_cuda_choices(host, llama_tag, upstream_assets)
+            attempts = _drop_blackwell_incapable_windows_cuda(
+                host, resolve_windows_cuda_choices(host, llama_tag, upstream_assets)
+            )
             if attempts:
                 return attempts[0]
-            raise PrebuiltFallback("no compatible Windows CUDA asset was found")
+            # A Blackwell host left with only an sm_120-incapable cuda-12.4 build
+            # (upstream gated off 13.3) has no usable GPU prebuilt here; fall
+            # through to the CPU bundle rather than returning a build it cannot
+            # offload. A non-Blackwell NVIDIA host with no CUDA asset at all is
+            # still a hard fallback.
+            if not _host_is_blackwell(host):
+                raise PrebuiltFallback("no compatible Windows CUDA asset was found")
 
         # AMD ROCm on Windows: try upstream HIP prebuilt, then fall back to CPU
         if host.has_rocm:

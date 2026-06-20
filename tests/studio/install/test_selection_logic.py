@@ -3193,6 +3193,29 @@ class TestResolveUpstreamAssetChoice:
         assert result.install_kind == "macos-arm64"
         assert result.name == name
 
+    def test_windows_blackwell_drops_incapable_cuda_to_cpu(self, monkeypatch):
+        # A Blackwell host on a 13.1 driver gets cuda-13.3 gated off and only the
+        # sm_120-incapable cuda-12.4 build left; it must fall through to the CPU
+        # bundle rather than be handed a GPU build it cannot offload.
+        names = [
+            f"llama-{self.TAG}-bin-win-cuda-13.3-x64.zip",
+            "cudart-llama-bin-win-cuda-13.3-x64.zip",
+            f"llama-{self.TAG}-bin-win-cuda-12.4-x64.zip",
+            "cudart-llama-bin-win-cuda-12.4-x64.zip",
+            f"llama-{self.TAG}-bin-win-cpu-x64.zip",
+        ]
+        self._mock_github_assets(monkeypatch, {n: f"https://x/{n}" for n in names})
+        host = make_host(
+            system = "Windows",
+            machine = "AMD64",
+            has_usable_nvidia = True,
+            driver_cuda_version = (13, 1),
+            compute_caps = ["120"],
+        )
+        result = resolve_upstream_asset_choice(host, self.TAG)
+        assert result.install_kind == "windows-cpu"
+        assert result.name == f"llama-{self.TAG}-bin-win-cpu-x64.zip"
+
     def test_macos_arm64_missing(self, monkeypatch):
         self._mock_github_assets(monkeypatch, {})
         host = make_host(
