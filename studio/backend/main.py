@@ -1050,12 +1050,12 @@ async def get_system_info(current_subject: str = Depends(get_current_subject)):
             "total_gb": memory.total / 1024**3,
             "available_gb": memory.available / 1024**3,
             "percent_used": memory.percent,
-            "process_used_mb": round(current_process.memory_info().rss / 1024**2),
-        },
-        "disk": {
-            "total_gb": round(disk.total / 1e9, 2),
-            "free_gb": round(disk.free / 1e9, 2),
-            "percent_used": disk.percent,
+      "process_used_mb": round(current_process.memory_info().rss / 1024**2) if current_process else 0,
+    },
+    "disk": {
+      "total_gb": round(disk.total / 1e9, 2) if disk else 0,
+      "free_gb": round(disk.free / 1e9, 2) if disk else 0,
+      "percent_used": disk.percent if disk else 0,
         },
         "gpu": gpu_info,
         "ml_packages": ml_packages,
