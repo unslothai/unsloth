@@ -200,6 +200,15 @@ def test_already_in_target_state_reloads_on_mode_change(loaded, requested):
     assert _target_state(_loaded_backend(loaded), requested) is False
 
 
+def test_already_in_target_state_ignores_mode_for_diffusion():
+    # The diffusion runner is mode-agnostic (always reports "auto"), so a standing
+    # fit/manual preference in the request must not force a needless reload of an
+    # already-loaded diffusion model.
+    backend = _loaded_backend("auto")
+    backend._is_diffusion = True
+    assert _target_state(backend, "fit") is True
+
+
 # ── load_model fit branch bypasses Unsloth GPU management ────────────
 
 

@@ -553,6 +553,7 @@ export function ChatSettingsPanel({
   const gpuMemoryMode = useChatRuntimeStore((s) => s.gpuMemoryMode);
   const setGpuMemoryMode = useChatRuntimeStore((s) => s.setGpuMemoryMode);
   const loadedGpuMemoryMode = useChatRuntimeStore((s) => s.loadedGpuMemoryMode);
+  const loadedIsDiffusion = useChatRuntimeStore((s) => s.loadedIsDiffusion);
   const gpuLayers = useChatRuntimeStore((s) => s.gpuLayers);
   const setGpuLayers = useChatRuntimeStore((s) => s.setGpuLayers);
   const loadedGpuLayers = useChatRuntimeStore((s) => s.loadedGpuLayers);
@@ -609,9 +610,18 @@ export function ChatSettingsPanel({
   const specDirty = speculativeType !== loadedSpeculativeType;
   const specDraftDirty = specDraftNMax !== loadedSpecDraftNMax;
   const tpDirty = tensorParallel !== (loadedTensorParallel ?? false);
-  const gpuDirty = gpuMemoryMode !== (loadedGpuMemoryMode ?? "auto");
-  const isAutoFit = gpuMemoryMode === "fit";
-  const isManual = gpuMemoryMode === "manual";
+  // A loaded diffusion GGUF runs mode-agnostic (its runner pins all layers on one
+  // GPU and ignores --fit/--gpu-layers), so the GPU Memory mode + manual controls
+  // don't apply -- hide them and don't let the preserved standing mode read as
+  // dirty. The GPU picker still applies (diffusion pins the chosen device). A
+  // staged pick keeps the controls (a pending pick's diffusion-ness isn't known
+  // until it loads).
+  const gpuModeApplies =
+    isGguf && (pendingSelection != null || !loadedIsDiffusion);
+  const gpuDirty =
+    gpuModeApplies && gpuMemoryMode !== (loadedGpuMemoryMode ?? "auto");
+  const isAutoFit = gpuModeApplies && gpuMemoryMode === "fit";
+  const isManual = gpuModeApplies && gpuMemoryMode === "manual";
   // GPUs actually in use: the picked subset, or all visible when none picked.
   const gpusInUse = selectedGpuIds ?? gpuDevices.map((d) => d.index);
   // Only fit forces TP off: llama.cpp's --fit aborts under --split-mode tensor.
@@ -1249,6 +1259,7 @@ export function ChatSettingsPanel({
                 )}
                   </>
                 )}
+                {gpuModeApplies && (
                 <div className="flex items-center justify-between gap-3">
                   <div className="flex min-w-0 items-center gap-1.5">
                     <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
@@ -1301,6 +1312,7 @@ export function ChatSettingsPanel({
                     </Select>
                   </div>
                 </div>
+                )}
                 {isManual && (
                   <>
                     <ParamSlider
@@ -1402,6 +1414,7 @@ export function ChatSettingsPanel({
                     </div>
                   </div>
                 )}
+                {gpuModeApplies && (
                 <div className="flex items-center justify-between gap-3">
                   <div className="flex min-w-0 items-center gap-1.5">
                     <span className="min-w-0 text-[13px] font-medium leading-[1.25] tracking-nav text-nav-fg">
@@ -1421,6 +1434,7 @@ export function ChatSettingsPanel({
                     data-test-id="tensor-parallel-switch"
                   />
                 </div>
+                )}
               </>
             )}
             {/* No persistent "enable custom code" toggle: it is consented per model

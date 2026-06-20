@@ -1333,6 +1333,9 @@ async function autoLoadSmallestModel(): Promise<{
               tensorParallel: loadResp.tensor_parallel ?? false,
               loadedTensorParallel: loadResp.tensor_parallel ?? false,
               ...loadedGpuMemoryFields(loadResp),
+              // Drives the GPU Memory controls' diffusion gate; set alongside the
+              // GPU fields on every load path so the gate can't read stale.
+              loadedIsDiffusion: loadResp.is_diffusion ?? false,
               defaultChatTemplate: loadResp.chat_template ?? null,
               chatTemplateOverride: null,
               loadedChatTemplateOverride: null,
@@ -1518,6 +1521,9 @@ async function autoLoadSmallestModel(): Promise<{
         tensorParallel: loadResp.tensor_parallel ?? false,
         loadedTensorParallel: loadResp.tensor_parallel ?? false,
         ...loadedGpuMemoryFields(loadResp),
+        // Drives the GPU Memory controls' diffusion gate; set alongside the
+        // GPU fields on every load path so the gate can't read stale.
+        loadedIsDiffusion: loadResp.is_diffusion ?? false,
         defaultChatTemplate: loadResp.chat_template ?? null,
         chatTemplateOverride: null,
         loadedIsMultimodal: isMultimodalResponse(loadResp),

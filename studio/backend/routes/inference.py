@@ -1825,14 +1825,18 @@ def _request_matches_loaded_settings(
         effective_extra, request.tensor_parallel, llama_backend.tensor_parallel
     ):
         return False
-    if request.gpu_memory_mode != llama_backend.gpu_memory_mode:
-        return False
-    if request.gpu_memory_mode == "manual" and (
-        request.gpu_layers != llama_backend.gpu_layers
-        or request.n_cpu_moe != llama_backend.n_cpu_moe
-        or (request.tensor_split or None) != (llama_backend.tensor_split or None)
-    ):
-        return False
+    # The diffusion runner is mode-agnostic (it always reports "auto" and ignores
+    # the layer/MoE/split knobs), so a standing fit/manual preference in the
+    # request must not force a needless reload -- only the GPU pick matters.
+    if not llama_backend.is_diffusion:
+        if request.gpu_memory_mode != llama_backend.gpu_memory_mode:
+            return False
+        if request.gpu_memory_mode == "manual" and (
+            request.gpu_layers != llama_backend.gpu_layers
+            or request.n_cpu_moe != llama_backend.n_cpu_moe
+            or (request.tensor_split or None) != (llama_backend.tensor_split or None)
+        ):
+            return False
     _req_gpu_ids = sorted(request.gpu_ids) if request.gpu_ids else None
     if _req_gpu_ids != llama_backend.gpu_ids:
         return False

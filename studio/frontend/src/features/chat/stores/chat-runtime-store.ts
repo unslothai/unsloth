@@ -495,6 +495,7 @@ export function rebalanceSplit(
 // Shared by every load path so the manual-knob round-trip can't drift.
 export function loadedGpuMemoryFields(resp: {
   is_gguf?: boolean;
+  is_diffusion?: boolean;
   gpu_memory_mode?: "auto" | "fit" | "manual";
   gpu_layers?: number;
   n_cpu_moe?: number;
@@ -525,7 +526,13 @@ export function loadedGpuMemoryFields(resp: {
         }
       : { loadedGpuLayers: null, loadedNCpuMoe: null, loadedSplitRatio: null };
   return {
-    gpuMemoryMode: mode,
+    // A diffusion GGUF runs mode-agnostic (its runner pins all layers on one GPU
+    // and always reports "auto"), so adopt everything a chat GGUF does EXCEPT the
+    // live standing preference -- the next chat load must still honor the user's
+    // fit/manual choice. The loaded baseline below is still set to "auto"; the UI
+    // hides the mode controls for a loaded diffusion model, so it can't read as
+    // dirty against the preserved preference.
+    ...(resp.is_diffusion ? {} : { gpuMemoryMode: mode }),
     loadedGpuMemoryMode: mode,
     ggufLayerCount: resp.n_layers ?? null,
     // MoE expert-layer count: the n_cpu_moe slider max, and 0 hides the slider.
@@ -1097,10 +1104,15 @@ function loadedBaselineSettings(s: ChatRuntimeStore) {
     chatTemplateOverride: s.loadedChatTemplateOverride,
     // GPU memory mode is a standing preference; revert to the loaded model's
     // mode (or the persisted default when nothing is loaded). The manual knobs
-    // and GPU pick are per-model and revert to their loaded baseline.
-    gpuMemoryMode: hasLoadedModel
-      ? (s.loadedGpuMemoryMode ?? "auto")
-      : readPersistedGpuMemoryMode(),
+    // and GPU pick are per-model and revert to their loaded baseline. A loaded
+    // diffusion model has no applicable mode (its baseline is "auto"); keep the
+    // live preference so Reset doesn't silently drop the user's fit/manual choice
+    // for the next chat load.
+    gpuMemoryMode: !hasLoadedModel
+      ? readPersistedGpuMemoryMode()
+      : s.loadedIsDiffusion
+        ? s.gpuMemoryMode
+        : (s.loadedGpuMemoryMode ?? "auto"),
     gpuLayers: s.loadedGpuLayers ?? GPU_LAYERS_ALL,
     nCpuMoe: s.loadedNCpuMoe ?? 0,
     splitRatio: s.loadedSplitRatio ?? null,

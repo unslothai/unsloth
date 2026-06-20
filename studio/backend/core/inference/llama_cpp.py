@@ -6845,16 +6845,20 @@ class LlamaCppBackend:
         if not _tensor_parallel_matches_loaded(extra_args, tensor_parallel, self._tensor_parallel):
             return False
 
-        # A GPU-memory-mode flip (Unsloth / --fit / manual) must always reload.
-        if self._gpu_memory_mode != gpu_memory_mode:
-            return False
-        # In manual mode a changed layer count, MoE-offload, or GPU split reloads.
-        if gpu_memory_mode == "manual" and (
-            self._gpu_layers != gpu_layers
-            or self._n_cpu_moe != n_cpu_moe
-            or (self._tensor_split or None) != (tensor_split or None)
-        ):
-            return False
+        # The diffusion runner is mode-agnostic (always "auto", ignores the
+        # layer/MoE/split knobs), so a standing fit/manual preference in the
+        # request must not force a needless reload -- only the GPU pick matters.
+        if not self._is_diffusion:
+            # A GPU-memory-mode flip (Unsloth / --fit / manual) must always reload.
+            if self._gpu_memory_mode != gpu_memory_mode:
+                return False
+            # In manual mode a changed layer count, MoE-offload, or GPU split reloads.
+            if gpu_memory_mode == "manual" and (
+                self._gpu_layers != gpu_layers
+                or self._n_cpu_moe != n_cpu_moe
+                or (self._tensor_split or None) != (tensor_split or None)
+            ):
+                return False
         # A changed GPU pick must reload (compare order-insensitively; None/[]
         # both mean automatic).
         if (self._gpu_ids or None) != (sorted(gpu_ids) if gpu_ids else None):
