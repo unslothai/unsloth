@@ -798,7 +798,7 @@ def studio_default(
                 args.append("--api-only")
             # Forward the explicit polarity (matches run.py's BooleanOptionalAction).
             args.append("--cloudflare" if cloudflare else "--no-cloudflare")
-            args.append("--secure" if secure else "--not-secure")
+            args.append("--secure" if secure else "--no-secure")
             # Forward an explicit tool policy; None -> run.py leaves it unset (tools on).
             if enable_tools is True:
                 args.append("--enable-tools")
