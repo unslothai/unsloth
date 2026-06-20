@@ -882,14 +882,23 @@ class TestLocalConfig530Tier:
 
     def test_config_needs_530_qwen3_5_moe(self):
         """Qwen3.5 MoE (Qwen3.5-35B-A3B / 122B-A10B) uses qwen3_5_moe ids."""
-        assert _config_needs_530(
-            {"model_type": "qwen3_5_moe", "architectures": ["Qwen3_5MoeForConditionalGeneration"]}
-        ) is True
+        assert (
+            _config_needs_530(
+                {
+                    "model_type": "qwen3_5_moe",
+                    "architectures": ["Qwen3_5MoeForConditionalGeneration"],
+                }
+            )
+            is True
+        )
 
     def test_config_needs_530_qwen3_next(self):
-        assert _config_needs_530(
-            {"model_type": "qwen3_next", "architectures": ["Qwen3NextForCausalLM"]}
-        ) is True
+        assert (
+            _config_needs_530(
+                {"model_type": "qwen3_next", "architectures": ["Qwen3NextForCausalLM"]}
+            )
+            is True
+        )
 
     def test_config_needs_530_plain_qwen3_is_false(self):
         """Regular Qwen3 (non-MoE, non-3.5) must not be promoted to 5.3.0."""
@@ -937,7 +946,10 @@ class TestLocalConfig530Tier:
         d.mkdir()
         (d / "config.json").write_text(
             json.dumps(
-                {"model_type": "qwen3_5_moe", "architectures": ["Qwen3_5MoeForConditionalGeneration"]}
+                {
+                    "model_type": "qwen3_5_moe",
+                    "architectures": ["Qwen3_5MoeForConditionalGeneration"],
+                }
             )
         )
         assert get_transformers_tier(str(d)) == "530"
@@ -949,7 +961,9 @@ class TestLocalConfig530Tier:
         d = tmp_path / "Qwen3.6-27B"
         d.mkdir()
         (d / "config.json").write_text(
-            json.dumps({"model_type": "qwen3_5", "architectures": ["Qwen3_5ForConditionalGeneration"]})
+            json.dumps(
+                {"model_type": "qwen3_5", "architectures": ["Qwen3_5ForConditionalGeneration"]}
+            )
         )
         assert get_transformers_tier(str(d)) == "550"
 
