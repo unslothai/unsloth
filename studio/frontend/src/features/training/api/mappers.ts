@@ -82,6 +82,7 @@ export function buildTrainingStartPayload(
         ? config.visionImageSize
         : null,
     trust_remote_code: config.trustRemoteCode ?? false,
+    approved_remote_code_fingerprint: config.approvedRemoteCodeFingerprint ?? null,
     hf_dataset: hfDataset,
     subset: hfDataset ? config.datasetSubset : null,
     train_split: hfDataset ? config.datasetSplit : null,

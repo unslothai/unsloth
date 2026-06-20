@@ -1,13 +1,4 @@
-"""Resilience checks for Studio install-root inference under hostile
-filesystem conditions:
-- _infer_studio_home_from_venv must NOT propagate PermissionError /
-  OSError out through studio_root() (it would crash module import in
-  run.py / main.py / transformers_version.py / model_config.py).
-- _kill_orphaned_servers must catch (ImportError, OSError, ValueError)
-  on the studio_root() probe so a transient resolve / sentinel failure
-  cannot crash server startup.
-- _find_llama_server_binary must keep the custom-root in search_roots
-  when the inner resolve() comparison itself fails."""
+"""Studio install-root inference must not crash under hostile filesystem conditions (PermissionError/OSError swallowed; custom root kept when resolve() fails)."""
 
 from __future__ import annotations
 
@@ -48,9 +39,7 @@ def test_infer_studio_home_swallows_permission_error(tmp_path, monkeypatch):
 
 
 def test_studio_root_does_not_crash_on_permission_error(tmp_path, monkeypatch):
-    """studio_root() must remain callable even when the venv inference
-    encounters a restricted filesystem; it should fall through to the
-    legacy default."""
+    """studio_root() falls through to the legacy default on a restricted filesystem."""
     candidate = tmp_path / "fake_root"
     venv = candidate / "unsloth_studio"
     venv.mkdir(parents = True)
@@ -65,19 +54,15 @@ def test_studio_root_does_not_crash_on_permission_error(tmp_path, monkeypatch):
 
 
 def test_kill_orphan_catches_oserror_from_studio_root():
-    """_kill_orphaned_servers must catch (ImportError, OSError, ValueError)
-    on the studio_root() probe specifically; the sister function
-    _find_llama_server_binary uses the same broader catch on its own probe."""
+    """_kill_orphaned_servers must catch (ImportError, OSError, ValueError) on the studio_root() probe."""
     src = LLAMA_CPP.read_text()
     fn_start = src.index("def _kill_orphaned_servers")
     fn_body = src[fn_start : fn_start + 4000]
-    # The studio_root() probe in this fn is the one that imports as `_sr`
-    # and assigns `_resolved_sr = _sr()`. Find the except that closes it.
+    # The studio_root() probe imports as `_sr` and assigns `_resolved_sr = _sr()`.
     probe_idx = fn_body.index("storage_roots import studio_root as _sr")
-    # The matching except is the next `except ...:` after the inner
-    # OSError/ValueError block that wraps resolve().
+    # The matching except is the next one after the inner resolve() block.
     after = fn_body[probe_idx:]
-    # Skip over the inner `except (OSError, ValueError):` that wraps resolve().
+    # Skip the inner `except (OSError, ValueError):` that wraps resolve().
     inner_idx = after.index("except (OSError, ValueError):")
     after_inner = after[inner_idx + len("except (OSError, ValueError):") :]
     outer_match = re.search(r"except\s*\(?[^)]*?\)?:", after_inner)
@@ -91,8 +76,7 @@ def test_kill_orphan_catches_oserror_from_studio_root():
 def _exec_search_roots_block(
     home: Path, studio_root_value: Path, resolve_raises: bool
 ) -> list[Path]:
-    """Extract _find_llama_server_binary's env-mode search_roots block
-    and execute it with controlled inputs."""
+    """Extract and run _find_llama_server_binary's env-mode search_roots block with controlled inputs."""
     src = LLAMA_CPP.read_text()
     block_start = src.index('legacy_llama = Path.home() / ".unsloth" / "llama.cpp"')
     block_end = src.index("_seen_roots: set[str]", block_start)
