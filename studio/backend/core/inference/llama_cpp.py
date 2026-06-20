@@ -3840,11 +3840,30 @@ class LlamaCppBackend:
             return None
 
         target: Optional[str] = None
-        try:
-            from huggingface_hub import list_repo_files
-            target = pick(list_repo_files(hf_repo, token = hf_token))
-        except Exception as e:
-            logger.debug(f"Could not list repo files for {label}: {e}")
+        from huggingface_hub import list_repo_files
+        # Retry a transient listing blip (like the download step); a permanent
+        # repo/auth error is not retried.
+        for attempt in range(3):
+            if self._cancel_event.is_set():
+                return None
+            try:
+                target = pick(list_repo_files(hf_repo, token = hf_token))
+                break
+            except Exception as e:
+                if type(e).__name__ in (
+                    "RepositoryNotFoundError",
+                    "GatedRepoError",
+                    "RevisionNotFoundError",
+                    "EntryNotFoundError",
+                ):
+                    logger.debug(f"Could not list repo files for {label}: {e}")
+                    break
+                logger.debug(
+                    f"Could not list repo files for {label} "
+                    f"(attempt {attempt + 1}/3): {e}"
+                )
+                if attempt < 2:
+                    self._cancel_event.wait(2**attempt)
 
         if target is None:
             try:
