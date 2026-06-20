@@ -4,20 +4,19 @@
 """
 Training backend — subprocess orchestrator.
 
-Each training job runs in a fresh subprocess (mp.get_context("spawn")),
-solving the transformers version-switching problem. The old in-process
-UnslothTrainer singleton is only used inside the subprocess (worker.py).
-
-This file orchestrates the subprocess lifecycle, pumps events from the
-worker's mp.Queue, and exposes the same API surface to routes/training.py.
-
-Pattern follows core/data_recipe/jobs/manager.py.
+Each job runs in a fresh spawn subprocess (solving transformers version-switching);
+the in-process UnslothTrainer singleton is only used inside the worker. This file
+orchestrates the subprocess lifecycle, pumps events from the worker's mp.Queue, and
+exposes the same API to routes/training.py. Pattern follows data_recipe/jobs/manager.py.
 """
 
 import json as _json
 import math
 import multiprocessing as mp
+import os
 import queue
+import re
+import shutil
 import threading
 import time
 import structlog
@@ -29,8 +28,122 @@ from typing import Optional, Tuple, Any
 
 import matplotlib.pyplot as plt
 from utils.hardware import prepare_gpu_selection
+from utils.native_path_leases import (
+    native_path_secret_removed_for_child_start,
+    run_without_native_path_secret,
+)
+from utils.paths import outputs_root
 
 logger = get_logger(__name__)
+
+
+def _coerce_seed(value, default = 3407) -> int:
+    """Normalize None / non-int to `default` (transformers.set_seed(None) raises)."""
+    if value is None:
+        return int(default)
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return int(default)
+
+
+def _coerce_optional_bool(value, default: bool) -> bool:
+    """Treat explicit None as `default` instead of `bool(None) == False`."""
+    if value is None:
+        return bool(default)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in ("true", "1", "yes", "on"):
+            return True
+        if normalized in ("false", "0", "no", "off", ""):
+            return False
+    return bool(value)
+
+
+def _coerce_optional_nonneg_float(name: str, value):
+    """Reject negatives; HTTP `ge=0` doesn't cover raw `**kwargs` callers."""
+    if value is None:
+        return None
+    try:
+        coerced = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"Unsloth: {name}={value!r} must be a non-negative float or None.")
+    if coerced < 0:
+        raise ValueError(f"Unsloth: {name}={coerced} must be >= 0 (use 0 or None to disable).")
+    return coerced
+
+
+_HF_TMP_CHECKPOINT_RE = re.compile(r"^tmp-checkpoint-\d+$")
+
+
+def _sanitize_db_config(config: dict[str, Any]) -> dict[str, Any]:
+    db_config = {
+        k: v for k, v in config.items() if k not in {"hf_token", "wandb_token", "s3_config"}
+    }
+    s3_config = config.get("s3_config")
+    if hasattr(s3_config, "model_dump"):
+        s3_config = s3_config.model_dump()
+    if isinstance(s3_config, dict) and s3_config:
+        db_config["dataset_source"] = "s3"
+        db_config["s3_dataset"] = {
+            "bucket": s3_config.get("bucket"),
+            "region": s3_config.get("region"),
+            "prefix": s3_config.get("prefix"),
+            "use_iam_role": bool(s3_config.get("use_iam_role")),
+        }
+    return db_config
+
+
+def _s3_dataset_name(s3_dataset: Any) -> Optional[str]:
+    if not isinstance(s3_dataset, dict):
+        return None
+    bucket = s3_dataset.get("bucket")
+    if not bucket:
+        return None
+    prefix = s3_dataset.get("prefix")
+    return f"s3://{bucket}/{prefix}" if prefix else f"s3://{bucket}"
+
+
+def _cleanup_cancelled_checkpoints(output_dir: str | os.PathLike) -> None:
+    """Remove only HF Trainer ``tmp-checkpoint-<step>/`` partials after a cancel.
+
+    Completed ``checkpoint-<int>/`` dirs survive. Symlinked output_dir / children
+    are skipped so containment can't be bypassed.
+    """
+    out = Path(output_dir)
+    if not out.exists() or not out.is_dir() or out.is_symlink():
+        return
+    try:
+        out_real = out.resolve()
+        out_root_real = Path(outputs_root()).resolve()
+    except OSError:
+        return
+    try:
+        out_real.relative_to(out_root_real)
+    except ValueError:
+        logger.warning(
+            "Skipping checkpoint cleanup - %s is not under outputs_root %s",
+            out_real,
+            out_root_real,
+        )
+        return
+    removed = 0
+    for entry in out.iterdir():
+        if not entry.is_dir() or entry.is_symlink():
+            continue
+        if not _HF_TMP_CHECKPOINT_RE.match(entry.name):
+            continue
+        try:
+            shutil.rmtree(entry, ignore_errors = False)
+            removed += 1
+        except OSError as exc:
+            logger.warning("Could not remove %s: %s", entry, exc)
+    logger.info(
+        "Cancelled-run cleanup removed %d in-flight tmp-checkpoint dir(s) under %s",
+        removed,
+        out,
+    )
+
 
 _CTX = mp.get_context("spawn")
 
@@ -41,8 +154,7 @@ PLOT_HEIGHT = 3.5
 
 @dataclass
 class TrainingProgress:
-    """Mirror of trainer.TrainingProgress — kept here so the parent process
-    never needs to import the heavy ML modules."""
+    """Mirror of trainer.TrainingProgress so the parent never imports heavy ML modules."""
 
     epoch: float = 0
     step: int = 0
@@ -58,12 +170,13 @@ class TrainingProgress:
     grad_norm: Optional[float] = None
     num_tokens: Optional[int] = None
     eval_loss: Optional[float] = None
+    peak_memory_gb: Optional[float] = None
 
 
 class TrainingBackend:
     """
     Training orchestration backend — subprocess-based.
-    Launches a fresh subprocess per training job, communicates via mp.Queue.
+    Launches a fresh subprocess per job, communicates via mp.Queue.
     """
 
     FLUSH_THRESHOLD: int = 10
@@ -81,7 +194,7 @@ class TrainingBackend:
         self._should_stop = False
         self._cancel_requested = False  # True only for stop(save=False)
 
-        # Training Metrics (consumed by routes for SSE and /metrics)
+        # Training metrics (consumed by routes for SSE and /metrics)
         self.loss_history: list = []
         self.lr_history: list = []
         self.step_history: list = []
@@ -104,17 +217,36 @@ class TrainingBackend:
         self._db_config: Optional[dict] = None
         self._db_started_at: Optional[str] = None
 
+        # Xet -> HTTP model-load fallback state (config kept for the respawn).
+        self._last_full_config: Optional[dict] = None
+        self._in_model_load: bool = False
+        self._xet_fallback_used: bool = False
+        self._needs_xet_respawn: bool = False
+
         logger.info("TrainingBackend initialized (subprocess mode)")
 
     # ------------------------------------------------------------------
     # Public API (called by routes/training.py)
     # ------------------------------------------------------------------
 
-    def start_training(self, job_id: str, **kwargs) -> bool:
+    def start_training(
+        self,
+        job_id: str,
+        *,
+        before_spawn = None,
+        **kwargs,
+    ) -> bool:
         """Spawn a subprocess to run the full training pipeline.
 
         All kwargs are serialized into a config dict and sent to the worker.
-        Returns True if the subprocess was started successfully.
+        Returns True if the subprocess started successfully.
+
+        ``before_spawn`` is an optional no-arg callable run after synchronous
+        validation (start guards, config build, explicit gpu_ids) passes but
+        before VRAM-dependent auto GPU-selection and the spawn -- used to free
+        VRAM (e.g. unload chat) without tearing it down on a refused start, while
+        still letting auto-selection place training against the freed memory.
+        Hook failures never block the start.
         """
         with self._lock:
             if self._proc is not None and self._proc.is_alive():
@@ -125,9 +257,7 @@ class TrainingBackend:
         if self._pump_thread is not None and self._pump_thread.is_alive():
             self._pump_thread.join(timeout = 5.0)
             if self._pump_thread.is_alive():
-                logger.warning(
-                    "Previous pump thread did not exit within 5s — refusing to start"
-                )
+                logger.warning("Previous pump thread did not exit within 5s — refusing to start")
                 return False
         self._pump_thread = None
 
@@ -139,6 +269,7 @@ class TrainingBackend:
             "hf_token": kwargs.get("hf_token", ""),
             "load_in_4bit": kwargs.get("load_in_4bit", True),
             "max_seq_length": kwargs.get("max_seq_length", 2048),
+            "vision_image_size": kwargs.get("vision_image_size"),
             "hf_dataset": kwargs.get("hf_dataset", ""),
             "local_datasets": kwargs.get("local_datasets"),
             "local_eval_datasets": kwargs.get("local_eval_datasets"),
@@ -155,6 +286,7 @@ class TrainingBackend:
             "is_embedding": kwargs.get("is_embedding", False),
             "num_epochs": kwargs.get("num_epochs", 3),
             "learning_rate": kwargs.get("learning_rate", "2e-4"),
+            "embedding_learning_rate": kwargs.get("embedding_learning_rate"),
             "batch_size": kwargs.get("batch_size", 2),
             "gradient_accumulation_steps": kwargs.get("gradient_accumulation_steps", 4),
             "warmup_steps": kwargs.get("warmup_steps"),
@@ -162,7 +294,18 @@ class TrainingBackend:
             "max_steps": kwargs.get("max_steps", 0),
             "save_steps": kwargs.get("save_steps", 0),
             "weight_decay": kwargs.get("weight_decay", 0.001),
-            "random_seed": kwargs.get("random_seed", 3407),
+            "max_grad_norm": kwargs.get("max_grad_norm", 0.0),
+            "max_grad_value": _coerce_optional_nonneg_float(
+                "max_grad_value", kwargs.get("max_grad_value")
+            ),
+            "max_grad_leaf_norm": _coerce_optional_nonneg_float(
+                "max_grad_leaf_norm", kwargs.get("max_grad_leaf_norm")
+            ),
+            "cast_norm_output_to_input_dtype": _coerce_optional_bool(
+                kwargs.get("cast_norm_output_to_input_dtype"), True
+            ),
+            # MLX/CUDA/embedding workers need an int (transformers.set_seed(None) raises).
+            "random_seed": _coerce_seed(kwargs.get("random_seed")),
             "packing": kwargs.get("packing", False),
             "optim": kwargs.get("optim", "adamw_8bit"),
             "lr_scheduler_type": kwargs.get("lr_scheduler_type", "linear"),
@@ -177,26 +320,37 @@ class TrainingBackend:
             "train_on_completions": kwargs.get("train_on_completions", False),
             "finetune_vision_layers": kwargs.get("finetune_vision_layers", True),
             "finetune_language_layers": kwargs.get("finetune_language_layers", True),
-            "finetune_attention_modules": kwargs.get(
-                "finetune_attention_modules", True
-            ),
+            "finetune_attention_modules": kwargs.get("finetune_attention_modules", True),
             "finetune_mlp_modules": kwargs.get("finetune_mlp_modules", True),
             "enable_wandb": kwargs.get("enable_wandb", False),
             "wandb_token": kwargs.get("wandb_token"),
             "wandb_project": kwargs.get("wandb_project", "unsloth-training"),
             "enable_tensorboard": kwargs.get("enable_tensorboard", False),
             "tensorboard_dir": kwargs.get("tensorboard_dir", "runs"),
+            "resume_from_checkpoint": kwargs.get("resume_from_checkpoint"),
             "trust_remote_code": kwargs.get("trust_remote_code", False),
+            "approved_remote_code_fingerprint": kwargs.get("approved_remote_code_fingerprint"),
             "gpu_ids": kwargs.get("gpu_ids"),
+            "s3_config": kwargs.get("s3_config"),
+            # Flipped to True only by the HTTP-fallback respawn after a stall.
+            "disable_xet": kwargs.get("disable_xet", False),
         }
 
-        # Derive load_in_4bit from training_type
-        if config["training_type"] != "LoRA/QLoRA":
+        # Full finetuning always runs in 16-bit; LoRA/QLoRA/CPT keep the request.
+        if config["training_type"] == "Full Finetuning":
             config["load_in_4bit"] = False
 
-        # Spawn subprocess — use locals so state is untouched on failure
-        resolved_gpu_ids, gpu_selection = prepare_gpu_selection(
-            kwargs.get("gpu_ids"),
+        # Split GPU validation from placement around the VRAM hook:
+        #   * Explicit gpu_ids are validated here (raises -> the route returns 400
+        #     before any teardown) and their placement is VRAM-independent, so it
+        #     stays correct after the hook frees memory.
+        #   * Auto-selection ranks GPUs by *free* VRAM, so it is deferred until
+        #     after the hook frees export/chat -- otherwise it could pin training
+        #     onto a GPU the hook is about to clear (and onto a kept chat model).
+        from utils.hardware import hardware as _hw
+
+        gpu_ids = kwargs.get("gpu_ids")
+        gpu_selection_kwargs = dict(
             model_name = config["model_name"],
             hf_token = config["hf_token"] or None,
             training_type = config["training_type"],
@@ -208,33 +362,59 @@ class TrainingBackend:
             gradient_checkpointing = config.get("gradient_checkpointing", "unsloth"),
             optimizer = config.get("optim", "adamw_8bit"),
         )
-        config["resolved_gpu_ids"] = resolved_gpu_ids
-        config["gpu_selection"] = gpu_selection
+
+        defer_auto_selection = False
+        if _hw.DEVICE == _hw.DeviceType.MLX:
+            config["resolved_gpu_ids"] = None
+            config["gpu_selection"] = None
+        elif gpu_ids:
+            resolved_gpu_ids, gpu_selection = prepare_gpu_selection(gpu_ids, **gpu_selection_kwargs)
+            config["resolved_gpu_ids"] = resolved_gpu_ids
+            config["gpu_selection"] = gpu_selection
+        else:
+            defer_auto_selection = True
+
+        # Synchronous validation passed -> free VRAM (export + chat) now, before
+        # auto-selection and the spawn, so placement sees the freed memory.
+        if before_spawn is not None:
+            try:
+                before_spawn()
+            except Exception:
+                logger.warning("before_spawn hook failed; continuing", exc_info = True)
+
+        if defer_auto_selection:
+            resolved_gpu_ids, gpu_selection = prepare_gpu_selection(None, **gpu_selection_kwargs)
+            config["resolved_gpu_ids"] = resolved_gpu_ids
+            config["gpu_selection"] = gpu_selection
 
         from .worker import run_training_process
 
-        event_queue = _CTX.Queue()
-        stop_queue = _CTX.Queue()
-
-        proc = _CTX.Process(
-            target = run_training_process,
-            kwargs = {
-                "event_queue": event_queue,
-                "stop_queue": stop_queue,
-                "config": config,
-            },
-            daemon = True,
-        )
         try:
-            proc.start()
+            with native_path_secret_removed_for_child_start():
+                event_queue = _CTX.Queue()
+                stop_queue = _CTX.Queue()
+
+                proc = _CTX.Process(
+                    target = run_without_native_path_secret,
+                    args = (run_training_process,),
+                    kwargs = {
+                        "event_queue": event_queue,
+                        "stop_queue": stop_queue,
+                        "config": config,
+                    },
+                    daemon = True,
+                )
+                proc.start()
+                from utils.process_lifetime import adopt_pid
+
+                adopt_pid(proc.pid)  # bind to parent lifetime (Windows job / sweep)
         except Exception:
             logger.error("Failed to start training subprocess", exc_info = True)
             return False
 
         logger.info("Training subprocess started (pid=%s)", proc.pid)
 
-        # Reset state — safe because old pump thread is confirmed dead
-        # and proc.start() succeeded
+        # Reset state (old pump thread dead, proc.start() succeeded).
         self.current_job_id = job_id
         self._should_stop = False
         self._cancel_requested = False
@@ -254,20 +434,22 @@ class TrainingBackend:
         self._run_finalized = False
         self._db_run_created = False
         self._db_total_steps_set = False
-        self._db_config = {
-            k: v for k, v in config.items() if k not in {"hf_token", "wandb_token"}
-        }
+        self._db_config = _sanitize_db_config(config)
         self._db_started_at = datetime.now(timezone.utc).isoformat()
+        # Start each job Xet-first; keep config so a stall can respawn over HTTP.
+        self._last_full_config = config
+        self._in_model_load = False
+        self._xet_fallback_used = False
+        self._needs_xet_respawn = False
 
-        # Assign subprocess handles after state reset
+        # Assign subprocess handles after state reset.
         self._event_queue = event_queue
         self._stop_queue = stop_queue
         self._proc = proc
 
-        # Eagerly create DB run row so the run appears in history during model loading
+        # Eagerly create DB run row so it appears in history during model loading.
         self._ensure_db_run_created()
 
-        # Start event pump thread
         self._pump_thread = threading.Thread(target = self._pump_loop, daemon = True)
         self._pump_thread.start()
 
@@ -284,11 +466,9 @@ class TrainingBackend:
                     self._stop_queue.put({"type": "stop", "save": save})
                 except (OSError, ValueError):
                     pass
-            # Update progress immediately for responsive UI
+            # Update progress immediately for responsive UI.
             self._progress.status_message = (
-                "Stopping training and saving checkpoint..."
-                if save
-                else "Cancelling training..."
+                "Stopping training and saving checkpoint..." if save else "Cancelling training..."
             )
         return True
 
@@ -296,11 +476,11 @@ class TrainingBackend:
         """Force-kill the training subprocess so state can be reset immediately."""
         with self._lock:
             if self._proc is not None and self._proc.is_alive():
-                logger.info(
-                    "Force-terminating training subprocess (pid=%s)", self._proc.pid
-                )
+                logger.info("Force-terminating training subprocess (pid=%s)", self._proc.pid)
                 self._proc.terminate()
             proc = self._proc
+            cancelled = self._cancel_requested
+            output_dir = self._output_dir
 
         if proc is not None:
             proc.join(timeout = 5.0)
@@ -308,30 +488,129 @@ class TrainingBackend:
                 proc.kill()
                 proc.join(timeout = 2.0)
 
-        # Wait for pump thread to finish DB finalization before returning
-        # (8s covers SQLite's default 5s lock timeout plus execution overhead)
+        # Wait for pump thread to finish DB finalization (8s covers SQLite's 5s lock timeout).
         if self._pump_thread is not None and self._pump_thread.is_alive():
             self._pump_thread.join(timeout = 8.0)
+
+        if cancelled and output_dir:
+            try:
+                _cleanup_cancelled_checkpoints(output_dir)
+            except Exception:
+                logger.exception(
+                    "Failed to clean up cancelled-run checkpoints under %s",
+                    output_dir,
+                )
+
+    def _handle_stall_event(self, event: dict) -> None:
+        """A worker reported a no-progress download stall.
+
+        On the first model-load, terminate the worker so the pump loop respawns it
+        over HTTP. A later stall (already on HTTP, or outside model-load) surfaces
+        as an error instead.
+        """
+        msg = event.get("message", "Download stalled")
+        with self._lock:
+            recover = self._in_model_load and not self._xet_fallback_used
+            proc = self._proc
+            if recover:
+                self._xet_fallback_used = True
+                self._needs_xet_respawn = True
+                self._progress.status_message = (
+                    "Model download stalled on Xet; retrying over HTTP..."
+                )
+            else:
+                self._progress.error = self._progress.error or (
+                    "Model download stalled even over HTTP -- check your network connection"
+                )
+        if recover:
+            logger.warning("Training model-load stalled on Xet; respawning over HTTP: %s", msg)
+        else:
+            logger.error("Training download stalled with no further fallback: %s", msg)
+        # Terminate either way so the pump loop proceeds (respawn or finalize).
+        if proc is not None and proc.is_alive():
+            proc.terminate()
+
+    def _respawn_worker_disable_xet(self) -> None:
+        """Respawn the worker once with HF_HUB_DISABLE_XET=1 after a model-load
+        stall. Runs on the exiting pump thread, reaps the terminated worker, and
+        starts a fresh worker + pump. DB/progress run-state is preserved so the
+        history row is not duplicated; the new worker re-formats and loads over HTTP.
+        """
+        config = self._last_full_config
+        if config is None:
+            logger.error("Cannot respawn training worker: no stored config")
+            return
+
+        with self._lock:
+            old_proc = self._proc
+        if old_proc is not None:
+            old_proc.join(timeout = 5.0)
+            if old_proc.is_alive():
+                old_proc.kill()
+                old_proc.join(timeout = 2.0)
+
+        config = {**config, "disable_xet": True}
+        self._last_full_config = config
+        logger.warning("Respawning training worker with HF_HUB_DISABLE_XET=1 after Xet stall")
+
+        from .worker import run_training_process
+
+        try:
+            with native_path_secret_removed_for_child_start():
+                event_queue = _CTX.Queue()
+                stop_queue = _CTX.Queue()
+                new_proc = _CTX.Process(
+                    target = run_without_native_path_secret,
+                    args = (run_training_process,),
+                    kwargs = {
+                        "event_queue": event_queue,
+                        "stop_queue": stop_queue,
+                        "config": config,
+                    },
+                    daemon = True,
+                )
+                new_proc.start()
+                from utils.process_lifetime import adopt_pid
+
+                adopt_pid(new_proc.pid)  # bind to parent lifetime (Windows job / sweep)
+        except Exception:
+            logger.error("Failed to respawn training subprocess", exc_info = True)
+            with self._lock:
+                self._progress.is_training = False
+                self._progress.error = "Failed to recover stalled model download"
+            self._ensure_db_run_created()
+            self._finalize_run_in_db(
+                status = "error",
+                error_message = "Failed to recover stalled model download",
+            )
+            return
+
+        logger.info("Training subprocess respawned with Xet disabled (pid=%s)", new_proc.pid)
+        new_pump = threading.Thread(target = self._pump_loop, daemon = True)
+        with self._lock:
+            self._in_model_load = False
+            self._event_queue = event_queue
+            self._stop_queue = stop_queue
+            self._proc = new_proc
+            self._pump_thread = new_pump
+        new_pump.start()
 
     def is_training_active(self) -> bool:
         """Check if training is currently active."""
         with self._lock:
-            # Subprocess alive = active
             if self._proc is not None and self._proc.is_alive():
                 return True
 
-            # Stop was requested and process exited → inactive
             if self._should_stop:
                 return False
 
-            # Check progress state
             p = self._progress
             if p.is_training:
                 return True
             if p.is_completed or p.error:
                 return False
 
-            # Check status message for activity indicators
+            # Infer activity from the status message.
             status_lower = (p.status_message or "").lower()
             if any(
                 k in status_lower
@@ -424,21 +703,27 @@ class TrainingBackend:
             if self._proc is None or self._event_queue is None:
                 return
 
-            # Try to read an event
             event = self._read_queue(self._event_queue, timeout_sec = 0.25)
             if event is not None:
                 self._handle_event(event)
                 continue
 
-            # No event — check if process is still alive
             if self._proc.is_alive():
                 continue
 
-            # Process exited — drain remaining events
+            # Process exited — drain remaining events.
             for e in self._drain_queue(self._event_queue):
                 self._handle_event(e)
 
-            # Mark as done if no explicit complete/error was received
+            # Model-load stall: respawn over HTTP instead of finalizing as failure.
+            # Runs on THIS exiting pump thread and starts a fresh pump (never joins
+            # the current thread); DB run-state is preserved.
+            if self._needs_xet_respawn:
+                self._needs_xet_respawn = False
+                self._respawn_worker_disable_xet()
+                return
+
+            # Mark done if no explicit complete/error was received.
             with self._lock:
                 if self._progress.is_training:
                     if self._should_stop:
@@ -447,8 +732,7 @@ class TrainingBackend:
                     else:
                         self._progress.is_training = False
                         self._progress.error = (
-                            self._progress.error
-                            or "Training process exited unexpectedly"
+                            self._progress.error or "Training process exited unexpectedly"
                         )
 
             self._ensure_db_run_created()
@@ -463,19 +747,31 @@ class TrainingBackend:
     def _handle_event(self, event: dict) -> None:
         """Apply a subprocess event to local state.
 
-        State updates happen inside self._lock; DB I/O happens after
-        releasing it so status-polling API endpoints are never blocked
-        by slow SQLite writes.
+        State updates happen inside self._lock; DB I/O happens after releasing
+        it so status-polling endpoints aren't blocked by slow SQLite writes.
         """
         etype = event.get("type")
         db_action: Optional[str] = None
         db_action_kwargs: dict = {}
 
+        # Model-load lifecycle + stall recovery (no DB metrics); handled first.
+        if etype == "model_load_started":
+            with self._lock:
+                self._in_model_load = True
+            return
+        if etype == "model_load_completed":
+            with self._lock:
+                self._in_model_load = False
+            return
+        if etype == "stall":
+            self._handle_stall_event(event)
+            return
+
         with self._lock:
             if etype == "progress":
                 self._progress.step = event.get("step", self._progress.step)
                 self._progress.epoch = event.get("epoch", self._progress.epoch)
-                # loss/lr are sanitized below; update progress after coercion
+                # loss/lr sanitized below.
                 _raw_loss = event.get("loss")
                 _raw_lr = event.get("learning_rate")
                 try:
@@ -483,35 +779,52 @@ class TrainingBackend:
                 except (TypeError, ValueError):
                     logger.debug("Could not convert loss to float: %s", _raw_loss)
                     _safe_loss = None
-                if _safe_loss is not None and not math.isfinite(_safe_loss):
+                _loss_is_nonfinite = _safe_loss is not None and not math.isfinite(_safe_loss)
+                if _loss_is_nonfinite:
+                    # Drop the value rather than laundering it back to the last
+                    # finite loss; clients see loss=None at this step so the NaN
+                    # is not hidden behind a stale value. Training continues.
                     _safe_loss = None
+                    if not getattr(self._progress, "_nonfinite_loss_warned", False):
+                        self._progress._nonfinite_loss_warned = True
+                        logger.warning(
+                            "Training produced non-finite loss at step %s; "
+                            "loss field will report null until it recovers.",
+                            event.get("step", "?"),
+                        )
                 try:
                     _safe_lr = float(_raw_lr) if _raw_lr is not None else None
                 except (TypeError, ValueError):
-                    logger.debug(
-                        "Could not convert learning_rate to float: %s", _raw_lr
-                    )
+                    logger.debug("Could not convert learning_rate to float: %s", _raw_lr)
                     _safe_lr = None
                 if _safe_lr is not None and not math.isfinite(_safe_lr):
                     _safe_lr = None
                 if _safe_loss is not None:
                     self._progress.loss = _safe_loss
+                elif _loss_is_nonfinite:
+                    # Clear stale finite loss so the API doesn't keep
+                    # reporting the last good value while NaN is happening.
+                    self._progress.loss = None
                 if _safe_lr is not None:
                     self._progress.learning_rate = _safe_lr
-                self._progress.total_steps = event.get(
-                    "total_steps", self._progress.total_steps
-                )
+                self._progress.total_steps = event.get("total_steps", self._progress.total_steps)
                 self._progress.elapsed_seconds = event.get("elapsed_seconds")
                 self._progress.eta_seconds = event.get("eta_seconds")
                 self._progress.grad_norm = event.get("grad_norm")
                 self._progress.num_tokens = event.get("num_tokens")
                 self._progress.eval_loss = event.get("eval_loss")
+                _peak = event.get("peak_memory_gb")
+                if _peak is not None:
+                    try:
+                        self._progress.peak_memory_gb = float(_peak)
+                    except (TypeError, ValueError):
+                        pass
                 self._progress.is_training = True
                 status = event.get("status_message", "")
                 if status:
                     self._progress.status_message = status
 
-                # Update metric histories — reuse sanitized values from above
+                # Update metric histories using sanitized values.
                 step = event.get("step", 0)
                 loss = _safe_loss
                 lr = _safe_lr
@@ -538,9 +851,7 @@ class TrainingBackend:
                     try:
                         eval_loss = float(eval_loss)
                     except (TypeError, ValueError):
-                        logger.debug(
-                            "Could not convert eval_loss to float: %s", eval_loss
-                        )
+                        logger.debug("Could not convert eval_loss to float: %s", eval_loss)
                         eval_loss = None
                     if step > 0 and eval_loss is not None and math.isfinite(eval_loss):
                         self.eval_loss_history.append(eval_loss)
@@ -549,7 +860,7 @@ class TrainingBackend:
                     else:
                         eval_loss = None
 
-                # Buffer metric for DB flush (loss/lr already sanitized above)
+                # Buffer metric for DB flush.
                 self._metric_buffer.append(
                     {
                         "step": step,
@@ -563,19 +874,16 @@ class TrainingBackend:
                     }
                 )
 
-                # Decide which DB action to take after releasing the lock
+                # Pick the DB action to run after releasing the lock.
                 if not self._db_run_created and self.current_job_id and self._db_config:
                     db_action = "create_run"
                     db_action_kwargs = {
                         "job_id": self.current_job_id,
                         "model_name": self._db_config["model_name"],
                         "dataset_name": self._db_config.get("hf_dataset")
-                        or next(
-                            iter(self._db_config.get("local_datasets") or []), "unknown"
-                        ),
+                        or next(iter(self._db_config.get("local_datasets") or []), "unknown"),
                         "config_json": _json.dumps(self._db_config),
-                        "started_at": self._db_started_at
-                        or datetime.now(timezone.utc).isoformat(),
+                        "started_at": self._db_started_at or datetime.now(timezone.utc).isoformat(),
                         "total_steps": event.get("total_steps"),
                     }
                 elif (
@@ -653,10 +961,7 @@ class TrainingBackend:
         elif db_action == "update_total_steps":
             try:
                 from storage.studio_db import update_run_total_steps
-
-                update_run_total_steps(
-                    db_action_kwargs["job_id"], db_action_kwargs["total_steps"]
-                )
+                update_run_total_steps(db_action_kwargs["job_id"], db_action_kwargs["total_steps"])
                 self._db_total_steps_set = True
             except Exception:
                 logger.warning("Failed to update total_steps in DB", exc_info = True)
@@ -672,23 +977,23 @@ class TrainingBackend:
         try:
             from storage.studio_db import create_run
 
-            dataset_name = self._db_config.get("hf_dataset") or next(
-                iter(self._db_config.get("local_datasets") or []), "unknown"
+            dataset_name = (
+                self._db_config.get("hf_dataset")
+                or next(iter(self._db_config.get("local_datasets") or []), None)
+                or _s3_dataset_name(self._db_config.get("s3_dataset"))
+                or "unknown"
             )
             create_run(
                 id = self.current_job_id,
                 model_name = self._db_config["model_name"],
                 dataset_name = dataset_name,
                 config_json = _json.dumps(self._db_config),
-                started_at = self._db_started_at
-                or datetime.now(timezone.utc).isoformat(),
+                started_at = self._db_started_at or datetime.now(timezone.utc).isoformat(),
                 total_steps = self._progress.total_steps or None,
             )
             self._db_run_created = True
         except Exception:
-            logger.warning(
-                "Failed to create DB run record for early failure", exc_info = True
-            )
+            logger.warning("Failed to create DB run record for early failure", exc_info = True)
 
     def _finalize_run_in_db(
         self,
@@ -711,10 +1016,7 @@ class TrainingBackend:
                 ended_at = datetime.now(timezone.utc).isoformat(),
                 final_step = self._progress.step,
                 final_loss = self._progress.loss
-                if (
-                    self._progress.loss is not None
-                    and math.isfinite(self._progress.loss)
-                )
+                if (self._progress.loss is not None and math.isfinite(self._progress.loss))
                 else None,
                 duration_seconds = self._progress.elapsed_seconds,
                 loss_sparkline = _json.dumps(sparkline),
@@ -723,26 +1025,20 @@ class TrainingBackend:
             )
             self._run_finalized = True
         except Exception:
-            logger.warning(
-                "Failed to finalize run in DB (status=%s)", status, exc_info = True
-            )
+            logger.warning("Failed to finalize run in DB (status=%s)", status, exc_info = True)
 
     def _flush_metrics_to_db(self) -> None:
         """Flush buffered metrics to the database and update live progress."""
-        if (
-            not self._metric_buffer
-            or not self.current_job_id
-            or not self._db_run_created
-        ):
+        if not self._metric_buffer or not self.current_job_id or not self._db_run_created:
             return
-        # Cap buffer to prevent unbounded memory growth
+        # Cap buffer to bound memory growth.
         if len(self._metric_buffer) > 500:
             logger.warning(
                 "Metric buffer exceeded 500 entries (%d) — trimming oldest",
                 len(self._metric_buffer),
             )
             self._metric_buffer = self._metric_buffer[-500:]
-        # Snapshot before insert so metrics arriving during the write are preserved
+        # Snapshot before insert so metrics arriving during the write survive.
         batch = list(self._metric_buffer)
         try:
             from storage.studio_db import insert_metrics_batch, update_run_progress
@@ -753,10 +1049,7 @@ class TrainingBackend:
                 id = self.current_job_id,
                 step = self._progress.step,
                 loss = self._progress.loss
-                if (
-                    self._progress.loss is not None
-                    and math.isfinite(self._progress.loss)
-                )
+                if (self._progress.loss is not None and math.isfinite(self._progress.loss))
                 else None,
                 duration_seconds = self._progress.elapsed_seconds,
             )
@@ -785,11 +1078,13 @@ class TrainingBackend:
                 return events
 
     # ------------------------------------------------------------------
-    # Plot generation (unchanged from original)
+    # Plot generation
     # ------------------------------------------------------------------
 
     def _create_loss_plot(
-        self, progress: TrainingProgress, theme: str = "light"
+        self,
+        progress: TrainingProgress,
+        theme: str = "light",
     ) -> plt.Figure:
         """Create training loss plot with theme-aware styling."""
         plt.close("all")
@@ -872,9 +1167,7 @@ class TrainingBackend:
             else:
                 title = "Training Loss"
 
-            ax.set_title(
-                title, fontsize = 11, fontweight = "bold", pad = 10, color = style["text"]
-            )
+            ax.set_title(title, fontsize = 11, fontweight = "bold", pad = 10, color = style["text"])
             ax.grid(True, alpha = 0.4, linestyle = "--", color = style["grid_color"])
             ax.tick_params(colors = style["text"], which = "both")
             ax.spines["top"].set_visible(False)
@@ -908,9 +1201,8 @@ class TrainingBackend:
     def _transfer_to_inference_backend(self) -> bool:
         """Transfer model to inference backend.
 
-        With subprocess-based training, the model lives in the subprocess
-        and is freed when it exits. Inference must load from the saved
-        checkpoint on disk. This is a no-op placeholder.
+        No-op: with subprocess training the model is freed on exit, so inference
+        must load from the saved checkpoint on disk.
         """
         logger.info(
             "_transfer_to_inference_backend: subprocess training — "

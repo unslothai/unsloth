@@ -1,47 +1,56 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Run script for Unsloth UI Backend.
-Works independently and can be moved to any directory.
+"""Run script for Unsloth UI Backend.
+
+Self-contained; can be moved to any directory.
 """
 
 import os
 import sys
+import time
 from pathlib import Path
+from typing import Optional
 
-# Suppress annoying C-level dependency warnings globally (e.g. SwigPyPacked)
+# Suppress C-level dependency warnings globally (e.g. SwigPyPacked).
 os.environ["PYTHONWARNINGS"] = "ignore"
 
-# Add the backend directory to Python path early so local modules are importable
+# Add the backend dir to sys.path early so local modules import.
 backend_dir = Path(__file__).parent
 if str(backend_dir) not in sys.path:
     sys.path.insert(0, str(backend_dir))
 
-# Fix for Anaconda/conda-forge Python: seed platform._sys_version_cache before
-# any library imports that trigger attrs -> rich -> structlog -> platform crash.
+from utils.cpu_threads import configure_cpu_threads
+
+try:
+    configure_cpu_threads()
+except ValueError as exc:
+    configured = os.environ.get("UNSLOTH_CPU_THREADS")
+    raise SystemExit(f"Error: Invalid UNSLOTH_CPU_THREADS value {configured!r}: {exc}") from None
+
+# Anaconda/conda-forge Python: seed platform._sys_version_cache before imports
+# that trigger attrs -> rich -> structlog -> platform crash.
 # See: https://github.com/python/cpython/issues/102396
 import _platform_compat  # noqa: F401
 
 from loggers import get_logger
-from startup_banner import print_studio_access_banner
+from startup_banner import print_studio_access_banner, print_studio_stop_hint
 
 logger = get_logger(__name__)
 
 
 def _resolve_external_ip() -> str:
-    """
-    Resolve the machine's external IP address.
+    """Resolve the machine's external IP address.
 
-    Tries (in order):
-    1. GCE metadata server (instant, works on Google Cloud VMs)
-    2. ifconfig.me (works anywhere with internet)
+    Tries, in order:
+    1. GCE metadata server (instant on Google Cloud VMs)
+    2. ifconfig.me (anywhere with internet)
     3. LAN IP via UDP socket trick (fallback)
     """
     import urllib.request
     import socket
 
-    # 1. Try GCE metadata server (responds in <10ms on GCE, times out fast elsewhere)
+    # 1. GCE metadata server (<10ms on GCE, times out fast elsewhere).
     try:
         req = urllib.request.Request(
             "http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip",
@@ -54,7 +63,7 @@ def _resolve_external_ip() -> str:
     except Exception:
         pass
 
-    # 2. Try public IP service
+    # 2. Public IP service.
     try:
         with urllib.request.urlopen("https://ifconfig.me", timeout = 3) as resp:
             ip = resp.read().decode().strip()
@@ -74,13 +83,416 @@ def _resolve_external_ip() -> str:
         return "0.0.0.0"
 
 
+def _install_uvicorn_startup_log_rewrite(bind_host: str, display_host: str) -> None:
+    """Rewrite Uvicorn's startup log line: swap wildcard bind for the
+    externally-reachable address, use our Mac-aware stop hint, and rename the
+    prefix to "Unsloth Studio running on"."""
+    import logging
+    import re
+
+    rewrite_host = (
+        bind_host in ("0.0.0.0", "::") and bool(display_host) and display_host != bind_host
+    )
+    new_suffix = "(To stop: press Ctrl+C -- on macOS, Control+C not Command+C)"
+    old_suffix_re = re.compile(r"\(Press CTRL\+C to quit\)")
+    old_prefix = "Uvicorn running on "
+    new_prefix = "Unsloth Studio running on "
+
+    def _rewrite(text: str) -> str:
+        if text.startswith(old_prefix):
+            text = new_prefix + text[len(old_prefix) :]
+        return old_suffix_re.sub(new_suffix, text)
+
+    class _UvicornStartupRewrite(logging.Filter):
+        def filter(self, record: logging.LogRecord) -> bool:
+            try:
+                msg = record.msg if isinstance(record.msg, str) else ""
+                if (
+                    msg.startswith(old_prefix)
+                    and isinstance(record.args, tuple)
+                    and len(record.args) >= 3
+                ):
+                    if rewrite_host and record.args[1] == bind_host:
+                        record.args = (
+                            record.args[0],
+                            display_host,
+                            record.args[2],
+                            *record.args[3:],
+                        )
+                    record.msg = _rewrite(msg)
+                    cmsg = getattr(record, "color_message", None)
+                    if isinstance(cmsg, str):
+                        record.color_message = _rewrite(cmsg)
+            except Exception:
+                pass
+            return True
+
+    f = _UvicornStartupRewrite()
+    for name in ("uvicorn", "uvicorn.error"):
+        logging.getLogger(name).addFilter(f)
+
+
+def _local_port_open(
+    host: str,
+    port: int,
+    timeout: float = 1.0,
+) -> bool:
+    """True iff a TCP connection to (host, port) succeeds within timeout."""
+    import socket
+    try:
+        with socket.create_connection((host, port), timeout = timeout):
+            return True
+    except OSError:
+        return False
+
+
+def _working_local_url(port: int) -> "str | None":
+    """A working loopback URL on this machine, or None if neither 127.0.0.1 nor
+    ::1 responds. Fallback when external reachability fails."""
+    if _local_port_open("127.0.0.1", port):
+        return f"http://127.0.0.1:{port}"
+    if _local_port_open("::1", port):
+        return f"http://[::1]:{port}"
+    return None
+
+
+def _localhost_ipv6_mismatch_url(bind_host: str, port: int) -> "str | None":
+    """Return the IPv4 loopback URL when localhost won't reach 127.0.0.1.
+
+    Local Studio binds to 127.0.0.1. Where localhost resolves to IPv6 only (::1),
+    http://localhost:<port> fails (or hits a different process on ::1) even though
+    http://127.0.0.1:<port> works. Return the IPv4 URL for the caller to surface.
+    """
+    import socket
+
+    if bind_host != "127.0.0.1" or not port or port <= 0:
+        return None
+
+    ipv4_url = f"http://127.0.0.1:{port}"
+
+    # Only warn once Studio is confirmed answering on IPv4 loopback.
+    if _working_local_url(port) != ipv4_url:
+        return None
+
+    try:
+        addr_info = socket.getaddrinfo("localhost", port, socket.AF_UNSPEC, socket.SOCK_STREAM)
+    except Exception:
+        return None
+
+    if not addr_info:
+        return None
+
+    has_ipv4_loopback = False
+    has_ipv6_loopback = False
+    for family, _, _, _, sockaddr in addr_info:
+        if family == socket.AF_INET and sockaddr and sockaddr[0] == "127.0.0.1":
+            has_ipv4_loopback = True
+        elif family == socket.AF_INET6 and sockaddr:
+            host = sockaddr[0].split("%", 1)[0]
+            if host == "::1":
+                has_ipv6_loopback = True
+
+    # A connection to ::1 is NOT evidence Studio is reachable there: Studio binds
+    # 127.0.0.1 only, so anything on ::1 is a different process. Dual-stack
+    # localhost is fine (browsers fall back to 127.0.0.1), so only the IPv6-only
+    # case strands the user.
+    if has_ipv6_loopback and not has_ipv4_loopback:
+        return ipv4_url
+    return None
+
+
+def _stdout_color_ok() -> bool:
+    """Whether to emit ANSI color codes on stdout. Mirrors startup_banner."""
+    if os.environ.get("NO_COLOR", "").strip():
+        return False
+    if os.environ.get("FORCE_COLOR", "").strip():
+        return True
+    try:
+        return sys.stdout.isatty()
+    except (AttributeError, OSError, ValueError):
+        return False
+
+
+def _print_localhost_ipv6_mismatch_warning(local_url: str, port: int) -> None:
+    """Warn that localhost points at ::1 while Studio is bound to 127.0.0.1."""
+    use_color = _stdout_color_ok()
+    warn_c = "\033[38;5;215;1m" if use_color else ""
+    reset = "\033[0m" if use_color else ""
+
+    print(
+        f"{warn_c}  Warning: localhost resolves to IPv6 (::1), but Unsloth "
+        f"Studio is listening on 127.0.0.1 only. Open {local_url} instead of "
+        f"http://localhost:{port}.{reset}",
+        flush = True,
+    )
+
+
+def _verify_global_reachability(display_host: str, port: int) -> None:
+    """Probe check-host.net to confirm display_host:port is reachable from the
+    public internet. Synchronous so output lands between the banner URLs and the
+    stop hint. Bounded at ~15s; failures swallowed (verifier failing != Studio
+    failing). Only meaningful for a wildcard bind."""
+    global _public_reachable
+    # Reset to "unknown" each run; set True/False only when the probe decides.
+    _public_reachable = None
+    import ipaddress
+    import json
+    import time
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+
+    if not display_host or display_host in ("0.0.0.0", "::"):
+        return
+
+    use_color = _stdout_color_ok()
+    dim = "\033[38;5;245m" if use_color else ""
+    ok_c = "\033[38;5;120;1m" if use_color else ""
+    err_c = "\033[38;5;203;1m" if use_color else ""
+    warn_c = "\033[38;5;215;1m" if use_color else ""
+    local_url_c = "\033[38;5;108;1m" if use_color else ""  # matches banner's URL color
+    reset = "\033[0m" if use_color else ""
+
+    url = f"http://{display_host}:{port}"
+
+    # Private/loopback/link-local addresses aren't globally routable.
+    try:
+        addr = ipaddress.ip_address(display_host)
+        if addr.is_loopback or addr.is_private or addr.is_link_local:
+            print(
+                f"{dim}  Note: {display_host} is a private/LAN address -- "
+                f"reachable on this network only, not from the public internet."
+                f"{reset}",
+                flush = True,
+            )
+            return
+    except ValueError:
+        # Not an IP literal; probe by hostname.
+        pass
+
+    try:
+        qs = urllib.parse.urlencode({"host": f"{display_host}:{port}", "max_nodes": 3})
+        req = urllib.request.Request(
+            f"https://check-host.net/check-tcp?{qs}",
+            headers = {
+                "Accept": "application/json",
+                "User-Agent": "unsloth-studio-reachability/1",
+            },
+        )
+        with urllib.request.urlopen(req, timeout = 5) as resp:
+            init = json.loads(resp.read().decode("utf-8", errors = "replace"))
+        req_id = init.get("request_id")
+        if not req_id:
+            return
+
+        results = {}
+        deadline = time.monotonic() + 15.0
+        poll_req = urllib.request.Request(
+            f"https://check-host.net/check-result/{req_id}",
+            headers = {
+                "Accept": "application/json",
+                "User-Agent": "unsloth-studio-reachability/1",
+            },
+        )
+        while time.monotonic() < deadline:
+            time.sleep(1.5)
+            try:
+                with urllib.request.urlopen(poll_req, timeout = 5) as resp:
+                    results = json.loads(resp.read().decode("utf-8", errors = "replace"))
+            except Exception:
+                continue
+            if results and all(v is not None for v in results.values()):
+                break
+            # Two decisive nodes is enough; stop early.
+            decisive = [
+                v
+                for v in results.values()
+                if isinstance(v, list)
+                and v
+                and isinstance(v[0], dict)
+                and ("time" in v[0] or "error" in v[0])
+            ]
+            if len(decisive) >= 2:
+                break
+
+        ok_nodes = err_nodes = 0
+        for v in results.values():
+            if not isinstance(v, list) or not v or not isinstance(v[0], dict):
+                continue
+            if "time" in v[0]:
+                ok_nodes += 1
+            elif "error" in v[0]:
+                err_nodes += 1
+        total = ok_nodes + err_nodes
+
+        print("", flush = True)
+        if ok_nodes:
+            _public_reachable = True
+            print(
+                f"{ok_c}  Reachability check: {url}/ is reachable from the "
+                f"public internet ({ok_nodes}/{total} probe nodes connected).{reset}",
+                flush = True,
+            )
+        elif err_nodes:
+            _public_reachable = False
+            print(
+                f"{err_c}  Reachability check: {url}/ is NOT reachable from "
+                f"the public internet ({err_nodes}/{total} probe nodes failed).{reset}",
+                flush = True,
+            )
+            print(f"{dim}    Common causes:{reset}", flush = True)
+            print(
+                f"{dim}      * AWS  -- the instance's Security Group doesn't "
+                f"allow inbound TCP {port}.{reset}",
+                flush = True,
+            )
+            print(
+                f"{dim}      * GCP  -- no firewall rule allowing TCP {port} "
+                f"for the instance's network tag.{reset}",
+                flush = True,
+            )
+            print(
+                f"{dim}      * Azure / other clouds -- equivalent NSG / "
+                f"firewall rule missing.{reset}",
+                flush = True,
+            )
+            print(
+                f"{dim}      * Home -- your router isn't port-forwarding "
+                f"{port} to this machine.{reset}",
+                flush = True,
+            )
+            print(
+                f"{dim}    Workaround that needs no firewall changes -- "
+                f"SSH local-forward from your laptop:{reset}",
+                flush = True,
+            )
+            print(
+                f"{dim}        ssh -L {port}:localhost:{port} " f"<user>@{display_host}{reset}",
+                flush = True,
+            )
+            print(
+                f"{dim}    then open http://localhost:{port}/ in your browser.{reset}",
+                flush = True,
+            )
+            # Only offer the local URL if loopback answers.
+            local_url = _working_local_url(port)
+            if local_url:
+                print(
+                    f"{local_url_c}  You can access Unsloth Studio locally "
+                    f"in the meantime: {local_url}{reset}",
+                    flush = True,
+                )
+        else:
+            print(
+                f"{warn_c}  Reachability check: probe nodes did not respond "
+                f"in time -- could not verify {url}/.{reset}",
+                flush = True,
+            )
+    except urllib.error.URLError:
+        # Outbound HTTPS blocked; skip.
+        pass
+    except Exception:
+        pass
+
+
+def _tool_policy_notice(host: str, secure: bool, enable_tools: "Optional[bool]") -> str:
+    """One-line tool-policy summary for the plain-server startup banner, so a
+    network-reachable launch is never silent about code execution."""
+    if enable_tools is False:
+        return "Server-side tools are DISABLED (--disable-tools)."
+    state = (
+        "ENABLED (--enable-tools)"
+        if enable_tools
+        else "ENABLED by default (per-request setting honored)"
+    )
+    if secure:
+        return (
+            f"Server-side tools are {state}, reachable via the authenticated "
+            "Cloudflare HTTPS tunnel. Anyone with the API key can run code on "
+            "this machine. Do not share the API key. Pass --disable-tools to turn off."
+        )
+    from utils.host_policy import is_external_host
+
+    if host in ("0.0.0.0", "::") or is_external_host(host):
+        return (
+            f"Server-side tools are {state} and this port is network-reachable. "
+            "Anyone who can reach it with the API key can run code on this "
+            "machine. Do not share the API key. Pass --disable-tools to turn off."
+        )
+    return f"Server-side tools are {state} for loopback. Pass --disable-tools to turn off."
+
+
+def _emit_tool_policy_notice(host: str, secure: bool, enable_tools: "Optional[bool]") -> None:
+    print(_tool_policy_notice(host, secure, enable_tools), flush = True)
+
+
+def _emit_secure_startup_output(port: int, enable_tools: "Optional[bool]" = None) -> None:
+    """Secure-mode banner: only the Cloudflare link (loopback has no public raw URL)."""
+    print("")
+    print("🦥 Unsloth Studio is running (secure)")
+    print("─" * 52)
+    _print_cloudflare_line()
+    print(f"  On this machine only: http://127.0.0.1:{port}/")
+    print("─" * 52)
+    _emit_tool_policy_notice("127.0.0.1", True, enable_tools)
+    print_studio_stop_hint()
+
+
+def _emit_startup_output(
+    host: str,
+    port: int,
+    display_host: str,
+    secure: bool = False,
+    enable_tools: "Optional[bool]" = None,
+) -> None:
+    """Print the access banner, post-startup warnings, the tool-policy notice,
+    then a single stop hint. Extracted from ``_run`` so the wiring is testable."""
+    if secure:
+        _emit_secure_startup_output(port, enable_tools)
+        return
+    wildcard_bind = host in ("0.0.0.0", "::")
+    localhost_mismatch_url = _localhost_ipv6_mismatch_url(host, port)
+    print_studio_access_banner(
+        port = port,
+        bind_host = host,
+        display_host = display_host,
+        include_stop_hint = False,
+    )
+    if localhost_mismatch_url:
+        _print_localhost_ipv6_mismatch_warning(localhost_mismatch_url, port)
+    elif wildcard_bind:
+        _verify_global_reachability(display_host, port)
+        _print_cloudflare_line()
+    _emit_tool_policy_notice(host, False, enable_tools)
+    print_studio_stop_hint()
+
+
+def _print_cloudflare_line() -> None:
+    """Print the Cloudflare quick-tunnel URL for 0.0.0.0 binds, if one is up.
+
+    Reads the module-level URL set by ``run_server``. Prints nothing when the
+    tunnel is disabled or failed -- failures are silently ignored. When the public
+    reachability probe just failed (``_public_reachable is False``) but the tunnel
+    is up, reword to point the user at the Cloudflare link as the way in.
+    """
+    if not _cloudflare_url:
+        return
+    from startup_banner import stdout_supports_color
+
+    accent = "\033[38;5;150;1m"
+    reset = "\033[0m"
+    if _public_reachable is False:
+        line = f"  Use the secure link access via Cloudflare instead: {_cloudflare_url}"
+    else:
+        line = f"  Secure link access via Cloudflare: {_cloudflare_url}"
+    print(f"{accent}{line}{reset}" if stdout_supports_color() else line)
+
+
 def _get_pid_on_port(port: int) -> "tuple[int, str] | None":
-    """Return (pid, process_name) of the process listening on *port*, or None.
+    """Return (pid, process_name) listening on *port*, or None.
 
-    Uses psutil when available.  Falls back gracefully to None so callers
-    can still report the port conflict without process details.
-
-    Works on Windows, macOS, and Linux wherever psutil is installed.
+    Uses psutil when available, else None so callers can still report the conflict
+    without process details.
     """
     try:
         import psutil
@@ -97,7 +509,7 @@ def _get_pid_on_port(port: int) -> "tuple[int, str] | None":
                 except (psutil.NoSuchProcess, psutil.AccessDenied):
                     return (conn.pid, "<unknown>")
     except (psutil.AccessDenied, OSError) as e:
-        # psutil.net_connections() needs elevated privileges on some platforms
+        # net_connections() needs elevated privileges on some platforms.
         logger.debug("Failed to scan network connections for port %s: %s", port, e)
     return None
 
@@ -105,19 +517,14 @@ def _get_pid_on_port(port: int) -> "tuple[int, str] | None":
 def _is_port_free(host: str, port: int) -> bool:
     """Check if a port is available for binding.
 
-    When *host* is ``0.0.0.0`` (wildcard), we also check whether anything
-    is already listening on ``127.0.0.1`` (and ``::1`` when IPv6 is
-    available).  An SSH tunnel or similar process may hold the loopback
-    address while our wildcard bind still succeeds, making Unsloth Studio
-    unreachable via ``localhost``.
-
-    Works on Windows, macOS, and Linux.
+    For a ``0.0.0.0`` wildcard host, also check whether anything is listening on
+    ``127.0.0.1`` (and ``::1`` when IPv6 exists): an SSH tunnel may hold loopback
+    while the wildcard bind succeeds, making Studio unreachable via ``localhost``.
     """
     import socket
 
-    # 1. Can we bind to the requested address?
-    #    Use getaddrinfo so both IPv4 ("0.0.0.0") and IPv6 ("::") hosts
-    #    resolve to the correct address family automatically.
+    # 1. Can we bind to the requested address? getaddrinfo resolves both
+    #    IPv4 and IPv6 to the right address family.
     try:
         addr_info = socket.getaddrinfo(host, port, socket.AF_UNSPEC, socket.SOCK_STREAM)
         family, socktype, proto, _, sockaddr = addr_info[0]
@@ -127,9 +534,8 @@ def _is_port_free(host: str, port: int) -> bool:
     except OSError:
         return False
 
-    # 2. When binding to all interfaces, verify that localhost is not
-    #    already claimed by another process (e.g. an SSH -L tunnel).
-    #    We attempt a TCP connect -- if it succeeds something is listening.
+    # 2. On a wildcard bind, verify localhost isn't already claimed by another
+    #    process (e.g. an SSH -L tunnel); a successful connect means it is.
     if host in ("0.0.0.0", "::"):
         for loopback, family in [
             ("127.0.0.1", socket.AF_INET),
@@ -139,27 +545,54 @@ def _is_port_free(host: str, port: int) -> bool:
                 with socket.socket(family, socket.SOCK_STREAM) as s:
                     s.settimeout(1)
                     if s.connect_ex((loopback, port)) == 0:
-                        # Connection succeeded -- port is taken on loopback
+                        # Port is taken on loopback.
                         return False
             except OSError:
-                # IPv6 disabled or other OS-level restriction -- skip
+                # IPv6 disabled or other OS-level restriction -- skip.
                 continue
 
     return True
 
 
-def _find_free_port(host: str, start: int, max_attempts: int = 20) -> int:
-    """Find a free port starting from `start`, trying up to max_attempts ports."""
+def _find_free_port(
+    host: str,
+    start: int,
+    max_attempts: int = 20,
+) -> int:
+    """Find a free port from `start`, trying up to max_attempts ports."""
     for offset in range(max_attempts):
         candidate = start + offset
         if _is_port_free(host, candidate):
             return candidate
-    raise RuntimeError(
-        f"Could not find a free port in range {start}-{start + max_attempts - 1}"
-    )
+    raise RuntimeError(f"Could not find a free port in range {start}-{start + max_attempts - 1}")
 
 
-_PID_FILE = Path.home() / ".unsloth" / "studio" / "studio.pid"
+from utils.paths.storage_roots import studio_root as _studio_root
+
+_PID_FILE = _studio_root() / "studio.pid"
+
+# Direct backend launches bypass the CLI's env re-export; do it here for
+# real custom roots so unsloth-zoo's import-time LLAMA_CPP_DEFAULT_DIR
+# picks up the custom build. Skip legacy-default to avoid flipping
+# default-mode installs into env-override.
+try:
+    _LEGACY_STUDIO_ROOT = (Path.home() / ".unsloth" / "studio").resolve()
+except (OSError, ValueError):
+    _LEGACY_STUDIO_ROOT = Path.home() / ".unsloth" / "studio"
+try:
+    _STUDIO_ROOT_RESOLVED = _studio_root().resolve()
+except (OSError, ValueError):
+    _STUDIO_ROOT_RESOLVED = _studio_root()
+if _STUDIO_ROOT_RESOLVED != _LEGACY_STUDIO_ROOT:
+    if not os.environ.get("UNSLOTH_STUDIO_HOME"):
+        os.environ["UNSLOTH_STUDIO_HOME"] = str(_STUDIO_ROOT_RESOLVED)
+    if not os.environ.get("UNSLOTH_LLAMA_CPP_PATH"):
+        os.environ["UNSLOTH_LLAMA_CPP_PATH"] = str(_STUDIO_ROOT_RESOLVED / "llama.cpp")
+
+# The studio bundles unsloth_zoo; declare unsloth present (as `import unsloth`
+# does) so its lazy submodule imports (export, hardware, mlx) and the
+# DiffusionGemma runner never trip the install guard on a clean install.
+os.environ.setdefault("UNSLOTH_IS_PRESENT", "1")
 
 
 def _write_pid_file():
@@ -183,72 +616,281 @@ def _remove_pid_file():
 
 
 def _graceful_shutdown(server = None):
-    """Explicitly shut down all subprocess backends and the uvicorn server.
+    """Shut down all subprocess backends and the uvicorn server.
 
-    Called from signal handlers to ensure child processes are cleaned up
-    before the parent exits. This is critical on Windows where atexit
-    handlers are unreliable after Ctrl+C.
+    Called from signal handlers to clean up children before exit. Critical on
+    Windows where atexit handlers are unreliable after Ctrl+C.
     """
     _remove_pid_file()
     logger.info("Graceful shutdown initiated — cleaning up subprocesses...")
 
-    # 1. Shut down uvicorn server (releases the listening socket)
+    # 1. Shut down uvicorn (releases the listening socket).
     if server is not None:
         server.should_exit = True
 
-    # 2. Clean up inference subprocess (if instantiated)
+    # 2. Clean up inference subprocess (if instantiated).
     try:
         from core.inference.orchestrator import _inference_backend
-
         if _inference_backend is not None:
             _inference_backend._shutdown_subprocess(timeout = 5.0)
     except Exception as e:
         logger.warning("Error shutting down inference subprocess: %s", e)
 
-    # 3. Clean up export subprocess (if instantiated)
+    # 3. Clean up export subprocess (if instantiated).
     try:
         from core.export.orchestrator import _export_backend
-
         if _export_backend is not None:
             _export_backend._shutdown_subprocess(timeout = 5.0)
     except Exception as e:
         logger.warning("Error shutting down export subprocess: %s", e)
 
-    # 4. Clean up training subprocess (if active)
+    # 4. Clean up training subprocess (if active).
     try:
         from core.training.training import _training_backend
-
         if _training_backend is not None:
             _training_backend.force_terminate()
     except Exception as e:
         logger.warning("Error shutting down training subprocess: %s", e)
 
-    # 5. Kill llama-server subprocess (if loaded)
+    # 5. Kill llama-server subprocess (if loaded).
     try:
         from routes.inference import _llama_cpp_backend
-
         if _llama_cpp_backend is not None:
             _llama_cpp_backend._kill_process()
     except Exception as e:
         logger.warning("Error shutting down llama-server: %s", e)
 
+    # 6. Stop the Cloudflare tunnel (if started).
+    try:
+        from cloudflare_tunnel import stop_studio_tunnel
+        stop_studio_tunnel()
+    except Exception as e:
+        logger.warning("Error stopping Cloudflare tunnel: %s", e)
+
+    # 7. Backstop sweep for any adopted child the steps above missed.
+    try:
+        from utils.process_lifetime import terminate_all
+        terminate_all()
+    except Exception as e:
+        logger.warning("Error in process-lifetime sweep: %s", e)
+
     logger.info("All subprocesses cleaned up")
 
 
 # The uvicorn server instance -- set by run_server(), used by callers
-# that need to tell the server to exit (e.g. signal handlers).
+# that tell the server to exit (e.g. signal handlers).
 _server = None
 
-# Shutdown event -- used to wake the main loop on signal
+# Shutdown event -- wakes the main loop on signal.
 _shutdown_event = None
+
+# trycloudflare.com URL for 0.0.0.0 binds (set by run_server, read by the banner);
+# None when there is no tunnel (loopback, disabled, or a silently-ignored failure).
+_cloudflare_url = None
+
+# Public reachability from the last _verify_global_reachability run, read by the
+# Cloudflare banner line. True when the public ip:port probe confirmed reachable,
+# False when it confirmed NOT reachable, None when the probe did not run or could
+# not decide (timeout, blocked, private address).
+_public_reachable = None
+
+
+_DEFAULT_FRONTEND_PATH = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+
+
+def _iter_frontend_fallback_candidates() -> "list[Path]":
+    """Yield `studio/frontend/dist` paths to try when the default is missing.
+
+    Covers PATH-shadowed binaries whose __file__ resolves into a site-packages
+    tree with no vite build (e.g. plain `pip install unsloth`).
+    """
+    import ast
+    import re
+
+    out: list[Path] = []
+    home_str = (
+        os.environ.get("UNSLOTH_STUDIO_HOME")
+        or os.environ.get("STUDIO_HOME")
+        or str(Path.home() / ".unsloth" / "studio")
+    )
+    venv_dir = Path(home_str).expanduser() / "unsloth_studio"
+    # Installer venv site-packages.
+    for pattern in (
+        "lib/python*/site-packages/studio/frontend/dist",
+        "Lib/site-packages/studio/frontend/dist",
+    ):
+        out.extend(venv_dir.glob(pattern))
+    # Editable source roots referenced from the installer venv.
+    for sp_pattern in ("lib/python*/site-packages", "Lib/site-packages"):
+        for sp in venv_dir.glob(sp_pattern):
+            for finder in sp.glob("__editable___*_finder.py"):
+                try:
+                    src = finder.read_text(encoding = "utf-8")
+                except OSError:
+                    continue
+                # Tolerate single/multi-line dict literals; [^}]* rejects nested
+                # dicts, which the setuptools editable template never emits.
+                m = re.search(r"^MAPPING\s*(?::[^=]*)?=\s*(\{[^}]*\})", src, re.M | re.S)
+                if not m:
+                    continue
+                try:
+                    mapping = ast.literal_eval(m.group(1))
+                except (SyntaxError, ValueError):
+                    continue
+                # literal_eval can return a set/list/None if `{...}` isn't a dict.
+                if not isinstance(mapping, dict):
+                    continue
+                studio_pkg = mapping.get("studio")
+                if studio_pkg:
+                    out.append(Path(studio_pkg) / "frontend" / "dist")
+    return out
+
+
+def _resolve_frontend_path(frontend_path: Path) -> tuple[Optional[Path], list[Path]]:
+    """Pick a frontend dir that contains `index.html`.
+
+    Returns (chosen, attempted). `chosen` is None if nothing servable was found;
+    `attempted` is the ordered list for diagnostics.
+    """
+    attempted: list[Path] = []
+    seen: set[Path] = set()
+
+    def _try(p: Path) -> bool:
+        try:
+            key = p.resolve()
+        except OSError:
+            key = p
+        if key in seen:
+            return False
+        seen.add(key)
+        attempted.append(p)
+        return (p / "index.html").is_file()
+
+    if _try(Path(frontend_path)):
+        return attempted[-1], attempted
+    for alt in _iter_frontend_fallback_candidates():
+        if _try(alt):
+            return attempted[-1], attempted
+    return None, attempted
+
+
+class _TeeStream:
+    """Mirror writes to the original stream and a session log file.
+
+    Console behavior is unchanged (writes/returns delegate to the original
+    stream; Tauri's structured-stdout protocol and isatty probes see exactly
+    what they saw before). The file copy is best-effort: a full disk or a
+    closed handle must never break the console."""
+
+    def __init__(self, stream, log_fh):
+        self._stream = stream
+        self._log_fh = log_fh
+
+    def write(self, data):
+        try:
+            self._log_fh.write(data)
+        except Exception:
+            pass
+        return self._stream.write(data)
+
+    def flush(self):
+        try:
+            self._log_fh.flush()
+        except Exception:
+            pass
+        try:
+            self._stream.flush()
+        except Exception:
+            pass
+
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
+
+
+def _setup_server_disk_logging():
+    """Tee stdout/stderr to ~/.unsloth/studio/logs/server/ and aim
+    faulthandler at the same file so hard crashes (access violations /
+    SIGSEGV in the GPU runtime) leave a stack trace on disk.
+
+    Also exports PYTHONFAULTHANDLER=1 so child Python processes (training
+    workers) dump native-crash stacks to their captured stderr. Keeps the
+    newest 20 session logs. Opt out with UNSLOTH_STUDIO_NO_FILE_LOG=1.
+    Returns the log path, or None when disabled/unavailable.
+    """
+    if os.environ.get("UNSLOTH_STUDIO_NO_FILE_LOG") == "1":
+        return None
+    try:
+        from utils.paths import studio_root
+        log_dir = Path(studio_root()) / "logs" / "server"
+    except Exception:
+        home = (
+            os.environ.get("UNSLOTH_STUDIO_HOME")
+            or os.environ.get("STUDIO_HOME")
+            or os.path.join(os.path.expanduser("~"), ".unsloth", "studio")
+        )
+        log_dir = Path(home) / "logs" / "server"
+    try:
+        log_dir.mkdir(parents = True, exist_ok = True)
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        log_path = log_dir / f"server-{stamp}-pid{os.getpid()}.log"
+        # Line-buffered so the tail survives a hard kill; errors="replace"
+        # so a console encoding quirk can never take the server down.
+        log_fh = open(log_path, "w", encoding = "utf-8", errors = "replace", buffering = 1)
+    except Exception:
+        return None
+
+    import faulthandler
+
+    try:
+        faulthandler.enable(file = log_fh, all_threads = True)
+    except Exception:
+        pass
+    # Children (training workers) inherit: their native-crash stacks land on
+    # the stderr the server already captures.
+    os.environ.setdefault("PYTHONFAULTHANDLER", "1")
+
+    sys.stdout = _TeeStream(sys.stdout, log_fh)
+    sys.stderr = _TeeStream(sys.stderr, log_fh)
+
+    # Best-effort retention: keep the newest 20 session logs.
+    try:
+        logs = sorted(log_dir.glob("server-*.log"), key = lambda p: p.stat().st_mtime)
+        for old in logs[:-20]:
+            old.unlink(missing_ok = True)
+    except Exception:
+        pass
+    return log_path
+
+
+def _cloudflare_tunnel_should_start(
+    *, cloudflare: bool, host: str, secure: bool, api_only: bool, is_colab: bool
+) -> bool:
+    """Whether to start the Cloudflare tunnel. --secure tunnels a loopback bind too;
+    non-secure keeps the 0.0.0.0-only rule. Colab/api-only never tunnel."""
+    return cloudflare and (host == "0.0.0.0" or secure) and not api_only and not is_colab
+
+
+def _apply_cli_tool_policy(enable_tools: "Optional[bool]") -> None:
+    """Honor an explicit --enable-tools/--disable-tools; None leaves the policy
+    unset (tools default on, per-request enable_tools honored). Host is never
+    inspected here."""
+    if enable_tools is None:
+        return
+    from state.tool_policy import set_tool_policy
+
+    set_tool_policy(enable_tools)
 
 
 def run_server(
-    host: str = "0.0.0.0",
+    host: str = "127.0.0.1",
     port: int = 8888,
-    frontend_path: Path = Path(__file__).resolve().parent.parent / "frontend" / "dist",
+    frontend_path: Path = _DEFAULT_FRONTEND_PATH,
     silent: bool = False,
+    api_only: bool = False,
     llama_parallel_slots: int = 1,
+    cloudflare: bool = True,
+    secure: bool = False,
+    enable_tools: "Optional[bool]" = None,
 ):
     """
     Start the FastAPI server.
@@ -258,22 +900,55 @@ def run_server(
         port: Port to bind to (auto-increments if in use)
         frontend_path: Path to frontend build directory (optional)
         silent: Suppress startup messages
-        llama_parallel_slots: Number of parallel slots for llama-server
+        api_only: API server only, no frontend (for Tauri desktop app)
+        llama_parallel_slots: parallel slots for llama-server
+        enable_tools: explicit --enable-tools/--disable-tools policy; None leaves
+            the default (tools on, per-request enable_tools honored)
 
     Note:
-        Signal handlers are NOT registered here so that embedders
-        (e.g. Colab notebooks) keep their own interrupt semantics.
-        Standalone callers should register handlers after calling this.
+        Signal handlers are NOT registered here so embedders (e.g. Colab) keep
+        their own interrupt semantics; standalone callers register them after.
     """
     global _server, _shutdown_event
 
-    # On Windows the default console encoding (cp1252) cannot encode emoji.
-    # Reconfigure stdout to UTF-8 so startup messages do not crash the server.
+    # Reap every child if the parent dies abnormally (terminal close, Task
+    # Manager kill, SIGKILL); must run before any child can spawn.
+    from utils.process_lifetime import initialize_parent_lifetime
+
+    initialize_parent_lifetime()
+
+    # --secure exposes only the Cloudflare link: force a loopback bind so the raw
+    # port is never public (even with -H 0.0.0.0), and reject the contradictory combo.
+    if secure and not cloudflare:
+        raise SystemExit(
+            "A secure Cloudflare link is not allowed, use --not-secure which provides a 0.0.0.0 link"
+        )
+    if secure:
+        host = "127.0.0.1"
+
+    # `unsloth studio run` installs its own resolved policy and passes None here.
+    _apply_cli_tool_policy(enable_tools)
+
+    # Windows cp1252 can't encode emoji; reconfigure stdout to UTF-8.
     if sys.platform == "win32" and hasattr(sys.stdout, "reconfigure"):
         try:
             sys.stdout.reconfigure(encoding = "utf-8", errors = "replace")
         except Exception:
             pass
+
+    # Persist a session log + native-crash stacks BEFORE importing main, so
+    # even import-time failures leave evidence on disk. Field report: Studio
+    # "terminates without a warning" -- a native crash in the GPU runtime
+    # kills the process with no Python traceback, and a desktop-shortcut
+    # console closes before anything can be read. Console-only logging made
+    # that undiagnosable.
+    _session_log = _setup_server_disk_logging()
+    if _session_log is not None and not silent:
+        print(f"Session log: {_session_log}")
+
+    # Set env var BEFORE importing main so CORS middleware picks it up.
+    if api_only:
+        os.environ["UNSLOTH_API_ONLY"] = "1"
 
     import nest_asyncio
 
@@ -281,16 +956,22 @@ def run_server(
 
     import asyncio
     from threading import Thread, Event
-    import time
     import uvicorn
 
-    from main import app, setup_frontend
+    from main import app, setup_frontend, _IS_COLAB
     from utils.paths import ensure_studio_directories
 
-    # Create all standard directories on startup
+    # Allow local stdio MCP servers on a loopback bind (the user's own machine),
+    # but never on Colab, which is a hosted VM reachable through its proxy. The
+    # gate reads the env var at request time, so this need not precede the import.
+    from utils.host_policy import apply_stdio_mcp_loopback_default
+
+    apply_stdio_mcp_loopback_default(host, is_colab = _IS_COLAB)
+
+    # Create all standard directories on startup.
     ensure_studio_directories()
 
-    # Auto-find free port if requested port is in use
+    # Auto-find a free port if the requested one is in use.
     if not _is_port_free(host, port):
         original_port = port
         blocker = _get_pid_on_port(port)
@@ -300,9 +981,7 @@ def run_server(
             print("=" * 50)
             if blocker:
                 pid, name = blocker
-                print(
-                    f"Port {original_port} is already in use by " f"{name} (PID {pid})."
-                )
+                print(f"Port {original_port} is already in use by " f"{name} (PID {pid}).")
             else:
                 print(f"Port {original_port} is already in use.")
             print(f"Unsloth Studio will use port {port} instead.")
@@ -310,46 +989,95 @@ def run_server(
             print("=" * 50)
             print("")
 
-    # Setup frontend if path provided
-    if frontend_path:
-        if setup_frontend(app, frontend_path):
+    # Setup frontend (skip in api-only). Falls back through alternate locations if
+    # the default lacks a built dist; errors loudly rather than 404 on `/`.
+    if frontend_path and not api_only:
+        chosen, attempted = _resolve_frontend_path(Path(frontend_path))
+        if chosen is not None and setup_frontend(app, chosen):
             if not silent:
-                print(f"[OK] Frontend loaded from {frontend_path}")
+                # Resolve so logs show an absolute path for support.
+                try:
+                    display = chosen.resolve()
+                except OSError:
+                    display = chosen
+                print(f"[OK] Frontend loaded from {display}")
         else:
-            if not silent:
-                print(f"[WARNING] Frontend not found at {frontend_path}")
+            home_str = (
+                os.environ.get("UNSLOTH_STUDIO_HOME")
+                or os.environ.get("STUDIO_HOME")
+                or str(Path.home() / ".unsloth" / "studio")
+            )
+            # Windows shim: $STUDIO_HOME/bin/unsloth.exe; Linux/macOS venv binary:
+            # $STUDIO_HOME/unsloth_studio/bin/unsloth.
+            home = Path(home_str).expanduser()
+            if sys.platform == "win32":
+                installer_bin = home / "bin" / "unsloth.exe"
+            else:
+                installer_bin = home / "unsloth_studio" / "bin" / "unsloth"
+            tried_lines = "\n".join(f"  - {p}" for p in attempted) or "  (none)"
+            raise SystemExit(
+                "[ERROR] Studio frontend build not found.\n"
+                f"Tried:\n{tried_lines}\n"
+                "\n"
+                "Likely cause: another 'unsloth' on PATH is shadowing the "
+                "installer's binary and points at a site-packages tree with "
+                "no built dist.\n"
+                "\n"
+                "Fix one of:\n"
+                f"  - run the installer's binary directly: {installer_bin} studio\n"
+                "  - pass --frontend <path/to/studio/frontend/dist>\n"
+                "  - pass --api-only to skip serving the web UI\n"
+                "  - reinstall: curl -fsSL https://unsloth.ai/install.sh | sh"
+            )
 
-    # Create the uvicorn server and expose it for signal handlers
-    config = uvicorn.Config(
-        app, host = host, port = port, log_level = "info", access_log = False
+    # Resolve once; shared by the log rewrite and banner.
+    display_host = _resolve_external_ip() if host == "0.0.0.0" else host
+    _install_uvicorn_startup_log_rewrite(host, display_host)
+
+    ready_event = Event()
+    startup_failed = Event()
+    startup_errors = []
+
+    class _ReadyServer(uvicorn.Server):
+        async def startup(self, *args, **kwargs):
+            await super().startup(*args, **kwargs)
+            if getattr(self, "started", False) and not self.should_exit:
+                ready_event.set()
+
+    # server_header=False suppresses uvicorn's "Server: uvicorn"; SecurityHeadersMiddleware sets its own.
+    config_kwargs = dict(
+        host = host,
+        port = port,
+        log_level = "info",
+        access_log = False,
+        server_header = False,
     )
-    _server = uvicorn.Server(config)
+    # Colab only: trust X-Forwarded-* from Colab's reverse proxy so the app sees
+    # the real https origin. forwarded_allow_ips="*" is safe in Colab's
+    # single-user sandbox but too lax for local/standalone, so leave uvicorn's
+    # loopback-only default elsewhere.
+    if _IS_COLAB:
+        config_kwargs["proxy_headers"] = True
+        config_kwargs["forwarded_allow_ips"] = "*"
+    config = uvicorn.Config(app, **config_kwargs)
+    _server = _ReadyServer(config)
     _shutdown_event = Event()
 
-    # Expose the actual bound port so request-handling code can build
-    # loopback URLs that point at the real backend, not whatever port a
-    # reverse proxy or tunnel exposed in the request URL. Only publish
-    # an explicit value when we know the concrete port; for ephemeral
-    # binds (port==0) leave it unset and let request handlers fall back
-    # to the ASGI request scope or request.base_url.
+    # Expose the actual bound port so handlers build loopback URLs at the real
+    # backend, not whatever a proxy/tunnel exposed. For ephemeral binds (port==0)
+    # leave it unset so handlers fall back to the request scope / base_url.
     app.state.server_port = port if port and port > 0 else None
+    # Direct (non-tunnel) base for the API panel; resolve 0.0.0.0 to the LAN IP.
+    if port and port > 0:
+        _direct_host = _resolve_external_ip() if host == "0.0.0.0" else host
+        app.state.server_url = f"http://{_direct_host}:{port}"
+    else:
+        app.state.server_url = None
+    app.state.secure = secure
     app.state.llama_parallel_slots = llama_parallel_slots
 
-    # Run server in a daemon thread
-    def _run():
-        asyncio.run(_server.serve())
-
-    thread = Thread(target = _run, daemon = True)
-    thread.start()
-    time.sleep(3)
-
-    _write_pid_file()
-    import atexit
-
-    atexit.register(_remove_pid_file)
-
-    # Expose a shutdown callable via app.state so the /api/shutdown endpoint
-    # can trigger graceful shutdown without circular imports.
+    # Expose a shutdown callable before the server accepts requests so
+    # /api/shutdown is ready as soon as readiness publishes.
     def _trigger_shutdown():
         _graceful_shutdown(_server)
         if _shutdown_event is not None:
@@ -357,24 +1085,102 @@ def run_server(
 
     app.state.trigger_shutdown = _trigger_shutdown
 
-    if not silent:
-        display_host = _resolve_external_ip() if host == "0.0.0.0" else host
-        print_studio_access_banner(
-            port = port,
-            bind_host = host,
-            display_host = display_host,
+    # Run server in a daemon thread with explicit new_event_loop() +
+    # run_until_complete() (not asyncio.run) so nest_asyncio's patches don't
+    # interfere when Colab/IPython already runs a loop on the main thread.
+    def _run():
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(_server.serve())
+        except BaseException as exc:
+            startup_errors.append(exc)
+            startup_failed.set()
+        finally:
+            loop.close()
+            if not ready_event.is_set():
+                startup_failed.set()
+
+    thread = Thread(target = _run, daemon = True)
+    thread.start()
+
+    # Wait until uvicorn finishes lifespan startup and binds sockets, or until it
+    # exits/fails first. No deadline: a slow but live startup stays in progress.
+    try:
+        while not ready_event.is_set():
+            if startup_failed.is_set() or not thread.is_alive():
+                if startup_errors:
+                    raise RuntimeError(
+                        "Uvicorn server failed before startup completed"
+                    ) from startup_errors[0]
+                raise RuntimeError("Uvicorn server exited before startup completed")
+            ready_event.wait(timeout = 0.1)
+    except KeyboardInterrupt:
+        _graceful_shutdown(_server)
+        _shutdown_event.set()
+        raise
+
+    _write_pid_file()
+    import atexit
+
+    atexit.register(_remove_pid_file)
+    from utils.process_lifetime import terminate_all
+
+    atexit.register(terminate_all)
+
+    # Output port for Tauri (api-only), only after sockets bind and startup done.
+    if api_only:
+        print(f"TAURI_PORT={port}", flush = True)
+
+    # Free trycloudflare.com tunnel for 0.0.0.0 binds (the raw ip:port is often
+    # unreachable). Started pre-banner and even when silent so the CLI banner can
+    # read app.state.cloudflare_url; torn down by _graceful_shutdown.
+    global _cloudflare_url
+    _cloudflare_url = None
+    app.state.cloudflare_url = None
+    _cloudflare_enabled = _cloudflare_tunnel_should_start(
+        cloudflare = cloudflare,
+        host = host,
+        secure = secure,
+        api_only = api_only,
+        is_colab = _IS_COLAB,
+    )
+    if _cloudflare_enabled:
+        try:  # best-effort: any failure must not block startup
+            from cloudflare_tunnel import start_studio_tunnel, stop_studio_tunnel
+
+            _cloudflare_url = start_studio_tunnel(port)
+            app.state.cloudflare_url = _cloudflare_url
+            # Backstop: tear the tunnel down even on an abnormal exit that bypasses
+            # _graceful_shutdown (e.g. an exception after startup -> sys.exit). Idempotent.
+            atexit.register(stop_studio_tunnel)
+        except Exception as e:
+            logger.debug("Cloudflare tunnel skipped: %s", e)
+
+    # --secure fails closed: no tunnel means no public link, so exit rather than
+    # silently fall back to a raw port.
+    if secure and not _cloudflare_url:
+        print(
+            "A secure Cloudflare link is not allowed, use --not-secure which provides a 0.0.0.0 link",
+            file = sys.stderr,
+            flush = True,
         )
+        _graceful_shutdown(_server)
+        sys.exit(1)
+
+    if not silent:
+        _emit_startup_output(host, port, display_host, secure = secure, enable_tools = enable_tools)
 
     return app
 
 
-# For direct execution (also invoked by CLI via os.execvp / subprocess)
+# For direct execution (also invoked by CLI via os.execvp / subprocess).
 if __name__ == "__main__":
     import argparse
     import signal
     import traceback
 
-    # Ensure stderr can handle Unicode on Windows (tracebacks with non-ASCII paths)
+    # Ensure stderr handles Unicode on Windows (non-ASCII path tracebacks).
     if sys.platform == "win32" and hasattr(sys.stderr, "reconfigure"):
         try:
             sys.stderr.reconfigure(encoding = "utf-8", errors = "replace")
@@ -382,19 +1188,90 @@ if __name__ == "__main__":
             pass
 
     parser = argparse.ArgumentParser(description = "Run Unsloth UI Backend server")
-    parser.add_argument("--host", default = "0.0.0.0", help = "Host to bind to")
+    parser.add_argument(
+        "--host",
+        default = "127.0.0.1",
+        help = "Host to bind to (default: 127.0.0.1; use 0.0.0.0 for network/cloud access)",
+    )
     parser.add_argument("--port", type = int, default = 8888, help = "Port to bind to")
     parser.add_argument(
         "--frontend",
         type = str,
-        default = Path(__file__).resolve().parent.parent / "frontend" / "dist",
+        default = _DEFAULT_FRONTEND_PATH,
         help = "Path to frontend build",
     )
     parser.add_argument("--silent", action = "store_true", help = "Suppress output")
+    parser.add_argument(
+        "--api-only",
+        action = "store_true",
+        help = "API server only, no frontend (for Tauri)",
+    )
+    parser.add_argument(
+        "--cloudflare",
+        action = argparse.BooleanOptionalAction,
+        default = True,
+        help = "Auto-create a free Cloudflare HTTPS tunnel when bound to 0.0.0.0 "
+        "(default on; --no-cloudflare to disable)",
+    )
+    parser.add_argument(
+        "--secure",
+        action = argparse.BooleanOptionalAction,
+        default = False,
+        help = "Expose ONLY a Cloudflare HTTPS link: bind localhost and fail closed "
+        "if the tunnel can't start. Without it, --not-secure also serves the raw "
+        "0.0.0.0 port, which is reachable from anywhere on the network",
+    )
+    # Tri-state tool policy: no flag -> None (tools on, per-request honored);
+    # --enable-tools/--disable-tools force on/off.
+    parser.add_argument(
+        "--enable-tools",
+        dest = "enable_tools",
+        action = "store_true",
+        default = None,
+        help = "Force server-side tools (web search, code execution) on for "
+        "every request. Default: on for every bind, per-request setting honored.",
+    )
+    parser.add_argument(
+        "--disable-tools",
+        dest = "enable_tools",
+        action = "store_false",
+        default = None,
+        help = "Force server-side tools off for every request.",
+    )
+    # Mirror unsloth_cli/commands/studio.py's _PARALLEL_*. Default 1 is for direct
+    # backend launches; `unsloth studio run` always passes its own value (4).
+    _PARALLEL_MIN = 1
+    _PARALLEL_MAX = 64
+    _PARALLEL_DEFAULT_PLAIN = 1
+    parser.add_argument(
+        "--parallel",
+        "--n-parallel",
+        type = int,
+        default = _PARALLEL_DEFAULT_PLAIN,
+        help = (
+            f"llama-server parallel decode slots ({_PARALLEL_MIN}..{_PARALLEL_MAX}). "
+            f"Default {_PARALLEL_DEFAULT_PLAIN}; `unsloth studio run` uses 4."
+        ),
+    )
 
     args = parser.parse_args()
+    if not _PARALLEL_MIN <= args.parallel <= _PARALLEL_MAX:
+        parser.error(f"--parallel must be between {_PARALLEL_MIN} and {_PARALLEL_MAX}")
+    if args.secure and not args.cloudflare:
+        parser.error(
+            "--secure requires the Cloudflare tunnel; do not combine it with --no-cloudflare"
+        )
 
-    kwargs = dict(host = args.host, port = args.port, silent = args.silent)
+    kwargs = dict(
+        host = args.host,
+        port = args.port,
+        silent = args.silent,
+        api_only = args.api_only,
+        llama_parallel_slots = args.parallel,
+        cloudflare = args.cloudflare,
+        secure = args.secure,
+        enable_tools = args.enable_tools,
+    )
     if args.frontend is not None:
         kwargs["frontend_path"] = Path(args.frontend)
 
@@ -407,13 +1284,11 @@ if __name__ == "__main__":
         sys.stderr.write("=" * 60 + "\n")
         traceback.print_exc(file = sys.stderr)
         sys.stderr.write("\n")
-        sys.stderr.write(
-            "If a package is missing, try re-running: unsloth studio setup\n"
-        )
+        sys.stderr.write("If a package is missing, try re-running: unsloth studio setup\n")
         sys.stderr.flush()
         sys.exit(1)
 
-    # Signal handler -- ensures subprocess cleanup on Ctrl+C
+    # Signal handler -- ensures subprocess cleanup on Ctrl+C.
     def _signal_handler(signum, frame):
         _graceful_shutdown(_server)
         _shutdown_event.set()
@@ -421,13 +1296,12 @@ if __name__ == "__main__":
     signal.signal(signal.SIGINT, _signal_handler)
     signal.signal(signal.SIGTERM, _signal_handler)
 
-    # On Windows, some terminals send SIGBREAK for Ctrl+C / Ctrl+Break
+    # On Windows, some terminals send SIGBREAK for Ctrl+C / Ctrl+Break.
     if hasattr(signal, "SIGBREAK"):
         signal.signal(signal.SIGBREAK, _signal_handler)
 
-    # Keep running until shutdown signal.
-    # NOTE: Event.wait() without a timeout blocks at the C level on Linux,
-    # which prevents Python from delivering SIGINT (Ctrl+C).  Using a
-    # short timeout in a loop lets the interpreter process pending signals.
+    # Keep running until shutdown signal. Event.wait() without a timeout blocks at
+    # the C level on Linux, preventing SIGINT delivery; a short timeout in a loop
+    # lets the interpreter process pending signals.
     while not _shutdown_event.is_set():
         _shutdown_event.wait(timeout = 1)

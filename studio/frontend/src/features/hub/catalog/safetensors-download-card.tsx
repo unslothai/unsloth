@@ -1,0 +1,327 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import { Spinner } from "@/components/ui/spinner";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import { useRepoDownload } from "../download-manager";
+import { deleteCachedModel } from "../inventory";
+import { cn } from "@/lib/utils";
+import {
+  Alert02Icon,
+  PencilEdit02Icon,
+  PlayIcon,
+} from "@hugeicons/core-free-icons";
+import { TrainIcon } from "../components/train-icon";
+import { HUB_POST_DOWNLOAD_ACTIONS_VISIBLE } from "../lib/hub-feature-flags";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { useEffect, useState } from "react";
+import { useHfTokenStore } from "../stores/hf-token-store";
+import { fetchModelSize } from "../lib/dataset-size";
+import { formatBytes } from "../lib/format";
+import { fingerprintToken } from "../lib/token-fingerprint";
+import { useOnlineStatus } from "../hooks/use-online-status";
+import {
+  CardDivider,
+  CardDeleteButton,
+  DeleteConfirmDialog,
+  DownloadActionButton,
+  DownloadCard,
+} from "./download-card";
+import { DotTag } from "./dot-tag";
+import { PathInfoButton } from "./path-info-button";
+import { useCardDelete } from "./use-card-delete";
+import type { ModelInventoryFormat } from "../inventory";
+import { useDownloadCardState } from "./use-download-card-state";
+
+function formatModelLabel(modelFormat?: ModelInventoryFormat | null): string {
+  if (modelFormat === "adapter") return "Adapter";
+  if (modelFormat === "checkpoint") return "Checkpoint";
+  if (!modelFormat || modelFormat === "safetensors") return "Safetensors";
+  return "Model";
+}
+
+function formatModelTone(
+  modelFormat?: ModelInventoryFormat | null,
+): "checkpoint" | "adapter" {
+  return modelFormat === "adapter" ? "adapter" : "checkpoint";
+}
+
+export function SafetensorsDownloadCard({
+  repoId,
+  isDownloaded,
+  isPartial = false,
+  partialTransport = null,
+  modelFormat,
+  canRun = true,
+  isActive,
+  isLoadingThisModel,
+  cachePath,
+  knownBytes,
+  onLoad,
+  onUseInChat,
+  onTrain,
+  onChange,
+}: {
+  repoId: string;
+  isDownloaded: boolean;
+  isPartial?: boolean;
+  partialTransport?: string | null;
+  modelFormat?: ModelInventoryFormat | null;
+  canRun?: boolean;
+  isActive: boolean;
+  isLoadingThisModel: boolean;
+  cachePath?: string | null;
+  knownBytes?: number | null;
+  onLoad: (opts: { ggufVariant?: string; expectedBytes?: number }) => void;
+  onUseInChat?: () => void;
+  onTrain?: () => void;
+  onChange?: () => void;
+}) {
+  const hfToken = useHfTokenStore((s) => s.token);
+  const online = useOnlineStatus();
+  const sizeKey = `${repoId}::${fingerprintToken(hfToken)}`;
+  const [modelSize, setModelSize] = useState<{
+    key: string;
+    bytes: number | null;
+  }>(() => ({ key: sizeKey, bytes: null }));
+  const modelTotalBytes =
+    knownBytes && knownBytes > 0
+      ? knownBytes
+      : modelSize.key === sizeKey
+      ? modelSize.bytes
+      : null;
+  const [deleteRepoOpen, setDeleteRepoOpen] = useState(false);
+  const { deleting, runDelete } = useCardDelete({
+    action: () => deleteCachedModel(repoId, undefined, hfToken || undefined),
+    resourceName: "model",
+    successMessage: () => `Deleted ${repoId}`,
+    onSuccess: () => {
+      setDeleteRepoOpen(false);
+      onChange?.();
+    },
+  });
+
+  const job = useRepoDownload({
+    kind: "model",
+    repoId,
+    activeVariant: null,
+    autoAdopt: true,
+  });
+
+  const progress = job.progress;
+  const cancelling = job.cancelling;
+  const repoPeerActive = job.repoPeerActive;
+  const setJobExpectedBytes = job.setExpectedBytes;
+
+  useEffect(() => {
+    if (knownBytes && knownBytes > 0) {
+      setJobExpectedBytes(knownBytes);
+      return;
+    }
+    if (!online) return;
+    if (!repoId) return;
+    const controller = new AbortController();
+    const { signal } = controller;
+    void fetchModelSize(repoId, hfToken || undefined, signal)
+      .then((info) => {
+        if (signal.aborted || !info) return;
+        const upstream = info.weightsBytes ?? info.totalBytes;
+        if (upstream && upstream > 0) {
+          setModelSize({ key: sizeKey, bytes: upstream });
+          setJobExpectedBytes(upstream);
+        }
+      })
+      .catch((err) => {
+        if (!signal.aborted && import.meta.env.DEV) {
+          console.debug("Model size lookup failed", err);
+        }
+      });
+    return () => {
+      controller.abort();
+    };
+  }, [repoId, hfToken, sizeKey, setJobExpectedBytes, knownBytes, online]);
+
+  const downloading = progress !== null && progress.variant === null;
+  const downloadAction = useDownloadCardState({
+    job,
+    variant: null,
+    expectedBytes: modelTotalBytes ?? 0,
+    downloading,
+    disabled: isLoadingThisModel || cancelling || repoPeerActive,
+    isPartial,
+    partialTransport,
+  });
+  const showActionPair = isDownloaded && !downloading && (canRun || !!onTrain);
+  const showUnavailableAction =
+    isDownloaded && !downloading && !canRun && !onTrain;
+  const canDelete =
+    (isDownloaded || isPartial) &&
+    !downloading &&
+    !repoPeerActive &&
+    !isActive &&
+    !isLoadingThisModel;
+
+  return (
+    <div className="flex w-full flex-col gap-2"><DownloadCard
+        job={job}
+        progress={downloading ? progress : null}
+        dialogs={
+          <DeleteConfirmDialog
+            open={deleteRepoOpen}
+            onOpenChange={(o) => {
+              if (!o && !deleting) setDeleteRepoOpen(false);
+            }}
+            title="Delete cached model?"
+            deleting={deleting}
+            onConfirm={() => void runDelete()}
+            description={
+              <>
+                This will remove{" "}
+                <span className="font-medium text-foreground">{repoId}</span>{" "}
+                and its downloaded files
+                {modelTotalBytes && modelTotalBytes > 0
+                  ? ` (${formatBytes(modelTotalBytes)})`
+                  : ""}{" "}
+                from disk. You can re-download it later.
+              </>
+            }
+          />
+        }
+      >
+        <div className="relative flex h-9 min-w-0 flex-1 items-center pl-3 pr-2">
+          <span className="flex items-center gap-1.5 text-[12px] text-muted-foreground">
+            {(isActive || isDownloaded) && (
+              <DotTag
+                tone="success"
+                label={isActive ? "Loaded" : "On device"}
+              />
+            )}
+            {!isDownloaded && !isActive && isPartial && !downloading && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span className="inline-flex">
+                    <DotTag tone="warning" label="Partial" />
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent side="top" sideOffset={4}>
+                  Partial download. Click to continue.
+                </TooltipContent>
+              </Tooltip>
+            )}
+            <DotTag
+              tone={formatModelTone(modelFormat)}
+              label={formatModelLabel(modelFormat)}
+            />
+            {modelTotalBytes && modelTotalBytes > 0 && (
+              <span className="tabular-nums">
+                {formatBytes(modelTotalBytes)}
+              </span>
+            )}
+          </span>
+          <div className="ml-auto flex items-center gap-0.5">
+            {canDelete && (
+              <CardDeleteButton
+                label={`Delete ${repoId}`}
+                onClick={() => setDeleteRepoOpen(true)}
+              />
+            )}
+            {isDownloaded && cachePath && (
+              <PathInfoButton
+                path={cachePath}
+                title="On-device location"
+                description={`Where ${repoId} lives on disk.`}
+              />
+            )}
+          </div>
+        </div>
+        {/* Divider sits above the Download CTA; in the action-pair state it hides with the pair. */}
+        {(!showActionPair || HUB_POST_DOWNLOAD_ACTIONS_VISIBLE) && <CardDivider />}
+        {showActionPair ? (
+          <div
+            className={cn(
+              "group/pair flex h-9 shrink-0 items-stretch gap-1.5",
+              // Run+Train pair hidden until Hub→chat / Hub→train pickers ship.
+              !HUB_POST_DOWNLOAD_ACTIONS_VISIBLE && "hidden",
+            )}
+          >
+            {onTrain && (
+              <button
+                type="button"
+                onClick={onTrain}
+                className="hub-action-btn w-24"
+              >
+                <HugeiconsIcon icon={TrainIcon} strokeWidth={1.75} />
+                Train
+              </button>
+            )}
+            <button
+              type="button"
+              disabled={isLoadingThisModel || !canRun}
+              onClick={() => {
+                if (!canRun) return;
+                if (isActive) {
+                  onUseInChat?.();
+                  return;
+                }
+                onLoad({});
+              }}
+              className={cn(
+                isLoadingThisModel || isActive || !canRun
+                  ? "hub-action-btn w-24"
+                  : "hub-run-action-btn w-24",
+                (isLoadingThisModel || !canRun) && "opacity-70",
+              )}
+            >
+              {isLoadingThisModel ? (
+                <>
+                  <Spinner />
+                  Loading…
+                </>
+              ) : isActive ? (
+                <>
+                  <HugeiconsIcon icon={PencilEdit02Icon} strokeWidth={1.75} />
+                  Chat
+                </>
+              ) : !canRun ? (
+                <>
+                  <HugeiconsIcon icon={Alert02Icon} strokeWidth={1.75} />
+                  No run
+                </>
+              ) : (
+                <>
+                  <HugeiconsIcon icon={PlayIcon} strokeWidth={1.75} />
+                  Run
+                </>
+              )}
+            </button>
+          </div>
+        ) : showUnavailableAction ? (
+          <button
+            type="button"
+            disabled
+            className="hub-action-btn w-28 opacity-70"
+          >
+            <HugeiconsIcon icon={Alert02Icon} strokeWidth={1.75} />
+            Unavailable
+          </button>
+        ) : (
+          <DownloadActionButton
+            downloading={downloadAction.downloading}
+            cancelling={downloadAction.cancelling}
+            loading={isLoadingThisModel || downloadAction.starting}
+            isPartial={downloadAction.isPartial}
+            partialTransport={downloadAction.partialTransport}
+            progressPercent={downloadAction.progressPercent}
+            disabled={downloadAction.disabled}
+            onClick={downloadAction.onClick}
+            className={repoPeerActive ? "opacity-70" : undefined}
+          />
+        )}
+      </DownloadCard>
+    </div>
+  );
+}

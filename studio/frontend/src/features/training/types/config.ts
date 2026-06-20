@@ -6,6 +6,7 @@ import type {
   DatasetSource,
   GradientCheckpointing,
   ModelType,
+  S3Config,
   StepNumber,
   TrainingMethod,
 } from "@/types/training";
@@ -42,6 +43,7 @@ export interface TrainingConfigState {
   epochs: number;
   contextLength: number;
   learningRate: number;
+  embeddingLearningRate: number | null;
   optimizerType: string;
   lrSchedulerType: string;
   loraRank: number;
@@ -76,12 +78,15 @@ export interface TrainingConfigState {
   isDatasetImage: boolean | null;
   isDatasetAudio: boolean;
   trustRemoteCode: boolean;
+  approvedRemoteCodeFingerprint?: string | null;
   finetuneVisionLayers: boolean;
   finetuneLanguageLayers: boolean;
   finetuneAttentionModules: boolean;
   finetuneMLPModules: boolean;
   targetModules: string[];
   maxPositionEmbeddings: number | null;
+  visionImageSize: number | null;
+  s3Config: S3Config | null;
 }
 
 export interface TrainingConfigActions {
@@ -98,6 +103,7 @@ export interface TrainingConfigActions {
   setDatasetSource: (source: DatasetSource) => void;
   selectHfDataset: (dataset: string | null) => void;
   selectLocalDataset: (file: string | null) => void;
+  selectS3Source: () => void;
   setDatasetFormat: (format: DatasetFormat) => void;
   setDataset: (dataset: string | null) => void;
   setDatasetSubset: (subset: string | null) => void;
@@ -116,7 +122,9 @@ export interface TrainingConfigActions {
   setUploadedEvalFile: (file: string | null) => void;
   setEpochs: (epochs: number) => void;
   setContextLength: (length: number) => void;
+  setVisionImageSize: (size: number | null) => void;
   setLearningRate: (rate: number) => void;
+  setEmbeddingLearningRate: (rate: number | null) => void;
   setOptimizerType: (value: string) => void;
   setLrSchedulerType: (value: string) => void;
   setLoraRank: (rank: number) => void;
@@ -145,6 +153,7 @@ export interface TrainingConfigActions {
   setFinetuneAttentionModules: (value: boolean) => void;
   setFinetuneMLPModules: (value: boolean) => void;
   setTargetModules: (value: string[]) => void;
+  setS3Config: (value: S3Config | null) => void;
   canProceed: () => boolean;
   reset: () => void;
   resetToModelDefaults: () => void;

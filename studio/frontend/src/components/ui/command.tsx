@@ -14,8 +14,9 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { InputGroup, InputGroupAddon } from "@/components/ui/input-group";
+import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
-import { SearchIcon, Tick02Icon } from "@hugeicons/core-free-icons";
+import { Search01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
 function Command({
@@ -39,12 +40,14 @@ function CommandDialog({
   description = "Search for a command to run...",
   children,
   className,
+  overlayClassName,
   showCloseButton = false,
   ...props
 }: React.ComponentProps<typeof Dialog> & {
   title?: string;
   description?: string;
   className?: string;
+  overlayClassName?: string;
   showCloseButton?: boolean;
 }) {
   return (
@@ -55,9 +58,10 @@ function CommandDialog({
       </DialogHeader>
       <DialogContent
         className={cn(
-          "rounded-4xl! p-0 top-1/3 translate-y-0 overflow-hidden p-0",
+          "rounded-4xl! top-1/3 translate-y-0 overflow-hidden p-0",
           className,
         )}
+        overlayClassName={overlayClassName}
         showCloseButton={showCloseButton}
       >
         {children}
@@ -83,7 +87,7 @@ function CommandInput({
         />
         <InputGroupAddon>
           <HugeiconsIcon
-            icon={SearchIcon}
+            icon={Search01Icon}
             strokeWidth={2}
             className="size-4 shrink-0 opacity-50"
           />

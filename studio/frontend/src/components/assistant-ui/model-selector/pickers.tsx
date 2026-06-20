@@ -1,16 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
 import { Input } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 import {
@@ -23,10 +13,12 @@ import {
   type ScanFolderInfo,
   addScanFolder,
   deleteCachedModel,
+  deleteFineTunedModel,
   listCachedGguf,
   listCachedModels,
   listGgufVariants,
   listLocalModels,
+  listRecommendedFolders,
   listScanFolders,
   removeScanFolder,
 } from "@/features/chat/api/chat-api";
@@ -43,21 +35,27 @@ import {
   useInfiniteScroll,
   useRecommendedModelVram,
 } from "@/hooks";
+import { extractParamLabel } from "@/lib/model-size";
 import { cn, formatCompact } from "@/lib/utils";
 import type { VramFitStatus } from "@/lib/vram";
 import { checkVramFit, estimateLoadingVram } from "@/lib/vram";
-import { Add01Icon, Cancel01Icon, Folder02Icon, Search01Icon } from "@hugeicons/core-free-icons";
+import { Add01Icon, Cancel01Icon, Download01Icon, Folder02Icon, Search01Icon, StarIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { Trash2Icon } from "lucide-react";
+import { FolderBrowser } from "./folder-browser";
+import { ModelDeleteAction } from "./model-delete-action";
+import { ChevronDownIcon, ChevronRightIcon } from "lucide-react";
 import {
+  type KeyboardEvent,
   type ReactNode,
   useCallback,
   useEffect,
+  useId,
   useMemo,
   useState,
 } from "react";
-import { toast } from "sonner";
+import { toast } from "@/lib/toast";
 import type {
+  DeletedModelRef,
   LoraModelOption,
   ModelOption,
   ModelSelectorChangeMeta,
@@ -67,25 +65,229 @@ function dedupe(values: string[]): string[] {
   return [...new Set(values.filter(Boolean))];
 }
 
-/** Normalize a string for fuzzy search: lowercase, strip separators. */
-function normalizeForSearch(s: string): string {
-  return s.toLowerCase().replace(/[\s\-_\.]/g, "");
+/** Newest-first by `last_modified` (epoch s), repo_id tie-break. Copies the
+ * input; treats a missing field as oldest for older-backend compatibility. */
+function sortByDownloadRecency<T extends { repo_id: string; last_modified?: number }>(
+  rows: T[],
+): T[] {
+  return [...rows].sort((a, b) => {
+    const at = a.last_modified ?? -1;
+    const bt = b.last_modified ?? -1;
+    if (at !== bt) return bt - at;
+    return a.repo_id.localeCompare(b.repo_id);
+  });
 }
 
-function ListLabel({ children }: { children: ReactNode }) {
+/** Lowercase and strip separators for fuzzy search. */
+function normalizeForSearch(s: string): string {
+  return s.toLowerCase().replace(/[\s_.-]/g, "");
+}
+
+function makeModelOptionKey(section: string, id: string): string {
+  return `${section}::${id}`;
+}
+
+function makeModelOptionChildrenId(optionKey: string): string {
+  return `model-picker-children-${optionKey.replace(/[^A-Za-z0-9_-]/g, "-")}`;
+}
+
+function focusFirstChildOption(optionKey: string): boolean {
+  const childList = document.getElementById(makeModelOptionChildrenId(optionKey));
+  const option = childList?.querySelector<HTMLElement>(
+    "[data-model-picker-option]",
+  );
+  if (!option) {
+    return false;
+  }
+  option.focus();
+  return true;
+}
+
+type ModelRowOptionProps = {
+  id: string;
+  tabIndex: number;
+  onFocus: () => void;
+  onKeyDown: (event: KeyboardEvent<HTMLButtonElement>) => void;
+  "data-model-picker-option": true;
+  "data-model-picker-active-option"?: "true";
+  "aria-current"?: "true";
+};
+
+function useRovingModelList({
+  label,
+  optionKeys,
+  selectedOptionKey,
+  onNavigatePastStart,
+  onNavigatePastEnd,
+}: {
+  label: string;
+  optionKeys: string[];
+  selectedOptionKey?: string;
+  onNavigatePastStart?: () => void;
+  onNavigatePastEnd?: () => void;
+}) {
+  const rawListboxId = useId();
+  const listboxId = `model-picker-${rawListboxId.replace(/:/g, "")}`;
+  const [rovingOptionKey, setRovingOptionKey] = useState<string | null>(null);
+
+  const preferredOptionKey =
+    selectedOptionKey && optionKeys.includes(selectedOptionKey)
+      ? selectedOptionKey
+      : (optionKeys[0] ?? null);
+  const activeOptionKey =
+    rovingOptionKey && optionKeys.includes(rovingOptionKey)
+      ? rovingOptionKey
+      : preferredOptionKey;
+
+  const getOptionDomId = useCallback(
+    (optionKey: string) => {
+      const index = optionKeys.indexOf(optionKey);
+      return index === -1 ? undefined : `${listboxId}-option-${index}`;
+    },
+    [listboxId, optionKeys],
+  );
+
+  const focusOption = useCallback(
+    (optionKey: string) => {
+      const id = getOptionDomId(optionKey);
+      if (!id) {
+        return;
+      }
+      document.getElementById(id)?.focus();
+    },
+    [getOptionDomId],
+  );
+
+  const moveFocus = useCallback(
+    (
+      fromOptionKey: string,
+      direction: "next" | "previous" | "first" | "last",
+    ) => {
+      if (optionKeys.length === 0) {
+        return;
+      }
+
+      const currentIndex = optionKeys.indexOf(fromOptionKey);
+      let nextIndex = currentIndex === -1 ? 0 : currentIndex;
+      if (direction === "next") {
+        if (currentIndex >= optionKeys.length - 1) {
+          onNavigatePastEnd?.();
+          return;
+        }
+        nextIndex = Math.min(optionKeys.length - 1, nextIndex + 1);
+      } else if (direction === "previous") {
+        if (currentIndex <= 0) {
+          onNavigatePastStart?.();
+          return;
+        }
+        nextIndex = Math.max(0, nextIndex - 1);
+      } else if (direction === "first") {
+        nextIndex = 0;
+      } else {
+        nextIndex = optionKeys.length - 1;
+      }
+
+      const nextOptionKey = optionKeys[nextIndex];
+      setRovingOptionKey(nextOptionKey);
+      focusOption(nextOptionKey);
+    },
+    [focusOption, onNavigatePastEnd, onNavigatePastStart, optionKeys],
+  );
+
+  const getOptionProps = useCallback(
+    (optionKey: string, selected: boolean): ModelRowOptionProps => ({
+      id: getOptionDomId(optionKey) ?? `${listboxId}-option-missing`,
+      tabIndex: 0,
+      onFocus: () => {
+        setRovingOptionKey(optionKey);
+      },
+      onKeyDown: (event) => {
+        if (event.key === "ArrowDown") {
+          event.preventDefault();
+          moveFocus(optionKey, "next");
+        } else if (event.key === "ArrowUp") {
+          event.preventDefault();
+          moveFocus(optionKey, "previous");
+        } else if (event.key === "Home") {
+          event.preventDefault();
+          moveFocus(optionKey, "first");
+        } else if (event.key === "End") {
+          event.preventDefault();
+          moveFocus(optionKey, "last");
+        }
+      },
+      "data-model-picker-option": true,
+      "data-model-picker-active-option":
+        optionKey === activeOptionKey ? "true" : undefined,
+      "aria-current": selected ? "true" : undefined,
+    }),
+    [activeOptionKey, getOptionDomId, listboxId, moveFocus],
+  );
+
+  return {
+    activeOptionKey,
+    focusOption,
+    getOptionProps,
+    moveFocus,
+    listboxProps: {
+      id: listboxId,
+      "data-model-picker-list": true,
+      "aria-label": label,
+    },
+  };
+}
+
+function ListLabel({
+  children,
+  icon,
+  collapsed,
+  onToggle,
+}: {
+  children: ReactNode;
+  icon?: ReactNode;
+  collapsed?: boolean;
+  onToggle?: () => void;
+}) {
   return (
-    <div className="px-2.5 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-      {children}
+    <div className="flex items-center justify-between gap-1 px-2.5 py-1.5">
+      <span className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+        {icon}
+        {children}
+      </span>
+      {onToggle && (
+        <button
+          type="button"
+          onClick={onToggle}
+          aria-label={collapsed ? "Expand section" : "Collapse section"}
+          className="shrink-0 rounded p-1 text-muted-foreground/60 transition-colors hover:text-foreground"
+        >
+          {collapsed
+            ? <ChevronRightIcon className="size-3" />
+            : <ChevronDownIcon className="size-3" />}
+        </button>
+      )}
     </div>
   );
 }
 
 /** Format bytes to a human-readable size string. */
 function formatBytes(bytes: number): string {
-  if (bytes === 0) return "0 B";
+  // Guard non-positive / non-finite sizes (0, missing -> NaN, Infinity) so we
+  // never render "NaN undefined" or a negative unit index.
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
+  // Decimal (base-1000) units to match what Hugging Face reports for a repo's
+  // file sizes -- e.g. 217 GB, not the 201.8 GiB a base-1024 divide would show.
+  // (GPU-fit math below stays base-1024 since VRAM is binary.)
+  // Divide iteratively rather than via Math.log, which has float error at exact
+  // powers of 1000 (log(1e12)/log(1000) = 3.9999... would mislabel 1 TB as
+  // "1000 GB"); the loop also can't run off the end of units.
   const units = ["B", "KB", "MB", "GB", "TB"];
-  const i = Math.floor(Math.log(bytes) / Math.log(1024));
-  const value = bytes / 1024 ** i;
+  let i = 0;
+  let value = bytes;
+  while (value >= 1000 && i < units.length - 1) {
+    value /= 1000;
+    i += 1;
+  }
   return `${value.toFixed(value < 10 ? 1 : 0)} ${units[i]}`;
 }
 
@@ -98,15 +300,19 @@ function ModelRow({
   vramEst,
   gpuGb,
   tooltipText,
+  optionProps,
+  onArrowDownIntoChildren,
 }: {
   label: string;
-  meta?: string;
+  meta?: string | null;
   selected?: boolean;
   onClick: () => void;
   vramStatus?: VramFitStatus | null;
   vramEst?: number;
   gpuGb?: number;
   tooltipText?: ReactNode;
+  optionProps?: ModelRowOptionProps;
+  onArrowDownIntoChildren?: () => boolean;
 }) {
   const exceeds = vramStatus === "exceeds";
   const showVramTooltip =
@@ -123,10 +329,18 @@ function ModelRow({
   const content = (
     <button
       type="button"
+      {...optionProps}
+      onKeyDown={(event) => {
+        if (event.key === "ArrowDown" && onArrowDownIntoChildren?.()) {
+          event.preventDefault();
+          return;
+        }
+        optionProps?.onKeyDown(event);
+      }}
       onClick={onClick}
       className={cn(
-        "flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-sm transition-colors hover:bg-accent",
-        selected && "bg-accent/60",
+        "flex w-full items-center gap-2 rounded-full px-3 py-1.5 text-left text-sm transition-colors hover:bg-[#ececec] focus-visible:bg-[#ececec] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/45 dark:hover:bg-[#3a3d44] dark:focus-visible:bg-[#3a3d44]",
+        selected && "bg-[#ececec] dark:bg-[#3a3d44]",
       )}
     >
       <span
@@ -155,7 +369,10 @@ function ModelRow({
     return (
       <Tooltip>
         <TooltipTrigger asChild={true}>{content}</TooltipTrigger>
-        <TooltipContent side="left" className="max-w-xs break-all">
+        <TooltipContent
+          side="left"
+          className="tooltip-compact max-w-xs break-all"
+        >
           {label}
           <span className="block text-[10px] mt-1">{vramTooltipText}</span>
         </TooltipContent>
@@ -167,7 +384,10 @@ function ModelRow({
     return (
       <Tooltip>
         <TooltipTrigger asChild={true}>{content}</TooltipTrigger>
-        <TooltipContent side="left" className="max-w-xs break-all">
+        <TooltipContent
+          side="left"
+          className="tooltip-compact max-w-xs break-all"
+        >
           {tooltipText}
         </TooltipContent>
       </Tooltip>
@@ -183,13 +403,29 @@ function GgufVariantExpander({
   onSelect,
   gpuGb,
   systemRamGb,
+  parentOptionKey,
+  onNavigatePastStart,
+  onNavigatePastEnd,
   onDeleteVariant,
+  sourceOverride,
+  deleteVariantTitle = "Delete cached model?",
+  renderDeleteVariantDescription,
+  getDeleteVariantSuccessMessage,
+  deleteDisabled = false,
 }: {
   repoId: string;
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
   gpuGb?: number;
   systemRamGb?: number;
-  onDeleteVariant?: (quant: string) => void;
+  parentOptionKey?: string;
+  onNavigatePastStart?: () => void;
+  onNavigatePastEnd?: () => void;
+  onDeleteVariant?: (quant: string) => Promise<void> | void;
+  sourceOverride?: ModelSelectorChangeMeta["source"];
+  deleteVariantTitle?: string;
+  renderDeleteVariantDescription?: (quant: string) => ReactNode;
+  getDeleteVariantSuccessMessage?: (quant: string) => string;
+  deleteDisabled?: boolean;
 }) {
   const [variants, setVariants] = useState<GgufVariantDetail[] | null>(null);
   const [defaultVariant, setDefaultVariant] = useState<string | null>(null);
@@ -232,14 +468,14 @@ function GgufVariantExpander({
   const handleVariantClick = useCallback(
     (quant: string, downloaded?: boolean, sizeBytes?: number) => {
       onSelect(repoId, {
-        source: isLocalPath ? "local" : "hub",
+        source: sourceOverride ?? (isLocalPath ? "local" : "hub"),
         isLora: false,
         ggufVariant: quant,
         isDownloaded: isLocalPath ? true : downloaded,
         expectedBytes: sizeBytes,
       });
     },
-    [repoId, isLocalPath, onSelect],
+    [repoId, isLocalPath, onSelect, sourceOverride],
   );
 
   // GGUF fit classification matching llama-server's _select_gpus logic:
@@ -260,14 +496,14 @@ function GgufVariantExpander({
     [gpuGb, gpuBudgetGb, totalBudgetGb],
   );
 
-  // If the backend-recommended variant is OOM, pick the largest fitting
-  // variant instead; if all are OOM, recommend the smallest one.
+  // If the recommended variant is OOM, pick the largest fitting one;
+  // if all are OOM, recommend the smallest.
   const effectiveRecommended = useMemo(() => {
     if (!variants || !gpuGb || gpuGb <= 0) return defaultVariant;
     const defaultV = variants.find((v) => v.quant === defaultVariant);
     if (defaultV && getGgufFit(defaultV.size_bytes) !== "oom")
       return defaultVariant;
-    // Default is OOM -- pick largest non-OOM variant (best quality that fits)
+    // Largest non-OOM variant (best quality that fits)
     const fitting = variants.filter((v) => getGgufFit(v.size_bytes) !== "oom");
     if (fitting.length > 0) {
       fitting.sort((a, b) => b.size_bytes - a.size_bytes);
@@ -306,6 +542,20 @@ function GgufVariantExpander({
     });
   }, [variants, effectiveRecommended, getGgufFit]);
 
+  const variantOptionKeys = useMemo(
+    () =>
+      (sortedVariants ?? []).map((variant) =>
+        makeModelOptionKey("gguf-variant", `${repoId}:${variant.filename}`),
+      ),
+    [repoId, sortedVariants],
+  );
+  const variantList = useRovingModelList({
+    label: `${repoId} quantizations`,
+    optionKeys: variantOptionKeys,
+    onNavigatePastStart,
+    onNavigatePastEnd,
+  });
+
   if (loading) {
     return (
       <div className="flex items-center gap-2 px-5 py-2">
@@ -328,7 +578,15 @@ function GgufVariantExpander({
   }
 
   return (
-    <div className="pl-4 border-l-2 border-accent/50 ml-3 my-1">
+    <div
+      {...variantList.listboxProps}
+      id={
+        parentOptionKey
+          ? makeModelOptionChildrenId(parentOptionKey)
+          : variantList.listboxProps.id
+      }
+      className="pl-4 border-l-2 border-accent/50 ml-3 my-1"
+    >
       <div className="px-2 py-1 flex items-center gap-1.5">
         <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
           Quantizations
@@ -341,15 +599,18 @@ function GgufVariantExpander({
         const fit = getGgufFit(v.size_bytes);
         const oom = fit === "oom";
         const tight = fit === "tight";
+        const keyBase = `${repoId}:${v.filename}`;
+        const variantOptionKey = makeModelOptionKey("gguf-variant", keyBase);
         return (
           <div key={v.filename} className="flex items-center gap-0.5">
             <button
               type="button"
+              {...variantList.getOptionProps(variantOptionKey, false)}
               onClick={() =>
                 handleVariantClick(v.quant, v.downloaded, v.size_bytes)
               }
               className={cn(
-                "flex min-w-0 flex-1 items-center justify-between gap-2 rounded-md px-2.5 py-1 text-left text-sm transition-colors hover:bg-accent",
+                "flex min-w-0 flex-1 items-center justify-between gap-2 rounded-full px-3 py-1 text-left text-sm transition-colors hover:bg-[#ececec] focus-visible:bg-[#ececec] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/45 dark:hover:bg-[#3a3d44] dark:focus-visible:bg-[#3a3d44]",
               )}
             >
               <span className="min-w-0 flex-1 truncate font-mono text-xs">
@@ -381,16 +642,29 @@ function GgufVariantExpander({
               </span>
             </button>
             {v.downloaded && onDeleteVariant && (
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onDeleteVariant(v.quant);
-                }}
-                className="shrink-0 rounded-md p-1 text-muted-foreground/60 transition-colors hover:bg-destructive/10 hover:text-destructive"
-              >
-                <Trash2Icon className="size-3" />
-              </button>
+              <ModelDeleteAction
+                ariaLabel={`Delete ${repoId} ${v.quant}`}
+                title={deleteVariantTitle}
+                description={
+                  renderDeleteVariantDescription?.(v.quant) ?? (
+                    <>
+                      This will remove{" "}
+                      <span className="font-medium text-foreground">
+                        {repoId} ({v.quant})
+                      </span>{" "}
+                      from disk. You can re-download it later.
+                    </>
+                  )
+                }
+                successMessage={
+                  getDeleteVariantSuccessMessage?.(v.quant) ??
+                  `Deleted ${repoId} ${v.quant}`
+                }
+                buttonClassName="p-1"
+                iconClassName="size-3"
+                disabled={deleteDisabled}
+                onConfirm={() => onDeleteVariant(v.quant)}
+              />
             )}
           </div>
         );
@@ -399,18 +673,14 @@ function GgufVariantExpander({
   );
 }
 
-// ── Detect GGUF repos by naming convention ────────────────────
+// ── Detect GGUF repos by naming convention or hub tag ────────────────────
 
-function isGgufRepo(id: string): boolean {
-  return id.toUpperCase().includes("-GGUF");
+function hasGgufSuffix(id: string): boolean {
+  return /-GGUF(?:$|-)/i.test(id);
 }
 
-/** Extract param count label from model name (e.g. "Qwen3-0.6B" -> "0.6B"). */
-function extractParamLabel(id: string): string | undefined {
-  // Match patterns like "0.6B", "1B", "4B", "3.5B", "70B", "1.5B" etc.
-  const name = id.split("/").pop() ?? id;
-  const match = name.match(/(?:^|[-_])(\d+(?:\.\d+)?)[Bb](?:[-_]|$)/);
-  return match ? `${match[1]}B` : undefined;
+function isGgufRepo(id: string, hintedIsGguf?: boolean): boolean {
+  return Boolean(hintedIsGguf) || hasGgufSuffix(id);
 }
 
 // Module-level caches so re-mounting the popover shows results instantly
@@ -432,6 +702,13 @@ function sortLmStudio(models: LocalModelInfo[]): LocalModelInfo[] {
   });
 }
 
+function canDeleteLoraModel(model: LoraModelOption): boolean {
+  const isTraining = model.source === "training";
+  const isExported = model.source === "exported";
+  const isExportedGguf = isExported && model.exportType === "gguf";
+  return (isTraining || isExported) && !isExportedGguf;
+}
+
 // ── Hub Model Picker ──────────────────────────────────────────
 
 export function HubModelPicker({
@@ -451,15 +728,41 @@ export function HubModelPicker({
   const { results, isLoading, isLoadingMore, fetchMore } =
     useHfModelSearch(debouncedQuery);
 
+  // Lowercased repo ids confirmed GGUF by the store or HF search.
+  // Absence means "no hint" -> hasGgufSuffix is the fallback (don't
+  // conflate unknown with known-not-GGUF). Lowercased so store and HF
+  // IDs differing only by casing match the same hint.
+  const modelGgufIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const model of models) {
+      if (model.isGguf) ids.add(model.id.toLowerCase());
+    }
+    return ids;
+  }, [models]);
+  const resultGgufIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const result of results) {
+      if (result.isGguf) ids.add(result.id.toLowerCase());
+    }
+    return ids;
+  }, [results]);
+  const isKnownGgufRepo = useCallback(
+    (id: string): boolean => {
+      const key = id.toLowerCase();
+      return isGgufRepo(id, resultGgufIds.has(key) || modelGgufIds.has(key));
+    },
+    [modelGgufIds, resultGgufIds],
+  );
+
   // Track which GGUF repo is expanded for variant selection
   const [expandedGguf, setExpandedGguf] = useState<string | null>(null);
 
-  // Delete confirmation dialog state
-  const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
-  const [deleting, setDeleting] = useState(false);
+  const [downloadedCollapsed, setDownloadedCollapsed] = useState(false);
+  const [customFoldersCollapsed, setCustomFoldersCollapsed] = useState(false);
+  const [recommendedCollapsed, setRecommendedCollapsed] = useState(false);
 
-  // Cached (already downloaded) repos -- use module-level cache so
-  // re-mounting the popover does not flash an empty "Downloaded" section.
+  // Cached (downloaded) repos -- module-level cache avoids flashing an
+  // empty "Downloaded" section when the popover re-mounts.
   const [cachedGguf, setCachedGguf] =
     useState<CachedGgufRepo[]>(_cachedGgufCache);
   const [cachedModels, setCachedModels] =
@@ -468,8 +771,7 @@ export function HubModelPicker({
     _cachedGgufCache.length > 0 || _cachedModelsCache.length > 0;
   const [cachedReady, setCachedReady] = useState(alreadyCached);
 
-  // LM Studio local models -- module-level cache so re-mounting the
-  // popover does not flash an empty section (same pattern as GGUF/models).
+  // LM Studio local models -- module-level cache, same pattern as above.
   const [lmStudioModels, setLmStudioModels] =
     useState<LocalModelInfo[]>(_lmStudioCache);
   const [customFolderModels, setCustomFolderModels] =
@@ -481,6 +783,8 @@ export function HubModelPicker({
   const [folderError, setFolderError] = useState<string | null>(null);
   const [showFolderInput, setShowFolderInput] = useState(false);
   const [folderLoading, setFolderLoading] = useState(false);
+  const [showFolderBrowser, setShowFolderBrowser] = useState(false);
+  const [recommendedFolders, setRecommendedFolders] = useState<string[]>([]);
 
   const refreshLocalModelsList = useCallback(() => {
     listLocalModels()
@@ -506,14 +810,21 @@ export function HubModelPicker({
       .catch(() => {});
   }, []);
 
-  const handleAddFolder = useCallback(async () => {
-    const trimmed = folderInput.trim();
+  const handleAddFolder = useCallback(async (overridePath?: string) => {
+    // Explicit path lets the folder browser submit in the same tick it
+    // calls `setFolderInput`; reading `folderInput` would race the update.
+    const raw = overridePath !== undefined ? overridePath : folderInput;
+    const trimmed = raw.trim();
     if (!trimmed || folderLoading) return;
     setFolderError(null);
     setFolderLoading(true);
+    // From the folder browser's one-click "Use this folder": the typed-
+    // input panel is closed, so the inline folderError is invisible.
+    // Surface failures (denylisted path, sandbox 403, etc.) via toast.
+    const fromBrowser = overridePath !== undefined;
     try {
       const created = await addScanFolder(trimmed);
-      // Backend returns existing row for duplicates, so deduplicate
+      // Backend returns the existing row for duplicates, so dedupe.
       const next = _scanFoldersCache.some((f) => f.id === created.id || f.path === created.path)
         ? _scanFoldersCache
         : [..._scanFoldersCache, created];
@@ -526,7 +837,11 @@ export function HubModelPicker({
       // Background reconciliation with the server
       void refreshScanFolders();
     } catch (e) {
-      setFolderError(e instanceof Error ? e.message : "Failed to add folder");
+      const message = e instanceof Error ? e.message : "Failed to add folder";
+      setFolderError(message);
+      if (fromBrowser) {
+        toast.error("Couldn't add folder", { description: message });
+      }
     } finally {
       setFolderLoading(false);
     }
@@ -535,7 +850,7 @@ export function HubModelPicker({
   const handleRemoveFolder = useCallback(async (id: number) => {
     try {
       await removeScanFolder(id);
-      // Optimistic update so the folder disappears immediately
+      // Optimistic: drop it immediately.
       const next = _scanFoldersCache.filter((f) => f.id !== id);
       _scanFoldersCache = next;
       setScanFolders(next);
@@ -565,11 +880,17 @@ export function HubModelPicker({
   }, [refreshLocalModelsList]);
 
   useEffect(() => {
-    // Always refresh LM Studio + custom folder models (not gated by alreadyCached)
+    // Always refresh LM Studio + custom folder models (not gated by alreadyCached).
     refreshLocalModelsList();
     refreshScanFolders();
+    listRecommendedFolders()
+      .then(setRecommendedFolders)
+      .catch(() => {});
 
-    if (alreadyCached) return;
+    // Always refetch cached GGUF/model lists. The module-level caches render
+    // instantly with stale data (no spinner flash), but newly downloaded
+    // repos need a fresh backend hit. cachedReady=alreadyCached initially,
+    // so the background refresh is invisible when we already had data.
     let done = 0;
     const check = () => {
       if (++done >= 2) setCachedReady(true);
@@ -588,31 +909,10 @@ export function HubModelPicker({
       })
       .catch(() => {})
       .finally(check);
-  }, [alreadyCached, refreshLocalModelsList, refreshScanFolders]);
+  }, [refreshLocalModelsList, refreshScanFolders]);
 
-  const handleDeleteConfirm = useCallback(async () => {
-    if (!deleteTarget) return;
-    setDeleting(true);
-    try {
-      // deleteTarget is "repo_id" or "repo_id::variant"
-      const sepIdx = deleteTarget.indexOf("::");
-      const repoId = sepIdx >= 0 ? deleteTarget.slice(0, sepIdx) : deleteTarget;
-      const variant = sepIdx >= 0 ? deleteTarget.slice(sepIdx + 2) : undefined;
-      await deleteCachedModel(repoId, variant);
-      toast.success(`Deleted ${variant ? `${repoId} ${variant}` : repoId}`);
-      refreshCachedLists();
-    } catch (err) {
-      toast.error(
-        err instanceof Error ? err.message : "Failed to delete model",
-      );
-    } finally {
-      setDeleting(false);
-      setDeleteTarget(null);
-    }
-  }, [deleteTarget, refreshCachedLists]);
-
-  // Deduplicate: don't show downloaded models in the recommended list.
-  // Compare case-insensitively since HF cache lowercases repo IDs.
+  // Hide downloaded models from the recommended list. Case-insensitive
+  // since the HF cache lowercases repo IDs.
   const downloadedSet = useMemo(() => {
     const s = new Set<string>();
     for (const c of cachedGguf) s.add(c.repo_id.toLowerCase());
@@ -625,17 +925,17 @@ export function HubModelPicker({
   const recommendedIds = useMemo(() => {
     const all = dedupe([...models.map((model) => model.id), value ?? ""])
       .filter((id) => !downloadedSet.has(id.toLowerCase()))
-      .filter((id) => !chatOnly || isGgufRepo(id))
+      .filter((id) => !chatOnly || isKnownGgufRepo(id))
       .filter((id) => !/-FP8[-.]|FP8-Dynamic/i.test(id));
     // Sort: GGUFs first, then hub models
     const gguf: string[] = [];
     const hub: string[] = [];
     for (const id of all) {
-      if (isGgufRepo(id)) gguf.push(id);
+      if (isKnownGgufRepo(id)) gguf.push(id);
       else hub.push(id);
     }
     return [...gguf, ...hub];
-  }, [models, value, downloadedSet, chatOnly]);
+  }, [models, value, downloadedSet, chatOnly, isKnownGgufRepo]);
 
   // Infinite scroll paging for the recommended section
   const [recommendedPage, setRecommendedPage] = useState(1);
@@ -645,7 +945,7 @@ export function HubModelPicker({
   }, [models, chatOnly]);
 
   const visibleRecommendedIds = useMemo(() => {
-    const hubStartIndex = recommendedIds.findIndex((id) => !isGgufRepo(id));
+    const hubStartIndex = recommendedIds.findIndex((id) => !isKnownGgufRepo(id));
     const allGguf =
       hubStartIndex === -1
         ? recommendedIds
@@ -659,12 +959,39 @@ export function HubModelPicker({
       result.push(...allHub.slice(p * 4, (p + 1) * 4));
     }
     return result;
-  }, [recommendedIds, recommendedPage]);
+  }, [recommendedIds, recommendedPage, isKnownGgufRepo]);
 
   const hasMoreRecommended =
     visibleRecommendedIds.length < recommendedIds.length;
 
   const showHfSection = debouncedQuery.trim().length > 0;
+
+  // Newest-first (also covers older backends without `last_modified`).
+  const sortedCachedGguf = useMemo(
+    () => sortByDownloadRecency(cachedGguf),
+    [cachedGguf],
+  );
+  const sortedCachedModels = useMemo(
+    () => sortByDownloadRecency(cachedModels),
+    [cachedModels],
+  );
+
+  // While searching, filter Downloaded by the query instead of hiding it, so a
+  // downloaded model the user is searching for stays visible.
+  const visibleCachedGguf = useMemo(() => {
+    if (!showHfSection) return sortedCachedGguf;
+    const q = normalizeForSearch(debouncedQuery.trim());
+    return sortedCachedGguf.filter((c) => normalizeForSearch(c.repo_id).includes(q));
+  }, [sortedCachedGguf, showHfSection, debouncedQuery]);
+  const visibleCachedModels = useMemo(() => {
+    if (!showHfSection) return sortedCachedModels;
+    const q = normalizeForSearch(debouncedQuery.trim());
+    return sortedCachedModels.filter((c) => normalizeForSearch(c.repo_id).includes(q));
+  }, [sortedCachedModels, showHfSection, debouncedQuery]);
+
+  // Non-GGUF cached rows are not shown in chat-only mode, so the empty-state
+  // logic must use this (not visibleCachedModels) or the picker can go blank.
+  const visibleCachedModelRows = chatOnly ? [] : visibleCachedModels;
 
   // Recommended models that match the current search query
   const filteredRecommendedIds = useMemo(() => {
@@ -673,16 +1000,15 @@ export function HubModelPicker({
     return recommendedIds.filter((id) => normalizeForSearch(id).includes(q));
   }, [showHfSection, debouncedQuery, recommendedIds]);
 
-  // Fetch VRAM info for visible models, plus any models surfaced by a search
-  // query so that filtered recommended models also show VRAM badges.
-  // Skip GGUF repos: they have no safetensors metadata and the render layer
-  // already shows a static "GGUF" badge instead of VRAM data.
+  // VRAM info for visible models plus any surfaced by a search query, so
+  // filtered recommended models also show VRAM badges. Skip GGUF repos:
+  // no safetensors metadata, and the render layer shows a "GGUF" badge.
   const idsForVram = useMemo(() => {
     const ids = showHfSection
       ? [...new Set([...visibleRecommendedIds, ...filteredRecommendedIds])]
       : visibleRecommendedIds;
-    return ids.filter((id) => !isGgufRepo(id));
-  }, [visibleRecommendedIds, showHfSection, filteredRecommendedIds]);
+    return ids.filter((id) => !isKnownGgufRepo(id));
+  }, [visibleRecommendedIds, showHfSection, filteredRecommendedIds, isKnownGgufRepo]);
   const { paramCountById: recommendedParamCountById } =
     useRecommendedModelVram(idsForVram);
 
@@ -697,9 +1023,95 @@ export function HubModelPicker({
     return results
       .map((result) => result.id)
       .filter((id) => !recommendedSet.has(id))
-      .filter((id) => !chatOnly || isGgufRepo(id))
+      // Shown under Downloaded (kept visible while searching); no duplicate.
+      .filter((id) => !downloadedSet.has(id.toLowerCase()))
+      .filter((id) => !chatOnly || isKnownGgufRepo(id))
       .filter((id) => !/-FP8[-.]|FP8-Dynamic/i.test(id));
-  }, [recommendedSet, results, showHfSection, chatOnly]);
+  }, [recommendedSet, downloadedSet, results, showHfSection, chatOnly, isKnownGgufRepo]);
+
+  const hubOptionKeys = useMemo(() => {
+    const keys: string[] = [];
+
+    if (
+      cachedReady &&
+      !downloadedCollapsed &&
+      (visibleCachedGguf.length > 0 || visibleCachedModelRows.length > 0)
+    ) {
+      keys.push(
+        ...visibleCachedGguf.map((model) =>
+          makeModelOptionKey("downloaded-gguf", model.repo_id),
+        ),
+      );
+      keys.push(
+        ...visibleCachedModelRows.map((model) =>
+          makeModelOptionKey("downloaded-model", model.repo_id),
+        ),
+      );
+    }
+
+    if (showHfSection) {
+      keys.push(
+        ...filteredRecommendedIds.map((id) =>
+          makeModelOptionKey("search-recommended", id),
+        ),
+      );
+      keys.push(...hfIds.map((id) => makeModelOptionKey("search-hf", id)));
+      return keys;
+    }
+
+    if (chatOnly) {
+      keys.push(
+        ...lmStudioModels.map((model) =>
+          makeModelOptionKey("lm-studio", model.id),
+        ),
+      );
+    }
+
+    if (!customFoldersCollapsed) {
+      keys.push(
+        ...customFolderModels.map((model) =>
+          makeModelOptionKey("custom-folder", model.id),
+        ),
+      );
+    }
+
+    if (cachedReady && !recommendedCollapsed) {
+      keys.push(
+        ...visibleRecommendedIds.map((id) =>
+          makeModelOptionKey("recommended", id),
+        ),
+      );
+    }
+
+    return keys;
+  }, [
+    cachedReady,
+    chatOnly,
+    customFolderModels,
+    customFoldersCollapsed,
+    downloadedCollapsed,
+    filteredRecommendedIds,
+    hfIds,
+    lmStudioModels,
+    recommendedCollapsed,
+    showHfSection,
+    visibleCachedGguf,
+    visibleCachedModelRows,
+    visibleRecommendedIds,
+  ]);
+
+  const selectedHubOptionKey = useMemo(
+    () =>
+      value
+        ? hubOptionKeys.find((optionKey) => optionKey.endsWith(`::${value}`))
+        : undefined,
+    [hubOptionKeys, value],
+  );
+  const hubModelList = useRovingModelList({
+    label: "Hub models",
+    optionKeys: hubOptionKeys,
+    selectedOptionKey: selectedHubOptionKey,
+  });
 
   const metricsById = useMemo(
     () =>
@@ -768,9 +1180,8 @@ export function HubModelPicker({
   );
 
   // Sentinel + IntersectionObserver for recommended infinite scroll.
-  // We disconnect after each fire so the observer doesn't loop while
-  // React re-renders; the effect re-creates it on the next page.
-  // Uses a callback ref for the sentinel so we detect mount/unmount reliably.
+  // Disconnect after each fire so it doesn't loop during re-render; the
+  // effect re-creates it next page. Callback ref detects mount/unmount.
   const [recommendedSentinel, setRecommendedSentinel] =
     useState<HTMLDivElement | null>(null);
   const recommendedSentinelRef = useCallback((node: HTMLDivElement | null) => {
@@ -789,7 +1200,7 @@ export function HubModelPicker({
       },
       { threshold: 0, root },
     );
-    // Small delay so the browser finishes layout after the previous page render
+    // Small delay so layout settles after the previous page render.
     const timer = setTimeout(() => obs.observe(recommendedSentinel), 100);
     return () => {
       clearTimeout(timer);
@@ -800,14 +1211,14 @@ export function HubModelPicker({
   /** Handle clicking a model row — GGUF repos expand, others load directly. */
   const handleModelClick = useCallback(
     (id: string) => {
-      if (isGgufRepo(id)) {
+      if (isKnownGgufRepo(id)) {
         // Toggle GGUF variant expander
         setExpandedGguf((prev) => (prev === id ? null : id));
       } else {
         onSelect(id, { source: "hub", isLora: false });
       }
     },
-    [onSelect],
+    [onSelect, isKnownGgufRepo],
   );
 
   return (
@@ -820,82 +1231,137 @@ export function HubModelPicker({
         <Input
           value={query}
           onChange={(event) => setQuery(event.target.value)}
-          placeholder="Search Hugging Face models"
-          className="h-9 pl-8 pr-8"
+          placeholder="Search models"
+          data-model-picker-search-input={true}
+          className="h-9 border-[#f2f2f2] dark:border-input pl-8 pr-8"
         />
         {isLoading && (
           <Spinner className="pointer-events-none absolute right-2.5 top-2.5 size-4 text-muted-foreground" />
         )}
       </div>
 
-      <div ref={scrollRef} className="max-h-64 overflow-y-auto">
-        <div className="p-1">
-          {!cachedReady && !showHfSection ? (
+      <div
+        ref={scrollRef}
+        className="max-h-64 overflow-y-auto"
+        {...hubModelList.listboxProps}
+      >
+        <div className="py-1">
+          {/* First-load spinner only when nothing cached is shown yet. */}
+          {!cachedReady &&
+          !showHfSection &&
+          visibleCachedGguf.length === 0 &&
+          visibleCachedModelRows.length === 0 ? (
             <div className="flex items-center gap-2 px-5 py-3">
               <Spinner className="size-3 text-muted-foreground" />
               <span className="text-xs text-muted-foreground">
                 Loading models…
               </span>
             </div>
-          ) : !showHfSection &&
-            (cachedGguf.length > 0 ||
-              (!chatOnly && cachedModels.length > 0)) ? (
+          ) : null}
+
+          {/* Downloaded stays visible (filtered) while searching. */}
+          {visibleCachedGguf.length > 0 || visibleCachedModelRows.length > 0 ? (
             <>
-              <ListLabel>Downloaded</ListLabel>
-              {cachedGguf.map((c) => (
-                <div key={c.repo_id}>
-                  <ModelRow
-                    label={c.repo_id}
-                    meta={`GGUF · ${formatBytes(c.size_bytes)}`}
-                    selected={value === c.repo_id}
-                    onClick={() => handleModelClick(c.repo_id)}
-                    vramStatus={null}
-                  />
-                  {expandedGguf === c.repo_id && (
-                    <GgufVariantExpander
-                      repoId={c.repo_id}
-                      onSelect={onSelect}
-                      gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
-                      systemRamGb={
-                        gpu.available ? gpu.systemRamAvailableGb : undefined
-                      }
-                      onDeleteVariant={(quant) =>
-                        setDeleteTarget(`${c.repo_id}::${quant}`)
-                      }
-                    />
-                  )}
-                </div>
-              ))}
-              {!chatOnly &&
-                cachedModels.map((c) => (
-                  <div key={c.repo_id} className="flex items-center gap-0.5">
-                    <div className="min-w-0 flex-1">
+              <ListLabel
+                icon={<HugeiconsIcon icon={Download01Icon} className="size-3" />}
+                collapsed={downloadedCollapsed}
+                onToggle={() => setDownloadedCollapsed((v) => !v)}
+              >Downloaded</ListLabel>
+              {!downloadedCollapsed &&
+                visibleCachedGguf.map((c) => {
+                  const optionKey = makeModelOptionKey("downloaded-gguf", c.repo_id);
+                  return (
+                    <div key={c.repo_id}>
                       <ModelRow
                         label={c.repo_id}
-                        meta={formatBytes(c.size_bytes)}
+                        meta={`GGUF · ${formatBytes(c.size_bytes)}`}
                         selected={value === c.repo_id}
+                        optionProps={hubModelList.getOptionProps(
+                          optionKey,
+                          value === c.repo_id,
+                        )}
                         onClick={() =>
-                          onSelect(c.repo_id, {
-                            source: "hub",
-                            isLora: false,
-                            isDownloaded: true,
-                          })
+                          setExpandedGguf((prev) =>
+                            prev === c.repo_id ? null : c.repo_id,
+                          )
+                        }
+                        onArrowDownIntoChildren={
+                          expandedGguf === c.repo_id
+                            ? () => {
+                                const focused = focusFirstChildOption(optionKey);
+                                return focused;
+                              }
+                            : undefined
                         }
                         vramStatus={null}
                       />
+                      {expandedGguf === c.repo_id && (
+                        <GgufVariantExpander
+                          repoId={c.repo_id}
+                          onSelect={onSelect}
+                          parentOptionKey={optionKey}
+                          onNavigatePastStart={() =>
+                            hubModelList.focusOption(optionKey)
+                          }
+                          onNavigatePastEnd={() =>
+                            hubModelList.moveFocus(optionKey, "next")
+                          }
+                          gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
+                          systemRamGb={
+                            gpu.available ? gpu.systemRamAvailableGb : undefined
+                          }
+                          onDeleteVariant={async (quant) => {
+                            await deleteCachedModel(c.repo_id, quant);
+                            refreshCachedLists();
+                          }}
+                        />
+                      )}
                     </div>
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setDeleteTarget(c.repo_id);
-                      }}
-                      className="shrink-0 rounded-md p-1.5 text-muted-foreground/60 transition-colors hover:bg-destructive/10 hover:text-destructive"
-                    >
-                      <Trash2Icon className="size-3.5" />
-                    </button>
-                  </div>
-                ))}
+                  );
+                })}
+              {!downloadedCollapsed &&
+                visibleCachedModelRows.map((c) => {
+                  const optionKey = makeModelOptionKey("downloaded-model", c.repo_id);
+                  return (
+                    <div key={c.repo_id} className="flex items-center gap-0.5">
+                      <div className="min-w-0 flex-1">
+                        <ModelRow
+                          label={c.repo_id}
+                          meta={formatBytes(c.size_bytes)}
+                          selected={value === c.repo_id}
+                          optionProps={hubModelList.getOptionProps(
+                            optionKey,
+                            value === c.repo_id,
+                          )}
+                          onClick={() =>
+                            onSelect(c.repo_id, {
+                              source: "hub",
+                              isLora: false,
+                              isDownloaded: true,
+                            })
+                          }
+                          vramStatus={null}
+                        />
+                      </div>
+                      <ModelDeleteAction
+                        ariaLabel={`Delete ${c.repo_id}`}
+                        title="Delete cached model?"
+                        description={
+                          <>
+                            This will remove{" "}
+                            <span className="font-medium text-foreground">
+                              {c.repo_id}
+                            </span>{" "}
+                            from disk. You can re-download it later.
+                          </>
+                        }
+                        successMessage={`Deleted ${c.repo_id}`}
+                        onConfirm={() => deleteCachedModel(c.repo_id)}
+                        onDeleted={refreshCachedLists}
+                      />
+                    </div>
+                  );
+                })}
             </>
           ) : null}
 
@@ -903,15 +1369,19 @@ export function HubModelPicker({
             <>
               <ListLabel>LM Studio</ListLabel>
               {lmStudioModels.map((m) => {
+                const isGgufFile = m.path.toLowerCase().endsWith(".gguf");
                 const isGguf = isGgufRepo(m.id) || isGgufRepo(m.display_name);
+                const optionKey = makeModelOptionKey("lm-studio", m.id);
                 return (
                   <div key={m.id}>
                     <ModelRow
                       label={m.model_id ?? m.display_name}
-                      meta={
-                        isGguf || m.path.endsWith(".gguf") ? "GGUF" : "Local"
-                      }
+                      meta={isGguf || isGgufFile ? "GGUF" : "Local"}
                       selected={value === m.id}
+                      optionProps={hubModelList.getOptionProps(
+                        optionKey,
+                        value === m.id,
+                      )}
                       onClick={() => {
                         if (isGguf) {
                           setExpandedGguf((prev) =>
@@ -922,15 +1392,31 @@ export function HubModelPicker({
                             source: "local",
                             isLora: false,
                             isDownloaded: true,
+                            isGguf: isGgufFile,
                           });
                         }
                       }}
+                      onArrowDownIntoChildren={
+                        expandedGguf === m.id
+                          ? () => {
+                              const focused = focusFirstChildOption(optionKey);
+                              return focused;
+                            }
+                          : undefined
+                      }
                       vramStatus={null}
                     />
                     {expandedGguf === m.id && (
                       <GgufVariantExpander
                         repoId={m.id}
                         onSelect={onSelect}
+                        parentOptionKey={optionKey}
+                        onNavigatePastStart={() =>
+                          hubModelList.focusOption(optionKey)
+                        }
+                        onNavigatePastEnd={() =>
+                          hubModelList.moveFocus(optionKey, "next")
+                        }
                         gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
                         systemRamGb={
                           gpu.available ? gpu.systemRamAvailableGb : undefined
@@ -945,30 +1431,56 @@ export function HubModelPicker({
 
           {!showHfSection ? (
             <>
-              <div className="flex items-center justify-between px-2.5 py-1.5">
-                <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+              <div className="flex items-center gap-1 px-2.5 py-1.5">
+                <span className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  <HugeiconsIcon icon={Folder02Icon} className="size-3" />
                   Custom Folders
                 </span>
-                <button
-                  type="button"
-                  aria-label={showFolderInput ? "Cancel adding folder" : "Add scan folder"}
-                  onClick={() => {
-                    setShowFolderInput((open) => {
-                      if (open) { setFolderInput(""); setFolderError(null); }
-                      return !open;
-                    });
-                  }}
-                  className="rounded p-0.5 text-muted-foreground/60 transition-colors hover:text-foreground"
-                >
-                  <HugeiconsIcon icon={showFolderInput ? Cancel01Icon : Add01Icon} className="size-3" />
-                </button>
+                <div className="flex items-center gap-0.5">
+                  <button
+                    type="button"
+                    aria-label={showFolderInput ? "Cancel adding folder" : "Add scan folder by path"}
+                    title={showFolderInput ? "Cancel" : "Add by typing a path"}
+                    onClick={() => {
+                      setShowFolderInput((open) => {
+                        if (open) { setFolderInput(""); setFolderError(null); }
+                        return !open;
+                      });
+                    }}
+                    className="shrink-0 rounded p-1 text-muted-foreground/60 transition-colors hover:text-foreground"
+                  >
+                    <HugeiconsIcon icon={showFolderInput ? Cancel01Icon : Add01Icon} className="size-3" />
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="Browse for a folder on the server"
+                    title="Browse folders on the server"
+                    onClick={() => setShowFolderBrowser(true)}
+                    className="shrink-0 rounded p-0.5 text-muted-foreground/60 transition-colors hover:text-foreground"
+                  >
+                    <HugeiconsIcon icon={Search01Icon} className="size-2.5" />
+                  </button>
+                </div>
+                <div className="ml-auto">
+                  <button
+                    type="button"
+                    aria-label={customFoldersCollapsed ? "Expand custom folders" : "Collapse custom folders"}
+                    title={customFoldersCollapsed ? "Expand" : "Collapse"}
+                    onClick={() => setCustomFoldersCollapsed((v) => !v)}
+                    className="shrink-0 rounded p-1 text-muted-foreground/60 transition-colors hover:text-foreground"
+                  >
+                    {customFoldersCollapsed
+                      ? <ChevronRightIcon className="size-3" />
+                      : <ChevronDownIcon className="size-3" />}
+                  </button>
+                </div>
               </div>
 
               {/* Folder paths */}
-              {scanFolders.map((f) => (
+              {!customFoldersCollapsed && scanFolders.map((f) => (
                 <div
                   key={f.id}
-                  className="group flex items-center gap-1.5 px-3 py-0.5"
+                  className="group flex items-center gap-1.5 px-2.5 py-0.5"
                 >
                   <HugeiconsIcon icon={Folder02Icon} className="size-3 shrink-0 text-muted-foreground/40" />
                   <span
@@ -981,15 +1493,38 @@ export function HubModelPicker({
                     type="button"
                     onClick={() => handleRemoveFolder(f.id)}
                     aria-label={`Remove folder ${f.path}`}
-                    className="shrink-0 rounded p-0.5 text-muted-foreground/40 opacity-100 md:opacity-0 md:group-hover:opacity-100 focus-visible:opacity-100 transition-opacity hover:text-destructive"
+                    className="shrink-0 rounded p-1 text-foreground/70 transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:bg-destructive/10 focus-visible:text-destructive"
                   >
-                    <HugeiconsIcon icon={Cancel01Icon} className="size-2.5" />
+                    <HugeiconsIcon icon={Cancel01Icon} className="size-3" />
                   </button>
                 </div>
               ))}
 
+              {/* Recommended folders */}
+              {!customFoldersCollapsed && (() => {
+                const registered = new Set(scanFolders.map((f) => f.path));
+                const unregistered = recommendedFolders.filter((p) => !registered.has(p));
+                if (unregistered.length === 0) return null;
+                return (
+                  <div className="flex flex-wrap gap-1 px-2.5 pb-0.5">
+                    {unregistered.map((p) => (
+                      <button
+                        key={p}
+                        type="button"
+                        onClick={() => void handleAddFolder(p)}
+                        disabled={folderLoading}
+                        title={`Add ${p}`}
+                        className="rounded-full border border-dashed border-border/50 px-2 py-0.5 font-mono text-[10px] text-muted-foreground/70 transition-colors hover:border-foreground/30 hover:bg-accent hover:text-foreground disabled:opacity-40"
+                      >
+                        <span className="text-[11px] font-semibold">+</span> {p.length > 30 ? `...${p.slice(-27)}` : p}
+                      </button>
+                    ))}
+                  </div>
+                );
+              })()}
+
               {/* Add folder input */}
-              {showFolderInput && (
+              {!customFoldersCollapsed && showFolderInput && (
                 <div className="px-2.5 pb-1 pt-0.5">
                   <div className="flex items-center gap-1">
                     <HugeiconsIcon icon={Folder02Icon} className="size-3 shrink-0 text-muted-foreground/40" />
@@ -1007,7 +1542,17 @@ export function HubModelPicker({
                     />
                     <button
                       type="button"
-                      onClick={handleAddFolder}
+                      onClick={() => setShowFolderBrowser(true)}
+                      disabled={folderLoading}
+                      aria-label="Browse for folder"
+                      title="Browse folders on the server"
+                      className="flex h-6 shrink-0 items-center justify-center rounded border border-border/50 px-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"
+                    >
+                      <HugeiconsIcon icon={Search01Icon} className="size-3" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { void handleAddFolder(); }}
                       disabled={folderLoading || !folderInput.trim()}
                       className="h-6 shrink-0 rounded border border-border/50 px-1.5 text-[10px] text-muted-foreground transition-colors hover:bg-accent disabled:opacity-40"
                     >
@@ -1020,31 +1565,50 @@ export function HubModelPicker({
                 </div>
               )}
 
-              {/* Empty state */}
-              {scanFolders.length === 0 && customFolderModels.length === 0 && !showFolderInput && (
-                <button
-                  type="button"
-                  onClick={() => setShowFolderInput(true)}
-                  className="px-2.5 pb-1.5 text-left text-[10px] text-muted-foreground/60 transition-colors hover:text-muted-foreground"
-                >
-                  + Add a folder to scan for local models
-                </button>
-              )}
+              <FolderBrowser
+                open={showFolderBrowser}
+                onOpenChange={setShowFolderBrowser}
+                initialPath={folderInput.trim() || undefined}
+                onSelect={(picked) => {
+                  setFolderInput(picked);
+                  setFolderError(null);
+                  // Pass the path explicitly: `folderInput` state hasn't
+                  // flushed yet when "Use this folder" submits.
+                  void handleAddFolder(picked);
+                }}
+              />
+
 
               {/* Models from custom folders */}
-              {customFolderModels.map((m) => {
+              {!customFoldersCollapsed && customFolderModels.map((m) => {
+                const isGgufFile = m.path.toLowerCase().endsWith(".gguf");
                 const isGguf =
+                  isGgufFile ||
                   isGgufRepo(m.id) ||
-                  isGgufRepo(m.display_name) ||
-                  m.path.endsWith(".gguf");
+                  isGgufRepo(m.display_name);
+                // Single .gguf files (e.g. Ollama blobs) load directly;
+                // GGUF repos/directories expand to pick a variant.
+                const isDirectGguf = isGgufFile;
+                const optionKey = makeModelOptionKey("custom-folder", m.id);
                 return (
                   <div key={m.id}>
                     <ModelRow
                       label={m.model_id ?? m.display_name}
                       meta={isGguf ? "GGUF" : "Local"}
                       selected={value === m.id}
+                      optionProps={hubModelList.getOptionProps(
+                        optionKey,
+                        value === m.id,
+                      )}
                       onClick={() => {
-                        if (isGguf) {
+                        if (isDirectGguf) {
+                          onSelect(m.id, {
+                            source: "local",
+                            isLora: false,
+                            isDownloaded: true,
+                            isGguf: true,
+                          });
+                        } else if (isGguf) {
                           setExpandedGguf((prev) =>
                             prev === m.id ? null : m.id,
                           );
@@ -1056,12 +1620,27 @@ export function HubModelPicker({
                           });
                         }
                       }}
+                      onArrowDownIntoChildren={
+                        expandedGguf === m.id
+                          ? () => {
+                              const focused = focusFirstChildOption(optionKey);
+                              return focused;
+                            }
+                          : undefined
+                      }
                       vramStatus={null}
                     />
                     {expandedGguf === m.id && (
                       <GgufVariantExpander
                         repoId={m.id}
                         onSelect={onSelect}
+                        parentOptionKey={optionKey}
+                        onNavigatePastStart={() =>
+                          hubModelList.focusOption(optionKey)
+                        }
+                        onNavigatePastEnd={() =>
+                          hubModelList.moveFocus(optionKey, "next")
+                        }
                         gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
                         systemRamGb={
                           gpu.available ? gpu.systemRamAvailableGb : undefined
@@ -1076,35 +1655,65 @@ export function HubModelPicker({
 
           {!showHfSection && cachedReady ? (
             <>
-              <ListLabel>Recommended</ListLabel>
-              {visibleRecommendedIds.length === 0 ? (
+              <ListLabel
+                icon={<HugeiconsIcon icon={StarIcon} className="size-3" />}
+                collapsed={recommendedCollapsed}
+                onToggle={() => setRecommendedCollapsed((v) => !v)}
+              >Recommended</ListLabel>
+              {recommendedCollapsed ? null : visibleRecommendedIds.length === 0 ? (
                 <div className="px-2.5 py-2 text-xs text-muted-foreground">
                   No default models.
                 </div>
               ) : (
                 visibleRecommendedIds.map((id) => {
                   const vram = recommendedVramMap.get(id);
+                  const optionKey = makeModelOptionKey("recommended", id);
                   return (
                     <div key={id}>
                       <ModelRow
                         label={id}
                         meta={
-                          isGgufRepo(id)
+                          isKnownGgufRepo(id)
                             ? "GGUF"
                             : (vram?.detail ?? extractParamLabel(id))
                         }
                         selected={value === id}
-                        onClick={() => handleModelClick(id)}
+                        optionProps={hubModelList.getOptionProps(
+                          optionKey,
+                          value === id,
+                        )}
+                        onClick={() => {
+                          if (isKnownGgufRepo(id)) {
+                            setExpandedGguf((prev) => (prev === id ? null : id));
+                          } else {
+                            handleModelClick(id);
+                          }
+                        }}
                         vramStatus={
-                          isGgufRepo(id) ? null : (vram?.status ?? null)
+                          isKnownGgufRepo(id) ? null : (vram?.status ?? null)
                         }
-                        vramEst={isGgufRepo(id) ? undefined : vram?.est}
+                        vramEst={isKnownGgufRepo(id) ? undefined : vram?.est}
                         gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
+                        onArrowDownIntoChildren={
+                          expandedGguf === id
+                            ? () => {
+                                const focused = focusFirstChildOption(optionKey);
+                                return focused;
+                              }
+                            : undefined
+                        }
                       />
                       {expandedGguf === id && (
                         <GgufVariantExpander
                           repoId={id}
                           onSelect={onSelect}
+                          parentOptionKey={optionKey}
+                          onNavigatePastStart={() =>
+                            hubModelList.focusOption(optionKey)
+                          }
+                          onNavigatePastEnd={() =>
+                            hubModelList.moveFocus(optionKey, "next")
+                          }
                           gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
                           systemRamGb={
                             gpu.available ? gpu.systemRamAvailableGb : undefined
@@ -1115,7 +1724,7 @@ export function HubModelPicker({
                   );
                 })
               )}
-              {hasMoreRecommended && (
+              {!recommendedCollapsed && hasMoreRecommended && (
                 <>
                   <div ref={recommendedSentinelRef} className="h-px" />
                   <div className="flex items-center justify-center py-2">
@@ -1128,30 +1737,56 @@ export function HubModelPicker({
 
           {showHfSection && filteredRecommendedIds.length > 0 ? (
             <>
-              <ListLabel>Recommended</ListLabel>
+              <ListLabel icon={<HugeiconsIcon icon={StarIcon} className="size-3" />}>Recommended</ListLabel>
               {filteredRecommendedIds.map((id) => {
                 const vram = recommendedVramMap.get(id);
+                const optionKey = makeModelOptionKey("search-recommended", id);
                 return (
                   <div key={id}>
                     <ModelRow
                       label={id}
                       meta={
-                        isGgufRepo(id)
+                        isKnownGgufRepo(id)
                           ? "GGUF"
                           : (vram?.detail ?? extractParamLabel(id))
                       }
                       selected={value === id}
-                      onClick={() => handleModelClick(id)}
+                      optionProps={hubModelList.getOptionProps(
+                        optionKey,
+                        value === id,
+                      )}
+                      onClick={() => {
+                        if (isKnownGgufRepo(id)) {
+                          setExpandedGguf((prev) => (prev === id ? null : id));
+                        } else {
+                          handleModelClick(id);
+                        }
+                      }}
                       vramStatus={
-                        isGgufRepo(id) ? null : (vram?.status ?? null)
+                        isKnownGgufRepo(id) ? null : (vram?.status ?? null)
                       }
-                      vramEst={isGgufRepo(id) ? undefined : vram?.est}
+                      vramEst={isKnownGgufRepo(id) ? undefined : vram?.est}
                       gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
+                      onArrowDownIntoChildren={
+                        expandedGguf === id
+                          ? () => {
+                              const focused = focusFirstChildOption(optionKey);
+                              return focused;
+                            }
+                          : undefined
+                      }
                     />
                     {expandedGguf === id && (
                       <GgufVariantExpander
                         repoId={id}
                         onSelect={onSelect}
+                        parentOptionKey={optionKey}
+                        onNavigatePastStart={() =>
+                          hubModelList.focusOption(optionKey)
+                        }
+                        onNavigatePastEnd={() =>
+                          hubModelList.moveFocus(optionKey, "next")
+                        }
                         gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
                         systemRamGb={
                           gpu.available ? gpu.systemRamAvailableGb : undefined
@@ -1170,35 +1805,64 @@ export function HubModelPicker({
                 <ListLabel>Hugging Face</ListLabel>
               )}
               {hfIds.length === 0 && !isLoading ? (
-                filteredRecommendedIds.length === 0 ? (
+                filteredRecommendedIds.length === 0 &&
+                visibleCachedGguf.length === 0 &&
+                visibleCachedModelRows.length === 0 ? (
                   <div className="px-2.5 py-2 text-xs text-muted-foreground">
                     No matching models.
                   </div>
                 ) : null
-              ) : (
+                ) : (
                 hfIds.map((id) => {
                   const vram = vramMap.get(id);
+                  const isSearchGguf = isKnownGgufRepo(id);
+                  const optionKey = makeModelOptionKey("search-hf", id);
                   return (
                     <div key={id}>
                       <ModelRow
                         label={id}
                         meta={
-                          isGgufRepo(id)
+                          isSearchGguf
                             ? "GGUF"
                             : (metricsById.get(id) ?? extractParamLabel(id))
                         }
                         selected={value === id}
-                        onClick={() => handleModelClick(id)}
+                        optionProps={hubModelList.getOptionProps(
+                          optionKey,
+                          value === id,
+                        )}
+                        onClick={() => {
+                          if (isSearchGguf) {
+                            setExpandedGguf((prev) => (prev === id ? null : id));
+                          } else {
+                            handleModelClick(id);
+                          }
+                        }}
                         vramStatus={
-                          isGgufRepo(id) ? null : (vram?.status ?? null)
+                          isSearchGguf ? null : (vram?.status ?? null)
                         }
-                        vramEst={isGgufRepo(id) ? undefined : vram?.est}
+                        vramEst={isSearchGguf ? undefined : vram?.est}
                         gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
+                        onArrowDownIntoChildren={
+                          expandedGguf === id
+                            ? () => {
+                                const focused = focusFirstChildOption(optionKey);
+                                return focused;
+                              }
+                            : undefined
+                        }
                       />
                       {expandedGguf === id && (
                         <GgufVariantExpander
                           repoId={id}
                           onSelect={onSelect}
+                          parentOptionKey={optionKey}
+                          onNavigatePastStart={() =>
+                            hubModelList.focusOption(optionKey)
+                          }
+                          onNavigatePastEnd={() =>
+                            hubModelList.moveFocus(optionKey, "next")
+                          }
                           gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
                           systemRamGb={
                             gpu.available ? gpu.systemRamAvailableGb : undefined
@@ -1220,40 +1884,6 @@ export function HubModelPicker({
         </div>
       </div>
 
-      <AlertDialog
-        open={deleteTarget !== null}
-        onOpenChange={(open) => {
-          if (!open && !deleting) setDeleteTarget(null);
-        }}
-      >
-        <AlertDialogContent size="sm">
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete cached model?</AlertDialogTitle>
-            <AlertDialogDescription>
-              This will remove{" "}
-              <span className="font-medium text-foreground">
-                {deleteTarget?.includes("::")
-                  ? `${deleteTarget.split("::")[0]} (${deleteTarget.split("::")[1]})`
-                  : deleteTarget}
-              </span>{" "}
-              from disk. You can re-download it later.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={deleting}>No</AlertDialogCancel>
-            <AlertDialogAction
-              variant="destructive"
-              disabled={deleting}
-              onClick={(e) => {
-                e.preventDefault();
-                handleDeleteConfirm();
-              }}
-            >
-              {deleting ? "Deleting..." : "Yes"}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
     </div>
   );
 }
@@ -1262,10 +1892,14 @@ export function LoraModelPicker({
   loraModels,
   value,
   onSelect,
+  onModelsChange,
+  deleteDisabled = false,
 }: {
   loraModels: LoraModelOption[];
   value?: string;
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
+  onModelsChange?: (deletedModel?: DeletedModelRef) => void;
+  deleteDisabled?: boolean;
 }) {
   const [query, setQuery] = useState("");
   const [expandedGguf, setExpandedGguf] = useState<string | null>(null);
@@ -1320,6 +1954,26 @@ export function LoraModelPicker({
     });
   }, [normalized, query]);
 
+  const loraOptionKeys = useMemo(
+    () =>
+      grouped.flatMap(([, adapters]) =>
+        adapters.map((adapter) => makeModelOptionKey("lora", adapter.id)),
+      ),
+    [grouped],
+  );
+  const selectedLoraOptionKey = useMemo(
+    () =>
+      value
+        ? loraOptionKeys.find((optionKey) => optionKey.endsWith(`::${value}`))
+        : undefined,
+    [loraOptionKeys, value],
+  );
+  const loraModelList = useRovingModelList({
+    label: "Fine-tuned models",
+    optionKeys: loraOptionKeys,
+    selectedOptionKey: selectedLoraOptionKey,
+  });
+
   return (
     <div className="space-y-2">
       <div className="relative">
@@ -1330,16 +1984,17 @@ export function LoraModelPicker({
         <Input
           value={query}
           onChange={(event) => setQuery(event.target.value)}
-          placeholder="Search local adapters"
-          className="h-9 pl-8"
+          placeholder="Search trained models"
+          data-model-picker-search-input={true}
+          className="h-9 border-[#f2f2f2] dark:border-input pl-8"
         />
       </div>
 
-      <div className="max-h-64 overflow-y-auto">
-        <div className="p-1">
+      <div className="max-h-64 overflow-y-auto" {...loraModelList.listboxProps}>
+        <div className="py-1">
           {grouped.length === 0 ? (
             <div className="px-2.5 py-2 text-xs text-muted-foreground">
-              No adapters found.
+              No trained models found.
             </div>
           ) : (
             grouped.map(([baseModel, adapters], index) => (
@@ -1348,18 +2003,25 @@ export function LoraModelPicker({
                 <ListLabel>{baseModel}</ListLabel>
                 {adapters.map((adapter) => {
                   const isLocal = adapter.source === "local";
+                  const isTraining = adapter.source === "training";
                   const isExported = adapter.source === "exported";
                   const isMerged = adapter.exportType === "merged";
                   const isGguf = adapter.exportType === "gguf";
+                  const isExportedGguf = isExported && isGguf;
+                  const canDelete = canDeleteLoraModel(adapter);
+                  const isTrainingFull = isTraining && isMerged;
                   const isLocalGgufDir =
                     isLocal &&
                     (isGgufRepo(adapter.id) || isGgufRepo(adapter.name));
+                  const optionKey = makeModelOptionKey("lora", adapter.id);
                   const tag = isLocal
                     ? isLocalGgufDir
                       ? "GGUF"
                       : "Local"
                     : isGguf
                       ? "GGUF"
+                      : isTrainingFull
+                        ? "Full"
                       : isExported
                         ? isMerged
                           ? "Merged"
@@ -1369,50 +2031,133 @@ export function LoraModelPicker({
                     ? isLocalGgufDir
                       ? "GGUF"
                       : "Local"
+                    : isTrainingFull
+                      ? "Full finetune"
                     : isExported
                       ? `${tag} · Exported`
                       : tag;
                   return (
                     <div key={adapter.id}>
-                      <ModelRow
-                        label={adapter.name}
-                        meta={meta}
-                        selected={value === adapter.id}
-                        onClick={() => {
-                          if (isLocalGgufDir) {
-                            setExpandedGguf((prev) =>
-                              prev === adapter.id ? null : adapter.id,
-                            );
-                          } else {
-                            onSelect(adapter.id, {
-                              source: isLocal
-                                ? "local"
-                                : isExported
-                                  ? "exported"
-                                  : "lora",
-                              isLora: !isLocal && !isMerged && !isGguf,
-                              isDownloaded: true,
-                            });
-                          }
-                        }}
-                        tooltipText={
-                          <>
-                            <span className="block break-words">
-                              {adapter.name}
-                            </span>
-                            <span className="block mt-1 text-[10px] text-muted-foreground break-all">
-                              {adapter.id}
-                            </span>
-                          </>
-                        }
-                      />
+                      <div className="flex items-center gap-0.5">
+                        <div className="min-w-0 flex-1">
+                          <ModelRow
+                            label={adapter.name}
+                            meta={meta}
+                            selected={value === adapter.id}
+                            optionProps={loraModelList.getOptionProps(
+                              optionKey,
+                              value === adapter.id,
+                            )}
+                            onClick={() => {
+                              if (isLocalGgufDir || isExportedGguf) {
+                                setExpandedGguf((prev) =>
+                                  prev === adapter.id ? null : adapter.id,
+                                );
+                              } else {
+                                onSelect(adapter.id, {
+                                  source: isLocal
+                                    ? "local"
+                                    : isExported
+                                      ? "exported"
+                                      : "lora",
+                                  isLora: !isLocal && !isMerged && !isGguf,
+                                  isDownloaded: true,
+                                });
+                              }
+                            }}
+                            tooltipText={
+                              <>
+                                <span className="block break-words">
+                                  {adapter.name}
+                                </span>
+                                <span className="block mt-1 text-[10px] text-muted-foreground break-all">
+                                  {adapter.id}
+                                </span>
+                              </>
+                            }
+                            onArrowDownIntoChildren={
+                              expandedGguf === adapter.id
+                                ? () => {
+                                    const focused = focusFirstChildOption(optionKey);
+                                    return focused;
+                                  }
+                                : undefined
+                            }
+                          />
+                        </div>
+                        {canDelete && (
+                          <ModelDeleteAction
+                            ariaLabel={`Delete ${adapter.name}`}
+                            title="Delete fine-tuned model?"
+                            description={
+                              <>
+                                This will remove{" "}
+                                <span className="font-medium text-foreground">
+                                  {adapter.name}
+                                </span>{" "}
+                                from disk. This cannot be undone.
+                              </>
+                            }
+                            successMessage={`Deleted ${adapter.name}`}
+                            disabled={deleteDisabled}
+                            onConfirm={() =>
+                              deleteFineTunedModel({
+                                modelPath: adapter.id,
+                                source: isExported ? "exported" : "training",
+                                exportType: adapter.exportType,
+                              })
+                            }
+                            onDeleted={() =>
+                              onModelsChange?.({ id: adapter.id })
+                            }
+                          />
+                        )}
+                      </div>
                       {expandedGguf === adapter.id && (
                         <GgufVariantExpander
                           repoId={adapter.id}
                           onSelect={onSelect}
+                          parentOptionKey={optionKey}
+                          onNavigatePastStart={() =>
+                            loraModelList.focusOption(optionKey)
+                          }
+                          onNavigatePastEnd={() =>
+                            loraModelList.moveFocus(optionKey, "next")
+                          }
                           gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
                           systemRamGb={
                             gpu.available ? gpu.systemRamAvailableGb : undefined
+                          }
+                          sourceOverride={isExportedGguf ? "exported" : undefined}
+                          deleteVariantTitle="Delete exported GGUF variant?"
+                          renderDeleteVariantDescription={(quant) => (
+                            <>
+                              This will remove{" "}
+                              <span className="font-medium text-foreground">
+                                {adapter.name} ({quant})
+                              </span>{" "}
+                              from disk. This cannot be undone.
+                            </>
+                          )}
+                          getDeleteVariantSuccessMessage={(quant) =>
+                            `Deleted ${adapter.name} ${quant}`
+                          }
+                          deleteDisabled={deleteDisabled}
+                          onDeleteVariant={
+                            isExportedGguf
+                              ? async (quant) => {
+                                  await deleteFineTunedModel({
+                                    modelPath: adapter.id,
+                                    source: "exported",
+                                    exportType: "gguf",
+                                    ggufVariant: quant,
+                                  });
+                                  onModelsChange?.({
+                                    id: adapter.id,
+                                    ggufVariant: quant,
+                                  });
+                                }
+                              : undefined
                           }
                         />
                       )}
@@ -1424,6 +2169,7 @@ export function LoraModelPicker({
           )}
         </div>
       </div>
+
     </div>
   );
 }

@@ -47,6 +47,7 @@ import { ConfigDialog } from "./dialogs/config-dialog";
 import { ImportDialog } from "./dialogs/import-dialog";
 import { RunDialog } from "./dialogs/preview-dialog";
 import { ProcessorsDialog } from "./dialogs/processors-dialog";
+import { GithubCrawlerEasyView } from "./easy/github-crawler-easy-view";
 import type {
   RecipeExecutionRecord,
   RecipeStudioView,
@@ -77,16 +78,15 @@ const EDGE_TYPES: EdgeTypes = {
 const COMPLETE_ISLAND_VISIBLE_MS = 7_000;
 const TAB_SWITCH_FIT_DELAY_MS = 110;
 /**
- * Maximum RAF iterations to wait for React Flow's ResizeObserver to populate
- * `node.measured` dimensions before calling fitView. ~20 frames ≈ 333 ms at
- * 60 fps — more than enough for the render → layout → ResizeObserver cycle.
+ * Max RAF iterations to wait for React Flow's ResizeObserver to populate
+ * `node.measured` before calling fitView. ~20 frames ≈ 333 ms at 60 fps,
+ * ample for the render → layout → ResizeObserver cycle.
  */
 const MAX_FIT_VIEW_RETRIES = 20;
 /**
- * After all target nodes appear measured, wait this many extra stable frames
- * before firing fitView. This absorbs `updateNodeInternals` calls from
- * InternalsSync and individual node mount effects that can transiently reset
- * measurements.
+ * Extra stable frames to wait after target nodes appear measured before
+ * firing fitView, absorbing `updateNodeInternals` calls from InternalsSync
+ * and node mount effects that can transiently reset measurements.
  */
 const FIT_VIEW_STABLE_FRAMES = 3;
 
@@ -201,7 +201,40 @@ export function RecipeStudioPage({
     null,
   );
   const flowContainerRef = useRef<HTMLDivElement | null>(null);
-  const [activeView, setActiveView] = useState<RecipeStudioView>("editor");
+  const supportsEasyMode =
+    initialPayload?.ui?.seed_source_type === "github_repo" ||
+    (initialPayload?.recipe?.seed_config as { source?: { seed_type?: string } } | undefined)
+      ?.source?.seed_type === "github_repo";
+  const viewModeStorageKey = `recipe-studio:view-mode:${recipeId}`;
+  const [activeView, setActiveViewState] = useState<RecipeStudioView>(() => {
+    if (typeof window !== "undefined") {
+      const stored = window.localStorage.getItem(viewModeStorageKey);
+      if (stored === "easy" && supportsEasyMode) return "easy";
+      if (stored === "editor" || stored === "executions") return stored;
+    }
+    return supportsEasyMode ? "easy" : "editor";
+  });
+  const setActiveView = useCallback(
+    (next: RecipeStudioView | ((prev: RecipeStudioView) => RecipeStudioView)) => {
+      setActiveViewState((prev) => {
+        const resolved = typeof next === "function" ? next(prev) : next;
+        if (typeof window !== "undefined") {
+          window.localStorage.setItem(viewModeStorageKey, resolved);
+        }
+        return resolved;
+      });
+    },
+    [viewModeStorageKey],
+  );
+  // Easy mode has no canvas overlay/progress island, so a started run would
+  // leave the Run button stuck on "Running..." with nothing else changing.
+  // Flip to the Runs pane where progress is rendered. Advanced (editor) keeps
+  // its island and stays put.
+  const handleExecutionStart = useCallback(() => {
+    setActiveView((currentView) =>
+      currentView === "easy" ? "executions" : currentView,
+    );
+  }, [setActiveView]);
   const [processorsOpen, setProcessorsOpen] = useState(false);
   const [interactive, setInteractive] = useState(true);
   const [runtimeIslandMinimized, setRuntimeIslandMinimized] = useState(false);
@@ -326,6 +359,8 @@ export function RecipeStudioPage({
     validateResult,
     cancelExecution,
     loadExecutionDatasetPage,
+    runPreview,
+    runFull,
     copyRecipe,
     importRecipe,
   } = useRecipeStudioActions({
@@ -338,6 +373,7 @@ export function RecipeStudioPage({
     resetRecipe,
     loadRecipe,
     getCurrentPayloadFromStore,
+    onExecutionStart: handleExecutionStart,
   });
   const {
     activeExecution,
@@ -358,6 +394,18 @@ export function RecipeStudioPage({
   const canvasInteractive = interactive && !executionLocked;
   const runBusy = previewLoading || fullLoading || executionLocked;
   const islandExecution = activeExecution ?? recentCompletedExecution;
+
+  // Easy mode uses runFull (artifact persisted, tracked in Runs pane), which
+  // requires a non-empty fullRunName. The Easy form has no run-name input, so
+  // seed a default once Easy is active; user can rename from Advanced/Runs.
+  useEffect(() => {
+    if (!supportsEasyMode) return;
+    if (activeView !== "easy") return;
+    if (fullRunName.trim()) return;
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 16);
+    const base = workflowName.trim() || "Easy run";
+    setFullRunName(`${base} ${stamp}`);
+  }, [supportsEasyMode, activeView, fullRunName, workflowName, setFullRunName]);
 
   const toggleInteractive = useCallback(() => {
     if (executionLocked) {
@@ -477,22 +525,21 @@ export function RecipeStudioPage({
           return;
         }
         if (retries >= MAX_FIT_VIEW_RETRIES) {
-          // Timed out waiting — fit with whatever we have (graceful fallback).
+          // Timed out: fit with whatever we have (graceful fallback).
           doFit();
           return;
         }
         const targets = getFitViewTargetNodes(reactFlowInstance.getNodes());
         if (allTargetsMeasured(targets)) {
           stableCount++;
-          // Wait a few extra frames after measurements appear to let
-          // updateNodeInternals (InternalsSync, node mount effects) settle.
+          // Extra frames after measurements appear let updateNodeInternals
+          // (InternalsSync, node mount effects) settle.
           if (stableCount >= FIT_VIEW_STABLE_FRAMES) {
             doFit();
             return;
           }
         } else {
-          // Measurements were reset (e.g. by updateNodeInternals) — restart
-          // the stability counter.
+          // Measurements reset (e.g. by updateNodeInternals): restart counter.
           stableCount = 0;
         }
         retries++;
@@ -726,7 +773,7 @@ export function RecipeStudioPage({
   }
 
   return (
-    <div className="min-h-screen bg-background">
+    <div className="min-h-[calc(100dvh-var(--studio-titlebar-height,0px))] bg-background">
       <main className="w-full px-6 py-8">
         <div
           className="relative w-full overflow-hidden rounded-2xl corner-squircle border"
@@ -739,6 +786,7 @@ export function RecipeStudioPage({
             savedAtLabel={savedAtLabel}
             workflowName={workflowName}
             warnings={getGraphWarnings(configs, edges)}
+            supportsEasyMode={supportsEasyMode}
             onWorkflowNameChange={setWorkflowName}
             onViewChange={setActiveView}
             onSaveRecipe={() => {
@@ -749,7 +797,24 @@ export function RecipeStudioPage({
             className="h-[75vh] w-full rounded-t-none"
             ref={flowContainerRef}
           >
-            {activeView === "editor" ? (
+            {activeView === "easy" ? (
+              <GithubCrawlerEasyView
+                configs={configs}
+                rows={fullRows}
+                setRows={setFullRows}
+                updateConfig={updateConfig}
+                onRun={() => {
+                  // Easy mode is a full run (artifact persisted, tracked in
+                  // Runs) capped at the user's row count. runFull requires a
+                  // non-empty fullRunName; the effect above populates one on
+                  // mount so runFull's closure is current by click time.
+                  void runFull();
+                }}
+                runLoading={fullLoading || executionLocked}
+                runErrors={runErrors}
+                onSwitchToAdvanced={() => setActiveView("editor")}
+              />
+            ) : activeView === "editor" ? (
               editorContent
             ) : (
               <ExecutionsView

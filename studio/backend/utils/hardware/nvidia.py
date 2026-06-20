@@ -6,6 +6,11 @@ from typing import Any, Optional
 
 from loggers import get_logger
 
+from utils.native_path_leases import child_env_without_native_path_secret
+from utils.subprocess_compat import (
+    windows_hidden_subprocess_kwargs as _windows_hidden_subprocess_kwargs,
+)
+
 logger = get_logger(__name__)
 
 
@@ -20,20 +25,12 @@ def _parse_smi_value(raw: str):
 
 
 def _build_gpu_metrics(
-    vram_used_mb,
-    vram_total_mb,
-    power_draw,
-    power_limit,
-    **extra,
+    vram_used_mb, vram_total_mb, power_draw, power_limit, **extra
 ) -> dict[str, Any]:
     return {
         **extra,
-        "vram_used_gb": round(vram_used_mb / 1024, 2)
-        if vram_used_mb is not None
-        else None,
-        "vram_total_gb": round(vram_total_mb / 1024, 2)
-        if vram_total_mb is not None
-        else None,
+        "vram_used_gb": round(vram_used_mb / 1024, 2) if vram_used_mb is not None else None,
+        "vram_total_gb": round(vram_total_mb / 1024, 2) if vram_total_mb is not None else None,
         "vram_utilization_pct": round((vram_used_mb / vram_total_mb) * 100, 1)
         if vram_used_mb is not None and vram_total_mb and vram_total_mb > 0
         else None,
@@ -45,9 +42,7 @@ def _build_gpu_metrics(
     }
 
 
-def _visible_ordinal_map(
-    parent_visible_ids: Optional[list[int]],
-) -> Optional[dict[int, int]]:
+def _visible_ordinal_map(parent_visible_ids: Optional[list[int]]) -> Optional[dict[int, int]]:
     if parent_visible_ids is None:
         return None
     return {gpu_id: ordinal for ordinal, gpu_id in enumerate(parent_visible_ids)}
@@ -61,6 +56,8 @@ def get_physical_gpu_count() -> Optional[int]:
             capture_output = True,
             text = True,
             timeout = 5,
+            env = child_env_without_native_path_secret(),
+            **_windows_hidden_subprocess_kwargs(),
         )
         if result.returncode == 0 and result.stdout.strip():
             return len(result.stdout.strip().splitlines())
@@ -85,6 +82,8 @@ def get_primary_gpu_utilization() -> dict[str, Any]:
             capture_output = True,
             text = True,
             timeout = 5,
+            env = child_env_without_native_path_secret(),
+            **_windows_hidden_subprocess_kwargs(),
         )
     except (OSError, subprocess.TimeoutExpired) as e:
         logger.warning("nvidia-smi query failed in get_primary_gpu_utilization: %s", e)
@@ -109,12 +108,10 @@ def get_primary_gpu_utilization() -> dict[str, Any]:
 
 
 def get_visible_gpu_utilization(
-    parent_visible_ids: Optional[list[int]],
-    parent_cuda_visible_devices: Optional[str] = None,
+    parent_visible_ids: Optional[list[int]], parent_cuda_visible_devices: Optional[str] = None
 ) -> dict[str, Any]:
-    # When parent_visible_ids is None (UUID/MIG mask), we cannot safely
-    # map nvidia-smi rows to the process's visible devices. Return empty
-    # instead of exposing all physical GPUs.
+    # parent_visible_ids None (UUID/MIG mask): can't map nvidia-smi rows to
+    # visible devices, so return empty rather than exposing all physical GPUs.
     if parent_visible_ids is None:
         return {
             "available": False,
@@ -135,6 +132,8 @@ def get_visible_gpu_utilization(
             capture_output = True,
             text = True,
             timeout = 5,
+            env = child_env_without_native_path_secret(),
+            **_windows_hidden_subprocess_kwargs(),
         )
     except (OSError, subprocess.TimeoutExpired) as e:
         logger.warning("nvidia-smi query failed in get_visible_gpu_utilization: %s", e)
@@ -177,9 +176,7 @@ def get_visible_gpu_utilization(
                 index = idx,
                 index_kind = "physical",
                 visible_ordinal = (
-                    visible_ordinals[idx]
-                    if visible_ordinals is not None
-                    else len(devices)
+                    visible_ordinals[idx] if visible_ordinals is not None else len(devices)
                 ),
                 gpu_utilization_pct = _parse_smi_value(parts[1]),
                 temperature_c = _parse_smi_value(parts[2]),
@@ -196,11 +193,10 @@ def get_visible_gpu_utilization(
 
 
 def get_backend_visible_gpu_info(
-    parent_visible_ids: Optional[list[int]],
-    backend_cuda_visible_devices: Optional[str],
+    parent_visible_ids: Optional[list[int]], backend_cuda_visible_devices: Optional[str]
 ) -> dict[str, Any]:
-    # When parent_visible_ids is None (UUID/MIG mask), we cannot safely
-    # map nvidia-smi rows to the process's visible devices.
+    # parent_visible_ids None (UUID/MIG mask): can't map nvidia-smi rows to
+    # visible devices.
     if parent_visible_ids is None:
         return {
             "available": False,
@@ -220,6 +216,8 @@ def get_backend_visible_gpu_info(
             capture_output = True,
             text = True,
             timeout = 10,
+            env = child_env_without_native_path_secret(),
+            **_windows_hidden_subprocess_kwargs(),
         )
     except (OSError, subprocess.TimeoutExpired) as e:
         logger.warning("nvidia-smi query failed in get_backend_visible_gpu_info: %s", e)
@@ -250,7 +248,7 @@ def get_backend_visible_gpu_info(
             continue
         if visible_ordinals is not None and idx not in visible_ordinals:
             continue
-        # Use split with limit to handle GPU names containing commas
+        # Rejoin in case the GPU name contains commas
         name = parts[1] if len(parts) == 3 else ", ".join(parts[1:-1])
         try:
             mem_total_mb = int(parts[-1])
@@ -261,9 +259,7 @@ def get_backend_visible_gpu_info(
                 "index": idx,
                 "index_kind": "physical",
                 "visible_ordinal": (
-                    visible_ordinals[idx]
-                    if visible_ordinals is not None
-                    else len(devices)
+                    visible_ordinals[idx] if visible_ordinals is not None else len(devices)
                 ),
                 "name": name,
                 "memory_total_gb": round(mem_total_mb / 1024, 2),

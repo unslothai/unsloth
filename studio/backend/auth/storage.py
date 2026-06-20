@@ -1,13 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-SQLite storage for authentication data (user credentials + JWT secret).
-"""
+"""SQLite storage for auth data (user credentials + JWT secret)."""
 
 import hashlib
+import hmac
+import os
 import secrets
 import sqlite3
+import threading
 from datetime import datetime, timezone
 from typing import Optional, Tuple
 
@@ -16,50 +17,63 @@ from utils.paths import auth_db_path, ensure_dir
 DB_PATH = auth_db_path()
 DEFAULT_ADMIN_USERNAME = "unsloth"
 
-# Plaintext bootstrap password file — lives beside auth.db, deleted on
-# first password change so the credential never lingers on disk.
+# Plaintext bootstrap password file beside auth.db, deleted on first password
+# change so the credential never lingers on disk.
 _BOOTSTRAP_PW_PATH = DB_PATH.parent / ".bootstrap_password"
 
-# In-process cache so we don't re-read the file on every HTML serve.
+# In-process cache to avoid re-reading the file on every HTML serve.
 _bootstrap_password: Optional[str] = None
 
 
 def generate_bootstrap_password() -> str:
     """Generate a 4-word diceware passphrase and persist it to disk.
 
-    The passphrase is written to ``_BOOTSTRAP_PW_PATH`` so that it
-    survives server restarts (the DB only stores the *hash*).  On
-    subsequent calls / restarts, the persisted value is returned.
+    Persisted (the DB stores only the hash) so it survives restarts; later
+    calls return the persisted value.
     """
     global _bootstrap_password
 
-    # 1. Already cached in this process?
+    # Cached in this process?
     if _bootstrap_password is not None:
         return _bootstrap_password
 
-    # 2. Already persisted from a previous run?
+    # Persisted from a previous run?
     if _BOOTSTRAP_PW_PATH.is_file():
         _bootstrap_password = _BOOTSTRAP_PW_PATH.read_text().strip()
         if _bootstrap_password:
             return _bootstrap_password
 
-    # 3. First-ever startup — generate a fresh passphrase.
+    # First startup: generate a fresh passphrase.
     import diceware
 
     _bootstrap_password = diceware.get_passphrase(
         options = diceware.handle_options(args = ["-n", "4", "-d", "", "-c"])
     )
 
-    # Persist so the *same* passphrase is used if the server restarts
-    # before the user changes the password.
+    # Persist so the same passphrase survives restarts until password change.
     ensure_dir(_BOOTSTRAP_PW_PATH.parent)
     _BOOTSTRAP_PW_PATH.write_text(_bootstrap_password)
+    try:
+        os.chmod(_BOOTSTRAP_PW_PATH, 0o600)
+    except OSError:
+        pass
 
     return _bootstrap_password
 
 
 def get_bootstrap_password() -> Optional[str]:
     """Return the cached bootstrap password, or None if not yet generated."""
+    return _bootstrap_password
+
+
+def _load_bootstrap_password() -> Optional[str]:
+    """Load an existing bootstrap password without creating one."""
+    global _bootstrap_password
+    _bootstrap_password = None
+    if _BOOTSTRAP_PW_PATH.is_file():
+        bootstrap_password = _BOOTSTRAP_PW_PATH.read_text().strip()
+        if bootstrap_password:
+            _bootstrap_password = bootstrap_password
     return _bootstrap_password
 
 
@@ -72,21 +86,12 @@ def clear_bootstrap_password() -> None:
 
 
 def _hash_token(token: str) -> str:
-    """SHA-256 hash helper used for refresh token storage.
+    """SHA-256 hash helper for refresh token storage.
 
-    Plain SHA-256 is intentional here: refresh tokens are high-entropy
-    random strings from ``secrets.token_urlsafe(48)`` (384 bits of
-    entropy), so a slow KDF (Argon2 / bcrypt / PBKDF2) provides zero
-    additional security — no attacker can brute-force 2^384 regardless
-    of hash speed — while adding tens of ms of CPU to every refresh.
-    See the OWASP Password Storage Cheat Sheet on fast-vs-slow hashing
-    of high-entropy inputs.
-
-    API keys use the separate ``_pbkdf2_api_key`` helper below, which
-    runs PBKDF2-HMAC-SHA256 with a persistent server-side salt — not
-    for cryptographic reasons (128-bit random tokens don't need slow
-    hashing), but because CodeQL's ``py/weak-sensitive-data-hashing``
-    query mislabels API keys as passwords and demands a KDF.
+    Plain SHA-256 is intentional: refresh tokens are 384-bit random strings, so
+    a slow KDF adds no security while costing per-refresh latency. API keys use
+    the separate ``_pbkdf2_api_key`` helper, only to satisfy CodeQL's
+    ``py/weak-sensitive-data-hashing`` query, not for crypto reasons.
     """
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
@@ -114,7 +119,8 @@ def get_connection() -> sqlite3.Connection:
             id INTEGER PRIMARY KEY,
             token_hash TEXT NOT NULL,
             username TEXT NOT NULL,
-            expires_at TEXT NOT NULL
+            expires_at TEXT NOT NULL,
+            is_desktop INTEGER NOT NULL DEFAULT 0
         );
         """
     )
@@ -129,10 +135,14 @@ def get_connection() -> sqlite3.Connection:
             created_at TEXT NOT NULL,
             last_used_at TEXT,
             expires_at TEXT,
-            is_active  INTEGER NOT NULL DEFAULT 1
+            is_active  INTEGER NOT NULL DEFAULT 1,
+            is_internal INTEGER NOT NULL DEFAULT 0
         );
         """
     )
+    api_key_columns = {row["name"] for row in conn.execute("PRAGMA table_info(api_keys)")}
+    if "is_internal" not in api_key_columns:
+        conn.execute("ALTER TABLE api_keys ADD COLUMN is_internal INTEGER NOT NULL DEFAULT 0")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS app_secrets (
@@ -146,28 +156,28 @@ def get_connection() -> sqlite3.Connection:
         conn.execute(
             "ALTER TABLE auth_user ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0"
         )
+    refresh_columns = {row["name"] for row in conn.execute("PRAGMA table_info(refresh_tokens)")}
+    if "is_desktop" not in refresh_columns:
+        conn.execute("ALTER TABLE refresh_tokens ADD COLUMN is_desktop INTEGER NOT NULL DEFAULT 0")
     conn.commit()
     return conn
 
 
 # ── API-key PBKDF2 salt ────────────────────────────────────────────────
 #
-# Module-level cache for the persistent API-key PBKDF2 salt. Populated
-# lazily on first use via ``_get_or_create_api_key_pbkdf2_salt``. Not
-# protected by a lock because (a) the ``INSERT OR IGNORE`` provides
-# atomicity at the SQLite layer and (b) concurrent populations converge
-# on the same value, so the worst case is a harmless duplicate read on
-# startup.
+# Module-level cache for the persistent API-key PBKDF2 salt, populated lazily
+# via ``_get_or_create_api_key_pbkdf2_salt``. No lock needed: (a) ``INSERT OR
+# IGNORE`` is atomic at the SQLite layer and (b) concurrent populations
+# converge on the same value, so the worst case is a harmless duplicate read
+# on startup.
 _api_key_pbkdf2_salt_cache: Optional[bytes] = None
 
 
 def _get_or_create_api_key_pbkdf2_salt() -> bytes:
     """Return the persistent API-key PBKDF2 salt, generating it once if missing.
 
-    Stored as a hex-encoded 32-byte random value in the ``app_secrets``
-    table under key ``"api_key_pbkdf2_salt"``. Regenerated only if the row
-    is missing (i.e. fresh install, or operator manually deleted the row
-    and accepts invalidating existing API keys).
+    Hex-encoded 32-byte random value in ``app_secrets``. Regenerated only when
+    the row is missing (fresh install, or operator deleted it).
     """
     global _api_key_pbkdf2_salt_cache
     if _api_key_pbkdf2_salt_cache is not None:
@@ -201,27 +211,18 @@ def _get_or_create_api_key_pbkdf2_salt() -> bytes:
 
 
 _API_KEY_PBKDF2_ITERATIONS = 100_000
+DESKTOP_SECRET_PREFIX = "desktop-"
+_DESKTOP_SECRET_HASH_KEY = "desktop_secret_hash"
+_DESKTOP_SECRET_CREATED_AT_KEY = "desktop_secret_created_at"
 
 
 def _pbkdf2_api_key(raw_key: str) -> str:
     """PBKDF2-HMAC-SHA256 an API key with a persistent server-side salt.
 
-    Used for API-key storage ONLY, not refresh tokens. Matches the
-    PBKDF2 algorithm + iteration count used by the password hasher in
-    ``auth/hashing.py`` so the codebase is consistent on which KDF it
-    uses for credential storage.
-
-    Notes on why a slow KDF here is *only* a CodeQL appeasement and
-    *not* a cryptographic requirement: API keys are cryptographically
-    random 128-bit tokens (via ``secrets.token_hex``), so brute force
-    against 2^128 is infeasible regardless of hash speed. CodeQL's
-    ``py/weak-sensitive-data-hashing`` query mislabels these tokens as
-    "password" sensitive data and then demands a KDF from its
-    allowlist (Argon2 / scrypt / bcrypt / PBKDF2). Per the query's
-    own recommendation page we use PBKDF2. The persistent salt is
-    still loaded from ``app_secrets`` so an attacker dumping the
-    ``api_keys`` table alone cannot derive hashes for candidate
-    tokens without also obtaining the salt row.
+    For API-key storage ONLY, not refresh tokens. The slow KDF is only to
+    appease CodeQL's ``py/weak-sensitive-data-hashing`` query, not a crypto
+    requirement (API keys are random 128-bit tokens). The salt lives in
+    ``app_secrets`` so dumping ``api_keys`` alone can't derive hashes.
     """
     salt = _get_or_create_api_key_pbkdf2_salt()
     dk = hashlib.pbkdf2_hmac(
@@ -231,6 +232,33 @@ def _pbkdf2_api_key(raw_key: str) -> str:
         _API_KEY_PBKDF2_ITERATIONS,
     )
     return dk.hex()
+
+
+def _pbkdf2_desktop_secret(raw_secret: str) -> str:
+    return _pbkdf2_api_key(raw_secret)
+
+
+# Memoize the deterministic raw-key -> PBKDF2-hash derivation so the 100k-round
+# KDF runs once per key instead of on every authenticated request. Keyed by a
+# salted HMAC of the key (not the key itself); revocation/expiry are still
+# enforced by the SQLite read on every call, so a cache hit only skips the KDF.
+# Only keys present in the DB are cached, so unknown-key spam can't grow it.
+_api_key_hash_cache: dict[str, str] = {}
+_API_KEY_HASH_CACHE_MAX = 4096
+_api_key_hash_cache_lock = threading.Lock()
+
+
+def _api_key_cache_id(raw_key: str) -> str:
+    """Cache id for a raw key: salted HMAC-SHA256 (not the key itself)."""
+    return hmac.new(
+        _get_or_create_api_key_pbkdf2_salt(), raw_key.encode("utf-8"), hashlib.sha256
+    ).hexdigest()
+
+
+def _reset_api_key_hash_cache() -> None:
+    """Drop memoized derivations (tests / salt change)."""
+    with _api_key_hash_cache_lock:
+        _api_key_hash_cache.clear()
 
 
 def is_initialized() -> bool:
@@ -374,6 +402,10 @@ def ensure_default_admin() -> bool:
     Uses a randomly generated diceware passphrase as the bootstrap password.
     Returns True when the default admin was created in this call.
     """
+    if get_user_and_secret(DEFAULT_ADMIN_USERNAME) is not None:
+        _load_bootstrap_password()
+        return False
+
     bootstrap_pw = generate_bootstrap_password()
     try:
         create_initial_user(
@@ -406,12 +438,19 @@ def update_password(username: str, new_password: str) -> bool:
         conn.commit()
         if cursor.rowcount > 0:
             clear_bootstrap_password()
+            clear_desktop_secret()
         return cursor.rowcount > 0
     finally:
         conn.close()
 
 
-def save_refresh_token(token: str, username: str, expires_at: str) -> None:
+def save_refresh_token(
+    token: str,
+    username: str,
+    expires_at: str,
+    *,
+    is_desktop: bool = False,
+) -> None:
     """
     Store a hashed refresh token with its associated username and expiry.
     """
@@ -420,27 +459,58 @@ def save_refresh_token(token: str, username: str, expires_at: str) -> None:
     try:
         conn.execute(
             """
-            INSERT INTO refresh_tokens (token_hash, username, expires_at)
-            VALUES (?, ?, ?)
+            INSERT INTO refresh_tokens (token_hash, username, expires_at, is_desktop)
+            VALUES (?, ?, ?, ?)
             """,
-            (token_hash, username, expires_at),
+            (token_hash, username, expires_at, int(is_desktop)),
         )
         conn.commit()
     finally:
         conn.close()
 
 
-def verify_refresh_token(token: str) -> Optional[str]:
-    """
-    Verify a refresh token and return the username.
+def consume_refresh_token(token: str) -> Optional[Tuple[str, bool]]:
+    """Atomically validate-and-delete a refresh token for single-use rotation.
 
-    Returns the username if valid and not expired, None otherwise.
+    DELETE RETURNING fuses validate and delete into one statement so two
+    concurrent refresh requests cannot both consume the same token.
+    """
+    token_hash = _hash_token(token)
+    now = datetime.now(timezone.utc).isoformat()
+    conn = get_connection()
+    try:
+        conn.execute(
+            "DELETE FROM refresh_tokens WHERE expires_at < ?",
+            (now,),
+        )
+        cur = conn.execute(
+            """
+            DELETE FROM refresh_tokens
+            WHERE token_hash = ? AND expires_at >= ?
+            RETURNING username, is_desktop
+            """,
+            (token_hash, now),
+        )
+        row = cur.fetchone()
+        conn.commit()
+        if row is None:
+            return None
+        return row["username"], bool(row["is_desktop"])
+    finally:
+        conn.close()
+
+
+def verify_refresh_token(token: str) -> Optional[Tuple[str, bool]]:
+    """
+    Verify a refresh token and return the username plus desktop marker.
+
+    Returns the username and desktop marker if valid and not expired, None otherwise.
     The token is NOT consumed — it stays valid until it expires.
     """
     token_hash = _hash_token(token)
     conn = get_connection()
     try:
-        # Clean up any expired tokens while we're here
+        # Opportunistically clean up expired tokens
         conn.execute(
             "DELETE FROM refresh_tokens WHERE expires_at < ?",
             (datetime.now(timezone.utc).isoformat(),),
@@ -449,7 +519,7 @@ def verify_refresh_token(token: str) -> Optional[str]:
 
         cur = conn.execute(
             """
-            SELECT id, username, expires_at FROM refresh_tokens
+            SELECT id, username, expires_at, is_desktop FROM refresh_tokens
             WHERE token_hash = ?
             """,
             (token_hash,),
@@ -465,7 +535,7 @@ def verify_refresh_token(token: str) -> Optional[str]:
             conn.commit()
             return None
 
-        return row["username"]
+        return row["username"], bool(row["is_desktop"])
     finally:
         conn.close()
 
@@ -475,6 +545,65 @@ def revoke_user_refresh_tokens(username: str) -> None:
     conn = get_connection()
     try:
         conn.execute("DELETE FROM refresh_tokens WHERE username = ?", (username,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def create_desktop_secret() -> str:
+    """Create/rotate the local desktop credential and return it once."""
+    ensure_default_admin()
+    raw_secret = DESKTOP_SECRET_PREFIX + secrets.token_urlsafe(48)
+    secret_hash = _pbkdf2_desktop_secret(raw_secret)
+    now = datetime.now(timezone.utc).isoformat()
+    conn = get_connection()
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO app_secrets (key, value) VALUES (?, ?)",
+            (_DESKTOP_SECRET_HASH_KEY, secret_hash),
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO app_secrets (key, value) VALUES (?, ?)",
+            (_DESKTOP_SECRET_CREATED_AT_KEY, now),
+        )
+        conn.commit()
+        return raw_secret
+    finally:
+        conn.close()
+
+
+def validate_desktop_secret(raw_secret: str) -> Optional[str]:
+    """Return the real admin username when the desktop secret matches."""
+    if not raw_secret.startswith(DESKTOP_SECRET_PREFIX):
+        return None
+    if get_user_and_secret(DEFAULT_ADMIN_USERNAME) is None:
+        return None
+
+    secret_hash = _pbkdf2_desktop_secret(raw_secret)
+    conn = get_connection()
+    try:
+        cur = conn.execute(
+            "SELECT value FROM app_secrets WHERE key = ?",
+            (_DESKTOP_SECRET_HASH_KEY,),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return None
+        if not secrets.compare_digest(row["value"], secret_hash):
+            return None
+        return DEFAULT_ADMIN_USERNAME
+    finally:
+        conn.close()
+
+
+def clear_desktop_secret() -> None:
+    """Remove backend-side desktop auth state."""
+    conn = get_connection()
+    try:
+        conn.execute(
+            "DELETE FROM app_secrets WHERE key IN (?, ?)",
+            (_DESKTOP_SECRET_HASH_KEY, _DESKTOP_SECRET_CREATED_AT_KEY),
+        )
         conn.commit()
     finally:
         conn.close()
@@ -491,11 +620,15 @@ def create_api_key(
     username: str,
     name: str,
     expires_at: Optional[str] = None,
+    internal: bool = False,
 ) -> Tuple[str, dict]:
     """Create a new API key for *username*.
 
     Returns ``(raw_key, row_dict)`` where *raw_key* is shown to the user
-    exactly once.  The database only stores the SHA-256 hash.
+    exactly once.  The database only stores the PBKDF2 hash.
+
+    Pass ``internal=True`` for keys minted by workflows (e.g. data-recipe
+    runs) that should not appear in user-facing key listings.
     """
     raw_key = API_KEY_PREFIX + secrets.token_hex(16)
     key_hash = _pbkdf2_api_key(raw_key)
@@ -506,10 +639,18 @@ def create_api_key(
     try:
         conn.execute(
             """
-            INSERT INTO api_keys (username, key_prefix, key_hash, name, created_at, expires_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO api_keys (username, key_prefix, key_hash, name, created_at, expires_at, is_internal)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (username, key_prefix, key_hash, name, now, expires_at),
+            (
+                username,
+                key_prefix,
+                key_hash,
+                name,
+                now,
+                expires_at,
+                1 if internal else 0,
+            ),
         )
         conn.commit()
         cur = conn.execute("SELECT * FROM api_keys WHERE key_hash = ?", (key_hash,))
@@ -519,19 +660,33 @@ def create_api_key(
         conn.close()
 
 
-def list_api_keys(username: str) -> list:
-    """Return all API keys for *username* (never exposes ``key_hash``)."""
+def list_api_keys(username: str, include_internal: bool = False) -> list:
+    """Return API keys for *username*. Internal workflow keys are hidden
+    by default so they do not clutter user-facing UIs."""
     conn = get_connection()
     try:
-        cur = conn.execute(
-            """
-            SELECT id, username, key_prefix, name, created_at, last_used_at, expires_at, is_active
-            FROM api_keys
-            WHERE username = ?
-            ORDER BY created_at DESC
-            """,
-            (username,),
-        )
+        if include_internal:
+            cur = conn.execute(
+                """
+                SELECT id, username, key_prefix, name, created_at, last_used_at,
+                       expires_at, is_active, is_internal
+                FROM api_keys
+                WHERE username = ?
+                ORDER BY created_at DESC
+                """,
+                (username,),
+            )
+        else:
+            cur = conn.execute(
+                """
+                SELECT id, username, key_prefix, name, created_at, last_used_at,
+                       expires_at, is_active, is_internal
+                FROM api_keys
+                WHERE username = ? AND is_internal = 0
+                ORDER BY created_at DESC
+                """,
+                (username,),
+            )
         return [dict(row) for row in cur.fetchall()]
     finally:
         conn.close()
@@ -551,12 +706,32 @@ def revoke_api_key(username: str, key_id: int) -> bool:
         conn.close()
 
 
+def revoke_internal_api_key(key_id: int) -> bool:
+    """Revoke an internal workflow-minted key without requiring a username.
+
+    Used by the recipe runner to retire its sk-unsloth-* key once the job
+    terminates, shrinking the window a leaked key could be abused.
+    """
+    conn = get_connection()
+    try:
+        cursor = conn.execute(
+            "UPDATE api_keys SET is_active = 0 WHERE id = ? AND is_internal = 1",
+            (key_id,),
+        )
+        conn.commit()
+        return cursor.rowcount > 0
+    finally:
+        conn.close()
+
+
 def validate_api_key(raw_key: str) -> Optional[str]:
     """Validate *raw_key* and return the owning username, or ``None``.
 
     Also updates ``last_used_at`` on success.
     """
-    key_hash = _pbkdf2_api_key(raw_key)
+    cache_id = _api_key_cache_id(raw_key)
+    cached_hash = _api_key_hash_cache.get(cache_id)
+    key_hash = cached_hash if cached_hash is not None else _pbkdf2_api_key(raw_key)
     conn = get_connection()
     try:
         cur = conn.execute(
@@ -566,6 +741,12 @@ def validate_api_key(raw_key: str) -> Optional[str]:
         row = cur.fetchone()
         if row is None:
             return None
+        # Real key: memoize so later requests skip the KDF. Bounded; clear on overflow.
+        if cached_hash is None:
+            with _api_key_hash_cache_lock:
+                if len(_api_key_hash_cache) >= _API_KEY_HASH_CACHE_MAX:
+                    _api_key_hash_cache.clear()
+                _api_key_hash_cache[cache_id] = key_hash
         if not row["is_active"]:
             return None
         if row["expires_at"] is not None:

@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-Path utilities for model and dataset handling
-"""
+"""Path utilities for model and dataset handling."""
 
 from .path_utils import (
     normalize_path,
@@ -25,6 +23,11 @@ from .storage_roots import (
     auth_root,
     auth_db_path,
     studio_db_path,
+    rag_root,
+    rag_db_path,
+    rag_uploads_root,
+    documents_root,
+    project_workspaces_root,
     tmp_root,
     seed_uploads_root,
     unstructured_seed_cache_root,
@@ -34,14 +37,21 @@ from .storage_roots import (
     legacy_hf_cache_dir,
     hf_default_cache_dir,
     lmstudio_model_dirs,
+    well_known_model_dirs,
     ensure_dir,
     ensure_studio_directories,
     resolve_under_root,
+    default_run_dir_name,
     resolve_output_dir,
     resolve_export_dir,
+    resolve_export_write_dir,
     resolve_tensorboard_dir,
     resolve_dataset_path,
 )
+
+# Re-export shim: mark project-path helpers as used so the import-hoist
+# safety net does not flag them as unused.
+_REEXPORTED = (documents_root, project_workspaces_root, resolve_export_write_dir)
 
 __all__ = [
     "normalize_path",
@@ -61,6 +71,11 @@ __all__ = [
     "auth_root",
     "auth_db_path",
     "studio_db_path",
+    "rag_root",
+    "rag_db_path",
+    "rag_uploads_root",
+    "documents_root",
+    "project_workspaces_root",
     "tmp_root",
     "seed_uploads_root",
     "unstructured_seed_cache_root",
@@ -70,11 +85,17 @@ __all__ = [
     "legacy_hf_cache_dir",
     "hf_default_cache_dir",
     "lmstudio_model_dirs",
+    "well_known_model_dirs",
     "ensure_dir",
     "ensure_studio_directories",
     "resolve_under_root",
+    "default_run_dir_name",
     "resolve_output_dir",
     "resolve_export_dir",
+    "resolve_export_write_dir",
     "resolve_tensorboard_dir",
     "resolve_dataset_path",
 ]
+
+# Bind the re-exports so the import-hoist verifier counts them as used.
+_ = (rag_root, rag_db_path, rag_uploads_root)

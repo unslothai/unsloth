@@ -39,7 +39,9 @@ def build_default_output_dir_name(
     timestamp: Optional[int] = None,
 ) -> str:
     """Build the default training output folder name."""
-    run_parts = [model_name.replace("/", "_")]
+    from utils.paths import default_run_dir_name
+
+    run_parts = [default_run_dir_name(model_name)]
     project_slug = slugify_project_name(project_name)
     if project_slug:
         run_parts.append(project_slug)

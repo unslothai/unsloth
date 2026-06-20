@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { authFetch } from "@/features/auth";
 import { useEffect, useState } from "react";
 
 export interface GpuInfo {
@@ -27,7 +28,7 @@ async function fetchGpuOnce(): Promise<GpuInfo> {
 
   fetchPromise = (async () => {
     try {
-      const res = await fetch("/api/system");
+      const res = await authFetch("/api/system");
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       const gpuData = data?.gpu;
@@ -53,10 +54,8 @@ async function fetchGpuOnce(): Promise<GpuInfo> {
 }
 
 /**
- * Fetch GPU info from the backend /api/system endpoint.
- *
- * The result is cached at module level -- only one network request is made
- * regardless of how many components call this hook.
+ * Fetch GPU info from /api/system. Cached at module level, so only one request
+ * is made no matter how many components call this hook.
  */
 export function useGpuInfo(): GpuInfo {
   const [gpu, setGpu] = useState<GpuInfo>(cachedGpu ?? DEFAULT_GPU);

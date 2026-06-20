@@ -1,63 +1,325 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { toast } from "@/lib/toast";
 import { create } from "zustand";
-import { toast } from "sonner";
+import { cancelStagedModelDownload } from "@/features/hub";
 import {
-  DEFAULT_INFERENCE_PARAMS,
+  type ChatPresetSource,
+  type Preset,
+  getPresetSource,
+} from "../presets/preset-policy";
+import {
   type ChatLoraSummary,
   type ChatModelSummary,
+  DEFAULT_INFERENCE_PARAMS,
   type InferenceParams,
 } from "../types/runtime";
+import { isExternalModelId, parseExternalModelId } from "../external-providers";
+import { getExternalMaxOutputTokens } from "../provider-capabilities";
+import { useExternalProvidersStore } from "./external-providers-store";
+import {
+  loadChatSettingsWithLegacyImport,
+  savePersistedChatSettingsPatch,
+} from "../utils/chat-settings-storage";
 
-const AUTO_TITLE_KEY = "unsloth_chat_auto_title";
-const AUTO_HEAL_TOOL_CALLS_KEY = "unsloth_auto_heal_tool_calls";
-const MAX_TOOL_CALLS_KEY = "unsloth_max_tool_calls_per_message";
-const TOOL_CALL_TIMEOUT_KEY = "unsloth_tool_call_timeout";
 const HF_TOKEN_KEY = "unsloth_hf_token";
-const INFERENCE_PARAMS_KEY = "unsloth_chat_inference_params";
-let hasShownInferencePersistenceWarning = false;
+const HF_TOKEN_CHANGED_EVENT = "unsloth:hf-token-changed";
+export const CHAT_REASONING_ENABLED_KEY = "unsloth_chat_reasoning_enabled";
+export const CHAT_TOOLS_ENABLED_KEY = "unsloth_chat_tools_enabled";
+export const CHAT_CODE_TOOLS_ENABLED_KEY = "unsloth_chat_code_tools_enabled";
+export const CHAT_IMAGE_TOOLS_ENABLED_KEY = "unsloth_chat_image_tools_enabled";
+export const CHAT_ARTIFACTS_ENABLED_KEY = "unsloth_chat_artifacts_enabled";
+export const CHAT_COLLAPSE_HTML_ARTIFACTS_KEY =
+  "unsloth_chat_collapse_html_artifacts";
+export const CHAT_ALLOW_ARTIFACT_NETWORK_ACCESS_KEY =
+  "unsloth_chat_allow_artifact_network_access";
+export const CHAT_MCP_ENABLED_KEY = "unsloth_chat_mcp_enabled";
+export const CHAT_CONFIRM_TOOL_CALLS_KEY = "unsloth_chat_confirm_tool_calls";
+export const CHAT_LOAD_ON_SELECTION_KEY = "unsloth_chat_load_on_selection";
+export const CHAT_BYPASS_PERMISSIONS_KEY = "unsloth_chat_bypass_permissions";
+export const CHAT_WEB_FETCH_TOOLS_ENABLED_KEY =
+  "unsloth_chat_web_fetch_tools_enabled";
+export const CHAT_RAG_SOURCE_KEY = "unsloth_chat_rag_source";
+export const CHAT_RAG_MODE_KEY = "unsloth_chat_rag_mode";
+export const CHAT_RAG_TOP_K_KEY = "unsloth_chat_rag_top_k";
+export const CHAT_RAG_AUTOINJECT_KEY = "unsloth_chat_rag_autoinject";
+export const CHAT_RAG_AUTOINJECT_MIN_SCORE_KEY =
+  "unsloth_chat_rag_autoinject_min_score";
+export const CHAT_SPECULATIVE_TYPE_KEY = "unsloth_chat_speculative_type";
+
+// Persist only the model-agnostic intents (auto/ngram/off). MTP modes
+// (mtp/mtp+ngram) and spec_draft_n_max stay session-only: a persisted MTP
+// choice would silently no-op on models without an MTP head. Unknown -> auto.
+const PERSISTED_SPEC_MODES = new Set(["auto", "ngram", "off"]);
+
+export type RagSource =
+  | { type: "thread" }
+  | { type: "kb"; kbId: string };
+
+export type RagMode = "hybrid" | "lexical" | "dense";
+
+export const DEFAULT_RAG_SOURCE: RagSource = { type: "thread" };
+export const DEFAULT_RAG_MODE: RagMode = "hybrid";
+export const DEFAULT_RAG_TOP_K = 5;
+// `auto` forces retrieval for smaller models (<=9B); `on`/`off` force it.
+export type RagAutoInject = "auto" | "on" | "off";
+export const DEFAULT_RAG_AUTOINJECT: RagAutoInject = "auto";
+export const DEFAULT_RAG_AUTOINJECT_MIN_SCORE = 0.7;
+
+function loadRagSource(): RagSource {
+  if (typeof window === "undefined") return DEFAULT_RAG_SOURCE;
+  try {
+    const raw = window.localStorage.getItem(CHAT_RAG_SOURCE_KEY);
+    if (!raw) return DEFAULT_RAG_SOURCE;
+    const parsed = JSON.parse(raw) as RagSource;
+    if (parsed?.type === "kb" && typeof parsed.kbId === "string") {
+      return { type: "kb", kbId: parsed.kbId };
+    }
+    if (parsed?.type === "thread") return { type: "thread" };
+    return DEFAULT_RAG_SOURCE;
+  } catch {
+    return DEFAULT_RAG_SOURCE;
+  }
+}
+
+function saveRagSource(value: RagSource): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(CHAT_RAG_SOURCE_KEY, JSON.stringify(value));
+  } catch {
+    // Ignore storage failures; the default RAG source still works for this session.
+  }
+}
+
+function loadRagMode(): RagMode {
+  const raw = loadString(CHAT_RAG_MODE_KEY, DEFAULT_RAG_MODE);
+  return raw === "lexical" || raw === "dense" ? raw : "hybrid";
+}
+
+function loadRagAutoInject(): RagAutoInject {
+  const raw = loadString(CHAT_RAG_AUTOINJECT_KEY, DEFAULT_RAG_AUTOINJECT);
+  if (raw === "auto" || raw === "on" || raw === "off") return raw;
+  // Legacy boolean migration: false -> Off, else Auto.
+  return raw === "false" ? "off" : "auto";
+}
+
+function loadRagTopK(): number {
+  if (typeof window === "undefined") return DEFAULT_RAG_TOP_K;
+  try {
+    const raw = window.localStorage.getItem(CHAT_RAG_TOP_K_KEY);
+    if (raw === null) return DEFAULT_RAG_TOP_K;
+    const parsed = Number.parseInt(raw, 10);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_RAG_TOP_K;
+  } catch {
+    return DEFAULT_RAG_TOP_K;
+  }
+}
+
+// Preserves a stored 0 (score floors can legitimately be 0).
+function loadRagNumber(
+  key: string,
+  fallback: number,
+  { min, max, integer = false }: { min: number; max: number; integer?: boolean },
+): number {
+  if (typeof window === "undefined") return fallback;
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (raw === null) return fallback;
+    const parsed = integer ? Number.parseInt(raw, 10) : Number.parseFloat(raw);
+    if (!Number.isFinite(parsed)) return fallback;
+    return Math.min(max, Math.max(min, parsed));
+  } catch {
+    return fallback;
+  }
+}
+
+// External provider selection is encoded into `params.checkpoint` as
+// `external::<providerId>::<modelId>`. PersistedChatSettings omits `checkpoint`
+// because the local-model side is mirrored by the backend's
+// /api/inference/status.active_model. External selections have no such mirror,
+// so without explicit localStorage persistence here the user's external pick
+// is reset to the default on every refresh.
+const LAST_EXTERNAL_CHECKPOINT_KEY = "unsloth_chat_last_external_checkpoint";
+
+function loadLastExternalCheckpoint(): string | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const value = window.localStorage.getItem(LAST_EXTERNAL_CHECKPOINT_KEY);
+    return isExternalModelId(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveLastExternalCheckpoint(value: string | null): void {
+  if (typeof window === "undefined") return;
+  try {
+    if (value && isExternalModelId(value)) {
+      window.localStorage.setItem(LAST_EXTERNAL_CHECKPOINT_KEY, value);
+    } else {
+      // Clear on switch to a local/empty checkpoint so the next refresh
+      // won't override the now-active local selection.
+      window.localStorage.removeItem(LAST_EXTERNAL_CHECKPOINT_KEY);
+    }
+  } catch {
+    // Storage quota / private-mode failures are non-fatal; selection just
+    // won't survive the refresh.
+  }
+}
+
+// "enable_thinking_effort" is a hybrid: an on/off gate (enable_thinking) plus an
+// effort level among a discrete set (e.g. GLM-5.2's high|max). It reuses the
+// reasoning_effort dropdown UI but, unlike gpt-oss, can be fully disabled.
+export type ReasoningStyle =
+  | "enable_thinking"
+  | "reasoning_effort"
+  | "enable_thinking_effort";
+/** One live DiffusionGemma denoising snapshot: the current canvas text at a
+ *  given step of a given block (block/step are 0-based; total = steps in block). */
+export type DiffusionCanvasFrame = {
+  block: number;
+  step: number;
+  total: number;
+  text: string;
+};
+export type PendingImageEditReference = {
+  threadId: string | null;
+  openaiImageGenerationCallId: string;
+  openaiResponseId?: string;
+  openaiReasoningItem?: unknown;
+};
+export type ReasoningEffort =
+  | "none"
+  | "minimal"
+  | "low"
+  | "medium"
+  | "high"
+  | "max"
+  | "xhigh";
+
+let hasShownSettingsPersistenceWarning = false;
+let customPresetsMutationVersion = 0;
+let activePresetMutationVersion = 0;
+let activePresetSourceMutationVersion = 0;
+let settingsHydrationPromise: Promise<void> | null = null;
+
+function warnSettingsPersistenceFailure(): void {
+  if (hasShownSettingsPersistenceWarning) {
+    return;
+  }
+  hasShownSettingsPersistenceWarning = true;
+  toast.warning("Chat settings could not be persisted", {
+    description: "Your changes apply now, but may reset after refresh.",
+  });
+}
+
+// Coalesce setting writes into one pendingPatch (deep merge for nested keys),
+// flush on a trailing-edge debounce and on beforeunload so a pending patch
+// survives tab close. Slider drags produce one HTTP write per quiet window.
+type SettingsPatch = Parameters<typeof savePersistedChatSettingsPatch>[0];
+
+const SETTINGS_DEBOUNCE_MS = 400;
+let pendingPatch: SettingsPatch = {};
+let pendingTimer: ReturnType<typeof setTimeout> | null = null;
+let inflightFlush: Promise<void> = Promise.resolve();
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function mergePatch(into: SettingsPatch, more: SettingsPatch): void {
+  for (const [key, value] of Object.entries(more)) {
+    const intoAny = into as Record<string, unknown>;
+    const prev = intoAny[key];
+    if (isPlainObject(prev) && isPlainObject(value)) {
+      intoAny[key] = { ...prev, ...value };
+    } else {
+      intoAny[key] = value;
+    }
+  }
+}
+
+async function flushSettingsPatch(keepalive = false): Promise<void> {
+  if (Object.keys(pendingPatch).length === 0) return;
+  const patch = pendingPatch;
+  pendingPatch = {};
+  try {
+    await savePersistedChatSettingsPatch(patch, { keepalive });
+  } catch {
+    const retryPatch: SettingsPatch = {};
+    mergePatch(retryPatch, patch);
+    mergePatch(retryPatch, pendingPatch);
+    pendingPatch = retryPatch;
+    warnSettingsPersistenceFailure();
+  }
+}
+
+function saveSettingsPatch(patch: SettingsPatch): void {
+  mergePatch(pendingPatch, patch);
+  if (pendingTimer !== null) clearTimeout(pendingTimer);
+  pendingTimer = setTimeout(() => {
+    pendingTimer = null;
+    inflightFlush = inflightFlush
+      .catch(() => undefined)
+      .then(() => flushSettingsPatch());
+  }, SETTINGS_DEBOUNCE_MS);
+}
+
+// Best-effort flush of any pending patch on tab close. keepalive lets the PUT
+// outlive the unload; without it the browser cancels the fetch and the user's
+// last slider drag is dropped.
+if (typeof window !== "undefined") {
+  window.addEventListener("beforeunload", () => {
+    if (pendingTimer !== null) clearTimeout(pendingTimer);
+    if (Object.keys(pendingPatch).length === 0) return;
+    inflightFlush = inflightFlush
+      .catch(() => undefined)
+      .then(() => flushSettingsPatch(true));
+  });
+}
 
 function canUseStorage(): boolean {
   return typeof window !== "undefined";
 }
 
 function loadBool(key: string, fallback: boolean): boolean {
-  if (!canUseStorage()) return fallback;
+  const raw = loadOptionalBool(key);
+  return raw ?? fallback;
+}
+
+export function loadOptionalBool(key: string): boolean | null {
+  if (!canUseStorage()) return null;
   try {
     const raw = localStorage.getItem(key);
-    if (raw === null) return fallback;
+    if (raw === null) return null;
     return raw === "true";
   } catch {
-    return fallback;
+    return null;
   }
+}
+
+/**
+ * Resolve the web-search / code-execution pill state to apply when a model
+ * loads. Honors the user's persisted preference so a tool-capable model never
+ * re-enables a pill the user turned off; falls back to the model's capability
+ * only when no preference has been expressed.
+ */
+export function resolveToolsEnabledOnLoad(supportsTools: boolean): {
+  toolsEnabled: boolean;
+  codeToolsEnabled: boolean;
+} {
+  if (!supportsTools) return { toolsEnabled: false, codeToolsEnabled: false };
+  return {
+    toolsEnabled: loadOptionalBool(CHAT_TOOLS_ENABLED_KEY) ?? true,
+    codeToolsEnabled: loadOptionalBool(CHAT_CODE_TOOLS_ENABLED_KEY) ?? true,
+  };
 }
 
 function saveBool(key: string, value: boolean): void {
   if (!canUseStorage()) return;
   try {
     localStorage.setItem(key, value ? "true" : "false");
-  } catch {
-    // ignore
-  }
-}
-
-function loadInt(key: string, fallback: number): number {
-  if (!canUseStorage()) return fallback;
-  try {
-    const raw = localStorage.getItem(key);
-    if (raw === null) return fallback;
-    const parsed = parseInt(raw, 10);
-    return Number.isNaN(parsed) ? fallback : parsed;
-  } catch {
-    return fallback;
-  }
-}
-
-function saveInt(key: string, value: number): void {
-  if (!canUseStorage()) return;
-  try {
-    localStorage.setItem(key, String(value));
   } catch {
     // ignore
   }
@@ -81,71 +343,126 @@ function saveString(key: string, value: string): void {
   }
 }
 
-function asFiniteNumber(value: unknown, fallback: number): number {
-  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+// Canonicalises any backend value onto the Speculative Decoding dropdown's
+// modes ("auto"/"mtp"/"ngram"/"mtp+ngram"/"off"/null). Backend-only
+// legacy aliases map to their closest UI mode.
+export function normalizeSpeculativeType(
+  v: string | null | undefined,
+): string | null {
+  if (v == null) return null;
+  const s = String(v).trim().toLowerCase();
+  if (!s) return null;
+  if (s === "auto" || s === "default") return "auto";
+  if (s === "off") return "off";
+  if (s === "mtp" || s === "draft-mtp") return "mtp";
+  if (s === "ngram" || s === "ngram-mod" || s === "ngram-simple") {
+    return "ngram";
+  }
+  if (s === "mtp+ngram") return "mtp+ngram";
+  // Comma-chained legacy values (e.g. from older backend echoes).
+  const parts = s.split(",").map((p) => p.trim()).filter(Boolean);
+  const hasMtp = parts.some((p) => p === "mtp" || p === "draft-mtp");
+  const hasNgram = parts.some(
+    (p) => p === "ngram" || p === "ngram-mod" || p === "ngram-simple",
+  );
+  if (hasMtp && hasNgram) return "mtp+ngram";
+  if (hasMtp) return "mtp";
+  if (hasNgram) return "ngram";
+  // Unknown -> safe fallback to Auto so the dropdown stays controlled.
+  return "auto";
 }
 
-function asString(value: unknown, fallback: string): string {
-  return typeof value === "string" ? value : fallback;
+export function resolveLoadedSpeculativeSettings(response: {
+  speculative_type?: string | null;
+  spec_draft_n_max?: number | null;
+}): {
+  speculativeType: string | null;
+  loadedSpeculativeType: string | null;
+  specDraftNMax: number | null;
+  loadedSpecDraftNMax: number | null;
+} {
+  const loadedSpeculativeType = normalizeSpeculativeType(
+    response.speculative_type,
+  );
+  const loadedSpecDraftNMax = response.spec_draft_n_max ?? null;
+  return {
+    speculativeType: loadedSpeculativeType,
+    loadedSpeculativeType,
+    specDraftNMax: loadedSpecDraftNMax,
+    loadedSpecDraftNMax,
+  };
 }
 
-function asBoolean(value: unknown, fallback: boolean): boolean {
-  return typeof value === "boolean" ? value : fallback;
+// The user's standing preference, sanitized to the universal set.
+export function readPersistedSpeculativeType(): string {
+  const raw = loadString(CHAT_SPECULATIVE_TYPE_KEY, "auto");
+  return PERSISTED_SPEC_MODES.has(raw) ? raw : "auto";
 }
 
-function loadInferenceParams(): InferenceParams {
-  if (!canUseStorage()) return DEFAULT_INFERENCE_PARAMS;
-  try {
-    const raw = localStorage.getItem(INFERENCE_PARAMS_KEY);
-    if (!raw) return DEFAULT_INFERENCE_PARAMS;
-    const parsed = JSON.parse(raw) as Partial<InferenceParams>;
-    return {
-      temperature: asFiniteNumber(parsed.temperature, DEFAULT_INFERENCE_PARAMS.temperature),
-      topP: asFiniteNumber(parsed.topP, DEFAULT_INFERENCE_PARAMS.topP),
-      topK: asFiniteNumber(parsed.topK, DEFAULT_INFERENCE_PARAMS.topK),
-      minP: asFiniteNumber(parsed.minP, DEFAULT_INFERENCE_PARAMS.minP),
-      repetitionPenalty: asFiniteNumber(
-        parsed.repetitionPenalty,
-        DEFAULT_INFERENCE_PARAMS.repetitionPenalty,
-      ),
-      presencePenalty: asFiniteNumber(
-        parsed.presencePenalty,
-        DEFAULT_INFERENCE_PARAMS.presencePenalty,
-      ),
-      maxSeqLength: asFiniteNumber(
-        parsed.maxSeqLength,
-        DEFAULT_INFERENCE_PARAMS.maxSeqLength,
-      ),
-      maxTokens: asFiniteNumber(parsed.maxTokens, DEFAULT_INFERENCE_PARAMS.maxTokens),
-      systemPrompt: asString(parsed.systemPrompt, DEFAULT_INFERENCE_PARAMS.systemPrompt),
-      checkpoint: DEFAULT_INFERENCE_PARAMS.checkpoint,
-      trustRemoteCode: asBoolean(
-        parsed.trustRemoteCode,
-        DEFAULT_INFERENCE_PARAMS.trustRemoteCode ?? false,
-      ),
-    };
-  } catch {
-    return DEFAULT_INFERENCE_PARAMS;
+// MTP / null / unknown values are left unwritten so they stay session-only.
+// Called from the load path so only an applied preference is persisted, not an
+// unapplied dropdown edit the user might Reset or abandon before Apply.
+export function saveSpeculativeType(value: string | null): void {
+  if (value && PERSISTED_SPEC_MODES.has(value)) {
+    saveString(CHAT_SPECULATIVE_TYPE_KEY, value);
   }
 }
 
-function saveInferenceParams(params: InferenceParams): boolean {
-  if (!canUseStorage()) return false;
+function notifyHfTokenChanged(value: string): void {
+  if (!canUseStorage()) return;
   try {
-    const { checkpoint, ...rest } = params;
-    void checkpoint;
-    localStorage.setItem(INFERENCE_PARAMS_KEY, JSON.stringify(rest));
-    return true;
+    window.dispatchEvent(new CustomEvent(HF_TOKEN_CHANGED_EVENT, { detail: value }));
   } catch {
-    return false;
+    // ignore
   }
+}
+
+/** A local model staged for a deferred load (see `pendingSelection`). Shape is
+ *  a subset of the load hook's `SelectedModelInput`, structurally assignable. */
+export type PendingModelSelection = {
+  id: string;
+  isLora?: boolean;
+  ggufVariant?: string;
+  isDownloaded?: boolean;
+  expectedBytes?: number;
+  /** Native (drag-drop / picked-from-disk) GGUF: the path token used to read
+   *  the header and to load. Absent for HF-repo models. */
+  nativePathToken?: string;
+  /** Direct local .gguf file (custom folder / LM Studio): a GGUF source even
+   *  though it carries neither an HF variant nor a native path token. */
+  isGguf?: boolean;
+  /** Native context length read from the GGUF header once the file is local.
+   *  Scoped here (not the shared `ggufContextLength`) so a staged model's
+   *  metadata never pollutes the currently-loaded model's context display. */
+  contextLength?: number | null;
+};
+
+/** A pick is a GGUF (HF variant, native file, or a direct local .gguf) and so
+ *  has pre-load options worth staging. Works on a selection or a staged pick. */
+export function hasGgufSource(x: {
+  ggufVariant?: string;
+  nativePathToken?: string;
+  isGguf?: boolean;
+}): boolean {
+  return (
+    x.ggufVariant != null || x.nativePathToken != null || x.isGguf === true
+  );
+}
+
+export function isPendingGguf(pending: PendingModelSelection | null): boolean {
+  return pending != null && hasGgufSource(pending);
 }
 
 type ChatRuntimeStore = {
+  settingsHydrated: boolean;
   params: InferenceParams;
+  customPresets: Preset[];
+  activePreset: string;
+  activePresetSource: ChatPresetSource;
   models: ChatModelSummary[];
   loras: ChatLoraSummary[];
   runningByThreadId: Record<string, boolean>;
+  cancelByThreadId: Record<string, () => void>;
   autoTitle: boolean;
   hfToken: string;
   modelsError: string | null;
@@ -157,9 +474,97 @@ type ChatRuntimeStore = {
   supportsReasoning: boolean;
   reasoningAlwaysOn: boolean;
   reasoningEnabled: boolean;
+  /**
+   * The model id the OpenRouter router picked for the most recent stream when
+   * the active checkpoint is the openrouter/free meta-model. Updated when a
+   * chunk's `model` field differs from the requested id; cleared on a
+   * non-OpenRouter model. UI display only (appended after `openrouter/free:`).
+   */
+  lastOpenRouterChosenModel: string | null;
+  reasoningStyle: ReasoningStyle;
+  reasoningEffort: ReasoningEffort;
+  supportsReasoningOff: boolean;
+  reasoningEffortLevels: readonly ReasoningEffort[];
+  supportsPreserveThinking: boolean;
+  preserveThinking: boolean;
   supportsTools: boolean;
+  /**
+   * Whether the active external provider exposes a server-side web_search tool
+   * (OpenAI's /v1/responses today). Distinct from `supportsTools` (the local
+   * tool runtime): this only enables the composer's Search pill for external
+   * models. Local models keep `supportsTools` only.
+   */
+  supportsBuiltinWebSearch: boolean;
+  /**
+   * Whether the active external provider exposes a server-side code-execution
+   * tool (Anthropic's `code_execution_20250825` on Claude 4.x). Distinct from
+   * `supportsTools` like supportsBuiltinWebSearch: Anthropic dispatches it
+   * server-side. Read by both composers' Code pill gate.
+   */
+  supportsBuiltinCodeExecution: boolean;
+  /**
+   * Whether the active external provider exposes a server-side image-generation
+   * tool (OpenAI's Responses-API `image_generation`). Gates the composer's
+   * Images pill. Local models never receive it (their runtime can't dispatch it).
+   */
+  supportsBuiltinImageGeneration: boolean;
+  /**
+   * Whether the active external provider exposes a server-side web_fetch tool
+   * (Anthropic's `web_fetch_20250910` / `web_fetch_20260209`). Gates the
+   * composer's Fetch pill, independent of Search.
+   */
+  supportsBuiltinWebFetch: boolean;
   toolsEnabled: boolean;
   codeToolsEnabled: boolean;
+  imageToolsEnabled: boolean;
+  artifactsEnabled: boolean;
+  collapseHtmlArtifacts: boolean;
+  allowArtifactNetworkAccess: boolean;
+  mcpEnabledForChat: boolean;
+  ragEnabled: boolean;
+  ragSource: RagSource;
+  ragMode: RagMode;
+  ragTopK: number;
+  // autoInject = forced first-pass retrieval before answering.
+  ragAutoInject: RagAutoInject;
+  ragAutoInjectMinScore: number;
+  /**
+   * When on, local Studio tool calls pause for an explicit allow/deny in the
+   * chat before they run.
+   */
+  confirmToolCalls: boolean;
+  /**
+   * Bypass Permissions: when on, tool calls run with no confirmation gate
+   * AND the python/terminal execution sandbox is disabled on the backend
+   * (secrets are still stripped). Takes precedence over confirmToolCalls.
+   */
+  bypassPermissions: boolean;
+  /** Whether the "Enable Bypass Permissions?" warning dialog is open. Lifted out
+   *  of the composer menu so confirming/cancelling it doesn't leave the menu frozen. */
+  bypassConfirmOpen: boolean;
+  /**
+   * Per-chat set of tool names the user chose to auto-approve via "Always
+   * allow". Keyed by UI confirmation scope, not necessarily the backend
+   * sandbox session id. Not persisted across reloads.
+   */
+  alwaysAllowToolsBySession: Map<string, Set<string>>;
+  /**
+   * Tool calls currently paused awaiting the user's allow/deny decision,
+   * keyed by the scoped frontend tool-call id. Each entry carries the backend
+   * ``approvalId`` to echo back and the ``sessionId`` the generation runs
+   * under, so the confirmation always resolves the exact pending call. The
+   * ``autoAllowKey`` scopes the UI-only "Always allow" bucket per chat.
+   * Only backend-gated local tool calls are added here.
+   */
+  toolConfirmations: Record<
+    string,
+    { approvalId: string; sessionId: string; autoAllowKey: string }
+  >;
+  /**
+   * Fetch pill state, independent of `toolsEnabled` (Search). Only
+   * consulted when `providerSupportsBuiltinWebFetch` is true.
+   */
+  webFetchToolsEnabled: boolean;
   toolStatus: string | null;
   generatingStatus: string | null;
   autoHealToolCalls: boolean;
@@ -169,54 +574,378 @@ type ChatRuntimeStore = {
   loadedKvCacheDtype: string | null;
   speculativeType: string | null;
   loadedSpeculativeType: string | null;
+  /**
+   * Why MTP was disabled on the loaded model despite being requested, or null.
+   * Mirrors InferenceStatusResponse.spec_fallback_reason.
+   */
+  specFallbackReason: string | null;
+  /** User --spec-draft-n-max override (null = platform default). */
+  specDraftNMax: number | null;
+  loadedSpecDraftNMax: number | null;
+  /** Tensor-parallel split (--split-mode tensor) toggle, GGUF multi-GPU only. */
+  tensorParallel: boolean;
+  /** Backend-reported tensor-parallel state; null until first hydrated. */
+  loadedTensorParallel: boolean | null;
+  /** Persisted: when false, picking a local model stages it as
+   *  `pendingSelection` (and opens settings) instead of loading immediately,
+   *  so load settings can be set before the single load. */
+  loadOnSelection: boolean;
+  /** A local model picked while `loadOnSelection` is off: staged, not loaded.
+   *  The settings sheet shows its load knobs and a Load button. */
+  pendingSelection: PendingModelSelection | null;
+  loadedIsMultimodal: boolean;
+  /** Active model is a block-diffusion model (DiffusionGemma): drives the
+   *  denoising-canvas artifact auto-render. */
+  loadedIsDiffusion: boolean;
+  /** Live denoising frame for the in-progress diffusion message. Transient: set
+   *  per step, cleared when the run ends, never persisted into the transcript. */
+  activeDiffusionCanvas: DiffusionCanvasFrame | null;
   customContextLength: number | null;
   defaultChatTemplate: string | null;
   chatTemplateOverride: string | null;
+  loadedChatTemplateOverride: string | null;
   activeThreadId: string | null;
+  activeProjectId: string | null;
+  /**
+   * Temporary / incognito chat toggle. When on, the active conversation
+   * lives only in assistant-ui's in-memory repository and is never
+   * persisted to studio.db -- so it stays out of history and vanishes on
+   * reload. Deliberately ephemeral: NOT mirrored to localStorage or the
+   * backend settings, so a refresh always exits incognito.
+   */
+  incognito: boolean;
+  settingsPanelOpen: boolean;
+  editingMessageId: string | null;
   pendingAudioBase64: string | null;
   pendingAudioName: string | null;
+  pendingImageEditReference: PendingImageEditReference | null;
   contextUsage: {
     promptTokens: number;
     completionTokens: number;
     totalTokens: number;
     cachedTokens: number;
+    // Anthropic-only; optional so pre-cache-stats persisted entries load.
+    cacheWriteTokens?: number;
   } | null;
   modelLoading: boolean;
+  activeNativePathToken: string | null;
+  hydratePersistedSettings: () => Promise<void>;
   setModelLoading: (loading: boolean) => void;
   setModelRequiresTrustRemoteCode: (required: boolean) => void;
   setParams: (params: InferenceParams) => void;
+  setCustomPresets: (presets: Preset[]) => void;
+  setActivePreset: (name: string) => void;
+  setActivePresetSource: (source: ChatPresetSource) => void;
   setModels: (models: ChatModelSummary[]) => void;
   setLoras: (loras: ChatLoraSummary[]) => void;
   setThreadRunning: (threadId: string, running: boolean) => void;
+  registerThreadCancel: (threadId: string, cancel: () => void) => void;
+  clearThreadCancel: (threadId: string) => void;
   setAutoTitle: (enabled: boolean) => void;
   setHfToken: (token: string) => void;
   setModelsError: (error: string | null) => void;
   setCheckpoint: (modelId: string, ggufVariant?: string | null) => void;
   setActiveThreadId: (threadId: string | null) => void;
+  setActiveProjectId: (projectId: string | null) => void;
+  setIncognito: (incognito: boolean) => void;
+  setSettingsPanelOpen: (open: boolean) => void;
+  setEditingMessageId: (id: string | null) => void;
   clearCheckpoint: () => void;
-  setReasoningEnabled: (enabled: boolean) => void;
-  setToolsEnabled: (enabled: boolean) => void;
+  setReasoningEnabled: (
+    enabled: boolean,
+    options?: { persist?: boolean },
+  ) => void;
+  setLastOpenRouterChosenModel: (chosen: string | null) => void;
+  setReasoningStyle: (style: ReasoningStyle) => void;
+  setReasoningEffort: (effort: ReasoningEffort) => void;
+  setPreserveThinking: (value: boolean) => void;
+  setToolsEnabled: (enabled: boolean, options?: { persist?: boolean }) => void;
   setCodeToolsEnabled: (enabled: boolean) => void;
+  setImageToolsEnabled: (enabled: boolean) => void;
+  setArtifactsEnabled: (
+    enabled: boolean,
+    options?: { persist?: boolean },
+  ) => void;
+  setCollapseHtmlArtifacts: (enabled: boolean) => void;
+  setAllowArtifactNetworkAccess: (enabled: boolean) => void;
+  setMcpEnabledForChat: (enabled: boolean) => void;
+  setConfirmToolCalls: (enabled: boolean) => void;
+  setBypassPermissions: (enabled: boolean) => void;
+  setBypassConfirmOpen: (open: boolean) => void;
+  allowToolAlways: (sessionId: string, toolName: string) => void;
+  setToolConfirmation: (
+    toolCallId: string,
+    approvalId: string,
+    sessionId: string,
+    autoAllowKey: string,
+  ) => void;
+  clearToolConfirmation: (toolCallId: string) => void;
+  setWebFetchToolsEnabled: (enabled: boolean) => void;
+  setRagEnabled: (enabled: boolean) => void;
+  setRagSource: (source: RagSource) => void;
+  setRagMode: (mode: RagMode) => void;
+  setRagTopK: (topK: number) => void;
+  setRagAutoInject: (value: RagAutoInject) => void;
+  setRagAutoInjectMinScore: (score: number) => void;
   setToolStatus: (status: string | null) => void;
   setGeneratingStatus: (status: string | null) => void;
+  setActiveDiffusionCanvas: (canvas: DiffusionCanvasFrame | null) => void;
   setAutoHealToolCalls: (enabled: boolean) => void;
   setMaxToolCallsPerMessage: (value: number) => void;
   setToolCallTimeout: (value: number) => void;
   setKvCacheDtype: (dtype: string | null) => void;
   setSpeculativeType: (type: string | null) => void;
+  setSpecDraftNMax: (value: number | null) => void;
+  /** Revert the editable load knobs to the loaded model's baseline (or defaults
+   *  when nothing is loaded). Used by the settings-sheet Reset button and to
+   *  start each deferred-staging session clean so one staged pick's settings
+   *  don't leak onto the next. */
+  resetModelSettingsToLoaded: () => void;
+  setTensorParallel: (value: boolean) => void;
+  setLoadOnSelection: (value: boolean) => void;
+  setPendingSelection: (selection: PendingModelSelection | null) => void;
+  /** Stage a pick for a deferred load: revert knobs to the loaded baseline,
+   *  record the selection, and open the settings sheet. */
+  stageModel: (selection: PendingModelSelection) => void;
+  /** Abandon a staged pick without loading: revert the knobs to the loaded
+   *  baseline and clear the pending selection. */
+  abandonStagedModel: () => void;
   setCustomContextLength: (v: number | null) => void;
   setChatTemplateOverride: (template: string | null) => void;
   setPendingAudio: (base64: string, name: string) => void;
   clearPendingAudio: () => void;
+  setPendingImageEditReference: (
+    reference: PendingImageEditReference | null,
+  ) => void;
+  clearPendingImageEditReference: () => void;
   setContextUsage: (usage: ChatRuntimeStore["contextUsage"]) => void;
 };
 
-export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
-  params: loadInferenceParams(),
+type PersistedChatSettings = Awaited<
+  ReturnType<typeof loadChatSettingsWithLegacyImport>
+>;
+type PersistedInferenceParams = NonNullable<
+  PersistedChatSettings["inferenceParams"]
+>;
+type PersistedInferenceParamKey = keyof PersistedInferenceParams;
+type ScalarSettingKey =
+  | "autoTitle"
+  | "reasoningEffort"
+  | "preserveThinking"
+  | "collapseHtmlArtifacts"
+  | "allowArtifactNetworkAccess"
+  | "autoHealToolCalls"
+  | "maxToolCallsPerMessage"
+  | "toolCallTimeout";
+
+type PresetHydrationVersions = {
+  customPresets: number;
+  activePreset: number;
+  activePresetSource: number;
+};
+
+type SettingsHydrationVersions = {
+  inferenceParams: Record<PersistedInferenceParamKey, number>;
+  scalarSettings: Record<ScalarSettingKey, number>;
+  presets: PresetHydrationVersions;
+};
+
+const PERSISTED_INFERENCE_PARAM_KEYS = [
+  "temperature",
+  "topP",
+  "topK",
+  "minP",
+  "repetitionPenalty",
+  "presencePenalty",
+  "maxSeqLength",
+  "maxTokens",
+  "systemPrompt",
+  "trustRemoteCode",
+  "fastMode",
+] as const satisfies readonly PersistedInferenceParamKey[];
+
+const SCALAR_SETTING_KEYS = [
+  "autoTitle",
+  "reasoningEffort",
+  "preserveThinking",
+  "collapseHtmlArtifacts",
+  "allowArtifactNetworkAccess",
+  "autoHealToolCalls",
+  "maxToolCallsPerMessage",
+  "toolCallTimeout",
+] as const satisfies readonly ScalarSettingKey[];
+
+const inferenceParamMutationVersions = Object.fromEntries(
+  PERSISTED_INFERENCE_PARAM_KEYS.map((key) => [key, 0]),
+) as Record<PersistedInferenceParamKey, number>;
+const scalarSettingMutationVersions = Object.fromEntries(
+  SCALAR_SETTING_KEYS.map((key) => [key, 0]),
+) as Record<ScalarSettingKey, number>;
+
+function hasKeys(value: object): boolean {
+  return Object.keys(value).length > 0;
+}
+
+function getSettingsHydrationVersions(): SettingsHydrationVersions {
+  return {
+    inferenceParams: { ...inferenceParamMutationVersions },
+    scalarSettings: { ...scalarSettingMutationVersions },
+    presets: {
+      customPresets: customPresetsMutationVersion,
+      activePreset: activePresetMutationVersion,
+      activePresetSource: activePresetSourceMutationVersion,
+    },
+  };
+}
+
+function setInferenceParam(
+  params: InferenceParams,
+  key: PersistedInferenceParamKey,
+  value: PersistedInferenceParams[PersistedInferenceParamKey],
+): void {
+  (params as Record<PersistedInferenceParamKey, unknown>)[key] = value;
+}
+
+function getChangedInferenceParams(
+  nextParams: InferenceParams,
+  currentParams: InferenceParams,
+): PersistedInferenceParams {
+  const changedParams: PersistedInferenceParams = {};
+  for (const key of PERSISTED_INFERENCE_PARAM_KEYS) {
+    const nextValue = nextParams[key];
+    if (Object.is(nextValue, currentParams[key])) {
+      continue;
+    }
+    inferenceParamMutationVersions[key] += 1;
+    if (nextValue !== undefined) {
+      setInferenceParam(changedParams as InferenceParams, key, nextValue);
+    }
+  }
+  return changedParams;
+}
+
+function getHydratedCustomPresets(
+  settings: PersistedChatSettings,
+  state: ChatRuntimeStore,
+): Preset[] {
+  return (
+    settings.customPresets?.map((preset) => ({
+      name: preset.name,
+      params: {
+        ...DEFAULT_INFERENCE_PARAMS,
+        ...preset.params,
+      },
+    })) ?? state.customPresets
+  );
+}
+
+function getHydratedPresetState(
+  settings: PersistedChatSettings,
+  state: ChatRuntimeStore,
+  versions: PresetHydrationVersions,
+): Partial<
+  Pick<
+    ChatRuntimeStore,
+    "customPresets" | "activePreset" | "activePresetSource"
+  >
+> {
+  const nextState: Partial<
+    Pick<
+      ChatRuntimeStore,
+      "customPresets" | "activePreset" | "activePresetSource"
+    >
+  > = {};
+  if (customPresetsMutationVersion === versions.customPresets) {
+    nextState.customPresets = getHydratedCustomPresets(settings, state);
+  }
+  if (activePresetMutationVersion === versions.activePreset) {
+    nextState.activePreset = settings.activePreset ?? state.activePreset;
+  }
+  if (activePresetSourceMutationVersion === versions.activePresetSource) {
+    const activePreset = nextState.activePreset ?? state.activePreset;
+    nextState.activePresetSource =
+      settings.activePresetSource ?? getPresetSource(activePreset);
+  }
+  return nextState;
+}
+
+function getHydratedSettingsState(
+  settings: PersistedChatSettings,
+  state: ChatRuntimeStore,
+  versions: SettingsHydrationVersions,
+): Partial<ChatRuntimeStore> {
+  const nextState: Partial<ChatRuntimeStore> = {};
+  const params = { ...state.params };
+  for (const key of PERSISTED_INFERENCE_PARAM_KEYS) {
+    const value = settings.inferenceParams?.[key];
+    if (
+      value !== undefined &&
+      inferenceParamMutationVersions[key] === versions.inferenceParams[key]
+    ) {
+      setInferenceParam(params, key, value);
+    }
+  }
+  nextState.params = params;
+  for (const key of SCALAR_SETTING_KEYS) {
+    const value = settings[key];
+    if (
+      value !== undefined &&
+      scalarSettingMutationVersions[key] === versions.scalarSettings[key]
+    ) {
+      (nextState as Record<ScalarSettingKey, unknown>)[key] = value;
+    }
+  }
+  return nextState;
+}
+
+function setScalarSettingVersion<K extends ScalarSettingKey>(
+  key: K,
+  value: ChatRuntimeStore[K],
+  currentValue: ChatRuntimeStore[K],
+): void {
+  if (Object.is(value, currentValue)) {
+    return;
+  }
+  scalarSettingMutationVersions[key] += 1;
+  saveSettingsPatch({ [key]: value });
+}
+
+/** The "revert to the loaded model" baseline for the editable load knobs.
+ *  Shared by resetModelSettingsToLoaded (full revert) and stageModel (which
+ *  overrides speculative to start a fresh pick from the standing default). */
+function loadedBaselineSettings(s: ChatRuntimeStore) {
+  const hasLoadedModel = Boolean(s.params.checkpoint);
+  return {
+    customContextLength: null,
+    kvCacheDtype: s.loadedKvCacheDtype,
+    tensorParallel: s.loadedTensorParallel ?? false,
+    speculativeType: hasLoadedModel
+      ? s.loadedSpeculativeType
+      : readPersistedSpeculativeType(),
+    specDraftNMax: hasLoadedModel ? s.loadedSpecDraftNMax : null,
+    chatTemplateOverride: s.loadedChatTemplateOverride,
+  };
+}
+
+export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
+  settingsHydrated: false,
+  // Hydrate the last external checkpoint so the external picker survives a
+  // refresh. Local checkpoints are re-derived from the backend in
+  // useChatModelRuntime and intentionally NOT persisted here.
+  params: (() => {
+    const persistedExternal = loadLastExternalCheckpoint();
+    return persistedExternal
+      ? { ...DEFAULT_INFERENCE_PARAMS, checkpoint: persistedExternal }
+      : DEFAULT_INFERENCE_PARAMS;
+  })(),
+  customPresets: [],
+  activePreset: "Default",
+  activePresetSource: getPresetSource("Default"),
   models: [],
   loras: [],
   runningByThreadId: {},
-  autoTitle: loadBool(AUTO_TITLE_KEY, false),
+  cancelByThreadId: {},
+  autoTitle: false,
   hfToken: loadString(HF_TOKEN_KEY, ""),
   modelsError: null,
   activeGgufVariant: null,
@@ -226,41 +955,157 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
   modelRequiresTrustRemoteCode: false,
   supportsReasoning: false,
   reasoningAlwaysOn: false,
-  reasoningEnabled: true,
+  reasoningEnabled: loadBool(CHAT_REASONING_ENABLED_KEY, true),
+  reasoningStyle: "enable_thinking",
+  reasoningEffort: "medium",
+  supportsReasoningOff: false,
+  reasoningEffortLevels: ["low", "medium", "high"],
+  lastOpenRouterChosenModel: null,
+  supportsPreserveThinking: false,
+  preserveThinking: false,
   supportsTools: false,
-  toolsEnabled: false,
-  codeToolsEnabled: false,
+  supportsBuiltinWebSearch: false,
+  supportsBuiltinCodeExecution: false,
+  supportsBuiltinImageGeneration: false,
+  supportsBuiltinWebFetch: false,
+  toolsEnabled: loadBool(CHAT_TOOLS_ENABLED_KEY, false),
+  codeToolsEnabled: loadBool(CHAT_CODE_TOOLS_ENABLED_KEY, false),
+  imageToolsEnabled: loadBool(CHAT_IMAGE_TOOLS_ENABLED_KEY, false),
+  artifactsEnabled: loadBool(CHAT_ARTIFACTS_ENABLED_KEY, false),
+  collapseHtmlArtifacts: loadBool(CHAT_COLLAPSE_HTML_ARTIFACTS_KEY, false),
+  allowArtifactNetworkAccess: loadBool(
+    CHAT_ALLOW_ARTIFACT_NETWORK_ACCESS_KEY,
+    false,
+  ),
+  mcpEnabledForChat: loadBool(CHAT_MCP_ENABLED_KEY, false),
+  confirmToolCalls: loadBool(CHAT_CONFIRM_TOOL_CALLS_KEY, false),
+  // Never restore Bypass Permissions from storage: it disables the sandbox and
+  // the confirmation gate, so it must be re-enabled (through the warning
+  // dialog) each session rather than silently reactivating on reload.
+  bypassPermissions: false,
+  bypassConfirmOpen: false,
+  alwaysAllowToolsBySession: new Map<string, Set<string>>(),
+  toolConfirmations: {},
+  webFetchToolsEnabled: loadBool(CHAT_WEB_FETCH_TOOLS_ENABLED_KEY, false),
+  // RAG is opt-in per session: always starts off, never restored from storage.
+  ragEnabled: false,
+  ragSource: loadRagSource(),
+  ragMode: loadRagMode(),
+  ragTopK: loadRagTopK(),
+  ragAutoInject: loadRagAutoInject(),
+  ragAutoInjectMinScore: loadRagNumber(
+    CHAT_RAG_AUTOINJECT_MIN_SCORE_KEY,
+    DEFAULT_RAG_AUTOINJECT_MIN_SCORE,
+    { min: 0, max: 1 },
+  ),
   toolStatus: null,
   generatingStatus: null,
-  autoHealToolCalls: loadBool(AUTO_HEAL_TOOL_CALLS_KEY, true),
-  maxToolCallsPerMessage: loadInt(MAX_TOOL_CALLS_KEY, 25),
-  toolCallTimeout: loadInt(TOOL_CALL_TIMEOUT_KEY, 5),
+  activeDiffusionCanvas: null,
+  autoHealToolCalls: true,
+  maxToolCallsPerMessage: 25,
+  toolCallTimeout: 5,
   kvCacheDtype: null,
   loadedKvCacheDtype: null,
-  speculativeType: "ngram-mod",
+  speculativeType: readPersistedSpeculativeType(),
   loadedSpeculativeType: null,
+  specFallbackReason: null,
+  specDraftNMax: null,
+  loadedSpecDraftNMax: null,
+  tensorParallel: false,
+  loadedTensorParallel: null,
+  loadOnSelection: loadBool(CHAT_LOAD_ON_SELECTION_KEY, true),
+  pendingSelection: null,
+  loadedIsMultimodal: false,
+  loadedIsDiffusion: false,
   customContextLength: null,
   defaultChatTemplate: null,
   chatTemplateOverride: null,
+  loadedChatTemplateOverride: null,
   activeThreadId: null,
+  activeProjectId: null,
+  incognito: false,
+  settingsPanelOpen: false,
+  editingMessageId: null,
   pendingAudioBase64: null,
   pendingAudioName: null,
+  pendingImageEditReference: null,
   contextUsage: null,
   modelLoading: false,
+  activeNativePathToken: null,
+  hydratePersistedSettings: async () => {
+    if (get().settingsHydrated) {
+      return;
+    }
+    if (settingsHydrationPromise) {
+      return settingsHydrationPromise;
+    }
+    settingsHydrationPromise = (async () => {
+      const hydrationVersions = getSettingsHydrationVersions();
+      try {
+        const settings = await loadChatSettingsWithLegacyImport();
+        set((state) => {
+          if (state.settingsHydrated) {
+            return state;
+          }
+          const nextState: Partial<ChatRuntimeStore> = {
+            settingsHydrated: true,
+            ...getHydratedPresetState(
+              settings,
+              state,
+              hydrationVersions.presets,
+            ),
+            ...getHydratedSettingsState(settings, state, hydrationVersions),
+          };
+          return nextState;
+        });
+      } catch {
+        // Hydrate failed: treat as hydrated-with-defaults so future setParams
+        // calls reach saveSettingsPatch (which toasts on real network failure).
+        warnSettingsPersistenceFailure();
+        set({ settingsHydrated: true });
+      } finally {
+        settingsHydrationPromise = null;
+      }
+    })();
+    return settingsHydrationPromise;
+  },
   setModelLoading: (loading) => set({ modelLoading: loading }),
   setModelRequiresTrustRemoteCode: (modelRequiresTrustRemoteCode) =>
     set({ modelRequiresTrustRemoteCode }),
   setParams: (params) =>
-    set(() => {
-      const persisted = saveInferenceParams(params);
-      if (!persisted && !hasShownInferencePersistenceWarning) {
-        hasShownInferencePersistenceWarning = true;
-        toast.warning("Chat settings could not be persisted", {
-          description:
-            "Your changes apply now, but may reset after refresh.",
-        });
+    set((state) => {
+      // Bump version unconditionally so a late hydration response won't clobber
+      // a pre-hydrate user edit; only the HTTP write is gated on settingsHydrated.
+      const changedParams = getChangedInferenceParams(params, state.params);
+      if (state.settingsHydrated && hasKeys(changedParams)) {
+        saveSettingsPatch({ inferenceParams: changedParams });
       }
-      return { params };
+      // Mirror setCheckpoint: the local load path can mutate params.checkpoint
+      // via setParams() before setCheckpoint runs, leaving stale per-turn
+      // counters under the new checkpoint.
+      const checkpointChanged = state.params.checkpoint !== params.checkpoint;
+      return {
+        params,
+        ...(checkpointChanged ? { contextUsage: null } : {}),
+      };
+    }),
+  setCustomPresets: (customPresets) =>
+    set(() => {
+      customPresetsMutationVersion += 1;
+      saveSettingsPatch({ customPresets });
+      return { customPresets };
+    }),
+  setActivePreset: (activePreset) =>
+    set(() => {
+      activePresetMutationVersion += 1;
+      saveSettingsPatch({ activePreset });
+      return { activePreset };
+    }),
+  setActivePresetSource: (activePresetSource) =>
+    set(() => {
+      activePresetSourceMutationVersion += 1;
+      saveSettingsPatch({ activePresetSource });
+      return { activePresetSource };
     }),
   setModels: (models) => set({ models }),
   setLoras: (loras) => set({ loras }),
@@ -274,79 +1119,405 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set) => ({
       }
       return { runningByThreadId: next };
     }),
+  registerThreadCancel: (threadId, cancel) =>
+    set((state) => {
+      const next = { ...state.cancelByThreadId };
+      next[threadId] = cancel;
+      return { cancelByThreadId: next };
+    }),
+  clearThreadCancel: (threadId) =>
+    set((state) => {
+      if (!(threadId in state.cancelByThreadId)) return state;
+      const next = { ...state.cancelByThreadId };
+      delete next[threadId];
+      return { cancelByThreadId: next };
+    }),
   setAutoTitle: (autoTitle) =>
-    set(() => {
-      saveBool(AUTO_TITLE_KEY, autoTitle);
+    set((state) => {
+      setScalarSettingVersion("autoTitle", autoTitle, state.autoTitle);
       return { autoTitle };
     }),
-  setHfToken: (hfToken) =>
-    set(() => {
-      saveString(HF_TOKEN_KEY, hfToken);
-      return { hfToken };
-    }),
+  setHfToken: (hfToken) => {
+    saveString(HF_TOKEN_KEY, hfToken);
+    set({ hfToken });
+    notifyHfTokenChanged(hfToken);
+  },
   setModelsError: (modelsError) => set({ modelsError }),
   setCheckpoint: (modelId, ggufVariant) =>
-    set((state) => ({
-      params: {
-        ...state.params,
-        checkpoint: modelId,
-      },
-      activeGgufVariant: ggufVariant ?? null,
-    })),
-  setActiveThreadId: (activeThreadId) => set({ activeThreadId, contextUsage: null }),
-  clearCheckpoint: () =>
-    set((state) => ({
+    set((state) => {
+      // Persist external selections so they survive a refresh. Local ids are
+      // NOT persisted -- they're re-derived from the backend on mount, and a
+      // stale persisted local id would race the freshly-loaded model. See
+      // LAST_EXTERNAL_CHECKPOINT_KEY notes.
+      saveLastExternalCheckpoint(isExternalModelId(modelId) ? modelId : null);
+      // Clear stale per-turn usage on model change; the relaxed external-provider
+      // render gate would otherwise show old counters until the next completion.
+      const checkpointChanged = state.params.checkpoint !== modelId;
+      const pendingToClear =
+        checkpointChanged && state.params.checkpoint ? state.pendingSelection : null;
+      if (pendingToClear) {
+        cancelStagedModelDownload(pendingToClear);
+      }
+      // Clamp maxTokens to the new model's cap when switching into an external
+      // model so a value carried over from a local session doesn't exceed the
+      // slider's max.
+      let nextMaxTokens = state.params.maxTokens;
+      if (checkpointChanged && isExternalModelId(modelId)) {
+        const parsed = parseExternalModelId(modelId);
+        const provider = parsed
+          ? useExternalProvidersStore
+              .getState()
+              .providers.find((p) => p.id === parsed.providerId)
+          : null;
+        const cap = getExternalMaxOutputTokens(
+          provider?.providerType,
+          parsed?.modelId,
+        );
+        if (nextMaxTokens > cap) {
+          nextMaxTokens = cap;
+        }
+      }
+      return {
+        params: {
+          ...state.params,
+          checkpoint: modelId,
+          maxTokens: nextMaxTokens,
+        },
+        activeGgufVariant: ggufVariant ?? null,
+        ...(checkpointChanged ? { contextUsage: null } : {}),
+        // Switching away from a loaded model (e.g. picking an external provider)
+        // abandons any staged pick, so its Load button and edited knobs don't
+        // linger over the newly active model. Same revert as abandonStagedModel.
+        // Guarded on a non-empty current checkpoint: an establishing set from a
+        // background status sync (empty -> active) must not wipe a fresh stage.
+        ...(pendingToClear
+          ? { ...loadedBaselineSettings(state), pendingSelection: null }
+          : {}),
+      };
+    }),
+  setActiveThreadId: (activeThreadId) =>
+    set({ activeThreadId, contextUsage: null }),
+  setActiveProjectId: (activeProjectId) => set({ activeProjectId }),
+  setIncognito: (incognito) => set({ incognito }),
+  setSettingsPanelOpen: (settingsPanelOpen) => set({ settingsPanelOpen }),
+  setEditingMessageId: (id) => set({ editingMessageId: id }),
+  clearCheckpoint: () => {
+    // Mirror setCheckpoint's persistence: dropping the checkpoint must also
+    // clear any stored external selection so the next refresh doesn't snap
+    // back to a model the user intentionally cleared.
+    saveLastExternalCheckpoint(null);
+    cancelStagedModelDownload(get().pendingSelection);
+    return set((state) => ({
       params: {
         ...state.params,
         checkpoint: "",
       },
       activeGgufVariant: null,
+      activeNativePathToken: null,
+      pendingSelection: null,
       ggufContextLength: null,
       ggufMaxContextLength: null,
       ggufNativeContextLength: null,
       modelRequiresTrustRemoteCode: false,
       contextUsage: null,
       supportsReasoning: false,
+      reasoningAlwaysOn: false,
       reasoningEnabled: true,
+      reasoningStyle: "enable_thinking",
+      supportsReasoningOff: false,
+      reasoningEffortLevels: ["low", "medium", "high"],
+      supportsPreserveThinking: false,
       supportsTools: false,
+      supportsBuiltinWebSearch: false,
+      supportsBuiltinCodeExecution: false,
+      supportsBuiltinImageGeneration: false,
+      supportsBuiltinWebFetch: false,
       toolsEnabled: false,
       codeToolsEnabled: false,
+      imageToolsEnabled: false,
+      artifactsEnabled: false,
+      mcpEnabledForChat: false,
+      webFetchToolsEnabled: false,
+      // Only the per-session enable pill resets; source/mode/top_k persist.
+      ragEnabled: false,
       toolStatus: null,
+      activeDiffusionCanvas: null,
       kvCacheDtype: null,
       loadedKvCacheDtype: null,
-      speculativeType: "ngram-mod",
+      speculativeType: readPersistedSpeculativeType(),
       loadedSpeculativeType: null,
+      specFallbackReason: null,
+      specDraftNMax: null,
+      loadedSpecDraftNMax: null,
+      tensorParallel: false,
+      loadedTensorParallel: null,
+      loadedIsMultimodal: false,
+      loadedIsDiffusion: false,
       customContextLength: null,
       defaultChatTemplate: null,
       chatTemplateOverride: null,
+      loadedChatTemplateOverride: null,
+      pendingImageEditReference: null,
+    }));
+  },
+  setReasoningEnabled: (reasoningEnabled, options) =>
+    set(() => {
+      if (options?.persist !== false) {
+        saveBool(CHAT_REASONING_ENABLED_KEY, reasoningEnabled);
+      }
+      return { reasoningEnabled };
+    }),
+  setLastOpenRouterChosenModel: (lastOpenRouterChosenModel) =>
+    set({ lastOpenRouterChosenModel }),
+  setReasoningStyle: (reasoningStyle) => set({ reasoningStyle }),
+  setReasoningEffort: (reasoningEffort) =>
+    set((state) => {
+      setScalarSettingVersion(
+        "reasoningEffort",
+        reasoningEffort,
+        state.reasoningEffort,
+      );
+      return { reasoningEffort };
+    }),
+  setPreserveThinking: (preserveThinking) =>
+    set((state) => {
+      setScalarSettingVersion(
+        "preserveThinking",
+        preserveThinking,
+        state.preserveThinking,
+      );
+      return { preserveThinking };
+    }),
+  setToolsEnabled: (toolsEnabled, options) =>
+    set(() => {
+      if (options?.persist !== false) {
+        saveBool(CHAT_TOOLS_ENABLED_KEY, toolsEnabled);
+      }
+      return { toolsEnabled };
+    }),
+  setCodeToolsEnabled: (codeToolsEnabled) =>
+    set(() => {
+      saveBool(CHAT_CODE_TOOLS_ENABLED_KEY, codeToolsEnabled);
+      return { codeToolsEnabled };
+    }),
+  setImageToolsEnabled: (imageToolsEnabled) =>
+    set(() => {
+      saveBool(CHAT_IMAGE_TOOLS_ENABLED_KEY, imageToolsEnabled);
+      return { imageToolsEnabled };
+    }),
+  setArtifactsEnabled: (artifactsEnabled, options) =>
+    set(() => {
+      if (options?.persist !== false) {
+        saveBool(CHAT_ARTIFACTS_ENABLED_KEY, artifactsEnabled);
+      }
+      return { artifactsEnabled };
+    }),
+  setCollapseHtmlArtifacts: (collapseHtmlArtifacts) =>
+    set((state) => {
+      saveBool(CHAT_COLLAPSE_HTML_ARTIFACTS_KEY, collapseHtmlArtifacts);
+      setScalarSettingVersion(
+        "collapseHtmlArtifacts",
+        collapseHtmlArtifacts,
+        state.collapseHtmlArtifacts,
+      );
+      return { collapseHtmlArtifacts };
+    }),
+  setAllowArtifactNetworkAccess: (allowArtifactNetworkAccess) =>
+    set((state) => {
+      saveBool(
+        CHAT_ALLOW_ARTIFACT_NETWORK_ACCESS_KEY,
+        allowArtifactNetworkAccess,
+      );
+      setScalarSettingVersion(
+        "allowArtifactNetworkAccess",
+        allowArtifactNetworkAccess,
+        state.allowArtifactNetworkAccess,
+      );
+      return { allowArtifactNetworkAccess };
+    }),
+  setMcpEnabledForChat: (mcpEnabledForChat) =>
+    set(() => {
+      saveBool(CHAT_MCP_ENABLED_KEY, mcpEnabledForChat);
+      return { mcpEnabledForChat };
+    }),
+  setConfirmToolCalls: (confirmToolCalls) =>
+    set(() => {
+      saveBool(CHAT_CONFIRM_TOOL_CALLS_KEY, confirmToolCalls);
+      return { confirmToolCalls };
+    }),
+  setBypassPermissions: (bypassPermissions) =>
+    // Deliberately not persisted (see init): a reload must not silently keep
+    // the sandbox/confirmation bypass active without re-accepting the warning.
+    set(() => ({ bypassPermissions })),
+  setBypassConfirmOpen: (bypassConfirmOpen) =>
+    set(() => ({ bypassConfirmOpen })),
+  allowToolAlways: (sessionId, toolName) =>
+    set((state) => {
+      const current = state.alwaysAllowToolsBySession.get(sessionId);
+      if (current?.has(toolName)) return state;
+      const next = new Map(state.alwaysAllowToolsBySession);
+      next.set(sessionId, new Set(current ?? []).add(toolName));
+      return { alwaysAllowToolsBySession: next };
+    }),
+  setToolConfirmation: (toolCallId, approvalId, sessionId, autoAllowKey) =>
+    set((state) => ({
+      toolConfirmations: {
+        ...state.toolConfirmations,
+        [toolCallId]: { approvalId, sessionId, autoAllowKey },
+      },
     })),
-  setReasoningEnabled: (reasoningEnabled) => set({ reasoningEnabled }),
-  setToolsEnabled: (toolsEnabled) => set({ toolsEnabled }),
-  setCodeToolsEnabled: (codeToolsEnabled) => set({ codeToolsEnabled }),
+  clearToolConfirmation: (toolCallId) =>
+    set((state) => {
+      if (
+        !Object.prototype.hasOwnProperty.call(
+          state.toolConfirmations,
+          toolCallId,
+        )
+      ) {
+        return state;
+      }
+      const next = { ...state.toolConfirmations };
+      delete next[toolCallId];
+      return { toolConfirmations: next };
+    }),
+  setWebFetchToolsEnabled: (webFetchToolsEnabled) =>
+    set(() => {
+      saveBool(CHAT_WEB_FETCH_TOOLS_ENABLED_KEY, webFetchToolsEnabled);
+      return { webFetchToolsEnabled };
+    }),
+  setRagEnabled: (ragEnabled) => set(() => ({ ragEnabled })),
+  setRagSource: (ragSource) =>
+    set(() => {
+      saveRagSource(ragSource);
+      return { ragSource };
+    }),
+  setRagMode: (ragMode) =>
+    set(() => {
+      saveString(CHAT_RAG_MODE_KEY, ragMode);
+      return { ragMode };
+    }),
+  setRagTopK: (ragTopK) =>
+    set(() => {
+      saveString(CHAT_RAG_TOP_K_KEY, String(ragTopK));
+      return { ragTopK };
+    }),
+  setRagAutoInject: (ragAutoInject) =>
+    set(() => {
+      saveString(CHAT_RAG_AUTOINJECT_KEY, ragAutoInject);
+      return { ragAutoInject };
+    }),
+  setRagAutoInjectMinScore: (ragAutoInjectMinScore) =>
+    set(() => {
+      saveString(
+        CHAT_RAG_AUTOINJECT_MIN_SCORE_KEY,
+        String(ragAutoInjectMinScore),
+      );
+      return { ragAutoInjectMinScore };
+    }),
   setToolStatus: (toolStatus) => set({ toolStatus }),
+  setActiveDiffusionCanvas: (activeDiffusionCanvas) =>
+    set({ activeDiffusionCanvas }),
   setGeneratingStatus: (generatingStatus) => set({ generatingStatus }),
   setAutoHealToolCalls: (autoHealToolCalls) =>
-    set(() => {
-      saveBool(AUTO_HEAL_TOOL_CALLS_KEY, autoHealToolCalls);
+    set((state) => {
+      setScalarSettingVersion(
+        "autoHealToolCalls",
+        autoHealToolCalls,
+        state.autoHealToolCalls,
+      );
       return { autoHealToolCalls };
     }),
   setMaxToolCallsPerMessage: (maxToolCallsPerMessage) =>
-    set(() => {
-      saveInt(MAX_TOOL_CALLS_KEY, maxToolCallsPerMessage);
+    set((state) => {
+      setScalarSettingVersion(
+        "maxToolCallsPerMessage",
+        maxToolCallsPerMessage,
+        state.maxToolCallsPerMessage,
+      );
       return { maxToolCallsPerMessage };
     }),
   setToolCallTimeout: (toolCallTimeout) =>
-    set(() => {
-      saveInt(TOOL_CALL_TIMEOUT_KEY, toolCallTimeout);
+    set((state) => {
+      setScalarSettingVersion(
+        "toolCallTimeout",
+        toolCallTimeout,
+        state.toolCallTimeout,
+      );
       return { toolCallTimeout };
     }),
   setKvCacheDtype: (kvCacheDtype) => set({ kvCacheDtype }),
   setSpeculativeType: (speculativeType) => set({ speculativeType }),
+  setSpecDraftNMax: (specDraftNMax) => set({ specDraftNMax }),
+  setTensorParallel: (tensorParallel) => set({ tensorParallel }),
+  resetModelSettingsToLoaded: () => set((s) => loadedBaselineSettings(s)),
+  setLoadOnSelection: (loadOnSelection) => {
+    saveBool(CHAT_LOAD_ON_SELECTION_KEY, loadOnSelection);
+    set({ loadOnSelection });
+  },
+  setPendingSelection: (pendingSelection) => set({ pendingSelection }),
+  stageModel: (selection) =>
+    set((s) => {
+      if (
+        s.pendingSelection &&
+        (s.pendingSelection.id !== selection.id ||
+          (s.pendingSelection.ggufVariant ?? null) !==
+            (selection.ggufVariant ?? null))
+      ) {
+        cancelStagedModelDownload(s.pendingSelection);
+      }
+      return {
+        ...loadedBaselineSettings(s),
+        pendingSelection: selection,
+        settingsPanelOpen: true,
+        // Speculative starts from the standing default, not the loaded model's
+        // mode, so a fresh pick doesn't inherit (and then carry, via the staged
+        // Load's keepSpeculative) a forced MTP mode onto a model that may lack it.
+        speculativeType: readPersistedSpeculativeType(),
+        specDraftNMax: null,
+      };
+    }),
+  abandonStagedModel: () => {
+    const { pendingSelection } = get();
+    if (!pendingSelection) return;
+    // Cancel the staged pick's in-flight download so it doesn't keep running
+    // after the staging UI is gone. Centralized here so every abandon path
+    // (sheet close, thread switch, route exit, new chat) cancels it, including
+    // root-level callers that have no access to the useRepoDownload hook.
+    cancelStagedModelDownload(pendingSelection);
+    set((s) => ({ ...loadedBaselineSettings(s), pendingSelection: null }));
+  },
   setCustomContextLength: (customContextLength) => set({ customContextLength }),
-  setChatTemplateOverride: (chatTemplateOverride) => set({ chatTemplateOverride }),
+  setChatTemplateOverride: (chatTemplateOverride) =>
+    set({ chatTemplateOverride }),
   setPendingAudio: (base64, name) =>
     set({ pendingAudioBase64: base64, pendingAudioName: name }),
   clearPendingAudio: () =>
     set({ pendingAudioBase64: null, pendingAudioName: null }),
+  setPendingImageEditReference: (pendingImageEditReference) =>
+    set({ pendingImageEditReference }),
+  clearPendingImageEditReference: () =>
+    set({ pendingImageEditReference: null }),
   setContextUsage: (contextUsage) => set({ contextUsage }),
 }));
+
+export function resolveSpeculativeSettingsForLoad({
+  usePersistedPreference = false,
+}: {
+  usePersistedPreference?: boolean;
+} = {}): {
+  speculativeType: string | null;
+  specDraftNMax: number | null;
+} {
+  const state = useChatRuntimeStore.getState();
+  const speculativeType = usePersistedPreference
+    ? readPersistedSpeculativeType()
+    : state.speculativeType ?? readPersistedSpeculativeType();
+  return {
+    speculativeType,
+    specDraftNMax:
+      !usePersistedPreference &&
+      (speculativeType === "mtp" || speculativeType === "mtp+ngram")
+        ? state.specDraftNMax
+        : null,
+  };
+}

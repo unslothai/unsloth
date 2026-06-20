@@ -7,12 +7,15 @@ export interface TrainingRunSummary {
   model_name: string;
   project_name: string | null;
   dataset_name: string;
+  display_name: string | null;
   started_at: string;
   ended_at: string | null;
   total_steps: number | null;
   final_step: number | null;
   final_loss: number | null;
   output_dir: string | null;
+  can_resume: boolean;
+  resumed_later: boolean;
   duration_seconds: number | null;
   error_message: string | null;
   loss_sparkline: number[] | null;

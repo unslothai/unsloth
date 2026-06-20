@@ -4,20 +4,80 @@
 """
 Anthropic Messages API ↔ OpenAI format translation utilities.
 
-Pure functions and a stateful stream emitter — no FastAPI, no I/O.
+Pure functions plus stateful stream emitters; no FastAPI, no I/O.
 """
 
 from __future__ import annotations
 
 import json
+import uuid
 from typing import Any, Optional, Union
 
 
+def openai_finish_to_anthropic_stop(finish_reason, had_tool_calls = False) -> str:
+    """Map an OpenAI finish_reason to an Anthropic stop_reason.
+    'length' -> 'max_tokens' (truncation wins even mid tool call, so a cut-off
+    tool call isn't mislabeled tool_use); tool_calls / had_tool_calls -> 'tool_use';
+    'stop_sequence' -> 'stop_sequence'; 'stop'/None/unknown -> 'end_turn'."""
+    # Truncation takes precedence: a tool call cut off at max_tokens has possibly
+    # incomplete arguments, so report max_tokens rather than telling the client to
+    # run the tool.
+    if finish_reason == "length":
+        return "max_tokens"
+    if finish_reason == "tool_calls" or had_tool_calls:
+        return "tool_use"
+    if finish_reason == "stop_sequence":
+        return "stop_sequence"
+    # "stop", None, and any unknown value collapse to end_turn.
+    return "end_turn"
+
+
+def anthropic_tool_use_id(upstream_id = None) -> str:
+    """Return an Anthropic-style tool_use id (prefix 'toolu_'). Reuses an
+    upstream id only if it already starts with 'toolu_'; otherwise mints a fresh
+    'toolu_<24 hex>'."""
+    if upstream_id and isinstance(upstream_id, str) and upstream_id.startswith("toolu_"):
+        return upstream_id
+    return f"toolu_{uuid.uuid4().hex[:24]}"
+
+
+def _anthropic_image_block_to_openai_part(block: dict) -> Optional[dict]:
+    """Translate one Anthropic ``image`` block to an OpenAI ``image_url`` part.
+
+    Accepts both source shapes:
+      - ``{"type": "base64", "media_type": "image/jpeg", "data": "..."}``
+      - ``{"type": "url", "url": "https://..."}``
+
+    Returns ``None`` when the source is malformed so the caller can skip it.
+    """
+    source = block.get("source") or {}
+    stype = source.get("type")
+    if stype == "base64":
+        data = source.get("data")
+        if not data:
+            return None
+        media_type = source.get("media_type") or "image/jpeg"
+        return {
+            "type": "image_url",
+            "image_url": {"url": f"data:{media_type};base64,{data}"},
+        }
+    if stype == "url":
+        url = source.get("url")
+        if not url:
+            return None
+        return {"type": "image_url", "image_url": {"url": url}}
+    return None
+
+
 def anthropic_messages_to_openai(
-    messages: list[dict],
-    system: Optional[Union[str, list]] = None,
+    messages: list[dict], system: Optional[Union[str, list]] = None
 ) -> list[dict]:
-    """Convert Anthropic messages + system to OpenAI-format message dicts."""
+    """Convert Anthropic messages + system to OpenAI-format message dicts.
+
+    User messages with ``image`` blocks are emitted as OpenAI multimodal
+    content arrays (``[{type: "text", ...}, {type: "image_url", ...}]``) so
+    they flow through llama-server's native vision pathway.
+    """
     result: list[dict] = []
 
     # System prompt
@@ -42,54 +102,70 @@ def anthropic_messages_to_openai(
             result.append({"role": role, "content": content})
             continue
 
-        # Content is a list of blocks
-        text_parts: list[str] = []
-        tool_calls: list[dict] = []
-        tool_results: list[dict] = []
-
-        for block in content:
-            b = block if isinstance(block, dict) else block.model_dump()
-            btype = b.get("type", "")
-
-            if btype == "text":
-                text_parts.append(b["text"])
-            elif btype == "tool_use":
-                tool_calls.append(
-                    {
-                        "id": b["id"],
-                        "type": "function",
-                        "function": {
-                            "name": b["name"],
-                            "arguments": json.dumps(b["input"]),
-                        },
-                    }
-                )
-            elif btype == "tool_result":
-                tc = b.get("content", "")
-                if isinstance(tc, list):
-                    tc = " ".join(
-                        p["text"]
-                        for p in tc
-                        if isinstance(p, dict) and p.get("type") == "text"
-                    )
-                tool_results.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": b["tool_use_id"],
-                        "content": str(tc),
-                    }
-                )
-
         if role == "assistant":
+            # Assistant content: text + tool_use only (no images in Anthropic's model).
+            text_parts: list[str] = []
+            tool_calls: list[dict] = []
+            for block in content:
+                b = block if isinstance(block, dict) else block.model_dump()
+                btype = b.get("type", "")
+                if btype == "text":
+                    text_parts.append(b["text"])
+                elif btype == "tool_use":
+                    tool_calls.append(
+                        {
+                            "id": b["id"],
+                            "type": "function",
+                            "function": {
+                                "name": b["name"],
+                                "arguments": json.dumps(b["input"]),
+                            },
+                        }
+                    )
             msg_dict: dict[str, Any] = {"role": "assistant"}
             if text_parts:
                 msg_dict["content"] = "\n".join(text_parts)
             if tool_calls:
                 msg_dict["tool_calls"] = tool_calls
             result.append(msg_dict)
-        elif role == "user":
-            if text_parts:
-                result.append({"role": "user", "content": "\n".join(text_parts)})
+            continue
+
+        if role == "user":
+            # Ordered parts preserve text/image interleaving; tool_result -> own "tool" messages.
+            user_parts: list[dict] = []
+            has_image = False
+            tool_results: list[dict] = []
+            for block in content:
+                b = block if isinstance(block, dict) else block.model_dump()
+                btype = b.get("type", "")
+                if btype == "text":
+                    user_parts.append({"type": "text", "text": b["text"]})
+                elif btype == "image":
+                    part = _anthropic_image_block_to_openai_part(b)
+                    if part is not None:
+                        user_parts.append(part)
+                        has_image = True
+                elif btype == "tool_result":
+                    tc = b.get("content", "")
+                    if isinstance(tc, list):
+                        tc = " ".join(
+                            p["text"] for p in tc if isinstance(p, dict) and p.get("type") == "text"
+                        )
+                    tool_results.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": b["tool_use_id"],
+                            "content": str(tc),
+                        }
+                    )
+
+            if has_image:
+                result.append({"role": "user", "content": user_parts})
+            else:
+                # No images: collapse text parts to a plain string.
+                text = "\n".join(p["text"] for p in user_parts)
+                if text:
+                    result.append({"role": "user", "content": text})
             for tr in tool_results:
                 result.append(tr)
 
@@ -97,21 +173,58 @@ def anthropic_messages_to_openai(
 
 
 def anthropic_tools_to_openai(tools: list) -> list[dict]:
-    """Convert Anthropic tool definitions to OpenAI function-tool format."""
+    """Convert Anthropic client tools to OpenAI function-tool format."""
     result = []
     for t in tools:
         td = t if isinstance(t, dict) else t.model_dump()
+        name = td.get("name")
+        input_schema = td.get("input_schema")
+        if not name or input_schema is None:
+            continue
         result.append(
             {
                 "type": "function",
                 "function": {
-                    "name": td["name"],
+                    "name": name,
                     "description": td.get("description", ""),
-                    "parameters": td.get("input_schema", {}),
+                    "parameters": input_schema,
                 },
             }
         )
     return result
+
+
+def anthropic_tool_choice_to_openai(tc: Any) -> Any:
+    """Translate Anthropic `tool_choice` into OpenAI `tool_choice`.
+
+    Anthropic formats (all dict shapes with a ``type`` discriminator):
+
+    - ``{"type": "auto"}``                       → ``"auto"``
+    - ``{"type": "any"}``                        → ``"required"``
+    - ``{"type": "none"}``                       → ``"none"``
+    - ``{"type": "tool", "name": "get_weather"}``
+          → ``{"type": "function", "function": {"name": "get_weather"}}``
+
+    Returns ``None`` for ``None`` or any unrecognized shape (caller falls
+    back to its own default, typically ``"auto"``).
+    """
+    if tc is None:
+        return None
+    if not isinstance(tc, dict):
+        return None
+    t = tc.get("type")
+    if t == "auto":
+        return "auto"
+    if t == "any":
+        return "required"
+    if t == "none":
+        return "none"
+    if t == "tool":
+        name = tc.get("name")
+        if not name:
+            return None
+        return {"type": "function", "function": {"name": name}}
+    return None
 
 
 def build_anthropic_sse_event(event_type: str, data: dict) -> str:
@@ -119,17 +232,40 @@ def build_anthropic_sse_event(event_type: str, data: dict) -> str:
     return f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
 
 
+def _message_delta_usage(usage: Optional[dict]) -> dict:
+    """Usage block for a message_delta event (cumulative token counts). Cache
+    fields are always 0 — no prompt caching backend. ``usage`` may be None when a
+    metadata event carried usage=None (e.g. only finish_reason set)."""
+    usage = usage or {}
+    return {
+        "input_tokens": usage.get("prompt_tokens", 0),
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "output_tokens": usage.get("completion_tokens", 0),
+    }
+
+
 class AnthropicStreamEmitter:
-    """Converts generator events from generate_chat_completion_with_tools()
-    into Anthropic Messages SSE strings."""
+    """Converts generate_chat_completion_with_tools() events into Anthropic
+    Messages SSE strings."""
 
     def __init__(self) -> None:
         self.block_index: int = 0
         self._text_block_open: bool = False
+        self._open_tool_call_id: Optional[str] = None
+        # The mapped Anthropic ``toolu_*`` id published in content_block_start,
+        # reused for the paired tool_result so consumers can correlate them.
+        self._open_tool_use_id: Optional[str] = None
+        self._open_tool_args_sent: bool = False
         self._prev_text: str = ""
         self._usage: dict = {}
 
-    def start(self, message_id: str, model: str) -> list[str]:
+    def start(
+        self,
+        message_id: str,
+        model: str,
+        input_tokens: int = 0,
+    ) -> list[str]:
         """Emit message_start and open the first text content block."""
         events = []
         events.append(
@@ -145,7 +281,12 @@ class AnthropicStreamEmitter:
                         "model": model,
                         "stop_reason": None,
                         "stop_sequence": None,
-                        "usage": {"input_tokens": 0, "output_tokens": 0},
+                        "usage": {
+                            "input_tokens": input_tokens,
+                            "output_tokens": 0,
+                            "cache_creation_input_tokens": 0,
+                            "cache_read_input_tokens": 0,
+                        },
                     },
                 },
             )
@@ -168,20 +309,28 @@ class AnthropicStreamEmitter:
         # status events — no Anthropic equivalent
         return []
 
-    def finish(self, stop_reason: str = "end_turn") -> list[str]:
+    def finish(
+        self,
+        stop_reason: str = "end_turn",
+        stop_sequence = None,
+    ) -> list[str]:
         """Close any open block and emit message_delta + message_stop."""
         events = []
-        if self._text_block_open:
+        if self._text_block_open or self._open_tool_call_id is not None:
             events.append(self._close_block())
+            self._open_tool_call_id = None
+            self._open_tool_use_id = None
+            self._open_tool_args_sent = False
         events.append(
             build_anthropic_sse_event(
                 "message_delta",
                 {
                     "type": "message_delta",
-                    "delta": {"stop_reason": stop_reason, "stop_sequence": None},
-                    "usage": {
-                        "output_tokens": self._usage.get("completion_tokens", 0),
+                    "delta": {
+                        "stop_reason": stop_reason,
+                        "stop_sequence": stop_sequence,
                     },
+                    "usage": _message_delta_usage(self._usage),
                 },
             )
         )
@@ -218,12 +367,26 @@ class AnthropicStreamEmitter:
         return events
 
     def _handle_tool_start(self, event: dict) -> list[str]:
+        tool_call_id = event.get("tool_call_id", "")
+        args = event.get("arguments", {})
+        if tool_call_id and self._open_tool_call_id == tool_call_id:
+            return self._tool_arguments_delta(args)
+
         events = []
-        # Close current text block if open
         if self._text_block_open:
             events.append(self._close_block())
-        # Open a tool_use block
+        # Defensive: close a stale open tool_use block before starting another.
+        elif self._open_tool_call_id is not None:
+            events.append(self._close_block())
+            self._open_tool_call_id = None
+            self._open_tool_use_id = None
+            self._open_tool_args_sent = False
+
+        # Open a tool_use block.
         self.block_index += 1
+        self._open_tool_call_id = tool_call_id
+        self._open_tool_use_id = anthropic_tool_use_id(tool_call_id)
+        self._open_tool_args_sent = False
         events.append(
             build_anthropic_sse_event(
                 "content_block_start",
@@ -232,42 +395,54 @@ class AnthropicStreamEmitter:
                     "index": self.block_index,
                     "content_block": {
                         "type": "tool_use",
-                        "id": event.get("tool_call_id", ""),
+                        "id": self._open_tool_use_id,
                         "name": event.get("tool_name", ""),
                         "input": {},
                     },
                 },
             )
         )
-        # Emit the arguments as input_json_delta
-        args = event.get("arguments", {})
-        if args:
-            events.append(
-                build_anthropic_sse_event(
-                    "content_block_delta",
-                    {
-                        "type": "content_block_delta",
-                        "index": self.block_index,
-                        "delta": {
-                            "type": "input_json_delta",
-                            "partial_json": json.dumps(args),
-                        },
-                    },
-                )
-            )
+        events.extend(self._tool_arguments_delta(args))
         return events
+
+    def _tool_arguments_delta(self, args: dict) -> list[str]:
+        if not args:
+            return []
+        if self._open_tool_args_sent:
+            return []
+        self._open_tool_args_sent = True
+        return [
+            build_anthropic_sse_event(
+                "content_block_delta",
+                {
+                    "type": "content_block_delta",
+                    "index": self.block_index,
+                    "delta": {
+                        "type": "input_json_delta",
+                        "partial_json": json.dumps(args),
+                    },
+                },
+            )
+        ]
 
     def _handle_tool_end(self, event: dict) -> list[str]:
         events = []
-        # Close the tool_use block
-        events.append(self._close_block())
+        # Close the tool_use block.
+        if self._open_tool_call_id is not None or self._text_block_open:
+            events.append(self._close_block())
+        # Reuse the id published in content_block_start; fall back to mapping
+        # the raw id only if no tool_start preceded this end.
+        tool_use_id = self._open_tool_use_id or anthropic_tool_use_id(event.get("tool_call_id", ""))
+        self._open_tool_call_id = None
+        self._open_tool_use_id = None
+        self._open_tool_args_sent = False
         # Emit custom tool_result event (non-standard, ignored by SDKs)
         events.append(
             build_anthropic_sse_event(
                 "tool_result",
                 {
                     "type": "tool_result",
-                    "tool_use_id": event.get("tool_call_id", ""),
+                    "tool_use_id": tool_use_id,
                     "content": event.get("result", ""),
                 },
             )
@@ -306,10 +481,10 @@ class AnthropicStreamEmitter:
 class AnthropicPassthroughEmitter:
     """Converts llama-server's OpenAI-format streaming chunks into Anthropic SSE.
 
-    Used for the client-side tool-use pass-through path: the client (e.g. Claude
-    Code) sends its own tool definitions in the ``tools`` field and expects to
-    execute them itself. We forward them to llama-server and translate the
-    streaming response back to Anthropic format without executing anything.
+    Used for the client-side tool-use pass-through path: the client (e.g.
+    Claude Code) sends its own tool definitions in ``tools`` and executes
+    them itself. We forward them to llama-server and translate the streaming
+    response back to Anthropic format without executing anything.
     """
 
     def __init__(self) -> None:
@@ -318,8 +493,14 @@ class AnthropicPassthroughEmitter:
         self._tool_call_states: dict = {}  # delta index -> {block_index, id, name}
         self._usage: dict = {}
         self._stop_reason: str = "end_turn"
+        self._stop_sequence: Optional[str] = None
 
-    def start(self, message_id: str, model: str) -> list[str]:
+    def start(
+        self,
+        message_id: str,
+        model: str,
+        input_tokens: int = 0,
+    ) -> list[str]:
         return [
             build_anthropic_sse_event(
                 "message_start",
@@ -333,7 +514,12 @@ class AnthropicPassthroughEmitter:
                         "model": model,
                         "stop_reason": None,
                         "stop_sequence": None,
-                        "usage": {"input_tokens": 0, "output_tokens": 0},
+                        "usage": {
+                            "input_tokens": input_tokens,
+                            "output_tokens": 0,
+                            "cache_creation_input_tokens": 0,
+                            "cache_read_input_tokens": 0,
+                        },
                     },
                 },
             )
@@ -383,7 +569,7 @@ class AnthropicPassthroughEmitter:
                 # New tool call — close prior block, open tool_use block
                 if self._current_block_type is not None:
                     events.append(self._close_current_block())
-                tc_id = tc.get("id", "")
+                tc_id = anthropic_tool_use_id(tc.get("id", ""))
                 tc_name = fn.get("name", "")
                 self.block_index += 1
                 self._current_block_type = "tool_use"
@@ -426,12 +612,7 @@ class AnthropicPassthroughEmitter:
 
         # ── Finish reason ──
         if finish_reason:
-            if finish_reason == "tool_calls":
-                self._stop_reason = "tool_use"
-            elif finish_reason == "length":
-                self._stop_reason = "max_tokens"
-            else:
-                self._stop_reason = "end_turn"
+            self._stop_reason = openai_finish_to_anthropic_stop(finish_reason)
 
         return events
 
@@ -446,11 +627,9 @@ class AnthropicPassthroughEmitter:
                     "type": "message_delta",
                     "delta": {
                         "stop_reason": self._stop_reason,
-                        "stop_sequence": None,
+                        "stop_sequence": self._stop_sequence,
                     },
-                    "usage": {
-                        "output_tokens": self._usage.get("completion_tokens", 0),
-                    },
+                    "usage": _message_delta_usage(self._usage),
                 },
             )
         )

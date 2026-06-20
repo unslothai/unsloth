@@ -1,0 +1,136 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+# Builds the PyPI wheel from the PR branch, then verifies the built wheel
+# actually contains what we expect to ship and does NOT contain the broken
+# Studio bundle that 2026.5.1 published. This is the single workflow that
+# would have blocked the 2026.5.1 release before twine upload.
+#
+# Verified locally end-to-end against this branch:
+#   - python -m build produces unsloth-<version>-py3-none-any.whl in 13s
+#   - wheel content sanity passes:
+#       lockfile shipped, frontend dist shipped,
+#       no node_modules in wheel, no bun.lock in wheel,
+#       main bundle has unstable_Provider hits=1 (assistant-ui internals only).
+#   - Studio backend imports cleanly from the installed wheel with the
+#     lightweight dep set below.
+
+name: Wheel CI
+
+on:
+  pull_request:
+    paths:
+      - 'pyproject.toml'
+      - 'studio/**'
+      - 'unsloth/**'
+      - 'unsloth_cli/**'
+      - '.github/workflows/wheel-smoke.yml'
+  push:
+    branches: [main, pip]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  wheel:
+    name: Wheel build + content sanity + import smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+        with:
+          node-version: '22'
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: '3.12'
+
+      - name: Lockfile supply-chain audit (pre-install scan)
+        run: python3 scripts/lockfile_supply_chain_audit.py
+
+      - name: Build frontend
+        # Lifecycle scripts (esbuild native-binary postinstall, etc.) are
+        # required for `vite build`. The pre-install lockfile structural
+        # audit (lockfile_supply_chain_audit.py) is the practical defence
+        # against the npm postinstall-dropper class -- it fires BEFORE any
+        # tarball runs, on the injection pattern itself rather than an
+        # advisory-DB lookup.
+        run: |
+          cd studio/frontend
+          npm ci --no-fund --no-audit
+          npm run build
+
+      - name: Build wheel + sdist
+        run: |
+          python -m pip install --upgrade pip build
+          rm -rf dist build ./*.egg-info
+          python -m build
+
+      - name: Wheel content sanity
+        run: |
+          python - <<'PY'
+          import zipfile, glob, sys
+          w = glob.glob("dist/unsloth-*.whl")
+          if not w:
+              print("FAIL: no wheel produced"); sys.exit(2)
+          w = w[0]
+          print(f"wheel: {w}")
+          with zipfile.ZipFile(w) as z:
+              n = z.namelist()
+              checks = {
+                "lockfile shipped":      any(s.endswith("studio/frontend/package-lock.json") for s in n),
+                "frontend dist shipped": any(s.endswith("studio/frontend/dist/index.html")    for s in n),
+                "no node_modules":       not any("studio/frontend/node_modules/" in s for s in n),
+                "no bun.lock":           not any(s.endswith("studio/frontend/bun.lock")       for s in n),
+              }
+              js = [s for s in n
+                    if "studio/frontend/dist/assets/" in s
+                    and s.endswith(".js")
+                    and "/index-" in s]
+              if not js:
+                  print("FAIL: no main bundle index-*.js in wheel"); sys.exit(2)
+              data = z.read(js[0]).decode("utf-8", "replace")
+              hits = data.count("unstable_Provider:")
+              print(f"main bundle: {js[0]}")
+              print(f"unstable_Provider hits: {hits} (>=4 indicates 2026.5.1 regression)")
+              checks["bundle has no Studio unstable_Provider call site"] = (hits < 4)
+
+              print()
+              for k, v in checks.items():
+                  print(f"  [{'PASS' if v else 'FAIL'}] {k}")
+              sys.exit(0 if all(checks.values()) else 1)
+          PY
+
+      - name: Studio backend import smoke
+        # Imports `studio.backend.main:app` from the freshly-installed wheel in
+        # a clean venv. This catches the class of bug that 2026.5.1 shipped with:
+        # frontend dist missing, package-lock.json missing, or the wheel's Python
+        # source tree broken in a way that surfaces only at app construction time.
+        run: |
+          python -m venv /tmp/v
+          /tmp/v/bin/pip install --upgrade pip
+          /tmp/v/bin/pip install -r studio/backend/requirements/studio.txt
+          /tmp/v/bin/pip install \
+            python-multipart aiofiles sqlalchemy cryptography \
+            pyyaml jinja2 mammoth unpdf requests \
+            'numpy<3'
+          /tmp/v/bin/pip install --no-deps dist/unsloth-*.whl
+          # Run from /tmp so Python imports the installed package, not the source tree.
+          cd /tmp
+          /tmp/v/bin/python -c "from studio.backend.main import app; print('Studio backend OK:', app.title)"
+
+      - name: Upload wheel on failure
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: unsloth-wheel
+          path: dist/
+          retention-days: 7

@@ -5,7 +5,11 @@ import Dexie, { type EntityTable, liveQuery } from "dexie";
 import { useEffect, useRef, useState } from "react";
 import type { MessageRecord, ThreadRecord } from "./types";
 
-const db = new Dexie("unsloth-chat") as Dexie & {
+// Legacy browser-only chat storage. Replaced by studio.db (see
+// chat-history-storage.ts), kept read-only for the one-shot import path.
+export const DEXIE_DB_NAME = "unsloth-chat";
+
+const db = new Dexie(DEXIE_DB_NAME) as Dexie & {
   threads: EntityTable<ThreadRecord, "id">;
   messages: EntityTable<MessageRecord, "id">;
 };
@@ -41,9 +45,8 @@ export { db };
 /**
  * Wraps Dexie liveQuery for React state updates.
  *
- * Important: include every semantic query input in `deps` (filters, sort keys,
- * IDs, etc). `querier` identity is intentionally ignored to avoid re-subscribing
- * on every render when callers pass inline functions.
+ * Include every semantic query input in `deps` (filters, sort keys, IDs). `querier`
+ * identity is ignored to avoid re-subscribing every render on inline functions.
  */
 export function useLiveQuery<T>(
   querier: () => Promise<T>,
