@@ -2435,6 +2435,7 @@ export function ChatPage({
                 value={selectedVoiceModelId}
                 onValueChange={(id) => void handleVoiceModelChange(id)}
                 loading={voiceSlotLoading}
+                disabled={!hasActiveModel}
                 className="!h-[34px]"
               />
             )}

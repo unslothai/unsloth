@@ -19,6 +19,9 @@ interface VoiceModelSelectorProps {
   value: string | null;
   onValueChange: (id: string | null) => void;
   loading?: boolean;
+  /** When true (no main chat model loaded), grey out and block the selector:
+   *  picking a voice would load a TTS model with no brain to generate replies. */
+  disabled?: boolean;
   className?: string;
 }
 
@@ -30,6 +33,7 @@ export const VoiceModelSelector: FC<VoiceModelSelectorProps> = ({
   value,
   onValueChange,
   loading = false,
+  disabled = false,
   className,
 }) => {
   const [open, setOpen] = useState(false);
@@ -43,16 +47,23 @@ export const VoiceModelSelector: FC<VoiceModelSelectorProps> = ({
   };
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    <Popover
+      open={disabled ? false : open}
+      onOpenChange={(next) => !disabled && setOpen(next)}
+    >
       <PopoverTrigger asChild>
         <button
           type="button"
+          disabled={disabled}
           className={cn(
-            "flex min-w-0 items-center gap-2 rounded-[10px] transition-colors hover:bg-[#ececec] dark:hover:bg-[#2d2e32]",
+            "flex min-w-0 items-center gap-2 rounded-[10px] transition-colors",
+            disabled
+              ? "cursor-not-allowed opacity-50"
+              : "hover:bg-[#ececec] dark:hover:bg-[#2d2e32]",
             "h-9 px-3.5 text-sm",
             className,
           )}
-          aria-label="Select voice model"
+          aria-label={disabled ? "Select a chat model first" : "Select voice model"}
         >
           {loading ? (
             <Spinner className="size-3.5 shrink-0 text-muted-foreground" />
@@ -60,7 +71,7 @@ export const VoiceModelSelector: FC<VoiceModelSelectorProps> = ({
             <MicVocalIcon className="size-3.5 shrink-0 text-muted-foreground" />
           )}
           <span className="min-w-0 truncate font-heading text-[16px] font-medium leading-tight text-black dark:text-white">
-            {displayName}
+            {disabled ? "Select model first" : displayName}
           </span>
           <span className="flex size-4 shrink-0 items-center justify-center">
             <HugeiconsIcon

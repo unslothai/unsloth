@@ -50,9 +50,17 @@ export const VoiceOrb: FC = () => {
 
       <div
         className={cn(
-          "pointer-events-none absolute inset-0 z-30 flex items-center justify-center bg-background",
+          // When active, the backdrop must intercept pointer events so hovers
+          // don't fall through to hidden chat history underneath (tooltips,
+          // hover menus, side panels). The composer dock sits at z-40 above this
+          // and keeps its own pointer-events-auto, so it stays interactive. When
+          // inactive the backdrop is still mounted (opacity-0), so it must let
+          // clicks pass through.
+          "absolute inset-0 z-30 flex items-center justify-center bg-background",
           "transition-opacity duration-500",
-          orbState ? "opacity-100" : "opacity-0",
+          orbState
+            ? "pointer-events-auto opacity-100"
+            : "pointer-events-none opacity-0",
         )}
         aria-hidden
       >
