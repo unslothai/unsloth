@@ -44,7 +44,9 @@ def test_uv_path_used_when_available(monkeypatch):
 def test_no_op_off_apple_silicon(monkeypatch):
     monkeypatch.setattr(mr, "is_apple_silicon", lambda: False)
     called = {"n": 0}
-    monkeypatch.setattr(mr, "attempt_mlx_repair", lambda **_k: called.__setitem__("n", called["n"] + 1) or True)
+    monkeypatch.setattr(
+        mr, "attempt_mlx_repair", lambda **_k: called.__setitem__("n", called["n"] + 1) or True
+    )
     assert mr.start_mlx_autorepair_if_needed() is False
     assert called["n"] == 0
 
@@ -82,6 +84,7 @@ def test_apple_silicon_missing_mlx_starts_repair_and_redetects(monkeypatch):
     monkeypatch.setattr(mr, "attempt_mlx_repair", _fake_repair)
 
     import utils.hardware.hardware as hw
+
     monkeypatch.setattr(hw, "detect_hardware", lambda: redetected.__setitem__("called", True))
 
     started = mr.start_mlx_autorepair_if_needed()

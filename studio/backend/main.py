@@ -459,11 +459,9 @@ async def lifespan(app: FastAPI):
     # elsewhere; opt out with UNSLOTH_DISABLE_MLX_AUTOREPAIR=1.
     try:
         from utils.mlx_repair import start_mlx_autorepair_if_needed
-
         start_mlx_autorepair_if_needed()
     except Exception as _mlx_exc:
         import structlog as _structlog
-
         _structlog.get_logger(__name__).debug("mlx autorepair skipped: %s", _mlx_exc)
 
     # Reap download workers orphaned by a previous crash before new downloads start.

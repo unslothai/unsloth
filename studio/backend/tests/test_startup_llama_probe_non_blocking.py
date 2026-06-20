@@ -43,11 +43,13 @@ def _fast_capability_probe(monkeypatch):
     # Keep the (local) capability probe instant + offline so the freshness sleep
     # is the only slow thing under test.
     monkeypatch.setattr(
-        LlamaCppBackend, "_find_llama_server_binary",
+        LlamaCppBackend,
+        "_find_llama_server_binary",
         staticmethod(lambda: "/no/such/llama-server"),
     )
     monkeypatch.setattr(
-        LlamaCppBackend, "probe_server_capabilities",
+        LlamaCppBackend,
+        "probe_server_capabilities",
         staticmethod(lambda _b: {"found": False}),
     )
     monkeypatch.delenv("UNSLOTH_DISABLE_UPDATE_CHECK", raising = False)

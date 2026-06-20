@@ -22,7 +22,7 @@ from utils.models.model_config import load_model_defaults  # noqa: E402
 
 def test_none_and_empty_return_empty_without_error(caplog):
     with caplog.at_level(logging.ERROR):
-        assert load_model_defaults(None) == {}      # type: ignore[arg-type]
+        assert load_model_defaults(None) == {}  # type: ignore[arg-type]
         assert load_model_defaults("") == {}
     assert "Error loading model defaults" not in caplog.text
     assert "NoneType" not in caplog.text
