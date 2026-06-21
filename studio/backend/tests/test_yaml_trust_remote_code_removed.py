@@ -70,6 +70,35 @@ def test_formerly_flagged_models_load_inference_config_without_crash():
         assert cfg.get("trust_remote_code", False) is False
 
 
+def test_all_model_yamls_load_for_training_and_inference():
+    # Every model default YAML must load through both Studio config paths without
+    # crashing: load_model_defaults (training) and load_inference_config (inference),
+    # including the exact .get() access patterns the routes use. Passing the file stem
+    # as the model name resolves to that exact file via the filename match.
+    from utils.inference import load_inference_config
+    from utils.models.model_config import load_model_defaults
+
+    infer_keys = {
+        "temperature", "top_p", "top_k", "min_p", "presence_penalty", "trust_remote_code",
+    }
+    failures = []
+    for f in sorted(_MODEL_DEFAULTS.rglob("*.yaml")):
+        stem = f.stem
+        try:
+            md = load_model_defaults(stem)
+            assert isinstance(md, dict), f"load_model_defaults -> {type(md).__name__}"
+            assert not [k for k, v in md.items() if v is None], "has a None section"
+            # the dict sections the loaders read via .get('sect', {}).get(...)
+            for sect in ("training", "inference", "lora", "logging"):
+                assert isinstance(md.get(sect, {}), dict), f"{sect!r} is not a mapping"
+            md.get("training", {}).get("trust_remote_code", False)  # routes/training.py:263
+            cfg = load_inference_config(stem)
+            assert infer_keys <= set(cfg), f"inference config missing {infer_keys - set(cfg)}"
+        except Exception as e:  # noqa: BLE001 - aggregate so one failure does not hide others
+            failures.append(f"{f.relative_to(_CONFIGS)}: {type(e).__name__}: {e}")
+    assert not failures, "YAML config loaders crashed on: " + "; ".join(failures)
+
+
 def test_base_templates_have_no_trust_remote_code():
     for name in ("full_finetune.yaml", "lora_text.yaml", "vision_lora.yaml"):
         doc = yaml.safe_load((_CONFIGS / name).read_text()) or {}
