@@ -14,8 +14,10 @@ function Check($name, $cond) {
 }
 
 $setupPath = (Resolve-Path ([System.IO.Path]::Combine($PSScriptRoot, "..", "..", "studio", "setup.ps1"))).Path
+# Match specifically the two system-version probe assignments (not every
+# Get-Command node/npm in the file, e.g. the OXC-runtime npm guard).
 $probeLines = (Get-Content $setupPath) | Where-Object {
-    $_ -match 'Get-Command (node|npm) -ErrorAction SilentlyContinue'
+    $_ -match '\$Sys(Node|Npm)Version = if \(Get-Command (node|npm) -ErrorAction SilentlyContinue'
 }
 Check "setup.ps1 guards both node and npm probes with Get-Command" ($probeLines.Count -eq 2)
 

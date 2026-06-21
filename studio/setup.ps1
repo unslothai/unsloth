@@ -1974,7 +1974,7 @@ if ($NeedFrontendBuild -and -not $IsPipInstall) {
     }
 }
 
-if ((Test-Path $OxcValidatorDir) -and $NodeSource -ne "skip") {
+if ((Test-Path $OxcValidatorDir) -and $NodeSource -ne "skip" -and (Get-Command npm -ErrorAction SilentlyContinue)) {
     substep "installing OXC validator runtime..."
     $prevEAP_oxc = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
@@ -1989,6 +1989,12 @@ if ((Test-Path $OxcValidatorDir) -and $NodeSource -ne "skip") {
     Pop-Location
     $ErrorActionPreference = $prevEAP_oxc
     step "oxc runtime" "installed"
+} elseif ((Test-Path $OxcValidatorDir) -and $NodeSource -ne "skip") {
+    # No npm on PATH (e.g. a pip-installed Studio with no system Node and no
+    # frontend build to provision the isolated Node). Skip the OXC runtime install
+    # instead of aborting setup -- the backend's runtime Node resolver degrades the
+    # validator gracefully. Mirrors setup.sh's `command -v npm` guard on this block.
+    substep "OXC validator runtime skipped (no npm found); code validation degrades until Node is available" "Yellow"
 }
 
 # ==========================================================================
