@@ -27,6 +27,14 @@ import utils.hardware.hardware as hw  # noqa: E402
 def _no_torch(monkeypatch):
     # Force the non-CUDA/XPU path regardless of the test host's real GPUs.
     monkeypatch.setattr(hw, "_has_torch", lambda: False)
+    # detect_hardware() assigns these module globals directly (not via monkeypatch),
+    # so save and restore them; otherwise a chat-only verdict here leaks into other
+    # backend tests (e.g. test_utils.py) when they share a process on a GPU host.
+    saved = (hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON, hw.IS_ROCM)
+    try:
+        yield
+    finally:
+        hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON, hw.IS_ROCM = saved
 
 
 def test_apple_silicon_without_mlx_is_chat_only_with_reason(monkeypatch):

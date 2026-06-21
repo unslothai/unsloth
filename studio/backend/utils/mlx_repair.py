@@ -124,14 +124,22 @@ def _transformers_constraint_args() -> tuple[list[str], str | None]:
     is belt-and-suspenders; on the plain-pip path (no UV_OVERRIDE support) it is
     the actual guard -- the resolver either finds an mlx build compatible with the
     pin or fails, leaving us chat-only rather than breaking Studio. Returns
-    (pip args, temp file path to clean up)."""
+    (pip args, temp file path to clean up).
+
+    Read the version from installed metadata rather than `import transformers`:
+    transformers can have valid metadata yet fail to import (e.g. an incompatible
+    huggingface_hub), and in that case we still want to pin it so the mlx install
+    cannot quietly upgrade it out from under Studio."""
+    from importlib.metadata import PackageNotFoundError, version as _dist_version
     try:
-        import transformers  # already a hard Studio dependency
+        transformers_version = _dist_version("transformers")
+    except PackageNotFoundError:
+        return [], None
     except Exception:
         return [], None
     fd, path = tempfile.mkstemp(prefix = "mlx_repair_", suffix = ".txt")
     with os.fdopen(fd, "w") as fh:
-        fh.write(f"transformers=={transformers.__version__}\n")
+        fh.write(f"transformers=={transformers_version}\n")
     return ["--constraint", path], path
 
 
