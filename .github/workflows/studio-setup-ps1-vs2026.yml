@@ -15,6 +15,10 @@
 #   - windows-2025-vs2026  -> real Visual Studio 2026 (toolset v180)
 # VS 2017/2019/2015 are retired from hosted images, so only 2022 and 2026 can be
 # exercised against a genuine install; the rest stay covered by job 1's mocks.
+#
+# Job 3 (vcredist-clean-box): exercises the VC++ runtime guard on a throwaway
+# runner - detection is present on the stock image, fires on a genuinely clean box
+# (signals removed restorably), and an uninstall/reinstall round trip restores it.
 
 name: Windows Studio setup.ps1 unit tests
 
@@ -152,3 +156,98 @@ jobs:
           }
 
           Write-Host "PASS: real $env:EXPECT_GEN detected correctly with toolset '$derived'."
+
+  vcredist-clean-box:
+    # Validate the VC++ runtime detection (Test-VCRedistInstalled) and the install
+    # path (Ensure-VCRedist) on a real, throwaway runner. Confirm present on the
+    # stock image, confirm detection FIRES on a genuinely clean box (registry +
+    # System32 signals removed, restorably), then run a literal uninstall/reinstall
+    # round trip. The runtime is always restored before the job ends.
+    name: VC++ runtime detect + install round-trip (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, windows-2025-vs2026]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Detect present, fire on a clean box, and round-trip the install
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          . (Join-Path $env:GITHUB_WORKSPACE 'tests/studio_setup_ps1/Get-FunctionSource.ps1')
+          $setup = Join-Path $env:GITHUB_WORKSPACE 'studio/setup.ps1'
+          foreach ($fn in @('step', 'substep', 'Invoke-SetupCommand', 'Refresh-Environment',
+                            'Test-VCRedistInstalled', 'Ensure-VCRedist')) {
+              $src = Get-FunctionSource -Path $setup -Name $fn
+              if (-not $src) { throw "Function '$fn' not found in setup.ps1" }
+              . ([scriptblock]::Create($src))
+          }
+
+          $regKeys = @(
+              'HKLM\SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64',
+              'HKLM\SOFTWARE\WOW6432Node\Microsoft\VisualStudio\14.0\VC\Runtimes\x64'
+          )
+          function Show-GroundTruth {
+              $dll = Join-Path $env:SystemRoot 'System32\vcruntime140_1.dll'
+              Write-Host ("  System32\vcruntime140_1.dll present: {0}" -f (Test-Path $dll))
+              foreach ($k in $regKeys) {
+                  $r = Get-ItemProperty -Path "HKLM:\$($k.Substring(5))" -ErrorAction SilentlyContinue
+                  if ($r) { Write-Host ("  {0}: Installed={1} {2}.{3}" -f $k, $r.Installed, $r.Major, $r.Minor) }
+                  else    { Write-Host ("  {0}: (absent)" -f $k) }
+              }
+          }
+
+          Write-Host '== A. Detection on the stock runner (expect present) =='
+          Show-GroundTruth
+          if (-not (Test-VCRedistInstalled)) { throw 'Test-VCRedistInstalled reported ABSENT on a stock runner that ships the VC++ runtime (detection regression).' }
+          Write-Host '  Test-VCRedistInstalled -> present  OK'
+
+          Write-Host '== B. Genuinely clean box (restorable): detection must FIRE =='
+          $scratch = Join-Path $env:RUNNER_TEMP 'cleanwin'
+          New-Item -ItemType Directory -Force -Path (Join-Path $scratch 'System32') | Out-Null
+          $backup = Join-Path $env:RUNNER_TEMP 'vcreg_backup'
+          New-Item -ItemType Directory -Force -Path $backup | Out-Null
+          $origSysRoot = $env:SystemRoot
+          try {
+              for ($i = 0; $i -lt $regKeys.Count; $i++) {
+                  reg query $regKeys[$i] *> $null
+                  if ($LASTEXITCODE -eq 0) {
+                      reg export $regKeys[$i] (Join-Path $backup "$i.reg") /y *> $null
+                      reg delete $regKeys[$i] /f *> $null
+                  }
+              }
+              $env:SystemRoot = $scratch
+              if (Test-VCRedistInstalled) { throw 'Detection still PRESENT after both signals were removed (it would never trigger an install on a clean box).' }
+              Write-Host '  Test-VCRedistInstalled -> absent  OK (detection fires on a clean box)'
+          } finally {
+              $env:SystemRoot = $origSysRoot
+              for ($i = 0; $i -lt $regKeys.Count; $i++) {
+                  $f = Join-Path $backup "$i.reg"
+                  if (Test-Path $f) { reg import $f *> $null }
+              }
+          }
+          Show-GroundTruth
+          if (-not (Test-VCRedistInstalled)) { throw 'Detection did not recover after restoring the registry (test restore bug).' }
+
+          Write-Host '== C. Literal uninstall on this throwaway VM (official installer), observe detection =='
+          $exe = Join-Path $env:RUNNER_TEMP 'vc_redist.x64.exe'
+          Invoke-WebRequest -Uri 'https://aka.ms/vs/17/release/vc_redist.x64.exe' -OutFile $exe
+          Start-Process -FilePath $exe -ArgumentList '/uninstall', '/quiet', '/norestart' -Wait
+          Show-GroundTruth
+          Write-Host ("  Test-VCRedistInstalled after uninstall -> {0}" -f (Test-VCRedistInstalled))
+
+          Write-Host '== D. Restore via Ensure-VCRedist (winget product path), installer fallback if needed =='
+          Ensure-VCRedist
+          if (-not (Test-VCRedistInstalled)) {
+              Write-Host '  winget path did not restore it; using the official installer to close the round trip.'
+              Start-Process -FilePath $exe -ArgumentList '/install', '/quiet', '/norestart' -Wait
+          }
+          Show-GroundTruth
+          if (-not (Test-VCRedistInstalled)) { throw 'VC++ runtime could not be restored after the uninstall round-trip.' }
+          Write-Host '  Test-VCRedistInstalled -> present  OK'
+          Write-Host 'PASS: detection is correct on a real install, fires on a clean box, and the install round-trip restores the runtime.'
