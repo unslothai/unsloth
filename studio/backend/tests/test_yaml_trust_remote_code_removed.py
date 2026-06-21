@@ -36,6 +36,41 @@ def test_no_model_default_yaml_sets_trust_remote_code():
     )
 
 
+def test_no_model_default_yaml_has_empty_or_none_section():
+    # Removing a section's only key (trust_remote_code) must not leave a bare header
+    # like `inference:` -> PyYAML parses that as None and load_inference_config() does
+    # `model_config.get("inference", {}).get(...)`, which crashes on None. Every present
+    # top-level section must be a non-empty mapping.
+    offenders = []
+    for f in _MODEL_DEFAULTS.rglob("*.yaml"):
+        doc = yaml.safe_load(f.read_text())
+        if not isinstance(doc, dict):
+            offenders.append(f"{f.relative_to(_CONFIGS)} (not a mapping)")
+            continue
+        for section, body in doc.items():
+            if body is None or (isinstance(body, dict) and not body):
+                offenders.append(f"{f.relative_to(_CONFIGS)} [{section}]")
+    assert not offenders, (
+        "empty/None YAML section would crash the config loaders; drop the bare section "
+        f"header instead. Offending: {offenders}"
+    )
+
+
+def test_formerly_flagged_models_load_inference_config_without_crash():
+    # End-to-end: the models whose inference section was emptied by the TRC removal must
+    # still load their inference config (falling back to family/default params).
+    from utils.inference import load_inference_config
+
+    for model in (
+        "tiiuae/Falcon-H1-0.5B-Instruct",
+        "unsloth/Llama-3.2-1B-Instruct",
+        "unsloth/Qwen2.5-7B",
+    ):
+        cfg = load_inference_config(model)
+        assert isinstance(cfg, dict)
+        assert cfg.get("trust_remote_code", False) is False
+
+
 def test_base_templates_have_no_trust_remote_code():
     for name in ("full_finetune.yaml", "lora_text.yaml", "vision_lora.yaml"):
         doc = yaml.safe_load((_CONFIGS / name).read_text()) or {}
