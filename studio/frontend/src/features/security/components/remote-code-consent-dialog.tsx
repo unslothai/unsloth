@@ -23,6 +23,7 @@ import { severityTone } from "../lib/severity-tone";
 import { useRemoteCodeConsentDialogStore } from "../stores/remote-code-consent-dialog-store";
 import type {
   RemoteCodeFinding,
+  RemoteCodeScan,
   RemoteCodeSeverity,
   RemoteCodeSnippetRow,
   UnsafeFile,
@@ -163,11 +164,17 @@ function FindingCard({ finding }: { finding: RemoteCodeFinding }) {
 
 /** Split a model id into its display name and provider (the HF org/owner) so the
  *  consent dialog can say e.g. `Nemotron-3-Nano-4B from "unsloth"`. Returns a null
- *  provider for local paths (./, /, ~, C:\, backslashes) and bare names with no owner. */
-function parseModelDisplay(modelName?: string): {
+ *  provider unless the id is a canonical single Hub repo (`owner/repo`, exactly one
+ *  slash, both segments non-empty) that is not a local path. A deeper path
+ *  (`models/llama/7b`), a local path (./, /, ~, C:\, backslashes), or a multi-repo
+ *  scan (a LoRA adapter pulls its base too, so findings span repos) all yield a null
+ *  provider -- we must not present another repo's or a local directory's name as the
+ *  publisher in a trust decision. */
+function parseModelDisplay(scan?: RemoteCodeScan | null): {
   displayName: string;
   provider: string | null;
 } {
+  const modelName = scan?.modelName;
   if (!modelName) return { displayName: "This model", provider: null };
   const parts = modelName.split("/");
   const displayName = parts[parts.length - 1] || modelName;
@@ -177,8 +184,27 @@ function parseModelDisplay(modelName?: string): {
     modelName.startsWith("~") ||
     modelName.includes("\\") ||
     /^[A-Za-z]:/.test(modelName);
-  const provider = parts.length >= 2 && !looksLocal ? parts[0] : null;
+  const isCanonicalHubId =
+    parts.length === 2 && Boolean(parts[0]) && Boolean(parts[1]);
+  // A LoRA/adapter scan also pulls its base model and aggregates findings across
+  // both, so a single owner from modelName could misattribute the base's issue.
+  const multiRepoScan = (scan?.scanCreatedRepos?.length ?? 0) > 1;
+  const provider =
+    isCanonicalHubId && !looksLocal && !multiRepoScan ? parts[0] : null;
   return { displayName, provider };
+}
+
+/** ` from "<provider>"` clause, rendered only when a provider was confidently
+ *  resolved (see {@link parseModelDisplay}). */
+function ProviderSuffix({ provider }: { provider: string | null }) {
+  if (!provider) return null;
+  return (
+    <>
+      {" "}
+      from{" "}
+      <span className="font-medium text-foreground">"{provider}"</span>
+    </>
+  );
 }
 
 /** App-wide consent dialog for trust_remote_code loads: shows scan findings with the
@@ -188,7 +214,7 @@ export function RemoteCodeConsentDialog() {
   const scan = useRemoteCodeConsentDialogStore((s) => s.scan);
   const resolve = useRemoteCodeConsentDialogStore((s) => s.resolve);
 
-  const { displayName, provider } = parseModelDisplay(scan?.modelName);
+  const { displayName, provider } = parseModelDisplay(scan);
   const blocked = scan ? !scan.approvable : false;
   const findings = scan?.findings ?? [];
   const unsafeFiles = scan?.unsafeFiles ?? [];
@@ -239,15 +265,7 @@ export function RemoteCodeConsentDialog() {
                       <span className="font-medium text-foreground">
                         {displayName}
                       </span>
-                      {provider ? (
-                        <>
-                          {" "}
-                          from{" "}
-                          <span className="font-medium text-foreground">
-                            "{provider}"
-                          </span>
-                        </>
-                      ) : null}{" "}
+                      <ProviderSuffix provider={provider} />{" "}
                       contains files that Hugging Face's security scan flagged as
                       unsafe (for example, a malicious pickle that would run code
                       when the model loads). It cannot be loaded. The flagged
@@ -258,15 +276,7 @@ export function RemoteCodeConsentDialog() {
                       <span className="font-medium text-foreground">
                         {displayName}
                       </span>
-                      {provider ? (
-                        <>
-                          {" "}
-                          from{" "}
-                          <span className="font-medium text-foreground">
-                            "{provider}"
-                          </span>
-                        </>
-                      ) : null}{" "}
+                      <ProviderSuffix provider={provider} />{" "}
                       declares custom Python code in its repository.{" "}
                       {blocked
                         ? "A security scan flagged CRITICAL issues, so it cannot be enabled."
