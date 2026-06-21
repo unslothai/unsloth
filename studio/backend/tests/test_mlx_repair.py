@@ -133,6 +133,35 @@ def test_stack_unavailable_without_mlx(monkeypatch):
     assert mr.mlx_stack_available() is False
 
 
+def test_stack_unavailable_when_companion_import_fails(monkeypatch):
+    monkeypatch.setattr(mr, "mlx_available", lambda: True)
+
+    def _import_module(name):
+        if name == "mlx_vlm":
+            raise ModuleNotFoundError(name)
+        return object()
+
+    monkeypatch.setattr(mr.importlib, "import_module", _import_module)
+    assert mr.mlx_stack_available() is False
+
+
+def test_stack_available_requires_runtime_imports_and_versions(monkeypatch):
+    import importlib.metadata as metadata
+
+    monkeypatch.setattr(mr, "mlx_available", lambda: True)
+    imported = []
+
+    def _import_module(name):
+        imported.append(name)
+        return object()
+
+    monkeypatch.setattr(mr.importlib, "import_module", _import_module)
+    monkeypatch.setattr(metadata, "version", lambda name: mr._MLX_MIN_VERSIONS[name])
+
+    assert mr.mlx_stack_available() is True
+    assert imported == list(mr._MLX_RUNTIME_IMPORTS)
+
+
 def test_no_op_off_apple_silicon(monkeypatch):
     monkeypatch.setattr(mr, "is_apple_silicon", lambda: False)
     called = {"n": 0}

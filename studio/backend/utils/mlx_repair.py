@@ -24,6 +24,7 @@ best-effort, opt out with UNSLOTH_DISABLE_MLX_AUTOREPAIR=1.
 
 from __future__ import annotations
 
+import importlib
 import os
 import platform
 import shutil
@@ -42,6 +43,7 @@ DISABLE_ENV_VAR = "UNSLOTH_DISABLE_MLX_AUTOREPAIR"
 # deps). mlx-vlm especially must be >=0.4.4: an older one still imports but
 # breaks VLM Train/Export, so installing it would wrongly clear chat-only.
 _MLX_MIN_VERSIONS = {"mlx": "0.22.0", "mlx-lm": "0.22.0", "mlx-vlm": "0.4.4"}
+_MLX_RUNTIME_IMPORTS = ("mlx_lm", "mlx_lm.sample_utils", "mlx_vlm")
 MLX_PACKAGES = tuple(f"{name}>={version}" for name, version in _MLX_MIN_VERSIONS.items())
 _REPAIR_TIMEOUT_S = 900
 
@@ -63,13 +65,23 @@ def mlx_available() -> bool:
         return False
 
 
+def _mlx_runtime_imports_available() -> bool:
+    for module in _MLX_RUNTIME_IMPORTS:
+        try:
+            importlib.import_module(module)
+        except Exception:
+            return False
+    return True
+
+
 def mlx_stack_available() -> bool:
     """`import mlx.core` works AND mlx/mlx-lm/mlx-vlm meet unsloth-zoo's minimums.
 
-    A bare `import mlx.core` is not enough: a backtracked old mlx-vlm imports
-    fine but breaks VLM Train/Export, so it must not count as a healthy stack
-    (otherwise the self-heal would clear chat-only onto a broken install)."""
+    A bare `import mlx.core` is not enough: missing companion modules or a
+    backtracked old mlx-vlm would enable Train/Export onto a broken stack."""
     if not mlx_available():
+        return False
+    if not _mlx_runtime_imports_available():
         return False
     try:
         from importlib.metadata import PackageNotFoundError
