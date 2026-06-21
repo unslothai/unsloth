@@ -1,0 +1,193 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Tests for utils.ssm_runtime: the inference-side auto-install of SSM/Mamba kernels.
+
+Covers detection, wheel-first install, idempotency, the failure path, the inference
+worker wiring, and a drift guard so the constants/detection stay in lockstep with the
+training worker (the original source of this behaviour).
+"""
+
+import sys
+import types
+from pathlib import Path
+
+import pytest
+
+_BACKEND = Path(__file__).resolve().parent.parent
+if str(_BACKEND) not in sys.path:
+    sys.path.insert(0, str(_BACKEND))
+
+from utils import ssm_runtime  # noqa: E402
+
+
+class _Result:
+    def __init__(self, returncode=0, stdout=""):
+        self.returncode = returncode
+        self.stdout = stdout
+
+
+# ── detection ────────────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("name", [
+    "unsloth/NVIDIA-Nemotron-3-Nano-4B",
+    "unsloth/Nemotron-3-Nano-30B-A3B",
+    "nvidia/Nemotron-H-8B",
+    "tiiuae/Falcon-H1-0.5B-Instruct",
+    "ibm-granite/granite-4.0-h-micro",
+    "ibm/granitemoehybrid-test",
+])
+def test_ssm_models_detected(name):
+    assert ssm_runtime.model_is_ssm(name) is True
+    # every SSM model also needs causal-conv1d
+    assert ssm_runtime.model_wants_causal_conv1d(name) is True
+
+
+@pytest.mark.parametrize("name", [
+    "Qwen/Qwen3-Next-80B-A3B",
+    "unsloth/Qwen3.5-2B",
+    "LiquidAI/LFM2-1.2B",
+])
+def test_causal_conv1d_only_models(name):
+    # linear-attention hybrids need causal-conv1d but not mamba-ssm
+    assert ssm_runtime.model_wants_causal_conv1d(name) is True
+    assert ssm_runtime.model_is_ssm(name) is False
+
+
+@pytest.mark.parametrize("name", [
+    "unsloth/Llama-3.2-1B-Instruct",
+    "unsloth/Qwen2.5-7B",
+    "unsloth/gemma-3-4b-it",
+    "",
+    None,
+])
+def test_non_ssm_models_not_detected(name):
+    assert ssm_runtime.model_is_ssm(name) is False
+    assert ssm_runtime.model_wants_causal_conv1d(name) is False
+
+
+# ── ensure_ssm_runtime behaviour ─────────────────────────────────────────────
+
+def test_noop_for_non_ssm_model(monkeypatch):
+    calls = []
+    monkeypatch.setattr(ssm_runtime, "_install_kernel", lambda **k: calls.append(k) or True)
+    ssm_runtime.ensure_ssm_runtime("unsloth/Llama-3.2-1B-Instruct", run=lambda *a, **k: _Result())
+    assert calls == []  # nothing installed for a plain transformer
+
+
+def test_ssm_model_installs_causal_then_mamba(monkeypatch):
+    order = []
+
+    def fake_install(*, import_name, **_):
+        order.append(import_name)
+        return True
+
+    monkeypatch.setattr(ssm_runtime, "_install_kernel", fake_install)
+    ssm_runtime.ensure_ssm_runtime("unsloth/NVIDIA-Nemotron-3-Nano-4B")
+    assert order == ["causal_conv1d", "mamba_ssm"]
+
+
+def test_causal_only_model_skips_mamba(monkeypatch):
+    order = []
+    monkeypatch.setattr(
+        ssm_runtime, "_install_kernel",
+        lambda *, import_name, **_: order.append(import_name) or True,
+    )
+    ssm_runtime.ensure_ssm_runtime("Qwen/Qwen3-Next-80B-A3B")
+    assert order == ["causal_conv1d"]
+
+
+def test_failure_raises_runtime_error(monkeypatch):
+    monkeypatch.setattr(ssm_runtime, "_install_kernel", lambda **k: False)
+    with pytest.raises(RuntimeError):
+        ssm_runtime.ensure_ssm_runtime("unsloth/Nemotron-3-Nano-30B-A3B")
+
+
+def test_install_kernel_idempotent_when_present(monkeypatch):
+    monkeypatch.setattr(ssm_runtime, "_is_importable", lambda name: True)
+    called = []
+    monkeypatch.setattr(ssm_runtime, "url_exists", lambda u: called.append("url") or True)
+    ok = ssm_runtime._install_kernel(
+        import_name="mamba_ssm", display_name="mamba-ssm", pypi_name="mamba-ssm",
+        package_version="2.3.1", release_tag="v2.3.1", release_base_url="x",
+        status_cb=None, run=lambda *a, **k: _Result(),
+    )
+    assert ok is True
+    assert called == []  # short-circuits before touching the network
+
+
+def test_install_kernel_uses_prebuilt_wheel(monkeypatch):
+    monkeypatch.setattr(ssm_runtime, "_is_importable", lambda name: False)
+    monkeypatch.setattr(ssm_runtime, "probe_torch_wheel_env", lambda timeout=30: {"x": "y"})
+    seen = {}
+    monkeypatch.setattr(
+        ssm_runtime, "direct_wheel_url",
+        lambda **k: seen.update(k) or "https://example/mamba_ssm-2.3.1-cp313.whl",
+    )
+    monkeypatch.setattr(ssm_runtime, "url_exists", lambda u: True)
+    installed = {}
+
+    def fake_install_wheel(url, **k):
+        installed["url"] = url
+        return [("uv", _Result(returncode=0))]
+
+    monkeypatch.setattr(ssm_runtime, "install_wheel", fake_install_wheel)
+    ran = []
+    ok = ssm_runtime._install_kernel(
+        import_name="mamba_ssm", display_name="mamba-ssm", pypi_name="mamba-ssm",
+        package_version="2.3.1", release_tag="v2.3.1",
+        release_base_url="https://github.com/state-spaces/mamba/releases/download",
+        status_cb=None, run=lambda *a, **k: ran.append(a) or _Result(),
+    )
+    assert ok is True
+    assert installed["url"].endswith(".whl")
+    assert seen["filename_prefix"] == "mamba_ssm"
+    assert ran == []  # wheel succeeded; no PyPI source build
+
+
+def test_install_kernel_falls_back_to_source(monkeypatch):
+    # no wheel -> source build -> importable after install
+    states = iter([False, True])  # before install, after install
+    monkeypatch.setattr(ssm_runtime, "_is_importable", lambda name: next(states))
+    monkeypatch.setattr(ssm_runtime, "probe_torch_wheel_env", lambda timeout=30: {})
+    monkeypatch.setattr(ssm_runtime, "direct_wheel_url", lambda **k: None)
+    pip_cmds = []
+    ok = ssm_runtime._install_kernel(
+        import_name="causal_conv1d", display_name="causal-conv1d", pypi_name="causal-conv1d",
+        package_version="1.6.1", release_tag="v1.6.1.post4", release_base_url="x",
+        status_cb=None, run=lambda cmd, **k: pip_cmds.append(cmd) or _Result(returncode=0),
+    )
+    assert ok is True
+    assert any("causal-conv1d==1.6.1" in c for c in pip_cmds[0])
+
+
+# ── inference worker wiring ───────────────────────────────────────────────────
+
+def test_inference_worker_calls_ensure_ssm_runtime():
+    src = (_BACKEND / "core" / "inference" / "worker.py").read_text()
+    assert "from utils.ssm_runtime import ensure_ssm_runtime" in src
+    assert "ensure_ssm_runtime(" in src
+
+
+# ── drift guard vs the training worker (single source of truth) ───────────────
+
+def test_constants_match_training_worker():
+    try:
+        from core.training import worker as tw
+    except Exception as exc:  # pragma: no cover - only when training deps absent
+        pytest.skip(f"training worker not importable here: {exc}")
+
+    assert set(ssm_runtime.SSM_MODEL_SUBSTRINGS) == set(tw._SSM_MODEL_SUBSTRINGS)
+    assert ssm_runtime.MAMBA_SSM_PACKAGE_VERSION == tw._MAMBA_SSM_PACKAGE_VERSION
+    assert ssm_runtime.MAMBA_SSM_RELEASE_TAG == tw._MAMBA_SSM_RELEASE_TAG
+    assert ssm_runtime.CAUSAL_CONV1D_PACKAGE_VERSION == tw._CAUSAL_CONV1D_PACKAGE_VERSION
+    assert ssm_runtime.CAUSAL_CONV1D_RELEASE_TAG == tw._CAUSAL_CONV1D_RELEASE_TAG
+
+    # detection must agree with the training worker across SSM + non-SSM names
+    for name in (
+        "unsloth/NVIDIA-Nemotron-3-Nano-4B", "nvidia/Nemotron-H-8B",
+        "tiiuae/Falcon-H1-0.5B", "ibm-granite/granite-4.0-h-micro",
+        "Qwen/Qwen3-Next-80B", "LiquidAI/LFM2-1.2B",
+        "unsloth/Llama-3.2-1B-Instruct", "unsloth/Qwen2.5-7B",
+    ):
+        assert ssm_runtime.model_wants_causal_conv1d(name) == tw._model_wants_causal_conv1d(name), name

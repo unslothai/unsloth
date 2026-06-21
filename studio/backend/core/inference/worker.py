@@ -232,6 +232,36 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                 )
                 return
 
+        # SSM/Mamba hybrids (Nemotron-H/Nano, Falcon-H1, Granite-4.0-H, ...) lazily
+        # `import mamba_ssm` / `causal_conv1d` inside their modeling code during
+        # from_pretrained; without those kernels the load dies with "mamba-ssm is
+        # required by the Mamba model but cannot be imported". The training worker
+        # already auto-installs them before a fine-tune; mirror that here so the same
+        # model loads for chat. No-op + idempotent for non-SSM models.
+        try:
+            from utils.ssm_runtime import ensure_ssm_runtime
+
+            ensure_ssm_runtime(
+                config["model_name"],
+                status_cb = lambda m: _send_response(
+                    resp_queue, {"type": "status", "message": m}
+                ),
+            )
+        except Exception as exc:
+            _send_response(
+                resp_queue,
+                {
+                    "type": "loaded",
+                    "success": False,
+                    "message": (
+                        f"This model needs SSM kernel libraries (causal-conv1d / "
+                        f"mamba-ssm) that could not be installed: {exc}"
+                    ),
+                    "error_kind": "ssm_runtime_install_failed",
+                },
+            )
+            return
+
         # Heartbeat keeps the orchestrator's inactivity deadline alive during slow
         # loads; a no-progress Xet download is reported as a stall so the parent
         # can respawn over HTTP. Watch model + base repos (base is the LoRA
