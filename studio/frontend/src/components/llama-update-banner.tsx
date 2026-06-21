@@ -8,12 +8,10 @@ import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { Download } from "lucide-react";
 import { type ReactElement, useEffect, useRef, useState } from "react";
-// Backend progress is coarse (5% steps, ~0.9 max) and the extract tail emits no
-// signal. Creep toward this cap so the bar keeps moving rather than freezing.
+// Creep toward this cap between coarse backend progress updates.
 const RUNNING_CAP = 0.95;
 
-// Smoothed 0..1 bar progress: eases toward real `progress`, trickles toward a
-// ceiling when idle, animates to 100% when `done`. Resets to 0 on each start.
+// Smooth coarse backend progress without freezing between milestones.
 function useSmoothedProgress(
   active: boolean,
   progress: number | null,
@@ -35,8 +33,7 @@ function useSmoothedProgress(
     let raf = 0;
     let last = performance.now();
     const tick = (now: number) => {
-      // rAF timestamps can predate the performance.now() captured above, so
-      // clamp dt at 0 to keep the first frame from stepping backwards.
+      // Guard against a first rAF timestamp before the captured start time.
       const dt = Math.max(0, Math.min((now - last) / 1000, 0.1));
       last = now;
       const current = displayRef.current;
@@ -74,18 +71,11 @@ function useSmoothedProgress(
 
 interface LlamaUpdateBannerProps {
   enabled?: boolean;
-  // false: fill the parent instead of self-anchoring, so banners can stack in a
-  // shared container. true (default) keeps standalone desktop mounts working.
+  // false fills a shared stack; true self-anchors.
   positioned?: boolean;
 }
 
-/**
- * Non-invasive "Update llama.cpp" affordance. Appears bottom-right ~1s after a
- * newer prebuilt is detected and stays up until the user explicitly acts on it
- * (X, Update, or Remind me later). Clicking Update swaps the prebuilt in place
- * via POST /api/llama/update. Can be turned off entirely in Settings ->
- * General -> Notifications (on by default).
- */
+/** Bottom-right llama.cpp update toast. */
 export function LlamaUpdateBanner({
   enabled = true,
   positioned = true,
@@ -99,9 +89,11 @@ export function LlamaUpdateBanner({
   async function handleUpdate() {
     const result = await apply();
     if (result?.ok) {
-      toast.success(
-        `llama.cpp updated to ${result.tag ?? "the latest build"}. Reload your model to use it.`,
-      );
+      const updatedTag = result.tag ?? status?.latest_tag ?? "the latest build";
+      const reloadHint = result.reloadRequired
+        ? " Reload your model to use it."
+        : "";
+      toast.success(`llama.cpp updated to ${updatedTag}.${reloadHint}`);
     } else if (result) {
       toast.error(
         `llama.cpp update failed: ${result.error ?? "unknown error"}`,
@@ -112,24 +104,20 @@ export function LlamaUpdateBanner({
   const show =
     visible && status != null && (status.update_available || applying);
   const sizeBytes = status?.update_size_bytes ?? null;
-  // Round to whole MB; these prebuilts are hundreds of MB.
   const sizeLabel =
     sizeBytes && sizeBytes > 0
       ? `${Math.round(sizeBytes / (1024 * 1024))} MB`
       : null;
   const updateProgress = status?.job.progress ?? null;
   const jobSucceeded = status?.job.state === "success";
-  // Drives the bar so it animates continuously; aria reports the real value.
+  // Display value animates; aria uses the real progress.
   const displayProgress = useSmoothedProgress(
     applying,
     updateProgress,
     jobSucceeded,
   );
 
-  // Render with no enter/exit animation. An opacity/transform transition (in or
-  // out) promotes a GPU compositing layer whose creation or teardown can flash
-  // for a frame on real displays, which reads as a flicker on appear and on
-  // dismiss. A plain conditional mount appears and leaves cleanly.
+  // Avoid opacity/transform transitions; GPU layer churn can flash.
   return show ? (
     <div
       className={cn(
@@ -220,7 +208,7 @@ export function LlamaUpdateBanner({
             </Button>
             <Button
               size="sm"
-              // -mr optically aligns the filled pill's edge with the card padding
+              // Align pill edge with card padding.
               className="-mr-1 h-auto rounded-full px-3.5 py-2 text-[13px]"
               onClick={handleUpdate}
               data-testid="llama-update-button"
