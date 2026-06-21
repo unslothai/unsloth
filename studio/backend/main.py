@@ -928,9 +928,6 @@ async def health_check(request: Request):
         "timestamp": datetime.now().isoformat(),
         "service": "Unsloth UI Backend",
         "chat_only": _hw_module.CHAT_ONLY,
-        # Why chat_only is set (None when training is enabled). Lets the UI explain
-        # greyed-out Train/Export, e.g. "mlx_unavailable" on Apple Silicon.
-        "chat_only_reason": getattr(_hw_module, "CHAT_ONLY_REASON", None),
         "desktop_protocol_version": 1,
         "desktop_manageability_version": 1,
         "supports_desktop_auth": True,
@@ -961,6 +958,8 @@ async def health_check(request: Request):
     device_type = platform_map.get(sys.platform, sys.platform)
     return {
         **base,
+        # Why chat_only is set. This fingerprints the host, so keep it authed.
+        "chat_only_reason": getattr(_hw_module, "CHAT_ONLY_REASON", None),
         "version": UNSLOTH_VERSION,
         "studio_version": STUDIO_VERSION,
         "device_type": device_type,

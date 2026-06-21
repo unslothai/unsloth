@@ -89,12 +89,30 @@ def mlx_stack_available() -> bool:
     return True
 
 
-def _pip_install_cmd(*args: str) -> list[str]:
-    """`uv pip install` into this venv if uv is on PATH, else `python -m pip
-    install`. Mirrors core.training.worker._pip_install_cmd."""
-    if shutil.which("uv"):
-        return ["uv", "pip", "install", "--python", sys.executable, *args]
-    return [sys.executable, "-m", "pip", "install", *args]
+def _uv_executable() -> str | None:
+    """Find uv even when macOS GUI launchers start with a minimal PATH."""
+    found = shutil.which("uv")
+    if found:
+        return found
+    for candidate in (
+        Path.home() / ".local" / "bin" / "uv",
+        Path.home() / ".cargo" / "bin" / "uv",
+        Path("/opt/homebrew/bin/uv"),
+        Path("/usr/local/bin/uv"),
+    ):
+        try:
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                return str(candidate)
+        except OSError:
+            continue
+    return None
+
+
+def _uv_install_cmd(*args: str) -> list[str] | None:
+    uv = _uv_executable()
+    if not uv:
+        return None
+    return [uv, "pip", "install", "--python", sys.executable, *args]
 
 
 def _mlx_install_env() -> dict[str, str]:
@@ -141,9 +159,15 @@ def attempt_mlx_repair(*, timeout: int = _REPAIR_TIMEOUT_S) -> bool:
     (so a backtracked old mlx-vlm is rejected, not accepted). transformers is held
     at its pinned version so the install can never upgrade it underneath Studio."""
     constraint_args, constraint_path = _transformers_constraint_args()
-    cmd = _pip_install_cmd("--upgrade", *constraint_args, *MLX_PACKAGES)
-    logger.info("MLX self-heal: installing %s", ", ".join(MLX_PACKAGES))
     try:
+        cmd = _uv_install_cmd("--upgrade", *constraint_args, *MLX_PACKAGES)
+        if cmd is None:
+            logger.warning(
+                "MLX self-heal requires uv so Studio can apply dependency overrides; "
+                "staying chat-only. Run `unsloth studio update` to restore uv."
+            )
+            return False
+        logger.info("MLX self-heal: installing %s", ", ".join(MLX_PACKAGES))
         result = subprocess.run(
             cmd,
             env = _mlx_install_env(),
