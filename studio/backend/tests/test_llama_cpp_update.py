@@ -445,6 +445,7 @@ def test_start_update_happy_path(monkeypatch, tmp_path):
         time.sleep(0.05)
     assert job["state"] == "success", job
     assert job["to_tag"] == "b9518"
+    assert job["reload_required"] is False
     # Installer was invoked with the resolved install dir + latest + repo.
     assert "--install-dir" in captured["cmd"]
     assert str(install_dir) in captured["cmd"]
@@ -454,6 +455,35 @@ def test_start_update_happy_path(monkeypatch, tmp_path):
     assert job["progress"] == 1.0
     # The worker asks the installer for fine-grained progress milestones.
     assert popen_kwargs["env"]["UNSLOTH_PROGRESS_PERCENT_STEP"] == "5"
+
+
+def test_start_update_reports_full_release_tag(monkeypatch, tmp_path):
+    install_dir = tmp_path / "llama.cpp"
+    binary = _write_install(install_dir, "b9595")
+    monkeypatch.setattr(upd, "_find_binary", lambda: binary)
+    monkeypatch.setattr(upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py")
+    monkeypatch.setattr(
+        freshness,
+        "_fetch_latest_release_tag",
+        lambda repo, timeout = 5.0: "b9596-mix-e6f2453",
+    )
+
+    def _on_start(cmd):
+        _write_install(install_dir, "b9596", release_tag = "b9596-mix-e6f2453")
+
+    _patch_installer_popen(monkeypatch, on_start = _on_start)
+
+    res = upd.start_update()
+    assert res["started"] is True
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        job = upd.get_update_status()["job"]
+        if job["state"] in ("success", "error"):
+            break
+        time.sleep(0.05)
+    assert job["state"] == "success", job
+    assert job["to_tag"] == "b9596-mix-e6f2453"
+    assert "Updated llama.cpp to b9596-mix-e6f2453." in job["message"]
 
 
 def test_start_update_installer_failure_reports_error(monkeypatch, tmp_path):
@@ -674,6 +704,7 @@ def test_update_sets_maintenance_flag_and_unloads(monkeypatch, tmp_path):
         time.sleep(0.05)
 
     assert backend.unloaded is True
+    assert upd.get_update_status()["job"]["reload_required"] is True
     assert seen.get("flag_during_install") is True
     # Cleared in the finally so model loads work again after the swap.
     assert backend._llama_update_in_progress is False

@@ -518,8 +518,11 @@ export function ChatSettingsPanel({
   const handleMtpUpdate = useCallback(async () => {
     const result = await applyLlamaUpdate();
     if (result.ok) {
+      const reloadHint = result.reloadRequired
+        ? " Reload your model to enable MTP."
+        : "";
       toast.success(
-        `llama.cpp updated to ${result.tag ?? "the latest build"}. Reload your model to enable MTP.`,
+        `llama.cpp updated to ${result.tag ?? "the latest build"}.${reloadHint}`,
       );
     } else {
       toast.error(`llama.cpp update failed: ${result.error ?? "unknown error"}`);

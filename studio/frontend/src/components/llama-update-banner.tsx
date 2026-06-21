@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
-import { isExternalModelId, useChatRuntimeStore } from "@/features/chat";
 import { useLlamaUpdateCheck } from "@/hooks/use-llama-update-check";
 import { useShowLlamaUpdateBanner } from "@/hooks/use-llama-update-pref";
 import { toast } from "@/lib/toast";
@@ -100,15 +99,8 @@ export function LlamaUpdateBanner({
   async function handleUpdate() {
     const result = await apply();
     if (result?.ok) {
-      // Prefer the full release tag (e.g. b9726-mix-<sha>); the job's to_tag and
-      // installed_tag are the bare bNNNN build number.
-      const updatedTag = status?.latest_tag ?? result.tag ?? "the latest build";
-      // Only a loaded local model can be reloaded to pick up the new binary;
-      // external-provider models do not use llama.cpp at all.
-      const checkpoint = useChatRuntimeStore.getState().params.checkpoint;
-      const hasLocalModel =
-        Boolean(checkpoint) && !isExternalModelId(checkpoint);
-      const reloadHint = hasLocalModel
+      const updatedTag = result.tag ?? status?.latest_tag ?? "the latest build";
+      const reloadHint = result.reloadRequired
         ? " Reload your model to use it."
         : "";
       toast.success(`llama.cpp updated to ${updatedTag}.${reloadHint}`);

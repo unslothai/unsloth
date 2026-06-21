@@ -62,6 +62,7 @@ _job: dict = {
     "message": "",
     "from_tag": None,
     "to_tag": None,
+    "reload_required": None,
     "error": None,
     "progress": None,
     "started_at": None,
@@ -505,7 +506,7 @@ def _run_update(install_dir: Path, repo: str, asset: Optional[str], script: Path
         except Exception as exc:  # pragma: no cover - network defensive
             logger.debug("llama update: post-install freshness refresh failed", error = str(exc))
         new_marker = read_install_marker(_find_binary())
-        new_tag = (new_marker or {}).get("tag") or (new_marker or {}).get("release_tag")
+        new_tag = (new_marker or {}).get("release_tag") or (new_marker or {}).get("tag")
 
         with _job_lock:
             _job.update(
@@ -515,6 +516,7 @@ def _run_update(install_dir: Path, repo: str, asset: Optional[str], script: Path
                     + (" Reload your model to use it." if model_was_active else "")
                 ),
                 to_tag = new_tag,
+                reload_required = model_was_active,
                 error = None,
                 progress = 1.0,
                 finished_at = _utcnow(),
@@ -618,6 +620,7 @@ def start_update() -> dict:
             message = "Downloading and installing the latest llama.cpp prebuilt...",
             from_tag = from_tag,
             to_tag = None,
+            reload_required = None,
             error = None,
             progress = 0.0,
             started_at = _utcnow(),
@@ -643,6 +646,7 @@ def _reset_job_for_tests() -> None:
             message = "",
             from_tag = None,
             to_tag = None,
+            reload_required = None,
             error = None,
             progress = None,
             started_at = None,

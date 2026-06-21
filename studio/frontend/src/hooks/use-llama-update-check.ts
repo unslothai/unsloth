@@ -21,6 +21,7 @@ export interface LlamaUpdateJob {
   message: string;
   from_tag: string | null;
   to_tag: string | null;
+  reload_required: boolean | null;
   error: string | null;
   // Download fraction (0..1) while running, 1 on success, null when unknown.
   progress: number | null;
@@ -52,6 +53,8 @@ function parseStatus(value: unknown): LlamaUpdateStatus | null {
       message: typeof job.message === "string" ? job.message : "",
       from_tag: typeof job.from_tag === "string" ? job.from_tag : null,
       to_tag: typeof job.to_tag === "string" ? job.to_tag : null,
+      reload_required:
+        typeof job.reload_required === "boolean" ? job.reload_required : null,
       error: typeof job.error === "string" ? job.error : null,
       progress: typeof job.progress === "number" ? job.progress : null,
     },
@@ -85,6 +88,7 @@ interface UseLlamaUpdateCheckOptions {
 export interface LlamaApplyResult {
   ok: boolean;
   tag?: string | null;
+  reloadRequired?: boolean | null;
   error?: string | null;
 }
 
@@ -126,7 +130,11 @@ export function useLlamaUpdateCheck({
         if (s.job.state === "success") {
           setVisible(false);
           void refreshHardwareInfo();
-          onDone?.({ ok: true, tag: s.job.to_tag });
+          onDone?.({
+            ok: true,
+            tag: s.job.to_tag,
+            reloadRequired: s.job.reload_required,
+          });
         } else if (s.job.state === "error") {
           // Leave the banner up so the user can retry; clearing applying drops
           // the "Updating..." state.
