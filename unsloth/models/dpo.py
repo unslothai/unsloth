@@ -60,17 +60,19 @@ def PatchDPOTrainer():
         _original_init = DPOTrainer.__init__
 
         def _patched_init(self, *args, **kwargs):
-            # Accept either DPOConfig or legacy TrainingArguments as `args` kwarg
-            if "args" in kwargs and isinstance(kwargs["args"], transformers.TrainingArguments):
-                if not isinstance(kwargs["args"], DPOConfig):
-                    import warnings
-                    warnings.warn(
-                        "Unsloth: Passing `TrainingArguments` to DPOTrainer is deprecated. "
-                        "Please use `trl.DPOConfig` (or `unsloth.UnslothDPOConfig`) instead. "
-                        "See: https://huggingface.co/docs/trl/dpo_trainer#trl.DPOConfig",
-                        DeprecationWarning,
-                        stacklevel = 2,
-                    )
+            # Accept either DPOConfig or legacy TrainingArguments
+            training_args = kwargs.get("args")
+            if training_args is None and len(args) > 2:
+                training_args = args[2]
+            if isinstance(training_args, transformers.TrainingArguments) and not isinstance(training_args, DPOConfig):
+                import warnings
+                warnings.warn(
+                    f"Unsloth: Passing '{type(training_args).__name__}' to DPOTrainer is deprecated. "
+                    "Please use 'trl.DPOConfig' (or 'unsloth.UnslothDPOConfig') instead. "
+                    "See: https://huggingface.co/docs/trl/dpo_trainer#trl.DPOConfig",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
             return _original_init(self, *args, **kwargs)
 
         DPOTrainer.__init__ = _patched_init
