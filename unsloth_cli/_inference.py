@@ -6,8 +6,6 @@
 import os
 import re
 import sys
-import urllib.error
-import urllib.request
 from pathlib import Path
 from typing import Optional
 
@@ -20,26 +18,29 @@ _THINK_BLOCK = re.compile(rf"{re.escape(_THINK_OPEN)}.*?</think>", re.DOTALL)
 # "Python-urllib/X.Y" User-Agent as a bot; send a real one on every request.
 _USER_AGENT = "unsloth-cli"
 
+# Built once, on first use; urllib stays function-local to match this module.
+_no_redirect_opener = None
 
-class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
-    """Refuse to follow redirects on requests that carry (or accept) credentials.
+
+def urlopen_no_redirect(request, timeout):
+    """urlopen that treats any redirect as an error.
 
     Following a 3xx would send a bearer token -- or accept an identity proof --
     from the base URL we vetted to a different one we didn't, which a process
     squatting the discovered port can abuse to relay a real Studio's response.
     """
+    global _no_redirect_opener
+    if _no_redirect_opener is None:
+        import urllib.error
+        import urllib.request
 
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        raise urllib.error.HTTPError(
-            req.full_url, code, f"refusing redirect to {newurl}", headers, fp
-        )
+        class _NoRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, req, fp, code, msg, headers, newurl):
+                raise urllib.error.HTTPError(
+                    req.full_url, code, f"refusing redirect to {newurl}", headers, fp
+                )
 
-
-_no_redirect_opener = urllib.request.build_opener(_NoRedirectHandler)
-
-
-def urlopen_no_redirect(request, timeout):
-    """urlopen that treats any redirect as an error (see _NoRedirectHandler)."""
+        _no_redirect_opener = urllib.request.build_opener(_NoRedirect)
     return _no_redirect_opener.open(request, timeout = timeout)
 
 
@@ -335,6 +336,7 @@ def verify_studio_identity(base: str, timeout: float = 3.0) -> bool:
     import hmac as _hmac
     import json
     import secrets as _secrets
+    import urllib.request
 
     try:
         import studio.backend.core  # noqa: F401  puts studio/backend on sys.path
@@ -397,6 +399,8 @@ class HttpChatBackend:
         timeout = None,
     ):
         import json
+        import urllib.request
+
         request = urllib.request.Request(
             self._base + path,
             data = None if payload is None else json.dumps(payload).encode(),
@@ -407,7 +411,7 @@ class HttpChatBackend:
             },
             method = method,
         )
-        # No redirects: this carries a bearer token (see _NoRedirectHandler).
+        # No redirects: this carries a bearer token (see urlopen_no_redirect).
         return urlopen_no_redirect(request, timeout = timeout)
 
     def ensure_loaded(self, model: str, *, hf_token, max_seq_length, load_in_4bit) -> None:
