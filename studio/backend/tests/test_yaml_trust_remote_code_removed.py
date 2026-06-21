@@ -60,7 +60,6 @@ def test_formerly_flagged_models_load_inference_config_without_crash():
     # End-to-end: the models whose inference section was emptied by the TRC removal must
     # still load their inference config (falling back to family/default params).
     from utils.inference import load_inference_config
-
     for model in (
         "tiiuae/Falcon-H1-0.5B-Instruct",
         "unsloth/Llama-3.2-1B-Instruct",
