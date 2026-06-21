@@ -3294,15 +3294,17 @@ def is_gemma4_shared_kv_model(model) -> bool:
     26B-A4B have num_kv_shared_layers == 0 and are unaffected.
     """
     config = getattr(model, "config", model)
-    text_config = getattr(config, "text_config", None) or config
-    model_type = getattr(config, "model_type", "") or ""
-    text_model_type = getattr(text_config, "model_type", "") or ""
+    # Use _config_get so a dict config (some serialization / init paths) is read
+    # correctly; plain getattr would silently miss the field on a dict.
+    text_config = _config_get(config, "text_config", None) or config
+    model_type = _config_get(config, "model_type", "") or ""
+    text_model_type = _config_get(text_config, "model_type", "") or ""
     if not (
         (isinstance(model_type, str) and model_type.startswith("gemma4"))
         or (isinstance(text_model_type, str) and text_model_type.startswith("gemma4"))
     ):
         return False
-    return (getattr(text_config, "num_kv_shared_layers", 0) or 0) > 0
+    return (_config_get(text_config, "num_kv_shared_layers", 0) or 0) > 0
 
 
 
