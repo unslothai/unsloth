@@ -126,3 +126,49 @@ def test_loader_defaults_trust_remote_code_off_for_formerly_flagged_models():
             assert not (d.get(section) or {}).get(
                 "trust_remote_code", False
             ), f"{model} [{section}] still carries a trust_remote_code default"
+
+
+def test_formerly_flagged_auto_map_models_still_require_consent_dialog():
+    # The crux of removing the YAML default: an auto_map model (Nemotron / PaddleOCR-VL /
+    # ERNIE-4.5-VL) must STILL surface the consent dialog. The dialog is driven by the
+    # repo's auto_map, not the YAML flag, so removing the flag cannot suppress it. This
+    # exercises the same backend path the training/inference/export flows call
+    # (preflight_remote_code_consent_for_targets -> the real _config_has_auto_map), mocking
+    # only the Hub config json + the .py downloader so no network/torch is needed.
+    from unittest.mock import patch
+    from utils.security import consent, preflight_remote_code_consent_for_targets
+
+    auto_map_cfg = [{
+        "auto_map": {"AutoConfig": "configuration_x.XConfig",
+                     "AutoModelForCausalLM": "modeling_x.XForCausalLM"}
+    }]
+    benign_py = {"modeling_x.py": "class XForCausalLM:\n    pass\n"}
+    for model in (
+        "unsloth/Nemotron-3-Nano-30B-A3B",
+        "unsloth/PaddleOCR-VL",
+        "unsloth/ERNIE-4.5-VL-28B-A3B-PT",
+    ):
+        with patch.object(consent, "_load_remote_code_configs", return_value=auto_map_cfg), \
+             patch.object(consent, "repo_remote_code_files", return_value=benign_py):
+            decision = preflight_remote_code_consent_for_targets([model], hf_token=None)
+        # routes/models.py sets requires_trust_remote_code = decision.has_remote_code, which
+        # the frontend uses to open the dialog.
+        assert decision.has_remote_code is True, (
+            f"{model} ships auto_map but the consent scan did not flag it -> dialog would "
+            "not fire"
+        )
+
+
+def test_no_auto_map_model_takes_no_dialog():
+    # The flip side: GLM-4.7-Flash ships no auto_map, so the scan reports no remote code
+    # and no dialog fires -- it loads natively with trust_remote_code=False. Its old YAML
+    # flag was a no-op, which is why removing it is safe.
+    from unittest.mock import patch
+    from utils.security import consent, preflight_remote_code_consent_for_targets
+
+    with patch.object(consent, "_load_remote_code_configs",
+                      return_value=[{"model_type": "glm4_moe_lite"}]):
+        decision = preflight_remote_code_consent_for_targets(
+            ["unsloth/GLM-4.7-Flash"], hf_token=None
+        )
+    assert decision.has_remote_code is False
