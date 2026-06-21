@@ -28,6 +28,16 @@ class DownloadModelRequest(BaseModel):
         True,
         description = "Use Xet parallel chunked transport. Default True; set False for HTTP Range-resume.",
     )
+    confirmed: bool = Field(
+        False,
+        description = (
+            "Explicit user confirmation to proceed with a first-time download. "
+            "When False and the model is not already cached locally, the server "
+            "returns state='confirmation_required' with needs_confirmation=True "
+            "instead of starting the download. Pass confirmed=True on the "
+            "follow-up request to actually begin downloading."
+        ),
+    )
 
 
 class CancelDownloadRequest(BaseModel):
@@ -61,6 +71,14 @@ class DownloadStartResponse(BaseModel):
     state: str
     accepted: bool
     generation: int
+    needs_confirmation: bool = Field(
+        False,
+        description = (
+            "True when the model is not in the local cache and the request did not "
+            "include confirmed=True.  The client should show a confirmation dialog "
+            "and re-POST with confirmed=True to begin the download."
+        ),
+    )
 
 
 class CancelDownloadResponse(BaseModel):
