@@ -2763,9 +2763,7 @@ class TestResolveReleaseAssetChoicePin:
         # walks back to the upstream release; stub that fetch so the unit test stays
         # offline (a live GitHub call is blocked by the security scanner) and the
         # walk-back deterministically finds no usable CUDA build -> PrebuiltFallback.
-        monkeypatch.setattr(
-            INSTALL_LLAMA_PREBUILT, "github_release_assets", lambda repo, tag: {}
-        )
+        monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "github_release_assets", lambda repo, tag: {})
         release = self._release([("13.3", "cuda13"), ("12.4", "cuda12")])
         checksums = self._checksums(["12.4"])  # 13.3 gated off for a 13.1 driver
         host = make_host(
