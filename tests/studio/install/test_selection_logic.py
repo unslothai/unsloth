@@ -2759,6 +2759,13 @@ class TestResolveReleaseAssetChoicePin:
     def test_no_cuda_attempt_on_published_path_for_13_1(self, monkeypatch):
         mock_windows_runtime(monkeypatch, ["cuda13", "cuda12"])
         self._no_torch(monkeypatch)
+        # After the published Blackwell filter drops every attempt, the resolver
+        # walks back to the upstream release; stub that fetch so the unit test stays
+        # offline (a live GitHub call is blocked by the security scanner) and the
+        # walk-back deterministically finds no usable CUDA build -> PrebuiltFallback.
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT, "github_release_assets", lambda repo, tag: {}
+        )
         release = self._release([("13.3", "cuda13"), ("12.4", "cuda12")])
         checksums = self._checksums(["12.4"])  # 13.3 gated off for a 13.1 driver
         host = make_host(
