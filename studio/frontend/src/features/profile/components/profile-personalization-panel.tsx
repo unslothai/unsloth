@@ -11,7 +11,7 @@ import { useT } from "@/i18n";
 import { toastError, toastSuccess } from "@/shared/toast";
 import { Camera01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { SLOTH_AVATARS } from "../sloth-avatars";
 import { decodeJwtSubject } from "../utils/jwt-subject";
 import { resizeImageFileToDataUrl } from "../utils/resize-image-file";
@@ -65,6 +65,8 @@ export function ProfilePersonalizationPanel() {
   const [draftName, setDraftName] = useState(displayName);
   const [draftNickname, setDraftNickname] = useState(nickname);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const lastDisplayNameRef = useRef(displayName);
+  const lastNicknameRef = useRef(nickname);
 
   const sessionSub = decodeJwtSubject(getAuthToken()) ?? "";
   const previewName = draftName.trim() || sessionSub || "Unsloth";
@@ -76,6 +78,18 @@ export function ProfilePersonalizationPanel() {
     () => draftNickname.trim() !== nickname.trim(),
     [draftNickname, nickname],
   );
+
+  useEffect(() => {
+    const previous = lastDisplayNameRef.current;
+    lastDisplayNameRef.current = displayName;
+    setDraftName((draft) => (draft === previous ? displayName : draft));
+  }, [displayName]);
+
+  useEffect(() => {
+    const previous = lastNicknameRef.current;
+    lastNicknameRef.current = nickname;
+    setDraftNickname((draft) => (draft === previous ? nickname : draft));
+  }, [nickname]);
 
   const saveName = () => {
     const trimmed = draftName.trim();
@@ -111,7 +125,6 @@ export function ProfilePersonalizationPanel() {
     }
   };
 
-  // Persist an avatar value (data URL or asset URL) and toast the result.
   const applyAvatar = (value: string) => {
     setAvatarDataUrl(value);
     const persisted = readPersistedProfile();

@@ -5,7 +5,10 @@ import { AppSidebar } from "@/components/app-sidebar";
 import { Navbar } from "@/components/navbar";
 import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
-import { SettingsDialog, useSettingsDialogStore } from "@/features/settings";
+import {
+  SettingsDialog,
+  useSettingsDialogStore,
+} from "@/features/settings";
 import {
   ChatPage,
   clearNewChatDraft,
@@ -16,7 +19,7 @@ import { RemoteCodeConsentDialog } from "@/features/security";
 import { useTrainingUnloadGuard } from "@/features/training";
 import { useExportRuntimeLifecycle } from "@/features/export";
 import { hasAuthToken } from "@/features/auth";
-import { usePersonalizationSync } from "@/features/profile/hooks/use-personalization-sync";
+import { usePersonalizationSync } from "@/features/profile";
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
 import { useT, type TranslationKey } from "@/i18n";
 import {
@@ -52,6 +55,11 @@ function RouteFallback() {
       {t("common.loading")}
     </div>
   );
+}
+
+function PersonalizationSyncMount() {
+  usePersonalizationSync(hasAuthToken());
+  return null;
 }
 
 const CHAT_ONLY_ALLOWED = new Set([
@@ -137,10 +145,6 @@ function RootLayout() {
   // Global export driver: streams worker logs and tracks status from any route
   // so an export keeps running and stays visible while training / chatting.
   useExportRuntimeLifecycle();
-  // Mirror profile + appearance to the server (when signed in) so they follow
-  // the account across browsers and devices instead of living only in this
-  // browser's localStorage.
-  usePersonalizationSync(hasAuthToken());
 
   const matchedTitle = useMatches({
     select: (matches) => {
@@ -206,6 +210,7 @@ function RootLayout() {
 
   return (
     <AppProvider>
+      <PersonalizationSyncMount />
       <SettingsDialog />
       <RemoteCodeConsentDialog />
       {hideNavbar ? (

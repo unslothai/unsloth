@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Server-side personalization validation + persistence roundtrip."""
-
 import sys
 from pathlib import Path
 
@@ -60,6 +58,37 @@ def test_valid_avatar_and_shape():
         }
     )
     assert p.profile.avatarShape == "rounded"
+
+
+def test_bundled_avatar_url_allowed():
+    p = PersonalizationPayload.model_validate(
+        {"profile": {"avatarDataUrl": "/Sloth%20emojis/large%20sloth%20yay.png"}}
+    )
+    assert p.profile.avatarDataUrl == "/Sloth%20emojis/large%20sloth%20yay.png"
+
+
+def test_bundled_avatar_subpath_allowed():
+    p = PersonalizationPayload.model_validate(
+        {"profile": {"avatarDataUrl": "/studio/Sloth%20emojis/large%20sloth%20yay.png"}}
+    )
+    assert "Sloth%20emojis" in p.profile.avatarDataUrl
+
+
+def test_bundled_avatar_traversal_rejected():
+    with pytest.raises(ValidationError):
+        PersonalizationPayload.model_validate(
+            {"profile": {"avatarDataUrl": "/Sloth%20emojis/../secret.png"}}
+        )
+
+
+def test_get_read_errors_propagate(monkeypatch):
+    def fail(*args, **kwargs):
+        raise RuntimeError("read failed")
+
+    monkeypatch.setattr("storage.studio_db.get_app_setting", fail)
+
+    with pytest.raises(RuntimeError, match = "read failed"):
+        pers.get_personalization()
 
 
 def test_get_set_roundtrip(monkeypatch):

@@ -2,6 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 from typing import Literal, Optional
+from urllib.parse import unquote, urlsplit
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -121,9 +122,17 @@ def update_helper_precache(
     return _helper_precache_response(enabled)
 
 
-# --- Personalization (profile + appearance), persisted server-side ----------
-# Field names are camelCase to match the frontend stores 1:1; extra keys are
-# ignored so the client can add prefs without a backend change.
+def _is_bundled_avatar_url(value: str) -> bool:
+    parsed = urlsplit(value)
+    if parsed.scheme or parsed.netloc:
+        return False
+    path = unquote(parsed.path).lstrip("/")
+    if ".." in path.split("/"):
+        return False
+    marker = "Sloth emojis/"
+    if marker not in path:
+        return False
+    return path[path.index(marker):].lower().endswith(".png")
 
 
 class PersonalizationProfile(BaseModel):
@@ -131,7 +140,7 @@ class PersonalizationProfile(BaseModel):
 
     displayName: str = Field("", max_length = 200)
     nickname: str = Field("", max_length = 200)
-    avatarDataUrl: Optional[str] = Field(None)
+    avatarDataUrl: Optional[str] = Field(None, max_length = MAX_AVATAR_DATA_URL_BYTES)
     avatarShape: Literal["circle", "rounded"] = "circle"
 
     @field_validator("avatarDataUrl")
@@ -139,10 +148,8 @@ class PersonalizationProfile(BaseModel):
     def _validate_avatar(cls, value: Optional[str]) -> Optional[str]:
         if not value:
             return value
-        if not value.startswith("data:image/"):
-            raise ValueError("avatarDataUrl must be an image data URL.")
-        if len(value) > MAX_AVATAR_DATA_URL_BYTES:
-            raise ValueError("Avatar image is too large.")
+        if not value.startswith("data:image/") and not _is_bundled_avatar_url(value):
+            raise ValueError("avatarDataUrl must be an image data URL or bundled avatar.")
         return value
 
 
@@ -162,9 +169,6 @@ class PersonalizationPayload(BaseModel):
 
 
 class PersonalizationResponse(PersonalizationPayload):
-    # Whether a blob was ever saved. The client uses this to decide between
-    # hydrating from the server and migrating existing local settings up, so a
-    # never-saved account does not overwrite the browser's values with defaults.
     saved: bool = False
 
 
@@ -172,8 +176,6 @@ class PersonalizationResponse(PersonalizationPayload):
 def get_personalization_settings(
     current_subject: str = Depends(get_current_subject),
 ) -> PersonalizationResponse:
-    # Normalize the stored blob through the model so the client always gets a
-    # complete, validated shape (defaults fill any missing fields).
     stored = get_personalization()
     response = PersonalizationResponse.model_validate(stored or {})
     response.saved = bool(stored)
