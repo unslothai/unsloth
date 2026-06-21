@@ -238,26 +238,39 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
         # required by the Mamba model but cannot be imported". The training worker
         # already auto-installs them before a fine-tune; mirror that here so the same
         # model loads for chat. No-op + idempotent for non-SSM models.
-        try:
-            from utils.ssm_runtime import ensure_ssm_runtime
-            ensure_ssm_runtime(
-                config["model_name"],
-                status_cb = lambda m: _send_response(resp_queue, {"type": "status", "message": m}),
-            )
-        except Exception as exc:
-            _send_response(
-                resp_queue,
-                {
-                    "type": "loaded",
-                    "success": False,
-                    "message": (
-                        f"This model needs SSM kernel libraries (causal-conv1d / "
-                        f"mamba-ssm) that could not be installed: {exc}"
-                    ),
-                    "error_kind": "ssm_runtime_install_failed",
-                },
-            )
-            return
+        #
+        # Skip entirely on MLX (Apple Silicon): these are CUDA/ROCm Torch kernels
+        # with no MLX use and no macOS prebuilt wheel, so the source build would
+        # just fail before the MLX backend ever loads the model.
+        if getattr(backend, "device", None) != "mlx":
+            try:
+                from utils.ssm_runtime import ensure_ssm_runtime
+
+                _ssm_status = lambda m: _send_response(
+                    resp_queue, {"type": "status", "message": m}
+                )
+                # Check the requested id and, for a LoRA, its base model: an adapter
+                # named e.g. "me/my-lora" won't match the SSM heuristics, but its
+                # SSM base (Nemotron-H, ...) is what actually needs the kernels.
+                ssm_targets = [config["model_name"]]
+                if mc.is_lora and getattr(mc, "base_model", None):
+                    ssm_targets.append(str(mc.base_model))
+                for ssm_target in dict.fromkeys(ssm_targets):
+                    ensure_ssm_runtime(ssm_target, status_cb = _ssm_status)
+            except Exception as exc:
+                _send_response(
+                    resp_queue,
+                    {
+                        "type": "loaded",
+                        "success": False,
+                        "message": (
+                            f"This model needs SSM kernel libraries (causal-conv1d / "
+                            f"mamba-ssm) that could not be installed: {exc}"
+                        ),
+                        "error_kind": "ssm_runtime_install_failed",
+                    },
+                )
+                return
 
         # Heartbeat keeps the orchestrator's inactivity deadline alive during slow
         # loads; a no-progress Xet download is reported as a stall so the parent

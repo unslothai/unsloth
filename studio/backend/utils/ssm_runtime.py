@@ -23,6 +23,7 @@ fails if the two copies drift.
 
 from __future__ import annotations
 
+import importlib
 import shutil
 import subprocess
 import sys
@@ -93,6 +94,10 @@ def model_wants_causal_conv1d(model_name: str) -> bool:
 
 
 def _is_importable(import_name: str) -> bool:
+    # Invalidate the import-system finder caches first so a kernel installed
+    # earlier in THIS process (wheel or source build) is visible -- without this
+    # the freshly written site-packages can still import as ModuleNotFoundError.
+    importlib.invalidate_caches()
     try:
         __import__(import_name)
         return True
@@ -151,6 +156,8 @@ def _install_kernel(
             run = run,
         ):
             if getattr(result, "returncode", 1) == 0:
+                # Make the just-written wheel importable in this process.
+                importlib.invalidate_caches()
                 logger.info("Installed prebuilt %s wheel", display_name)
                 return True
             logger.warning(
