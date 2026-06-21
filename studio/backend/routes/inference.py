@@ -1393,6 +1393,20 @@ async def _select_request_tools(
     return tools
 
 
+def _apply_rag_nudge(nudge: str, tools: list[dict], *, rag_scope) -> str:
+    """Append the RAG grounding nudge to ``nudge`` when the knowledge-base tool
+    is active (search_knowledge_base present and a retrieval scope is set). The
+    date is prefixed when the tool nudge is empty (RAG-only tool set). Returns
+    ``nudge`` unchanged when RAG isn't active."""
+    tool_names = {(t.get("function") or {}).get("name") for t in (tools or [])}
+    if "search_knowledge_base" not in tool_names or not rag_scope:
+        return nudge
+    if not nudge:
+        date_line = f"The current date is {_date.today().isoformat()}."
+        return date_line + " " + _RAG_GROUNDING_NUDGE
+    return nudge + " " + _RAG_GROUNDING_NUDGE
+
+
 # Strip tool-call XML the speculative buffer in core/inference/llama_cpp.py
 # split across the visible/DRAIN boundary. Four leak shapes:
 #   1. well-formed `<tool_call>...</tool_call>` / `<function=...>...</function>`
@@ -4970,16 +4984,7 @@ async def openai_chat_completions(
             )
 
             # Nudge the model to ground in attached documents instead of memory.
-            _tool_names = {(t.get("function") or {}).get("name") for t in (tools_to_use or [])}
-            _rag_active = "search_knowledge_base" in _tool_names and payload.rag_scope
-            if _rag_active:
-                # Prefix the date when the tool nudge is empty (RAG-only tool set).
-                _date_line = f"The current date is {_date.today().isoformat()}."
-                _nudge = (
-                    _date_line + " " + _RAG_GROUNDING_NUDGE
-                    if not _nudge
-                    else _nudge + " " + _RAG_GROUNDING_NUDGE
-                )
+            _nudge = _apply_rag_nudge(_nudge, tools_to_use, rag_scope = payload.rag_scope)
 
             if _nudge:
                 # Append nudge to system prompt (preserve user's prompt)
@@ -5460,16 +5465,7 @@ async def openai_chat_completions(
         )
 
         # RAG nudge, mirroring the GGUF path.
-        _sf_tool_names = {(t.get("function") or {}).get("name") for t in (_sf_tools_to_use or [])}
-        _sf_rag_active = "search_knowledge_base" in _sf_tool_names and payload.rag_scope
-        if _sf_rag_active:
-            # Prefix the date when the tool nudge is empty (RAG-only tool set).
-            _sf_date_line = f"The current date is {_date.today().isoformat()}."
-            _sf_nudge = (
-                _sf_date_line + " " + _RAG_GROUNDING_NUDGE
-                if not _sf_nudge
-                else _sf_nudge + " " + _RAG_GROUNDING_NUDGE
-            )
+        _sf_nudge = _apply_rag_nudge(_sf_nudge, _sf_tools_to_use, rag_scope = payload.rag_scope)
 
         _sf_system_prompt = system_prompt
         if _sf_nudge:

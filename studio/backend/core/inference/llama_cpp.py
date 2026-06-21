@@ -573,12 +573,14 @@ def detect_reasoning_flags(
 ) -> dict:
     """Classify a chat template's reasoning and tool-calling capabilities.
 
-    Returns the same five keys as the GGUF sniffer: ``supports_reasoning``,
-    ``reasoning_style`` (``"enable_thinking"`` | ``"reasoning_effort"``),
-    ``reasoning_always_on``, ``supports_preserve_thinking``,
-    ``supports_tools``. Used by both the llama-server backend at load time
-    and the safetensors/transformers paths in ``routes/inference`` so they
-    agree on what the frontend sees.
+    Returns the same six keys as the GGUF sniffer: ``supports_reasoning``,
+    ``reasoning_style`` (``"enable_thinking"`` | ``"reasoning_effort"`` |
+    ``"enable_thinking_effort"``), ``reasoning_always_on``,
+    ``reasoning_effort_levels``, ``supports_preserve_thinking``,
+    ``supports_tools``. A falsy ``chat_template`` yields the all-default dict.
+    Used by both the llama-server backend at load time and the
+    safetensors/transformers paths in ``routes/inference`` so they agree on
+    what the frontend sees.
     """
     flags = {
         "supports_reasoning": False,
