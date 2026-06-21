@@ -37,13 +37,13 @@ _amd_smi_disabled = False
 def _path_inside_venv(path: str) -> bool:
     """True if ``path`` is inside the active venv (sys.prefix).
 
-    The AMD torch wheel ships hipInfo.exe in the venv and main.py/worker.py put it
-    on PATH for bitsandbytes, but it is NOT a HIP SDK (see _hip_sdk_present)."""
+    The venv hipInfo.exe (AMD wheel, put on PATH by main.py/worker.py for
+    bitsandbytes) is NOT a HIP SDK (see _hip_sdk_present)."""
     try:
         # realpath (not abspath): resolve symlinks/8.3 names so an aliased venv matches.
         root = os.path.normcase(os.path.realpath(sys.prefix))
-        # A root-dir prefix (C:\ or /) would make commonpath match every path on it;
-        # never treat that as "inside the venv" (defensive: a venv is never at root).
+        # Guard a root-dir prefix (C:\ or /): commonpath would match every path on
+        # it. A venv is never at root, so treat that as outside.
         if os.path.dirname(root) == root:
             return False
         return os.path.normcase(os.path.commonpath([os.path.realpath(path), root])) == root
@@ -71,8 +71,8 @@ def _hip_sdk_present() -> bool:
     """True if a HIP SDK is detectable (hipinfo on PATH or under HIP_PATH/
     ROCM_PATH), so amd-smi has a runtime and runs un-elevated.
 
-    Ignores the venv hipInfo.exe (AMD wheel, put on PATH by main.py/worker.py for
-    bitsandbytes): not a HIP SDK, and it does NOT stop amd-smi's DiskPart UAC."""
+    Ignores the venv hipInfo.exe (AMD wheel via the bnb fix): not a HIP SDK, and
+    doesn't stop amd-smi's DiskPart UAC."""
     if _external_hipinfo_on_path():
         return True
     for var in ("HIP_PATH", "HIP_PATH_57", "ROCM_PATH"):

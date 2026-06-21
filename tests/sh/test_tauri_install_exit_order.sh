@@ -35,8 +35,8 @@ early_tauri_exit_line=$(
     awk -v setup="$first_setup_check_line" '
         NR >= setup { exit }
         # Only a real "if ...; then" opener starts a Tauri block. Ignore && one-liners
-        # like the reroute helper'\''s `[ "$TAURI_MODE" = true ] && _rr_args=... --tauri`,
-        # whose later (correct) reroute `exit 0` is not an end-of-install success exit.
+        # like the reroute `[ "$TAURI_MODE" = true ] && _rr_args=... --tauri`, whose
+        # reroute `exit 0` is not an end-of-install success exit.
         /^[[:space:]]*if \[ "\$TAURI_MODE" = true \][[:space:]]*;[[:space:]]*then[[:space:]]*$/ {
             in_tauri = 1
             depth = 1

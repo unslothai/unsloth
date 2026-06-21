@@ -31,8 +31,8 @@ function Uninstall-UnslothStudio {
                 return
             }
             # Remove-Item -Recurse can report success yet leave a transiently-locked
-            # child (e.g. unsloth.ico held by Explorer's icon cache). Verify + retry
-            # so we never falsely claim "removed" or orphan the dir.
+            # child (e.g. unsloth.ico in Explorer's icon cache); verify + retry so we
+            # never falsely claim "removed" or orphan the dir.
             if (-not (Test-Path -LiteralPath $Path)) {
                 _Substep "removed: $Path" "Green"
                 return
@@ -42,9 +42,8 @@ function Uninstall-UnslothStudio {
         }
     }
 
-    # Remove the shared data dir, but keep unsloth.ico if a WSL shortcut still uses
-    # it (install.sh points the WSL icon here) -- else that shortcut blanks.
-    # uninstall.sh drops the icon + empty dir when WSL is later removed.
+    # Remove the shared data dir, but keep unsloth.ico if a WSL shortcut still points
+    # at it (else that shortcut blanks); uninstall.sh drops it when WSL is removed.
     function _RemoveDataDirKeepingWslIcon {
         param(
             [string]$DataDir,
@@ -53,8 +52,8 @@ function Uninstall-UnslothStudio {
         )
         if ([string]::IsNullOrWhiteSpace($DataDir)) { return }
         if (-not (Test-Path -LiteralPath $DataDir)) { return }
-        # $null = not passed (use defaults); honor an explicit @(), so test $null
-        # not truthiness (-not @() is $true).
+        # $null = not passed (use defaults); test $null not truthiness so an explicit
+        # @() is honored (-not @() is $true).
         if ($null -eq $ShortcutDirs) {
             # Guard $env:APPDATA: it can be unset in service/CI Windows contexts, where
             # an unguarded Join-Path emits a noisy parameter-binding error.
@@ -415,9 +414,9 @@ function Uninstall-UnslothStudio {
         }
     } catch { }
 
-    # Re-sweep: Explorer/SMEH may have held unsloth.ico open for the native shortcut
-    # on the first pass; now the shortcut is gone the handle is freed. (A surviving
-    # WSL shortcut still keeps the icon -- see the helper.)
+    # Re-sweep: the first pass may have left unsloth.ico locked by Explorer/SMEH for
+    # the native shortcut; that handle is now freed. (A surviving WSL shortcut still
+    # keeps the icon -- see the helper.)
     if ($defaultDataDir -and (Test-Path -LiteralPath $defaultDataDir)) { _RemoveDataDirKeepingWslIcon $defaultDataDir }
 
     # ── Clean user PATH and registry backup ──

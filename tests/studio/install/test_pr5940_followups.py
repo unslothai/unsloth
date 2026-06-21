@@ -272,9 +272,9 @@ def test_amd_smi_opt_out_overrides_hip_sdk():
 
 
 def test_amd_smi_skipped_when_hipinfo_is_venv_internal(tmp_path):
-    # The venv hipInfo.exe (AMD wheel, on PATH via the bnb fix) is NOT a HIP SDK
-    # and must NOT re-open the gate -- else amd-smi pops the DiskPart UAC mid-install
-    # on Strix Halo with no real HIP SDK (the snapcast3r/UBER6 bug).
+    # The venv hipInfo.exe (AMD wheel via the bnb fix) is NOT a HIP SDK and must
+    # not re-open the gate -- else amd-smi pops the DiskPart UAC mid-install on
+    # Strix Halo with no real HIP SDK (the snapcast3r/UBER6 bug).
     venv_root = tmp_path / "venv"
     venv_scripts = venv_root / "Scripts"
     venv_scripts.mkdir(parents = True)
@@ -448,9 +448,9 @@ def test_ps_venv_probe_expands_tilde_for_custom_studio_home(ps):
         f"{ps.name}: the ~ expansion must guard against an empty $env:USERPROFILE "
         "before Join-Path (else it throws on a profile-less account)"
     )
-    # A bare "~" leaves an empty child path; Join-Path rejects an empty -ChildPath
-    # on PS 5.1, so the expansion must fall back to USERPROFILE directly (only
-    # joining a non-empty remainder) instead of calling Join-Path with "".
+    # A bare "~" leaves an empty child path, which Join-Path rejects on PS 5.1, so
+    # the expansion must fall back to USERPROFILE directly (joining only a non-empty
+    # remainder) rather than call Join-Path with "".
     assert "$studioHomeRest" in block and "else { $env:USERPROFILE }" in block, (
         f"{ps.name}: the ~ expansion must handle a bare ~ without passing an empty "
         "child path to Join-Path (PS 5.1 rejects it)"
@@ -464,8 +464,8 @@ def _ps_floor_map(text, prefix):
 
 def test_install_setup_ps_rocm_torch_floors_in_sync():
     # install.ps1/setup.ps1 pull from AMD's per-arch index; their torch and
-    # companion floor maps must match so both resolve the same ABI-consistent
-    # trio (install.ps1 once left companions bare -> incompatible set -> CPU).
+    # companion floor maps must match so both resolve the same ABI-consistent trio
+    # (install.ps1 once left companions bare -> incompatible set -> CPU).
     it = _INSTALL_PS1.read_text(encoding = "utf-8")
     st = _SETUP_PS1.read_text(encoding = "utf-8")
     for prefix in ("torch>=", "torchvision>=", "torchaudio>="):
@@ -543,8 +543,8 @@ def test_install_python_stack_gates_every_amd_smi_spawn():
 
 def test_install_ps1_installs_rocm_torch_for_known_arch():
     # A known AMD arch (even name-inferred, $HasROCm false) must select the ROCm
-    # index directly, not a CPU base setup.ps1 then force-reinstalls as ROCm. The
-    # repo.amd.com wheels bundle their runtime (no HIP SDK), so gate on $ROCmGfxArch.
+    # index directly, not a CPU base that setup.ps1 then force-reinstalls as ROCm.
+    # The repo.amd.com wheels bundle their runtime (no HIP SDK), so gate on $ROCmGfxArch.
     text = _INSTALL_PS1.read_text(encoding = "utf-8")
     gates = [
         ln
@@ -587,8 +587,8 @@ def test_python_hipinfo_strips_quotes_in_all_copies():
 
 
 def test_python_path_inside_venv_guards_root_prefix_in_all_copies():
-    # If sys.prefix ever resolves to a bare root (C:\ or /), commonpath would match
-    # every path on that filesystem and classify a real external hipinfo as
+    # If sys.prefix resolves to a bare root (C:\ or /), commonpath matches every
+    # path on the filesystem and classifies a real external hipinfo as
     # venv-internal, silently disabling amd-smi. All three copies must guard it.
     for src in (_PREBUILT_PATH, _AMD_PY, _PYSTACK_PY):
         text = src.read_text(encoding = "utf-8")
@@ -638,7 +638,7 @@ def test_ps_env_fallback_iterates_all_hip_roots(ps):
 def test_install_ps1_clears_rocm_index_after_cpu_fallback():
     # After the ROCm->CPU fallback, $ROCmIndexUrl must be cleared so the later
     # flavor-repair block doesn't retry the just-failed index and Exit-InstallFailure
-    # (the fallback is meant to let install complete; setup.ps1 retries ROCm).
+    # (the fallback lets install complete; setup.ps1 retries ROCm).
     text = _INSTALL_PS1.read_text(encoding = "utf-8")
     i = text.find("ROCm PyTorch install failed")
     assert i != -1, "ROCm->CPU fallback block not found in install.ps1"
@@ -666,7 +666,7 @@ def test_install_ps1_rocm_repair_pins_companions():
 def test_install_sh_wsl_reroute_uses_pipefail():
     # The `curl | sh` reroute runs via `bash -lc`; without pipefail a failed curl is
     # masked by sh exiting 0 on empty input, so the reroute would wrongly report
-    # success and exit 0 the parent installer.
+    # success and exit 0 from the parent installer.
     text = _INSTALL_SH.read_text(encoding = "utf-8")
     assert "set -o pipefail" in text, "reroute must enable pipefail"
     # The reroute targets the selected distro ($_rr_target: 24.04 preferred, 22.04
@@ -682,9 +682,9 @@ def test_install_sh_wsl_reroute_uses_pipefail():
 
 
 def test_uninstall_sh_preserves_shared_icon_for_surviving_shortcut():
-    # The WSL uninstall shares %LOCALAPPDATA%\Unsloth Studio\unsloth.ico with the
-    # native install and other WSL distros; both removal paths must keep it while any
-    # "Unsloth Studio*.lnk" shortcut survives (reciprocal of uninstall.ps1's
+    # %LOCALAPPDATA%\Unsloth Studio\unsloth.ico is shared with the native install
+    # and other WSL distros; both removal paths must keep it while any "Unsloth
+    # Studio*.lnk" survives (reciprocal of uninstall.ps1's
     # _RemoveDataDirKeepingWslIcon), not delete it unconditionally.
     text = (PACKAGE_ROOT / "scripts" / "uninstall.sh").read_text(encoding = "utf-8")
     assert "_drop_shared_icon_if_unused" in text, (
@@ -704,11 +704,11 @@ def test_uninstall_sh_preserves_shared_icon_for_surviving_shortcut():
 
 
 def test_install_python_stack_windows_rocm_repair_pins_and_is_nonfatal():
-    # The Windows AMD ROCm repair path in _ensure_rocm_torch() must mirror the
-    # PowerShell installer: (1) pin torchvision/torchaudio for the arches the PS
-    # side pins so AMD's per-arch index resolves an ABI-consistent trio, and
-    # (2) be nonfatal so a transient AMD-index failure does not abort the whole
-    # install after the PowerShell side already fell back to CPU torch.
+    # The Windows AMD ROCm repair in _ensure_rocm_torch() must mirror the PS
+    # installer: (1) pin torchvision/torchaudio for the arches the PS side pins so
+    # the per-arch index resolves an ABI-consistent trio, and (2) be nonfatal so a
+    # transient index failure doesn't abort the install after the PS side already
+    # fell back to CPU torch.
     text = _PYSTACK_PY.read_text(encoding = "utf-8")
     assert (
         "_WINDOWS_ROCM_TORCH_PKG_SPECS" in text

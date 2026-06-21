@@ -1,11 +1,11 @@
 #!/bin/bash
 # Unit tests for _maybe_reroute_strixhalo_to_2404() from install.sh.
 #
-# ROCm-on-WSL only targets Ubuntu 24.04: from a newer default distro (e.g. 26.04)
-# with a 24.04 distro present, re-run the install there and stop; otherwise leave
-# the distro alone and let CPU-fallback print the `wsl --install` hint. Tests that
-# decision matrix hermetically -- the function is extracted from install.sh, its
-# absolute paths rewritten to per-test fixtures, with a mock wsl.exe (no real WSL).
+# ROCm-on-WSL only targets Ubuntu 24.04: from a newer distro (e.g. 26.04) with a
+# 24.04 distro present, re-run the install there and stop; otherwise leave the distro
+# alone and let CPU-fallback print the `wsl --install` hint. Tested hermetically: the
+# function is extracted from install.sh, its absolute paths rewritten to per-test
+# fixtures, with a mock wsl.exe (no real WSL).
 #
 # Follows the extract-via-sed pattern of test_get_torch_index_url.sh.
 set -e
@@ -16,7 +16,7 @@ PASS=0
 FAIL=0
 
 # All fixtures/temp files live under one root removed on exit, so a set -e abort
-# (or a failed assertion that stops the script) can't leak dirs into $TMPDIR.
+# can't leak dirs into $TMPDIR.
 _TMP_ROOT=$(mktemp -d)
 trap 'rm -rf "$_TMP_ROOT"' EXIT
 
@@ -173,9 +173,8 @@ _out=$(run_func "$_d" SKIP_TORCH=true)
 assert_contains "SKIP_TORCH=true -> no route"           "$_out" "__NOROUTE__"
 rm -rf "$_d"
 
-# 11) Loop-guard payload check: the reroute exec exports UNSLOTH_WSL_REROUTED=1
-#     into the child so the nested install short-circuits gate 7. Verify the
-#     export is part of the command handed to wsl.exe -d.
+# 11) Loop-guard payload: the reroute exports UNSLOTH_WSL_REROUTED=1 into the child
+#     (so the nested install short-circuits gate 7). Verify it reaches wsl.exe -d.
 _d=$(make_fixture 1 strix 0 26.04 1)
 _out=$(run_func "$_d" UNSLOTH_WSL_REROUTE_CMD='echo flag=[$UNSLOTH_WSL_REROUTED]')
 assert_contains "reroute exports loop-guard flag"       "$_out" "flag=[1]"
@@ -235,8 +234,7 @@ rm -rf "$_d"
 
 # 19) No wsl.exe on an unsupported distro -> can't reach a 24.04 target, so stay
 #     CPU-only AND set the skip guard (don't bootstrap ROCm into 26.04 etc.).
-#     Drop the stub AND pin PATH to coreutils so a real host wsl.exe (this runs on
-#     dev boxes that have WSL) can't leak in and make the "no wsl.exe" case route.
+#     Drop the stub AND pin PATH to coreutils so a real host wsl.exe can't leak in.
 _d=$(make_fixture 1 strix 0 26.04 1)
 rm -f "$_d/bin/wsl.exe"
 _out=$(run_func "$_d" PATH="$_d/bin:/usr/bin:/bin")

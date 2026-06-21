@@ -1629,7 +1629,7 @@ exit 0
             param([AllowNull()][string]$HipinfoPath)
             if ([string]::IsNullOrWhiteSpace($HipinfoPath)) { return $false }
             # Also derive the venv from the setup python + default Studio home, so
-            # its hipInfo is caught even when VenvDir/VIRTUAL_ENV are unset.
+            # the venv hipInfo is caught when VenvDir/VIRTUAL_ENV are unset.
             $venvRoots = @()
             if ($env:VIRTUAL_ENV) { $venvRoots += $env:VIRTUAL_ENV }
             $vd = Get-Variable -Name VenvDir -ValueOnly -ErrorAction SilentlyContinue
@@ -1666,9 +1666,9 @@ exit 0
             }
             return $false
         }
-        # Get-Command returns only the first hipinfo; the venv copy (bnb fix) could
-        # shadow a real HIP SDK's. Scan all, keep the first non-venv one.
-        # -CommandType Application so only real executables match (not a user alias/function named hipinfo).
+        # Scan all hipinfo and keep the first non-venv one (the venv copy from the
+        # bnb fix could shadow a real HIP SDK's). -CommandType Application matches
+        # only real executables, not a user alias/function named hipinfo.
         $hipinfoExe = Get-Command hipinfo -CommandType Application -All -ErrorAction SilentlyContinue |
             Where-Object { -not (Test-HipinfoIsVenvInternal $_.Source) } |
             Select-Object -First 1
@@ -1781,9 +1781,9 @@ exit 0
         }
         # ── Arch resolution: env-var override → name inference ──────────────
         # Runs even when the probe can't confirm a runtime ($HasROCm false): the
-        # gfx arch from the WMI GPU name drives both ROCm llama.cpp and the torch
-        # wheels. repo.amd.com wheels bundle their own runtime (no HIP SDK), so a
-        # mapped arch installs ROCm torch directly below -- no wasted CPU base.
+        # WMI-name gfx arch drives both ROCm llama.cpp and torch. repo.amd.com
+        # wheels bundle their own runtime (no HIP SDK), so a mapped arch installs
+        # ROCm torch directly below -- no wasted CPU base.
         if (-not $ROCmGfxArch) {
             # 1. Manual override: set UNSLOTH_ROCM_GFX_ARCH=gfx1151 before running.
             if ($env:UNSLOTH_ROCM_GFX_ARCH) {
@@ -2050,10 +2050,9 @@ exit 0
             "gfx1201" = "torch>=2.11.0,<2.12.0"; "gfx1200" = "torch>=2.11.0,<2.12.0"
             "gfx1151" = "torch>=2.11.0,<2.12.0"; "gfx1150" = "torch>=2.11.0,<2.12.0"
         }
-        # torchvision/torchaudio companion ranges -- track the torch ceiling so
-        # pip resolves a consistent trio on AMD's per-arch index (which publishes
-        # each independently). Mirrors setup.ps1 / install_python_stack.py; bump
-        # all three together when 2.12.x is validated.
+        # Companion ranges track the torch ceiling so pip resolves a consistent
+        # trio on AMD's per-arch index (each published independently). Mirrors
+        # setup.ps1 / install_python_stack.py; bump all three together for 2.12.x.
         $torchvisionFloorMap = @{
             "gfx1201" = "torchvision>=0.26.0,<0.27.0"; "gfx1200" = "torchvision>=0.26.0,<0.27.0"
             "gfx1151" = "torchvision>=0.26.0,<0.27.0"; "gfx1150" = "torchvision>=0.26.0,<0.27.0"
@@ -2202,9 +2201,9 @@ exit 0
                     Write-Host "[ERROR] Failed to install PyTorch (ROCm and CPU base both failed, exit code $torchInstallExit)" -ForegroundColor Red
                     return (Exit-InstallFailure "Failed to install PyTorch (exit code $torchInstallExit)" $torchInstallExit)
                 }
-                # CPU base is in place; drop the ROCm expectation so the flavor-repair
-                # block below doesn't retry the just-failed index and abort. setup.ps1
-                # reinstalls ROCm afterwards (it recomputes its own index URL).
+                # CPU base is in; drop the ROCm expectation so the flavor-repair
+                # block below won't retry the just-failed index and abort. setup.ps1
+                # reinstalls ROCm afterwards (recomputes its own index URL).
                 $ROCmIndexUrl = $null
                 $ROCmTorchFloor = $null
             }
@@ -2305,8 +2304,8 @@ exit 0
                     # AMD: a migrated venv can keep a stale CPU torch the fresh ROCm path
                     # would have force-reinstalled. Repair from the same repo.amd.com index.
                     $rocmSpec = if ($ROCmTorchFloor) { $ROCmTorchFloor } else { "torch" }
-                    # Pin companions like the fresh ROCm path; bare names can resolve an
-                    # ABI-incompatible torchvision/torchaudio on AMD's per-arch index.
+                    # Pin companions like the fresh ROCm path (bare names can pull an
+                    # ABI-incompatible torchvision/torchaudio from the per-arch index).
                     $visionSpec = if ($ROCmGfxArch -and $torchvisionFloorMap.ContainsKey($ROCmGfxArch)) { $torchvisionFloorMap[$ROCmGfxArch] } else { "torchvision" }
                     $audioSpec = if ($ROCmGfxArch -and $torchaudioFloorMap.ContainsKey($ROCmGfxArch)) { $torchaudioFloorMap[$ROCmGfxArch] } else { "torchaudio" }
                     substep "PyTorch flavor mismatch (installed $installedTorchTag, need ROCm) -- reinstalling correct build..." "Yellow"

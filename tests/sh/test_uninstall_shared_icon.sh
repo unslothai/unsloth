@@ -1,12 +1,12 @@
 #!/bin/bash
 # Unit tests for _drop_shared_icon_if_unused() from scripts/uninstall.sh.
 #
-# The WSL uninstall shares %LOCALAPPDATA%\Unsloth Studio\unsloth.ico with the
-# native install and every other WSL distro's shortcut. Removing one side must
-# KEEP the icon while any "Unsloth Studio*.lnk" shortcut still references it, and
-# only drop it (plus the dir, if empty) once the last shortcut is gone. Reciprocal
-# of uninstall.ps1's _RemoveDataDirKeepingWslIcon. Tested hermetically: the
-# function is extracted from uninstall.sh and run against per-test fixture dirs.
+# The WSL uninstall shares %LOCALAPPDATA%\Unsloth Studio\unsloth.ico with the native
+# install and every other WSL distro's shortcut. Removing one side must KEEP the icon
+# while any "Unsloth Studio*.lnk" still references it, and drop it (plus the dir, if
+# empty) only once the last shortcut is gone. Reciprocal of uninstall.ps1's
+# _RemoveDataDirKeepingWslIcon. Tested hermetically: the function is extracted from
+# uninstall.sh and run against per-test fixture dirs.
 #
 # Follows the extract-via-sed pattern of test_strixhalo_wsl_reroute.sh.
 set -e
@@ -17,7 +17,7 @@ PASS=0
 FAIL=0
 
 # All fixtures/temp files live under one root removed on exit, so a set -e abort
-# (or a failed assertion that stops the script) can't leak dirs into $TMPDIR.
+# can't leak dirs into $TMPDIR.
 _TMP_ROOT=$(mktemp -d)
 trap 'rm -rf "$_TMP_ROOT"' EXIT
 

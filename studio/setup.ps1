@@ -808,7 +808,7 @@ if (-not $HasNvidiaSmi) {
         if ([string]::IsNullOrWhiteSpace($HipinfoPath)) { return $false }
         # VenvDir/VIRTUAL_ENV can be unset this early (the update flow probes before
         # VenvDir is set), so also derive the venv from the setup python + default
-        # Studio home; else the venv hipInfo isn't caught.
+        # Studio home, else the venv hipInfo isn't caught.
         $venvRoots = @()
         if ($env:VIRTUAL_ENV) { $venvRoots += $env:VIRTUAL_ENV }
         $vd = Get-Variable -Name VenvDir -ValueOnly -ErrorAction SilentlyContinue
@@ -845,9 +845,9 @@ if (-not $HasNvidiaSmi) {
         }
         return $false
     }
-    # Get-Command returns only the first hipinfo; the venv copy (bnb fix) could
-    # shadow a real HIP SDK's. Scan all, keep the first non-venv one.
-    # -CommandType Application so only real executables match (not a user alias/function named hipinfo).
+    # Scan all hipinfo and keep the first non-venv one (the venv copy from the
+    # bnb fix could shadow a real HIP SDK's). -CommandType Application matches
+    # only real executables, not a user alias/function named hipinfo.
     $hipinfoExe = Get-Command hipinfo -CommandType Application -All -ErrorAction SilentlyContinue |
         Where-Object { -not (Test-HipinfoIsVenvInternal $_.Source) } |
         Select-Object -First 1
@@ -2495,12 +2495,11 @@ if (-not $ROCmIndexUrl -and $CuTag -eq "cpu") {
     }
 }
 
-# No unsloth.exe rename needed. The rename never worked: setup.ps1 runs *via*
-# unsloth.exe, so renaming the running uv-trampoline launcher failed with a
-# sharing violation (WinError 32) and only printed a scary warning. Nor is it
-# needed -- install.ps1 sets SKIP_STUDIO_BASE=1 (base never reinstalled), and
-# 'studio update' upgrades via uv (--upgrade-package), whose pip fallback no-ops
-# on the already-satisfied bare unsloth/unsloth-zoo. Either way unsloth.exe stays.
+# No unsloth.exe rename needed. setup.ps1 runs *via* unsloth.exe, so renaming the
+# running launcher only ever failed (WinError 32) and printed a scary warning. It's
+# also unnecessary: install.ps1 sets SKIP_STUDIO_BASE=1 (base never reinstalled) and
+# 'studio update' goes through uv (--upgrade-package), whose pip fallback no-ops on
+# the already-satisfied bare unsloth/unsloth-zoo. Either way unsloth.exe stays.
 
 # Ordered heavy dependency installation -- shared cross-platform script
 substep "running ordered dependency installation..."
