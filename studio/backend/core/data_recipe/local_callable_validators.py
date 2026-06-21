@@ -253,6 +253,7 @@ def _run_oxc_batch(
         node_bin_dir = os.path.dirname(node_executable)
         if node_bin_dir:
             env["PATH"] = node_bin_dir + os.pathsep + env.get("PATH", "")
+        env.pop("NODE_PATH", None)
         proc = subprocess.run(
             [node_executable, str(_OXC_RUNNER_PATH)],
             cwd = str(_OXC_TOOL_DIR),

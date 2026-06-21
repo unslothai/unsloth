@@ -606,6 +606,10 @@ elif [ "$NODE_SOURCE" = bundled ]; then
     # Prepend the isolated bin so node/npm/bun resolve here for the build and the
     # oxc step below. Affects this script's process only -- not the user's shell.
     export PATH="$NODE_DIR/bin:$PATH"
+    # Keep npm and module resolution inside the isolated Node.
+    export NPM_CONFIG_PREFIX="$NODE_DIR"
+    export npm_config_prefix="$NODE_DIR"
+    unset NODE_PATH
     hash -r 2>/dev/null || true
     step "node" "$(node -v) | npm $(npm -v) (isolated)"
 else

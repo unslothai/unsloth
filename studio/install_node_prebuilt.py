@@ -412,6 +412,34 @@ def install_lock_path(install_dir: Path) -> Path:
     return install_dir.parent / f".{install_dir.name}.install.lock"
 
 
+def _pid_is_alive(pid: int) -> bool:
+    """Best-effort process liveness check that never signals the process on Windows."""
+    if pid <= 0:
+        return False
+    if sys.platform == "win32":
+        try:
+            result = subprocess.run(
+                ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+                capture_output = True,
+                text = True,
+                timeout = 5,
+                **_windows_hidden_kwargs(),
+            )
+        except (OSError, ValueError, subprocess.SubprocessError):
+            # Be conservative if tasklist itself is unavailable.
+            return True
+        return f'"{pid}"' in result.stdout
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except ValueError:
+        return False
+    return True
+
+
 @contextmanager
 def install_lock(lock_path: Path) -> Iterator[None]:
     lock_path.parent.mkdir(parents = True, exist_ok = True)
@@ -432,11 +460,9 @@ def install_lock(lock_path: Path) -> Iterator[None]:
                 stale = False
                 if raw:
                     try:
-                        os.kill(int(raw), 0)
-                    except (ValueError, ProcessLookupError):
+                        stale = not _pid_is_alive(int(raw))
+                    except ValueError:
                         stale = True
-                    except PermissionError:
-                        pass
                 if stale:
                     lock_path.unlink(missing_ok = True)
                     continue

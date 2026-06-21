@@ -7,6 +7,7 @@
 $ErrorActionPreference = "Stop"
 $setupPath = [System.IO.Path]::Combine($PSScriptRoot, "..", "..", "studio", "setup.ps1")
 $setupPath = (Resolve-Path $setupPath).Path
+$source = Get-Content -Raw -Path $setupPath
 
 $tokens = $null; $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($setupPath, [ref]$tokens, [ref]$errors)
@@ -43,6 +44,24 @@ Check "missing -> bundled"            ((D "" "" "0") -eq "bundled")
 Check "npm10 + skip -> skip"          ((D "v22.17.1" "10.9.2"  "1") -eq "skip")
 Check "missing + skip -> skip"        ((D "" "" "1") -eq "skip")
 Check "good + skip -> system"         ((D "v22.17.1" "11.13.0" "1") -eq "system")
+
+# Structural guards: OXC can need Node when frontend is skipped, custom roots
+# must exist before NodeParent creation, and bundled Node must isolate npm.
+$nodeSourceOffset = $source.IndexOf('$NodeSource = Get-NodeDecision')
+$skipFrontendBranchOffset = $source.IndexOf('} elseif ($SkipFrontend) {')
+$customHomeErrorOffset = $source.IndexOf('UNSLOTH_STUDIO_HOME/STUDIO_HOME=$NodeOverride does not exist')
+$nodeParentMkdirOffset = $source.IndexOf('New-Item -ItemType Directory -Force -Path $NodeParent')
+$npmPrefixOffset = $source.IndexOf('$env:NPM_CONFIG_PREFIX = $NodeDir')
+$nodePathClearOffset = $source.IndexOf('Remove-Item Env:NODE_PATH')
+Check "NodeSource initialized before SKIP_STUDIO_FRONTEND branch" (
+    $nodeSourceOffset -ge 0 -and $skipFrontendBranchOffset -ge 0 -and $nodeSourceOffset -lt $skipFrontendBranchOffset
+)
+Check "custom Studio home validated before Node parent creation" (
+    $customHomeErrorOffset -ge 0 -and $nodeParentMkdirOffset -ge 0 -and $customHomeErrorOffset -lt $nodeParentMkdirOffset
+)
+Check "bundled Node pins npm prefix and clears NODE_PATH" (
+    $npmPrefixOffset -ge 0 -and $nodePathClearOffset -ge 0 -and $npmPrefixOffset -lt $nodePathClearOffset
+)
 
 Write-Host ""
 if ($failures -gt 0) { Write-Host "$failures check(s) FAILED" -ForegroundColor Red; exit 1 }

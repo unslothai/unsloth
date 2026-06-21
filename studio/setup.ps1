@@ -1492,54 +1492,54 @@ if ($HasROCm) {
 # ============================================
 # 1f. Node.js / npm (skip if pip-installed or Tauri -- only needed for frontend build)
 # ============================================
-$SkipFrontend = ($env:SKIP_STUDIO_FRONTEND -eq "1")
-if ($IsPipInstall) {
-    step "frontend" "bundled (pip install)"
-} elseif ($SkipFrontend) {
-    step "frontend" "bundled (Tauri)"
-} else {
-    # The Studio frontend (Vite 8) needs Node ^20.19.0 || >=22.12.0 || >=23 AND
-    # npm >= 11. Older setups ran `winget install Node.js LTS` whenever only npm
-    # was stale -- replacing the user's system Node without consent and, since
-    # Node 22 LTS ships npm 10.x, not even fixing npm (an install loop whose error
-    # wrongly blamed Node). We now NEVER touch the system Node/npm: decide the
-    # source here (no install yet), then provision in the build phase only when a
-    # build is actually needed.
-    #
-    # Get-NodeDecision is pure (unit-tested in tests/studio/test_node_decision.ps1)
-    # and returns one of: system | bundled | skip.
-    function Get-NodeDecision {
-        param(
-            [string]$NodeVersion,    # `node -v` output, e.g. v22.17.1 (or empty)
-            [string]$NpmVersion,     # `npm -v`  output, e.g. 10.9.2  (or empty)
-            [string]$SkipInstall     # "1" => never auto-install
-        )
-        $node = ($NodeVersion -replace '^v', '').Trim()
-        $npm = "$NpmVersion".Trim()
-        if ($node -match '^\d+\.\d+' -and $npm -match '^\d+') {
-            $nodeMajor = [int]($node.Split('.')[0])
-            $nodeMinor = [int]($node.Split('.')[1])
-            $npmMajor = [int]($npm.Split('.')[0])
-            $nodeOk = ($nodeMajor -eq 20 -and $nodeMinor -ge 19) -or
-                      ($nodeMajor -eq 22 -and $nodeMinor -ge 12) -or
-                      ($nodeMajor -ge 23)
-            if ($nodeOk -and $npmMajor -ge 11) { return "system" }
-        }
-        if ($SkipInstall -eq "1") { return "skip" }
-        return "bundled"
+# Frontend and OXC share this Node floor. The helper returns:
+# system | bundled | skip.
+function Get-NodeDecision {
+    param(
+        [string]$NodeVersion,    # `node -v` output, e.g. v22.17.1 (or empty)
+        [string]$NpmVersion,     # `npm -v`  output, e.g. 10.9.2  (or empty)
+        [string]$SkipInstall     # "1" => never auto-install
+    )
+    $node = ($NodeVersion -replace '^v', '').Trim()
+    $npm = "$NpmVersion".Trim()
+    if ($node -match '^\d+\.\d+' -and $npm -match '^\d+') {
+        $nodeMajor = [int]($node.Split('.')[0])
+        $nodeMinor = [int]($node.Split('.')[1])
+        $npmMajor = [int]($npm.Split('.')[0])
+        $nodeOk = ($nodeMajor -eq 20 -and $nodeMinor -ge 19) -or
+                  ($nodeMajor -eq 22 -and $nodeMinor -ge 12) -or
+                  ($nodeMajor -ge 23)
+        if ($nodeOk -and $npmMajor -ge 11) { return "system" }
     }
+    if ($SkipInstall -eq "1") { return "skip" }
+    return "bundled"
+}
 
-    # Resolve the isolated Node parent the same way $UnslothHome is derived later
-    # (a custom UNSLOTH_STUDIO_HOME / STUDIO_HOME override owns the tree, else the
-    # legacy ~\.unsloth root) so the Node nest sits beside llama.cpp.
-    $NodeOverride = $null
+$SkipFrontend = ($env:SKIP_STUDIO_FRONTEND -eq "1")
+$NodeOverride = $null
+$NodeParent = $null
+$NodeDir = $null
+$SysNodeVersion = ""
+$SysNpmVersion = ""
+$NodeSource = $null
+
+if (-not $IsPipInstall) {
+    # Put Node beside the Studio root. OXC can still need npm when the
+    # frontend build is skipped.
     if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_STUDIO_HOME)) { $NodeOverride = $env:UNSLOTH_STUDIO_HOME.Trim() }
     elseif (-not [string]::IsNullOrWhiteSpace($env:STUDIO_HOME)) { $NodeOverride = $env:STUDIO_HOME.Trim() }
     if ($NodeOverride) {
-        if ($NodeOverride -eq "~" -or $NodeOverride -like "~/*" -or $NodeOverride -like "~\*") {
+        if ($NodeOverride -eq "~") {
+            $NodeOverride = $env:USERPROFILE
+        } elseif ($NodeOverride -like "~/*" -or $NodeOverride -like "~\*") {
             $NodeOverride = (Join-Path $env:USERPROFILE $NodeOverride.Substring(1).TrimStart('/', '\'))
         }
-        $NodeParent = $NodeOverride
+        if (-not (Test-Path -LiteralPath $NodeOverride -PathType Container)) {
+            Write-Host "ERROR: UNSLOTH_STUDIO_HOME/STUDIO_HOME=$NodeOverride does not exist." -ForegroundColor Red
+            Write-Host "       Run install.ps1 to create the install root before 'unsloth studio update'." -ForegroundColor Red
+            exit 1
+        }
+        $NodeParent = (Resolve-Path -LiteralPath $NodeOverride).Path
     } else {
         $NodeParent = Join-Path $env:USERPROFILE ".unsloth"
     }
@@ -1555,6 +1555,15 @@ if ($IsPipInstall) {
     $SysNodeVersion = if (Get-Command node -ErrorAction SilentlyContinue) { (node -v 2>$null) } else { "" }
     $SysNpmVersion = if (Get-Command npm -ErrorAction SilentlyContinue) { (npm -v 2>$null) } else { "" }
     $NodeSource = Get-NodeDecision -NodeVersion "$SysNodeVersion" -NpmVersion "$SysNpmVersion" -SkipInstall "$($env:UNSLOTH_SKIP_NODE_INSTALL)"
+}
+
+if ($IsPipInstall) {
+    step "frontend" "bundled (pip install)"
+} elseif ($SkipFrontend) {
+    step "frontend" "bundled (Tauri)"
+} else {
+    # Stale npm used to trigger system Node changes. Keep this process-local
+    # and provision only when the build or OXC needs Node.
     if ($NodeSource -eq "system") {
         substep "Node $SysNodeVersion and npm $SysNpmVersion already meet requirements (system)."
     } elseif ($NodeSource -eq "bundled") {
@@ -1820,6 +1829,10 @@ if ($NeedNodeForSetup) {
         # so node/npm/bun resolve here for the build. Process-scoped only -- this
         # never edits the user's PATH or shell profile.
         $env:PATH = "$NodeDir;" + $env:PATH
+        # Keep npm and module resolution inside the isolated Node.
+        $env:NPM_CONFIG_PREFIX = $NodeDir
+        $env:npm_config_prefix = $NodeDir
+        Remove-Item Env:NODE_PATH -ErrorAction SilentlyContinue
         step "node" "$(node -v) | npm $(npm -v) (isolated)"
 
         # bun (optional, faster installs) -- npm -g lands inside the isolated
@@ -1836,6 +1849,9 @@ if ($NeedNodeForSetup) {
             # Re-prepend so node/npm/bun resolve to the isolated install for the
             # frontend build and the OXC step (process-scoped only).
             $env:PATH = "$NodeDir;" + $env:PATH
+            $env:NPM_CONFIG_PREFIX = $NodeDir
+            $env:npm_config_prefix = $NodeDir
+            Remove-Item Env:NODE_PATH -ErrorAction SilentlyContinue
             if (Get-Command bun -ErrorAction SilentlyContinue) {
                 substep "bun installed ($(bun --version))"
             } else {

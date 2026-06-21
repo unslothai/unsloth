@@ -8,6 +8,7 @@ import json
 import os
 import sys
 import tarfile
+import types
 import zipfile
 from pathlib import Path
 
@@ -233,6 +234,62 @@ def test_download_file_verified_rejects_mismatch(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(M, "download_file", fake_download)
     with pytest.raises(PrebuiltFallback):
         M.download_file_verified("http://x/a", tmp_path / "a", expected_sha256 = "0" * 64, label = "a")
+
+
+# --------------------------------------------------------------------------- #
+# Lock liveness probe (Windows must not use os.kill(pid, 0))
+# --------------------------------------------------------------------------- #
+def test_pid_is_alive_windows_uses_tasklist_not_os_kill(monkeypatch):
+    monkeypatch.setattr(M.sys, "platform", "win32")
+
+    def fail_kill(pid, sig):
+        raise AssertionError("Windows liveness must not call os.kill(pid, 0)")
+
+    def fake_run(cmd, **kwargs):
+        assert cmd[:2] == ["tasklist", "/FI"]
+        assert "PID eq 1234" in cmd
+        return types.SimpleNamespace(stdout = '"node.exe","1234","Console","1","12,345 K"\n')
+
+    monkeypatch.setattr(M.os, "kill", fail_kill)
+    monkeypatch.setattr(M.subprocess, "run", fake_run)
+    assert M._pid_is_alive(1234) is True
+
+
+def test_pid_is_alive_windows_false_when_tasklist_omits_pid(monkeypatch):
+    monkeypatch.setattr(M.sys, "platform", "win32")
+    monkeypatch.setattr(
+        M.subprocess,
+        "run",
+        lambda *a, **k: types.SimpleNamespace(
+            stdout = "INFO: No tasks are running which match the specified criteria.\n"
+        ),
+    )
+    assert M._pid_is_alive(1234) is False
+
+
+def test_pid_is_alive_windows_assumes_alive_when_tasklist_fails(monkeypatch):
+    monkeypatch.setattr(M.sys, "platform", "win32")
+
+    def boom(*args, **kwargs):
+        raise OSError("tasklist unavailable")
+
+    monkeypatch.setattr(M.subprocess, "run", boom)
+    assert M._pid_is_alive(1234) is True
+
+
+def test_pid_is_alive_posix_signal_zero(monkeypatch):
+    monkeypatch.setattr(M.sys, "platform", "linux")
+    calls = []
+
+    def fake_kill(pid, sig):
+        calls.append((pid, sig))
+        if pid == 9999:
+            raise ProcessLookupError
+
+    monkeypatch.setattr(M.os, "kill", fake_kill)
+    assert M._pid_is_alive(1234) is True
+    assert M._pid_is_alive(9999) is False
+    assert calls == [(1234, 0), (9999, 0)]
 
 
 # --------------------------------------------------------------------------- #
