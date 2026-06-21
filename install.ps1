@@ -2093,6 +2093,14 @@ exit 0
         # Forward a user Python pin (install.sh reads UNSLOTH_PYTHON, but Windows env vars don't cross
         # into WSL unless bridged). Numeric-only guard (e.g. 3.12) prevents injection.
         if ($env:UNSLOTH_PYTHON -and ($env:UNSLOTH_PYTHON -match '^[0-9][0-9.]*$')) { $_fwdEnv += "export UNSLOTH_PYTHON=$($env:UNSLOTH_PYTHON); " }
+        # Forward a custom PyTorch wheel mirror. install.sh reads UNSLOTH_PYTORCH_MIRROR (get_torch_index_url)
+        # but, like the other Windows env vars, it doesn't cross into WSL -- so a mirror-required / restricted-
+        # network install would silently fall back to download.pytorch.org inside the distro even though the
+        # outer installer honored the mirror. Strict http(s)-URL allow-list (no shell metachars) + single-quote
+        # so the value can't break out of the bash -lc string.
+        if ($env:UNSLOTH_PYTORCH_MIRROR -and ($env:UNSLOTH_PYTORCH_MIRROR -match '^https?://[A-Za-z0-9._~:/?#@%+=&-]+$')) {
+            $_fwdEnv += "export UNSLOTH_PYTORCH_MIRROR='$($env:UNSLOTH_PYTORCH_MIRROR)'; "
+        }
         # install.ps1 owns the WoA shortcut (one canonical "Unsloth Studio.lnk" with a
         # %USERPROFILE%\.unsloth icon that renders on WoA). Tell install.sh to skip its own
         # WSL .lnk so we don't get a duplicate whose %LOCALAPPDATA% icon renders blank.
