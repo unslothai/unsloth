@@ -232,9 +232,8 @@ def _run_oxc_batch(
         "code_shape": code_shape,
         "codes": code_values,
     }
-    # Resolve a usable Node: a version-adequate system Node, else the isolated
-    # Node the installer provisioned under <UNSLOTH_HOME>/node (which is NOT on
-    # the user's PATH, so a bare "node" would fail for those users).
+    # Resolve a usable Node (system or the isolated install, which is not on the
+    # user's PATH); a bare "node" would fail for isolated-Node users.
     node_executable = resolve_node_executable()
     if not node_executable:
         return _fallback_results(
@@ -248,8 +247,7 @@ def _run_oxc_batch(
         env["TMPDIR"] = tmp_dir_str
         env["TMP"] = tmp_dir_str
         env["TEMP"] = tmp_dir_str
-        # Put the resolved node's dir first on the child PATH so it finds its own
-        # bundled npm/npx/corepack -- essential for the isolated Node.
+        # Resolved node's dir first on the child PATH so it finds its own npm/npx.
         node_bin_dir = os.path.dirname(node_executable)
         if node_bin_dir:
             env["PATH"] = node_bin_dir + os.pathsep + env.get("PATH", "")

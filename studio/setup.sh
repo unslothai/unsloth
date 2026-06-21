@@ -439,15 +439,10 @@ _STUDIO_HOME_IS_CUSTOM=false
 if [ "$_studio_home_canon" != "$_LEGACY_STUDIO_HOME" ]; then
     _STUDIO_HOME_IS_CUSTOM=true
 fi
-# Directory-local evidence that Studio created "$1", used to adopt a custom-home
-# llama.cpp / Node predating the .unsloth-studio-owned marker without weakening the
-# guard. Only the prebuilt-installer metadata counts: UNSLOTH_PREBUILT_INFO.json
-# (llama.cpp) or UNSLOTH_NODE_PREBUILT_INFO.json (Node, install_node_prebuilt.py) --
-# both written exclusively by our installers. This mirrors the setup.ps1 Node guard,
-# which also adopts a dir carrying UNSLOTH_NODE_PREBUILT_INFO.json. A top-level
-# llama-quantize symlink is NOT trusted: a user may have their own build with one,
-# and this runs right before a destructive rm -rf, so we keep markerless source
-# builds strict.
+# Directory-local evidence Studio created "$1": only prebuilt-installer metadata
+# counts (UNSLOTH_PREBUILT_INFO.json for llama.cpp, UNSLOTH_NODE_PREBUILT_INFO.json
+# for Node), both written only by our installers. Mirrors the setup.ps1 Node guard.
+# A markerless source build stays strict since this runs right before an rm -rf.
 _studio_owned_adoptable() {
     [ -f "$1/UNSLOTH_PREBUILT_INFO.json" ] && return 0
     [ -f "$1/UNSLOTH_NODE_PREBUILT_INFO.json" ] && return 0
@@ -489,10 +484,8 @@ if [ -d "$SCRIPT_DIR/frontend/dist" ]; then
 fi
 fi  # end SKIP_STUDIO_FRONTEND guard
 
-# The OXC validator runtime install (below) needs node/npm whenever its dir
-# exists, independent of the frontend dist staleness. So provision Node when the
-# frontend needs building OR the OXC dir exists -- otherwise an up-to-date dist
-# would skip Node and leave OXC running against an unsuitable/absent system Node.
+# OXC validator runtime (below) needs node/npm whenever its dir exists, regardless
+# of dist staleness; provision Node when the frontend builds OR the OXC dir exists.
 _OXC_DIR="$SCRIPT_DIR/backend/core/data_recipe/oxc-validator"
 if [ "$_NEED_FRONTEND_BUILD" = false ] && [ ! -d "$_OXC_DIR" ]; then
     step "frontend" "up to date"
@@ -500,21 +493,13 @@ if [ "$_NEED_FRONTEND_BUILD" = false ] && [ ! -d "$_OXC_DIR" ]; then
 else
 
 # ── Node (isolated; never touches the system Node/npm) ──
-# The Studio frontend (Vite 8) needs Node ^20.19.0 || >=22.12.0 || >=23 AND
-# npm >= 11. Earlier versions reinstalled Node via nvm/winget when only npm was
-# stale -- replacing the user's Node without consent and, since Node 22 LTS ships
-# npm 10.x, not even fixing npm. We now decide between three sources:
-#   system  -- the system Node + npm already satisfy both; use them read-only.
-#   bundled -- install a pinned, isolated Node under $UNSLOTH_HOME/node and use
-#              it only for this build; the system Node/npm are left untouched.
-#   skip    -- UNSLOTH_SKIP_NODE_INSTALL=1 and the system is unsuitable; print
-#              the exact manual fix and skip the frontend build (no silent change).
-#
-# decide_node_source is a pure function (unit-tested in tests/sh/test_node_decision.sh):
-#   $1 = `node -v` output (e.g. v22.17.1 or empty)
-#   $2 = `npm -v`  output (e.g. 10.9.2  or empty)
-#   $3 = skip flag ("1" => never auto-install)
-# echoes one of: system | bundled | skip
+# Studio's frontend (Vite 8) needs Node ^20.19 || >=22.12 || >=23 and npm >= 11.
+# Three sources:
+#   system  -- system Node + npm already satisfy both; used read-only.
+#   bundled -- install a pinned isolated Node under $UNSLOTH_HOME/node, build-only.
+#   skip    -- UNSLOTH_SKIP_NODE_INSTALL=1 and system unsuitable; print manual fix.
+# decide_node_source(node_v, npm_v, skip_flag) -> system | bundled | skip
+# (pure; unit-tested in tests/sh/test_node_decision.sh).
 decide_node_source() {
     _dns_node="${1#v}"
     _dns_npm="$2"
@@ -546,8 +531,7 @@ decide_node_source() {
     echo bundled
 }
 
-# Mirror the UNSLOTH_HOME derivation used for llama.cpp (computed later at the
-# llama step). The frontend build runs first, so derive the parent here too.
+# Mirror the llama.cpp UNSLOTH_HOME derivation; the frontend build runs first.
 if [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
     _NODE_PARENT="$STUDIO_HOME"
 else
@@ -564,16 +548,14 @@ if [ "$NODE_SOURCE" = system ]; then
     step "node" "$(node -v) | npm $(npm -v) (system)"
 elif [ "$NODE_SOURCE" = bundled ]; then
     mkdir -p "$_NODE_PARENT"
-    # why: install_node_prebuilt.py uses os.replace(); guard a custom-home dir
-    # so we never displace something the user put at $UNSLOTH_STUDIO_HOME/node.
+    # install_node_prebuilt.py uses os.replace(); guard a custom-home dir so we
+    # never displace a user-owned $UNSLOTH_STUDIO_HOME/node.
     if [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
         _assert_studio_owned_or_absent "$NODE_DIR" "Node install"
     fi
     substep "installing isolated Node (system Node/npm left untouched)..."
-    # This runs BEFORE the venv is activated (line ~772), so a bare `python` may
-    # be absent (only python3, or the venv interpreter off PATH). Resolve one
-    # explicitly -- venv python first, then python3, then python -- mirroring the
-    # "$VENV_DIR/bin/python" pattern used elsewhere in this file.
+    # Runs before the venv is activated, so bare `python` may be absent; resolve
+    # venv python, then python3, then python.
     if [ -x "$VENV_DIR/bin/python" ]; then
         _NODE_PY="$VENV_DIR/bin/python"
     elif command -v python3 >/dev/null 2>&1; then
@@ -607,8 +589,7 @@ elif [ "$NODE_SOURCE" = bundled ]; then
     if [ "$_STUDIO_HOME_IS_CUSTOM" = true ] && [ -d "$NODE_DIR" ]; then
         : > "$NODE_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
     fi
-    # Prepend the isolated bin so node/npm/bun resolve here for the build and the
-    # oxc step below. Affects this script's process only -- not the user's shell.
+    # Prepend the isolated bin (this process only) so node/npm/bun resolve here.
     export PATH="$NODE_DIR/bin:$PATH"
     # Keep npm and module resolution inside the isolated Node.
     export NPM_CONFIG_PREFIX="$NODE_DIR"
@@ -633,10 +614,8 @@ elif [ "$_NEED_FRONTEND_BUILD" = false ]; then
 else
 
 # ── Install bun (optional, faster package installs) ──
-# Uses npm to install bun globally -- Node is already guaranteed above.
-# Only install bun when we manage the isolated Node (npm -g lands inside the
-# isolated prefix); on a system Node we never install global packages, leaving
-# the user's environment untouched. The build falls back to npm if bun is absent.
+# Install bun via npm only when we manage the isolated Node (npm -g lands in the
+# isolated prefix); on a system Node we install nothing global. Build falls back to npm.
 if command -v bun &>/dev/null; then
     substep "bun already installed ($(bun --version))"
 elif [ "$NODE_SOURCE" = bundled ]; then

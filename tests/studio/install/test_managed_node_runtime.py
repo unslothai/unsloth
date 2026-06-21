@@ -19,8 +19,7 @@ from pathlib import Path
 
 import pytest
 
-# node_runtime lives under studio/backend and imports sibling backend packages
-# (utils.subprocess_compat, utils.paths) by their top-level names, so put
+# node_runtime imports sibling backend packages by top-level name, so put
 # studio/backend on sys.path before importing it.
 _BACKEND = Path(__file__).resolve().parents[3] / "studio" / "backend"
 if str(_BACKEND) not in sys.path:
@@ -139,9 +138,8 @@ def test_resolve_returns_none_when_nothing_available(monkeypatch, tmp_path):
 
 
 def test_negative_result_is_not_cached(monkeypatch, tmp_path):
-    # The installer runs in a separate process; a Node that appears AFTER the
-    # first (empty) probe must be picked up without a restart -- i.e. None must
-    # not be memoized.
+    # A Node that appears after the first (empty) probe must be picked up without
+    # a restart, so None must not be memoized.
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setattr(nr.shutil, "which", lambda name: None)
     monkeypatch.setattr(nr, "_node_version_ok", lambda exe: False)

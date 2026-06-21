@@ -1,11 +1,8 @@
-# Regression test for the setup.ps1 system-node/npm probes.
-#
-# setup.ps1 runs under $ErrorActionPreference = "Stop". A bare `node -v` when node
-# is absent throws a terminating CommandNotFoundException that `2>$null` does NOT
-# swallow, which previously aborted setup on a fresh (no-Node) Windows machine
-# before the bundled-Node decision could run. The probes are now guarded with
-# Get-Command. This test extracts the real probe lines from setup.ps1 and runs
-# them in a child pwsh with node/npm absent, asserting setup would NOT terminate.
+# Regression test for the setup.ps1 system-node/npm probes. Under "Stop", a bare
+# `node -v` for an absent/broken node throws a terminating error `2>$null` cannot
+# swallow, which used to abort setup before the bundled-Node decision. The probes
+# are now guarded (Get-Command + try/catch); this runs the real probe lines with
+# node/npm absent or throwing and asserts setup would NOT terminate.
 $ErrorActionPreference = "Stop"
 $script:failures = 0
 function Check($name, $cond) {

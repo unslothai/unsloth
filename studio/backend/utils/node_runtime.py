@@ -3,16 +3,11 @@
 
 """Resolve a usable Node.js executable at runtime.
 
-The installer (studio/setup.{sh,ps1} + install_node_prebuilt.py) provisions an
-isolated Node under ``<UNSLOTH_HOME>/node`` and only prepends it to PATH for the
-*setup* process -- the user's shell PATH is deliberately never modified. So
-backend code that shells out to ``node`` at runtime (e.g. the OXC data-recipe
-validator) cannot rely on PATH alone: a user who got the isolated Node (because
-their system Node was missing or too old) would have no ``node`` on PATH.
-
-``resolve_node_executable`` bridges that gap: prefer a version-adequate system
-Node, else fall back to the managed isolated Node, mirroring the version bar the
-installer applies (Node ^20.19 || >=22.12 || >=23).
+The installer provisions an isolated Node under ``<UNSLOTH_HOME>/node`` but only
+puts it on PATH for the *setup* process, never the user's shell. So backend code
+that shells out to ``node`` at runtime (the OXC validator) cannot rely on PATH.
+``resolve_node_executable`` prefers a version-adequate system Node, else the
+managed isolated Node (same floor the installer applies: ^20.19 || >=22.12 || >=23).
 """
 
 from __future__ import annotations
@@ -28,9 +23,8 @@ from utils.subprocess_compat import windows_hidden_subprocess_kwargs
 _NODE_VERSION_PROBE_TIMEOUT_SECONDS = 10
 
 
-# Same floor the setup scripts enforce in their Node decision (Vite 8 needs
-# Node ^20.19.0 || >=22.12.0 || >=23). Keep in sync with Get-NodeDecision
-# (setup.ps1) / decide_node_source (setup.sh).
+# Keep in sync with the setup scripts' Node floor: Get-NodeDecision (setup.ps1) /
+# decide_node_source (setup.sh). Vite 8 needs Node ^20.19 || >=22.12 || >=23.
 def _version_meets_floor(version: str) -> bool:
     """True iff a ``node -v`` string clears the installer's version bar."""
     match = re.match(r"v?(\d+)\.(\d+)", version.strip())
@@ -41,17 +35,12 @@ def _version_meets_floor(version: str) -> bool:
 
 
 def managed_node_dir() -> Path:
-    """The isolated Node install dir, matching the installer layout.
-
-    Mirrors ``_find_llama_server_binary`` (core/inference/llama_cpp.py): Node and
-    llama.cpp share the same parent -- ``<STUDIO_HOME>`` in env/custom mode, else
-    the legacy ``~/.unsloth`` (the sibling of ``~/.unsloth/studio``).
-    """
+    """Isolated Node install dir. Mirrors ``_find_llama_server_binary``: shares a
+    parent with llama.cpp -- ``<STUDIO_HOME>`` in custom mode, else legacy ``~/.unsloth``."""
     legacy_node = Path.home() / ".unsloth" / "node"
     try:
         # Lazy import (mirrors _find_llama_server_binary) so this module stays
-        # importable -- and falls back to the legacy root -- even if utils.paths
-        # cannot be loaded.
+        # importable even if utils.paths cannot be loaded.
         from utils.paths.storage_roots import studio_root
 
         resolved = studio_root()
@@ -62,9 +51,8 @@ def managed_node_dir() -> Path:
             is_legacy = resolved == legacy_studio
         return legacy_node if is_legacy else (resolved / "node")
     except (ImportError, OSError, ValueError):
-        # Degraded import environment (utils.paths unavailable): still honor an
-        # explicit STUDIO_HOME override, mirroring studio_root()'s priority,
-        # before falling back to the legacy default.
+        # Degraded env (utils.paths unavailable): still honor an explicit
+        # STUDIO_HOME override before the legacy default, mirroring studio_root().
         override = (
             os.environ.get("UNSLOTH_STUDIO_HOME") or os.environ.get("STUDIO_HOME") or ""
         ).strip()
@@ -77,11 +65,7 @@ def managed_node_dir() -> Path:
 
 
 def managed_node_binary() -> Path:
-    """The node executable inside the isolated install (Windows vs Unix layout).
-
-    Matches ``node_binary_path`` in install_node_prebuilt.py: ``<dir>/node.exe``
-    on Windows, ``<dir>/bin/node`` elsewhere.
-    """
+    """Node executable in the isolated install: ``<dir>/node.exe`` on Windows, ``<dir>/bin/node`` else."""
     node_dir = managed_node_dir()
     if os.name == "nt":
         return node_dir / "node.exe"
@@ -105,11 +89,9 @@ def _node_version_ok(executable: str) -> bool:
     return _version_meets_floor(result.stdout)
 
 
-# Memoize ONLY a confirmed version-adequate executable. The installer runs in a
-# separate process and may finish AFTER the backend first probes here, so a
-# negative / last-resort result must not be cached -- otherwise the validator
-# would keep reporting "Node not found" until a backend restart even after Node
-# appears on disk.
+# Memoize ONLY a confirmed version-adequate executable: the installer runs in a
+# separate process and may finish after the first probe here, so a negative /
+# last-resort result must not be cached (it would stick until a backend restart).
 _resolved_node: str | None = None
 
 
@@ -120,13 +102,11 @@ def _reset_resolved_node() -> None:
 
 
 def resolve_node_executable() -> str | None:
-    """Resolve a usable node executable, or None if none is available.
+    """Resolve a usable node executable, or None.
 
-    Order: a version-adequate system ``node`` on PATH; else the managed isolated
-    Node if present and adequate; else fall back to whatever bare ``node`` is on
-    PATH (may be None) to preserve the pre-isolation behaviour. Only a
-    version-adequate result is memoized, so a Node installed after the first
-    probe is picked up without a backend restart.
+    Order: version-adequate system ``node`` on PATH; else the managed isolated
+    Node if adequate; else bare ``node`` (may be None). Only an adequate result
+    is memoized, so a Node installed after the first probe is picked up live.
     """
     global _resolved_node
     if _resolved_node is not None:
@@ -146,6 +126,5 @@ def resolve_node_executable() -> str | None:
         _resolved_node = str(managed)
         return _resolved_node
 
-    # Nothing adequate yet -- return a last-resort system node (may be None)
-    # WITHOUT caching, so a later install/upgrade is picked up on the next call.
+    # Last-resort system node (may be None), NOT cached so a later install is picked up.
     return system_node

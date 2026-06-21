@@ -2,23 +2,16 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Cross platform Node.js prebuilt installer for Unsloth Studio.
+"""Cross-platform Node.js prebuilt installer for Unsloth Studio.
 
-Downloads an official Node.js binary archive from nodejs.org into an isolated
-directory owned by Unsloth (``<UNSLOTH_HOME>/node``) and never touches the
-system Node/npm. The Studio frontend build (Vite 8) needs Node ^20.19 || >=22.12
-and npm >= 11; pinning a Node 24+ LTS satisfies both with the npm it bundles, so
-the historical "reinstall Node via winget / nvm" path (which replaced the user's
-Node without consent and still shipped npm 10) is gone.
+Downloads an official Node.js archive from nodejs.org into an isolated
+``<UNSLOTH_HOME>/node`` and never touches the system Node/npm. Pinning Node 24+
+LTS clears the Studio frontend build floor (Vite 8: Node ^20.19 || >=22.12,
+npm >= 11) with the npm it bundles.
 
-Contract mirrors ``install_llama_prebuilt.py`` so ``setup.sh`` / ``setup.ps1``
-can drive it the same way:
-  * ``--install-dir`` chooses the isolated location (caller re-derives the bin
-    dir by OS convention: ``<dir>/bin`` on Unix, ``<dir>`` on Windows).
-  * Exit codes: 0 success, 1 error, 2 fallback (caller prints manual hint),
-    3 busy (another install holds the lock).
-  * A re-run that already matches the requested version logs "already matches"
-    and returns 0 without downloading -- the string the setup scripts grep for.
+Mirrors ``install_llama_prebuilt.py`` so the setup scripts drive it the same way.
+Exit codes: 0 success, 1 error, 2 fallback, 3 busy. A re-run that already matches
+logs "already matches" and returns 0 without downloading (the scripts grep it).
 """
 
 from __future__ import annotations
@@ -57,10 +50,8 @@ EXIT_ERROR = 1
 EXIT_FALLBACK = 2
 EXIT_BUSY = 3
 
-# Vite 8 requires Node ^20.19.0 || >=22.12.0 AND npm >= 11. Node 24 LTS bundles
-# npm 11, so a single pinned-major floor satisfies both with zero npm upgrade.
+# Node 24 LTS bundles npm 11, clearing Vite 8's floor (Node ^20.19 || >=22.12, npm >= 11).
 NODE_MIN_LTS_MAJOR = 24
-# Lowest npm we accept; the build fails below this.
 NPM_MIN_MAJOR = 11
 
 NODE_DIST_BASE = "https://nodejs.org/dist"
@@ -74,8 +65,7 @@ INSTALL_STAGING_ROOT_NAME = ".staging"
 METADATA_FILENAME = "UNSLOTH_NODE_PREBUILT_INFO.json"
 METADATA_SCHEMA_VERSION = 1
 
-# setup.sh json.load()s nothing here, but PowerShell renders stderr as
-# NativeCommandError noise on the install path; main() flips this to stdout.
+# PowerShell renders stderr as NativeCommandError noise; main() flips logs to stdout.
 _LOG_TO_STDOUT = False
 
 
@@ -91,9 +81,7 @@ def log(message: str) -> None:
     print(f"[node-prebuilt] {message}", file = sys.stdout if _LOG_TO_STDOUT else sys.stderr)
 
 
-# --------------------------------------------------------------------------- #
-# Host detection
-# --------------------------------------------------------------------------- #
+# ── Host detection ──
 @dataclass(frozen = True)
 class HostInfo:
     system: str  # platform.system()
@@ -127,8 +115,7 @@ def detect_host() -> HostInfo:
     else:
         raise PrebuiltFallback(f"unsupported CPU architecture for Node prebuilt: {machine}")
 
-    # nodejs.org ships .zip for Windows and .tar.gz (alongside .tar.xz) for
-    # Unix; we deliberately use .tar.gz so the shared extractor needs no xz.
+    # .tar.gz (not .tar.xz) on Unix so the extractor needs no xz; .zip on Windows.
     archive_ext = ".zip" if is_windows else ".tar.gz"
     return HostInfo(
         system = system,
@@ -140,9 +127,7 @@ def detect_host() -> HostInfo:
     )
 
 
-# --------------------------------------------------------------------------- #
-# URL / asset construction (pure -- unit tested directly)
-# --------------------------------------------------------------------------- #
+# ── URL / asset construction (pure, unit tested) ──
 def node_asset_stem(version: str, host: HostInfo) -> str:
     """e.g. node-v24.4.1-linux-x64 (no extension)."""
     return f"node-v{version}-{host.node_os}-{host.node_arch}"
@@ -207,11 +192,9 @@ def select_node_version(index: list[dict], *, channel: str, min_major: int) -> s
     return best_version
 
 
-# --------------------------------------------------------------------------- #
-# HTTP (retry/backoff) -- trimmed from install_llama_prebuilt.py
-# --------------------------------------------------------------------------- #
+# ── HTTP (retry/backoff) ──
 def _auth_headers() -> dict[str, str]:
-    # nodejs.org needs no auth; a User-Agent keeps some proxies/CDNs happy.
+    # A User-Agent keeps some proxies/CDNs happy; nodejs.org needs no auth.
     return {"User-Agent": "unsloth-studio-node-prebuilt"}
 
 
@@ -318,9 +301,7 @@ def download_file_verified(
             raise PrebuiltFallback(f"{label} checksum mismatch after retry")
 
 
-# --------------------------------------------------------------------------- #
-# Safe archive extraction (zip + tar.gz, traversal/symlink guarded)
-# --------------------------------------------------------------------------- #
+# ── Safe archive extraction (zip + tar.gz, traversal/symlink guarded) ──
 def _safe_extract_path(base: Path, member_name: str) -> Path:
     member_path = Path(member_name.replace("\\", "/"))
     if member_path.is_absolute():
@@ -406,9 +387,7 @@ def extract_archive(archive_path: Path, destination: Path) -> None:
         raise PrebuiltFallback(f"unsupported archive format: {archive_path.name}")
 
 
-# --------------------------------------------------------------------------- #
-# Install lock (concurrent setup runs share one UNSLOTH_HOME)
-# --------------------------------------------------------------------------- #
+# ── Install lock (concurrent setup runs share one UNSLOTH_HOME) ──
 def install_lock_path(install_dir: Path) -> Path:
     return install_dir.parent / f".{install_dir.name}.install.lock"
 
@@ -489,9 +468,7 @@ def install_lock(lock_path: Path) -> Iterator[None]:
         ) from exc
 
 
-# --------------------------------------------------------------------------- #
-# Install layout / metadata / health
-# --------------------------------------------------------------------------- #
+# ── Install layout / metadata / health ──
 def node_binary_path(install_dir: Path, host: HostInfo) -> Path:
     return install_dir / "node.exe" if host.is_windows else install_dir / "bin" / "node"
 
@@ -601,11 +578,7 @@ def existing_install_matches(install_dir: Path, host: HostInfo, *, version: str)
 
 
 def existing_install_usable(install_dir: Path, host: HostInfo) -> bool:
-    """True iff the on-disk install runs and clears the npm floor, ignoring version.
-
-    Lets an update keep a working isolated Node when the dist index is unreachable,
-    instead of aborting on a transient nodejs.org outage.
-    """
+    """True iff the on-disk install runs and clears the npm floor, ignoring version."""
     if not load_metadata(install_dir):
         return False
     if installed_node_version(install_dir, host) is None:
@@ -632,21 +605,16 @@ def _swap_into_place(extracted_root: Path, install_dir: Path) -> None:
 
 
 def _ensure_npm_floor(install_dir: Path, host: HostInfo) -> None:
-    """Safety net: self-upgrade npm *inside the isolated prefix* if a pinned
-    build ever ships npm < 11. With Node 24+ this is a no-op."""
+    """Self-upgrade npm inside the isolated prefix if a pinned build ships npm < 11 (no-op on Node 24+)."""
     npm_major = installed_npm_major(install_dir, host)
     if npm_major is not None and npm_major >= NPM_MIN_MAJOR:
         return
     log(f"bundled npm {npm_major} below {NPM_MIN_MAJOR}; upgrading npm inside the isolated prefix")
     cli = npm_cli_path(install_dir, host)
-    # node bin dir is the npm global prefix for a self-contained install, so
-    # `-g` stays inside install_dir and never touches the system.
     _run_node(install_dir, host, [str(cli), "install", "-g", f"npm@^{NPM_MIN_MAJOR}"], timeout = 300)
 
 
-# --------------------------------------------------------------------------- #
-# Orchestration
-# --------------------------------------------------------------------------- #
+# ── Orchestration ──
 def install_prebuilt(install_dir: Path, *, channel: str, min_major: int, force: bool) -> int:
     host = detect_host()
 
