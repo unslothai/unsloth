@@ -26,6 +26,21 @@ BASE = "http://127.0.0.1:8888"
 MODEL = {"id": "unsloth/gemma-4-26B-A4B-it-GGUF", "context_length": 131072}
 
 
+# `unsloth connect --no-launch` prints shell setup in the syntax of the host
+# OS: POSIX `export X=v` / `unset X` on Unix and inside WSL, PowerShell
+# `$env:X = "v"` / `Remove-Item Env:X` on native Windows (see connect._print_env).
+# These helpers assert the right form for whichever OS the test runs on, so the
+# suite passes on the Windows runners the connect command also targets.
+def _assert_env_set(output: str, name: str, value: str) -> None:
+    needle = f'$env:{name} = "{value}"' if os.name == "nt" else f"export {name}={value}"
+    assert needle in output, f"{needle!r} not found in:\n{output}"
+
+
+def _assert_env_unset(output: str, name: str) -> None:
+    needle = f"Remove-Item Env:{name}" if os.name == "nt" else f"unset {name}"
+    assert needle in output, f"{needle!r} not found in:\n{output}"
+
+
 @pytest.fixture()
 def claude_settings(tmp_path, monkeypatch):
     path = tmp_path / "claude" / "settings.json"
@@ -192,13 +207,13 @@ def fake_studio(tmp_path, monkeypatch, claude_settings):
 def test_connect_claude_no_launch(fake_studio, claude_settings):
     result = CliRunner().invoke(connect.connect_app, ["claude", "--no-launch"])
     assert result.exit_code == 0, result.output
-    assert "unset ANTHROPIC_API_KEY" in result.output
-    assert "unset CLAUDE_CODE_OAUTH_TOKEN" in result.output
-    assert f"export ANTHROPIC_BASE_URL={BASE}" in result.output
-    assert "export ANTHROPIC_AUTH_TOKEN=sk-unsloth-feedfacefeedface" in result.output
-    assert f"export ANTHROPIC_MODEL={MODEL['id']}" in result.output
-    assert "export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1" in result.output
-    assert "export CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1" in result.output
+    _assert_env_unset(result.output, "ANTHROPIC_API_KEY")
+    _assert_env_unset(result.output, "CLAUDE_CODE_OAUTH_TOKEN")
+    _assert_env_set(result.output, "ANTHROPIC_BASE_URL", BASE)
+    _assert_env_set(result.output, "ANTHROPIC_AUTH_TOKEN", "sk-unsloth-feedfacefeedface")
+    _assert_env_set(result.output, "ANTHROPIC_MODEL", MODEL["id"])
+    _assert_env_set(result.output, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1")
+    _assert_env_set(result.output, "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS", "1")
     assert f"claude --model {MODEL['id']} --exclude-dynamic-system-prompt-sections" in result.output
     settings = json.loads(claude_settings.read_text())
     assert settings["env"]["CLAUDE_CODE_ATTRIBUTION_HEADER"] == "0"
@@ -228,6 +243,11 @@ def test_connect_claude_launch_scrubs_conflicting_auth_env(fake_studio, monkeypa
     assert captured["env"]["ANTHROPIC_MODEL"] == MODEL["id"]
 
 
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason = "WSL-from-Linux scenario (calling a Windows agent .exe from inside WSL); "
+    "os.name is 'posix' under WSL, so this path can't run on a native Windows runner.",
+)
 def test_connect_claude_windows_shim_from_wsl_bridges_env(fake_studio, monkeypatch):
     captured = {}
     monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu")
@@ -267,6 +287,11 @@ def test_connect_claude_windows_shim_from_wsl_bridges_env(fake_studio, monkeypat
         assert name in captured["env"]["WSLENV"].split(":")
 
 
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason = "WSL-from-Linux scenario (calling a Windows agent .exe from inside WSL); "
+    "os.name is 'posix' under WSL, so this path can't run on a native Windows runner.",
+)
 def test_connect_claude_no_launch_windows_shim_from_wsl_prints_wslenv(fake_studio, monkeypatch):
     monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu")
     monkeypatch.setattr(
@@ -286,7 +311,7 @@ def test_connect_claude_no_launch_windows_shim_from_wsl_prints_wslenv(fake_studi
 def test_connect_codex_no_launch(fake_studio, tmp_path):
     result = CliRunner().invoke(connect.connect_app, ["codex", "--no-launch"])
     assert result.exit_code == 0, result.output
-    assert "export UNSLOTH_STUDIO_AUTH_TOKEN=sk-unsloth-feedfacefeedface" in result.output
+    _assert_env_set(result.output, "UNSLOTH_STUDIO_AUTH_TOKEN", "sk-unsloth-feedfacefeedface")
     assert "codex --oss --profile unsloth_api" in result.output
     assert (tmp_path / "codex" / "config.toml").exists()
     assert (tmp_path / "codex" / "unsloth_api.config.toml").exists()
@@ -310,7 +335,7 @@ def test_connect_explicit_key_remembered_for_keyless_runs(fake_studio, tmp_path)
     result = CliRunner().invoke(connect.connect_app, ["claude", "--no-launch"])
     assert result.exit_code == 0, result.output
     # Reused, not re-minted (a mint would return the feedface stand-in).
-    assert "export ANTHROPIC_AUTH_TOKEN=sk-unsloth-deadbeefdeadbeef" in result.output
+    _assert_env_set(result.output, "ANTHROPIC_AUTH_TOKEN", "sk-unsloth-deadbeefdeadbeef")
     cached = json.loads((tmp_path / "agent_api_key.json").read_text())
     # An explicit key is remembered as "saved" so it replays without the handshake.
     assert cached["servers"][BASE]["saved"] == ["sk-unsloth-deadbeefdeadbeef"]
@@ -340,7 +365,7 @@ def test_connect_skips_cached_keys_the_server_rejects(fake_studio, tmp_path, mon
     monkeypatch.setattr(connect, "_http_json", http_json)
     result = CliRunner().invoke(connect.connect_app, ["claude", "--no-launch"])
     assert result.exit_code == 0, result.output
-    assert "export ANTHROPIC_AUTH_TOKEN=sk-unsloth-feedfacefeedface" in result.output
+    _assert_env_set(result.output, "ANTHROPIC_AUTH_TOKEN", "sk-unsloth-feedfacefeedface")
     # The working key moves to the front so the next run tries it first.
     cached = json.loads(cache.read_text())
     assert cached["servers"][BASE]["minted"] == ["sk-unsloth-feedfacefeedface", "sk-unsloth-stale"]
@@ -353,7 +378,7 @@ def test_connect_legacy_unscoped_cache_not_replayed(fake_studio, tmp_path):
     (tmp_path / "agent_api_key.json").write_text(json.dumps({"key": "sk-unsloth-oldformat"}))
     result = CliRunner().invoke(connect.connect_app, ["claude", "--no-launch"])
     assert result.exit_code == 0, result.output
-    assert "export ANTHROPIC_AUTH_TOKEN=sk-unsloth-feedfacefeedface" in result.output
+    _assert_env_set(result.output, "ANTHROPIC_AUTH_TOKEN", "sk-unsloth-feedfacefeedface")
     cached = json.loads((tmp_path / "agent_api_key.json").read_text())
     assert cached["servers"][BASE]["minted"] == ["sk-unsloth-feedfacefeedface"]
     assert "key" not in cached  # legacy field collapsed away
@@ -368,7 +393,7 @@ def test_connect_model_flag_loads_on_server(fake_studio):
     assert loads == [
         ("POST", f"{BASE}/api/inference/load", {"model_path": "unsloth/Qwen3.5-35B-A3B"})
     ]
-    assert "export ANTHROPIC_MODEL=unsloth/Qwen3.5-35B-A3B" in result.output
+    _assert_env_set(result.output, "ANTHROPIC_MODEL", "unsloth/Qwen3.5-35B-A3B")
 
 
 def test_connect_model_flag_matches_canonical_id(fake_studio, monkeypatch):
@@ -399,7 +424,7 @@ def test_connect_model_flag_matches_canonical_id(fake_studio, monkeypatch):
         connect.connect_app, ["claude", "--no-launch", "--model", requested]
     )
     assert result.exit_code == 0, result.output
-    assert f"export ANTHROPIC_MODEL={canonical}" in result.output
+    _assert_env_set(result.output, "ANTHROPIC_MODEL", canonical)
 
 
 def test_connect_no_model_loaded_errors(fake_studio, monkeypatch):
@@ -501,7 +526,7 @@ def test_connect_nonloopback_replays_saved_key(fake_studio, tmp_path, monkeypatc
     )
     result = CliRunner().invoke(connect.connect_app, ["claude", "--no-launch"])
     assert result.exit_code == 0, result.output
-    assert "export ANTHROPIC_AUTH_TOKEN=sk-unsloth-deadbeefdeadbeef" in result.output
+    _assert_env_set(result.output, "ANTHROPIC_AUTH_TOKEN", "sk-unsloth-deadbeefdeadbeef")
     assert not any(c[1].endswith("/api/auth/api-keys") for c in fake_studio)  # never minted
 
 
@@ -557,7 +582,7 @@ def test_connect_replays_saved_key_without_identity_check(fake_studio, tmp_path,
     monkeypatch.setattr(connect, "verify_studio_identity", lambda base: False)
     result = CliRunner().invoke(connect.connect_app, ["claude", "--no-launch"])
     assert result.exit_code == 0, result.output
-    assert "export ANTHROPIC_AUTH_TOKEN=sk-unsloth-deadbeefdeadbeef" in result.output
+    _assert_env_set(result.output, "ANTHROPIC_AUTH_TOKEN", "sk-unsloth-deadbeefdeadbeef")
     assert not any(c[1].endswith("/api/auth/api-keys") for c in fake_studio)  # reused, not minted
 
 
@@ -584,7 +609,7 @@ def test_connect_explicit_key_skips_identity_check(fake_studio, monkeypatch):
         ["claude", "--no-launch", "--api-key", "sk-unsloth-deadbeefdeadbeef"],
     )
     assert result.exit_code == 0, result.output
-    assert "export ANTHROPIC_AUTH_TOKEN=sk-unsloth-deadbeefdeadbeef" in result.output
+    _assert_env_set(result.output, "ANTHROPIC_AUTH_TOKEN", "sk-unsloth-deadbeefdeadbeef")
 
 
 def _serve_identity(proof_for):
@@ -720,7 +745,7 @@ def test_connect_explicit_api_key_skips_mint(fake_studio):
         ["claude", "--no-launch", "--api-key", "sk-unsloth-deadbeefdeadbeef"],
     )
     assert result.exit_code == 0, result.output
-    assert "export ANTHROPIC_AUTH_TOKEN=sk-unsloth-deadbeefdeadbeef" in result.output
+    _assert_env_set(result.output, "ANTHROPIC_AUTH_TOKEN", "sk-unsloth-deadbeefdeadbeef")
     assert not any(c[1].endswith("/api/auth/api-keys") for c in fake_studio)
 
 
@@ -901,7 +926,7 @@ def test_connect_hermes_no_launch(fake_studio, hermes_config):
     yaml = pytest.importorskip("yaml")
     result = CliRunner().invoke(connect.connect_app, ["hermes", "--no-launch"])
     assert result.exit_code == 0, result.output
-    assert "export UNSLOTH_API_KEY=sk-unsloth-feedfacefeedface" in result.output
+    _assert_env_set(result.output, "UNSLOTH_API_KEY", "sk-unsloth-feedfacefeedface")
     assert "hermes" in result.output
     config = yaml.safe_load(hermes_config.read_text())
     assert config["model"]["provider"] == "custom:unsloth"
