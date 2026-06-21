@@ -509,8 +509,7 @@ export function ChatSettingsPanel({
     (s) => s.loadedSpeculativeType,
   );
   const specFallbackReason = useChatRuntimeStore((s) => s.specFallbackReason);
-  // "binary_no_mtp" / "binary_outdated" mean a newer prebuilt would re-enable
-  // MTP; "runtime_error" means the current build cannot run it (no update push).
+  // Only binary fallback states are solved by a newer prebuilt.
   const mtpUpdatable =
     specFallbackReason === "binary_no_mtp" ||
     specFallbackReason === "binary_outdated";
@@ -522,8 +521,11 @@ export function ChatSettingsPanel({
   const handleMtpUpdate = useCallback(async () => {
     const result = await applyLlamaUpdate();
     if (result.ok) {
+      const reloadHint = result.reloadRequired
+        ? " Reload your model to enable MTP."
+        : "";
       toast.success(
-        `llama.cpp updated to ${result.tag ?? "the latest build"}. Reload your model to enable MTP.`,
+        `llama.cpp updated to ${result.tag ?? "the latest build"}.${reloadHint}`,
       );
     } else {
       toast.error(`llama.cpp update failed: ${result.error ?? "unknown error"}`);
@@ -569,6 +571,12 @@ export function ChatSettingsPanel({
   const setSelectedGpuIds = useChatRuntimeStore((s) => s.setSelectedGpuIds);
   const loadedGpuIds = useChatRuntimeStore((s) => s.loadedGpuIds);
   const gpuDevices = useGpuDevices();
+  const chatTemplateOverride = useChatRuntimeStore(
+    (s) => s.chatTemplateOverride,
+  );
+  const loadedChatTemplateOverride = useChatRuntimeStore(
+    (s) => s.loadedChatTemplateOverride,
+  );
   const customContextLength = useChatRuntimeStore((s) => s.customContextLength);
   const loadedCustomContextLength = useChatRuntimeStore(
     (s) => s.loadedCustomContextLength,
@@ -709,6 +717,9 @@ export function ChatSettingsPanel({
   const fitCtxAuto = isAutoFit && (customContextLength ?? 0) <= 0;
   const fitResolvedCtx =
     fitCtxAuto && loadedGpuMemoryMode === "fit" ? ggufContextLength : null;
+  // A saved chat-template override is a reload-time setting too, so surface
+  // Apply for a template-only edit (otherwise it could never be applied).
+  const templateDirty = chatTemplateOverride !== loadedChatTemplateOverride;
   const modelSettingsDirty =
     kvDirty ||
     ctxDirty ||
@@ -718,7 +729,8 @@ export function ChatSettingsPanel({
     gpuDirty ||
     manualDirty ||
     gpuIdsDirty ||
-    splitRatioDirty;
+    splitRatioDirty ||
+    templateDirty;
   const [presetNameInput, setPresetNameInput] = useState(activePreset);
   const [systemPromptEditorOpen, setSystemPromptEditorOpen] = useState(false);
   const [systemPromptDraft, setSystemPromptDraft] = useState("");
