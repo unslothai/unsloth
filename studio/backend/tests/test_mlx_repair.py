@@ -106,6 +106,9 @@ def test_repair_install_pins_transformers_and_cleans_up(monkeypatch):
     # upgrade it underneath Studio, and the temp constraint file is cleaned up.
     assert "--constraint" in cmd
     assert "--upgrade" in cmd
+    reinstall_pairs = set(zip(cmd, cmd[1:]))
+    for name in mr._MLX_PACKAGE_NAMES:
+        assert ("--reinstall-package", name) in reinstall_pairs
     for pkg in mr.MLX_PACKAGES:
         assert pkg in cmd
     assert created_paths and not Path(created_paths[0]).exists()
@@ -117,7 +120,7 @@ def test_repair_install_pins_transformers_and_cleans_up(monkeypatch):
 
 
 def test_repair_rejects_inadequate_stack(monkeypatch):
-    # A successful pip run that still leaves an old/missing mlx-vlm must NOT clear
+    # A successful uv run that still leaves an old/missing mlx-vlm must NOT clear
     # chat-only: attempt_mlx_repair returns False so Train/Export stay disabled.
     class _Result:
         returncode = 0
@@ -128,13 +131,60 @@ def test_repair_rejects_inadequate_stack(monkeypatch):
     assert mr.attempt_mlx_repair() is False
 
 
+def test_repair_invalidates_import_caches_before_stack_check(monkeypatch):
+    events = []
+
+    class _Result:
+        returncode = 0
+        stdout = ""
+
+    def _stack_available():
+        events.append("check")
+        assert events == ["invalidate", "check"]
+        return True
+
+    monkeypatch.setattr(mr.subprocess, "run", lambda *a, **k: _Result())
+    monkeypatch.setattr(mr, "_uv_executable", lambda: "/usr/bin/uv")
+    monkeypatch.setattr(mr, "_transformers_constraint_args", lambda: ([], None))
+    monkeypatch.setattr(
+        mr.importlib, "invalidate_caches", lambda: events.append("invalidate")
+    )
+    monkeypatch.setattr(mr, "mlx_stack_available", _stack_available)
+
+    assert mr.attempt_mlx_repair() is True
+    assert events == ["invalidate", "check"]
+
+
 def test_stack_unavailable_without_mlx(monkeypatch):
-    monkeypatch.setattr(mr, "mlx_available", lambda: False)
+    import importlib.metadata as metadata
+
+    def _missing(_name):
+        raise metadata.PackageNotFoundError(_name)
+
+    monkeypatch.setattr(metadata, "version", _missing)
+    assert mr.mlx_stack_available() is False
+
+
+def test_stack_unavailable_checks_versions_before_imports(monkeypatch):
+    import importlib.metadata as metadata
+
+    def _version(name):
+        if name == "mlx":
+            return "0.21.0"
+        return mr._MLX_MIN_VERSIONS[name]
+
+    def _import_module(_name):
+        raise AssertionError("MLX modules must not import before versions pass")
+
+    monkeypatch.setattr(metadata, "version", _version)
+    monkeypatch.setattr(mr.importlib, "import_module", _import_module)
     assert mr.mlx_stack_available() is False
 
 
 def test_stack_unavailable_when_companion_import_fails(monkeypatch):
-    monkeypatch.setattr(mr, "mlx_available", lambda: True)
+    import importlib.metadata as metadata
+
+    monkeypatch.setattr(metadata, "version", lambda name: mr._MLX_MIN_VERSIONS[name])
 
     def _import_module(name):
         if name == "mlx_vlm":
@@ -148,7 +198,6 @@ def test_stack_unavailable_when_companion_import_fails(monkeypatch):
 def test_stack_available_requires_runtime_imports_and_versions(monkeypatch):
     import importlib.metadata as metadata
 
-    monkeypatch.setattr(mr, "mlx_available", lambda: True)
     imported = []
 
     def _import_module(name):
@@ -181,7 +230,7 @@ def test_no_op_when_mlx_stack_present(monkeypatch):
 
 def test_disable_env_skips(monkeypatch):
     monkeypatch.setattr(mr, "is_apple_silicon", lambda: True)
-    monkeypatch.setattr(mr, "mlx_available", lambda: False)
+    monkeypatch.setattr(mr, "mlx_stack_available", lambda: False)
     monkeypatch.setenv(mr.DISABLE_ENV_VAR, "1")
     assert mr.start_mlx_autorepair_if_needed() is False
 
@@ -190,7 +239,7 @@ def test_apple_silicon_missing_mlx_starts_repair_and_redetects(monkeypatch):
     import threading
 
     monkeypatch.setattr(mr, "is_apple_silicon", lambda: True)
-    monkeypatch.setattr(mr, "mlx_available", lambda: False)
+    monkeypatch.setattr(mr, "mlx_stack_available", lambda: False)
 
     repaired = {"called": False}
 
@@ -222,7 +271,7 @@ def test_apple_silicon_missing_mlx_starts_repair_and_redetects(monkeypatch):
 
 def test_attempts_only_once_per_process(monkeypatch):
     monkeypatch.setattr(mr, "is_apple_silicon", lambda: True)
-    monkeypatch.setattr(mr, "mlx_available", lambda: False)
+    monkeypatch.setattr(mr, "mlx_stack_available", lambda: False)
     monkeypatch.setattr(mr, "attempt_mlx_repair", lambda **_k: False)
 
     first = mr.start_mlx_autorepair_if_needed()
