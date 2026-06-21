@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { requestVoiceToggle } from "@/components/assistant-ui/thread";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { cn } from "@/lib/utils";
-import type { FC } from "react";
+import { XIcon } from "lucide-react";
+import { useEffect, type FC } from "react";
 
 const orbConfig = {
   listening: {
@@ -30,6 +32,20 @@ export const VoiceOrb: FC = () => {
   const orbState = useChatRuntimeStore((s) => s.voiceOrbState);
 
   const cfg = orbState ? orbConfig[orbState] : null;
+
+  // Esc disables voice mode, but only while the orb is active — the listener is
+  // attached only when orbState is set, so it never fires globally.
+  useEffect(() => {
+    if (!orbState) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        requestVoiceToggle();
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [orbState]);
 
   return (
     <>
@@ -62,10 +78,24 @@ export const VoiceOrb: FC = () => {
             ? "pointer-events-auto opacity-100"
             : "pointer-events-none opacity-0",
         )}
-        aria-hidden
       >
+        {orbState && (
+          <button
+            type="button"
+            onClick={() => requestVoiceToggle()}
+            aria-label="Exit voice mode"
+            className={cn(
+              "pointer-events-auto absolute right-4 top-4 flex size-8 items-center justify-center",
+              "rounded-full text-muted-foreground/60 transition-colors",
+              "hover:bg-accent hover:text-foreground",
+            )}
+          >
+            <XIcon className="size-4" />
+          </button>
+        )}
         <div
           className="transition-all duration-500"
+          aria-hidden
           style={{
             width: 140,
             height: 140,

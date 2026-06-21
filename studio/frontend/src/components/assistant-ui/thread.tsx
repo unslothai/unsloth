@@ -2424,6 +2424,19 @@ let _voiceMode: "off" | "configuring" | "active" = "off";
 // the toggle (and its in-gesture primeAudio) from a different component.
 let _voiceToggle: (() => void) | null = null;
 
+// Lets the VoiceOrb overlay (close button + Esc handler) drive the same toggle
+// the plus-menu uses, without prop-drilling across the remount boundary.
+export function requestVoiceToggle() {
+  _voiceToggle?.();
+}
+
+// Registered by the mounted VoiceEngine so the dictation adapter can re-arm the
+// mic after a recoverable "no-speech" timeout, without killing the voice loop.
+let _voiceResume: (() => void) | null = null;
+export function requestVoiceResume() {
+  _voiceResume?.();
+}
+
 const VoiceEngine: FC = () => {
   const aui = useAui();
   const [voiceMode, setVoiceModeState] = useState(_voiceMode);
@@ -2448,16 +2461,44 @@ const VoiceEngine: FC = () => {
   });
   const selectedVoiceModelId = useChatRuntimeStore((s) => s.selectedVoiceModelId);
   const voiceSlotLoaded = voiceMode === "active" && selectedVoiceModelId !== null;
+  const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
+  const prevThreadIdRef = useRef(activeThreadId);
 
   // Called after speaking ends (or immediately if there's nothing to speak).
   const resumeListen = useCallback(() => {
-    if (voiceModeRef.current === "active") {
-      if (!auiRef.current.composer().getState().dictation) {
-        document
-          .querySelector<HTMLButtonElement>('button[aria-label="Dictate"]')
-          ?.click();
+    // After a session ends (no-speech finish, silence timer), the composer's
+    // dictation field can lag a few frames before clearing. Clicking Dictate
+    // while it is still set would toggle dictation OFF and kill the loop, so
+    // poll briefly for it to clear before re-arming; as a last resort, re-arm
+    // anyway rather than leave the loop dead.
+    const MAX_ATTEMPTS = 5;
+    const RETRY_MS = 50;
+
+    const clickDictate = () => {
+      document
+        .querySelector<HTMLButtonElement>('button[aria-label="Dictate"]')
+        ?.click();
+    };
+
+    const attempt = (n: number) => {
+      // Voice turned off while we were waiting — abort the re-arm.
+      if (voiceModeRef.current !== "active") return;
+      const hasDictation = Boolean(
+        auiRef.current.composer().getState().dictation,
+      );
+      if (!hasDictation) {
+        clickDictate();
+        return;
       }
-    }
+      if (n < MAX_ATTEMPTS) {
+        setTimeout(() => attempt(n + 1), RETRY_MS);
+        return;
+      }
+      // Exhausted ~250ms of retries; assume the state is stale and re-arm.
+      clickDictate();
+    };
+
+    attempt(1);
   }, []);
 
   const { isSpeaking, speak, stop, primeAudio } = useTtsPlayer(activeAudioType, resumeListen, voiceSlotLoaded);
@@ -2572,6 +2613,13 @@ const VoiceEngine: FC = () => {
       composer.stopDictation();
       if (composer.getState().isEditing && composer.getState().text.trim()) {
         composer.send();
+      } else {
+        // No speech this window: stopDictation ends the session but nothing
+        // re-arms it, so the loop would die while voiceMode stays "active"
+        // (orb stuck, mic dead). Re-arm so we keep listening indefinitely.
+        // Deferred so assistant-ui clears the ended session before resumeListen
+        // re-checks it.
+        setTimeout(() => resumeListen(), 0);
       }
     }, 1500);
 
@@ -2581,7 +2629,7 @@ const VoiceEngine: FC = () => {
         silenceTimerRef.current = null;
       }
     };
-  }, [dictationTranscript, dictationStatusType, stop]);
+  }, [dictationTranscript, dictationStatusType, stop, resumeListen]);
 
   const toggle = useCallback(() => {
     // OFF → CONFIGURING (show dropdown, don't start mic)
@@ -2624,6 +2672,26 @@ const VoiceEngine: FC = () => {
       if (_voiceToggle === toggle) _voiceToggle = null;
     };
   }, [toggle]);
+
+  // Expose resumeListen so the dictation adapter can re-arm the mic after a
+  // recoverable no-speech timeout. It self-guards: no-op unless voice is active.
+  useEffect(() => {
+    _voiceResume = resumeListen;
+    return () => {
+      if (_voiceResume === resumeListen) _voiceResume = null;
+    };
+  }, [resumeListen]);
+
+  // Thread switch resets voice entirely: toggle() exits voice mode (hiding the
+  // orb), and the unload-on-off effect in chat-page then unloads the voice slot.
+  // Fires only on an actual change, never on mount.
+  useEffect(() => {
+    if (prevThreadIdRef.current === activeThreadId) return;
+    prevThreadIdRef.current = activeThreadId;
+    if (voiceModeRef.current !== "off") {
+      toggle();
+    }
+  }, [activeThreadId, toggle]);
 
   // Headless: the visible control now lives in the plus menu (ComposerToolsMenu).
   // This component stays mounted only to keep the voice loop's hooks/effects alive.
