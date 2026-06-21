@@ -45,6 +45,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { useAnimatedThemeToggle } from "@/components/ui/animated-theme-toggler";
 import { cn } from "@/lib/utils";
+import { isTauri } from "@/lib/api-base";
 import {
   Archive03Icon,
   ChefHatIcon,
@@ -261,6 +262,22 @@ export function AppSidebar() {
   });
   const { togglePinned, isMobile, setOpenMobile } = useSidebar();
   const navigate = useNavigate();
+
+  // Current installed app version (Tauri only) for the sidebar update card.
+  const [appVersion, setAppVersion] = useState<string | null>(null);
+  useEffect(() => {
+    if (!isTauri) return;
+    let cancelled = false;
+    import("@tauri-apps/api/app")
+      .then(({ getVersion }) => getVersion())
+      .then((v) => {
+        if (!cancelled) setAppVersion(v);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Auto-close mobile Sheet after navigation
   const closeMobileIfOpen = () => {
@@ -1327,28 +1344,29 @@ export function AppSidebar() {
           )}
         />
         <SidebarMenu>
-          {/* Update affordance — static design only; functionality wired later. */}
-          <SidebarMenuItem className="mb-6 group-data-[collapsible=icon]:hidden">
+          {/* Update affordance — design + current-version display; click behavior wired later. */}
+          <SidebarMenuItem className="mb-6">
             <button
               type="button"
-              className="flex h-[55px] w-full items-center gap-2.5 rounded-[14px] border border-border/60 bg-transparent px-3 text-left transition-colors hover:bg-nav-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="flex h-[55px] w-full items-center gap-2.5 rounded-[14px] border border-border/60 bg-transparent px-3 text-left transition-colors hover:bg-nav-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-data-[collapsible=icon]:h-[34px] group-data-[collapsible=icon]:w-[34px] group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:gap-0 group-data-[collapsible=icon]:px-0 group-data-[collapsible=icon]:mx-auto"
             >
               <HugeiconsIcon
                 icon={Clock03Icon}
                 strokeWidth={1.75}
                 className="size-[22px] shrink-0 text-nav-fg"
               />
-              <div className="flex min-w-0 flex-col gap-px leading-tight">
+              <div className="flex min-w-0 flex-col gap-px leading-tight group-data-[collapsible=icon]:hidden">
                 <span className="truncate font-heading text-[13.5px] font-semibold text-nav-fg">
                   Update available
                 </span>
-                {/* TODO: replace with the target version once functionality is wired. */}
-                <span className="truncate text-[11.5px] text-muted-foreground">
-                  v0.0.0
-                </span>
+                {appVersion && (
+                  <span className="truncate text-[11.5px] text-muted-foreground">
+                    v{appVersion}
+                  </span>
+                )}
               </div>
               <ArrowRight
-                className="ml-auto size-4 shrink-0 text-muted-foreground"
+                className="ml-auto size-4 shrink-0 text-muted-foreground group-data-[collapsible=icon]:hidden"
                 strokeWidth={1.75}
               />
             </button>
