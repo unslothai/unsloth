@@ -489,6 +489,32 @@ def _qwen3_5_vlm_state_dict_for_save(state_dict):
     return remapped_state_dict
 
 
+def _normalize_tied_weights_keys(model):
+    """Coerce a legacy list/tuple ``_tied_weights_keys`` into the dict form that
+    transformers 5.x expects, so ``save_pretrained`` does not crash mid-save.
+
+    transformers >= 5 ``save_pretrained`` calls ``_get_tied_weight_keys``, which does
+    ``module._tied_weights_keys.keys()``. A model that still declares the attribute as a
+    list -- e.g. NemotronH (``backbone.layers.N.mixer.*_proj``) -- raises
+    ``AttributeError: 'list' object has no attribute 'keys'`` part-way through the save.
+    Only the keys are read (as patterns to dedup tied tensors), so mapping each entry to
+    itself preserves behaviour while satisfying the ``.keys()`` access; older transformers
+    iterate the attribute directly, for which a dict yields the same keys. Idempotent
+    (dicts/None are left as-is) and best-effort -- a save must never fail over this.
+    """
+    try:
+        modules = model.modules()
+    except Exception:
+        return
+    for module in modules:
+        keys = getattr(module, "_tied_weights_keys", None)
+        if isinstance(keys, (list, tuple)) and keys:
+            try:
+                module._tied_weights_keys = {k: k for k in keys}
+            except Exception:
+                pass
+
+
 @torch.inference_mode
 def unsloth_save_model(
     model,
@@ -519,6 +545,9 @@ def unsloth_save_model(
 ):
     if isinstance(tokenizer, (PreTrainedTokenizerBase, ProcessorMixin)):
         tokenizer = patch_saving_functions(tokenizer)
+
+    # Legacy list-form _tied_weights_keys (e.g. NemotronH) crashes transformers 5.x save.
+    _normalize_tied_weights_keys(model)
 
     if token is None:
         token = get_token()
@@ -2149,6 +2178,9 @@ def unsloth_save_pretrained_gguf(
     if isinstance(tokenizer, (PreTrainedTokenizerBase, ProcessorMixin)):
         tokenizer = patch_saving_functions(tokenizer)
 
+    # Legacy list-form _tied_weights_keys (e.g. NemotronH) crashes transformers 5.x save.
+    _normalize_tied_weights_keys(self)
+
     try:
         base_model_name = get_model_name(self.config._name_or_path, load_in_4bit = False)
         model_name = base_model_name.split("/")[-1]
@@ -2998,6 +3030,9 @@ def unsloth_generic_save(
 ):
     if isinstance(tokenizer, (PreTrainedTokenizerBase, ProcessorMixin)):
         tokenizer = patch_saving_functions(tokenizer)
+
+    # Legacy list-form _tied_weights_keys (e.g. NemotronH) crashes transformers 5.x save.
+    _normalize_tied_weights_keys(model)
 
     if token is None and push_to_hub:
         token = get_token()
