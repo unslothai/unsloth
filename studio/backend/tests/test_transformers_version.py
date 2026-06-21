@@ -34,6 +34,8 @@ from utils.transformers_version import (
     _check_tokenizer_config_needs_v5,
     _check_config_needs_510,
     _check_config_needs_550,
+    _config_needs_510,
+    _nemotron_h_needs_mlp_support,
     _config_json_cache,
     _tokenizer_class_cache,
     _config_needs_510_cache,
@@ -383,6 +385,49 @@ class TestCheckConfigNeeds510:
 
 
 # ---------------------------------------------------------------------------
+# NemotronH dense (MLP) models need the 5.10 tier
+# ---------------------------------------------------------------------------
+
+
+class TestNemotronHNeedsMlpSupport:
+    """Dense NemotronH configs (MLP layers) require transformers >= 5.10."""
+
+    def test_hybrid_override_pattern_with_dash(self):
+        cfg = {
+            "model_type": "nemotron_h",
+            "hybrid_override_pattern": "M-M-M*-M-",
+        }
+        assert _nemotron_h_needs_mlp_support(cfg) is True
+
+    def test_layers_block_type_with_mlp(self):
+        cfg = {
+            "model_type": "nemotron_h",
+            "layers_block_type": ["mamba", "mlp", "attention", "mamba"],
+        }
+        assert _nemotron_h_needs_mlp_support(cfg) is True
+
+    def test_nemotron_h_moe_only_returns_false(self):
+        """A pure MoE NemotronH (no MLP) does not need the 5.10 tier."""
+        cfg = {
+            "model_type": "nemotron_h",
+            "hybrid_override_pattern": "MEME*MEM",
+        }
+        assert _nemotron_h_needs_mlp_support(cfg) is False
+
+    def test_non_nemotron_with_dash_returns_false(self):
+        """The dash heuristic only applies to nemotron_h configs."""
+        cfg = {"model_type": "llama", "hybrid_override_pattern": "M-M-"}
+        assert _nemotron_h_needs_mlp_support(cfg) is False
+
+    def test_config_needs_510_includes_dense_nemotron_h(self):
+        cfg = {
+            "model_type": "nemotron_h",
+            "hybrid_override_pattern": "M-M-M*-",
+        }
+        assert _config_needs_510(cfg) is True
+
+
+# ---------------------------------------------------------------------------
 # get_transformers_tier — tier detection
 # ---------------------------------------------------------------------------
 
@@ -437,6 +482,43 @@ class TestGetTransformersTier:
         (tmp_path / "config.json").write_text(json.dumps(cfg))
 
         assert get_transformers_tier(str(tmp_path)) == "510"
+
+    def test_dense_nemotron_h_config_json_returns_510(self, tmp_path: Path):
+        """Local dense NemotronH checkpoint → 510 (MLP layers need >= 5.10)."""
+        cfg = {
+            "model_type": "nemotron_h",
+            "hybrid_override_pattern": "M-M-M*-M-",
+        }
+        (tmp_path / "config.json").write_text(json.dumps(cfg))
+        # A v5 tokenizer would otherwise route this to 530; 510 must win.
+        (tmp_path / "tokenizer_config.json").write_text(
+            json.dumps({"tokenizer_class": "TokenizersBackend"})
+        )
+
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            assert get_transformers_tier(str(tmp_path)) == "510"
+            mock_urlopen.assert_not_called()
+
+    def test_dense_nemotron_h_remote_config_returns_510(self):
+        """Remote dense NemotronH (HF id) → 510 via config.json fetch, not 530."""
+
+        class _Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return json.dumps(
+                    {
+                        "model_type": "nemotron_h",
+                        "hybrid_override_pattern": "M-M-M*-M-",
+                    }
+                ).encode()
+
+        with patch("urllib.request.urlopen", return_value = _Response()):
+            assert get_transformers_tier("unsloth/NVIDIA-Nemotron-3-Nano-4B") == "510"
 
     def test_local_config_json_short_circuits_path_substrings(self, tmp_path: Path):
         """Local config.json should prevent false matches from parent directory names."""

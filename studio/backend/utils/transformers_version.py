@@ -5,7 +5,9 @@
 
 Some newer model architectures (Ministral-3, GLM-4.7-Flash, Qwen3-30B-A3B MoE,
 tiny_qwen3_moe) require transformers>=5.3.0, while Gemma 4 models require a
-newer 5.x sidecar.  Everything else needs the default 4.57.x that ships with
+newer 5.x sidecar.  Dense NemotronH models (e.g. NVIDIA-Nemotron-3-Nano-4B) use
+MLP layers that only transformers>=5.10 can parse natively, so they go on the
+5.10 sidecar too.  Everything else needs the default 4.57.x that ships with
 Unsloth.
 
 Two separate target directories are maintained:
@@ -393,12 +395,38 @@ def _config_needs_550(cfg: dict) -> bool:
     )
 
 
+def _nemotron_h_needs_mlp_support(cfg: dict) -> bool:
+    """True for a dense NemotronH config that uses MLP (``-``) layers.
+
+    NemotronH ``hybrid_override_pattern`` uses ``M`` (mamba), ``*`` (attention),
+    ``E`` (moe) and ``-`` (mlp). transformers only gained ``-`` -> ``mlp`` in its
+    ``pattern_mapping``/``valid_types``/``MIXER_TYPES`` in 5.10; 5.3 and 5.5 raise
+    ``KeyError: '-'`` (or reject the ``"mlp"`` block type) when parsing the config.
+    The model also ships ``auto_map`` remote code, but that only loads with
+    ``trust_remote_code=True`` -- a native (TRC=False) load such as export needs the
+    5.10 tier. Detected via the raw pattern or an already-expanded
+    ``layers_block_type`` list.
+    """
+    if cfg.get("model_type") != "nemotron_h":
+        return False
+    pattern = cfg.get("hybrid_override_pattern")
+    if isinstance(pattern, str) and "-" in pattern:
+        return True
+    block_types = cfg.get("layers_block_type")
+    if isinstance(block_types, (list, tuple)) and "mlp" in block_types:
+        return True
+    return False
+
+
 def _config_needs_510(cfg: dict) -> bool:
-    return _config_matches_tier(
+    if _config_matches_tier(
         cfg,
         _TRANSFORMERS_510_ARCHITECTURES,
         _TRANSFORMERS_510_MODEL_TYPES,
-    )
+    ):
+        return True
+    # Dense NemotronH (e.g. NVIDIA-Nemotron-3-Nano-4B) needs 5.10 for MLP layers.
+    return _nemotron_h_needs_mlp_support(cfg)
 
 
 def _check_config_needs_550(model_name: str) -> bool:
