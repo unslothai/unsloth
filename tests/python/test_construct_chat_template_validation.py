@@ -80,7 +80,7 @@ class _SuccessFakeTokenizer(_FakeTokenizer):
 
     def __call__(self, text):
         # input_ids[0] must differ from bos_token_id so the BOS-handling branch is skipped.
-        return SimpleNamespace(input_ids=[5])
+        return SimpleNamespace(input_ids = [5])
 
 
 @pytest.mark.parametrize(
