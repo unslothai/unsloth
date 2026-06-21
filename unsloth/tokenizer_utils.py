@@ -639,8 +639,9 @@ _VISION_PAD_TOKENS = frozenset(
         "<|audio_pad|>",
     )
 )
-# Safe text replacements, in preference order.
-_SAFE_TEXT_PAD_TOKENS = ("<|endoftext|>", "<pad>", "[PAD]", "<unk>")
+# Safe text replacements, in preference order. <unk> is excluded: reusing it as
+# pad makes every OOV token share pad_token_id, so masking drops real OOV tokens.
+_SAFE_TEXT_PAD_TOKENS = ("<|endoftext|>", "<pad>", "[PAD]")
 
 
 def _fix_vision_pad_token(tokenizer):
@@ -657,17 +658,23 @@ def _fix_vision_pad_token(tokenizer):
     if pad_token is None or pad_token not in _VISION_PAD_TOKENS:
         return tokenizer
 
-    vocab = tokenizer.get_vocab()
+    get_vocab = getattr(tokenizer, "get_vocab", None)
+    if get_vocab is None:
+        return tokenizer
+    vocab = get_vocab()
+    if not isinstance(vocab, dict):
+        return tokenizer
     new_pad_token = None
     for candidate in _SAFE_TEXT_PAD_TOKENS:
         if candidate in vocab and candidate != getattr(tokenizer, "eos_token", None):
             new_pad_token = candidate
             break
-    # Fall back to eos_token only if it differs from pad_token (else the loss
-    # would ignore eos, breaking stop-token learning).
+    # Fall back to eos_token only if it differs from pad_token and is not itself a
+    # vision token (else we keep the NaN, or the loss ignores eos breaking stop-token
+    # learning).
     if new_pad_token is None:
         eos_token = getattr(tokenizer, "eos_token", None)
-        if eos_token is not None and eos_token != pad_token:
+        if eos_token is not None and eos_token != pad_token and eos_token not in _VISION_PAD_TOKENS:
             new_pad_token = eos_token
     if new_pad_token is None:
         return tokenizer
