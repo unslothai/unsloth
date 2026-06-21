@@ -167,6 +167,7 @@ def _transformers_constraint_args() -> tuple[list[str], str | None]:
     huggingface_hub), and in that case we still want to pin it so the mlx install
     cannot quietly upgrade it out from under Studio."""
     from importlib.metadata import PackageNotFoundError, version as _dist_version
+
     try:
         transformers_version = _dist_version("transformers")
     except PackageNotFoundError:
