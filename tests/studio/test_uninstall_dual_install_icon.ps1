@@ -1,4 +1,6 @@
 #!/usr/bin/env pwsh
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 # Unit test for _RemoveDataDirKeepingWslIcon in scripts/uninstall.ps1.
 #
 # A native uninstall must NOT delete the shared unsloth.ico while a WSL shortcut
