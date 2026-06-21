@@ -3,13 +3,13 @@
 
 """Best-effort MLX self-heal for Apple Silicon.
 
-On macOS, Studio enables Train/Export only when `import mlx.core` works
-(see utils.hardware.hardware.detect_hardware -> CHAT_ONLY). MLX is pulled only
-transitively via unsloth-zoo, and a resolver backtrack (mlx-vlm -> transformers>=5
-vs the single-env transformers pin) can silently drop it, leaving Train/Export
-greyed out after a reinstall/update. This reinstalls mlx *by name* -- bypassing
-that fragile transitive resolution -- on a background thread, then re-detects so
-the gate re-opens without a manual `unsloth studio update`.
+On macOS, Studio enables Train/Export only when the MLX training/export stack is
+usable (see utils.hardware.hardware.detect_hardware -> CHAT_ONLY). MLX is pulled
+only transitively via unsloth-zoo, and a resolver backtrack (mlx-vlm ->
+transformers>=5 vs the single-env transformers pin) can silently drop it, leaving
+Train/Export greyed out after a reinstall/update. This reinstalls mlx by name on
+a background thread, then re-detects so the gate re-opens without a manual
+`unsloth studio update`.
 
 The install mirrors the main Apple Silicon installer (install_python_stack.py):
 it points UV_OVERRIDE at overrides-darwin-arm64.txt so the resolver keeps the
@@ -24,6 +24,7 @@ best-effort, opt out with UNSLOTH_DISABLE_MLX_AUTOREPAIR=1.
 
 from __future__ import annotations
 
+import importlib
 import os
 import platform
 import shutil
@@ -42,7 +43,12 @@ DISABLE_ENV_VAR = "UNSLOTH_DISABLE_MLX_AUTOREPAIR"
 # deps). mlx-vlm especially must be >=0.4.4: an older one still imports but
 # breaks VLM Train/Export, so installing it would wrongly clear chat-only.
 _MLX_MIN_VERSIONS = {"mlx": "0.22.0", "mlx-lm": "0.22.0", "mlx-vlm": "0.4.4"}
+_MLX_PACKAGE_NAMES = tuple(_MLX_MIN_VERSIONS)
+_MLX_RUNTIME_IMPORTS = ("mlx.core", "mlx_lm", "mlx_lm.sample_utils", "mlx_vlm")
 MLX_PACKAGES = tuple(f"{name}>={version}" for name, version in _MLX_MIN_VERSIONS.items())
+_MLX_REINSTALL_ARGS = tuple(
+    arg for name in _MLX_PACKAGE_NAMES for arg in ("--reinstall-package", name)
+)
 _REPAIR_TIMEOUT_S = 900
 
 # Attempt at most once per process; success is sticky (mlx then imports and the
@@ -63,21 +69,23 @@ def mlx_available() -> bool:
         return False
 
 
-def mlx_stack_available() -> bool:
-    """`import mlx.core` works AND mlx/mlx-lm/mlx-vlm meet unsloth-zoo's minimums.
+def _mlx_runtime_imports_available() -> bool:
+    for module in _MLX_RUNTIME_IMPORTS:
+        try:
+            importlib.import_module(module)
+        except Exception:
+            return False
+    return True
 
-    A bare `import mlx.core` is not enough: a backtracked old mlx-vlm imports
-    fine but breaks VLM Train/Export, so it must not count as a healthy stack
-    (otherwise the self-heal would clear chat-only onto a broken install)."""
-    if not mlx_available():
-        return False
+
+def _mlx_versions_satisfy_minimums() -> bool:
     try:
         from importlib.metadata import PackageNotFoundError
         from importlib.metadata import version as _dist_version
 
         from packaging.version import Version
     except Exception:
-        return True  # cannot version-check here; trust the successful import
+        return False
     for name, minimum in _MLX_MIN_VERSIONS.items():
         try:
             if Version(_dist_version(name)) < Version(minimum):
@@ -85,16 +93,44 @@ def mlx_stack_available() -> bool:
         except PackageNotFoundError:
             return False
         except Exception:
-            continue  # unparseable version metadata: do not fail the whole check
+            return False
     return True
 
 
-def _pip_install_cmd(*args: str) -> list[str]:
-    """`uv pip install` into this venv if uv is on PATH, else `python -m pip
-    install`. Mirrors core.training.worker._pip_install_cmd."""
-    if shutil.which("uv"):
-        return ["uv", "pip", "install", "--python", sys.executable, *args]
-    return [sys.executable, "-m", "pip", "install", *args]
+def mlx_stack_available() -> bool:
+    """`import mlx.core` works AND mlx/mlx-lm/mlx-vlm meet unsloth-zoo's minimums.
+
+    Check distribution versions before imports so a too-old but importable MLX
+    module is not loaded into this process before repair can replace it."""
+    if not _mlx_versions_satisfy_minimums():
+        return False
+    return _mlx_runtime_imports_available()
+
+
+def _uv_executable() -> str | None:
+    """Find uv even when macOS GUI launchers start with a minimal PATH."""
+    found = shutil.which("uv")
+    if found:
+        return found
+    for candidate in (
+        Path.home() / ".local" / "bin" / "uv",
+        Path.home() / ".cargo" / "bin" / "uv",
+        Path("/opt/homebrew/bin/uv"),
+        Path("/usr/local/bin/uv"),
+    ):
+        try:
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                return str(candidate)
+        except OSError:
+            continue
+    return None
+
+
+def _uv_install_cmd(*args: str) -> list[str] | None:
+    uv = _uv_executable()
+    if not uv:
+        return None
+    return [uv, "pip", "install", "--python", sys.executable, *args]
 
 
 def _mlx_install_env() -> dict[str, str]:
@@ -149,9 +185,15 @@ def attempt_mlx_repair(*, timeout: int = _REPAIR_TIMEOUT_S) -> bool:
     (so a backtracked old mlx-vlm is rejected, not accepted). transformers is held
     at its pinned version so the install can never upgrade it underneath Studio."""
     constraint_args, constraint_path = _transformers_constraint_args()
-    cmd = _pip_install_cmd("--upgrade", *constraint_args, *MLX_PACKAGES)
-    logger.info("MLX self-heal: installing %s", ", ".join(MLX_PACKAGES))
     try:
+        cmd = _uv_install_cmd("--upgrade", *_MLX_REINSTALL_ARGS, *constraint_args, *MLX_PACKAGES)
+        if cmd is None:
+            logger.warning(
+                "MLX self-heal requires uv so Studio can apply dependency overrides; "
+                "staying chat-only. Run `unsloth studio update` to restore uv."
+            )
+            return False
+        logger.info("MLX self-heal: installing %s", ", ".join(MLX_PACKAGES))
         result = subprocess.run(
             cmd,
             env = _mlx_install_env(),
@@ -176,6 +218,7 @@ def attempt_mlx_repair(*, timeout: int = _REPAIR_TIMEOUT_S) -> bool:
         tail = (result.stdout or "")[-2000:]
         logger.warning("MLX self-heal failed (staying chat-only):\n%s", tail)
         return False
+    importlib.invalidate_caches()
     if not mlx_stack_available():
         logger.warning(
             "MLX self-heal produced an incomplete or too-old MLX stack "

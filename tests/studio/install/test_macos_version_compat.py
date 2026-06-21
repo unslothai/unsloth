@@ -223,7 +223,7 @@ def _fake_macos_releases(tags):
 
 
 class TestMacosReleasePin:
-    """macOS has no special-case upstream pin: pre-26, macOS 26+ and unknown-version hosts all use normal latest selection."""
+    """Pre-26 upstream macOS pins the last loadable ggml-org release."""
 
     TAGS = [f"b{n}" for n in range(9442, 9400, -1)]  # newest-first, includes b9415
 
@@ -236,6 +236,18 @@ class TestMacosReleasePin:
 
         monkeypatch.setattr(ILP, "iter_release_payloads_by_time", fake_iter)
 
+    def test_pre26_host_pins_b9415(self, monkeypatch):
+        self._patch_releases(monkeypatch)
+        tag, plans = ILP.resolve_simple_install_release_plans(
+            "latest",
+            make_macos_host((14, 0)),
+            "ggml-org/llama.cpp",
+            "",
+        )
+        assert tag == ILP._PINNED_MACOS_FALLBACK_TAG == "b9415"
+        assert len(plans) == 1
+        assert plans[0].release_tag == "b9415"
+
     def test_tahoe_host_takes_latest(self, monkeypatch):
         self._patch_releases(monkeypatch)
         tag, plans = ILP.resolve_simple_install_release_plans(
@@ -246,11 +258,7 @@ class TestMacosReleasePin:
         )
         assert tag == "latest"
         assert plans[0].release_tag == self.TAGS[0]  # newest release
-        # A known-version macOS host walks back as deep as the fork macOS path so
-        # a pre-26 host can reach a loadable build past a run of macOS-26-only
-        # ones (replaces the removed b9415 pin). A 26 host still gets the newest
-        # first; the extra entries are cheap fallback candidates.
-        assert len(plans) == ILP.DEFAULT_MAX_MACOS_RELEASE_FALLBACKS
+        assert len(plans) == ILP.DEFAULT_MAX_PREBUILT_RELEASE_FALLBACKS
 
     def test_unknown_macos_host_uses_default(self, monkeypatch):
         self._patch_releases(monkeypatch)
