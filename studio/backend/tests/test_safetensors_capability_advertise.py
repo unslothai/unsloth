@@ -107,6 +107,7 @@ def test_detect_safetensors_features_none_template_returns_all_false():
         "supports_reasoning": False,
         "reasoning_style": "enable_thinking",
         "reasoning_always_on": False,
+        "reasoning_effort_levels": [],
         "supports_preserve_thinking": False,
         "supports_tools": False,
     }
