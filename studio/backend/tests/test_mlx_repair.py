@@ -146,9 +146,7 @@ def test_repair_invalidates_import_caches_before_stack_check(monkeypatch):
     monkeypatch.setattr(mr.subprocess, "run", lambda *a, **k: _Result())
     monkeypatch.setattr(mr, "_uv_executable", lambda: "/usr/bin/uv")
     monkeypatch.setattr(mr, "_transformers_constraint_args", lambda: ([], None))
-    monkeypatch.setattr(
-        mr.importlib, "invalidate_caches", lambda: events.append("invalidate")
-    )
+    monkeypatch.setattr(mr.importlib, "invalidate_caches", lambda: events.append("invalidate"))
     monkeypatch.setattr(mr, "mlx_stack_available", _stack_available)
 
     assert mr.attempt_mlx_repair() is True

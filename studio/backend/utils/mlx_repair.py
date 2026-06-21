@@ -178,9 +178,7 @@ def attempt_mlx_repair(*, timeout: int = _REPAIR_TIMEOUT_S) -> bool:
     at its pinned version so the install can never upgrade it underneath Studio."""
     constraint_args, constraint_path = _transformers_constraint_args()
     try:
-        cmd = _uv_install_cmd(
-            "--upgrade", *_MLX_REINSTALL_ARGS, *constraint_args, *MLX_PACKAGES
-        )
+        cmd = _uv_install_cmd("--upgrade", *_MLX_REINSTALL_ARGS, *constraint_args, *MLX_PACKAGES)
         if cmd is None:
             logger.warning(
                 "MLX self-heal requires uv so Studio can apply dependency overrides; "
