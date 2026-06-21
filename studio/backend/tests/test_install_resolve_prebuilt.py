@@ -123,12 +123,24 @@ def test_macos_intel_and_arm_both_route_to_fork():
     )
 
 
-def test_macos_upstream_pin_removed():
-    # The deterministic upstream macOS pin was removed once macOS routed to the
-    # fork; the Mach-O minos preflight remains the backstop.
-    assert not hasattr(ilp, "pinned_macos_release_tag")
-    assert not hasattr(ilp, "_PINNED_MACOS_FALLBACK_TAG")
-    assert not hasattr(ilp, "_PINNED_MACOS_LATEST_FLOOR")
+def test_macos_upstream_pin_only_for_explicit_pre26_upstream():
+    pre26 = _host(
+        system = "Darwin",
+        is_macos = True,
+        is_arm64 = True,
+        machine = "arm64",
+        macos_version = (15, 5),
+    )
+    assert ilp.pinned_macos_release_tag(pre26, UPSTREAM) == "b9415"
+    assert ilp.pinned_macos_release_tag(pre26, FORK) is None
+    tahoe = _host(
+        system = "Darwin",
+        is_macos = True,
+        is_arm64 = True,
+        machine = "arm64",
+        macos_version = (26, 0),
+    )
+    assert ilp.pinned_macos_release_tag(tahoe, UPSTREAM) is None
 
 
 def _run_resolve(monkeypatch, capsys, plans_or_exc):

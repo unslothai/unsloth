@@ -65,6 +65,7 @@ _windows_cuda_attempt_covers_blackwell = (
     INSTALL_LLAMA_PREBUILT._windows_cuda_attempt_covers_blackwell
 )
 resolve_release_asset_choice = INSTALL_LLAMA_PREBUILT.resolve_release_asset_choice
+pinned_macos_release_tag = INSTALL_LLAMA_PREBUILT.pinned_macos_release_tag
 resolve_simple_install_release_plans = INSTALL_LLAMA_PREBUILT.resolve_simple_install_release_plans
 
 
@@ -3308,8 +3309,39 @@ def _macos_host(machine = "arm64", version = (15, 5)):
     )
 
 
-class TestResolveSimpleMacosNoPin:
-    """Simple/upstream path: macOS no longer has a special-case pin. Every host (pre-26 or macOS 26) resolves the requested 'latest' ref like any other host."""
+class TestPinnedMacosReleaseTag:
+    def test_arm64_sequoia_pins_b9415(self):
+        host = _macos_host("arm64", (15, 5))
+        assert pinned_macos_release_tag(host, UPSTREAM_REPO) == "b9415"
+
+    def test_arm64_sonoma_pins_b9415(self):
+        host = _macos_host("arm64", (14, 7))
+        assert pinned_macos_release_tag(host, UPSTREAM_REPO) == "b9415"
+
+    def test_x64_ventura_13_3_pins_b9415(self):
+        host = _macos_host("x86_64", (13, 3))
+        assert pinned_macos_release_tag(host, UPSTREAM_REPO) == "b9415"
+
+    def test_tahoe_takes_latest(self):
+        host = _macos_host("arm64", (26, 0))
+        assert pinned_macos_release_tag(host, UPSTREAM_REPO) is None
+
+    def test_unknown_version_takes_latest(self):
+        host = _macos_host("arm64", None)
+        assert pinned_macos_release_tag(host, UPSTREAM_REPO) is None
+
+    def test_fork_repo_is_dormant(self):
+        host = _macos_host("arm64", (15, 5))
+        fork = INSTALL_LLAMA_PREBUILT.DEFAULT_PUBLISHED_REPO
+        assert pinned_macos_release_tag(host, fork) is None
+
+    def test_non_macos_host_is_dormant(self):
+        host = make_host(system = "Linux", machine = "x86_64")
+        assert pinned_macos_release_tag(host, UPSTREAM_REPO) is None
+
+
+class TestResolveSimpleMacosPin:
+    """Pre-26 upstream macOS resolves b9415; macOS 26 keeps latest."""
 
     TAGS = ["b9442", "b9430", "b9428", "b9415"]  # newest-first feed
 
@@ -3344,19 +3376,19 @@ class TestResolveSimpleMacosNoPin:
         monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "iter_release_payloads_by_time", fake_iter)
         return calls
 
-    def test_pre26_host_takes_latest_release(self, monkeypatch):
-        # The b9415 pin is gone: a pre-26 host resolves the requested "latest" ref
-        # like any other host instead of pinning an older release.
+    def test_pre26_host_pins_b9415_without_walkback(self, monkeypatch):
         calls = self._feed(monkeypatch)
         host = _macos_host("arm64", (15, 5))
         requested_tag, plans = resolve_simple_install_release_plans(
             "latest", host, "ggml-org/llama.cpp", ""
         )
-        assert requested_tag == "latest"
-        assert plans[0].release_tag == "b9442"
-        # No pin: the iterator was asked for latest, not a specific tag.
-        assert calls[0][2] == "latest"
-        # Simple/upstream path stays unverified-by-manifest.
+        assert requested_tag == "b9415"
+        assert len(plans) == 1
+        assert plans[0].release_tag == "b9415"
+        assert plans[0].llama_tag == "b9415"
+        assert plans[0].attempts[0].install_kind == "macos-arm64"
+        assert plans[0].attempts[0].name == "llama-b9415-bin-macos-arm64.tar.gz"
+        assert calls[0][2] == "b9415"
         assert plans[0].approved_checksums.artifacts == {}
 
     def test_tahoe_host_takes_latest_release(self, monkeypatch):

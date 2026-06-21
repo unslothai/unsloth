@@ -179,6 +179,9 @@ DEFAULT_MAX_MACOS_RELEASE_FALLBACKS = env_int(
     16,
     minimum = 1,
 )
+# Last upstream macOS release before ggml-org moved macOS builds to Tahoe.
+_PINNED_MACOS_FALLBACK_TAG = "b9415"
+_PINNED_MACOS_LATEST_FLOOR = (26, 0)
 FORCE_COMPILE_DEFAULT_REF = os.environ.get("UNSLOTH_LLAMA_FORCE_COMPILE_REF", "master")
 
 # Lowest CUDA major we ship prebuilts for, and the highest major we probe for
@@ -1546,6 +1549,14 @@ def direct_upstream_release_plan(
     )
 
 
+def pinned_macos_release_tag(host: HostInfo, repo: str) -> str | None:
+    if repo != UPSTREAM_REPO or not host.is_macos or host.macos_version is None:
+        return None
+    if host.macos_version >= _PINNED_MACOS_LATEST_FLOOR:
+        return None
+    return _PINNED_MACOS_FALLBACK_TAG
+
+
 def resolve_simple_install_release_plans(
     llama_tag: str,
     host: HostInfo,
@@ -1568,22 +1579,12 @@ def resolve_simple_install_release_plans(
         )
     requested_tag = normalized_requested_llama_tag(llama_tag)
     allow_older_release_fallback = requested_tag == "latest" and not published_release_tag
-    # macOS no longer needs a special upstream pin: published_repo_for_host routes
-    # every macOS host (arm64 and Intel) to the unslothai/llama.cpp fork, which
-    # ships its own macOS prebuilts, so this upstream (ggml-org) path is only
-    # reachable via an explicit --published-repo override. For that rare case the
-    # release-by-release walk-back below plus the post-download Mach-O minos
-    # backstop (macos_binary_minos_issues / host_supports_macos_minos) handle a
-    # too-new macOS build.
+    if allow_older_release_fallback:
+        pinned_macos = pinned_macos_release_tag(host, repo)
+        if pinned_macos is not None:
+            requested_tag = pinned_macos
+            allow_older_release_fallback = False
     release_limit = max(1, max_release_fallbacks)
-    # A pre-macOS-26 host can sit behind a long run of macOS-26-only upstream
-    # builds before a loadable one. direct_upstream_release_plan builds those
-    # plans optimistically (minos is only checked post-download), so without a
-    # deeper limit the loop collects two too-new plans and gives up before
-    # reaching the loadable older build. Walk back as deep as the fork macOS path
-    # (this replaces the removed b9415 pin with dynamic discovery).
-    if host.is_macos and allow_older_release_fallback and host.macos_version is not None:
-        release_limit = max(release_limit, DEFAULT_MAX_MACOS_RELEASE_FALLBACKS)
     plans: list[InstallReleasePlan] = []
     last_error: PrebuiltFallback | None = None
 
