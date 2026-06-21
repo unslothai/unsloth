@@ -67,6 +67,7 @@ import {
   listPromptEntries,
   type PromptEntry,
 } from "@/features/chat/api/prompts-api";
+import { useChatPreferencesStore } from "@/features/chat/stores/chat-preferences-store";
 import { useChatProjects } from "@/features/chat/hooks/use-chat-projects";
 import { NewProjectDialog } from "@/features/chat/components/new-project-dialog";
 import { parseExternalModelId } from "@/features/chat/external-providers";
@@ -1177,6 +1178,9 @@ const ThreadComposerDock: FC<{
         promptQueueItemMatchesThreadIds(item, promptQueueThreadIds),
       ),
   );
+  const showModelDisclaimer = useChatPreferencesStore(
+    (s) => s.showModelDisclaimer,
+  );
 
   // Report dock height so the viewport reserves matching scroll space when
   // attachments or multiline input grow the composer.
@@ -1220,9 +1224,11 @@ const ThreadComposerDock: FC<{
             menuSide="top"
           />
         </div>
-        <p className="composer-footer-note">
-          LLMs can make mistakes. Double-check responses.
-        </p>
+        {showModelDisclaimer && (
+          <p className="composer-footer-note">
+            LLMs can make mistakes. Double-check responses.
+          </p>
+        )}
       </div>
     </div>
   );

@@ -104,6 +104,7 @@ import {
   loadOptionalBool,
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
+import { useChatPreferencesStore } from "./stores/chat-preferences-store";
 import { useExternalProvidersStore } from "./stores/external-providers-store";
 import { buildChatTourSteps } from "./tour";
 import { ArtifactSurface } from "./artifacts/artifact-surface";
@@ -492,6 +493,9 @@ function CompareShell({
   children: ReactElement;
   composer: ReactElement;
 }): ReactElement {
+  const showModelDisclaimer = useChatPreferencesStore(
+    (s) => s.showModelDisclaimer,
+  );
   return (
     <CompareHandlesProvider handlesRef={handlesRef}>
       <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col">
@@ -503,9 +507,11 @@ function CompareShell({
         </div>
         <div className="shrink-0 bg-background pl-5 pr-5 md:pr-[30px] pb-2 pt-1">
           <div className="mx-auto w-full max-w-[48rem]">{composer}</div>
-          <p className="composer-footer-note">
-            LLMs can make mistakes. Double-check responses.
-          </p>
+          {showModelDisclaimer && (
+            <p className="composer-footer-note">
+              LLMs can make mistakes. Double-check responses.
+            </p>
+          )}
         </div>
       </div>
     </CompareHandlesProvider>
