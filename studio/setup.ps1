@@ -612,6 +612,45 @@ function Find-VsBuildTools {
     return $null
 }
 
+# Detect the Microsoft Visual C++ 2015-2022 Redistributable. The prebuilt
+# llama-server.exe and the PyTorch wheels dynamically link VCRUNTIME140.dll /
+# MSVCP140.dll / VCRUNTIME140_1.dll; the Universal CRT ships with Windows 10+ but
+# this redistributable does not. vcruntime140_1.dll (VS 2019+) is the newest of
+# those, so its presence is the signal; the registry is a fallback.
+function Test-VCRedistInstalled {
+    $sys = $env:SystemRoot
+    if ($sys -and (Test-Path (Join-Path $sys 'System32\vcruntime140_1.dll'))) { return $true }
+    foreach ($k in @(
+        'HKLM:\SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64',
+        'HKLM:\SOFTWARE\WOW6432Node\Microsoft\VisualStudio\14.0\VC\Runtimes\x64'
+    )) {
+        try {
+            $r = Get-ItemProperty -Path $k -ErrorAction Stop
+            if ($r.Installed -eq 1 -and [int]$r.Major -ge 14 -and [int]$r.Minor -ge 20) { return $true }
+        } catch { }
+    }
+    return $false
+}
+
+# Install the VC++ 2015-2022 runtime if missing (non-fatal). Both the prebuilt
+# llama-server and PyTorch need it; it is usually already present, so this no-ops.
+function Ensure-VCRedist {
+    if (Test-VCRedistInstalled) { step "vcredist" "present"; return }
+    Write-Host "Microsoft Visual C++ Redistributable (2015-2022) is missing; the prebuilt llama.cpp and PyTorch need it. Installing the runtime..." -ForegroundColor Yellow
+    if ($null -ne (Get-Command winget -ErrorAction SilentlyContinue)) {
+        try {
+            Invoke-SetupCommand { winget install --id Microsoft.VCRedist.2015+.x64 --source winget --accept-package-agreements --accept-source-agreements } | Out-Null
+            Refresh-Environment
+        } catch { substep "VCRedist install failed: $($_.Exception.Message)" "Yellow" }
+    }
+    if (Test-VCRedistInstalled) { step "vcredist" "installed" }
+    else {
+        substep "Could not install the VC++ Redistributable automatically." "Yellow"
+        substep "If llama-server or torch reports a missing VCRUNTIME140.dll, install:" "Yellow"
+        substep "https://aka.ms/vs/17/release/vc_redist.x64.exe" "Yellow"
+    }
+}
+
 # ─────────────────────────────────────────────
 # Output style (aligned with studio/setup.sh: step / substep)
 # ─────────────────────────────────────────────
@@ -1282,6 +1321,13 @@ if (-not $HasGit) {
 } else {
     step "git" "$(git --version)"
 }
+
+# ============================================
+# 1b.5. Visual C++ Redistributable (runtime for the prebuilt llama.cpp + PyTorch)
+# ============================================
+# Not a build tool: the prebuilt llama-server and the pip/uv PyTorch wheels both
+# load the MSVC runtime DLLs at runtime, so ensure it even with no build tools.
+Ensure-VCRedist
 
 # ============================================
 # 1c. CMake (required for llama.cpp build)
