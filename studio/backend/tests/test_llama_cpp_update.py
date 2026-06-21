@@ -84,12 +84,7 @@ def _write_install(
     asset: str | None = None,
     release_tag: str | None = None,
 ) -> str:
-    """Create a fake prebuilt install tree and return the llama-server path.
-
-    ``asset`` is the bundle filename recorded in the marker; omit it to model an
-    older marker that predates asset-based ROCm forwarding (backward compat).
-    ``release_tag`` is the full release tag (e.g. a ``b9596-mix-<sha>`` mix
-    build); defaults to ``tag`` for a plain prebuilt."""
+    """Create a fake prebuilt install and return the llama-server path."""
     bin_dir = dir_ / "build" / "bin"
     bin_dir.mkdir(parents = True, exist_ok = True)
     binary = bin_dir / "llama-server"
@@ -436,7 +431,6 @@ def test_start_update_happy_path(monkeypatch, tmp_path):
     assert res["job"]["from_tag"] == "b9493"
     assert res["job"]["progress"] == 0.0
 
-    # Wait for the background worker.
     deadline = time.time() + 10
     while time.time() < deadline:
         job = upd.get_update_status()["job"]
@@ -446,14 +440,11 @@ def test_start_update_happy_path(monkeypatch, tmp_path):
     assert job["state"] == "success", job
     assert job["to_tag"] == "b9518"
     assert job["reload_required"] is False
-    # Installer was invoked with the resolved install dir + latest + repo.
     assert "--install-dir" in captured["cmd"]
     assert str(install_dir) in captured["cmd"]
     assert "--llama-tag" in captured["cmd"] and "latest" in captured["cmd"]
     assert "unslothai/llama.cpp" in captured["cmd"]
-    # Progress lines were parsed and success pins progress at 1.0.
     assert job["progress"] == 1.0
-    # The worker asks the installer for fine-grained progress milestones.
     assert popen_kwargs["env"]["UNSLOTH_PROGRESS_PERCENT_STEP"] == "5"
 
 
@@ -653,7 +644,7 @@ def test_start_update_installer_missing_refuses(monkeypatch, tmp_path):
 
 
 class _FakeBackend:
-    """Minimal stand-in for LlamaCppBackend's update-coordination surface."""
+    """Fake backend for update coordination."""
 
     def __init__(self):
         import threading
@@ -689,7 +680,6 @@ def test_update_sets_maintenance_flag_and_unloads(monkeypatch, tmp_path):
     seen = {}
 
     def _on_start(cmd):
-        # The maintenance flag must be set while the installer runs.
         seen["flag_during_install"] = backend._llama_update_in_progress
         _write_install(install_dir, "b9518")
 
@@ -706,7 +696,6 @@ def test_update_sets_maintenance_flag_and_unloads(monkeypatch, tmp_path):
     assert backend.unloaded is True
     assert upd.get_update_status()["job"]["reload_required"] is True
     assert seen.get("flag_during_install") is True
-    # Cleared in the finally so model loads work again after the swap.
     assert backend._llama_update_in_progress is False
 
 

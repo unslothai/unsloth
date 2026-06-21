@@ -505,8 +505,7 @@ export function ChatSettingsPanel({
     (s) => s.loadedSpeculativeType,
   );
   const specFallbackReason = useChatRuntimeStore((s) => s.specFallbackReason);
-  // "binary_no_mtp" / "binary_outdated" mean a newer prebuilt would re-enable
-  // MTP; "runtime_error" means the current build cannot run it (no update push).
+  // Only binary fallback states are solved by a newer prebuilt.
   const mtpUpdatable =
     specFallbackReason === "binary_no_mtp" ||
     specFallbackReason === "binary_outdated";
