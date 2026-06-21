@@ -132,7 +132,7 @@ def _is_bundled_avatar_url(value: str) -> bool:
     marker = "Sloth emojis/"
     if marker not in path:
         return False
-    return path[path.index(marker):].lower().endswith(".png")
+    return path[path.index(marker) :].lower().endswith(".png")
 
 
 class PersonalizationProfile(BaseModel):
