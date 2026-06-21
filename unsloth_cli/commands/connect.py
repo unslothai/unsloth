@@ -23,6 +23,7 @@ from unsloth_cli._inference import (
     ensure_studio_backend_path,
     find_studio_server,
     is_loopback_url,
+    urlopen_no_redirect,
     verify_studio_identity,
 )
 
@@ -94,7 +95,9 @@ def _http_json(
         method = method,
     )
     try:
-        with urllib.request.urlopen(request, timeout = timeout) as response:
+        # No redirects: this carries a bearer token, and a 3xx to another base
+        # would leak it to a server we never vetted (see _NoRedirectHandler).
+        with urlopen_no_redirect(request, timeout = timeout) as response:
             return json.loads(response.read().decode() or "{}")
     except urllib.error.HTTPError as exc:
         if error is None:
@@ -131,21 +134,33 @@ def _read_cache(cache: Path) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def _cached_keys(cache: Path, base: str) -> list:
-    # Keys are scoped to the exact server they were minted/used against, so a
-    # key is only ever replayed to that same server. Pre-scoping caches
-    # (flat "keys"/"key") had no server binding, so we deliberately ignore
-    # them rather than risk sending one server's key to another; the worst
-    # case is one extra automatic mint on the next local launch.
-    servers = _read_cache(cache).get("servers")
-    if not isinstance(servers, dict):
-        return []
-    keys = servers.get(base)
-    # Tolerate a hand-edited or corrupt cache: a bare string where a list is
-    # expected would otherwise iterate into single characters.
-    if not isinstance(keys, list):
-        return []
-    return [k for k in keys if isinstance(k, str)]
+def _server_buckets(servers: dict, base: str) -> dict:
+    # Normalise one server's cache entry to {"saved": [...], "minted": [...]},
+    # tolerating a hand-edited/corrupt cache (e.g. a bare string or non-list,
+    # which would otherwise iterate into single characters). An older
+    # single-list entry has unknown provenance, so it's treated as minted and
+    # therefore stays behind the identity check.
+    entry = servers.get(base) if isinstance(servers, dict) else None
+    if isinstance(entry, list):
+        return {"saved": [], "minted": [k for k in entry if isinstance(k, str)]}
+    if not isinstance(entry, dict):
+        return {"saved": [], "minted": []}
+
+    def _strs(name: str) -> list:
+        value = entry.get(name)
+        return [k for k in value if isinstance(k, str)] if isinstance(value, list) else []
+
+    return {"saved": _strs("saved"), "minted": _strs("minted")}
+
+
+def _cached_keys(cache: Path, base: str, source: str) -> list:
+    # Keys are scoped to the exact server they were saved/minted against, so a
+    # key is only ever replayed to that same server. `source` separates keys
+    # the user supplied with --api-key ("saved", trusted for that base) from
+    # ones we auto-minted ("minted", replayed only after the identity check).
+    # Pre-scoping caches (flat "keys"/"key") had no server binding and are
+    # ignored, so the worst case is one extra automatic mint.
+    return _server_buckets(_read_cache(cache).get("servers", {}), base)[source]
 
 
 def _write_private_json(path: Path, data: dict) -> None:
@@ -176,17 +191,19 @@ def _subdict(parent: dict, key: str) -> dict:
     return child
 
 
-def _remember_key(cache: Path, base: str, key: str) -> None:
+def _remember_key(cache: Path, base: str, key: str, source: str) -> None:
     data = _read_cache(cache)
     servers = data.get("servers")
     if not isinstance(servers, dict):
         servers = data["servers"] = {}
-    raw = servers.get(base)
-    existing = [k for k in raw if isinstance(k, str)] if isinstance(raw, list) else []
-    keys = ([key] + [k for k in existing if k != key])[:8]
-    if keys == existing:
+    buckets = _server_buckets(servers, base)
+    other = "minted" if source == "saved" else "saved"
+    buckets[source] = ([key] + [k for k in buckets[source] if k != key])[:8]
+    buckets[other] = [k for k in buckets[other] if k != key]  # a key has one provenance
+    new_entry = {"saved": buckets["saved"], "minted": buckets["minted"]}
+    if servers.get(base) == new_entry:
         return
-    servers[base] = keys
+    servers[base] = new_entry
     # Collapse any pre-scoping fields so the file carries one schema.
     data.pop("keys", None)
     data.pop("key", None)
@@ -196,30 +213,36 @@ def _remember_key(cache: Path, base: str, key: str) -> None:
         pass  # worst case the next launch mints another key
 
 
+def _key_accepted(base: str, key: str) -> bool:
+    try:
+        _http_json("GET", f"{base}/v1/models", key)
+        return True
+    except Exception:
+        return False
+
+
 def _agent_api_key(base: str, explicit: Optional[str]) -> str:
     cache = _key_cache_path()
     if explicit:
-        _remember_key(cache, base, explicit)
+        _remember_key(cache, base, explicit, "saved")
         return explicit
 
-    # Replay a key already saved for *this exact* server first. Keys are scoped
-    # per base URL, so a saved key is only ever sent back to the server it was
-    # saved for -- including a remote or SSH-tunnelled Studio the user passed
-    # --api-key to once (its base, e.g. 127.0.0.1:<forwarded-port>, won't match
-    # the local identity secret below, so this is the only way it can be
-    # reused). A key the server no longer accepts is skipped.
-    for key in _cached_keys(cache, base):
-        try:
-            _http_json("GET", f"{base}/v1/models", key)
-        except Exception:
-            continue
-        _remember_key(cache, base, key)
-        return key
+    # Replay a key the user explicitly saved for *this exact* server first.
+    # Keys are scoped per base URL, so a saved key only ever goes back to the
+    # server it was saved for -- including a remote or SSH-tunnelled Studio
+    # (base e.g. 127.0.0.1:<forwarded-port>) whose identity secret the local
+    # handshake below can't match. A key the server no longer accepts is
+    # skipped.
+    for key in _cached_keys(cache, base, "saved"):
+        if _key_accepted(base, key):
+            _remember_key(cache, base, key, "saved")
+            return key
 
-    # No saved key, so the next step would auto-mint: self-issue a JWT and
-    # create a brand-new credential. find_studio_server() trusts a base after
-    # only an unauthenticated health check, so only ever mint against a local
-    # server we can cryptographically confirm is really our Studio.
+    # Beyond here we either auto-mint (self-issue a JWT) or replay a key we
+    # minted automatically. find_studio_server() trusts a base after only an
+    # unauthenticated health check, so both must be limited to a local server we
+    # can cryptographically confirm is really our Studio -- otherwise a process
+    # squatting the port could collect the credential.
     if not is_loopback_url(base):
         _fail(
             f"No saved API key for {base} and automatic minting only runs against "
@@ -235,8 +258,15 @@ def _agent_api_key(base: str, explicit: Optional[str]) -> str:
             "UNSLOTH_API_KEY."
         )
 
-    # Loopback, identity verified. Self-issue a JWT (signed with the same local
-    # secret the server validates against) and mint a key through it.
+    # Identity verified. Replay a key we previously auto-minted for this server,
+    # then fall back to minting a new one.
+    for key in _cached_keys(cache, base, "minted"):
+        if _key_accepted(base, key):
+            _remember_key(cache, base, key, "minted")
+            return key
+
+    # Self-issue a JWT (signed with the same local secret the server validates
+    # against) and mint a key through it.
     token = _studio_token()
     if token is None:
         _fail(
@@ -251,7 +281,7 @@ def _agent_api_key(base: str, explicit: Optional[str]) -> str:
         {"name": "Coding agents (unsloth connect)"},
         error = "Couldn't create an API key",
     )["key"]
-    _remember_key(cache, base, key)
+    _remember_key(cache, base, key, "minted")
     return key
 
 
