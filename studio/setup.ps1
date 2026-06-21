@@ -483,8 +483,43 @@ function Get-FallbackVsGenerator {
     # older toolchain is installed -- so a VS 2022 + old-cmake host keeps building
     # as it did before VS 2026 detection landed (issue #6473 review). Returns
     # @{ Generator = "..."; InstallPath = "..." } or $null.
-    $roots = @($env:ProgramFiles, ${env:ProgramFiles(x86)}) | Where-Object { $_ }
+    # Symmetric with Find-VsBuildTools: vswhere first (catches a VS outside the
+    # default Program Files roots, e.g. D:\), then the Program Files scan. (#6473 review)
     $knownEditions = @('BuildTools', 'Community', 'Professional', 'Enterprise', 'Preview')
+
+    # Return the install path if it holds a usable cl.exe, else $null.
+    $tryCandidate = {
+        param($gen, $installPath)
+        if (-not $installPath) { return $null }
+        $vcDir = Join-Path $installPath "VC\Tools\MSVC"
+        if (-not (Test-Path $vcDir)) { return $null }
+        $cl = Get-ChildItem -Path $vcDir -Filter "cl.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($cl) { return @{ Generator = $gen; InstallPath = $installPath } }
+        return $null
+    }
+
+    # vswhere first (finds non-default install roots).
+    $vsw = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+    if (Test-Path $vsw) {
+        $json = & $vsw -all -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -format json 2>$null | Out-String
+        if ($json) {
+            try { $instances = @($json | ConvertFrom-Json) } catch { $instances = @() }
+            $ranked = $instances | ForEach-Object {
+                $label = if ($_.catalog -and $_.catalog.productLineVersion) { [string]$_.catalog.productLineVersion } else { '' }
+                [pscustomobject]@{ Gen = (Resolve-VsGeneratorFromLabel $label); Path = [string]$_.installationPath }
+            } | Where-Object { $_.Gen -and ($_.Gen -notmatch 'Visual Studio 18\b') }
+            # Newest usable older VS first (2022 > 2019 > 2017).
+            $ranked = $ranked | Sort-Object { switch -regex ($_.Gen) { '17 2022' {0} '16 2019' {1} '15 2017' {2} default {9} } }
+            foreach ($cand in $ranked) {
+                if (-not (Test-CmakeListsGenerator -Generator $cand.Gen)) { continue }
+                $res = & $tryCandidate $cand.Gen $cand.Path
+                if ($res) { return $res }
+            }
+        }
+    }
+
+    # Program Files filesystem scan.
+    $roots = @($env:ProgramFiles, ${env:ProgramFiles(x86)}) | Where-Object { $_ }
     $older = @(
         @{ Dir = '2022'; Generator = 'Visual Studio 17 2022' },
         @{ Dir = '2019'; Generator = 'Visual Studio 16 2019' },
@@ -498,12 +533,8 @@ function Get-FallbackVsGenerator {
             foreach ($ed in $knownEditions) {
                 $candidate = Join-Path $vsBase $ed
                 if (-not (Test-Path $candidate)) { continue }
-                $vcDir = Join-Path $candidate "VC\Tools\MSVC"
-                if (-not (Test-Path $vcDir)) { continue }
-                $cl = Get-ChildItem -Path $vcDir -Filter "cl.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
-                if ($cl) {
-                    return @{ Generator = $entry.Generator; InstallPath = $candidate }
-                }
+                $res = & $tryCandidate $entry.Generator $candidate
+                if ($res) { return $res }
             }
         }
     }
@@ -3128,10 +3159,9 @@ if (-not $NeedLlamaSourceBuild) {
     substep "Install CMake from https://cmake.org/download/ and re-run setup." "Yellow"
     $script:LlamaCppDegraded = $true
 } else {
-    # A source build is committed here. The CUDA toolkit is only needed now, so
-    # resolve (and winget-install if needed) it lazily, failing fast if no
-    # driver-compatible toolkit exists. The prebuilt path never reaches this.
-    if ($HasNvidiaSmi) { Resolve-CudaToolkit -RequireOrExit }
+    # Pick the final VS generator (gate/fallback below) BEFORE resolving CUDA:
+    # Resolve-CudaToolkit copies the CUDA .targets into the current generator's
+    # BuildCustomizations, so a later VS swap would strand them. (#6473 review)
 
     # CMake version gate for the Visual Studio 2026 generator. The
     # "Visual Studio 18 2026" cmake generator was added in CMake 4.2; an older
@@ -3184,6 +3214,10 @@ if (-not $NeedLlamaSourceBuild) {
         }
         substep "CMake can drive the $CmakeGenerator generator"
     }
+
+    # CUDA toolkit resolved lazily here (fail fast if none), AFTER the final VS
+    # generator so its .targets copy targets the toolset cmake actually uses.
+    if ($HasNvidiaSmi) { Resolve-CudaToolkit -RequireOrExit }
 
     Write-Host ""
     if ($HasNvidiaSmi) {

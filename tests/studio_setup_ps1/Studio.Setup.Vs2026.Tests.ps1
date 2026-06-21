@@ -288,3 +288,31 @@ Describe 'Get-FallbackVsGenerator (older VS the cmake can drive)' {
         (Get-FallbackVsGenerator).Generator | Should -Be 'Visual Studio 17 2022'
     }
 }
+
+Describe 'Source-build ordering invariant: CUDA integration runs AFTER the VS generator is finalized (#6473 review)' {
+    # Guards the fix for the CUDA-.targets-after-VS-fallback bug. Resolve-CudaToolkit
+    # copies the CUDA MSBuild .targets into the BuildCustomizations folder of the
+    # CURRENT $VsInstallPath/$CmakeGenerator, so it MUST run after the VS 2026 CMake
+    # gate/fallback (which can swap to an older VS). If a future edit moves the CUDA
+    # resolve back above the fallback, a VS 2026 + old-cmake host that falls back to
+    # VS 2022 would build with v170 while the .targets were copied to v180
+    # ("No CUDA toolset found").
+    It 'the source-build Resolve-CudaToolkit call appears AFTER the Get-FallbackVsGenerator fallback' {
+        $text = Get-Content -Raw -LiteralPath $script:SetupPs1
+        $idxFallback = $text.IndexOf('$fallback = Get-FallbackVsGenerator')
+        $idxResolve  = $text.IndexOf('Resolve-CudaToolkit -RequireOrExit')
+        $idxFallback | Should -BeGreaterThan 0
+        $idxResolve  | Should -BeGreaterThan 0
+        $idxResolve  | Should -BeGreaterThan $idxFallback
+    }
+}
+
+Describe 'Get-FallbackVsGenerator discovery is symmetric with Find-VsBuildTools (#6473 review)' {
+    # The fallback must also consult vswhere (not only the default Program Files
+    # roots), else a VS registered in a custom location is found as the primary
+    # toolchain but missed as the fallback -> an avoidable hard exit.
+    It 'queries vswhere as part of fallback discovery' {
+        $src = Get-FunctionSource -Path $script:SetupPs1 -Name Get-FallbackVsGenerator
+        $src | Should -Match 'vswhere'
+    }
+}
