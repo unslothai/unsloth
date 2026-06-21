@@ -35,7 +35,7 @@ if sys.platform == "win32":
     for _win_stream in (sys.stdout, sys.stderr):
         if _win_stream is not None and hasattr(_win_stream, "reconfigure"):
             try:
-                _win_stream.reconfigure(encoding="utf-8", errors="replace")
+                _win_stream.reconfigure(encoding = "utf-8", errors = "replace")
             except Exception:
                 pass
     del _win_stream

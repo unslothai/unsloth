@@ -88,9 +88,7 @@ def _is_model_in_local_cache(repo_id: str, variant: Optional[str]) -> bool:
                 if variant is None:
                     # Any complete revision is sufficient for safetensors models.
                     revisions = getattr(repo, "revisions", ())
-                    return any(
-                        not getattr(rev, "is_incomplete", True) for rev in revisions
-                    )
+                    return any(not getattr(rev, "is_incomplete", True) for rev in revisions)
                 # For GGUF variants, check that the specific file exists.
                 for rev in getattr(repo, "revisions", ()):
                     for f in getattr(rev, "files", ()):

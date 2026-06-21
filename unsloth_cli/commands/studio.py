@@ -411,7 +411,7 @@ def _write_auth_secret(path: Path, secret: str) -> None:
             os.chmod(tmp_path, 0o600)
         except OSError:
             pass
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
+        with os.fdopen(fd, "w", encoding = "utf-8") as f:
             fd = -1
             f.write(secret)
         os.replace(tmp_path, path)
@@ -813,7 +813,7 @@ def studio_default(
                 # so non-ASCII banner characters (e.g. the 🦥 emoji) don't raise
                 # UnicodeEncodeError on Windows cp1252 terminals.
                 _child_env = {**os.environ, "PYTHONIOENCODING": "utf-8:replace"}
-                proc = _sp.Popen(args, env=_child_env, **_windows_hidden_subprocess_kwargs())
+                proc = _sp.Popen(args, env = _child_env, **_windows_hidden_subprocess_kwargs())
                 try:
                     rc = proc.wait()
                 except KeyboardInterrupt:

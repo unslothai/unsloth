@@ -3578,7 +3578,7 @@ class UnslothTrainer:
             return
 
         try:
-            with open(config_path, "r", encoding="utf-8") as f:
+            with open(config_path, "r", encoding = "utf-8") as f:
                 config = json.load(f)
 
             # Determine training method
@@ -3592,7 +3592,7 @@ class UnslothTrainer:
             config["unsloth_training_method"] = method
             logger.info(f"Patching adapter_config.json with unsloth_training_method='{method}'")
 
-            with open(config_path, "w", encoding="utf-8") as f:
+            with open(config_path, "w", encoding = "utf-8") as f:
                 json.dump(config, f, indent = 2)
 
         except Exception as e:

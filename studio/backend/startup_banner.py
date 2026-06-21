@@ -20,7 +20,7 @@ def _safe_print(text: str) -> None:
         print(text)
     except UnicodeEncodeError:
         encoding = getattr(sys.stdout, "encoding", None) or "ascii"
-        print(text.encode(encoding, errors="replace").decode(encoding))
+        print(text.encode(encoding, errors = "replace").decode(encoding))
 
 
 def stdout_supports_color() -> bool:

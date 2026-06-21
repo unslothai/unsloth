@@ -170,19 +170,20 @@ except:
 
 try:
     from trl import DPOConfig as _TrlDPOConfig
-
     class UnslothDPOConfig(_TrlDPOConfig):
         """Drop-in replacement for ``trl.DPOConfig`` with Unsloth-specific
         defaults.  Pass this instead of the legacy ``TrainingArguments`` when
         running DPO fine-tuning so the trainer receives the correct DPO-only
         hyper-parameters (e.g. ``beta``, ``loss_type``)."""
-        pass
+
 
 except ImportError:
+
     class UnslothDPOConfig(TrainingArguments):
         """Compatibility shim: ``trl.DPOConfig`` is not available in this
         environment.  Falls back to the standard ``TrainingArguments``; upgrade
         TRL (``pip install -U trl``) to get native DPO parameters."""
+
         pass
 
 
