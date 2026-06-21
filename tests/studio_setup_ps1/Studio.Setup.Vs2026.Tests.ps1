@@ -30,7 +30,7 @@ BeforeAll {
     foreach ($fn in @('Resolve-VsGeneratorFromLabel', 'Find-VsBuildTools', 'Get-VcBuildCustomizationsDir',
                       'Test-CmakeSupportsGenerator', 'Get-CmakeVersion', 'Test-CmakeListsGenerator',
                       'Test-CmakeCanDriveGenerator', 'Get-FallbackVsGenerator',
-                      'Ensure-BuildToolsForLlamaSourceBuild')) {
+                      'Ensure-BuildToolsForLlamaSourceBuild', 'Test-VCRedistInstalled')) {
         $src = Get-FunctionSource -Path $script:SetupPs1 -Name $fn
         if (-not $src) { throw "Function '$fn' not found in $script:SetupPs1 - cannot test the real code." }
         . ([scriptblock]::Create($src))
@@ -354,5 +354,40 @@ Describe 'Get-FallbackVsGenerator discovery is symmetric with Find-VsBuildTools 
     It 'queries vswhere as part of fallback discovery' {
         $src = Get-FunctionSource -Path $script:SetupPs1 -Name Get-FallbackVsGenerator
         $src | Should -Match 'vswhere'
+    }
+}
+
+Describe 'Test-VCRedistInstalled (VC++ 2015-2022 runtime needed by the prebuilt llama.cpp + PyTorch)' {
+    # The prebuilt llama-server.exe and the PyTorch wheels link VCRUNTIME140.dll /
+    # MSVCP140.dll / VCRUNTIME140_1.dll, which the VC++ redistributable provides
+    # (the Universal CRT ships with Windows, this does not). Detection is the
+    # System32 vcruntime140_1.dll DLL with a registry fallback.
+    BeforeEach { $script:OrigSysRoot = $env:SystemRoot }
+    AfterEach  { $env:SystemRoot = $script:OrigSysRoot }
+
+    # Test-VCRedistInstalled probes Test-Path once (the System32 DLL); when that is
+    # $false it consults the registry via Get-ItemProperty. Mock both directly.
+    It 'returns true when vcruntime140_1.dll is present in System32' {
+        $env:SystemRoot = 'C:\Windows'
+        Mock Test-Path { $true }
+        Test-VCRedistInstalled | Should -BeTrue
+    }
+    It 'returns true via the registry when the DLL is not found (Installed=1, >= 14.20)' {
+        $env:SystemRoot = 'C:\Windows'
+        Mock Test-Path { $false }
+        Mock Get-ItemProperty { [pscustomobject]@{ Installed = 1; Major = 14; Minor = 29 } }
+        Test-VCRedistInstalled | Should -BeTrue
+    }
+    It 'returns false when neither the DLL nor a >= 14.20 registry entry exists' {
+        $env:SystemRoot = 'C:\Windows'
+        Mock Test-Path { $false }
+        Mock Get-ItemProperty { throw 'no key' }
+        Test-VCRedistInstalled | Should -BeFalse
+    }
+    It 'returns false for an old 2015-only redist (Installed=1 but < 14.20)' {
+        $env:SystemRoot = 'C:\Windows'
+        Mock Test-Path { $false }
+        Mock Get-ItemProperty { [pscustomobject]@{ Installed = 1; Major = 14; Minor = 0 } }
+        Test-VCRedistInstalled | Should -BeFalse
     }
 }
