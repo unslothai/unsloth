@@ -3281,8 +3281,6 @@ def is_moe_model(model) -> bool:
     return num_experts is not None and num_experts > 0
 
 
-
-
 def is_gemma4_shared_kv_model(model) -> bool:
     """
     Detect Gemma 4 E-series models (E2B / E4B) that share KV across layers.
@@ -3305,8 +3303,6 @@ def is_gemma4_shared_kv_model(model) -> bool:
     ):
         return False
     return (_config_get(text_config, "num_kv_shared_layers", 0) or 0) > 0
-
-
 
 
 def _resolve_moe_parameter_name(model, default_name: str, alternate_name: str) -> str:
