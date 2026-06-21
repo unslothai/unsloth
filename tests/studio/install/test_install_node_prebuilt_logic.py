@@ -367,7 +367,9 @@ def test_install_prebuilt_keeps_existing_when_index_unreachable(tmp_path: Path, 
     assert rc == M.EXIT_SUCCESS
 
 
-def test_install_prebuilt_reraises_when_index_unreachable_and_no_install(tmp_path: Path, monkeypatch):
+def test_install_prebuilt_reraises_when_index_unreachable_and_no_install(
+    tmp_path: Path, monkeypatch
+):
     install_dir = tmp_path / "node"  # nothing on disk to fall back to
     monkeypatch.setattr(M, "detect_host", lambda: _host("linux", "x64"))
     monkeypatch.setattr(M, "fetch_json", _offline)
