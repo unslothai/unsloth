@@ -51,3 +51,30 @@ class TestBuildUvCmdTorchBackend:
         assert not any(
             a.startswith("--torch-backend") for a in cmd
         ), f"Empty UV_TORCH_BACKEND should not add flag, got: {cmd}"
+
+
+class TestUvSafePath:
+    """_uv_safe_path hands uv a space-free `-c`/`-r` path (issue #6503)."""
+
+    def test_passthrough_when_no_space(self):
+        """A path without a space is returned unchanged on every platform."""
+        p = "/tmp/plain/constraints.txt"
+        assert ips._uv_safe_path(p) == p
+
+    @pytest.mark.skipif(ips.IS_WINDOWS, reason = "POSIX temp-copy fallback")
+    def test_posix_space_path_returns_spacefree_copy(self, tmp_path):
+        src = tmp_path / "Open Source" / "constraints.txt"
+        src.parent.mkdir(parents = True)
+        src.write_text("torch>=2.6\n")
+
+        out = ips._uv_safe_path(str(src))
+
+        assert " " not in out, f"uv-safe path still has a space: {out!r}"
+        assert out != str(src)
+        assert Path(out).read_text() == "torch>=2.6\n"
+
+    @pytest.mark.skipif(ips.IS_WINDOWS, reason = "POSIX temp-copy fallback")
+    def test_posix_missing_file_falls_back_to_original(self):
+        """No file to copy -> return the original path rather than raise."""
+        p = "/nonexistent dir/constraints.txt"
+        assert ips._uv_safe_path(p) == p

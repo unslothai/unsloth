@@ -11,6 +11,7 @@ activated. Expects `pip` and `python` on PATH to point at the venv.
 
 from __future__ import annotations
 
+import atexit
 import glob
 import os
 import platform
@@ -1308,25 +1309,53 @@ def _ensure_rocm_torch() -> None:
             )
 
 
-def _uv_safe_path(path: object) -> str:
-    # uv 0.11.x: `-c <path with space>` truncates at the space; use 8.3 short form.
-    s = str(path)
-    if not IS_WINDOWS or " " not in s:
-        return s
-    try:
-        import ctypes
-        from ctypes import wintypes
+# Space-free temp copies handed to uv by _uv_safe_path on POSIX; removed at exit.
+_UV_SAFE_PATH_TMPDIRS: list[str] = []
 
-        get_short = ctypes.windll.kernel32.GetShortPathNameW
-        get_short.argtypes = [wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD]
-        get_short.restype = wintypes.DWORD
-        buf = ctypes.create_unicode_buffer(32768)
-        rc = get_short(s, buf, 32768)
-        if 0 < rc < 32768 and " " not in buf.value:
-            return buf.value
+
+@atexit.register
+def _cleanup_uv_safe_path_tmpdirs() -> None:
+    while _UV_SAFE_PATH_TMPDIRS:
+        shutil.rmtree(_UV_SAFE_PATH_TMPDIRS.pop(), ignore_errors = True)
+
+
+def _uv_safe_path(path: object) -> str:
+    # uv 0.11.x truncates a `-c`/`-r` path at the first space, so hand it a
+    # space-free path instead (https://github.com/unslothai/unsloth/issues/6503).
+    s = str(path)
+    if " " not in s:
+        return s
+    if IS_WINDOWS:
+        # Windows: resolve to the 8.3 short form, no temp copy needed.
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            get_short = ctypes.windll.kernel32.GetShortPathNameW
+            get_short.argtypes = [wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD]
+            get_short.restype = wintypes.DWORD
+            buf = ctypes.create_unicode_buffer(32768)
+            rc = get_short(s, buf, 32768)
+            if 0 < rc < 32768 and " " not in buf.value:
+                return buf.value
+        except Exception:
+            pass
+        return s
+    # macOS/Linux have no 8.3 equivalent: copy the constraints/requirements file
+    # into a space-free temp dir and point uv there. On any error, return s.
+    try:
+        if not os.path.isfile(s):
+            return s
+        tmp_dir = tempfile.mkdtemp(prefix = "unsloth_uv_")
+        if " " in tmp_dir:  # extremely unusual (e.g. TMPDIR has a space)
+            shutil.rmtree(tmp_dir, ignore_errors = True)
+            return s
+        dst = os.path.join(tmp_dir, (os.path.basename(s) or "uv_args.txt").replace(" ", "_"))
+        shutil.copyfile(s, dst)
+        _UV_SAFE_PATH_TMPDIRS.append(tmp_dir)
+        return dst
     except Exception:
-        pass
-    return s
+        return s
 
 
 def _windows_hidden_subprocess_kwargs() -> dict[str, object]:
