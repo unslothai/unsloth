@@ -99,9 +99,11 @@ export function LlamaUpdateBanner({
   async function handleUpdate() {
     const result = await apply();
     if (result?.ok) {
-      toast.success(
-        `llama.cpp updated to ${result.tag ?? "the latest build"}. Reload your model to use it.`,
-      );
+      const updatedTag = result.tag ?? status?.latest_tag ?? "the latest build";
+      const reloadHint = result.reloadRequired
+        ? " Reload your model to use it."
+        : "";
+      toast.success(`llama.cpp updated to ${updatedTag}.${reloadHint}`);
     } else if (result) {
       toast.error(
         `llama.cpp update failed: ${result.error ?? "unknown error"}`,
