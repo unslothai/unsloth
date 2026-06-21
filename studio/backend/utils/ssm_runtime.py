@@ -44,9 +44,7 @@ StatusCb = Optional[Callable[[str], None]]
 # (_CAUSAL_CONV1D_* / _MAMBA_SSM_*) by tests/test_ssm_runtime.py.
 CAUSAL_CONV1D_PACKAGE_VERSION = "1.6.1"
 CAUSAL_CONV1D_RELEASE_TAG = "v1.6.1.post4"
-CAUSAL_CONV1D_RELEASE_BASE_URL = (
-    "https://github.com/Dao-AILab/causal-conv1d/releases/download"
-)
+CAUSAL_CONV1D_RELEASE_BASE_URL = "https://github.com/Dao-AILab/causal-conv1d/releases/download"
 MAMBA_SSM_PACKAGE_VERSION = "2.3.1"
 MAMBA_SSM_RELEASE_TAG = "v2.3.1"
 MAMBA_SSM_RELEASE_BASE_URL = "https://github.com/state-spaces/mamba/releases/download"
@@ -109,7 +107,7 @@ def _emit(status_cb: StatusCb, message: str) -> None:
     try:
         status_cb(message)
     except Exception:  # status is best-effort; never fail a load over a UI message
-        logger.debug("ssm_runtime status callback raised", exc_info=True)
+        logger.debug("ssm_runtime status callback raised", exc_info = True)
 
 
 def _install_kernel(
@@ -136,21 +134,21 @@ def _install_kernel(
         logger.info("%s already installed", display_name)
         return True
 
-    env = probe_torch_wheel_env(timeout=30)
+    env = probe_torch_wheel_env(timeout = 30)
     wheel_url = direct_wheel_url(
-        filename_prefix=import_name,
-        package_version=package_version,
-        release_tag=release_tag,
-        release_base_url=release_base_url,
-        env=env,
+        filename_prefix = import_name,
+        package_version = package_version,
+        release_tag = release_tag,
+        release_base_url = release_base_url,
+        env = env,
     )
     if wheel_url and url_exists(wheel_url):
         _emit(status_cb, f"Installing {display_name} (prebuilt kernel) for this model...")
         for installer, result in install_wheel(
             wheel_url,
-            python_executable=sys.executable,
-            use_uv=bool(shutil.which("uv")),
-            run=run,
+            python_executable = sys.executable,
+            use_uv = bool(shutil.which("uv")),
+            run = run,
         ):
             if getattr(result, "returncode", 1) == 0:
                 logger.info("Installed prebuilt %s wheel", display_name)
@@ -173,24 +171,33 @@ def _install_kernel(
     spec = f"{pypi_name}=={package_version}"
     _emit(
         status_cb,
-        f"Building {display_name} from source for this model "
-        "(this can take several minutes)...",
+        f"Building {display_name} from source for this model (this can take several minutes)...",
     )
     if shutil.which("uv"):
         cmd = [
-            "uv", "pip", "install", "--python", sys.executable,
-            "--no-build-isolation", "--no-deps", spec,
+            "uv",
+            "pip",
+            "install",
+            "--python",
+            sys.executable,
+            "--no-build-isolation",
+            "--no-deps",
+            spec,
         ]
     else:
         cmd = [
-            sys.executable, "-m", "pip", "install",
-            "--no-build-isolation", "--no-deps", "--no-cache-dir", spec,
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--no-build-isolation",
+            "--no-deps",
+            "--no-cache-dir",
+            spec,
         ]
-    result = run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    result = run(cmd, stdout = subprocess.PIPE, stderr = subprocess.STDOUT, text = True)
     if getattr(result, "returncode", 1) != 0:
-        logger.warning(
-            "%s source install failed:\n%s", display_name, getattr(result, "stdout", "")
-        )
+        logger.warning("%s source install failed:\n%s", display_name, getattr(result, "stdout", ""))
     return _is_importable(import_name)
 
 
@@ -216,29 +223,27 @@ def ensure_ssm_runtime(
     # causal-conv1d first: SSM modeling files lazy-import it during from_pretrained,
     # and mamba-ssm's fast path uses it.
     if wants_causal_conv1d and not _install_kernel(
-        import_name="causal_conv1d",
-        display_name="causal-conv1d",
-        pypi_name="causal-conv1d",
-        package_version=CAUSAL_CONV1D_PACKAGE_VERSION,
-        release_tag=CAUSAL_CONV1D_RELEASE_TAG,
-        release_base_url=CAUSAL_CONV1D_RELEASE_BASE_URL,
-        status_cb=status_cb,
-        run=run,
+        import_name = "causal_conv1d",
+        display_name = "causal-conv1d",
+        pypi_name = "causal-conv1d",
+        package_version = CAUSAL_CONV1D_PACKAGE_VERSION,
+        release_tag = CAUSAL_CONV1D_RELEASE_TAG,
+        release_base_url = CAUSAL_CONV1D_RELEASE_BASE_URL,
+        status_cb = status_cb,
+        run = run,
     ):
         raise RuntimeError(
             "Could not install causal-conv1d, required by this model's Mamba layers."
         )
 
     if is_ssm and not _install_kernel(
-        import_name="mamba_ssm",
-        display_name="mamba-ssm",
-        pypi_name="mamba-ssm",
-        package_version=MAMBA_SSM_PACKAGE_VERSION,
-        release_tag=MAMBA_SSM_RELEASE_TAG,
-        release_base_url=MAMBA_SSM_RELEASE_BASE_URL,
-        status_cb=status_cb,
-        run=run,
+        import_name = "mamba_ssm",
+        display_name = "mamba-ssm",
+        pypi_name = "mamba-ssm",
+        package_version = MAMBA_SSM_PACKAGE_VERSION,
+        release_tag = MAMBA_SSM_RELEASE_TAG,
+        release_base_url = MAMBA_SSM_RELEASE_BASE_URL,
+        status_cb = status_cb,
+        run = run,
     ):
-        raise RuntimeError(
-            "Could not install mamba-ssm, required by this Mamba model."
-        )
+        raise RuntimeError("Could not install mamba-ssm, required by this Mamba model.")

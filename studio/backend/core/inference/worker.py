@@ -240,12 +240,9 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
         # model loads for chat. No-op + idempotent for non-SSM models.
         try:
             from utils.ssm_runtime import ensure_ssm_runtime
-
             ensure_ssm_runtime(
                 config["model_name"],
-                status_cb = lambda m: _send_response(
-                    resp_queue, {"type": "status", "message": m}
-                ),
+                status_cb = lambda m: _send_response(resp_queue, {"type": "status", "message": m}),
             )
         except Exception as exc:
             _send_response(
