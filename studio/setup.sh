@@ -1616,6 +1616,30 @@ else
             substep "$_BUILD_DESC..."
 
             NCPU=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
+            # Thermal cap for the aarch64 + NVIDIA foreground CUDA build. A full
+            # -j(nproc) nvcc compile draws enough sustained power to trip a
+            # thermal shutdown on the lightly-cooled NVIDIA-ARM boxes this path
+            # targets (DGX Spark / GB10, N1X "RTX Spark" laptops) -- the same
+            # reason provision_llama_cuda.sh caps its background build. Mirror
+            # that cap here (this foreground build only runs when no prebuilt was
+            # available and a CUDA toolkit is already present): ~half the cores,
+            # also bounded by ~1.5 GB/nvcc job. Other platforms keep full
+            # -j(nproc); override on any host with UNSLOTH_LLAMA_BUILD_JOBS=N.
+            if { [ "$_HOST_MACHINE" = "aarch64" ] || [ "$_HOST_MACHINE" = "arm64" ]; } \
+                    && [ "${GPU_BACKEND:-}" = "cuda" ]; then
+                if [ -n "${UNSLOTH_LLAMA_BUILD_JOBS:-}" ] && [ "${UNSLOTH_LLAMA_BUILD_JOBS}" -ge 1 ] 2>/dev/null; then
+                    NCPU="$UNSLOTH_LLAMA_BUILD_JOBS"
+                else
+                    _cap_half=$(( (NCPU + 1) / 2 ))
+                    [ "$NCPU" -le 4 ] && _cap_half="$NCPU"   # tiny boxes: use all cores
+                    _cap_memkb="$(awk '/MemTotal/{print $2}' /proc/meminfo 2>/dev/null || echo 0)"
+                    _cap_memjobs=$(( _cap_memkb / 1572864 ))  # ~1.5 GB per nvcc job
+                    [ "$_cap_memjobs" -lt 1 ] && _cap_memjobs=1
+                    [ "$_cap_memjobs" -lt "$_cap_half" ] && _cap_half="$_cap_memjobs"
+                    NCPU="$_cap_half"
+                fi
+                substep "thermal-capped CUDA build: -j${NCPU} (override with UNSLOTH_LLAMA_BUILD_JOBS=N)"
+            fi
             CMAKE_GENERATOR_ARGS=""
             if command -v ninja &>/dev/null; then
                 CMAKE_GENERATOR_ARGS="-G Ninja"
