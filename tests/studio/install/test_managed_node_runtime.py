@@ -41,7 +41,7 @@ def _clear_resolver_cache():
     [
         ("v20.19.0", True),
         ("v20.18.9", False),
-        ("v21.7.0", False),   # Node 21 (odd, non-LTS) is below the bar
+        ("v21.7.0", False),  # Node 21 (odd, non-LTS) is below the bar
         ("v22.12.0", True),
         ("v22.11.0", False),
         ("v23.0.0", True),
@@ -95,7 +95,9 @@ def test_managed_dir_fallback_legacy_without_override(monkeypatch):
 
 
 def test_resolve_prefers_adequate_system_node(monkeypatch):
-    monkeypatch.setattr(nr.shutil, "which", lambda name: "/usr/bin/node" if name == "node" else None)
+    monkeypatch.setattr(
+        nr.shutil, "which", lambda name: "/usr/bin/node" if name == "node" else None
+    )
     monkeypatch.setattr(nr, "_node_version_ok", lambda exe: exe == "/usr/bin/node")
     assert nr.resolve_node_executable() == "/usr/bin/node"
 
@@ -130,7 +132,7 @@ def test_resolve_returns_old_system_as_last_resort(monkeypatch, tmp_path):
 
 
 def test_resolve_returns_none_when_nothing_available(monkeypatch, tmp_path):
-    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))   # managed dir is empty
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))  # managed dir is empty
     monkeypatch.setattr(nr.shutil, "which", lambda name: None)
     monkeypatch.setattr(nr, "_node_version_ok", lambda exe: False)
     assert nr.resolve_node_executable() is None

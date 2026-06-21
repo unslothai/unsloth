@@ -66,7 +66,9 @@ def managed_node_dir() -> Path:
         # Degraded import environment (utils.paths unavailable): still honor an
         # explicit STUDIO_HOME override, mirroring studio_root()'s priority,
         # before falling back to the legacy default.
-        override = (os.environ.get("UNSLOTH_STUDIO_HOME") or os.environ.get("STUDIO_HOME") or "").strip()
+        override = (
+            os.environ.get("UNSLOTH_STUDIO_HOME") or os.environ.get("STUDIO_HOME") or ""
+        ).strip()
         if override:
             try:
                 return Path(override).expanduser().resolve() / "node"
