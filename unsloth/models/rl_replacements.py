@@ -566,6 +566,9 @@ RL_FUNCTIONS["cpo_trainer"].append(orpo_trainer_text_tokenizer)
 # this, ORPO/CPOTrainer.__init__ raises AttributeError on
 # `DPODataCollatorWithPadding(pad_token_id=processing_class.pad_token_id, ...)`
 # and on `self.padding_value = ... else processing_class.pad_token_id`.
+# CPOTrainer.__init__ (TRL >= 0.28) additionally reads bare
+# `processing_class.pad_token`/`processing_class.eos_token` before that point, so
+# bind those reads to the underlying tokenizer too.
 _PAD_FALLBACK = (
     "(getattr(processing_class, 'pad_token_id', None) "
     "if getattr(processing_class, 'pad_token_id', None) is not None "
@@ -576,8 +579,20 @@ _PAD_FALLBACK = (
 def orpo_trainer_processor_pad_token(function_name, function):
     if function_name != "__init__":
         return function
-    if "processing_class.pad_token_id" not in function:
+    if "processing_class.pad_token" not in function:
         return function
+    function = re.sub(
+        r"(?m)^([ \t]*)if processing_class\.pad_token is None:\n"
+        r"[ \t]*processing_class\.pad_token = processing_class\.eos_token\n",
+        r'\1pad_tokenizer = getattr(processing_class, "tokenizer", processing_class)'
+        "\n"
+        r"\1if pad_tokenizer.pad_token is None:"
+        "\n"
+        r"\1    pad_tokenizer.pad_token = pad_tokenizer.eos_token"
+        "\n",
+        function,
+        count = 1,
+    )
     return function.replace("processing_class.pad_token_id", _PAD_FALLBACK)
 
 

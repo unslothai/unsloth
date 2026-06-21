@@ -87,3 +87,26 @@ def build_tokenized_answer(self, prompt, answer):
         'tokenizer = getattr(self.processing_class, "tokenizer", self.processing_class)'
         in rewritten
     )
+
+
+def test_pad_token_rewriter_binds_init_token_reads_to_tokenizer():
+    # CPOTrainer.__init__ (TRL >= 0.28) reads bare processing_class.pad_token /
+    # processing_class.eos_token, which AttributeError on multimodal processors.
+    rewriter = _load_rewriter("orpo_trainer_processor_pad_token")
+    source = """
+def __init__(self, model, args, processing_class):
+    data_collator = DPODataCollatorWithPadding(
+        pad_token_id=processing_class.pad_token_id,
+    )
+    self.processing_class = processing_class
+    if processing_class.pad_token is None:
+        processing_class.pad_token = processing_class.eos_token
+    self.pad_token_id = processing_class.pad_token_id
+"""
+    rewritten = rewriter("__init__", source)
+    assert "processing_class.pad_token is None" not in rewritten
+    assert "processing_class.eos_token" not in rewritten
+    assert "processing_class.pad_token_id" not in rewritten
+    assert 'pad_tokenizer = getattr(processing_class, "tokenizer", processing_class)' in rewritten
+    assert "pad_tokenizer.pad_token = pad_tokenizer.eos_token" in rewritten
+    ast.parse(rewritten)
