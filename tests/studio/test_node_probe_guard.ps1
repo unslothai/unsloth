@@ -17,7 +17,7 @@ $setupPath = (Resolve-Path ([System.IO.Path]::Combine($PSScriptRoot, "..", "..",
 # Match specifically the two system-version probe assignments (not every
 # Get-Command node/npm in the file, e.g. the OXC-runtime npm guard).
 $probeLines = (Get-Content $setupPath) | Where-Object {
-    $_ -match '\$Sys(Node|Npm)Version = if \(Get-Command (node|npm) -ErrorAction SilentlyContinue'
+    $_ -match '\$Sys(Node|Npm)Version = try \{ if \(Get-Command (node|npm) -ErrorAction SilentlyContinue'
 }
 Check "setup.ps1 guards both node and npm probes with Get-Command" ($probeLines.Count -eq 2)
 
@@ -55,6 +55,20 @@ Check "guarded probes yield empty node/npm versions" ($r.Output -match 'RESULT n
 $unguarded = "`$SysNodeVersion = (node -v 2>`$null)`nWrite-Output ""REACHED"""
 $n = Invoke-WithoutNode $unguarded
 Check "unguarded bare probe terminates under Stop (negative control)" ($n.ExitCode -ne 0 -and $n.Output -notmatch 'REACHED')
+
+# 3. Present-but-broken shim: Get-Command finds it but invoking it throws (corrupt
+#    Node / blocked npm.ps1). The try/catch must still degrade to empty, not abort.
+$throwShims = "function node { throw 'boom' }`nfunction npm { throw 'boom' }`n"
+$broken = $throwShims + ($probeLines -join "`n") + "`nWrite-Output ""RESULT node=[`$SysNodeVersion] npm=[`$SysNpmVersion]"""
+$b = Invoke-WithoutNode $broken
+Check "guarded probes do not terminate when a present shim throws (exit 0)" ($b.ExitCode -eq 0)
+Check "guarded probes yield empty versions when a present shim throws" ($b.Output -match 'RESULT node=\[\] npm=\[\]')
+
+# 4. Negative control: the if-guard WITHOUT try/catch terminates when a present
+#    command throws -- proves the try/catch (not just Get-Command) is load-bearing.
+$brokenUnguarded = "function node { throw 'boom' }`n`$SysNodeVersion = if (Get-Command node -ErrorAction SilentlyContinue) { (node -v 2>`$null) } else { '' }`nWrite-Output ""REACHED"""
+$bn = Invoke-WithoutNode $brokenUnguarded
+Check "if-guard without try/catch terminates on a throwing present command (negative control)" ($bn.ExitCode -ne 0 -and $bn.Output -notmatch 'REACHED')
 
 Remove-Item -Recurse -Force $emptyDir -ErrorAction SilentlyContinue
 

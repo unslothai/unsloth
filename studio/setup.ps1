@@ -1551,9 +1551,10 @@ if (-not $IsPipInstall) {
     # that `2>$null` does NOT swallow -- so a fresh machine with no Node would
     # crash here before Get-NodeDecision could return "bundled". Guard each probe
     # with Get-Command (node and npm independently; one can exist without the
-    # other) and pass an empty version when the command is absent.
-    $SysNodeVersion = if (Get-Command node -ErrorAction SilentlyContinue) { (node -v 2>$null) } else { "" }
-    $SysNpmVersion = if (Get-Command npm -ErrorAction SilentlyContinue) { (npm -v 2>$null) } else { "" }
+    # other) and wrap in try/catch so a present-but-broken shim degrades to
+    # bundled instead of aborting. Empty version when absent or broken.
+    $SysNodeVersion = try { if (Get-Command node -ErrorAction SilentlyContinue) { (node -v 2>$null) } else { "" } } catch { "" }
+    $SysNpmVersion = try { if (Get-Command npm -ErrorAction SilentlyContinue) { (npm -v 2>$null) } else { "" } } catch { "" }
     $NodeSource = Get-NodeDecision -NodeVersion "$SysNodeVersion" -NpmVersion "$SysNpmVersion" -SkipInstall "$($env:UNSLOTH_SKIP_NODE_INSTALL)"
 }
 
@@ -1810,7 +1811,10 @@ if ($NeedNodeForSetup) {
             }
         }
         substep "installing isolated Node (system Node/npm left untouched)..."
-        $nodeOut = & python "$PSScriptRoot\install_node_prebuilt.py" --install-dir $NodeDir 2>&1 | Out-String
+        # The main Python resolver runs later; bare `python` may be a Store stub or
+        # absent this early, so prefer the handed-off/venv Python when available.
+        $NodeInstallPython = if ($ReusedSetupPython) { $ReusedSetupPython } else { "python" }
+        $nodeOut = & $NodeInstallPython "$PSScriptRoot\install_node_prebuilt.py" --install-dir $NodeDir 2>&1 | Out-String
         $nodeExit = $LASTEXITCODE
         if ($nodeExit -eq 3) {
             Write-Host $nodeOut -ForegroundColor DarkGray

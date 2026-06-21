@@ -761,6 +761,10 @@ if [ -d "$_OXC_DIR" ] && [ "${NODE_SOURCE:-}" != skip ] && command -v npm &>/dev
         exit "$_oxc_install_rc"
     fi
     cd "$SCRIPT_DIR"
+elif [ -d "$_OXC_DIR" ] && [ "${NODE_SOURCE:-}" != skip ]; then
+    # No npm on PATH: skip rather than abort; the backend Node resolver degrades
+    # the validator gracefully. Mirrors setup.ps1's elseif on this block.
+    substep "OXC validator runtime skipped (no npm found); code validation degrades until Node is available" "$C_WARN"
 fi
 
 # ── Python venv + deps ──

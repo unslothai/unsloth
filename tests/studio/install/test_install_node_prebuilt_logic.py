@@ -328,3 +328,60 @@ def test_install_prebuilt_short_circuits_when_version_matches(tmp_path: Path, mo
 
     rc = M.install_prebuilt(install_dir, channel = "lts", min_major = 24, force = False)
     assert rc == M.EXIT_SUCCESS
+
+
+def test_existing_install_usable_is_version_agnostic(tmp_path: Path, monkeypatch):
+    host = _host("linux", "x64")
+    assert M.existing_install_usable(tmp_path, host) is False  # no metadata
+    M.write_metadata(tmp_path, version = "24.17.0", asset = "x", sha256 = "y")
+    monkeypatch.setattr(M, "installed_node_version", lambda d, h: "24.17.0")
+    monkeypatch.setattr(M, "installed_npm_major", lambda d, h: 11)
+    assert M.existing_install_usable(tmp_path, host) is True
+    monkeypatch.setattr(M, "installed_npm_major", lambda d, h: 10)
+    assert M.existing_install_usable(tmp_path, host) is False  # npm below floor
+    monkeypatch.setattr(M, "installed_npm_major", lambda d, h: 11)
+    monkeypatch.setattr(M, "installed_node_version", lambda d, h: None)
+    assert M.existing_install_usable(tmp_path, host) is False  # node does not run
+
+
+def _offline(*a, **k):
+    raise OSError("nodejs.org unreachable")
+
+
+def test_install_prebuilt_keeps_existing_when_index_unreachable(tmp_path: Path, monkeypatch):
+    install_dir = tmp_path / "node"
+    install_dir.mkdir()
+    M.write_metadata(install_dir, version = "24.17.0", asset = "x", sha256 = "y")
+    monkeypatch.setattr(M, "detect_host", lambda: _host("linux", "x64"))
+    monkeypatch.setattr(M, "installed_node_version", lambda d, h: "24.17.0")
+    monkeypatch.setattr(M, "installed_npm_major", lambda d, h: 11)
+    monkeypatch.setattr(M, "fetch_json", _offline)
+
+    def boom(*a, **k):
+        raise AssertionError("must not download when keeping the existing install")
+
+    monkeypatch.setattr(M, "download_file", boom)
+    monkeypatch.setattr(M, "download_bytes", boom)
+
+    rc = M.install_prebuilt(install_dir, channel = "lts", min_major = 24, force = False)
+    assert rc == M.EXIT_SUCCESS
+
+
+def test_install_prebuilt_reraises_when_index_unreachable_and_no_install(tmp_path: Path, monkeypatch):
+    install_dir = tmp_path / "node"  # nothing on disk to fall back to
+    monkeypatch.setattr(M, "detect_host", lambda: _host("linux", "x64"))
+    monkeypatch.setattr(M, "fetch_json", _offline)
+    with pytest.raises(OSError):
+        M.install_prebuilt(install_dir, channel = "lts", min_major = 24, force = False)
+
+
+def test_install_prebuilt_force_does_not_keep_existing_offline(tmp_path: Path, monkeypatch):
+    install_dir = tmp_path / "node"
+    install_dir.mkdir()
+    M.write_metadata(install_dir, version = "24.17.0", asset = "x", sha256 = "y")
+    monkeypatch.setattr(M, "detect_host", lambda: _host("linux", "x64"))
+    monkeypatch.setattr(M, "installed_node_version", lambda d, h: "24.17.0")
+    monkeypatch.setattr(M, "installed_npm_major", lambda d, h: 11)
+    monkeypatch.setattr(M, "fetch_json", _offline)
+    with pytest.raises(OSError):
+        M.install_prebuilt(install_dir, channel = "lts", min_major = 24, force = True)

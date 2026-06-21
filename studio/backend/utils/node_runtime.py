@@ -25,12 +25,12 @@ from pathlib import Path
 
 from utils.subprocess_compat import windows_hidden_subprocess_kwargs
 
-# Same floor the setup scripts enforce in their Node decision (Vite 8 needs
-# Node ^20.19.0 || >=22.12.0 || >=23). Keep in sync with Get-NodeDecision
-# (setup.ps1) / decide_node_source (setup.sh).
 _NODE_VERSION_PROBE_TIMEOUT_SECONDS = 10
 
 
+# Same floor the setup scripts enforce in their Node decision (Vite 8 needs
+# Node ^20.19.0 || >=22.12.0 || >=23). Keep in sync with Get-NodeDecision
+# (setup.ps1) / decide_node_source (setup.sh).
 def _version_meets_floor(version: str) -> bool:
     """True iff a ``node -v`` string clears the installer's version bar."""
     match = re.match(r"v?(\d+)\.(\d+)", version.strip())

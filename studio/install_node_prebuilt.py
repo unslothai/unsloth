@@ -379,7 +379,8 @@ def _extract_tar_safely(source: Path, base: Path) -> None:
             raise PrebuiltFallback(
                 f"archive link used an unsafe target: {member.name} -> {link_name}"
             )
-        resolved = (target.parent / link_path).resolve()
+        # tar symlink names are link-parent relative; hard-link names are archive-root relative.
+        resolved = (target.parent / link_path if member.issym() else base / link_path).resolve()
         try:
             resolved.relative_to(base.resolve())
         except ValueError as exc:
@@ -520,11 +521,18 @@ def _run_node(
     timeout: int = 120,
 ) -> str:
     node_bin = node_binary_path(install_dir, host)
+    env = os.environ.copy()
+    # Keep any `npm -g` writes inside the isolated prefix; Windows npm otherwise
+    # defaults its global prefix to %APPDATA%\npm and touches the system install.
+    env["NPM_CONFIG_PREFIX"] = str(install_dir)
+    env["npm_config_prefix"] = str(install_dir)
+    env.pop("NODE_PATH", None)
     result = subprocess.run(
         [str(node_bin), *args],
         capture_output = True,
         text = True,
         timeout = timeout,
+        env = env,
         **_windows_hidden_kwargs(),
     )
     if result.returncode != 0:
@@ -592,6 +600,20 @@ def existing_install_matches(install_dir: Path, host: HostInfo, *, version: str)
     return npm_major is not None and npm_major >= NPM_MIN_MAJOR
 
 
+def existing_install_usable(install_dir: Path, host: HostInfo) -> bool:
+    """True iff the on-disk install runs and clears the npm floor, ignoring version.
+
+    Lets an update keep a working isolated Node when the dist index is unreachable,
+    instead of aborting on a transient nodejs.org outage.
+    """
+    if not load_metadata(install_dir):
+        return False
+    if installed_node_version(install_dir, host) is None:
+        return False
+    npm_major = installed_npm_major(install_dir, host)
+    return npm_major is not None and npm_major >= NPM_MIN_MAJOR
+
+
 def _swap_into_place(extracted_root: Path, install_dir: Path) -> None:
     """Atomically replace install_dir with extracted_root (same filesystem)."""
     install_dir.parent.mkdir(parents = True, exist_ok = True)
@@ -629,7 +651,14 @@ def install_prebuilt(install_dir: Path, *, channel: str, min_major: int, force: 
     host = detect_host()
 
     if channel in {"lts", "latest"}:
-        index = fetch_json(NODE_DIST_INDEX)
+        try:
+            index = fetch_json(NODE_DIST_INDEX)
+        except Exception as exc:  # noqa: BLE001
+            # nodejs.org unreachable: keep a working isolated Node instead of aborting.
+            if not force and existing_install_usable(install_dir, host):
+                log(f"Node dist index unreachable ({exc}); keeping existing isolated Node")
+                return EXIT_SUCCESS
+            raise
         if not isinstance(index, list):
             raise PrebuiltFallback(f"unexpected index.json payload from {NODE_DIST_INDEX}")
         version = select_node_version(index, channel = channel, min_major = min_major)
