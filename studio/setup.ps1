@@ -1545,8 +1545,15 @@ if ($IsPipInstall) {
     }
     $NodeDir = Join-Path $NodeParent "node"
 
-    $SysNodeVersion = (node -v 2>$null)
-    $SysNpmVersion = (npm -v 2>$null)
+    # Probe the system node/npm WITHOUT letting a missing command abort setup.
+    # The script runs under $ErrorActionPreference = "Stop", where a bare
+    # `node -v` for an absent node throws a terminating CommandNotFoundException
+    # that `2>$null` does NOT swallow -- so a fresh machine with no Node would
+    # crash here before Get-NodeDecision could return "bundled". Guard each probe
+    # with Get-Command (node and npm independently; one can exist without the
+    # other) and pass an empty version when the command is absent.
+    $SysNodeVersion = if (Get-Command node -ErrorAction SilentlyContinue) { (node -v 2>$null) } else { "" }
+    $SysNpmVersion = if (Get-Command npm -ErrorAction SilentlyContinue) { (npm -v 2>$null) } else { "" }
     $NodeSource = Get-NodeDecision -NodeVersion "$SysNodeVersion" -NpmVersion "$SysNpmVersion" -SkipInstall "$($env:UNSLOTH_SKIP_NODE_INSTALL)"
     if ($NodeSource -eq "system") {
         substep "Node $SysNodeVersion and npm $SysNpmVersion already meet requirements (system)."
@@ -1765,13 +1772,19 @@ if ($IsPipInstall) {
     }
 }
 
-# Provision Node only when we will actually build -- never eagerly (an up-to-date
-# dist needs no Node). Uses the system Node read-only, or an isolated Node we
-# manage; the user's system Node/npm are never modified.
-if ($NeedFrontendBuild -and -not $IsPipInstall) {
+# Provision Node when a frontend build OR the OXC validator runtime install needs
+# it -- never eagerly (an up-to-date dist with no OXC dir needs no Node). The OXC
+# `npm install` below runs whenever its dir exists, independent of the frontend
+# dist staleness, so gating Node solely on $NeedFrontendBuild would leave OXC
+# running against an unsuitable/absent system Node. Uses the system Node read-only,
+# or an isolated Node we manage; the user's system Node/npm are never modified.
+$NeedNodeForSetup = (-not $IsPipInstall) -and ($NeedFrontendBuild -or (Test-Path $OxcValidatorDir))
+if ($NeedNodeForSetup) {
     if ($NodeSource -eq "skip") {
+        if ($NeedFrontendBuild) {
+            step "frontend" "skipped (no suitable Node; system left untouched)" "Yellow"
+        }
         $NeedFrontendBuild = $false
-        step "frontend" "skipped (no suitable Node; system left untouched)" "Yellow"
         substep "found Node='$SysNodeVersion' npm='$SysNpmVersion'; Studio needs Node >=20.19/22.12/23 and npm >= 11" "Yellow"
         substep "install a suitable Node + npm, or unset UNSLOTH_SKIP_NODE_INSTALL to let Unsloth manage an isolated Node" "Yellow"
     } elseif ($NodeSource -eq "bundled") {
@@ -1818,6 +1831,11 @@ if ($NeedFrontendBuild -and -not $IsPipInstall) {
             Invoke-SetupCommand { npm install -g bun --allow-scripts=bun } | Out-Null
             $ErrorActionPreference = $prevEAP_bun
             Refresh-Environment
+            # Refresh-Environment rebuilds PATH as Machine;User;current, which
+            # demotes the isolated-Node prepend (above) behind any system Node.
+            # Re-prepend so node/npm/bun resolve to the isolated install for the
+            # frontend build and the OXC step (process-scoped only).
+            $env:PATH = "$NodeDir;" + $env:PATH
             if (Get-Command bun -ErrorAction SilentlyContinue) {
                 substep "bun installed ($(bun --version))"
             } else {
@@ -1940,7 +1958,7 @@ if ($NeedFrontendBuild -and -not $IsPipInstall) {
     }
 }
 
-if (Test-Path $OxcValidatorDir) {
+if ((Test-Path $OxcValidatorDir) -and $NodeSource -ne "skip") {
     substep "installing OXC validator runtime..."
     $prevEAP_oxc = $ErrorActionPreference
     $ErrorActionPreference = "Continue"

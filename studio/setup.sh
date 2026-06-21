@@ -485,7 +485,12 @@ if [ -d "$SCRIPT_DIR/frontend/dist" ]; then
 fi
 fi  # end SKIP_STUDIO_FRONTEND guard
 
-if [ "$_NEED_FRONTEND_BUILD" = false ]; then
+# The OXC validator runtime install (below) needs node/npm whenever its dir
+# exists, independent of the frontend dist staleness. So provision Node when the
+# frontend needs building OR the OXC dir exists -- otherwise an up-to-date dist
+# would skip Node and leave OXC running against an unsuitable/absent system Node.
+_OXC_DIR="$SCRIPT_DIR/backend/core/data_recipe/oxc-validator"
+if [ "$_NEED_FRONTEND_BUILD" = false ] && [ ! -d "$_OXC_DIR" ]; then
     step "frontend" "up to date"
     verbose_substep "frontend dist is newer than source inputs"
 else
@@ -561,13 +566,24 @@ elif [ "$NODE_SOURCE" = bundled ]; then
         _assert_studio_owned_or_absent "$NODE_DIR" "Node install"
     fi
     substep "installing isolated Node (system Node/npm left untouched)..."
+    # This runs BEFORE the venv is activated (line ~772), so a bare `python` may
+    # be absent (only python3, or the venv interpreter off PATH). Resolve one
+    # explicitly -- venv python first, then python3, then python -- mirroring the
+    # "$VENV_DIR/bin/python" pattern used elsewhere in this file.
+    if [ -x "$VENV_DIR/bin/python" ]; then
+        _NODE_PY="$VENV_DIR/bin/python"
+    elif command -v python3 >/dev/null 2>&1; then
+        _NODE_PY="python3"
+    else
+        _NODE_PY="python"
+    fi
     _NODE_LOG="$(mktemp)"
     set +e
     if _is_verbose; then
-        python "$SCRIPT_DIR/install_node_prebuilt.py" --install-dir "$NODE_DIR" 2>&1 | tee "$_NODE_LOG"
+        "$_NODE_PY" "$SCRIPT_DIR/install_node_prebuilt.py" --install-dir "$NODE_DIR" 2>&1 | tee "$_NODE_LOG"
         _NODE_STATUS=${PIPESTATUS[0]}
     else
-        python "$SCRIPT_DIR/install_node_prebuilt.py" --install-dir "$NODE_DIR" >"$_NODE_LOG" 2>&1
+        "$_NODE_PY" "$SCRIPT_DIR/install_node_prebuilt.py" --install-dir "$NODE_DIR" >"$_NODE_LOG" 2>&1
         _NODE_STATUS=$?
     fi
     set -e
@@ -600,7 +616,13 @@ else
 fi
 verbose_substep "node source: $NODE_SOURCE (sys node=${_SYS_NODE_VER:-none} npm=${_SYS_NPM_VER:-none}) dir=$NODE_DIR"
 
-if [ "$_FRONTEND_SKIP" != true ]; then
+if [ "$_FRONTEND_SKIP" = true ]; then
+    : # no suitable Node (skip source): message already shown above; nothing to build
+elif [ "$_NEED_FRONTEND_BUILD" = false ]; then
+    # Node was provisioned only for the OXC runtime; the dist is already current.
+    step "frontend" "up to date"
+    verbose_substep "frontend dist is newer than source inputs"
+else
 
 # ── Install bun (optional, faster package installs) ──
 # Uses npm to install bun globally -- Node is already guaranteed above.
@@ -721,8 +743,10 @@ fi  # end _FRONTEND_SKIP guard (Node available: system or isolated)
 fi  # end frontend build check
 
 # ── oxc-validator runtime ──
-if [ -d "$SCRIPT_DIR/backend/core/data_recipe/oxc-validator" ] && command -v npm &>/dev/null; then
-    cd "$SCRIPT_DIR/backend/core/data_recipe/oxc-validator"
+# Skip when the user opted out of Node (NODE_SOURCE=skip): there is no suitable
+# Node, so do not run npm install against an unsuitable/absent system Node.
+if [ -d "$_OXC_DIR" ] && [ "${NODE_SOURCE:-}" != skip ] && command -v npm &>/dev/null; then
+    cd "$_OXC_DIR"
     run_quiet_no_exit "npm install (oxc validator runtime)" npm install --no-fund --no-audit --loglevel=error
     _oxc_install_rc=$?
     if [ "$_oxc_install_rc" -ne 0 ]; then
