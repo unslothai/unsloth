@@ -161,6 +161,26 @@ function FindingCard({ finding }: { finding: RemoteCodeFinding }) {
   );
 }
 
+/** Split a model id into its display name and provider (the HF org/owner) so the
+ *  consent dialog can say e.g. `Nemotron-3-Nano-4B from "unsloth"`. Returns a null
+ *  provider for local paths (./, /, ~, C:\, backslashes) and bare names with no owner. */
+function parseModelDisplay(modelName?: string): {
+  displayName: string;
+  provider: string | null;
+} {
+  if (!modelName) return { displayName: "This model", provider: null };
+  const parts = modelName.split("/");
+  const displayName = parts[parts.length - 1] || modelName;
+  const looksLocal =
+    modelName.startsWith(".") ||
+    modelName.startsWith("/") ||
+    modelName.startsWith("~") ||
+    modelName.includes("\\") ||
+    /^[A-Za-z]:/.test(modelName);
+  const provider = parts.length >= 2 && !looksLocal ? parts[0] : null;
+  return { displayName, provider };
+}
+
 /** App-wide consent dialog for trust_remote_code loads: shows scan findings with the
  *  flagged code in context; CRITICAL is a hard block. Mounted once in the root layout. */
 export function RemoteCodeConsentDialog() {
@@ -168,7 +188,7 @@ export function RemoteCodeConsentDialog() {
   const scan = useRemoteCodeConsentDialogStore((s) => s.scan);
   const resolve = useRemoteCodeConsentDialogStore((s) => s.resolve);
 
-  const displayName = scan?.modelName?.split("/").pop() || "This model";
+  const { displayName, provider } = parseModelDisplay(scan?.modelName);
   const blocked = scan ? !scan.approvable : false;
   const findings = scan?.findings ?? [];
   const unsafeFiles = scan?.unsafeFiles ?? [];
@@ -218,7 +238,16 @@ export function RemoteCodeConsentDialog() {
                     <>
                       <span className="font-medium text-foreground">
                         {displayName}
-                      </span>{" "}
+                      </span>
+                      {provider ? (
+                        <>
+                          {" "}
+                          from{" "}
+                          <span className="font-medium text-foreground">
+                            "{provider}"
+                          </span>
+                        </>
+                      ) : null}{" "}
                       contains files that Hugging Face's security scan flagged as
                       unsafe (for example, a malicious pickle that would run code
                       when the model loads). It cannot be loaded. The flagged
@@ -228,7 +257,16 @@ export function RemoteCodeConsentDialog() {
                     <>
                       <span className="font-medium text-foreground">
                         {displayName}
-                      </span>{" "}
+                      </span>
+                      {provider ? (
+                        <>
+                          {" "}
+                          from{" "}
+                          <span className="font-medium text-foreground">
+                            "{provider}"
+                          </span>
+                        </>
+                      ) : null}{" "}
                       declares custom Python code in its repository.{" "}
                       {blocked
                         ? "A security scan flagged CRITICAL issues, so it cannot be enabled."
