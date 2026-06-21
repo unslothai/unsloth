@@ -96,11 +96,11 @@ def log(message: str) -> None:
 # --------------------------------------------------------------------------- #
 @dataclass(frozen = True)
 class HostInfo:
-    system: str           # platform.system()
-    machine: str          # lowered platform.machine()
-    node_os: str          # nodejs.org token: linux | darwin | win
-    node_arch: str        # nodejs.org token: x64 | arm64 | armv7l
-    archive_ext: str      # .tar.gz | .zip
+    system: str  # platform.system()
+    machine: str  # lowered platform.machine()
+    node_os: str  # nodejs.org token: linux | darwin | win
+    node_arch: str  # nodejs.org token: x64 | arm64 | armv7l
+    archive_ext: str  # .tar.gz | .zip
     is_windows: bool
 
 
@@ -303,7 +303,9 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def download_file_verified(url: str, destination: Path, *, expected_sha256: str, label: str) -> None:
+def download_file_verified(
+    url: str, destination: Path, *, expected_sha256: str, label: str
+) -> None:
     for attempt in range(1, 3):
         download_file(url, destination)
         actual = sha256_file(destination)
@@ -374,7 +376,9 @@ def _extract_tar_safely(source: Path, base: Path) -> None:
         link_name = member.linkname.replace("\\", "/")
         link_path = Path(link_name)
         if link_path.is_absolute() or not link_name:
-            raise PrebuiltFallback(f"archive link used an unsafe target: {member.name} -> {link_name}")
+            raise PrebuiltFallback(
+                f"archive link used an unsafe target: {member.name} -> {link_name}"
+            )
         resolved = (target.parent / link_path).resolve()
         try:
             resolved.relative_to(base.resolve())
@@ -482,7 +486,13 @@ def _windows_hidden_kwargs() -> dict[str, object]:
     return kwargs
 
 
-def _run_node(install_dir: Path, host: HostInfo, args: list[str], *, timeout: int = 120) -> str:
+def _run_node(
+    install_dir: Path,
+    host: HostInfo,
+    args: list[str],
+    *,
+    timeout: int = 120,
+) -> str:
     node_bin = node_binary_path(install_dir, host)
     result = subprocess.run(
         [str(node_bin), *args],
@@ -492,7 +502,9 @@ def _run_node(install_dir: Path, host: HostInfo, args: list[str], *, timeout: in
         **_windows_hidden_kwargs(),
     )
     if result.returncode != 0:
-        raise RuntimeError(f"node {' '.join(args)} failed: {result.stderr.strip() or result.stdout.strip()}")
+        raise RuntimeError(
+            f"node {' '.join(args)} failed: {result.stderr.strip() or result.stdout.strip()}"
+        )
     return result.stdout.strip()
 
 
@@ -661,14 +673,18 @@ def main(argv: list[str] | None = None) -> int:
     _LOG_TO_STDOUT = True
 
     parser = argparse.ArgumentParser(description = "Install an isolated Node.js for Unsloth Studio")
-    parser.add_argument("--install-dir", required = True, help = "isolated Node directory, e.g. <UNSLOTH_HOME>/node")
+    parser.add_argument(
+        "--install-dir", required = True, help = "isolated Node directory, e.g. <UNSLOTH_HOME>/node"
+    )
     parser.add_argument(
         "--node-version",
         default = os.environ.get("UNSLOTH_NODE_VERSION", "lts"),
         help = "'lts' (default), 'latest', or an explicit version like 24.4.1",
     )
     parser.add_argument("--min-major", type = int, default = NODE_MIN_LTS_MAJOR)
-    parser.add_argument("--force", action = "store_true", help = "reinstall even if the version matches")
+    parser.add_argument(
+        "--force", action = "store_true", help = "reinstall even if the version matches"
+    )
     args = parser.parse_args(argv)
 
     install_dir = Path(args.install_dir).expanduser().resolve()

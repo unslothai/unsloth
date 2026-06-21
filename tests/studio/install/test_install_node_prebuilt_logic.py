@@ -152,7 +152,12 @@ def test_select_no_candidate_raises():
 # --------------------------------------------------------------------------- #
 # Archive extraction (zip + tar.gz with the npm-style symlink), traversal guard
 # --------------------------------------------------------------------------- #
-def _add_file(tar: tarfile.TarFile, name: str, data: bytes, mode: int = 0o644):
+def _add_file(
+    tar: tarfile.TarFile,
+    name: str,
+    data: bytes,
+    mode: int = 0o644,
+):
     info = tarfile.TarInfo(name)
     info.size = len(data)
     info.mode = mode
@@ -168,7 +173,7 @@ def _add_symlink(tar: tarfile.TarFile, name: str, target: str):
 
 @pytest.mark.skipif(
     os.name == "nt",
-    reason="Node ships a .zip (no symlinks) on Windows; the tar+symlink path is Unix-only",
+    reason = "Node ships a .zip (no symlinks) on Windows; the tar+symlink path is Unix-only",
 )
 def test_extract_tar_gz_with_npm_symlink(tmp_path: Path):
     # Mirrors the real Node tarball: bin/npm -> ../lib/node_modules/npm/bin/npm-cli.js
