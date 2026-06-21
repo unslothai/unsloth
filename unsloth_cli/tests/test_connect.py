@@ -513,11 +513,11 @@ def test_connect_studio_server_errors_on_explicit_remote(monkeypatch):
     import unsloth_cli._inference as inference
 
     monkeypatch.setenv("UNSLOTH_STUDIO_URL", "http://studio.example:8888")
-    monkeypatch.setattr(inference, "find_studio_server", lambda *a, **k: "http://studio.example:8888")
+    monkeypatch.setattr(
+        inference, "find_studio_server", lambda *a, **k: "http://studio.example:8888"
+    )
     with pytest.raises(typer.Exit):
-        inference.connect_studio_server(
-            "m", hf_token = None, max_seq_length = 4096, load_in_4bit = False
-        )
+        inference.connect_studio_server("m", hf_token = None, max_seq_length = 4096, load_in_4bit = False)
 
 
 def test_connect_studio_server_falls_back_locally_on_default_discovery(monkeypatch):
@@ -529,9 +529,7 @@ def test_connect_studio_server_falls_back_locally_on_default_discovery(monkeypat
     monkeypatch.setattr(inference, "find_studio_server", lambda *a, **k: "http://127.0.0.1:8888")
     monkeypatch.setattr(inference, "verify_studio_identity", lambda *a, **k: False)
     assert (
-        inference.connect_studio_server(
-            "m", hf_token = None, max_seq_length = 4096, load_in_4bit = False
-        )
+        inference.connect_studio_server("m", hf_token = None, max_seq_length = 4096, load_in_4bit = False)
         is None
     )
 

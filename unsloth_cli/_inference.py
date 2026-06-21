@@ -397,7 +397,6 @@ class HttpChatBackend:
         timeout = None,
     ):
         import json
-
         request = urllib.request.Request(
             self._base + path,
             data = None if payload is None else json.dumps(payload).encode(),
@@ -529,13 +528,17 @@ def connect_studio_server(model: str, *, hf_token, max_seq_length, load_in_4bit)
     # disclosing it would be a credential leak), and a genuine remote Studio
     # signs with a different secret and would reject it anyway.
     if not is_loopback_url(base_url):
-        return _refuse("it isn't a local Studio, so a self-issued token can't "
-                       "authenticate to it and must not be sent to it.")
+        return _refuse(
+            "it isn't a local Studio, so a self-issued token can't "
+            "authenticate to it and must not be sent to it."
+        )
     # Cryptographically confirm the loopback responder really is our Studio
     # (not a process squatting the port) before handing it the token.
     if not verify_studio_identity(base_url):
-        return _refuse("its identity couldn't be verified (it may be running as a "
-                       "different OS user, or another process took the port).")
+        return _refuse(
+            "its identity couldn't be verified (it may be running as a "
+            "different OS user, or another process took the port)."
+        )
     token = _studio_token()
     if not token:
         return _refuse("couldn't self-issue a Studio token (is Studio set up here?).")
