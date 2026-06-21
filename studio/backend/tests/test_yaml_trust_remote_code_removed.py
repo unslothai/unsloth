@@ -138,19 +138,25 @@ def test_formerly_flagged_auto_map_models_still_require_consent_dialog():
     from unittest.mock import patch
     from utils.security import consent, preflight_remote_code_consent_for_targets
 
-    auto_map_cfg = [{
-        "auto_map": {"AutoConfig": "configuration_x.XConfig",
-                     "AutoModelForCausalLM": "modeling_x.XForCausalLM"}
-    }]
+    auto_map_cfg = [
+        {
+            "auto_map": {
+                "AutoConfig": "configuration_x.XConfig",
+                "AutoModelForCausalLM": "modeling_x.XForCausalLM",
+            }
+        }
+    ]
     benign_py = {"modeling_x.py": "class XForCausalLM:\n    pass\n"}
     for model in (
         "unsloth/Nemotron-3-Nano-30B-A3B",
         "unsloth/PaddleOCR-VL",
         "unsloth/ERNIE-4.5-VL-28B-A3B-PT",
     ):
-        with patch.object(consent, "_load_remote_code_configs", return_value=auto_map_cfg), \
-             patch.object(consent, "repo_remote_code_files", return_value=benign_py):
-            decision = preflight_remote_code_consent_for_targets([model], hf_token=None)
+        with (
+            patch.object(consent, "_load_remote_code_configs", return_value = auto_map_cfg),
+            patch.object(consent, "repo_remote_code_files", return_value = benign_py),
+        ):
+            decision = preflight_remote_code_consent_for_targets([model], hf_token = None)
         # routes/models.py sets requires_trust_remote_code = decision.has_remote_code, which
         # the frontend uses to open the dialog.
         assert decision.has_remote_code is True, (
@@ -166,9 +172,10 @@ def test_no_auto_map_model_takes_no_dialog():
     from unittest.mock import patch
     from utils.security import consent, preflight_remote_code_consent_for_targets
 
-    with patch.object(consent, "_load_remote_code_configs",
-                      return_value=[{"model_type": "glm4_moe_lite"}]):
+    with patch.object(
+        consent, "_load_remote_code_configs", return_value = [{"model_type": "glm4_moe_lite"}]
+    ):
         decision = preflight_remote_code_consent_for_targets(
-            ["unsloth/GLM-4.7-Flash"], hf_token=None
+            ["unsloth/GLM-4.7-Flash"], hf_token = None
         )
     assert decision.has_remote_code is False
