@@ -26,11 +26,8 @@ BASE = "http://127.0.0.1:8888"
 MODEL = {"id": "unsloth/gemma-4-26B-A4B-it-GGUF", "context_length": 131072}
 
 
-# `unsloth connect --no-launch` prints shell setup in the syntax of the host
-# OS: POSIX `export X=v` / `unset X` on Unix and inside WSL, PowerShell
-# `$env:X = "v"` / `Remove-Item Env:X` on native Windows (see connect._print_env).
-# These helpers assert the right form for whichever OS the test runs on, so the
-# suite passes on the Windows runners the connect command also targets.
+# --no-launch prints shell setup as POSIX (export/unset) on Unix/WSL and
+# PowerShell ($env:/Remove-Item) on native Windows; assert the host's form.
 def _assert_env_set(output: str, name: str, value: str) -> None:
     needle = f'$env:{name} = "{value}"' if os.name == "nt" else f"export {name}={value}"
     assert needle in output, f"{needle!r} not found in:\n{output}"
@@ -188,12 +185,9 @@ def fake_studio(tmp_path, monkeypatch, claude_settings):
         raise AssertionError(f"unexpected request: {method} {url}")
 
     monkeypatch.setattr(connect, "find_studio_server", lambda: BASE)
-    # The server identity handshake is exercised in its own tests; here the
-    # discovered loopback server is trusted so the rest of the flow runs.
+    # Identity handshake has its own tests; trust the loopback server here.
     monkeypatch.setattr(connect, "verify_studio_identity", lambda base: True)
-    # A new key is minted through the (identity-verified) server; the fake
-    # /api/auth/api-keys above returns it, and _studio_token stands in for the
-    # self-issued JWT so tests stay offline.
+    # _studio_token / api-keys are faked so the mint flow stays offline.
     monkeypatch.setattr(connect, "_studio_token", lambda: "jwt-token")
     monkeypatch.setattr(connect, "_http_json", http_json)
     monkeypatch.setattr(connect, "_key_cache_path", lambda: tmp_path / "agent_api_key.json")
@@ -372,9 +366,8 @@ def test_connect_skips_cached_keys_the_server_rejects(fake_studio, tmp_path, mon
 
 
 def test_connect_legacy_unscoped_cache_not_replayed(fake_studio, tmp_path):
-    # Pre-scoping caches have no server binding, so replaying them could leak a
-    # key to a different server. They're ignored: a key is re-minted and stored
-    # scoped to the server it was minted for.
+    # Legacy unscoped caches have no server binding (could leak across servers),
+    # so they're ignored: a fresh key is minted and stored scoped to this server.
     (tmp_path / "agent_api_key.json").write_text(json.dumps({"key": "sk-unsloth-oldformat"}))
     result = CliRunner().invoke(connect.connect_app, ["claude", "--no-launch"])
     assert result.exit_code == 0, result.output
@@ -493,9 +486,8 @@ def test_connect_codex_rejects_non_gguf_model(fake_studio, monkeypatch):
 
 
 def test_connect_nonloopback_keyless_refuses_to_send_credential(fake_studio, monkeypatch):
-    # A server discovered only by URL + health check is unverified. Keyless
-    # connect must refuse rather than auto-send a credential, and must not make
-    # any request to do so.
+    # A server known only by URL + health check is unverified: keyless connect
+    # must refuse and make no request at all.
     monkeypatch.setattr(connect, "find_studio_server", lambda: "http://studio.evil.example:8888")
     result = CliRunner().invoke(connect.connect_app, ["opencode", "--no-launch"])
     assert result.exit_code == 1
@@ -505,8 +497,7 @@ def test_connect_nonloopback_keyless_refuses_to_send_credential(fake_studio, mon
 
 
 def test_connect_nonloopback_explicit_key_is_allowed(fake_studio, monkeypatch):
-    # The user explicitly named both the server and the key, so this is their
-    # choice; only the unattended auto-send paths are blocked.
+    # User named both server and key, so it's their choice; only auto-send is blocked.
     monkeypatch.setattr(connect, "find_studio_server", lambda: "http://studio.example:8888")
     result = CliRunner().invoke(
         connect.connect_app,
@@ -516,9 +507,8 @@ def test_connect_nonloopback_explicit_key_is_allowed(fake_studio, monkeypatch):
 
 
 def test_connect_nonloopback_replays_saved_key(fake_studio, tmp_path, monkeypatch):
-    # A key explicitly saved for a remote (non-loopback) Studio is reused on
-    # keyless runs. Auto-minting is still blocked for non-loopback; only the
-    # key the user already saved for this exact base is replayed.
+    # A key saved for a remote (non-loopback) Studio is replayed on keyless runs;
+    # auto-minting stays blocked for non-loopback.
     remote = "http://studio.example:8888"
     monkeypatch.setattr(connect, "find_studio_server", lambda: remote)
     (tmp_path / "agent_api_key.json").write_text(
@@ -562,9 +552,8 @@ def test_connect_studio_server_falls_back_locally_on_default_discovery(monkeypat
 def test_connect_unverified_loopback_without_cached_key_refuses_to_mint(
     fake_studio, tmp_path, monkeypatch
 ):
-    # With no saved key, the next step would auto-mint (self-issue a JWT). A
-    # process squatting the loopback port can't prove it is our Studio, so
-    # minting must be refused and nothing sent.
+    # With no saved key, the next step would auto-mint; an unverified loopback
+    # server (port squatter) must be refused, with nothing sent.
     monkeypatch.setattr(connect, "verify_studio_identity", lambda base: False)
     result = CliRunner().invoke(connect.connect_app, ["claude", "--no-launch"])
     assert result.exit_code == 1
@@ -573,10 +562,8 @@ def test_connect_unverified_loopback_without_cached_key_refuses_to_mint(
 
 
 def test_connect_replays_saved_key_without_identity_check(fake_studio, tmp_path, monkeypatch):
-    # A key the user explicitly saved ("saved" provenance) for *this* base (e.g.
-    # an SSH-tunnelled remote Studio, whose identity secret the local handshake
-    # can't match) is replayed on keyless runs without requiring the handshake.
-    # It is scoped to this base, so it is only sent back to its own server.
+    # A "saved" key (e.g. for an SSH-tunnelled Studio the handshake can't match)
+    # replays on keyless runs without the handshake, scoped to its own base.
     cache = tmp_path / "agent_api_key.json"
     cache.write_text(json.dumps({"servers": {BASE: {"saved": ["sk-unsloth-deadbeefdeadbeef"]}}}))
     monkeypatch.setattr(connect, "verify_studio_identity", lambda base: False)
@@ -587,10 +574,8 @@ def test_connect_replays_saved_key_without_identity_check(fake_studio, tmp_path,
 
 
 def test_connect_minted_cache_requires_identity_check(fake_studio, tmp_path, monkeypatch):
-    # An auto-minted key (or a legacy single-list entry, treated as minted) is
-    # NOT replayed to an unverified loopback server: minting and minted-key
-    # replay both sit behind the identity handshake, so a port squatter can't
-    # collect the cached key.
+    # A "minted" key is NOT replayed to an unverified loopback server: minting and
+    # minted-key replay both sit behind the handshake, so a squatter can't grab it.
     cache = tmp_path / "agent_api_key.json"
     cache.write_text(json.dumps({"servers": {BASE: {"minted": ["sk-unsloth-feedfacefeedface"]}}}))
     monkeypatch.setattr(connect, "verify_studio_identity", lambda base: False)
@@ -644,9 +629,8 @@ def _serve_identity(proof_for):
 
 
 def test_verify_studio_identity_end_to_end(tmp_path, monkeypatch):
-    # Faithful client + server crypto: the real verify_studio_identity reads
-    # the install identity secret from an isolated auth DB; a "good" server
-    # proves knowledge of that same secret and a spoofing server cannot.
+    # Real crypto end to end: verify_studio_identity reads the install secret from
+    # an isolated DB; a "good" server proves the same secret, a spoofing one can't.
     import unsloth_cli._inference as inference
 
     inference.ensure_studio_backend_path()
@@ -691,9 +675,8 @@ def _serve_redirect(target):
 
 
 def test_verify_studio_identity_rejects_redirect(tmp_path, monkeypatch):
-    # A process squatting the port could 302-redirect /api/auth/identity to the
-    # real Studio and relay its valid proof. Redirects must be refused so the
-    # squatter's base is not accepted.
+    # A squatter could 302 /api/auth/identity to the real Studio and relay its
+    # proof; redirects must be refused so the squatter's base isn't accepted.
     import unsloth_cli._inference as inference
 
     inference.ensure_studio_backend_path()

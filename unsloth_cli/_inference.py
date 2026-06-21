@@ -18,17 +18,14 @@ _THINK_BLOCK = re.compile(rf"{re.escape(_THINK_OPEN)}.*?</think>", re.DOTALL)
 # "Python-urllib/X.Y" User-Agent as a bot; send a real one on every request.
 _USER_AGENT = "unsloth-cli"
 
-# Built once, on first use; urllib stays function-local to match this module.
+# Built lazily; urllib stays function-local to match this module.
 _no_redirect_opener = None
 
 
 def urlopen_no_redirect(request, timeout):
-    """urlopen that treats any redirect as an error.
-
-    Following a 3xx would send a bearer token -- or accept an identity proof --
-    from the base URL we vetted to a different one we didn't, which a process
-    squatting the discovered port can abuse to relay a real Studio's response.
-    """
+    """urlopen that errors on any redirect: following a 3xx would send a bearer
+    token (or accept an identity proof) to a base we never vetted, letting a port
+    squatter relay a real Studio's response."""
     global _no_redirect_opener
     if _no_redirect_opener is None:
         import urllib.error
@@ -296,18 +293,9 @@ def find_studio_server(timeout: float = 3.0) -> Optional[str]:
 
 
 def is_loopback_url(base: str) -> bool:
-    """True only when *base* resolves to this machine's loopback interface.
-
-    find_studio_server() returns a base URL after only an unauthenticated
-    /api/health probe, so the server's identity is never verified: an
-    attacker-controlled UNSLOTH_STUDIO_URL, or a process that preempts the
-    default port, both pass that check. Sending a credential (a cached API key
-    or a self-issued JWT) to such a server discloses it. We can't prove a
-    server's identity without a signed handshake, but we can refuse to
-    auto-send credentials anywhere except loopback, which is the only target
-    the automatic flows were meant for (a local Studio, or one reached through
-    an SSH tunnel that also lands on 127.0.0.1).
-    """
+    """True only when *base* resolves to loopback. find_studio_server() trusts a
+    base after only a health probe, so credentials are auto-sent only to loopback
+    (a local Studio or an SSH tunnel on 127.0.0.1), the targets the auto flows mean."""
     from urllib.parse import urlparse
 
     host = (urlparse(base).hostname or "").lower()
@@ -323,15 +311,9 @@ def is_loopback_url(base: str) -> bool:
 def verify_studio_identity(base: str, timeout: float = 3.0) -> bool:
     """Confirm `base` is really this machine's Studio before sending a secret.
 
-    Challenge-response: send a fresh random nonce to /api/auth/identity and
-    check the returned HMAC against one computed from the local same-user
-    identity secret. A server that doesn't hold that secret (a different OS
-    user that preempted the port, or a remote/fake endpoint) can't produce a
-    matching proof. Reading the local secret is the same same-OS-user
-    capability the auto-mint path already needs. Fails closed: any error
-    (endpoint missing, secret unreadable, mismatch) returns False so callers
-    refuse rather than leak.
-    """
+    Send a random nonce to /api/auth/identity and check the returned HMAC against
+    the one computed from the local same-user secret; an endpoint without that
+    secret (port squatter, remote/fake) can't match. Fails closed on any error."""
     import base64
     import hmac as _hmac
     import json
@@ -350,8 +332,7 @@ def verify_studio_identity(base: str, timeout: float = 3.0) -> bool:
         f"{base}/api/auth/identity?nonce={query}", headers = {"User-Agent": _USER_AGENT}
     )
     try:
-        # No redirects: a 302 to a real Studio would relay a valid proof for the
-        # attacker's base (see _NoRedirectHandler).
+        # No redirects: a 302 could relay a real Studio's proof (see urlopen_no_redirect).
         with urlopen_no_redirect(request, timeout = timeout) as response:
             proof = json.loads(response.read().decode() or "{}").get("proof")
     except Exception:
@@ -511,15 +492,13 @@ def connect_studio_server(model: str, *, hf_token, max_seq_length, load_in_4bit)
     if not base_url:
         return None
 
-    # Did the user explicitly point us at a server, or did we just discover the
-    # local default? If they asked for a specific server and we can't safely
-    # attach, fail loudly rather than silently loading a (possibly large) model
-    # on this machine, which they did not ask for.
+    # Explicit server (UNSLOTH_STUDIO_URL) we can't safely attach to -> fail loudly;
+    # opportunistic local discovery just falls back to a local load.
     explicit = bool(os.environ.get("UNSLOTH_STUDIO_URL"))
 
     def _refuse(reason: str):
         if not explicit:
-            return None  # opportunistic local discovery: just load locally
+            return None
         typer.echo(
             f"Can't attach to the Studio server at {base_url}: {reason} Run Studio "
             "on this machine, or unset UNSLOTH_STUDIO_URL to load the model locally.",
@@ -527,17 +506,14 @@ def connect_studio_server(model: str, *, hf_token, max_seq_length, load_in_4bit)
         )
         raise typer.Exit(code = 1)
 
-    # The self-issued JWT is a bearer token signed with the local Studio secret;
-    # only ever hand it to a loopback server. A remote URL is unverified (so
-    # disclosing it would be a credential leak), and a genuine remote Studio
-    # signs with a different secret and would reject it anyway.
+    # Only hand the self-issued JWT (signed with the local secret) to loopback: a
+    # remote URL is unverified and a real remote Studio would reject it anyway.
     if not is_loopback_url(base_url):
         return _refuse(
             "it isn't a local Studio, so a self-issued token can't "
             "authenticate to it and must not be sent to it."
         )
-    # Cryptographically confirm the loopback responder really is our Studio
-    # (not a process squatting the port) before handing it the token.
+    # Confirm the loopback responder is really our Studio (not a port squatter).
     if not verify_studio_identity(base_url):
         return _refuse(
             "its identity couldn't be verified (it may be running as a "

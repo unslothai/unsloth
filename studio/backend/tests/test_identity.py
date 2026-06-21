@@ -50,19 +50,15 @@ def test_compute_identity_proof_matches_manual_hmac():
 def test_proof_differs_when_secret_differs(tmp_path, monkeypatch):
     nonce = b"shared-nonce-across-two-installs!"
     proof_a = storage.compute_identity_proof(nonce)
-    # A different install (different DB / secret) is what an attacker without
-    # this install's secret is limited to: it cannot reproduce the proof.
+    # A different install (different secret) can't reproduce the proof.
     monkeypatch.setattr(storage, "DB_PATH", tmp_path / "other_auth.db")
     monkeypatch.setattr(storage, "_identity_secret_cache", None)
     assert storage.compute_identity_proof(nonce) != proof_a
 
 
 def _identity_client() -> TestClient:
-    # routes.auth pulls the whole routes package (routes/__init__ -> inference
-    # -> llama_cpp, ...). Where those heavy deps aren't installed (a minimal
-    # test matrix) or another test has polluted that import chain, skip rather
-    # than hard-fail: the proof crypto is already covered by the storage-level
-    # tests above, and the full backend CI exercises this route.
+    # routes.auth pulls the whole routes package (-> inference -> llama_cpp). Skip
+    # if those heavy deps are missing; the proof crypto is covered above.
     try:
         from routes.auth import router
     except Exception as exc:  # pragma: no cover - environment-dependent
