@@ -508,7 +508,10 @@ def _normalize_tied_weights_keys(model):
         return
     for module in modules:
         keys = getattr(module, "_tied_weights_keys", None)
-        if isinstance(keys, (list, tuple)) and keys:
+        # transformers only skips the attribute when it is ``None``; an empty
+        # list/tuple/set still reaches ``.keys()`` and crashes, so coerce every
+        # non-dict container (including the empty case) to a dict.
+        if isinstance(keys, (list, tuple, set)):
             try:
                 module._tied_weights_keys = {k: k for k in keys}
             except Exception:

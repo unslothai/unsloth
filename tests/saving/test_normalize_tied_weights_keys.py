@@ -53,13 +53,32 @@ def test_existing_dict_is_left_unchanged():
     assert mixer._tied_weights_keys is original
 
 
-def test_none_and_empty_are_left_unchanged():
+def test_set_keys_become_dict():
+    root, mixer = _build_tree()
+    mixer._tied_weights_keys = {"q_proj.weight"}
+    _normalize_tied_weights_keys(root)
+    assert mixer._tied_weights_keys == {"q_proj.weight": "q_proj.weight"}
+
+
+def test_none_is_left_unchanged_but_empty_becomes_dict():
     root, mixer = _build_tree()
     root._tied_weights_keys = None
     mixer._tied_weights_keys = []
     _normalize_tied_weights_keys(root)
+    # None means "no tied weights" to transformers and is left alone; an empty
+    # list still lacks ``.keys()`` (transformers only skips on None), so it must
+    # be coerced to an empty dict.
     assert root._tied_weights_keys is None
-    assert mixer._tied_weights_keys == []
+    assert mixer._tied_weights_keys == {}
+
+
+def test_empty_tuple_and_set_become_dict():
+    root, mixer = _build_tree()
+    root._tied_weights_keys = ()
+    mixer._tied_weights_keys = set()
+    _normalize_tied_weights_keys(root)
+    assert root._tied_weights_keys == {}
+    assert mixer._tied_weights_keys == {}
 
 
 def test_idempotent():
