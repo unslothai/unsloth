@@ -5,9 +5,10 @@
 .SYNOPSIS
     Full environment setup for Unsloth Studio on Windows (bundled version).
 .DESCRIPTION
-    Always installs Node.js if needed. When running from pip install:
-    skips frontend build (already bundled). When running from git repo:
-    full setup including frontend build.
+    Uses an isolated, Unsloth-managed Node.js for the frontend build when the
+    system Node/npm do not meet requirements (never modifies the system Node).
+    When running from pip install: skips frontend build (already bundled). When
+    running from git repo: full setup including frontend build.
     Supports NVIDIA GPU (full training + inference) and CPU-only (GGUF chat mode).
 .NOTES
     Default output is minimal (step/substep), aligned with studio/setup.sh.
@@ -1497,65 +1498,62 @@ if ($IsPipInstall) {
 } elseif ($SkipFrontend) {
     step "frontend" "bundled (Tauri)"
 } else {
-    # setup.sh installs Node LTS (v22) via nvm. We enforce the same range here:
-    # Vite 8 requires Node ^20.19.0 || >=22.12.0, npm >= 11.
-    $NeedNode = $true
-    try {
-        $NodeVersion = (node -v 2>$null)
-        $NpmVersion = (npm -v 2>$null)
-        if ($NodeVersion -and $NpmVersion) {
-            $NodeParts = ($NodeVersion -replace 'v','').Split('.')
-            $NodeMajor = [int]$NodeParts[0]
-            $NodeMinor = [int]$NodeParts[1]
-            $NpmMajor = [int]$NpmVersion.Split('.')[0]
-
-            # Vite 8: ^20.19.0 || >=22.12.0
-            $NodeOk = ($NodeMajor -eq 20 -and $NodeMinor -ge 19) -or
-                      ($NodeMajor -eq 22 -and $NodeMinor -ge 12) -or
-                      ($NodeMajor -ge 23)
-            if ($NodeOk -and $NpmMajor -ge 11) {
-                substep "Node $NodeVersion and npm $NpmVersion already meet requirements."
-                $NeedNode = $false
-            } else {
-                substep "Node $NodeVersion / npm $NpmVersion too old." "Yellow"
-            }
+    # The Studio frontend (Vite 8) needs Node ^20.19.0 || >=22.12.0 || >=23 AND
+    # npm >= 11. Older setups ran `winget install Node.js LTS` whenever only npm
+    # was stale -- replacing the user's system Node without consent and, since
+    # Node 22 LTS ships npm 10.x, not even fixing npm (an install loop whose error
+    # wrongly blamed Node). We now NEVER touch the system Node/npm: decide the
+    # source here (no install yet), then provision in the build phase only when a
+    # build is actually needed.
+    #
+    # Get-NodeDecision is pure (unit-tested in tests/studio/test_node_decision.ps1)
+    # and returns one of: system | bundled | skip.
+    function Get-NodeDecision {
+        param(
+            [string]$NodeVersion,    # `node -v` output, e.g. v22.17.1 (or empty)
+            [string]$NpmVersion,     # `npm -v`  output, e.g. 10.9.2  (or empty)
+            [string]$SkipInstall     # "1" => never auto-install
+        )
+        $node = ($NodeVersion -replace '^v', '').Trim()
+        $npm = "$NpmVersion".Trim()
+        if ($node -match '^\d+\.\d+' -and $npm -match '^\d+') {
+            $nodeMajor = [int]($node.Split('.')[0])
+            $nodeMinor = [int]($node.Split('.')[1])
+            $npmMajor = [int]($npm.Split('.')[0])
+            $nodeOk = ($nodeMajor -eq 20 -and $nodeMinor -ge 19) -or
+                      ($nodeMajor -eq 22 -and $nodeMinor -ge 12) -or
+                      ($nodeMajor -ge 23)
+            if ($nodeOk -and $npmMajor -ge 11) { return "system" }
         }
-    } catch {
-        substep "Node/npm not found." "Yellow"
+        if ($SkipInstall -eq "1") { return "skip" }
+        return "bundled"
     }
 
-    if ($NeedNode) {
-        substep "installing Node.js LTS via winget..."
-        try {
-            winget install OpenJS.NodeJS.LTS --source winget --accept-package-agreements --accept-source-agreements
-            Refresh-Environment
-        } catch {
-            Write-Host "[ERROR] Could not install Node.js automatically." -ForegroundColor Red
-            Write-Host "Please install Node.js >= 20 from https://nodejs.org/" -ForegroundColor Red
-            exit 1
+    # Resolve the isolated Node parent the same way $UnslothHome is derived later
+    # (a custom UNSLOTH_STUDIO_HOME / STUDIO_HOME override owns the tree, else the
+    # legacy ~\.unsloth root) so the Node nest sits beside llama.cpp.
+    $NodeOverride = $null
+    if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_STUDIO_HOME)) { $NodeOverride = $env:UNSLOTH_STUDIO_HOME.Trim() }
+    elseif (-not [string]::IsNullOrWhiteSpace($env:STUDIO_HOME)) { $NodeOverride = $env:STUDIO_HOME.Trim() }
+    if ($NodeOverride) {
+        if ($NodeOverride -eq "~" -or $NodeOverride -like "~/*" -or $NodeOverride -like "~\*") {
+            $NodeOverride = (Join-Path $env:USERPROFILE $NodeOverride.Substring(1).TrimStart('/', '\'))
         }
-    }
-
-    step "node" "$(node -v) | npm $(npm -v)"
-
-    # ── bun (optional, faster package installs) ──
-    # Installed via npm — Node is already guaranteed above. Works on all platforms.
-    if (-not (Get-Command bun -ErrorAction SilentlyContinue)) {
-        substep "installing bun (faster frontend package installs)..."
-        $prevEAP_bun = $ErrorActionPreference
-        $ErrorActionPreference = "Continue"
-        # --allow-scripts=bun: npm >=11.16 gates install scripts and bun's
-        # postinstall fetches its binary; without it the install is a broken stub.
-        Invoke-SetupCommand { npm install -g bun --allow-scripts=bun } | Out-Null
-        $ErrorActionPreference = $prevEAP_bun
-        Refresh-Environment
-        if (Get-Command bun -ErrorAction SilentlyContinue) {
-            substep "bun installed ($(bun --version))"
-        } else {
-            substep "bun install skipped (npm will be used instead)"
-        }
+        $NodeParent = $NodeOverride
     } else {
-        substep "bun already installed ($(bun --version))"
+        $NodeParent = Join-Path $env:USERPROFILE ".unsloth"
+    }
+    $NodeDir = Join-Path $NodeParent "node"
+
+    $SysNodeVersion = (node -v 2>$null)
+    $SysNpmVersion = (npm -v 2>$null)
+    $NodeSource = Get-NodeDecision -NodeVersion "$SysNodeVersion" -NpmVersion "$SysNpmVersion" -SkipInstall "$($env:UNSLOTH_SKIP_NODE_INSTALL)"
+    if ($NodeSource -eq "system") {
+        substep "Node $SysNodeVersion and npm $SysNpmVersion already meet requirements (system)."
+    } elseif ($NodeSource -eq "bundled") {
+        substep "Node='$SysNodeVersion' npm='$SysNpmVersion' unsuitable; will use an isolated Node (system left untouched)."
+    } else {
+        substep "Node='$SysNodeVersion' npm='$SysNpmVersion' unsuitable and UNSLOTH_SKIP_NODE_INSTALL set; frontend build will be skipped." "Yellow"
     }
 }
 
@@ -1764,6 +1762,72 @@ if ($IsPipInstall) {
         step "frontend" "up to date"
     } else {
         substep "Frontend source changed since last build -- rebuilding..." "Yellow"
+    }
+}
+
+# Provision Node only when we will actually build -- never eagerly (an up-to-date
+# dist needs no Node). Uses the system Node read-only, or an isolated Node we
+# manage; the user's system Node/npm are never modified.
+if ($NeedFrontendBuild -and -not $IsPipInstall) {
+    if ($NodeSource -eq "skip") {
+        $NeedFrontendBuild = $false
+        step "frontend" "skipped (no suitable Node; system left untouched)" "Yellow"
+        substep "found Node='$SysNodeVersion' npm='$SysNpmVersion'; Studio needs Node >=20.19/22.12/23 and npm >= 11" "Yellow"
+        substep "install a suitable Node + npm, or unset UNSLOTH_SKIP_NODE_INSTALL to let Unsloth manage an isolated Node" "Yellow"
+    } elseif ($NodeSource -eq "bundled") {
+        New-Item -ItemType Directory -Force -Path $NodeParent -ErrorAction SilentlyContinue | Out-Null
+        # Minimal ownership guard for a custom-home dir (the full Studio-owned
+        # helpers are defined later); never os.replace over a user-owned dir.
+        if ($NodeOverride -and (Test-Path -LiteralPath $NodeDir -PathType Container)) {
+            $nodeOwnedMarker = Join-Path $NodeDir ".unsloth-studio-owned"
+            $nodeMeta = Join-Path $NodeDir "UNSLOTH_NODE_PREBUILT_INFO.json"
+            if (-not (Test-Path -LiteralPath $nodeOwnedMarker) -and -not (Test-Path -LiteralPath $nodeMeta)) {
+                Write-Host "[ERROR] $NodeDir already exists and is not a Studio-owned Node install." -ForegroundColor Red
+                Write-Host "        Move it aside or choose an empty UNSLOTH_STUDIO_HOME before re-running." -ForegroundColor Yellow
+                exit 1
+            }
+        }
+        substep "installing isolated Node (system Node/npm left untouched)..."
+        $nodeOut = & python "$PSScriptRoot\install_node_prebuilt.py" --install-dir $NodeDir 2>&1 | Out-String
+        $nodeExit = $LASTEXITCODE
+        if ($nodeExit -eq 3) {
+            Write-Host $nodeOut -ForegroundColor DarkGray
+            step "node" "install blocked by another active Studio install" "Red"
+            exit 3
+        } elseif ($nodeExit -ne 0) {
+            Write-Host $nodeOut -ForegroundColor DarkGray
+            Write-Host "[ERROR] Could not install an isolated Node automatically." -ForegroundColor Red
+            Write-Host "        Install Node >= 20.19 (with npm >= 11) from https://nodejs.org/ and re-run, or check your network." -ForegroundColor Yellow
+            exit 1
+        }
+        if ($NodeOverride -and (Test-Path -LiteralPath $NodeDir -PathType Container)) {
+            New-Item -ItemType File -Force -Path (Join-Path $NodeDir ".unsloth-studio-owned") -ErrorAction SilentlyContinue | Out-Null
+        }
+        # Windows Node zip ships node.exe + npm.cmd at the install root; prepend it
+        # so node/npm/bun resolve here for the build. Process-scoped only -- this
+        # never edits the user's PATH or shell profile.
+        $env:PATH = "$NodeDir;" + $env:PATH
+        step "node" "$(node -v) | npm $(npm -v) (isolated)"
+
+        # bun (optional, faster installs) -- npm -g lands inside the isolated
+        # prefix, so this does not touch the system either.
+        if (-not (Get-Command bun -ErrorAction SilentlyContinue)) {
+            substep "installing bun (faster frontend package installs)..."
+            $prevEAP_bun = $ErrorActionPreference
+            $ErrorActionPreference = "Continue"
+            Invoke-SetupCommand { npm install -g bun --allow-scripts=bun } | Out-Null
+            $ErrorActionPreference = $prevEAP_bun
+            Refresh-Environment
+            if (Get-Command bun -ErrorAction SilentlyContinue) {
+                substep "bun installed ($(bun --version))"
+            } else {
+                substep "bun install skipped (npm will be used instead)"
+            }
+        }
+    } else {
+        # system Node already satisfies requirements; use it as-is. We do NOT
+        # install global packages (bun) here -- the build falls back to npm.
+        step "node" "$SysNodeVersion | npm $SysNpmVersion (system)"
     }
 }
 if ($NeedFrontendBuild -and -not $IsPipInstall) {
