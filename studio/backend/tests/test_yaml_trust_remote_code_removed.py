@@ -79,7 +79,12 @@ def test_all_model_yamls_load_for_training_and_inference():
     from utils.models.model_config import load_model_defaults
 
     infer_keys = {
-        "temperature", "top_p", "top_k", "min_p", "presence_penalty", "trust_remote_code",
+        "temperature",
+        "top_p",
+        "top_k",
+        "min_p",
+        "presence_penalty",
+        "trust_remote_code",
     }
     failures = []
     for f in sorted(_MODEL_DEFAULTS.rglob("*.yaml")):
