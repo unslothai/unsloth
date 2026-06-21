@@ -453,13 +453,19 @@ def _missing_torchvision_error(error = None):
     """True if a VLM processor failed to load because torchvision is unavailable.
 
     transformers >= 5.4 hard-requires torchvision for image/video processors. Check
-    both the captured exception text and torchvision availability directly, since the
-    inner fallbacks may swallow the original ImportError (#4202)."""
-    if error is not None and "torchvision" in str(error).lower():
-        return True
+    availability directly first; only trust the error text for the specific
+    torchvision-required message, not any incidental substring such as a model path
+    that contains "torchvision" (#4202)."""
     import importlib.util
 
-    return importlib.util.find_spec("torchvision") is None
+    if importlib.util.find_spec("torchvision") is None:
+        return True
+    if error is not None:
+        error_str = str(error).lower()
+        return (
+            "requires the torchvision" in error_str or "no module named 'torchvision'" in error_str
+        )
+    return False
 
 
 def _construct_vlm_processor_fallback(tokenizer_name, model_type, token, trust_remote_code):
