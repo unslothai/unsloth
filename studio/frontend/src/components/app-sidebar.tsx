@@ -48,6 +48,7 @@ import { cn } from "@/lib/utils";
 import {
   Archive03Icon,
   ChefHatIcon,
+  Clock03Icon,
   CursorInfo02Icon,
   DashboardCircleIcon,
   Delete02Icon,
@@ -85,7 +86,7 @@ import {
 } from "@/components/ui/tooltip";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { ChevronDown, Moon } from "lucide-react";
+import { ArrowRight, ChevronDown, Moon } from "lucide-react";
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import {
   archiveChatItem,
@@ -1326,6 +1327,32 @@ export function AppSidebar() {
           )}
         />
         <SidebarMenu>
+          {/* Update affordance — static design only; functionality wired later. */}
+          <SidebarMenuItem className="mb-6 group-data-[collapsible=icon]:hidden">
+            <button
+              type="button"
+              className="flex h-[55px] w-full items-center gap-2.5 rounded-[14px] border border-border/60 bg-transparent px-3 text-left transition-colors hover:bg-nav-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <HugeiconsIcon
+                icon={Clock03Icon}
+                strokeWidth={1.75}
+                className="size-[22px] shrink-0 text-nav-fg"
+              />
+              <div className="flex min-w-0 flex-col gap-px leading-tight">
+                <span className="truncate font-heading text-[13.5px] font-semibold text-nav-fg">
+                  Update available
+                </span>
+                {/* TODO: replace with the target version once functionality is wired. */}
+                <span className="truncate text-[11.5px] text-muted-foreground">
+                  v0.0.0
+                </span>
+              </div>
+              <ArrowRight
+                className="ml-auto size-4 shrink-0 text-muted-foreground"
+                strokeWidth={1.75}
+              />
+            </button>
+          </SidebarMenuItem>
           <SidebarMenuItem>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
