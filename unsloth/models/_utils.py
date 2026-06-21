@@ -205,15 +205,25 @@ def _unsloth_install_pretrain_detector(model):
     marker = getattr(model, "_unsloth_pretrain_marker", None)
     if isinstance(marker, dict):
         marker["seen"] = False
-        return model
-    marker = {"seen": False}
-    try:
-        model._unsloth_pretrain_marker = marker
-    except Exception:
-        return model
+        # Re-register only if the previous hook was torn down (e.g. by an earlier
+        # train()); if the hook is still live this is a strict no-op so we never
+        # stack duplicate hooks.
+        if "hook" in marker:
+            return model
+    else:
+        marker = {"seen": False}
+        try:
+            model._unsloth_pretrain_marker = marker
+        except Exception:
+            return model
 
     def _mark(_module, _inp):
-        marker["seen"] = True
+        # Only a GRAD-ENABLED forward can poison the AOTAutograd/torch.compile
+        # backward-graph cache. A no-grad probe (`with torch.no_grad(): model(...)`,
+        # the sanity check the warning recommends) builds no backward graph, so
+        # treat it as clean and avoid a needless dynamo reset + recompile + warning.
+        if torch.is_grad_enabled():
+            marker["seen"] = True
 
     try:
         marker["hook"] = model.register_forward_pre_hook(_mark)

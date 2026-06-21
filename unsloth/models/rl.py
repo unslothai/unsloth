@@ -402,8 +402,25 @@ def _unsloth_reset_stray_compile_cache(self):
     model = getattr(self, "model", None)
     if model is None:
         return
-    marker = getattr(model, "_unsloth_pretrain_marker", None)
-    seen = bool(marker.get("seen")) if isinstance(marker, dict) else False
+    # The detector hook may sit on any wrapper in the chain (PeftModel / DDP /
+    # the base model), and a pre-train probe could have run on a different
+    # wrapper than self.model. Walk the chain so a "seen" marker anywhere is
+    # detected, and collect every marker so all hooks are torn down below.
+    markers = []
+    seen = False
+    _curr = model
+    _visited = set()
+    while _curr is not None and id(_curr) not in _visited:
+        _visited.add(id(_curr))
+        _m = getattr(_curr, "_unsloth_pretrain_marker", None)
+        if isinstance(_m, dict):
+            markers.append(_m)
+            if _m.get("seen"):
+                seen = True
+        _nxt = getattr(_curr, "model", None)
+        if _nxt is None:
+            _nxt = getattr(_curr, "base_model", None)
+        _curr = _nxt
     if seen and os.environ.get("UNSLOTH_COMPILE_DISABLE", "0") != "1":
         try:
             import torch._dynamo as _dynamo
@@ -424,13 +441,13 @@ def _unsloth_reset_stray_compile_cache(self):
             "reset the torch.compile graph cache it poisoned so training starts clean. "
             "To avoid this, run any pre-train probe under `with torch.no_grad():`."
         )
-    # Tear down the one-shot detector hook so it never adds per-step cost.
-    if isinstance(marker, dict):
-        hook = marker.pop("hook", None)
+    # Tear down every one-shot detector hook in the chain so none adds per-step cost.
+    for _m in markers:
+        hook = _m.pop("hook", None)
         if hook is not None:
             try: hook.remove()
             except Exception: pass
-        marker["seen"] = False
+        _m["seen"] = False
 def prepare_for_training_mode(f):
     @functools.wraps(f)
     def wrapper(self, *args, **kwargs):
