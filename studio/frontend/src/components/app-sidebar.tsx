@@ -1348,6 +1348,10 @@ export function AppSidebar() {
           <SidebarMenuItem className="mb-6">
             <button
               type="button"
+              onClick={() => {
+                useSettingsDialogStore.getState().openDialog("about");
+                closeMobileIfOpen();
+              }}
               className="flex h-[55px] w-full items-center gap-2.5 rounded-[14px] border border-border/60 bg-transparent px-3 text-left transition-colors hover:bg-nav-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-data-[collapsible=icon]:h-[34px] group-data-[collapsible=icon]:w-[34px] group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:gap-0 group-data-[collapsible=icon]:px-0 group-data-[collapsible=icon]:mx-auto"
             >
               <HugeiconsIcon
