@@ -440,13 +440,17 @@ if [ "$_studio_home_canon" != "$_LEGACY_STUDIO_HOME" ]; then
     _STUDIO_HOME_IS_CUSTOM=true
 fi
 # Directory-local evidence that Studio created "$1", used to adopt a custom-home
-# llama.cpp predating the .unsloth-studio-owned marker without weakening the guard.
-# Only UNSLOTH_PREBUILT_INFO.json counts (written exclusively by the prebuilt
-# installer). A top-level llama-quantize symlink is NOT trusted: a user may have
-# their own build with one, and this runs right before a destructive rm -rf, so we
-# match Windows and keep markerless source builds strict.
+# llama.cpp / Node predating the .unsloth-studio-owned marker without weakening the
+# guard. Only the prebuilt-installer metadata counts: UNSLOTH_PREBUILT_INFO.json
+# (llama.cpp) or UNSLOTH_NODE_PREBUILT_INFO.json (Node, install_node_prebuilt.py) --
+# both written exclusively by our installers. This mirrors the setup.ps1 Node guard,
+# which also adopts a dir carrying UNSLOTH_NODE_PREBUILT_INFO.json. A top-level
+# llama-quantize symlink is NOT trusted: a user may have their own build with one,
+# and this runs right before a destructive rm -rf, so we keep markerless source
+# builds strict.
 _studio_owned_adoptable() {
     [ -f "$1/UNSLOTH_PREBUILT_INFO.json" ] && return 0
+    [ -f "$1/UNSLOTH_NODE_PREBUILT_INFO.json" ] && return 0
     return 1
 }
 _assert_studio_owned_or_absent() {

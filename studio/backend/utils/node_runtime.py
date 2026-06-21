@@ -21,7 +21,6 @@ import os
 import re
 import shutil
 import subprocess
-from functools import lru_cache
 from pathlib import Path
 
 from utils.subprocess_compat import windows_hidden_subprocess_kwargs
@@ -106,18 +105,37 @@ def _node_version_ok(executable: str) -> bool:
     return _version_meets_floor(result.stdout)
 
 
-@lru_cache(maxsize = 1)
+# Memoize ONLY a confirmed version-adequate executable. The installer runs in a
+# separate process and may finish AFTER the backend first probes here, so a
+# negative / last-resort result must not be cached -- otherwise the validator
+# would keep reporting "Node not found" until a backend restart even after Node
+# appears on disk.
+_resolved_node: str | None = None
+
+
+def _reset_resolved_node() -> None:
+    """Clear the memoized executable (used by tests)."""
+    global _resolved_node
+    _resolved_node = None
+
+
 def resolve_node_executable() -> str | None:
     """Resolve a usable node executable, or None if none is available.
 
     Order: a version-adequate system ``node`` on PATH; else the managed isolated
     Node if present and adequate; else fall back to whatever bare ``node`` is on
-    PATH (may be None) to preserve the pre-isolation behaviour. Cached per
-    process -- call ``resolve_node_executable.cache_clear()`` in tests.
+    PATH (may be None) to preserve the pre-isolation behaviour. Only a
+    version-adequate result is memoized, so a Node installed after the first
+    probe is picked up without a backend restart.
     """
+    global _resolved_node
+    if _resolved_node is not None:
+        return _resolved_node
+
     system_node = shutil.which("node")
     if system_node and _node_version_ok(system_node):
-        return system_node
+        _resolved_node = system_node
+        return _resolved_node
 
     managed = managed_node_binary()
     try:
@@ -125,6 +143,9 @@ def resolve_node_executable() -> str | None:
     except OSError:
         managed_present = False
     if managed_present and _node_version_ok(str(managed)):
-        return str(managed)
+        _resolved_node = str(managed)
+        return _resolved_node
 
+    # Nothing adequate yet -- return a last-resort system node (may be None)
+    # WITHOUT caching, so a later install/upgrade is picked up on the next call.
     return system_node

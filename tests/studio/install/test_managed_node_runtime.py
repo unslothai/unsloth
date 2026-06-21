@@ -31,9 +31,9 @@ nr = importlib.import_module("utils.node_runtime")
 
 @pytest.fixture(autouse = True)
 def _clear_resolver_cache():
-    nr.resolve_node_executable.cache_clear()
+    nr._reset_resolved_node()
     yield
-    nr.resolve_node_executable.cache_clear()
+    nr._reset_resolved_node()
 
 
 @pytest.mark.parametrize(
@@ -136,3 +136,32 @@ def test_resolve_returns_none_when_nothing_available(monkeypatch, tmp_path):
     monkeypatch.setattr(nr.shutil, "which", lambda name: None)
     monkeypatch.setattr(nr, "_node_version_ok", lambda exe: False)
     assert nr.resolve_node_executable() is None
+
+
+def test_negative_result_is_not_cached(monkeypatch, tmp_path):
+    # The installer runs in a separate process; a Node that appears AFTER the
+    # first (empty) probe must be picked up without a restart -- i.e. None must
+    # not be memoized.
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    monkeypatch.setattr(nr.shutil, "which", lambda name: None)
+    monkeypatch.setattr(nr, "_node_version_ok", lambda exe: False)
+    assert nr.resolve_node_executable() is None
+
+    managed = nr.managed_node_binary()
+    managed.parent.mkdir(parents = True, exist_ok = True)
+    managed.write_text("now-installed")
+    monkeypatch.setattr(nr, "_node_version_ok", lambda exe: str(exe) == str(managed))
+    assert nr.resolve_node_executable() == str(managed)
+
+
+def test_positive_result_is_cached(monkeypatch):
+    monkeypatch.setattr(nr.shutil, "which", lambda name: "/usr/bin/node")
+    monkeypatch.setattr(nr, "_node_version_ok", lambda exe: True)
+    assert nr.resolve_node_executable() == "/usr/bin/node"
+
+    # A cached positive result must not re-probe (shutil.which would now raise).
+    def _boom(name):
+        raise AssertionError("resolver re-probed despite a cached positive result")
+
+    monkeypatch.setattr(nr.shutil, "which", _boom)
+    assert nr.resolve_node_executable() == "/usr/bin/node"
