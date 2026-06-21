@@ -23,36 +23,18 @@ is_cuda_server() {
     return 1
 }
 
-# Functional confirmation that the server's CUDA backend actually loads, used only
-# to gate the step-0 early-skip. is_cuda_server() trusts a co-located
-# libggml-cuda.so*, but an *interrupted* build (thermal/power shutdown -- common on
-# this hardware) can leave a half-linked libggml-cuda.so beside the binary: present,
-# so is_cuda_server() matches, yet the backend fails to dlopen at runtime. The
-# post-build path already wipes+rebuilds such a partial .so, but the early-skip would
-# trust it and never rebuild. `--list-devices` enumerates backends and exits, so it's
-# a cheap probe (no server spin-up). Returns: 0 = a CUDA device is listed; 1 = the
-# flag is supported and ran but no CUDA device appeared (broken/partial backend ->
-# rebuild); 2 = inconclusive (timed out, or an old pin without --list-devices) -> keep
-# trusting the .so so we never force a needless, thermally-expensive rebuild.
-cuda_server_probe() {
-    local _to="" _out _rc
-    command -v timeout >/dev/null 2>&1 && _to="timeout 60"
-    _out="$( $_to "$1" --list-devices 2>&1 )"; _rc=$?
-    [ "$_rc" -eq 124 ] && return 2                                   # timed out
-    printf '%s\n' "$_out" | grep -qiE 'CUDA[0-9]'        && return 0 # CUDA device listed
-    printf '%s\n' "$_out" | grep -qi  'available devices' && return 1 # ran, but none is CUDA
-    return 2                                                         # flag unsupported / couldn't run
-}
-
-# 0. Already provisioned?
+# 0. Already provisioned? A co-located libggml-cuda.so* is the trusted signal: the
+# prebuilt resolver validates the server it installs, and a *source* build that gets
+# interrupted is caught by the build-failure wipe+rebuild below (section 6), so the
+# early-skip can rely on the structural check. We deliberately do NOT run a functional
+# `--list-devices` probe here: this script runs in a stripped-down detached shell whose
+# loader path can miss /usr/lib/wsl/lib, so the CUDA backend may fail to enumerate even
+# on a perfectly good server -- and a false negative would wipe a validated build and
+# trigger a needless, thermally-dangerous source rebuild on the NVIDIA-ARM laptops this
+# targets. Trust the .so; never gamble the machine's thermals on an env-fragile probe.
 if is_cuda_server "$SERVER"; then
-    cuda_server_probe "$SERVER"; _probe=$?
-    if [ "$_probe" -ne 1 ]; then
-        log "CUDA llama-server already present: $SERVER"
-        exit 0
-    fi
-    log "existing llama-server has libggml-cuda.so but lists no CUDA device (partial/broken build); rebuilding clean"
-    rm -rf "$LLAMA_DIR/build"   # force a clean reconfigure+build below
+    log "CUDA llama-server already present: $SERVER"
+    exit 0
 fi
 
 # 1. Require an NVIDIA GPU (this script is only meaningful with one).
