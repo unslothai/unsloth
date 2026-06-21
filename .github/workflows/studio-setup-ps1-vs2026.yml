@@ -2,23 +2,12 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
 # Tests for studio/setup.ps1 Visual Studio detection + CUDA toolset support.
-#
-# Job 1 (pester): pure-logic unit tests on windows-latest. No real Visual Studio,
-# CUDA, or GPU required - functions are extracted from setup.ps1 and dot-sourced
-# (the script is a top-level installer, not importable wholesale), with
-# vswhere/cmake mocked and fake VS trees on disk. Covers all five versions
-# (2017/2019/2022/2026 + Preview) since those installs cannot be conjured in CI.
-#
-# Job 2 (vs-integration): runs the REAL detection against the actual Visual Studio
-# preinstalled on GitHub-hosted runners, in parallel:
-#   - windows-2022         -> real Visual Studio 2022 (toolset v170)
-#   - windows-2025-vs2026  -> real Visual Studio 2026 (toolset v180)
-# VS 2017/2019/2015 are retired from hosted images, so only 2022 and 2026 can be
-# exercised against a genuine install; the rest stay covered by job 1's mocks.
-#
-# Job 3 (vcredist-clean-box): exercises the VC++ runtime guard on a throwaway
-# runner - detection is present on the stock image, fires on a genuinely clean box
-# (signals removed restorably), and an uninstall/reinstall round trip restores it.
+# Job 1 (pester): mocked unit tests covering all VS versions (functions are
+#   dot-sourced from setup.ps1; the installs cannot be conjured in CI).
+# Job 2 (vs-integration): real detection against the VS preinstalled on the
+#   windows-2022 (v170) and windows-2025-vs2026 (v180) runners.
+# Job 3 (vcredist-clean-box): the VC++ runtime guard on a throwaway runner -
+#   present on the stock image, fires on a clean box, restored after a round trip.
 
 name: Windows Studio setup.ps1 unit tests
 
@@ -85,8 +74,7 @@ jobs:
           if-no-files-found: warn
 
   vs-integration:
-    # Exercise the real detection logic against the Visual Studio that is actually
-    # installed on the runner image - no mocks. Both versions run in parallel.
+    # Real detection against the VS installed on the runner image (no mocks).
     name: real-VS detection (${{ matrix.label }})
     strategy:
       fail-fast: false
@@ -141,8 +129,8 @@ jobs:
               throw "Toolset mismatch: derived '$derived', expected '$env:EXPECT_TOOLSET'"
           }
 
-          # ...and that v-number must be a real folder on the actual VS install
-          # (proves CUDA's BuildCustomizations would land in an existing toolset dir).
+          # ...and that v-number is a real folder on the VS install (where CUDA's
+          # BuildCustomizations would land).
           $vcRoot = Join-Path $r.InstallPath 'MSBuild\Microsoft\VC'
           if (Test-Path $vcRoot) {
               $realToolsets = @((Get-ChildItem -Path $vcRoot -Directory -ErrorAction SilentlyContinue).Name)
@@ -158,11 +146,9 @@ jobs:
           Write-Host "PASS: real $env:EXPECT_GEN detected correctly with toolset '$derived'."
 
   vcredist-clean-box:
-    # Validate the VC++ runtime detection (Test-VCRedistInstalled) and the install
-    # path (Ensure-VCRedist) on a real, throwaway runner. Confirm present on the
-    # stock image, confirm detection FIRES on a genuinely clean box (registry +
-    # System32 signals removed, restorably), then run a literal uninstall/reinstall
-    # round trip. The runtime is always restored before the job ends.
+    # Validate Test-VCRedistInstalled + Ensure-VCRedist on a throwaway runner:
+    # present on the stock image, fires on a clean box (signals removed restorably),
+    # then a literal uninstall/reinstall round trip. Always restored before the end.
     name: VC++ runtime detect + install round-trip (${{ matrix.os }})
     strategy:
       fail-fast: false
@@ -181,8 +167,8 @@ jobs:
           $ErrorActionPreference = 'Stop'
           . (Join-Path $env:GITHUB_WORKSPACE 'tests/studio_setup_ps1/Get-FunctionSource.ps1')
           $setup = Join-Path $env:GITHUB_WORKSPACE 'studio/setup.ps1'
-          # Dot-source the runtime guard plus the logging closure it reaches
-          # (Ensure-VCRedist -> step/substep -> Write-StudioStdoutMirror / Get-StudioAnsi).
+          # Dot-source the guard + the logging closure it reaches
+          # (step/substep -> Write-StudioStdoutMirror / Get-StudioAnsi).
           $script:StudioVtOk = $false
           $script:UnslothVerbose = $false
           foreach ($fn in @('Get-StudioAnsi', 'Write-StudioStdoutMirror', 'step', 'substep',
