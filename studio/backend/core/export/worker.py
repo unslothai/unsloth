@@ -506,6 +506,13 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
         if backend_path not in sys.path:
             sys.path.insert(0, backend_path)
 
+        # Recover from any namespace-package shadow (a stray `unsloth/` dir on
+        # PYTHONPATH) before importing the Unsloth-backed export backend, which
+        # would otherwise fail with a cryptic "cannot import name ...".
+        from core.import_guards import ensure_real_packages
+
+        ensure_real_packages("unsloth_zoo", "unsloth")
+
         from core.export.export import ExportBackend
 
         import transformers

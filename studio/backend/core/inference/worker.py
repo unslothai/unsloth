@@ -716,6 +716,13 @@ def run_inference_process(*, cmd_queue: Any, resp_queue: Any, cancel_event, conf
 
         _ensure_backend_on_path()
 
+        # Recover from any namespace-package shadow (a stray `unsloth/` dir on
+        # PYTHONPATH) before importing the Unsloth-backed backend, which would
+        # otherwise fail with a cryptic "cannot import name ...".
+        from core.import_guards import ensure_real_packages
+
+        ensure_real_packages("unsloth_zoo", "unsloth")
+
         from core.inference.inference import InferenceBackend
 
         import transformers
