@@ -376,8 +376,15 @@ def test_install_prebuilt_force_does_not_keep_existing_offline(tmp_path: Path, m
 @pytest.mark.parametrize(
     "ver,ok",
     [
-        ("20.19.0", True), ("20.18.9", False), ("22.12.0", True), ("22.11.5", False),
-        ("23.0.0", True), ("24.4.1", True), ("21.7.3", False), ("24", True), ("20", False),
+        ("20.19.0", True),
+        ("20.18.9", False),
+        ("22.12.0", True),
+        ("22.11.5", False),
+        ("23.0.0", True),
+        ("24.4.1", True),
+        ("21.7.3", False),
+        ("24", True),
+        ("20", False),
     ],
 )
 def test_meets_node_floor(ver, ok):
