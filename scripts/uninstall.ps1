@@ -461,6 +461,13 @@ function Uninstall-UnslothStudio {
     }
     # The WoA shortcut icon lives under the user profile (icon broker can't read AppData\Local).
     if ($env:USERPROFILE) { _RemovePath (Join-Path $env:USERPROFILE ".unsloth\unsloth.ico") }
+    # The empty-dir sweep of ~/.unsloth above ran BEFORE this icon removal, so on a WoA install
+    # the still-present unsloth.ico kept ~/.unsloth non-empty then and it was skipped -- leaving an
+    # empty ~/.unsloth behind. Re-attempt now that the icon (the last default-mode child) is gone.
+    if ($defaultUnslothHome -and (Test-Path -LiteralPath $defaultUnslothHome) -and
+        -not (Get-ChildItem -LiteralPath $defaultUnslothHome -Force -ErrorAction SilentlyContinue)) {
+        _RemovePath $defaultUnslothHome
+    }
     # Remove the Studio install inside each WSL distro (the real GPU install + any CUDA llama.cpp build).
     if (Get-Command wsl.exe -ErrorAction SilentlyContinue) {
         try {
