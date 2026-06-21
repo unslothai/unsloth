@@ -1540,6 +1540,16 @@ if (-not $IsPipInstall) {
             exit 1
         }
         $NodeParent = (Resolve-Path -LiteralPath $NodeOverride).Path
+        # An override pointing at the legacy default maps to the legacy sibling
+        # ~/.unsloth/node (what the runtime resolver and setup.sh use), not <root>/node.
+        $_legacyStudio = Join-Path $env:USERPROFILE ".unsloth\studio"
+        if (Test-Path -LiteralPath $_legacyStudio -PathType Container) {
+            $_legacyStudio = (Resolve-Path -LiteralPath $_legacyStudio).Path
+        }
+        if ($NodeParent -eq $_legacyStudio) {
+            $NodeParent = Join-Path $env:USERPROFILE ".unsloth"
+            $NodeOverride = $null
+        }
     } else {
         $NodeParent = Join-Path $env:USERPROFILE ".unsloth"
     }
@@ -1642,12 +1652,14 @@ function Add-PythonDirToProcessPath {
 }
 
 # Reuse the install.ps1 / venv interpreter before any system probe.
+$ValidatedSetupPython = $null
 if ($ReusedSetupPython) {
     $_reusedVer = Get-CompatiblePythonVersion $ReusedSetupPython
     if ($_reusedVer -and -not (Test-IsConda $ReusedSetupPython)) {
         $DetectedPyVer = $_reusedVer
         Add-PythonDirToProcessPath $ReusedSetupPython
         $PythonOk = $true
+        $ValidatedSetupPython = $ReusedSetupPython
     }
 }
 
@@ -1806,8 +1818,8 @@ if ($NeedNodeForSetup) {
         }
         substep "installing isolated Node (system Node/npm left untouched)..."
         # The main Python resolver runs later; bare `python` may be a Store stub or
-        # absent this early, so prefer the handed-off/venv Python when available.
-        $NodeInstallPython = if ($ReusedSetupPython) { $ReusedSetupPython } else { "python" }
+        # absent this early, so prefer the validated handed-off/venv Python.
+        $NodeInstallPython = if ($ValidatedSetupPython) { $ValidatedSetupPython } else { "python" }
         $nodeOut = & $NodeInstallPython "$PSScriptRoot\install_node_prebuilt.py" --install-dir $NodeDir 2>&1 | Out-String
         $nodeExit = $LASTEXITCODE
         if ($nodeExit -eq 3) {

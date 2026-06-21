@@ -163,6 +163,16 @@ def _version_tuple(value: str) -> tuple[int, ...]:
         return ()
 
 
+def _meets_node_floor(version: str) -> bool:
+    """True iff version clears the setup floor (^20.19 || >=22.12 || >=23)."""
+    parts = _version_tuple(version)
+    if not parts:
+        return False
+    major = parts[0]
+    minor = parts[1] if len(parts) > 1 else 0
+    return (major == 20 and minor >= 19) or (major == 22 and minor >= 12) or major >= 23
+
+
 def select_node_version(index: list[dict], *, channel: str, min_major: int) -> str:
     """Pick a concrete Node version from nodejs.org index.json.
 
@@ -444,7 +454,14 @@ def install_lock(lock_path: Path) -> Iterator[None]:
                     except ValueError:
                         stale = True
                 if stale:
-                    lock_path.unlink(missing_ok = True)
+                    # Atomically rename before unlinking so only one racer removes
+                    # the stale lock; a process recreating it loses the rename and waits.
+                    try:
+                        stale_path = lock_path.with_name(f"{lock_path.name}.stale.{os.getpid()}")
+                        os.replace(str(lock_path), str(stale_path))
+                        stale_path.unlink(missing_ok = True)
+                    except (OSError, ValueError):
+                        pass
                     continue
                 if time.monotonic() >= deadline:
                     raise BusyInstallConflict(
@@ -632,6 +649,11 @@ def install_prebuilt(install_dir: Path, *, channel: str, min_major: int, force: 
         version = select_node_version(index, channel = channel, min_major = min_major)
     else:
         version = channel.lstrip("v")
+        # Explicit version bypasses min_major; reject anything Vite/OXC cannot use.
+        if not _meets_node_floor(version):
+            raise PrebuiltFallback(
+                f"requested Node v{version} is below the floor (^20.19 || >=22.12 || >=23)"
+            )
 
     asset = node_asset_name(version, host)
     log(f"target Node v{version} ({asset})")

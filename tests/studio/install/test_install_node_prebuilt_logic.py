@@ -371,3 +371,27 @@ def test_install_prebuilt_force_does_not_keep_existing_offline(tmp_path: Path, m
     monkeypatch.setattr(M, "fetch_json", _offline)
     with pytest.raises(OSError):
         M.install_prebuilt(install_dir, channel = "lts", min_major = 24, force = True)
+
+
+@pytest.mark.parametrize(
+    "ver,ok",
+    [
+        ("20.19.0", True), ("20.18.9", False), ("22.12.0", True), ("22.11.5", False),
+        ("23.0.0", True), ("24.4.1", True), ("21.7.3", False), ("24", True), ("20", False),
+    ],
+)
+def test_meets_node_floor(ver, ok):
+    assert M._meets_node_floor(ver) is ok
+
+
+def test_install_prebuilt_rejects_explicit_below_floor(tmp_path: Path, monkeypatch):
+    install_dir = tmp_path / "node"
+    monkeypatch.setattr(M, "detect_host", lambda: _host("linux", "x64"))
+
+    def boom(*a, **k):
+        raise AssertionError("must not download a below-floor Node")
+
+    monkeypatch.setattr(M, "download_file", boom)
+    monkeypatch.setattr(M, "download_bytes", boom)
+    with pytest.raises(PrebuiltFallback):
+        M.install_prebuilt(install_dir, channel = "20.18.0", min_major = 24, force = False)
