@@ -181,7 +181,12 @@ jobs:
           $ErrorActionPreference = 'Stop'
           . (Join-Path $env:GITHUB_WORKSPACE 'tests/studio_setup_ps1/Get-FunctionSource.ps1')
           $setup = Join-Path $env:GITHUB_WORKSPACE 'studio/setup.ps1'
-          foreach ($fn in @('step', 'substep', 'Invoke-SetupCommand', 'Refresh-Environment',
+          # Dot-source the runtime guard plus the logging closure it reaches
+          # (Ensure-VCRedist -> step/substep -> Write-StudioStdoutMirror / Get-StudioAnsi).
+          $script:StudioVtOk = $false
+          $script:UnslothVerbose = $false
+          foreach ($fn in @('Get-StudioAnsi', 'Write-StudioStdoutMirror', 'step', 'substep',
+                            'Invoke-SetupCommand', 'Refresh-Environment',
                             'Test-VCRedistInstalled', 'Ensure-VCRedist')) {
               $src = Get-FunctionSource -Path $setup -Name $fn
               if (-not $src) { throw "Function '$fn' not found in setup.ps1" }
@@ -240,6 +245,10 @@ jobs:
           Start-Process -FilePath $exe -ArgumentList '/uninstall', '/quiet', '/norestart' -Wait
           Show-GroundTruth
           Write-Host ("  Test-VCRedistInstalled after uninstall -> {0}" -f (Test-VCRedistInstalled))
+          if (Test-VCRedistInstalled) {
+              Write-Host '  Note: the Visual Studio on this image ref-counts the runtime, so the package'
+              Write-Host '        uninstall is a no-op here; section B already proved detection on a clean box.'
+          }
 
           Write-Host '== D. Restore via Ensure-VCRedist (winget product path), installer fallback if needed =='
           Ensure-VCRedist
