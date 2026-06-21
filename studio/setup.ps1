@@ -389,10 +389,8 @@ function Get-PytorchCudaTag {
     return "cu126"
 }
 
-# Derive the MSBuild VC "BuildCustomizations" directory for a Visual Studio
-# generator. The VC toolset folder tracks the VS major: VS 2026 (generator major
-# 18) -> v180, VS 2022 -> v170, VS 2019 -> v160. Falls back to v170 (VS 2022)
-# when the major cannot be parsed, preserving prior behavior.
+# VS generator -> MSBuild BuildCustomizations dir; toolset tracks the VS major
+# (18->v180, 17->v170), defaulting to v170 when unparseable.
 function Get-VcBuildCustomizationsDir {
     param(
         [Parameter(Mandatory)][string]$VsInstallPath,
@@ -405,8 +403,7 @@ function Get-VcBuildCustomizationsDir {
     return (Join-Path $VsInstallPath "MSBuild\Microsoft\VC\$toolset\BuildCustomizations")
 }
 
-# Parse the installed CMake version (e.g. "cmake version 4.2.1" -> [version]4.2.1).
-# Returns $null when cmake is absent or its version is unparseable.
+# Installed cmake version, or $null if absent/unparseable.
 function Get-CmakeVersion {
     $raw = & cmake --version 2>$null | Select-Object -First 1
     if ($raw -and ($raw -match '(\d+)\.(\d+)(?:\.(\d+))?')) {
@@ -416,9 +413,7 @@ function Get-CmakeVersion {
     return $null
 }
 
-# CMake version gate for a Visual Studio generator. The "Visual Studio 18 2026"
-# generator was added in CMake 4.2; an older cmake cannot drive a VS 2026
-# toolchain. Always true (no-op) for VS 2022/2019/2017 generators.
+# VS 18 2026 generator needs cmake >= 4.2 (added there); true for older VS generators.
 function Test-CmakeSupportsGenerator {
     param(
         [Parameter(Mandatory)][string]$CmakeVersion,
@@ -433,10 +428,8 @@ function Test-CmakeSupportsGenerator {
 }
 
 function Test-CmakeListsGenerator {
-    # Authoritative check: does the cmake on PATH actually advertise the generator?
-    # VS-bundled cmake (e.g. the 4.1.x shipped with VS 2026) can drive the VS 2026
-    # generator below the 4.2 version floor, so probe `cmake --help` rather than
-    # gating on the version number alone (issue #6473 review).
+    # Does `cmake --help` actually list the generator? A VS-bundled cmake can drive
+    # VS 2026 below the 4.2 floor, so probe rather than trust the version. (#6473)
     param([Parameter(Mandatory)][string]$Generator)
     $help = & cmake --help 2>$null | Out-String
     if (-not $help) { return $false }
@@ -446,9 +439,7 @@ function Test-CmakeListsGenerator {
 }
 
 function Test-CmakeCanDriveGenerator {
-    # True when the cmake on PATH can drive $Generator: it either lists the
-    # generator (covers a VS-bundled cmake below the 4.2 floor) or satisfies the
-    # version requirement.
+    # cmake can drive $Generator if it lists it (VS-bundled below 4.2) or meets the floor.
     param([Parameter(Mandatory)][string]$Generator)
     if (Test-CmakeListsGenerator -Generator $Generator) { return $true }
     $verObj = Get-CmakeVersion
@@ -457,10 +448,8 @@ function Test-CmakeCanDriveGenerator {
 }
 
 function Add-DefaultCmakeToPath {
-    # Prepend the default CMake install dir so a freshly winget-installed cmake is
-    # found even when an older cmake (Chocolatey/Scoop/VS) is earlier on PATH; a
-    # bare re-check would keep resolving the old exe (issue #6473 review). Returns
-    # $true when a cmake.exe is located in a default location.
+    # Prepend the default CMake dir so a freshly winget-installed cmake wins over an
+    # older one already on PATH. $true if found. (#6473)
     $cmakeDefaults = @(
         "$env:ProgramFiles\CMake\bin",
         "${env:ProgramFiles(x86)}\CMake\bin",
@@ -477,17 +466,13 @@ function Add-DefaultCmakeToPath {
 }
 
 function Get-FallbackVsGenerator {
-    # Find the newest installed VS *older* than 2026 whose generator the current
-    # cmake can actually drive. Used when the detected VS 2026 generator is unusable
-    # by the available cmake (old cmake, offline/winget-disabled host) but a viable
-    # older toolchain is installed -- so a VS 2022 + old-cmake host keeps building
-    # as it did before VS 2026 detection landed (issue #6473 review). Returns
-    # @{ Generator = "..."; InstallPath = "..." } or $null.
-    # Symmetric with Find-VsBuildTools: vswhere first (catches a VS outside the
-    # default Program Files roots, e.g. D:\), then the Program Files scan. (#6473 review)
+    # Newest pre-2026 VS whose generator the current cmake can drive, for when the
+    # VS 2026 generator is unusable (old/offline cmake) but an older toolchain exists.
+    # vswhere first (catches non-default roots like D:\), then Program Files; matches
+    # Find-VsBuildTools. Returns @{ Generator; InstallPath } or $null. (#6473)
     $knownEditions = @('BuildTools', 'Community', 'Professional', 'Enterprise', 'Preview')
 
-    # Return the install path if it holds a usable cl.exe, else $null.
+    # install path if it holds a usable cl.exe, else $null
     $tryCandidate = {
         param($gen, $installPath)
         if (-not $installPath) { return $null }
@@ -498,7 +483,7 @@ function Get-FallbackVsGenerator {
         return $null
     }
 
-    # vswhere first (finds non-default install roots).
+    # vswhere (non-default roots)
     $vsw = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
     if (Test-Path $vsw) {
         $json = & $vsw -all -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -format json 2>$null | Out-String
@@ -508,7 +493,7 @@ function Get-FallbackVsGenerator {
                 $label = if ($_.catalog -and $_.catalog.productLineVersion) { [string]$_.catalog.productLineVersion } else { '' }
                 [pscustomobject]@{ Gen = (Resolve-VsGeneratorFromLabel $label); Path = [string]$_.installationPath }
             } | Where-Object { $_.Gen -and ($_.Gen -notmatch 'Visual Studio 18\b') }
-            # Newest usable older VS first (2022 > 2019 > 2017).
+            # newest first: 2022 > 2019 > 2017
             $ranked = $ranked | Sort-Object { switch -regex ($_.Gen) { '17 2022' {0} '16 2019' {1} '15 2017' {2} default {9} } }
             foreach ($cand in $ranked) {
                 if (-not (Test-CmakeListsGenerator -Generator $cand.Gen)) { continue }
@@ -518,7 +503,7 @@ function Get-FallbackVsGenerator {
         }
     }
 
-    # Program Files filesystem scan.
+    # Program Files scan
     $roots = @($env:ProgramFiles, ${env:ProgramFiles(x86)}) | Where-Object { $_ }
     $older = @(
         @{ Dir = '2022'; Generator = 'Visual Studio 17 2022' },
@@ -541,12 +526,9 @@ function Get-FallbackVsGenerator {
     return $null
 }
 
-# Map a Visual Studio version label to its CMake generator. vswhere's
-# catalog_productLineVersion is the marketing YEAR for VS <= 2022 (e.g. "2022"),
-# but the internal MAJOR for VS 2026 (observed as "18" on the real VS 2026 runner
-# image), and install-dir names use either form. Accept both so detection works
-# from vswhere and from the filesystem scan regardless of which label a VS reports.
-# (VS 2026 detection adapted from @LeoBorcherding's #6038.)
+# VS version label -> cmake generator. vswhere's productLineVersion is the year for
+# VS <= 2022 but the internal major "18" for VS 2026, and dir names use either form,
+# so accept both. (VS 2026 detection adapted from @LeoBorcherding's #6038.)
 function Resolve-VsGeneratorFromLabel {
     param([string]$Label)
     if (-not $Label) { return $null }
@@ -559,11 +541,10 @@ function Resolve-VsGeneratorFromLabel {
     return $map[$Label.Trim()]
 }
 
-# Find Visual Studio Build Tools for cmake -G flag.
-# Strategy: (1) vswhere, (2) scan filesystem (handles broken vswhere registration).
-# Returns @{ Generator = "Visual Studio 17 2022"; InstallPath = "C:\..."; Source = "..." } or $null.
+# Find VS Build Tools for cmake -G: vswhere, then a filesystem scan (handles broken
+# vswhere registration). Returns @{ Generator; InstallPath; Source } or $null.
 function Find-VsBuildTools {
-    # --- Try vswhere first (works when VS is properly registered) ---
+    # vswhere first (works when VS is properly registered)
     $vsw = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
     if (Test-Path $vsw) {
         $info = & $vsw -latest -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property catalog_productLineVersion 2>$null
@@ -576,10 +557,10 @@ function Find-VsBuildTools {
         }
     }
 
-    # --- Scan filesystem (handles broken vswhere registration after winget cycles) ---
+    # filesystem scan (handles broken vswhere registration); VS 2026+ dir is "18"
     $roots = @($env:ProgramFiles, ${env:ProgramFiles(x86)}) | Where-Object { $_ }
     $knownEditions = @('BuildTools', 'Community', 'Professional', 'Enterprise', 'Preview')
-    # VS 2026+ uses the internal version dir ("18"); older versions use the year.
+
     $dirs = @('18', '2026', '2022', '2019', '2017')
 
     foreach ($d in $dirs) {
@@ -588,8 +569,7 @@ function Find-VsBuildTools {
         foreach ($r in $roots) {
             $vsBase = Join-Path $r "Microsoft Visual Studio\$d"
             if (-not (Test-Path $vsBase)) { continue }
-            # VS 2026 (dir "18") may use non-standard edition names; scan every
-            # subdir. Older versions use the known edition names (incl. Preview).
+            # VS 2026 (dir "18") may use non-standard edition names, so scan every subdir
             if ($d -eq '18' -or $d -eq '2026') {
                 $editionCandidates = Get-ChildItem -Path $vsBase -Directory -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName }
             } else {
@@ -612,11 +592,9 @@ function Find-VsBuildTools {
     return $null
 }
 
-# Detect the Microsoft Visual C++ 2015-2022 Redistributable. The prebuilt
-# llama-server.exe and the PyTorch wheels dynamically link VCRUNTIME140.dll /
-# MSVCP140.dll / VCRUNTIME140_1.dll; the Universal CRT ships with Windows 10+ but
-# this redistributable does not. vcruntime140_1.dll (VS 2019+) is the newest of
-# those, so its presence is the signal; the registry is a fallback.
+# Detect the VC++ 2015-2022 Redistributable that the prebuilt llama-server and
+# PyTorch need (they link VCRUNTIME140_1.dll etc., which the Universal CRT lacks).
+# Signal is System32\vcruntime140_1.dll (VS 2019+), registry as fallback.
 function Test-VCRedistInstalled {
     $sys = $env:SystemRoot
     if ($sys -and (Test-Path (Join-Path $sys 'System32\vcruntime140_1.dll'))) { return $true }
@@ -632,8 +610,7 @@ function Test-VCRedistInstalled {
     return $false
 }
 
-# Install the VC++ 2015-2022 runtime if missing (non-fatal). Both the prebuilt
-# llama-server and PyTorch need it; it is usually already present, so this no-ops.
+# Install the VC++ 2015-2022 runtime if missing (non-fatal; usually a no-op).
 function Ensure-VCRedist {
     if (Test-VCRedistInstalled) { step "vcredist" "present"; return }
     Write-Host "Microsoft Visual C++ Redistributable (2015-2022) is missing; the prebuilt llama.cpp and PyTorch need it. Installing the runtime..." -ForegroundColor Yellow
@@ -1325,8 +1302,7 @@ if (-not $HasGit) {
 # ============================================
 # 1b.5. Visual C++ Redistributable (runtime for the prebuilt llama.cpp + PyTorch)
 # ============================================
-# Not a build tool: the prebuilt llama-server and the pip/uv PyTorch wheels both
-# load the MSVC runtime DLLs at runtime, so ensure it even with no build tools.
+# Runtime dep, not a build tool: the prebuilt llama-server and PyTorch load it.
 Ensure-VCRedist
 
 # ============================================
@@ -3205,33 +3181,25 @@ if (-not $NeedLlamaSourceBuild) {
     substep "Install CMake from https://cmake.org/download/ and re-run setup." "Yellow"
     $script:LlamaCppDegraded = $true
 } else {
-    # Pick the final VS generator (gate/fallback below) BEFORE resolving CUDA:
-    # Resolve-CudaToolkit copies the CUDA .targets into the current generator's
-    # BuildCustomizations, so a later VS swap would strand them. (#6473 review)
-
-    # CMake version gate for the Visual Studio 2026 generator. The
-    # "Visual Studio 18 2026" cmake generator was added in CMake 4.2; an older
-    # cmake cannot drive a VS 2026 source build. This is checked ONLY here, in
-    # the committed-source-build path -- the preferred prebuilt llama.cpp path
-    # never reaches this, so a VS 2026 host on cmake < 4.2 is not blocked from
-    # using the prebuilt. No-op for VS 2022/2019/2017 generators.
+    # Finalize the VS generator (gate/fallback below) BEFORE Resolve-CudaToolkit,
+    # which copies the CUDA .targets into the current generator's dir; a later swap
+    # would strand them. The CMake 4.2 gate for VS 2026 is checked only here, in the
+    # source-build path, so a VS 2026 + cmake < 4.2 host can still use the prebuilt. (#6473)
     if ($CmakeGenerator -match 'Visual Studio 18\b') {
         if (-not (Test-CmakeCanDriveGenerator -Generator $CmakeGenerator)) {
             $cmakeVerObj = Get-CmakeVersion
             $cmakeVerStr = if ($cmakeVerObj) { $cmakeVerObj.ToString() } else { '0.0' }
             substep "CMake $cmakeVerStr cannot drive the Visual Studio 2026 generator (need 4.2+ or a VS-bundled cmake) -- updating via winget..." "Yellow"
             if ($null -ne (Get-Command winget -ErrorAction SilentlyContinue)) {
-                # Try upgrade first (fast when Kitware.CMake is already a winget app),
-                # then prepend the default install dir so the new cmake wins over an
-                # older one earlier on PATH before re-probing.
+                # upgrade first (fast if Kitware.CMake is already a winget app), then
+                # prepend the default dir so the new cmake wins over an older one on PATH
                 try {
                     Invoke-SetupCommand { winget upgrade Kitware.CMake --source winget --accept-package-agreements --accept-source-agreements } | Out-Null
                     Refresh-Environment
                 } catch { substep "CMake winget upgrade failed: $($_.Exception.Message)" "Yellow" }
                 Add-DefaultCmakeToPath | Out-Null
-                # winget upgrade is a no-op when the on-PATH cmake came from
-                # Scoop/Chocolatey/VS rather than the Kitware winget package; in
-                # that case install the package so a 4.2+ cmake is available.
+                # upgrade no-ops if the cmake came from Scoop/Chocolatey/VS, not the
+                # Kitware winget package; install it so a 4.2+ cmake is available
                 if (-not (Test-CmakeCanDriveGenerator -Generator $CmakeGenerator)) {
                     try {
                         Invoke-SetupCommand { winget install Kitware.CMake --source winget --accept-package-agreements --accept-source-agreements } | Out-Null
@@ -3241,11 +3209,9 @@ if (-not $NeedLlamaSourceBuild) {
                 }
             }
             if (-not (Test-CmakeCanDriveGenerator -Generator $CmakeGenerator)) {
-                # The available cmake still cannot drive VS 2026. Before failing,
-                # fall back to an older installed VS whose generator this cmake CAN
-                # drive, so a host with a viable older toolchain (e.g. VS 2022 + an
-                # old cmake on an offline box) keeps building as it did before VS
-                # 2026 detection landed.
+                # cmake still cannot drive VS 2026; before failing, fall back to an
+                # older installed VS whose generator it can drive (e.g. VS 2022 + old
+                # cmake on an offline box keeps building)
                 $fallback = Get-FallbackVsGenerator
                 if ($fallback) {
                     substep "CMake cannot drive $CmakeGenerator; falling back to $($fallback.Generator)" "Yellow"
@@ -3261,8 +3227,8 @@ if (-not $NeedLlamaSourceBuild) {
         substep "CMake can drive the $CmakeGenerator generator"
     }
 
-    # CUDA toolkit resolved lazily here (fail fast if none), AFTER the final VS
-    # generator so its .targets copy targets the toolset cmake actually uses.
+    # CUDA resolved here (fail fast if none), after the final VS generator so its
+    # .targets land in the toolset cmake actually uses.
     if ($HasNvidiaSmi) { Resolve-CudaToolkit -RequireOrExit }
 
     Write-Host ""
