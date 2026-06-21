@@ -23,6 +23,7 @@ export const en = {
     brand: "unsloth",
     product: "Unsloth Studio",
     accountMenu: "{name} account menu",
+    updateAvailable: "Update available",
     aria: {
       home: "Unsloth home",
       closeSidebar: "Close sidebar",

@@ -1348,6 +1348,7 @@ export function AppSidebar() {
           <SidebarMenuItem className="mb-6">
             <button
               type="button"
+              aria-label={t("shell.updateAvailable")}
               onClick={() => {
                 useSettingsDialogStore.getState().openDialog("about");
                 closeMobileIfOpen();
@@ -1361,7 +1362,7 @@ export function AppSidebar() {
               />
               <div className="flex min-w-0 flex-col gap-px leading-tight group-data-[collapsible=icon]:hidden">
                 <span className="truncate font-heading text-[13.5px] font-semibold text-nav-fg">
-                  Update available
+                  {t("shell.updateAvailable")}
                 </span>
                 {appVersion && (
                   <span className="truncate text-[11.5px] text-muted-foreground">
