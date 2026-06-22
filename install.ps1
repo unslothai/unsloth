@@ -2387,7 +2387,9 @@ exit 0
 
     # ── Run studio setup ──
     # setup.ps1 will handle installing Git, CMake, Visual Studio Build Tools,
-    # CUDA Toolkit, Node.js, and other dependencies automatically via winget.
+    # CUDA Toolkit, and other dependencies automatically via winget. Node.js is
+    # NOT installed via winget -- setup.ps1 uses an isolated Node it manages and
+    # never touches the system Node/npm.
     Write-TauriLog "STEP" "Running studio setup"
     step "setup" "running unsloth studio setup..."
     $UnslothExe = Join-Path $VenvDir "Scripts\unsloth.exe"
