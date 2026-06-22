@@ -1,0 +1,1 @@
+Continue from the latest directive: fix merge conflicts. The conflicts have already been resolved, tests passed, changes were pushed, and PR #6392 is mergeable again; do not re-run the completed Bash step. Next action is to report the completed resolution and verification status from the latest assistant state.

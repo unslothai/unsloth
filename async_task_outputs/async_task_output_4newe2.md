@@ -1,0 +1,6 @@
+- Decision: posted usage examples as a GitHub PR comment on `#6392` because the user wanted the OpenAI Python SDK examples shared there.
+- File created: `/mnt/disks/unslothai/ubuntu/workspace_58/temp/comment_6392_usage.md`; contains the PR comment body with setup, toggle enablement, `/v1/models` discovery, naming-to-load behavior, switch-by-`model` multi-model workflow, quant pinning, streaming/embeddings, external-tools note, and caveats.
+- Command run: `cd /mnt/disks/unslothai/ubuntu/workspace_58/studio_repo && gh pr comment 6392 -R unslothai/unsloth --body-file /mnt/disks/unslothai/ubuntu/workspace_58/temp/comment_6392_usage.md 2>&1 | tail -1`; exit status implied success; key output `https://github.com/unslothai/unsloth/pull/6392#issuecomment-4767255161`.
+- Completed: OpenAI Python SDK usage examples were posted to `https://github.com/unslothai/unsloth/pull/6392#issuecomment-4767255161`.
+- Completed: comment states the one-line effect: `model` argument now selects the model; it also notes live verification swapping `SmolLM2-135M` and `Qwen3-1.7B` by request `model` alone.
+- Pending: no pending work noted in this span.

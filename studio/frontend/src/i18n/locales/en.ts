@@ -105,6 +105,27 @@ export const en = {
         "Used to load gated models and push artifacts.",
       hideToken: "Hide token",
       showToken: "Show token",
+      password: "Password",
+      passwordDescription: "Change the password for this Studio account.",
+      passwordDialog: {
+        trigger: "Change password",
+        title: "Change password",
+        description:
+          "Enter your current password and choose a new one (at least {minLength} characters).",
+        currentPassword: "Current password",
+        newPassword: "New password",
+        confirmPassword: "Confirm new password",
+        currentTooShort:
+          "Current password must be at least {minLength} characters.",
+        newTooShort: "New password must be at least {minLength} characters.",
+        mismatch: "Passwords do not match.",
+        samePassword:
+          "New password must be different from your current password.",
+        update: "Update password",
+        updating: "Updating...",
+        updated: "Password updated.",
+        updateFailed: "Password update failed.",
+      },
       chatDefaults: "Chat defaults",
       autoTitleNewChats: "Auto-title new chats",
       autoTitleNewChatsDescription:
@@ -859,6 +880,7 @@ export const en = {
       resumingTraining: "Resuming training...",
       startingTraining: "starting training...",
       dataset: "Dataset",
+      datasetStreaming: "Dataset: streaming (no full download)",
       modelWeights: "Model weights",
     },
     tour: {

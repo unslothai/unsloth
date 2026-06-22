@@ -31,11 +31,18 @@ sys.modules.setdefault("loggers", _loggers_stub)
 
 from utils.transformers_version import (
     _resolve_base_model,
+    _is_lora_adapter_dir,
+    _has_adapter_weights,
     _remote_lora_base,
     _check_tokenizer_config_needs_v5,
     _check_config_needs_510,
+    _check_config_needs_530,
     _check_config_needs_550,
     _config_needs_510,
+    _config_needs_530,
+    _norm_separators,
+    _tier_from_name,
+    _looks_like_hf_id,
     _nemotron_h_needs_mlp_support,
     _config_json_from_hf_cache,
     _load_config_json,
@@ -43,6 +50,7 @@ from utils.transformers_version import (
     _config_json_cache,
     _tokenizer_class_cache,
     _config_needs_510_cache,
+    _config_needs_530_cache,
     _config_needs_550_cache,
     needs_transformers_5,
     get_transformers_tier,
@@ -105,6 +113,14 @@ class TestResolveBaseModel:
 
         result = _resolve_base_model(str(tmp_path))
         assert result == "Qwen/Qwen3.5-9B"
+
+    def test_non_string_base_does_not_crash(self, tmp_path: Path):
+        """A malformed config (list/dict for model_name) must not raise."""
+        config_cfg = {"model_name": ["x"], "_name_or_path": "Qwen/Qwen3.5-9B"}
+        (tmp_path / "config.json").write_text(json.dumps(config_cfg))
+
+        # Skips the non-string model_name and falls through to _name_or_path.
+        assert _resolve_base_model(str(tmp_path)) == "Qwen/Qwen3.5-9B"
 
     def test_model_name_takes_priority_over_name_or_path(self, tmp_path: Path):
         """model_name should be preferred over _name_or_path."""
@@ -1129,9 +1145,13 @@ class TestActivateLoggingClarity:
         assert "5.10.2" in text, f"local checkpoint tier did not win: {text!r}"
 
     def test_activate_adapter_without_config_skips_path_name_recheck(self, caplog, tmp_path):
-        # Adapter dir named 'gemma-4' but no config.json: the path-name re-check must not run.
+        # LoRA adapter in a dir named 'gemma-4' (base resolves elsewhere): the resolved
+        # base drives the tier; the path name must not re-check or upgrade it.
         adapter = tmp_path / "gemma-4-experiment" / "llama-lora"
         adapter.mkdir(parents = True)
+        (adapter / "adapter_config.json").write_text(
+            json.dumps({"base_model_name_or_path": "meta/llama"})
+        )
         local = str(adapter)
         caplog.set_level(logging.INFO)
         snap = self._snapshot_env()
@@ -1263,3 +1283,674 @@ class TestEnsureVenvDirProgressLogging:
         assert ok is True
         mock_install.assert_not_called()
         assert "Installing" not in " ".join(r.getMessage() for r in caplog.records)
+
+
+# ---------------------------------------------------------------------------
+# _tier_from_name — shared name-based detection helper
+# ---------------------------------------------------------------------------
+
+
+class TestTierFromName:
+    """Unit tests for _tier_from_name(), which backs both the fast substring
+    path and the config _name_or_path fallback."""
+
+    def test_returns_none_for_unknown(self):
+        assert _tier_from_name("meta-llama/Llama-3-8B") is None
+
+    def test_gemma4_returns_550(self):
+        tier, _ = _tier_from_name("google/gemma-4-E2B-it")
+        assert tier == "550"
+
+    def test_gemma4_assistant_returns_510(self):
+        tier, match = _tier_from_name("google/gemma-4-E2B-it-assistant")
+        assert tier == "510"
+        assert "assistant" in match
+
+    def test_gemma4_12b_returns_510(self):
+        tier, _ = _tier_from_name("unsloth/gemma-4-12b-it")
+        assert tier == "510"
+
+    def test_qwen35_returns_530(self):
+        tier, match = _tier_from_name("Qwen/Qwen3.5-7B")
+        assert tier == "530"
+        assert "qwen3.5" in match
+
+    def test_ministral3_returns_530(self):
+        # The existing substring "ministral-3-" matches the 2512 naming style.
+        tier, _ = _tier_from_name("mistralai/Ministral-3-8B-Instruct-2512")
+        assert tier == "530"
+
+    def test_qwen3_moe_substring_returns_530(self):
+        tier, _ = _tier_from_name("Qwen/Qwen3-30B-A3B-Instruct-2507")
+        assert tier == "530"
+
+    def test_510_beats_550(self):
+        """gemma-4-12b matches 510 (checked first), not 550."""
+        tier, _ = _tier_from_name("google/gemma-4-12b-it")
+        assert tier == "510"
+
+    def test_550_beats_530(self):
+        """gemma-4 matches 550, not 530."""
+        tier, _ = _tier_from_name("gemma-4-model")
+        assert tier == "550"
+
+
+# ---------------------------------------------------------------------------
+# Local-folder tier detection via config.json
+#
+# When a local checkpoint's config.json architecture/model_type matches a known
+# sidecar set, that's the authoritative answer.  When it doesn't match (unknown
+# or future family), the HF model ID from _name_or_path / model_name in the
+# config is run through the same name-based rules so renamed folders are still
+# routed correctly without introducing path false-positives.
+# ---------------------------------------------------------------------------
+
+
+class TestLocalConfig530Tier:
+    def setup_method(self):
+        _config_json_cache.clear()
+        _tokenizer_class_cache.clear()
+        _config_needs_530_cache.clear()
+
+    # --- config-set matches -------------------------------------------------
+
+    def test_config_needs_530_qwen3_5_model_type(self):
+        assert _config_needs_530({"model_type": "qwen3_5"}) is True
+
+    def test_config_needs_530_qwen3_5_conditional_generation(self):
+        assert _config_needs_530({"architectures": ["Qwen3_5ForConditionalGeneration"]}) is True
+
+    def test_config_needs_530_qwen3_moe(self):
+        assert _config_needs_530({"model_type": "qwen3_moe"}) is True
+
+    def test_config_needs_530_glm4_moe_lite(self):
+        assert _config_needs_530({"model_type": "glm4_moe_lite"}) is True
+
+    def test_config_needs_530_lfm2_vl(self):
+        assert _config_needs_530({"model_type": "lfm2_vl"}) is True
+
+    def test_config_needs_530_qwen3_5_moe(self):
+        """Qwen3.5 MoE (Qwen3.5-35B-A3B / 122B-A10B) uses qwen3_5_moe ids."""
+        assert (
+            _config_needs_530(
+                {
+                    "model_type": "qwen3_5_moe",
+                    "architectures": ["Qwen3_5MoeForConditionalGeneration"],
+                }
+            )
+            is True
+        )
+
+    def test_config_needs_530_qwen3_next(self):
+        assert (
+            _config_needs_530(
+                {"model_type": "qwen3_next", "architectures": ["Qwen3NextForCausalLM"]}
+            )
+            is True
+        )
+
+    def test_config_needs_530_qwen3_5_text_towers(self):
+        """Text-tower configs (architectures may be stripped) still need 5.3.0."""
+        assert _config_needs_530({"model_type": "qwen3_5_text"}) is True
+        assert _config_needs_530({"model_type": "qwen3_5_moe_text"}) is True
+
+    def test_config_needs_530_plain_qwen3_is_false(self):
+        """Regular Qwen3 (non-MoE, non-3.5) must not be promoted to 5.3.0."""
+        assert _config_needs_530({"model_type": "qwen3"}) is False
+
+    def test_tier_local_qwen35_config_selects_530(self, tmp_path: Path):
+        """Reported case: a local Qwen3.5 folder routes to 530 via config.json."""
+        d = tmp_path / "Qwen3.5-2B"
+        d.mkdir()
+        (d / "config.json").write_text(json.dumps({"model_type": "qwen3_5"}))
+        assert get_transformers_tier(str(d)) == "530"
+
+    def test_tier_local_qwen3_moe_config_selects_530(self, tmp_path: Path):
+        """Local Qwen3 MoE checkpoint routes to 530 via config.json."""
+        d = tmp_path / "my-qwen3-moe"
+        d.mkdir()
+        (d / "config.json").write_text(
+            json.dumps({"model_type": "qwen3_moe", "architectures": ["Qwen3MoeForCausalLM"]})
+        )
+        assert get_transformers_tier(str(d)) == "530"
+
+    def test_tier_local_glm4_moe_lite_config_selects_530(self, tmp_path: Path):
+        """Local GLM-4.7-Flash checkpoint routes to 530 via config.json."""
+        d = tmp_path / "my-glm-model"
+        d.mkdir()
+        (d / "config.json").write_text(
+            json.dumps({"model_type": "glm4_moe_lite", "architectures": ["Glm4MoeLiteForCausalLM"]})
+        )
+        assert get_transformers_tier(str(d)) == "530"
+
+    def test_tier_local_lfm2_vl_config_selects_530(self, tmp_path: Path):
+        """Local LFM2.5-VL checkpoint routes to 530 via config.json."""
+        d = tmp_path / "my-liquid-model"
+        d.mkdir()
+        (d / "config.json").write_text(
+            json.dumps(
+                {"model_type": "lfm2_vl", "architectures": ["Lfm2VlForConditionalGeneration"]}
+            )
+        )
+        assert get_transformers_tier(str(d)) == "530"
+
+    def test_tier_local_qwen35_moe_config_selects_530(self, tmp_path: Path):
+        """A renamed Qwen3.5 MoE folder (no name hint) routes to 530 via config."""
+        d = tmp_path / "my-custom-moe"
+        d.mkdir()
+        (d / "config.json").write_text(
+            json.dumps(
+                {
+                    "model_type": "qwen3_5_moe",
+                    "architectures": ["Qwen3_5MoeForConditionalGeneration"],
+                }
+            )
+        )
+        assert get_transformers_tier(str(d)) == "530"
+
+    # --- Qwen3.6 reuses Qwen3.5 config ids but routes to 550 by name ---------
+
+    def test_local_qwen36_config_keeps_550_name_tier(self, tmp_path: Path):
+        """Qwen3.6 config carries qwen3_5 ids; a higher-tier name match wins."""
+        d = tmp_path / "Qwen3.6-27B"
+        d.mkdir()
+        (d / "config.json").write_text(
+            json.dumps(
+                {"model_type": "qwen3_5", "architectures": ["Qwen3_5ForConditionalGeneration"]}
+            )
+        )
+        assert get_transformers_tier(str(d)) == "550"
+
+    def test_local_qwen36_moe_via_name_or_path_keeps_550(self, tmp_path: Path):
+        """Renamed Qwen3.6 MoE folder: _name_or_path carries the 5.5 name signal."""
+        d = tmp_path / "renamed-q36-moe"
+        d.mkdir()
+        (d / "config.json").write_text(
+            json.dumps(
+                {
+                    "model_type": "qwen3_5_moe",
+                    "architectures": ["Qwen3_5MoeForConditionalGeneration"],
+                    "_name_or_path": "Qwen/Qwen3.6-35B-A3B",
+                }
+            )
+        )
+        assert get_transformers_tier(str(d)) == "550"
+
+    def test_stale_absolute_name_or_path_not_promoted(self, tmp_path: Path):
+        """A non-5.x checkpoint with a stale absolute _name_or_path isn't name-matched."""
+        d = tmp_path / "my-llama-ckpt"
+        d.mkdir()
+        (d / "config.json").write_text(
+            json.dumps({"model_type": "llama", "_name_or_path": "/old/run/qwen3.5-source"})
+        )
+        with patch(
+            "utils.transformers_version._check_tokenizer_config_needs_v5", return_value = False
+        ):
+            assert get_transformers_tier(str(d)) == "default"
+
+    # --- _name_or_path fallback ---------------------------------------------
+
+    def test_renamed_folder_falls_back_to_hf_id_in_config(self, tmp_path: Path):
+        """A renamed local folder with an unrecognised model_type but a known
+        HF ID in _name_or_path still routes to the correct tier."""
+        d = tmp_path / "my-custom-name"
+        d.mkdir()
+        # Simulate a future/unknown model_type; the HF ID carries the tier signal.
+        (d / "config.json").write_text(
+            json.dumps(
+                {
+                    "model_type": "future_unknown_type",
+                    "_name_or_path": "Qwen/Qwen3.5-7B",
+                }
+            )
+        )
+        assert get_transformers_tier(str(d)) == "530"
+
+    def test_hf_id_fallback_respects_550_tier(self, tmp_path: Path):
+        """_name_or_path pointing to a Gemma-4 HF ID routes to 550."""
+        d = tmp_path / "renamed-gemma"
+        d.mkdir()
+        (d / "config.json").write_text(
+            json.dumps(
+                {
+                    "model_type": "future_unknown_type",
+                    "_name_or_path": "google/gemma-4-E2B-it",
+                }
+            )
+        )
+        assert get_transformers_tier(str(d)) == "550"
+
+    def test_hf_id_fallback_skipped_when_same_as_path(self, tmp_path: Path):
+        """If _name_or_path equals the model path, skip the name fallback to
+        avoid false positives from self-referencing configs."""
+        d = tmp_path / "qwen3.5-experiment"
+        d.mkdir()
+        # _name_or_path is the local path itself (e.g. saved via save_pretrained)
+        (d / "config.json").write_text(
+            json.dumps(
+                {
+                    "model_type": "llama",
+                    "_name_or_path": str(d),
+                }
+            )
+        )
+        with patch(
+            "utils.transformers_version._check_tokenizer_config_needs_v5", return_value = False
+        ):
+            # "qwen3.5" is in the path but config says llama and _name_or_path
+            # is self-referencing — must not be promoted to 530.
+            assert get_transformers_tier(str(d)) == "default"
+
+    def test_hf_id_fallback_not_triggered_when_name_or_path_is_absolute_self(self, tmp_path: Path):
+        """_name_or_path == absolute path of the same checkpoint while model_name
+        is a relative path: the two strings differ, but both point to the same
+        directory.  The absolute path must not be scanned for tier substrings."""
+        d = tmp_path / "qwen3.5-experiment"
+        d.mkdir()
+        (d / "config.json").write_text(
+            json.dumps(
+                {
+                    "model_type": "llama",
+                    # absolute path — textually different from a relative model_name
+                    "_name_or_path": str(d),
+                }
+            )
+        )
+        with patch(
+            "utils.transformers_version._check_tokenizer_config_needs_v5", return_value = False
+        ):
+            # Even though str(d) contains "qwen3.5", the local-dir branch recurses
+            # into config checks on the resolved path, which returns default.
+            assert get_transformers_tier(str(d)) == "default"
+
+    # --- false-positive guard -----------------------------------------------
+
+    def test_tier_local_plain_model_still_default(self, tmp_path: Path):
+        """A local non-5.x checkpoint returns default; the directory-name
+        false-positive guard is preserved."""
+        d = tmp_path / "checkpoint-1000"
+        d.mkdir()
+        (d / "config.json").write_text(
+            json.dumps({"architectures": ["LlamaForCausalLM"], "model_type": "llama"})
+        )
+        with patch(
+            "utils.transformers_version._check_tokenizer_config_needs_v5",
+            return_value = False,
+        ):
+            assert get_transformers_tier(str(d)) == "default"
+
+
+# ---------------------------------------------------------------------------
+# _check_config_needs_530 — slow HF-ID path (network stub)
+# ---------------------------------------------------------------------------
+
+
+class TestCheckConfigNeeds530:
+    """_check_config_needs_530 is used in the slow HF-ID fallback path for
+    private or renamed repos whose names don't contain a 5.3 substring."""
+
+    def setup_method(self):
+        _config_json_cache.clear()
+        _config_needs_530_cache.clear()
+
+    def test_returns_true_for_qwen3_5_model_type(self):
+        with patch(
+            "utils.transformers_version._load_config_json",
+            return_value = {"model_type": "qwen3_5"},
+        ):
+            assert _check_config_needs_530("some-private/qwen3.5-variant") is True
+
+    def test_returns_true_for_qwen3_moe_architecture(self):
+        with patch(
+            "utils.transformers_version._load_config_json",
+            return_value = {"architectures": ["Qwen3MoeForCausalLM"]},
+        ):
+            assert _check_config_needs_530("org/private-moe-model") is True
+
+    def test_returns_false_for_llama(self):
+        with patch(
+            "utils.transformers_version._load_config_json",
+            return_value = {"model_type": "llama", "architectures": ["LlamaForCausalLM"]},
+        ):
+            assert _check_config_needs_530("meta-llama/Llama-3-8B") is False
+
+    def test_returns_false_when_config_unavailable(self):
+        with patch("utils.transformers_version._load_config_json", return_value = None):
+            assert _check_config_needs_530("org/unreachable-model") is False
+
+    def test_result_is_cached(self):
+        with patch(
+            "utils.transformers_version._load_config_json",
+            return_value = {"model_type": "qwen3_5"},
+        ) as mock_load:
+            _check_config_needs_530("cached-model")
+            _check_config_needs_530("cached-model")
+            assert mock_load.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# _norm_separators
+# ---------------------------------------------------------------------------
+
+
+class TestNormSeparators:
+    def test_underscore_to_hyphen(self):
+        assert _norm_separators("qwen3_5") == "qwen3-5"
+
+    def test_dot_preserved(self):
+        assert _norm_separators("qwen3.5") == "qwen3.5"
+
+    def test_hyphen_unchanged(self):
+        assert _norm_separators("gemma-4") == "gemma-4"
+
+    def test_mixed(self):
+        assert _norm_separators("Qwen3_5.MoE") == "Qwen3-5.MoE"
+
+    def test_whitespace_to_hyphen(self):
+        assert _norm_separators("some model") == "some-model"
+
+    def test_empty(self):
+        assert _norm_separators("") == ""
+
+
+# ---------------------------------------------------------------------------
+# _tier_from_name — separator-insensitive matching
+# ---------------------------------------------------------------------------
+
+
+class TestTierFromNameSeparatorNorm:
+    """Verify that underscore/dot aliases in model IDs resolve to the same
+    tier as their canonical hyphen/dot counterparts."""
+
+    def test_qwen3_underscore_5_returns_530(self):
+        tier, _ = _tier_from_name("Qwen/Qwen3_5-7B")
+        assert tier == "530"
+
+    def test_qwen3_next_underscore_returns_530(self):
+        tier, _ = _tier_from_name("org/Qwen3_Next-14B")
+        assert tier == "530"
+
+    def test_gemma_4_underscore_returns_550(self):
+        tier, _ = _tier_from_name("google/gemma_4_E2B_it")
+        assert tier == "550"
+
+    def test_gemma_4_12b_underscore_returns_510(self):
+        tier, _ = _tier_from_name("unsloth/gemma_4_12b_it")
+        assert tier == "510"
+
+    def test_canonical_dot_still_works(self):
+        tier, _ = _tier_from_name("Qwen/Qwen3.5-7B")
+        assert tier == "530"
+
+    def test_unrelated_underscores_not_promoted(self):
+        assert _tier_from_name("meta_llama/Llama_3_8B") is None
+
+    def test_qwen3_hyphen_6_size_not_promoted(self):
+        """Qwen3-6B is a size name, not the qwen3.6 release line."""
+        assert _tier_from_name("Qwen/Qwen3-6B-Instruct") is None
+
+    def test_qwen3_hyphen_5_size_not_promoted(self):
+        assert _tier_from_name("Qwen/Qwen3-5B") is None
+
+
+# ---------------------------------------------------------------------------
+# _resolve_base_model — model_name-then-_name_or_path fallback
+# ---------------------------------------------------------------------------
+
+
+class TestResolveBaseModelNameOrPathFallback:
+    """When config.json has both 'model_name' (self-referential local path) and
+    '_name_or_path' (original HF ID), _resolve_base_model must use _name_or_path."""
+
+    def test_name_or_path_used_when_model_name_is_self_ref(self, tmp_path: Path):
+        d = tmp_path / "my-qwen35-finetune"
+        d.mkdir()
+        (d / "config.json").write_text(
+            json.dumps(
+                {
+                    "model_name": str(d),
+                    "_name_or_path": "Qwen/Qwen3.5-7B",
+                }
+            )
+        )
+        assert _resolve_base_model(str(d)) == "Qwen/Qwen3.5-7B"
+
+    def test_model_name_used_when_not_self_ref(self, tmp_path: Path):
+        d = tmp_path / "adapter"
+        d.mkdir()
+        (d / "config.json").write_text(
+            json.dumps(
+                {
+                    "model_name": "unsloth/Qwen3.5-7B-bnb-4bit",
+                    "_name_or_path": "Qwen/Qwen3.5-7B",
+                }
+            )
+        )
+        # model_name is not the local path, so it wins
+        assert _resolve_base_model(str(d)) == "unsloth/Qwen3.5-7B-bnb-4bit"
+
+    def test_tier_resolved_via_name_or_path_when_model_name_self_refs(self, tmp_path: Path):
+        """End-to-end: get_transformers_tier picks up the sidecar tier from
+        _name_or_path even when model_name is set to the checkpoint's own path."""
+        d = tmp_path / "my-custom-finetune"
+        d.mkdir()
+        (d / "config.json").write_text(
+            json.dumps(
+                {
+                    "model_type": "future_unknown_type",
+                    "model_name": str(d),
+                    "_name_or_path": "Qwen/Qwen3.5-7B",
+                }
+            )
+        )
+        assert get_transformers_tier(str(d)) == "530"
+
+    def test_local_config_tier_not_bypassed_by_private_name_or_path(self, tmp_path: Path):
+        """Full checkpoint with model_type: qwen3_5 must still route to 530 even
+        when _name_or_path is a private HF ID with no recognisable tier substring.
+
+        Regression guard: before the adapter-only pre-resolve fix,
+        activate_transformers_for_subprocess would resolve to the private HF ID
+        and then fail to probe it offline, returning default instead of 530.
+        """
+        d = tmp_path / "my-finetuned-model"
+        d.mkdir()
+        (d / "config.json").write_text(
+            json.dumps(
+                {
+                    "model_type": "qwen3_5",
+                    "model_name": str(d),
+                    "_name_or_path": "my-org/private-custom-id",
+                }
+            )
+        )
+        # get_transformers_tier reads config.json directly and returns 530
+        # without needing to probe the private HF ID.
+        assert get_transformers_tier(str(d)) == "530"
+
+
+# ---------------------------------------------------------------------------
+# adapter_model-only LoRA resolution (no adapter_config.json)
+# ---------------------------------------------------------------------------
+
+
+class TestAdapterModelOnlyLoRA:
+    """A LoRA dir with adapter_model*.safetensors but no adapter_config.json must
+    still be detected as an adapter and resolved to its base model so the worker
+    activates the base model's sidecar instead of tiering off the adapter folder."""
+
+    def test_has_adapter_weights_detects_safetensors_and_bin(self, tmp_path: Path):
+        d = tmp_path / "adapter"
+        d.mkdir()
+        assert _has_adapter_weights(d) is False
+        (d / "adapter_model.safetensors").write_text("")
+        assert _has_adapter_weights(d) is True
+        d2 = tmp_path / "adapter_bin"
+        d2.mkdir()
+        (d2 / "adapter_model.bin").write_text("")
+        assert _has_adapter_weights(d2) is True
+
+    def test_is_lora_adapter_dir_for_config_and_weights_only(self, tmp_path: Path):
+        # adapter_config.json present
+        a = tmp_path / "cfg"
+        a.mkdir()
+        (a / "adapter_config.json").write_text("{}")
+        assert _is_lora_adapter_dir(a) is True
+        # adapter_model weights only, no config
+        b = tmp_path / "weights_only"
+        b.mkdir()
+        (b / "adapter_model.safetensors").write_text("")
+        assert _is_lora_adapter_dir(b) is True
+        # plain checkpoint dir (neither)
+        c = tmp_path / "plain"
+        c.mkdir()
+        (c / "config.json").write_text("{}")
+        assert _is_lora_adapter_dir(c) is False
+        # not a directory
+        assert _is_lora_adapter_dir(tmp_path / "missing") is False
+
+    def test_resolve_adapter_only_lora_via_unsloth_dir_name(self, tmp_path: Path):
+        """adapter_model-only LoRA with the unsloth_<model>_<ts> naming resolves to
+        unsloth/<model> through the import-light directory-name parse."""
+        d = tmp_path / "unsloth_Qwen3.5-7B_20260620"
+        d.mkdir()
+        (d / "adapter_model.safetensors").write_text("")
+        assert _resolve_base_model(str(d)) == "unsloth/Qwen3.5-7B"
+
+    def test_activation_pre_resolves_adapter_only_lora(self, tmp_path: Path):
+        """Regression: activate_transformers_for_subprocess must pre-resolve an
+        adapter_model-only LoRA dir (weights present, adapter_config.json absent).
+        Before the gate used _is_lora_adapter_dir, the adapter_config-only check
+        skipped resolution and the worker tiered off the adapter folder itself."""
+        d = tmp_path / "my-custom-lora"
+        d.mkdir()
+        (d / "adapter_model.safetensors").write_text("")
+        snap = (list(sys.path), os.environ.get("PYTHONPATH"))
+        try:
+            with (
+                patch(
+                    "utils.transformers_version._resolve_base_model",
+                    side_effect = lambda m: m,
+                ) as mock_resolve,
+                patch(
+                    "utils.transformers_version.get_transformers_tier",
+                    return_value = "default",
+                ),
+            ):
+                activate_transformers_for_subprocess(str(d))
+        finally:
+            sys.path[:] = snap[0]
+            if snap[1] is None:
+                os.environ.pop("PYTHONPATH", None)
+            else:
+                os.environ["PYTHONPATH"] = snap[1]
+        mock_resolve.assert_called_once_with(str(d))
+
+
+# ---------------------------------------------------------------------------
+# 530-config override must not be flipped by stale local path hints
+# ---------------------------------------------------------------------------
+
+
+class TestConfig530OverrideGuard:
+    """A correct 530 config must not be flipped to 550 by a 5.5-looking substring in
+    a stale/renamed local path; only a real Hub id or the folder basename may override."""
+
+    def test_stale_local_path_does_not_flip_530_to_550(self, tmp_path: Path):
+        d = tmp_path / "my-qwen35-run"
+        d.mkdir()
+        (d / "config.json").write_text(
+            json.dumps(
+                {
+                    "model_type": "qwen3_5",
+                    "_name_or_path": "/old/run/qwen3.6-source",
+                }
+            )
+        )
+        # Stale path is not a Hub id, so the 530 config wins over its qwen3.6 substring.
+        assert get_transformers_tier(str(d)) == "530"
+
+    def test_current_basename_can_still_override_to_550(self, tmp_path: Path):
+        d = tmp_path / "Qwen3.6-27B"
+        d.mkdir()
+        # Qwen3.6 reuses the qwen3_5 config id but is a 5.5 model by name.
+        (d / "config.json").write_text(
+            json.dumps({"model_type": "qwen3_5", "_name_or_path": str(d)})
+        )
+        assert get_transformers_tier(str(d)) == "550"
+
+    def test_real_hub_id_can_still_override_to_550(self, tmp_path: Path):
+        d = tmp_path / "my-finetune"
+        d.mkdir()
+        (d / "config.json").write_text(
+            json.dumps({"model_type": "qwen3_5", "_name_or_path": "Qwen/Qwen3.6-27B"})
+        )
+        assert get_transformers_tier(str(d)) == "550"
+
+    def test_remote_qwen36_name_or_path_overrides_530(self):
+        """Slow path: a fetched qwen3_5 config naming Qwen3.6 in _name_or_path -> 550."""
+        _config_needs_530_cache.clear()
+        _config_json_cache.clear()
+        with patch(
+            "utils.transformers_version._load_config_json",
+            return_value = {"model_type": "qwen3_5", "_name_or_path": "Qwen/Qwen3.6-27B"},
+        ):
+            assert get_transformers_tier("private/renamed-q36") == "550"
+
+
+class TestLooksLikeHfId:
+    def test_empty_and_whitespace_are_not_ids(self):
+        assert _looks_like_hf_id("") is False
+        assert _looks_like_hf_id("   ") is False
+
+    def test_plain_hub_id(self):
+        assert _looks_like_hf_id("Qwen/Qwen3.5-7B") is True
+
+    def test_absolute_and_dot_paths_are_not_ids(self):
+        assert _looks_like_hf_id("/old/run/qwen3.5-source") is False
+        assert _looks_like_hf_id("./qwen3.5-source") is False
+
+    def test_existing_local_path_is_not_an_id(self, tmp_path: Path):
+        d = tmp_path / "Qwen3.5-7B"
+        d.mkdir()
+        import os as _os
+
+        cwd = _os.getcwd()
+        try:
+            _os.chdir(tmp_path)
+            # "Qwen3.5-7B" exists relative to cwd, so it is a path, not a Hub id.
+            assert _looks_like_hf_id("Qwen3.5-7B") is False
+        finally:
+            _os.chdir(cwd)
+
+
+class TestMalformedInputRobustness:
+    """Tier detection fails open to default instead of crashing on bad input."""
+
+    def setup_method(self):
+        _config_json_cache.clear()
+        _config_needs_530_cache.clear()
+
+    def test_non_string_model_type_does_not_crash(self):
+        assert _config_needs_530({"model_type": ["qwen3_5"]}) is False
+
+    def test_non_list_architectures_does_not_crash(self):
+        assert _config_needs_530({"architectures": "Qwen3_5ForCausalLM"}) is False
+
+    def test_local_config_non_string_fields_returns_default(self, tmp_path: Path):
+        d = tmp_path / "weird"
+        d.mkdir()
+        (d / "config.json").write_text(
+            json.dumps({"model_type": ["qwen3_5"], "_name_or_path": {"x": 1}})
+        )
+        with patch(
+            "utils.transformers_version._check_tokenizer_config_needs_v5", return_value = False
+        ):
+            assert get_transformers_tier(str(d)) == "default"
+
+    def test_pathological_long_name_does_not_crash(self):
+        # An over-long name makes is_file() raise OSError; must fail open.
+        assert get_transformers_tier("x" * 5000) == "default"
+
+    def test_empty_name_returns_default(self):
+        assert get_transformers_tier("") == "default"

@@ -55,6 +55,22 @@ def _env_offline() -> bool:
     ) or os.environ.get("TRANSFORMERS_OFFLINE", "").lower() in ("1", "true", "yes")
 
 
+def _safe_is_file(p: Path) -> bool:
+    """``p.is_file()`` returning False instead of raising on a bad path."""
+    try:
+        return p.is_file()
+    except (OSError, ValueError):
+        return False
+
+
+def _safe_is_dir(p: Path) -> bool:
+    """``p.is_dir()`` returning False instead of raising on a bad path."""
+    try:
+        return p.is_dir()
+    except (OSError, ValueError):
+        return False
+
+
 # ---------------------------------------------------------------------------
 # Detection
 # ---------------------------------------------------------------------------
@@ -105,6 +121,29 @@ _TRANSFORMERS_550_MODEL_TYPES: set[str] = {
     "gemma4",
 }
 
+# Architecture classes / model_type values that require transformers 5.3.0.
+# Checked via config.json (local or HuggingFace).
+_TRANSFORMERS_530_ARCHITECTURES: set[str] = {
+    "Qwen3_5ForCausalLM",
+    "Qwen3_5ForConditionalGeneration",
+    "Qwen3_5MoeForCausalLM",
+    "Qwen3_5MoeForConditionalGeneration",
+    "Qwen3MoeForCausalLM",
+    "Qwen3NextForCausalLM",
+    "Glm4MoeLiteForCausalLM",
+    "Lfm2VlForConditionalGeneration",
+}
+_TRANSFORMERS_530_MODEL_TYPES: set[str] = {
+    "qwen3_5",
+    "qwen3_5_text",
+    "qwen3_5_moe",
+    "qwen3_5_moe_text",
+    "qwen3_moe",
+    "qwen3_next",
+    "glm4_moe_lite",
+    "lfm2_vl",
+}
+
 # Tokenizer classes that only exist in transformers>=5.x.
 _TRANSFORMERS_5_TOKENIZER_CLASSES: set[str] = {
     "TokenizersBackend",
@@ -117,6 +156,7 @@ _tokenizer_class_cache: dict[str, bool] = {}
 _config_json_cache: dict[tuple[str, str | None], dict | None] = {}
 _config_needs_510_cache: dict[str, bool] = {}
 _config_needs_550_cache: dict[str, bool] = {}
+_config_needs_530_cache: dict[str, bool] = {}
 
 # Versions
 TRANSFORMERS_510_VERSION = "5.10.2"
@@ -153,7 +193,12 @@ def activate_transformers_for_subprocess(model_name: str) -> None:
     ``sys.path``, and propagates it via ``PYTHONPATH`` for child processes
     (e.g. GGUF converter). Used by training, inference, and export workers.
     """
-    resolved = _resolve_base_model(model_name)
+    # Pre-resolve only LoRA adapters; full checkpoints go to get_transformers_tier
+    # so their local config.json drives the tier (avoids a fragile HF-id probe).
+    if _is_lora_adapter_dir(Path(model_name)):
+        resolved = _resolve_base_model(model_name)
+    else:
+        resolved = model_name
     tier = get_transformers_tier(resolved)
     if model_name != resolved and (Path(model_name) / "config.json").is_file():
         # Gate on a real local config.json: a checkpoint carries config the base may not
@@ -215,6 +260,35 @@ def activate_transformers_for_subprocess(model_name: str) -> None:
         logger.info("Using default transformers (4.57.x) for %s", model_name)
 
 
+def _has_adapter_weights(path: Path) -> bool:
+    """True if *path* holds LoRA adapter weight files (``adapter_model.*``)."""
+    try:
+        return any(path.glob("adapter_model*.safetensors")) or any(path.glob("adapter_model*.bin"))
+    except OSError:
+        return False
+
+
+def _is_lora_adapter_dir(path: Path) -> bool:
+    """True if *path* is a local LoRA dir (adapter_config.json or adapter_model-only
+    weights). Import-light so it can run during subprocess activation."""
+    try:
+        if not path.is_dir():
+            return False
+        return (path / "adapter_config.json").is_file() or _has_adapter_weights(path)
+    except OSError:
+        return False
+
+
+def _is_same_path(value: str, local_path: Path) -> bool:
+    """True if *value* resolves to *local_path* (relative/absolute/symlink)."""
+    if value == str(local_path):
+        return True
+    try:
+        return os.path.realpath(value) == os.path.realpath(str(local_path))
+    except OSError:
+        return False
+
+
 def _resolve_base_model(model_name: str) -> str:
     """If *model_name* points to a LoRA adapter, return its base model.
 
@@ -226,7 +300,7 @@ def _resolve_base_model(model_name: str) -> str:
     # --- Fast local check ---------------------------------------------------
     local_path = Path(model_name)
     adapter_cfg_path = local_path / "adapter_config.json"
-    if adapter_cfg_path.is_file():
+    if _safe_is_file(adapter_cfg_path):
         try:
             with open(adapter_cfg_path) as f:
                 cfg = json.load(f)
@@ -243,24 +317,27 @@ def _resolve_base_model(model_name: str) -> str:
 
     # --- config.json fallback (works for both LoRA and full fine-tune) ------
     config_json_path = local_path / "config.json"
-    if config_json_path.is_file():
+    if _safe_is_file(config_json_path):
         try:
             with open(config_json_path) as f:
                 cfg = json.load(f)
-            # Unsloth writes "model_name"; HF writes "_name_or_path"
-            base = cfg.get("model_name") or cfg.get("_name_or_path")
-            if base and base != str(local_path):
-                logger.info(
-                    "Resolved checkpoint '%s' → base model '%s' (via config.json)",
-                    model_name,
-                    base,
-                )
-                return base
+            # Unsloth writes model_name, HF writes _name_or_path; skip a self-reference.
+            for _key in ("model_name", "_name_or_path"):
+                base = cfg.get(_key)
+                if isinstance(base, str) and base and not _is_same_path(base, local_path):
+                    logger.info(
+                        "Resolved checkpoint '%s' → base model '%s' (via config.json)",
+                        model_name,
+                        base,
+                    )
+                    return base
         except Exception as exc:
             logger.debug("Could not read %s: %s", config_json_path, exc)
 
-    # --- Only try the heavier fallback for local directories ----------------
-    if local_path.is_dir():
+    # Gate the heavy resolver on adapter_config.json: importing utils.models pulls
+    # in transformers, which would pin the default into sys.modules before the
+    # sidecar venv is prepended during activation.
+    if _safe_is_file(adapter_cfg_path):
         try:
             from utils.models import get_base_model_from_lora
             base = get_base_model_from_lora(model_name)
@@ -278,6 +355,19 @@ def _resolve_base_model(model_name: str) -> str:
                 model_name,
                 exc,
             )
+
+    # adapter_model-only LoRA: no config to resolve from, so use the
+    # unsloth_<model>_<timestamp> dir-name convention (pure string parse).
+    if local_path.name.startswith("unsloth_") and _has_adapter_weights(local_path):
+        parts = local_path.name.split("_")
+        if len(parts) >= 2:  # unsloth_<model...>_<timestamp>
+            base = "unsloth/" + "_".join(parts[1:-1])
+            logger.info(
+                "Resolved adapter-only LoRA '%s' → base model '%s' (via directory name)",
+                model_name,
+                base,
+            )
+            return base
 
     return model_name
 
@@ -392,7 +482,7 @@ def _check_tokenizer_config_needs_v5(model_name: str) -> bool:
     # --- Check local tokenizer_config.json first ---------------------------
     local_path = Path(model_name)
     local_tc = local_path / "tokenizer_config.json"
-    if local_tc.is_file():
+    if _safe_is_file(local_tc):
         try:
             with open(local_tc) as f:
                 data = json.load(f)
@@ -497,7 +587,7 @@ def _load_config_json(model_name: str, hf_token: str | None = None) -> dict | No
         return _config_json_cache[cache_key]
 
     local_cfg = Path(model_name) / "config.json"
-    if local_cfg.is_file():
+    if _safe_is_file(local_cfg):
         try:
             with open(local_cfg) as f:
                 cfg = json.load(f)
@@ -548,12 +638,12 @@ def _config_json_is_definitive(model_name: str) -> bool:
 
 
 def _config_matches_tier(cfg: dict, architectures: set[str], model_types: set[str]) -> bool:
-    archs = cfg.get("architectures", [])
-    if any(a in architectures for a in archs):
+    # Defensive: a malformed config may carry non-string values (e.g. list model_type).
+    archs = cfg.get("architectures")
+    if isinstance(archs, (list, tuple)) and any(a in architectures for a in archs):
         return True
-    if cfg.get("model_type") in model_types:
-        return True
-    return False
+    mt = cfg.get("model_type")
+    return isinstance(mt, str) and mt in model_types
 
 
 def _config_needs_550(cfg: dict) -> bool:
@@ -596,6 +686,14 @@ def _config_needs_510(cfg: dict) -> bool:
     return _nemotron_h_needs_mlp_support(cfg)
 
 
+def _config_needs_530(cfg: dict) -> bool:
+    return _config_matches_tier(
+        cfg,
+        _TRANSFORMERS_530_ARCHITECTURES,
+        _TRANSFORMERS_530_MODEL_TYPES,
+    )
+
+
 def _check_config_needs_550(model_name: str) -> bool:
     """True if ``config.json`` needs transformers 5.5.0 (e.g. Gemma 4). Local first, else
     fetched; cached only for a definitive read so a transient miss retries. False on error.
@@ -615,6 +713,33 @@ def _check_config_needs_550(model_name: str) -> bool:
         )
     if _config_json_is_definitive(model_name):
         _config_needs_550_cache[model_name] = result
+    return result
+
+
+def _check_config_needs_530(model_name: str) -> bool:
+    """Check ``config.json`` for 5.3.0-only architectures (Qwen3.5, Qwen3 MoE, GLM-4.7, LFM2.5-VL).
+
+    Used in the slow HF-ID path for private/renamed repos where name substrings
+    aren't reliable.
+    """
+    if model_name in _config_needs_530_cache:
+        return _config_needs_530_cache[model_name]
+
+    cfg = _load_config_json(model_name)
+    if cfg is None:
+        _config_needs_530_cache[model_name] = False
+        return False
+
+    result = _config_needs_530(cfg)
+    if result:
+        logger.info(
+            "config.json check: %s needs transformers %s (architectures=%s, model_type=%s)",
+            model_name,
+            TRANSFORMERS_530_VERSION,
+            cfg.get("architectures", []),
+            cfg.get("model_type"),
+        )
+    _config_needs_530_cache[model_name] = result
     return result
 
 
@@ -638,6 +763,59 @@ def _check_config_needs_510(model_name: str) -> bool:
     return result
 
 
+def _norm_separators(s: str) -> str:
+    """Collapse ``_``/whitespace to ``-`` (underscore aliases) but keep ``.`` so a
+    version dot (``qwen3.5``) isn't conflated with a size separator (``Qwen3-5B``)."""
+    return "".join("-" if ch in "_ \t" else ch for ch in s)
+
+
+def _looks_like_hf_id(value: str) -> bool:
+    """True if *value* looks like a Hub id (``org/name``), not a local path. An
+    existing path is treated as a path, mirroring transformers' own resolution."""
+    if not value or not value.strip():
+        return False
+    if os.path.isabs(value) or value.startswith((".", "~")) or "\\" in value:
+        return False
+    if os.path.exists(value):
+        return False
+    return value.count("/") <= 1
+
+
+def _tier_from_name(name: str) -> tuple[str, str] | None:
+    """``(tier, reason)`` from name substrings (order 510 > 550 > 530), or ``None``.
+
+    Underscore aliases match (``Qwen3_5`` == ``Qwen3.5``); a dot-version substring
+    matches only the dot/underscore form, never a hyphen, so ``Qwen3-6B`` size names
+    aren't promoted.
+    """
+    lowered = name.lower()
+    norm = _norm_separators(lowered)
+    dotted = lowered.replace("_", ".")
+    if "assistant" in lowered and ("gemma-4" in norm or "gemma4" in norm):
+        return "510", "gemma-4 assistant variant"
+    for substrings, tier in (
+        (TRANSFORMERS_510_MODEL_SUBSTRINGS, "510"),
+        (TRANSFORMERS_550_MODEL_SUBSTRINGS, "550"),
+        (TRANSFORMERS_5_MODEL_SUBSTRINGS, "530"),
+    ):
+        for s in substrings:
+            if "." in s:
+                if s in lowered or s in dotted:
+                    return tier, s
+            elif s in lowered or _norm_separators(s) in norm:
+                return tier, s
+    return None
+
+
+def _higher_tier_name_override(name_hint: str | None) -> str | None:
+    """510/550 tier if *name_hint* names a higher-tier model, else ``None``. Qwen3.6
+    reuses Qwen3.5 config ids but needs the 5.5 sidecar, so a name hint overrides 530."""
+    if not name_hint:
+        return None
+    hint = _tier_from_name(name_hint)
+    return hint[0] if hint is not None and hint[0] in ("510", "550") else None
+
+
 def get_transformers_tier(model_name: str) -> str:
     """Return the transformers tier required for *model_name*.
 
@@ -646,31 +824,78 @@ def get_transformers_tier(model_name: str) -> str:
     ``"530"`` for models needing transformers 5.3.0 (e.g. Ministral-3, Qwen3 MoE),
     or ``"default"`` for everything else (4.57.x).
 
-    Higher 5.x tiers run first.
+    Higher 5.x tiers run first.  For local paths, ``config.json`` is checked
+    before name heuristics to avoid false-positives from directory name fragments.
     """
-    lowered = model_name.lower()
-
-    # Local checkpoint names can contain architecture substrings in their
-    # directory names (for example a pytest temp dir). If config.json exists,
-    # trust it before using name heuristics.
+    # Local path: trust config.json. If its arch matches a known sidecar, return;
+    # else fall back to the HF id in the config (not the folder name) for renamed dirs.
     local_cfg = Path(model_name) / "config.json"
-    if local_cfg.is_file():
+    if _safe_is_file(local_cfg):
         cfg = _load_config_json(model_name)
-        if cfg is not None and _config_needs_510(cfg):
-            logger.info(
-                "Transformers tier 510 selected for %s (local config.json check)",
-                model_name,
-            )
-            return "510"
-        if cfg is not None and _config_needs_550(cfg):
-            logger.info(
-                "Transformers tier 550 selected for %s (local config.json check)",
-                model_name,
-            )
-            return "550"
         if cfg is not None:
+            if _config_needs_510(cfg):
+                logger.info(
+                    "Transformers tier 510 selected for %s (local config.json check)",
+                    model_name,
+                )
+                return "510"
+            if _config_needs_550(cfg):
+                logger.info(
+                    "Transformers tier 550 selected for %s (local config.json check)",
+                    model_name,
+                )
+                return "550"
+            if _config_needs_530(cfg):
+                # Qwen3.6 reuses Qwen3.5 config ids but needs 5.5 by name. Only a real
+                # Hub id (or the folder basename) may override 530, so a stale local
+                # path in _name_or_path can't flip a correct 530 config to 550.
+                base = _resolve_base_model(model_name)
+                hint_src = (
+                    base
+                    if (base != model_name and _looks_like_hf_id(base))
+                    else Path(model_name).name
+                )
+                override = _higher_tier_name_override(hint_src)
+                if override is not None:
+                    logger.info(
+                        "Transformers tier %s selected for %s (name overrides 530 config)",
+                        override,
+                        model_name,
+                    )
+                    return override
+                logger.info(
+                    "Transformers tier 530 selected for %s (local config.json check)",
+                    model_name,
+                )
+                return "530"
+            # Unknown arch: resolve the base id from config. A resolved local dir
+            # recurses (config check); a Hub id uses name rules only (no network).
+            resolved = _resolve_base_model(model_name)
+            if resolved != model_name:
+                if _safe_is_dir(Path(resolved)):
+                    tier = get_transformers_tier(resolved)
+                    if tier != "default":
+                        logger.info(
+                            "Transformers tier %s selected for %s (resolved local path: %s)",
+                            tier,
+                            model_name,
+                            resolved,
+                        )
+                        return tier
+                elif _looks_like_hf_id(resolved):
+                    result = _tier_from_name(resolved)
+                    if result is not None:
+                        tier, match = result
+                        logger.info(
+                            "Transformers tier %s selected for %s (resolved HF ID: %s, match: %s)",
+                            tier,
+                            model_name,
+                            resolved,
+                            match,
+                        )
+                        return tier
             local_tc = Path(model_name) / "tokenizer_config.json"
-            if local_tc.is_file() and _check_tokenizer_config_needs_v5(model_name):
+            if _safe_is_file(local_tc) and _check_tokenizer_config_needs_v5(model_name):
                 logger.info(
                     "Transformers tier 530 selected for %s (local tokenizer_config.json check)",
                     model_name,
@@ -683,36 +908,16 @@ def get_transformers_tier(model_name: str) -> str:
             return "default"
 
     # --- Fast substring checks (no I/O) ------------------------------------
-    if "assistant" in lowered and ("gemma-4" in lowered or "gemma4" in lowered):
+    result = _tier_from_name(model_name)
+    if result is not None:
+        tier, match = result
         logger.info(
-            "Transformers tier 510 selected for %s (gemma-4 assistant variant)",
-            model_name,
-        )
-        return "510"
-    match = next((sub for sub in TRANSFORMERS_510_MODEL_SUBSTRINGS if sub in lowered), None)
-    if match is not None:
-        logger.info(
-            "Transformers tier 510 selected for %s (substring match: %s)",
+            "Transformers tier %s selected for %s (substring match: %s)",
+            tier,
             model_name,
             match,
         )
-        return "510"
-    match = next((sub for sub in TRANSFORMERS_550_MODEL_SUBSTRINGS if sub in lowered), None)
-    if match is not None:
-        logger.info(
-            "Transformers tier 550 selected for %s (substring match: %s)",
-            model_name,
-            match,
-        )
-        return "550"
-    match = next((sub for sub in TRANSFORMERS_5_MODEL_SUBSTRINGS if sub in lowered), None)
-    if match is not None:
-        logger.info(
-            "Transformers tier 530 selected for %s (substring match: %s)",
-            model_name,
-            match,
-        )
-        return "530"
+        return tier
 
     # --- Slow config fallbacks (network for HF IDs) ------------------------
     if _check_config_needs_510(model_name):
@@ -721,6 +926,23 @@ def get_transformers_tier(model_name: str) -> str:
     if _check_config_needs_550(model_name):
         logger.info("Transformers tier 550 selected for %s (config.json check)", model_name)
         return "550"
+    if _check_config_needs_530(model_name):
+        # Same Qwen3.6 caveat as the local path: honor a _name_or_path name hint
+        # before selecting 530.
+        remote_cfg = _load_config_json(model_name) or {}
+        base = remote_cfg.get("_name_or_path") or remote_cfg.get("model_name")
+        override = _higher_tier_name_override(
+            base if isinstance(base, str) and base != model_name else None
+        )
+        if override is not None:
+            logger.info(
+                "Transformers tier %s selected for %s (name overrides 530 config)",
+                override,
+                model_name,
+            )
+            return override
+        logger.info("Transformers tier 530 selected for %s (config.json check)", model_name)
+        return "530"
     if _check_tokenizer_config_needs_v5(model_name):
         logger.info(
             "Transformers tier 530 selected for %s (tokenizer_config.json check)",
@@ -1001,14 +1223,18 @@ def ensure_transformers_version(model_name: str) -> None:
       • Need 5.3.0 → prepend .venv_t5_530/ to sys.path, purge modules.
       • Need 4.x  → remove all .venv_t5_*/ from sys.path, purge modules.
 
-    For custom-named LoRA adapters, the base model is resolved from
-    ``adapter_config.json`` before checking.
+    For custom-named LoRA adapters, the base model is resolved before checking
+    (from ``adapter_config.json`` or, for adapter_model-only LoRAs, the directory
+    name).
 
     NOTE: Training and inference use subprocess isolation instead. Used only by
     the export path (routes/export.py).
     """
-    # Resolve LoRA adapters to their base model for accurate detection.
-    resolved = _resolve_base_model(model_name)
+    # Only pre-resolve for LoRA adapter dirs; see activate_transformers_for_subprocess.
+    if _is_lora_adapter_dir(Path(model_name)):
+        resolved = _resolve_base_model(model_name)
+    else:
+        resolved = model_name
     tier = get_transformers_tier(resolved)
     if model_name != resolved and (Path(model_name) / "config.json").is_file():
         # Gate on a real local config.json: a checkpoint carries config the base may not
