@@ -845,6 +845,7 @@ export const en = {
       resumingTraining: "Resuming training...",
       startingTraining: "starting training...",
       dataset: "Dataset",
+      datasetStreaming: "Dataset: streaming (no full download)",
       modelWeights: "Model weights",
     },
     tour: {

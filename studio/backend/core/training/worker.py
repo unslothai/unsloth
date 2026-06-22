@@ -2801,6 +2801,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             subset = config.get("subset"),
             train_split = config.get("train_split", "train"),
             eval_split = config.get("eval_split"),
+            dataset_streaming = config.get("dataset_streaming", False),
             eval_steps = config.get("eval_steps", 0.00),
             dataset_slice_start = config.get("dataset_slice_start"),
             dataset_slice_end = config.get("dataset_slice_end"),
