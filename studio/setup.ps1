@@ -2560,7 +2560,10 @@ if (-not $ROCmIndexUrl -and $CuTag -eq "cpu") {
     # After an AMD ROCm fallback, force-reinstall so a partially-installed ROCm torch
     # (which still satisfies the CPU torch>= range) is replaced by the CPU build. Skip
     # the forced reinstall on a genuine CPU-only host so the common path stays fast.
-    $cpuForce = if ($ROCmCpuFallback) { @("--force-reinstall") } else { @() }
+    # Build the array directly: an if-expression collapses @("x") to a scalar string,
+    # which @splat would then enumerate char-by-char into broken single-letter args.
+    $cpuForce = @()
+    if ($ROCmCpuFallback) { $cpuForce = @("--force-reinstall") }
     if ($script:UnslothVerbose) {
         Fast-Install torch torchvision torchaudio @cpuForce --index-url "$PyTorchWhlBase/cpu"
         $torchInstallExit = $LASTEXITCODE
