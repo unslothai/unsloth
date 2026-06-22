@@ -141,6 +141,13 @@ class ValidateModelRequest(BaseModel):
     max_seq_length: int = Field(0, ge = 0, le = 1048576)
     load_in_4bit: bool = Field(True)
     gpu_ids: Optional[List[int]] = Field(None)
+    load_mmproj: bool = Field(
+        True,
+        description = (
+            "For GGUF vision models, include the mmproj vision projector in "
+            "validation-time VRAM sizing. Mirrors LoadRequest.load_mmproj."
+        ),
+    )
     include_context_length: bool = Field(
         False,
         description = "Also read the native context length from the local GGUF header. "
@@ -427,12 +434,13 @@ class InferenceStatusResponse(BaseModel):
             "(auto on an MTP model, or forced mtp / mtp+ngram). "
             "'binary_no_mtp' / 'binary_outdated' -> a newer prebuilt would "
             "re-enable it (show the update affordance); 'runtime_error' -> the "
-            "current build could not run it. 'mla_mtp_disabled' -> an Auto-mode "
-            "policy downgrade: the model is MLA (GLM-5.2 et al.) whose llama.cpp "
-            "MTP path runs slower than no speculation, so Auto used ngram-mod or "
-            "spec-off instead -- updating won't help; choose MTP in Settings (or "
-            "set UNSLOTH_MLA_MTP_ENABLED=1) to force it. None when MTP engaged or "
-            "was not requested."
+            "current build could not run it; 'drafter_not_found' -> the model's "
+            "separate MTP drafter could not be resolved; 'mla_mtp_disabled' -> "
+            "an Auto-mode policy downgrade: the model is MLA (GLM-5.2 et al.) "
+            "whose llama.cpp MTP path runs slower than no speculation, so Auto "
+            "used ngram-mod or spec-off instead -- updating won't help; choose "
+            "MTP in Settings (or set UNSLOTH_MLA_MTP_ENABLED=1) to force it. "
+            "None when MTP engaged or was not requested."
         ),
     )
     llama_cpp_prebuilt_stale: bool = Field(
