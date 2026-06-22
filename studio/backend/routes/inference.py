@@ -2065,6 +2065,19 @@ def get_llama_cpp_backend() -> LlamaCppBackend:
     return _llama_cpp_backend
 
 
+def _note_idle_activity(backend) -> None:
+    """Best-effort idle-TTL activity ping at a request boundary.
+
+    The real GGUF backend implements ``note_activity`` for the idle-TTL evictor.
+    Calling it through this guard keeps the request path working for any backend
+    that does not track activity, so a missing telemetry hook can never turn a
+    served request into a 500.
+    """
+    note = getattr(backend, "note_activity", None)
+    if callable(note):
+        note()
+
+
 def _effective_load_in_4bit(config: ModelConfig, requested: bool) -> bool:
     """Effective quantization the loader will use: a LoRA adapter can flip 4-bit to
     16-bit via adapter_config.json, so the guard sizes this, not the raw request."""
@@ -4593,6 +4606,10 @@ async def openai_chat_completions(
 
     llama_backend = get_llama_cpp_backend()
     using_gguf = llama_backend.is_loaded
+    if using_gguf:
+        # Refresh idle-TTL activity at request start; streamed chunks refresh it
+        # again so a long generation is never auto-evicted mid-flight.
+        _note_idle_activity(llama_backend)
 
     # OpenAI-SDK clients send ``chat_template_kwargs`` via ``extra_body``, which
     # the SDK spreads into the request body at the top level. Studio's
@@ -6044,6 +6061,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
             status_code = 503,
             detail = "No GGUF model loaded. Load a GGUF model first.",
         )
+    _note_idle_activity(llama_backend)
 
     body = await request.json()
     if body.get("max_tokens") is None:
@@ -6214,6 +6232,7 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
             status_code = 503,
             detail = "No GGUF model loaded. Load a GGUF model first.",
         )
+    _note_idle_activity(llama_backend)
 
     body = await request.json()
     target_url = f"{llama_backend.base_url}/v1/embeddings"

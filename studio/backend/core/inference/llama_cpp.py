@@ -9,6 +9,7 @@ OpenAI-compatible /v1/chat/completions endpoint.
 
 import atexit
 import contextlib
+import functools
 import json
 import os
 import re
@@ -1219,6 +1220,20 @@ def _backfill_usage_from_timings(usage, timings):
     return out
 
 
+def _tracks_inflight(genfunc):
+    """Decorate a generator method so it counts as an in-flight request for the
+    whole time the caller iterates it. Keeps the idle-TTL evictor from unloading
+    the model mid-generation -- including the window before the first streamed
+    token, when per-chunk activity has not started refreshing yet."""
+
+    @functools.wraps(genfunc)
+    def wrapper(self, *args, **kwargs):
+        with self.request_in_flight():
+            yield from genfunc(self, *args, **kwargs)
+
+    return wrapper
+
+
 class LlamaCppBackend:
     """Manages a llama-server subprocess for GGUF model inference.
 
@@ -1350,6 +1365,18 @@ class LlamaCppBackend:
         # to decide whether to wait for the VRAM reclaim to finish.
         self._last_kill_monotonic: float = 0.0
 
+        # Monotonic timestamp of the last generation activity, refreshed on load
+        # and on every streamed chunk. Drives the idle-TTL eviction loop so a
+        # genuinely idle model can be unloaded automatically.
+        self._last_activity: float = 0.0
+        # Count of inference requests currently in flight. The idle-TTL evictor
+        # refuses to unload while this is > 0, so a request that is still waiting
+        # on its first token (no per-chunk activity yet) is never evicted
+        # mid-flight. Guarded by its own lock; requests bracket themselves with
+        # request_in_flight().
+        self._inflight_requests: int = 0
+        self._inflight_lock = threading.Lock()
+
         _reaped = self._kill_orphaned_servers()
         if _reaped:
             # Reaped VRAM frees lazily; arm the settle wait so the first load
@@ -1367,6 +1394,76 @@ class LlamaCppBackend:
     def is_active(self) -> bool:
         """True if a llama-server process exists (loading or loaded)."""
         return self._process is not None
+
+    def note_activity(self) -> None:
+        """Record that the loaded model was just used (drives idle-TTL eviction)."""
+        self._last_activity = time.monotonic()
+
+    @property
+    def last_activity_monotonic(self) -> float:
+        return self._last_activity
+
+    @property
+    def idle_seconds(self) -> Optional[float]:
+        """Seconds since the model was last used, or None when none is loaded."""
+        if not self.is_loaded:
+            return None
+        if not self._last_activity:
+            return 0.0
+        return max(0.0, time.monotonic() - self._last_activity)
+
+    def _inflight_lock_obj(self) -> "threading.Lock":
+        """The in-flight counter lock, created on demand. __init__ sets it, but
+        some tests build a backend via __new__ (skipping __init__); creating it
+        lazily keeps the idle-TTL guard working for those too."""
+        lock = getattr(self, "_inflight_lock", None)
+        if lock is None:
+            lock = threading.Lock()
+            self._inflight_lock = lock
+            if not hasattr(self, "_inflight_requests"):
+                self._inflight_requests = 0
+        return lock
+
+    @contextlib.contextmanager
+    def request_in_flight(self):
+        """Bracket an inference request so the idle-TTL evictor will not unload
+        the model while it runs. Refreshes activity on entry and exit so the gap
+        before the first streamed token (when per-chunk activity has not started)
+        cannot be mistaken for idleness."""
+        lock = self._inflight_lock_obj()
+        with lock:
+            self._inflight_requests += 1
+        self.note_activity()
+        try:
+            yield
+        finally:
+            with lock:
+                self._inflight_requests = max(0, self._inflight_requests - 1)
+            self.note_activity()
+
+    def evict_if_idle(self, ttl: Optional[float]) -> Optional[float]:
+        """Unload the model iff it is loaded, has no in-flight request, and has
+        been idle at least ``ttl`` seconds. Returns the idle seconds at eviction
+        time, or ``None`` if nothing was evicted.
+
+        Serialized via ``_serial_load_lock`` (the same lock ``load_model`` holds
+        for its whole duration) so eviction can never run concurrently with a
+        load: ``unload_model`` sets ``_cancel_event``, which would otherwise abort
+        an in-flight load of a different model. The idle and in-flight checks are
+        re-evaluated under the lock, so a load or a fresh request that lands first
+        wins the race.
+        """
+        if not ttl or ttl <= 0:
+            return None
+        with self._serial_load_lock:
+            with self._inflight_lock_obj():
+                if self._inflight_requests > 0:
+                    return None
+            idle = self.idle_seconds
+            if self.is_loaded and idle is not None and idle >= ttl:
+                self.unload_model()
+                return idle
+            return None
 
     @property
     def base_url(self) -> str:
@@ -3580,6 +3677,7 @@ class LlamaCppBackend:
         healthy = self._wait_for_health(timeout = 600.0)
         if healthy:
             self._healthy = True
+            self.note_activity()
             self._gpu_offload_active = True
             if extra_args is not None:
                 self._extra_args = list(extra_args)
@@ -6015,6 +6113,7 @@ class LlamaCppBackend:
                         )
 
                 self._healthy = True
+                self.note_activity()
 
                 # Commit caller intent only after _healthy=True so a failed start
                 # can't poison the next inheritance check. None keeps prior, []
@@ -7497,6 +7596,7 @@ class LlamaCppBackend:
                 logger.error(f"Failed to respawn llama-server: {exc}")
                 return False
 
+    @_tracks_inflight
     def generate_chat_completion(
         self,
         messages: list[dict],
@@ -7579,6 +7679,9 @@ class LlamaCppBackend:
                     first_token_deadline = first_token_deadline,
                 ):
                     buffer += raw_chunk
+                    # Idle-TTL activity: each streamed chunk keeps the model from
+                    # being auto-evicted mid-generation.
+                    self.note_activity()
                     while "\n" in buffer:
                         line, buffer = buffer.split("\n", 1)
                         line = line.strip()
@@ -7704,6 +7807,7 @@ class LlamaCppBackend:
 
     # ── Tool-calling agentic loop ──────────────────────────────
 
+    @_tracks_inflight
     def generate_chat_completion_with_tools(
         self,
         messages: list[dict],
@@ -8608,6 +8712,9 @@ class LlamaCppBackend:
                     first_token_deadline = first_token_deadline,
                 ):
                     buffer += raw_chunk
+                    # Idle-TTL activity: each streamed chunk keeps the model from
+                    # being auto-evicted mid-generation.
+                    self.note_activity()
                     while "\n" in buffer:
                         line, buffer = buffer.split("\n", 1)
                         line = line.strip()

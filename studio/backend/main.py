@@ -440,6 +440,55 @@ def _start_llama_cpp_probes_if_enabled(app: FastAPI) -> None:
     ).start()
 
 
+async def _model_idle_eviction_loop() -> None:
+    """Unload the loaded GGUF model once it has been idle longer than the
+    configured TTL. ``0`` disables eviction (the historical behavior). Activity is
+    recorded on every generation request and streamed chunk, so this only fires on
+    a genuinely idle model. Started/stopped by the app lifespan."""
+    import os as _os
+
+    import structlog as _structlog
+
+    from utils.model_ttl_settings import (
+        MODEL_IDLE_EVICTION_POLL_SECONDS,
+        get_model_idle_ttl_seconds,
+    )
+
+    _log = _structlog.get_logger(__name__)
+    while True:
+        try:
+            await asyncio.sleep(MODEL_IDLE_EVICTION_POLL_SECONDS)
+            ttl = get_model_idle_ttl_seconds()
+            if ttl <= 0:
+                continue
+            from routes.inference import get_llama_cpp_backend
+
+            backend = get_llama_cpp_backend()
+            # Cheap pre-check off the lock to avoid hopping to a thread every
+            # poll; the authoritative, atomic decision is made in evict_if_idle.
+            idle = backend.idle_seconds
+            if not (backend.is_loaded and idle is not None and idle >= ttl):
+                continue
+            # Read the label before eviction (model_identifier clears on unload).
+            _label = _os.path.basename(str(backend.model_identifier or "")) or "model"
+            # evict_if_idle re-checks idle + in-flight under the load lock and
+            # unloads atomically, so it cannot race a concurrent load/unload or
+            # evict a request still waiting on its first token. Blocking, so run
+            # it off the event loop.
+            evicted_idle = await asyncio.to_thread(backend.evict_if_idle, ttl)
+            if evicted_idle is not None:
+                _log.info(
+                    "model.idle_evict",
+                    model = _label,
+                    idle_seconds = round(evicted_idle, 1),
+                    ttl_seconds = ttl,
+                )
+        except asyncio.CancelledError:
+            break
+        except Exception as exc:
+            _log.debug("model idle eviction loop error: %s", exc)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup: detect hardware, seed default admin if needed. Shutdown: clean up compiled cache."""
@@ -521,7 +570,20 @@ async def lifespan(app: FastAPI):
         print("=" * 60 + "\n")
     else:
         app.state.bootstrap_password = storage.get_bootstrap_password()
+
+    app.state.model_idle_eviction_task = asyncio.create_task(_model_idle_eviction_loop())
+
     yield
+
+    _evict_task = getattr(app.state, "model_idle_eviction_task", None)
+    if _evict_task is not None:
+        _evict_task.cancel()
+        try:
+            await _evict_task
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            pass
 
     from core.inference.llama_http import aclose as _close_llama_http
 

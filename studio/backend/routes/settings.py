@@ -31,6 +31,13 @@ from utils.helper_precache_settings import (
     helper_model_disabled_by_env,
     set_helper_precache_enabled,
 )
+from utils.model_ttl_settings import (
+    MAX_MODEL_IDLE_TTL_SECONDS,
+    MIN_MODEL_IDLE_TTL_SECONDS,
+    default_model_idle_ttl_seconds,
+    get_model_idle_ttl_seconds,
+    set_model_idle_ttl_seconds,
+)
 
 router = APIRouter()
 
@@ -197,3 +204,60 @@ def update_personalization_settings(
             log = logger,
         ) from exc
     return payload
+
+
+class ModelIdleTtlPayload(BaseModel):
+    idle_ttl_seconds: int = Field(..., ge = MIN_MODEL_IDLE_TTL_SECONDS, le = MAX_MODEL_IDLE_TTL_SECONDS)
+
+
+class ModelIdleTtlResponse(BaseModel):
+    idle_ttl_seconds: int
+    default_idle_ttl_seconds: int
+    min_idle_ttl_seconds: int = MIN_MODEL_IDLE_TTL_SECONDS
+    max_idle_ttl_seconds: int = MAX_MODEL_IDLE_TTL_SECONDS
+    enabled: bool
+    loaded_model_idle_seconds: float | None = None
+    evicts_in_seconds: float | None = None
+
+
+def _model_idle_ttl_response(ttl: int) -> ModelIdleTtlResponse:
+    idle: float | None = None
+    evicts_in: float | None = None
+    try:
+        from routes.inference import get_llama_cpp_backend
+
+        backend = get_llama_cpp_backend()
+        idle = backend.idle_seconds
+        if ttl > 0 and idle is not None:
+            evicts_in = max(0.0, ttl - idle)
+    except Exception:
+        pass
+    return ModelIdleTtlResponse(
+        idle_ttl_seconds = ttl,
+        default_idle_ttl_seconds = default_model_idle_ttl_seconds(),
+        enabled = ttl > 0,
+        loaded_model_idle_seconds = idle,
+        evicts_in_seconds = evicts_in,
+    )
+
+
+@router.get("/model-ttl", response_model = ModelIdleTtlResponse)
+def get_model_ttl(current_subject: str = Depends(get_current_subject)) -> ModelIdleTtlResponse:
+    return _model_idle_ttl_response(get_model_idle_ttl_seconds())
+
+
+@router.put("/model-ttl", response_model = ModelIdleTtlResponse)
+def update_model_ttl(
+    payload: ModelIdleTtlPayload, current_subject: str = Depends(get_current_subject)
+) -> ModelIdleTtlResponse:
+    try:
+        ttl = set_model_idle_ttl_seconds(payload.idle_ttl_seconds)
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_error_detail(exc, fallback = "Invalid model idle TTL."),
+            event = "settings.update_model_ttl_failed",
+            log = logger,
+        ) from exc
+    return _model_idle_ttl_response(ttl)
