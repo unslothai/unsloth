@@ -1794,6 +1794,7 @@ else
         printf "  ${C_DIM}%-15s${C_OK}%s${C_RST}\n" "launch" "unsloth studio -p 8888"
     fi
     printf "  ${C_DIM}%-15s%s${C_RST}\n" "" "(add -H 0.0.0.0 to allow network / cloud access)"
+    printf "  ${C_DIM}%-15s%s${C_RST}\n" "" "(add --secure to allow HTTPS)"
 fi
 echo ""
 
