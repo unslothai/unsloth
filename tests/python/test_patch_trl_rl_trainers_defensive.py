@@ -79,3 +79,65 @@ def test_grpo_config_sibling_module_import_is_patched(tmp_path):
     args = config_module_config(output_dir = str(tmp_path))
     assert hasattr(args, "unsloth_grpo_mini_batch")
     assert args.unsloth_grpo_mini_batch is None
+
+
+def test_alias_experimental_trl_trainers_exposes_cpo_orpo():
+    # TRL 1.x moves CPOTrainer/ORPOTrainer to trl.experimental.<algo> and drops
+    # the trl.trainer.<algo>_trainer shim, so dir(trl.trainer) discovery in
+    # patch_trl_rl_trainers() would miss them and the #4952 fix would silently
+    # stop applying. The alias helper must re-expose them under trl.trainer.
+    import unsloth  # noqa: F401
+    import importlib
+
+    import trl.trainer
+
+    from unsloth.models.rl import _alias_experimental_trl_trainers
+
+    try:
+        importlib.import_module("trl.experimental")
+    except Exception:
+        pytest.skip("TRL build has no trl.experimental package")
+
+    _alias_experimental_trl_trainers()
+
+    discovered = [
+        x
+        for x in dir(trl.trainer)
+        if x.islower() and x.endswith("_trainer") and x != "base_trainer"
+    ]
+
+    for algo in ("cpo", "orpo"):
+        trainer_file = f"{algo}_trainer"
+        # Only assert re-exposure if the algo actually exists in experimental
+        # (it does on TRL >= 0.27 / 1.x; on very old TRL it lives in trl.trainer
+        # natively and is already discoverable).
+        try:
+            importlib.import_module(f"trl.experimental.{algo}.{trainer_file}")
+            in_experimental = True
+        except Exception:
+            in_experimental = False
+        if in_experimental:
+            assert trainer_file in discovered, (
+                f"{trainer_file} not discoverable after alias; #4952 fix would "
+                f"not apply on this TRL"
+            )
+            # The from-import path that _patch_trl_rl_trainers_impl relies on
+            # must resolve through the aliased module.
+            assert hasattr(trl.trainer, trainer_file)
+
+
+def test_alias_experimental_trl_trainers_is_idempotent_and_noop_on_old_trl():
+    # Re-running must not raise and must not shadow already-present trainers.
+    import unsloth  # noqa: F401
+    import trl.trainer
+
+    from unsloth.models.rl import _alias_experimental_trl_trainers
+
+    before = {
+        x for x in dir(trl.trainer) if x.endswith("_trainer")
+    }
+    _alias_experimental_trl_trainers()
+    _alias_experimental_trl_trainers()  # idempotent
+    after = {x for x in dir(trl.trainer) if x.endswith("_trainer")}
+    # Aliasing only ever adds; it never removes a trainer that already existed.
+    assert before.issubset(after)

@@ -1795,6 +1795,33 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
     except Exception:
         pass
 
+    # TRL 1.x: the Trainer/Config originate from trl.experimental.<algo> and are
+    # re-exported by the experimental package (e.g. `from trl.experimental.cpo
+    # import CPOTrainer`). The writebacks above only update trl.trainer.*; the
+    # experimental package and any module that bound the original class by
+    # reference at import time still point at the unpatched class. Rebind every
+    # already-imported trl.* module that holds the original symbol so the fix is
+    # visible at the user's import site, regardless of which path they use.
+    try:
+        _patched_trainer_cls = getattr(created_module, f"Unsloth{RLTrainer_name}")
+        _patched_config_cls = getattr(created_module, f"Unsloth{RLConfig_name}")
+        _orig_trainer_name = RLTrainer.__name__
+        _orig_config_name = RLConfig.__name__
+        for _mod_name, _mod in list(sys.modules.items()):
+            if _mod is None or not _mod_name.startswith("trl"):
+                continue
+            try:
+                _bound_t = getattr(_mod, _orig_trainer_name, None)
+                if _bound_t is RLTrainer:
+                    setattr(_mod, _orig_trainer_name, _patched_trainer_cls)
+                _bound_c = getattr(_mod, _orig_config_name, None)
+                if _bound_c is RLConfig:
+                    setattr(_mod, _orig_config_name, _patched_config_cls)
+            except (AttributeError, TypeError, ImportError):
+                continue
+    except Exception:
+        pass
+
     if trainer_file == "grpo_trainer":
         try:
             _wrap_grpo_generate_and_score(getattr(created_module, f"Unsloth{RLTrainer_name}"))
@@ -2140,9 +2167,87 @@ def patch_functions(RLTrainer, trainer_file, RLTrainer_name, all_imports, import
     return RLTrainer_source
 
 
+def _alias_experimental_trl_trainers():
+    # TRL 1.x moved several trainers (e.g. CPOTrainer, ORPOTrainer) out of
+    # trl.trainer into trl.experimental.<algo>.<algo>_trainer and dropped the
+    # trl.trainer.<algo>_trainer shim that older TRL (0.26 - 0.28) kept. Because
+    # patch_trl_rl_trainers() discovers trainers via dir(trl.trainer), those
+    # trainers are never patched on TRL 1.x and Unsloth fixes (e.g. the CPO/ORPO
+    # multimodal-processor tokenization fix, #4952) silently stop applying.
+    #
+    # Re-expose any experimental-only "<algo>_trainer" module under trl.trainer
+    # (module alias + Trainer/Config class attributes) so the existing discovery
+    # and patch machinery, which already resolves thin wrappers to their
+    # experimental parent, works unchanged. No-op when trl.trainer.<algo>_trainer
+    # already exists (older TRL), so this is backwards compatible.
+    import trl.trainer
+
+    try:
+        import trl.experimental as _trl_experimental
+    except Exception:
+        return
+
+    _experimental_dir = os.path.dirname(getattr(_trl_experimental, "__file__", "") or "")
+    if not _experimental_dir:
+        return
+
+    # Only re-expose trainers Unsloth actually has dedicated rewriters for
+    # (RL_FUNCTIONS keys, e.g. cpo_trainer / orpo_trainer). This keeps the
+    # patch surface identical to older TRL and avoids compiling unrelated
+    # experimental trainers that were never patched before.
+    _wanted_algos = {k[: -len("_trainer")] for k in RL_FUNCTIONS if k.endswith("_trainer")}
+
+    for _algo in sorted(_wanted_algos):
+        _trainer_file = f"{_algo}_trainer"
+        # Skip if trl.trainer already exposes this trainer module (older TRL).
+        if hasattr(trl.trainer, _trainer_file):
+            continue
+        _exp_mod_name = f"trl.experimental.{_algo}.{_trainer_file}"
+        try:
+            _exp_mod = importlib.import_module(_exp_mod_name)
+        except Exception:
+            continue
+        # Only alias modules that actually define a matching <Algo>Trainer, so we
+        # never shadow trl.trainer with an unrelated experimental submodule.
+        _trainer_classes = [
+            x
+            for x in dir(_exp_mod)
+            if x.endswith("Trainer")
+            and x != "Trainer"
+            and not x.startswith("_")
+            and _algo in x.lower()
+        ]
+        if len(_trainer_classes) != 1:
+            continue
+        try:
+            setattr(trl.trainer, _trainer_file, _exp_mod)
+            sys.modules.setdefault(f"trl.trainer.{_trainer_file}", _exp_mod)
+            # Expose Trainer/Config classes as trl.trainer attributes so the
+            # existing `from trl.trainer import (XTrainer, XConfig)` path works.
+            for _attr in dir(_exp_mod):
+                if (
+                    (_attr.endswith("Trainer") or _attr.endswith("Config"))
+                    and _attr not in ("Trainer", "Config")
+                    and not _attr.startswith("_")
+                    and _algo in _attr.lower()
+                    and not hasattr(trl.trainer, _attr)
+                ):
+                    setattr(trl.trainer, _attr, getattr(_exp_mod, _attr))
+        except Exception:
+            continue
+    return
+
+
 def patch_trl_rl_trainers():
     # Patch all TRL modules if they have vLLM or PEFT
     import trl.trainer
+
+    # Re-expose TRL 1.x experimental-only trainers (CPO/ORPO/...) under
+    # trl.trainer so dir(trl.trainer) discovery below still finds them.
+    try:
+        _alias_experimental_trl_trainers()
+    except Exception as e:
+        logger.info(f"Unsloth: Could not alias experimental TRL trainers: {e}")
 
     all_trainers = dir(trl.trainer)
     all_trainers = [
