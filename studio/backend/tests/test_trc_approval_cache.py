@@ -101,6 +101,31 @@ def test_store_roundtrip_and_forget():
     assert approvals.lookup("u", "k") is None
 
 
+def test_file_lock_acquires_releases_and_reacquires():
+    # Used around every store write; must acquire, release, and be re-acquirable (no leak).
+    with approvals._file_lock():
+        pass
+    with approvals._file_lock():
+        pass
+
+
+def test_concurrent_records_do_not_lose_entries():
+    # Many writers recording different keys must all survive the read-modify-write; the file
+    # lock + re-read serialize them so none clobbers another (cross-process race fix).
+    import threading
+
+    def rec(i):
+        approvals.record("u", f"k{i}", commit_sha = "s", fingerprint = f"f{i}", max_severity = "HIGH")
+
+    threads = [threading.Thread(target = rec, args = (i,)) for i in range(20)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    for i in range(20):
+        assert approvals.lookup("u", f"k{i}") is not None
+
+
 def test_combined_sha_none_when_any_unresolvable(monkeypatch):
     monkeypatch.setattr(
         approvals, "resolve_commit_sha", lambda t, hf = None: None if t == "org/base" else "s"

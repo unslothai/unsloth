@@ -77,8 +77,12 @@ _HF_TMP_CHECKPOINT_RE = re.compile(r"^tmp-checkpoint-\d+$")
 
 
 def _sanitize_db_config(config: dict[str, Any]) -> dict[str, Any]:
+    # ``subject`` (the run owner's username / API-key id) is worker-only metadata; never
+    # persist it to config_json, which run-history GET returns to any authenticated user.
     db_config = {
-        k: v for k, v in config.items() if k not in {"hf_token", "wandb_token", "s3_config"}
+        k: v
+        for k, v in config.items()
+        if k not in {"hf_token", "wandb_token", "s3_config", "subject"}
     }
     s3_config = config.get("s3_config")
     if hasattr(s3_config, "model_dump"):

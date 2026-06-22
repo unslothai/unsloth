@@ -13,6 +13,7 @@ never stored or honored, and any store/SHA error degrades to "ask again", never 
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import threading
@@ -100,6 +101,44 @@ def _save(data: dict) -> None:
             pass
 
 
+@contextlib.contextmanager
+def _file_lock():
+    """Best-effort cross-process exclusive lock over the store. Inference/export/training
+    record approvals from separate subprocesses, so the in-process RLock is not enough: two
+    processes could each read the same JSON and clobber the other's entry on ``os.replace``.
+    Holding this around the read-modify-write serializes them. Degrades to a no-op if OS
+    locking is unavailable (the consequence is only an occasional extra prompt)."""
+    path = _store_path()
+    try:
+        storage_roots.ensure_dir(path.parent)
+        fd = os.open(str(path.parent / f"{path.name}.lock"), os.O_CREAT | os.O_RDWR, 0o600)
+    except Exception:
+        yield
+        return
+    try:
+        try:
+            if os.name == "nt":
+                import msvcrt
+                msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(fd, fcntl.LOCK_EX)
+        except Exception:
+            pass  # locking unavailable; the thread lock still applies
+        yield
+    finally:
+        try:
+            if os.name == "nt":
+                import msvcrt
+                with contextlib.suppress(Exception):
+                    msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
+
 def lookup(subject: str, target_key: str) -> Optional[StoredApproval]:
     """The stored approval for (subject, target_key), or None. A CRITICAL entry (e.g. a
     hand-edited store) is refused so it can never seed an approval."""
@@ -132,7 +171,7 @@ def record(
     """Persist a user's explicit approval. CRITICAL is never stored."""
     if not subject or not fingerprint or cache_disabled() or max_severity == CRITICAL:
         return
-    with _lock:
+    with _lock, _file_lock():
         data = _load()
         data.setdefault("subjects", {}).setdefault(subject, {})[target_key] = {
             "commit_sha": commit_sha,
@@ -148,7 +187,7 @@ def forget(subject: str, target_key: str) -> None:
     """Drop an approval (e.g. the user declined / discarded the download)."""
     if not subject:
         return
-    with _lock:
+    with _lock, _file_lock():
         data = _load()
         if data.get("subjects", {}).get(subject, {}).pop(target_key, None) is not None:
             _save(data)
