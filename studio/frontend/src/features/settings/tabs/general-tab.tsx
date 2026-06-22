@@ -14,7 +14,7 @@ import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { usePlatformStore } from "@/config/env";
 import { isTauri } from "@/lib/api-base";
-import { openModelsDir } from "@/features/native-intents/api";
+import { openModelsDir } from "@/features/native-intents";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { toast } from "@/lib/toast";
 import { loadModelsFolder, type ModelsFolder } from "../api/models-folder";
@@ -343,14 +343,14 @@ export function GeneralTab() {
         {/* The desktop app authenticates via desktop auto-auth with a generated
             secret, so there is no user-entered password to change here (and
             changing it would clear the desktop secret). Web only. */}
-        {!isTauri ? (
+        {isTauri ? null : (
           <SettingsRow
-            label="Password"
-            description="Change the password for this Studio account."
+            label={t("settings.general.password")}
+            description={t("settings.general.passwordDescription")}
           >
             <ChangePasswordDialog />
           </SettingsRow>
-        ) : null}
+        )}
       </SettingsSection>
 
       {modelsFolder ? (

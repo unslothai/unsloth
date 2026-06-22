@@ -105,6 +105,22 @@ export const en = {
         "Used to load gated models and push artifacts.",
       hideToken: "Hide token",
       showToken: "Show token",
+      password: "Password",
+      passwordDescription: "Change the password for this Studio account.",
+      passwordDialog: {
+        trigger: "Change password",
+        title: "Change password",
+        description:
+          "Enter your current password and choose a new one (at least {minLength} characters).",
+        currentPassword: "Current password",
+        newPassword: "New password",
+        confirmPassword: "Confirm new password",
+        mismatch: "Passwords do not match.",
+        update: "Update password",
+        updating: "Updating...",
+        updated: "Password updated.",
+        updateFailed: "Password update failed.",
+      },
       chatDefaults: "Chat defaults",
       autoTitleNewChats: "Auto-title new chats",
       autoTitleNewChatsDescription:
