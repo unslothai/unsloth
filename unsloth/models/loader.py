@@ -1254,6 +1254,7 @@ class FastModel(FastBaseModel):
         # and break the load. Mirror that normalization from the model's own config.
         try:
             from unsloth_zoo.utils import get_quant_type
+
             # For an adapter-only PEFT repo, model_config is still None here (the base
             # config is loaded later), so resolve the base checkpoint's config to detect
             # a non-bnb-quantized base (e.g. a LoRA over gpt-oss MXFP4).
