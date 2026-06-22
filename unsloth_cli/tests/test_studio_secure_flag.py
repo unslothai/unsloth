@@ -51,7 +51,6 @@ def test_studio_default_exposes_secure_option_default_off():
 def test_secure_exposes_hidden_not_secure_alias():
     # --not-secure is a hidden, deprecated alias for --no-secure on both commands.
     import inspect
-
     for fn in (_studio().run, _studio().studio_default):
         opt = inspect.signature(fn).parameters["not_secure"].default
         decls = set(getattr(opt, "param_decls", []) or [])
