@@ -240,9 +240,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
             try:
                 from utils.ssm_runtime import ensure_ssm_runtime
 
-                _ssm_status = lambda m: _send_response(
-                    resp_queue, {"type": "status", "message": m}
-                )
+                _ssm_status = lambda m: _send_response(resp_queue, {"type": "status", "message": m})
                 # For a LoRA, also check the base: the adapter id won't match the SSM
                 # heuristics but its base (Nemotron-H, ...) needs the kernels.
                 ssm_targets = [config["model_name"]]

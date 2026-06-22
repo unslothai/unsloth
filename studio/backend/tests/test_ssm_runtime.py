@@ -194,32 +194,35 @@ def test_install_kernel_falls_back_to_source(monkeypatch):
 
 # ── import-cache invalidation (so a just-installed kernel is importable) ───────
 
+
 def test_is_importable_invalidates_caches(monkeypatch):
     calls = []
-    monkeypatch.setattr(
-        ssm_runtime.importlib, "invalidate_caches", lambda: calls.append(1)
-    )
+    monkeypatch.setattr(ssm_runtime.importlib, "invalidate_caches", lambda: calls.append(1))
     assert ssm_runtime._is_importable("sys") is True
     assert calls  # caches invalidated before attempting the import
 
 
 def test_wheel_install_invalidates_caches(monkeypatch):
     monkeypatch.setattr(ssm_runtime, "_is_importable", lambda name: False)
-    monkeypatch.setattr(ssm_runtime, "probe_torch_wheel_env", lambda timeout=30: {})
+    monkeypatch.setattr(ssm_runtime, "probe_torch_wheel_env", lambda timeout = 30: {})
     monkeypatch.setattr(ssm_runtime, "direct_wheel_url", lambda **k: "https://x/w.whl")
     monkeypatch.setattr(ssm_runtime, "url_exists", lambda u: True)
     monkeypatch.setattr(
-        ssm_runtime, "install_wheel",
-        lambda url, **k: [("uv", _Result(returncode=0))],
+        ssm_runtime,
+        "install_wheel",
+        lambda url, **k: [("uv", _Result(returncode = 0))],
     )
     calls = []
-    monkeypatch.setattr(
-        ssm_runtime.importlib, "invalidate_caches", lambda: calls.append(1)
-    )
+    monkeypatch.setattr(ssm_runtime.importlib, "invalidate_caches", lambda: calls.append(1))
     ok = ssm_runtime._install_kernel(
-        import_name="mamba_ssm", display_name="mamba-ssm", pypi_name="mamba-ssm",
-        package_version="2.3.1", release_tag="v2.3.1", release_base_url="x",
-        status_cb=None, run=lambda *a, **k: _Result(),
+        import_name = "mamba_ssm",
+        display_name = "mamba-ssm",
+        pypi_name = "mamba-ssm",
+        package_version = "2.3.1",
+        release_tag = "v2.3.1",
+        release_base_url = "x",
+        status_cb = None,
+        run = lambda *a, **k: _Result(),
     )
     assert ok is True
     assert calls  # invalidated caches so the freshly written wheel imports
