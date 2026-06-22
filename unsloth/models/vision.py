@@ -26,6 +26,7 @@ try:
 except:
     from transformers import AutoModelForVision2Seq
 from ..kernels import (
+    fast_cross_entropy_loss,
     post_patch_loss_function,
 )
 from ._utils import (
@@ -41,6 +42,7 @@ from ._utils import (
 )
 from ._utils import *
 from .loader_utils import _get_fp8_mode_and_check_settings
+from .mtp import patch_mtp_loss
 from ..save import patch_saving_functions
 from ..models.loader_utils import is_distributed
 from unsloth_zoo.gradient_checkpointing import (
@@ -1257,6 +1259,7 @@ class FastBaseModel:
                 # If fallback also fails, raise the original error
                 raise _patch_err
         model = post_patch_loss_function(model)
+        model = patch_mtp_loss(model, fast_cross_entropy_loss)
 
         # Log Unsloth version for future fastpaths for inference
         if hasattr(model, "config"):

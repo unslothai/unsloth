@@ -1354,6 +1354,9 @@ def _LlamaModel_fast_forward_inference(
 LlamaModel_fast_forward_inference = _LlamaModel_fast_forward_inference()
 
 
+from .mtp import compute_mtp_loss, filter_mtp_kwargs
+
+
 def CausalLM_fast_forward(fast_forward_inference):
     def _CausalLM_fast_forward(
         self,
@@ -1485,6 +1488,22 @@ def CausalLM_fast_forward(fast_forward_inference):
                     torch_compile = True,
                     logit_softcapping = logit_softcapping,
                 )
+                mtp_loss = compute_mtp_loss(
+                    self,
+                    hidden_states,
+                    labels,
+                    loss_fn = fast_cross_entropy_loss,
+                    n_items = n_items,
+                    logit_softcapping = logit_softcapping,
+                    logit_scaling = logit_scaling,
+                    mtp_loss_weight = kwargs.get("mtp_loss_weight", None),
+                    use_mtp_loss = kwargs.get("use_mtp_loss", None),
+                    train_mtp = kwargs.get("train_mtp", None),
+                    packed_seq_lengths = kwargs.get("packed_seq_lengths", None),
+                    **filter_mtp_kwargs(kwargs),
+                )
+                if mtp_loss is not None:
+                    loss = loss + mtp_loss.to(loss.device)
                 if not return_dict:
                     output = (logits,) + outputs[1:]
                     return (loss,) + output if loss is not None else output
@@ -1536,6 +1555,22 @@ def CausalLM_fast_forward(fast_forward_inference):
                 logit_scaling = logit_scaling,
                 n_items = n_items,
             )
+            mtp_loss = compute_mtp_loss(
+                self,
+                hidden_states,
+                labels,
+                loss_fn = fast_cross_entropy_loss,
+                n_items = n_items,
+                logit_softcapping = logit_softcapping,
+                logit_scaling = logit_scaling,
+                mtp_loss_weight = kwargs.get("mtp_loss_weight", None),
+                use_mtp_loss = kwargs.get("use_mtp_loss", None),
+                train_mtp = kwargs.get("train_mtp", None),
+                packed_seq_lengths = kwargs.get("packed_seq_lengths", None),
+                **filter_mtp_kwargs(kwargs),
+            )
+            if mtp_loss is not None:
+                loss = loss + mtp_loss.to(loss.device)
         else:
             if logit_scaling != 0:
                 if logits.requires_grad:
