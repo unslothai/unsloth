@@ -818,6 +818,8 @@ class _SameTaskStreamingResponse(StreamingResponse):
             raise ClientDisconnect()
         if self.background is not None:
             await self.background()
+
+
 async def _aclose_stream_resources(
     *,
     watchers = (),
