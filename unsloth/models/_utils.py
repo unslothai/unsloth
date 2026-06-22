@@ -239,6 +239,7 @@ def _unsloth_reset_stray_compile_cache(self):
     # Module-level (not just inside the RL trainer template) so the SFT auto-packing wrapper and
     # the plain-Trainer loop can import and run it too.
     import os
+
     model = getattr(self, "model", None)
     if model is None:
         return
@@ -270,7 +271,9 @@ def _unsloth_reset_stray_compile_cache(self):
         except Exception:
             pass
         try:
-            from unsloth_zoo.gradient_checkpointing import reset_unsloth_gradient_checkpointing_buffers
+            from unsloth_zoo.gradient_checkpointing import (
+                reset_unsloth_gradient_checkpointing_buffers,
+            )
             reset_unsloth_gradient_checkpointing_buffers()
         except Exception:
             pass
@@ -279,6 +282,7 @@ def _unsloth_reset_stray_compile_cache(self):
         except Exception:
             pass
         import warnings
+
         warnings.warn(
             "Unsloth: detected a manual forward/backward run before trainer.train(); "
             "reset the torch.compile graph cache it poisoned so training starts clean. "
@@ -288,8 +292,10 @@ def _unsloth_reset_stray_compile_cache(self):
     for _m in markers:
         hook = _m.pop("hook", None)
         if hook is not None:
-            try: hook.remove()
-            except Exception: pass
+            try:
+                hook.remove()
+            except Exception:
+                pass
         _m["seen"] = False
 
 
