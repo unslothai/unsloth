@@ -3145,8 +3145,10 @@ if [ -t 1 ]; then
             # Run studio in a subshell that resets INT to default, so the child
             # does not inherit the ignore (which would swallow its own Ctrl+C).
             trap '' INT
-            (trap - INT; exec "$VENV_DIR/bin/unsloth" studio -p 8888 </dev/null)
-            _LAUNCH_EXIT=$?
+            # `|| ...` keeps set -e from exiting on a non-zero studio, so the
+            # migration hint below still prints; captures the real exit code.
+            _LAUNCH_EXIT=0
+            (trap - INT; exec "$VENV_DIR/bin/unsloth" studio -p 8888 </dev/null) || _LAUNCH_EXIT=$?
             if [ "$_LAUNCH_EXIT" -ne 0 ] && [ "$_MIGRATED" = true ]; then
                 echo ""
                 echo "⚠️  Unsloth Studio failed to start after migration."
