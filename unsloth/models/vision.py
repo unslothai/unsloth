@@ -450,12 +450,10 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
 
 
 def _missing_torchvision_error(error = None):
-    """True if a VLM processor failed to load because torchvision is unavailable.
+    """True if a VLM processor failed to load due to missing torchvision (#4202).
 
-    transformers >= 5.4 hard-requires torchvision for image/video processors. Check
-    availability directly first; only trust the error text for the specific
-    torchvision-required message, not any incidental substring such as a model path
-    that contains "torchvision" (#4202)."""
+    Checks availability directly first, then only the specific torchvision-required
+    error text (not any incidental "torchvision" substring like a model path)."""
     import importlib.util
 
     if importlib.util.find_spec("torchvision") is None:
@@ -1216,11 +1214,8 @@ class FastBaseModel:
             )
             if _fallback is not None:
                 tokenizer = _fallback
-            # Still degraded: transformers >= 5.4 hard-requires torchvision for VLM
-            # image/video processors and no longer falls back to a slow processor, so a
-            # missing torchvision silently degrades the processor to a text-only tokenizer
-            # and later trips the misleading "only for image models" collator error (#4202).
-            # Surface the real cause up front instead.
+            # Missing torchvision silently degrades the VLM processor to a text-only
+            # tokenizer; surface the real cause instead of the later collator error (#4202).
             if tokenizer is None or not hasattr(tokenizer, "image_processor"):
                 if _missing_torchvision_error(_processor_load_error):
                     raise ImportError(

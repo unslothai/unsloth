@@ -1,10 +1,5 @@
-"""Regression test for unsloth#4202.
-
-transformers >= 5.4 hard-requires torchvision for VLM image/video processors. When
-torchvision is missing the processor silently degrades to a text-only tokenizer and
-later trips the misleading "UnslothVisionDataCollator is only for image models!" error.
-`_missing_torchvision_error` lets the loader surface the real cause up front.
-"""
+"""Regression test for unsloth#4202: detect missing torchvision so the loader can
+surface the real cause instead of a misleading collator error."""
 
 import importlib.util
 from unittest import mock
@@ -30,6 +25,6 @@ def test_torchvision_present_unrelated_error_is_not_flagged():
 
 
 def test_matches_real_environment():
-    # find_spec is the source of truth when no torchvision-flavoured error is supplied.
+    # find_spec is the source of truth when no error is supplied.
     expected = importlib.util.find_spec("torchvision") is None
     assert _missing_torchvision_error(None) is expected
