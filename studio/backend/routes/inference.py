@@ -5306,6 +5306,10 @@ async def openai_chat_completions(
                             )
                         ],
                     )
+                    # Emit the terminal chunk carrying finish_reason before the
+                    # optional usage chunk and [DONE], so OpenAI-compatible
+                    # clients can detect stop/length/tool_calls.
+                    yield f"data: {final_chunk.model_dump_json(exclude_none = True)}\n\n"
                     usage_line = _openai_stream_usage_chunk(
                         payload,
                         completion_id,
@@ -5458,6 +5462,10 @@ async def openai_chat_completions(
                             )
                         ],
                     )
+                    # Emit the terminal chunk carrying finish_reason before the
+                    # optional usage chunk and [DONE], so OpenAI-compatible
+                    # clients can detect stop/length/tool_calls.
+                    yield f"data: {final_chunk.model_dump_json(exclude_none = True)}\n\n"
                     usage_line = _openai_stream_usage_chunk(
                         payload,
                         completion_id,
