@@ -220,11 +220,33 @@ def _install_kernel(
         f"Building {display_name} from source for this model (this can take several minutes)...",
     )
     if shutil.which("uv"):
-        cmd = ["uv", "pip", "install", "--python", sys.executable, "--no-build-isolation", "--no-deps", spec]
+        cmd = [
+            "uv",
+            "pip",
+            "install",
+            "--python",
+            sys.executable,
+            "--no-build-isolation",
+            "--no-deps",
+            spec,
+        ]
     else:
-        cmd = [sys.executable, "-m", "pip", "install", "--no-build-isolation", "--no-deps", "--no-cache-dir", spec]
+        cmd = [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--no-build-isolation",
+            "--no-deps",
+            "--no-cache-dir",
+            spec,
+        ]
 
-    run_kwargs: dict[str, Any] = {"stdout": subprocess.PIPE, "stderr": subprocess.STDOUT, "text": True}
+    run_kwargs: dict[str, Any] = {
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.STDOUT,
+        "text": True,
+    }
     if is_hip:
         run_kwargs["timeout"] = 1800  # ROCm builds can take 10-30 min
         existing = os.environ.get("HIPCC_COMPILE_FLAGS_APPEND", "")
@@ -232,7 +254,9 @@ def _install_kernel(
             gcc_dir = _hipcc_gcc_install_dir()
             if gcc_dir:
                 _env = os.environ.copy()
-                _env["HIPCC_COMPILE_FLAGS_APPEND"] = f"{existing} --gcc-install-dir={gcc_dir}".strip()
+                _env["HIPCC_COMPILE_FLAGS_APPEND"] = (
+                    f"{existing} --gcc-install-dir={gcc_dir}".strip()
+                )
                 run_kwargs["env"] = _env
     try:
         result = _run_with_heartbeat(run, cmd, status_cb, display_name, **run_kwargs)

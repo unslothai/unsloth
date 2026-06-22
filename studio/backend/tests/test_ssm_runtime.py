@@ -233,7 +233,9 @@ def test_wheel_installed_but_not_importable_falls_back_to_source(monkeypatch):
 def test_hip_source_build_requires_hipcc(monkeypatch):
     # ROCm env (hip_version set) with no wheel and no hipcc must fail clearly, not build.
     monkeypatch.setattr(ssm_runtime, "_is_importable", lambda name: False)
-    monkeypatch.setattr(ssm_runtime, "probe_torch_wheel_env", lambda timeout = 30: {"hip_version": "6.2"})
+    monkeypatch.setattr(
+        ssm_runtime, "probe_torch_wheel_env", lambda timeout = 30: {"hip_version": "6.2"}
+    )
     monkeypatch.setattr(ssm_runtime, "direct_wheel_url", lambda **k: None)
     monkeypatch.setattr(ssm_runtime.shutil, "which", lambda name: None)  # no uv, no hipcc
     ran = []
