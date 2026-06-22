@@ -694,9 +694,7 @@ class TestProbeTier:
         monkeypatch.delenv("UNSLOTH_DISABLE_TIER_PROBE", raising = False)
         for fn in ("_ensure_venv_t5_530_exists", "_ensure_venv_t5_550_exists"):
             monkeypatch.setattr(f"utils.transformers_version.{fn}", lambda: True)
-        monkeypatch.setattr(
-            "utils.transformers_version._ensure_venv_t5_510_exists", lambda: False
-        )
+        monkeypatch.setattr("utils.transformers_version._ensure_venv_t5_510_exists", lambda: False)
         monkeypatch.setattr(
             "utils.transformers_version.subprocess.run",
             lambda cmd, **k: _proc(1, "KeyError: '-'"),
@@ -810,7 +808,11 @@ class TestProbeTier:
         calls = {"n": 0}
 
         class _Api:
-            def model_info(self, m, token = None):
+            def model_info(
+                self,
+                m,
+                token = None,
+            ):
                 calls["n"] += 1
                 raise RuntimeError("transient")
 
@@ -830,6 +832,7 @@ class TestProbeTier:
         class _BadPath:
             def __init__(self, *a):
                 pass
+
             def exists(self):
                 raise OSError("WinError 123: invalid path syntax")
 

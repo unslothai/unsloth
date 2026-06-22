@@ -644,7 +644,9 @@ def _probe_tier(model_name: str, hf_token: str | None, reason: str) -> str:
         if ok is True:
             logger.info(
                 "Transformers tier %s selected for %s (AutoConfig probe; %s)",
-                tier, model_name, reason,
+                tier,
+                model_name,
+                reason,
             )
             return _cache(tier)
         if ok is None:
@@ -654,13 +656,12 @@ def _probe_tier(model_name: str, hf_token: str | None, reason: str) -> str:
     # Nothing parsed. Only treat it as conclusive (and cache) when every tier was actually
     # probed; a skipped sidecar means the environment is incomplete, so retry uncached.
     if skipped_any or probed_count == 0:
-        logger.info(
-            "Tier probe incomplete for %s (%s); using 530 (uncached)", model_name, reason
-        )
+        logger.info("Tier probe incomplete for %s (%s); using 530 (uncached)", model_name, reason)
         return "530"
     logger.info(
         "Transformers tier 530 selected for %s (AutoConfig probe found no higher tier; %s)",
-        model_name, reason,
+        model_name,
+        reason,
     )
     return _cache("530")
 
