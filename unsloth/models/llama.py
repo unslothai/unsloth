@@ -2756,6 +2756,20 @@ class FastLlamaModel:
             "is_torch_tpu_available()",
             "False",
         )
+        # Wire the stray-forward compile-cache reset into the plain Trainer path: get_peft_model
+        # arms the pre-train detector for every LoRA model, but only the TRL SFT/RL wrappers run
+        # the reset. A grad-enabled probe before a bare transformers.Trainer.train() would
+        # otherwise keep the poisoned Dynamo cache and leave the detector hook installed. Anchored
+        # on the first body statement; a no-op (and harmless) if upstream drops that line.
+        inner_training_loop = inner_training_loop.replace(
+            "self.accelerator.free_memory()",
+            "self.accelerator.free_memory()\n"
+            "    try:\n"
+            "        from unsloth.models.rl import _unsloth_reset_stray_compile_cache as _unsloth_reset_cc\n"
+            "        _unsloth_reset_cc(self)\n"
+            "    except Exception: pass",
+            1,
+        )
         exec(inner_training_loop, globals())
         Trainer._inner_training_loop = _fast_inner_training_loop
 

@@ -203,10 +203,13 @@ def _unsloth_install_pretrain_detector(model):
         return model
     marker = getattr(model, "_unsloth_pretrain_marker", None)
     if isinstance(marker, dict):
-        marker["seen"] = False
-        # Re-register only if the previous hook was torn down; a live hook stays (no duplicates).
+        # A live hook is already recording: keep it (no duplicates) and DON'T clear seen -- a
+        # grad-enabled probe may have already flagged the poisoned cache, and a re-entrant
+        # get_peft_model/patch_peft_model call must not erase that before train() resets.
         if "hook" in marker:
             return model
+        # Marker exists but its hook was torn down -> reinstall fresh, so reset seen.
+        marker["seen"] = False
     else:
         marker = {"seen": False}
         try:
