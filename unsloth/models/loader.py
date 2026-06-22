@@ -755,12 +755,23 @@ class FastLanguageModel(FastLlamaModel):
             use_gradient_checkpointing, max_seq_length, dtype
         )
 
-        # Check if this is local model since the tokenizer gets overwritten
-        if (
-            os.path.exists(os.path.join(old_model_name, "tokenizer_config.json"))
-            and os.path.exists(os.path.join(old_model_name, "tokenizer.json"))
-            and os.path.exists(os.path.join(old_model_name, "special_tokens_map.json"))
-        ):
+        # Check if this is local model since the tokenizer gets overwritten.
+        # Keep the local checkpoint dir as tokenizer_name when it has a tokenizer
+        # config plus the actual tokenizer files. special_tokens_map.json is NOT
+        # required: modern tokenizers (e.g. Gemma) store special tokens inside
+        # tokenizer_config.json and often omit it, and requiring it forced a
+        # fallback to the base repo id, which breaks offline reloads / exports.
+        _has_tok_config = os.path.exists(
+            os.path.join(old_model_name, "tokenizer_config.json")
+        )
+        _has_tok_files = (
+            os.path.exists(os.path.join(old_model_name, "tokenizer.json"))
+            or os.path.exists(os.path.join(old_model_name, "tokenizer.model"))
+            or os.path.exists(os.path.join(old_model_name, "vocab.json"))
+            or os.path.exists(os.path.join(old_model_name, "vocab.txt"))
+            or os.path.exists(os.path.join(old_model_name, "spiece.model"))
+        )
+        if _has_tok_config and _has_tok_files:
             tokenizer_name = old_model_name
         else:
             tokenizer_name = kwargs.pop("tokenizer_name", None)
@@ -1517,12 +1528,23 @@ class FastModel(FastBaseModel):
             if model_type in model_types_all:
                 supports_sdpa = False
 
-        # Check if this is local model since the tokenizer gets overwritten
-        if (
-            os.path.exists(os.path.join(old_model_name, "tokenizer_config.json"))
-            and os.path.exists(os.path.join(old_model_name, "tokenizer.json"))
-            and os.path.exists(os.path.join(old_model_name, "special_tokens_map.json"))
-        ):
+        # Check if this is local model since the tokenizer gets overwritten.
+        # Keep the local checkpoint dir as tokenizer_name when it has a tokenizer
+        # config plus the actual tokenizer files. special_tokens_map.json is NOT
+        # required: modern tokenizers (e.g. Gemma) store special tokens inside
+        # tokenizer_config.json and often omit it, and requiring it forced a
+        # fallback to the base repo id, which breaks offline reloads / exports.
+        _has_tok_config = os.path.exists(
+            os.path.join(old_model_name, "tokenizer_config.json")
+        )
+        _has_tok_files = (
+            os.path.exists(os.path.join(old_model_name, "tokenizer.json"))
+            or os.path.exists(os.path.join(old_model_name, "tokenizer.model"))
+            or os.path.exists(os.path.join(old_model_name, "vocab.json"))
+            or os.path.exists(os.path.join(old_model_name, "vocab.txt"))
+            or os.path.exists(os.path.join(old_model_name, "spiece.model"))
+        )
+        if _has_tok_config and _has_tok_files:
             tokenizer_name = old_model_name
         else:
             tokenizer_name = kwargs.pop("tokenizer_name", None)

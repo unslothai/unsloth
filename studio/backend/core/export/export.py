@@ -37,6 +37,37 @@ logger = get_logger(__name__)
 _LLAMA_CPP_SCRIPTS_WARNING_EMITTED = False
 
 
+def _hf_offline(timeout = 3):
+    """Whether checkpoint loading for export should avoid the Hugging Face Hub.
+
+    Honors the HF offline env vars, otherwise does one cheap TCP reachability
+    probe to the configured HF endpoint. When online the probe costs a few
+    milliseconds; when the network is down we treat the load as offline so it
+    uses local files / the HF cache instead of hanging on long connection
+    timeouts (the reported "Loading checkpoint" hang) or failing the export.
+    Probed per call so a long-running server reacts to connectivity changes.
+    """
+    _offline = {"1", "true", "yes", "on"}
+    if (
+        os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in _offline
+        or os.environ.get("TRANSFORMERS_OFFLINE", "").strip().lower() in _offline
+    ):
+        return True
+    import socket
+    from urllib.parse import urlparse
+
+    endpoint = os.environ.get("HF_ENDPOINT", "https://huggingface.co")
+    host = urlparse(endpoint).hostname or "huggingface.co"
+    try:
+        socket.create_connection((host, 443), timeout = timeout).close()
+        return False
+    except Exception:
+        logger.warning(
+            "Hugging Face Hub (%s) unreachable; loading checkpoint in offline mode", host
+        )
+        return True
+
+
 def _is_wsl():
     """Detect if running under Windows Subsystem for Linux."""
     try:
@@ -175,6 +206,10 @@ class ExportBackend:
 
             model_id = base_model or checkpoint_path
 
+            # Skip the Hub when offline so a no-internet export uses the local
+            # checkpoint dir / HF cache instead of hanging or crashing.
+            local_files_only = _hf_offline()
+
             # Token the type-detection probes too, else a gated multimodal base
             # 404s here and falls through to the text loader.
             self._audio_type = detect_audio_type(model_id, hf_token = token)
@@ -193,6 +228,7 @@ class ExportBackend:
                     load_in_4bit = False,
                     trust_remote_code = trust_remote_code,
                     token = token,
+                    local_files_only = local_files_only,
                 )
 
             elif self._audio_type == "whisper":
@@ -207,6 +243,7 @@ class ExportBackend:
                     auto_model = WhisperForConditionalGeneration,
                     trust_remote_code = trust_remote_code,
                     token = token,
+                    local_files_only = local_files_only,
                 )
 
             elif self._audio_type == "snac":
@@ -218,6 +255,7 @@ class ExportBackend:
                     load_in_4bit = load_in_4bit,
                     trust_remote_code = trust_remote_code,
                     token = token,
+                    local_files_only = local_files_only,
                 )
 
             elif self._audio_type == "bicodec":
@@ -230,6 +268,7 @@ class ExportBackend:
                     load_in_4bit = False,
                     trust_remote_code = trust_remote_code,
                     token = token,
+                    local_files_only = local_files_only,
                 )
 
             elif self._audio_type == "dac":
@@ -241,6 +280,7 @@ class ExportBackend:
                     load_in_4bit = False,
                     trust_remote_code = trust_remote_code,
                     token = token,
+                    local_files_only = local_files_only,
                 )
 
             elif self.is_vision:
@@ -252,6 +292,7 @@ class ExportBackend:
                     load_in_4bit = load_in_4bit,
                     trust_remote_code = trust_remote_code,
                     token = token,
+                    local_files_only = local_files_only,
                 )
                 tokenizer = processor  # vision: processor acts as tokenizer
 
@@ -264,6 +305,7 @@ class ExportBackend:
                     load_in_4bit = load_in_4bit,
                     trust_remote_code = trust_remote_code,
                     token = token,
+                    local_files_only = local_files_only,
                 )
 
             if _IS_MLX:

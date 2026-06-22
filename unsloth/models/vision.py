@@ -449,7 +449,109 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
     return output
 
 
-def _construct_vlm_processor_fallback(tokenizer_name, model_type, token, trust_remote_code):
+def _get_effective_local_files_only(kwargs):
+    """Decide whether tokenizer/processor/config loads should stay local.
+
+    Mirrors the offline policy already used in loader.py and diffusion.py: an
+    explicit local_files_only kwarg wins, otherwise honor the HF offline env
+    vars. We only read kwargs here (never pop) because the model weight load
+    relies on the same key flowing through **kwargs.
+    """
+    if kwargs.get("local_files_only", None):
+        return True
+    _offline = {"1", "true", "yes", "on"}
+    return (
+        os.environ.get("TRANSFORMERS_OFFLINE", "").strip().lower() in _offline
+        or os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in _offline
+    )
+
+
+def _is_offline_related_error(exc):
+    """True if exc (or anything in its cause/context chain) looks like a lost
+    network connection rather than a genuinely missing file.
+
+    Used to decide whether retrying a load with local_files_only=True can recover
+    the files from the HF cache. A FileNotFoundError is deliberately never treated
+    as offline so real "file is missing" errors keep propagating.
+    """
+    _net_types = [ConnectionError, TimeoutError]
+    try:
+        import requests
+        _net_types += [
+            requests.exceptions.ConnectionError,
+            requests.exceptions.Timeout,
+            requests.exceptions.HTTPError,
+        ]
+    except Exception:
+        pass
+    try:
+        from huggingface_hub.errors import (
+            OfflineModeIsEnabled,
+            HfHubHTTPError,
+            LocalEntryNotFoundError,
+        )
+        _net_types += [OfflineModeIsEnabled, HfHubHTTPError, LocalEntryNotFoundError]
+    except Exception:
+        pass
+    _net_types = tuple(_net_types)
+    _wording = (
+        "couldn't connect", "could not connect", "connection error", "connectionerror",
+        "max retries", "offline", "timed out", "timeout", "couldn't reach",
+        "could not reach", "failed to resolve", "getaddrinfo", "name resolution",
+        "no address associated", "network is unreachable", "connection refused",
+        "we couldn't connect to", "proxyerror",
+    )
+    seen = set()
+    cur = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if isinstance(cur, _net_types) and not isinstance(cur, FileNotFoundError):
+            return True
+        if isinstance(cur, OSError) and not isinstance(cur, FileNotFoundError):
+            if any(w in str(cur).lower() for w in _wording):
+                return True
+        cur = cur.__cause__ or cur.__context__
+    return False
+
+
+@contextlib.contextmanager
+def _force_hf_offline():
+    """Temporarily force Hugging Face offline mode at runtime.
+
+    Passing local_files_only=True is not always enough: on current transformers
+    versions AutoProcessor / AutoTokenizer still issue a /api/models request
+    during processor-class resolution, which hangs or fails when there is no
+    network even though every file is already cached. Flipping the offline
+    constants (equivalent to HF_HUB_OFFLINE=1) makes those calls read straight
+    from the local cache. Everything is restored on exit.
+    """
+    patched = []
+    try:
+        import huggingface_hub.constants as _hfc
+        patched.append((_hfc, "HF_HUB_OFFLINE", _hfc.HF_HUB_OFFLINE))
+        _hfc.HF_HUB_OFFLINE = True
+    except Exception:
+        pass
+    try:
+        import transformers.utils.hub as _tuh
+        if hasattr(_tuh, "_is_offline_mode"):
+            patched.append((_tuh, "_is_offline_mode", _tuh._is_offline_mode))
+            _tuh._is_offline_mode = True
+    except Exception:
+        pass
+    try:
+        yield
+    finally:
+        for obj, attr, val in patched:
+            try:
+                setattr(obj, attr, val)
+            except Exception:
+                pass
+
+
+def _construct_vlm_processor_fallback(
+    tokenizer_name, model_type, token, trust_remote_code, local_files_only = False,
+):
     """Construct a VLM processor manually when AutoProcessor.from_pretrained fails.
 
     Some VLMs (e.g., LFM2.5-VL) have tokenizer_class entries that AutoTokenizer
@@ -466,6 +568,7 @@ def _construct_vlm_processor_fallback(tokenizer_name, model_type, token, trust_r
             tokenizer_name,
             token = token,
             trust_remote_code = trust_remote_code,
+            local_files_only = local_files_only,
         )
         # Load tokenizer via PreTrainedTokenizerFast (bypasses tokenizer_class check)
         tok = PreTrainedTokenizerFast.from_pretrained(
@@ -473,14 +576,29 @@ def _construct_vlm_processor_fallback(tokenizer_name, model_type, token, trust_r
             padding_side = "left",
             token = token,
             trust_remote_code = trust_remote_code,
+            local_files_only = local_files_only,
         )
-        # Read tokenizer_config.json for model-specific special tokens
+        # Read tokenizer_config.json for model-specific special tokens. Prefer a
+        # local file (works offline and for a local checkpoint dir); only fall
+        # back to hf_hub_download when the path is a real repo id and we are online.
         try:
-            from huggingface_hub import hf_hub_download
+            import json as _json
+            tok_config = None
+            _local_cfg = os.path.join(tokenizer_name, "tokenizer_config.json")
+            if os.path.isdir(tokenizer_name) and os.path.exists(_local_cfg):
+                with open(_local_cfg, "r", encoding = "utf-8") as f:
+                    tok_config = _json.load(f)
+            elif not local_files_only:
+                from huggingface_hub import hf_hub_download
 
-            config_path = hf_hub_download(tokenizer_name, "tokenizer_config.json", token = token)
-            with open(config_path, "r", encoding = "utf-8") as f:
-                tok_config = json.load(f)
+                config_path = hf_hub_download(
+                    tokenizer_name, "tokenizer_config.json", token = token,
+                    local_files_only = local_files_only,
+                )
+                with open(config_path, "r", encoding = "utf-8") as f:
+                    tok_config = _json.load(f)
+            if tok_config is None:
+                raise FileNotFoundError("tokenizer_config.json not available")
             # Set model-specific special tokens and their IDs
             for key in (
                 "image_token",
@@ -508,6 +626,7 @@ def _construct_vlm_processor_fallback(tokenizer_name, model_type, token, trust_r
                     tokenizer_name,
                     token = token,
                     trust_remote_code = trust_remote_code,
+                    local_files_only = local_files_only,
                 )
                 proc_class_name = PROCESSOR_MAPPING_NAMES.get(config.model_type)
             except Exception:
@@ -597,6 +716,11 @@ class FastBaseModel:
         if auto_config is None and user_config is not None:
             auto_config = user_config
 
+        # Effective offline mode for tokenizer/processor/config loads below. Kept as a
+        # local snapshot (not popped from kwargs) so the model weight load that reads
+        # local_files_only out of **kwargs is unaffected. See _get_effective_local_files_only.
+        local_files_only = _get_effective_local_files_only(kwargs)
+
         if unsloth_vllm_standby and os.environ.get("UNSLOTH_VLLM_STANDBY", "0") != "1":
             raise RuntimeError(
                 "Unsloth: UNSLOTH_VLLM_STANDBY is True, but UNSLOTH_VLLM_STANDBY is not set to 1!"
@@ -616,6 +740,7 @@ class FastBaseModel:
                 model_name,
                 token = token,
                 trust_remote_code = trust_remote_code,
+                local_files_only = local_files_only,
             )
         if text_only and hasattr(auto_config, "vision_config"):
             parent_config = auto_config
@@ -794,6 +919,7 @@ class FastBaseModel:
                 model_name,
                 token = token,
                 trust_remote_code = trust_remote_code,
+                local_files_only = local_files_only,
             )
         model_class = resolve_model_class(auto_model, auto_config)
         attn_impl = resolve_attention_implementation(
@@ -895,6 +1021,7 @@ class FastBaseModel:
                     model_name,
                     token = token,
                     trust_remote_code = trust_remote_code,
+                    local_files_only = local_files_only,
                 )
             if hasattr(auto_config, "quantization_config"):
                 from transformers.quantizers.auto import (
@@ -948,6 +1075,7 @@ class FastBaseModel:
                 model_name,
                 token = token,
                 trust_remote_code = trust_remote_code,
+                local_files_only = local_files_only,
             )
         _set_attn_impl(auto_config, config_attn_impl)
         model_config = auto_config
@@ -1148,58 +1276,80 @@ class FastBaseModel:
                     except Exception:
                         pass
 
-        if (whisper_language and whisper_task) or auto_model.__name__.endswith(
-            "ForConditionalGeneration"
-        ):
-            try:
-                tokenizer = auto_processor.from_pretrained(
-                    tokenizer_name,
-                    padding_side = "left",
-                    token = token,
-                    language = whisper_language,
-                    task = whisper_task,
-                    trust_remote_code = trust_remote_code,
-                )
-            except Exception:
-                tokenizer = None
-        else:
-            try:
-                tokenizer = auto_processor.from_pretrained(
-                    tokenizer_name,
-                    padding_side = "left",
-                    token = token,
-                    trust_remote_code = trust_remote_code,
-                )
-            except:
-                tokenizer = get_auto_processor(
-                    tokenizer_name,
-                    padding_side = "left",
-                    token = token,
-                    trust_remote_code = trust_remote_code,
-                )
+        # Acquire the tokenizer/processor in an offline-safe way. The whole
+        # primary + VLM-fallback sequence is wrapped so we can retry it with
+        # local_files_only=True when the first (online) attempt returns nothing
+        # because the network is down. This fixes offline reloads / exports where
+        # tokenizer_name points at the base repo id but the files are cached.
+        def _acquire_processor(lfo):
+            # When loading local-only, also force HF offline mode: local_files_only
+            # alone does not stop AutoProcessor / AutoTokenizer from issuing a
+            # /api/models request during class resolution on current transformers
+            # versions, which hangs or fails with no network even when cached.
+            with (_force_hf_offline() if lfo else contextlib.nullcontext()):
+                if (whisper_language and whisper_task) or auto_model.__name__.endswith(
+                    "ForConditionalGeneration"
+                ):
+                    try:
+                        _tok = auto_processor.from_pretrained(
+                            tokenizer_name,
+                            padding_side = "left",
+                            token = token,
+                            language = whisper_language,
+                            task = whisper_task,
+                            trust_remote_code = trust_remote_code,
+                            local_files_only = lfo,
+                        )
+                    except Exception:
+                        _tok = None
+                else:
+                    try:
+                        _tok = auto_processor.from_pretrained(
+                            tokenizer_name,
+                            padding_side = "left",
+                            token = token,
+                            trust_remote_code = trust_remote_code,
+                            local_files_only = lfo,
+                        )
+                    except:
+                        _tok = get_auto_processor(
+                            tokenizer_name,
+                            padding_side = "left",
+                            token = token,
+                            trust_remote_code = trust_remote_code,
+                            local_files_only = lfo,
+                        )
 
-        # If processor loading failed (e.g., tokenizer class not found),
-        # or if AutoProcessor silently degraded to a text-only tokenizer
-        # instead of returning a full VLM processor (issue #4085),
-        # try constructing the processor manually from separate components.
-        _processor_is_degraded = (
-            is_vlm and tokenizer is not None and not hasattr(tokenizer, "image_processor")
-        )
-        if (tokenizer is None or _processor_is_degraded) and is_vlm:
-            _fallback = _construct_vlm_processor_fallback(
-                tokenizer_name,
-                model_type_arch,
-                token,
-                trust_remote_code,
-            )
-            if _fallback is not None:
-                tokenizer = _fallback
-            if tokenizer is None:
-                import sys
-                print(
-                    f"Unsloth: Warning - VLM processor fallback returned None for model_type={model_type_arch}",
-                    file = sys.stderr,
+                # If processor loading failed (e.g., tokenizer class not found),
+                # or if AutoProcessor silently degraded to a text-only tokenizer
+                # instead of returning a full VLM processor (issue #4085),
+                # try constructing the processor manually from separate components.
+                _processor_is_degraded = (
+                    is_vlm and _tok is not None and not hasattr(_tok, "image_processor")
                 )
+                if (_tok is None or _processor_is_degraded) and is_vlm:
+                    _fallback = _construct_vlm_processor_fallback(
+                        tokenizer_name,
+                        model_type_arch,
+                        token,
+                        trust_remote_code,
+                        local_files_only = lfo,
+                    )
+                    if _fallback is not None:
+                        _tok = _fallback
+            return _tok
+
+        tokenizer = _acquire_processor(local_files_only)
+        if tokenizer is None and not local_files_only:
+            # The network may be unavailable (offline env var not set); retry
+            # against the local cache (offline forced inside _acquire_processor).
+            tokenizer = _acquire_processor(True)
+        if tokenizer is None and is_vlm:
+            import sys
+            print(
+                f"Unsloth: Warning - VLM processor fallback returned None for model_type={model_type_arch}",
+                file = sys.stderr,
+            )
         # Backwards compat: if processor has no chat_template (e.g. old saves without
         # chat_template.jinja) but the inner tokenizer does, copy it to the processor.
         if (
@@ -1246,6 +1396,7 @@ class FastBaseModel:
                     padding_side = "left",
                     token = token,
                     trust_remote_code = trust_remote_code,
+                    local_files_only = local_files_only,
                 )
                 model, _fallback_tok = patch_tokenizer(model, _fallback_tok)
                 # Re-attach as processor wrapper if original was a processor
@@ -1263,29 +1414,51 @@ class FastBaseModel:
             model.config.update({"unsloth_version": __version__})
         patch_saving_functions(model, vision = True)
         if tokenizer is None:
-            # Last resort: try loading tokenizer via AutoTokenizer, then PreTrainedTokenizerFast
+            # Last resort: try loading tokenizer via AutoTokenizer, then
+            # PreTrainedTokenizerFast. Retry locally if the network is down so an
+            # offline reload uses the cache / local checkpoint dir instead of
+            # raising the misleading "weirdly not loaded" error.
+            def _last_resort_tokenizer(lfo):
+                with (_force_hf_offline() if lfo else contextlib.nullcontext()):
+                    from transformers import AutoTokenizer as _AutoTokenizer
+                    try:
+                        return _AutoTokenizer.from_pretrained(
+                            tokenizer_name,
+                            padding_side = "left",
+                            token = token,
+                            trust_remote_code = trust_remote_code,
+                            local_files_only = lfo,
+                        )
+                    except Exception:
+                        from transformers import PreTrainedTokenizerFast
+                        return PreTrainedTokenizerFast.from_pretrained(
+                            tokenizer_name,
+                            padding_side = "left",
+                            token = token,
+                            trust_remote_code = trust_remote_code,
+                            local_files_only = lfo,
+                        )
+
+            _last_resort_err = None
             try:
-                from transformers import AutoTokenizer as _AutoTokenizer
-                tokenizer = _AutoTokenizer.from_pretrained(
-                    tokenizer_name,
-                    padding_side = "left",
-                    token = token,
-                    trust_remote_code = trust_remote_code,
-                )
-            except Exception:
-                try:
-                    from transformers import PreTrainedTokenizerFast
-                    tokenizer = PreTrainedTokenizerFast.from_pretrained(
-                        tokenizer_name,
-                        padding_side = "left",
-                        token = token,
-                        trust_remote_code = trust_remote_code,
-                    )
-                except Exception:
-                    del model
-                    raise RuntimeError(
-                        "Unsloth: The tokenizer is weirdly not loaded? Please check if there is one."
-                    )
+                tokenizer = _last_resort_tokenizer(local_files_only)
+            except Exception as _e:
+                _last_resort_err = _e
+                if not local_files_only and _is_offline_related_error(_e):
+                    try:
+                        tokenizer = _last_resort_tokenizer(True)
+                        _last_resort_err = None
+                    except Exception as _e2:
+                        _last_resort_err = _e2
+            if tokenizer is None:
+                del model
+                raise RuntimeError(
+                    "Unsloth: Could not load the tokenizer/processor. If you are "
+                    "offline, make sure the tokenizer files exist in the checkpoint "
+                    "folder or were previously downloaded to the Hugging Face cache, "
+                    "or set HF_HUB_OFFLINE=1 to force local loading. "
+                    "Otherwise please check that the model has a tokenizer."
+                ) from _last_resort_err
         patch_saving_functions(tokenizer, vision = True)
 
         # Fix gradient accumulation. See issue #4982.
