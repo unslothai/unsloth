@@ -14,6 +14,20 @@ export interface RememberedLoadSettings {
   tensorParallel: boolean;
 }
 
+// Storage key for a pick's remembered settings. The remembered knobs are
+// VRAM-budget driven (context override, KV-cache dtype, tensor-parallel), so the
+// right values differ per quant. An HF repo collapses all its GGUF variants into
+// one `id`, so fold the variant in to scope settings per quant; native files and
+// local .gguf paths are already file-specific through `id`, so they're unchanged.
+export function rememberedLoadSettingsKey(selection: {
+  id: string;
+  ggufVariant?: string | null;
+}): string {
+  return selection.ggufVariant
+    ? `${selection.id}::${selection.ggufVariant}`
+    : selection.id;
+}
+
 function readAll(): Record<string, RememberedLoadSettings> {
   try {
     return JSON.parse(localStorage.getItem(KEY) ?? "{}");
