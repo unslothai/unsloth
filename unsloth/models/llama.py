@@ -3019,6 +3019,9 @@ class FastLlamaModel:
                         model.get_output_embeddings(), DEVICE_TYPE_TORCH
                     )
 
+                # Pre-wrapped PEFT model passes through here; still arm the detector so an RL
+                # trainer can reset a compile cache poisoned by a pre-train forward.
+                _unsloth_install_pretrain_detector(model)
                 return model
             else:
                 raise TypeError(
