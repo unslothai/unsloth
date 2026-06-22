@@ -45,7 +45,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { useAnimatedThemeToggle } from "@/components/ui/animated-theme-toggler";
 import { cn } from "@/lib/utils";
-import { isTauri } from "@/lib/api-base";
+import { useWebUpdateCheck } from "@/hooks/use-web-update-check";
 import {
   Archive03Icon,
   ChefHatIcon,
@@ -251,6 +251,19 @@ function NavItem({
   );
 }
 
+// TEMP DEV override: preview the update card on installs with no real update
+// (e.g. an editable checkout). In the browser console run
+// `localStorage.setItem("unsloth_force_update_card", "1")` and reload. Remove
+// before merge.
+function devForceUpdateCard(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    return window.localStorage.getItem("unsloth_force_update_card") === "1";
+  } catch {
+    return false;
+  }
+}
+
 export function AppSidebar() {
   const t = useT();
   const { isDark, toggleTheme, anchorRef } = useAnimatedThemeToggle();
@@ -263,21 +276,15 @@ export function AppSidebar() {
   const { togglePinned, isMobile, setOpenMobile } = useSidebar();
   const navigate = useNavigate();
 
-  // Current installed app version (Tauri only) for the sidebar update card.
-  const [appVersion, setAppVersion] = useState<string | null>(null);
-  useEffect(() => {
-    if (!isTauri) return;
-    let cancelled = false;
-    import("@tauri-apps/api/app")
-      .then(({ getVersion }) => getVersion())
-      .then((v) => {
-        if (!cancelled) setAppVersion(v);
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  // Web update detection: `webUpdate` is non-null only when the installed
+  // (PyPI) version is behind the latest release, so the card is hidden by
+  // default. `forceUpdateCard` is a TEMP dev override to preview it on installs
+  // with no real update (e.g. an editable checkout); remove before merge.
+  const { status: webUpdate } = useWebUpdateCheck();
+  const [forceUpdateCard] = useState(devForceUpdateCard);
+  const showUpdateCard = Boolean(webUpdate) || forceUpdateCard;
+  const updateVersion =
+    webUpdate?.latestVersion ?? (forceUpdateCard ? "0.0.0" : null);
 
   // Auto-close mobile Sheet after navigation
   const closeMobileIfOpen = () => {
@@ -1344,38 +1351,40 @@ export function AppSidebar() {
           )}
         />
         <SidebarMenu>
-          {/* Update affordance — design + current-version display; click behavior wired later. */}
-          <SidebarMenuItem className="mb-6">
-            <button
-              type="button"
-              aria-label={t("shell.updateAvailable")}
-              onClick={() => {
-                useSettingsDialogStore.getState().openDialog("about");
-                closeMobileIfOpen();
-              }}
-              className="flex h-[55px] w-full items-center gap-2.5 rounded-[14px] border border-border/60 bg-transparent px-3 text-left transition-colors hover:bg-nav-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-data-[collapsible=icon]:h-[34px] group-data-[collapsible=icon]:w-[34px] group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:gap-0 group-data-[collapsible=icon]:px-0 group-data-[collapsible=icon]:mx-auto"
-            >
-              <HugeiconsIcon
-                icon={Clock03Icon}
-                strokeWidth={1.75}
-                className="size-[22px] shrink-0 text-nav-fg"
-              />
-              <div className="flex min-w-0 flex-col gap-px leading-tight group-data-[collapsible=icon]:hidden">
-                <span className="truncate font-heading text-[13.5px] font-semibold text-nav-fg">
-                  {t("shell.updateAvailable")}
-                </span>
-                {appVersion && (
-                  <span className="truncate text-[11.5px] text-muted-foreground">
-                    v{appVersion}
+          {/* Update affordance — shows only when a newer version is available. */}
+          {showUpdateCard && (
+            <SidebarMenuItem className="mb-6">
+              <button
+                type="button"
+                aria-label={t("shell.updateAvailable")}
+                onClick={() => {
+                  useSettingsDialogStore.getState().openDialog("about");
+                  closeMobileIfOpen();
+                }}
+                className="flex h-[55px] w-full items-center gap-2.5 rounded-[14px] border border-border/60 bg-transparent px-3 text-left transition-colors hover:bg-nav-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-data-[collapsible=icon]:h-[34px] group-data-[collapsible=icon]:w-[34px] group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:gap-0 group-data-[collapsible=icon]:px-0 group-data-[collapsible=icon]:mx-auto"
+              >
+                <HugeiconsIcon
+                  icon={Clock03Icon}
+                  strokeWidth={1.75}
+                  className="size-[22px] shrink-0 text-nav-fg"
+                />
+                <div className="flex min-w-0 flex-col gap-px leading-tight group-data-[collapsible=icon]:hidden">
+                  <span className="truncate font-heading text-[13.5px] font-semibold text-nav-fg">
+                    {t("shell.updateAvailable")}
                   </span>
-                )}
-              </div>
-              <ArrowRight
-                className="ml-auto size-4 shrink-0 text-muted-foreground group-data-[collapsible=icon]:hidden"
-                strokeWidth={1.75}
-              />
-            </button>
-          </SidebarMenuItem>
+                  {updateVersion && (
+                    <span className="truncate text-[11.5px] text-muted-foreground">
+                      v{updateVersion}
+                    </span>
+                  )}
+                </div>
+                <ArrowRight
+                  className="ml-auto size-4 shrink-0 text-muted-foreground group-data-[collapsible=icon]:hidden"
+                  strokeWidth={1.75}
+                />
+              </button>
+            </SidebarMenuItem>
+          )}
           <SidebarMenuItem>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
