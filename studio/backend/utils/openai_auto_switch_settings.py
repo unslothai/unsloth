@@ -90,13 +90,23 @@ def set_openai_auto_switch_enabled(value: Any) -> bool:
     return parsed
 
 
+def get_stored_auto_unload_idle_seconds() -> int:
+    """The persisted idle-unload TTL, independent of whether auto-switch is on.
+
+    The settings UI reads this so it can display and round-trip the saved value;
+    toggling auto-switch off must not erase it. The idle loop uses the gated
+    reader below instead, so it still never unloads while the feature is off.
+    """
+    parsed = _coerce_int(_cached_setting(AUTO_UNLOAD_IDLE_SETTING_KEY, None))
+    return parsed if parsed is not None else DEFAULT_AUTO_UNLOAD_IDLE_SECONDS
+
+
 def get_auto_unload_idle_seconds() -> int:
     # Gate idle-unload on auto-switch: when off, report 0 so the feature can
     # never unload a model, keeping the off state identical to pre-feature.
     if not get_openai_auto_switch_enabled():
         return 0
-    parsed = _coerce_int(_cached_setting(AUTO_UNLOAD_IDLE_SETTING_KEY, None))
-    return parsed if parsed is not None else DEFAULT_AUTO_UNLOAD_IDLE_SECONDS
+    return get_stored_auto_unload_idle_seconds()
 
 
 def set_auto_unload_idle_seconds(value: Any) -> int:

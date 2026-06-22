@@ -34,9 +34,9 @@ from utils.helper_precache_settings import (
 from utils.openai_auto_switch_settings import (
     DEFAULT_AUTO_UNLOAD_IDLE_SECONDS,
     DEFAULT_OPENAI_AUTO_SWITCH_ENABLED,
-    get_auto_unload_idle_seconds,
     get_model_overrides,
     get_openai_auto_switch_enabled,
+    get_stored_auto_unload_idle_seconds,
     set_auto_unload_idle_seconds,
     set_model_override,
     set_openai_auto_switch_enabled,
@@ -159,7 +159,7 @@ def get_openai_auto_switch(
 ) -> OpenAIAutoSwitchResponse:
     return OpenAIAutoSwitchResponse(
         enabled = get_openai_auto_switch_enabled(),
-        auto_unload_idle_seconds = get_auto_unload_idle_seconds(),
+        auto_unload_idle_seconds = get_stored_auto_unload_idle_seconds(),
     )
 
 
