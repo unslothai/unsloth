@@ -19,7 +19,8 @@ from fastapi.testclient import TestClient
 
 from auth import storage
 
-PORT = 8765  # the proof is bound to the server's listening port
+HOST = "127.0.0.1"  # the proof is bound to the connection address...
+PORT = 8765  # ...and port
 
 
 @pytest.fixture(autouse = True)
@@ -42,20 +43,23 @@ def test_identity_secret_is_persistent_and_cached():
 def test_compute_identity_proof_matches_manual_hmac():
     nonce = b"a-fixed-nonce-for-the-proof-test!"
     secret = storage.get_or_create_identity_secret()
-    expected = hmac.new(secret, nonce + b"|" + str(PORT).encode(), hashlib.sha256).hexdigest()
-    assert storage.compute_identity_proof(nonce, PORT) == expected
-    # Bound to nonce and port: a different nonce or port yields a different proof.
-    assert storage.compute_identity_proof(b"a-different-nonce-entirely-here!!", PORT) != expected
-    assert storage.compute_identity_proof(nonce, PORT + 1) != expected
+    expected = hmac.new(
+        secret, b"|".join([nonce, HOST.encode(), str(PORT).encode()]), hashlib.sha256
+    ).hexdigest()
+    assert storage.compute_identity_proof(nonce, HOST, PORT) == expected
+    # Bound to nonce, host and port: changing any one yields a different proof.
+    assert storage.compute_identity_proof(b"a-different-nonce-entirely-here!!", HOST, PORT) != expected
+    assert storage.compute_identity_proof(nonce, "127.0.0.2", PORT) != expected
+    assert storage.compute_identity_proof(nonce, HOST, PORT + 1) != expected
 
 
 def test_proof_differs_when_secret_differs(tmp_path, monkeypatch):
     nonce = b"shared-nonce-across-two-installs!"
-    proof_a = storage.compute_identity_proof(nonce, PORT)
+    proof_a = storage.compute_identity_proof(nonce, HOST, PORT)
     # A different install (different secret) can't reproduce the proof.
     monkeypatch.setattr(storage, "DB_PATH", tmp_path / "other_auth.db")
     monkeypatch.setattr(storage, "_identity_secret_cache", None)
-    assert storage.compute_identity_proof(nonce, PORT) != proof_a
+    assert storage.compute_identity_proof(nonce, HOST, PORT) != proof_a
 
 
 def _identity_client() -> TestClient:
@@ -68,8 +72,8 @@ def _identity_client() -> TestClient:
 
     app = FastAPI()
     app.include_router(router, prefix = "/api/auth")
-    # base_url port becomes scope["server"][1], which the route binds the proof to.
-    return TestClient(app, base_url = f"http://testserver:{PORT}")
+    # base_url host:port become scope["server"], which the route binds the proof to.
+    return TestClient(app, base_url = f"http://{HOST}:{PORT}")
 
 
 def test_identity_route_returns_matching_proof():
@@ -78,7 +82,7 @@ def test_identity_route_returns_matching_proof():
     encoded = base64.urlsafe_b64encode(nonce).decode()
     response = client.get(f"/api/auth/identity?nonce={encoded}")
     assert response.status_code == 200
-    assert response.json()["proof"] == storage.compute_identity_proof(nonce, PORT)
+    assert response.json()["proof"] == storage.compute_identity_proof(nonce, HOST, PORT)
 
 
 def test_identity_route_validates_nonce():

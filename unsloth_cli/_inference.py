@@ -318,6 +318,7 @@ def verify_studio_identity(base: str, timeout: float = 3.0) -> bool:
     import hmac as _hmac
     import json
     import secrets as _secrets
+    import socket
     import urllib.request
     from urllib.parse import urlparse
 
@@ -328,11 +329,22 @@ def verify_studio_identity(base: str, timeout: float = 3.0) -> bool:
         return False
 
     parsed = urlparse(base)
+    host = parsed.hostname or ""
     port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    # Resolve to one concrete address and talk to *that* address, then bind the
+    # proof to (address, port). A name like localhost can resolve to a squatter on
+    # ::1 while the real Studio is on 127.0.0.1; connecting to the resolved IP and
+    # binding to it means a proof relayed from a different address/port won't match.
+    try:
+        ip = socket.getaddrinfo(host, port, type = socket.SOCK_STREAM)[0][4][0]
+    except Exception:
+        return False
+    netloc = f"[{ip}]:{port}" if ":" in ip else f"{ip}:{port}"
     nonce = _secrets.token_bytes(32)
     query = base64.urlsafe_b64encode(nonce).decode()
     request = urllib.request.Request(
-        f"{base}/api/auth/identity?nonce={query}", headers = {"User-Agent": _USER_AGENT}
+        f"{parsed.scheme}://{netloc}/api/auth/identity?nonce={query}",
+        headers = {"User-Agent": _USER_AGENT, "Host": parsed.netloc},
     )
     try:
         # No redirects: a 302 could relay a real Studio's proof (see urlopen_no_redirect).
@@ -344,9 +356,7 @@ def verify_studio_identity(base: str, timeout: float = 3.0) -> bool:
     if not isinstance(proof, str):
         return False
     try:
-        # Bind to the port we connected to: a proof relayed from a Studio on
-        # another port was computed for that port and won't match.
-        expected = storage.compute_identity_proof(nonce, port)
+        expected = storage.compute_identity_proof(nonce, ip, port)
     except Exception:
         return False
     return _hmac.compare_digest(proof, expected)

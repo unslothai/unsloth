@@ -5,6 +5,7 @@
 
 import hashlib
 import hmac
+import ipaddress
 import os
 import secrets
 import sqlite3
@@ -255,11 +256,17 @@ def get_or_create_identity_secret() -> bytes:
     return secret
 
 
-def compute_identity_proof(nonce: bytes, port: int) -> str:
+def compute_identity_proof(nonce: bytes, host: str, port: int) -> str:
     """HMAC-SHA256 proof that the caller holds this install's identity secret,
-    bound to the server's listening `port` so a proof relayed from a Studio on a
-    different port (a port squatter proxying to the real one) won't match."""
-    msg = nonce + b"|" + str(int(port)).encode()
+    bound to the loopback address and port the connection landed on. A proof
+    relayed from a Studio on a different address/port (a squatter proxying to the
+    real one, e.g. localhost resolving to ::1 while Studio is on 127.0.0.1) was
+    computed for that other endpoint and won't match the one the client dialed."""
+    try:
+        host = ipaddress.ip_address(host).compressed  # normalise 127.0.0.1 / ::1 forms
+    except ValueError:
+        host = (host or "").lower()
+    msg = b"|".join([nonce, host.encode(), str(int(port)).encode()])
     return hmac.new(get_or_create_identity_secret(), msg, hashlib.sha256).hexdigest()
 
 

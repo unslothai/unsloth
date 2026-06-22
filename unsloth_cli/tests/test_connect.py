@@ -613,7 +613,8 @@ def _serve_identity(proof_for):
                 self.end_headers()
                 return
             nonce = base64.urlsafe_b64decode(parse_qs(parsed.query)["nonce"][0])
-            body = json.dumps({"proof": proof_for(nonce, self.server.server_address[1])}).encode()
+            host, port = self.server.server_address[0], self.server.server_address[1]
+            body = json.dumps({"proof": proof_for(nonce, host, port)}).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
@@ -642,8 +643,8 @@ def test_verify_studio_identity_end_to_end(tmp_path, monkeypatch):
     monkeypatch.setattr(storage, "DB_PATH", tmp_path / "auth.db")
     monkeypatch.setattr(storage, "_identity_secret_cache", None)
 
-    good = lambda nonce, port: storage.compute_identity_proof(nonce, port)  # holds the real secret
-    bad = lambda nonce, port: "00" * 32  # spoofer without the secret
+    good = lambda nonce, host, port: storage.compute_identity_proof(nonce, host, port)  # real secret
+    bad = lambda nonce, host, port: "00" * 32  # spoofer without the secret
     base_ok, stop_ok = _serve_identity(good)
     base_bad, stop_bad = _serve_identity(bad)
     try:
@@ -689,7 +690,7 @@ def test_verify_studio_identity_rejects_redirect(tmp_path, monkeypatch):
     monkeypatch.setattr(storage, "_identity_secret_cache", None)
 
     real_base, stop_real = _serve_identity(
-        lambda nonce, port: storage.compute_identity_proof(nonce, port)
+        lambda nonce, host, port: storage.compute_identity_proof(nonce, host, port)
     )
     squatter_base, stop_squatter = _serve_redirect(real_base)
     try:
@@ -716,12 +717,12 @@ def test_verify_studio_identity_rejects_relayed_proof(tmp_path, monkeypatch):
     monkeypatch.setattr(storage, "_identity_secret_cache", None)
 
     real_base, stop_real = _serve_identity(
-        lambda nonce, port: storage.compute_identity_proof(nonce, port)
+        lambda nonce, host, port: storage.compute_identity_proof(nonce, host, port)
     )
     real_port = int(real_base.rsplit(":", 1)[1])
     # The squatter answers on its own port but returns the proof for the real port.
     squatter_base, stop_squatter = _serve_identity(
-        lambda nonce, port: storage.compute_identity_proof(nonce, real_port)
+        lambda nonce, host, port: storage.compute_identity_proof(nonce, host, real_port)
     )
     try:
         assert inference.verify_studio_identity(real_base) is True
