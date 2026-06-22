@@ -479,6 +479,36 @@ def _check_config_needs_510(model_name: str, hf_token: str | None = None) -> boo
     return result
 
 
+def _config_saved_by_transformers_5(cfg: dict | None) -> bool:
+    """True if ``config.json`` records a transformers >= 5 ``transformers_version``.
+
+    This field is the *saving* version, not the minimum to load, so it never decides the
+    tier on its own. It is only a cheap "worth probing" hint: a model saved by 5.x and
+    not matched by any fast path may carry a new architecture the default 4.57.x parser
+    cannot read. The probe (default-first) makes the authoritative call.
+    """
+    if not isinstance(cfg, dict):
+        return False
+    ver = cfg.get("transformers_version")
+    if not isinstance(ver, str):
+        return False
+    try:
+        return int(ver.strip().split(".", 1)[0]) >= 5
+    except ValueError:
+        return False
+
+
+def _cached_config_json(model_name: str, hf_token: str | None) -> dict | None:
+    """Return an already-fetched config.json from the in-process cache, without a new
+    network round-trip. The tier checks above populate it in the real flow; a miss
+    (mocked checks, transient fetch, no config) just means "skip the version-field probe".
+    """
+    import hashlib
+
+    tok = hashlib.sha256(hf_token.encode()).hexdigest()[:16] if hf_token else None
+    return _config_json_cache.get((model_name, tok))
+
+
 # --- AutoConfig probe: general tier resolution for ambiguous models ----------
 # When the cheap signals only say "needs some 5.x", parse config.json with the built-in
 # parser in each candidate sidecar (lowest first) instead of guessing. Generalizes beyond
@@ -492,7 +522,8 @@ _PROBE_CONFIG_SCRIPT = r"""
 import sys, os
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 target_dir, model_name = sys.argv[1], sys.argv[2]
-sys.path.insert(0, target_dir)
+if target_dir:  # empty = probe the ambient (default 4.57.x) transformers, no sidecar prepend
+    sys.path.insert(0, target_dir)
 try:
     from transformers import AutoConfig
     AutoConfig.from_pretrained(model_name, trust_remote_code=False)
@@ -526,8 +557,11 @@ def _stderr_is_transient(err: str) -> bool:
 
 
 def _probe_tier_venvs():
-    """tier -> (target_dir, ensure_fn), built here so the later _ensure_* defs resolve."""
+    """tier -> (target_dir, ensure_fn), built here so the later _ensure_* defs resolve.
+    The ``default`` entry has an empty target_dir (ambient 4.57.x, no sidecar) and is
+    always available; it is only probed when a caller passes ``include_default``."""
     return {
+        "default": ("", lambda: True),
         "530": (_VENV_T5_530_DIR, _ensure_venv_t5_530_exists),
         "550": (_VENV_T5_550_DIR, _ensure_venv_t5_550_exists),
         "510": (_VENV_T5_510_DIR, _ensure_venv_t5_510_exists),
@@ -587,23 +621,36 @@ def _probe_cache_key(model_name: str) -> str:
     return f"{model_name}\0{st.st_size}:{st.st_mtime_ns}"
 
 
-def _probe_tier(model_name: str, hf_token: str | None, reason: str) -> str:
-    """Lowest sidecar tier whose built-in parser loads the config; '530' fail-safe.
+def _probe_tier(
+    model_name: str,
+    hf_token: str | None,
+    reason: str,
+    *,
+    include_default: bool = False,
+    floor: str = "530",
+) -> str:
+    """Lowest tier whose built-in parser loads the config; *floor* is the fail-safe.
 
-    Escalates 530 -> 550 -> 510 and returns the first that parses; never raises, never
-    escalates on uncertainty (so it can only improve on the legacy '530' guess):
+    Escalates through ``_PROBE_TIER_ORDER`` (optionally prefixed with the ambient
+    ``default`` tier when ``include_default`` is set) and returns the first that parses;
+    never raises, never escalates on uncertainty:
       - first success wins (cached unless a lower tier was skipped);
-      - transient failure (auth/network/offline) -> '530', uncached;
+      - transient failure (auth/network/offline) -> *floor*, uncached;
       - a skipped/uninstallable sidecar -> uncached (a lower tier may yet be the answer);
       - all tiers probed, none parse -> a remote-code/custom model_type that loads via its
-        own code; keep '530' rather than jumping to 510 (which would change 5.3-stack models).
+        own code; keep *floor* rather than jumping to a higher 5.x sidecar.
+
+    Callers that already know the model needs 5.x use ``floor='530'`` (never default).
+    Callers probing on a weak signal (config saved by transformers 5.x) use
+    ``include_default=True, floor='default'`` so a model that still parses on 4.57.x is
+    left on the stable default instead of being pushed onto a sidecar.
 
     Cached per _probe_cache_key for the process lifetime (a model's tier follows its config).
     No Hub commit sha is resolved: that would import huggingface_hub into the worker before
     the sidecar is on sys.path (activation does not purge), pinning the default-env hub.
     """
     if os.environ.get("UNSLOTH_DISABLE_TIER_PROBE", "").lower() in ("1", "true", "yes"):
-        return "530"
+        return floor
     key = _probe_cache_key(model_name)
     if key in _probe_tier_cache:
         return _probe_tier_cache[key]
@@ -616,9 +663,10 @@ def _probe_tier(model_name: str, hf_token: str | None, reason: str) -> str:
         return tier
 
     venvs = _probe_tier_venvs()
+    order = (("default",) + _PROBE_TIER_ORDER) if include_default else _PROBE_TIER_ORDER
     probed_count = 0
     skipped_any = False
-    for tier in _PROBE_TIER_ORDER:
+    for tier in order:
         target_dir, ensure_fn = venvs[tier]
         try:
             available = ensure_fn()
@@ -638,23 +686,28 @@ def _probe_tier(model_name: str, hf_token: str | None, reason: str) -> str:
             )
             return _cache(tier, skipped = skipped_any)
         if ok is None:
-            logger.info("Tier probe inconclusive for %s (%s); using 530", model_name, reason)
-            return "530"  # transient: retry next load
+            logger.info("Tier probe inconclusive for %s (%s); using %s", model_name, reason, floor)
+            return floor  # transient: retry next load
 
     # Nothing parsed. Only treat it as conclusive (and cache) when every tier was actually
     # probed; a skipped sidecar means the environment is incomplete, so retry uncached.
     if skipped_any or probed_count == 0:
-        logger.info("Tier probe incomplete for %s (%s); using 530 (uncached)", model_name, reason)
-        return "530"
+        logger.info(
+            "Tier probe incomplete for %s (%s); using %s (uncached)", model_name, reason, floor
+        )
+        return floor
     logger.info(
-        "Transformers tier 530 selected for %s (AutoConfig probe found no higher tier; %s)",
+        "Transformers tier %s selected for %s (AutoConfig probe found no higher tier; %s)",
+        floor,
         model_name,
         reason,
     )
-    return _cache("530", skipped = False)
+    return _cache(floor, skipped = False)
 
 
-def get_transformers_tier(model_name: str, hf_token: str | None = None) -> str:
+def get_transformers_tier(
+    model_name: str, hf_token: str | None = None, probe: bool = True
+) -> str:
     """Return the transformers tier required for *model_name*.
 
     Returns ``"510"`` for models needing transformers 5.10.x (Gemma 4 Unified),
@@ -664,7 +717,14 @@ def get_transformers_tier(model_name: str, hf_token: str | None = None) -> str:
 
     Strong signals (architecture/model_type, name substrings) are fast paths. When the
     only signal is "needs some 5.x" (the tokenizer class), the exact tier is resolved by
-    probing AutoConfig in each sidecar instead of guessing the lowest one.
+    probing AutoConfig in each sidecar instead of guessing the lowest one. A model whose
+    ``config.json`` was saved by transformers 5.x but matches no fast path is probed
+    default-first, so a new 5.x-only architecture is caught while 4.57.x-loadable models
+    stay on the default.
+
+    ``probe=False`` skips every AutoConfig probe (the sidecar subprocesses) and is used by
+    the cheap :func:`needs_transformers_5` boolean so a parent/log-only caller never spawns
+    probes; the real activation path keeps the default ``probe=True``.
 
     Higher 5.x tiers run first.
     """
@@ -691,7 +751,19 @@ def get_transformers_tier(model_name: str, hf_token: str | None = None) -> str:
         if cfg is not None:
             local_tc = Path(model_name) / "tokenizer_config.json"
             if local_tc.is_file() and _check_tokenizer_config_needs_v5(model_name, hf_token):
+                if not probe:
+                    return "530"
                 return _probe_tier(model_name, hf_token, "local tokenizer needs 5.x")
+            if probe and _config_saved_by_transformers_5(cfg):
+                tier = _probe_tier(
+                    model_name,
+                    hf_token,
+                    "local config saved by transformers 5.x",
+                    include_default = True,
+                    floor = "default",
+                )
+                if tier != "default":
+                    return tier
             logger.info(
                 "Transformers tier default (4.57.x) selected for %s (local config.json no match)",
                 model_name,
@@ -738,7 +810,20 @@ def get_transformers_tier(model_name: str, hf_token: str | None = None) -> str:
         logger.info("Transformers tier 550 selected for %s (config.json check)", model_name)
         return "550"
     if _check_tokenizer_config_needs_v5(model_name, hf_token):
+        if not probe:
+            return "530"
         return _probe_tier(model_name, hf_token, "tokenizer needs 5.x")
+
+    if probe and _config_saved_by_transformers_5(_cached_config_json(model_name, hf_token)):
+        tier = _probe_tier(
+            model_name,
+            hf_token,
+            "config saved by transformers 5.x",
+            include_default = True,
+            floor = "default",
+        )
+        if tier != "default":
+            return tier
 
     logger.info("Transformers tier default (4.57.x) selected for %s (no match)", model_name)
     return "default"
@@ -747,9 +832,11 @@ def get_transformers_tier(model_name: str, hf_token: str | None = None) -> str:
 def needs_transformers_5(model_name: str) -> bool:
     """Return True if *model_name* requires any transformers 5.x version.
 
-    Convenience wrapper around :func:`get_transformers_tier`.
+    Convenience wrapper around :func:`get_transformers_tier`. Passes ``probe=False`` so a
+    log-only parent caller never spawns sidecar probes (the worker re-resolves the exact
+    tier with ``probe=True`` on the real activation path).
     """
-    return get_transformers_tier(model_name) != "default"
+    return get_transformers_tier(model_name, probe = False) != "default"
 
 
 # ---------------------------------------------------------------------------

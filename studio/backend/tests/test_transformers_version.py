@@ -892,6 +892,115 @@ class TestProbeTier:
         assert captured.get("HF_HUB_DISABLE_IMPLICIT_TOKEN") == "0"
 
 
+class TestProbeGating:
+    """probe=False suppresses sidecar probes (the log-only needs_transformers_5 path); a
+    config saved by transformers 5.x is probed default-first so a new 5.x-only arch is
+    caught without mis-routing a 4.57.x-loadable model onto a sidecar."""
+
+    def setup_method(self):
+        _probe_tier_cache.clear()
+        _config_json_cache.clear()
+        _config_needs_510_cache.clear()
+        _config_needs_550_cache.clear()
+        _tokenizer_class_cache.clear()
+
+    def _patch_venvs(self, monkeypatch):
+        for fn in (
+            "_ensure_venv_t5_530_exists",
+            "_ensure_venv_t5_550_exists",
+            "_ensure_venv_t5_510_exists",
+        ):
+            monkeypatch.setattr(f"utils.transformers_version.{fn}", lambda: True)
+        monkeypatch.delenv("UNSLOTH_DISABLE_TIER_PROBE", raising = False)
+
+    def _patch_checks_to_tokenizer(self, monkeypatch):
+        monkeypatch.setattr(
+            "utils.transformers_version._check_config_needs_510", lambda m, t = None: False
+        )
+        monkeypatch.setattr(
+            "utils.transformers_version._check_config_needs_550", lambda m, t = None: False
+        )
+        monkeypatch.setattr(
+            "utils.transformers_version._check_tokenizer_config_needs_v5", lambda m, t = None: True
+        )
+
+    # ---- needs_transformers_5 / probe=False must not spawn probes --------------
+
+    def test_needs_transformers_5_does_not_spawn_probe(self, monkeypatch):
+        self._patch_checks_to_tokenizer(monkeypatch)
+
+        def boom(cmd, **k):
+            raise AssertionError("needs_transformers_5 must not spawn a probe")
+
+        monkeypatch.setattr("utils.transformers_version.subprocess.run", boom)
+        # Still correctly reports 5.x from the tokenizer signal, just without probing.
+        assert needs_transformers_5("org/unknown-5x") is True
+
+    def test_probe_false_returns_530_for_tokenizer_signal(self, monkeypatch):
+        self._patch_checks_to_tokenizer(monkeypatch)
+
+        def boom(cmd, **k):
+            raise AssertionError("probe=False must not spawn a probe")
+
+        monkeypatch.setattr("utils.transformers_version.subprocess.run", boom)
+        assert get_transformers_tier("org/unknown-5x", probe = False) == "530"
+
+    # ---- version-field probe is default-first (no mis-routing of 4.x models) ----
+
+    def test_version_field_probe_stays_default_when_default_parses(self, monkeypatch):
+        self._patch_venvs(monkeypatch)
+        monkeypatch.setattr(
+            "utils.transformers_version._check_tokenizer_config_needs_v5", lambda m, t = None: False
+        )
+        _config_json_cache[("org/new", None)] = {
+            "model_type": "brandnew",
+            "transformers_version": "5.0.0",
+        }
+        seen = []
+        monkeypatch.setattr(
+            "utils.transformers_version.subprocess.run",
+            lambda cmd, **k: seen.append(cmd[3]) or _proc(0),
+        )
+        assert get_transformers_tier("org/new") == "default"
+        assert seen == [""]  # probed the ambient default tier first, it parsed -> stayed default
+
+    def test_version_field_probe_escalates_when_default_fails(self, monkeypatch):
+        import utils.transformers_version as tv
+
+        self._patch_venvs(monkeypatch)
+        monkeypatch.setattr(
+            "utils.transformers_version._check_tokenizer_config_needs_v5", lambda m, t = None: False
+        )
+        _config_json_cache[("org/new", None)] = {
+            "model_type": "brandnew",
+            "transformers_version": "5.6.0",
+        }
+        results = iter([_proc(1, "KeyError: 'x'"), _proc(1, "KeyError: 'x'"), _proc(0)])
+        seen = []
+        monkeypatch.setattr(
+            "utils.transformers_version.subprocess.run",
+            lambda cmd, **k: seen.append(cmd[3]) or next(results),
+        )
+        assert get_transformers_tier("org/new") == "550"
+        assert seen == ["", tv._VENV_T5_530_DIR, tv._VENV_T5_550_DIR]
+
+    def test_ordinary_4x_config_does_not_probe(self, monkeypatch):
+        self._patch_venvs(monkeypatch)
+        monkeypatch.setattr(
+            "utils.transformers_version._check_tokenizer_config_needs_v5", lambda m, t = None: False
+        )
+        _config_json_cache[("org/llama", None)] = {
+            "model_type": "llama",
+            "transformers_version": "4.57.0",
+        }
+
+        def boom(cmd, **k):
+            raise AssertionError("a 4.x-saved config must not trigger a probe")
+
+        monkeypatch.setattr("utils.transformers_version.subprocess.run", boom)
+        assert get_transformers_tier("org/llama") == "default"
+
+
 # ---------------------------------------------------------------------------
 # activate_transformers_for_subprocess — issue #6103
 # The early log must make clear it only prepends to sys.path; the real
