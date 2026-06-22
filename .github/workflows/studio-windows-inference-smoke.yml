@@ -1518,7 +1518,7 @@ jobs:
             if (Test-Path -LiteralPath $d) { Rename-Item -LiteralPath $d -NewName ((Split-Path $d -Leaf) + '.vsoff'); Write-Host "Hid VS: $d" }
           }
 
-      - name: A Windows CUDA prebuilt exists in unslothai/llama.cpp (what GPU users download, no VS)
+      - name: Windows CUDA and ROCm prebuilts exist in unslothai/llama.cpp (what GPU users download, no VS)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -1529,7 +1529,14 @@ jobs:
           echo "$ASSETS" | grep -iE 'windows-x64-cuda[0-9]' || {
             echo "::error::no Windows x64 CUDA prebuilt asset found in unslothai/llama.cpp latest release"
             echo "$ASSETS"; exit 1; }
-          echo "Windows CUDA prebuilt is available -- GPU users get it without compiling."
+          # AMD parity: hosted runners have no AMD GPU, so the resolver step below
+          # can't exercise the ROCm path (it resolves to CPU). Pin the per-gfx
+          # Windows ROCm bundles here so a release that drops them fails loudly --
+          # the AMD no-VS guarantee otherwise rides only on shared resolver code.
+          echo "$ASSETS" | grep -iE 'windows-x64-rocm-gfx' || {
+            echo "::error::no Windows x64 ROCm (per-gfx) prebuilt asset found in unslothai/llama.cpp latest release"
+            echo "$ASSETS"; exit 1; }
+          echo "Windows CUDA and ROCm prebuilts are available -- GPU users get them without compiling."
 
       - name: The prebuilt resolver runs without Visual Studio
         env:
