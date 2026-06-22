@@ -10,6 +10,7 @@ import tempfile
 from loggers import get_logger
 import os
 import shutil
+import contextlib
 from pathlib import Path
 from typing import Optional, Tuple, List
 from unsloth import FastLanguageModel, FastVisionModel, _IS_MLX
@@ -41,11 +42,16 @@ def _hf_offline(timeout = 3):
     """Whether checkpoint loading for export should avoid the Hugging Face Hub.
 
     Honors the HF offline env vars, otherwise does one cheap TCP reachability
-    probe to the configured HF endpoint. When online the probe costs a few
-    milliseconds; when the network is down we treat the load as offline so it
-    uses local files / the HF cache instead of hanging on long connection
-    timeouts (the reported "Loading checkpoint" hang) or failing the export.
-    Probed per call so a long-running server reacts to connectivity changes.
+    probe. When online the probe costs a few milliseconds; when the network is
+    down we treat the load as offline so it uses local files / the HF cache
+    instead of hanging on long connection timeouts (the reported "Loading
+    checkpoint" hang) or failing the export. Probed per call so a long-running
+    server reacts to connectivity changes.
+
+    Proxy aware: if an HTTP(S) proxy is configured for the HF endpoint (and the
+    host is not in NO_PROXY), we probe the *proxy* egress rather than a direct
+    connection to the Hub, so a setup that only reaches the Hub through a proxy is
+    not wrongly marked offline. Disable the probe with UNSLOTH_OFFLINE_PROBE=0.
     """
     _offline = {"1", "true", "yes", "on"}
     if (
@@ -53,19 +59,57 @@ def _hf_offline(timeout = 3):
         or os.environ.get("TRANSFORMERS_OFFLINE", "").strip().lower() in _offline
     ):
         return True
+    if os.environ.get("UNSLOTH_OFFLINE_PROBE", "1").strip().lower() in {"0", "false", "no", "off"}:
+        return False  # probe disabled -> assume online; loads still pass local_files_only on env
+
     import socket
     from urllib.parse import urlparse
+    from urllib.request import getproxies, proxy_bypass
 
     endpoint = os.environ.get("HF_ENDPOINT", "https://huggingface.co")
-    host = urlparse(endpoint).hostname or "huggingface.co"
+    ep = urlparse(endpoint if "://" in endpoint else "https://" + endpoint)
+    hf_host = ep.hostname or "huggingface.co"
+    hf_port = ep.port or (80 if ep.scheme == "http" else 443)
+
+    target_host, target_port = hf_host, hf_port
     try:
-        socket.create_connection((host, 443), timeout = timeout).close()
+        proxies = getproxies()  # reads *_PROXY env (and system proxy on Win/macOS)
+        bypass = False
+        try:
+            bypass = bool(proxy_bypass(hf_host))
+        except Exception:
+            bypass = False
+        proxy_url = proxies.get(ep.scheme) or proxies.get("https") or proxies.get("http") or proxies.get("all")
+        if proxy_url and not bypass:
+            pp = urlparse(proxy_url if "://" in proxy_url else "http://" + proxy_url)
+            if pp.hostname:
+                target_host = pp.hostname
+                target_port = pp.port or (443 if pp.scheme == "https" else 80)
+    except Exception:
+        target_host, target_port = hf_host, hf_port
+
+    try:
+        socket.create_connection((target_host, target_port), timeout = timeout).close()
         return False
     except Exception:
         logger.warning(
-            "Hugging Face Hub (%s) unreachable; loading checkpoint in offline mode", host
+            "Hugging Face endpoint (%s:%s) unreachable; loading checkpoint in offline mode",
+            target_host, target_port,
         )
         return True
+
+
+# Reuse Unsloth's lock-guarded forced-offline context (same repo / release) so
+# the brief HF-offline window during type detection is correct under nesting.
+# Fall back to a no-op if the private helper ever moves.
+try:
+    from unsloth.models.vision import _force_hf_offline as _unsloth_force_hf_offline
+except Exception:
+    import contextlib as _contextlib
+
+    @_contextlib.contextmanager
+    def _unsloth_force_hf_offline():
+        yield
 
 
 def _is_wsl():
@@ -211,9 +255,15 @@ class ExportBackend:
             local_files_only = _hf_offline()
 
             # Token the type-detection probes too, else a gated multimodal base
-            # 404s here and falls through to the text loader.
-            self._audio_type = detect_audio_type(model_id, hf_token = token)
-            self.is_vision = not self._audio_type and is_vision_model(model_id, hf_token = token)
+            # 404s here and falls through to the text loader. These probes resolve
+            # config / tokenizer files via the Hub, so when offline we run them in
+            # a forced-offline window: their hf_hub_download / AutoConfig reads then
+            # hit the local cache directly instead of waiting out connection
+            # timeouts (detect_audio_type already reads the local cache first).
+            _probe_ctx = _unsloth_force_hf_offline() if local_files_only else contextlib.nullcontext()
+            with _probe_ctx:
+                self._audio_type = detect_audio_type(model_id, hf_token = token)
+                self.is_vision = not self._audio_type and is_vision_model(model_id, hf_token = token)
 
             if self._audio_type == "csm":
                 from unsloth import FastModel

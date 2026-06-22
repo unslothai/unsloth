@@ -527,39 +527,68 @@ def _is_offline_related_error(exc):
     return False
 
 
+import threading as _threading
+
+# Guards the process-wide HF offline flag below. A depth counter lets nested or
+# concurrent _force_hf_offline() windows share one flip: only the first entrant
+# saves the real original value and only the last exit restores it, so
+# overlapping windows can never restore the flag to a stale value. The lock is
+# held only around the flip/restore, not around the wrapped load.
+_force_offline_lock = _threading.RLock()
+_force_offline_depth = 0
+_force_offline_saved = []
+
+
 @contextlib.contextmanager
 def _force_hf_offline():
     """Temporarily force Hugging Face offline mode at runtime.
 
-    Passing local_files_only=True is not always enough: on current transformers
-    versions AutoProcessor / AutoTokenizer still issue a /api/models request
-    during processor-class resolution, which hangs or fails when there is no
-    network even though every file is already cached. Flipping the offline
-    constants (equivalent to HF_HUB_OFFLINE=1) makes those calls read straight
-    from the local cache. Everything is restored on exit.
+    Passing local_files_only=True is not always enough: on transformers < 5
+    AutoProcessor / AutoTokenizer still issue a /api/models request during
+    processor-class resolution, which hangs or fails when there is no network
+    even though every file is already cached. Flipping the offline constants
+    (equivalent to HF_HUB_OFFLINE=1) makes those calls read straight from the
+    local cache.
+
+    Caveat: the flag is process-global for the (brief) duration, so a concurrent
+    load that legitimately needs the Hub during the window would also see
+    offline. Callers minimise this by only entering on a genuine network failure
+    (see _acquire_processor), and the refcount keeps restore correct under
+    nesting / overlap.
     """
-    patched = []
-    try:
-        import huggingface_hub.constants as _hfc
-        patched.append((_hfc, "HF_HUB_OFFLINE", _hfc.HF_HUB_OFFLINE))
-        _hfc.HF_HUB_OFFLINE = True
-    except Exception:
-        pass
-    try:
-        import transformers.utils.hub as _tuh
-        if hasattr(_tuh, "_is_offline_mode"):
-            patched.append((_tuh, "_is_offline_mode", _tuh._is_offline_mode))
-            _tuh._is_offline_mode = True
-    except Exception:
-        pass
+    global _force_offline_depth, _force_offline_saved
+    with _force_offline_lock:
+        if _force_offline_depth == 0:
+            saved = []
+            try:
+                import huggingface_hub.constants as _hfc
+                if hasattr(_hfc, "HF_HUB_OFFLINE"):
+                    saved.append((_hfc, "HF_HUB_OFFLINE", _hfc.HF_HUB_OFFLINE))
+                    _hfc.HF_HUB_OFFLINE = True
+            except Exception:
+                pass
+            try:
+                import transformers.utils.hub as _tuh
+                for _attr in ("_is_offline_mode", "OFFLINE"):
+                    if hasattr(_tuh, _attr):
+                        saved.append((_tuh, _attr, getattr(_tuh, _attr)))
+                        setattr(_tuh, _attr, True)
+            except Exception:
+                pass
+            _force_offline_saved = saved
+        _force_offline_depth += 1
     try:
         yield
     finally:
-        for obj, attr, val in patched:
-            try:
-                setattr(obj, attr, val)
-            except Exception:
-                pass
+        with _force_offline_lock:
+            _force_offline_depth -= 1
+            if _force_offline_depth == 0:
+                for obj, attr, val in _force_offline_saved:
+                    try:
+                        setattr(obj, attr, val)
+                    except Exception:
+                        pass
+                _force_offline_saved = []
 
 
 def _construct_vlm_processor_fallback(
@@ -596,8 +625,9 @@ def _construct_vlm_processor_fallback(
             local_files_only = local_files_only,
         )
         # Read tokenizer_config.json for model-specific special tokens. Prefer a
-        # local file (works offline and for a local checkpoint dir); only fall
-        # back to hf_hub_download when the path is a real repo id and we are online.
+        # local file (works offline and for a local checkpoint dir); otherwise use
+        # hf_hub_download, forwarding local_files_only so a cached repo-id config is
+        # still resolved from the local cache when offline (no network needed).
         try:
             import json as _json
 
@@ -606,7 +636,7 @@ def _construct_vlm_processor_fallback(
             if os.path.isdir(tokenizer_name) and os.path.exists(_local_cfg):
                 with open(_local_cfg, "r", encoding = "utf-8") as f:
                     tok_config = _json.load(f)
-            elif not local_files_only:
+            else:
                 from huggingface_hub import hf_hub_download
                 config_path = hf_hub_download(
                     tokenizer_name,
@@ -1306,12 +1336,15 @@ class FastBaseModel:
         # local_files_only=True when the first (online) attempt returns nothing
         # because the network is down. This fixes offline reloads / exports where
         # tokenizer_name points at the base repo id but the files are cached.
-        def _acquire_processor(lfo):
-            # When loading local-only, also force HF offline mode: local_files_only
-            # alone does not stop AutoProcessor / AutoTokenizer from issuing a
-            # /api/models request during class resolution on current transformers
-            # versions, which hangs or fails with no network even when cached.
-            with _force_hf_offline() if lfo else contextlib.nullcontext():
+        def _acquire_processor(lfo, force_offline = False):
+            # force_offline flips the process-wide HF offline flag for this load.
+            # We only set it on the retry (see below), because local_files_only
+            # alone does not stop AutoProcessor / AutoTokenizer issuing a
+            # /api/models request on transformers < 5. Keeping it off for the
+            # first attempt means transformers 5 and local-dir loads never touch
+            # the global flag at all. Every leaf load is guarded so a network
+            # error returns None (lets the caller retry) instead of escaping.
+            with (_force_hf_offline() if force_offline else contextlib.nullcontext()):
                 if (whisper_language and whisper_task) or auto_model.__name__.endswith(
                     "ForConditionalGeneration"
                 ):
@@ -1336,14 +1369,19 @@ class FastBaseModel:
                             trust_remote_code = trust_remote_code,
                             local_files_only = lfo,
                         )
-                    except:
-                        _tok = get_auto_processor(
-                            tokenizer_name,
-                            padding_side = "left",
-                            token = token,
-                            trust_remote_code = trust_remote_code,
-                            local_files_only = lfo,
-                        )
+                    except Exception:
+                        try:
+                            _tok = get_auto_processor(
+                                tokenizer_name,
+                                padding_side = "left",
+                                token = token,
+                                trust_remote_code = trust_remote_code,
+                                local_files_only = lfo,
+                            )
+                        except Exception:
+                            # get_auto_processor can itself raise (network /
+                            # TypeError); swallow so the offline retry can run.
+                            _tok = None
 
                 # If processor loading failed (e.g., tokenizer class not found),
                 # or if AutoProcessor silently degraded to a text-only tokenizer
@@ -1353,22 +1391,30 @@ class FastBaseModel:
                     is_vlm and _tok is not None and not hasattr(_tok, "image_processor")
                 )
                 if (_tok is None or _processor_is_degraded) and is_vlm:
-                    _fallback = _construct_vlm_processor_fallback(
-                        tokenizer_name,
-                        model_type_arch,
-                        token,
-                        trust_remote_code,
-                        local_files_only = lfo,
-                    )
+                    try:
+                        _fallback = _construct_vlm_processor_fallback(
+                            tokenizer_name,
+                            model_type_arch,
+                            token,
+                            trust_remote_code,
+                            local_files_only = lfo,
+                        )
+                    except Exception:
+                        _fallback = None
                     if _fallback is not None:
                         _tok = _fallback
             return _tok
 
-        tokenizer = _acquire_processor(local_files_only)
-        if tokenizer is None and not local_files_only:
-            # The network may be unavailable (offline env var not set); retry
-            # against the local cache (offline forced inside _acquire_processor).
-            tokenizer = _acquire_processor(True)
+        # If offline was explicitly requested (kwarg or env), force it up front so
+        # the load is fast and never touches the network. Otherwise try online and
+        # only flip the global offline flag after a real network failure - so we
+        # never force offline while we might actually be online.
+        tokenizer = _acquire_processor(local_files_only, force_offline = local_files_only)
+        if tokenizer is None:
+            # The kwarg alone was insufficient (transformers < 5) or the network is
+            # down: retry against the local cache, forcing HF offline so
+            # AutoProcessor skips its /api/models lookup.
+            tokenizer = _acquire_processor(True, force_offline = True)
         if tokenizer is None and is_vlm:
             import sys
             print(
@@ -1443,8 +1489,8 @@ class FastBaseModel:
             # PreTrainedTokenizerFast. Retry locally if the network is down so an
             # offline reload uses the cache / local checkpoint dir instead of
             # raising the misleading "weirdly not loaded" error.
-            def _last_resort_tokenizer(lfo):
-                with _force_hf_offline() if lfo else contextlib.nullcontext():
+            def _last_resort_tokenizer(lfo, force_offline = False):
+                with (_force_hf_offline() if force_offline else contextlib.nullcontext()):
                     from transformers import AutoTokenizer as _AutoTokenizer
                     try:
                         return _AutoTokenizer.from_pretrained(
@@ -1466,12 +1512,12 @@ class FastBaseModel:
 
             _last_resort_err = None
             try:
-                tokenizer = _last_resort_tokenizer(local_files_only)
+                tokenizer = _last_resort_tokenizer(local_files_only, force_offline = local_files_only)
             except Exception as _e:
                 _last_resort_err = _e
-                if not local_files_only and _is_offline_related_error(_e):
+                if _is_offline_related_error(_e):
                     try:
-                        tokenizer = _last_resort_tokenizer(True)
+                        tokenizer = _last_resort_tokenizer(True, force_offline = True)
                         _last_resort_err = None
                     except Exception as _e2:
                         _last_resort_err = _e2
