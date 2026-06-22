@@ -201,6 +201,7 @@ def _run_security_gates(
     approved_fingerprint: str | None,
     resp_queue: Any,
     compute_subdirs: bool = True,
+    subject: str | None = None,
 ) -> bool:
     """Malware + (when trust_remote_code) remote-code consent gates over *targets*
     (model + base). Sends the matching 'loaded' failure and returns False if blocked; True
@@ -245,6 +246,7 @@ def _run_security_gates(
             hf_token = hf_token,
             trust_remote_code = True,
             approved_fingerprint = approved_fingerprint,
+            subject = subject,
         )
         if _rc.blocked:
             _send_response(
@@ -292,6 +294,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
             hf_token = hf_token,
             approved_fingerprint = config.get("approved_remote_code_fingerprint"),
             resp_queue = resp_queue,
+            subject = config.get("subject"),
         ):
             return
 
@@ -823,6 +826,7 @@ def run_inference_process(*, cmd_queue: Any, resp_queue: Any, cancel_event, conf
         approved_fingerprint = config.get("approved_remote_code_fingerprint"),
         resp_queue = resp_queue,
         compute_subdirs = False,  # stay transformers-free until the SSM kernels are installed
+        subject = config.get("subject"),
     ):
         return
     # Probe the resolved base for SSM kernels, not the adapter id / local checkpoint path

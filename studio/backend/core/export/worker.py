@@ -261,6 +261,7 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
             hf_token = cmd.get("hf_token"),
             trust_remote_code = True,
             approved_fingerprint = cmd.get("approved_remote_code_fingerprint"),
+            subject = cmd.get("subject"),
         )
         if _rc.blocked:
             _send_response(

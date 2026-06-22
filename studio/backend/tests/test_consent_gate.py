@@ -418,7 +418,7 @@ class TestWorkersWireTheGate:
         # Inference + export expand the consent scan to the LoRA base model's code.
         for rel in ("core/inference/worker.py", "core/export/worker.py"):
             src = (_BACKEND / rel).read_text()
-            assert "consent_targets" in src
+            assert "evaluate_remote_code_consent" in src
             assert "get_base_model_from_lora" in src or "mc.base_model" in src
 
     def test_remote_lora_base_is_resolved_in_gate_paths(self):
@@ -603,6 +603,8 @@ class TestStructuredFindingsForDialog:
             "preflight_remote_code_consent_for_targets",
             lambda *_a, **_k: SimpleNamespace(
                 has_remote_code = True,
+                blocked = False,
+                reason = "allowed: no high-risk patterns",
                 response_payload = lambda: {"has_remote_code": True, "approvable": True},
             ),
         )
@@ -636,6 +638,8 @@ class TestStructuredFindingsForDialog:
     def test_fingerprint_threaded_to_worker(self, rel):
         src = (Path(__file__).resolve().parent.parent / rel).read_text()
         assert "approved_remote_code_fingerprint" in src
+        # The per-user approval cache rides the same path as the fingerprint.
+        assert "subject" in src
 
 
 # Trusted-org auto-enable: is_trusted_org_repo decides whether a repo may auto-enable

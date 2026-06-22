@@ -1508,6 +1508,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
             hf_token = hf_token,
             trust_remote_code = True,
             approved_fingerprint = config.get("approved_remote_code_fingerprint"),
+            subject = config.get("subject"),
         )
         if _rc.blocked:
             _send(
@@ -1916,7 +1917,8 @@ def _run_mlx_training(event_queue, stop_queue, config):
             wandb_token = config.get("wandb_token")
             if wandb_token:
                 os.environ["WANDB_API_KEY"] = wandb_token
-            _wandb_sensitive = {"hf_token", "wandb_token", "s3_config"}
+            # Keep the authenticated subject out of W&B run config (mirrors _sanitize_db_config).
+            _wandb_sensitive = {"hf_token", "wandb_token", "s3_config", "subject"}
             wandb_run = _wandb.init(
                 project = config.get("wandb_project") or "unsloth-mlx",
                 config = {k: v for k, v in config.items() if k not in _wandb_sensitive},
@@ -2245,6 +2247,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             hf_token = config.get("hf_token") or None,
             trust_remote_code = True,
             approved_fingerprint = config.get("approved_remote_code_fingerprint"),
+            subject = config.get("subject"),
         )
         if _rc.blocked:
             event_queue.put(
@@ -3267,6 +3270,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
                 hf_token = hf_token,
                 trust_remote_code = True,
                 approved_fingerprint = config.get("approved_remote_code_fingerprint"),
+                subject = config.get("subject"),
             )
             if _rc.blocked:
                 event_queue.put(

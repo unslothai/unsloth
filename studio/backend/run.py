@@ -921,7 +921,7 @@ def run_server(
     # port is never public (even with -H 0.0.0.0), and reject the contradictory combo.
     if secure and not cloudflare:
         raise SystemExit(
-            "A secure Cloudflare link is not allowed, use --not-secure which provides a 0.0.0.0 link"
+            "A secure Cloudflare link is not allowed, use --no-secure which provides a 0.0.0.0 link"
         )
     if secure:
         host = "127.0.0.1"
@@ -1161,7 +1161,7 @@ def run_server(
     # silently fall back to a raw port.
     if secure and not _cloudflare_url:
         print(
-            "A secure Cloudflare link is not allowed, use --not-secure which provides a 0.0.0.0 link",
+            "A secure Cloudflare link is not allowed, use --no-secure which provides a 0.0.0.0 link",
             file = sys.stderr,
             flush = True,
         )
@@ -1174,18 +1174,20 @@ def run_server(
     return app
 
 
-# For direct execution (also invoked by CLI via os.execvp / subprocess).
-if __name__ == "__main__":
-    import argparse
-    import signal
-    import traceback
+# Mirror unsloth_cli/commands/studio.py's _PARALLEL_*. Default 1 is for direct
+# backend launches; `unsloth studio run` always passes its own value (4).
+_PARALLEL_MIN = 1
+_PARALLEL_MAX = 64
+_PARALLEL_DEFAULT_PLAIN = 1
 
-    # Ensure stderr handles Unicode on Windows (non-ASCII path tracebacks).
-    if sys.platform == "win32" and hasattr(sys.stderr, "reconfigure"):
-        try:
-            sys.stderr.reconfigure(encoding = "utf-8", errors = "replace")
-        except Exception:
-            pass
+
+def _build_arg_parser():
+    """Build the backend CLI argument parser.
+
+    Extracted from the __main__ block so the flag wiring (notably the
+    --secure/--no-secure polarity and its --not-secure alias) stays unit-testable.
+    """
+    import argparse
 
     parser = argparse.ArgumentParser(description = "Run Unsloth UI Backend server")
     parser.add_argument(
@@ -1218,8 +1220,16 @@ if __name__ == "__main__":
         action = argparse.BooleanOptionalAction,
         default = False,
         help = "Expose ONLY a Cloudflare HTTPS link: bind localhost and fail closed "
-        "if the tunnel can't start. Without it, --not-secure also serves the raw "
+        "if the tunnel can't start. Without it, --no-secure also serves the raw "
         "0.0.0.0 port, which is reachable from anywhere on the network",
+    )
+    # Back-compat: accept --not-secure as a hidden alias for --no-secure.
+    parser.add_argument(
+        "--not-secure",
+        dest = "secure",
+        action = "store_false",
+        default = argparse.SUPPRESS,
+        help = argparse.SUPPRESS,
     )
     # Tri-state tool policy: no flag -> None (tools on, per-request honored);
     # --enable-tools/--disable-tools force on/off.
@@ -1238,11 +1248,6 @@ if __name__ == "__main__":
         default = None,
         help = "Force server-side tools off for every request.",
     )
-    # Mirror unsloth_cli/commands/studio.py's _PARALLEL_*. Default 1 is for direct
-    # backend launches; `unsloth studio run` always passes its own value (4).
-    _PARALLEL_MIN = 1
-    _PARALLEL_MAX = 64
-    _PARALLEL_DEFAULT_PLAIN = 1
     parser.add_argument(
         "--parallel",
         "--n-parallel",
@@ -1253,7 +1258,22 @@ if __name__ == "__main__":
             f"Default {_PARALLEL_DEFAULT_PLAIN}; `unsloth studio run` uses 4."
         ),
     )
+    return parser
 
+
+# For direct execution (also invoked by CLI via os.execvp / subprocess).
+if __name__ == "__main__":
+    import signal
+    import traceback
+
+    # Ensure stderr handles Unicode on Windows (non-ASCII path tracebacks).
+    if sys.platform == "win32" and hasattr(sys.stderr, "reconfigure"):
+        try:
+            sys.stderr.reconfigure(encoding = "utf-8", errors = "replace")
+        except Exception:
+            pass
+
+    parser = _build_arg_parser()
     args = parser.parse_args()
     if not _PARALLEL_MIN <= args.parallel <= _PARALLEL_MAX:
         parser.error(f"--parallel must be between {_PARALLEL_MIN} and {_PARALLEL_MAX}")

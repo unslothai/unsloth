@@ -42,6 +42,7 @@ export async function confirmRemoteCodeIfNeeded({
       scanCreatedRepos: [],
       unsafeFiles: [],
       securityBlocked: false,
+      alreadyApproved: false,
       provider: null,
     };
   }
@@ -49,6 +50,12 @@ export async function confirmRemoteCodeIfNeeded({
   // No custom code and nothing unsafe: proceed without trust_remote_code. Models needing
   // it ship auto_map and hit the dialog below, so the flag is only enabled via approval.
   if (!scan.requiresTrustRemoteCode && scan.unsafeFiles.length === 0) {
+    return true;
+  }
+
+  // Already approved this exact code and nothing unsafe flagged: reuse without re-prompting.
+  if (scan.alreadyApproved && scan.unsafeFiles.length === 0 && !scan.securityBlocked) {
+    onApprove(scan.fingerprint);
     return true;
   }
 
