@@ -179,9 +179,14 @@ export function useSystemInfo(): SystemInfoResponse {
     let cancelled = false;
 
     const updateSystemInfo = () => {
-      fetchSystemOnce().then((info) => !cancelled && setSystemInfo(info));
-      cachedSystem = null;
-      systemFetchPromise = null;
+      // Reset only after the request settles so a probe slower than the interval
+      // is reused instead of stacking overlapping requests.
+      fetchSystemOnce()
+        .then((info) => !cancelled && setSystemInfo(info))
+        .finally(() => {
+          cachedSystem = null;
+          systemFetchPromise = null;
+        });
     };
 
     updateSystemInfo();
@@ -993,7 +998,7 @@ export function AppSidebar() {
     const totalVram = device.reduce((sum, d) => sum + (d.memory_total_gb ?? 0), 0)
     const usedVram = device.reduce((sum, d) => sum + (d.vram_used_gb ?? 0), 0)
 
-    const vramPercent = usedVram > 0 ? (usedVram / totalVram) * 100 : 0;
+    const vramPercent = totalVram > 0 ? (usedVram / totalVram) * 100 : 0;
     const ramTotalGb = systemInfo?.memory?.total_gb ?? 0;
     const ramAvailableGb = systemInfo?.memory?.available_gb ?? 0;
     const ramUsedGb = ramTotalGb - ramAvailableGb;

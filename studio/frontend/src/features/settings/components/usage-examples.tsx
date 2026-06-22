@@ -241,20 +241,17 @@ function javascriptSnippet(
     options.push(`    max_tokens: ${ADV.max_tokens},`);
   }
 
-  const extra: string[] = [];
+  // The JS SDK forwards unknown options into the request body, so these go at the
+  // top level (the Python SDK needs them under extra_body instead).
   if (variant === "advanced") {
-    extra.push(`      top_k: ${ADV.top_k},`);
-    extra.push(`      min_p: ${ADV.min_p},`);
-    extra.push(`      repetition_penalty: ${ADV.repetition_penalty},`);
-    extra.push(`      enable_thinking: true,`);
+    options.push(`    top_k: ${ADV.top_k},`);
+    options.push(`    min_p: ${ADV.min_p},`);
+    options.push(`    repetition_penalty: ${ADV.repetition_penalty},`);
+    options.push(`    enable_thinking: true,`);
   }
   if (variant !== "plain") {
-    extra.push(`      enable_tools: true,`);
-    extra.push(`      enabled_tools: [${toolsJson}],`);
-  }
-
-  if (extra.length) {
-    options.push(`    extra_body: {\n${extra.join("\n")}\n    },`);
+    options.push(`    enable_tools: true,`);
+    options.push(`    enabled_tools: [${toolsJson}],`);
   }
 
   const trailingOptions = options.length ? `\n${options.join("\n")}` : "";

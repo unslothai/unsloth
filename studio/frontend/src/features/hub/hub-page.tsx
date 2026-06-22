@@ -993,7 +993,7 @@ export function ModelsPage() {
     ? `${Math.floor(gpu.memoryTotalGb)} GB`
     : "Unavailable";
   const ramLabel =
-    gpu.systemRamAvailableGb > 0
+    gpu.systemRamTotalGb > 0
       ? `${Math.floor(gpu.systemRamTotalGb)} GB`
       : "Unavailable";
   const coreLabel = `${gpu.cpuCore}/${gpu.cpuThread}`;

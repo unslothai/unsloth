@@ -736,7 +736,7 @@ def get_gpu_utilization() -> list[Dict[str, Any]]:
                     }
                 ]
 
-        # Last resort: torch mem_get_info (process-local) para TODAS as GPUs visíveis
+        # Last resort: torch mem_get_info (process-local) for ALL visible GPUs
         _visible_spec = _get_parent_visible_gpu_spec()
         _numeric_ids = _visible_spec.get("numeric_ids") or []
         if not _numeric_ids:

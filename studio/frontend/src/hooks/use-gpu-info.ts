@@ -39,18 +39,23 @@ async function fetchGpuOnce(): Promise<GpuInfo> {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json() as SystemInfoResponse;
       const gpuData = data?.gpu;
-      if (!gpuData?.available || !gpuData.devices?.length) return DEFAULT_GPU;
-      const devices = gpuData.devices;
-      const totalGb = devices.reduce((sum, d) => sum + (d.memory_total_gb ?? 0), 0);
-      const info: GpuInfo = {
-        available: true,
-        name: devices[0]?.name ?? "Unknown",
-        memoryTotalGb: totalGb,
+      // CPU/RAM exist even on hosts without a GPU, so populate them on every path.
+      const base = {
         cpuCore: data?.cpu?.physical_count ?? 0,
         cpuThread: data?.cpu?.logical_count ?? 0,
         systemRamAvailableGb: data?.memory?.available_gb ?? 0,
-        systemRamTotalGb: data?.memory?.total_gb
+        systemRamTotalGb: data?.memory?.total_gb ?? 0,
       };
+      const devices = gpuData?.devices ?? [];
+      const info: GpuInfo =
+        gpuData?.available && devices.length
+          ? {
+              ...base,
+              available: true,
+              name: devices[0]?.name ?? "Unknown",
+              memoryTotalGb: devices.reduce((sum, d) => sum + (d.memory_total_gb ?? 0), 0),
+            }
+          : { ...DEFAULT_GPU, ...base };
       cachedGpu = info;
       return info;
     } catch {

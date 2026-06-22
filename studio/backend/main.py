@@ -978,7 +978,7 @@ async def get_system_info(current_subject: str = Depends(get_current_subject)):
     from utils.hardware import get_device, get_backend_visible_gpu_info, get_visible_gpu_utilization
     from utils.hardware.hardware import _backend_label
 
-    # Instanciando o logger para evitar NameError nos blocos except abaixo
+    # Logger used by the except blocks below
     logger = logging.getLogger(__name__)
 
     visibility_info = get_backend_visible_gpu_info()
@@ -991,8 +991,8 @@ async def get_system_info(current_subject: str = Depends(get_current_subject)):
         idx = dev.get("index")
         util = util_devices.get(idx, {})
 
-        total_vram = util.get("vram_total_gb") or dev.get("memory_total_gb", 0)
-        used_vram = util.get("vram_used_gb", 0)
+        total_vram = util.get("vram_total_gb") or dev.get("memory_total_gb") or 0
+        used_vram = util.get("vram_used_gb") or 0
 
         enriched_dev = dict(dev)
         enriched_dev["vram_used_gb"] = used_vram
@@ -1026,19 +1026,18 @@ async def get_system_info(current_subject: str = Depends(get_current_subject)):
         logger.debug(f"Failed to get current process: {e}")
         current_process = None
 
-    # Secure extraction of ML package versions (as promised in the docstring)
-    ml_packages = {}
-    try:
-        import torch
-        ml_packages["torch"] = torch.__version__
-    except ImportError:
-        pass
+    # Read versions from metadata so a 3s system poll never imports heavy ML
+    # libraries (and never 500s on their import-time failures).
+    from importlib.metadata import PackageNotFoundError, version as pkg_version
 
-    try:
-        import transformers
-        ml_packages["transformers"] = transformers.__version__
-    except ImportError:
-        pass
+    ml_packages = {}
+    for pkg in ("torch", "transformers"):
+        try:
+            ml_packages[pkg] = pkg_version(pkg)
+        except PackageNotFoundError:
+            pass
+        except Exception as e:
+            logger.debug(f"Failed to read {pkg} version: {e}")
 
     return {
         "platform": platform.platform(),
