@@ -3375,7 +3375,7 @@ class TestLlamaCppRuntimeWslOrdering:
 
     def test_prepends_before_binary_dir(self):
         source = _LLAMA_CPP_PATH.read_text(encoding = "utf-8")
-        idx_helper = source.find("for _wsl_rocm in _wsl_system_rocm_lib_dirs()")
+        idx_helper = source.find("lib_dirs.extend(_wsl_system_rocm_lib_dirs())")
         idx_binary = source.find("lib_dirs.append(binary_dir)")
         assert idx_helper != -1 and idx_binary != -1
         assert idx_helper < idx_binary

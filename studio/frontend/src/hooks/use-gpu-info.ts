@@ -37,15 +37,20 @@ async function fetchGpuOnce(): Promise<GpuInfo> {
     try {
       const res = await authFetch("/api/system");
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
       const data = await res.json() as SystemInfoResponse;
       const gpuData = data?.gpu;
+
       // CPU/RAM exist even on hosts without a GPU, so populate them on every path.
+      // No discrete GPU (e.g. Mac): still surface system RAM so memory math
+      // (unified memory) has a budget to work with.
       const base = {
         cpuCore: data?.cpu?.physical_count ?? 0,
         cpuThread: data?.cpu?.logical_count ?? 0,
         systemRamAvailableGb: data?.memory?.available_gb ?? 0,
         systemRamTotalGb: data?.memory?.total_gb ?? 0,
       };
+
       const devices = gpuData?.devices ?? [];
       const info: GpuInfo =
         gpuData?.available && devices.length

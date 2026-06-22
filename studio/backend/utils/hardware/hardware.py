@@ -66,6 +66,11 @@ class DeviceType(str, Enum):
 
 DEVICE: Optional[DeviceType] = None
 CHAT_ONLY: bool = True  # No CUDA GPU -> GGUF chat only (Mac, CPU-only, etc.)
+# Why CHAT_ONLY is True (Train/Export disabled). None when training is enabled.
+# "mlx_unavailable": Apple Silicon but the MLX stack is missing, too old, or broken
+# (the usual cause of "Train/Export greyed out" on Macs after a reinstall dropped MLX);
+# "intel_mac": Intel Mac (no PyTorch/MLX); "no_gpu": CPU-only non-Mac host.
+CHAT_ONLY_REASON: Optional[str] = None
 IS_ROCM: bool = False  # True when running on AMD ROCm (HIP) -- routes GPU monitoring to amd.py
 
 
@@ -104,6 +109,24 @@ def _has_mlx() -> bool:
         return True
     except ImportError:
         return False
+
+
+def _has_usable_mlx_stack() -> bool:
+    """True only when the FULL Studio MLX training/export stack is usable
+    (mlx + mlx-lm + mlx-vlm at the minimum versions unsloth-zoo requires), not
+    just a bare ``import mlx.core``. A backtracked/old mlx-vlm still imports but
+    breaks VLM Train/Export, so the training gate must match the self-heal's own
+    criterion (utils.mlx_repair.mlx_stack_available) -- otherwise detect_hardware
+    would enable Train/Export on exactly the inadequate stack the MLX self-heal
+    is trying to repair, leaving the user with greyed-in-but-broken buttons."""
+    try:
+        from utils.mlx_repair import mlx_stack_available
+        return mlx_stack_available()
+    except Exception as exc:
+        # mlx_repair should always import; if it somehow cannot, fall back to the
+        # bare import check rather than forcing a working host into chat-only.
+        logger.debug("MLX stack availability check failed, using bare import: %s", exc)
+        return _has_mlx()
 
 
 def _print_cuda_device_list(is_rocm: bool) -> None:
@@ -151,8 +174,9 @@ def detect_hardware() -> DeviceType:
       2. MLX   (Apple Silicon via MLX framework)
       3. CPU   (fallback)
     """
-    global DEVICE, CHAT_ONLY, IS_ROCM
-    CHAT_ONLY = True  # reset -- only CUDA/ROCm sets it to False
+    global DEVICE, CHAT_ONLY, CHAT_ONLY_REASON, IS_ROCM
+    CHAT_ONLY = True  # reset -- only CUDA/ROCm/XPU/MLX sets it to False
+    CHAT_ONLY_REASON = None
     IS_ROCM = False
 
     # --- CUDA / ROCm: try PyTorch ---
@@ -190,7 +214,10 @@ def detect_hardware() -> DeviceType:
             return DEVICE
 
     # --- MLX: Apple Silicon ---
-    if is_apple_silicon() and _has_mlx():
+    # Require the full mlx/mlx-lm/mlx-vlm stack (not a bare `import mlx.core`) so
+    # the gate matches utils.mlx_repair: a partial/backtracked stack stays
+    # chat-only (reason "mlx_unavailable") and the background self-heal repairs it.
+    if is_apple_silicon() and _has_usable_mlx_stack():
         DEVICE = DeviceType.MLX
         CHAT_ONLY = False
         # Use platform.machine() ("arm64"); platform.processor() returns "i386"
@@ -201,6 +228,23 @@ def detect_hardware() -> DeviceType:
 
     # --- Fallback ---
     DEVICE = DeviceType.CPU
+    # CHAT_ONLY is still True here (every training-capable branch returned early),
+    # so record WHY so the UI can explain the greyed-out Train/Export instead of
+    # silently disabling them.
+    if is_apple_silicon():
+        # Reached the CPU fallback on Apple Silicon, so the MLX stack is missing,
+        # too old, or broken. This is usually an environment problem recoverable
+        # with `unsloth studio update`.
+        CHAT_ONLY_REASON = "mlx_unavailable"
+        logger.warning(
+            "Apple Silicon detected but the MLX stack is incomplete or too old; "
+            "Train/Export disabled (chat-only). Run `unsloth studio update` to "
+            "restore MLX training."
+        )
+    elif platform.system() == "Darwin":
+        CHAT_ONLY_REASON = "intel_mac"  # Intel Mac: no PyTorch/MLX -> GGUF-only by design.
+    else:
+        CHAT_ONLY_REASON = "no_gpu"
     print("Hardware detected: CPU (no GPU backend available)")
     return DEVICE
 
@@ -1193,7 +1237,24 @@ def _load_config_for_gpu_estimate(model_name: str, hf_token: Optional[str] = Non
 
         return _to_ns(cfg)
     except Exception as e:
-        logger.warning("Could not load config for '%s': %s", model_name, e)
+        # A 5.x-only config can't be parsed by the default transformers; that is
+        # expected (the worker reloads under the sidecar), so only warn for default tier.
+        tier = "default"
+        try:
+            from utils.transformers_version import get_transformers_tier
+            tier = get_transformers_tier(model_name)
+        except Exception:
+            pass
+        if tier != "default":
+            _tier_version = {"510": "5.10.x", "530": "5.3.0", "550": "5.5.0"}.get(tier, "5.x")
+            logger.info(
+                "Config for '%s' not parseable by the default transformers; "
+                "needs transformers %s and will be loaded with that sidecar in the worker",
+                model_name,
+                _tier_version,
+            )
+        else:
+            logger.warning("Could not load config for '%s': %s", model_name, e)
         return None
 
 
