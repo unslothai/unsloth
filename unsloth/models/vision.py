@@ -1344,7 +1344,7 @@ class FastBaseModel:
             # first attempt means transformers 5 and local-dir loads never touch
             # the global flag at all. Every leaf load is guarded so a network
             # error returns None (lets the caller retry) instead of escaping.
-            with (_force_hf_offline() if force_offline else contextlib.nullcontext()):
+            with _force_hf_offline() if force_offline else contextlib.nullcontext():
                 if (whisper_language and whisper_task) or auto_model.__name__.endswith(
                     "ForConditionalGeneration"
                 ):
@@ -1490,7 +1490,7 @@ class FastBaseModel:
             # offline reload uses the cache / local checkpoint dir instead of
             # raising the misleading "weirdly not loaded" error.
             def _last_resort_tokenizer(lfo, force_offline = False):
-                with (_force_hf_offline() if force_offline else contextlib.nullcontext()):
+                with _force_hf_offline() if force_offline else contextlib.nullcontext():
                     from transformers import AutoTokenizer as _AutoTokenizer
                     try:
                         return _AutoTokenizer.from_pretrained(

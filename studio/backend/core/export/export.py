@@ -79,7 +79,12 @@ def _hf_offline(timeout = 3):
             bypass = bool(proxy_bypass(hf_host))
         except Exception:
             bypass = False
-        proxy_url = proxies.get(ep.scheme) or proxies.get("https") or proxies.get("http") or proxies.get("all")
+        proxy_url = (
+            proxies.get(ep.scheme)
+            or proxies.get("https")
+            or proxies.get("http")
+            or proxies.get("all")
+        )
         if proxy_url and not bypass:
             pp = urlparse(proxy_url if "://" in proxy_url else "http://" + proxy_url)
             if pp.hostname:
@@ -94,7 +99,8 @@ def _hf_offline(timeout = 3):
     except Exception:
         logger.warning(
             "Hugging Face endpoint (%s:%s) unreachable; loading checkpoint in offline mode",
-            target_host, target_port,
+            target_host,
+            target_port,
         )
         return True
 
@@ -260,7 +266,9 @@ class ExportBackend:
             # a forced-offline window: their hf_hub_download / AutoConfig reads then
             # hit the local cache directly instead of waiting out connection
             # timeouts (detect_audio_type already reads the local cache first).
-            _probe_ctx = _unsloth_force_hf_offline() if local_files_only else contextlib.nullcontext()
+            _probe_ctx = (
+                _unsloth_force_hf_offline() if local_files_only else contextlib.nullcontext()
+            )
             with _probe_ctx:
                 self._audio_type = detect_audio_type(model_id, hf_token = token)
                 self.is_vision = not self._audio_type and is_vision_model(model_id, hf_token = token)
