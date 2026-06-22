@@ -224,6 +224,7 @@ def test_merged_checkpoint_strips_use_adapter(tmp_path, monkeypatch, captured):
     (merged / "config.json").write_text(json.dumps({"_name_or_path": "some/base"}))
 
     from utils.paths import storage_roots as _sr
+
     monkeypatch.setattr(_sr, "outputs_root", lambda: outputs)
 
     async def _fake_load(load_req, request, subject):
