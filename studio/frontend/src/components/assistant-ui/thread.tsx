@@ -67,6 +67,7 @@ import {
   listPromptEntries,
   type PromptEntry,
 } from "@/features/chat/api/prompts-api";
+import { useChatPreferencesStore } from "@/features/chat/stores/chat-preferences-store";
 import { useChatProjects } from "@/features/chat/hooks/use-chat-projects";
 import { NewProjectDialog } from "@/features/chat/components/new-project-dialog";
 import { parseExternalModelId } from "@/features/chat/external-providers";
@@ -1177,6 +1178,9 @@ const ThreadComposerDock: FC<{
         promptQueueItemMatchesThreadIds(item, promptQueueThreadIds),
       ),
   );
+  const showModelDisclaimer = useChatPreferencesStore(
+    (s) => s.showModelDisclaimer,
+  );
 
   // Report dock height so the viewport reserves matching scroll space when
   // attachments or multiline input grow the composer.
@@ -1206,7 +1210,7 @@ const ThreadComposerDock: FC<{
       <div
         aria-hidden={true}
         className={cn(
-          "absolute inset-x-0 bottom-0 bg-gradient-to-t from-background from-[calc(100%_-_28px)] to-transparent",
+          "absolute inset-x-0 bottom-0 bg-gradient-to-t from-background from-[calc(100%_-_28px)] to-[rgb(from_var(--background)_r_g_b/0)]",
           queueVisible
             ? "h-32 backdrop-blur-[1px] [mask-image:linear-gradient(to_top,black_0%,black_58%,transparent_100%)]"
             : "top-[10px]",
@@ -1220,9 +1224,11 @@ const ThreadComposerDock: FC<{
             menuSide="top"
           />
         </div>
-        <p className="composer-footer-note">
-          LLMs can make mistakes. Double-check responses.
-        </p>
+        {showModelDisclaimer && (
+          <p className="composer-footer-note">
+            LLMs can make mistakes. Double-check responses.
+          </p>
+        )}
       </div>
     </div>
   );

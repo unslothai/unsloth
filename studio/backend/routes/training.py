@@ -312,6 +312,7 @@ async def start_training(
             "resume_from_checkpoint": request.resume_from_checkpoint,
             "trust_remote_code": request.trust_remote_code,
             "approved_remote_code_fingerprint": request.approved_remote_code_fingerprint,
+            "subject": current_subject,
             "gpu_ids": request.gpu_ids,
             "s3_config": request.s3_config.model_dump() if request.s3_config else None,
         }

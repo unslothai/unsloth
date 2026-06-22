@@ -5,7 +5,10 @@ import { AppSidebar } from "@/components/app-sidebar";
 import { Navbar } from "@/components/navbar";
 import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
-import { SettingsDialog, useSettingsDialogStore } from "@/features/settings";
+import {
+  SettingsDialog,
+  useSettingsDialogStore,
+} from "@/features/settings";
 import {
   ChatPage,
   clearNewChatDraft,
@@ -15,6 +18,8 @@ import {
 import { RemoteCodeConsentDialog } from "@/features/security";
 import { useTrainingUnloadGuard } from "@/features/training";
 import { useExportRuntimeLifecycle } from "@/features/export";
+import { hasAuthToken } from "@/features/auth";
+import { usePersonalizationSync } from "@/features/profile";
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
 import { useT, type TranslationKey } from "@/i18n";
 import {
@@ -50,6 +55,11 @@ function RouteFallback() {
       {t("common.loading")}
     </div>
   );
+}
+
+function PersonalizationSyncMount() {
+  usePersonalizationSync(hasAuthToken());
+  return null;
 }
 
 const CHAT_ONLY_ALLOWED = new Set([
@@ -200,6 +210,7 @@ function RootLayout() {
 
   return (
     <AppProvider>
+      <PersonalizationSyncMount />
       <SettingsDialog />
       <RemoteCodeConsentDialog />
       {hideNavbar ? (
