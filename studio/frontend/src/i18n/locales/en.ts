@@ -203,6 +203,9 @@ export const en = {
         compactSidebar: "Pin sidebar by default",
         compactSidebarDescription:
           "Keep the sidebar expanded instead of collapsing to icons.",
+        hardwareMonitor: "Show hardware monitor",
+        hardwareMonitorDescription:
+          "Show live VRAM and RAM usage at the bottom of the sidebar. Turn off to stop polling system stats.",
       },
     },
     chat: {

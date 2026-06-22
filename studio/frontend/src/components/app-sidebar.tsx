@@ -132,6 +132,7 @@ import { toast } from "@/lib/toast";
 import { ShutdownDialog } from "@/components/shutdown-dialog";
 import { translate, useT, type TranslationKey } from "@/i18n";
 import type { SystemInfoResponse } from "@/hooks/use-system";
+import { useHardwareMonitor } from "@/hooks/use-hardware-monitor";
 
 let cachedSystem: SystemInfoResponse | null = null;
 let systemFetchPromise: Promise<SystemInfoResponse> | null = null;
@@ -172,10 +173,15 @@ async function fetchSystemOnce(): Promise<SystemInfoResponse> {
 /**
  * System information update every 3 seconds.
  */
-export function useSystemInfo(): SystemInfoResponse {
+export function useSystemInfo(enabled: boolean): SystemInfoResponse {
   const [systemInfo, setSystemInfo] = useState<SystemInfoResponse>(cachedSystem ?? DEFAULT_SYSTEM);
 
   useEffect(() => {
+    if (!enabled) {
+      // Monitor off: show nothing and never poll /api/system (no SMI probes).
+      setSystemInfo(DEFAULT_SYSTEM);
+      return;
+    }
     let cancelled = false;
 
     const updateSystemInfo = () => {
@@ -196,7 +202,7 @@ export function useSystemInfo(): SystemInfoResponse {
       cancelled = true;
       clearInterval(intervalId);
     };
-  }, []);
+  }, [enabled]);
 
   return systemInfo;
 }
@@ -991,7 +997,8 @@ export function AppSidebar() {
     );
   }
 
-  const systemInfo: SystemInfoResponse = useSystemInfo();
+  const { enabled: monitorEnabled } = useHardwareMonitor();
+  const systemInfo: SystemInfoResponse = useSystemInfo(monitorEnabled);
 
   const { vramUsedGb, vramTotalGb, vramPercent, ramUsedGb, ramTotalGb, ramPercent } = useMemo(() => {
     const device = systemInfo?.gpu?.devices ?? [];
@@ -1426,6 +1433,7 @@ export function AppSidebar() {
               canScrollDown ? "opacity-100" : "opacity-0",
             )}
           />
+          {monitorEnabled && (
           <SidebarGroup className="mb-2 group-data-[collapsible=icon]:hidden">
             <SidebarGroupContent className="rounded-2xl bg-background/60 px-3.5 py-3 font-mono text-[11px] uppercase tracking-wider text-muted-foreground/80">
               <div className="flex items-center gap-2 mb-2">
@@ -1455,6 +1463,7 @@ export function AppSidebar() {
               </div>
             </SidebarGroupContent>
           </SidebarGroup>
+          )}
 
           <SidebarMenu>
             <SidebarMenuItem>

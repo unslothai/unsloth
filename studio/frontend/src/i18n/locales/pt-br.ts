@@ -192,6 +192,9 @@ export const ptBR = {
         compactSidebar: "Fixar barra lateral por padrão",
         compactSidebarDescription:
           "Mantém a barra lateral expandida em vez de recolhê-la em ícones.",
+        hardwareMonitor: "Mostrar monitor de hardware",
+        hardwareMonitorDescription:
+          "Mostra o uso de VRAM e RAM em tempo real na parte inferior da barra lateral. Desative para parar de consultar as estatísticas do sistema.",
       },
     },
     chat: {
