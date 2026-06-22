@@ -418,7 +418,7 @@ class TestWorkersWireTheGate:
         # Inference + export expand the consent scan to the LoRA base model's code.
         for rel in ("core/inference/worker.py", "core/export/worker.py"):
             src = (_BACKEND / rel).read_text()
-            assert "consent_targets" in src
+            assert "evaluate_remote_code_consent" in src
             assert "get_base_model_from_lora" in src or "mc.base_model" in src
 
     def test_remote_lora_base_is_resolved_in_gate_paths(self):

@@ -1,27 +1,27 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { cancelStagedModelDownload } from "@/features/hub";
 import { toast } from "@/lib/toast";
 import { create } from "zustand";
-import { cancelStagedModelDownload } from "@/features/hub";
+import { isExternalModelId, parseExternalModelId } from "../external-providers";
 import {
   type ChatPresetSource,
   type Preset,
   getPresetSource,
 } from "../presets/preset-policy";
+import { getExternalMaxOutputTokens } from "../provider-capabilities";
 import {
   type ChatLoraSummary,
   type ChatModelSummary,
   DEFAULT_INFERENCE_PARAMS,
   type InferenceParams,
 } from "../types/runtime";
-import { isExternalModelId, parseExternalModelId } from "../external-providers";
-import { getExternalMaxOutputTokens } from "../provider-capabilities";
-import { useExternalProvidersStore } from "./external-providers-store";
 import {
   loadChatSettingsWithLegacyImport,
   savePersistedChatSettingsPatch,
 } from "../utils/chat-settings-storage";
+import { useExternalProvidersStore } from "./external-providers-store";
 
 const HF_TOKEN_KEY = "unsloth_hf_token";
 const HF_TOKEN_CHANGED_EVENT = "unsloth:hf-token-changed";
@@ -37,6 +37,10 @@ export const CHAT_ALLOW_ARTIFACT_NETWORK_ACCESS_KEY =
 export const CHAT_MCP_ENABLED_KEY = "unsloth_chat_mcp_enabled";
 export const CHAT_CONFIRM_TOOL_CALLS_KEY = "unsloth_chat_confirm_tool_calls";
 export const CHAT_LOAD_ON_SELECTION_KEY = "unsloth_chat_load_on_selection";
+export const CHAT_EXPAND_QUANTIZATIONS_KEY =
+  "unsloth_chat_expand_quantizations";
+export const CHAT_SHOW_ALL_QUANTIZATIONS_KEY =
+  "unsloth_chat_show_all_quantizations";
 export const CHAT_BYPASS_PERMISSIONS_KEY = "unsloth_chat_bypass_permissions";
 export const CHAT_WEB_FETCH_TOOLS_ENABLED_KEY =
   "unsloth_chat_web_fetch_tools_enabled";
@@ -53,9 +57,7 @@ export const CHAT_SPECULATIVE_TYPE_KEY = "unsloth_chat_speculative_type";
 // choice would silently no-op on models without an MTP head. Unknown -> auto.
 const PERSISTED_SPEC_MODES = new Set(["auto", "ngram", "off"]);
 
-export type RagSource =
-  | { type: "thread" }
-  | { type: "kb"; kbId: string };
+export type RagSource = { type: "thread" } | { type: "kb"; kbId: string };
 
 export type RagMode = "hybrid" | "lexical" | "dense";
 
@@ -120,7 +122,11 @@ function loadRagTopK(): number {
 function loadRagNumber(
   key: string,
   fallback: number,
-  { min, max, integer = false }: { min: number; max: number; integer?: boolean },
+  {
+    min,
+    max,
+    integer = false,
+  }: { min: number; max: number; integer?: boolean },
 ): number {
   if (typeof window === "undefined") return fallback;
   try {
@@ -360,7 +366,10 @@ export function normalizeSpeculativeType(
   }
   if (s === "mtp+ngram") return "mtp+ngram";
   // Comma-chained legacy values (e.g. from older backend echoes).
-  const parts = s.split(",").map((p) => p.trim()).filter(Boolean);
+  const parts = s
+    .split(",")
+    .map((p) => p.trim())
+    .filter(Boolean);
   const hasMtp = parts.some((p) => p === "mtp" || p === "draft-mtp");
   const hasNgram = parts.some(
     (p) => p === "ngram" || p === "ngram-mod" || p === "ngram-simple",
@@ -411,7 +420,9 @@ export function saveSpeculativeType(value: string | null): void {
 function notifyHfTokenChanged(value: string): void {
   if (!canUseStorage()) return;
   try {
-    window.dispatchEvent(new CustomEvent(HF_TOKEN_CHANGED_EVENT, { detail: value }));
+    window.dispatchEvent(
+      new CustomEvent(HF_TOKEN_CHANGED_EVENT, { detail: value }),
+    );
   } catch {
     // ignore
   }
@@ -435,6 +446,12 @@ export type PendingModelSelection = {
    *  Scoped here (not the shared `ggufContextLength`) so a staged model's
    *  metadata never pollutes the currently-loaded model's context display. */
   contextLength?: number | null;
+  /** "Load on selection" on + un-cached GGUF: download via the manager (global
+   *  indicator) without opening the sheet, then load once the download finishes. */
+  autoLoad?: boolean;
+  /** Uncached non-GGUF HF repo: download the full snapshot via the manager
+   *  (variant null) the same way GGUF picks download a variant. */
+  isHubRepo?: boolean;
 };
 
 /** A pick is a GGUF (HF variant, native file, or a direct local .gguf) and so
@@ -446,6 +463,33 @@ export function hasGgufSource(x: {
 }): boolean {
   return (
     x.ggufVariant != null || x.nativePathToken != null || x.isGguf === true
+  );
+}
+
+/** A local-disk model id: Unix absolute (/), relative (./ ../), tilde (~/),
+ *  Windows drive (C:\) or UNC (\\server). Shared so the loader and the
+ *  hub-repo predicate classify ids identically. */
+export function isLocalModelPath(id: string): boolean {
+  return /^(\/|\.{1,2}[\\/]|~[\\/]|[A-Za-z]:[\\/]|\\\\)/.test(id);
+}
+
+/** An uncached HF hub repo we can download as a full snapshot (non-GGUF
+ *  safetensors / MLX). Excludes GGUF sources, local paths, native files, LoRA,
+ *  and external provider models so none are mis-routed into a snapshot. */
+export function isDownloadableHubRepo(x: {
+  id: string;
+  source?: string;
+  isLora?: boolean;
+  ggufVariant?: string;
+  nativePathToken?: string;
+  isGguf?: boolean;
+}): boolean {
+  return (
+    x.source === "hub" &&
+    !hasGgufSource(x) &&
+    x.isLora !== true &&
+    x.nativePathToken == null &&
+    !isLocalModelPath(x.id)
   );
 }
 
@@ -609,6 +653,11 @@ type ChatRuntimeStore = {
    *  `pendingSelection` (and opens settings) instead of loading immediately,
    *  so load settings can be set before the single load. */
   loadOnSelection: boolean;
+  /** Persisted: expand every On Device GGUF repo's quantizations by default
+   *  instead of waiting for a click. */
+  expandQuantizations: boolean;
+  /** Persisted: show non-downloaded quantizations too, not just downloaded. */
+  showAllQuantizations: boolean;
   /** A local model picked while `loadOnSelection` is off: staged, not loaded.
    *  The settings sheet shows its load knobs and a Load button. */
   pendingSelection: PendingModelSelection | null;
@@ -723,6 +772,8 @@ type ChatRuntimeStore = {
   resetModelSettingsToLoaded: () => void;
   setTensorParallel: (value: boolean) => void;
   setLoadOnSelection: (value: boolean) => void;
+  setExpandQuantizations: (value: boolean) => void;
+  setShowAllQuantizations: (value: boolean) => void;
   setPendingSelection: (selection: PendingModelSelection | null) => void;
   /** Stage a pick for a deferred load: revert knobs to the loaded baseline,
    *  record the selection, and open the settings sheet. */
@@ -1035,6 +1086,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   tensorParallel: false,
   loadedTensorParallel: null,
   loadOnSelection: loadBool(CHAT_LOAD_ON_SELECTION_KEY, true),
+  expandQuantizations: loadBool(CHAT_EXPAND_QUANTIZATIONS_KEY, false),
+  showAllQuantizations: loadBool(CHAT_SHOW_ALL_QUANTIZATIONS_KEY, true),
   pendingSelection: null,
   loadedIsMultimodal: false,
   loadedIsDiffusion: false,
@@ -1176,7 +1229,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       // render gate would otherwise show old counters until the next completion.
       const checkpointChanged = state.params.checkpoint !== modelId;
       const pendingToClear =
-        checkpointChanged && state.params.checkpoint ? state.pendingSelection : null;
+        checkpointChanged && state.params.checkpoint
+          ? state.pendingSelection
+          : null;
       if (pendingToClear) {
         cancelStagedModelDownload(pendingToClear);
       }
@@ -1476,6 +1531,14 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     saveBool(CHAT_LOAD_ON_SELECTION_KEY, loadOnSelection);
     set({ loadOnSelection });
   },
+  setExpandQuantizations: (expandQuantizations) => {
+    saveBool(CHAT_EXPAND_QUANTIZATIONS_KEY, expandQuantizations);
+    set({ expandQuantizations });
+  },
+  setShowAllQuantizations: (showAllQuantizations) => {
+    saveBool(CHAT_SHOW_ALL_QUANTIZATIONS_KEY, showAllQuantizations);
+    set({ showAllQuantizations });
+  },
   setPendingSelection: (pendingSelection) => set({ pendingSelection }),
   stageModel: (selection) => {
     // Refuse staging mid-load: post-load cleanup would silently drop the queued
@@ -1493,7 +1556,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       return {
         ...loadedBaselineSettings(s),
         pendingSelection: selection,
-        settingsPanelOpen: true,
+        // autoLoad downloads silently and loads on completion, so keep the sheet shut.
+        settingsPanelOpen: !selection.autoLoad,
         // Speculative starts from the standing default, not the loaded model's
         // mode, so a fresh pick doesn't inherit (and then carry, via the staged
         // Load's keepSpeculative) a forced MTP mode onto a model that may lack it.
@@ -1537,7 +1601,7 @@ export function resolveSpeculativeSettingsForLoad({
   const state = useChatRuntimeStore.getState();
   const speculativeType = usePersistedPreference
     ? readPersistedSpeculativeType()
-    : state.speculativeType ?? readPersistedSpeculativeType();
+    : (state.speculativeType ?? readPersistedSpeculativeType());
   return {
     speculativeType,
     specDraftNMax:
