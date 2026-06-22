@@ -162,14 +162,9 @@ function FindingCard({ finding }: { finding: RemoteCodeFinding }) {
   );
 }
 
-/** Split a model id into its display name and provider (the HF org/owner) so the
- *  consent dialog can say e.g. `Nemotron-3-Nano-4B from "unsloth"`. Returns a null
- *  provider unless the id is a canonical single Hub repo (`owner/repo`, exactly one
- *  slash, both segments non-empty) that is not a local path. A deeper path
- *  (`models/llama/7b`), a local path (./, /, ~, C:\, backslashes), or a multi-repo
- *  scan (a LoRA adapter pulls its base too, so findings span repos) all yield a null
- *  provider -- we must not present another repo's or a local directory's name as the
- *  publisher in a trust decision. */
+/** Display name + provider (HF org) for the consent dialog. Provider is null unless the
+ *  id is a canonical `owner/repo` Hub id (not local, not a multi-repo/LoRA scan), so we
+ *  never attribute a local dir or another repo's finding to the wrong publisher. */
 function parseModelDisplay(scan?: RemoteCodeScan | null): {
   displayName: string;
   provider: string | null;
@@ -186,16 +181,14 @@ function parseModelDisplay(scan?: RemoteCodeScan | null): {
     /^[A-Za-z]:/.test(modelName);
   const isCanonicalHubId =
     parts.length === 2 && Boolean(parts[0]) && Boolean(parts[1]);
-  // A LoRA/adapter scan also pulls its base model and aggregates findings across
-  // both, so a single owner from modelName could misattribute the base's issue.
+  // A LoRA scan also pulls its base, so a single owner could misattribute its finding.
   const multiRepoScan = (scan?.scanCreatedRepos?.length ?? 0) > 1;
   const provider =
     isCanonicalHubId && !looksLocal && !multiRepoScan ? parts[0] : null;
   return { displayName, provider };
 }
 
-/** ` from "<provider>"` clause, rendered only when a provider was confidently
- *  resolved (see {@link parseModelDisplay}). */
+/** ` from "<provider>"` clause, rendered only when a provider was resolved. */
 function ProviderSuffix({ provider }: { provider: string | null }) {
   if (!provider) return null;
   return (
