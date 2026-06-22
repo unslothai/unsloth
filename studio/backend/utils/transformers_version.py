@@ -652,6 +652,12 @@ def _probe_tier(
     if os.environ.get("UNSLOTH_DISABLE_TIER_PROBE", "").lower() in ("1", "true", "yes"):
         return floor
     key = _probe_cache_key(model_name)
+    # The probe mode changes what a cached result means: the default-first path
+    # (floor='default') may legitimately return 'default', which is wrong to hand back to a
+    # tokenizer/known-5.x caller (floor='530', no default tier). Key those modes separately
+    # so a 'default' result never leaks across; the legacy 530 mode keeps the bare key.
+    if include_default or floor != "530":
+        key = f"{key}\0floor={floor}:def={int(include_default)}"
     if key in _probe_tier_cache:
         return _probe_tier_cache[key]
 
@@ -726,7 +732,9 @@ def get_transformers_tier(
 
     ``probe=False`` skips every AutoConfig probe (the sidecar subprocesses) and is used by
     the cheap :func:`needs_transformers_5` boolean so a parent/log-only caller never spawns
-    probes; the real activation path keeps the default ``probe=True``.
+    probes; it still classifies via the cheap signals (a config saved by transformers 5.x
+    returns ``"530"`` without probing). The real activation path keeps ``probe=True`` and
+    resolves the exact tier (which may be ``"default"`` if the model still parses on 4.57.x).
 
     Higher 5.x tiers run first.
     """
@@ -756,7 +764,9 @@ def get_transformers_tier(
                 if not probe:
                     return "530"
                 return _probe_tier(model_name, hf_token, "local tokenizer needs 5.x")
-            if probe and _config_saved_by_transformers_5(cfg):
+            if _config_saved_by_transformers_5(cfg):
+                if not probe:
+                    return "530"  # cheap 5.x hint; the real path resolves the exact tier
                 tier = _probe_tier(
                     model_name,
                     hf_token,
@@ -816,7 +826,9 @@ def get_transformers_tier(
             return "530"
         return _probe_tier(model_name, hf_token, "tokenizer needs 5.x")
 
-    if probe and _config_saved_by_transformers_5(_cached_config_json(model_name, hf_token)):
+    if _config_saved_by_transformers_5(_cached_config_json(model_name, hf_token)):
+        if not probe:
+            return "530"  # cheap 5.x hint; the real path resolves the exact tier
         tier = _probe_tier(
             model_name,
             hf_token,

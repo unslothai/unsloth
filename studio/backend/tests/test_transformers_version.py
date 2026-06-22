@@ -1000,6 +1000,53 @@ class TestProbeGating:
         monkeypatch.setattr("utils.transformers_version.subprocess.run", boom)
         assert get_transformers_tier("org/llama") == "default"
 
+    def test_needs_transformers_5_true_for_version_field_only(self, monkeypatch):
+        # A standard-tokenizer model whose only cheap signal is transformers_version>=5 must
+        # still be reported as 5.x (so the vision-routing fallback uses the 5.x subprocess),
+        # and it must do so WITHOUT spawning a probe.
+        monkeypatch.setattr(
+            "utils.transformers_version._check_config_needs_510", lambda m, t = None: False
+        )
+        monkeypatch.setattr(
+            "utils.transformers_version._check_config_needs_550", lambda m, t = None: False
+        )
+        monkeypatch.setattr(
+            "utils.transformers_version._check_tokenizer_config_needs_v5", lambda m, t = None: False
+        )
+        _config_json_cache[("org/new", None)] = {
+            "model_type": "brandnew",
+            "transformers_version": "5.2.0",
+        }
+
+        def boom(cmd, **k):
+            raise AssertionError("needs_transformers_5 must not spawn a probe")
+
+        monkeypatch.setattr("utils.transformers_version.subprocess.run", boom)
+        assert needs_transformers_5("org/new") is True
+
+    def test_default_first_result_not_reused_for_tokenizer_path(self, monkeypatch, tmp_path):
+        # A local checkpoint probed via the version-field (default-first) path can cache
+        # "default". When tokenizer_config.json later marks it as a 5.x-only tokenizer, the
+        # tokenizer path (floor=530) must re-probe, not return the stale "default".
+        self._patch_venvs(monkeypatch)
+        (tmp_path / "config.json").write_text(
+            json.dumps({"model_type": "brandnew", "transformers_version": "5.0.0"})
+        )
+        local = str(tmp_path)
+        monkeypatch.setattr("utils.transformers_version.subprocess.run", lambda cmd, **k: _proc(0))
+        assert (
+            _probe_tier(local, None, "version", include_default = True, floor = "default")
+            == "default"
+        )
+        seen = []
+        monkeypatch.setattr(
+            "utils.transformers_version.subprocess.run",
+            lambda cmd, **k: seen.append(cmd[3]) or _proc(0),
+        )
+        # Tokenizer/known-5.x mode (floor=530): must re-probe and never reuse "default".
+        assert _probe_tier(local, None, "tokenizer needs 5.x") == "530"
+        assert seen, "tokenizer path reused the cached default result instead of re-probing"
+
 
 # ---------------------------------------------------------------------------
 # activate_transformers_for_subprocess — issue #6103
