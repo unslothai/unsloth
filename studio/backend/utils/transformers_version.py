@@ -706,7 +706,9 @@ def _probe_tier(
 
 
 def get_transformers_tier(
-    model_name: str, hf_token: str | None = None, probe: bool = True
+    model_name: str,
+    hf_token: str | None = None,
+    probe: bool = True,
 ) -> str:
     """Return the transformers tier required for *model_name*.
 
