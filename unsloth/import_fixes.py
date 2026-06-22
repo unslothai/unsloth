@@ -152,12 +152,9 @@ if not UNSLOTH_ENABLE_LOGGING:
     sys.stderr.add_filter("CUTE_INVALID_CONTROL_PATH")
     # CUTLASS TMA-related errors when not targeting correct architecture
     sys.stderr.add_filter("Trying to use tma without CUTE_ARCH_TMA")
-    # torchao logs a cosmetic WARNING on torch < 2.11 (torchao/__init__.py:
-    # `logger.warning("Skipping import of cpp extensions due to incompatible
-    # torch version. Please upgrade to torch >= 2.11.0 (found ...).")`). The
-    # bnb-4bit / Unsloth paths do not use torchao's cpp kernels, so drop only
-    # this record and keep every other torchao log instead of raising the whole
-    # logger to ERROR.
+    # torchao logs a cosmetic "Skipping import of cpp extensions" WARNING on torch < 2.11. The
+    # bnb-4bit / Unsloth paths don't use torchao's cpp kernels, so drop only that record rather
+    # than raising the whole torchao logger to ERROR.
     logging.getLogger("torchao").addFilter(
         HideLoggingMessage("Skipping import of cpp extensions due to incompatible torch version")
     )
