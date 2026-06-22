@@ -40,6 +40,7 @@ from utils.transformers_version import (
     _config_needs_530,
     _norm_separators,
     _tier_from_name,
+    _looks_like_hf_id,
     _config_json_cache,
     _tokenizer_class_cache,
     _config_needs_510_cache,
@@ -106,6 +107,14 @@ class TestResolveBaseModel:
 
         result = _resolve_base_model(str(tmp_path))
         assert result == "Qwen/Qwen3.5-9B"
+
+    def test_non_string_base_does_not_crash(self, tmp_path: Path):
+        """A malformed config (list/dict for model_name) must not raise."""
+        config_cfg = {"model_name": ["x"], "_name_or_path": "Qwen/Qwen3.5-9B"}
+        (tmp_path / "config.json").write_text(json.dumps(config_cfg))
+
+        # Skips the non-string model_name and falls through to _name_or_path.
+        assert _resolve_base_model(str(tmp_path)) == "Qwen/Qwen3.5-9B"
 
     def test_model_name_takes_priority_over_name_or_path(self, tmp_path: Path):
         """model_name should be preferred over _name_or_path."""
@@ -902,6 +911,11 @@ class TestLocalConfig530Tier:
             is True
         )
 
+    def test_config_needs_530_qwen3_5_text_towers(self):
+        """Text-tower configs (architectures may be stripped) still need 5.3.0."""
+        assert _config_needs_530({"model_type": "qwen3_5_text"}) is True
+        assert _config_needs_530({"model_type": "qwen3_5_moe_text"}) is True
+
     def test_config_needs_530_plain_qwen3_is_false(self):
         """Regular Qwen3 (non-MoE, non-3.5) must not be promoted to 5.3.0."""
         assert _config_needs_530({"model_type": "qwen3"}) is False
@@ -1398,3 +1412,40 @@ class TestConfig530OverrideGuard:
             json.dumps({"model_type": "qwen3_5", "_name_or_path": "Qwen/Qwen3.6-27B"})
         )
         assert get_transformers_tier(str(d)) == "550"
+
+    def test_remote_qwen36_name_or_path_overrides_530(self):
+        """Slow path: a private/renamed Hub repo whose fetched config reuses the
+        qwen3_5 id but names Qwen3.6 in _name_or_path must select 550, not 530."""
+        _config_needs_530_cache.clear()
+        _config_json_cache.clear()
+        with patch(
+            "utils.transformers_version._load_config_json",
+            return_value = {"model_type": "qwen3_5", "_name_or_path": "Qwen/Qwen3.6-27B"},
+        ):
+            assert get_transformers_tier("private/renamed-q36") == "550"
+
+
+class TestLooksLikeHfId:
+    def test_empty_and_whitespace_are_not_ids(self):
+        assert _looks_like_hf_id("") is False
+        assert _looks_like_hf_id("   ") is False
+
+    def test_plain_hub_id(self):
+        assert _looks_like_hf_id("Qwen/Qwen3.5-7B") is True
+
+    def test_absolute_and_dot_paths_are_not_ids(self):
+        assert _looks_like_hf_id("/old/run/qwen3.5-source") is False
+        assert _looks_like_hf_id("./qwen3.5-source") is False
+
+    def test_existing_local_path_is_not_an_id(self, tmp_path: Path):
+        d = tmp_path / "Qwen3.5-7B"
+        d.mkdir()
+        import os as _os
+
+        cwd = _os.getcwd()
+        try:
+            _os.chdir(tmp_path)
+            # "Qwen3.5-7B" exists relative to cwd, so it is a path, not a Hub id.
+            assert _looks_like_hf_id("Qwen3.5-7B") is False
+        finally:
+            _os.chdir(cwd)

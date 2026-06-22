@@ -117,7 +117,9 @@ _TRANSFORMERS_530_ARCHITECTURES: set[str] = {
 }
 _TRANSFORMERS_530_MODEL_TYPES: set[str] = {
     "qwen3_5",
+    "qwen3_5_text",  # Qwen3.5 text tower (dense)
     "qwen3_5_moe",
+    "qwen3_5_moe_text",  # Qwen3.5 MoE text tower
     "qwen3_moe",
     "qwen3_next",
     "glm4_moe_lite",
@@ -251,9 +253,20 @@ def _is_lora_adapter_dir(path: Path) -> bool:
     try:
         if not path.is_dir():
             return False
+        return (path / "adapter_config.json").is_file() or _has_adapter_weights(path)
     except OSError:
         return False
-    return (path / "adapter_config.json").is_file() or _has_adapter_weights(path)
+
+
+def _is_same_path(value: str, local_path: Path) -> bool:
+    """True if *value* points to *local_path* (handles relative/absolute and
+    symlink differences), so a self-referential config id isn't taken as a base."""
+    if value == str(local_path):
+        return True
+    try:
+        return os.path.realpath(value) == os.path.realpath(str(local_path))
+    except OSError:
+        return False
 
 
 def _resolve_base_model(model_name: str) -> str:
@@ -293,7 +306,7 @@ def _resolve_base_model(model_name: str) -> str:
             # useful base id may still live in "_name_or_path".
             for _key in ("model_name", "_name_or_path"):
                 base = cfg.get(_key)
-                if base and base != str(local_path):
+                if isinstance(base, str) and base and not _is_same_path(base, local_path):
                     logger.info(
                         "Resolved checkpoint '%s' → base model '%s' (via config.json)",
                         model_name,
@@ -578,8 +591,13 @@ def _norm_separators(s: str) -> str:
 
 def _looks_like_hf_id(value: str) -> bool:
     """True if *value* looks like a Hub id (``org/name``) rather than a local
-    filesystem path, so a stale/renamed checkpoint path isn't name-matched."""
+    filesystem path, so a stale/renamed checkpoint path isn't name-matched.
+    Mirrors transformers' own rule: an existing local path is a path, not an id."""
+    if not value or not value.strip():
+        return False
     if os.path.isabs(value) or value.startswith((".", "~")) or "\\" in value:
+        return False
+    if os.path.exists(value):
         return False
     return value.count("/") <= 1
 
@@ -615,6 +633,16 @@ def _tier_from_name(name: str) -> tuple[str, str] | None:
             elif s in lowered or _norm_separators(s) in norm:
                 return tier, s
     return None
+
+
+def _higher_tier_name_override(name_hint: str | None) -> str | None:
+    """Return ``"510"``/``"550"`` if *name_hint* names a higher-tier model, else
+    ``None``.  Qwen3.6 configs reuse Qwen3.5 ids (qwen3_5 / qwen3_5_moe) but need
+    the 5.5 sidecar, so a 5.5/5.10 name hint must override a 530 config match."""
+    if not name_hint:
+        return None
+    hint = _tier_from_name(name_hint)
+    return hint[0] if hint is not None and hint[0] in ("510", "550") else None
 
 
 def get_transformers_tier(model_name: str) -> str:
@@ -664,14 +692,14 @@ def get_transformers_tier(model_name: str) -> str:
                     if (base != model_name and _looks_like_hf_id(base))
                     else Path(model_name).name
                 )
-                hint = _tier_from_name(hint_src)
-                if hint is not None and hint[0] in ("510", "550"):
+                override = _higher_tier_name_override(hint_src)
+                if override is not None:
                     logger.info(
                         "Transformers tier %s selected for %s (name overrides 530 config)",
-                        hint[0],
+                        override,
                         model_name,
                     )
-                    return hint[0]
+                    return override
                 logger.info(
                     "Transformers tier 530 selected for %s (local config.json check)",
                     model_name,
@@ -741,6 +769,21 @@ def get_transformers_tier(model_name: str) -> str:
         logger.info("Transformers tier 550 selected for %s (config.json check)", model_name)
         return "550"
     if _check_config_needs_530(model_name):
+        # Same Qwen3.6 caveat as the local path: a renamed/private repo whose
+        # fetched config reuses Qwen3.5 ids but whose _name_or_path names Qwen3.6
+        # needs the 5.5 sidecar. Apply the name override before selecting 530.
+        remote_cfg = _load_config_json(model_name) or {}
+        base = remote_cfg.get("_name_or_path") or remote_cfg.get("model_name")
+        override = _higher_tier_name_override(
+            base if isinstance(base, str) and base != model_name else None
+        )
+        if override is not None:
+            logger.info(
+                "Transformers tier %s selected for %s (name overrides 530 config)",
+                override,
+                model_name,
+            )
+            return override
         logger.info("Transformers tier 530 selected for %s (config.json check)", model_name)
         return "530"
     if _check_tokenizer_config_needs_v5(model_name):
