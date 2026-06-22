@@ -675,6 +675,12 @@ def studio_default(
         "if the tunnel can't start. Without it, --no-secure also serves the raw "
         "0.0.0.0 port, which is reachable from anywhere on the network.",
     ),
+    not_secure: bool = typer.Option(
+        False,
+        "--not-secure",
+        hidden = True,
+        help = "Deprecated alias for --no-secure.",
+    ),
     verbose: bool = typer.Option(
         False,
         "--verbose",
@@ -690,6 +696,9 @@ def studio_default(
     ),
 ):
     """Launch the Unsloth Studio server."""
+    # Back-compat: --not-secure is a deprecated alias for --no-secure.
+    if not_secure:
+        secure = False
     # Runs before every subcommand (run/setup/update/...).
     _ensure_studio_env_exported()
     if ctx.invoked_subcommand is not None:
@@ -1039,6 +1048,12 @@ def run(
         "if the tunnel can't start. Without it, --no-secure also serves the raw "
         "0.0.0.0 port, which is reachable from anywhere on the network.",
     ),
+    not_secure: bool = typer.Option(
+        False,
+        "--not-secure",
+        hidden = True,
+        help = "Deprecated alias for --no-secure.",
+    ),
     tensor_parallel: bool = typer.Option(
         False,
         "--tensor-parallel/--no-tensor-parallel",
@@ -1066,6 +1081,9 @@ def run(
         unsloth studio run --model some-model --chat-template-file /path/to/tpl.jinja
         unsloth studio run --model unsloth/Qwen3-27B-GGUF --gguf-variant Q8_0 --tensor-parallel
     """
+    # Back-compat: --not-secure is a deprecated alias for --no-secure.
+    if not_secure:
+        secure = False
     extra_llama_args: List[str] = list(ctx.args) if ctx.args else []
 
     # Set before any re-exec so the in-venv server inherits it via the env.
