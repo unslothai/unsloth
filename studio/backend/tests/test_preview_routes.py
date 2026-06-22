@@ -61,6 +61,7 @@ def client(tmp_path, monkeypatch, captured):
 
     # resolve_preview_checkpoint -> resolve_output_dir -> outputs_root().
     from utils.paths import storage_roots as _sr
+
     monkeypatch.setattr(_sr, "outputs_root", lambda: outputs)
 
     async def _fake_load_model(load_req, request, subject):
@@ -98,6 +99,7 @@ def test_page_escapes_title(tmp_path, monkeypatch, captured):
     # Run dir name carries an HTML-special char; the page must escape it.
     _make_run(outputs, name = "a<b")
     from utils.paths import storage_roots as _sr
+
     monkeypatch.setattr(_sr, "outputs_root", lambda: outputs)
 
     app = FastAPI()
@@ -137,10 +139,10 @@ def test_list_previews_builds_urls(client, monkeypatch):
 @pytest.mark.parametrize(
     "path",
     [
-        "/p/..",                       # parent segment as run
-        "/p/%2e%2e/etc",               # encoded traversal
+        "/p/..",  # parent segment as run
+        "/p/%2e%2e/etc",  # encoded traversal
         "/p/..%2f..%2fetc/v1/models",  # encoded slash traversal
-        "/p/does-not-exist",           # unknown run
+        "/p/does-not-exist",  # unknown run
     ],
 )
 def test_traversal_and_missing_rejected(client, path):
@@ -162,9 +164,9 @@ def test_chat_traversal_rejected(client):
 @pytest.mark.parametrize(
     "asset",
     [
-        "../../../../etc/passwd",   # escapes dist
-        "secrets.txt",              # non-allowlisted suffix
-        "nope.png",                 # allowlisted suffix but missing
+        "../../../../etc/passwd",  # escapes dist
+        "secrets.txt",  # non-allowlisted suffix
+        "nope.png",  # allowlisted suffix but missing
     ],
 )
 def test_asset_path_contained(client, asset):
@@ -220,6 +222,7 @@ def test_streaming_holds_lock_until_drained(tmp_path, monkeypatch, captured):
     outputs = tmp_path / "outputs"
     _make_run(outputs)
     from utils.paths import storage_roots as _sr
+
     monkeypatch.setattr(_sr, "outputs_root", lambda: outputs)
 
     async def _fake_load_model(load_req, request, subject):

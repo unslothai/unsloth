@@ -41,6 +41,7 @@ def _make_run(outputs: Path) -> tuple[Path, Path]:
 def _point_outputs_root_at(monkeypatch, outputs: Path) -> None:
     from utils.paths import storage_roots as _sr
     from utils.models import checkpoints as _ckpt
+
     monkeypatch.setattr(_sr, "outputs_root", lambda: outputs)
     # checkpoints imported `outputs_root` by name, so patch that alias too
     # (preview_ref calls it directly; resolve_output_dir reads the storage_roots one).
