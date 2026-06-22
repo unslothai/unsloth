@@ -821,7 +821,6 @@ class TestConsentProvider:
     @staticmethod
     def _fn():
         from routes.models import _consent_provider
-
         return _consent_provider
 
     def test_single_hub_id_returns_owner(self):
