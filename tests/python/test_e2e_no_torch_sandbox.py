@@ -867,9 +867,7 @@ class TestInstallPythonStackFiltering:
         result_path = ips._filter_requirements(extras, ips.NO_TORCH_SKIP_PACKAGES)
         filtered = Path(result_path).read_text(encoding = "utf-8").lower()
         lines = [
-            l.strip()
-            for l in filtered.splitlines()
-            if l.strip() and not l.strip().startswith("#")
+            l.strip() for l in filtered.splitlines() if l.strip() and not l.strip().startswith("#")
         ]
 
         for pkg in ips.NO_TORCH_SKIP_PACKAGES:
