@@ -1,11 +1,7 @@
 """CPO shares ORPO's row-tokenization replacements (issue #4952).
 
-CPOTrainer reuses ORPOTrainer's build_tokenized_answer/tokenize_row/__init__
-code, so the same ORPO rewriters that route tokenization through a processor's
-inner tokenizer and resolve pad_token_id must be registered for cpo_trainer too.
-Without them the positional self.processing_class(prompt, ...) call binds prompt
-to a multimodal processor's images= arg and crashes on text[0]. These are
-static, CPU-only checks so they run on Linux/macOS/Windows without torch.
+CPOTrainer reuses ORPO's tokenize/init code, so the ORPO rewriters must also be
+registered for cpo_trainer. Static, CPU-only checks that run without torch.
 """
 
 import ast
@@ -90,8 +86,8 @@ def build_tokenized_answer(self, prompt, answer):
 
 
 def test_pad_token_rewriter_binds_init_token_reads_to_tokenizer():
-    # CPOTrainer.__init__ (TRL >= 0.28) reads bare processing_class.pad_token /
-    # processing_class.eos_token, which AttributeError on multimodal processors.
+    # CPOTrainer.__init__ (TRL >= 0.28) reads bare pad_token/eos_token, which
+    # AttributeError on multimodal processors.
     rewriter = _load_rewriter("orpo_trainer_processor_pad_token")
     source = """
 def __init__(self, model, args, processing_class):

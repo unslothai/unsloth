@@ -511,11 +511,10 @@ def sft_trainer_compute_loss(function_name, function):
 RL_FUNCTIONS["sft_trainer"].append(sft_trainer_compute_loss)
 
 
-# Use the underlying text tokenizer for ORPO/CPO row tokenization when a
-# multimodal processor is supplied as the processing class. CPOTrainer shares
-# the same build_tokenized_answer/tokenize_row code, where the positional
-# self.processing_class(prompt, ...) call binds prompt to a multimodal
-# processor's images= arg, leaving text=None and crashing (issue #4952).
+# Route ORPO/CPO row tokenization through the underlying text tokenizer when the
+# processing class is a multimodal processor. Otherwise the positional
+# processing_class(prompt, ...) binds prompt to the processor's images= arg,
+# leaving text=None and crashing; CPO shares this code (#4952).
 def orpo_trainer_text_tokenizer(function_name, function):
     if function_name == "build_tokenized_answer":
         function = re.sub(
@@ -561,14 +560,10 @@ RL_FUNCTIONS["orpo_trainer"].append(orpo_trainer_text_tokenizer)
 RL_FUNCTIONS["cpo_trainer"].append(orpo_trainer_text_tokenizer)
 
 
-# Resolve `processing_class.pad_token_id` through the underlying tokenizer when
-# a multimodal processor is supplied (processors lack `pad_token_id`). Without
-# this, ORPO/CPOTrainer.__init__ raises AttributeError on
-# `DPODataCollatorWithPadding(pad_token_id=processing_class.pad_token_id, ...)`
-# and on `self.padding_value = ... else processing_class.pad_token_id`.
-# CPOTrainer.__init__ (TRL >= 0.28) additionally reads bare
-# `processing_class.pad_token`/`processing_class.eos_token` before that point, so
-# bind those reads to the underlying tokenizer too.
+# Resolve `processing_class.pad_token_id` via the underlying tokenizer for
+# multimodal processors (which lack it), else ORPO/CPOTrainer.__init__ raises
+# AttributeError. CPOTrainer (TRL >= 0.28) also reads bare pad_token/eos_token
+# earlier, so bind those to the underlying tokenizer too.
 _PAD_FALLBACK = (
     "(getattr(processing_class, 'pad_token_id', None) "
     "if getattr(processing_class, 'pad_token_id', None) is not None "
