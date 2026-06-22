@@ -8471,9 +8471,17 @@ async def _anthropic_tool_stream(
         drop_until_tool_end = False
 
         gen = run_gen()
+        # Concurrent disconnect watcher: the loop only polls is_disconnected()
+        # between events, so a client disconnect during a long prefill or
+        # generation step would otherwise hold the decode slot until the next
+        # event or a failed send. The watcher sets cancel_event so the backend
+        # stops promptly.
+        disconnect_watcher = asyncio.create_task(
+            _await_disconnect_then_cancel(request, cancel_event)
+        )
         try:
             while True:
-                if await request.is_disconnected():
+                if cancel_event.is_set() or await request.is_disconnected():
                     cancel_event.set()
                     return
                 event = await asyncio.to_thread(next, gen, _sentinel)
@@ -8521,6 +8529,8 @@ async def _anthropic_tool_stream(
             if _error_event is not None:
                 yield _error_event
                 return
+        finally:
+            await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
 
         stop_reason = openai_finish_to_anthropic_stop(
             captured_finish_reason, had_tool_calls = ends_on_tool_use
@@ -8557,9 +8567,17 @@ async def _anthropic_plain_stream(
         captured_finish_reason = None
 
         gen = run_gen()
+        # Concurrent disconnect watcher: the loop only polls is_disconnected()
+        # between chunks, so a client disconnect during a long prefill or
+        # generation step would otherwise hold the decode slot until the next
+        # chunk or a failed send. The watcher sets cancel_event so the backend
+        # stops promptly.
+        disconnect_watcher = asyncio.create_task(
+            _await_disconnect_then_cancel(request, cancel_event)
+        )
         try:
             while True:
-                if await request.is_disconnected():
+                if cancel_event.is_set() or await request.is_disconnected():
                     cancel_event.set()
                     return
                 cumulative = await asyncio.to_thread(next, gen, _sentinel)
@@ -8582,6 +8600,8 @@ async def _anthropic_plain_stream(
             if _error_event is not None:
                 yield _error_event
                 return
+        finally:
+            await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
 
         stop_reason = openai_finish_to_anthropic_stop(captured_finish_reason, had_tool_calls = False)
         for line in emitter.finish(stop_reason = stop_reason, stop_sequence = None):

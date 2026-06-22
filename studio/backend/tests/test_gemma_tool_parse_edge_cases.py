@@ -45,6 +45,19 @@ def test_normal_multi_key_arguments_still_split():
     assert _args(calls[0]) == {"a": 1, "b": "hello", "c": "x,y"}
 
 
+def test_bare_value_with_timestamps_after_comma_is_kept():
+    # A comma followed by digits-then-colon (a timestamp/ratio) is value text,
+    # not a new key, so the whole query must be preserved as one argument.
+    calls = parse_tool_calls_from_text(
+        "<|tool_call>call:remind{query:meet at 10:00, 11:00 tomorrow,priority:high}<tool_call|>"
+    )
+    assert len(calls) == 1, calls
+    assert _args(calls[0]) == {
+        "query": "meet at 10:00, 11:00 tomorrow",
+        "priority": "high",
+    }
+
+
 def test_marker_inside_json_argument_is_not_a_second_call():
     # A python call whose `code` argument contains a Gemma marker string. The
     # marker is data and must not execute as a second `terminal` call.

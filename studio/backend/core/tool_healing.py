@@ -39,8 +39,11 @@ _PARAM_CLOSE_TAG = "</parameter>"
 _FUNC_CLOSE_TAG = "</function>"
 # A bare (unquoted) Gemma value ends at `}` or at a comma that begins the next
 # `key:` pair. A comma NOT followed by a key token is part of the value (e.g.
-# `location:New York, NY`), so it must not terminate the value.
-_GEMMA_NEXT_KEY_RE = re.compile(r"\s*[\w-]+\s*:")
+# `location:New York, NY`), so it must not terminate the value. The key token
+# must be identifier-shaped (start with a letter or underscore); a comma
+# followed by digits-then-colon is value text such as a timestamp or ratio
+# (`meet at 10:00, 11:00 tomorrow`), not a new key.
+_GEMMA_NEXT_KEY_RE = re.compile(r"\s*[A-Za-z_][\w-]*\s*:")
 
 
 def _balanced_brace_end(
