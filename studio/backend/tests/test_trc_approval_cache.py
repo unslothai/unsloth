@@ -39,7 +39,11 @@ def _isolated_store(tmp_path, monkeypatch):
     yield
 
 
-def _patch_scan(monkeypatch, files, sha = "sha1"):
+def _patch_scan(
+    monkeypatch,
+    files,
+    sha = "sha1",
+):
     """Stub the gate's scanners and the SHA resolver; return a {'scans': n} counter."""
     state = {"scans": 0}
 
@@ -53,7 +57,12 @@ def _patch_scan(monkeypatch, files, sha = "sha1"):
     return state
 
 
-def _gate(targets, *, approved = None, subject = "user-a"):
+def _gate(
+    targets,
+    *,
+    approved = None,
+    subject = "user-a",
+):
     return evaluate_remote_code_consent_for_targets(
         targets if isinstance(targets, list) else [targets],
         None,
@@ -203,7 +212,5 @@ def test_no_subject_disables_cache(monkeypatch):
     )
     assert approvals.lookup("", approvals.approval_target_key(["org/m"])) is None
     before = st["scans"]
-    evaluate_remote_code_consent_for_targets(
-        ["org/m"], None, trust_remote_code = True, subject = None
-    )
+    evaluate_remote_code_consent_for_targets(["org/m"], None, trust_remote_code = True, subject = None)
     assert st["scans"] == before + 1  # no subject -> no cache, always scans

@@ -183,7 +183,6 @@ def resolve_commit_sha(target: str, hf_token: Optional[str] = None) -> Optional[
     try:
         if not is_local_path(target) and not _env_offline():
             from huggingface_hub import HfApi
-
             sha = HfApi().model_info(target, token = hf_token).sha
     except Exception as exc:
         logger.debug("Could not resolve commit sha for '%s': %s", target, exc)

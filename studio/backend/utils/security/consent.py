@@ -293,9 +293,7 @@ def evaluate_remote_code_consent_for_targets(
         if _stored is not None:
             _sha = remote_code_approvals.resolve_combined_sha(targets, hf_token)
             if _sha is not None and _sha == _stored.commit_sha:
-                logger.info(
-                    "trust_remote_code approved from cache (sha match) for '%s'", primary
-                )
+                logger.info("trust_remote_code approved from cache (sha match) for '%s'", primary)
                 return _auto_approved_decision(primary, _stored)
             approved_fingerprint = approved_fingerprint or _stored.fingerprint
 
@@ -389,7 +387,6 @@ def evaluate_remote_code_consent_for_targets(
     # cache seed) so the same unchanged repo is not re-prompted next session.
     if approved and subject and caller_approved_fingerprint == fingerprint:
         from utils.security import remote_code_approvals
-
         remote_code_approvals.record(
             subject,
             remote_code_approvals.approval_target_key(targets),
