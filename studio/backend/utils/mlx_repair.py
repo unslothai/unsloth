@@ -185,8 +185,12 @@ def attempt_mlx_repair(*, timeout: int = _REPAIR_TIMEOUT_S) -> bool:
     Best-effort; returns True iff the resulting stack meets unsloth-zoo's minimums
     (so a backtracked old mlx-vlm is rejected, not accepted). transformers is held
     at its pinned version so the install can never upgrade it underneath Studio."""
-    constraint_args, constraint_path = _transformers_constraint_args()
+    # Prepare the constraint inside the try: this runs on a daemon thread, so an
+    # exception here (e.g. tempfile.mkstemp failing on a full disk or bad TMPDIR)
+    # must leave Studio chat-only, not crash the background self-heal thread.
+    constraint_path = None
     try:
+        constraint_args, constraint_path = _transformers_constraint_args()
         cmd = _uv_install_cmd("--upgrade", *_MLX_REINSTALL_ARGS, *constraint_args, *MLX_PACKAGES)
         if cmd is None:
             logger.warning(
