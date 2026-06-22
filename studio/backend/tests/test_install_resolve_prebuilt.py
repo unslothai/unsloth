@@ -105,6 +105,44 @@ def test_published_repo_for_host():
     )
 
 
+def test_macos_intel_and_arm_both_route_to_fork():
+    # macOS uses the unslothai fork's own Mac prebuilts for BOTH arm64 and Intel;
+    # there is no longer any upstream-on-macOS default path, so the obsolete
+    # pre-macOS-26 pin (b9415) is gone.
+    assert (
+        ilp.published_repo_for_host(
+            _host(system = "Darwin", is_macos = True, is_arm64 = True, machine = "arm64")
+        )
+        == FORK
+    )
+    assert (
+        ilp.published_repo_for_host(
+            _host(system = "Darwin", is_macos = True, is_x86_64 = True, machine = "x86_64")
+        )
+        == FORK
+    )
+
+
+def test_macos_upstream_pin_only_for_explicit_pre26_upstream():
+    pre26 = _host(
+        system = "Darwin",
+        is_macos = True,
+        is_arm64 = True,
+        machine = "arm64",
+        macos_version = (15, 5),
+    )
+    assert ilp.pinned_macos_release_tag(pre26, UPSTREAM) == "b9415"
+    assert ilp.pinned_macos_release_tag(pre26, FORK) is None
+    tahoe = _host(
+        system = "Darwin",
+        is_macos = True,
+        is_arm64 = True,
+        machine = "arm64",
+        macos_version = (26, 0),
+    )
+    assert ilp.pinned_macos_release_tag(tahoe, UPSTREAM) is None
+
+
 def _run_resolve(monkeypatch, capsys, plans_or_exc):
     monkeypatch.setattr(
         ilp,

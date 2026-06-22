@@ -379,24 +379,18 @@ def _start_helper_precache_if_enabled() -> None:
     threading.Thread(target = _precache, daemon = True, name = "helper-gguf-precache").start()
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Startup: detect hardware, seed default admin if needed. Shutdown: clean up compiled cache."""
-    clear_unsloth_compiled_cache()
+def _run_llama_cpp_startup_probes(app: FastAPI) -> None:
+    """llama.cpp capability (MTP support) + freshness (release age) probes.
 
-    # Remove stale .venv_overlay from old versions; switching now uses .venv_t5/.
-    overlay_dir = Path(__file__).resolve().parent.parent.parent / ".venv_overlay"
-    if overlay_dir.is_dir():
-        shutil.rmtree(overlay_dir, ignore_errors = True)
-
-    # Detect hardware first — sets the DEVICE global used everywhere.
-    detect_hardware()
-
-    # Reap download workers orphaned by a previous crash before new downloads start.
-    reap_hub_orphan_workers()
-
-    # llama.cpp probes: capability (MTP support) + freshness (release age).
-    # Both cached; freshness has a 24h disk TTL.
+    Runs OFF the startup critical path (see _start_llama_cpp_probes_if_enabled).
+    Both are cached and freshness has a 24h disk TTL, but on a cold/expired cache
+    the freshness check makes a blocking GitHub request, and on macOS the first
+    `llama-server --help` exec can stall on Gatekeeper verification -- neither must
+    ever gate `Application startup complete`. Writes app.state only; nothing reads
+    those values synchronously at startup (the status routes call
+    check_prebuilt_freshness directly at request time), so populating them late is
+    safe.
+    """
     try:
         from core.inference.llama_cpp import LlamaCppBackend
         from utils.llama_cpp_freshness import (
@@ -428,6 +422,61 @@ async def lifespan(app: FastAPI):
     except Exception as _probe_exc:
         import structlog as _structlog
         _structlog.get_logger(__name__).debug("llama.cpp startup probes failed: %s", _probe_exc)
+
+
+def _start_llama_cpp_probes_if_enabled(app: FastAPI) -> None:
+    """Run the llama.cpp startup probes on a daemon thread, off the startup
+    critical path so they never delay `Application startup complete`. Skipped
+    entirely when update checks are disabled, so a fully offline boot makes no
+    background network calls."""
+    if os.environ.get("UNSLOTH_DISABLE_UPDATE_CHECK") == "1":
+        return
+
+    threading.Thread(
+        target = _run_llama_cpp_startup_probes,
+        args = (app,),
+        daemon = True,
+        name = "llama-cpp-startup-probe",
+    ).start()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Startup: detect hardware, seed default admin if needed. Shutdown: clean up compiled cache."""
+    clear_unsloth_compiled_cache()
+
+    # Remove stale .venv_overlay from old versions; switching now uses .venv_t5/.
+    overlay_dir = Path(__file__).resolve().parent.parent.parent / ".venv_overlay"
+    if overlay_dir.is_dir():
+        shutil.rmtree(overlay_dir, ignore_errors = True)
+
+    # Detect hardware first — sets the DEVICE global used everywhere.
+    detect_hardware()
+
+    # Apple Silicon with MLX missing => Train/Export are greyed out (chat-only).
+    # Reinstall mlx by name on a background thread (off the critical path) and
+    # re-detect, so a reinstall/update that dropped mlx self-heals. No-op
+    # elsewhere; opt out with UNSLOTH_DISABLE_MLX_AUTOREPAIR=1.
+    try:
+        from utils.mlx_repair import start_mlx_autorepair_if_needed
+        start_mlx_autorepair_if_needed()
+    except Exception as _mlx_exc:
+        import structlog as _structlog
+        _structlog.get_logger(__name__).debug("mlx autorepair skipped: %s", _mlx_exc)
+
+    # Reap download workers orphaned by a previous crash before new downloads start.
+    reap_hub_orphan_workers()
+
+    # llama.cpp probes: capability (MTP support) + freshness (release age).
+    # These used to run inline here and could block `Application startup complete`
+    # for tens of seconds on macOS (cold GitHub freshness cache / slow network, and
+    # Gatekeeper verifying the unsigned binary on first `--help` exec). They only
+    # write app.state and nothing reads it synchronously at startup, so run them on
+    # a daemon thread off the startup critical path (mirrors the helper-precache and
+    # RAG-warm threads). Default to None until the thread populates them.
+    app.state.llama_cpp_capabilities = None
+    app.state.llama_cpp_freshness = None
+    _start_llama_cpp_probes_if_enabled(app)
 
     from storage.studio_db import cleanup_orphaned_runs
 
@@ -909,6 +958,8 @@ async def health_check(request: Request):
     device_type = platform_map.get(sys.platform, sys.platform)
     return {
         **base,
+        # Why chat_only is set. This fingerprints the host, so keep it authed.
+        "chat_only_reason": getattr(_hw_module, "CHAT_ONLY_REASON", None),
         "version": UNSLOTH_VERSION,
         "studio_version": STUDIO_VERSION,
         "device_type": device_type,

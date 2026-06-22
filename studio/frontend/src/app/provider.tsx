@@ -258,7 +258,8 @@ function TauriWrapper({ children }: { children: ReactNode }) {
     return (
       <>
         {children}
-        <DownloadManagerPanel />
+        {/* One bottom-right stack so overlays never overlap; they stack with a
+            gap, download panel anchored at the corner with banners above. */}
         <div className="pointer-events-none fixed bottom-4 right-4 z-[9998] flex w-[calc(100vw-2rem)] max-w-[400px] flex-col items-stretch gap-2">
           <WebUpdateBanner
             positioned={false}
@@ -268,6 +269,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
             positioned={false}
             enabled={!WEB_UPDATE_HIDDEN_ROUTES.has(pathname)}
           />
+          <DownloadManagerPanel positioned={false} />
         </div>
       </>
     );
@@ -285,7 +287,6 @@ function TauriWrapper({ children }: { children: ReactNode }) {
       <TauriUpdateLayer isExternalServer={isExternalServer} />
       <NativeIntentDrain />
       {children}
-      <DownloadManagerPanel />
     </>
   ) : (
     <StartupScreen
@@ -310,9 +311,13 @@ function TauriWrapper({ children }: { children: ReactNode }) {
     return (
       <>
         {content}
-        <LlamaUpdateBanner
-          enabled={showApp && !HIDDEN_TITLEBAR_SIDEBAR_ROUTES.has(pathname)}
-        />
+        <div className="pointer-events-none fixed bottom-4 right-4 z-[9998] flex w-[calc(100vw-2rem)] max-w-[400px] flex-col items-stretch gap-2">
+          <LlamaUpdateBanner
+            positioned={false}
+            enabled={showApp && !HIDDEN_TITLEBAR_SIDEBAR_ROUTES.has(pathname)}
+          />
+          {showApp ? <DownloadManagerPanel positioned={false} /> : null}
+        </div>
       </>
     );
   }
@@ -326,9 +331,13 @@ function TauriWrapper({ children }: { children: ReactNode }) {
       <div className="min-h-0 flex-1 overflow-hidden">
         {content}
       </div>
-      <LlamaUpdateBanner
-        enabled={showApp && !HIDDEN_TITLEBAR_SIDEBAR_ROUTES.has(pathname)}
-      />
+      <div className="pointer-events-none fixed bottom-4 right-4 z-[9998] flex w-[calc(100vw-2rem)] max-w-[400px] flex-col items-stretch gap-2">
+        <LlamaUpdateBanner
+          positioned={false}
+          enabled={showApp && !HIDDEN_TITLEBAR_SIDEBAR_ROUTES.has(pathname)}
+        />
+        {showApp ? <DownloadManagerPanel positioned={false} /> : null}
+      </div>
     </div>
   );
 }
