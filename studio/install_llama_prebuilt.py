@@ -230,11 +230,18 @@ FORCE_COMPILE_DEFAULT_REF = os.environ.get("UNSLOTH_LLAMA_FORCE_COMPILE_REF", "m
 _MIN_CUDA_MAJOR = 12
 _MAX_PROBE_CUDA_MAJOR = 19
 
-# Blackwell sm_120 capability thresholds. A host is Blackwell when its highest
-# compute capability is at least sm_120; ggml compiles sm_120 only at toolkit
-# >= 12.8, so an in-release windows-cuda build at or above that already covers
-# Blackwell, while cuda-12.4 does not and is dropped on a Blackwell host.
-_BLACKWELL_MIN_SM = 120
+# Blackwell capability thresholds. A host is Blackwell when its highest compute
+# capability is at least sm_100: the data-center parts (B100/B200 sm_100,
+# B300/GB300 sm_103) sit BELOW consumer Blackwell (RTX 50 sm_120, DGX Spark
+# sm_121) numerically, so the floor is sm_100, not sm_120. Using 120 here
+# silently excluded every data-center Blackwell host (their highest cap is 100
+# or 103, both < 120), so the Blackwell runtime-line preference and the
+# cuda-12.4 drop never fired for a B200/B300 and the GPU could be handed a
+# prebuilt that does not offload its SM. ggml compiles the whole Blackwell
+# family only at toolkit >= 12.8, so an in-release windows-cuda build at or
+# above that already covers Blackwell, while cuda-12.4 does not and is dropped
+# on a Blackwell host.
+_BLACKWELL_MIN_SM = 100
 _BLACKWELL_MIN_TOOLKIT = (12, 8)
 
 
@@ -3419,14 +3426,15 @@ def windows_cuda_attempts(
 
 
 def _windows_cuda_attempt_covers_blackwell(attempt: AssetChoice) -> bool:
-    """True if an in-release windows-cuda attempt yields a Blackwell sm_120
-    capable build. The fork's app-named bundles declare their SM coverage
-    directly; legacy upstream-named bundles instead encode their CUDA toolkit
-    minor in the filename (covers Blackwell at toolkit >= 12.8)."""
+    """True if an in-release windows-cuda attempt yields a Blackwell-capable
+    build (sm_100 data-center through sm_120+ consumer). The fork's app-named
+    bundles declare their SM coverage directly; legacy upstream-named bundles
+    instead encode their CUDA toolkit minor in the filename (covers Blackwell at
+    toolkit >= 12.8)."""
     if attempt.install_kind != "windows-cuda":
         return False
     # Legacy upstream-named bundles encode their toolkit minor; it is the binding
-    # constraint (a 12.4 toolkit cannot offload sm_120 whatever its metadata says).
+    # constraint (a 12.4 toolkit cannot offload Blackwell whatever its metadata says).
     m = re.search(r"-bin-win-cuda-(\d+)\.(\d+)-x64\.zip$", attempt.name)
     if m is not None:
         return (int(m.group(1)), int(m.group(2))) >= _BLACKWELL_MIN_TOOLKIT
@@ -3442,11 +3450,12 @@ def _host_is_blackwell(host: HostInfo) -> bool:
 def _drop_blackwell_incapable_windows_cuda(
     host: HostInfo, attempts: list[AssetChoice]
 ) -> list[AssetChoice]:
-    """On a Blackwell host, drop windows-cuda attempts that cannot offload
-    sm_120 (e.g. upstream cuda-12.4, toolkit 12.4). Such a build loads and
-    passes the functional validator but runs the model on a slow non-native
-    path (an RTX 5090 measured 7.1 tok/s vs 551.2 on cuda-13.3), so it must
-    not sit in the fallback chain behind the pin or an in-release cuda13.
+    """On a Blackwell host (data-center sm_100/sm_103 or consumer sm_120+),
+    drop windows-cuda attempts that cannot offload Blackwell (e.g. upstream
+    cuda-12.4, toolkit 12.4). Such a build loads and passes the functional
+    validator but runs the model on a slow non-native path (an RTX 5090
+    measured 7.1 tok/s vs 551.2 on cuda-13.3), so it must not sit in the
+    fallback chain behind the pin or an in-release cuda13.
     Non-cuda attempts (windows-cpu, windows-hip, ...) pass through so the
     host still degrades to an honest CPU install when no CUDA 13 exists."""
     if not _host_is_blackwell(host):

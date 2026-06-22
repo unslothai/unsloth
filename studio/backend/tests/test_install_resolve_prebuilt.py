@@ -209,3 +209,116 @@ def test_resolve_prebuilt_linux_amd_tooling_routes_to_fork(monkeypatch, capsys):
     out = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
     assert seen["repo"] == FORK
     assert out["repo"] == FORK
+
+
+# ---------------------------------------------------------------------------
+# Blackwell classification: the floor is sm_100 (data-center B100/B200), not
+# sm_120 (consumer RTX 50). Using 120 silently excluded every data-center
+# Blackwell host -- its highest compute cap is 100 or 103, both < 120 -- so the
+# Blackwell runtime-line preference (Linux) and the cuda-12.4 drop (Windows)
+# never fired and the GPU could be handed a prebuilt that does not offload its
+# SM. See unslothai/unsloth (GLM-5.2-GGUF on 8x B200).
+# ---------------------------------------------------------------------------
+
+
+def _gpu_linux_host(caps):
+    return _host(
+        is_linux = True,
+        is_x86_64 = True,
+        has_physical_nvidia = True,
+        has_usable_nvidia = True,
+        driver_cuda_version = (13, 1),
+        compute_caps = caps,
+    )
+
+
+def test_host_is_blackwell_includes_datacenter_parts():
+    # Data-center Blackwell (sm_100 B100/B200, sm_103 B300/GB300) and consumer
+    # Blackwell (sm_120 RTX 50, sm_121 DGX Spark) are all Blackwell.
+    assert ilp._host_is_blackwell(_gpu_linux_host(["10.0"])) is True  # B200 sm_100
+    assert ilp._host_is_blackwell(_gpu_linux_host(["10.3"])) is True  # B300 sm_103
+    assert ilp._host_is_blackwell(_gpu_linux_host(["12.0"])) is True  # RTX 50 sm_120
+    assert ilp._host_is_blackwell(_gpu_linux_host(["12.1"])) is True  # DGX Spark sm_121
+    # Hopper (sm_90) and Ampere (sm_80) are NOT Blackwell.
+    assert ilp._host_is_blackwell(_gpu_linux_host(["9.0"])) is False
+    assert ilp._host_is_blackwell(_gpu_linux_host(["8.0"])) is False
+    # Highest cap decides on a mixed host (last entry after normalise+sort).
+    assert ilp._host_is_blackwell(_gpu_linux_host(["9.0", "10.0"])) is True
+
+
+def _linux_cuda_artifact(runtime_line, supported_sms, min_sm, max_sm, profile):
+    return ilp.PublishedLlamaArtifact(
+        asset_name = f"app-b9739-linux-x64-{profile}.tar.gz",
+        install_kind = "linux-cuda",
+        runtime_line = runtime_line,
+        coverage_class = "newer",
+        supported_sms = supported_sms,
+        min_sm = min_sm,
+        max_sm = max_sm,
+        bundle_profile = profile,
+        rank = 50,
+    )
+
+
+def test_linux_blackwell_override_prefers_cuda13_for_datacenter(monkeypatch):
+    # Both a cuda12 and a cuda13 bundle cover sm_100, and torch's reported line
+    # is cuda12 (a cu12x torch build). Without the Blackwell override a B200
+    # would settle on the cuda12 bundle; the override must lift cuda13 to the
+    # front -- the native Blackwell line -- exactly as it already does for an
+    # RTX 50. The coverage filter alone can't decide this (both lines cover the
+    # host SM), so only the corrected sm_100 floor flips the choice.
+    cuda12 = _linux_cuda_artifact("cuda12", ["86", "89", "90", "100", "120"], 86, 120, "cuda12-newer")
+    cuda13 = _linux_cuda_artifact(
+        "cuda13", ["86", "89", "90", "100", "103", "120"], 86, 120, "cuda13-newer"
+    )
+    release = ilp.PublishedReleaseBundle(
+        repo = FORK,
+        release_tag = "b9739-mix",
+        upstream_tag = "b9739",
+        assets = {cuda12.asset_name: "https://x/cuda12", cuda13.asset_name: "https://x/cuda13"},
+        artifacts = [cuda12, cuda13],
+    )
+    monkeypatch.setattr(
+        ilp,
+        "detected_linux_runtime_lines",
+        lambda: (["cuda13", "cuda12"], {"cuda13": ["/usr/lib"], "cuda12": ["/usr/lib"]}),
+    )
+
+    selection = ilp.linux_cuda_choice_from_release(
+        _gpu_linux_host(["10.0"]), release, preferred_runtime_line = "cuda12"
+    )
+    assert selection is not None
+    assert selection.primary.runtime_line == "cuda13"
+    assert selection.primary.bundle_profile == "cuda13-newer"
+
+
+def test_drop_blackwell_incapable_windows_cuda_applies_to_datacenter():
+    # A B200 on Windows must drop a cuda-12.4 build (toolkit < 12.8 cannot
+    # offload Blackwell natively) and keep the cuda13 build, just like an RTX 50.
+    host = _host(
+        system = "Windows",
+        is_windows = True,
+        is_x86_64 = True,
+        has_physical_nvidia = True,
+        has_usable_nvidia = True,
+        compute_caps = ["10.0"],
+    )
+    cuda124 = ilp.AssetChoice(
+        repo = FORK,
+        tag = "b9739",
+        name = "llama-b9739-bin-win-cuda-12.4-x64.zip",
+        url = "https://x/124",
+        source_label = "published",
+        install_kind = "windows-cuda",
+    )
+    cuda13 = ilp.AssetChoice(
+        repo = FORK,
+        tag = "b9739",
+        name = "app-b9739-windows-x64-cuda13-newer.zip",
+        url = "https://x/13",
+        source_label = "published",
+        install_kind = "windows-cuda",
+        max_sm = 120,
+    )
+    kept = ilp._drop_blackwell_incapable_windows_cuda(host, [cuda124, cuda13])
+    assert [a.name for a in kept] == [cuda13.name]
