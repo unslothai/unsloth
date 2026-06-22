@@ -93,6 +93,26 @@ def test_managed_dir_fallback_legacy_without_override(monkeypatch):
     assert nr.managed_node_dir() == Path.home() / ".unsloth" / "node"
 
 
+def test_managed_dir_honors_studio_home_alias(monkeypatch, tmp_path):
+    monkeypatch.delenv("UNSLOTH_STUDIO_HOME", raising = False)
+    monkeypatch.setenv("STUDIO_HOME", str(tmp_path))
+    assert nr.managed_node_dir() == tmp_path / "node"
+
+
+def test_managed_dir_unsloth_studio_home_wins_over_alias(monkeypatch, tmp_path):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    monkeypatch.setenv("STUDIO_HOME", str(tmp_path / "other"))
+    assert nr.managed_node_dir() == tmp_path / "node"
+
+
+def test_managed_dir_legacy_valued_override_uses_sibling(monkeypatch):
+    # An override set explicitly to the legacy default maps to the sibling
+    # ~/.unsloth/node (matching setup.sh / setup.ps1), not ~/.unsloth/studio/node.
+    legacy = Path.home() / ".unsloth" / "studio"
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(legacy))
+    assert nr.managed_node_dir() == Path.home() / ".unsloth" / "node"
+
+
 def test_resolve_prefers_adequate_system_node(monkeypatch):
     monkeypatch.setattr(
         nr.shutil, "which", lambda name: "/usr/bin/node" if name == "node" else None
