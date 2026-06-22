@@ -8618,9 +8618,7 @@ class LlamaCppBackend:
                                         and not _final_reasoning_summary_emitted
                                     ):
                                         _final_reasoning_summary_emitted = True
-                                        yield _reasoning_summary_event(
-                                            _final_reasoning_started_at
-                                        )
+                                        yield _reasoning_summary_event(_final_reasoning_started_at)
                                     has_content_tokens = True
                                     if in_thinking:
                                         cumulative += "</think>"
