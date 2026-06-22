@@ -92,6 +92,8 @@ export interface GgufVariantsResponse {
   variants: GgufVariantDetail[];
   has_vision: boolean;
   default_variant: string | null;
+  /** Native max context from GGUF metadata; present once a variant is downloaded. */
+  context_length?: number | null;
 }
 
 export function isMultimodalResponse(

@@ -5,7 +5,9 @@
 
 Some newer model architectures (Ministral-3, GLM-4.7-Flash, Qwen3-30B-A3B MoE,
 tiny_qwen3_moe) require transformers>=5.3.0, while Gemma 4 models require a
-newer 5.x sidecar.  Everything else needs the default 4.57.x that ships with
+newer 5.x sidecar.  Dense NemotronH models (e.g. NVIDIA-Nemotron-3-Nano-4B) use
+MLP layers that only transformers>=5.10 can parse natively, so they go on the
+5.10 sidecar too.  Everything else needs the default 4.57.x that ships with
 Unsloth.
 
 Two separate target directories are maintained:
@@ -140,6 +142,13 @@ _VENV_T5_510_DIR = str(_studio_root() / ".venv_t5_510")
 # Backwards-compat alias
 _VENV_T5_DIR = _VENV_T5_550_DIR
 
+# Tier precedence: higher rank wins in _higher_tier.
+_TIER_RANK = {"default": 0, "530": 1, "550": 2, "510": 3}
+
+
+def _higher_tier(a: str, b: str) -> str:
+    return a if _TIER_RANK.get(a, 0) >= _TIER_RANK.get(b, 0) else b
+
 
 def activate_transformers_for_subprocess(model_name: str, hf_token: str | None = None) -> None:
     """Activate the correct transformers version in a subprocess worker.
@@ -154,6 +163,10 @@ def activate_transformers_for_subprocess(model_name: str, hf_token: str | None =
     """
     resolved = _resolve_base_model(model_name)
     tier = get_transformers_tier(resolved, hf_token)
+    if model_name != resolved and (Path(model_name) / "config.json").is_file():
+        # Gate on a real local config.json: a checkpoint carries config the base may not
+        # surface, but path names alone must not upgrade a plain adapter.
+        tier = _higher_tier(tier, get_transformers_tier(model_name, hf_token))
 
     if tier == "510":
         if not _ensure_venv_t5_510_exists():
@@ -356,12 +369,56 @@ def _check_tokenizer_config_needs_v5(model_name: str, hf_token: str | None = Non
         return False
 
 
+def _safe_mtime(path: Path) -> float:
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
+def _config_json_from_hf_cache(model_name: str) -> dict | None:
+    """Parsed ``config.json`` from the local HF hub cache, or None.
+
+    Stdlib-only path resolution (no ``huggingface_hub`` import) so tier detection never
+    loads the default-env hub before a sidecar venv is activated.
+    """
+    # Only a canonical ``owner/repo`` Hub id maps to a cache dir; reject local paths.
+    if not model_name or model_name.count("/") != 1 or model_name[0] in "/.~" or "\\" in model_name:
+        return None
+    hub = (
+        os.environ.get("HF_HUB_CACHE")
+        or os.environ.get("HUGGINGFACE_HUB_CACHE")
+        or os.path.join(
+            os.environ.get("HF_HOME") or os.path.expanduser("~/.cache/huggingface"), "hub"
+        )
+    )
+    repo_dir = Path(hub) / ("models--" + model_name.replace("/", "--"))
+    candidates = []
+    ref_main = repo_dir / "refs" / "main"
+    try:
+        if ref_main.is_file():
+            candidates.append(repo_dir / "snapshots" / ref_main.read_text().strip() / "config.json")
+        # No refs/main (e.g. commit-pinned downloads): newest snapshot by mtime, not a stale
+        # lexicographically-first SHA, matching what the Hub cache would actually load.
+        candidates += sorted(
+            repo_dir.glob("snapshots/*/config.json"), key = _safe_mtime, reverse = True
+        )
+        for cfg_path in candidates:
+            if cfg_path.is_file():
+                with open(cfg_path) as f:
+                    return json.load(f)
+    except Exception as exc:
+        logger.debug("HF cache config.json lookup failed for '%s': %s", model_name, exc)
+    return None
+
+
 def _load_config_json(model_name: str, hf_token: str | None = None) -> dict | None:
     """Return parsed ``config.json`` for *model_name*, checking local files first.
 
     ``hf_token`` authenticates the raw fetch so gated/private repos resolve. The
     cache is keyed on the token so an unauthenticated miss never poisons a later
-    authenticated read.
+    authenticated read. The HF hub cache is consulted only offline or after a failed
+    network fetch, so an online read never serves stale metadata.
     """
     import hashlib
 
@@ -388,9 +445,12 @@ def _load_config_json(model_name: str, hf_token: str | None = None) -> dict | No
         return None
 
     if _env_offline():
-        _config_json_cache[cache_key] = None
-        return None
+        # No network: a previously downloaded repo can still tier from the hub cache.
+        cfg = _config_json_from_hf_cache(model_name)
+        _config_json_cache[cache_key] = cfg
+        return cfg
 
+    import urllib.error
     import urllib.request
 
     url = f"https://huggingface.co/{model_name}/raw/main/config.json"
@@ -403,10 +463,24 @@ def _load_config_json(model_name: str, hf_token: str | None = None) -> dict | No
             cfg = json.loads(resp.read().decode())
         _config_json_cache[cache_key] = cfg
         return cfg
+    except urllib.error.HTTPError as exc:
+        # 401/403/404 is a definitive access answer: never serve another caller's cached
+        # private metadata to an unauthenticated/wrong-token request.
+        if exc.code in (401, 403, 404):
+            logger.debug("config.json access denied for '%s': %s", model_name, exc)
+            return None
+        logger.debug("Could not fetch config.json for '%s': %s", model_name, exc)
+        return _config_json_from_hf_cache(model_name)
     except Exception as exc:
         logger.debug("Could not fetch config.json for '%s': %s", model_name, exc)
-        _config_json_cache[cache_key] = None
-        return None
+        # Transient: serve the hub cache uncached so the next call retries the network.
+        return _config_json_from_hf_cache(model_name)
+
+
+def _config_json_is_definitive(model_name: str, hf_token: str | None = None) -> bool:
+    """True if the last ``_load_config_json`` read for this model+token was cached
+    (definitive), not a transient fallback (not stored, so callers re-check next call)."""
+    return _token_cache_key(model_name, hf_token) in _config_json_cache
 
 
 def _config_matches_tier(cfg: dict, architectures: set[str], model_types: set[str]) -> bool:
@@ -426,32 +500,49 @@ def _config_needs_550(cfg: dict) -> bool:
     )
 
 
+_NESTED_CONFIG_KEYS = ("llm_config", "text_config", "language_config", "thinker_config")
+
+
+def _nemotron_h_needs_mlp_support(cfg: dict) -> bool:
+    """True for a dense NemotronH config using MLP (``-``) layers.
+
+    transformers only gained ``-`` -> ``mlp`` in 5.10; 5.3/5.5 raise ``KeyError: '-'``.
+    Read from ``hybrid_override_pattern`` or ``layers_block_type``, recursing into nested
+    language configs (VL wrappers hold the dense LM under ``llm_config``/``text_config``).
+    """
+    if not isinstance(cfg, dict):
+        return False
+    if cfg.get("model_type") == "nemotron_h":
+        pattern = cfg.get("hybrid_override_pattern")
+        if isinstance(pattern, str) and "-" in pattern:
+            return True
+        block_types = cfg.get("layers_block_type")
+        if isinstance(block_types, (list, tuple)) and "mlp" in block_types:
+            return True
+    return any(_nemotron_h_needs_mlp_support(cfg.get(key)) for key in _NESTED_CONFIG_KEYS)
+
+
 def _config_needs_510(cfg: dict) -> bool:
-    return _config_matches_tier(
+    if _config_matches_tier(
         cfg,
         _TRANSFORMERS_510_ARCHITECTURES,
         _TRANSFORMERS_510_MODEL_TYPES,
-    )
+    ):
+        return True
+    return _nemotron_h_needs_mlp_support(cfg)
 
 
 def _check_config_needs_550(model_name: str, hf_token: str | None = None) -> bool:
-    """True if ``config.json`` has architectures/model_type needing transformers
-    5.5.0 (e.g. Gemma 4).
-
-    Checks locally first, else fetches from HuggingFace (authenticated with
-    ``hf_token``). Cached in ``_config_needs_550_cache``, keyed by (model, token).
-    Returns False on any error (fail-open to lower tier).
+    """True if ``config.json`` needs transformers 5.5.0 (e.g. Gemma 4). Local first, else
+    fetched (authenticated with ``hf_token``); cached by (model, token) only for a definitive
+    read so a transient miss retries. False on error.
     """
     cache_key = _token_cache_key(model_name, hf_token)
     if cache_key in _config_needs_550_cache:
         return _config_needs_550_cache[cache_key]
 
     cfg = _load_config_json(model_name, hf_token)
-    if cfg is None:
-        _config_needs_550_cache[cache_key] = False
-        return False
-
-    result = _config_needs_550(cfg)
+    result = bool(cfg) and _config_needs_550(cfg)
     if result:
         logger.info(
             "config.json check: %s needs transformers %s (architectures=%s, model_type=%s)",
@@ -460,23 +551,20 @@ def _check_config_needs_550(model_name: str, hf_token: str | None = None) -> boo
             cfg.get("architectures", []),
             cfg.get("model_type"),
         )
-    _config_needs_550_cache[cache_key] = result
+    if _config_json_is_definitive(model_name, hf_token):
+        _config_needs_550_cache[cache_key] = result
     return result
 
 
 def _check_config_needs_510(model_name: str, hf_token: str | None = None) -> bool:
-    """Check ``config.json`` for Gemma 4 Unified / 12B architectures (authenticated
-    with ``hf_token``; cache keyed by (model, token))."""
+    """Check ``config.json`` for Gemma 4 Unified / 12B architectures (authenticated with
+    ``hf_token``; cached by (model, token) only for a definitive read)."""
     cache_key = _token_cache_key(model_name, hf_token)
     if cache_key in _config_needs_510_cache:
         return _config_needs_510_cache[cache_key]
 
     cfg = _load_config_json(model_name, hf_token)
-    if cfg is None:
-        _config_needs_510_cache[cache_key] = False
-        return False
-
-    result = _config_needs_510(cfg)
+    result = bool(cfg) and _config_needs_510(cfg)
     if result:
         logger.info(
             "config.json check: %s needs transformers %s (architectures=%s, model_type=%s)",
@@ -485,7 +573,8 @@ def _check_config_needs_510(model_name: str, hf_token: str | None = None) -> boo
             cfg.get("architectures", []),
             cfg.get("model_type"),
         )
-    _config_needs_510_cache[cache_key] = result
+    if _config_json_is_definitive(model_name, hf_token):
+        _config_needs_510_cache[cache_key] = result
     return result
 
 
@@ -1115,6 +1204,10 @@ def ensure_transformers_version(model_name: str) -> None:
     # Resolve LoRA adapters to their base model for accurate detection.
     resolved = _resolve_base_model(model_name)
     tier = get_transformers_tier(resolved)
+    if model_name != resolved and (Path(model_name) / "config.json").is_file():
+        # Gate on a real local config.json: a checkpoint carries config the base may not
+        # surface, but path names alone must not upgrade a plain adapter.
+        tier = _higher_tier(tier, get_transformers_tier(model_name))
 
     if tier == "510":
         target_version = TRANSFORMERS_510_VERSION

@@ -27,6 +27,7 @@ from _playwright_robust import (  # noqa: E402
     is_benign_console_error,
     is_benign_page_error,
     recover_or_replace_page,
+    robust_evaluate,
     wait_for_health,
 )
 
@@ -356,12 +357,14 @@ with sync_playwright() as p:
 
     # /api/models/list and /api/inference/load need a bearer; the
     # frontend stores it under "unsloth_auth_token" (auth/session.ts).
-    token = page.evaluate(
+    token = robust_evaluate(
+        page,
         "() => localStorage.getItem('unsloth_auth_token')",
     )
     if not token:
         # Fall back: exchange the refresh token via /api/auth/refresh.
-        refresh_token = page.evaluate(
+        refresh_token = robust_evaluate(
+            page,
             "() => localStorage.getItem('unsloth_auth_refresh_token')",
         )
         if refresh_token:
@@ -450,7 +453,7 @@ with sync_playwright() as p:
     if load_resp.get("error"):
         fail(f"/api/inference/load wedged: {load_resp['error']!r}")
     if load_resp["status"] != 200:
-        fail(f"/api/inference/load returned {load_resp['status']}: " f"{load_resp.get('body')!r}")
+        fail(f"/api/inference/load returned {load_resp['status']}: {load_resp.get('body')!r}")
     info(f"loaded model: {(load_resp['body'] or {}).get('display_name')}")
 
     # Studio caches model state in zustand; reload so the composer picks
@@ -670,7 +673,7 @@ with sync_playwright() as p:
     for feature in ("thinking", "web search", "code execution"):
         # Match whichever of "Disable X" / "Enable X" is rendered.
         toggle = page.locator(
-            f'button[aria-label="Disable {feature}"], ' f'button[aria-label="Enable {feature}"]'
+            f'button[aria-label="Disable {feature}"], button[aria-label="Enable {feature}"]'
         ).first
         if toggle.count() == 0:
             info(f"toggle '{feature}' not present on this layout")
@@ -685,7 +688,7 @@ with sync_playwright() as p:
         page.wait_for_timeout(200)
         after = (
             page.locator(
-                f'button[aria-label="Disable {feature}"], ' f'button[aria-label="Enable {feature}"]'
+                f'button[aria-label="Disable {feature}"], button[aria-label="Enable {feature}"]'
             ).first.get_attribute("aria-label")
             or ""
         )
@@ -696,7 +699,7 @@ with sync_playwright() as p:
         # Flip back so test state is unchanged.
         try:
             page.locator(
-                f'button[aria-label="Disable {feature}"], ' f'button[aria-label="Enable {feature}"]'
+                f'button[aria-label="Disable {feature}"], button[aria-label="Enable {feature}"]'
             ).first.click()
         except Exception:
             pass
@@ -773,9 +776,7 @@ with sync_playwright() as p:
                     acct.click(force = True)
                 except Exception as exc:
                     if attempt == 1:
-                        soft_fail(
-                            f"theme cycle {cycle + 1}: account-menu click failed " f"({exc!r})"
-                        )
+                        soft_fail(f"theme cycle {cycle + 1}: account-menu click failed ({exc!r})")
                     continue
                 try:
                     page.wait_for_selector(
@@ -819,9 +820,7 @@ with sync_playwright() as p:
                     page.wait_for_timeout(200)
             if click_err is not None:
                 page.keyboard.press("Escape")
-                soft_fail(
-                    f"theme cycle {cycle + 1}: theme menuitem click failed " f"({click_err!r})"
-                )
+                soft_fail(f"theme cycle {cycle + 1}: theme menuitem click failed ({click_err!r})")
                 break
             # Settle. The ".dark" class on <html> is the ground truth
             # (theme-store toggles only that); don't gate on ".light".
@@ -892,8 +891,7 @@ with sync_playwright() as p:
         page.wait_for_timeout(800)
         if expected_url_pat and not re.search(expected_url_pat, page.url):
             soft_fail(
-                f"clicking '{label}' didn't change url to /{expected_url_pat}; "
-                f"current: {page.url}"
+                f"clicking '{label}' didn't change url to /{expected_url_pat}; current: {page.url}"
             )
             return False
         return True
@@ -1061,7 +1059,7 @@ with sync_playwright() as p:
             info(f"recent-thread click {i} failed: {_click_err!s}")
             continue
     if not clicked_recent:
-        soft_fail(f"no Recents entry was clickable within 30s deadline " f"(n_threads={n_threads})")
+        soft_fail(f"no Recents entry was clickable within 30s deadline (n_threads={n_threads})")
     # Back to chat.
     page.goto(f"{BASE}/chat")
     composer = page.locator('textarea[aria-label="Message input"]')
@@ -1283,8 +1281,7 @@ with sync_playwright() as p:
     if real_errors:
         fail(f"{len(real_errors)} non-benign pageerror events")
     info(
-        f"console.error events: {len(console_errors)} total "
-        f"({len(real_console_errors)} non-benign)"
+        f"console.error events: {len(console_errors)} total ({len(real_console_errors)} non-benign)"
     )
 
     info("PASS comprehensive UI flow")

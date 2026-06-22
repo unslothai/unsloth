@@ -28,7 +28,8 @@ export function OwnerScopeToggle({
       onValueChange={onChange}
       ariaLabel="Publisher scope"
       align="end"
-      className="h-8 text-[11.5px]"
+      // Extra gap so the chevron sits a touch further from the label.
+      className="h-8 gap-1.5 text-[11.5px]"
     />
   );
 }

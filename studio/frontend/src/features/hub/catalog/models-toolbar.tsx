@@ -47,11 +47,11 @@ const SORT_OPTIONS: ReadonlyArray<{
   value: HfSortKey;
   label: string;
 }> = [
+  { value: "createdAt", label: "Newest" },
   { value: "trendingScore", label: "Trending" },
-  { value: "likes", label: "Most likes" },
   { value: "downloads", label: "Most downloads" },
   { value: "lastModified", label: "Recently updated" },
-  { value: "createdAt", label: "Newest" },
+  { value: "likes", label: "Most likes" },
 ];
 
 export const ModelsToolbar = memo(function ModelsToolbar({

@@ -451,7 +451,8 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
 
     import studio.backend.main as backend_main
 
-    monkeypatch.setattr(backend_main._hw_module, "CHAT_ONLY", False)
+    monkeypatch.setattr(backend_main._hw_module, "CHAT_ONLY", True)
+    monkeypatch.setattr(backend_main._hw_module, "CHAT_ONLY_REASON", "mlx_unavailable")
 
     seed_user()
     from auth.authentication import create_access_token
@@ -462,6 +463,12 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
     app.add_api_route("/api/health", backend_main.health_check, methods = ["GET"])
     client = TestClient(app)
 
+    unauthenticated = client.get("/api/health")
+    assert unauthenticated.status_code == 200
+    unauthenticated_body = unauthenticated.json()
+    assert unauthenticated_body["chat_only"] is True
+    assert "chat_only_reason" not in unauthenticated_body
+
     response = client.get(
         "/api/health",
         headers = {"Authorization": f"Bearer {token}"},
@@ -471,6 +478,7 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
 
     assert body["desktop_protocol_version"] == 1
     assert body["supports_desktop_auth"] is True
+    assert body["chat_only_reason"] == "mlx_unavailable"
 
 
 def test_provision_desktop_auth_writes_secret_and_creates_db_without_backend_deps(
