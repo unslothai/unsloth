@@ -569,6 +569,20 @@ with sync_playwright() as p:
         #    this at temp 0), and the old non-empty predicate got stuck
         #    on such bubbles.
         bubbles_before = _bubble_count()
+        # The llama.cpp update banner is a bottom-right toast that can overlap
+        # the composer's Send button and intercept the click. Snooze it if it
+        # is showing before sending.
+        snooze_btn = page.locator('[data-testid="llama-update-snooze-button"]')
+        if snooze_btn.count():
+            try:
+                snooze_btn.first.click(timeout = 2_000)
+                page.wait_for_selector(
+                    '[data-testid="llama-update-banner"]',
+                    state = "detached",
+                    timeout = 5_000,
+                )
+            except Exception:
+                pass
         composer.click()
         composer.fill(prompt)
         page.locator('button[aria-label="Send message"]').click()
