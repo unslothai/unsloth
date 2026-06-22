@@ -13,7 +13,6 @@ import json
 import os
 import re
 import struct
-import structlog
 from loggers import get_logger
 import shutil
 import signal
@@ -40,15 +39,7 @@ from core.inference.llama_server_args import (
     strip_split_mode_only,
 )
 from core.tool_healing import (
-    _TC_END_TAG_RE,
-    _TC_FUNC_CLOSE_RE,
-    _TC_FUNC_START_RE,
-    _TC_JSON_START_RE,
-    _TC_PARAM_CLOSE_RE,
-    _TC_PARAM_START_RE,
     _TOOL_ALL_PATS,
-    _TOOL_CLOSED_PATS,
-    parse_tool_calls_from_text,
     strip_tool_call_markup,
 )
 from utils.native_path_leases import child_env_without_native_path_secret
@@ -379,6 +370,13 @@ def _period_from_layer_types(layer_types: list) -> Optional[int]:
     return None
 
 
+def _swa_entry_from_layer_types(lt) -> Optional[object]:
+    """Period int, or per-layer bool mask, from a transformers ``layer_types`` list."""
+    if isinstance(lt, list) and lt:
+        return _period_from_layer_types(lt) or ["full" not in str(t).lower() for t in lt]
+    return None
+
+
 def _fetch_swa_entry_from_hf(repo_id: str) -> Optional[object]:
     try:
         from huggingface_hub import hf_hub_download
@@ -392,10 +390,7 @@ def _fetch_swa_entry_from_hf(repo_id: str) -> Optional[object]:
     period = src.get("sliding_window_pattern")
     if isinstance(period, int) and period > 0:
         return period
-    lt = src.get("layer_types")
-    if isinstance(lt, list) and lt:
-        return _period_from_layer_types(lt) or ["full" not in str(t).lower() for t in lt]
-    return None
+    return _swa_entry_from_layer_types(src.get("layer_types"))
 
 
 def _arch_aliases(arch: str) -> tuple:
@@ -412,10 +407,7 @@ def _swa_entry_from_config_obj(cfg) -> Optional[object]:
     period = getattr(src, "sliding_window_pattern", None)
     if isinstance(period, int) and period > 0:
         return period
-    lt = getattr(src, "layer_types", None)
-    if isinstance(lt, list) and lt:
-        return _period_from_layer_types(lt) or ["full" not in str(t).lower() for t in lt]
-    return None
+    return _swa_entry_from_layer_types(getattr(src, "layer_types", None))
 
 
 _SWA_PATTERN_SOURCE_RE = re.compile(r"sliding_window_pattern\s*(?::\s*[\w\[\], ]*)?\s*=\s*(\d+)")
@@ -581,12 +573,14 @@ def detect_reasoning_flags(
 ) -> dict:
     """Classify a chat template's reasoning and tool-calling capabilities.
 
-    Returns the same five keys as the GGUF sniffer: ``supports_reasoning``,
-    ``reasoning_style`` (``"enable_thinking"`` | ``"reasoning_effort"``),
-    ``reasoning_always_on``, ``supports_preserve_thinking``,
-    ``supports_tools``. Used by both the llama-server backend at load time
-    and the safetensors/transformers paths in ``routes/inference`` so they
-    agree on what the frontend sees.
+    Returns the same six keys as the GGUF sniffer: ``supports_reasoning``,
+    ``reasoning_style`` (``"enable_thinking"`` | ``"reasoning_effort"`` |
+    ``"enable_thinking_effort"``), ``reasoning_always_on``,
+    ``reasoning_effort_levels``, ``supports_preserve_thinking``,
+    ``supports_tools``. A falsy ``chat_template`` yields the all-default dict.
+    Used by both the llama-server backend at load time and the
+    safetensors/transformers paths in ``routes/inference`` so they agree on
+    what the frontend sees.
     """
     flags = {
         "supports_reasoning": False,
@@ -606,7 +600,7 @@ def detect_reasoning_flags(
         if ("reasoning_effort" in tpl and "enable_thinking" in tpl)
         else []
     )
-    if "enable_thinking" in tpl and "reasoning_effort" in tpl and effort_levels:
+    if effort_levels:
         # GLM-5.2-style: an enable_thinking on/off gate PLUS a reasoning_effort
         # level among a discrete set (e.g. 'high' | 'max'). Distinct from
         # gpt-oss (reasoning_effort only, no on/off gate) and Qwen
@@ -1375,6 +1369,12 @@ class LlamaCppBackend:
         return f"http://127.0.0.1:{self._port}"
 
     @property
+    def _auth_headers(self) -> "Optional[dict[str, str]]":
+        """Bearer header matching the --api-key direct-stream mode uses, else
+        None (so unauthenticated llama-server calls don't get a spurious 401)."""
+        return {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
+
+    @property
     def model_identifier(self) -> Optional[str]:
         return self._model_identifier
 
@@ -1653,6 +1653,30 @@ class LlamaCppBackend:
     # ── Binary discovery ──────────────────────────────────────────
 
     @staticmethod
+    def _resolved_studio_root_and_is_legacy() -> "tuple[Optional[Path], bool]":
+        """Resolve the Studio install root and classify it as the legacy
+        ~/.unsloth/studio root vs. a custom (env/venv-inferred) root.
+
+        Returns (resolved_root, is_legacy). On any import/resolution failure the
+        root is treated as legacy and resolved_root is None -- callers must read
+        resolved_root only when is_legacy is False. Shared by
+        _find_llama_server_binary (discovery) and _kill_orphaned_servers
+        (cleanup) so the two never disagree on which root is legacy.
+        """
+        try:
+            from utils.paths.storage_roots import studio_root as _sr  # noqa: WPS433
+
+            resolved = _sr()
+            legacy_studio = Path.home() / ".unsloth" / "studio"
+            try:
+                is_legacy = resolved.resolve() == legacy_studio.resolve()
+            except (OSError, ValueError):
+                is_legacy = resolved == legacy_studio
+            return (None if is_legacy else resolved), is_legacy
+        except (ImportError, OSError, ValueError):
+            return None, True
+
+    @staticmethod
     def _find_llama_server_binary(*, include_denied: bool = False) -> Optional[str]:
         """
         Locate the llama-server binary.
@@ -1738,33 +1762,16 @@ class LlamaCppBackend:
         # 2-4. Match installer layout: env-mode -> $STUDIO_HOME/llama.cpp;
         # default/HOME-redirect -> ~/.unsloth/llama.cpp (sibling of studio).
         legacy_llama = Path.home() / ".unsloth" / "llama.cpp"
-        try:
-            from utils.paths.storage_roots import studio_root as _sr  # noqa: WPS433
-
-            _resolved_sr = _sr()
-            _legacy_studio = Path.home() / ".unsloth" / "studio"
-            try:
-                _is_legacy = _resolved_sr.resolve() == _legacy_studio.resolve()
-            except (OSError, ValueError):
-                _is_legacy = _resolved_sr == _legacy_studio
-            if _is_legacy:
-                search_roots = [legacy_llama]
-            else:
-                # _kill_orphaned_servers excludes the legacy root in custom
-                # mode; discovery must match so we never spawn a server we
-                # then refuse to clean up. UNSLOTH_LLAMA_CPP_PATH (handled
-                # earlier) is the explicit way to share a build across roots.
-                search_roots = [_resolved_sr / "llama.cpp"]
-        except (ImportError, OSError, ValueError):
+        _resolved_sr, _is_legacy = LlamaCppBackend._resolved_studio_root_and_is_legacy()
+        if _is_legacy:
             search_roots = [legacy_llama]
-        _seen_roots: set[str] = set()
-        _unique_roots: list[Path] = []
-        for r in search_roots:
-            k = str(r)
-            if k not in _seen_roots:
-                _seen_roots.add(k)
-                _unique_roots.append(r)
-        for unsloth_home in _unique_roots:
+        else:
+            # _kill_orphaned_servers excludes the legacy root in custom mode;
+            # discovery must match so we never spawn a server we then refuse to
+            # clean up. UNSLOTH_LLAMA_CPP_PATH (handled earlier) is the explicit
+            # way to share a build across roots.
+            search_roots = [_resolved_sr / "llama.cpp"]
+        for unsloth_home in search_roots:
             hit, locked = _scan_pinned(_layout_candidates(unsloth_home))
             if locked is not None:
                 return _unavailable(locked)
@@ -1987,6 +1994,36 @@ class LlamaCppBackend:
         return total
 
     @staticmethod
+    def _resolve_visible_physical_ids() -> Optional[list[int]]:
+        """Physical GPU ids behind the active visibility mask (HIP/ROCR/CUDA on
+        ROCm, CUDA otherwise). None when no mask is set; empty list for an empty
+        mask. Shared by the APU / datacenter / free-memory probes so they agree
+        on the ordinal->physical mapping."""
+        try:
+            import torch
+            is_rocm = getattr(torch.version, "hip", None) is not None
+        except Exception:
+            is_rocm = False
+        if is_rocm:
+            hip_v = os.environ.get("HIP_VISIBLE_DEVICES")
+            rocr_v = os.environ.get("ROCR_VISIBLE_DEVICES")
+            cvd = (
+                hip_v
+                if hip_v is not None
+                else rocr_v
+                if rocr_v is not None
+                else os.environ.get("CUDA_VISIBLE_DEVICES")
+            )
+        else:
+            cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
+        if cvd is None:
+            return None
+        try:
+            return [int(x.strip()) for x in cvd.split(",") if x.strip()]
+        except ValueError:
+            return None
+
+    @staticmethod
     def _amd_apu_wants_unified_memory(gpu_indices = None) -> bool:
         """True only for AMD unified-memory APUs (gfx1150/gfx1151), where
         GGML_CUDA_ENABLE_UNIFIED_MEMORY lets llama.cpp use shared system RAM (it
@@ -2002,21 +2039,7 @@ class LlamaCppBackend:
                 return False
             # Map visible ordinal -> physical id via the active ROCm mask (HIP,
             # then ROCR, then CUDA), mirroring _get_gpu_memory's ROCm branch.
-            physical_ids: Optional[list[int]] = None
-            hip_v = os.environ.get("HIP_VISIBLE_DEVICES")
-            rocr_v = os.environ.get("ROCR_VISIBLE_DEVICES")
-            cvd = (
-                hip_v
-                if hip_v is not None
-                else rocr_v
-                if rocr_v is not None
-                else os.environ.get("CUDA_VISIBLE_DEVICES")
-            )
-            if cvd is not None:
-                try:
-                    physical_ids = [int(x.strip()) for x in cvd.split(",") if x.strip()]
-                except ValueError:
-                    physical_ids = None
+            physical_ids = LlamaCppBackend._resolve_visible_physical_ids()
             arch_by_id: dict[int, str] = {}
             for ordinal in range(torch.cuda.device_count()):
                 try:
@@ -2068,13 +2091,7 @@ class LlamaCppBackend:
 
             # Mirror _get_gpu_free_memory: map visible ordinal -> physical id via
             # CUDA_VISIBLE_DEVICES; unset/unparsable leaves physical id == ordinal.
-            physical_ids: Optional[list[int]] = None
-            cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
-            if cvd is not None:
-                try:
-                    physical_ids = [int(x.strip()) for x in cvd.split(",") if x.strip()]
-                except ValueError:
-                    physical_ids = None
+            physical_ids = LlamaCppBackend._resolve_visible_physical_ids()
 
             pattern = LlamaCppBackend._DATACENTER_GPU_RE
             names_by_id: dict[int, str] = {}
@@ -2228,29 +2245,12 @@ class LlamaCppBackend:
             # feed these IDs back into the subprocess as CVD, so visible ordinals
             # must be translated to physical indices first; otherwise CVD=2,3
             # gets rewritten to 0,1 and targets the wrong GPUs.
-            physical_ids: Optional[list[int]] = None
             # Match utils/hardware/hardware.py::_get_parent_visible_gpu_spec:
             # treat an empty mask (HIP_VISIBLE_DEVICES="") as "no GPUs" rather
             # than falling through. ``or`` would coerce "" to the wrong source.
-            if getattr(torch.version, "hip", None) is not None:
-                hip_v = os.environ.get("HIP_VISIBLE_DEVICES")
-                rocr_v = os.environ.get("ROCR_VISIBLE_DEVICES")
-                cvd = (
-                    hip_v
-                    if hip_v is not None
-                    else rocr_v
-                    if rocr_v is not None
-                    else os.environ.get("CUDA_VISIBLE_DEVICES")
-                )
-            else:
-                cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
-            if cvd is not None:
-                try:
-                    # Empty mask (CVD="") yields an empty list -> no GPUs,
-                    # consistent with the nvidia-smi path.
-                    physical_ids = [int(x.strip()) for x in cvd.split(",") if x.strip()]
-                except ValueError:
-                    physical_ids = None
+            # Empty mask (CVD="") yields an empty list -> no GPUs, consistent
+            # with the nvidia-smi path.
+            physical_ids = LlamaCppBackend._resolve_visible_physical_ids()
             gpus = []
             for ordinal in range(torch.cuda.device_count()):
                 free_bytes, total_bytes = torch.cuda.mem_get_info(ordinal)
@@ -2489,8 +2489,7 @@ class LlamaCppBackend:
 
             lib_dirs = []
             # WSL: system HIP before the bundle's (which segfaults on /dev/dxg).
-            for _wsl_rocm in _wsl_system_rocm_lib_dirs():
-                lib_dirs.append(_wsl_rocm)
+            lib_dirs.extend(_wsl_system_rocm_lib_dirs())
             if lib_dirs:
                 env.setdefault("HSA_ENABLE_DXG_DETECTION", "1")
             lib_dirs.append(binary_dir)
@@ -2502,33 +2501,8 @@ class LlamaCppBackend:
             import glob as _glob
 
             for _nv_pattern in [
-                os.path.join(
-                    sys.prefix,
-                    "lib",
-                    "python*",
-                    "site-packages",
-                    "nvidia",
-                    "cu*",
-                    "lib",
-                ),
-                os.path.join(
-                    sys.prefix,
-                    "lib",
-                    "python*",
-                    "site-packages",
-                    "nvidia",
-                    "cudnn",
-                    "lib",
-                ),
-                os.path.join(
-                    sys.prefix,
-                    "lib",
-                    "python*",
-                    "site-packages",
-                    "nvidia",
-                    "nvjitlink",
-                    "lib",
-                ),
+                os.path.join(sys.prefix, "lib", "python*", "site-packages", "nvidia", _sub, "lib")
+                for _sub in ("cu*", "cudnn", "nvjitlink")
             ]:
                 for _nv_dir in _glob.glob(_nv_pattern):
                     if os.path.isdir(_nv_dir):
@@ -2643,6 +2617,12 @@ class LlamaCppBackend:
             return self._n_kv_heads_by_layer[layer_idx]
         return fallback
 
+    def _legacy_head_dim(self) -> int:
+        """Head-dim fallback for GGUFs without explicit key/value dims. Reached
+        only via the legacy branch of _can_estimate_kv(), so _embedding_length
+        is non-None here."""
+        return self._embedding_length // self._n_heads if self._n_heads else 128  # type: ignore[operator]
+
     def _estimate_kv_cache_bytes(
         self,
         n_ctx: int,
@@ -2706,7 +2686,7 @@ class LlamaCppBackend:
             n_attn = -(-n_layers // fai) if fai > 0 else n_layers  # ceiling division
             if key_len is not None and val_len is not None:
                 return int(n_attn * n_ctx * n_kv * (key_len + val_len) * bpe)
-            head_dim = self._embedding_length // self._n_heads if self._n_heads else 128  # type: ignore[operator]
+            head_dim = self._legacy_head_dim()
             return int(n_attn * n_ctx * n_kv * 2 * head_dim * bpe)
 
         # Path 3: Sliding window (Gemma 2/3/3n/4, gpt-oss, Cohere2 ...). Pattern
@@ -2773,7 +2753,7 @@ class LlamaCppBackend:
             return int(n_layers_kv * n_ctx * n_kv * (key_len + val_len) * bpe)
 
         # Path 5: Legacy fallback (old GGUFs without explicit dimensions)
-        head_dim = self._embedding_length // self._n_heads if self._n_heads else 128  # type: ignore[operator]
+        head_dim = self._legacy_head_dim()
         return int(2 * n_kv * head_dim * n_layers_kv * n_ctx * bpe)
 
     def _draft_backend_for(self, drafter_path: str) -> Optional["LlamaCppBackend"]:
@@ -3337,8 +3317,8 @@ class LlamaCppBackend:
                                 attr = arch_keys.get(key)
                                 if attr == "n_kv_heads" and val_a is not None:
                                     self._n_kv_heads_by_layer = [int(x) for x in val_a]
-                                    if self._n_kv_heads is None and val_a:
-                                        self._n_kv_heads = max(int(x) for x in val_a)
+                                    if self._n_kv_heads is None and self._n_kv_heads_by_layer:
+                                        self._n_kv_heads = max(self._n_kv_heads_by_layer)
                                 elif attr == "sliding_window_pattern" and val_a is not None:
                                     self._sliding_window_pattern = [bool(x) for x in val_a]
                                     sliding_window_pattern_period = None
@@ -3437,8 +3417,6 @@ class LlamaCppBackend:
         alongside llama-server. Returns None if neither can be found.
         """
         import importlib.util
-        import os
-        import sys
 
         # Visual-server binary: env override, else next to llama-server or in the
         # install's build/bin (where the prebuilt/installer puts it). .exe on Windows.
@@ -3498,8 +3476,6 @@ class LlamaCppBackend:
         visual decoder) and wait for health. Presents the same /v1 + /health
         interface as llama-server, so the rest of Studio is unchanged.
         """
-        import os
-
         assets = self._find_diffusion_assets()
         if assets is None:
             raise RuntimeError(
@@ -3608,9 +3584,8 @@ class LlamaCppBackend:
             # (auto-sized to VRAM). Read it back so the UI context bar shows the real budget.
             chosen = maxtok
             try:
-                import re as _re
                 for _ln in reversed(self._stdout_lines):
-                    _m = _re.search(r"MAXTOK=(\d+)", _ln)
+                    _m = re.search(r"MAXTOK=(\d+)", _ln)
                     if _m:
                         chosen = int(_m.group(1))
                         break
@@ -3802,13 +3777,9 @@ class LlamaCppBackend:
                     hf_token,
                     cancel_event = self._cancel_event,
                 )
-        except RuntimeError as e:
-            if "Cancelled" in str(e):
-                raise
-            raise RuntimeError(
-                f"Failed to download GGUF file '{gguf_filename}' from {hf_repo}: {e}"
-            )
         except Exception as e:
+            if isinstance(e, RuntimeError) and "Cancelled" in str(e):
+                raise
             raise RuntimeError(
                 f"Failed to download GGUF file '{gguf_filename}' from {hf_repo}: {e}"
             )
@@ -4387,6 +4358,16 @@ class LlamaCppBackend:
             out.append(tok)
         return out
 
+    @staticmethod
+    def _redacted_cmd_for_log(cmd: "list[str]") -> "list[str]":
+        """Copy of cmd with the value after --api-key replaced by <redacted>."""
+        out = list(cmd)
+        if "--api-key" in out:
+            ki = out.index("--api-key") + 1
+            if ki < len(out):
+                out[ki] = "<redacted>"
+        return out
+
     def _start_llama_process(self, cmd: list[str], env: dict) -> None:
         """Spawn llama-server from cmd and start draining its output.
 
@@ -4423,12 +4404,7 @@ class LlamaCppBackend:
 
         # Log the argv per attempt (the text-only mmproj retry re-enters here
         # with --mmproj stripped), redacting the API key.
-        _log_cmd = list(cmd)
-        if "--api-key" in _log_cmd:
-            _ki = _log_cmd.index("--api-key") + 1
-            if _ki < len(_log_cmd):
-                _log_cmd[_ki] = "<redacted>"
-        logger.info(f"Starting llama-server: {' '.join(_log_cmd)}")
+        logger.info(f"Starting llama-server: {' '.join(self._redacted_cmd_for_log(cmd))}")
 
         self._process = subprocess.Popen(
             cmd,
@@ -4541,36 +4517,8 @@ class LlamaCppBackend:
                     except Exception as exc:
                         logger.debug("Fast-path audio probe failed: %s", exc)
                         detected = None
-                    if detected in ("snac", "bicodec", "dac"):
-                        with self._lock:
-                            if not self._healthy:
-                                return False
-                            try:
-                                self.init_audio_codec(detected)
-                                self._is_audio = True
-                                self._audio_type = detected
-                            except Exception as exc:
-                                logger.warning(
-                                    "Failed to init audio codec '%s': %s",
-                                    detected,
-                                    exc,
-                                )
-                                self._audio_probed = False
-                                return False
-                    elif detected:
-                        # csm / whisper / audio_vlm: track type but keep
-                        # _is_audio False -- GGUF TTS routing only fires for
-                        # snac/bicodec/dac.
-                        with self._lock:
-                            if not self._healthy:
-                                return False
-                            self._audio_type = detected
-                    # Re-derive after a retried probe (_mmproj_has_audio persists).
-                    from utils.models.model_config import is_audio_input_type
-
-                    self._has_audio_input = bool(is_audio_input_type(self._audio_type)) or bool(
-                        self._mmproj_has_audio
-                    )
+                    if not self._apply_detected_audio(detected):
+                        return False
                 if not self._healthy:
                     return False
                 return True
@@ -5076,13 +5024,12 @@ class LlamaCppBackend:
                     )
                     _pin_fraction = self._GPU_PIN_VRAM_FRACTION - _flat_mtp_reserve
 
-                    if tensor_parallel and effective_is_vision:
-                        logger.info(
-                            "Tensor parallelism skipped for vision model: "
-                            "--split-mode tensor is incompatible with --mmproj "
-                            "in the current llama.cpp build; using layer split."
-                        )
-                        tensor_parallel = False
+                    def _restore_after_tensor_downgrade():
+                        # Tensor mode dropped a quantized KV and stripped the cache
+                        # extras (it rejects quantized); layer split supports them, so
+                        # restore the original type + extras (minus --split-mode) and
+                        # clear the env flag so the layer launch re-emits them.
+                        nonlocal cache_type_kv, _cache_type_from_env, extra_args
                         if _tensor_dropped_cache_type_kv is not None:
                             cache_type_kv = _tensor_dropped_cache_type_kv
                             _cache_type_from_env = False
@@ -5091,6 +5038,15 @@ class LlamaCppBackend:
                             if _tensor_dropped_extra_args is not None
                             else extra_args
                         )
+
+                    if tensor_parallel and effective_is_vision:
+                        logger.info(
+                            "Tensor parallelism skipped for vision model: "
+                            "--split-mode tensor is incompatible with --mmproj "
+                            "in the current llama.cpp build; using layer split."
+                        )
+                        tensor_parallel = False
+                        _restore_after_tensor_downgrade()
 
                     # Tensor mode replicates a compute buffer on every GPU, so drop
                     # GPUs below that reserve from the set up front (gpu_indices
@@ -5130,21 +5086,9 @@ class LlamaCppBackend:
                         )
                         tensor_parallel = False
                         # Layer split supports a quantized KV the tensor attempt
-                        # dropped; restore it and re-emit it (clear the env flag the
-                        # tensor re-adoption may have set, so the restored type wins
-                        # over a stale inherited env on the layer launch).
-                        if _tensor_dropped_cache_type_kv is not None:
-                            cache_type_kv = _tensor_dropped_cache_type_kv
-                            _cache_type_from_env = False
-                        # Restore the original extras (with the real, possibly
-                        # asymmetric, --cache-type-k/-v the tensor attempt stripped),
-                        # then drop the user --split-mode tensor so the downgrade
-                        # actually applies (extras are appended last).
-                        extra_args = strip_split_mode_only(
-                            _tensor_dropped_extra_args
-                            if _tensor_dropped_extra_args is not None
-                            else extra_args
-                        )
+                        # dropped; restore the original cache type + extras (minus
+                        # --split-mode) so the layer launch re-emits them.
+                        _restore_after_tensor_downgrade()
 
                     if tensor_parallel and tp_gpus:
                         # Pooled usable budget (after each device's compute buffer)
@@ -5177,18 +5121,9 @@ class LlamaCppBackend:
                                 "per-device compute buffers; falling back to layer split."
                             )
                             tensor_parallel = False
-                            # Restore the dropped quantized KV (layer split supports
-                            # it); clear the env flag so the restored type is emitted.
-                            if _tensor_dropped_cache_type_kv is not None:
-                                cache_type_kv = _tensor_dropped_cache_type_kv
-                                _cache_type_from_env = False
-                            # Restore the original (possibly asymmetric) cache extras
-                            # too, dropping only the user --split-mode tensor.
-                            extra_args = strip_split_mode_only(
-                                _tensor_dropped_extra_args
-                                if _tensor_dropped_extra_args is not None
-                                else extra_args
-                            )
+                            # Restore the dropped quantized KV + original cache extras
+                            # (minus --split-mode); layer split supports them.
+                            _restore_after_tensor_downgrade()
 
                     if tensor_parallel and tp_gpus:
                         # Tensor-parallel allocation; see _plan_tensor_parallel.
@@ -5637,10 +5572,9 @@ class LlamaCppBackend:
                     logger.info(f"Using mmproj for vision: {launch_mmproj_path}")
 
                 # Option C: --api-key for direct client access when enabled
-                import os as _os
                 import secrets as _secrets
 
-                if _os.getenv("UNSLOTH_DIRECT_STREAM", "0") == "1":
+                if os.getenv("UNSLOTH_DIRECT_STREAM", "0") == "1":
                     self._api_key = _secrets.token_urlsafe(32)
                     cmd.extend(["--api-key", self._api_key])
                     logger.info("llama-server started with --api-key for direct streaming")
@@ -5676,12 +5610,7 @@ class LlamaCppBackend:
                     cmd.extend(str(a) for a in extra_args)
                     logger.info(f"Appending user extra args to llama-server: {list(extra_args)}")
 
-                _log_cmd = list(cmd)
-                if "--api-key" in _log_cmd:
-                    _ki = _log_cmd.index("--api-key") + 1
-                    if _ki < len(_log_cmd):
-                        _log_cmd[_ki] = "<redacted>"
-                logger.info(f"Starting llama-server: {' '.join(_log_cmd)}")
+                logger.info(f"Starting llama-server: {' '.join(self._redacted_cmd_for_log(cmd))}")
 
                 # Library paths so llama-server finds its shared libs and CUDA DLLs.
                 env = self._llama_server_env_for_binary(binary)
@@ -6139,37 +6068,8 @@ class LlamaCppBackend:
             except Exception as exc:
                 logger.debug("Audio probe failed: %s", exc)
                 detected = None
-            if detected in ("snac", "bicodec", "dac"):
-                with self._lock:
-                    if not self._healthy:
-                        return False
-                    try:
-                        self.init_audio_codec(detected)
-                        self._is_audio = True
-                        self._audio_type = detected
-                    except Exception as exc:
-                        # Surface as HTTP 500 (matches pre-PR contract).
-                        logger.warning(
-                            "Failed to init audio codec '%s': %s",
-                            detected,
-                            exc,
-                        )
-                        self._audio_probed = False
-                        return False
-            elif detected:
-                # csm / whisper / audio_vlm: track type but keep _is_audio
-                # False -- GGUF TTS routing only fires for snac/bicodec/dac.
-                with self._lock:
-                    if not self._healthy:
-                        return False
-                    self._audio_type = detected
-
-            # Audio input = token probe (audio_vlm/whisper) OR mmproj encoder.
-            from utils.models.model_config import is_audio_input_type
-
-            self._has_audio_input = bool(is_audio_input_type(self._audio_type)) or bool(
-                self._mmproj_has_audio
-            )
+            if not self._apply_detected_audio(detected):
+                return False
 
             if not self._healthy:
                 return False
@@ -6318,6 +6218,8 @@ class LlamaCppBackend:
             if mtp_draft_path:
                 flags.extend(["--model-draft", mtp_draft_path])
                 logger.info(f"Using separate MTP drafter: {mtp_draft_path}")
+            spec_value = mtp_token
+            ngram_knobs: list[str] = []
             if chain_ngram:
                 ngram_knobs = _build_ngram_mod_flags(caps)
                 if ngram_knobs:
@@ -6327,25 +6229,8 @@ class LlamaCppBackend:
                         "llama-server lacks ngram-mod tuning "
                         "flags; loading MTP only (no ngram chain)"
                     )
-                    spec_value = mtp_token
-                flags.extend(
-                    [
-                        "--spec-type",
-                        spec_value,
-                        n_max_flag,
-                        str(draft_n_max),
-                    ]
-                )
-                flags.extend(ngram_knobs)
-            else:
-                flags.extend(
-                    [
-                        "--spec-type",
-                        mtp_token,
-                        n_max_flag,
-                        str(draft_n_max),
-                    ]
-                )
+            flags.extend(["--spec-type", spec_value, n_max_flag, str(draft_n_max)])
+            flags.extend(ngram_knobs)
             self._speculative_type = "draft-mtp"
             chain_label = "chained ngram-mod" if chain_ngram else "MTP-only"
             logger.info(f"Spec decoding: {mtp_token} ({chain_label})")
@@ -6686,7 +6571,6 @@ class LlamaCppBackend:
             # Clean up temp chat template file.
             if hasattr(self, "_chat_template_file") and self._chat_template_file:
                 try:
-                    import os
                     os.unlink(self._chat_template_file.name)
                 except Exception:
                     pass
@@ -6964,20 +6848,10 @@ class LlamaCppBackend:
             install_roots: list[Path] = []
 
             # Env-mode custom root (mirrors _find_llama_server_binary).
-            _is_custom_root = False
-            try:
-                from utils.paths.storage_roots import studio_root as _sr  # noqa: WPS433
-
-                _resolved_sr = _sr()
-                _legacy_studio = Path.home() / ".unsloth" / "studio"
-                try:
-                    _is_custom_root = _resolved_sr.resolve() != _legacy_studio.resolve()
-                except (OSError, ValueError):
-                    _is_custom_root = _resolved_sr != _legacy_studio
-                if _is_custom_root:
-                    install_roots.append(_resolved_sr / "llama.cpp")
-            except (ImportError, OSError, ValueError):
-                pass
+            _resolved_sr, _is_legacy = LlamaCppBackend._resolved_studio_root_and_is_legacy()
+            _is_custom_root = not _is_legacy
+            if _is_custom_root:
+                install_roots.append(_resolved_sr / "llama.cpp")
 
             # Primary install dir (default mode only). Env-mode skips this so a
             # custom-root Studio can't kill a default-install Studio's server.
@@ -7139,12 +7013,10 @@ class LlamaCppBackend:
         tokens generate (e.g. under --split-mode tensor). False on any error so
         the caller can drop MTP and retry.
         """
-        url = f"http://127.0.0.1:{self._port}/completion"
+        url = f"{self.base_url}/completion"
         payload = {"prompt": "Hi", "n_predict": 4, "temperature": 0.0, "stream": False}
-        # Match the --api-key auth direct-stream mode uses, else a spurious 401.
-        headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
         try:
-            resp = httpx.post(url, json = payload, timeout = timeout, headers = headers)
+            resp = httpx.post(url, json = payload, timeout = timeout, headers = self._auth_headers)
         except Exception as e:
             logger.debug(f"MTP decode probe failed: {e}")
             return False
@@ -7272,7 +7144,7 @@ class LlamaCppBackend:
     ) -> bool:
         """Poll llama-server's /health until 200; also detect early exit/crash."""
         deadline = time.monotonic() + timeout
-        url = f"http://127.0.0.1:{self._port}/health"
+        url = f"{self.base_url}/health"
 
         while time.monotonic() < deadline:
             # Process crashed?
@@ -7341,7 +7213,7 @@ class LlamaCppBackend:
         The memory-fit step or ``--parallel`` slot split can leave this below
         the requested ``-c``; requests are validated against this value.
         """
-        url = f"http://127.0.0.1:{self._port}/props"
+        url = f"{self.base_url}/props"
         try:
             resp = httpx.get(url, timeout = 5.0)
             if resp.status_code != 200:
@@ -7413,6 +7285,33 @@ class LlamaCppBackend:
         return result
 
     # ── Generation (proxy to llama-server) ────────────────────────
+
+    @contextlib.contextmanager
+    def _open_stream(self, url: str, payload: dict, cancel_event):
+        """Open a streaming POST to llama-server, retrying through prefill, and
+        yield ``(response, first_token_deadline)`` once a 200 lands. Owns the
+        httpx.Client + auth headers for the stream's lifetime; raises
+        RuntimeError on a non-200. Shared scaffold for the streaming consumers,
+        which differ only in how they parse the SSE body."""
+        stream_timeout = httpx.Timeout(connect = 10, read = 0.5, write = 10, pool = 10)
+        with httpx.Client(
+            timeout = stream_timeout, limits = httpx.Limits(max_keepalive_connections = 0)
+        ) as client:
+            first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
+            with self._stream_with_retry(
+                client,
+                url,
+                payload,
+                cancel_event,
+                headers = self._auth_headers,
+                first_token_deadline = first_token_deadline,
+            ) as response:
+                if response.status_code != 200:
+                    error_body = response.read().decode()
+                    raise RuntimeError(
+                        f"llama-server returned {response.status_code}: {error_body}"
+                    )
+                yield response, first_token_deadline
 
     @staticmethod
     def _iter_text_cancellable(
@@ -7663,119 +7562,102 @@ class LlamaCppBackend:
         _metadata_finish_reason = None
 
         try:
-            # Prefill can use the long first-token timeout; body reads are lowered after headers.
-            stream_timeout = httpx.Timeout(connect = 10, read = 0.5, write = 10, pool = 10)
-            _auth_headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
-            with httpx.Client(
-                timeout = stream_timeout, limits = httpx.Limits(max_keepalive_connections = 0)
-            ) as client:
-                first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
-                with self._stream_with_retry(
-                    client,
-                    url,
-                    payload,
+            with self._open_stream(url, payload, cancel_event) as (
+                response,
+                first_token_deadline,
+            ):
+                buffer = ""
+                has_content_tokens = False
+                reasoning_text = ""
+                for raw_chunk in self._iter_text_cancellable(
+                    response,
                     cancel_event,
-                    headers = _auth_headers,
                     first_token_deadline = first_token_deadline,
-                ) as response:
-                    if response.status_code != 200:
-                        error_body = response.read().decode()
-                        raise RuntimeError(
-                            f"llama-server returned {response.status_code}: {error_body}"
-                        )
+                ):
+                    buffer += raw_chunk
+                    while "\n" in buffer:
+                        line, buffer = buffer.split("\n", 1)
+                        line = line.strip()
 
-                    buffer = ""
-                    has_content_tokens = False
-                    reasoning_text = ""
-                    for raw_chunk in self._iter_text_cancellable(
-                        response,
-                        cancel_event,
-                        first_token_deadline = first_token_deadline,
-                    ):
-                        buffer += raw_chunk
-                        while "\n" in buffer:
-                            line, buffer = buffer.split("\n", 1)
-                            line = line.strip()
+                        if not line:
+                            continue
+                        if line == "data: [DONE]":
+                            if in_thinking:
+                                if has_content_tokens:
+                                    # Real thinking + content: close the tag
+                                    cumulative += "</think>"
+                                    yield cumulative
+                                else:
+                                    # Only reasoning_content, no content:
+                                    # model put its whole reply in reasoning
+                                    # (e.g. Qwen3 always-think). Show it as
+                                    # the main response, not a thinking block.
+                                    cumulative = reasoning_text
+                                    yield cumulative
+                            _stream_done = True
+                            break  # exit inner while
+                        if not line.startswith("data: "):
+                            continue
 
-                            if not line:
+                        try:
+                            data = json.loads(line[6:])
+                            # Diffusion frame (per-step canvas) from the shim: forward untouched so
+                            # the frontend renders it in place. No assistant text, so it never enters
+                            # the cumulative content.
+                            if data.get("type") == "diffusion_frame":
+                                yield data
                                 continue
-                            if line == "data: [DONE]":
-                                if in_thinking:
-                                    if has_content_tokens:
-                                        # Real thinking + content: close the tag
+                            # Capture server timings/usage from final chunks.
+                            _chunk_timings = data.get("timings")
+                            if _chunk_timings:
+                                _metadata_timings = _chunk_timings
+                            _chunk_usage = data.get("usage")
+                            if _chunk_usage:
+                                _metadata_usage = _chunk_usage
+                            choices = data.get("choices", [])
+                            if choices:
+                                delta = choices[0].get("delta", {})
+                                _fr = choices[0].get("finish_reason")
+                                if _fr:
+                                    _metadata_finish_reason = _fr
+
+                                # Reasoning/thinking tokens: llama-server
+                                # sends these as "reasoning_content"; wrap
+                                # in <think> tags for the frontend parser.
+                                reasoning = delta.get("reasoning_content", "")
+                                if reasoning:
+                                    reasoning_text += reasoning
+                                    if not in_thinking:
+                                        cumulative += "<think>"
+                                        in_thinking = True
+                                    cumulative += reasoning
+                                    yield cumulative
+
+                                token = delta.get("content", "")
+                                if token:
+                                    has_content_tokens = True
+                                    if in_thinking:
                                         cumulative += "</think>"
-                                        yield cumulative
-                                    else:
-                                        # Only reasoning_content, no content:
-                                        # model put its whole reply in reasoning
-                                        # (e.g. Qwen3 always-think). Show it as
-                                        # the main response, not a thinking block.
-                                        cumulative = reasoning_text
-                                        yield cumulative
-                                _stream_done = True
-                                break  # exit inner while
-                            if not line.startswith("data: "):
-                                continue
-
-                            try:
-                                data = json.loads(line[6:])
-                                # Diffusion frame (per-step canvas) from the shim: forward untouched so
-                                # the frontend renders it in place. No assistant text, so it never enters
-                                # the cumulative content.
-                                if data.get("type") == "diffusion_frame":
-                                    yield data
-                                    continue
-                                # Capture server timings/usage from final chunks.
-                                _chunk_timings = data.get("timings")
-                                if _chunk_timings:
-                                    _metadata_timings = _chunk_timings
-                                _chunk_usage = data.get("usage")
-                                if _chunk_usage:
-                                    _metadata_usage = _chunk_usage
-                                choices = data.get("choices", [])
-                                if choices:
-                                    delta = choices[0].get("delta", {})
-                                    _fr = choices[0].get("finish_reason")
-                                    if _fr:
-                                        _metadata_finish_reason = _fr
-
-                                    # Reasoning/thinking tokens: llama-server
-                                    # sends these as "reasoning_content"; wrap
-                                    # in <think> tags for the frontend parser.
-                                    reasoning = delta.get("reasoning_content", "")
-                                    if reasoning:
-                                        reasoning_text += reasoning
-                                        if not in_thinking:
-                                            cumulative += "<think>"
-                                            in_thinking = True
-                                        cumulative += reasoning
-                                        yield cumulative
-
-                                    token = delta.get("content", "")
-                                    if token:
-                                        has_content_tokens = True
-                                        if in_thinking:
-                                            cumulative += "</think>"
-                                            in_thinking = False
-                                        cumulative += token
-                                        yield cumulative
-                            except json.JSONDecodeError:
-                                logger.debug(f"Skipping malformed SSE line: {line[:100]}")
-                        if _stream_done:
-                            break  # exit outer for
-                    if _metadata_usage or _metadata_timings or _metadata_finish_reason:
-                        _metadata_usage = _backfill_usage_from_timings(
-                            _metadata_usage, _metadata_timings
-                        )
-                        yield {
-                            "type": "metadata",
-                            # Never None: a finish-only metadata event (no usage,
-                            # no timings) would otherwise crash consumers that do
-                            # usage.get(...) on the non-streaming paths.
-                            "usage": _metadata_usage or {},
-                            "timings": _metadata_timings,
-                            "finish_reason": _metadata_finish_reason,
-                        }
+                                        in_thinking = False
+                                    cumulative += token
+                                    yield cumulative
+                        except json.JSONDecodeError:
+                            logger.debug(f"Skipping malformed SSE line: {line[:100]}")
+                    if _stream_done:
+                        break  # exit outer for
+                if _metadata_usage or _metadata_timings or _metadata_finish_reason:
+                    _metadata_usage = _backfill_usage_from_timings(
+                        _metadata_usage, _metadata_timings
+                    )
+                    yield {
+                        "type": "metadata",
+                        # Never None: a finish-only metadata event (no usage,
+                        # no timings) would otherwise crash consumers that do
+                        # usage.get(...) on the non-streaming paths.
+                        "usage": _metadata_usage or {},
+                        "timings": _metadata_timings,
+                        "finish_reason": _metadata_finish_reason,
+                    }
 
         except httpx.ConnectError as e:
             # Server already down. If this was an MTP+tensor crash, recover by
@@ -7889,6 +7771,42 @@ class LlamaCppBackend:
                 text = pat.sub("", text)
             return text
 
+        def _build_metadata_event(usage, timings, finish_reason):
+            """Final usage+timings metadata event for the given pass, merging its
+            usage/timings with the running cross-iteration accumulators. None when
+            there is nothing to report."""
+            _fu = _backfill_usage_from_timings(usage, timings) or {}
+            _fp = _fu.get("prompt_tokens", 0)
+            _tc = _fu.get("completion_tokens", 0) + _accumulated_completion_tokens
+            if not (usage or timings or _accumulated_completion_tokens or finish_reason):
+                return None
+            _mt = dict(timings) if timings else {}
+            if _accumulated_predicted_ms or _accumulated_predicted_n:
+                _mt["predicted_ms"] = _mt.get("predicted_ms", 0) + _accumulated_predicted_ms
+                _mt["predicted_n"] = _mt.get("predicted_n", 0) + _accumulated_predicted_n
+                if _mt["predicted_ms"] > 0:
+                    _mt["predicted_per_second"] = _mt["predicted_n"] / (
+                        _mt["predicted_ms"] / 1000.0
+                    )
+            return {
+                "type": "metadata",
+                "usage": {
+                    "prompt_tokens": _fp,
+                    "completion_tokens": _tc,
+                    "total_tokens": _fp + _tc,
+                },
+                "timings": _mt,
+                "finish_reason": finish_reason,
+            }
+
+        def _flush_reasoning_and_buffer():
+            """Append buffered reasoning (as a <think> block) then the held
+            content_buffer to the cumulative display text."""
+            nonlocal cumulative_display
+            if reasoning_accum:
+                cumulative_display += "<think>" + reasoning_accum + "</think>"
+            cumulative_display += content_buffer
+
         tool_controller = ToolLoopController(
             tools = tools,
             auto_heal_tool_calls = auto_heal_tool_calls,
@@ -7927,7 +7845,7 @@ class LlamaCppBackend:
             if not active_tools:
                 _append_budget_exhausted_nudge = False
                 break
-            _tool_xml_signals = TOOL_XML_SIGNALS if active_tools else ()
+            _tool_xml_signals = TOOL_XML_SIGNALS
 
             # Build payload -- stream: True so we detect tool signals
             # in the first 1-2 chunks without a non-streaming penalty.
@@ -7960,10 +7878,6 @@ class LlamaCppBackend:
                 payload["seed"] = seed
 
             try:
-                _auth_headers = (
-                    {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
-                )
-
                 # ── Speculative buffer state machine ──────────────────
                 # BUFFERING: accumulate content, check for tool signals
                 # STREAMING: no tool detected, yield tokens to caller
@@ -7989,194 +7903,220 @@ class LlamaCppBackend:
                 provisional_render_html_tool_call_ids = set()
                 _suppress_visible_output = _forced_tool_call_pending
 
-                stream_timeout = httpx.Timeout(
-                    connect = 10,
-                    read = 0.5,
-                    write = 10,
-                    pool = 10,
-                )
-                with httpx.Client(
-                    timeout = stream_timeout,
-                    limits = httpx.Limits(max_keepalive_connections = 0),
-                ) as client:
-                    first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
-                    with self._stream_with_retry(
-                        client,
-                        url,
-                        payload,
+                with self._open_stream(url, payload, cancel_event) as (
+                    response,
+                    first_token_deadline,
+                ):
+                    raw_buf = ""
+                    for raw_chunk in self._iter_text_cancellable(
+                        response,
                         cancel_event,
-                        headers = _auth_headers,
                         first_token_deadline = first_token_deadline,
-                    ) as response:
-                        if response.status_code != 200:
-                            error_body = response.read().decode()
-                            raise RuntimeError(
-                                f"llama-server returned {response.status_code}: {error_body}"
-                            )
+                    ):
+                        raw_buf += raw_chunk
+                        while "\n" in raw_buf:
+                            line, raw_buf = raw_buf.split("\n", 1)
+                            line = line.strip()
 
-                        raw_buf = ""
-                        for raw_chunk in self._iter_text_cancellable(
-                            response,
-                            cancel_event,
-                            first_token_deadline = first_token_deadline,
-                        ):
-                            raw_buf += raw_chunk
-                            while "\n" in raw_buf:
-                                line, raw_buf = raw_buf.split("\n", 1)
-                                line = line.strip()
+                            if not line:
+                                continue
+                            if line == "data: [DONE]":
+                                # Flush thinking state for STREAMING
+                                if detect_state == _S_STREAMING and in_thinking:
+                                    if has_content_tokens:
+                                        cumulative_display += "</think>"
+                                        if not _suppress_visible_output:
+                                            yield {
+                                                "type": "content",
+                                                "text": _strip_tool_markup(
+                                                    cumulative_display,
+                                                    final = True,
+                                                ),
+                                            }
+                                    else:
+                                        cumulative_display = reasoning_accum
+                                        if not _suppress_visible_output:
+                                            yield {
+                                                "type": "content",
+                                                "text": cumulative_display,
+                                            }
+                                _stream_done = True
+                                break  # exit inner while
+                            if not line.startswith("data: "):
+                                continue
 
-                                if not line:
+                            try:
+                                chunk_data = json.loads(line[6:])
+                                _ct = chunk_data.get("timings")
+                                if _ct:
+                                    _iter_timings = _ct
+                                _cu = chunk_data.get("usage")
+                                if _cu:
+                                    _iter_usage = _cu
+
+                                choices = chunk_data.get("choices", [])
+                                if not choices:
                                     continue
-                                if line == "data: [DONE]":
-                                    # Flush thinking state for STREAMING
-                                    if detect_state == _S_STREAMING and in_thinking:
-                                        if has_content_tokens:
+
+                                delta = choices[0].get("delta", {})
+                                _fr = choices[0].get("finish_reason")
+                                if _fr:
+                                    _iter_finish_reason = _fr
+
+                                # ── Structured tool_calls ──
+                                tc_deltas = delta.get("tool_calls")
+                                if tc_deltas:
+                                    # llama-server can emit visible assistant
+                                    # preface content before native structured
+                                    # tool_calls. Preserve content_accum as
+                                    # the assistant pre-tool text and still
+                                    # drain/execute the structured call.
+                                    has_structured_tc = True
+                                    detect_state = _S_DRAINING
+                                    for tc_d in tc_deltas:
+                                        idx = tc_d.get("index", 0)
+                                        if idx not in tool_calls_acc:
+                                            tool_calls_acc[idx] = {
+                                                "id": tc_d.get("id", f"call_{idx}"),
+                                                "type": "function",
+                                                "function": {
+                                                    "name": "",
+                                                    "arguments": "",
+                                                },
+                                            }
+                                        elif tc_d.get("id"):
+                                            # Update ID if a real one
+                                            # arrives on a later delta.
+                                            tool_calls_acc[idx]["id"] = tc_d["id"]
+                                        func = tc_d.get("function", {})
+                                        if func.get("name"):
+                                            tool_calls_acc[idx]["function"]["name"] += func["name"]
+                                        if func.get("arguments"):
+                                            tool_calls_acc[idx]["function"]["arguments"] += func[
+                                                "arguments"
+                                            ]
+                                        current_name = tool_calls_acc[idx]["function"].get(
+                                            "name", ""
+                                        )
+                                        fallback_id = f"call_{idx}"
+                                        current_id = tool_calls_acc[idx].get("id", fallback_id)
+                                        already_started = (
+                                            current_id in provisional_render_html_tool_call_ids
+                                        )
+                                        has_real_id = current_id != fallback_id
+                                        if (
+                                            current_name == "render_html"
+                                            and not _tool_succeeded("render_html")
+                                            and any(
+                                                (
+                                                    (tool.get("function") or {}).get("name")
+                                                    == "render_html"
+                                                )
+                                                for tool in active_tools
+                                            )
+                                            and not already_started
+                                            and not provisional_render_html_tool_call_ids
+                                            and has_real_id
+                                        ):
+                                            provisional_render_html_tool_call_ids.add(current_id)
+                                            yield {
+                                                "type": "tool_start",
+                                                "tool_name": "render_html",
+                                                "tool_call_id": current_id,
+                                                "arguments": {},
+                                                "provenance": tool_event_provenance(
+                                                    provisional = True,
+                                                ),
+                                            }
+                                    continue
+
+                                # ── Reasoning tokens ──
+                                # Yield only in STREAMING. In BUFFERING and
+                                # DRAINING, accumulate silently so we don't
+                                # corrupt the consumer's prev_text tracker
+                                # (routes/inference.py never resets it
+                                # between tool iterations).
+                                reasoning = delta.get("reasoning_content", "")
+                                if reasoning:
+                                    reasoning_accum += reasoning
+                                    if detect_state == _S_STREAMING:
+                                        if not in_thinking:
+                                            cumulative_display += "<think>"
+                                            in_thinking = True
+                                        cumulative_display += reasoning
+                                        if not _suppress_visible_output:
+                                            yield {
+                                                "type": "content",
+                                                "text": cumulative_display,
+                                            }
+
+                                # ── Content tokens ──
+                                token = delta.get("content", "")
+                                if token:
+                                    has_content_tokens = True
+                                    content_accum += token
+
+                                    if detect_state == _S_DRAINING:
+                                        pass  # accumulate silently
+
+                                    elif detect_state == _S_STREAMING:
+                                        if in_thinking:
                                             cumulative_display += "</think>"
+                                            in_thinking = False
+                                        cumulative_display += token
+                                        cleaned = _strip_tool_markup_streaming(cumulative_display)
+                                        if len(cleaned) > len(_last_emitted):
+                                            _last_emitted = cleaned
                                             if not _suppress_visible_output:
                                                 yield {
                                                     "type": "content",
-                                                    "text": _strip_tool_markup(
-                                                        cumulative_display,
-                                                        final = True,
-                                                    ),
-                                                }
-                                        else:
-                                            cumulative_display = reasoning_accum
-                                            if not _suppress_visible_output:
-                                                yield {
-                                                    "type": "content",
-                                                    "text": cumulative_display,
-                                                }
-                                    _stream_done = True
-                                    break  # exit inner while
-                                if not line.startswith("data: "):
-                                    continue
-
-                                try:
-                                    chunk_data = json.loads(line[6:])
-                                    _ct = chunk_data.get("timings")
-                                    if _ct:
-                                        _iter_timings = _ct
-                                    _cu = chunk_data.get("usage")
-                                    if _cu:
-                                        _iter_usage = _cu
-
-                                    choices = chunk_data.get("choices", [])
-                                    if not choices:
-                                        continue
-
-                                    delta = choices[0].get("delta", {})
-                                    _fr = choices[0].get("finish_reason")
-                                    if _fr:
-                                        _iter_finish_reason = _fr
-
-                                    # ── Structured tool_calls ──
-                                    tc_deltas = delta.get("tool_calls")
-                                    if tc_deltas:
-                                        # llama-server can emit visible assistant
-                                        # preface content before native structured
-                                        # tool_calls. Preserve content_accum as
-                                        # the assistant pre-tool text and still
-                                        # drain/execute the structured call.
-                                        has_structured_tc = True
-                                        detect_state = _S_DRAINING
-                                        for tc_d in tc_deltas:
-                                            idx = tc_d.get("index", 0)
-                                            if idx not in tool_calls_acc:
-                                                tool_calls_acc[idx] = {
-                                                    "id": tc_d.get("id", f"call_{idx}"),
-                                                    "type": "function",
-                                                    "function": {
-                                                        "name": "",
-                                                        "arguments": "",
-                                                    },
-                                                }
-                                            elif tc_d.get("id"):
-                                                # Update ID if a real one
-                                                # arrives on a later delta.
-                                                tool_calls_acc[idx]["id"] = tc_d["id"]
-                                            func = tc_d.get("function", {})
-                                            if func.get("name"):
-                                                tool_calls_acc[idx]["function"]["name"] += func[
-                                                    "name"
-                                                ]
-                                            if func.get("arguments"):
-                                                tool_calls_acc[idx]["function"]["arguments"] += (
-                                                    func["arguments"]
-                                                )
-                                            current_name = tool_calls_acc[idx]["function"].get(
-                                                "name", ""
-                                            )
-                                            fallback_id = f"call_{idx}"
-                                            current_id = tool_calls_acc[idx].get("id", fallback_id)
-                                            already_started = (
-                                                current_id in provisional_render_html_tool_call_ids
-                                            )
-                                            has_real_id = current_id != fallback_id
-                                            if (
-                                                current_name == "render_html"
-                                                and not _tool_succeeded("render_html")
-                                                and any(
-                                                    (
-                                                        (tool.get("function") or {}).get("name")
-                                                        == "render_html"
-                                                    )
-                                                    for tool in active_tools
-                                                )
-                                                and not already_started
-                                                and not provisional_render_html_tool_call_ids
-                                                and has_real_id
-                                            ):
-                                                provisional_render_html_tool_call_ids.add(
-                                                    current_id
-                                                )
-                                                yield {
-                                                    "type": "tool_start",
-                                                    "tool_name": "render_html",
-                                                    "tool_call_id": current_id,
-                                                    "arguments": {},
-                                                    "provenance": tool_event_provenance(
-                                                        provisional = True,
-                                                    ),
-                                                }
-                                        continue
-
-                                    # ── Reasoning tokens ──
-                                    # Yield only in STREAMING. In BUFFERING and
-                                    # DRAINING, accumulate silently so we don't
-                                    # corrupt the consumer's prev_text tracker
-                                    # (routes/inference.py never resets it
-                                    # between tool iterations).
-                                    reasoning = delta.get("reasoning_content", "")
-                                    if reasoning:
-                                        reasoning_accum += reasoning
-                                        if detect_state == _S_STREAMING:
-                                            if not in_thinking:
-                                                cumulative_display += "<think>"
-                                                in_thinking = True
-                                            cumulative_display += reasoning
-                                            if not _suppress_visible_output:
-                                                yield {
-                                                    "type": "content",
-                                                    "text": cumulative_display,
+                                                    "text": cleaned,
                                                 }
 
-                                    # ── Content tokens ──
-                                    token = delta.get("content", "")
-                                    if token:
-                                        has_content_tokens = True
-                                        content_accum += token
+                                    elif detect_state == _S_BUFFERING:
+                                        content_buffer += token
+                                        stripped_buf = content_buffer.lstrip()
+                                        if not stripped_buf:
+                                            continue
 
-                                        if detect_state == _S_DRAINING:
-                                            pass  # accumulate silently
+                                        # Check tool signal prefixes.
+                                        is_prefix = False
+                                        is_match = False
+                                        for sig in _tool_xml_signals:
+                                            if stripped_buf.startswith(sig):
+                                                is_match = True
+                                                break
+                                            if sig.startswith(stripped_buf):
+                                                is_prefix = True
+                                                break
 
-                                        elif detect_state == _S_STREAMING:
-                                            if in_thinking:
-                                                cumulative_display += "</think>"
-                                                in_thinking = False
-                                            cumulative_display += token
+                                        if is_match:
+                                            # Tool signal -- flush any visible
+                                            # prefix before DRAINING so the
+                                            # route sends it before tool_start.
+                                            _flush_reasoning_and_buffer()
                                             cleaned = _strip_tool_markup_streaming(
-                                                cumulative_display
+                                                cumulative_display,
+                                                force = True,
+                                            )
+                                            if len(cleaned) > len(_last_emitted):
+                                                _last_emitted = cleaned
+                                                if not _suppress_visible_output:
+                                                    yield {
+                                                        "type": "content",
+                                                        "text": cleaned,
+                                                    }
+                                            detect_state = _S_DRAINING
+                                        elif is_prefix and len(stripped_buf) < _MAX_BUFFER_CHARS:
+                                            pass  # keep buffering
+                                        else:
+                                            # Not a tool -- flush buffer
+                                            detect_state = _S_STREAMING
+                                            # Flush reasoning accumulated
+                                            # during BUFFERING.
+                                            _flush_reasoning_and_buffer()
+                                            cleaned = _strip_tool_markup(
+                                                cumulative_display,
                                             )
                                             if len(cleaned) > len(_last_emitted):
                                                 _last_emitted = cleaned
@@ -8186,73 +8126,10 @@ class LlamaCppBackend:
                                                         "text": cleaned,
                                                     }
 
-                                        elif detect_state == _S_BUFFERING:
-                                            content_buffer += token
-                                            stripped_buf = content_buffer.lstrip()
-                                            if not stripped_buf:
-                                                continue
-
-                                            # Check tool signal prefixes.
-                                            is_prefix = False
-                                            is_match = False
-                                            for sig in _tool_xml_signals:
-                                                if stripped_buf.startswith(sig):
-                                                    is_match = True
-                                                    break
-                                                if sig.startswith(stripped_buf):
-                                                    is_prefix = True
-                                                    break
-
-                                            if is_match:
-                                                # Tool signal -- flush any visible
-                                                # prefix before DRAINING so the
-                                                # route sends it before tool_start.
-                                                if reasoning_accum:
-                                                    cumulative_display += "<think>"
-                                                    cumulative_display += reasoning_accum
-                                                    cumulative_display += "</think>"
-                                                cumulative_display += content_buffer
-                                                cleaned = _strip_tool_markup_streaming(
-                                                    cumulative_display,
-                                                    force = True,
-                                                )
-                                                if len(cleaned) > len(_last_emitted):
-                                                    _last_emitted = cleaned
-                                                    if not _suppress_visible_output:
-                                                        yield {
-                                                            "type": "content",
-                                                            "text": cleaned,
-                                                        }
-                                                detect_state = _S_DRAINING
-                                            elif (
-                                                is_prefix and len(stripped_buf) < _MAX_BUFFER_CHARS
-                                            ):
-                                                pass  # keep buffering
-                                            else:
-                                                # Not a tool -- flush buffer
-                                                detect_state = _S_STREAMING
-                                                # Flush reasoning accumulated
-                                                # during BUFFERING.
-                                                if reasoning_accum:
-                                                    cumulative_display += "<think>"
-                                                    cumulative_display += reasoning_accum
-                                                    cumulative_display += "</think>"
-                                                cumulative_display += content_buffer
-                                                cleaned = _strip_tool_markup(
-                                                    cumulative_display,
-                                                )
-                                                if len(cleaned) > len(_last_emitted):
-                                                    _last_emitted = cleaned
-                                                    if not _suppress_visible_output:
-                                                        yield {
-                                                            "type": "content",
-                                                            "text": cleaned,
-                                                        }
-
-                                except json.JSONDecodeError:
-                                    logger.debug(f"Skipping malformed SSE line: {line[:100]}")
-                            if _stream_done:
-                                break  # exit outer for
+                            except json.JSONDecodeError:
+                                logger.debug(f"Skipping malformed SSE line: {line[:100]}")
+                        if _stream_done:
+                            break  # exit outer for
 
                 # ── Resolve BUFFERING at stream end ──
                 if detect_state == _S_BUFFERING:
@@ -8263,11 +8140,7 @@ class LlamaCppBackend:
                         detect_state = _S_STREAMING
                         if content_buffer:
                             # Flush reasoning first.
-                            if reasoning_accum:
-                                cumulative_display += "<think>"
-                                cumulative_display += reasoning_accum
-                                cumulative_display += "</think>"
-                            cumulative_display += content_buffer
+                            _flush_reasoning_and_buffer()
                             if not _suppress_visible_output:
                                 yield {
                                     "type": "content",
@@ -8388,31 +8261,11 @@ class LlamaCppBackend:
 
                         # Content was already streamed.  Yield metadata.
                         yield {"type": "status", "text": ""}
-                        _fu = _backfill_usage_from_timings(_iter_usage, _iter_timings) or {}
-                        _fc = _fu.get("completion_tokens", 0)
-                        _fp = _fu.get("prompt_tokens", 0)
-                        _tc = _fc + _accumulated_completion_tokens
-                        if _iter_usage or _iter_timings or _accumulated_completion_tokens:
-                            _mt = dict(_iter_timings) if _iter_timings else {}
-                            if _accumulated_predicted_ms or _accumulated_predicted_n:
-                                _mt["predicted_ms"] = (
-                                    _mt.get("predicted_ms", 0) + _accumulated_predicted_ms
-                                )
-                                _tn = _mt.get("predicted_n", 0) + _accumulated_predicted_n
-                                _mt["predicted_n"] = _tn
-                                _tms = _mt["predicted_ms"]
-                                if _tms > 0:
-                                    _mt["predicted_per_second"] = _tn / (_tms / 1000.0)
-                            yield {
-                                "type": "metadata",
-                                "usage": {
-                                    "prompt_tokens": _fp,
-                                    "completion_tokens": _tc,
-                                    "total_tokens": _fp + _tc,
-                                },
-                                "timings": _mt,
-                                "finish_reason": _iter_finish_reason,
-                            }
+                        _meta = _build_metadata_event(
+                            _iter_usage, _iter_timings, _iter_finish_reason
+                        )
+                        if _meta is not None:
+                            yield _meta
                         return
 
                     # Safety net caught tool XML -- treat as tool call.
@@ -8463,31 +8316,11 @@ class LlamaCppBackend:
                             content_accum = _strip_tool_markup(content_accum, final = True)
                         if content_accum:
                             yield {"type": "content", "text": content_accum}
-                        _fu = _backfill_usage_from_timings(_iter_usage, _iter_timings) or {}
-                        _fc = _fu.get("completion_tokens", 0)
-                        _fp = _fu.get("prompt_tokens", 0)
-                        _tc = _fc + _accumulated_completion_tokens
-                        if _iter_usage or _iter_timings or _accumulated_completion_tokens:
-                            _mt = dict(_iter_timings) if _iter_timings else {}
-                            if _accumulated_predicted_ms or _accumulated_predicted_n:
-                                _mt["predicted_ms"] = (
-                                    _mt.get("predicted_ms", 0) + _accumulated_predicted_ms
-                                )
-                                _tn = _mt.get("predicted_n", 0) + _accumulated_predicted_n
-                                _mt["predicted_n"] = _tn
-                                _tms = _mt["predicted_ms"]
-                                if _tms > 0:
-                                    _mt["predicted_per_second"] = _tn / (_tms / 1000.0)
-                            yield {
-                                "type": "metadata",
-                                "usage": {
-                                    "prompt_tokens": _fp,
-                                    "completion_tokens": _tc,
-                                    "total_tokens": _fp + _tc,
-                                },
-                                "timings": _mt,
-                                "finish_reason": _iter_finish_reason,
-                            }
+                        _meta = _build_metadata_event(
+                            _iter_usage, _iter_timings, _iter_finish_reason
+                        )
+                        if _meta is not None:
+                            yield _meta
                         return
 
                 # ── Execute tool calls ──
@@ -8688,125 +8521,85 @@ class LlamaCppBackend:
         _stream_done = False
 
         try:
-            stream_timeout = httpx.Timeout(connect = 10, read = 0.5, write = 10, pool = 10)
-            _auth_headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
-            with httpx.Client(
-                timeout = stream_timeout, limits = httpx.Limits(max_keepalive_connections = 0)
-            ) as client:
-                first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
-                with self._stream_with_retry(
-                    client,
-                    url,
-                    stream_payload,
+            with self._open_stream(url, stream_payload, cancel_event) as (
+                response,
+                first_token_deadline,
+            ):
+                buffer = ""
+                for raw_chunk in self._iter_text_cancellable(
+                    response,
                     cancel_event,
-                    headers = _auth_headers,
                     first_token_deadline = first_token_deadline,
-                ) as response:
-                    if response.status_code != 200:
-                        error_body = response.read().decode()
-                        raise RuntimeError(
-                            f"llama-server returned {response.status_code}: {error_body}"
-                        )
+                ):
+                    buffer += raw_chunk
+                    while "\n" in buffer:
+                        line, buffer = buffer.split("\n", 1)
+                        line = line.strip()
 
-                    buffer = ""
-                    for raw_chunk in self._iter_text_cancellable(
-                        response,
-                        cancel_event,
-                        first_token_deadline = first_token_deadline,
-                    ):
-                        buffer += raw_chunk
-                        while "\n" in buffer:
-                            line, buffer = buffer.split("\n", 1)
-                            line = line.strip()
+                        if not line:
+                            continue
+                        if line == "data: [DONE]":
+                            if in_thinking:
+                                if has_content_tokens:
+                                    cumulative += "</think>"
+                                    yield {
+                                        "type": "content",
+                                        "text": _strip_tool_markup(cumulative, final = True),
+                                    }
+                                else:
+                                    cumulative = reasoning_text
+                                    yield {"type": "content", "text": cumulative}
+                            _stream_done = True
+                            break  # exit inner while
+                        if not line.startswith("data: "):
+                            continue
 
-                            if not line:
-                                continue
-                            if line == "data: [DONE]":
-                                if in_thinking:
-                                    if has_content_tokens:
+                        try:
+                            chunk_data = json.loads(line[6:])
+                            # Capture server timings/usage from final chunks.
+                            _chunk_timings = chunk_data.get("timings")
+                            if _chunk_timings:
+                                _metadata_timings = _chunk_timings
+                            _chunk_usage = chunk_data.get("usage")
+                            if _chunk_usage:
+                                _metadata_usage = _chunk_usage
+                            choices = chunk_data.get("choices", [])
+                            if choices:
+                                delta = choices[0].get("delta", {})
+                                _fr = choices[0].get("finish_reason")
+                                if _fr:
+                                    _metadata_finish_reason = _fr
+
+                                reasoning = delta.get("reasoning_content", "")
+                                if reasoning:
+                                    reasoning_text += reasoning
+                                    if not in_thinking:
+                                        cumulative += "<think>"
+                                        in_thinking = True
+                                    cumulative += reasoning
+                                    yield {"type": "content", "text": cumulative}
+
+                                token = delta.get("content", "")
+                                if token:
+                                    has_content_tokens = True
+                                    if in_thinking:
                                         cumulative += "</think>"
-                                        yield {
-                                            "type": "content",
-                                            "text": _strip_tool_markup(cumulative, final = True),
-                                        }
-                                    else:
-                                        cumulative = reasoning_text
-                                        yield {"type": "content", "text": cumulative}
-                                _stream_done = True
-                                break  # exit inner while
-                            if not line.startswith("data: "):
-                                continue
-
-                            try:
-                                chunk_data = json.loads(line[6:])
-                                # Capture server timings/usage from final chunks.
-                                _chunk_timings = chunk_data.get("timings")
-                                if _chunk_timings:
-                                    _metadata_timings = _chunk_timings
-                                _chunk_usage = chunk_data.get("usage")
-                                if _chunk_usage:
-                                    _metadata_usage = _chunk_usage
-                                choices = chunk_data.get("choices", [])
-                                if choices:
-                                    delta = choices[0].get("delta", {})
-                                    _fr = choices[0].get("finish_reason")
-                                    if _fr:
-                                        _metadata_finish_reason = _fr
-
-                                    reasoning = delta.get("reasoning_content", "")
-                                    if reasoning:
-                                        reasoning_text += reasoning
-                                        if not in_thinking:
-                                            cumulative += "<think>"
-                                            in_thinking = True
-                                        cumulative += reasoning
-                                        yield {"type": "content", "text": cumulative}
-
-                                    token = delta.get("content", "")
-                                    if token:
-                                        has_content_tokens = True
-                                        if in_thinking:
-                                            cumulative += "</think>"
-                                            in_thinking = False
-                                        cumulative += token
-                                        cleaned = _strip_tool_markup(cumulative)
-                                        # Emit only when cleaned text grows (monotonic).
-                                        if len(cleaned) > len(_last_emitted):
-                                            _last_emitted = cleaned
-                                            yield {"type": "content", "text": cleaned}
-                            except json.JSONDecodeError:
-                                logger.debug(f"Skipping malformed SSE line: {line[:100]}")
-                        if _stream_done:
-                            break  # exit outer for
-                    _final_usage = _metadata_usage or {}
-                    _final_completion = _final_usage.get("completion_tokens", 0)
-                    _final_prompt = _final_usage.get("prompt_tokens", 0)
-                    _total_completion = _final_completion + _accumulated_completion_tokens
-                    if _metadata_usage or _metadata_timings or _metadata_finish_reason:
-                        _merged_timings = dict(_metadata_timings) if _metadata_timings else {}
-                        if _accumulated_predicted_ms or _accumulated_predicted_n:
-                            _merged_timings["predicted_ms"] = (
-                                _merged_timings.get("predicted_ms", 0) + _accumulated_predicted_ms
-                            )
-                            _total_predicted_n = (
-                                _merged_timings.get("predicted_n", 0) + _accumulated_predicted_n
-                            )
-                            _merged_timings["predicted_n"] = _total_predicted_n
-                            _total_predicted_ms = _merged_timings["predicted_ms"]
-                            if _total_predicted_ms > 0:
-                                _merged_timings["predicted_per_second"] = _total_predicted_n / (
-                                    _total_predicted_ms / 1000.0
-                                )
-                        yield {
-                            "type": "metadata",
-                            "usage": {
-                                "prompt_tokens": _final_prompt,
-                                "completion_tokens": _total_completion,
-                                "total_tokens": _final_prompt + _total_completion,
-                            },
-                            "timings": _merged_timings,
-                            "finish_reason": _metadata_finish_reason,
-                        }
+                                        in_thinking = False
+                                    cumulative += token
+                                    cleaned = _strip_tool_markup(cumulative)
+                                    # Emit only when cleaned text grows (monotonic).
+                                    if len(cleaned) > len(_last_emitted):
+                                        _last_emitted = cleaned
+                                        yield {"type": "content", "text": cleaned}
+                        except json.JSONDecodeError:
+                            logger.debug(f"Skipping malformed SSE line: {line[:100]}")
+                    if _stream_done:
+                        break  # exit outer for
+                _meta = _build_metadata_event(
+                    _metadata_usage, _metadata_timings, _metadata_finish_reason
+                )
+                if _meta is not None:
+                    yield _meta
 
         except httpx.ConnectError:
             raise RuntimeError("Lost connection to llama-server")
@@ -8844,8 +8637,6 @@ class LlamaCppBackend:
                         continue
                     if not isinstance(block, dict):
                         return True
-                    if block.get("type") == "text" and isinstance(block.get("text"), str):
-                        continue
                     if isinstance(block.get("text"), str):
                         continue
                     return True
@@ -8866,9 +8657,7 @@ class LlamaCppBackend:
                 parts = []
                 for block in content:
                     if isinstance(block, dict):
-                        if block.get("type") == "text" and isinstance(block.get("text"), str):
-                            parts.append(block["text"])
-                        elif isinstance(block.get("text"), str):
+                        if isinstance(block.get("text"), str):
                             parts.append(block["text"])
                     elif isinstance(block, str):
                         parts.append(block)
@@ -8883,8 +8672,7 @@ class LlamaCppBackend:
             system_text = _block_text(system)
 
         try:
-            _auth_headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
-            with httpx.Client(timeout = 10, headers = _auth_headers) as client:
+            with httpx.Client(timeout = 10, headers = self._auth_headers) as client:
 
                 def _tokenize(text: str) -> int:
                     r = client.post(
@@ -8963,12 +8751,44 @@ class LlamaCppBackend:
             logger.debug(f"Audio type detection failed: {e}")
             return None
 
+    def _apply_detected_audio(self, detected: Optional[str]) -> bool:
+        """Apply a probed audio codec under self._lock. Returns True to continue
+        the load (codec inited OK, or nothing to init), False to abort (server
+        unhealthy or codec init failed). Shared by the fast-path retry and the
+        main load path."""
+        if detected in ("snac", "bicodec", "dac"):
+            with self._lock:
+                if not self._healthy:
+                    return False
+                try:
+                    self.init_audio_codec(detected)
+                    self._is_audio = True
+                    self._audio_type = detected
+                except Exception as exc:
+                    # Surface as HTTP 500 (matches pre-PR contract).
+                    logger.warning("Failed to init audio codec '%s': %s", detected, exc)
+                    self._audio_probed = False
+                    return False
+        elif detected:
+            # csm / whisper / audio_vlm: track type but keep _is_audio False --
+            # GGUF TTS routing only fires for snac/bicodec/dac.
+            with self._lock:
+                if not self._healthy:
+                    return False
+                self._audio_type = detected
+        # Audio input = token probe (audio_vlm/whisper) OR mmproj encoder.
+        from utils.models.model_config import is_audio_input_type
+
+        self._has_audio_input = bool(is_audio_input_type(self._audio_type)) or bool(
+            self._mmproj_has_audio
+        )
+        return True
+
     def _detect_audio_type_strict(self) -> Optional[str]:
         """Codec name on match, None on non-audio, raises on transport/JSON errors."""
         if not self.is_loaded:
             return None
-        _auth_headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
-        with httpx.Client(timeout = 10, headers = _auth_headers) as client:
+        with httpx.Client(timeout = 10, headers = self._auth_headers) as client:
 
             def _detok(tid: int) -> str:
                 # Non-200 means "marker not in vocab" -- keep probing.
@@ -9082,8 +8902,9 @@ class LlamaCppBackend:
         if need_ids:
             payload["n_probs"] = 1
 
-        _auth_headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else None
-        with httpx.Client(timeout = httpx.Timeout(300, connect = 10), headers = _auth_headers) as client:
+        with httpx.Client(
+            timeout = httpx.Timeout(300, connect = 10), headers = self._auth_headers
+        ) as client:
             resp = client.post(f"{self.base_url}/completion", json = payload)
             if resp.status_code != 200:
                 raise RuntimeError(f"llama-server returned {resp.status_code}: {resp.text}")
