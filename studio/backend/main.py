@@ -294,6 +294,7 @@ from hub.utils.download_registry import (
 )
 from routes.settings import router as settings_router
 from routes.prompts import router as prompts_router
+from routes.phone import router as phone_router
 from auth import storage
 from auth.authentication import get_current_subject
 from utils.hardware import (
@@ -856,6 +857,30 @@ app.include_router(rag_router, prefix = "/api/rag", tags = ["rag"])
 app.include_router(training_history_router, prefix = "/api/train", tags = ["training-history"])
 app.include_router(hub_inventory_router, prefix = "/api/hub", tags = ["hub"])
 app.include_router(hub_datasets_router, prefix = "/api/hub/datasets", tags = ["hub"])
+app.include_router(phone_router, prefix = "/api/phone", tags = ["phone"])
+
+
+# Phone dashboard page; registered before the SPA catch-all so /m/<token> wins.
+@app.get("/m/{token}")
+async def serve_phone_dashboard(token: str):
+    import secrets
+
+    page = Path(__file__).parent / "assets" / "phone" / "index.html"
+    if not page.is_file():
+        raise HTTPException(status_code = 404, detail = "Phone dashboard not available")
+    # Per-response nonce so the CSP allows the page's inline <script>.
+    nonce = secrets.token_urlsafe(16)
+    html = page.read_text(encoding = "utf-8").replace(
+        "<script>", f'<script nonce="{nonce}">', 1
+    )
+    return Response(
+        content = html,
+        media_type = "text/html",
+        headers = {
+            _CSP_SCRIPT_NONCE_HEADER: nonce,
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+        },
+    )
 
 # Re-wrap client-error responses on the /v1/* surface into OpenAI/Anthropic
 # error envelopes; non-/v1 paths keep FastAPI's default {"detail": ...} shape.

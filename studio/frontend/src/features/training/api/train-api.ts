@@ -59,6 +59,20 @@ export async function getTrainingStatus(): Promise<TrainingStatusResponse> {
   return parseJson<TrainingStatusResponse>(response);
 }
 
+export interface PhoneShareResponse {
+  page_url: string;
+  expires_at: string;
+}
+
+/**
+ * Mint a read-only "watch on your phone" link for the current run. Returns a
+ * LAN URL to render as a QR code; the link only works on the same network.
+ */
+export async function shareTrainingToPhone(): Promise<PhoneShareResponse> {
+  const response = await authFetch("/api/phone/share", { method: "POST" });
+  return parseJson<PhoneShareResponse>(response);
+}
+
 export async function getTrainingMetrics(): Promise<TrainingMetricsResponse> {
   const response = await authFetch("/api/train/metrics");
   return parseJson<TrainingMetricsResponse>(response);
