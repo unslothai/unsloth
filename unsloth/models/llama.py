@@ -2460,7 +2460,10 @@ class FastLlamaModel:
             # Add to kwargs
             kwargs["rope_scaling"] = rope_scaling
 
-        from .loader_utils import check_and_disable_bitsandbytes_loading, sync_unsloth_model_name_bnb_flags
+        from .loader_utils import (
+            check_and_disable_bitsandbytes_loading,
+            sync_unsloth_model_name_bnb_flags,
+        )
         from unsloth_zoo.utils import get_quant_type
 
         # Extract load_in_8bit from kwargs if provided

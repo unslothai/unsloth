@@ -812,7 +812,10 @@ class FastBaseModel:
         user_quantization_config = kwargs.get("quantization_config", None)
 
         # Check if model already has a non-bitsandbytes quantization config (e.g. compressed-tensors/NVFP4)
-        from .loader_utils import check_and_disable_bitsandbytes_loading, sync_unsloth_model_name_bnb_flags
+        from .loader_utils import (
+            check_and_disable_bitsandbytes_loading,
+            sync_unsloth_model_name_bnb_flags,
+        )
 
         load_in_4bit, load_in_8bit, _ = check_and_disable_bitsandbytes_loading(
             auto_config, load_in_4bit = load_in_4bit, load_in_8bit = load_in_8bit
