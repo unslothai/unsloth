@@ -145,6 +145,6 @@ def test_failclosed_message_present_in_source():
     # The exact, user-facing fail-closed message must not drift.
     src = (_BACKEND / "run.py").read_text(encoding = "utf-8")
     assert (
-        "A secure Cloudflare link is not allowed, use --not-secure which provides a 0.0.0.0 link"
+        "A secure Cloudflare link is not allowed, use --no-secure which provides a 0.0.0.0 link"
         in src
     )
