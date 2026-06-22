@@ -115,9 +115,10 @@ _config_json_cache: dict[tuple[str, str | None], dict | None] = {}
 _config_needs_510_cache: dict[tuple[str, str | None], bool] = {}
 _config_needs_550_cache: dict[tuple[str, str | None], bool] = {}
 
-# AutoConfig-probe tier cache, keyed by model_name for the process lifetime (cleared on
-# restart). Not keyed by Hub sha, so the probe never imports huggingface_hub before a
-# worker's sidecar venv is activated (which would pin the wrong hub).
+# AutoConfig-probe tier cache for the process lifetime (cleared on restart), keyed by
+# model_name plus a local config.json signature (see _probe_cache_key) so an overwritten
+# checkpoint re-probes. Not keyed by Hub sha, so the probe never imports huggingface_hub
+# before a worker's sidecar venv is activated (which would pin the wrong hub).
 _probe_tier_cache: dict[str, str] = {}
 
 # Versions
@@ -541,6 +542,10 @@ def _probe_autoconfig(target_dir: str, model_name: str, hf_token: str | None) ->
     env = child_env_without_native_path_secret()
     if hf_token:
         env["HF_TOKEN"] = hf_token
+        # The probe relies on the implicit HF_TOKEN env (no token= arg). Clear any inherited
+        # HF_HUB_DISABLE_IMPLICIT_TOKEN=1 so a gated repo authenticates instead of 401ing
+        # into the 530 fail-safe.
+        env["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "0"
     if _env_offline():
         env["HF_HUB_OFFLINE"] = "1"
         env["TRANSFORMERS_OFFLINE"] = "1"
@@ -570,6 +575,18 @@ def _probe_autoconfig(target_dir: str, model_name: str, hf_token: str | None) ->
     return False
 
 
+def _probe_cache_key(model_name: str) -> str:
+    """Cache key for the probe result. A local checkpoint can be overwritten in place, so
+    fold in a cheap config.json signature (size + mtime) and re-probe when it changes.
+    Remote ids key by name alone (resolving a Hub revision would need a pre-activation hub
+    import that pins the wrong env)."""
+    try:
+        st = (Path(model_name) / "config.json").stat()
+    except OSError:
+        return model_name
+    return f"{model_name}\0{st.st_size}:{st.st_mtime_ns}"
+
+
 def _probe_tier(model_name: str, hf_token: str | None, reason: str) -> str:
     """Lowest sidecar tier whose built-in parser loads the config; '530' fail-safe.
 
@@ -581,20 +598,21 @@ def _probe_tier(model_name: str, hf_token: str | None, reason: str) -> str:
       - all tiers probed, none parse -> a remote-code/custom model_type that loads via its
         own code; keep '530' rather than jumping to 510 (which would change 5.3-stack models).
 
-    Cached per model_name for the process lifetime (a model's tier follows its architecture).
+    Cached per _probe_cache_key for the process lifetime (a model's tier follows its config).
     No Hub commit sha is resolved: that would import huggingface_hub into the worker before
     the sidecar is on sys.path (activation does not purge), pinning the default-env hub.
     """
     if os.environ.get("UNSLOTH_DISABLE_TIER_PROBE", "").lower() in ("1", "true", "yes"):
         return "530"
-    if model_name in _probe_tier_cache:
-        return _probe_tier_cache[model_name]
+    key = _probe_cache_key(model_name)
+    if key in _probe_tier_cache:
+        return _probe_tier_cache[key]
 
     def _cache(tier: str, *, skipped: bool) -> str:
         # Do not pin a result that depended on a skipped lower tier: once that sidecar is
         # available the lowest valid tier may differ, so re-probe next call.
         if not skipped:
-            _probe_tier_cache[model_name] = tier
+            _probe_tier_cache[key] = tier
         return tier
 
     venvs = _probe_tier_venvs()

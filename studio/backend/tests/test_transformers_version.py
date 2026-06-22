@@ -856,6 +856,41 @@ class TestProbeTier:
         activate_transformers_for_subprocess("org/gated", "hf_xyz")
         assert seen == {"model": "org/gated", "token": "hf_xyz"}
 
+    def test_local_checkpoint_reprobes_after_config_change(self, monkeypatch, tmp_path):
+        # A local checkpoint overwritten in place must re-probe: the cache key folds in the
+        # config.json signature, so a different config does not serve the stale tier.
+        self._patch_common(monkeypatch)
+        cfg = tmp_path / "config.json"
+        cfg.write_text(json.dumps({"model_type": "a"}))
+        local = str(tmp_path)
+        calls = []
+        monkeypatch.setattr(
+            "utils.transformers_version.subprocess.run",
+            lambda cmd, **k: calls.append(1) or _proc(0),
+        )
+        assert _probe_tier(local, None, "x") == "530"
+        assert _probe_tier(local, None, "x") == "530"  # cache hit, no re-spawn
+        assert len(calls) == 1
+        cfg.write_text(json.dumps({"model_type": "a_longer_value_changing_the_size"}))
+        assert _probe_tier(local, None, "x") == "530"
+        assert len(calls) == 2  # signature changed -> re-probed
+
+    def test_probe_child_enables_implicit_token(self, monkeypatch):
+        # With a token, the probe child must clear an inherited HF_HUB_DISABLE_IMPLICIT_TOKEN=1
+        # so HF_TOKEN authenticates the gated config fetch instead of 401ing to 530.
+        self._patch_common(monkeypatch)
+        monkeypatch.setenv("HF_HUB_DISABLE_IMPLICIT_TOKEN", "1")
+        captured = {}
+
+        def fake_run(cmd, **k):
+            captured.update(k.get("env") or {})
+            return _proc(0)
+
+        monkeypatch.setattr("utils.transformers_version.subprocess.run", fake_run)
+        assert _probe_tier("org/gated", "secret-token", "x") == "530"
+        assert captured.get("HF_TOKEN") == "secret-token"
+        assert captured.get("HF_HUB_DISABLE_IMPLICIT_TOKEN") == "0"
+
 
 # ---------------------------------------------------------------------------
 # activate_transformers_for_subprocess — issue #6103
