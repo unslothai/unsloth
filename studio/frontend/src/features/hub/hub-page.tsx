@@ -808,23 +808,22 @@ export function ModelsPage() {
 
   // Header tallies exclude infra/hidden models so the count matches the On
   // Device list (a fresh install with only the bge embedder cached reads 0,
-  // not 1 over an empty list). Datasets are never infra, so they keep their
-  // full count, mirroring the row filter above.
+  // not 1 over an empty list). Reuse isVisibleInventoryRow so a hidden row
+  // revealed by an active search is counted too, and datasets (never infra)
+  // keep their full count, mirroring the row filter above.
   const visibleCachedCount = useMemo(
     () =>
       effectiveCachedRows.filter(
-        (row) => isDatasetMode || !isHiddenModelId(row.id, row.repoId),
+        (row) => isDatasetMode || isVisibleInventoryRow(row),
       ).length,
-    [effectiveCachedRows, isDatasetMode],
+    [effectiveCachedRows, isDatasetMode, isVisibleInventoryRow],
   );
   const visibleLocalCount = useMemo(
     () =>
       effectiveLocalRows.filter(
-        (row) =>
-          isDatasetMode ||
-          !isHiddenModelId(row.id, row.repoId, row.path, row.title),
+        (row) => isDatasetMode || isVisibleInventoryRow(row),
       ).length,
-    [effectiveLocalRows, isDatasetMode],
+    [effectiveLocalRows, isDatasetMode, isVisibleInventoryRow],
   );
 
   const filterResetSignature = useMemo(
