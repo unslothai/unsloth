@@ -345,7 +345,6 @@ def _config_json_from_hf_cache(model_name: str) -> dict | None:
     """Parsed ``config.json`` from the local HF hub cache, or None if not cached."""
     try:
         from huggingface_hub import try_to_load_from_cache
-
         path = try_to_load_from_cache(model_name, "config.json")
         if isinstance(path, str) and path:
             with open(path) as f:
