@@ -97,6 +97,16 @@ def test_json_marker_inside_gemma_argument_is_not_a_second_call():
     assert [c["function"]["name"] for c in calls] == ["python"], calls
 
 
+def test_nested_gemma_marker_in_unquoted_arg_does_not_run_inner_call():
+    # An UNQUOTED Gemma value containing a literal marker: the outer object fails
+    # to normalize (the inner braces/marker break the JSON), but the inner marker
+    # is nested in the outer candidate span, so it must not be promoted to a
+    # standalone `terminal` call. The safe outcome is no executed tool call.
+    content = "<|tool_call>call:python{code:<|tool_call>call:terminal{command:ls}<tool_call|>}<tool_call|>"
+    calls = parse_tool_calls_from_text(content)
+    assert "terminal" not in [c["function"]["name"] for c in calls], calls
+
+
 def test_bare_string_array_argument_is_quoted():
     # Gemma may emit an array of bare strings without per-element quotes; they
     # must be quoted so the call is not dropped.

@@ -336,9 +336,14 @@ def parse_tool_calls_from_text(
             candidates.append((m.start(), end, "gemma", m))
     candidates.sort(key = lambda c: c[0])
 
-    consumed: list[tuple[int, int]] = []
-    for start, end, kind, m in candidates:
-        if any(s <= start < e for s, e in consumed):
+    spans = [(s, e) for s, e, _kind, _m in candidates]
+    for idx, (start, end, kind, m) in enumerate(candidates):
+        # Skip a candidate nested inside another candidate's brace span: it is
+        # the enclosing call's argument data, not its own call. Checked against
+        # every candidate span (not only the ones that parsed successfully), so a
+        # marker inside an outer call that later fails to normalize is still
+        # never promoted to its own executable tool call.
+        if any(s <= start and end <= e for j, (s, e) in enumerate(spans) if j != idx):
             continue
         if not allow_incomplete:
             tail = content[end + 1 :].lstrip()
@@ -364,7 +369,6 @@ def parse_tool_calls_from_text(
                 "function": {"name": name, "arguments": arguments},
             }
         )
-        consumed.append((start, end + 1))
 
     if not tool_calls:
         func_starts = [

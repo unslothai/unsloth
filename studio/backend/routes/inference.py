@@ -808,26 +808,61 @@ def _same_task_timeout(timeout_s: float):
 class _SameTaskStreamingResponse(StreamingResponse):
     """StreamingResponse without Starlette's legacy AnyIO task-group wrapper."""
 
+    def __init__(self, *args, unstarted_cleanup = None, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        # Async callable invoked when the client disconnects before the body
+        # iterator is ever advanced. A generator that never started cannot run
+        # its own try/finally, so a stream that acquires resources before its
+        # first yield (the passthrough opens an upstream httpx stream eagerly)
+        # passes this to release them.
+        self._unstarted_cleanup = unstarted_cleanup
+
     async def __call__(self, scope, receive, send) -> None:
+        # Track whether the body iterator was ever advanced: send() only emits a
+        # body message after the generator yields its first chunk, so a failure
+        # before then means it never entered its try/finally.
+        body_started = False
+
+        async def _tracking_send(message) -> None:
+            nonlocal body_started
+            if message.get("type") == "http.response.body":
+                body_started = True
+            await send(message)
+
         try:
-            await self.stream_response(send)
+            await self.stream_response(_tracking_send)
         except OSError:
-            # Client disconnected mid-send. Throw CancelledError into the body
-            # generator instead of aclose() (which raises GeneratorExit): the
-            # generators run their `except asyncio.CancelledError` handler, which
-            # finishes the api_monitor entry as "cancelled", whereas GeneratorExit
-            # skips it and only runs `finally`, leaving the monitor entry active.
-            # Fall back to aclose() for iterators without athrow.
-            athrow = getattr(self.body_iterator, "athrow", None)
-            if athrow is not None:
-                try:
-                    await athrow(asyncio.CancelledError())
-                except (asyncio.CancelledError, StopAsyncIteration, RuntimeError):
-                    pass
+            # Client disconnected mid-send.
+            if body_started:
+                # The generator produced at least one chunk and is suspended in
+                # its try/finally. Throw CancelledError into it (not aclose's
+                # GeneratorExit) so its `except asyncio.CancelledError` handler
+                # runs and finishes any api_monitor entry; GeneratorExit would
+                # skip it and only run `finally`. Fall back to aclose() without
+                # athrow.
+                athrow = getattr(self.body_iterator, "athrow", None)
+                if athrow is not None:
+                    try:
+                        await athrow(asyncio.CancelledError())
+                    except (asyncio.CancelledError, StopAsyncIteration, RuntimeError):
+                        pass
+                else:
+                    aclose = getattr(self.body_iterator, "aclose", None)
+                    if aclose is not None:
+                        await aclose()
             else:
+                # http.response.start failed before the body iterator advanced,
+                # so its try/finally never armed and aclose()/athrow() are no-ops
+                # on an unstarted generator. Release any resources acquired
+                # before the first yield via the explicit cleanup hook.
                 aclose = getattr(self.body_iterator, "aclose", None)
                 if aclose is not None:
                     await aclose()
+                if self._unstarted_cleanup is not None:
+                    try:
+                        await self._unstarted_cleanup()
+                    except Exception:
+                        pass
             raise ClientDisconnect()
         if self.background is not None:
             await self.background()
@@ -3419,6 +3454,13 @@ async def generate_stream(
             _DONE = object()
             while True:
                 if cancel_event.is_set():
+                    # The disconnect watcher set cancel_event between chunks.
+                    # Reset the backend here: closing the Python generator does
+                    # not signal a subprocess backend, so without this it keeps
+                    # decoding after the client is gone. The finally's reset is
+                    # guarded on cancel_event being unset, so it will not run
+                    # again for this path.
+                    backend.reset_generation_state()
                     break
                 chunk = await asyncio.to_thread(next, gen, _DONE)
                 if chunk is _DONE:
@@ -9726,6 +9768,14 @@ async def _openai_passthrough_stream(
                 )
                 _tracker.__exit__(None, None, None)
 
+        async def _unstarted_cleanup() -> None:
+            # Client disconnected before the body stream started, so _stream()'s
+            # finally never ran. Release the eagerly-opened upstream resp/client
+            # and the cancel-registry entry here; the watchers and line iterator
+            # are created inside _stream(), so there is nothing else to close.
+            await _aclose_stream_resources(resp = resp, client = client)
+            _tracker.__exit__(None, None, None)
+
         return _SameTaskStreamingResponse(
             _stream(),
             media_type = "text/event-stream",
@@ -9734,6 +9784,7 @@ async def _openai_passthrough_stream(
                 "Connection": "close",
                 "X-Accel-Buffering": "no",
             },
+            unstarted_cleanup = _unstarted_cleanup,
         )
     except BaseException:
         _tracker.__exit__(None, None, None)
