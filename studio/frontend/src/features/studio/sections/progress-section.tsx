@@ -162,6 +162,7 @@ export function ProgressSection({
   const canExportGguf =
     !data.isTrainingRunning &&
     !!exportRunName &&
+    !data.resumedLater &&
     (data.phase === "completed" || data.phase === "stopped");
   const handleExportGguf = () => {
     if (!exportRunName) return;
