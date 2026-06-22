@@ -155,9 +155,11 @@ def activate_transformers_for_subprocess(model_name: str) -> None:
     """
     resolved = _resolve_base_model(model_name)
     tier = get_transformers_tier(resolved)
-    if model_name != resolved:
-        # Prefer the higher tier: a local checkpoint's own config may reveal a dense
-        # NemotronH the (offline/private) base does not. Avoids KeyError: '-'.
+    if model_name != resolved and (Path(model_name) / "config.json").is_file():
+        # A local checkpoint carries its own config the (offline/private) base may not
+        # surface. Gate on a real local config.json so this reads metadata, not path-name
+        # substrings (a /runs/gemma-4-x/llama-lora adapter must not upgrade). Avoids
+        # KeyError: '-' for dense NemotronH without misrouting plain adapters.
         tier = _higher_tier(tier, get_transformers_tier(model_name))
 
     if tier == "510":
@@ -342,13 +344,32 @@ def _check_tokenizer_config_needs_v5(model_name: str) -> bool:
 
 
 def _config_json_from_hf_cache(model_name: str) -> dict | None:
-    """Parsed ``config.json`` from the local HF hub cache, or None if not cached."""
+    """Parsed ``config.json`` from the local HF hub cache, or None if not cached.
+
+    Resolves the cache path with stdlib only (no ``huggingface_hub`` import) so tier
+    detection never loads the default-env hub before a sidecar venv is activated.
+    """
+    # Only a canonical ``owner/repo`` Hub id maps to a cache dir; reject local paths.
+    if not model_name or model_name.count("/") != 1 or model_name[0] in "/.~" or "\\" in model_name:
+        return None
+    hub = (
+        os.environ.get("HF_HUB_CACHE")
+        or os.environ.get("HUGGINGFACE_HUB_CACHE")
+        or os.path.join(
+            os.environ.get("HF_HOME") or os.path.expanduser("~/.cache/huggingface"), "hub"
+        )
+    )
+    repo_dir = Path(hub) / ("models--" + model_name.replace("/", "--"))
+    candidates = []
+    ref_main = repo_dir / "refs" / "main"
     try:
-        from huggingface_hub import try_to_load_from_cache
-        path = try_to_load_from_cache(model_name, "config.json")
-        if isinstance(path, str) and path:
-            with open(path) as f:
-                return json.load(f)
+        if ref_main.is_file():
+            candidates.append(repo_dir / "snapshots" / ref_main.read_text().strip() / "config.json")
+        candidates += sorted(repo_dir.glob("snapshots/*/config.json"))
+        for cfg_path in candidates:
+            if cfg_path.is_file():
+                with open(cfg_path) as f:
+                    return json.load(f)
     except Exception as exc:
         logger.debug("HF cache config.json lookup failed for '%s': %s", model_name, exc)
     return None
@@ -359,7 +380,8 @@ def _load_config_json(model_name: str, hf_token: str | None = None) -> dict | No
 
     ``hf_token`` authenticates the raw fetch so gated/private repos resolve. The
     cache is keyed on the token so an unauthenticated miss never poisons a later
-    authenticated read.
+    authenticated read. The HF hub cache is consulted only offline or after a failed
+    network fetch, so an online read never serves stale metadata.
     """
     import hashlib
 
@@ -380,16 +402,11 @@ def _load_config_json(model_name: str, hf_token: str | None = None) -> dict | No
             _config_json_cache[cache_key] = None
             return None
 
-    # Already-downloaded repo: read config.json from the HF cache before any network,
-    # so offline/blocked fetches still tier correctly (e.g. a cached dense NemotronH).
-    cfg = _config_json_from_hf_cache(model_name)
-    if cfg is not None:
+    if _env_offline():
+        # No network: a previously downloaded repo can still tier from the hub cache.
+        cfg = _config_json_from_hf_cache(model_name)
         _config_json_cache[cache_key] = cfg
         return cfg
-
-    if _env_offline():
-        _config_json_cache[cache_key] = None
-        return None
 
     import urllib.request
 
@@ -405,8 +422,10 @@ def _load_config_json(model_name: str, hf_token: str | None = None) -> dict | No
         return cfg
     except Exception as exc:
         logger.debug("Could not fetch config.json for '%s': %s", model_name, exc)
-        _config_json_cache[cache_key] = None
-        return None
+        # Fall back to the hub cache if the fetch failed (rate limit, transient block).
+        cfg = _config_json_from_hf_cache(model_name)
+        _config_json_cache[cache_key] = cfg
+        return cfg
 
 
 def _config_matches_tier(cfg: dict, architectures: set[str], model_types: set[str]) -> bool:
@@ -884,9 +903,11 @@ def ensure_transformers_version(model_name: str) -> None:
     # Resolve LoRA adapters to their base model for accurate detection.
     resolved = _resolve_base_model(model_name)
     tier = get_transformers_tier(resolved)
-    if model_name != resolved:
-        # Prefer the higher tier: a local checkpoint's own config may reveal a dense
-        # NemotronH the (offline/private) base does not. Avoids KeyError: '-'.
+    if model_name != resolved and (Path(model_name) / "config.json").is_file():
+        # A local checkpoint carries its own config the (offline/private) base may not
+        # surface. Gate on a real local config.json so this reads metadata, not path-name
+        # substrings (a /runs/gemma-4-x/llama-lora adapter must not upgrade). Avoids
+        # KeyError: '-' for dense NemotronH without misrouting plain adapters.
         tier = _higher_tier(tier, get_transformers_tier(model_name))
 
     if tier == "510":

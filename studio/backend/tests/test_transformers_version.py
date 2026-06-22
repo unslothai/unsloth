@@ -454,36 +454,75 @@ class TestNemotronHNeedsMlpSupport:
         assert _nemotron_h_needs_mlp_support({"model_type": "wrapper", "llm_config": None}) is False
 
 
+def _hf_response(cfg: dict):
+    """A urlopen() context-manager stand-in returning *cfg* as JSON bytes."""
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return json.dumps(cfg).encode()
+
+    return _Resp()
+
+
 class TestConfigJsonHfCacheFallback:
-    """_load_config_json reads the HF hub cache before any network (offline support)."""
+    """HF hub cache is consulted only offline or after a failed fetch (never stale online)."""
 
     def setup_method(self):
         _config_json_cache.clear()
 
-    def test_cache_hit_skips_network(self, tmp_path: Path, monkeypatch):
+    @staticmethod
+    def _seed_cache(hub: Path, repo_id: str, cfg: dict, commit: str = "deadbeef"):
+        repo = hub / ("models--" + repo_id.replace("/", "--"))
+        snap = repo / "snapshots" / commit
+        snap.mkdir(parents = True)
+        (snap / "config.json").write_text(json.dumps(cfg))
+        (repo / "refs").mkdir(parents = True)
+        (repo / "refs" / "main").write_text(commit)
+
+    def test_offline_reads_from_cache(self, tmp_path: Path, monkeypatch):
         cfg = {"model_type": "nemotron_h", "hybrid_override_pattern": "M-M*-"}
-        cached = tmp_path / "config.json"
-        cached.write_text(json.dumps(cfg))
-        monkeypatch.setenv("HF_HUB_OFFLINE", "1")  # cache is consulted even offline
-        with (
-            patch("huggingface_hub.try_to_load_from_cache", return_value = str(cached)),
-            patch("urllib.request.urlopen") as mock_url,
-        ):
+        self._seed_cache(tmp_path, "unsloth/NVIDIA-Nemotron-3-Nano-4B", cfg)
+        monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
+        monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+        with patch("urllib.request.urlopen") as mock_url:
             assert _load_config_json("unsloth/NVIDIA-Nemotron-3-Nano-4B") == cfg
             mock_url.assert_not_called()
 
-    def test_offline_uncached_returns_none(self, monkeypatch):
+    def test_online_prefers_network_over_cache(self, tmp_path: Path, monkeypatch):
+        stale = {"model_type": "nemotron_h", "hybrid_override_pattern": "MMMM"}
+        fresh = {"model_type": "nemotron_h", "hybrid_override_pattern": "M-M*-"}
+        self._seed_cache(tmp_path, "org/model", stale)
+        monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
+        monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+        monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+        with patch("urllib.request.urlopen", return_value = _hf_response(fresh)):
+            assert _load_config_json("org/model") == fresh  # network wins, not stale cache
+
+    def test_network_failure_falls_back_to_cache(self, tmp_path: Path, monkeypatch):
+        cfg = {"model_type": "nemotron_h", "hybrid_override_pattern": "M-M*-"}
+        self._seed_cache(tmp_path, "org/model", cfg)
+        monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
+        monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+        with patch("urllib.request.urlopen", side_effect = OSError("boom")):
+            assert _load_config_json("org/model") == cfg
+
+    def test_offline_uncached_returns_none(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
         monkeypatch.setenv("HF_HUB_OFFLINE", "1")
-        with (
-            patch("huggingface_hub.try_to_load_from_cache", return_value = None),
-            patch("urllib.request.urlopen") as mock_url,
-        ):
+        with patch("urllib.request.urlopen") as mock_url:
             assert _load_config_json("private/unknown") is None
             mock_url.assert_not_called()
 
-    def test_helper_returns_none_when_missing(self):
-        with patch("huggingface_hub.try_to_load_from_cache", return_value = None):
-            assert _config_json_from_hf_cache("x/y") is None
+    def test_helper_ignores_local_paths(self, tmp_path: Path):
+        # A filesystem path is not a repo id; never treat it as one.
+        assert _config_json_from_hf_cache(str(tmp_path)) is None
+        assert _config_json_from_hf_cache("plainname") is None
 
 
 class TestHigherTier:
@@ -835,12 +874,14 @@ class TestActivateLoggingClarity:
             "sys.path" in text or "path only" in text
         ), f"early activation log does not clarify it is path-prepend only: {text!r}"
 
-    def test_activate_prefers_local_checkpoint_tier_over_resolved_base(self, caplog):
-        # A dense NemotronH checkpoint whose base resolves to an offline/private id: the
-        # base tier check yields default, but the local config wins via _higher_tier.
+    def test_activate_prefers_local_checkpoint_tier_over_resolved_base(self, caplog, tmp_path):
+        # A dense NemotronH checkpoint (real local config.json) whose base resolves to an
+        # offline/private id: the base check yields default, but the local config wins.
+        (tmp_path / "config.json").write_text(json.dumps({"model_type": "llama"}))
+        local = str(tmp_path)
         caplog.set_level(logging.INFO)
         snap = self._snapshot_env()
-        tiers = {"local/ckpt": "510", "private/base": "default"}
+        tiers = {local: "510", "private/base": "default"}
         try:
             with (
                 patch(
@@ -856,12 +897,45 @@ class TestActivateLoggingClarity:
                     return_value = True,
                 ),
             ):
-                activate_transformers_for_subprocess("local/ckpt")
+                activate_transformers_for_subprocess(local)
         finally:
             self._restore_env(snap)
 
         text = " ".join(r.getMessage() for r in caplog.records).lower()
         assert "5.10.2" in text, f"local checkpoint tier did not win: {text!r}"
+
+    def test_activate_adapter_without_config_skips_path_name_recheck(self, caplog, tmp_path):
+        # Adapter dir whose PATH contains 'gemma-4' but has no config.json: the local
+        # re-check must not run (would upgrade a default base from the directory name).
+        adapter = tmp_path / "gemma-4-experiment" / "llama-lora"
+        adapter.mkdir(parents = True)
+        local = str(adapter)
+        caplog.set_level(logging.INFO)
+        snap = self._snapshot_env()
+        seen = []
+
+        def fake_tier(m):
+            seen.append(m)
+            return "550" if "gemma-4" in m else "default"
+
+        try:
+            with (
+                patch(
+                    "utils.transformers_version._resolve_base_model",
+                    return_value = "meta/llama",
+                ),
+                patch(
+                    "utils.transformers_version.get_transformers_tier",
+                    side_effect = fake_tier,
+                ),
+            ):
+                activate_transformers_for_subprocess(local)
+        finally:
+            self._restore_env(snap)
+
+        assert seen == ["meta/llama"], f"adapter path was re-checked via substrings: {seen!r}"
+        text = " ".join(r.getMessage() for r in caplog.records).lower()
+        assert "default transformers" in text, f"adapter wrongly upgraded: {text!r}"
 
 
 # ---------------------------------------------------------------------------
