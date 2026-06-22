@@ -37,13 +37,10 @@ def call_mtp_module(module, hidden_states, **kwargs):
 
     parameters = signature.parameters
     has_kwargs = any(
-        parameter.kind == inspect.Parameter.VAR_KEYWORD
-        for parameter in parameters.values()
+        parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()
     )
     filtered_kwargs = (
-        kwargs
-        if has_kwargs
-        else {key: value for key, value in kwargs.items() if key in parameters}
+        kwargs if has_kwargs else {key: value for key, value in kwargs.items() if key in parameters}
     )
     has_positional = any(
         parameter.kind
