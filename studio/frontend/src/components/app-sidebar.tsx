@@ -1000,7 +1000,7 @@ export function AppSidebar() {
   const { enabled: monitorEnabled } = useHardwareMonitor();
   const systemInfo: SystemInfoResponse = useSystemInfo(monitorEnabled);
 
-  const { vramUsedGb, vramTotalGb, vramPercent, ramUsedGb, ramTotalGb, ramPercent } = useMemo(() => {
+  const { vramUsedGb, vramTotalGb, vramPercent, ramUsedGb, ramTotalGb, ramPercent, hasGpu } = useMemo(() => {
     const device = systemInfo?.gpu?.devices ?? [];
     const totalVram = device.reduce((sum, d) => sum + (d.memory_total_gb ?? 0), 0)
     const usedVram = device.reduce((sum, d) => sum + (d.vram_used_gb ?? 0), 0)
@@ -1010,8 +1010,9 @@ export function AppSidebar() {
     const ramAvailableGb = systemInfo?.memory?.available_gb ?? 0;
     const ramUsedGb = ramTotalGb - ramAvailableGb;
     const ramPercent = systemInfo?.memory?.percent_used ?? 0;
+    const hasGpu = (systemInfo?.gpu?.available ?? false) && device.length > 0;
 
-    return { vramUsedGb: usedVram, vramTotalGb: totalVram, vramPercent, ramUsedGb, ramTotalGb, ramPercent };
+    return { vramUsedGb: usedVram, vramTotalGb: totalVram, vramPercent, ramUsedGb, ramTotalGb, ramPercent, hasGpu };
   }, [systemInfo]);
 
   function getVramColor(percent: number): string {
@@ -1436,6 +1437,7 @@ export function AppSidebar() {
           {monitorEnabled && (
           <SidebarGroup className="mb-2 group-data-[collapsible=icon]:hidden">
             <SidebarGroupContent className="rounded-2xl bg-background/60 px-3.5 py-3 font-mono text-[11px] uppercase tracking-wider text-muted-foreground/80">
+              {hasGpu && (
               <div className="flex items-center gap-2 mb-2">
                 <HugeiconsIcon icon={ChipIcon} strokeWidth={1.5} className="size-4 shrink-0" />
                 <div className="flex-1 space-y-0.5">
@@ -1448,6 +1450,7 @@ export function AppSidebar() {
                   </div>
                 </div>
               </div>
+              )}
 
               <div className="flex items-center gap-2">
                 <HugeiconsIcon icon={RamMemoryIcon} strokeWidth={1.5} className="size-4 shrink-0" />
