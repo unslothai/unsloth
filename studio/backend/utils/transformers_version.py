@@ -816,10 +816,7 @@ def _config_saved_by_transformers_5(cfg: dict | None) -> bool:
 def _cached_config_json(model_name: str, hf_token: str | None) -> dict | None:
     """Already-fetched config.json from the in-process cache (no new fetch); the tier checks
     above populate it, and a miss just skips the version-field probe."""
-    import hashlib
-
-    tok = hashlib.sha256(hf_token.encode()).hexdigest()[:16] if hf_token else None
-    return _config_json_cache.get((model_name, tok))
+    return _config_json_cache.get(_token_cache_key(model_name, hf_token))
 
 
 # --- AutoConfig probe: general tier resolution for ambiguous models ----------
@@ -927,10 +924,11 @@ def _probe_cache_key(model_name: str) -> str:
     Remote ids key by name alone (resolving a Hub revision would need a pre-activation hub
     import that pins the wrong env)."""
     try:
-        st = (Path(model_name) / "config.json").stat()
+        config_path = (Path(model_name) / "config.json").resolve()
+        st = config_path.stat()
     except OSError:
         return model_name
-    return f"{model_name}\0{st.st_size}:{st.st_mtime_ns}"
+    return f"{config_path}\0{st.st_size}:{st.st_mtime_ns}"
 
 
 def _probe_tier(
