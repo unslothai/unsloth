@@ -85,3 +85,18 @@ def test_json_marker_inside_gemma_argument_is_not_a_second_call():
     )
     calls = parse_tool_calls_from_text(content)
     assert [c["function"]["name"] for c in calls] == ["python"], calls
+
+
+def test_bare_string_array_argument_is_quoted():
+    # Gemma may emit an array of bare strings without per-element quotes; they
+    # must be quoted so the call is not dropped.
+    calls = parse_tool_calls_from_text("<|tool_call>call:label{labels:[bug,ui]}<tool_call|>")
+    assert len(calls) == 1, calls
+    assert _args(calls[0]) == {"labels": ["bug", "ui"]}
+
+
+def test_array_keeps_numbers_and_quoted_elements():
+    calls = parse_tool_calls_from_text(
+        '<|tool_call>call:f{nums:[1,2],tags:[<|"|>a,b<|"|>,c]}<tool_call|>'
+    )
+    assert _args(calls[0]) == {"nums": [1, 2], "tags": ["a,b", "c"]}

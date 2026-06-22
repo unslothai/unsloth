@@ -80,6 +80,80 @@ def _balanced_brace_end(
     return -1
 
 
+def _balanced_bracket_end(src: str, start: int) -> int:
+    """Index of the ``]`` matching the ``[`` at ``start``, or -1. Tracks nested
+    ``[]``/``{}`` and double-quoted strings."""
+    depth = 0
+    i = start
+    in_string = False
+    while i < len(src):
+        ch = src[i]
+        if in_string:
+            if ch == "\\" and i + 1 < len(src):
+                i += 2
+                continue
+            if ch == '"':
+                in_string = False
+        elif ch == '"':
+            in_string = True
+        elif ch in "[{":
+            depth += 1
+        elif ch in "]}":
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+    return -1
+
+
+def _split_top_level_commas(src: str) -> list:
+    """Split on commas that are not inside a nested ``[]``/``{}`` or a string."""
+    parts: list[str] = []
+    depth = 0
+    in_string = False
+    start = 0
+    i = 0
+    while i < len(src):
+        ch = src[i]
+        if in_string:
+            if ch == "\\" and i + 1 < len(src):
+                i += 2
+                continue
+            if ch == '"':
+                in_string = False
+        elif ch == '"':
+            in_string = True
+        elif ch in "[{":
+            depth += 1
+        elif ch in "]}":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            parts.append(src[start:i])
+            start = i + 1
+        i += 1
+    parts.append(src[start:])
+    return parts
+
+
+def _quote_gemma_array_elements(body: str) -> str:
+    """Quote bare (unquoted) string elements in a Gemma array value. Gemma may
+    emit ``labels:[bug,ui]`` without per-element quotes; left as-is json.loads
+    fails and the whole call is dropped. Quoted strings (already normalised from
+    ``<|"|>``), numbers, and JSON literals are preserved."""
+    out: list[str] = []
+    for element in _split_top_level_commas(body):
+        stripped = element.strip()
+        if not stripped or stripped[0] in '"{[':
+            out.append(element)
+            continue
+        try:
+            json.loads(stripped)
+            out.append(element)
+        except (json.JSONDecodeError, ValueError):
+            out.append(json.dumps(stripped))
+    return ",".join(out)
+
+
 def _normalise_gemma_quoted_strings(src: str) -> str:
     parts: list[str] = []
     i = 0
@@ -148,7 +222,17 @@ def _quote_gemma_object_keys(src: str) -> str:
             while i < len(src) and src[i].isspace():
                 i += 1
             parts.append(src[ws:i])
-            if i < len(src) and src[i] not in '"{[':
+            if i < len(src) and src[i] == "[":
+                # Array value: quote bare string elements (e.g. labels:[bug,ui])
+                # so json.loads succeeds instead of dropping the call.
+                arr_end = _balanced_bracket_end(src, i)
+                if arr_end < 0:
+                    parts.append(src[i:])
+                    i = len(src)
+                else:
+                    parts.append("[" + _quote_gemma_array_elements(src[i + 1 : arr_end]) + "]")
+                    i = arr_end + 1
+            elif i < len(src) and src[i] not in '"{':
                 v_start = i
                 # Consume the bare value up to `}` or a comma that starts the
                 # next key:value pair; a comma inside the value (e.g.

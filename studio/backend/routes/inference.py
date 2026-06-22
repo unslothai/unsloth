@@ -9599,6 +9599,25 @@ async def _openai_passthrough_stream(
                     )
                     if monitor_event == "error":
                         saw_stream_error = True
+                    # If a trailing usage-only chunk (include_usage) arrives before
+                    # any finish chunk, emit the synthetic finish first so the order
+                    # stays finish -> usage -> [DONE], matching the other streams.
+                    if (
+                        isinstance(chunk_data, dict)
+                        and chunk_data.get("usage")
+                        and not (
+                            isinstance(chunk_data.get("choices"), list) and chunk_data["choices"]
+                        )
+                        and not saw_finish_reason
+                        and not saw_stream_error
+                        and not cancel_event.is_set()
+                    ):
+                        finish_line = _synthetic_finish_line()
+                        _monitor_openai_sse_line(
+                            monitor_id, finish_line, llama_backend.context_length
+                        )
+                        yield finish_line + "\n\n"
+                        saw_finish_reason = True
                     # Relay verbatim to preserve llama-server's native id,
                     # finish_reason, delta.tool_calls, and usage chunks.
                     yield raw_line + "\n\n"
