@@ -93,7 +93,10 @@ def test_grad_enabled_forward_marks_seen_no_grad_does_not():
     assert m._unsloth_pretrain_marker["seen"] is True
 
 
-def test_reset_clears_seen_and_warns_when_a_stray_forward_was_seen():
+def test_reset_clears_seen_and_warns_when_a_stray_forward_was_seen(monkeypatch):
+    # Pin compile on: the reset only warns/resets when UNSLOTH_COMPILE_DISABLE != "1", which a
+    # GPU-free CI env may set, so force it here to make the warn assertion deterministic.
+    monkeypatch.setenv("UNSLOTH_COMPILE_DISABLE", "0")
     m = torch.nn.Linear(2, 2)
     _unsloth_install_pretrain_detector(m)
     m._unsloth_pretrain_marker["seen"] = True  # a stray pre-train forward
@@ -109,9 +112,11 @@ def test_reset_clears_seen_and_warns_when_a_stray_forward_was_seen():
     assert m._unsloth_pretrain_marker["seen"] is False  # evidence consumed
 
 
-def test_reset_tears_down_hook_even_when_not_seen():
+def test_reset_tears_down_hook_even_when_not_seen(monkeypatch):
     # The clean path still removes the one-shot hook so it adds no per-step cost, but must not
-    # warn or reset Dynamo (nothing was poisoned).
+    # warn or reset Dynamo (nothing was poisoned). Pin compile on so the absent warning proves
+    # seen==False is the reason, not a disabled-compile short circuit.
+    monkeypatch.setenv("UNSLOTH_COMPILE_DISABLE", "0")
     m = torch.nn.Linear(2, 2)
     _unsloth_install_pretrain_detector(m)  # seen stays False
     trainer = _Trainer()
