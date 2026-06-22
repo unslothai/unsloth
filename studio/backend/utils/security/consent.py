@@ -267,15 +267,11 @@ def evaluate_remote_code_consent_for_targets(
             primary, False, False, None, None, "", "trust_remote_code disabled"
         )
 
-    # Persistent per-user approval (skips only the prompt, never the scan). Seed the stored
-    # fingerprint so the authoritative scan below auto-approves an unchanged repo. The seed
-    # is gated so it can never weaken the scan:
-    #   * the approval must be from the current scanner ruleset (reclassified bytes re-show);
-    #   * when a fresh commit SHA is resolvable it must match the approved revision (a moved
-    #     repo re-prompts; a None SHA from a local/offline target relies on the fingerprint).
-    # The fingerprint (which also covers external auto_map repos) and the unconditional
-    # CRITICAL block remain in force, so a stale/forged store cannot auto-run changed or
-    # CRITICAL code.
+    # Persistent per-user approval: seed the stored fingerprint so the authoritative scan
+    # below auto-approves an unchanged repo (skips only the prompt, never the scan). Gated so
+    # it cannot weaken the scan: the approval must match the current scanner ruleset, and a
+    # resolvable commit SHA must match the approved revision (a moved repo re-prompts; a None
+    # SHA relies on the fingerprint). The fingerprint and the CRITICAL block still apply.
     caller_approved_fingerprint = approved_fingerprint
     if subject:
         from utils.security import remote_code_approvals
@@ -373,9 +369,9 @@ def evaluate_remote_code_consent_for_targets(
             fingerprint[:12],
         )
 
-    # Persist a genuine user approval (the caller supplied the matching fingerprint, not a
-    # cache seed) so the same unchanged repo is not re-prompted next session. The current
-    # scanner version is stored so a later ruleset change invalidates this approval.
+    # Persist a genuine user approval (caller supplied the matching fingerprint, not a cache
+    # seed) under the current scanner version, so the unchanged repo is not re-prompted until
+    # the code or the ruleset changes.
     if approved and subject and caller_approved_fingerprint == fingerprint:
         from utils.security import remote_code_approvals
         remote_code_approvals.record(

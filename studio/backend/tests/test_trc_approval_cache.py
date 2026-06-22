@@ -3,12 +3,9 @@
 
 """Tests for the persistent per-user trust_remote_code approval cache.
 
-The cache only ever skips the DIALOG, never the scan: every load re-scans, so CRITICAL is
-hard-blocked every time and a hand-edited store cannot auto-run changed or malicious code.
-A stored approval (for the current scanner ruleset, same commit SHA when resolvable) seeds
-the authoritative fingerprint check so an unchanged repo auto-approves while any content
-change re-prompts. The scanner and fingerprint run for real; only the config/file fetch and
-the commit-SHA lookup are stubbed.
+The cache skips only the DIALOG, never the scan: every load re-scans (CRITICAL always
+blocked), and a stored approval just seeds the authoritative fingerprint check. The scanner
+and fingerprint run for real; only the config/file fetch and commit-SHA lookup are stubbed.
 """
 
 import pytest

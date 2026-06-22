@@ -1657,9 +1657,8 @@ async def scan_model_remote_code(
         )
         payload = decision.response_payload()
         payload["requires_trust_remote_code"] = decision.has_remote_code
-        # A prior approval by this user for the unchanged repo lets the dialog be skipped.
-        # The scan still ran (the cache only skips the prompt), so this reflects a real
-        # fingerprint match under the current scanner ruleset.
+        # Prior approval for the unchanged repo lets the dialog be skipped; the scan still
+        # ran, so this is a real fingerprint match under the current ruleset.
         payload["already_approved"] = (
             decision.has_remote_code
             and not decision.blocked

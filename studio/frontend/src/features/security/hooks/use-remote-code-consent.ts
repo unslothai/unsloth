@@ -54,8 +54,7 @@ export async function confirmRemoteCodeIfNeeded({
     return true;
   }
 
-  // This user already approved this exact code (same commit + fingerprint) and nothing
-  // unsafe was flagged: reuse the approval without re-prompting.
+  // Already approved this exact code and nothing unsafe flagged: reuse without re-prompting.
   if (scan.alreadyApproved && scan.unsafeFiles.length === 0 && !scan.securityBlocked) {
     onApprove(scan.fingerprint);
     return true;
