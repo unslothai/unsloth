@@ -109,15 +109,11 @@ def test_array_of_objects_is_normalised():
         "<|tool_call>call:batch{items:[{path:a,mode:r},{path:b,mode:w}]}<tool_call|>"
     )
     assert len(calls) == 1, calls
-    assert _args(calls[0]) == {
-        "items": [{"path": "a", "mode": "r"}, {"path": "b", "mode": "w"}]
-    }
+    assert _args(calls[0]) == {"items": [{"path": "a", "mode": "r"}, {"path": "b", "mode": "w"}]}
 
 
 def test_nested_array_elements_are_normalised():
-    calls = parse_tool_calls_from_text(
-        "<|tool_call>call:grid{cells:[[a,b],[c,d]]}<tool_call|>"
-    )
+    calls = parse_tool_calls_from_text("<|tool_call>call:grid{cells:[[a,b],[c,d]]}<tool_call|>")
     assert _args(calls[0]) == {"cells": [["a", "b"], ["c", "d"]]}
 
 
