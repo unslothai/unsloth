@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Shared guard against `unsloth` / `unsloth_zoo` namespace-package shadows.
-
-Dependency-free (stdlib only) so every subprocess entry point can call it
-before any heavy ML import. See `ensure_real_packages` for the full rationale.
-"""
+"""Recover `unsloth`/`unsloth_zoo` from a namespace-package shadow. Stdlib-only."""
 
 from __future__ import annotations
 
@@ -14,19 +10,10 @@ import sys
 
 
 def ensure_real_packages(*names: str) -> None:
-    """Stop `import <name>` from binding to a namespace-package shadow.
-
-    A directory named like the package but missing __init__.py on sys.path (a
-    stray checkout, a partial clone, or a polluted PYTHONPATH) makes the path
-    finder return a namespace package, so `from unsloth import FastLanguageModel`
-    dies with "cannot import name ... (unknown location)". A normal
-    site-packages install always wins, so only source/editable installs are
-    exposed. Drop the offending entries, import the real packages, then restore
-    sys.path so other modules on those entries keep importing.
-
-    Pass dependency-first (e.g. ``"unsloth_zoo", "unsloth"``); the real imports
-    are then performed dependency-last so each package's __init__ runs in order.
-    """
+    """Drop sys.path entries where a bare `<name>/` dir (no __init__.py) shadows
+    the installed package as a namespace, import the real packages, restore
+    sys.path. No-op without a shadow. Pass dependency-first (e.g. "unsloth_zoo",
+    "unsloth"); imports run dependency-last."""
     import importlib
     import importlib.util
 
@@ -37,8 +24,7 @@ def ensure_real_packages(*names: str) -> None:
             spec = importlib.util.find_spec(name)
         except (ImportError, ValueError, AttributeError):
             spec = None
-        # a real package exposes its __init__ via spec.origin; a namespace
-        # shadow has origin None/"namespace" and only search locations
+        # real package -> spec.origin is its __init__; namespace shadow -> None/"namespace"
         if spec is None or spec.origin not in (None, "namespace"):
             continue
         dirs = {os.path.realpath(d) for d in (spec.submodule_search_locations or [])}
@@ -60,9 +46,7 @@ def ensure_real_packages(*names: str) -> None:
             del sys.modules[cached]
     try:
         importlib.invalidate_caches()
-        # Import unsloth before unsloth_zoo (names are dependency-first):
-        # unsloth.__init__ runs ROCm/Windows bnb fixes before it imports zoo,
-        # so importing zoo first here would skip them. Repeat import is a no-op.
+        # import unsloth before unsloth_zoo: unsloth.__init__ runs GPU/bnb fixes zoo relies on
         for name in reversed(names):
             importlib.import_module(name)
     finally:

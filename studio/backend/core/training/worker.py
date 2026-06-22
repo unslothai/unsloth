@@ -3156,9 +3156,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
     # ── 1. Import embedding-specific libraries ──
     _send_status(event_queue, "Importing embedding libraries...")
     try:
-        # Recover from any namespace-package shadow (a stray `unsloth/` dir on
-        # PYTHONPATH) before importing Unsloth; the LLM path gets this via
-        # trainer.py, but embedding training imports unsloth directly.
+        # Recover from a namespace-package shadow (embedding imports unsloth directly).
         from core.import_guards import ensure_real_packages
 
         ensure_real_packages("unsloth_zoo", "unsloth")

@@ -46,8 +46,7 @@ if hasattr(torch._dynamo.config, "recompile_limit"):
     torch._dynamo.config.recompile_limit = 64
 
 
-# Shared with the inference / export / embedding workers: drop any
-# namespace-package shadow for unsloth/unsloth_zoo before importing them.
+# Drop any unsloth/unsloth_zoo namespace-package shadow before importing them.
 from core.import_guards import ensure_real_packages as _ensure_real_packages
 
 _ensure_real_packages("unsloth_zoo", "unsloth")

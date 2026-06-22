@@ -466,9 +466,8 @@ type ChatRuntimeStore = {
   autoTitle: boolean;
   hfToken: string;
   modelsError: string | null;
-  // Set only when an actual model LOAD attempt fails (not on refresh/list/
-  // unload errors, which set modelsError). Lets the image/audio attach gates
-  // distinguish "the last load failed" from the generic "no model picked".
+  // Set only when a LOAD fails (not refresh/list/unload, which use modelsError);
+  // lets the attach gates flag a failed load vs "no model picked".
   lastModelLoadError: string | null;
   activeGgufVariant: string | null;
   ggufContextLength: number | null;

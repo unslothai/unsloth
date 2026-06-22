@@ -22,9 +22,7 @@ export function getImageInputUnavailableReason({
   externalModelLabel?: string | null;
   loadedIsMultimodal: boolean;
   modelLoaded: boolean;
-  // The runtime `lastModelLoadError` (set only when an actual load attempt
-  // failed), if any. Lets the no-model branch distinguish a failed load from
-  // "no model picked".
+  // Runtime lastModelLoadError; lets the no-model branch flag a failed load.
   loadError?: string | null;
 }): string | null {
   if (isExternalModel) {
@@ -45,10 +43,7 @@ export function getImageInputUnavailableReason({
     return null;
   }
   if (!modelLoaded) {
-    // A failed load never sets the checkpoint, so modelLoaded stays false and
-    // the bare "Load a model" hint wrongly implies the user just forgot to
-    // pick one. When the last load actually errored, say so and point at the
-    // logs instead.
+    // Distinguish a failed load from "no model picked yet".
     if (loadError) {
       return "The last model failed to load. Check the server logs, then load a model before adding images.";
     }
