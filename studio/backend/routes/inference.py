@@ -18,6 +18,7 @@ import httpx
 from loggers import get_logger
 import asyncio
 import threading
+import weakref
 
 
 import re as _re
@@ -2065,8 +2066,18 @@ def get_llama_cpp_backend() -> LlamaCppBackend:
     return _llama_cpp_backend
 
 
-# Serializes opt-in auto-switch loads so two requests can't race a swap.
-_auto_switch_lock = asyncio.Lock()
+# Serializes opt-in auto-switch loads so two requests can't race a swap. One
+# lock per running loop, since a module-level asyncio.Lock binds to a single
+# loop and breaks multi-loop runners (e.g. pytest's per-test loops on pre-3.10).
+_auto_switch_locks: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
+
+
+def _auto_switch_lock() -> asyncio.Lock:
+    loop = asyncio.get_running_loop()
+    lock = _auto_switch_locks.get(loop)
+    if lock is None:
+        lock = _auto_switch_locks[loop] = asyncio.Lock()
+    return lock
 
 
 def _auto_switch_target_loaded(backend, target_id: str, variant: Optional[str]) -> bool:
@@ -2115,7 +2126,7 @@ async def _maybe_auto_switch_model(
 
     if _already_serving():
         return
-    async with _auto_switch_lock:
+    async with _auto_switch_lock():
         if _already_serving():
             return
         # Apply this model's saved launch flags so the swap honors the user's config.

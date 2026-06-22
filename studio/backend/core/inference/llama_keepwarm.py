@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
+import weakref
 
 from loggers import get_logger
 
@@ -22,8 +23,18 @@ logger = get_logger(__name__)
 _lock = threading.Lock()
 _inflight = 0
 _last_active = time.monotonic()
-# Guards inflight bumps against the idle-check-then-unload race.
-_unload_gate = asyncio.Lock()
+# Guards inflight bumps against the idle-check-then-unload race. One lock per
+# running loop: a module-level asyncio.Lock binds to one loop and breaks
+# multi-loop runners (e.g. pytest's per-test loops on pre-3.10).
+_unload_gates: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
+
+
+def _unload_gate() -> asyncio.Lock:
+    loop = asyncio.get_running_loop()
+    gate = _unload_gates.get(loop)
+    if gate is None:
+        gate = _unload_gates[loop] = asyncio.Lock()
+    return gate
 
 _INFERENCE_PREFIXES = ("/v1/", "/api/inference/")
 _INFERENCE_SUFFIXES = (
@@ -85,7 +96,7 @@ class LlamaKeepWarmMiddleware:
             await self.app(scope, receive, send)
             return
 
-        async with _unload_gate:
+        async with _unload_gate():
             _note_start()
         ended = {"done": False}
 
@@ -126,7 +137,7 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
                 seen_model = current
                 if current is not None:
                     _note_activity()
-            async with _unload_gate:
+            async with _unload_gate():
                 if backend.is_loaded and _is_idle(ttl):
                     await asyncio.to_thread(backend.unload_model)
                     logger.info("Idle auto-unload: freed GGUF after %ss idle", ttl)
