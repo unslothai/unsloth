@@ -196,10 +196,13 @@ class TestCheckTokenizerConfigNeedsV5:
         class _Resp:
             def __init__(self, body):
                 self._b = body
+
             def read(self):
                 return self._b.encode()
+
             def __enter__(self):
                 return self
+
             def __exit__(self, *a):
                 return False
 
