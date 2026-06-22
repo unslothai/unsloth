@@ -431,9 +431,8 @@ def _load_config_json(model_name: str, hf_token: str | None = None) -> dict | No
         _config_json_cache[cache_key] = cfg
         return cfg
     except urllib.error.HTTPError as exc:
-        # 401/403/404 is a definitive access answer, not a blip: do NOT fall back to the
-        # hub cache, or an unauthenticated/wrong-token request could read another caller's
-        # cached private metadata. Treat it as "no config".
+        # 401/403/404 is a definitive access answer: never serve another caller's cached
+        # private metadata to an unauthenticated/wrong-token request.
         if exc.code in (401, 403, 404):
             logger.debug("config.json access denied for '%s': %s", model_name, exc)
             return None
@@ -441,17 +440,13 @@ def _load_config_json(model_name: str, hf_token: str | None = None) -> dict | No
         return _config_json_from_hf_cache(model_name)
     except Exception as exc:
         logger.debug("Could not fetch config.json for '%s': %s", model_name, exc)
-        # Transient failure (timeout, network blip): serve the hub cache but do NOT cache
-        # it, so a later call retries the network once connectivity returns.
+        # Transient: serve the hub cache uncached so the next call retries the network.
         return _config_json_from_hf_cache(model_name)
 
 
 def _config_json_is_definitive(model_name: str) -> bool:
-    """True if the last unauthenticated ``_load_config_json`` read was definitive (local
-    file, offline hub cache, or a completed network fetch) rather than a transient
-    fallback. Transient reads are deliberately not stored, so a missing entry means
-    "retry next time" -- callers use this to avoid memoizing a network blip.
-    """
+    """True if the last unauthenticated ``_load_config_json`` read was cached (definitive),
+    not a transient fallback (deliberately not stored, so callers re-check next call)."""
     return (model_name, None) in _config_json_cache
 
 
@@ -505,13 +500,8 @@ def _config_needs_510(cfg: dict) -> bool:
 
 
 def _check_config_needs_550(model_name: str) -> bool:
-    """True if ``config.json`` has architectures/model_type needing transformers
-    5.5.0 (e.g. Gemma 4).
-
-    Checks locally first, else fetches from HuggingFace. Cached in
-    ``_config_needs_550_cache`` only for a definitive read; a transient fetch failure
-    retries next call instead of pinning the wrong tier. Returns False on any error
-    (fail-open to lower tier).
+    """True if ``config.json`` needs transformers 5.5.0 (e.g. Gemma 4). Local first, else
+    fetched; cached only for a definitive read so a transient miss retries. False on error.
     """
     if model_name in _config_needs_550_cache:
         return _config_needs_550_cache[model_name]

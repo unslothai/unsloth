@@ -560,13 +560,12 @@ class TestConfigJsonHfCacheFallback:
     def test_auth_failure_does_not_serve_cache(self, tmp_path: Path, monkeypatch):
         import urllib.error
 
-        # A repo whose config.json is in the hub cache from an earlier authorized session.
+        # config.json cached from an earlier authorized session; an unauthenticated 4xx
+        # must not be handed that private metadata.
         cfg = {"model_type": "nemotron_h", "hybrid_override_pattern": "M-M*-"}
         self._seed_cache(tmp_path, "private/model", cfg)
         monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
         monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
-        # 401/403/404 is a definitive "no access": an unauthenticated caller must not be
-        # handed the cached private metadata.
         for code in (401, 403, 404):
             _config_json_cache.clear()
             err = urllib.error.HTTPError("url", code, "denied", {}, None)
