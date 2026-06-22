@@ -745,7 +745,15 @@ export function ModelsPage() {
   // user can confirm it is already downloaded.
   const isVisibleInventoryRow = useCallback(
     (row: CachedInventoryRow | LocalInventoryRow) =>
-      !isHiddenModelId(row.id, row.repoId) ||
+      // Local rows can have a null repoId and an id that is a hash rather than
+      // the file path/name, so also check path/title (the backend's
+      // _is_hidden_model checks the on-disk path for the same reason).
+      !isHiddenModelId(
+        row.id,
+        row.repoId,
+        row.kind !== "cache" ? row.path : undefined,
+        row.kind !== "cache" ? row.title : undefined,
+      ) ||
       (inventoryTokens.length > 0 && inventoryRowMatches(row, inventoryTokens)),
     [inventoryTokens],
   );
