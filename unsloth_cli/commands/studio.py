@@ -260,6 +260,28 @@ _PARALLEL_DEFAULT_RUN = 4  # pre-PR hardcoded for `unsloth studio run`
 _PARALLEL_DEFAULT_PLAIN = 1  # pre-PR effective for plain `unsloth studio`
 
 
+def _resolve_secure(secure: bool, not_secure: bool) -> bool:
+    """Reconcile the deprecated --not-secure alias with --secure/--no-secure.
+
+    Typer parses --secure and --not-secure as independent options, so the alias
+    cannot lean on Click's last-wins ordering the way --secure/--no-secure do.
+    Restore that ordering from argv: --not-secure only forces secure off when it
+    is the last of the secure flags on the command line, matching the backend's
+    BooleanOptionalAction.
+    """
+    if not not_secure:
+        return secure
+    last_secure = max(
+        (i for i, a in enumerate(sys.argv) if a in ("--secure", "--no-secure")),
+        default = -1,
+    )
+    last_not_secure = max(
+        (i for i, a in enumerate(sys.argv) if a == "--not-secure"),
+        default = -1,
+    )
+    return secure if last_secure > last_not_secure else False
+
+
 def _iter_editable_studio_source_roots(venv_dir: Path):
     """Yield repo roots from setuptools `__editable___*_finder.py` files in
     *venv_dir*'s site-packages whose MAPPING includes a `studio` entry.
@@ -675,6 +697,12 @@ def studio_default(
         "if the tunnel can't start. Without it, --no-secure also serves the raw "
         "0.0.0.0 port, which is reachable from anywhere on the network.",
     ),
+    not_secure: bool = typer.Option(
+        False,
+        "--not-secure",
+        hidden = True,
+        help = "Deprecated alias for --no-secure.",
+    ),
     verbose: bool = typer.Option(
         False,
         "--verbose",
@@ -690,6 +718,8 @@ def studio_default(
     ),
 ):
     """Launch the Unsloth Studio server."""
+    # Back-compat: --not-secure is a deprecated alias for --no-secure.
+    secure = _resolve_secure(secure, not_secure)
     # Runs before every subcommand (run/setup/update/...).
     _ensure_studio_env_exported()
     if ctx.invoked_subcommand is not None:
@@ -1039,6 +1069,12 @@ def run(
         "if the tunnel can't start. Without it, --no-secure also serves the raw "
         "0.0.0.0 port, which is reachable from anywhere on the network.",
     ),
+    not_secure: bool = typer.Option(
+        False,
+        "--not-secure",
+        hidden = True,
+        help = "Deprecated alias for --no-secure.",
+    ),
     tensor_parallel: bool = typer.Option(
         False,
         "--tensor-parallel/--no-tensor-parallel",
@@ -1066,6 +1102,8 @@ def run(
         unsloth studio run --model some-model --chat-template-file /path/to/tpl.jinja
         unsloth studio run --model unsloth/Qwen3-27B-GGUF --gguf-variant Q8_0 --tensor-parallel
     """
+    # Back-compat: --not-secure is a deprecated alias for --no-secure.
+    secure = _resolve_secure(secure, not_secure)
     extra_llama_args: List[str] = list(ctx.args) if ctx.args else []
 
     # Set before any re-exec so the in-venv server inherits it via the env.
