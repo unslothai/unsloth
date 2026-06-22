@@ -1234,13 +1234,17 @@ class FastModel(FastBaseModel):
 
         # Save model types and loading method
         lowered_model_name = model_name.lower()
-        # Build UNSLOTH_MODEL_NAME freshly from THIS load's model name + flags. Do not
+        # Build UNSLOTH_MODEL_NAME freshly from THIS load's model types + flags. Do not
         # prepend the previous os.environ value: it is inherited across processes (e.g. a
         # save->reload subprocess) and accumulates stale load flags. A leftover
         # "_load_in_4bit_" from an earlier bnb-4bit load would make gpt-oss wrongly take the
         # BnB router patch (router.linear.weight) when later reloading a merged 16bit
         # checkpoint (router.weight), raising "some weights are not initialized".
-        string = lowered_model_name + "," + model_types_all
+        # Only the model TYPE tokens (model_types_all) and the load flags below are
+        # consumed downstream (e.g. `"gpt_oss" in`, `"_load_in_4bit_" in`); the raw model
+        # name/path is intentionally NOT included, so a local path that happens to contain
+        # a flag sentinel like "_load_in_4bit_" cannot be misread as that flag.
+        string = model_types_all
         if load_in_4bit:
             string += "_load_in_4bit_"
         if load_in_8bit:
