@@ -100,6 +100,14 @@ def get_connection() -> sqlite3.Connection:
     """Get a connection to the auth database, creating tables if needed."""
     ensure_dir(DB_PATH.parent)
     conn = sqlite3.connect(DB_PATH)
+    # Keep the auth dir + DB private (they hold the JWT/identity secrets and
+    # password hashes); sqlite3.connect would otherwise create the DB 0644 under
+    # a 022 umask, letting another OS user read the identity secret and forge proofs.
+    for _path, _mode in ((DB_PATH.parent, 0o700), (DB_PATH, 0o600)):
+        try:
+            os.chmod(_path, _mode)
+        except OSError:
+            pass
     conn.row_factory = sqlite3.Row
     conn.execute(
         """
@@ -247,9 +255,12 @@ def get_or_create_identity_secret() -> bytes:
     return secret
 
 
-def compute_identity_proof(nonce: bytes) -> str:
-    """HMAC-SHA256 proof that the caller holds this install's identity secret."""
-    return hmac.new(get_or_create_identity_secret(), nonce, hashlib.sha256).hexdigest()
+def compute_identity_proof(nonce: bytes, port: int) -> str:
+    """HMAC-SHA256 proof that the caller holds this install's identity secret,
+    bound to the server's listening `port` so a proof relayed from a Studio on a
+    different port (a port squatter proxying to the real one) won't match."""
+    msg = nonce + b"|" + str(int(port)).encode()
+    return hmac.new(get_or_create_identity_secret(), msg, hashlib.sha256).hexdigest()
 
 
 _API_KEY_PBKDF2_ITERATIONS = 100_000

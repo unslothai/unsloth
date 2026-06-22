@@ -319,6 +319,7 @@ def verify_studio_identity(base: str, timeout: float = 3.0) -> bool:
     import json
     import secrets as _secrets
     import urllib.request
+    from urllib.parse import urlparse
 
     try:
         import studio.backend.core  # noqa: F401  puts studio/backend on sys.path
@@ -326,6 +327,8 @@ def verify_studio_identity(base: str, timeout: float = 3.0) -> bool:
     except Exception:
         return False
 
+    parsed = urlparse(base)
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
     nonce = _secrets.token_bytes(32)
     query = base64.urlsafe_b64encode(nonce).decode()
     request = urllib.request.Request(
@@ -333,14 +336,17 @@ def verify_studio_identity(base: str, timeout: float = 3.0) -> bool:
     )
     try:
         # No redirects: a 302 could relay a real Studio's proof (see urlopen_no_redirect).
+        # Cap the read: the server is still unverified, so don't trust its length.
         with urlopen_no_redirect(request, timeout = timeout) as response:
-            proof = json.loads(response.read().decode() or "{}").get("proof")
+            proof = json.loads(response.read(65536).decode() or "{}").get("proof")
     except Exception:
         return False
     if not isinstance(proof, str):
         return False
     try:
-        expected = storage.compute_identity_proof(nonce)
+        # Bind to the port we connected to: a proof relayed from a Studio on
+        # another port was computed for that port and won't match.
+        expected = storage.compute_identity_proof(nonce, port)
     except Exception:
         return False
     return _hmac.compare_digest(proof, expected)

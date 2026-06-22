@@ -215,11 +215,14 @@ def _clear_login_bucket(key: tuple[str, str]) -> None:
         _LOGIN_IP_BUCKETS.pop(ip, None)
 
 
+# Sync def (not async): compute_identity_proof touches SQLite on the first call,
+# so FastAPI runs it in the threadpool rather than blocking the event loop.
 @router.get("/identity")
-async def identity(nonce: str) -> dict:
+def identity(nonce: str, request: Request) -> dict:
     """Challenge-response proof this is the real local Studio: caller sends a nonce,
-    gets HMAC(install identity secret, nonce). Unauthenticated and side-effect free;
-    a process that can't read the same-user secret can't forge a matching proof."""
+    gets HMAC(install identity secret, nonce, listening port). Unauthenticated and
+    side-effect free; a process that can't read the same-user secret can't forge a
+    proof, and binding to our real port stops a squatter relaying the real Studio's."""
     try:
         raw = base64.urlsafe_b64decode(nonce)
     except Exception:
@@ -230,7 +233,11 @@ async def identity(nonce: str) -> dict:
         raise HTTPException(
             status_code = status.HTTP_400_BAD_REQUEST, detail = "nonce must decode to 16-128 bytes"
         )
-    return {"proof": storage.compute_identity_proof(raw)}
+    # Our real listening port from the socket (request.scope), never the
+    # client-controlled Host header.
+    server = request.scope.get("server")
+    port = server[1] if server and server[1] is not None else 0
+    return {"proof": storage.compute_identity_proof(raw, port)}
 
 
 @router.get("/status", response_model = AuthStatusResponse)
