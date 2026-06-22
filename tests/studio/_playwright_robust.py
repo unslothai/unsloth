@@ -318,6 +318,59 @@ def dump_diagnostics(
             info(f"diagnostics: json sidecar {name} failed: {exc}")
 
 
+# Markers for the transient Playwright error raised when a navigation, reload, or
+# auth refresh destroys the JS execution context while an evaluate is in flight.
+_CONTEXT_LOST_MARKERS = (
+    "Execution context was destroyed",
+    "context with specified id",
+    "frame was detached",
+    "Target closed",
+    "Target page, context or browser has been closed",
+    "Execution context is not available",
+)
+
+
+# Robust page/locator.evaluate.
+# A navigation mid-evaluate destroys the execution context and raises at the Python
+# level (not a JS result), which would crash the script. Retry that transient class
+# within a small budget, settling the page first; non-transient or persistent errors
+# still propagate.
+def robust_evaluate(
+    target: Any,
+    expression: str,
+    arg: Any = None,
+    *,
+    retries: int = 2,
+    backoff_ms: int = 250,
+) -> Any:
+    """`target.evaluate(expression, arg)` for a Page or Locator, retried when a
+    concurrent navigation destroys the execution context. Re-raises on a
+    non-transient error or after the final attempt."""
+    page = target if hasattr(target, "wait_for_load_state") else getattr(target, "page", None)
+    attempts = max(1, int(retries) + 1)
+    for attempt in range(attempts):
+        try:
+            return target.evaluate(expression, arg)
+        except Exception as exc:
+            transient = any(s in str(exc) for s in _CONTEXT_LOST_MARKERS)
+            if not transient or attempt == attempts - 1:
+                raise
+            try:
+                sys.stderr.write(
+                    f"[robust_evaluate] execution context lost "
+                    f"({attempt + 1}/{attempts}); settling + retrying\n"
+                )
+                sys.stderr.flush()
+            except Exception:
+                pass
+            if page is not None:
+                try:
+                    page.wait_for_load_state("domcontentloaded", timeout = 10_000)
+                except Exception:
+                    pass
+            time.sleep((backoff_ms * (2**attempt)) / 1000.0)
+
+
 # Bounded in-page fetch.
 # `page.evaluate(...)` has no `timeout=`, so a stuck fetch hangs the script until
 # the runner timeout (run 25696797934 / PR #5387 burned 27+ min). evaluate_fetch
@@ -386,38 +439,11 @@ def evaluate_fetch(
     last: dict[str, Any] | None = None
     attempts = max(1, int(transport_retries) + 1)
     for attempt in range(attempts):
-        try:
-            result = page.evaluate(js, payload)
-        except Exception as exc:
-            # A navigation or auth refresh can destroy the JS execution context
-            # mid-evaluate ("Execution context was destroyed", "frame was detached",
-            # "Target closed"). That is a transient race, not a real failure: let the
-            # page settle and retry within the same budget instead of crashing.
-            msg = str(exc)
-            transient = any(s in msg for s in (
-                "Execution context was destroyed",
-                "context with specified id",
-                "frame was detached",
-                "Target closed",
-                "Target page, context or browser has been closed",
-                "Execution context is not available",
-            ))
-            if not transient or attempt == attempts - 1:
-                raise
-            try:
-                sys.stderr.write(
-                    f"[evaluate_fetch] {method} {url}: execution context lost "
-                    f"({attempt + 1}/{attempts}); settling + retrying\n"
-                )
-                sys.stderr.flush()
-            except Exception:
-                pass
-            try:
-                page.wait_for_load_state("domcontentloaded", timeout = 10_000)
-            except Exception:
-                pass
-            time.sleep((transport_backoff_ms * (2**attempt)) / 1000.0)
-            continue
+        # robust_evaluate retries the evaluate when a navigation destroys the
+        # execution context mid-call; the loop here retries transport failures.
+        result = robust_evaluate(
+            page, js, payload, retries = 2, backoff_ms = transport_backoff_ms
+        )
         last = result
         try:
             status = int(result.get("status") or 0)

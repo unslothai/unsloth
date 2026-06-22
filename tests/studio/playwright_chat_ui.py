@@ -27,6 +27,7 @@ from _playwright_robust import (  # noqa: E402
     is_benign_console_error,
     is_benign_page_error,
     recover_or_replace_page,
+    robust_evaluate,
     wait_for_health,
 )
 
@@ -356,13 +357,13 @@ with sync_playwright() as p:
 
     # /api/models/list and /api/inference/load need a bearer; the
     # frontend stores it under "unsloth_auth_token" (auth/session.ts).
-    token = page.evaluate(
-        "() => localStorage.getItem('unsloth_auth_token')",
+    token = robust_evaluate(
+        page, "() => localStorage.getItem('unsloth_auth_token')",
     )
     if not token:
         # Fall back: exchange the refresh token via /api/auth/refresh.
-        refresh_token = page.evaluate(
-            "() => localStorage.getItem('unsloth_auth_refresh_token')",
+        refresh_token = robust_evaluate(
+            page, "() => localStorage.getItem('unsloth_auth_refresh_token')",
         )
         if refresh_token:
             refresh_resp = evaluate_fetch(
