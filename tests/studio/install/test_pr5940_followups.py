@@ -514,12 +514,15 @@ def test_setup_ps1_rocm_cpu_fallback_force_reinstalls():
     # Build $cpuForce as a real array, NOT via an if-expression: PowerShell collapses
     # `$x = if (..) { @("--force-reinstall") }` to a scalar string, which @splat then
     # enumerates char-by-char into broken single-letter args (- - f o r c e ...).
-    assert "$cpuForce = @()" in text and 'if ($ROCmCpuFallback) { $cpuForce = @("--force-reinstall") }' in text, (
+    assert (
+        "$cpuForce = @()" in text
+        and 'if ($ROCmCpuFallback) { $cpuForce = @("--force-reinstall") }' in text
+    ), (
         "setup.ps1 must build $cpuForce as an array assigned outside an if-expression "
         "so @splat passes a single --force-reinstall arg, not per-character"
     )
-    assert '$cpuForce = if ($ROCmCpuFallback)' not in text, (
-        "setup.ps1 must NOT assign $cpuForce from an if-expression (collapses @(\"x\") "
+    assert "$cpuForce = if ($ROCmCpuFallback)" not in text, (
+        'setup.ps1 must NOT assign $cpuForce from an if-expression (collapses @("x") '
         "to a scalar string that @splat explodes char-by-char)"
     )
 
