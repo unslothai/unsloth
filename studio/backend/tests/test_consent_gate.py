@@ -815,6 +815,39 @@ class TestRemoteCodeScan:
         assert not scan_remote_code_files({"modeling_x.py": _SCAN_MALICIOUS}).clean
 
 
+class TestConsentProvider:
+    """_consent_provider attributes the dialog's `from "<provider>"` tag only when safe."""
+
+    @staticmethod
+    def _fn():
+        from routes.models import _consent_provider
+        return _consent_provider
+
+    def test_single_hub_id_returns_owner(self):
+        assert self._fn()("NVIDIA/Nemotron", ["NVIDIA/Nemotron"]) == "NVIDIA"
+        assert self._fn()("NVIDIA/Nemotron", ["NVIDIA/Nemotron"], []) == "NVIDIA"
+
+    def test_multi_target_lora_returns_none(self):
+        # A LoRA scans adapter + base; attributing to one would mislead.
+        assert self._fn()("user/adapter", ["user/adapter", "NVIDIA/base"]) is None
+
+    def test_external_auto_map_ref_returns_none(self):
+        # A single repo whose auto_map pulls code from another repo: don't attribute it.
+        assert self._fn()("owner/repo", ["owner/repo"], ["evilorg/evilrepo"]) is None
+
+    def test_local_path_returns_none(self, tmp_path):
+        d = tmp_path / "org" / "model"
+        d.mkdir(parents = True)
+        assert self._fn()(str(d), [str(d)]) is None
+        assert self._fn()("/home/me/model", ["/home/me/model"]) is None
+
+    def test_non_canonical_id_returns_none(self):
+        fn = self._fn()
+        assert fn("a/b/c", ["a/b/c"]) is None
+        assert fn("/repo", ["/repo"]) is None
+        assert fn("plainname", ["plainname"]) is None
+
+
 class TestScannerCoversAllExecutableCode:
     """repo_remote_code_files must collect every .py the loader could execute, so the fingerprint can't certify unscanned code."""
 

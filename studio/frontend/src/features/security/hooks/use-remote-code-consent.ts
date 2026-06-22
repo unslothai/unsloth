@@ -42,6 +42,7 @@ export async function confirmRemoteCodeIfNeeded({
       scanCreatedRepos: [],
       unsafeFiles: [],
       securityBlocked: false,
+      provider: null,
     };
   }
 
