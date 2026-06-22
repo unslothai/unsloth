@@ -761,9 +761,7 @@ class FastLanguageModel(FastLlamaModel):
         # required: modern tokenizers (e.g. Gemma) store special tokens inside
         # tokenizer_config.json and often omit it, and requiring it forced a
         # fallback to the base repo id, which breaks offline reloads / exports.
-        _has_tok_config = os.path.exists(
-            os.path.join(old_model_name, "tokenizer_config.json")
-        )
+        _has_tok_config = os.path.exists(os.path.join(old_model_name, "tokenizer_config.json"))
         _has_tok_files = (
             os.path.exists(os.path.join(old_model_name, "tokenizer.json"))
             or os.path.exists(os.path.join(old_model_name, "tokenizer.model"))
@@ -1534,9 +1532,7 @@ class FastModel(FastBaseModel):
         # required: modern tokenizers (e.g. Gemma) store special tokens inside
         # tokenizer_config.json and often omit it, and requiring it forced a
         # fallback to the base repo id, which breaks offline reloads / exports.
-        _has_tok_config = os.path.exists(
-            os.path.join(old_model_name, "tokenizer_config.json")
-        )
+        _has_tok_config = os.path.exists(os.path.join(old_model_name, "tokenizer_config.json"))
         _has_tok_files = (
             os.path.exists(os.path.join(old_model_name, "tokenizer.json"))
             or os.path.exists(os.path.join(old_model_name, "tokenizer.model"))

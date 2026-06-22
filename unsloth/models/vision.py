@@ -495,11 +495,24 @@ def _is_offline_related_error(exc):
         pass
     _net_types = tuple(_net_types)
     _wording = (
-        "couldn't connect", "could not connect", "connection error", "connectionerror",
-        "max retries", "offline", "timed out", "timeout", "couldn't reach",
-        "could not reach", "failed to resolve", "getaddrinfo", "name resolution",
-        "no address associated", "network is unreachable", "connection refused",
-        "we couldn't connect to", "proxyerror",
+        "couldn't connect",
+        "could not connect",
+        "connection error",
+        "connectionerror",
+        "max retries",
+        "offline",
+        "timed out",
+        "timeout",
+        "couldn't reach",
+        "could not reach",
+        "failed to resolve",
+        "getaddrinfo",
+        "name resolution",
+        "no address associated",
+        "network is unreachable",
+        "connection refused",
+        "we couldn't connect to",
+        "proxyerror",
     )
     seen = set()
     cur = exc
@@ -550,7 +563,11 @@ def _force_hf_offline():
 
 
 def _construct_vlm_processor_fallback(
-    tokenizer_name, model_type, token, trust_remote_code, local_files_only = False,
+    tokenizer_name,
+    model_type,
+    token,
+    trust_remote_code,
+    local_files_only = False,
 ):
     """Construct a VLM processor manually when AutoProcessor.from_pretrained fails.
 
@@ -583,6 +600,7 @@ def _construct_vlm_processor_fallback(
         # back to hf_hub_download when the path is a real repo id and we are online.
         try:
             import json as _json
+
             tok_config = None
             _local_cfg = os.path.join(tokenizer_name, "tokenizer_config.json")
             if os.path.isdir(tokenizer_name) and os.path.exists(_local_cfg):
@@ -590,9 +608,10 @@ def _construct_vlm_processor_fallback(
                     tok_config = _json.load(f)
             elif not local_files_only:
                 from huggingface_hub import hf_hub_download
-
                 config_path = hf_hub_download(
-                    tokenizer_name, "tokenizer_config.json", token = token,
+                    tokenizer_name,
+                    "tokenizer_config.json",
+                    token = token,
                     local_files_only = local_files_only,
                 )
                 with open(config_path, "r", encoding = "utf-8") as f:
@@ -1286,7 +1305,7 @@ class FastBaseModel:
             # alone does not stop AutoProcessor / AutoTokenizer from issuing a
             # /api/models request during class resolution on current transformers
             # versions, which hangs or fails with no network even when cached.
-            with (_force_hf_offline() if lfo else contextlib.nullcontext()):
+            with _force_hf_offline() if lfo else contextlib.nullcontext():
                 if (whisper_language and whisper_task) or auto_model.__name__.endswith(
                     "ForConditionalGeneration"
                 ):
@@ -1419,7 +1438,7 @@ class FastBaseModel:
             # offline reload uses the cache / local checkpoint dir instead of
             # raising the misleading "weirdly not loaded" error.
             def _last_resort_tokenizer(lfo):
-                with (_force_hf_offline() if lfo else contextlib.nullcontext()):
+                with _force_hf_offline() if lfo else contextlib.nullcontext():
                     from transformers import AutoTokenizer as _AutoTokenizer
                     try:
                         return _AutoTokenizer.from_pretrained(
