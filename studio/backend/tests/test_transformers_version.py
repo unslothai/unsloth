@@ -34,6 +34,7 @@ from utils.transformers_version import (
     _check_tokenizer_config_needs_v5,
     _check_config_needs_510,
     _check_config_needs_550,
+    _load_config_json,
     _config_json_cache,
     _tokenizer_class_cache,
     _config_needs_510_cache,
@@ -1045,6 +1046,42 @@ class TestProbeGating:
         # Tokenizer/known-5.x mode (floor=530): must re-probe and never reuse "default".
         assert _probe_tier(local, None, "tokenizer needs 5.x") == "530"
         assert seen, "tokenizer path reused the cached default result instead of re-probing"
+
+
+class TestLocalCheckpointFilesAppear:
+    """A local checkpoint dir inspected before its files exist must not cache the miss or hit
+    the network, so files written later in the same process are still read (in-progress
+    checkpoints)."""
+
+    def setup_method(self):
+        _tokenizer_class_cache.clear()
+        _config_json_cache.clear()
+
+    def test_tokenizer_config_appearing_later_is_read(self, tmp_path: Path, monkeypatch):
+        local = str(tmp_path)
+
+        def boom(*a, **k):
+            raise AssertionError("a local checkpoint must not be fetched from the Hub")
+
+        monkeypatch.setattr("urllib.request.urlopen", boom)
+        # Before the file exists: not 5.x, no network, and the miss must not be pinned.
+        assert _check_tokenizer_config_needs_v5(local) is False
+        # The file appears with a 5.x-only tokenizer -> the next call must read it.
+        (tmp_path / "tokenizer_config.json").write_text(
+            json.dumps({"tokenizer_class": "TokenizersBackend"})
+        )
+        assert _check_tokenizer_config_needs_v5(local) is True
+
+    def test_config_json_appearing_later_is_read(self, tmp_path: Path, monkeypatch):
+        local = str(tmp_path)
+
+        def boom(*a, **k):
+            raise AssertionError("a local checkpoint must not be fetched from the Hub")
+
+        monkeypatch.setattr("urllib.request.urlopen", boom)
+        assert _load_config_json(local) is None
+        (tmp_path / "config.json").write_text(json.dumps({"model_type": "gemma4"}))
+        assert _load_config_json(local) == {"model_type": "gemma4"}
 
 
 # ---------------------------------------------------------------------------

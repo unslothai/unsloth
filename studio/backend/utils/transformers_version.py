@@ -319,6 +319,12 @@ def _check_tokenizer_config_needs_v5(model_name: str, hf_token: str | None = Non
         except Exception as exc:
             logger.debug("Could not read %s: %s", local_tc, exc)
 
+    # A local checkpoint dir whose tokenizer_config.json is not (yet) present is not an HF
+    # id: don't fetch it from the Hub, and don't cache the miss, so a file written later in
+    # this same process (in-progress checkpoint) is read on the next call.
+    if local_path.is_dir():
+        return False
+
     # Offline: skip the 10s urllib fetch (fail-open to lower tier).
     if _env_offline():
         _tokenizer_class_cache[cache_key] = False
@@ -376,6 +382,12 @@ def _load_config_json(model_name: str, hf_token: str | None = None) -> dict | No
             logger.debug("Could not read %s: %s", local_cfg, exc)
             _config_json_cache[cache_key] = None
             return None
+
+    # A local checkpoint dir whose config.json is not (yet) present is not an HF id: don't
+    # fetch it from the Hub, and don't cache the miss, so a file written later in this same
+    # process (in-progress checkpoint) is read on the next call.
+    if Path(model_name).is_dir():
+        return None
 
     if _env_offline():
         _config_json_cache[cache_key] = None

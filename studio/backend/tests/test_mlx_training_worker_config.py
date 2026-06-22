@@ -239,7 +239,7 @@ def test_activate_transformers_version_or_warn_logs_on_failure(monkeypatch):
     )
     monkeypatch.setattr(_worker, "logger", fake_logger)
 
-    def _boom(_name):
+    def _boom(_name, _hf_token = None):
         raise RuntimeError("venv .venv_t5_550 missing")
 
     monkeypatch.setattr(_worker, "_activate_transformers_version", _boom)
@@ -257,7 +257,9 @@ def test_activate_transformers_version_or_warn_silent_on_success(monkeypatch):
         warning = lambda *a, **k: warnings_logged.append((a, k)),
     )
     monkeypatch.setattr(_worker, "logger", fake_logger)
-    monkeypatch.setattr(_worker, "_activate_transformers_version", lambda _name: None)
+    monkeypatch.setattr(
+        _worker, "_activate_transformers_version", lambda _name, _hf_token = None: None
+    )
 
     _worker._activate_transformers_version_or_warn("meta-llama/Llama-3-8B")
 
