@@ -23,7 +23,6 @@ import { severityTone } from "../lib/severity-tone";
 import { useRemoteCodeConsentDialogStore } from "../stores/remote-code-consent-dialog-store";
 import type {
   RemoteCodeFinding,
-  RemoteCodeScan,
   RemoteCodeSeverity,
   RemoteCodeSnippetRow,
   UnsafeFile,
@@ -162,30 +161,11 @@ function FindingCard({ finding }: { finding: RemoteCodeFinding }) {
   );
 }
 
-/** Display name + provider (HF org) for the consent dialog. Provider is null unless the
- *  id is a canonical `owner/repo` Hub id (not local, not a multi-repo/LoRA scan), so we
- *  never attribute a local dir or another repo's finding to the wrong publisher. */
-function parseModelDisplay(scan?: RemoteCodeScan | null): {
-  displayName: string;
-  provider: string | null;
-} {
-  const modelName = scan?.modelName;
-  if (!modelName) return { displayName: "This model", provider: null };
-  const parts = modelName.split("/");
-  const displayName = parts[parts.length - 1] || modelName;
-  const looksLocal =
-    modelName.startsWith(".") ||
-    modelName.startsWith("/") ||
-    modelName.startsWith("~") ||
-    modelName.includes("\\") ||
-    /^[A-Za-z]:/.test(modelName);
-  const isCanonicalHubId =
-    parts.length === 2 && Boolean(parts[0]) && Boolean(parts[1]);
-  // A LoRA scan also pulls its base, so a single owner could misattribute its finding.
-  const multiRepoScan = (scan?.scanCreatedRepos?.length ?? 0) > 1;
-  const provider =
-    isCanonicalHubId && !looksLocal && !multiRepoScan ? parts[0] : null;
-  return { displayName, provider };
+/** Last path segment of the model id for display. The provider (HF org) is decided
+ *  server-side (``scan.provider``), where locality and scan scope are known. */
+function modelDisplayName(modelName?: string): string {
+  if (!modelName) return "This model";
+  return modelName.split("/").pop() || modelName;
 }
 
 /** ` from "<provider>"` clause, rendered only when a provider was resolved. */
@@ -207,7 +187,8 @@ export function RemoteCodeConsentDialog() {
   const scan = useRemoteCodeConsentDialogStore((s) => s.scan);
   const resolve = useRemoteCodeConsentDialogStore((s) => s.resolve);
 
-  const { displayName, provider } = parseModelDisplay(scan);
+  const displayName = modelDisplayName(scan?.modelName);
+  const provider = scan?.provider ?? null;
   const blocked = scan ? !scan.approvable : false;
   const findings = scan?.findings ?? [];
   const unsafeFiles = scan?.unsafeFiles ?? [];

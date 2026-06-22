@@ -1582,6 +1582,19 @@ async def get_model_config(
         )
 
 
+def _consent_provider(model_name: str, scanned_targets: List[str]) -> Optional[str]:
+    """HF org for the consent dialog's `from "<provider>"` tag, or None.
+
+    Returns the owner only for a single, non-local, canonical ``owner/repo`` Hub id.
+    A LoRA's extra base target (len > 1) or a local/relative path yields None, so the
+    dialog never attributes the scanned code to the wrong publisher.
+    """
+    if len(scanned_targets) != 1 or is_local_path(model_name):
+        return None
+    parts = model_name.split("/")
+    return parts[0] if len(parts) == 2 and all(parts) else None
+
+
 @router.post("/remote-code-scan")
 async def scan_model_remote_code(
     model_name: str = Body(..., embed = True),
@@ -1658,6 +1671,9 @@ async def scan_model_remote_code(
         # created_by_scan = primary flag (older clients); scan_created_repos drives cleanup.
         payload["created_by_scan"] = model_name in scan_created_repos
         payload["scan_created_repos"] = scan_created_repos
+        # Provider (HF org) for the dialog's `from "<provider>"` tag, decided here where
+        # locality and scan scope are known (see _consent_provider).
+        payload["provider"] = _consent_provider(model_name, security_targets)
 
         # Malware gate (metadata-only): surface HF-flagged unsafe files so the dialog can
         # hard-block. Orthogonal to remote code -- a poisoned pickle needs no auto_map.
