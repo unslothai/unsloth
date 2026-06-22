@@ -395,6 +395,25 @@ def check_and_disable_bitsandbytes_loading(
     return load_in_4bit, load_in_8bit, quant_method
 
 
+def sync_unsloth_model_name_bnb_flags(load_in_4bit, load_in_8bit):
+    """Make UNSLOTH_MODEL_NAME's `_load_in_4bit_`/`_load_in_8bit_` tokens match the EFFECTIVE bnb
+    state (after get_model_name remap + check_and_disable). The per-load env is built from the
+    pre-remap config (None for adapter-only PEFT repos), so its tokens can be wrong once the base
+    resolves. Only the gpt-oss patch reads them, so this is gated to gpt-oss; no-op otherwise."""
+    name = os.environ.get("UNSLOTH_MODEL_NAME", "")
+    if "gpt_oss" not in name.replace("-", "_"):
+        return
+    for flag, present in (
+        ("_load_in_4bit_", bool(load_in_4bit)),
+        ("_load_in_8bit_", bool(load_in_8bit)),
+    ):
+        if present and flag not in name:
+            name += flag
+        elif not present and flag in name:
+            name = name.replace(flag, "")
+    os.environ["UNSLOTH_MODEL_NAME"] = name
+
+
 def _get_fp8_mode_and_check_settings(
     load_in_fp8: Union[bool, str],
     fast_inference: bool,

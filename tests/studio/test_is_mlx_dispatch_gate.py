@@ -178,6 +178,12 @@ def test_detect_hardware_picks_mlx_when_only_apple_silicon_available(monkeypatch
     monkeypatch.setitem(sys.modules, "mlx", fake_mlx)
     monkeypatch.setitem(sys.modules, "mlx.core", fake_mlx_core)
 
+    # detect_hardware now gates MLX on the full stack via _has_usable_mlx_stack()
+    # (utils.mlx_repair.mlx_stack_available imports mlx_lm/mlx_vlm and checks
+    # versions); faking mlx.core alone no longer satisfies it. This test asserts the
+    # dispatch decision when the stack IS usable, so model that directly.
+    monkeypatch.setattr(hw, "_has_usable_mlx_stack", lambda: True)
+
     detected = hw.detect_hardware()
     assert detected == hw.DeviceType.MLX, f"expected MLX, got {detected!r}"
 

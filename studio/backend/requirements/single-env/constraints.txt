@@ -13,4 +13,8 @@ fastmcp>=3.0.2
 mcp>=1.24,<2
 websockets>=15.0.1
 
+# anyio 4.14+ breaks cancel scope on Python 3.13 (#6483). Global cap so later
+# with-deps steps (studio.txt, data-designer-deps.txt) can't re-resolve it up.
+anyio<4.14.0
+
 pandas==2.3.3

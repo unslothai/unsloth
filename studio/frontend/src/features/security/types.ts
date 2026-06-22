@@ -43,4 +43,5 @@ export interface RemoteCodeScan {
   scanCreatedRepos: string[];
   unsafeFiles: UnsafeFile[]; // files HF flagged unsafe; non-empty => hard block
   securityBlocked: boolean; // blocked specifically by the malware gate
+  provider: string | null; // HF org for the "from <provider>" tag; null when unattributable
 }
