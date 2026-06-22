@@ -196,18 +196,15 @@ from unsloth_zoo.temporary_patches import (
 
 
 def _unsloth_install_pretrain_detector(model):
-    """Attach a one-shot forward pre-hook that records whether a forward ran
-    before trainer.train(). Used by prepare_for_training_mode to drop a
-    torch.compile graph cache poisoned by a stray manual forward/backward.
-    Idempotent and a no-op if the model cannot take hooks."""
+    """Attach a one-shot forward pre-hook recording whether a forward ran before
+    trainer.train(), so prepare_for_training_mode can drop a torch.compile graph cache poisoned
+    by a stray manual forward/backward. Idempotent; no-op if the model cannot take hooks."""
     if model is None or not hasattr(model, "register_forward_pre_hook"):
         return model
     marker = getattr(model, "_unsloth_pretrain_marker", None)
     if isinstance(marker, dict):
         marker["seen"] = False
-        # Re-register only if the previous hook was torn down (e.g. by an earlier
-        # train()); if the hook is still live this is a strict no-op so we never
-        # stack duplicate hooks.
+        # Re-register only if the previous hook was torn down; a live hook stays (no duplicates).
         if "hook" in marker:
             return model
     else:
@@ -218,10 +215,8 @@ def _unsloth_install_pretrain_detector(model):
             return model
 
     def _mark(_module, _inp):
-        # Only a GRAD-ENABLED forward can poison the AOTAutograd/torch.compile
-        # backward-graph cache. A no-grad probe (`with torch.no_grad(): model(...)`,
-        # the sanity check the warning recommends) builds no backward graph, so
-        # treat it as clean and avoid a needless dynamo reset + recompile + warning.
+        # Only a grad-enabled forward poisons the AOTAutograd backward-graph cache; a no-grad
+        # probe builds no backward graph, so treat it as clean (avoids a needless dynamo reset).
         if torch.is_grad_enabled():
             marker["seen"] = True
 

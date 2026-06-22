@@ -391,21 +391,17 @@ try:
 except:
     def reset_unsloth_gradient_checkpointing_buffers(): pass
 def _unsloth_reset_stray_compile_cache(self):
-    # A manual forward / forward+backward run under torch.compile BEFORE
-    # trainer.train() (e.g. a pre-train grad-norm probe) compiles and caches the
-    # model's forward and (via AOTAutograd) its backward graph in a one-off
-    # context that does not match the training loop. Reusing that cached graph
-    # poisons training with NaN/zero gradients (loss never moves). If a pre-train
-    # forward was seen and torch.compile is enabled, drop the compiled-graph cache
-    # so training recompiles cleanly. No-op on the normal path.
+    # A manual forward/backward under torch.compile BEFORE trainer.train() (e.g. a grad-norm
+    # probe) caches a forward + AOTAutograd backward graph in a one-off context; reusing it
+    # poisons training with NaN/zero gradients. If such a forward was seen and compile is on,
+    # drop the compiled-graph cache so training recompiles cleanly. No-op on the normal path.
     import os
     model = getattr(self, "model", None)
     if model is None:
         return
-    # The detector hook may sit on any wrapper in the chain (PeftModel / DDP /
-    # the base model), and a pre-train probe could have run on a different
-    # wrapper than self.model. Walk the chain so a "seen" marker anywhere is
-    # detected, and collect every marker so all hooks are torn down below.
+    # The detector hook can sit on any wrapper in the chain, and the probe may have run on a
+    # different one than self.model, so walk the chain: detect a "seen" marker anywhere and
+    # collect every marker to tear down below.
     markers = []
     seen = False
     _curr = model
@@ -417,9 +413,7 @@ def _unsloth_reset_stray_compile_cache(self):
             markers.append(_m)
             if _m.get("seen"):
                 seen = True
-        # Follow the wrapper chain: Unsloth/HF (.model), PEFT (.base_model) and
-        # DDP / FSDP (.module). A pre-train probe can fire on the model below a
-        # DDP wrapper, so .module must be walked too or the marker is missed.
+        # Follow the wrapper chain: Unsloth/HF (.model), PEFT (.base_model), DDP/FSDP (.module).
         _nxt = getattr(_curr, "model", None)
         if _nxt is None:
             _nxt = getattr(_curr, "base_model", None)
