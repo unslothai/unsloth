@@ -303,6 +303,9 @@
         if (e.isComposing || e.keyCode === 229) return;
         if (e.key === "Enter" && !e.shiftKey) {
           e.preventDefault();
+          // btn is disabled while a response streams; ignore Enter so a second
+          // request can't start before the first reply lands in `msgs`.
+          if (btn.disabled) return;
           form.requestSubmit();
         }
       });
@@ -315,6 +318,9 @@
       }
       form.addEventListener("submit", async (e) => {
         e.preventDefault();
+        // Defense in depth alongside the keydown guard: never start a second
+        // request while one is in flight (btn stays disabled until it finishes).
+        if (btn.disabled) return;
         const content = input.value.trim();
         if (!content) return;
         if (welcome) welcome.style.display = "none";

@@ -206,7 +206,12 @@ export function HistoryCardGrid({
     let cancelled = false;
     void (async () => {
       for (let attempt = 0; attempt < 12 && !cancelled; attempt++) {
-        await fetchDeviceType({ force: true });
+        try {
+          await fetchDeviceType({ force: true });
+        } catch {
+          // Ignore transient network/server blips during startup; the copy-link
+          // falls back to serverUrl/origin, so keep polling until the timeout.
+        }
         if (cancelled || usePlatformStore.getState().cloudflareUrl) return;
         await new Promise((r) => setTimeout(r, 2500));
       }
@@ -383,7 +388,10 @@ export function HistoryCardGrid({
           const isRunning = run.status === "running";
           const canResume = run.can_resume && !wasContinued;
           const isResuming = resumeTarget === run.id;
-          const canCopyPreview = !!run.output_dir && run.has_preview_model;
+          // preview_ref is the backend-computed /p ref (run or run/checkpoint),
+          // already gated on previewability and a route-expressible depth, so it
+          // survives nested output dirs that a bare basename would 404 on.
+          const canCopyPreview = !!run.preview_ref;
           return (
             <div
               role="button"
@@ -441,16 +449,18 @@ export function HistoryCardGrid({
                   className="absolute bottom-3 right-4 h-6 rounded-full px-2.5 text-[11px] leading-none shadow-sm"
                   onClick={async (e) => {
                     e.stopPropagation();
-                    const runName = (run.output_dir ?? "")
-                      .replace(/[\\/]+$/, "")
-                      .split(/[\\/]/)
-                      .pop();
+                    // preview_ref is "run" or "run/checkpoint"; encode each
+                    // segment but keep the separators so the /p route matches.
+                    const ref = (run.preview_ref ?? "")
+                      .split("/")
+                      .map(encodeURIComponent)
+                      .join("/");
                     const base = (
                       cloudflareUrl ??
                       serverUrl ??
                       window.location.origin
                     ).replace(/\/+$/, "");
-                    const url = `${base}/p/${encodeURIComponent(runName ?? "")}`;
+                    const url = `${base}/p/${ref}`;
                     const ok = await copyToClipboard(url);
                     toast[ok ? "success" : "error"](
                       t(

@@ -506,6 +506,7 @@ class TrainingRunSummary(BaseModel):
     can_resume: bool = False
     resumed_later: bool = False
     has_preview_model: bool = False
+    preview_ref: Optional[str] = None
 
 
 class TrainingRunUpdateRequest(BaseModel):

@@ -148,6 +148,28 @@ def has_preview_model(output_dir: Optional[str]) -> bool:
     return path.is_dir() and _is_model_dir(path)
 
 
+def preview_ref(output_dir: Optional[str]) -> Optional[str]:
+    """Route-expressible ``/p`` ref (``run`` or ``run/checkpoint``) for a run, or None.
+
+    Returns ``output_dir`` relative to ``outputs_root`` as a posix string so the
+    copy-link survives a nested output dir (e.g. ``experiments/run1`` -> the link
+    ``/p/experiments/run1``) instead of collapsing to the bare basename. The ``/p``
+    router only matches one or two path segments, so anything deeper -- or a dir
+    outside ``outputs_root``, or one without a previewable model -- returns None and
+    the UI omits the copy-link rather than offering a dead one.
+    """
+    if not has_preview_model(output_dir):
+        return None
+    try:
+        rel = Path(output_dir).resolve().relative_to(outputs_root().resolve())
+    except (ValueError, OSError):
+        return None
+    parts = rel.parts
+    if not parts or len(parts) > 2:
+        return None
+    return "/".join(parts)
+
+
 def resolve_preview_checkpoint(run: str, checkpoint: Optional[str] = None) -> Path:
     relative = run if not checkpoint else f"{run}/{checkpoint}"
     path = resolve_output_dir(relative)

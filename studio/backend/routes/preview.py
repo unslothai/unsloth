@@ -45,6 +45,11 @@ def _resolve_or_4xx(run: str, checkpoint: str | None):
 def _sanitize_preview_payload(payload: ChatCompletionRequest) -> ChatCompletionRequest:
     # Public surface: drop tools/MCP (host code execution) and provider routing
     # (would make /p/ an open proxy). Tools are also hard-off via the policy below.
+    # Pin use_adapter=True: a preview shows the fine-tuned checkpoint, and
+    # `_apply_adapter_state` toggles the shared in-memory model non-destructively
+    # without restoring it, so an unpinned `use_adapter=false` would leave adapters
+    # disabled for later visitors (the page never sends the field). Forcing it on
+    # also re-enables a previously-disabled adapter; it no-ops on merged checkpoints.
     return payload.model_copy(
         update = {
             "tools": None,
@@ -59,6 +64,7 @@ def _sanitize_preview_payload(payload: ChatCompletionRequest) -> ChatCompletionR
             "external_model": None,
             "encrypted_api_key": None,
             "provider_base_url": None,
+            "use_adapter": True,
         }
     )
 

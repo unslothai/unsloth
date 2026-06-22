@@ -16,6 +16,7 @@ export interface TrainingRunSummary {
   can_resume: boolean;
   resumed_later: boolean;
   has_preview_model: boolean;
+  preview_ref: string | null;
   duration_seconds: number | null;
   error_message: string | null;
   loss_sparkline: number[] | null;
