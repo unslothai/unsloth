@@ -147,6 +147,7 @@ function NumericValueInput({
   className,
   ariaLabel,
   size: sizeAttr,
+  disabled = false,
 }: {
   value: number;
   min?: number;
@@ -157,6 +158,7 @@ function NumericValueInput({
   className?: string;
   ariaLabel?: string;
   size?: number;
+  disabled?: boolean;
 }) {
   const [focused, setFocused] = useState(false);
   const [draft, setDraft] = useState("");
@@ -179,6 +181,7 @@ function NumericValueInput({
     <input
       type="text"
       inputMode="decimal"
+      disabled={disabled}
       size={sizeAttr}
       /* Fixed 4ch pill; grows only when a longer value would clip. */
       style={{ width: `calc(${Math.max(displayed.length, 4)}ch + 18px)` }}
@@ -497,6 +500,10 @@ export function ChatSettingsPanel({
       ggufVariant: loadingModel.ggufVariant,
       nativePathToken: loadingModel.nativePathToken,
     });
+  // While the staged pick is loading, its load-time settings were already
+  // snapshotted at click time, so editing them now would be silently ignored
+  // and then overwritten by the load response. Lock them until the load settles.
+  const modelControlsDisabled = stagedLoading;
   const abandonStagedModel = useChatRuntimeStore((s) => s.abandonStagedModel);
   const resetModelSettingsToLoaded = useChatRuntimeStore(
     (s) => s.resetModelSettingsToLoaded,
@@ -924,6 +931,7 @@ export function ChatSettingsPanel({
                       }}
                       ariaLabel="Context Length"
                       size={8}
+                      disabled={modelControlsDisabled}
                     />
                   </div>
                   <Slider
@@ -945,6 +953,7 @@ export function ChatSettingsPanel({
                       );
                     }}
                     className="panel-slider"
+                    disabled={modelControlsDisabled}
                   />
                   {ggufMaxContextLength != null &&
                     typeof ctxDisplayValue === "number" &&
@@ -970,6 +979,7 @@ export function ChatSettingsPanel({
                   </div>
                   <div className="flex shrink-0 items-center gap-1.5">
                     <Select
+                      disabled={modelControlsDisabled}
                       value={kvCacheDtype ?? "f16"}
                       onValueChange={(v) => {
                         setKvCacheDtype(v === "f16" ? null : v);
@@ -1009,6 +1019,7 @@ export function ChatSettingsPanel({
                   </div>
                   <div className="flex shrink-0 items-center gap-1.5">
                     <Select
+                      disabled={modelControlsDisabled}
                       value={speculativeType ?? "auto"}
                       onValueChange={(v) => {
                         setSpeculativeType(v);
@@ -1083,6 +1094,7 @@ export function ChatSettingsPanel({
                     </div>
                     <input
                       type="number"
+                      disabled={modelControlsDisabled}
                       min={1}
                       max={16}
                       step={1}
@@ -1123,6 +1135,7 @@ export function ChatSettingsPanel({
                     className="panel-switch shrink-0"
                     checked={tensorParallel}
                     onCheckedChange={setTensorParallel}
+                    disabled={modelControlsDisabled}
                     data-test-id="tensor-parallel-switch"
                   />
                 </div>
