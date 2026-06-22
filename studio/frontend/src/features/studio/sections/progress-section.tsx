@@ -566,7 +566,10 @@ function TrainingHeaderActions({
           <HugeiconsIcon icon={StopIcon} className="size-3" />
           {stopRequested ? t("studio.training.stopping") : t("studio.training.stopAction")}
         </Button>
-        <AlertDialogContent overlayClassName="bg-background/40 supports-backdrop-filter:backdrop-blur-[1px]">
+        <AlertDialogContent 
+          style={{ width: "max-content", maxWidth: "95vw" }}
+          overlayClassName="bg-background/40 supports-backdrop-filter:backdrop-blur-[1px]"
+        >
           <AlertDialogHeader>
             <AlertDialogTitle>{t("studio.training.stopTitle")}</AlertDialogTitle>
             <AlertDialogDescription>
