@@ -208,11 +208,43 @@ def test_chat_payload_sanitized(client, captured):
     assert p.provider_type is None
     assert p.provider_base_url is None
     assert p.external_model is None
-    # Adapter pinned on: an unauthenticated caller cannot flip the shared
-    # backend to the base model for later visitors.
+    # Adapter pinned on for a LoRA checkpoint: an unauthenticated caller cannot
+    # flip the shared backend to the base model for later visitors.
     assert p.use_adapter is True
     # Loads the resolved checkpoint dir, not an attacker-supplied path.
     assert captured["load_path"].endswith("demorun")
+
+
+def test_merged_checkpoint_strips_use_adapter(tmp_path, monkeypatch, captured):
+    # A merged (non-LoRA) checkpoint has no adapter to toggle, so use_adapter is
+    # stripped to None (avoids a per-request "not a PeftModel" warning).
+    outputs = tmp_path / "outputs"
+    merged = outputs / "mergedrun"
+    merged.mkdir(parents = True)
+    (merged / "config.json").write_text(json.dumps({"_name_or_path": "some/base"}))
+
+    from utils.paths import storage_roots as _sr
+    monkeypatch.setattr(_sr, "outputs_root", lambda: outputs)
+
+    async def _fake_load(load_req, request, subject):
+        return None
+
+    async def _fake_chat(payload, request, subject):
+        captured["payload"] = payload
+        return {"ok": True}
+
+    monkeypatch.setattr(preview, "load_model", _fake_load)
+    monkeypatch.setattr(preview, "openai_chat_completions", _fake_chat)
+
+    app = FastAPI()
+    app.include_router(preview.router, prefix = "/p")
+    c = TestClient(app, raise_server_exceptions = False)
+    r = c.post(
+        "/p/mergedrun/v1/chat/completions",
+        json = {"messages": [{"role": "user", "content": "hi"}], "use_adapter": False},
+    )
+    assert r.status_code == 200
+    assert captured["payload"].use_adapter is None
 
 
 # ── Streaming lock lifetime ──────────────────────────────────────────────────

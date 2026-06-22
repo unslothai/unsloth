@@ -42,14 +42,18 @@ def _resolve_or_4xx(run: str, checkpoint: str | None):
         raise HTTPException(status_code = 404, detail = str(exc))
 
 
-def _sanitize_preview_payload(payload: ChatCompletionRequest) -> ChatCompletionRequest:
+def _sanitize_preview_payload(
+    payload: ChatCompletionRequest, is_lora: bool
+) -> ChatCompletionRequest:
     # Public surface: drop tools/MCP (host code execution) and provider routing
     # (would make /p/ an open proxy). Tools are also hard-off via the policy below.
-    # Pin use_adapter=True: a preview shows the fine-tuned checkpoint, and
-    # `_apply_adapter_state` toggles the shared in-memory model non-destructively
-    # without restoring it, so an unpinned `use_adapter=false` would leave adapters
-    # disabled for later visitors (the page never sends the field). Forcing it on
-    # also re-enables a previously-disabled adapter; it no-ops on merged checkpoints.
+    # Normalize use_adapter rather than trusting the caller: `_apply_adapter_state`
+    # toggles the shared in-memory model non-destructively and never restores it,
+    # so an unpinned `use_adapter=false` would leave adapters disabled for later
+    # visitors (the page never sends the field). For a LoRA checkpoint pin it True
+    # (shows the fine-tune; self-heals a previously-disabled adapter); for a merged
+    # checkpoint strip to None (no adapter to toggle, and avoids a per-request
+    # "not a PeftModel" warning).
     return payload.model_copy(
         update = {
             "tools": None,
@@ -64,7 +68,7 @@ def _sanitize_preview_payload(payload: ChatCompletionRequest) -> ChatCompletionR
             "external_model": None,
             "encrypted_api_key": None,
             "provider_base_url": None,
-            "use_adapter": True,
+            "use_adapter": True if is_lora else None,
         }
     )
 
@@ -82,7 +86,8 @@ async def _serve_chat(
     run: str, checkpoint: str | None, payload: ChatCompletionRequest, request: Request
 ):
     path = _resolve_or_4xx(run, checkpoint)
-    payload = _sanitize_preview_payload(payload)
+    is_lora = (path / "adapter_config.json").exists()
+    payload = _sanitize_preview_payload(payload, is_lora)
     await _preview_lock.acquire()
     keep_locked = False
     try:
