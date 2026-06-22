@@ -38,6 +38,11 @@ from utils.transformers_version import (
     _tokenizer_class_cache,
     _config_needs_510_cache,
     _config_needs_550_cache,
+    _probe_tier_cache,
+    _probe_sha_cache,
+    _probe_tier,
+    _stderr_is_transient,
+    _local_dir_signature,
     needs_transformers_5,
     get_transformers_tier,
     activate_transformers_for_subprocess,
@@ -606,6 +611,161 @@ class TestGetTransformersTier:
             ),
         ):
             assert needs_transformers_5("meta-llama/Llama-3-8B") is False
+
+
+def _proc(returncode, stderr = ""):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(returncode = returncode, stdout = "", stderr = stderr)
+
+
+class TestProbeTier:
+    """_probe_tier resolves the tier by parsing config in each sidecar and escalating."""
+
+    def setup_method(self):
+        _probe_tier_cache.clear()
+        _probe_sha_cache.clear()
+
+    def _patch_common(self, monkeypatch, sha = "sha1"):
+        monkeypatch.setattr("utils.transformers_version._resolve_commit_sha", lambda m, t: sha)
+        for fn in (
+            "_ensure_venv_t5_530_exists",
+            "_ensure_venv_t5_550_exists",
+            "_ensure_venv_t5_510_exists",
+        ):
+            monkeypatch.setattr(f"utils.transformers_version.{fn}", lambda: True)
+        monkeypatch.delenv("UNSLOTH_DISABLE_TIER_PROBE", raising = False)
+
+    def _venv_dirs(self):
+        import utils.transformers_version as tv
+
+        return [tv._VENV_T5_530_DIR, tv._VENV_T5_550_DIR, tv._VENV_T5_510_DIR]
+
+    def test_escalates_to_first_parsing_tier(self, monkeypatch):
+        self._patch_common(monkeypatch)
+        seen = []
+        results = iter([_proc(1, "KeyError: '-'"), _proc(1, "KeyError: '-'"), _proc(0)])
+
+        def fake_run(cmd, **k):
+            seen.append(cmd[3])  # target_dir
+            return next(results)
+
+        monkeypatch.setattr("utils.transformers_version.subprocess.run", fake_run)
+        assert _probe_tier("org/dense-nemotron", None, "x") == "510"
+        assert seen == self._venv_dirs()  # escalated 530 -> 550 -> 510
+
+    def test_first_success_stops_escalation(self, monkeypatch):
+        self._patch_common(monkeypatch)
+        calls = []
+        monkeypatch.setattr(
+            "utils.transformers_version.subprocess.run",
+            lambda cmd, **k: calls.append(cmd[3]) or _proc(0),
+        )
+        assert _probe_tier("org/m", None, "x") == "530"
+        assert len(calls) == 1
+
+    def test_middle_tier_parses(self, monkeypatch):
+        self._patch_common(monkeypatch)
+        results = iter([_proc(1, "ValueError: bad"), _proc(0)])
+        monkeypatch.setattr(
+            "utils.transformers_version.subprocess.run", lambda cmd, **k: next(results)
+        )
+        assert _probe_tier("org/m", None, "x") == "550"
+
+    def test_nothing_parses_returns_highest(self, monkeypatch):
+        self._patch_common(monkeypatch)
+        monkeypatch.setattr(
+            "utils.transformers_version.subprocess.run",
+            lambda cmd, **k: _proc(1, "KeyError: '-'"),
+        )
+        assert _probe_tier("org/m", None, "x") == "510"
+
+    def test_cache_hit_skips_subprocess(self, monkeypatch):
+        self._patch_common(monkeypatch)
+        monkeypatch.setattr("utils.transformers_version.subprocess.run", lambda cmd, **k: _proc(0))
+        assert _probe_tier("org/m", None, "x") == "530"
+
+        def boom(cmd, **k):
+            raise AssertionError("should not re-probe a cached (model, sha)")
+
+        monkeypatch.setattr("utils.transformers_version.subprocess.run", boom)
+        assert _probe_tier("org/m", None, "x") == "530"
+
+    def test_transient_failure_is_530_and_uncached(self, monkeypatch):
+        self._patch_common(monkeypatch)
+        monkeypatch.setattr(
+            "utils.transformers_version.subprocess.run",
+            lambda cmd, **k: _proc(1, "ConnectionError: Max retries exceeded"),
+        )
+        assert _probe_tier("org/m", None, "x") == "530"
+        assert ("org/m", "sha1") not in _probe_tier_cache  # retried next load
+
+    def test_timeout_is_530_and_uncached(self, monkeypatch):
+        import subprocess as _sp
+
+        self._patch_common(monkeypatch)
+
+        def timeout(cmd, **k):
+            raise _sp.TimeoutExpired(cmd, 60)
+
+        monkeypatch.setattr("utils.transformers_version.subprocess.run", timeout)
+        assert _probe_tier("org/m", None, "x") == "530"
+        assert ("org/m", "sha1") not in _probe_tier_cache
+
+    def test_all_venvs_missing_is_530_no_spawn(self, monkeypatch):
+        monkeypatch.setattr("utils.transformers_version._resolve_commit_sha", lambda m, t: "s")
+        for fn in (
+            "_ensure_venv_t5_530_exists",
+            "_ensure_venv_t5_550_exists",
+            "_ensure_venv_t5_510_exists",
+        ):
+            monkeypatch.setattr(f"utils.transformers_version.{fn}", lambda: False)
+
+        def boom(cmd, **k):
+            raise AssertionError("no sidecar available; must not spawn")
+
+        monkeypatch.setattr("utils.transformers_version.subprocess.run", boom)
+        assert _probe_tier("org/m", None, "x") == "530"
+
+    def test_disable_flag_skips_probe(self, monkeypatch):
+        monkeypatch.setenv("UNSLOTH_DISABLE_TIER_PROBE", "1")
+
+        def boom(cmd, **k):
+            raise AssertionError("probe disabled; must not spawn")
+
+        monkeypatch.setattr("utils.transformers_version.subprocess.run", boom)
+        assert _probe_tier("org/m", None, "x") == "530"
+
+    def test_get_tier_uses_probe_for_remote_tokenizer_signal(self, monkeypatch):
+        # tokenizer says 5.x but no architecture/substring match -> probe (not a 530 guess).
+        monkeypatch.setattr(
+            "utils.transformers_version._check_config_needs_510", lambda m: False
+        )
+        monkeypatch.setattr(
+            "utils.transformers_version._check_config_needs_550", lambda m: False
+        )
+        monkeypatch.setattr(
+            "utils.transformers_version._check_tokenizer_config_needs_v5", lambda m: True
+        )
+        monkeypatch.setattr(
+            "utils.transformers_version._probe_tier", lambda m, t, reason: "510"
+        )
+        assert get_transformers_tier("org/unknown-5x-arch") == "510"
+
+    def test_stderr_is_transient(self):
+        assert _stderr_is_transient("ConnectionError: x") is True
+        assert _stderr_is_transient("GatedRepoError: need token") is True
+        assert _stderr_is_transient("KeyError: '-'") is False
+        assert _stderr_is_transient("ValueError: bad pattern") is False
+
+    def test_local_dir_signature_changes_with_content(self, tmp_path):
+        cfg = tmp_path / "config.json"
+        cfg.write_text('{"model_type": "x"}')
+        first = _local_dir_signature(tmp_path)
+        assert first is not None
+        cfg.write_text('{"model_type": "x", "extra": 1}')
+        assert _local_dir_signature(tmp_path) != first
+        assert _local_dir_signature(tmp_path / "nope") is None
 
 
 # ---------------------------------------------------------------------------

@@ -116,6 +116,10 @@ _config_json_cache: dict[tuple[str, str | None], dict | None] = {}
 _config_needs_510_cache: dict[str, bool] = {}
 _config_needs_550_cache: dict[str, bool] = {}
 
+# AutoConfig-probe tier resolution, keyed on (model_name, commit-sha) and the model's sha.
+_probe_tier_cache: dict[tuple[str, str | None], str] = {}
+_probe_sha_cache: dict[str, str | None] = {}
+
 # Versions
 TRANSFORMERS_510_VERSION = "5.10.2"
 TRANSFORMERS_550_VERSION = "5.5.0"
@@ -452,13 +456,179 @@ def _check_config_needs_510(model_name: str) -> bool:
     return result
 
 
-def get_transformers_tier(model_name: str) -> str:
+# --- AutoConfig probe: general tier resolution for ambiguous models ----------
+# When the cheap signals only say "needs some 5.x" we cannot tell which sidecar parses
+# the config. Rather than guess the lowest tier, actually parse config.json with the
+# built-in parser (trust_remote_code=False) in each candidate sidecar and pick the first
+# that succeeds. Generalizes beyond the hardcoded architecture lists -- e.g. dense
+# NemotronH, whose '-' (MLP) layer only transformers 5.10 can parse.
+_PROBE_TIER_ORDER = ("530", "550", "510")
+_PROBE_TIMEOUT_SECS = 60
+
+# config.json-only parse in a sidecar (the --target dir goes on sys.path; there is no
+# per-venv python). Built-in parser only, never repo code, no weights. Exit 0 = parses,
+# 1 = fails. Token rides in env (HF_TOKEN), never argv.
+_PROBE_CONFIG_SCRIPT = r"""
+import sys, os
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+target_dir, model_name = sys.argv[1], sys.argv[2]
+sys.path.insert(0, target_dir)
+try:
+    from transformers import AutoConfig
+    AutoConfig.from_pretrained(model_name, trust_remote_code=False)
+    sys.exit(0)
+except Exception as exc:
+    sys.stderr.write(type(exc).__name__ + ": " + str(exc))
+    sys.exit(1)
+"""
+
+# stderr fragments meaning "couldn't fetch/auth", NOT "needs a newer parser".
+_PROBE_TRANSIENT_MARKERS = (
+    "ConnectionError", "HTTPError", "Timeout", "Max retries", "Temporary failure",
+    "GatedRepoError", "RepositoryNotFoundError", "LocalEntryNotFoundError",
+    "OfflineModeIsEnabled", "401", "403", "404",
+)
+
+
+def _stderr_is_transient(err: str) -> bool:
+    return any(marker in err for marker in _PROBE_TRANSIENT_MARKERS)
+
+
+def _probe_tier_venvs():
+    """tier -> (target_dir, ensure_fn), built here so the later _ensure_* defs resolve."""
+    return {
+        "530": (_VENV_T5_530_DIR, _ensure_venv_t5_530_exists),
+        "550": (_VENV_T5_550_DIR, _ensure_venv_t5_550_exists),
+        "510": (_VENV_T5_510_DIR, _ensure_venv_t5_510_exists),
+    }
+
+
+def _local_dir_signature(path: Path) -> str | None:
+    """Cheap content signature for a local model dir (config/tokenizer size+mtime)."""
+    import hashlib
+
+    parts = []
+    for name in ("config.json", "tokenizer_config.json"):
+        try:
+            st = (path / name).stat()
+            parts.append(f"{name}:{st.st_size}:{st.st_mtime_ns}")
+        except OSError:
+            continue
+    return hashlib.sha256("|".join(parts).encode()).hexdigest()[:16] if parts else None
+
+
+def _resolve_commit_sha(model_name: str, hf_token: str | None) -> str | None:
+    """Immutable identity for the tier cache: a local dir signature or the HF commit sha.
+    None when unavailable (offline/error); still memoized so we don't re-resolve. Runs in
+    the default env before any sidecar is on sys.path, so importing huggingface_hub is safe.
+    """
+    if model_name in _probe_sha_cache:
+        return _probe_sha_cache[model_name]
+    sha: str | None = None
+    p = Path(model_name)
+    if p.exists():
+        sha = _local_dir_signature(p)
+    elif not _env_offline():
+        try:
+            from huggingface_hub import HfApi
+
+            sha = HfApi().model_info(model_name, token = hf_token).sha
+        except Exception as exc:
+            logger.debug("Could not resolve commit sha for '%s': %s", model_name, exc)
+    _probe_sha_cache[model_name] = sha
+    return sha
+
+
+def _probe_autoconfig(target_dir: str, model_name: str, hf_token: str | None) -> bool | None:
+    """Parse config.json with the built-in parser inside *target_dir*'s sidecar.
+    True = parses, False = parse/version failure (escalate), None = transient
+    (auth/network/offline/spawn) so the caller fails safe and does not cache.
+    """
+    env = child_env_without_native_path_secret()
+    if hf_token:
+        env["HF_TOKEN"] = hf_token
+    if _env_offline():
+        env["HF_HUB_OFFLINE"] = "1"
+        env["TRANSFORMERS_OFFLINE"] = "1"
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", _PROBE_CONFIG_SCRIPT, target_dir, model_name],
+            capture_output = True,
+            text = True,
+            timeout = _PROBE_TIMEOUT_SECS,
+            env = env,
+            **_windows_hidden_subprocess_kwargs(),
+        )
+    except subprocess.TimeoutExpired:
+        logger.warning("AutoConfig probe timed out for '%s' in %s", model_name, target_dir)
+        return None
+    except Exception as exc:
+        logger.warning("AutoConfig probe could not spawn for '%s': %s", model_name, exc)
+        return None
+    if result.returncode == 0:
+        return True
+    err = (result.stderr or "").strip()
+    if _stderr_is_transient(err):
+        logger.warning("AutoConfig probe transient failure for '%s': %s", model_name, err)
+        return None
+    logger.info("AutoConfig probe parse failure for '%s' in %s: %s", model_name, target_dir, err)
+    return False
+
+
+def _probe_tier(model_name: str, hf_token: str | None, reason: str) -> str:
+    """Lowest sidecar tier whose built-in parser loads the config; '530' fail-safe.
+
+    Escalates 530 -> 550 -> 510, returning the first that parses. A transient probe
+    failure (auth/network/offline) falls back to '530' uncached so it is retried. If
+    nothing parses but a sidecar was reachable, returns the highest tier we ship. Never
+    raises -- it can only improve on the legacy '530' guess. Cached by (model, sha).
+    """
+    if os.environ.get("UNSLOTH_DISABLE_TIER_PROBE", "").lower() in ("1", "true", "yes"):
+        return "530"
+    key = (model_name, _resolve_commit_sha(model_name, hf_token))
+    if key in _probe_tier_cache:
+        return _probe_tier_cache[key]
+
+    venvs = _probe_tier_venvs()
+    probed_any = False
+    resolved = "530"
+    for tier in _PROBE_TIER_ORDER:
+        target_dir, ensure_fn = venvs[tier]
+        try:
+            if not ensure_fn():
+                continue
+        except Exception:
+            continue
+        probed_any = True
+        ok = _probe_autoconfig(target_dir, model_name, hf_token)
+        if ok is True:
+            resolved = tier
+            break
+        if ok is None:
+            logger.info("Tier probe inconclusive for %s (%s); using 530", model_name, reason)
+            return "530"
+    else:
+        if probed_any:
+            resolved = "510"
+
+    logger.info(
+        "Transformers tier %s selected for %s (AutoConfig probe; %s)", resolved, model_name, reason
+    )
+    _probe_tier_cache[key] = resolved
+    return resolved
+
+
+def get_transformers_tier(model_name: str, hf_token: str | None = None) -> str:
     """Return the transformers tier required for *model_name*.
 
     Returns ``"510"`` for models needing transformers 5.10.x (Gemma 4 Unified),
     ``"550"`` for models needing transformers 5.5.0 (Gemma 4),
     ``"530"`` for models needing transformers 5.3.0 (e.g. Ministral-3, Qwen3 MoE),
     or ``"default"`` for everything else (4.57.x).
+
+    Strong signals (architecture/model_type, name substrings) are fast paths. When the
+    only signal is "needs some 5.x" (the tokenizer class), the exact tier is resolved by
+    probing AutoConfig in each sidecar instead of guessing the lowest one.
 
     Higher 5.x tiers run first.
     """
@@ -485,11 +655,7 @@ def get_transformers_tier(model_name: str) -> str:
         if cfg is not None:
             local_tc = Path(model_name) / "tokenizer_config.json"
             if local_tc.is_file() and _check_tokenizer_config_needs_v5(model_name):
-                logger.info(
-                    "Transformers tier 530 selected for %s (local tokenizer_config.json check)",
-                    model_name,
-                )
-                return "530"
+                return _probe_tier(model_name, hf_token, "local tokenizer needs 5.x")
             logger.info(
                 "Transformers tier default (4.57.x) selected for %s (local config.json no match)",
                 model_name,
@@ -536,11 +702,7 @@ def get_transformers_tier(model_name: str) -> str:
         logger.info("Transformers tier 550 selected for %s (config.json check)", model_name)
         return "550"
     if _check_tokenizer_config_needs_v5(model_name):
-        logger.info(
-            "Transformers tier 530 selected for %s (tokenizer_config.json check)",
-            model_name,
-        )
-        return "530"
+        return _probe_tier(model_name, hf_token, "tokenizer needs 5.x")
 
     logger.info("Transformers tier default (4.57.x) selected for %s (no match)", model_name)
     return "default"
