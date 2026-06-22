@@ -2420,6 +2420,9 @@ const ImagesToggle: FC = () => {
 // Module-level value: survives the ThreadWelcome → ThreadComposerDock remount
 // that occurs when the first message is sent.
 let _voiceMode: "off" | "configuring" | "active" = "off";
+// Tracks the previous thread-running state across the same remount, so the
+// run-lifecycle effect doesn't lose the first turn's true→false transition.
+let _prevRunning = false;
 // Registered by the mounted VoiceEngine so the plus-menu Voice item can drive
 // the toggle (and its in-gesture primeAudio) from a different component.
 let _voiceToggle: (() => void) | null = null;
@@ -2441,14 +2444,19 @@ const VoiceEngine: FC = () => {
   const aui = useAui();
   const [voiceMode, setVoiceModeState] = useState(_voiceMode);
   const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const prevRunningRef = useRef(false);
   // voiceModeRef is only written in toggle/activate — never in the render body.
   const voiceModeRef = useRef(_voiceMode);
   const isSpeakingRef = useRef(false);
   const auiRef = useRef(aui);
   auiRef.current = aui;
 
-  const isThreadRunning = useAuiState(({ thread }) => thread.isRunning);
+  // Read from the store keyed by activeThreadId, not useAuiState(thread.isRunning):
+  // the store value survives the composer remount on first send, so the first
+  // turn's running transition isn't missed (same reason the prompt queue uses
+  // runningByThreadId instead of aui.thread()).
+  const isThreadRunning = useChatRuntimeStore((s) =>
+    s.activeThreadId ? Boolean(s.runningByThreadId[s.activeThreadId]) : false,
+  );
   const dictationStatusType = useAuiState(
     ({ composer }) => composer.dictation?.status.type,
   );
@@ -2550,7 +2558,7 @@ const VoiceEngine: FC = () => {
   // Run lifecycle: stop dictation when model starts; speak + resume mic when done.
   useEffect(() => {
     if (isThreadRunning) {
-      prevRunningRef.current = true;
+      _prevRunning = true;
       if (voiceModeRef.current === "active") {
         if (silenceTimerRef.current) {
           clearTimeout(silenceTimerRef.current);
@@ -2561,8 +2569,8 @@ const VoiceEngine: FC = () => {
       }
       return;
     }
-    if (!prevRunningRef.current) return;
-    prevRunningRef.current = false;
+    if (!_prevRunning) return;
+    _prevRunning = false;
 
     if (voiceModeRef.current !== "active" || isSpeakingRef.current) return;
 
@@ -2613,6 +2621,10 @@ const VoiceEngine: FC = () => {
       composer.stopDictation();
       if (composer.getState().isEditing && composer.getState().text.trim()) {
         composer.send();
+        // On the first turn the send-reset can race with the new-thread bind /
+        // composer remount, leaving the utterance as a prefix on the next
+        // message. Clear explicitly to guard against that.
+        composer.setText("");
       } else {
         // No speech this window: stopDictation ends the session but nothing
         // re-arms it, so the loop would die while voiceMode stays "active"
