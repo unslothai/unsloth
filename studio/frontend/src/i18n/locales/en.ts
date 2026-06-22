@@ -123,7 +123,7 @@ export const en = {
         sectionTitle: "Notifications",
         showLlamaUpdates: "llama.cpp update notifications",
         showLlamaUpdatesDescription:
-          "Notify when a newer llama.cpp build is available. Turn off if you only train.",
+          "Notify when a newer llama.cpp build is available to run new models. Turn off if you only train.",
       },
       gettingStarted: "Getting started",
       startOnboarding: "Start onboarding",
@@ -133,8 +133,7 @@ export const en = {
       uploads: {
         sectionTitle: "Uploads",
         maxUploadSize: "Training dataset upload cap",
-        maxUploadSizeDescription:
-          "Default is {defaultSize} MB.",
+        maxUploadSizeDescription: "Default is {defaultSize} MB.",
       },
       storage: {
         sectionTitle: "Storage",
@@ -208,6 +207,9 @@ export const en = {
     chat: {
       title: "Chat",
       description: "Manage chat history stored on this device.",
+      modelDisclaimer: "Show model disclaimer",
+      modelDisclaimerDescription:
+        'Show "LLMs can make mistakes" under the chat box.',
       artifacts: {
         title: "Canvas",
         collapseHtmlBlocks: "Collapse HTML blocks",
@@ -219,8 +221,7 @@ export const en = {
       },
       data: "Data",
       exportHistory: "Export chat history",
-      exportHistoryDescription:
-        "Download all chats and messages as JSON.",
+      exportHistoryDescription: "Download all chats and messages as JSON.",
       exportAction: "Export",
       exportingAction: "Exporting...",
       exportConversations: "Export Recents and Projects",
@@ -280,8 +281,7 @@ export const en = {
     },
     apiKeys: {
       title: "API",
-      description:
-        "Access Unsloth via the OpenAI-compatible API.",
+      description: "Access Unsloth via the OpenAI-compatible API.",
       readDocs: "Read the API docs",
       noAccess: "No API access yet.",
       newBadge: "New",
@@ -337,8 +337,7 @@ export const en = {
     },
     about: {
       title: "About",
-      description:
-        "Docs, release notes, feedback, and build info.",
+      description: "Docs, release notes, feedback, and build info.",
       studioVersion: "Unsloth Version",
       packageVersion: "Package Version",
       llamaCppVersion: "llama.cpp Version",
@@ -357,8 +356,7 @@ export const en = {
         sectionTitle: "License",
         studioLabel: "Unsloth Studio",
         studioLicense: "AGPL-3.0",
-        studioDescription:
-          "Open source under the GNU AGPL v3.0.",
+        studioDescription: "Open source under the GNU AGPL v3.0.",
         libraryLabel: "Unsloth Core",
         libraryLicense: "Apache-2.0",
         libraryDescription: "Licensed under Apache 2.0.",
@@ -382,7 +380,8 @@ export const en = {
         installCommandWindows: "Windows install command",
         localInstallDetected:
           "Local install detected. Update from your original checkout to avoid replacing it with PyPI.",
-        pullThenUpdate: "Pull the latest changes, then run the local installer:",
+        pullThenUpdate:
+          "Pull the latest changes, then run the local installer:",
         gitPullCommand: "git pull command",
         localInstallerCommand: "local installer command",
         sourceInstallDetected:
@@ -542,7 +541,8 @@ export const en = {
       subset: "Subset",
       s3: {
         title: "S3 Configuration",
-        description: "Load .parquet, .json, .jsonl, or .csv datasets from Amazon S3",
+        description:
+          "Load .parquet, .json, .jsonl, or .csv datasets from Amazon S3",
         bucket: "Bucket Name",
         bucketPlaceholder: "my-training-data-bucket",
         region: "AWS Region",
@@ -555,12 +555,14 @@ export const en = {
         secretAccessKey: "Secret Access Key",
         secretAccessKeyPlaceholder: "Your AWS secret access key",
         useIamRole: "Use IAM Role",
-        useIamRoleTooltip: "Use IAM role credentials instead of access keys (recommended for EC2/SageMaker)",
+        useIamRoleTooltip:
+          "Use IAM role credentials instead of access keys (recommended for EC2/SageMaker)",
         testConnection: "Test Connection",
         connectionSuccess: "Successfully connected to S3 bucket",
         connectionFailed: "Failed to connect to S3 bucket",
         comingSoon: "S3 integration coming soon",
-        comingSoonDescription: "S3 dataset loading requires boto3. This feature is under development.",
+        comingSoonDescription:
+          "S3 dataset loading requires boto3. This feature is under development.",
       },
     },
     params: {
