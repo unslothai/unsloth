@@ -388,11 +388,18 @@ def evaluate_fetch(
     timeout_ms: int = 20_000,
     transport_retries: int = 2,
     transport_backoff_ms: int = 250,
+    retry_on_context_loss: bool = True,
 ) -> dict[str, Any]:
     """Run `fetch(url, opts)` in the page with an AbortSignal deadline; returns
     `{"status", "body", "error"}` (status==0 + AbortError on timeout). Treat
     status==0 or non-None error as transport failure. `body` may be str (verbatim)
-    or dict/list (JSON-encoded); pass headers explicitly for Content-Type/Auth."""
+    or dict/list (JSON-encoded); pass headers explicitly for Content-Type/Auth.
+
+    Set `retry_on_context_loss=False` for non-idempotent requests whose body the
+    backend consumes single-use (e.g. POST /api/auth/refresh): the in-page fetch
+    may have already reached the server before a navigation destroyed the context,
+    so replaying it would re-send a spent token and get a spurious 401. With it
+    off, a context-loss propagates instead of silently replaying the request."""
     body_arg: str | None
     if body is None:
         body_arg = None
@@ -438,10 +445,15 @@ def evaluate_fetch(
     # fetch" after auth rotation) retries after backoff to evict the dead socket.
     last: dict[str, Any] | None = None
     attempts = max(1, int(transport_retries) + 1)
+    ctx_retries = 2 if retry_on_context_loss else 0
     for attempt in range(attempts):
         # robust_evaluate retries the evaluate when a navigation destroys the
         # execution context mid-call; the loop here retries transport failures.
-        result = robust_evaluate(page, js, payload, retries = 2, backoff_ms = transport_backoff_ms)
+        # ctx_retries is 0 for non-idempotent single-use POSTs (see docstring) so
+        # a context-loss raises rather than replaying an already-consumed request.
+        result = robust_evaluate(
+            page, js, payload, retries = ctx_retries, backoff_ms = transport_backoff_ms
+        )
         last = result
         try:
             status = int(result.get("status") or 0)
