@@ -393,7 +393,8 @@ const ReasoningGroupImpl: ReasoningGroupComponent = ({
         <ReasoningTrigger
           className="min-w-0 flex-1"
           active={isReasoningStreaming}
-          duration={duration || persistedDuration}
+          // Prefer server timing when available.
+          duration={persistedDuration || duration}
         />
         <div className="flex w-16 shrink-0 justify-end">
           {isOpen && !isReasoningStreaming && (
