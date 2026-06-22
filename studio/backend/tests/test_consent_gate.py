@@ -825,10 +825,15 @@ class TestConsentProvider:
 
     def test_single_hub_id_returns_owner(self):
         assert self._fn()("NVIDIA/Nemotron", ["NVIDIA/Nemotron"]) == "NVIDIA"
+        assert self._fn()("NVIDIA/Nemotron", ["NVIDIA/Nemotron"], []) == "NVIDIA"
 
     def test_multi_target_lora_returns_none(self):
         # A LoRA scans adapter + base; attributing to one would mislead.
         assert self._fn()("user/adapter", ["user/adapter", "NVIDIA/base"]) is None
+
+    def test_external_auto_map_ref_returns_none(self):
+        # A single repo whose auto_map pulls code from another repo: don't attribute it.
+        assert self._fn()("owner/repo", ["owner/repo"], ["evilorg/evilrepo"]) is None
 
     def test_local_path_returns_none(self, tmp_path):
         d = tmp_path / "org" / "model"
