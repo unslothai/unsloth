@@ -217,10 +217,16 @@ _remove_path "$HOME/.unsloth/studio"
 # when absent. A user-set UNSLOTH_LLAMA_CPP_PATH is intentionally kept.
 _remove_path "$HOME/.unsloth/llama.cpp"
 _remove_path "$HOME/.unsloth/.cache"
+# Isolated Node.js runtime (install_node_prebuilt.py), a sibling of studio in
+# default mode. No-op in env/custom mode (nested under the custom root) and absent.
+_remove_path "$HOME/.unsloth/node"
 # llama.cpp atomic-install staging root (install_llama_prebuilt.py .staging).
 # Normally pruned after activate, but an interrupted build can leave it behind;
 # removing it lets the rmdir below succeed. No-op in env/custom mode and absent.
 _remove_path "$HOME/.unsloth/.staging"
+# llama.cpp install lock (serializes the shared build); a stray one keeps ~/.unsloth
+# from being pruned below. No-op in env/custom mode and when absent.
+_remove_path "$HOME/.unsloth/.llama.cpp.install.lock"
 # ROCm-on-WSL helper artifacts (librocdxg build clone + smoke-test venv). No-op
 # where they don't exist; removing them lets the rmdir below succeed.
 _remove_path "$HOME/.unsloth/librocdxg"
@@ -298,11 +304,50 @@ case "$_os" in
                                 Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue
                             } catch { }
                         }
+                    }
+                    # Keep the shared icon while any Unsloth shortcut still uses it (native
+                    # install or another WSL distro); drop it only with the last one.
+                    $iconInUse = $false;
+                    foreach ($d in $dirs) {
+                        if (-not $d -or -not (Test-Path -LiteralPath $d)) { continue }
+                        if (Get-ChildItem -LiteralPath $d -Filter "Unsloth Studio*.lnk" -ErrorAction SilentlyContinue) { $iconInUse = $true; break }
+                    }
+                    # Guard LOCALAPPDATA: empty on a service/SYSTEM account makes
+                    # Join-Path throw, aborting the icon cleanup (mirror uninstall.ps1).
+                    if (-not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) {
+                        $iconDir = Join-Path $env:LOCALAPPDATA "Unsloth Studio";
+                        $ico = Join-Path $iconDir "unsloth.ico";
+                        if ((-not $iconInUse) -and (Test-Path -LiteralPath $ico)) { Remove-Item -LiteralPath $ico -Force -ErrorAction SilentlyContinue }
+                        if ((Test-Path -LiteralPath $iconDir) -and -not (Get-ChildItem -LiteralPath $iconDir -Force -ErrorAction SilentlyContinue)) { Remove-Item -LiteralPath $iconDir -Recurse -Force -ErrorAction SilentlyContinue }
                     }' >/dev/null 2>&1 || true
             fi
-            # Fallback when powershell.exe can't run (interop disabled): remove the
-            # WSL .lnk files via drvfs. The "Unsloth Studio (WSL..." name is
-            # WSL-specific, so a native install's "Unsloth Studio.lnk" never matches.
+            # Remove $1's shared unsloth.ico only if no Unsloth shortcut (native install
+            # or another WSL distro) still uses it, then drop the dir if empty. Reciprocal
+            # of uninstall.ps1's _RemoveDataDirKeepingWslIcon (keeps the icon for a
+            # surviving WSL shortcut when the native side is removed).
+            _drop_shared_icon_if_unused() {
+                _du="$1"
+                _icodir="$_du/AppData/Local/Unsloth Studio"
+                _icon_in_use=0
+                for _sd in \
+                    "$_du/Desktop" \
+                    "$_du/OneDrive/Desktop" \
+                    "$_du"/OneDrive*/Desktop \
+                    "$_du/AppData/Roaming/Microsoft/Windows/Start Menu/Programs"; do
+                    [ -d "$_sd" ] || continue
+                    for _any in "$_sd"/"Unsloth Studio"*.lnk; do
+                        [ -e "$_any" ] && { _icon_in_use=1; break; }
+                    done
+                    [ "$_icon_in_use" = "1" ] && break
+                done
+                if [ "$_icon_in_use" = "0" ]; then
+                    [ -f "$_icodir/unsloth.ico" ] && rm -f "$_icodir/unsloth.ico" 2>/dev/null || true
+                fi
+                [ -d "$_icodir" ] && rmdir "$_icodir" 2>/dev/null || true
+            }
+            # Fallback when powershell.exe can't run (interop disabled): remove WSL .lnk
+            # files via drvfs. The "Unsloth Studio (WSL..." name is WSL-specific, so a
+            # native install's "Unsloth Studio.lnk" never matches.
             if [ "$_ps_ran" = "0" ]; then
                 for _drive in /mnt/c /mnt/d /mnt/e; do
                     [ -d "$_drive/Users" ] || continue
@@ -325,6 +370,8 @@ case "$_os" in
                                 done
                             fi
                         done
+                        # Drop the shared icon only when no shortcut still needs it.
+                        _drop_shared_icon_if_unused "$_udir"
                     done
                 done
             fi

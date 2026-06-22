@@ -65,6 +65,7 @@ import {
   SECTION_TO_CHANNEL,
   findChannel,
 } from "./lib/channels";
+import { isHiddenModelId } from "./lib/hidden-models";
 import { inventoryRowMatches, tokenizeQuery } from "./lib/inventory-search";
 import {
   buildDiscoverRows,
@@ -576,9 +577,10 @@ export function ModelsPage() {
   const effectiveSort: HfSortKey =
     isFeedMode && liveListChannel ? liveListChannel.sort : sortBy;
   const effectiveDirection: HfSortDirection = isFeedMode ? "desc" : direction;
-  // Feed mode uses the live channel format so it does not hide non-matching rows.
-  const effectiveDiscoverFormat: ModelFormatFilter =
-    isFeedMode && liveListChannel ? liveListChannel.format : deferredFormatFilter;
+  // The format dropdown always filters the visible list, including the feed's
+  // "Latest" list, so the default (GGUF) hides fp8/safetensors and picking a
+  // format actually changes the rows.
+  const effectiveDiscoverFormat: ModelFormatFilter = deferredFormatFilter;
 
   const listChannel = useMemo<HfModelSearchChannel | null>(() => {
     if (!liveListChannel) return null;
@@ -683,6 +685,7 @@ export function ModelsPage() {
     if (isDatasetMode) return discoverRows;
     return discoverRows.filter(
       (row) =>
+        !isHiddenModelId(row.id) &&
         matchesFormat(detectResultFormat(row.result), effectiveDiscoverFormat) &&
         matchesCapability(row.capabilities, deferredCapabilityFilter) &&
         (!activeChannel?.finetunableOnly || isUnslothFinetunable(row.result)),
@@ -710,7 +713,9 @@ export function ModelsPage() {
         hubFeed.trending.results,
         effectiveCachedRows,
         effectiveLocalRows,
-      ).filter((row) => matchesFormat(row.result.isGguf, "gguf")),
+      )
+        .filter((row) => !isHiddenModelId(row.id))
+        .filter((row) => matchesFormat(row.result.isGguf, "gguf")),
     [hubFeed.trending.results, modelDiscoveryInventorySignature],
   );
   const feedRows = useMemo(() => {
