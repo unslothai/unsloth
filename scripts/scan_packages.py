@@ -2602,12 +2602,14 @@ def _load_baseline(path: str) -> set[tuple[str, str, str, str]]:
         try:
             # Use the reviewed hash; else recompute it from the stored evidence.
             evidence_hash = e.get("evidence_hash") or _evidence_hash(e.get("evidence", ""))
-            keys.add((
-                _norm_pkg(e["package"]),
-                _relpath_in_package(e["file"]),
-                e["check"],
-                evidence_hash,
-            ))
+            keys.add(
+                (
+                    _norm_pkg(e["package"]),
+                    _relpath_in_package(e["file"]),
+                    e["check"],
+                    evidence_hash,
+                )
+            )
         except (KeyError, TypeError):
             continue
     return keys
