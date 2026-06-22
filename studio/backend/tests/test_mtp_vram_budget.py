@@ -829,6 +829,20 @@ class TestExtraArgsMtpDetection:
             "request.tensor_parallel,llama_backend.tensor_parallel)" in body
         )
 
+    def test_route_matcher_retries_after_drafter_not_found(self):
+        # drafter_not_found must not report "already loaded" or the reload never
+        # retries the download (#6459). Read source: importing routes pulls deps.
+        routes_src = (
+            Path(__file__).resolve().parent.parent / "routes" / "inference.py"
+        ).read_text()
+        start = routes_src.index("def _request_matches_loaded_settings")
+        end = routes_src.index("\ndef ", start + 1)
+        body = "".join(routes_src[start:end].split())
+        assert 'llama_backend.spec_fallback_reason=="drafter_not_found"' in body
+        assert "not_extra_args_set_spec_type(effective_extra)" in body
+        # HF-only (hf_repo): local/native loads have no download to retry.
+        assert "llama_backend.hf_repo" in body
+
     def test_extra_args_main_cache_type_heavier_axis(self):
         # Asymmetric --cache-type-k/-v must budget the heavier axis (extras win
         # per axis at launch), not the last-wins single type that under-reserves.
@@ -864,8 +878,10 @@ class TestExtraArgsMtpDetection:
         # f16/f16 on the layer fallback) (#6312).
         load = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
         assert "_tensor_dropped_extra_args=list(extra_args)" in load
-        # Both tensor->layer downgrade points restore the saved originals.
-        assert load.count("strip_split_mode_only(_tensor_dropped_extra_argsif") == 2
+        # The original extras are restored via one shared closure, called at all
+        # three tensor->layer downgrade points.
+        assert "strip_split_mode_only(_tensor_dropped_extra_argsif" in load
+        assert load.count("_restore_after_tensor_downgrade()") >= 3
 
     def test_load_model_tensor_skips_reserve_for_cpu_drafter(self):
         # A separate CPU-offloaded drafter (no embedded head) uses no GPU, so the

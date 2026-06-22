@@ -365,6 +365,11 @@ def test_runtime_recovery_reloads_without_mtp(monkeypatch):
     while b._spec_fallback_reason != "runtime_error" and time.monotonic() < deadline:
         time.sleep(0.02)
     assert b._spec_fallback_reason == "runtime_error"
+    # The reload thread clears the single-flight flag in its finally, a beat after
+    # it sets the fallback reason -- wait for that instead of racing the thread.
+    deadline = time.monotonic() + 2
+    while b._mtp_runtime_fallback_in_progress and time.monotonic() < deadline:
+        time.sleep(0.02)
     assert b._mtp_runtime_fallback_in_progress is False
 
 
@@ -1148,4 +1153,7 @@ def test_load_model_restores_quantized_kv_on_tensor_downgrade():
     # GPU-count and capacity-gate downgrades.
     compact = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
     assert "_tensor_dropped_cache_type_kv=cache_type_kv" in compact  # captured pre-null
-    assert compact.count("cache_type_kv=_tensor_dropped_cache_type_kv") >= 2  # restored
+    # Restore is shared in one closure, called at every tensor->layer downgrade.
+    assert "cache_type_kv=_tensor_dropped_cache_type_kv" in compact  # restored in the closure
+    assert "def_restore_after_tensor_downgrade():" in compact  # one shared restore helper
+    assert compact.count("_restore_after_tensor_downgrade()") >= 3  # called at each downgrade

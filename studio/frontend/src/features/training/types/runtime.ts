@@ -147,6 +147,9 @@ export interface TrainingViewData {
   currentEpoch: number | null;
   currentNumTokens: number | null;
   outputDir: string | null;
+  // True when a newer run reused this run's output_dir (resume), so its
+  // on-disk contents no longer match this (older) run's metrics.
+  resumedLater?: boolean;
   progressPercent: number;
   elapsedSeconds: number | null;
   etaSeconds: number | null;
