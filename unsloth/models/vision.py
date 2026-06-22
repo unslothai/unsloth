@@ -649,7 +649,11 @@ def _construct_vlm_processor_fallback(
     Some VLMs (e.g., LFM2.5-VL) have tokenizer_class entries that AutoTokenizer
     cannot resolve. This function loads the image processor and tokenizer separately,
     sets required special token attributes, and constructs the processor.
+
+    Returns (processor_or_None, error_or_None). The error lets the caller tell an
+    offline failure (retry from cache) apart from a genuine one (give up).
     """
+    _fb_err = None
     try:
         from transformers import AutoImageProcessor, PreTrainedTokenizerFast, AutoConfig
         from transformers.models.auto.processing_auto import PROCESSOR_MAPPING_NAMES
@@ -744,10 +748,10 @@ def _construct_vlm_processor_fallback(
                     tok, "chat_template", None
                 ):
                     processor.chat_template = tok.chat_template
-                return processor
-    except Exception:
-        pass
-    return None
+                return processor, None
+    except Exception as _e:
+        _fb_err = _e
+    return None, _fb_err
 
 
 def _get_total_transformer_layers(model):
@@ -1448,17 +1452,23 @@ class FastBaseModel:
                 )
                 if (_tok is None or _processor_is_degraded) and is_vlm:
                     try:
-                        _fallback = _construct_vlm_processor_fallback(
+                        _fallback, _fb_err = _construct_vlm_processor_fallback(
                             tokenizer_name,
                             model_type_arch,
                             token,
                             trust_remote_code,
                             local_files_only = lfo,
                         )
-                    except Exception:
-                        _fallback = None
+                    except Exception as _fe:
+                        _fallback, _fb_err = None, _fe
                     if _fallback is not None:
                         _tok = _fallback
+                    elif _err is None:
+                        # The manual fallback could not build a full processor.
+                        # Surface its failure so the caller can decide whether to
+                        # retry forced-offline (e.g. a degraded text-only VLM whose
+                        # image-processor files are cached but needed the network).
+                        _err = _fb_err
             return _tok, _err
 
         # If offline was explicitly requested (kwarg or env), force it up front so
@@ -1468,17 +1478,34 @@ class FastBaseModel:
         tokenizer, _primary_err = _acquire_processor(
             local_files_only, force_offline = local_files_only
         )
+
+        def _is_degraded_vlm(_t):
+            # A VLM that loaded only a text-only tokenizer (no image_processor):
+            # image inputs would break. Offline this happens when the image
+            # processor files could not be fetched and the manual fallback failed.
+            return is_vlm and _t is not None and not hasattr(_t, "image_processor")
+
         # Only retry when the first attempt was an ONLINE one (local_files_only
         # False) that failed with a genuinely network-related error. If offline
         # was already requested, the first attempt was forced offline / local-only
         # so an identical retry would just repeat the same failing work. And a
         # permanent tokenizer error (bad config, unknown class) must never flip the
         # process-wide offline flag for other concurrent loads in this process.
-        if tokenizer is None and not local_files_only and _is_offline_related_error(_primary_err):
+        # A degraded VLM counts as a failure too, so a cached full processor can be
+        # rebuilt forced-offline; we keep the original if the retry is not better.
+        if (
+            (tokenizer is None or _is_degraded_vlm(tokenizer))
+            and not local_files_only
+            and _is_offline_related_error(_primary_err)
+        ):
             # The kwarg alone was insufficient (transformers < 5) or the network is
             # down: retry against the local cache, forcing HF offline so
             # AutoProcessor skips its /api/models lookup.
-            tokenizer, _primary_err = _acquire_processor(True, force_offline = True)
+            _retry_tok, _retry_err = _acquire_processor(True, force_offline = True)
+            if _retry_tok is not None and not _is_degraded_vlm(_retry_tok):
+                tokenizer, _primary_err = _retry_tok, _retry_err
+            elif tokenizer is None and _retry_tok is not None:
+                tokenizer, _primary_err = _retry_tok, _retry_err
         if tokenizer is None and is_vlm:
             import sys
             print(
@@ -1526,13 +1553,28 @@ class FastBaseModel:
             try:
                 from transformers import AutoTokenizer as _AutoTokenizer
 
-                _fallback_tok = _AutoTokenizer.from_pretrained(
-                    tokenizer_name,
-                    padding_side = "left",
-                    token = token,
-                    trust_remote_code = trust_remote_code,
-                    local_files_only = local_files_only,
-                )
+                # Same offline handling as the primary / last-resort loads: force HF
+                # offline on a network failure so AutoTokenizer skips its /api/models
+                # lookup (local_files_only alone does not on transformers < 5).
+                def _load_patch_fallback_tok(lfo, force_offline = False):
+                    with _force_hf_offline() if force_offline else contextlib.nullcontext():
+                        return _AutoTokenizer.from_pretrained(
+                            tokenizer_name,
+                            padding_side = "left",
+                            token = token,
+                            trust_remote_code = trust_remote_code,
+                            local_files_only = lfo,
+                        )
+
+                try:
+                    _fallback_tok = _load_patch_fallback_tok(
+                        local_files_only, force_offline = local_files_only
+                    )
+                except Exception as _fe:
+                    if not local_files_only and _is_offline_related_error(_fe):
+                        _fallback_tok = _load_patch_fallback_tok(True, force_offline = True)
+                    else:
+                        raise
                 model, _fallback_tok = patch_tokenizer(model, _fallback_tok)
                 # Re-attach as processor wrapper if original was a processor
                 if hasattr(tokenizer, "image_processor"):

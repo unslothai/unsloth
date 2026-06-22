@@ -170,6 +170,11 @@ def _force_offline_probe_window():
                 _probe_window_saved = {}
 
 
+def _offline_window_if(local_files_only):
+    """Forced-offline window when offline was detected, else a no-op context."""
+    return _force_offline_probe_window() if local_files_only else contextlib.nullcontext()
+
+
 def _is_wsl():
     """Detect if running under Windows Subsystem for Linux."""
     try:
@@ -318,10 +323,7 @@ class ExportBackend:
             # a forced-offline window: their hf_hub_download / AutoConfig reads then
             # hit the local cache directly instead of waiting out connection
             # timeouts (detect_audio_type already reads the local cache first).
-            _probe_ctx = (
-                _force_offline_probe_window() if local_files_only else contextlib.nullcontext()
-            )
-            with _probe_ctx:
+            with _offline_window_if(local_files_only):
                 # detect_audio_type's remote fallback is a raw requests.get that
                 # ignores the HF offline flag, so pass local_files_only explicitly
                 # to skip it offline (the forced-offline window only covers the
@@ -364,15 +366,20 @@ class ExportBackend:
 
             elif self._audio_type == "snac":
                 logger.info("Loading as SNAC (Orpheus) audio model...")
-                model, tokenizer = FastLanguageModel.from_pretrained(
-                    model_name = checkpoint_path,
-                    max_seq_length = max_seq_length,
-                    dtype = None,
-                    load_in_4bit = load_in_4bit,
-                    trust_remote_code = trust_remote_code,
-                    token = token,
-                    local_files_only = local_files_only,
-                )
+                # FastLanguageModel's text tokenizer path (load_correct_tokenizer ->
+                # AutoTokenizer) does not forward local_files_only, so force HF
+                # offline around the load when the probe detected offline (the model
+                # weights / config still load via the local_files_only kwarg).
+                with _offline_window_if(local_files_only):
+                    model, tokenizer = FastLanguageModel.from_pretrained(
+                        model_name = checkpoint_path,
+                        max_seq_length = max_seq_length,
+                        dtype = None,
+                        load_in_4bit = load_in_4bit,
+                        trust_remote_code = trust_remote_code,
+                        token = token,
+                        local_files_only = local_files_only,
+                    )
 
             elif self._audio_type == "bicodec":
                 from unsloth import FastModel
@@ -414,15 +421,20 @@ class ExportBackend:
 
             else:
                 logger.info("Loading as text model...")
-                model, tokenizer = FastLanguageModel.from_pretrained(
-                    model_name = checkpoint_path,
-                    max_seq_length = max_seq_length,
-                    dtype = None,
-                    load_in_4bit = load_in_4bit,
-                    trust_remote_code = trust_remote_code,
-                    token = token,
-                    local_files_only = local_files_only,
-                )
+                # FastLanguageModel's text tokenizer path (load_correct_tokenizer ->
+                # AutoTokenizer) does not forward local_files_only, so force HF
+                # offline around the load when the probe detected offline (the model
+                # weights / config still load via the local_files_only kwarg).
+                with _offline_window_if(local_files_only):
+                    model, tokenizer = FastLanguageModel.from_pretrained(
+                        model_name = checkpoint_path,
+                        max_seq_length = max_seq_length,
+                        dtype = None,
+                        load_in_4bit = load_in_4bit,
+                        trust_remote_code = trust_remote_code,
+                        token = token,
+                        local_files_only = local_files_only,
+                    )
 
             if _IS_MLX:
                 # MLX doesn't use PeftModel — detect LoRA via adapter_config.json
