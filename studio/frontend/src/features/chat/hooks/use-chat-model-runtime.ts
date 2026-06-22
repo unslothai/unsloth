@@ -246,6 +246,9 @@ export function useChatModelRuntime() {
   const setLoras = useChatRuntimeStore((state) => state.setLoras);
   const setParams = useChatRuntimeStore((state) => state.setParams);
   const setModelsError = useChatRuntimeStore((state) => state.setModelsError);
+  const setLastModelLoadError = useChatRuntimeStore(
+    (state) => state.setLastModelLoadError,
+  );
   const setCheckpoint = useChatRuntimeStore((state) => state.setCheckpoint);
   const clearCheckpoint = useChatRuntimeStore((state) => state.clearCheckpoint);
 
@@ -493,6 +496,7 @@ export function useChatModelRuntime() {
         .filter(Boolean)
         .join(" ");
       setModelsError(null);
+      setLastModelLoadError(null); // clear prior failed-load marker
       setLoadToastDismissedState(false);
       const loadInfo = {
         id: modelId,
@@ -1184,6 +1188,7 @@ export function useChatModelRuntime() {
         const message =
           error instanceof Error ? error.message : "Failed to load model";
         setModelsError(message);
+        setLastModelLoadError(message); // load-specific failure for the attach gates
         if (throwOnError) {
           throw error instanceof Error ? error : new Error(message);
         }
@@ -1199,6 +1204,7 @@ export function useChatModelRuntime() {
       resetLoadingUi,
       setLoadToastDismissedState,
       setModelsError,
+      setLastModelLoadError,
       setParams,
     ],
   );
