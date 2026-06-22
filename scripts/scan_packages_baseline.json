@@ -924,6 +924,14 @@
     },
     {
       "package": "unsloth-zoo",
+      "file": "tests/test_mlx_save_export_regressions.py",
+      "check": "Writes to /tmp and executes (staged dropper)",
+      "severity": "CRITICAL",
+      "evidence": "L164: temporary_location=\"/tmp/ignored\",",
+      "evidence_hash": "be7b6e4bbc36baaa5eaafcac7cb2a02bcb71c836a9b80379c4022ff13e2156ab"
+    },
+    {
+      "package": "unsloth-zoo",
       "file": "tests/test_quantize_gguf_q2_k_l.py",
       "check": "Writes to /tmp and executes (staged dropper)",
       "severity": "CRITICAL",
@@ -951,7 +959,7 @@
       "file": "unsloth_zoo/llama_cpp.py",
       "check": "Creates archive with sensitive data AND makes network calls",
       "severity": "CRITICAL",
-      "evidence": "Archive: L881: with tarfile.open(archive_path, \"r:gz\") as archive:\nNetwork: L691: response = requests.get(url, timeout = timeout, headers = headers, stream = stream) | L1582: response = requests.get( | L2730: check = requests.get(llama_cpp_chat_file, timeout = 5)",
+      "evidence": "Archive: L938: with tarfile.open(archive_path, \"r:gz\") as archive:\nNetwork: L691: response = requests.get(url, timeout = timeout, headers = headers, stream = stream) | L1699: response = requests.get( | L2862: check = requests.get(llama_cpp_chat_file, timeout = 5)",
       "evidence_hash": "ecb1cfa283828be5e1cc325fa3cc4cc5a1c1b04c6f6c337e3b015dbd7774b496"
     },
     {
@@ -959,7 +967,7 @@
       "file": "unsloth_zoo/llama_cpp.py",
       "check": "Harvests environment variables/secrets AND makes network calls",
       "severity": "CRITICAL",
-      "evidence": "Env: L125: keynames = \"\\n\" + \"\\n\".join(os.environ.keys()) | L683: token = os.environ.get(\"GH_TOKEN\") or os.environ.get(\"GITHUB_TOKEN\")\nNetwork: L691: response = requests.get(url, timeout = timeout, headers = headers, stream = stream) | L1582: response = requests.get( | L2730: check = requests.get(llama_cpp_chat_file, timeout = 5)",
+      "evidence": "Env: L125: keynames = \"\\n\" + \"\\n\".join(os.environ.keys()) | L683: token = os.environ.get(\"GH_TOKEN\") or os.environ.get(\"GITHUB_TOKEN\")\nNetwork: L691: response = requests.get(url, timeout = timeout, headers = headers, stream = stream) | L1699: response = requests.get( | L2862: check = requests.get(llama_cpp_chat_file, timeout = 5)",
       "evidence_hash": "692f4e1c0da49dd54d4e05bf19d31d18ce34827337c1869e96f7739064d4cf06"
     },
     {
@@ -1495,7 +1503,7 @@
       "file": "unsloth_zoo/saving_utils.py",
       "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
       "severity": "HIGH",
-      "evidence": "Obfusc: L3040: module = __import__('transformers', fromlist=[model_class_name])\nExec: L2922: exec(f\"from transformers.modeling_utils import ({', '.join(functions)})\", locals(), globals()) | L2968: exec(save_pretrained, globals(), functions)",
+      "evidence": "Obfusc: L3241: module = __import__('transformers', fromlist=[model_class_name])\nExec: L3123: exec(f\"from transformers.modeling_utils import ({', '.join(functions)})\", locals(), globals()) | L3169: exec(save_pretrained, globals(), functions)",
       "evidence_hash": "86abad0fa73dba52306e1124103b130a7d60818751d544ee646aeafcfff6ab64"
     },
     {
