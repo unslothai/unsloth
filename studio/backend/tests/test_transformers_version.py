@@ -207,7 +207,6 @@ class TestRemoteLoraBase:
         # An existing one-slash relative path (e.g. outputs/run1) is a local checkpoint, not
         # a Hub repo: no request, no risk of matching an unrelated remote/cached adapter.
         import utils.paths as paths
-
         monkeypatch.setattr(paths, "is_local_path", lambda p: True)
         with patch("urllib.request.urlopen") as mock_url:
             assert _remote_lora_base("outputs/run1") is None
