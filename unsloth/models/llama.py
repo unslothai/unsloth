@@ -1486,9 +1486,8 @@ def CausalLM_fast_forward(fast_forward_inference):
                     logit_softcapping = logit_softcapping,
                 )
                 if not return_dict:
-                    # The fused CE path computes loss straight from hidden_states
-                    # and never materializes `logits`; mirror the return_dict
-                    # branch below and use EMPTY_LOGITS (fixes #2068).
+                    # Fused CE never materializes `logits`; use EMPTY_LOGITS
+                    # like the return_dict branch below (fixes #2068).
                     output = (EMPTY_LOGITS,) + outputs[1:]
                     return (loss,) + output if loss is not None else output
 

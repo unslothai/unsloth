@@ -13,16 +13,9 @@
 
 """Drift detector for unsloth#2068.
 
-The fused cross-entropy path in ``CausalLM_fast_forward`` computes the loss
-straight from ``hidden_states`` and never materializes ``logits``. The
-``return_dict=True`` branch correctly returns ``EMPTY_LOGITS``; the
-``not return_dict`` branch used to return ``(logits,) + outputs[1:]``, which
-raised ``UnboundLocalError: ... 'logits'`` whenever it ran (e.g. training with
-``return_dict=False``).
-
-This guards the source so the fused-CE ``not return_dict`` return keeps using
-``EMPTY_LOGITS``. Pure text inspection, so it runs under the GPU-free
-``tests/conftest.py`` (the fused path itself is GPU/triton only)."""
+The fused-CE path never materializes ``logits``, so its ``not return_dict``
+return must use ``EMPTY_LOGITS`` (it once used ``logits`` -> UnboundLocalError).
+Pure text inspection, so it runs GPU-free (the fused path is GPU/triton only)."""
 
 from __future__ import annotations
 
@@ -36,13 +29,9 @@ _REPO = Path(__file__).resolve().parent.parent
 
 
 def _fused_ce_not_return_dict_return(source: str) -> str:
-    """Return the `output = (...) + outputs[1:]` assignment from the FIRST
-    `if not return_dict:` that follows an `unsloth_fused_ce_loss(` call.
-
-    Parsed with whitespace-tolerant regexes (not exact string slicing) so the
-    drift detector survives a formatter respacing or rewrapping the assignment
-    across lines. Anchored after the fused guard so it targets the fused-CE
-    branch, not the normal `output = (logits,)` path further down."""
+    """Return the `output = (...) + outputs[1:]` assignment from the first
+    `if not return_dict:` after the `unsloth_fused_ce_loss(` call. Whitespace-
+    tolerant regexes survive reformatting; the anchor targets the fused branch."""
     fused = re.search(r"unsloth_fused_ce_loss\s*\(", source)
     if fused is None:
         raise ValueError("unsloth_fused_ce_loss( call not found")
