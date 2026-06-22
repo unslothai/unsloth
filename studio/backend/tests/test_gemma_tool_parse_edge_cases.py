@@ -68,7 +68,7 @@ def test_mixed_format_calls_preserve_document_order():
     # A Gemma-native call precedes a JSON-format call in the text; tools execute
     # in returned order, so `create` must come before `read`.
     content = (
-        '<|tool_call>call:create{path:a}<tool_call|> then '
+        "<|tool_call>call:create{path:a}<tool_call|> then "
         '<tool_call>{"name":"read","arguments":{"path":"a"}}</tool_call>'
     )
     calls = parse_tool_calls_from_text(content)
