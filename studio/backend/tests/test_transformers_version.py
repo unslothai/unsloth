@@ -182,9 +182,8 @@ class TestCheckTokenizerConfigNeedsV5:
         assert _tokenizer_class_cache[key] is True
 
     def test_token_cache_isolation_and_auth_fetch(self, monkeypatch):
-        # A gated repo's unauthenticated fetch fails and caches False under (model, None);
-        # an authenticated fetch uses a separate key and still resolves, so the model is
-        # not stuck on the default tier. The token rides in the Authorization header.
+        # A gated repo: the unauthenticated miss (cached under (model, None)) must not block a
+        # later authed fetch (separate key), and the token rides in the Authorization header.
         import utils.transformers_version as tv
 
         monkeypatch.setattr(tv, "_env_offline", lambda: False)
@@ -702,9 +701,8 @@ class TestProbeTier:
         assert _probe_tier("org/m", None, "x") == "550"
 
     def test_nothing_parses_stays_530_and_caches(self, monkeypatch):
-        # Every tier probed, none parsed with the built-in parser -> a remote-code / custom
-        # model_type that loads via its own code; keep the legacy 530 route (never jump to
-        # 510). Conclusive, so it is cached by model_name.
+        # All tiers probed, none parse -> a remote-code model that loads via its own code;
+        # keep 530 (never jump to 510). Conclusive, so cached by model_name.
         self._patch_common(monkeypatch)
         monkeypatch.setattr(
             "utils.transformers_version.subprocess.run",
@@ -786,9 +784,8 @@ class TestProbeTier:
         assert "org/m" not in _probe_tier_cache  # nothing probed -> uncached
 
     def test_probe_does_not_import_hub(self, monkeypatch):
-        # The probe must not pull huggingface_hub into the process: that would happen before
-        # the sidecar venv is on sys.path (activate only prepends, never purges), pinning the
-        # default-env hub over the sidecar's. So no commit-sha resolution in-process.
+        # The probe must not import huggingface_hub: that would land before the sidecar is on
+        # sys.path (activation never purges), pinning the default-env hub. So no in-process sha.
         self._patch_common(monkeypatch)
         monkeypatch.setattr("utils.transformers_version.subprocess.run", lambda cmd, **k: _proc(0))
         sys.modules.pop("huggingface_hub", None)

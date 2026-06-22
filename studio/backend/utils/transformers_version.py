@@ -115,10 +115,9 @@ _config_json_cache: dict[tuple[str, str | None], dict | None] = {}
 _config_needs_510_cache: dict[tuple[str, str | None], bool] = {}
 _config_needs_550_cache: dict[tuple[str, str | None], bool] = {}
 
-# AutoConfig-probe tier resolution, keyed on model_name for the lifetime of this process
-# (a model's required tier is a property of its architecture; cleared on restart). Keyed by
-# id only, NOT a Hub commit sha, so the probe never imports huggingface_hub into a worker
-# before the sidecar venv is activated (which would defeat the sidecar's pinned hub).
+# AutoConfig-probe tier cache, keyed by model_name for the process lifetime (cleared on
+# restart). Not keyed by Hub sha, so the probe never imports huggingface_hub before a
+# worker's sidecar venv is activated (which would pin the wrong hub).
 _probe_tier_cache: dict[str, str] = {}
 
 # Versions
@@ -150,8 +149,7 @@ def activate_transformers_for_subprocess(model_name: str, hf_token: str | None =
     (e.g. GGUF converter). Used by training, inference, and export workers.
 
     ``hf_token`` is forwarded to tier detection so a gated/private model whose only 5.x
-    signal lives in an authenticated ``config.json``/``tokenizer_config.json`` is routed to
-    the right sidecar instead of falling through to the default tier.
+    signal is an authenticated config/tokenizer reaches the right sidecar, not the default.
     """
     resolved = _resolve_base_model(model_name)
     tier = get_transformers_tier(resolved, hf_token)
@@ -481,17 +479,14 @@ def _check_config_needs_510(model_name: str, hf_token: str | None = None) -> boo
 
 
 # --- AutoConfig probe: general tier resolution for ambiguous models ----------
-# When the cheap signals only say "needs some 5.x" we cannot tell which sidecar parses
-# the config. Rather than guess the lowest tier, actually parse config.json with the
-# built-in parser (trust_remote_code=False) in each candidate sidecar and pick the first
-# that succeeds. Generalizes beyond the hardcoded architecture lists -- e.g. dense
-# NemotronH, whose '-' (MLP) layer only transformers 5.10 can parse.
+# When the cheap signals only say "needs some 5.x", parse config.json with the built-in
+# parser in each candidate sidecar (lowest first) instead of guessing. Generalizes beyond
+# the hardcoded lists, e.g. dense NemotronH whose '-' (MLP) layer only 5.10 can parse.
 _PROBE_TIER_ORDER = ("530", "550", "510")
 _PROBE_TIMEOUT_SECS = 60
 
-# config.json-only parse in a sidecar (the --target dir goes on sys.path; there is no
-# per-venv python). Built-in parser only, never repo code, no weights. Exit 0 = parses,
-# 1 = fails. Token rides in env (HF_TOKEN), never argv.
+# config.json-only parse in a sidecar (--target dir on sys.path, no per-venv python).
+# Built-in parser only, no repo code, no weights. Exit 0 = parses; token via env, not argv.
 _PROBE_CONFIG_SCRIPT = r"""
 import sys, os
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -578,24 +573,17 @@ def _probe_autoconfig(target_dir: str, model_name: str, hf_token: str | None) ->
 def _probe_tier(model_name: str, hf_token: str | None, reason: str) -> str:
     """Lowest sidecar tier whose built-in parser loads the config; '530' fail-safe.
 
-    Escalates 530 -> 550 -> 510 and returns the first that parses. The probe can only
-    improve on the legacy '530' guess, never raises, and never escalates on uncertainty:
+    Escalates 530 -> 550 -> 510 and returns the first that parses; never raises, never
+    escalates on uncertainty (so it can only improve on the legacy '530' guess):
+      - first success wins (cached unless a lower tier was skipped);
+      - transient failure (auth/network/offline) -> '530', uncached;
+      - a skipped/uninstallable sidecar -> uncached (a lower tier may yet be the answer);
+      - all tiers probed, none parse -> a remote-code/custom model_type that loads via its
+        own code; keep '530' rather than jumping to 510 (which would change 5.3-stack models).
 
-    * First parse success wins (and is cached, unless a lower tier was skipped).
-    * Transient probe failure (auth/network/offline) -> '530' uncached (retried next call).
-    * Sidecar missing/uninstallable, so a tier was skipped -> result is NOT cached (the
-      environment may complete later and a skipped lower tier could be the real answer).
-    * Every tier was actually probed and none parsed -> the built-in parser cannot handle
-      this model at any shipped tier (a remote-code / custom model_type that loads via its
-      own code with trust_remote_code=True). Keep the legacy '530' route -- do NOT jump to
-      510, which would change the behavior of models that worked on the 5.3 stack.
-
-    The result is cached per model_name for the lifetime of this process (cleared on
-    restart). A model's required tier is a property of its architecture, so this avoids
-    re-spawning probe subprocesses for the same id; it deliberately does NOT resolve a Hub
-    commit sha -- doing so would import huggingface_hub into the worker BEFORE the sidecar
-    is prepended to sys.path (this runs from activate_transformers_for_subprocess, which
-    does not purge modules), pinning the default-env hub over the sidecar's pinned version.
+    Cached per model_name for the process lifetime (a model's tier follows its architecture).
+    No Hub commit sha is resolved: that would import huggingface_hub into the worker before
+    the sidecar is on sys.path (activation does not purge), pinning the default-env hub.
     """
     if os.environ.get("UNSLOTH_DISABLE_TIER_PROBE", "").lower() in ("1", "true", "yes"):
         return "530"
