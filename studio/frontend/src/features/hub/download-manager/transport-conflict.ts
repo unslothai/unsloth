@@ -80,24 +80,35 @@ async function activeSiblingTransport(
   return null;
 }
 
+// Outcome of a start request so callers can tell whether a transfer actually
+// began before telling the user it did. "started" also covers an
+// already-active/pending download. "conflict" means a transport partial
+// conflict was recorded and must be resolved from the Hub download card;
+// "busy" means a sibling variant is downloading on another transport (its own
+// toast was already shown); "error" means the start threw.
+export type DownloadStartOutcome = "started" | "conflict" | "busy" | "error";
+
 async function runWithPendingStartGuard(
   req: DownloadRequest,
-  action: () => Promise<void>,
-): Promise<void> {
+  action: () => Promise<DownloadStartOutcome>,
+): Promise<DownloadStartOutcome> {
   const startKey = pendingStartKey(req);
-  if (hasActiveOrPendingStart(req)) return;
+  if (hasActiveOrPendingStart(req)) return "started";
   runtimeRegistry.pendingStartRepoKeys.add(startKey);
   try {
-    await action();
+    return await action();
   } catch (error) {
     reportConflictStartError(error);
+    return "error";
   } finally {
     runtimeRegistry.pendingStartRepoKeys.delete(startKey);
   }
 }
 
-export async function requestStart(req: DownloadRequest): Promise<void> {
-  await runWithPendingStartGuard(req, async () => {
+export async function requestStart(
+  req: DownloadRequest,
+): Promise<DownloadStartOutcome> {
+  return runWithPendingStartGuard(req, async () => {
     let mode: TransportMode = getTransportMode();
     try {
       mode = await effectiveTransportMode(mode);
@@ -119,7 +130,7 @@ export async function requestStart(req: DownloadRequest): Promise<void> {
               ? "This repository is currently downloading with Xet. Switch to Xet or wait for it to finish."
               : "This repository is currently downloading with HTTP. Switch to HTTP or wait for it to finish.",
         });
-        return;
+        return "busy";
       }
     } catch (err) {
       console.warn("Active download transport check failed.", err);
@@ -139,7 +150,7 @@ export async function requestStart(req: DownloadRequest): Promise<void> {
           },
           pending: req,
         });
-        return;
+        return "conflict";
       }
       if (status.has_partial && !status.last_transport) {
         toast.info("Restarting this download", {
@@ -163,7 +174,7 @@ export async function requestStart(req: DownloadRequest): Promise<void> {
             "Starting with HTTP so an existing partial is not discarded. Switch transport to retry with Xet.",
         });
         await startJob(req, { useXet: false });
-        return;
+        return "started";
       }
       toast.warning("Couldn't verify existing partial download", {
         description:
@@ -171,6 +182,7 @@ export async function requestStart(req: DownloadRequest): Promise<void> {
       });
     }
     await startJob(req, { useXet: mode === TRANSPORT.XET });
+    return "started";
   });
 }
 
@@ -178,22 +190,24 @@ export function resumeConflict(conflictKey: string): void {
   const entry = getState().conflicts[conflictKey];
   if (!entry) return;
   setConflict(conflictKey, null);
-  void runWithPendingStartGuard(entry.pending, () =>
-    startJob(entry.pending, {
+  void runWithPendingStartGuard(entry.pending, async () => {
+    await startJob(entry.pending, {
       useXet: entry.info.previous === TRANSPORT.XET,
-    }),
-  );
+    });
+    return "started";
+  });
 }
 
 export function restartConflict(conflictKey: string): void {
   const entry = getState().conflicts[conflictKey];
   if (!entry) return;
   setConflict(conflictKey, null);
-  void runWithPendingStartGuard(entry.pending, () =>
-    startJob(entry.pending, {
+  void runWithPendingStartGuard(entry.pending, async () => {
+    await startJob(entry.pending, {
       useXet: entry.info.next === TRANSPORT.XET,
-    }),
-  );
+    });
+    return "started";
+  });
 }
 
 export function cancelConflict(conflictKey: string): void {

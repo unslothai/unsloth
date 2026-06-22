@@ -1668,16 +1668,28 @@ export function ChatPage({
             hasGgufSource(selection) &&
             !selection.isDownloaded);
         if (wantBackgroundDownload) {
-          void downloadManager.requestStart({
+          // Only claim the download started once a job is actually created. A
+          // transport conflict records state that is only resolvable from the
+          // Hub download card, so point the user there instead of showing a
+          // success toast for a transfer that never began; "busy" and "error"
+          // already surface their own toasts.
+          const outcome = await downloadManager.requestStart({
             kind: DOWNLOAD_KIND.MODEL,
             repoId: selection.id,
             variant: selection.ggufVariant ?? null,
             expectedBytes: selection.expectedBytes ?? 0,
           });
-          toast.info("Downloading in the background", {
-            description:
-              "It'll be ready to load once the current model finishes.",
-          });
+          if (outcome === "started") {
+            toast.info("Downloading in the background", {
+              description:
+                "It'll be ready to load once the current model finishes.",
+            });
+          } else if (outcome === "conflict") {
+            toast.info("Resume this download from the Hub", {
+              description:
+                "An earlier partial download used a different transport. Open the Hub tab to resume or restart it.",
+            });
+          }
         } else {
           toast.info("Another model is already loading", {
             description: "Wait for it to finish or cancel it first.",
