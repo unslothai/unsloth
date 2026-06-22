@@ -604,7 +604,9 @@ def _patch_sft_trainer_auto_packing(trl_module):
         if not getattr(self, "_unsloth_train_reset_wrapped", False):
             try:
                 from unsloth.models.rl import _unsloth_reset_stray_compile_cache
+
                 _orig_train = self.train
+
                 @wraps(_orig_train)
                 def _train_with_reset(*train_args, **train_kwargs):
                     try:
@@ -612,6 +614,7 @@ def _patch_sft_trainer_auto_packing(trl_module):
                     except Exception:
                         pass
                     return _orig_train(*train_args, **train_kwargs)
+
                 self.train = _train_with_reset
                 self._unsloth_train_reset_wrapped = True
             except Exception:
