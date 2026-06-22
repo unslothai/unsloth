@@ -1,14 +1,5 @@
-"""
-Regression test for unslothai/unsloth#1013.
-
-With DoRA (use_dora=True) the lora_magnitude_vector is upcast to fp32 for the
-optimizer, which promotes the q/k/v_proj output to fp32. FlashAttention only
-accepts fp16/bf16, so the fp32 q/k/v previously raised:
-    RuntimeError: FlashAttention only support fp16 and bf16 data type
-
-run_attention must downcast fp32 q/k/v before calling the flash kernels, and
-must leave already-16bit tensors untouched.
-"""
+"""Regression test for unslothai/unsloth#1013: run_attention must downcast DoRA's
+fp32 q/k/v for FlashAttention while leaving already-16bit tensors untouched."""
 
 import torch
 import unsloth  # noqa: F401
