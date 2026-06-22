@@ -8,6 +8,10 @@ import {
   type ModelOption,
   ModelSelector,
 } from "@/components/assistant-ui/model-selector";
+import {
+  loadRememberedLoadSettings,
+  rememberedLoadSettingsKey,
+} from "@/components/assistant-ui/model-selector/remembered-load-settings";
 import { ProjectComposer, Thread } from "@/components/assistant-ui/thread";
 import { CopyableErrorChip } from "@/components/ui/copyable-error-chip";
 import {
@@ -1266,13 +1270,19 @@ export function ChatPage({
     selectModelRef.current = selectModel;
   }, [refresh, selectModel]);
   // Load a cached autoLoad pick once its download finishes. The sheet was never
-  // opened, so on a load failure just drop the orphaned staged knobs.
+  // opened, so on a load failure just drop the orphaned staged knobs. The
+  // restore effect already seeded this pick's saved knobs when it was staged;
+  // keepSpeculative carries the restored speculative choice across the switch
+  // (only when a config was saved -- otherwise the standing preference wins).
   autoLoadStagedRef.current = (pending) => {
+    const remembered = loadRememberedLoadSettings(
+      rememberedLoadSettingsKey(pending),
+    );
     void selectModel({
       ...pending,
       isDownloaded: true,
       forceReload: true,
-      keepSpeculative: false,
+      keepSpeculative: remembered != null,
       throwOnError: true,
     }).catch(() => {
       const store = useChatRuntimeStore.getState();
@@ -1643,7 +1653,18 @@ export function ChatPage({
         // context length) don't leak into this immediate load -- resolveLoad
         // reads customContextLength before checking the target is GGUF.
         abandonStaged();
-        await selectModel(selection);
+        // Load-on-selection skips the sheet, so seed this GGUF pick's saved load
+        // knobs (context, KV cache, speculative, …) the way the sheet's restore
+        // effect would -- otherwise a remembered config is silently ignored.
+        // keepSpeculative honors the restored speculative choice across the
+        // switch, matching the staged Load button.
+        const remembered = hasGgufSource(selection)
+          ? loadRememberedLoadSettings(rememberedLoadSettingsKey(selection))
+          : null;
+        if (remembered) store.applyRememberedLoadSettings(remembered);
+        await selectModel(
+          remembered ? { ...selection, keepSpeculative: true } : selection,
+        );
         return;
       }
       // Refuse staging while a load is in flight (it would be silently dropped);

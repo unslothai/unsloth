@@ -580,6 +580,9 @@ export function ChatSettingsPanel({
   );
   const kvCacheDtype = useChatRuntimeStore((s) => s.kvCacheDtype);
   const setKvCacheDtype = useChatRuntimeStore((s) => s.setKvCacheDtype);
+  const applyRememberedLoadSettings = useChatRuntimeStore(
+    (s) => s.applyRememberedLoadSettings,
+  );
   const loadedKvCacheDtype = useChatRuntimeStore((s) => s.loadedKvCacheDtype);
   const tensorParallel = useChatRuntimeStore((s) => s.tensorParallel);
   const setTensorParallel = useChatRuntimeStore((s) => s.setTensorParallel);
@@ -622,20 +625,8 @@ export function ChatSettingsPanel({
     if (!pendingKey) return;
     const saved = loadRememberedLoadSettings(pendingKey);
     setRemember(saved != null);
-    if (!saved) return;
-    setCustomContextLength(saved.contextLength);
-    setKvCacheDtype(saved.kvCacheDtype);
-    setSpeculativeType(saved.speculativeType ?? "auto");
-    setSpecDraftNMax(saved.specDraftNMax);
-    setTensorParallel(saved.tensorParallel);
-  }, [
-    pendingKey,
-    setCustomContextLength,
-    setKvCacheDtype,
-    setSpeculativeType,
-    setSpecDraftNMax,
-    setTensorParallel,
-  ]);
+    if (saved) applyRememberedLoadSettings(saved);
+  }, [pendingKey, applyRememberedLoadSettings]);
   // While staging, the sheet reflects the STAGED model, so its header context
   // takes precedence over the loaded model's (which may differ or be larger).
   const baseContext = pendingIsGguf ? stagedContextLength : ggufContextLength;
