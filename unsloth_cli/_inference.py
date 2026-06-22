@@ -280,16 +280,47 @@ def load_chat_backend(
     return ChatBackend("unsloth", backend)
 
 
+def _loopback_candidate_bases(base: str) -> list:
+    """For a bare ``localhost`` base, the concrete IP bases to try, IPv4
+    127.0.0.1 first (where ``unsloth studio`` binds by default). Pinning to one
+    address up front means discovery, the identity check, and the credential we
+    then send all target the same endpoint instead of racing IPv4/IPv6
+    resolution -- which would otherwise let the health probe land on one address
+    and the identity check on another. A literal IP or remote name is unchanged.
+    """
+    from urllib.parse import urlparse
+
+    parsed = urlparse(base)
+    if (parsed.hostname or "").lower() != "localhost":
+        return [base]
+    import socket
+
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    try:
+        ips = {ai[4][0] for ai in socket.getaddrinfo(parsed.hostname, port, type = socket.SOCK_STREAM)}
+    except Exception:
+        return [base]
+    ordered = sorted(ips, key = lambda ip: (ip != "127.0.0.1", ip))
+    bases = [f"{parsed.scheme}://" + (f"[{ip}]:{port}" if ":" in ip else f"{ip}:{port}") for ip in ordered]
+    return bases or [base]
+
+
 def find_studio_server(timeout: float = 3.0) -> Optional[str]:
     import urllib.request
 
     base = os.environ.get("UNSLOTH_STUDIO_URL", "http://127.0.0.1:8888").rstrip("/")
-    request = urllib.request.Request(f"{base}/api/health", headers = {"User-Agent": _USER_AGENT})
-    try:
-        with urllib.request.urlopen(request, timeout = timeout):
-            return base
-    except Exception:
-        return None
+    # Try the concrete loopback addresses in order and return the first that
+    # answers, so the rest of the flow talks to that exact address.
+    for candidate in _loopback_candidate_bases(base):
+        request = urllib.request.Request(
+            f"{candidate}/api/health", headers = {"User-Agent": _USER_AGENT}
+        )
+        try:
+            with urllib.request.urlopen(request, timeout = timeout):
+                return candidate
+        except Exception:
+            continue
+    return None
 
 
 def is_loopback_url(base: str) -> bool:
