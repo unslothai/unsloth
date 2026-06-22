@@ -1035,8 +1035,7 @@ class TestProbeGating:
         local = str(tmp_path)
         monkeypatch.setattr("utils.transformers_version.subprocess.run", lambda cmd, **k: _proc(0))
         assert (
-            _probe_tier(local, None, "version", include_default = True, floor = "default")
-            == "default"
+            _probe_tier(local, None, "version", include_default = True, floor = "default") == "default"
         )
         seen = []
         monkeypatch.setattr(
