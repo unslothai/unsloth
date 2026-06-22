@@ -33,12 +33,9 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import {
-  useDebouncedValue,
-  useHfDatasetSearch,
-  useHfTokenValidation,
-  useInfiniteScroll,
-} from "@/hooks";
+import { useDebouncedValue, useHfTokenValidation } from "@/hooks";
+import { useHubDatasetSearch } from "@/features/hub/hooks/use-hub-dataset-search";
+import { useHubInfiniteScroll } from "@/features/hub/hooks/use-hub-infinite-scroll";
 import {
   HfDatasetSubsetSplitSelectors,
   listLocalDatasets,
@@ -311,8 +308,9 @@ export function DatasetSection() {
     isLoading,
     isLoadingMore,
     fetchMore,
+    scannedCount,
     error: hfSearchError,
-  } = useHfDatasetSearch(pickerTab === "huggingface" ? debouncedQuery : "", {
+  } = useHubDatasetSearch(pickerTab === "huggingface" ? debouncedQuery : "", {
     modelType: effectiveModelType,
     accessToken: hfToken || undefined,
     enabled: pickerTab === "huggingface",
@@ -421,10 +419,12 @@ export function DatasetSection() {
   const comboboxAnchorRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const evalFileInputRef = useRef<HTMLInputElement>(null);
-  const { scrollRef, sentinelRef } = useInfiniteScroll(
-    fetchMore,
-    hfResults.length,
-  );
+  const { scrollRef, sentinelRef } = useHubInfiniteScroll(fetchMore, scannedCount, {
+    enabled: pickerTab === "huggingface",
+    isFetching: isLoading || isLoadingMore,
+    resultCount: hfResults.length,
+    resetKey: debouncedQuery,
+  });
 
   const [isUploading, setIsUploading] = useState(false);
   const [isDatasetDragOver, setIsDatasetDragOver] = useState(false);
