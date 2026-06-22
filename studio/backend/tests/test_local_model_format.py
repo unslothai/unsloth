@@ -69,6 +69,23 @@ def test_dir_model_format_no_gguf(tmp_path):
     assert models_route._dir_model_format(d) is None
 
 
+def test_dir_model_format_ignores_tokenizer_bin(tmp_path):
+    # A companion tokenizer.bin is not a weight file, so a GGUF folder shipping
+    # one is still GGUF (not misread as a plain .bin checkpoint).
+    d = tmp_path / "model"
+    _touch(d / "tokenizer.bin")
+    _touch(d / "model-Q4_K_M.gguf")
+    assert models_route._dir_model_format(d) == "gguf"
+
+
+def test_dir_model_format_weight_bin_is_not_gguf(tmp_path):
+    # A real PyTorch weight .bin alongside a .gguf means mixed weights -> None.
+    d = tmp_path / "model"
+    _touch(d / "pytorch_model.bin")
+    _touch(d / "model-Q4_K_M.gguf")
+    assert models_route._dir_model_format(d) is None
+
+
 def test_scan_models_dir_classifies_gguf_with_config(tmp_path):
     root = tmp_path / "models"
     # GGUF repo that also ships a config.json (the regression case).

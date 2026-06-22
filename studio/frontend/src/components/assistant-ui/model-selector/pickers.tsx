@@ -1718,8 +1718,13 @@ export function HubModelPicker({
         matchesFormatFilter(c.repo_id, true, formatFilter),
       );
     const q = normalizeForSearch(debouncedQuery.trim());
-    return sortedCachedGguf.filter((c) =>
-      normalizeForSearch(c.repo_id).includes(q),
+    // Keep the format filter active while searching so the dropdown stays
+    // consistent with the no-query branch (Safetensors selected shouldn't show
+    // GGUF downloads just because the user typed).
+    return sortedCachedGguf.filter(
+      (c) =>
+        matchesFormatFilter(c.repo_id, true, formatFilter) &&
+        normalizeForSearch(c.repo_id).includes(q),
     );
   }, [sortedCachedGguf, showHfSection, debouncedQuery, formatFilter]);
   const visibleCachedModels = useMemo(() => {
@@ -1728,8 +1733,10 @@ export function HubModelPicker({
         matchesFormatFilter(c.repo_id, false, formatFilter),
       );
     const q = normalizeForSearch(debouncedQuery.trim());
-    return sortedCachedModels.filter((c) =>
-      normalizeForSearch(c.repo_id).includes(q),
+    return sortedCachedModels.filter(
+      (c) =>
+        matchesFormatFilter(c.repo_id, false, formatFilter) &&
+        normalizeForSearch(c.repo_id).includes(q),
     );
   }, [sortedCachedModels, showHfSection, debouncedQuery, formatFilter]);
 

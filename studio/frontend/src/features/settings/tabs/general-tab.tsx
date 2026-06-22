@@ -67,6 +67,10 @@ const PREFS_KEYS: string[] = [
   "unsloth_chat_collapsible_state",
   "unsloth_chat_preferences",
   "unsloth_load_settings",
+  // Model selector settings ("Select model settings" group)
+  "unsloth_chat_load_on_selection",
+  "unsloth_chat_expand_quantizations",
+  "unsloth_chat_show_all_quantizations",
   // Chat presets
   "unsloth_chat_custom_presets",
   "unsloth_chat_active_preset",

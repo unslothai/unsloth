@@ -28,13 +28,23 @@ _models_src = _backend_root / "routes" / "models.py"
 
 
 def _load_has_downloaded_model():
-    """Return the real ``_dir_has_downloaded_model`` (plus its
-    ``_safe_is_dir`` dependency) without importing the heavy module."""
+    """Return the real ``_dir_has_downloaded_model`` (plus its ``_safe_is_dir``
+    and ``_is_weight_bin`` deps, and the ``_WEIGHT_BIN_PREFIXES`` constant the
+    latter reads) without importing the heavy module."""
     tree = ast.parse(_models_src.read_text())
-    wanted = {"_safe_is_dir", "_dir_has_downloaded_model"}
-    fns = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in wanted]
-    assert {f.name for f in fns} == wanted, "helpers missing from source"
-    module = ast.Module(body = fns, type_ignores = [])
+    wanted = {"_safe_is_dir", "_dir_has_downloaded_model", "_is_weight_bin"}
+    body = []
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name in wanted:
+            body.append(node)
+        elif isinstance(node, ast.Assign) and any(
+            isinstance(t, ast.Name) and t.id == "_WEIGHT_BIN_PREFIXES"
+            for t in node.targets
+        ):
+            body.append(node)
+    got = {n.name for n in body if isinstance(n, ast.FunctionDef)}
+    assert got == wanted, f"helpers missing from source: {wanted - got}"
+    module = ast.Module(body = body, type_ignores = [])
     ns: dict = {"Path": Path, "os": os}
     exec(compile(module, f"<extracted {_models_src}>", "exec"), ns)
     return ns["_dir_has_downloaded_model"]

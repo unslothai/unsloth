@@ -225,6 +225,29 @@ def _is_model_directory(d: Path) -> bool:
         return False
 
 
+# Weight ``.bin`` files the local scanners accept (PyTorch checkpoints), as
+# opposed to companion ``.bin`` files like ``tokenizer.bin``. Mirrors the gating
+# in ``_is_weight_file`` so every weight check classifies the same files.
+_WEIGHT_BIN_PREFIXES = ("pytorch_model", "model", "adapter_model", "consolidated")
+
+
+def _is_weight_bin(name: str) -> bool:
+    low = name.lower()
+    return low.endswith(".bin") and low.startswith(_WEIGHT_BIN_PREFIXES)
+
+
+def _has_non_gguf_weights(path: Path) -> bool:
+    """True if *path* holds non-GGUF weight files (``.safetensors`` or a weight
+    ``.bin``), ignoring companion ``.bin`` files such as ``tokenizer.bin`` so a
+    GGUF-only folder is not misread as a plain checkpoint."""
+    try:
+        if any(path.glob("*.safetensors")):
+            return True
+        return any(_is_weight_bin(f.name) for f in path.glob("*.bin"))
+    except OSError:
+        return False
+
+
 def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[LocalModelInfo]:
     if not models_dir.exists() or not models_dir.is_dir():
         return []
@@ -255,7 +278,7 @@ def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[Loca
             if not child.is_dir():
                 continue
             has_gguf = any(child.glob("*.gguf"))
-            has_non_gguf_weights = any(child.glob("*.safetensors")) or any(child.glob("*.bin"))
+            has_non_gguf_weights = _has_non_gguf_weights(child)
             has_config = (child / "config.json").exists() or (
                 child / "adapter_config.json"
             ).exists()
@@ -349,8 +372,7 @@ def _dir_model_format(path: Path) -> Optional[str]:
     try:
         if not any(path.glob("*.gguf")):
             return None
-        has_non_gguf = any(path.glob("*.safetensors")) or any(path.glob("*.bin"))
-        return None if has_non_gguf else "gguf"
+        return None if _has_non_gguf_weights(path) else "gguf"
     except OSError:
         return None
 
@@ -926,12 +948,7 @@ def _dir_has_downloaded_model(directory: Path, max_entries: int = 4000) -> bool:
                         return True
                     # PyTorch checkpoints the scanner also accepts; gate by name
                     # so tokenizer.bin and friends don't count as weights.
-                    if low.endswith(".bin") and (
-                        low.startswith("pytorch_model")
-                        or low.startswith("model")
-                        or low.startswith("adapter_model")
-                        or low.startswith("consolidated")
-                    ):
+                    if _is_weight_bin(entry.name):
                         return True
             except OSError:
                 continue
