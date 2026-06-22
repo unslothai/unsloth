@@ -179,9 +179,7 @@ DEFAULT_MAX_MACOS_RELEASE_FALLBACKS = env_int(
     16,
     minimum = 1,
 )
-# Deterministic macOS pin. At b9428 ggml-org's macOS runner moved to macOS 26
-# (Tahoe), so b9428+ prebuilts only load on macOS 26+. b9415 is the last build
-# stamped below 26 (arm64 minos 14, x64 minos 13.3); loads on macOS 13.3/14/15/26.
+# Last upstream macOS release before ggml-org moved macOS builds to Tahoe.
 _PINNED_MACOS_FALLBACK_TAG = "b9415"
 _PINNED_MACOS_LATEST_FLOOR = (26, 0)
 FORCE_COMPILE_DEFAULT_REF = os.environ.get("UNSLOTH_LLAMA_FORCE_COMPILE_REF", "master")
@@ -193,26 +191,12 @@ FORCE_COMPILE_DEFAULT_REF = os.environ.get("UNSLOTH_LLAMA_FORCE_COMPILE_REF", "m
 _MIN_CUDA_MAJOR = 12
 _MAX_PROBE_CUDA_MAJOR = 19
 
-# Last ggml-org release whose Windows win-cuda-13 build is still sub-13.3
-# (cuda-13.1, b9360, 2026-05-27). Upstream bumped win-cuda-13 to 13.3 at b9365
-# and now ships only cuda-12.4 + cuda-13.3. cuda-12.4 predates Blackwell (ggml
-# compiles sm_120 only at toolkit >= 12.8), so a Blackwell host on a 13.0/13.1/13.2
-# driver is gated off 13.3 and would drop to a CPU-only 12.4 build. b9360 is
-# immutable, so we pin its cuda-13.1 build (plus paired cudart) as a GPU
-# fallback for exactly those hosts. See unslothai/unsloth#5887.
-_PINNED_BLACKWELL_FALLBACK_TAG = "b9360"
-_PINNED_BLACKWELL_FALLBACK_RUNTIME = "13.1"
-# Floor at 13.0: b9360 ships native sm_120a SASS (no PTX/JIT) and a bundled
-# cuda-13.1 cudart, both of which run on a CUDA 13.0 r580+ driver via CUDA
-# minor-version compatibility, so the mainstream 13.0 Blackwell branch is covered.
-_PINNED_BLACKWELL_DRIVER_FLOOR = (13, 0)
+# Blackwell sm_120 capability thresholds. A host is Blackwell when its highest
+# compute capability is at least sm_120; ggml compiles sm_120 only at toolkit
+# >= 12.8, so an in-release windows-cuda build at or above that already covers
+# Blackwell, while cuda-12.4 does not and is dropped on a Blackwell host.
 _BLACKWELL_MIN_SM = 120
-# ggml compiles Blackwell sm_120 only at toolkit >= 12.8, so an in-release
-# windows-cuda build at or above this already covers Blackwell and makes the
-# older pinned 13.1 fallback unnecessary (cuda-12.4 is below it).
 _BLACKWELL_MIN_TOOLKIT = (12, 8)
-_PINNED_BLACKWELL_LLAMA_SHA256 = "31ddb8b42d7ab4a47cab8c48c397519f580ca502df7e73f3ab396eacc16c8e8d"
-_PINNED_BLACKWELL_CUDART_SHA256 = "f96935e7e385e3b2d0189239077c10fe8fd7e95690fea4afec455b1b6c7e3f18"
 
 
 def _cuda_runtime_lines_for_major(major: int) -> list[str]:
@@ -1441,11 +1425,6 @@ def direct_upstream_release_plan(
                 )
             )
             attempts[:] = _drop_blackwell_incapable_windows_cuda(host, attempts)
-            # Blackwell on a 13.1/13.2 driver: prefer the pinned cuda-13.1 GPU
-            # build over the CPU-only cuda-12.4 the in-release gating leaves.
-            pinned = _pinned_windows_cuda_fallback(host, attempts)
-            if pinned is not None:
-                attempts.insert(0, pinned)
         elif host.has_rocm:
             hip_asset = f"llama-{release_tag}-bin-win-hip-radeon-x64.zip"
             hip_url = assets.get(hip_asset)
@@ -1571,19 +1550,9 @@ def direct_upstream_release_plan(
 
 
 def pinned_macos_release_tag(host: HostInfo, repo: str) -> str | None:
-    """Pin b9415 (the last upstream macOS build that loads below macOS 26) for a
-    known pre-26 host on ggml-org upstream; return None to keep latest selection.
-    The unslothai/llama.cpp fork ships its own prebuilts (arm64 minos 14, x64
-    minos 13.3) and needs no pin, so this is a no-op there and for macOS 26+,
-    unknown version, non-macOS."""
-    if repo != UPSTREAM_REPO:
+    if repo != UPSTREAM_REPO or not host.is_macos or host.macos_version is None:
         return None
-    if not host.is_macos:
-        return None
-    version = host.macos_version
-    if version is None:
-        return None
-    if version >= _PINNED_MACOS_LATEST_FLOOR:
+    if host.macos_version >= _PINNED_MACOS_LATEST_FLOOR:
         return None
     return _PINNED_MACOS_FALLBACK_TAG
 
@@ -1610,9 +1579,6 @@ def resolve_simple_install_release_plans(
         )
     requested_tag = normalized_requested_llama_tag(llama_tag)
     allow_older_release_fallback = requested_tag == "latest" and not published_release_tag
-    # macOS: pin the last upstream build that loads on a pre-26 host instead of
-    # fetching the latest (macOS 26 only) build and walking back release by
-    # release. No-op on macOS 26+, unknown version, non-macOS, and the fork.
     if allow_older_release_fallback:
         pinned_macos = pinned_macos_release_tag(host, repo)
         if pinned_macos is not None:
@@ -3453,94 +3419,6 @@ def _drop_blackwell_incapable_windows_cuda(
     ]
 
 
-def _pinned_windows_cuda_fallback(
-    host: HostInfo, existing_cuda_attempts: list[AssetChoice]
-) -> AssetChoice | None:
-    """Pinned GPU fallback for a Blackwell host the in-release build gates off.
-    Upstream stopped publishing a sub-13.3 Windows cuda13 build after b9360, and
-    cuda-12.4 cannot offload sm_120, so a 13.1/13.2 driver would land on CPU.
-    b9360's cuda-13.1 build is immutable and runs on those drivers. Returns None
-    (dormant) whenever the in-release selection already offers a Blackwell-capable
-    build (toolkit >= 12.8, e.g. a runnable cuda13/cuda14), so it self-disables
-    once upstream ships a driver-runnable build again.
-
-    The b9360 binary reuses the current release's source tree and convert scripts
-    and is recorded via binary_release_tag."""
-    if not (host.is_windows and host.is_x86_64 and host.has_usable_nvidia):
-        return None
-    driver = host.driver_cuda_version
-    if driver is None or driver < _PINNED_BLACKWELL_DRIVER_FLOOR:
-        return None
-    caps = normalize_compute_caps(host.compute_caps)
-    if not caps or int(caps[-1]) < _BLACKWELL_MIN_SM:
-        return None
-    if any(_windows_cuda_attempt_covers_blackwell(attempt) for attempt in existing_cuda_attempts):
-        return None
-    tag = _PINNED_BLACKWELL_FALLBACK_TAG
-    runtime = _PINNED_BLACKWELL_FALLBACK_RUNTIME
-    base = (
-        f"https://github.com/{UPSTREAM_REPO}/releases/download/"
-        f"{urllib.parse.quote(tag, safe = '')}"
-    )
-    name = f"llama-{tag}-bin-win-cuda-{runtime}-x64.zip"
-    cudart_name = f"cudart-llama-bin-win-cuda-{runtime}-x64.zip"
-    return AssetChoice(
-        repo = UPSTREAM_REPO,
-        tag = tag,
-        name = name,
-        url = f"{base}/{name}",
-        source_label = "upstream",
-        install_kind = "windows-cuda",
-        runtime_line = "cuda13",
-        runtime_name = cudart_name,
-        runtime_url = f"{base}/{cudart_name}",
-        expected_sha256 = _PINNED_BLACKWELL_LLAMA_SHA256,
-        runtime_sha256 = _PINNED_BLACKWELL_CUDART_SHA256,
-        selection_log = [
-            f"windows_cuda_selection: pinned {tag} cuda-{runtime} Blackwell GPU "
-            f"fallback (in-release cuda13 gated off by driver "
-            f"{driver[0]}.{driver[1]})"
-        ],
-    )
-
-
-def _augment_checksums_with_pin(
-    checksums: ApprovedReleaseChecksums, pin: AssetChoice
-) -> ApprovedReleaseChecksums:
-    """Add the pin's own verified hashes to a copy of the approved checksums so
-    apply_approved_hashes keeps it on the published path (b9360 is not in the
-    release manifest)."""
-    artifacts = dict(checksums.artifacts)
-    if pin.expected_sha256:
-        artifacts[pin.name] = ApprovedArtifactHash(
-            asset_name = pin.name,
-            sha256 = pin.expected_sha256,
-            repo = pin.repo,
-            kind = "prebuilt",
-        )
-    if pin.runtime_name and pin.runtime_sha256:
-        artifacts[pin.runtime_name] = ApprovedArtifactHash(
-            asset_name = pin.runtime_name,
-            sha256 = pin.runtime_sha256,
-            repo = pin.repo,
-            kind = "prebuilt",
-        )
-    return dataclasses_replace(checksums, artifacts = artifacts)
-
-
-def _with_pinned_windows_cuda_fallback(
-    host: HostInfo, attempts: list[AssetChoice], checksums: ApprovedReleaseChecksums
-) -> tuple[list[AssetChoice], ApprovedReleaseChecksums]:
-    """Insert the Blackwell pin ahead of the Windows CUDA attempts and keep it
-    through apply_approved_hashes, or return the inputs unchanged when dormant.
-    Gives the published install path the same GPU fallback as the simple path."""
-    attempts = _drop_blackwell_incapable_windows_cuda(host, attempts)
-    pin = _pinned_windows_cuda_fallback(host, attempts)
-    if pin is None:
-        return attempts, checksums
-    return [pin, *attempts], _augment_checksums_with_pin(checksums, pin)
-
-
 def published_windows_cuda_attempts(
     host: HostInfo,
     release: PublishedReleaseBundle,
@@ -3966,10 +3844,18 @@ def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice
 
     if host.is_windows and host.is_x86_64:
         if host.has_usable_nvidia:
-            attempts = resolve_windows_cuda_choices(host, llama_tag, upstream_assets)
+            attempts = _drop_blackwell_incapable_windows_cuda(
+                host, resolve_windows_cuda_choices(host, llama_tag, upstream_assets)
+            )
             if attempts:
                 return attempts[0]
-            raise PrebuiltFallback("no compatible Windows CUDA asset was found")
+            # A Blackwell host left with only an sm_120-incapable cuda-12.4 build
+            # (upstream gated off 13.3) has no usable GPU prebuilt here; fall
+            # through to the CPU bundle rather than returning a build it cannot
+            # offload. A non-Blackwell NVIDIA host with no CUDA asset at all is
+            # still a hard fallback.
+            if not _host_is_blackwell(host):
+                raise PrebuiltFallback("no compatible Windows CUDA asset was found")
 
         # AMD ROCm on Windows: try upstream HIP prebuilt, then fall back to CPU
         if host.has_rocm:
@@ -4050,23 +3936,20 @@ def resolve_release_asset_choice(
             torch_preference.selection_log,
         )
         if published_attempts:
-            pin_attempts, pin_checksums = _with_pinned_windows_cuda_fallback(
-                host, published_attempts, checksums
-            )
+            pin_attempts = _drop_blackwell_incapable_windows_cuda(host, published_attempts)
             try:
-                return apply_approved_hashes(pin_attempts, pin_checksums)
+                return apply_approved_hashes(pin_attempts, checksums)
             except PrebuiltFallback as exc:
                 log(
                     "published Windows CUDA assets ignored for install planning: "
                     f"{release.repo}@{release.release_tag} ({exc})"
                 )
         upstream_assets = github_release_assets(UPSTREAM_REPO, llama_tag)
-        upstream_attempts, upstream_checksums = _with_pinned_windows_cuda_fallback(
+        upstream_attempts = _drop_blackwell_incapable_windows_cuda(
             host,
             resolve_windows_cuda_choices(host, llama_tag, upstream_assets),
-            checksums,
         )
-        return apply_approved_hashes(upstream_attempts, upstream_checksums)
+        return apply_approved_hashes(upstream_attempts, checksums)
 
     published_choice: AssetChoice | None = None
     if host.is_windows and host.is_x86_64:
