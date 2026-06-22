@@ -492,11 +492,10 @@ def _qwen3_5_vlm_state_dict_for_save(state_dict):
 
 def _coerce_tied_weights_keys_to_dict(model):
     """Coerce each module's legacy list/tuple/set ``_tied_weights_keys`` to dict form,
-    returning ``[(module, original), ...]`` so the caller can restore them.
+    returning ``[(module, original), ...]`` for the caller to restore.
 
-    transformers >= 5 ``save_pretrained`` reads ``_tied_weights_keys.keys()``; a model
-    still declaring it as a list (e.g. NemotronH) crashes mid-save. Only None is skipped
-    by transformers, so an empty/non-dict container still hits ``.keys()``.
+    transformers >= 5 ``save_pretrained`` reads ``_tied_weights_keys.keys()``, so a model
+    still declaring it as a list (e.g. NemotronH) crashes mid-save.
     """
     originals = []
     try:
@@ -524,11 +523,10 @@ def _restore_tied_weights_keys(originals):
 
 
 def _normalize_tied_weights_keys_for_save(save_fn):
-    """Coerce legacy list-form ``_tied_weights_keys`` to dict only for the duration of a
-    save, then restore. transformers >= 5 also re-ties from the dict's *values*, so a
-    persisted ``{k: k}`` self-map would no-op a later resize/re-tie; scoping the coercion
-    to the save keeps both the save and the live model correct. ``model`` is the first
-    positional arg (bound-method ``self``) or the ``model=`` keyword.
+    """Coerce legacy list-form ``_tied_weights_keys`` to dict for the duration of a save,
+    then restore: transformers >= 5 re-ties from the dict's *values*, so a persisted
+    ``{k: k}`` self-map would no-op a later resize/re-tie. ``model`` is the first positional
+    arg (bound-method ``self``) or the ``model=`` keyword.
     """
 
     @functools.wraps(save_fn)

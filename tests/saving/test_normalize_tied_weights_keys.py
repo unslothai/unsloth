@@ -2,9 +2,7 @@
 
 Regression for the NemotronH save / GGUF-export crash: transformers >= 5
 ``save_pretrained`` reads ``_tied_weights_keys.keys()`` and raises on the legacy list
-form. The coercion to dict is scoped to the save (transformers 5 re-ties from the dict's
-values, so a persisted ``{k: k}`` self-map would break a later resize/re-tie). Exercised
-directly on tiny module trees, no model download.
+form. Exercised on tiny module trees, no model download.
 """
 
 import pytest
