@@ -429,3 +429,49 @@ def test_install_prebuilt_reraises_shasums_failure_without_existing(tmp_path: Pa
     monkeypatch.setattr(M, "download_bytes", _offline)
     with pytest.raises(OSError):
         M.install_prebuilt(install_dir, channel = "lts", min_major = 24, force = False)
+
+
+# ── Isolation invariant: the installer only writes inside its own install_dir ──
+def test_run_node_pins_npm_prefix_to_install_dir(tmp_path: Path, monkeypatch):
+    # Every node/npm call the installer makes redirects npm's global prefix into
+    # the isolated install_dir and drops an inherited NODE_PATH, so a stray `npm
+    # -g` can never write to the user's system Node/npm.
+    install_dir = tmp_path / "node"
+    monkeypatch.setenv("NPM_CONFIG_PREFIX", "/usr/local")  # user's own global prefix
+    monkeypatch.setenv("NODE_PATH", "/usr/lib/node_modules")
+    captured = {}
+
+    def fake_run(cmd, **kw):
+        captured["env"] = kw["env"]
+        return types.SimpleNamespace(returncode = 0, stdout = "v24.17.0\n", stderr = "")
+
+    monkeypatch.setattr(M.subprocess, "run", fake_run)
+    assert M._run_node(install_dir, _host("linux", "x64"), ["-v"]) == "v24.17.0"
+    env = captured["env"]
+    assert env["NPM_CONFIG_PREFIX"] == str(install_dir)
+    assert env["npm_config_prefix"] == str(install_dir)
+    assert "NODE_PATH" not in env  # inherited NODE_PATH is dropped, not leaked in
+
+
+def test_ensure_npm_floor_scopes_upgrade_to_install_dir(tmp_path: Path, monkeypatch):
+    # A pinned build shipping npm < 11 self-upgrades, but only inside the isolated
+    # prefix: it goes through _run_node against install_dir, never the system.
+    install_dir = tmp_path / "node"
+    monkeypatch.setattr(M, "installed_npm_major", lambda d, h: 10)
+    calls = []
+    monkeypatch.setattr(M, "_run_node", lambda d, h, args, **kw: calls.append((d, args)) or "")
+    M._ensure_npm_floor(install_dir, _host("linux", "x64"))
+    assert len(calls) == 1
+    target_dir, args = calls[0]
+    assert target_dir == install_dir  # upgrade scoped to the isolated dir
+    assert args[-3:] == ["install", "-g", f"npm@^{M.NPM_MIN_MAJOR}"]
+
+
+def test_ensure_npm_floor_noop_when_npm_meets_bar(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(M, "installed_npm_major", lambda d, h: M.NPM_MIN_MAJOR)
+
+    def boom(*a, **k):
+        raise AssertionError("must not run an npm upgrade when npm already meets the floor")
+
+    monkeypatch.setattr(M, "_run_node", boom)
+    M._ensure_npm_floor(tmp_path / "node", _host("linux", "x64"))

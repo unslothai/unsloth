@@ -46,13 +46,17 @@ Check "missing + skip -> skip"        ((D "" "" "1") -eq "skip")
 Check "good + skip -> system"         ((D "v22.17.1" "11.13.0" "1") -eq "system")
 
 # Structural guards: OXC can need Node when frontend is skipped, custom roots
-# must exist before NodeParent creation, and bundled Node must isolate npm.
+# must exist before NodeParent creation, bundled Node must isolate npm, and the
+# reuse (system) arm must touch nothing -- no prefix pin, no global install.
 $nodeSourceOffset = $source.IndexOf('$NodeSource = Get-NodeDecision')
 $skipFrontendBranchOffset = $source.IndexOf('} elseif ($SkipFrontend) {')
 $customHomeErrorOffset = $source.IndexOf('UNSLOTH_STUDIO_HOME/STUDIO_HOME=$NodeOverride does not exist')
 $nodeParentMkdirOffset = $source.IndexOf('New-Item -ItemType Directory -Force -Path $NodeParent')
 $npmPrefixOffset = $source.IndexOf('$env:NPM_CONFIG_PREFIX = $NodeDir')
 $nodePathClearOffset = $source.IndexOf('Remove-Item Env:NODE_PATH')
+$bundledBranchOffset = $source.IndexOf('} elseif ($NodeSource -eq "bundled") {')
+$systemArmOffset = $source.IndexOf('$SysNodeVersion | npm $SysNpmVersion (system)')
+$globalBunOffset = $source.IndexOf('npm install -g bun')
 Check "NodeSource initialized before SKIP_STUDIO_FRONTEND branch" (
     $nodeSourceOffset -ge 0 -and $skipFrontendBranchOffset -ge 0 -and $nodeSourceOffset -lt $skipFrontendBranchOffset
 )
@@ -61,6 +65,17 @@ Check "custom Studio home validated before Node parent creation" (
 )
 Check "bundled Node pins npm prefix and clears NODE_PATH" (
     $npmPrefixOffset -ge 0 -and $nodePathClearOffset -ge 0 -and $npmPrefixOffset -lt $nodePathClearOffset
+)
+# Symmetric to tests/sh/test_system_node_readonly.sh: the prefix pin and the only
+# global install (bun) sit between the bundled-branch marker and the system arm,
+# i.e. inside bundled, so reusing a good system Node mutates nothing.
+Check "npm prefix pin lives in the bundled branch, not the system arm" (
+    $bundledBranchOffset -ge 0 -and $systemArmOffset -ge 0 -and
+    $bundledBranchOffset -lt $npmPrefixOffset -and $npmPrefixOffset -lt $systemArmOffset
+)
+Check "global bun install lives in the bundled branch, not the system arm" (
+    $bundledBranchOffset -ge 0 -and $systemArmOffset -ge 0 -and
+    $bundledBranchOffset -lt $globalBunOffset -and $globalBunOffset -lt $systemArmOffset
 )
 
 Write-Host ""
