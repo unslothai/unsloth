@@ -1404,6 +1404,17 @@ class FastBaseModel:
             finetune_attention_modules = True
             finetune_mlp_modules = True
             finetune_audio_layers = True
+        # Older unsloth_zoo (before get_peft_regex gained finetune_audio_layers) does
+        # not accept the kwarg, so pass it only when supported to avoid a TypeError.
+        if "finetune_audio_layers" in inspect.signature(get_peft_regex).parameters:
+            _audio_kwargs = {"finetune_audio_layers": finetune_audio_layers}
+        else:
+            if finetune_audio_layers:
+                logger.warning(
+                    "Unsloth: finetune_audio_layers=True needs a newer unsloth_zoo; ignoring it. "
+                    "Please upgrade with `pip install --upgrade --no-deps unsloth_zoo`."
+                )
+            _audio_kwargs = {}
         if target_modules is None or target_modules == "all-linear":
             target_modules = get_peft_regex(
                 model,
@@ -1411,20 +1422,23 @@ class FastBaseModel:
                 finetune_language_layers = finetune_language_layers,
                 finetune_attention_modules = finetune_attention_modules,
                 finetune_mlp_modules = finetune_mlp_modules,
-                finetune_audio_layers = finetune_audio_layers,
+                **_audio_kwargs,
             )
         else:
             assert type(target_modules) in (list, tuple, str)
+            # finetune_audio_layers is deliberately NOT part of this condition: it
+            # defaults False, so including it would force every explicit target_modules
+            # list through get_peft_regex (and print the warning) even for text/vision
+            # models that never opted into layer-scope filtering.
             if type(target_modules) in (list, tuple) and (
                 not finetune_vision_layers
                 or not finetune_language_layers
                 or not finetune_attention_modules
                 or not finetune_mlp_modules
-                or not finetune_audio_layers
             ):
                 print(
                     "Unsloth: Explicit target_modules are constrained by the "
-                    "finetune_(vision|language|audio|attention|mlp) filters; adapters "
+                    "finetune_(vision|language|attention|mlp) filters; adapters "
                     "attach only where both select."
                 )
                 target_modules = get_peft_regex(
@@ -1433,8 +1447,8 @@ class FastBaseModel:
                     finetune_language_layers = finetune_language_layers,
                     finetune_attention_modules = finetune_attention_modules,
                     finetune_mlp_modules = finetune_mlp_modules,
-                    finetune_audio_layers = finetune_audio_layers,
                     target_modules = list(target_modules),
+                    **_audio_kwargs,
                 )
 
         if hasattr(model, "vllm_engine"):
