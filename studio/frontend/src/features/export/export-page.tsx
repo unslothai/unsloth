@@ -37,12 +37,9 @@ import {
   type LocalModelInfo,
   useTrainingConfigStore,
 } from "@/features/training";
+import { useHubModelSearch } from "@/features/hub/hooks/use-hub-model-search";
 import { confirmRemoteCodeIfNeeded } from "@/features/security";
-import {
-  useDebouncedValue,
-  useHfModelSearch,
-  useHfTokenValidation,
-} from "@/hooks";
+import { useDebouncedValue, useHfTokenValidation } from "@/hooks";
 import {
   AlertCircleIcon,
   ArrowDown01Icon,
@@ -285,9 +282,12 @@ export function ExportPage() {
     results: hfResults,
     isLoading: isLoadingHfModels,
     error: hfSearchError,
-  } = useHfModelSearch(debouncedModelQuery, {
+  } = useHubModelSearch(debouncedModelQuery, {
     accessToken: debouncedHfToken || undefined,
     excludeGguf: true,
+    // Curated unsloth listing by default, but a typed query searches the whole
+    // Hub (unsloth floated first) so non-unsloth base models stay selectable.
+    ownerScope: debouncedModelQuery.trim() ? "all" : "unsloth",
   });
   const { error: tokenValidationError, isChecking: isCheckingToken } =
     useHfTokenValidation(hfToken);
