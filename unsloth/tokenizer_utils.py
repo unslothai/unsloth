@@ -626,11 +626,8 @@ def _load_correct_tokenizer(
         return fast_tokenizer
 
 
-# Vision tokens must not be used as pad_token for text-only models. Qwen3 text
-# models share Qwen3-VL's vocab, so their Hub configs ship <|vision_pad|> as
-# pad_token. Padding with a vision token corrupts text-only training and yields
-# NaN losses/gradients. See https://github.com/unslothai/unsloth/issues/3155
-# and https://github.com/unslothai/unsloth/issues/4104
+# Qwen3 text models share Qwen3-VL's vocab, so configs ship a vision pad_token;
+# padding text-only training with one yields NaN losses (#3155, #4104).
 _VISION_PAD_TOKENS = frozenset(
     (
         "<|vision_pad|>",
@@ -639,17 +636,12 @@ _VISION_PAD_TOKENS = frozenset(
         "<|audio_pad|>",
     )
 )
-# Safe text replacements, in preference order. <unk> is excluded: reusing it as
-# pad makes every OOV token share pad_token_id, so masking drops real OOV tokens.
+# Preference order; <unk> excluded since reusing it as pad masks real OOV tokens.
 _SAFE_TEXT_PAD_TOKENS = ("<|endoftext|>", "<pad>", "[PAD]")
 
 
 def _fix_vision_pad_token(tokenizer):
-    """Replace a vision pad_token on a text-only tokenizer with a safe text token.
-
-    Self-heals existing Hub configs without re-uploading them. Vision processors
-    (image_processor present) are left untouched.
-    """
+    """Swap a vision pad_token on a text-only tokenizer for a safe text token (#3155)."""
     if tokenizer is None:
         return tokenizer
     if hasattr(tokenizer, "image_processor"):
@@ -669,9 +661,7 @@ def _fix_vision_pad_token(tokenizer):
         if candidate in vocab and candidate != getattr(tokenizer, "eos_token", None):
             new_pad_token = candidate
             break
-    # Fall back to eos_token only if it differs from pad_token and is not itself a
-    # vision token (else we keep the NaN, or the loss ignores eos breaking stop-token
-    # learning).
+    # Fall back to eos_token only if it is a distinct, non-vision token.
     if new_pad_token is None:
         eos_token = getattr(tokenizer, "eos_token", None)
         if eos_token is not None and eos_token != pad_token and eos_token not in _VISION_PAD_TOKENS:
