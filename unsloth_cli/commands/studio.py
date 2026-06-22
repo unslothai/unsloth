@@ -862,10 +862,10 @@ def studio_default(
         else:
             while True:
                 time.sleep(1)
-        getattr(run_mod, "_wait_for_server_shutdown", lambda: None)()
     except KeyboardInterrupt:
         run_mod._graceful_shutdown(run_mod._server)
         typer.echo("\nShutting down...")
+    finally:
         getattr(run_mod, "_wait_for_server_shutdown", lambda: None)()
 
 
@@ -1372,10 +1372,10 @@ def run(
         else:
             while True:
                 time.sleep(1)
-        getattr(run_mod, "_wait_for_server_shutdown", lambda: None)()
     except KeyboardInterrupt:
         run_mod._graceful_shutdown(run_mod._server)
         typer.echo("\nShutting down...")
+    finally:
         getattr(run_mod, "_wait_for_server_shutdown", lambda: None)()
 
 
