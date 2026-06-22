@@ -2086,7 +2086,10 @@ export function HubModelPicker({
     visibleCachedGguf.length === 0 &&
     visibleCachedModelRows.length === 0 &&
     sortedLmStudio.length === 0 &&
-    sortedLocalDir.length === 0;
+    sortedLocalDir.length === 0 &&
+    // Fine-tuned models are on-device too: don't show the empty state above a
+    // non-empty Fine-tuned section.
+    fineTunedRows.length === 0;
 
   // Sort dropdown shown inline to the right of the section toggle. Options
   // depend on the tab and stay visible while searching so results can be

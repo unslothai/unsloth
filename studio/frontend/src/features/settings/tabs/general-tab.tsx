@@ -66,6 +66,7 @@ const PREFS_KEYS: string[] = [
   "unsloth_chat_inference_params",
   "unsloth_chat_collapsible_state",
   "unsloth_chat_preferences",
+  "unsloth_load_settings",
   // Chat presets
   "unsloth_chat_custom_presets",
   "unsloth_chat_active_preset",

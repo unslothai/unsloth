@@ -110,6 +110,7 @@ import {
   hasGgufSource,
   isDownloadableHubRepo,
   loadOptionalBool,
+  pendingSelectionMatches,
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
 import type { PendingModelSelection } from "./stores/chat-runtime-store";
@@ -1275,7 +1276,15 @@ export function ChatPage({
       throwOnError: true,
     }).catch(() => {
       const store = useChatRuntimeStore.getState();
-      if (!store.pendingSelection) store.resetModelSettingsToLoaded();
+      // selectModel only clears pendingSelection on success, so a failed
+      // auto-load leaves our staged pick (and its edited load knobs) behind.
+      // Abandon it when it is still the active stage; otherwise just revert the
+      // settings if the stage was already cleared by something else.
+      if (pendingSelectionMatches(store.pendingSelection, pending)) {
+        store.abandonStagedModel();
+      } else if (!store.pendingSelection) {
+        store.resetModelSettingsToLoaded();
+      }
     });
   };
   const isExternalModel = useMemo(

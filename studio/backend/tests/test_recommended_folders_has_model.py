@@ -88,6 +88,24 @@ def test_non_model_files_is_false(tmp_path):
     assert has_downloaded_model(junk) is False
 
 
+def test_pytorch_bin_weights_are_true(tmp_path):
+    # A folder whose only weights are PyTorch .bin checkpoints (which the local
+    # scanner accepts) should still earn a Recommended chip.
+    repo = tmp_path / "models" / "repo"
+    repo.mkdir(parents = True)
+    (repo / "config.json").write_text("{}")
+    (repo / "pytorch_model.bin").write_bytes(b"x")
+    assert has_downloaded_model(tmp_path / "models") is True
+
+
+def test_non_weight_bin_is_false(tmp_path):
+    # A stray .bin that is not a weight file (e.g. tokenizer.bin) must not count.
+    repo = tmp_path / "models" / "repo"
+    repo.mkdir(parents = True)
+    (repo / "tokenizer.bin").write_bytes(b"x")
+    assert has_downloaded_model(tmp_path / "models") is False
+
+
 def test_hidden_subtree_does_not_starve_the_budget(tmp_path):
     # A real model dir that also holds a huge hidden subtree (e.g. a .git or
     # .cache). The hidden entries must not exhaust max_entries before the walk

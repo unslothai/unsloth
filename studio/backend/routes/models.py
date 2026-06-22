@@ -879,9 +879,11 @@ def _dir_has_downloaded_model(directory: Path, max_entries: int = 4000) -> bool:
 
     Recommended-folder chips should only appear once the well-known dir
     has real weights, not just an empty LM Studio/Ollama scaffold. Two
-    layouts: a GGUF/safetensors file anywhere in the tree (LM Studio,
-    plain dirs) or the Ollama content-addressable store (a non-empty
-    ``manifests/`` beside ``blobs/``, whose blobs carry no extension).
+    layouts: a GGUF/safetensors/PyTorch-bin weight file anywhere in the
+    tree (LM Studio, plain dirs) or the Ollama content-addressable store
+    (a non-empty ``manifests/`` beside ``blobs/``, whose blobs carry no
+    extension). Weight detection mirrors the local scanner so a folder the
+    chip leads to is one the scanner would actually surface a model from.
     Bounded by *max_entries* so a huge tree can't stall the request.
     """
     # Ollama layout: manifest files reference blobs that lack extensions.
@@ -918,8 +920,19 @@ def _dir_has_downloaded_model(directory: Path, max_entries: int = 4000) -> bool:
                 if entry.is_dir():
                     if not entry.name.startswith("."):
                         queue.append(entry)
-                elif entry.name.lower().endswith((".gguf", ".safetensors")):
-                    return True
+                else:
+                    low = entry.name.lower()
+                    if low.endswith((".gguf", ".safetensors")):
+                        return True
+                    # PyTorch checkpoints the scanner also accepts; gate by name
+                    # so tokenizer.bin and friends don't count as weights.
+                    if low.endswith(".bin") and (
+                        low.startswith("pytorch_model")
+                        or low.startswith("model")
+                        or low.startswith("adapter_model")
+                        or low.startswith("consolidated")
+                    ):
+                        return True
             except OSError:
                 continue
     return False
