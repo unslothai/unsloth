@@ -812,11 +812,17 @@ class FastBaseModel:
         user_quantization_config = kwargs.get("quantization_config", None)
 
         # Check if model already has a non-bitsandbytes quantization config (e.g. compressed-tensors/NVFP4)
-        from .loader_utils import check_and_disable_bitsandbytes_loading
+        from .loader_utils import (
+            check_and_disable_bitsandbytes_loading,
+            sync_unsloth_model_name_bnb_flags,
+        )
 
         load_in_4bit, load_in_8bit, _ = check_and_disable_bitsandbytes_loading(
             auto_config, load_in_4bit = load_in_4bit, load_in_8bit = load_in_8bit
         )
+        # Correct UNSLOTH_MODEL_NAME's bnb tokens now that the effective bnb state is known
+        # (the per-load env was built before remap/disable). gpt-oss only; no-op otherwise.
+        sync_unsloth_model_name_bnb_flags(load_in_4bit, load_in_8bit)
 
         if full_finetuning and (load_in_4bit or load_in_8bit):
             print(

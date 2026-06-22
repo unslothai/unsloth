@@ -302,13 +302,13 @@ export function ProjectsPage() {
                 <DropdownMenuSubContent className="w-52">
                   {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
                     <DropdownMenuItem key={`ap-m-${fmt}`} onSelect={() => void handleBulkProjectExport("projects", fmt, true)}>
-                      {label} — combined
+                      {label} (combined)
                     </DropdownMenuItem>
                   ))}
                   <DropdownMenuSeparator />
                   {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
                     <DropdownMenuItem key={`ap-s-${fmt}`} onSelect={() => void handleBulkProjectExport("projects", fmt, false)}>
-                      {label} — per chat
+                      {label} (per chat)
                     </DropdownMenuItem>
                   ))}
                 </DropdownMenuSubContent>
@@ -318,13 +318,13 @@ export function ProjectsPage() {
                 <DropdownMenuSubContent className="w-52">
                   {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
                     <DropdownMenuItem key={`all-m-${fmt}`} onSelect={() => void handleBulkProjectExport("all", fmt, true)}>
-                      {label} — combined
+                      {label} (combined)
                     </DropdownMenuItem>
                   ))}
                   <DropdownMenuSeparator />
                   {EXPORT_FORMATS_LIST.map(({ fmt, label }) => (
                     <DropdownMenuItem key={`all-s-${fmt}`} onSelect={() => void handleBulkProjectExport("all", fmt, false)}>
-                      {label} — per chat
+                      {label} (per chat)
                     </DropdownMenuItem>
                   ))}
                 </DropdownMenuSubContent>
@@ -586,7 +586,8 @@ export function ProjectsPage() {
             <DialogTitle>Import chats</DialogTitle>
           </DialogHeader>
           <p className="text-sm text-muted-foreground">
-            <span className="font-medium text-foreground">{importFile?.name}</span> — choose where to import:
+            Choose where to import{" "}
+            <span className="font-medium text-foreground">{importFile?.name}</span>:
           </p>
           <Select
             value={importTargetId ?? "__recents__"}
