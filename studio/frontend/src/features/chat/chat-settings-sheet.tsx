@@ -505,8 +505,7 @@ export function ChatSettingsPanel({
     (s) => s.loadedSpeculativeType,
   );
   const specFallbackReason = useChatRuntimeStore((s) => s.specFallbackReason);
-  // "binary_no_mtp" / "binary_outdated" mean a newer prebuilt would re-enable
-  // MTP; "runtime_error" means the current build cannot run it (no update push).
+  // Only binary fallback states are solved by a newer prebuilt.
   const mtpUpdatable =
     specFallbackReason === "binary_no_mtp" ||
     specFallbackReason === "binary_outdated";
@@ -518,8 +517,11 @@ export function ChatSettingsPanel({
   const handleMtpUpdate = useCallback(async () => {
     const result = await applyLlamaUpdate();
     if (result.ok) {
+      const reloadHint = result.reloadRequired
+        ? " Reload your model to enable MTP."
+        : "";
       toast.success(
-        `llama.cpp updated to ${result.tag ?? "the latest build"}. Reload your model to enable MTP.`,
+        `llama.cpp updated to ${result.tag ?? "the latest build"}.${reloadHint}`,
       );
     } else {
       toast.error(`llama.cpp update failed: ${result.error ?? "unknown error"}`);
@@ -545,6 +547,12 @@ export function ChatSettingsPanel({
   const setTensorParallel = useChatRuntimeStore((s) => s.setTensorParallel);
   const loadedTensorParallel = useChatRuntimeStore(
     (s) => s.loadedTensorParallel,
+  );
+  const chatTemplateOverride = useChatRuntimeStore(
+    (s) => s.chatTemplateOverride,
+  );
+  const loadedChatTemplateOverride = useChatRuntimeStore(
+    (s) => s.loadedChatTemplateOverride,
   );
   const customContextLength = useChatRuntimeStore((s) => s.customContextLength);
   const setCustomContextLength = useChatRuntimeStore(
@@ -584,8 +592,11 @@ export function ChatSettingsPanel({
   const specDirty = speculativeType !== loadedSpeculativeType;
   const specDraftDirty = specDraftNMax !== loadedSpecDraftNMax;
   const tpDirty = tensorParallel !== (loadedTensorParallel ?? false);
+  // A saved chat-template override is a reload-time setting too, so surface
+  // Apply for a template-only edit (otherwise it could never be applied).
+  const templateDirty = chatTemplateOverride !== loadedChatTemplateOverride;
   const modelSettingsDirty =
-    kvDirty || ctxDirty || specDirty || specDraftDirty || tpDirty;
+    kvDirty || ctxDirty || specDirty || specDraftDirty || tpDirty || templateDirty;
   const [presetNameInput, setPresetNameInput] = useState(activePreset);
   const [systemPromptEditorOpen, setSystemPromptEditorOpen] = useState(false);
   const [systemPromptDraft, setSystemPromptDraft] = useState("");
@@ -1009,10 +1020,12 @@ export function ChatSettingsPanel({
                           ? "MTP is disabled by default for this model architecture because it currently runs slower than standard decoding. Select MTP above to force it."
                           : specFallbackReason === "runtime_error"
                           ? "MTP could not start for this model on the installed llama.cpp build, so it is running without speculative decoding."
-                          : "MTP is not available in the installed llama.cpp build, so this model is running without it." +
-                            (llamaUpdateStatus?.update_available
-                              ? " Update llama.cpp to enable it."
-                              : "")}
+                          : specFallbackReason === "drafter_not_found"
+                            ? "This model supports MTP, but its drafter file could not be downloaded, so MTP is off and it falls back to n-gram speculative decoding where the llama.cpp build supports it. Check your network connection or Hugging Face access, then reload the model to retry the drafter."
+                            : "MTP is not available in the installed llama.cpp build, so this model is running without it." +
+                              (llamaUpdateStatus?.update_available
+                                ? " Update llama.cpp to enable it."
+                                : "")}
                       </p>
                       {mtpUpdatable && llamaUpdateStatus?.update_available && (
                         <Button
