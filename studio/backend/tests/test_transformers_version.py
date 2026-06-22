@@ -34,6 +34,11 @@ from utils.transformers_version import (
     _check_tokenizer_config_needs_v5,
     _check_config_needs_510,
     _check_config_needs_550,
+    _config_needs_510,
+    _nemotron_h_needs_mlp_support,
+    _config_json_from_hf_cache,
+    _load_config_json,
+    _higher_tier,
     _config_json_cache,
     _tokenizer_class_cache,
     _config_needs_510_cache,
@@ -383,6 +388,259 @@ class TestCheckConfigNeeds510:
 
 
 # ---------------------------------------------------------------------------
+# NemotronH dense (MLP) models need the 5.10 tier
+# ---------------------------------------------------------------------------
+
+
+class TestNemotronHNeedsMlpSupport:
+    """Dense NemotronH configs (MLP layers) require transformers >= 5.10."""
+
+    def test_hybrid_override_pattern_with_dash(self):
+        cfg = {
+            "model_type": "nemotron_h",
+            "hybrid_override_pattern": "M-M-M*-M-",
+        }
+        assert _nemotron_h_needs_mlp_support(cfg) is True
+
+    def test_layers_block_type_with_mlp(self):
+        cfg = {
+            "model_type": "nemotron_h",
+            "layers_block_type": ["mamba", "mlp", "attention", "mamba"],
+        }
+        assert _nemotron_h_needs_mlp_support(cfg) is True
+
+    def test_nemotron_h_moe_only_returns_false(self):
+        """A pure MoE NemotronH (no MLP) does not need the 5.10 tier."""
+        cfg = {
+            "model_type": "nemotron_h",
+            "hybrid_override_pattern": "MEME*MEM",
+        }
+        assert _nemotron_h_needs_mlp_support(cfg) is False
+
+    def test_non_nemotron_with_dash_returns_false(self):
+        """The dash heuristic only applies to nemotron_h configs."""
+        cfg = {"model_type": "llama", "hybrid_override_pattern": "M-M-"}
+        assert _nemotron_h_needs_mlp_support(cfg) is False
+
+    def test_config_needs_510_includes_dense_nemotron_h(self):
+        cfg = {
+            "model_type": "nemotron_h",
+            "hybrid_override_pattern": "M-M-M*-",
+        }
+        assert _config_needs_510(cfg) is True
+
+    def test_nested_llm_config_with_dash(self):
+        # VL wrapper (e.g. NemotronH_Nano_VL_V2): dense LM is under llm_config.
+        cfg = {
+            "model_type": "NemotronH_Nano_VL_V2",
+            "llm_config": {"model_type": "nemotron_h", "hybrid_override_pattern": "M-M*-"},
+        }
+        assert _nemotron_h_needs_mlp_support(cfg) is True
+        assert _config_needs_510(cfg) is True
+
+    def test_nested_text_config_with_mlp(self):
+        cfg = {
+            "model_type": "wrapper",
+            "text_config": {"model_type": "nemotron_h", "layers_block_type": ["mamba", "mlp"]},
+        }
+        assert _nemotron_h_needs_mlp_support(cfg) is True
+
+    def test_nested_non_nemotron_returns_false(self):
+        cfg = {"model_type": "wrapper", "llm_config": {"model_type": "llama"}}
+        assert _nemotron_h_needs_mlp_support(cfg) is False
+
+    def test_non_dict_and_missing_nested_do_not_raise(self):
+        assert _nemotron_h_needs_mlp_support(None) is False
+        assert _nemotron_h_needs_mlp_support({"model_type": "wrapper", "llm_config": None}) is False
+
+
+def _hf_response(cfg: dict):
+    """A urlopen() context-manager stand-in returning *cfg* as JSON bytes."""
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return json.dumps(cfg).encode()
+
+    return _Resp()
+
+
+class TestConfigJsonHfCacheFallback:
+    """HF hub cache is consulted only offline or after a failed fetch (never stale online)."""
+
+    def setup_method(self):
+        _config_json_cache.clear()
+
+    @staticmethod
+    def _seed_cache(
+        hub: Path,
+        repo_id: str,
+        cfg: dict,
+        commit: str = "deadbeef",
+    ):
+        repo = hub / ("models--" + repo_id.replace("/", "--"))
+        snap = repo / "snapshots" / commit
+        snap.mkdir(parents = True)
+        (snap / "config.json").write_text(json.dumps(cfg))
+        (repo / "refs").mkdir(parents = True)
+        (repo / "refs" / "main").write_text(commit)
+
+    def test_offline_reads_from_cache(self, tmp_path: Path, monkeypatch):
+        cfg = {"model_type": "nemotron_h", "hybrid_override_pattern": "M-M*-"}
+        self._seed_cache(tmp_path, "unsloth/NVIDIA-Nemotron-3-Nano-4B", cfg)
+        monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
+        monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+        with patch("urllib.request.urlopen") as mock_url:
+            assert _load_config_json("unsloth/NVIDIA-Nemotron-3-Nano-4B") == cfg
+            mock_url.assert_not_called()
+
+    def test_online_prefers_network_over_cache(self, tmp_path: Path, monkeypatch):
+        stale = {"model_type": "nemotron_h", "hybrid_override_pattern": "MMMM"}
+        fresh = {"model_type": "nemotron_h", "hybrid_override_pattern": "M-M*-"}
+        self._seed_cache(tmp_path, "org/model", stale)
+        monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
+        monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+        monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+        with patch("urllib.request.urlopen", return_value = _hf_response(fresh)):
+            assert _load_config_json("org/model") == fresh  # network wins, not stale cache
+
+    def test_network_failure_falls_back_to_cache(self, tmp_path: Path, monkeypatch):
+        cfg = {"model_type": "nemotron_h", "hybrid_override_pattern": "M-M*-"}
+        self._seed_cache(tmp_path, "org/model", cfg)
+        monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
+        monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+        with patch("urllib.request.urlopen", side_effect = OSError("boom")):
+            assert _load_config_json("org/model") == cfg
+
+    def test_offline_uncached_returns_none(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
+        monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+        with patch("urllib.request.urlopen") as mock_url:
+            assert _load_config_json("private/unknown") is None
+            mock_url.assert_not_called()
+
+    def test_helper_ignores_local_paths(self, tmp_path: Path):
+        # A filesystem path is not a repo id; never treat it as one.
+        assert _config_json_from_hf_cache(str(tmp_path)) is None
+        assert _config_json_from_hf_cache("plainname") is None
+
+    def test_no_refs_main_picks_newest_snapshot(self, tmp_path: Path, monkeypatch):
+        # No refs/main (commit-pinned downloads): lexicographic order would pick the older
+        # SHA; selection must follow mtime so the newest snapshot wins.
+        repo = tmp_path / "models--org--model"
+        old = repo / "snapshots" / "0000old"
+        new = repo / "snapshots" / "ffffnew"
+        old.mkdir(parents = True)
+        new.mkdir(parents = True)
+        (old / "config.json").write_text(json.dumps({"model_type": "stale"}))
+        (new / "config.json").write_text(json.dumps({"model_type": "fresh"}))
+        os.utime(old / "config.json", (1000, 1000))
+        os.utime(new / "config.json", (2000, 2000))
+        monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
+        assert _config_json_from_hf_cache("org/model") == {"model_type": "fresh"}
+
+    def test_transient_failure_does_not_cache_fallback(self, tmp_path: Path, monkeypatch):
+        stale = {"model_type": "nemotron_h", "hybrid_override_pattern": "MMMM"}
+        fresh = {"model_type": "nemotron_h", "hybrid_override_pattern": "M-M*-"}
+        self._seed_cache(tmp_path, "org/model", stale)
+        monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
+        monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+        # Network fails -> serve the cached snapshot, but it must not be memoized.
+        with patch("urllib.request.urlopen", side_effect = OSError("boom")):
+            assert _load_config_json("org/model") == stale
+        # Connectivity returns: the next call must hit the network for the fresh config.
+        with patch("urllib.request.urlopen", return_value = _hf_response(fresh)):
+            assert _load_config_json("org/model") == fresh
+
+    def test_auth_failure_does_not_serve_cache(self, tmp_path: Path, monkeypatch):
+        import urllib.error
+
+        # config.json cached from an earlier authorized session; an unauthenticated 4xx
+        # must not be handed that private metadata.
+        cfg = {"model_type": "nemotron_h", "hybrid_override_pattern": "M-M*-"}
+        self._seed_cache(tmp_path, "private/model", cfg)
+        monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
+        monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+        for code in (401, 403, 404):
+            _config_json_cache.clear()
+            err = urllib.error.HTTPError("url", code, "denied", {}, None)
+            with patch("urllib.request.urlopen", side_effect = err):
+                assert _load_config_json("private/model") is None
+
+    def test_server_error_still_falls_back_to_cache(self, tmp_path: Path, monkeypatch):
+        import urllib.error
+
+        cfg = {"model_type": "nemotron_h", "hybrid_override_pattern": "M-M*-"}
+        self._seed_cache(tmp_path, "org/model", cfg)
+        monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
+        monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+        # A 5xx is transient, not an access decision: keep serving the cache.
+        err = urllib.error.HTTPError("url", 503, "busy", {}, None)
+        with patch("urllib.request.urlopen", side_effect = err):
+            assert _load_config_json("org/model") == cfg
+
+
+class TestTierCheckTransientRetry:
+    """tier-needs checks must not memoize a transient fetch fallback."""
+
+    def setup_method(self):
+        _config_json_cache.clear()
+        _config_needs_510_cache.clear()
+        _config_needs_550_cache.clear()
+
+    @staticmethod
+    def _seed_cache(
+        hub: Path,
+        repo_id: str,
+        cfg: dict,
+        commit: str = "deadbeef",
+    ):
+        repo = hub / ("models--" + repo_id.replace("/", "--"))
+        snap = repo / "snapshots" / commit
+        snap.mkdir(parents = True)
+        (snap / "config.json").write_text(json.dumps(cfg))
+        (repo / "refs").mkdir(parents = True)
+        (repo / "refs" / "main").write_text(commit)
+
+    def test_transient_fallback_not_memoized_then_retries(self, tmp_path: Path, monkeypatch):
+        stale = {"model_type": "llama"}  # does not need 510
+        fresh = {"architectures": ["Gemma4UnifiedForConditionalGeneration"]}  # needs 510
+        self._seed_cache(tmp_path, "org/model", stale)
+        monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
+        monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+        # Network blip -> serve the cache, but do NOT pin the tier result.
+        with patch("urllib.request.urlopen", side_effect = OSError("boom")):
+            assert _check_config_needs_510("org/model") is False
+        assert "org/model" not in _config_needs_510_cache
+        # Connectivity returns: the next call re-fetches and sees the higher tier.
+        with patch("urllib.request.urlopen", return_value = _hf_response(fresh)):
+            assert _check_config_needs_510("org/model") is True
+        assert _config_needs_510_cache["org/model"] is True  # definitive read is memoized
+
+    def test_definitive_network_read_is_memoized(self, tmp_path: Path, monkeypatch):
+        fresh = {"architectures": ["Gemma4ForConditionalGeneration"]}  # needs 550
+        monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
+        monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+        with patch("urllib.request.urlopen", return_value = _hf_response(fresh)) as mock_url:
+            assert _check_config_needs_550("org/model") is True
+            assert _check_config_needs_550("org/model") is True
+            assert mock_url.call_count == 1  # second call served from the tier cache
+
+
+class TestHigherTier:
+    def test_picks_stronger_tier(self):
+        assert _higher_tier("default", "510") == "510"
+        assert _higher_tier("530", "550") == "550"
+        assert _higher_tier("510", "default") == "510"
+        assert _higher_tier("default", "default") == "default"
+
+
+# ---------------------------------------------------------------------------
 # get_transformers_tier — tier detection
 # ---------------------------------------------------------------------------
 
@@ -437,6 +695,43 @@ class TestGetTransformersTier:
         (tmp_path / "config.json").write_text(json.dumps(cfg))
 
         assert get_transformers_tier(str(tmp_path)) == "510"
+
+    def test_dense_nemotron_h_config_json_returns_510(self, tmp_path: Path):
+        """Local dense NemotronH checkpoint → 510 (MLP layers need >= 5.10)."""
+        cfg = {
+            "model_type": "nemotron_h",
+            "hybrid_override_pattern": "M-M-M*-M-",
+        }
+        (tmp_path / "config.json").write_text(json.dumps(cfg))
+        # A v5 tokenizer would otherwise route this to 530; 510 must win.
+        (tmp_path / "tokenizer_config.json").write_text(
+            json.dumps({"tokenizer_class": "TokenizersBackend"})
+        )
+
+        with patch("urllib.request.urlopen") as mock_urlopen:
+            assert get_transformers_tier(str(tmp_path)) == "510"
+            mock_urlopen.assert_not_called()
+
+    def test_dense_nemotron_h_remote_config_returns_510(self):
+        """Remote dense NemotronH (HF id) → 510 via config.json fetch, not 530."""
+
+        class _Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return json.dumps(
+                    {
+                        "model_type": "nemotron_h",
+                        "hybrid_override_pattern": "M-M-M*-M-",
+                    }
+                ).encode()
+
+        with patch("urllib.request.urlopen", return_value = _Response()):
+            assert get_transformers_tier("unsloth/NVIDIA-Nemotron-3-Nano-4B") == "510"
 
     def test_local_config_json_short_circuits_path_substrings(self, tmp_path: Path):
         """Local config.json should prevent false matches from parent directory names."""
@@ -685,6 +980,67 @@ class TestActivateLoggingClarity:
         assert (
             "sys.path" in text or "path only" in text
         ), f"early activation log does not clarify it is path-prepend only: {text!r}"
+
+    def test_activate_prefers_local_checkpoint_tier_over_resolved_base(self, caplog, tmp_path):
+        # Base resolves to an offline/private id (default tier); the local config.json wins.
+        (tmp_path / "config.json").write_text(json.dumps({"model_type": "llama"}))
+        local = str(tmp_path)
+        caplog.set_level(logging.INFO)
+        snap = self._snapshot_env()
+        tiers = {local: "510", "private/base": "default"}
+        try:
+            with (
+                patch(
+                    "utils.transformers_version._resolve_base_model",
+                    return_value = "private/base",
+                ),
+                patch(
+                    "utils.transformers_version.get_transformers_tier",
+                    side_effect = lambda m: tiers[m],
+                ),
+                patch(
+                    "utils.transformers_version._ensure_venv_t5_510_exists",
+                    return_value = True,
+                ),
+            ):
+                activate_transformers_for_subprocess(local)
+        finally:
+            self._restore_env(snap)
+
+        text = " ".join(r.getMessage() for r in caplog.records).lower()
+        assert "5.10.2" in text, f"local checkpoint tier did not win: {text!r}"
+
+    def test_activate_adapter_without_config_skips_path_name_recheck(self, caplog, tmp_path):
+        # Adapter dir named 'gemma-4' but no config.json: the path-name re-check must not run.
+        adapter = tmp_path / "gemma-4-experiment" / "llama-lora"
+        adapter.mkdir(parents = True)
+        local = str(adapter)
+        caplog.set_level(logging.INFO)
+        snap = self._snapshot_env()
+        seen = []
+
+        def fake_tier(m):
+            seen.append(m)
+            return "550" if "gemma-4" in m else "default"
+
+        try:
+            with (
+                patch(
+                    "utils.transformers_version._resolve_base_model",
+                    return_value = "meta/llama",
+                ),
+                patch(
+                    "utils.transformers_version.get_transformers_tier",
+                    side_effect = fake_tier,
+                ),
+            ):
+                activate_transformers_for_subprocess(local)
+        finally:
+            self._restore_env(snap)
+
+        assert seen == ["meta/llama"], f"adapter path was re-checked via substrings: {seen!r}"
+        text = " ".join(r.getMessage() for r in caplog.records).lower()
+        assert "default transformers" in text, f"adapter wrongly upgraded: {text!r}"
 
 
 # ---------------------------------------------------------------------------
