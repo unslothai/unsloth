@@ -657,7 +657,9 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
                 gguf_hf_repo = None,
                 gguf_variant = None,
             )
-            with patch.object(self.route.LlamaCppBackend, "_get_gguf_size_bytes", return_value = 1000):
+            with patch.object(
+                self.route.LlamaCppBackend, "_get_gguf_size_bytes", return_value = 1000
+            ):
                 gb = self.route._estimate_gguf_required_gb(cfg, include_mmproj = False)
         self.assertAlmostEqual(gb, 4000 / (1024**3), places = 9)  # weights + MTP only
 
