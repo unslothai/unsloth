@@ -37,6 +37,10 @@ _TC_PARAM_CLOSE_RE = re.compile(r"\s*</parameter>\s*$")
 _GEMMA_QUOTE = '<|"|>'
 _PARAM_CLOSE_TAG = "</parameter>"
 _FUNC_CLOSE_TAG = "</function>"
+# A bare (unquoted) Gemma value ends at `}` or at a comma that begins the next
+# `key:` pair. A comma NOT followed by a key token is part of the value (e.g.
+# `location:New York, NY`), so it must not terminate the value.
+_GEMMA_NEXT_KEY_RE = re.compile(r"\s*[\w-]+\s*:")
 
 
 def _balanced_brace_end(
@@ -146,7 +150,14 @@ def _quote_gemma_object_keys(src: str) -> str:
             parts.append(src[ws:i])
             if i < len(src) and src[i] not in '"{[':
                 v_start = i
-                while i < len(src) and src[i] not in ",}":
+                # Consume the bare value up to `}` or a comma that starts the
+                # next key:value pair; a comma inside the value (e.g.
+                # `New York, NY`) does not terminate it.
+                while i < len(src):
+                    if src[i] == "}":
+                        break
+                    if src[i] == "," and _GEMMA_NEXT_KEY_RE.match(src, i + 1):
+                        break
                     i += 1
                 raw = src[v_start:i]
                 try:
@@ -196,6 +207,10 @@ def parse_tool_calls_from_text(
       <tool_call><function=web_search><parameter=query>...</parameter></function></tool_call>
     """
     tool_calls: list[dict] = []
+    # Byte spans already claimed by a parsed tool call. A tool-call marker that
+    # appears INSIDE another call's argument string is data, not a real call, so
+    # it must not be re-parsed into a spurious second call.
+    consumed: list[tuple[int, int]] = []
 
     for m in _TC_JSON_START_RE.finditer(content):
         brace_start = m.end() - 1
@@ -220,10 +235,13 @@ def parse_tool_calls_from_text(
             if isinstance(tc["function"]["arguments"], dict):
                 tc["function"]["arguments"] = json.dumps(tc["function"]["arguments"])
             tool_calls.append(tc)
+            consumed.append((m.start(), i + 1))
         except (json.JSONDecodeError, ValueError):
             pass
 
     for m in _TC_GEMMA_START_RE.finditer(content):
+        if any(start <= m.start() < end for start, end in consumed):
+            continue
         brace_start = m.end() - 1
         i = _balanced_brace_end(content, brace_start, gemma_quotes = True)
         if i < 0:
@@ -243,6 +261,7 @@ def parse_tool_calls_from_text(
                     },
                 }
             )
+            consumed.append((m.start(), i + 1))
         except (json.JSONDecodeError, ValueError):
             pass
 

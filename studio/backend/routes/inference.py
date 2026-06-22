@@ -9577,6 +9577,13 @@ async def _openai_passthrough_stream(
                                 delta = choice.get("delta")
                                 if isinstance(delta, dict) and delta.get("tool_calls"):
                                     saw_tool_call_delta = True
+                        # Detect an upstream error chunk independently of API
+                        # monitoring: when monitor_id is None (skip_api_monitor),
+                        # _monitor_openai_sse_line returns before inspecting the
+                        # error, so without this the synthetic-finish guard would
+                        # emit a successful finish_reason after a failed stream.
+                        if _monitor_openai_error_message(chunk_data):
+                            saw_stream_error = True
                     monitor_event = _monitor_openai_sse_line(
                         monitor_id,
                         raw_line,
