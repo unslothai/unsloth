@@ -219,7 +219,7 @@ export const ptBR = {
       exportConversationsDescription:
         "Baixe os Recentes ou Recentes mais chats de projetos como JSONL bruto, CSV ou ShareGPT JSONL, combinados ou por chat.",
       exportConversationsAction: "Exportar",
-      exportScopeRecents: "Recents",
+      exportScopeRecents: "Recentes",
       exportScopeAll: "Recentes + Projetos",
       exportCombinedSuffix: "(combinado)",
       exportPerChatSuffix: "(por chat)",
@@ -310,8 +310,8 @@ export const ptBR = {
       relativeJustNow: "agora mesmo",
       relativeHoursAgo: "há {count}h",
       relativeDaysAgo: "há {count}d",
-      relativeMonthsAgo: "há {count}meses",
-      relativeYearsAgo: "há {count}anos",
+      relativeMonthsAgo: "há {count} meses",
+      relativeYearsAgo: "há {count} anos",
       expired: "expirado",
       today: "hoje",
       inDays: "em {count}d",
@@ -577,7 +577,7 @@ export const ptBR = {
       learningRateTooltip:
         "Tamanho do passo para atualizações de peso. Valores menores treinam mais lentamente, mas com mais estabilidade.",
       learningRateDescription:
-        "Recomendado: 2e-4 para LoRA, 5e-5 for CPT, 2e-5 para fine-tune completo",
+        "Recomendado: 2e-4 para LoRA, 5e-5 para CPT, 2e-5 para fine-tune completo",
       embeddingLearningRate: "Taxa de Aprendizado do Embedding",
       embeddingLearningRateTooltip:
         "Usado apenas quando o CPT está treinando embed_tokens. Os embeddings são mais fáceis de desestabilizar do que os pesos LoRA, por isso geralmente precisam de um LR menor. Deixe em branco para usar lr/10; a faixa típica de funcionamento é de 2x a 10x menor que o LR principal. Aumente apenas se a adaptação de vocabulário ou de tokens de domínio estiver muito lenta.",
