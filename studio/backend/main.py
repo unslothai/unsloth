@@ -539,6 +539,7 @@ from starlette.responses import StreamingResponse as _StreamingResponse
 
 _original_stream_response = _StreamingResponse.stream_response
 
+
 async def _safe_stream_response(self: _StreamingResponse, send) -> None:
     try:
         await _original_stream_response(self, send)
@@ -548,6 +549,7 @@ async def _safe_stream_response(self: _StreamingResponse, send) -> None:
                 await self.body_iterator.aclose()
             except Exception:
                 pass
+
 
 _StreamingResponse.stream_response = _safe_stream_response
 # --------------------------------------------------------------------------------
