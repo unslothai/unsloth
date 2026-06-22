@@ -380,6 +380,13 @@ def test_inference_worker_skips_ssm_on_mlx_and_checks_lora_base():
     assert "mc.base_model" in src
 
 
+def test_inference_worker_resolves_remote_lora_base_pre_import():
+    # A remote LoRA's base (from the Hub adapter_config.json) must be resolved before the
+    # transformers import so its SSM kernels are pre-installed, not too late in _handle_load.
+    src = (_BACKEND / "core" / "inference" / "worker.py").read_text()
+    assert "_remote_lora_base" in src
+
+
 def _call_linenos(tree, func_name, call_name):
     import ast
     for node in ast.walk(tree):

@@ -777,10 +777,17 @@ def run_inference_process(*, cmd_queue: Any, resp_queue: Any, cancel_event, conf
     # metadata-only gates first and refuse a blocked model before any native build. A no-op
     # for non-SSM models; _handle_load re-runs the authoritative gates with the mc base.
     _ensure_backend_on_path()
-    from utils.transformers_version import _resolve_base_model
+    from utils.transformers_version import _remote_lora_base, _resolve_base_model
 
     _hf_token = _clean_token(config.get("hf_token"))
     _ssm_base = _resolve_base_model(model_name)
+    if _ssm_base == model_name:
+        # _resolve_base_model only reads local adapter_config.json. A remote LoRA's base
+        # lives in the Hub adapter_config.json (surfaced otherwise only by ModelConfig in
+        # _handle_load, after the import), so fetch it now to gate + pre-install its kernels.
+        _remote_base = _remote_lora_base(model_name, hf_token = _hf_token)
+        if _remote_base:
+            _ssm_base = _remote_base
     _ssm_targets = [model_name]
     if _ssm_base and _ssm_base != model_name:
         _ssm_targets.append(_ssm_base)

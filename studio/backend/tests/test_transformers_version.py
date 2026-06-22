@@ -31,6 +31,7 @@ sys.modules.setdefault("loggers", _loggers_stub)
 
 from utils.transformers_version import (
     _resolve_base_model,
+    _remote_lora_base,
     _check_tokenizer_config_needs_v5,
     _check_config_needs_510,
     _check_config_needs_550,
@@ -129,6 +130,48 @@ class TestResolveBaseModel:
         """Plain HuggingFace model IDs pass through unchanged."""
         result = _resolve_base_model("meta-llama/Llama-3-8B")
         assert result == "meta-llama/Llama-3-8B"
+
+
+class TestRemoteLoraBase:
+    """_remote_lora_base reads a remote adapter's base from its Hub adapter_config.json."""
+
+    @staticmethod
+    def _resp(cfg: dict):
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                return json.dumps(cfg).encode()
+
+        return _Resp()
+
+    def test_fetches_base_from_remote_adapter_config(self, monkeypatch):
+        monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+        cfg = {"base_model_name_or_path": "nvidia/NVIDIA-Nemotron-3-Nano-4B"}
+        with patch("urllib.request.urlopen", return_value = self._resp(cfg)):
+            assert (
+                _remote_lora_base("someuser/my-nemotron-lora")
+                == "nvidia/NVIDIA-Nemotron-3-Nano-4B"
+            )
+
+    def test_local_or_noncanonical_returns_none(self):
+        assert _remote_lora_base("/local/dir/adapter") is None
+        assert _remote_lora_base("plainname") is None
+
+    def test_offline_makes_no_request(self, monkeypatch):
+        monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+        with patch("urllib.request.urlopen") as mock_url:
+            assert _remote_lora_base("org/adapter") is None
+            mock_url.assert_not_called()
+
+    def test_non_adapter_repo_returns_none(self, monkeypatch):
+        monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+        with patch("urllib.request.urlopen", side_effect = OSError("404")):
+            assert _remote_lora_base("org/not-an-adapter") is None
 
 
 # ---------------------------------------------------------------------------
