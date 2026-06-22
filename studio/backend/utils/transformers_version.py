@@ -398,14 +398,9 @@ def _config_needs_550(cfg: dict) -> bool:
 def _nemotron_h_needs_mlp_support(cfg: dict) -> bool:
     """True for a dense NemotronH config that uses MLP (``-``) layers.
 
-    NemotronH ``hybrid_override_pattern`` uses ``M`` (mamba), ``*`` (attention),
-    ``E`` (moe) and ``-`` (mlp). transformers only gained ``-`` -> ``mlp`` in its
-    ``pattern_mapping``/``valid_types``/``MIXER_TYPES`` in 5.10; 5.3 and 5.5 raise
-    ``KeyError: '-'`` (or reject the ``"mlp"`` block type) when parsing the config.
-    The model also ships ``auto_map`` remote code, but that only loads with
-    ``trust_remote_code=True`` -- a native (TRC=False) load such as export needs the
-    5.10 tier. Detected via the raw pattern or an already-expanded
-    ``layers_block_type`` list.
+    transformers only gained ``-`` -> ``mlp`` (pattern_mapping/valid_types/MIXER_TYPES)
+    in 5.10; 5.3/5.5 raise ``KeyError: '-'`` parsing the config. Detected from the raw
+    ``hybrid_override_pattern`` or an expanded ``layers_block_type``.
     """
     if cfg.get("model_type") != "nemotron_h":
         return False
