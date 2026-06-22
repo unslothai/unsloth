@@ -595,7 +595,12 @@ class TestTierCheckTransientRetry:
         _config_needs_550_cache.clear()
 
     @staticmethod
-    def _seed_cache(hub: Path, repo_id: str, cfg: dict, commit: str = "deadbeef"):
+    def _seed_cache(
+        hub: Path,
+        repo_id: str,
+        cfg: dict,
+        commit: str = "deadbeef",
+    ):
         repo = hub / ("models--" + repo_id.replace("/", "--"))
         snap = repo / "snapshots" / commit
         snap.mkdir(parents = True)
