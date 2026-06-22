@@ -108,13 +108,12 @@ _TRANSFORMERS_5_TOKENIZER_CLASSES: set[str] = {
     "TokenizersBackend",
 }
 
-# Cache for dynamic tokenizer_config.json lookups (avoids repeated fetches).
-_tokenizer_class_cache: dict[str, bool] = {}
-
-# config.json cache keyed on (model_name, token-hash) so authed/unauthed reads stay separate.
+# Caches keyed on (model_name, token-hash) so authed/unauthed reads stay separate (a
+# gated/private repo's unauthenticated miss must not poison a later authenticated lookup).
+_tokenizer_class_cache: dict[tuple[str, str | None], bool] = {}
 _config_json_cache: dict[tuple[str, str | None], dict | None] = {}
-_config_needs_510_cache: dict[str, bool] = {}
-_config_needs_550_cache: dict[str, bool] = {}
+_config_needs_510_cache: dict[tuple[str, str | None], bool] = {}
+_config_needs_550_cache: dict[tuple[str, str | None], bool] = {}
 
 # AutoConfig-probe tier resolution, keyed on (model_name, commit-sha) and the model's sha.
 _probe_tier_cache: dict[tuple[str, str | None], str] = {}
@@ -273,15 +272,27 @@ def _resolve_base_model(model_name: str) -> str:
     return model_name
 
 
-def _check_tokenizer_config_needs_v5(model_name: str) -> bool:
+def _token_cache_key(model_name: str, hf_token: str | None) -> tuple[str, str | None]:
+    """Cache key that keeps authenticated and unauthenticated reads separate, so an
+    unauthenticated miss on a gated/private repo never poisons a later authed lookup."""
+    import hashlib
+
+    tok = hashlib.sha256(hf_token.encode()).hexdigest()[:16] if hf_token else None
+    return (model_name, tok)
+
+
+def _check_tokenizer_config_needs_v5(model_name: str, hf_token: str | None = None) -> bool:
     """True if the model's tokenizer_class requires transformers 5.x.
 
-    Checks local tokenizer_config.json, else fetches from HuggingFace. Cached in
-    ``_tokenizer_class_cache``. Returns False on any network/parse error
+    Checks local tokenizer_config.json, else fetches from HuggingFace (authenticated
+    with ``hf_token`` so gated/private repos resolve). Cached in
+    ``_tokenizer_class_cache``, keyed by (model, token) so an unauthenticated miss does
+    not poison a later authed read. Returns False on any network/parse error
     (fail-open to default version).
     """
-    if model_name in _tokenizer_class_cache:
-        return _tokenizer_class_cache[model_name]
+    cache_key = _token_cache_key(model_name, hf_token)
+    if cache_key in _tokenizer_class_cache:
+        return _tokenizer_class_cache[cache_key]
 
     # --- Check local tokenizer_config.json first ---------------------------
     local_path = Path(model_name)
@@ -298,22 +309,25 @@ def _check_tokenizer_config_needs_v5(model_name: str) -> bool:
                     model_name,
                     tokenizer_class,
                 )
-            _tokenizer_class_cache[model_name] = result
+            _tokenizer_class_cache[cache_key] = result
             return result
         except Exception as exc:
             logger.debug("Could not read %s: %s", local_tc, exc)
 
     # Offline: skip the 10s urllib fetch (fail-open to lower tier).
     if _env_offline():
-        _tokenizer_class_cache[model_name] = False
+        _tokenizer_class_cache[cache_key] = False
         return False
 
     # --- Fall back to fetching from HuggingFace ----------------------------
     import urllib.request
 
     url = f"https://huggingface.co/{model_name}/raw/main/tokenizer_config.json"
+    headers = {"User-Agent": "unsloth-studio"}
+    if hf_token:
+        headers["Authorization"] = f"Bearer {hf_token}"
     try:
-        req = urllib.request.Request(url, headers = {"User-Agent": "unsloth-studio"})
+        req = urllib.request.Request(url, headers = headers)
         with urllib.request.urlopen(req, timeout = 10) as resp:
             data = json.loads(resp.read().decode())
         tokenizer_class = data.get("tokenizer_class", "")
@@ -324,11 +338,11 @@ def _check_tokenizer_config_needs_v5(model_name: str) -> bool:
                 model_name,
                 tokenizer_class,
             )
-        _tokenizer_class_cache[model_name] = result
+        _tokenizer_class_cache[cache_key] = result
         return result
     except Exception as exc:
         logger.debug("Could not fetch tokenizer_config.json for '%s': %s", model_name, exc)
-        _tokenizer_class_cache[model_name] = False
+        _tokenizer_class_cache[cache_key] = False
         return False
 
 
@@ -405,19 +419,21 @@ def _config_needs_510(cfg: dict) -> bool:
     )
 
 
-def _check_config_needs_550(model_name: str) -> bool:
+def _check_config_needs_550(model_name: str, hf_token: str | None = None) -> bool:
     """True if ``config.json`` has architectures/model_type needing transformers
     5.5.0 (e.g. Gemma 4).
 
-    Checks locally first, else fetches from HuggingFace. Cached in
-    ``_config_needs_550_cache``. Returns False on any error (fail-open to lower tier).
+    Checks locally first, else fetches from HuggingFace (authenticated with
+    ``hf_token``). Cached in ``_config_needs_550_cache``, keyed by (model, token).
+    Returns False on any error (fail-open to lower tier).
     """
-    if model_name in _config_needs_550_cache:
-        return _config_needs_550_cache[model_name]
+    cache_key = _token_cache_key(model_name, hf_token)
+    if cache_key in _config_needs_550_cache:
+        return _config_needs_550_cache[cache_key]
 
-    cfg = _load_config_json(model_name)
+    cfg = _load_config_json(model_name, hf_token)
     if cfg is None:
-        _config_needs_550_cache[model_name] = False
+        _config_needs_550_cache[cache_key] = False
         return False
 
     result = _config_needs_550(cfg)
@@ -429,18 +445,20 @@ def _check_config_needs_550(model_name: str) -> bool:
             cfg.get("architectures", []),
             cfg.get("model_type"),
         )
-    _config_needs_550_cache[model_name] = result
+    _config_needs_550_cache[cache_key] = result
     return result
 
 
-def _check_config_needs_510(model_name: str) -> bool:
-    """Check ``config.json`` for Gemma 4 Unified / 12B architectures."""
-    if model_name in _config_needs_510_cache:
-        return _config_needs_510_cache[model_name]
+def _check_config_needs_510(model_name: str, hf_token: str | None = None) -> bool:
+    """Check ``config.json`` for Gemma 4 Unified / 12B architectures (authenticated
+    with ``hf_token``; cache keyed by (model, token))."""
+    cache_key = _token_cache_key(model_name, hf_token)
+    if cache_key in _config_needs_510_cache:
+        return _config_needs_510_cache[cache_key]
 
-    cfg = _load_config_json(model_name)
+    cfg = _load_config_json(model_name, hf_token)
     if cfg is None:
-        _config_needs_510_cache[model_name] = False
+        _config_needs_510_cache[cache_key] = False
         return False
 
     result = _config_needs_510(cfg)
@@ -452,7 +470,7 @@ def _check_config_needs_510(model_name: str) -> bool:
             cfg.get("architectures", []),
             cfg.get("model_type"),
         )
-    _config_needs_510_cache[model_name] = result
+    _config_needs_510_cache[cache_key] = result
     return result
 
 
@@ -529,15 +547,16 @@ def _local_dir_signature(path: Path) -> str | None:
 
 
 def _resolve_commit_sha(model_name: str, hf_token: str | None) -> str | None:
-    """Immutable identity for the tier cache: a local dir signature or the HF commit sha.
-    None when unavailable (offline/transient); a resolved value is memoized but a None is
-    NOT, so a transient Hub failure is retried on the next call instead of pinning the tier
-    cache under an unknown revision. Runs in the default env before any sidecar is on
+    """Identity for the tier cache: a local dir signature or the HF commit sha. None when
+    unavailable (offline/transient). Runs in the default env before any sidecar is on
     sys.path, so importing huggingface_hub is safe.
+
+    Only the immutable remote commit sha is memoized. A local dir signature is mutable
+    (the same checkpoint path can be overwritten in a long-running process), so it is
+    recomputed every call -- otherwise the tier cache would keep selecting the old tier
+    after the directory's config changed. A None (transient Hub failure) is never
+    memoized either, so it is retried instead of pinning the cache under an unknown sha.
     """
-    if model_name in _probe_sha_cache:
-        return _probe_sha_cache[model_name]
-    sha: str | None = None
     # On Windows, Path.exists() can raise OSError for a remote repo id with characters that
     # are invalid in a local path; treat that as "not a local dir".
     p = Path(model_name)
@@ -547,8 +566,12 @@ def _resolve_commit_sha(model_name: str, hf_token: str | None) -> str | None:
         logger.debug("Could not check local path for '%s': %s", model_name, exc)
         is_local = False
     if is_local:
-        sha = _local_dir_signature(p)
-    elif not _env_offline():
+        return _local_dir_signature(p)  # mutable: never memoized
+
+    if model_name in _probe_sha_cache:
+        return _probe_sha_cache[model_name]
+    sha: str | None = None
+    if not _env_offline():
         try:
             from huggingface_hub import HfApi
             sha = HfApi().model_info(model_name, token = hf_token).sha
@@ -687,7 +710,7 @@ def get_transformers_tier(model_name: str, hf_token: str | None = None) -> str:
     # trust it before using name heuristics.
     local_cfg = Path(model_name) / "config.json"
     if local_cfg.is_file():
-        cfg = _load_config_json(model_name)
+        cfg = _load_config_json(model_name, hf_token)
         if cfg is not None and _config_needs_510(cfg):
             logger.info(
                 "Transformers tier 510 selected for %s (local config.json check)",
@@ -702,7 +725,7 @@ def get_transformers_tier(model_name: str, hf_token: str | None = None) -> str:
             return "550"
         if cfg is not None:
             local_tc = Path(model_name) / "tokenizer_config.json"
-            if local_tc.is_file() and _check_tokenizer_config_needs_v5(model_name):
+            if local_tc.is_file() and _check_tokenizer_config_needs_v5(model_name, hf_token):
                 return _probe_tier(model_name, hf_token, "local tokenizer needs 5.x")
             logger.info(
                 "Transformers tier default (4.57.x) selected for %s (local config.json no match)",
@@ -742,14 +765,14 @@ def get_transformers_tier(model_name: str, hf_token: str | None = None) -> str:
         )
         return "530"
 
-    # --- Slow config fallbacks (network for HF IDs) ------------------------
-    if _check_config_needs_510(model_name):
+    # --- Slow config fallbacks (network for HF IDs; authenticated with hf_token) --------
+    if _check_config_needs_510(model_name, hf_token):
         logger.info("Transformers tier 510 selected for %s (config.json check)", model_name)
         return "510"
-    if _check_config_needs_550(model_name):
+    if _check_config_needs_550(model_name, hf_token):
         logger.info("Transformers tier 550 selected for %s (config.json check)", model_name)
         return "550"
-    if _check_tokenizer_config_needs_v5(model_name):
+    if _check_tokenizer_config_needs_v5(model_name, hf_token):
         return _probe_tier(model_name, hf_token, "tokenizer needs 5.x")
 
     logger.info("Transformers tier default (4.57.x) selected for %s (no match)", model_name)

@@ -179,10 +179,42 @@ class TestCheckTokenizerConfigNeedsV5:
         tc = {"tokenizer_class": "TokenizersBackend"}
         (tmp_path / "tokenizer_config.json").write_text(json.dumps(tc))
 
-        key = str(tmp_path)
-        _check_tokenizer_config_needs_v5(key)
+        key = (str(tmp_path), None)
+        _check_tokenizer_config_needs_v5(str(tmp_path))
         assert key in _tokenizer_class_cache
         assert _tokenizer_class_cache[key] is True
+
+    def test_token_cache_isolation_and_auth_fetch(self, monkeypatch):
+        # A gated repo's unauthenticated fetch fails and caches False under (model, None);
+        # an authenticated fetch uses a separate key and still resolves, so the model is
+        # not stuck on the default tier. The token rides in the Authorization header.
+        import utils.transformers_version as tv
+
+        monkeypatch.setattr(tv, "_env_offline", lambda: False)
+        seen_auth = []
+
+        class _Resp:
+            def __init__(self, body):
+                self._b = body
+            def read(self):
+                return self._b.encode()
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+
+        def fake_urlopen(req, timeout = 10):
+            auth = req.get_header("Authorization")
+            seen_auth.append(auth)
+            if auth:
+                return _Resp(json.dumps({"tokenizer_class": "TokenizersBackend"}))
+            raise OSError("HTTP 401")
+
+        monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+        assert _check_tokenizer_config_needs_v5("org/gated") is False  # unauth miss
+        assert _check_tokenizer_config_needs_v5("org/gated", "tok") is True  # authed hit
+        assert seen_auth == [None, "Bearer tok"]
+        assert _tokenizer_class_cache[("org/gated", None)] is False  # miss not poisoning
 
 
 # ---------------------------------------------------------------------------
@@ -273,8 +305,8 @@ class TestCheckConfigNeeds550:
         cfg = {"architectures": ["Gemma4ForConditionalGeneration"]}
         (tmp_path / "config.json").write_text(json.dumps(cfg))
 
-        key = str(tmp_path)
-        _check_config_needs_550(key)
+        key = (str(tmp_path), None)
+        _check_config_needs_550(str(tmp_path))
         assert key in _config_needs_550_cache
         assert _config_needs_550_cache[key] is True
 
@@ -373,8 +405,8 @@ class TestCheckConfigNeeds510:
         cfg = {"architectures": ["Gemma4UnifiedForConditionalGeneration"]}
         (tmp_path / "config.json").write_text(json.dumps(cfg))
 
-        key = str(tmp_path)
-        _check_config_needs_510(key)
+        key = (str(tmp_path), None)
+        _check_config_needs_510(str(tmp_path))
         assert key in _config_needs_510_cache
         assert _config_needs_510_cache[key] is True
 
@@ -779,10 +811,14 @@ class TestProbeTier:
 
     def test_get_tier_uses_probe_for_remote_tokenizer_signal(self, monkeypatch):
         # tokenizer says 5.x but no architecture/substring match -> probe (not a 530 guess).
-        monkeypatch.setattr("utils.transformers_version._check_config_needs_510", lambda m: False)
-        monkeypatch.setattr("utils.transformers_version._check_config_needs_550", lambda m: False)
         monkeypatch.setattr(
-            "utils.transformers_version._check_tokenizer_config_needs_v5", lambda m: True
+            "utils.transformers_version._check_config_needs_510", lambda m, t = None: False
+        )
+        monkeypatch.setattr(
+            "utils.transformers_version._check_config_needs_550", lambda m, t = None: False
+        )
+        monkeypatch.setattr(
+            "utils.transformers_version._check_tokenizer_config_needs_v5", lambda m, t = None: True
         )
         monkeypatch.setattr("utils.transformers_version._probe_tier", lambda m, t, reason: "510")
         assert get_transformers_tier("org/unknown-5x-arch") == "510"
@@ -838,6 +874,41 @@ class TestProbeTier:
 
         monkeypatch.setattr(tv, "Path", _BadPath)
         assert _resolve_commit_sha("org/weird::id", None) is None  # no raise
+
+    def test_local_signature_not_memoized(self, tmp_path, monkeypatch):
+        # codex: a local dir signature is mutable; it must be recomputed every call so an
+        # overwritten checkpoint is not pinned to the old tier. Only remote SHAs memoize.
+        monkeypatch.setattr("utils.transformers_version._env_offline", lambda: True)
+        cfg = tmp_path / "config.json"
+        cfg.write_text('{"model_type": "x"}')
+        first = _resolve_commit_sha(str(tmp_path), None)
+        assert first is not None
+        assert str(tmp_path) not in _probe_sha_cache  # local sig never memoized
+        cfg.write_text('{"model_type": "x", "extra": 1234567}')  # size changes
+        assert _resolve_commit_sha(str(tmp_path), None) != first  # recomputed, not stale
+
+    def test_get_tier_threads_token_to_checks(self, monkeypatch):
+        # A gated/private model: the token must reach the config/tokenizer checks (and the
+        # probe), otherwise the authed-only signal is missed and it falls to default 4.x.
+        seen = {}
+        monkeypatch.setattr(
+            "utils.transformers_version._check_config_needs_510",
+            lambda m, t = None: seen.update({"510": t}) or False,
+        )
+        monkeypatch.setattr(
+            "utils.transformers_version._check_config_needs_550",
+            lambda m, t = None: seen.update({"550": t}) or False,
+        )
+        monkeypatch.setattr(
+            "utils.transformers_version._check_tokenizer_config_needs_v5",
+            lambda m, t = None: seen.update({"tok": t}) or True,
+        )
+        monkeypatch.setattr(
+            "utils.transformers_version._probe_tier",
+            lambda m, t, reason: seen.update({"probe": t}) or "510",
+        )
+        assert get_transformers_tier("org/gated-5x", "hf_abc") == "510"
+        assert seen == {"510": "hf_abc", "550": "hf_abc", "tok": "hf_abc", "probe": "hf_abc"}
 
 
 # ---------------------------------------------------------------------------
