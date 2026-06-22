@@ -1367,6 +1367,7 @@ class FastBaseModel:
         finetune_language_layers = True,
         finetune_attention_modules = True,
         finetune_mlp_modules = True,
+        finetune_audio_layers = False,
         finetune_last_n_layers = None,
         layers_to_transform = None,
         layers_pattern = None,
@@ -1402,6 +1403,7 @@ class FastBaseModel:
             finetune_language_layers = True
             finetune_attention_modules = True
             finetune_mlp_modules = True
+            finetune_audio_layers = True
         if target_modules is None or target_modules == "all-linear":
             target_modules = get_peft_regex(
                 model,
@@ -1409,6 +1411,7 @@ class FastBaseModel:
                 finetune_language_layers = finetune_language_layers,
                 finetune_attention_modules = finetune_attention_modules,
                 finetune_mlp_modules = finetune_mlp_modules,
+                finetune_audio_layers = finetune_audio_layers,
             )
         else:
             assert type(target_modules) in (list, tuple, str)
@@ -1417,10 +1420,11 @@ class FastBaseModel:
                 or not finetune_language_layers
                 or not finetune_attention_modules
                 or not finetune_mlp_modules
+                or not finetune_audio_layers
             ):
                 print(
                     "Unsloth: Explicit target_modules are constrained by the "
-                    "finetune_(vision|language|attention|mlp) filters; adapters "
+                    "finetune_(vision|language|audio|attention|mlp) filters; adapters "
                     "attach only where both select."
                 )
                 target_modules = get_peft_regex(
@@ -1429,6 +1433,7 @@ class FastBaseModel:
                     finetune_language_layers = finetune_language_layers,
                     finetune_attention_modules = finetune_attention_modules,
                     finetune_mlp_modules = finetune_mlp_modules,
+                    finetune_audio_layers = finetune_audio_layers,
                     target_modules = list(target_modules),
                 )
 

@@ -2917,6 +2917,7 @@ class FastLlamaModel:
                 ("finetune_language_layers", True),
                 ("finetune_attention_modules", True),
                 ("finetune_mlp_modules", True),
+                ("finetune_audio_layers", False),
             ):
                 if peft_arg not in kwargs:
                     kwargs[peft_arg] = flag
