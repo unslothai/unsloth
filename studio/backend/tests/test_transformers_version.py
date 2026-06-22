@@ -851,9 +851,7 @@ class TestProbeTier:
         # activate_transformers_for_subprocess must forward hf_token to tier detection, or
         # the gated-model checks above run unauthenticated and the fix is unreachable.
         seen = {}
-        monkeypatch.setattr(
-            "utils.transformers_version._resolve_base_model", lambda m: m
-        )
+        monkeypatch.setattr("utils.transformers_version._resolve_base_model", lambda m: m)
         monkeypatch.setattr(
             "utils.transformers_version.get_transformers_tier",
             lambda m, t = None: seen.update({"model": m, "token": t}) or "default",
