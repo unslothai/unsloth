@@ -1405,15 +1405,17 @@ class FastBaseModel:
             finetune_mlp_modules = True
             finetune_audio_layers = True
         # Older unsloth_zoo (before get_peft_regex gained finetune_audio_layers) does
-        # not accept the kwarg, so pass it only when supported to avoid a TypeError.
+        # not accept the kwarg. Pass it only when supported; if the caller explicitly
+        # asked for audio but it is unsupported, fail loudly rather than silently
+        # training a language-only adapter.
         if "finetune_audio_layers" in inspect.signature(get_peft_regex).parameters:
             _audio_kwargs = {"finetune_audio_layers": finetune_audio_layers}
+        elif finetune_audio_layers:
+            raise RuntimeError(
+                "Unsloth: finetune_audio_layers=True requires a newer unsloth_zoo. "
+                "Please upgrade with `pip install --upgrade --no-deps unsloth_zoo`."
+            )
         else:
-            if finetune_audio_layers:
-                logger.warning(
-                    "Unsloth: finetune_audio_layers=True needs a newer unsloth_zoo; ignoring it. "
-                    "Please upgrade with `pip install --upgrade --no-deps unsloth_zoo`."
-                )
             _audio_kwargs = {}
         if target_modules is None or target_modules == "all-linear":
             target_modules = get_peft_regex(
@@ -1426,21 +1428,24 @@ class FastBaseModel:
             )
         else:
             assert type(target_modules) in (list, tuple, str)
-            # finetune_audio_layers is deliberately NOT part of this condition: it
-            # defaults False, so including it would force every explicit target_modules
-            # list through get_peft_regex (and print the warning) even for text/vision
-            # models that never opted into layer-scope filtering.
-            if type(target_modules) in (list, tuple) and (
+            # Route an explicit list through get_peft_regex when the caller scoped a
+            # layer family (one of the finetune_* below is off) OR opted into audio (so
+            # the new audio/embedder branches are considered). finetune_audio_layers is
+            # a POSITIVE term here: using `not finetune_audio_layers` would -- since it
+            # defaults False -- force every explicit list through the filter.
+            _scoping = (
                 not finetune_vision_layers
                 or not finetune_language_layers
                 or not finetune_attention_modules
                 or not finetune_mlp_modules
-            ):
-                print(
-                    "Unsloth: Explicit target_modules are constrained by the "
-                    "finetune_(vision|language|attention|mlp) filters; adapters "
-                    "attach only where both select."
-                )
+            )
+            if type(target_modules) in (list, tuple) and (_scoping or finetune_audio_layers):
+                if _scoping:
+                    print(
+                        "Unsloth: Explicit target_modules are constrained by the "
+                        "finetune_(vision|language|attention|mlp) filters; adapters "
+                        "attach only where both select."
+                    )
                 target_modules = get_peft_regex(
                     model,
                     finetune_vision_layers = finetune_vision_layers,
