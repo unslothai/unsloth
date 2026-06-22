@@ -302,7 +302,9 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
         if getattr(backend, "device", None) != "mlx":
             from utils.ssm_runtime import ssm_probe_identifier
 
-            _ssm_base = str(mc.base_model) if (mc.is_lora and getattr(mc, "base_model", None)) else None
+            _ssm_base = (
+                str(mc.base_model) if (mc.is_lora and getattr(mc, "base_model", None)) else None
+            )
             ssm_targets = [ssm_probe_identifier(config["model_name"], _ssm_base)]
             if not _ensure_ssm_kernels(ssm_targets, resp_queue):
                 return
