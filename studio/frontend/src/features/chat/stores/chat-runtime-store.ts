@@ -453,6 +453,22 @@ export function isPendingGguf(pending: PendingModelSelection | null): boolean {
   return pending != null && hasGgufSource(pending);
 }
 
+/** Whether `pending` refers to the same model as `pick` (id + GGUF variant +
+ *  native path token, optionals null-normalized). Native ids are display labels
+ *  that can collide, so the token must match too — id alone can land on the
+ *  wrong file. */
+export function pendingSelectionMatches(
+  pending: PendingModelSelection | null,
+  pick: { id: string; ggufVariant?: string | null; nativePathToken?: string | null },
+): boolean {
+  return (
+    pending != null &&
+    pending.id === pick.id &&
+    (pending.ggufVariant ?? null) === (pick.ggufVariant ?? null) &&
+    (pending.nativePathToken ?? null) === (pick.nativePathToken ?? null)
+  );
+}
+
 type ChatRuntimeStore = {
   settingsHydrated: boolean;
   params: InferenceParams;
@@ -1461,7 +1477,10 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     set({ loadOnSelection });
   },
   setPendingSelection: (pendingSelection) => set({ pendingSelection }),
-  stageModel: (selection) =>
+  stageModel: (selection) => {
+    // Refuse staging mid-load: post-load cleanup would silently drop the queued
+    // pick. stageOrLoad toasts first for callers that can.
+    if (get().modelLoading) return;
     set((s) => {
       if (
         s.pendingSelection &&
@@ -1481,7 +1500,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         speculativeType: readPersistedSpeculativeType(),
         specDraftNMax: null,
       };
-    }),
+    });
+  },
   abandonStagedModel: () => {
     const { pendingSelection } = get();
     if (!pendingSelection) return;
