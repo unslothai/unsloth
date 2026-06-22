@@ -222,7 +222,7 @@ class TestRealRequirementsFiltering:
         original = self._non_blank_non_comment(EXTRAS_TXT)
 
         # These must be gone.
-        for pkg in ["torch-stoi", "timm", "openai-whisper", "transformers-cfg"]:
+        for pkg in ["torch-stoi", "timm", "openai-whisper", "librosa"]:
             assert not any(
                 l.lower().startswith(pkg) for l in filtered
             ), f"{pkg} should be removed from extras.txt"

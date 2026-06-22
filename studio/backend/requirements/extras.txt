@@ -1,15 +1,10 @@
-# ExecuTorch dependencies
-ruamel.yaml
-# coremltools                    # 10.2 MB - Apple CoreML, no imports in unsloth/zoo/studio
+# onnxruntime (pymupdf-layout RAG) needs flatbuffers
 flatbuffers
-hydra-core
-# Also needed by sentence_transformers (installed with --no-deps in extras-no-deps.txt)
+# Needed by sentence_transformers (installed with --no-deps in extras-no-deps.txt)
 scikit-learn==1.7.1
 
 # Additional extras
-pybind11
-langid
-jiwer
+jiwer                            # WER/CER metrics for vision OCR save-merge benchmarks
 omegaconf
 einx
 pyloudnorm
@@ -32,11 +27,7 @@ pystoi
 soundfile
 tensorboard
 torch-stoi
-evaluate
 timm
-transformers-cfg
-addict
-easydict
 einops
 tabulate
 openai>=2.7.2
