@@ -44,6 +44,7 @@ import json
 import shutil
 import pickle
 import gc
+import functools
 from transformers.models.llama.modeling_llama import logger
 from .kernels import fast_dequantize, QUANT_STATE, get_lora_parameters_bias
 import subprocess
@@ -489,27 +490,62 @@ def _qwen3_5_vlm_state_dict_for_save(state_dict):
     return remapped_state_dict
 
 
-def _normalize_tied_weights_keys(model):
-    """Coerce legacy list/tuple/set ``_tied_weights_keys`` to dict form.
+def _coerce_tied_weights_keys_to_dict(model):
+    """Coerce each module's legacy list/tuple/set ``_tied_weights_keys`` to dict form,
+    returning ``[(module, original), ...]`` so the caller can restore them.
 
     transformers >= 5 ``save_pretrained`` reads ``_tied_weights_keys.keys()``; a model
-    still declaring it as a list (e.g. NemotronH) crashes mid-save. Only the keys are
-    read, so ``{k: k}`` preserves behaviour. Best-effort and idempotent.
+    still declaring it as a list (e.g. NemotronH) crashes mid-save. Only None is skipped
+    by transformers, so an empty/non-dict container still hits ``.keys()``.
     """
+    originals = []
     try:
-        modules = model.modules()
+        modules = list(model.modules())
     except Exception:
-        return
+        return originals
     for module in modules:
         keys = getattr(module, "_tied_weights_keys", None)
-        # Only None is skipped by transformers; an empty/non-dict container still hits .keys().
         if isinstance(keys, (list, tuple, set)):
             try:
                 module._tied_weights_keys = {k: k for k in keys}
+                originals.append((module, keys))
             except Exception:
                 pass
+    return originals
 
 
+def _restore_tied_weights_keys(originals):
+    """Undo _coerce_tied_weights_keys_to_dict."""
+    for module, keys in originals:
+        try:
+            module._tied_weights_keys = keys
+        except Exception:
+            pass
+
+
+def _normalize_tied_weights_keys_for_save(save_fn):
+    """Coerce legacy list-form ``_tied_weights_keys`` to dict only for the duration of a
+    save, then restore. transformers >= 5 also re-ties from the dict's *values*, so a
+    persisted ``{k: k}`` self-map would no-op a later resize/re-tie; scoping the coercion
+    to the save keeps both the save and the live model correct. ``model`` is the first
+    positional arg (bound-method ``self``) or the ``model=`` keyword.
+    """
+    @functools.wraps(save_fn)
+    def wrapper(*args, **kwargs):
+        model = kwargs.get("model")
+        if model is None and args:
+            model = args[0]
+        if model is None:
+            model = kwargs.get("self")
+        originals = _coerce_tied_weights_keys_to_dict(model) if model is not None else []
+        try:
+            return save_fn(*args, **kwargs)
+        finally:
+            _restore_tied_weights_keys(originals)
+    return wrapper
+
+
+@_normalize_tied_weights_keys_for_save
 @torch.inference_mode
 def unsloth_save_model(
     model,
@@ -540,9 +576,6 @@ def unsloth_save_model(
 ):
     if isinstance(tokenizer, (PreTrainedTokenizerBase, ProcessorMixin)):
         tokenizer = patch_saving_functions(tokenizer)
-
-    # Legacy list-form _tied_weights_keys (e.g. NemotronH) crashes transformers 5.x save.
-    _normalize_tied_weights_keys(model)
 
     if token is None:
         token = get_token()
@@ -2116,6 +2149,7 @@ def push_to_ollama(tokenizer, gguf_location, username: str, model_name: str, tag
     print("Successfully pushed to ollama")
 
 
+@_normalize_tied_weights_keys_for_save
 def unsloth_save_pretrained_gguf(
     self,
     save_directory: Union[str, os.PathLike],
@@ -2172,9 +2206,6 @@ def unsloth_save_pretrained_gguf(
         raise ValueError("Unsloth: Saving to GGUF must have a tokenizer.")
     if isinstance(tokenizer, (PreTrainedTokenizerBase, ProcessorMixin)):
         tokenizer = patch_saving_functions(tokenizer)
-
-    # Legacy list-form _tied_weights_keys (e.g. NemotronH) crashes transformers 5.x save.
-    _normalize_tied_weights_keys(self)
 
     try:
         base_model_name = get_model_name(self.config._name_or_path, load_in_4bit = False)
@@ -2995,6 +3026,7 @@ def save_to_gguf_generic(
     return metadata
 
 
+@_normalize_tied_weights_keys_for_save
 @torch.inference_mode
 def unsloth_generic_save(
     model,
@@ -3025,9 +3057,6 @@ def unsloth_generic_save(
 ):
     if isinstance(tokenizer, (PreTrainedTokenizerBase, ProcessorMixin)):
         tokenizer = patch_saving_functions(tokenizer)
-
-    # Legacy list-form _tied_weights_keys (e.g. NemotronH) crashes transformers 5.x save.
-    _normalize_tied_weights_keys(model)
 
     if token is None and push_to_hub:
         token = get_token()
