@@ -1471,7 +1471,12 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     set({ loadOnSelection });
   },
   setPendingSelection: (pendingSelection) => set({ pendingSelection }),
-  stageModel: (selection) =>
+  stageModel: (selection) => {
+    // A model load (or a cancel's background unload) is in flight. Staging now
+    // would queue this pick behind the active load, and the post-load cleanup
+    // would then silently drop it -- so refuse. Callers that can surface UI
+    // feedback (chat-page's stageOrLoad) show a toast first.
+    if (get().modelLoading) return;
     set((s) => {
       if (
         s.pendingSelection &&
@@ -1491,7 +1496,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         speculativeType: readPersistedSpeculativeType(),
         specDraftNMax: null,
       };
-    }),
+    });
+  },
   abandonStagedModel: () => {
     const { pendingSelection } = get();
     if (!pendingSelection) return;
