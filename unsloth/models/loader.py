@@ -826,13 +826,9 @@ class FastLanguageModel(FastLlamaModel):
         if load_in_4bit:
             # Fix up bitsandbytes config, but respect user-provided quantization_config
             if quantization_config is None:
-                # `load_in_4bit` here is the requested flag, not the effective one. A
-                # checkpoint already quantized with a non-bnb method (gpt-oss MXFP4, gptq,
-                # awq, compressed-tensors) had bnb disabled by
-                # check_and_disable_bitsandbytes_loading, so stamping a synthetic
-                # bitsandbytes quantization_config over its real one would be a lie and
-                # corrupt a saved config. Only stamp when the loaded model is bnb or
-                # unquantized.
+                # `load_in_4bit` is the requested flag, not the effective one: a non-bnb
+                # checkpoint (MXFP4/gptq/awq) had bnb disabled by check_and_disable, so stamping a
+                # synthetic bnb config would corrupt its real one. Only stamp bnb/unquantized.
                 try:
                     from unsloth_zoo.utils import get_quant_type
                     _stamp_bnb = get_quant_type(model.config) in (None, "bitsandbytes")
@@ -1247,29 +1243,18 @@ class FastModel(FastBaseModel):
 
         # Save model types and loading method
         lowered_model_name = model_name.lower()
-        # Build UNSLOTH_MODEL_NAME freshly from THIS load's model types + flags. Do not
-        # prepend the previous os.environ value: it is inherited across processes (e.g. a
-        # save->reload subprocess) and accumulates stale load flags. A leftover
-        # "_load_in_4bit_" from an earlier bnb-4bit load would make gpt-oss wrongly take the
-        # BnB router patch (router.linear.weight) when later reloading a merged 16bit
-        # checkpoint (router.weight), raising "some weights are not initialized".
-        # Only the model TYPE tokens (model_types_all) and the load flags below are
-        # consumed downstream (e.g. `"gpt_oss" in`, `"_load_in_4bit_" in`); the raw model
-        # name/path is intentionally NOT included, so a local path that happens to contain
-        # a flag sentinel like "_load_in_4bit_" cannot be misread as that flag.
+        # Build UNSLOTH_MODEL_NAME fresh from THIS load's model types + flags; do not prepend the
+        # inherited os.environ value (a stale "_load_in_4bit_" from an earlier load, e.g. across a
+        # save->reload subprocess, would push gpt-oss onto the BnB router patch when later loading
+        # a 16bit checkpoint -> "weights not initialized"). Only the type tokens and the load flags
+        # below are consumed downstream; the raw model name/path is excluded so a path containing a
+        # flag sentinel cannot be misread.
         #
-        # Encode the EFFECTIVE bnb state, not the requested one. A checkpoint already
-        # quantized with a non-bitsandbytes method (gpt-oss MXFP4, gptq, awq,
-        # compressed-tensors, ...) has load_in_4bit/8bit disabled later by
-        # check_and_disable_bitsandbytes_loading. Recording the requested `_load_in_4bit_`
-        # here would, for the public default load_in_4bit=True, route e.g. a native MXFP4
-        # gpt-oss (stock router.weight) onto the BnB router patch (router.linear.weight)
-        # and break the load. Mirror that normalization from the model's own config.
-        # This is only an EARLY best-effort: for an adapter-only PEFT repo model_config is
-        # still None here, and the base may yet be remapped (get_model_name) to a different
-        # quant (e.g. an Unsloth `-bnb-4bit` build). The authoritative correction happens in
-        # the load path via sync_unsloth_model_name_bnb_flags(...) right after
-        # check_and_disable_bitsandbytes_loading, once the effective bnb state is known.
+        # Encode the EFFECTIVE bnb state: a non-bnb checkpoint (MXFP4/gptq/awq) has load_in_4bit
+        # disabled later by check_and_disable, so recording the requested flag here would route a
+        # native MXFP4 gpt-oss onto the BnB router patch. This is only an EARLY best-effort (an
+        # adapter-only PEFT repo has model_config=None here, and the base may be remapped); the
+        # authoritative correction is sync_unsloth_model_name_bnb_flags(...) after check_and_disable.
         try:
             from unsloth_zoo.utils import get_quant_type
             _bnb_compatible_quant = get_quant_type(model_config) in (None, "bitsandbytes")
@@ -1700,13 +1685,9 @@ class FastModel(FastBaseModel):
         if load_in_4bit:
             # Fix up bitsandbytes config, but respect user-provided quantization_config
             if quantization_config is None:
-                # `load_in_4bit` here is the requested flag, not the effective one. A
-                # checkpoint already quantized with a non-bnb method (gpt-oss MXFP4, gptq,
-                # awq, compressed-tensors) had bnb disabled by
-                # check_and_disable_bitsandbytes_loading, so stamping a synthetic
-                # bitsandbytes quantization_config over its real one would be a lie and
-                # corrupt a saved config. Only stamp when the loaded model is bnb or
-                # unquantized.
+                # `load_in_4bit` is the requested flag, not the effective one: a non-bnb
+                # checkpoint (MXFP4/gptq/awq) had bnb disabled by check_and_disable, so stamping a
+                # synthetic bnb config would corrupt its real one. Only stamp bnb/unquantized.
                 try:
                     from unsloth_zoo.utils import get_quant_type
                     _stamp_bnb = get_quant_type(model.config) in (None, "bitsandbytes")
