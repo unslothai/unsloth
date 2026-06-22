@@ -323,6 +323,8 @@ def dump_diagnostics(
 # the runner timeout (run 25696797934 / PR #5387 burned 27+ min). evaluate_fetch
 # wraps the fetch in an AbortController.signal so the JS side always resolves --
 # real response, or synthetic `{status: 0, error: "AbortError..."}` after timeout_ms.
+# It also retries the evaluate itself when a navigation destroys the execution
+# context mid-call (a transient Playwright race, not a real fetch failure).
 def evaluate_fetch(
     page: Any,
     url: str,
@@ -384,7 +386,38 @@ def evaluate_fetch(
     last: dict[str, Any] | None = None
     attempts = max(1, int(transport_retries) + 1)
     for attempt in range(attempts):
-        result = page.evaluate(js, payload)
+        try:
+            result = page.evaluate(js, payload)
+        except Exception as exc:
+            # A navigation or auth refresh can destroy the JS execution context
+            # mid-evaluate ("Execution context was destroyed", "frame was detached",
+            # "Target closed"). That is a transient race, not a real failure: let the
+            # page settle and retry within the same budget instead of crashing.
+            msg = str(exc)
+            transient = any(s in msg for s in (
+                "Execution context was destroyed",
+                "context with specified id",
+                "frame was detached",
+                "Target closed",
+                "Target page, context or browser has been closed",
+                "Execution context is not available",
+            ))
+            if not transient or attempt == attempts - 1:
+                raise
+            try:
+                sys.stderr.write(
+                    f"[evaluate_fetch] {method} {url}: execution context lost "
+                    f"({attempt + 1}/{attempts}); settling + retrying\n"
+                )
+                sys.stderr.flush()
+            except Exception:
+                pass
+            try:
+                page.wait_for_load_state("domcontentloaded", timeout = 10_000)
+            except Exception:
+                pass
+            time.sleep((transport_backoff_ms * (2**attempt)) / 1000.0)
+            continue
         last = result
         try:
             status = int(result.get("status") or 0)
