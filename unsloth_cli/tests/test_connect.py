@@ -688,7 +688,9 @@ def test_verify_studio_identity_rejects_redirect(tmp_path, monkeypatch):
     monkeypatch.setattr(storage, "DB_PATH", tmp_path / "auth.db")
     monkeypatch.setattr(storage, "_identity_secret_cache", None)
 
-    real_base, stop_real = _serve_identity(lambda nonce, port: storage.compute_identity_proof(nonce, port))
+    real_base, stop_real = _serve_identity(
+        lambda nonce, port: storage.compute_identity_proof(nonce, port)
+    )
     squatter_base, stop_squatter = _serve_redirect(real_base)
     try:
         assert inference.verify_studio_identity(real_base) is True  # direct: ok
@@ -713,7 +715,9 @@ def test_verify_studio_identity_rejects_relayed_proof(tmp_path, monkeypatch):
     monkeypatch.setattr(storage, "DB_PATH", tmp_path / "auth.db")
     monkeypatch.setattr(storage, "_identity_secret_cache", None)
 
-    real_base, stop_real = _serve_identity(lambda nonce, port: storage.compute_identity_proof(nonce, port))
+    real_base, stop_real = _serve_identity(
+        lambda nonce, port: storage.compute_identity_proof(nonce, port)
+    )
     real_port = int(real_base.rsplit(":", 1)[1])
     # The squatter answers on its own port but returns the proof for the real port.
     squatter_base, stop_squatter = _serve_identity(
