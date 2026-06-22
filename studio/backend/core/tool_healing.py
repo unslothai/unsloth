@@ -207,63 +207,54 @@ def parse_tool_calls_from_text(
       <tool_call><function=web_search><parameter=query>...</parameter></function></tool_call>
     """
     tool_calls: list[dict] = []
-    # Byte spans already claimed by a parsed tool call. A tool-call marker that
-    # appears INSIDE another call's argument string is data, not a real call, so
-    # it must not be re-parsed into a spurious second call.
-    consumed: list[tuple[int, int]] = []
-
+    # Collect JSON- and Gemma-format candidates with their byte spans, then
+    # accept them in document order. Both order and spans matter:
+    #   * tools execute in returned order, so a call appearing earlier in the
+    #     text must be emitted first even across the two formats;
+    #   * a tool-call marker INSIDE another call's argument string is data, not a
+    #     call, so a candidate starting within an already accepted span is
+    #     skipped (covers a JSON marker nested in a Gemma arg and a Gemma marker
+    #     nested in a JSON arg alike, regardless of which format is outer).
+    candidates = []  # (start, brace_end, kind, match)
     for m in _TC_JSON_START_RE.finditer(content):
-        brace_start = m.end() - 1
-        i = _balanced_brace_end(content, brace_start)
-        if i < 0:
+        end = _balanced_brace_end(content, m.end() - 1)
+        if end >= 0:
+            candidates.append((m.start(), end, "json", m))
+    for m in _TC_GEMMA_START_RE.finditer(content):
+        end = _balanced_brace_end(content, m.end() - 1, gemma_quotes = True)
+        if end >= 0:
+            candidates.append((m.start(), end, "gemma", m))
+    candidates.sort(key = lambda c: c[0])
+
+    consumed: list[tuple[int, int]] = []
+    for start, end, kind, m in candidates:
+        if any(s <= start < e for s, e in consumed):
             continue
         if not allow_incomplete:
-            tail_after_json = content[i + 1 :].lstrip()
-            if _TC_END_TAG_RE.match(tail_after_json) is None:
+            tail = content[end + 1 :].lstrip()
+            close_re = _TC_END_TAG_RE if kind == "json" else _TC_GEMMA_END_TAG_RE
+            if close_re.match(tail) is None:
                 continue
-        json_str = content[brace_start : i + 1]
         try:
-            obj = json.loads(json_str)
-            tc = {
+            if kind == "json":
+                obj = json.loads(content[m.end() - 1 : end + 1])
+                name = obj.get("name", "")
+                arguments = obj.get("arguments", {})
+                if isinstance(arguments, dict):
+                    arguments = json.dumps(arguments)
+            else:
+                name = m.group(1)
+                arguments = json.dumps(_gemma_arguments_to_json(content[m.end() : end]))
+        except (json.JSONDecodeError, ValueError):
+            continue
+        tool_calls.append(
+            {
                 "id": f"call_{id_offset + len(tool_calls)}",
                 "type": "function",
-                "function": {
-                    "name": obj.get("name", ""),
-                    "arguments": obj.get("arguments", {}),
-                },
+                "function": {"name": name, "arguments": arguments},
             }
-            if isinstance(tc["function"]["arguments"], dict):
-                tc["function"]["arguments"] = json.dumps(tc["function"]["arguments"])
-            tool_calls.append(tc)
-            consumed.append((m.start(), i + 1))
-        except (json.JSONDecodeError, ValueError):
-            pass
-
-    for m in _TC_GEMMA_START_RE.finditer(content):
-        if any(start <= m.start() < end for start, end in consumed):
-            continue
-        brace_start = m.end() - 1
-        i = _balanced_brace_end(content, brace_start, gemma_quotes = True)
-        if i < 0:
-            continue
-        if not allow_incomplete:
-            tail_after_json = content[i + 1 :].lstrip()
-            if _TC_GEMMA_END_TAG_RE.match(tail_after_json) is None:
-                continue
-        try:
-            tool_calls.append(
-                {
-                    "id": f"call_{id_offset + len(tool_calls)}",
-                    "type": "function",
-                    "function": {
-                        "name": m.group(1),
-                        "arguments": json.dumps(_gemma_arguments_to_json(content[m.end() : i])),
-                    },
-                }
-            )
-            consumed.append((m.start(), i + 1))
-        except (json.JSONDecodeError, ValueError):
-            pass
+        )
+        consumed.append((start, end + 1))
 
     if not tool_calls:
         func_starts = [

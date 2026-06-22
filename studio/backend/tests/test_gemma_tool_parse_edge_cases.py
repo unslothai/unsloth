@@ -62,3 +62,26 @@ def test_two_separate_gemma_calls_both_parse():
     assert [c["function"]["name"] for c in calls] == ["a", "b"], calls
     assert _args(calls[0]) == {"x": 1}
     assert _args(calls[1]) == {"y": 2}
+
+
+def test_mixed_format_calls_preserve_document_order():
+    # A Gemma-native call precedes a JSON-format call in the text; tools execute
+    # in returned order, so `create` must come before `read`.
+    content = (
+        '<|tool_call>call:create{path:a}<tool_call|> then '
+        '<tool_call>{"name":"read","arguments":{"path":"a"}}</tool_call>'
+    )
+    calls = parse_tool_calls_from_text(content)
+    assert [c["function"]["name"] for c in calls] == ["create", "read"], calls
+
+
+def test_json_marker_inside_gemma_argument_is_not_a_second_call():
+    # The reverse of the JSON-outer case: a JSON-style marker inside a Gemma
+    # call's quoted argument is code text, not a second `terminal` call.
+    content = (
+        '<|tool_call>call:python{code:<|"|>'
+        'print(<tool_call>{"name":"terminal","arguments":{"command":"ls"}}</tool_call>)'
+        '<|"|>}<tool_call|>'
+    )
+    calls = parse_tool_calls_from_text(content)
+    assert [c["function"]["name"] for c in calls] == ["python"], calls
