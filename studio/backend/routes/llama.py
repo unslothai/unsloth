@@ -30,6 +30,7 @@ class LlamaUpdateJob(BaseModel):
     message: str = ""
     from_tag: Optional[str] = None
     to_tag: Optional[str] = None
+    reload_required: Optional[bool] = None
     error: Optional[str] = None
     progress: Optional[float] = Field(None, description = "0..1 while running, 1 on success.")
     started_at: Optional[str] = None

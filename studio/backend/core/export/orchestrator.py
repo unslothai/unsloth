@@ -385,6 +385,7 @@ class ExportOrchestrator:
         trust_remote_code: bool = False,
         approved_remote_code_fingerprint: Optional[str] = None,
         hf_token: Optional[str] = None,
+        subject: Optional[str] = None,
     ) -> Tuple[bool, str]:
         """Load a checkpoint for export.
 
@@ -396,6 +397,7 @@ class ExportOrchestrator:
             "load_in_4bit": load_in_4bit,
             "trust_remote_code": trust_remote_code,
             "approved_remote_code_fingerprint": approved_remote_code_fingerprint,
+            "subject": subject,
             "hf_token": hf_token,
         }
 
