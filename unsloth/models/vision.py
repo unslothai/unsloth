@@ -1463,11 +1463,7 @@ class FastBaseModel:
         # so an identical retry would just repeat the same failing work. And a
         # permanent tokenizer error (bad config, unknown class) must never flip the
         # process-wide offline flag for other concurrent loads in this process.
-        if (
-            tokenizer is None
-            and not local_files_only
-            and _is_offline_related_error(_primary_err)
-        ):
+        if tokenizer is None and not local_files_only and _is_offline_related_error(_primary_err):
             # The kwarg alone was insufficient (transformers < 5) or the network is
             # down: retry against the local cache, forcing HF offline so
             # AutoProcessor skips its /api/models lookup.

@@ -558,7 +558,11 @@ class TestAudioDetectionCacheTokenAware:
         mc._audio_detection_cache.clear()
         calls = []
 
-        def _fake(name, hf_token = None, local_files_only = False):
+        def _fake(
+            name,
+            hf_token = None,
+            local_files_only = False,
+        ):
             calls.append(hf_token)
             # Gated repo: only an authenticated probe can read the tokenizer.
             return ("bicodec", True) if hf_token else (None, True)
@@ -589,7 +593,11 @@ class TestAudioDetectionCacheTokenAware:
 
         transient_calls = []
 
-        def _transient(name, hf_token = None, local_files_only = False):
+        def _transient(
+            name,
+            hf_token = None,
+            local_files_only = False,
+        ):
             transient_calls.append(hf_token)
             return (None, False)  # network/5xx -- not cacheable
 
@@ -601,7 +609,11 @@ class TestAudioDetectionCacheTokenAware:
 
         definitive_calls = []
 
-        def _definitive(name, hf_token = None, local_files_only = False):
+        def _definitive(
+            name,
+            hf_token = None,
+            local_files_only = False,
+        ):
             definitive_calls.append(hf_token)
             return (None, True)  # read the config, no audio tokens
 
@@ -625,7 +637,11 @@ class TestAudioDetectionCacheTokenAware:
 
         seen = []
 
-        def _probe(name, hf_token = None, local_files_only = False):
+        def _probe(
+            name,
+            hf_token = None,
+            local_files_only = False,
+        ):
             seen.append(local_files_only)
             # Offline: nothing useful on disk -> definitive "not audio".
             # Online: the remote config reveals an audio model.
