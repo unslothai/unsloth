@@ -769,10 +769,17 @@ class FastLanguageModel(FastLlamaModel):
             or os.path.exists(os.path.join(old_model_name, "vocab.txt"))
             or os.path.exists(os.path.join(old_model_name, "spiece.model"))
         )
-        if _has_tok_config and _has_tok_files:
+        # Always pop tokenizer_name out of kwargs: it is also passed explicitly to
+        # the downstream loader, so leaving it in kwargs would raise "multiple
+        # values for keyword argument 'tokenizer_name'". A caller-supplied override
+        # wins; otherwise use the local checkpoint dir when it is self-sufficient.
+        _explicit_tokenizer_name = kwargs.pop("tokenizer_name", None)
+        if _explicit_tokenizer_name is not None:
+            tokenizer_name = _explicit_tokenizer_name
+        elif _has_tok_config and _has_tok_files:
             tokenizer_name = old_model_name
         else:
-            tokenizer_name = kwargs.pop("tokenizer_name", None)
+            tokenizer_name = None
 
         if fast_inference:
             fast_inference, model_name = fast_inference_setup(model_name, model_config)
@@ -1566,10 +1573,17 @@ class FastModel(FastBaseModel):
             or os.path.exists(os.path.join(old_model_name, "vocab.txt"))
             or os.path.exists(os.path.join(old_model_name, "spiece.model"))
         )
-        if _has_tok_config and _has_tok_files:
+        # Always pop tokenizer_name out of kwargs: it is also passed explicitly to
+        # the downstream loader, so leaving it in kwargs would raise "multiple
+        # values for keyword argument 'tokenizer_name'". A caller-supplied override
+        # wins; otherwise use the local checkpoint dir when it is self-sufficient.
+        _explicit_tokenizer_name = kwargs.pop("tokenizer_name", None)
+        if _explicit_tokenizer_name is not None:
+            tokenizer_name = _explicit_tokenizer_name
+        elif _has_tok_config and _has_tok_files:
             tokenizer_name = old_model_name
         else:
-            tokenizer_name = kwargs.pop("tokenizer_name", None)
+            tokenizer_name = None
 
         # Capture task intent before text_only can replace a parent VLM config
         # with its nested text config.

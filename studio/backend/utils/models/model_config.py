@@ -935,12 +935,20 @@ _AUDIO_TOKEN_PATTERNS = {
 }
 
 
-def detect_audio_type(model_name: str, hf_token: Optional[str] = None) -> Optional[str]:
+def detect_audio_type(
+    model_name: str,
+    hf_token: Optional[str] = None,
+    local_files_only: bool = False,
+) -> Optional[str]:
     """Detect if a model is an audio model and return its type.
 
     Works for any model via tokenizer_config.json special tokens.
     Returns an audio_type string ('snac', 'csm', 'bicodec', 'dac', 'whisper',
     'audio_vlm') or None.
+
+    When local_files_only is True (offline export) the remote HuggingFace fetch
+    is skipped so detection never blocks on a network read; only the local HF
+    cache is consulted.
     """
     # Normalize casing + include the token fingerprint (mirrors is_vision_model).
     try:
@@ -954,7 +962,9 @@ def detect_audio_type(model_name: str, hf_token: Optional[str] = None) -> Option
     if cache_key in _audio_detection_cache:
         return _audio_detection_cache[cache_key]
 
-    result, definitive = _detect_audio_from_tokenizer(model_name, hf_token)
+    result, definitive = _detect_audio_from_tokenizer(
+        model_name, hf_token, local_files_only = local_files_only
+    )
     # Cache only definitive results; a transient read failure stays None and retries.
     if definitive:
         _audio_detection_cache[cache_key] = result
@@ -964,12 +974,15 @@ def detect_audio_type(model_name: str, hf_token: Optional[str] = None) -> Option
 
 
 def _detect_audio_from_tokenizer(
-    model_name: str, hf_token: Optional[str] = None
+    model_name: str,
+    hf_token: Optional[str] = None,
+    local_files_only: bool = False,
 ) -> Tuple[Optional[str], bool]:
     """Detect audio type from tokenizer special tokens.
 
-    Checks local HF cache first, then fetches tokenizer_config.json from HF;
-    examines added_tokens_decoder for distinctive patterns.
+    Checks local HF cache first, then (unless local_files_only) fetches
+    tokenizer_config.json from HF; examines added_tokens_decoder for distinctive
+    patterns.
 
     Returns (audio_type_or_None, definitive). definitive is False only on a
     transient read failure (network/timeout/5xx) so the caller skips caching and
@@ -1009,7 +1022,11 @@ def _detect_audio_from_tokenizer(
     except Exception as e:
         logger.debug(f"Could not check local cache for {model_name}: {e}")
 
-    # 2) Fall back to HuggingFace API
+    # 2) Fall back to HuggingFace API (skipped offline so an offline export never
+    #    blocks on a 15s network read; the local cache above is authoritative).
+    if local_files_only:
+        return None, read_any
+
     try:
         import requests
         import os

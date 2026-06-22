@@ -270,7 +270,13 @@ class ExportBackend:
                 _unsloth_force_hf_offline() if local_files_only else contextlib.nullcontext()
             )
             with _probe_ctx:
-                self._audio_type = detect_audio_type(model_id, hf_token = token)
+                # detect_audio_type's remote fallback is a raw requests.get that
+                # ignores the HF offline flag, so pass local_files_only explicitly
+                # to skip it offline (the forced-offline window only covers the
+                # huggingface_hub-based reads in is_vision_model).
+                self._audio_type = detect_audio_type(
+                    model_id, hf_token = token, local_files_only = local_files_only
+                )
                 self.is_vision = not self._audio_type and is_vision_model(model_id, hf_token = token)
 
             if self._audio_type == "csm":

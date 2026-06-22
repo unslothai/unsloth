@@ -1344,6 +1344,7 @@ class FastBaseModel:
             # first attempt means transformers 5 and local-dir loads never touch
             # the global flag at all. Every leaf load is guarded so a network
             # error returns None (lets the caller retry) instead of escaping.
+            _err = None  # primary load failure, used to gate the offline retry
             with _force_hf_offline() if force_offline else contextlib.nullcontext():
                 if (whisper_language and whisper_task) or auto_model.__name__.endswith(
                     "ForConditionalGeneration"
@@ -1358,8 +1359,9 @@ class FastBaseModel:
                             trust_remote_code = trust_remote_code,
                             local_files_only = lfo,
                         )
-                    except Exception:
+                    except Exception as _e:
                         _tok = None
+                        _err = _e
                 else:
                     try:
                         _tok = auto_processor.from_pretrained(
@@ -1369,7 +1371,8 @@ class FastBaseModel:
                             trust_remote_code = trust_remote_code,
                             local_files_only = lfo,
                         )
-                    except Exception:
+                    except Exception as _e:
+                        _err = _e
                         try:
                             _tok = get_auto_processor(
                                 tokenizer_name,
@@ -1403,18 +1406,26 @@ class FastBaseModel:
                         _fallback = None
                     if _fallback is not None:
                         _tok = _fallback
-            return _tok
+            return _tok, _err
 
         # If offline was explicitly requested (kwarg or env), force it up front so
         # the load is fast and never touches the network. Otherwise try online and
         # only flip the global offline flag after a real network failure - so we
         # never force offline while we might actually be online.
-        tokenizer = _acquire_processor(local_files_only, force_offline = local_files_only)
-        if tokenizer is None:
+        tokenizer, _primary_err = _acquire_processor(
+            local_files_only, force_offline = local_files_only
+        )
+        if tokenizer is None and (
+            local_files_only or _is_offline_related_error(_primary_err)
+        ):
             # The kwarg alone was insufficient (transformers < 5) or the network is
             # down: retry against the local cache, forcing HF offline so
-            # AutoProcessor skips its /api/models lookup.
-            tokenizer = _acquire_processor(True, force_offline = True)
+            # AutoProcessor skips its /api/models lookup. We only flip the
+            # process-wide offline flag when offline was requested or the first
+            # failure was genuinely network related - a permanent tokenizer error
+            # (bad config, unknown class) must not toggle global offline mode for
+            # other concurrent loads in the same process.
+            tokenizer, _primary_err = _acquire_processor(True, force_offline = True)
         if tokenizer is None and is_vlm:
             import sys
             print(
