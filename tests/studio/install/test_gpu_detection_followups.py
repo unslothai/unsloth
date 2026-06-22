@@ -249,11 +249,9 @@ class TestSetupShHardening:
         ), "ROCm toolkit search must require a detected AMD GPU, not just hipcc"
 
     def test_compute_cap_probe_timeout_wrapped(self, setup_src):
-        # The compute_cap probe must run under the _setup_run_smi timeout wrapper.
-        # The nvidia-smi binary is resolved into a variable ($_smi_bin: PATH, then
-        # the /usr/bin fallback), so assert the wrapper precedes the probe rather
-        # than matching a hardcoded `nvidia-smi`. The literal also appears in a
-        # comment, so scan every occurrence and accept if any is wrapped.
+        # nvidia-smi is now a variable ($_smi_bin), so check the wrapper precedes
+        # the probe rather than matching a literal. The string also appears in a
+        # comment, so scan all occurrences and accept if any is wrapped.
         wrapped = False
         start = 0
         while True:

@@ -155,13 +155,10 @@ _nvcc_meets_llama_minimum() {
     echo "$_raw"
 }
 
-# Resolve the CUDA arch list for a source build (echoed ';'-separated, e.g.
-# "86;120"). An explicit override ($2, from UNSLOTH_LLAMA_CUDA_ARCHS) wins and is
-# passed through verbatim; otherwise the raw `nvidia-smi --query-gpu=compute_cap`
-# text ($1) is parsed and de-duplicated. Empty output is meaningful: it signals
-# "no detectable arch", which the caller turns into a CPU build rather than a
-# PTX-only CUDA binary that fails at runtime on a driver older than the toolkit
-# ("the provided PTX was compiled with an unsupported toolchain"; #5854).
+# Echo a ';'-separated CUDA arch list (e.g. "86;120"). Override ($2,
+# UNSLOTH_LLAMA_CUDA_ARCHS) wins verbatim; else parse+dedupe compute_cap text
+# ($1). Empty means "no arch detected", so the caller builds CPU instead of a
+# PTX-only binary that fails on an old driver (#5854).
 _resolve_cuda_archs() {
     local _raw_caps=$1
     local _arch_override=$2
@@ -1481,18 +1478,12 @@ else
                     fi
 
                     if [ "$_CUDA_TOOLKIT_ALLOWED" = true ]; then
-                        # Resolve the GPU arch list *before* committing to a CUDA
-                        # build. A CUDA build with no explicit arch list ships PTX
-                        # only, which fails at runtime on a driver older than the
-                        # toolkit ("the provided PTX was compiled with an
-                        # unsupported toolchain"; #5854). An explicit override
-                        # (UNSLOTH_LLAMA_CUDA_ARCHS) wins; otherwise probe nvidia-smi.
+                        # Resolve the arch list before committing to a CUDA build;
+                        # an empty list means CPU instead of a PTX-only binary (#5854).
                         _raw_caps=""
-                        # Resolve nvidia-smi the same way _setup_has_usable_nvidia_gpu
-                        # does (PATH, then /usr/bin fallback). A GPU host can be
-                        # classified usable via that fallback while nvidia-smi is off
-                        # PATH; probing only `command -v nvidia-smi` here would leave
-                        # the arch empty and drop an otherwise CUDA-capable build to CPU.
+                        # Resolve nvidia-smi as _setup_has_usable_nvidia_gpu does
+                        # (PATH, then /usr/bin); `command -v` alone would miss an
+                        # off-PATH binary and wrongly drop a CUDA host to CPU.
                         _smi_bin=""
                         if command -v nvidia-smi >/dev/null 2>&1; then
                             _smi_bin="nvidia-smi"
@@ -1513,12 +1504,8 @@ else
                             # toolkit aborts with "unsupported GNU version"); via env to avoid word-splitting.
                             export NVCC_PREPEND_FLAGS="${NVCC_PREPEND_FLAGS:+$NVCC_PREPEND_FLAGS }-allow-unsupported-compiler"
                         else
-                            # No detectable compute capability: a CUDA build here
-                            # would be PTX-only and can fail at runtime. Build CPU
-                            # instead so the user still ends up with a working
-                            # llama-server. CMAKE_ARGS is still the clean CPU
-                            # baseline at this point (no -DGGML_CUDA=ON was added),
-                            # so clearing GPU_BACKEND configures a plain CPU build.
+                            # No detectable arch: build CPU (CMAKE_ARGS has no
+                            # -DGGML_CUDA=ON yet, so clearing GPU_BACKEND yields CPU).
                             substep "could not detect a CUDA compute capability; building CPU llama.cpp instead of a PTX-only binary (set UNSLOTH_LLAMA_CUDA_ARCHS, e.g. \"120\", to force a CUDA build)." "$C_WARN"
                             GPU_BACKEND=""
                             _BUILD_DESC="building (CPU, CUDA arch undetectable)"
