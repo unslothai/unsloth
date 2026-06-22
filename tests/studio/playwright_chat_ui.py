@@ -375,8 +375,6 @@ with sync_playwright() as p:
                 headers = {"Content-Type": "application/json"},
                 body = {"refresh_token": refresh_token},
                 timeout_ms = FETCH_TIMEOUT_MS,
-                # Single-use token: don't replay on a mid-call context loss.
-                retry_on_context_loss = False,
             )
             if refresh_resp.get("error"):
                 fail(f"/api/auth/refresh wedged: {refresh_resp['error']!r}")
@@ -1183,8 +1181,6 @@ with sync_playwright() as p:
         f"{BASE}/api/auth/refresh",
         method = "POST",
         timeout_ms = FETCH_TIMEOUT_MS,
-        # Single-use token: don't replay on a mid-call context loss.
-        retry_on_context_loss = False,
     )
     if refresh_after.get("error"):
         fail(f"/api/auth/refresh wedged: {refresh_after['error']!r}")
