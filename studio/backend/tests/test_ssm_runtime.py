@@ -445,20 +445,40 @@ def test_pre_import_gate_is_transformers_free():
     import utils.security.file_security as fs
     import utils.security.consent as consent
 
-    for m in list(_sys.modules):
-        if m == "transformers" or m.startswith("transformers.") or m == "utils.models.model_config":
+    def _is_gated_module(name: str) -> bool:
+        return (
+            name == "transformers"
+            or name.startswith("transformers.")
+            or name == "utils.models.model_config"
+        )
+
+    # Snapshot then remove the modules so we can assert the gate does not re-import them.
+    # Restore the originals afterwards (finally): popping utils.models.model_config without
+    # restoring it makes a later importer get a fresh instance, so tests that patched the
+    # first instance (e.g. test_vision_cache) miss and hit the real network path.
+    _saved = {m: _sys.modules[m] for m in list(_sys.modules) if _is_gated_module(m)}
+    for m in _saved:
+        _sys.modules.pop(m, None)
+
+    try:
+        with patch.object(fs, "_fetch_security_status", return_value = None):
+            fs.evaluate_file_security("nvidia/Nemotron-H-8B", load_subdirs = ())
+        with patch.object(
+            consent, "_load_remote_code_configs", return_value = [{"model_type": "nemotron_h"}]
+        ):
+            from utils.security import evaluate_remote_code_consent_for_targets
+            evaluate_remote_code_consent_for_targets(
+                ["nvidia/Nemotron-H-8B"], trust_remote_code = True
+            )
+
+        assert "transformers" not in _sys.modules
+        assert "utils.models.model_config" not in _sys.modules
+    finally:
+        # Drop anything the gate imported, then rebind the original module objects so later
+        # tests see the same instances they captured at import time.
+        for m in [m for m in list(_sys.modules) if _is_gated_module(m) and m not in _saved]:
             _sys.modules.pop(m, None)
-
-    with patch.object(fs, "_fetch_security_status", return_value = None):
-        fs.evaluate_file_security("nvidia/Nemotron-H-8B", load_subdirs = ())
-    with patch.object(
-        consent, "_load_remote_code_configs", return_value = [{"model_type": "nemotron_h"}]
-    ):
-        from utils.security import evaluate_remote_code_consent_for_targets
-        evaluate_remote_code_consent_for_targets(["nvidia/Nemotron-H-8B"], trust_remote_code = True)
-
-    assert "transformers" not in _sys.modules
-    assert "utils.models.model_config" not in _sys.modules
+        _sys.modules.update(_saved)
 
 
 def test_pre_import_gate_skips_subdir_computation():
