@@ -95,10 +95,11 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
             found += _scan_lmstudio_dir(lm_dir)
         try:
             from storage.studio_db import list_scan_folders
-
             for folder in list_scan_folders():
                 fp = Path(folder["path"])
-                found += _scan_models_dir(fp, limit = 200) + _scan_hf_once(fp) + _scan_lmstudio_dir(fp)
+                found += (
+                    _scan_models_dir(fp, limit = 200) + _scan_hf_once(fp) + _scan_lmstudio_dir(fp)
+                )
         except Exception:
             pass
     except Exception:

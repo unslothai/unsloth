@@ -733,7 +733,6 @@ def test_keepwarm_tracks_inflight_when_enabled_even_if_idle_zero(monkeypatch):
 
 def _bad_body_request():
     import json as _json
-
     class _BadReq:
         async def json(self):
             raise _json.JSONDecodeError("expecting value", "", 0)
@@ -747,7 +746,13 @@ def test_completions_malformed_body_503_not_500_when_unloaded(monkeypatch):
     from fastapi import HTTPException
 
     backend = _FakeBackend(None)
-    _wire(monkeypatch, enabled = False, resolves_to = None, backend = backend, recorder = _LoadRecorder(backend))
+    _wire(
+        monkeypatch,
+        enabled = False,
+        resolves_to = None,
+        backend = backend,
+        recorder = _LoadRecorder(backend),
+    )
     with pytest.raises(HTTPException) as exc:
         asyncio.run(inference_route.openai_completions(_bad_body_request(), "tester"))
     assert exc.value.status_code == 503
@@ -757,7 +762,13 @@ def test_embeddings_malformed_body_503_not_500_when_unloaded(monkeypatch):
     from fastapi import HTTPException
 
     backend = _FakeBackend(None)
-    _wire(monkeypatch, enabled = False, resolves_to = None, backend = backend, recorder = _LoadRecorder(backend))
+    _wire(
+        monkeypatch,
+        enabled = False,
+        resolves_to = None,
+        backend = backend,
+        recorder = _LoadRecorder(backend),
+    )
     with pytest.raises(HTTPException) as exc:
         asyncio.run(inference_route.openai_embeddings(_bad_body_request(), "tester"))
     assert exc.value.status_code == 503
@@ -771,7 +782,13 @@ def test_swap_refused_while_another_stream_inflight(monkeypatch):
 
     backend = _FakeBackend("unsloth/A-GGUF")
     rec = _LoadRecorder(backend)
-    _wire(monkeypatch, enabled = True, resolves_to = ("unsloth/B-GGUF", None), backend = backend, recorder = rec)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("unsloth/B-GGUF", None),
+        backend = backend,
+        recorder = rec,
+    )
     monkeypatch.setattr(kw, "_inflight", 2)  # a stream on A + this request
     with pytest.raises(HTTPException) as exc:
         _run_hook("unsloth/B-GGUF")
@@ -785,7 +802,13 @@ def test_swap_proceeds_when_no_other_stream(monkeypatch):
 
     backend = _FakeBackend("unsloth/A-GGUF")
     rec = _LoadRecorder(backend)
-    _wire(monkeypatch, enabled = True, resolves_to = ("unsloth/B-GGUF", None), backend = backend, recorder = rec)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("unsloth/B-GGUF", None),
+        backend = backend,
+        recorder = rec,
+    )
     monkeypatch.setattr(kw, "_inflight", 1)
     _run_hook("unsloth/B-GGUF")
     assert len(rec.calls) == 1
@@ -857,15 +880,29 @@ def test_build_index_covers_legacy_default_lmstudio_and_custom_roots(monkeypatch
     import storage.studio_db as studio_db
 
     scanned = []
-    monkeypatch.setattr(models_route, "_scan_models_dir", lambda d, limit = None: scanned.append(("models", str(Path(d).resolve()))) or [])
-    monkeypatch.setattr(models_route, "_scan_hf_cache", lambda d: scanned.append(("hf", str(Path(d).resolve()))) or [])
-    monkeypatch.setattr(models_route, "_scan_lmstudio_dir", lambda d: scanned.append(("lm", str(Path(d).resolve()))) or [])
+    monkeypatch.setattr(
+        models_route,
+        "_scan_models_dir",
+        lambda d, limit = None: scanned.append(("models", str(Path(d).resolve()))) or [],
+    )
+    monkeypatch.setattr(
+        models_route,
+        "_scan_hf_cache",
+        lambda d: scanned.append(("hf", str(Path(d).resolve()))) or [],
+    )
+    monkeypatch.setattr(
+        models_route,
+        "_scan_lmstudio_dir",
+        lambda d: scanned.append(("lm", str(Path(d).resolve()))) or [],
+    )
     monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: tmp_path / "active")
     monkeypatch.setattr(models_route, "_is_hidden_model", lambda *a, **k: False)
     monkeypatch.setattr(upaths, "legacy_hf_cache_dir", lambda: tmp_path / "legacy")
     monkeypatch.setattr(upaths, "hf_default_cache_dir", lambda: tmp_path / "default")
     monkeypatch.setattr(upaths, "lmstudio_model_dirs", lambda: [tmp_path / "lmstudio"])
-    monkeypatch.setattr(studio_db, "list_scan_folders", lambda: [{"path": str(tmp_path / "custom")}])
+    monkeypatch.setattr(
+        studio_db, "list_scan_folders", lambda: [{"path": str(tmp_path / "custom")}]
+    )
     for sub in ("active", "legacy", "default", "lmstudio", "custom"):
         (tmp_path / sub).mkdir()
 

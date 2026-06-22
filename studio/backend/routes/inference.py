@@ -2089,7 +2089,6 @@ _in_hook_lock = threading.Lock()
 
 def _streams_on_loaded_model() -> int:
     from core.inference.llama_keepwarm import inflight_count
-
     with _in_hook_lock:
         pending = _in_hook
     return inflight_count() - pending
@@ -6216,7 +6215,9 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
             detail = "No GGUF model loaded. Load a GGUF model first.",
         )
     if not isinstance(body, dict):
-        body = await request.json()  # re-raise the malformed-body error, post-503 (pre-feature behavior)
+        body = (
+            await request.json()
+        )  # re-raise the malformed-body error, post-503 (pre-feature behavior)
 
     if body.get("max_tokens") is None:
         body["max_tokens"] = llama_backend.context_length or _DEFAULT_MAX_TOKENS_FLOOR
@@ -6389,7 +6390,9 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
             detail = "No GGUF model loaded. Load a GGUF model first.",
         )
     if not isinstance(body, dict):
-        body = await request.json()  # re-raise the malformed-body error, post-503 (pre-feature behavior)
+        body = (
+            await request.json()
+        )  # re-raise the malformed-body error, post-503 (pre-feature behavior)
 
     target_url = f"{llama_backend.base_url}/v1/embeddings"
     prompt_text = _flatten_monitor_prompt(body.get("input", ""))
