@@ -808,7 +808,12 @@ def _same_task_timeout(timeout_s: float):
 class _SameTaskStreamingResponse(StreamingResponse):
     """StreamingResponse without Starlette's legacy AnyIO task-group wrapper."""
 
-    def __init__(self, *args, unstarted_cleanup = None, **kwargs) -> None:
+    def __init__(
+        self,
+        *args,
+        unstarted_cleanup = None,
+        **kwargs,
+    ) -> None:
         super().__init__(*args, **kwargs)
         # Async callable invoked when the client disconnects before the body
         # iterator is ever advanced. A generator that never started cannot run
