@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Regression tests for terminal shutdown ordering.
-
-These stay source-level so they do not need to import the full Studio backend.
-The shell prompt must not return while uvicorn's background thread can still
-write shutdown logs to stdout/stderr.
-"""
+"""Source-level regression tests for terminal shutdown ordering (no backend import)."""
 
 import ast
 from pathlib import Path

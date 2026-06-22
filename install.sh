@@ -3126,9 +3126,7 @@ echo ""
 if [ -t 1 ]; then
     echo ""
     printf "  Start Unsloth Studio now? [Y/n] "
-    # Default to NOT starting when no answer can be read (closed/EOF tty) so a
-    # non-interactive caller is never trapped in a foreground server. A real
-    # Enter still counts as yes via ${_reply:-y} below.
+    # No readable answer (closed/EOF tty) defaults to no; Enter is still yes.
     if [ -r /dev/tty ]; then
         read -r _reply </dev/tty || _reply="n"
     else
@@ -3140,13 +3138,10 @@ if [ -t 1 ]; then
             # Detach stdin from the `curl | sh` pipe: as a foreground server the
             # studio would otherwise drain the rest of this piped script, leaving
             # the shell to die parsing the now-truncated tail (`unexpected fi`).
-            # Ignore Ctrl+C so this shell waits for studio's own graceful
-            # shutdown instead of dying first and racing the prompt over its logs.
-            # Run studio in a subshell that resets INT to default, so the child
-            # does not inherit the ignore (which would swallow its own Ctrl+C).
+            # trap '' INT: wait for studio's shutdown instead of racing the prompt.
+            # Subshell resets INT so the child still gets Ctrl+C (no inherited ignore).
             trap '' INT
-            # `|| ...` keeps set -e from exiting on a non-zero studio, so the
-            # migration hint below still prints; captures the real exit code.
+            # `|| ...`: capture the exit code without set -e aborting first.
             _LAUNCH_EXIT=0
             (trap - INT; exec "$VENV_DIR/bin/unsloth" studio -p 8888 </dev/null) || _LAUNCH_EXIT=$?
             if [ "$_LAUNCH_EXIT" -ne 0 ] && [ "$_MIGRATED" = true ]; then
