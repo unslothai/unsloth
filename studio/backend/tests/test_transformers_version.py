@@ -1449,3 +1449,38 @@ class TestLooksLikeHfId:
             assert _looks_like_hf_id("Qwen3.5-7B") is False
         finally:
             _os.chdir(cwd)
+
+
+class TestMalformedInputRobustness:
+    """Tier detection must never crash on malformed configs or pathological
+    model names; it fails open to the default tier."""
+
+    def setup_method(self):
+        _config_json_cache.clear()
+        _config_needs_530_cache.clear()
+
+    def test_non_string_model_type_does_not_crash(self):
+        # A list model_type is unhashable; the matcher must not raise.
+        assert _config_needs_530({"model_type": ["qwen3_5"]}) is False
+
+    def test_non_list_architectures_does_not_crash(self):
+        assert _config_needs_530({"architectures": "Qwen3_5ForCausalLM"}) is False
+
+    def test_local_config_non_string_fields_returns_default(self, tmp_path: Path):
+        d = tmp_path / "weird"
+        d.mkdir()
+        (d / "config.json").write_text(
+            json.dumps({"model_type": ["qwen3_5"], "_name_or_path": {"x": 1}})
+        )
+        with patch(
+            "utils.transformers_version._check_tokenizer_config_needs_v5", return_value = False
+        ):
+            assert get_transformers_tier(str(d)) == "default"
+
+    def test_pathological_long_name_does_not_crash(self):
+        # An over-long name component raises OSError from is_file(); tier
+        # detection must fail open instead of propagating it.
+        assert get_transformers_tier("x" * 5000) == "default"
+
+    def test_empty_name_returns_default(self):
+        assert get_transformers_tier("") == "default"

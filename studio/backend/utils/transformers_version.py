@@ -53,6 +53,24 @@ def _env_offline() -> bool:
     ) or os.environ.get("TRANSFORMERS_OFFLINE", "").lower() in ("1", "true", "yes")
 
 
+def _safe_is_file(p: Path) -> bool:
+    """``p.is_file()`` that fails closed on a bad path (over-long name, null byte,
+    Windows long path) instead of raising, so tier detection never crashes on a
+    pathological model_name."""
+    try:
+        return p.is_file()
+    except (OSError, ValueError):
+        return False
+
+
+def _safe_is_dir(p: Path) -> bool:
+    """``p.is_dir()`` counterpart of :func:`_safe_is_file`."""
+    try:
+        return p.is_dir()
+    except (OSError, ValueError):
+        return False
+
+
 # ---------------------------------------------------------------------------
 # Detection
 # ---------------------------------------------------------------------------
@@ -280,7 +298,7 @@ def _resolve_base_model(model_name: str) -> str:
     # --- Fast local check ---------------------------------------------------
     local_path = Path(model_name)
     adapter_cfg_path = local_path / "adapter_config.json"
-    if adapter_cfg_path.is_file():
+    if _safe_is_file(adapter_cfg_path):
         try:
             with open(adapter_cfg_path) as f:
                 cfg = json.load(f)
@@ -297,7 +315,7 @@ def _resolve_base_model(model_name: str) -> str:
 
     # --- config.json fallback (works for both LoRA and full fine-tune) ------
     config_json_path = local_path / "config.json"
-    if config_json_path.is_file():
+    if _safe_is_file(config_json_path):
         try:
             with open(config_json_path) as f:
                 cfg = json.load(f)
@@ -324,7 +342,7 @@ def _resolve_base_model(model_name: str) -> str:
     # transformers into ``sys.modules`` BEFORE the correct sidecar venv is
     # prepended to ``sys.path``, so the worker then loads the wrong version.
     # Gate on a real adapter_config.json to keep activation import-clean.
-    if adapter_cfg_path.is_file():
+    if _safe_is_file(adapter_cfg_path):
         try:
             from utils.models import get_base_model_from_lora
             base = get_base_model_from_lora(model_name)
@@ -376,7 +394,7 @@ def _check_tokenizer_config_needs_v5(model_name: str) -> bool:
     # --- Check local tokenizer_config.json first ---------------------------
     local_path = Path(model_name)
     local_tc = local_path / "tokenizer_config.json"
-    if local_tc.is_file():
+    if _safe_is_file(local_tc):
         try:
             with open(local_tc) as f:
                 data = json.load(f)
@@ -437,7 +455,7 @@ def _load_config_json(model_name: str, hf_token: str | None = None) -> dict | No
         return _config_json_cache[cache_key]
 
     local_cfg = Path(model_name) / "config.json"
-    if local_cfg.is_file():
+    if _safe_is_file(local_cfg):
         try:
             with open(local_cfg) as f:
                 cfg = json.load(f)
@@ -471,12 +489,13 @@ def _load_config_json(model_name: str, hf_token: str | None = None) -> dict | No
 
 
 def _config_matches_tier(cfg: dict, architectures: set[str], model_types: set[str]) -> bool:
-    archs = cfg.get("architectures", [])
-    if any(a in architectures for a in archs):
+    # Be defensive: a malformed/custom config.json may carry non-string values
+    # (e.g. a list model_type), which must not raise during tier detection.
+    archs = cfg.get("architectures")
+    if isinstance(archs, (list, tuple)) and any(a in architectures for a in archs):
         return True
-    if cfg.get("model_type") in model_types:
-        return True
-    return False
+    mt = cfg.get("model_type")
+    return isinstance(mt, str) and mt in model_types
 
 
 def _config_needs_550(cfg: dict) -> bool:
@@ -663,7 +682,7 @@ def get_transformers_tier(model_name: str) -> str:
     # renamed folders are handled correctly and parent-dir false-positives are
     # avoided.
     local_cfg = Path(model_name) / "config.json"
-    if local_cfg.is_file():
+    if _safe_is_file(local_cfg):
         cfg = _load_config_json(model_name)
         if cfg is not None:
             if _config_needs_510(cfg):
@@ -714,7 +733,7 @@ def get_transformers_tier(model_name: str) -> str:
             #   HF Hub ID  → _tier_from_name only (no network probes).
             resolved = _resolve_base_model(model_name)
             if resolved != model_name:
-                if Path(resolved).is_dir():
+                if _safe_is_dir(Path(resolved)):
                     tier = get_transformers_tier(resolved)
                     if tier != "default":
                         logger.info(
@@ -737,7 +756,7 @@ def get_transformers_tier(model_name: str) -> str:
                         )
                         return tier
             local_tc = Path(model_name) / "tokenizer_config.json"
-            if local_tc.is_file() and _check_tokenizer_config_needs_v5(model_name):
+            if _safe_is_file(local_tc) and _check_tokenizer_config_needs_v5(model_name):
                 logger.info(
                     "Transformers tier 530 selected for %s (local tokenizer_config.json check)",
                     model_name,
