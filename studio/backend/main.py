@@ -1026,6 +1026,12 @@ async def get_system_info(current_subject: str = Depends(get_current_subject)):
         logger.debug(f"Failed to get current process: {e}")
         current_process = None
 
+    try:
+        boot_time = psutil.boot_time()
+    except Exception as e:
+        logger.debug(f"Failed to get boot time: {e}")
+        boot_time = None
+
     # Read versions from metadata so a 3s system poll never imports heavy ML
     # libraries (and never 500s on their import-time failures).
     from importlib.metadata import PackageNotFoundError, version as pkg_version
@@ -1043,7 +1049,7 @@ async def get_system_info(current_subject: str = Depends(get_current_subject)):
         "platform": platform.platform(),
         "python_version": platform.python_version(),
         "device_backend": _backend_label(get_device()),
-        "uptime_seconds": round(time.time() - psutil.boot_time()),
+        "uptime_seconds": round(time.time() - boot_time) if boot_time else None,
         "cpu": {
             "logical_count": psutil.cpu_count(logical = True),
             "physical_count": psutil.cpu_count(logical = False),

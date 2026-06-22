@@ -16,7 +16,7 @@ export interface SystemInfoResponse {
   platform: string;
   python_version: string;
   device_backend: "cuda" | "rocm" | "cpu" | "mlx" | "xpu";
-  uptime_seconds: number;
+  uptime_seconds: number | null;
   cpu: {
     logical_count: number;
     physical_count: number;
