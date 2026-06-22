@@ -1253,11 +1253,15 @@ if [ "$_NEED_LLAMA_SOURCE_BUILD" = true ] && \
 fi
 
 # ── WSL2 aarch64 + NVIDIA, no nvcc yet: defer to the background CUDA build ──
-# install.ps1 builds the CUDA llama-server in the background; without nvcc,
-# section 9 could only make a slow CPU server that build discards. With nvcc we
-# fall through to section 9; opted out (UNSLOTH_NO_LLAMA_CUDA=1) the CPU build is
-# the only server.
+# install.ps1 builds the CUDA llama-server in the background AND signals that by
+# exporting UNSLOTH_WSL_LLAMA_DEFERRED=1 into this install. ONLY defer when that
+# flag is set: a direct in-WSL `unsloth studio update` has no background builder,
+# so deferring there would report "CUDA build running in background" while nothing
+# builds -- hiding a no-server state. Without the flag we fall through to section 9
+# (a slow CPU server, still better than a phantom background build). With nvcc we
+# fall through too; opted out (UNSLOTH_NO_LLAMA_CUDA=1) the CPU build is the only server.
 if [ "$_NEED_LLAMA_SOURCE_BUILD" = true ] \
+        && [ "${UNSLOTH_WSL_LLAMA_DEFERRED:-0}" = "1" ] \
         && [ "$_LLAMA_FORCE_COMPILE" != "1" ] \
         && [ -z "$_LLAMA_PR" ] \
         && [ "${UNSLOTH_NO_LLAMA_CUDA:-0}" != "1" ] \

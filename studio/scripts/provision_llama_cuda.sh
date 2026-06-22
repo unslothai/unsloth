@@ -172,6 +172,30 @@ if [ ! -d "$LLAMA_DIR/.git" ]; then
 fi
 cd "$LLAMA_DIR" || { _restore_prev; exit 0; }
 
+# When rebuilding in-place over an existing git checkout, the whole-dir backup above
+# was skipped (_LLAMA_BAK empty) -- but build/ may already hold a working (e.g. CPU)
+# llama-server from a prior setup.sh source build. The wipe-on-failure paths below
+# would destroy it with nothing to restore, leaving NO server despite the "keeps the
+# existing server" promise (a thermal shutdown mid-CUDA-build is a real failure mode
+# here). Back up the existing binaries so a failed rebuild can put them back. Only
+# bin/ (server + dlopen-ed backends) is needed; cheap since any pre-existing server
+# here is the non-CUDA fallback (a CUDA one would have exited at step 0).
+_BUILD_BAK=""
+if [ -z "$_LLAMA_BAK" ] && [ -x "$SERVER" ]; then
+    _BUILD_BAK="${LLAMA_DIR}.binbak.$$"
+    rm -rf "$_BUILD_BAK" 2>/dev/null
+    cp -a "$LLAMA_DIR/build/bin" "$_BUILD_BAK" 2>/dev/null || _BUILD_BAK=""
+fi
+_restore_build() {
+    if [ -n "$_BUILD_BAK" ] && [ -e "$_BUILD_BAK" ] && [ ! -x "$SERVER" ]; then
+        mkdir -p "$LLAMA_DIR/build" 2>/dev/null
+        rm -rf "$LLAMA_DIR/build/bin" 2>/dev/null
+        mv "$_BUILD_BAK" "$LLAMA_DIR/build/bin" 2>/dev/null && log "restored previous llama-server (rebuild failed)"
+    fi
+    [ -n "$_BUILD_BAK" ] && rm -rf "$_BUILD_BAK" 2>/dev/null
+    _BUILD_BAK=""
+}
+
 log "building CUDA llama.cpp (arch=$CUDA_ARCH, host=$HCXX) - this takes a few minutes..."
 _cmake_configure() {
     cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
@@ -185,7 +209,7 @@ _cmake_configure() {
 if ! _cmake_configure; then
     log "stale/incompatible CMake cache detected; wiping build dir for a clean CUDA configure"
     rm -rf build
-    _cmake_configure || { log "cmake configure failed"; cd /; _restore_prev; exit 0; }
+    _cmake_configure || { log "cmake configure failed"; cd /; _restore_build; _restore_prev; exit 0; }
 fi
 # Also builds the targets unsloth-zoo's GGUF exporter needs (llama-mtmd-cli,
 # llama-gguf-split). Jobs default to ~half the cores (full -j(nproc) CUDA builds
@@ -226,10 +250,13 @@ if ! _cmake_build; then
     # (undefined ggml_cuda_op_* refs); wipe and rebuild clean.
     log "build failed (likely interrupted/partial); wiping build dir and rebuilding clean"
     rm -rf build
-    _cmake_configure || { log "cmake configure failed"; cd /; _restore_prev; exit 0; }
-    _cmake_build || { log "cmake build failed"; cd /; _restore_prev; exit 0; }
+    _cmake_configure || { log "cmake configure failed"; cd /; _restore_build; _restore_prev; exit 0; }
+    _cmake_build || { log "cmake build failed"; cd /; _restore_build; _restore_prev; exit 0; }
 fi
 _cmake_build_extras
+# Drop the backup on a successful build, or restore the prior server if the rebuild
+# yielded none (idempotent; only restores when $SERVER is missing).
+_restore_build
 
 if is_cuda_server "$SERVER"; then
     log "CUDA llama-server ready: $SERVER"
