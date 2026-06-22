@@ -269,21 +269,71 @@ def _resolve_base_model(model_name: str) -> str:
     return model_name
 
 
+def _is_canonical_repo_id(model_name: str) -> bool:
+    """True for a canonical ``owner/repo`` Hub id (not a local or relative path)."""
+    return bool(
+        model_name
+        and model_name.count("/") == 1
+        and model_name[0] not in "/.~"
+        and "\\" not in model_name
+    )
+
+
+def _adapter_base_from_hf_cache(model_name: str) -> str | None:
+    """``base_model_name_or_path`` from a remote adapter's cached ``adapter_config.json``.
+
+    Stdlib path resolution of the HF hub cache (no ``huggingface_hub`` import); the newest
+    snapshot wins. Lets an offline cached LoRA still resolve its base.
+    """
+    if not _is_canonical_repo_id(model_name):
+        return None
+    hub = (
+        os.environ.get("HF_HUB_CACHE")
+        or os.environ.get("HUGGINGFACE_HUB_CACHE")
+        or os.path.join(
+            os.environ.get("HF_HOME") or os.path.expanduser("~/.cache/huggingface"), "hub"
+        )
+    )
+    repo_dir = Path(hub) / ("models--" + model_name.replace("/", "--"))
+    candidates = []
+    ref_main = repo_dir / "refs" / "main"
+
+    def _mtime(p: Path) -> float:
+        try:
+            return p.stat().st_mtime
+        except OSError:
+            return 0.0
+
+    try:
+        if ref_main.is_file():
+            candidates.append(
+                repo_dir / "snapshots" / ref_main.read_text().strip() / "adapter_config.json"
+            )
+        candidates += sorted(
+            repo_dir.glob("snapshots/*/adapter_config.json"), key = _mtime, reverse = True
+        )
+        for cfg_path in candidates:
+            if cfg_path.is_file():
+                base = json.loads(cfg_path.read_text()).get("base_model_name_or_path")
+                return base or None
+    except Exception as exc:
+        logger.debug("HF cache adapter_config.json lookup failed for '%s': %s", model_name, exc)
+    return None
+
+
 def _remote_lora_base(model_name: str, hf_token: str | None = None) -> str | None:
     """``base_model_name_or_path`` from a remote adapter's ``adapter_config.json``, or None.
 
     Raw HTTP (no huggingface_hub / transformers import), so a remote LoRA's base is known
-    before any ML import. Skipped for local paths, non-canonical ids, and offline mode; a
-    non-adapter repo simply 404s to None.
+    before any ML import. Offline (or on a fetch failure) it reads the local hub cache, since
+    a cached adapter is still loadable. Skipped for local/non-canonical ids; a non-adapter
+    repo simply 404s to None.
     """
-    if (
-        not model_name
-        or model_name.count("/") != 1
-        or model_name[0] in "/.~"
-        or "\\" in model_name
-        or _env_offline()
-    ):
+    if not _is_canonical_repo_id(model_name):
         return None
+    if _env_offline():
+        return _adapter_base_from_hf_cache(model_name)
+
     import urllib.request
 
     url = f"https://huggingface.co/{model_name}/raw/main/adapter_config.json"
@@ -300,7 +350,7 @@ def _remote_lora_base(model_name: str, hf_token: str | None = None) -> str | Non
         return base or None
     except Exception as exc:
         logger.debug("No remote adapter_config.json for '%s': %s", model_name, exc)
-        return None
+        return _adapter_base_from_hf_cache(model_name)
 
 
 def _check_tokenizer_config_needs_v5(model_name: str) -> bool:

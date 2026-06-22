@@ -161,13 +161,39 @@ class TestRemoteLoraBase:
         assert _remote_lora_base("/local/dir/adapter") is None
         assert _remote_lora_base("plainname") is None
 
-    def test_offline_makes_no_request(self, monkeypatch):
+    @staticmethod
+    def _seed_adapter_cache(hub: Path, repo_id: str, base: str, commit: str = "deadbeef"):
+        repo = hub / ("models--" + repo_id.replace("/", "--"))
+        snap = repo / "snapshots" / commit
+        snap.mkdir(parents = True)
+        (snap / "adapter_config.json").write_text(json.dumps({"base_model_name_or_path": base}))
+        (repo / "refs").mkdir(parents = True)
+        (repo / "refs" / "main").write_text(commit)
+
+    def test_offline_reads_base_from_hf_cache(self, tmp_path: Path, monkeypatch):
+        self._seed_adapter_cache(tmp_path, "user/cached-lora", "nvidia/Nemotron-H-8B")
+        monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
+        monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+        with patch("urllib.request.urlopen") as mock_url:
+            assert _remote_lora_base("user/cached-lora") == "nvidia/Nemotron-H-8B"
+            mock_url.assert_not_called()  # offline: cache only, no network
+
+    def test_fetch_failure_falls_back_to_cache(self, tmp_path: Path, monkeypatch):
+        self._seed_adapter_cache(tmp_path, "user/cached-lora", "nvidia/Nemotron-H-8B")
+        monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
+        monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+        with patch("urllib.request.urlopen", side_effect = OSError("boom")):
+            assert _remote_lora_base("user/cached-lora") == "nvidia/Nemotron-H-8B"
+
+    def test_offline_uncached_makes_no_request(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
         monkeypatch.setenv("HF_HUB_OFFLINE", "1")
         with patch("urllib.request.urlopen") as mock_url:
             assert _remote_lora_base("org/adapter") is None
             mock_url.assert_not_called()
 
-    def test_non_adapter_repo_returns_none(self, monkeypatch):
+    def test_non_adapter_repo_returns_none(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
         monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
         with patch("urllib.request.urlopen", side_effect = OSError("404")):
             assert _remote_lora_base("org/not-an-adapter") is None

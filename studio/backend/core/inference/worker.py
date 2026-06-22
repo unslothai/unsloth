@@ -744,9 +744,34 @@ def run_inference_process(*, cmd_queue: Any, resp_queue: Any, cancel_event, conf
                 )
         return
 
-    # ── 1. Activate transformers version BEFORE any ML imports ──
+    # ── Resolve the effective base once, before activation/gates/install (no ML import) ──
+    # A remote LoRA's base lives in the Hub adapter_config.json, surfaced otherwise only by
+    # ModelConfig in _handle_load after the import. _lora_base mirrors mc.is_lora/mc.base_model
+    # (set only for a genuine adapter) so the gate never scans a full fine-tune's unloaded base.
+    import json as _json
+
+    _ensure_backend_on_path()
+    from utils.transformers_version import _remote_lora_base, _resolve_base_model
+
+    _hf_token = _clean_token(config.get("hf_token"))
+    _lora_base = None
+    _local_adapter_cfg = Path(model_name) / "adapter_config.json"
+    if _local_adapter_cfg.is_file():
+        try:
+            _lora_base = _json.loads(_local_adapter_cfg.read_text()).get(
+                "base_model_name_or_path"
+            ) or None
+        except Exception:
+            _lora_base = None
+    if not _lora_base:
+        _lora_base = _remote_lora_base(model_name, hf_token = _hf_token)
+    # Base for tier activation + the SSM-kernel heuristic: the LoRA base if any, else a full
+    # fine-tune's recorded base from config.json (its name reveals the SSM/sidecar arch).
+    _base = _lora_base or _resolve_base_model(model_name)
+
+    # ── 1. Activate transformers version (on the resolved base) BEFORE any ML imports ──
     try:
-        _activate_transformers_version(model_name)
+        _activate_transformers_version(_base)
     except Exception as exc:
         _send_response(
             resp_queue,
@@ -776,32 +801,26 @@ def run_inference_process(*, cmd_queue: Any, resp_queue: Any, cancel_event, conf
     # "mamba-ssm is required". The SSM install is name-based and may source-build, so run the
     # metadata-only gates first and refuse a blocked model before any native build. A no-op
     # for non-SSM models; _handle_load re-runs the authoritative gates with the mc base.
-    _ensure_backend_on_path()
-    from utils.transformers_version import _remote_lora_base, _resolve_base_model
-
-    _hf_token = _clean_token(config.get("hf_token"))
-    _ssm_base = _resolve_base_model(model_name)
-    if _ssm_base == model_name:
-        # _resolve_base_model only reads local adapter_config.json. A remote LoRA's base
-        # lives in the Hub adapter_config.json (surfaced otherwise only by ModelConfig in
-        # _handle_load, after the import), so fetch it now to gate + pre-install its kernels.
-        _remote_base = _remote_lora_base(model_name, hf_token = _hf_token)
-        if _remote_base:
-            _ssm_base = _remote_base
-    _ssm_targets = [model_name]
-    if _ssm_base and _ssm_base != model_name:
-        _ssm_targets.append(_ssm_base)
+    # Gate only the model + a genuine LoRA base (matching _handle_load); a full fine-tune's
+    # recorded base is never loaded, so it must not be scanned/blocked here.
+    _gate_targets = [model_name]
+    if _lora_base:
+        _gate_targets.append(_lora_base)
     _trust_remote_code = config.get("trust_remote_code", False) or _needs_nemotron_trust(
         model_name, hf_token = _hf_token
     )
     if not _run_security_gates(
-        _ssm_targets,
+        _gate_targets,
         trust_remote_code = _trust_remote_code,
         hf_token = _hf_token,
         approved_fingerprint = config.get("approved_remote_code_fingerprint"),
         resp_queue = resp_queue,
     ):
         return
+    # SSM install also covers a full fine-tune's base name (reveals the SSM architecture).
+    _ssm_targets = [model_name]
+    if _base and _base != model_name:
+        _ssm_targets.append(_base)
     if not _ensure_ssm_kernels(_ssm_targets, resp_queue):
         return
 
