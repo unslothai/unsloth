@@ -1244,10 +1244,23 @@ class FastModel(FastBaseModel):
         # consumed downstream (e.g. `"gpt_oss" in`, `"_load_in_4bit_" in`); the raw model
         # name/path is intentionally NOT included, so a local path that happens to contain
         # a flag sentinel like "_load_in_4bit_" cannot be misread as that flag.
+        #
+        # Encode the EFFECTIVE bnb state, not the requested one. A checkpoint already
+        # quantized with a non-bitsandbytes method (gpt-oss MXFP4, gptq, awq,
+        # compressed-tensors, ...) has load_in_4bit/8bit disabled later by
+        # check_and_disable_bitsandbytes_loading. Recording the requested `_load_in_4bit_`
+        # here would, for the public default load_in_4bit=True, route e.g. a native MXFP4
+        # gpt-oss (stock router.weight) onto the BnB router patch (router.linear.weight)
+        # and break the load. Mirror that normalization from the model's own config.
+        try:
+            from unsloth_zoo.utils import get_quant_type
+            _bnb_compatible_quant = get_quant_type(model_config) in (None, "bitsandbytes")
+        except Exception:
+            _bnb_compatible_quant = True
         string = model_types_all
-        if load_in_4bit:
+        if load_in_4bit and _bnb_compatible_quant:
             string += "_load_in_4bit_"
-        if load_in_8bit:
+        if load_in_8bit and _bnb_compatible_quant:
             string += "_load_in_8bit_"
         if load_in_16bit:
             string += "_load_in_16bit_"
