@@ -136,15 +136,31 @@ def _split_top_level_commas(src: str) -> list:
 
 
 def _quote_gemma_array_elements(body: str) -> str:
-    """Quote bare (unquoted) string elements in a Gemma array value. Gemma may
-    emit ``labels:[bug,ui]`` without per-element quotes; left as-is json.loads
-    fails and the whole call is dropped. Quoted strings (already normalised from
-    ``<|"|>``), numbers, and JSON literals are preserved."""
+    """Normalise the elements of a Gemma array value so json.loads succeeds.
+
+    Gemma may emit ``labels:[bug,ui]`` without per-element quotes, or arrays of
+    objects (``items:[{path:a}]``) whose keys/values also lack quotes; left
+    as-is json.loads fails and the whole call is dropped. Bare string elements
+    are quoted, object and nested-array elements are normalised recursively, and
+    quoted strings (already normalised from ``<|"|>``), numbers, and JSON
+    literals are preserved."""
     out: list[str] = []
     for element in _split_top_level_commas(body):
         stripped = element.strip()
-        if not stripped or stripped[0] in '"{[':
+        if not stripped or stripped[0] == '"':
             out.append(element)
+            continue
+        if stripped[0] == "{":
+            # Object element: quote its keys/bare values like a top-level object.
+            out.append(_quote_gemma_object_keys(stripped))
+            continue
+        if stripped[0] == "[":
+            # Nested array: normalise its elements too.
+            inner_end = _balanced_bracket_end(stripped, 0)
+            if inner_end == len(stripped) - 1:
+                out.append("[" + _quote_gemma_array_elements(stripped[1:inner_end]) + "]")
+            else:
+                out.append(element)
             continue
         try:
             json.loads(stripped)
@@ -301,10 +317,17 @@ def parse_tool_calls_from_text(
     #     nested in a JSON arg alike, regardless of which format is outer).
     candidates = []  # (start, brace_end, kind, match)
     for m in _TC_JSON_START_RE.finditer(content):
+        # A marker that begins inside an open <function=...><parameter=...> value
+        # is that parameter's data, not its own call; skip it (same guard the
+        # XML-style parser below applies to nested <function= markers).
+        if _inside_open_parameter(content, m.start()):
+            continue
         end = _balanced_brace_end(content, m.end() - 1)
         if end >= 0:
             candidates.append((m.start(), end, "json", m))
     for m in _TC_GEMMA_START_RE.finditer(content):
+        if _inside_open_parameter(content, m.start()):
+            continue
         end = _balanced_brace_end(content, m.end() - 1, gemma_quotes = True)
         if end >= 0:
             candidates.append((m.start(), end, "gemma", m))

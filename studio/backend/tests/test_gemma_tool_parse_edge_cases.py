@@ -100,3 +100,46 @@ def test_array_keeps_numbers_and_quoted_elements():
         '<|tool_call>call:f{nums:[1,2],tags:[<|"|>a,b<|"|>,c]}<tool_call|>'
     )
     assert _args(calls[0]) == {"nums": [1, 2], "tags": ["a,b", "c"]}
+
+
+def test_array_of_objects_is_normalised():
+    # Arrays of objects are a common tool-schema shape; their (unquoted) keys and
+    # bare values must be normalised too, not left verbatim, or the call drops.
+    calls = parse_tool_calls_from_text(
+        "<|tool_call>call:batch{items:[{path:a,mode:r},{path:b,mode:w}]}<tool_call|>"
+    )
+    assert len(calls) == 1, calls
+    assert _args(calls[0]) == {
+        "items": [{"path": "a", "mode": "r"}, {"path": "b", "mode": "w"}]
+    }
+
+
+def test_nested_array_elements_are_normalised():
+    calls = parse_tool_calls_from_text(
+        "<|tool_call>call:grid{cells:[[a,b],[c,d]]}<tool_call|>"
+    )
+    assert _args(calls[0]) == {"cells": [["a", "b"], ["c", "d"]]}
+
+
+def test_gemma_marker_inside_xml_parameter_is_not_a_second_call():
+    # An XML-style <function=...> call whose <parameter=code> value contains a
+    # Gemma marker: the marker is the parameter's data, not a separate terminal
+    # call, so only the python call must be returned.
+    content = (
+        "<tool_call><function=python><parameter=code>"
+        "x = 1  # <|tool_call>call:terminal{command:ls}<tool_call|>"
+        "</parameter></function></tool_call>"
+    )
+    calls = parse_tool_calls_from_text(content)
+    assert [c["function"]["name"] for c in calls] == ["python"], calls
+    assert "terminal" in _args(calls[0])["code"]
+
+
+def test_json_marker_inside_xml_parameter_is_not_a_second_call():
+    content = (
+        "<tool_call><function=python><parameter=code>"
+        'run(<tool_call>{"name":"terminal","arguments":{"command":"ls"}}</tool_call>)'
+        "</parameter></function></tool_call>"
+    )
+    calls = parse_tool_calls_from_text(content)
+    assert [c["function"]["name"] for c in calls] == ["python"], calls

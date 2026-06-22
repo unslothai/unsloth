@@ -812,9 +812,22 @@ class _SameTaskStreamingResponse(StreamingResponse):
         try:
             await self.stream_response(send)
         except OSError:
-            aclose = getattr(self.body_iterator, "aclose", None)
-            if aclose is not None:
-                await aclose()
+            # Client disconnected mid-send. Throw CancelledError into the body
+            # generator instead of aclose() (which raises GeneratorExit): the
+            # generators run their `except asyncio.CancelledError` handler, which
+            # finishes the api_monitor entry as "cancelled", whereas GeneratorExit
+            # skips it and only runs `finally`, leaving the monitor entry active.
+            # Fall back to aclose() for iterators without athrow.
+            athrow = getattr(self.body_iterator, "athrow", None)
+            if athrow is not None:
+                try:
+                    await athrow(asyncio.CancelledError())
+                except (asyncio.CancelledError, StopAsyncIteration, RuntimeError):
+                    pass
+            else:
+                aclose = getattr(self.body_iterator, "aclose", None)
+                if aclose is not None:
+                    await aclose()
             raise ClientDisconnect()
         if self.background is not None:
             await self.background()
@@ -3332,7 +3345,9 @@ async def get_api_monitor_entry(entry_id: str, current_subject: str = Depends(ge
 
 @router.post("/generate/stream")
 async def generate_stream(
-    request: GenerateRequest, current_subject: str = Depends(get_current_subject)
+    request: GenerateRequest,
+    fastapi_request: Request,
+    current_subject: str = Depends(get_current_subject),
 ):
     """
     Generate a chat response with Server-Sent Events (SSE) streaming.
@@ -3382,6 +3397,13 @@ async def generate_stream(
     async def stream():
         gen = None
         completed = False
+        # Cancel the generation when the client disconnects. The generator only
+        # awaits asyncio.to_thread(next, gen, ...), so without a concurrent
+        # watcher a disconnect during a long prefill/generation would go
+        # unnoticed until the next send and the backend would keep generating.
+        disconnect_watcher = asyncio.create_task(
+            _await_disconnect_then_cancel(fastapi_request, cancel_event)
+        )
         try:
             gen = backend.generate_chat_response(
                 messages = request.messages,
@@ -3396,12 +3418,15 @@ async def generate_stream(
             )
             _DONE = object()
             while True:
+                if cancel_event.is_set():
+                    break
                 chunk = await asyncio.to_thread(next, gen, _DONE)
                 if chunk is _DONE:
+                    completed = True
                     break
                 yield f"data: {json.dumps({'content': chunk})}\n\n"
-            completed = True
-            yield "data: [DONE]\n\n"
+            if completed:
+                yield "data: [DONE]\n\n"
 
         except asyncio.CancelledError:
             cancel_event.set()
@@ -3413,6 +3438,7 @@ async def generate_stream(
             logger.error(f"Error during generation: {e}", exc_info = True)
             yield f"data: {json.dumps({'error': _friendly_error(e)})}\n\n"
         finally:
+            await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
             if not completed and not cancel_event.is_set():
                 cancel_event.set()
                 backend.reset_generation_state()
@@ -9624,19 +9650,19 @@ async def _openai_passthrough_stream(
                     if monitor_event == "done":
                         monitor_done = True
                         break
-                if (
-                    not saw_done
-                    and not saw_finish_reason
-                    and not saw_stream_error
-                    and not cancel_event.is_set()
-                ):
-                    finish_line = _synthetic_finish_line()
-                    _monitor_openai_sse_line(
-                        monitor_id,
-                        finish_line,
-                        llama_backend.context_length,
-                    )
-                    yield finish_line + "\n\n"
+                if not saw_done and not saw_stream_error and not cancel_event.is_set():
+                    # Synthesize a finish chunk only if one was not already
+                    # emitted (e.g. before a trailing usage-only chunk), but
+                    # always close with [DONE] whenever the upstream omitted it,
+                    # so the stream ends on the [DONE] sentinel either way.
+                    if not saw_finish_reason:
+                        finish_line = _synthetic_finish_line()
+                        _monitor_openai_sse_line(
+                            monitor_id,
+                            finish_line,
+                            llama_backend.context_length,
+                        )
+                        yield finish_line + "\n\n"
                     done_line = "data: [DONE]"
                     _monitor_openai_sse_line(
                         monitor_id,
