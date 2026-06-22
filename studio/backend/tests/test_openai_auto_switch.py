@@ -208,8 +208,8 @@ def test_embeddings_endpoint_wires_auto_switch_before_loaded_check():
     import inspect
 
     src = inspect.getsource(inference_route.openai_embeddings)
-    assert "_maybe_auto_switch_model" in src
-    assert src.index("_maybe_auto_switch_model") < src.index("is_loaded")
+    assert "_auto_switch_from_request_body" in src
+    assert src.index("_auto_switch_from_request_body") < src.index("is_loaded")
 
 
 def test_count_tokens_endpoint_wires_auto_switch_before_loaded_check():
@@ -726,3 +726,154 @@ def test_keepwarm_tracks_inflight_when_enabled_even_if_idle_zero(monkeypatch):
     asyncio.run(drive())
     assert seen["inflight"] == 1  # counted despite idle TTL being 0
     assert kw._inflight == 0  # balanced after completion
+
+
+# ── review follow-ups: OFF-state body, swap guard, alias reload, always-track ──
+
+
+def _bad_body_request():
+    import json as _json
+
+    class _BadReq:
+        async def json(self):
+            raise _json.JSONDecodeError("expecting value", "", 0)
+
+    return _BadReq()
+
+
+def test_completions_malformed_body_503_not_500_when_unloaded(monkeypatch):
+    # OFF + nothing loaded + unparseable body must still 503 (pre-feature
+    # behavior), not 500 from the early body read.
+    from fastapi import HTTPException
+
+    backend = _FakeBackend(None)
+    _wire(monkeypatch, enabled = False, resolves_to = None, backend = backend, recorder = _LoadRecorder(backend))
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route.openai_completions(_bad_body_request(), "tester"))
+    assert exc.value.status_code == 503
+
+
+def test_embeddings_malformed_body_503_not_500_when_unloaded(monkeypatch):
+    from fastapi import HTTPException
+
+    backend = _FakeBackend(None)
+    _wire(monkeypatch, enabled = False, resolves_to = None, backend = backend, recorder = _LoadRecorder(backend))
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route.openai_embeddings(_bad_body_request(), "tester"))
+    assert exc.value.status_code == 503
+
+
+def test_swap_refused_while_another_stream_inflight(monkeypatch):
+    # A cross-model swap must not kill a stream still running on the loaded model:
+    # with another request in flight, decline with 409 instead of loading.
+    from fastapi import HTTPException
+    from core.inference import llama_keepwarm as kw
+
+    backend = _FakeBackend("unsloth/A-GGUF")
+    rec = _LoadRecorder(backend)
+    _wire(monkeypatch, enabled = True, resolves_to = ("unsloth/B-GGUF", None), backend = backend, recorder = rec)
+    monkeypatch.setattr(kw, "_inflight", 2)  # a stream on A + this request
+    with pytest.raises(HTTPException) as exc:
+        _run_hook("unsloth/B-GGUF")
+    assert exc.value.status_code == 409
+    assert rec.calls == []  # the in-flight stream was never killed
+
+
+def test_swap_proceeds_when_no_other_stream(monkeypatch):
+    # Only this request is in flight: nothing to protect, so the swap proceeds.
+    from core.inference import llama_keepwarm as kw
+
+    backend = _FakeBackend("unsloth/A-GGUF")
+    rec = _LoadRecorder(backend)
+    _wire(monkeypatch, enabled = True, resolves_to = ("unsloth/B-GGUF", None), backend = backend, recorder = rec)
+    monkeypatch.setattr(kw, "_inflight", 1)
+    _run_hook("unsloth/B-GGUF")
+    assert len(rec.calls) == 1
+
+
+def test_alias_reloads_model_freed_by_idle_unload(monkeypatch):
+    # After idle-unload frees the model, an unknown/alias name (resolves to None)
+    # reloads what was freed instead of 503-ing on an empty backend.
+    from core.inference import llama_keepwarm as kw
+
+    backend = _FakeBackend(None)  # idle-unload emptied the backend
+    rec = _LoadRecorder(backend)
+    _wire(monkeypatch, enabled = True, resolves_to = None, backend = backend, recorder = rec)
+    monkeypatch.setattr(kw, "_inflight", 0)
+    monkeypatch.setattr(kw, "_last_unloaded_model", "unsloth/A-GGUF")
+    _run_hook("gpt-4o-mini")
+    assert len(rec.calls) == 1
+    assert rec.calls[0].model_path == "unsloth/A-GGUF"
+
+
+def test_alias_does_not_reload_when_model_already_loaded(monkeypatch):
+    # The reload only triggers on an empty backend; with something loaded, an
+    # unknown name still falls through (drop-in) without resurrecting the stash.
+    from core.inference import llama_keepwarm as kw
+
+    backend = _FakeBackend("unsloth/B-GGUF")
+    rec = _LoadRecorder(backend)
+    _wire(monkeypatch, enabled = True, resolves_to = None, backend = backend, recorder = rec)
+    monkeypatch.setattr(kw, "_last_unloaded_model", "unsloth/A-GGUF")
+    _run_hook("gpt-4o-mini")
+    assert rec.calls == []
+
+
+def test_keepwarm_tracks_inflight_even_when_auto_switch_off(monkeypatch):
+    # A stream that starts while the feature is OFF must still be counted, so
+    # enabling idle-unload mid-stream cannot unload it.
+    from core.inference import llama_keepwarm as kw
+
+    monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: False)
+    monkeypatch.setattr(kw, "_inflight", 0)
+    seen = {}
+
+    async def app(scope, receive, send):
+        seen["inflight"] = kw._inflight
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"ok", "more_body": False})
+
+    async def drive():
+        async def receive():
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        async def send(_m):
+            pass
+
+        scope = {"type": "http", "path": "/v1/chat/completions", "method": "POST", "headers": []}
+        await kw.LlamaKeepWarmMiddleware(app)(scope, receive, send)
+
+    asyncio.run(drive())
+    assert seen["inflight"] == 1  # tracked despite the feature being off
+    assert kw._inflight == 0
+
+
+def test_build_index_covers_legacy_default_lmstudio_and_custom_roots(monkeypatch, tmp_path):
+    # _build_index must scan the same roots the model picker lists, else a model
+    # the UI shows is silently served as the loaded one. Verify each is consulted.
+    from pathlib import Path
+    import routes.models as models_route
+    from utils import paths as upaths
+    import storage.studio_db as studio_db
+
+    scanned = []
+    monkeypatch.setattr(models_route, "_scan_models_dir", lambda d, limit = None: scanned.append(("models", str(Path(d).resolve()))) or [])
+    monkeypatch.setattr(models_route, "_scan_hf_cache", lambda d: scanned.append(("hf", str(Path(d).resolve()))) or [])
+    monkeypatch.setattr(models_route, "_scan_lmstudio_dir", lambda d: scanned.append(("lm", str(Path(d).resolve()))) or [])
+    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: tmp_path / "active")
+    monkeypatch.setattr(models_route, "_is_hidden_model", lambda *a, **k: False)
+    monkeypatch.setattr(upaths, "legacy_hf_cache_dir", lambda: tmp_path / "legacy")
+    monkeypatch.setattr(upaths, "hf_default_cache_dir", lambda: tmp_path / "default")
+    monkeypatch.setattr(upaths, "lmstudio_model_dirs", lambda: [tmp_path / "lmstudio"])
+    monkeypatch.setattr(studio_db, "list_scan_folders", lambda: [{"path": str(tmp_path / "custom")}])
+    for sub in ("active", "legacy", "default", "lmstudio", "custom"):
+        (tmp_path / sub).mkdir()
+
+    resolver._build_index()
+
+    hf = {p for k, p in scanned if k == "hf"}
+    lm = {p for k, p in scanned if k == "lm"}
+    assert str((tmp_path / "legacy").resolve()) in hf
+    assert str((tmp_path / "default").resolve()) in hf
+    assert str((tmp_path / "custom").resolve()) in hf
+    assert str((tmp_path / "lmstudio").resolve()) in lm

@@ -2080,6 +2080,21 @@ def _auto_switch_lock() -> asyncio.Lock:
     return lock
 
 
+# Requests currently inside the auto-switch hook (resolving / waiting to swap),
+# not yet streaming. (in-flight count - these) is how many are streaming on the
+# loaded model, which a cross-model swap must not kill.
+_in_hook = 0
+_in_hook_lock = threading.Lock()
+
+
+def _streams_on_loaded_model() -> int:
+    from core.inference.llama_keepwarm import inflight_count
+
+    with _in_hook_lock:
+        pending = _in_hook
+    return inflight_count() - pending
+
+
 def _auto_switch_target_loaded(backend, target_id: str, variant: Optional[str]) -> bool:
     """True when the live backend already serves target_id (and variant, if given)."""
     loaded = backend.model_identifier if backend.is_loaded else None
@@ -2106,42 +2121,81 @@ async def _maybe_auto_switch_model(
         get_model_override,
     )
     from core.inference.local_model_resolver import resolve_local_gguf
+    from core.inference.llama_keepwarm import get_last_unloaded_model
 
     if not requested_model or not get_openai_auto_switch_enabled():
         return
-    resolved = resolve_local_gguf(requested_model)
-    if resolved is None:
-        return
-    target_id, variant = resolved
-    backend = get_llama_cpp_backend()
-    # A bare model id (no :VARIANT) is satisfied by any loaded quant of that
-    # repo, so it never reloads a different local quant that already serves it.
-    bare = ":" not in requested_model
 
-    def _already_serving() -> bool:
-        if bare:
-            loaded = backend.model_identifier if backend.is_loaded else None
-            return bool(loaded) and loaded.lower() == target_id.lower()
-        return _auto_switch_target_loaded(backend, target_id, variant)
+    global _in_hook
+    with _in_hook_lock:
+        _in_hook += 1
+    try:
+        # Off the loop: a cold-cache rebuild walks several model dirs + HF caches.
+        resolved = await asyncio.to_thread(resolve_local_gguf, requested_model)
+        if resolved is None:
+            # Idle-unload may have freed the model; reload what it last freed so an
+            # alias/unknown name stays servable instead of 503-ing on an empty backend.
+            last = get_last_unloaded_model()
+            if not last or get_llama_cpp_backend().is_loaded:
+                return
+            resolved = (last, None)
+        target_id, variant = resolved
+        backend = get_llama_cpp_backend()
+        # A bare model id (no :VARIANT) is satisfied by any loaded quant of that
+        # repo, so it never reloads a different local quant that already serves it.
+        bare = ":" not in requested_model
 
-    if _already_serving():
-        return
-    async with _auto_switch_lock():
+        def _already_serving() -> bool:
+            if bare:
+                loaded = backend.model_identifier if backend.is_loaded else None
+                return bool(loaded) and loaded.lower() == target_id.lower()
+            return _auto_switch_target_loaded(backend, target_id, variant)
+
         if _already_serving():
             return
-        # Apply this model's saved launch flags so the swap honors the user's config.
-        override = get_model_override(target_id)
-        load_kwargs = {"model_path": target_id, "gguf_variant": variant}
-        if override.get("llama_extra_args") is not None:
-            load_kwargs["llama_extra_args"] = override["llama_extra_args"]
-        if override.get("max_seq_length") is not None:
-            load_kwargs["max_seq_length"] = override["max_seq_length"]
-        # Reuse the load route so its dedup, tensor fallback, and threading apply.
-        await load_model(
-            LoadRequest(**load_kwargs),
-            fastapi_request,
-            current_subject = current_subject,
-        )
+        async with _auto_switch_lock():
+            if _already_serving():
+                return
+            # Single slot: refuse to swap while another request is still streaming
+            # on the loaded model rather than killing its response mid-flight. The
+            # client can retry once that stream finishes (concurrent same-model
+            # requests never reach here, so they are unaffected).
+            if _streams_on_loaded_model() > 0:
+                raise HTTPException(
+                    status_code = 409,
+                    detail = "A different model is currently generating. Retry shortly.",
+                )
+            # Apply this model's saved launch flags so the swap honors the user's config.
+            override = get_model_override(target_id)
+            load_kwargs = {"model_path": target_id, "gguf_variant": variant}
+            if override.get("llama_extra_args") is not None:
+                load_kwargs["llama_extra_args"] = override["llama_extra_args"]
+            if override.get("max_seq_length") is not None:
+                load_kwargs["max_seq_length"] = override["max_seq_length"]
+            # Reuse the load route so its dedup, tensor fallback, and threading apply.
+            await load_model(
+                LoadRequest(**load_kwargs),
+                fastapi_request,
+                current_subject = current_subject,
+            )
+    finally:
+        with _in_hook_lock:
+            _in_hook = max(0, _in_hook - 1)
+
+
+async def _auto_switch_from_request_body(request: Request, current_subject: str):
+    """Run auto-switch from a raw-body endpoint's ``model`` without changing its
+    pre-feature status codes: a malformed/non-dict body yields no model (so an
+    unloaded backend still 503s, not 500), and the caller re-reads to surface the
+    original parse error after the loaded-state check. Returns the parsed body, or
+    None if it could not be parsed."""
+    try:
+        body = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        return None
+    model = body.get("model") if isinstance(body, dict) else None
+    await _maybe_auto_switch_model(model, request, current_subject)
+    return body
 
 
 def _effective_load_in_4bit(config: ModelConfig, requested: bool) -> bool:
@@ -6153,14 +6207,15 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
     """
     llama_backend = get_llama_cpp_backend()
 
-    body = await request.json()
     # Opt-in: load the requested local GGUF before the loaded-state check.
-    await _maybe_auto_switch_model(body.get("model"), request, current_subject)
+    body = await _auto_switch_from_request_body(request, current_subject)
     if not llama_backend.is_loaded:
         raise HTTPException(
             status_code = 503,
             detail = "No GGUF model loaded. Load a GGUF model first.",
         )
+    if not isinstance(body, dict):
+        body = await request.json()  # re-raise the malformed-body error, post-503 (pre-feature behavior)
 
     if body.get("max_tokens") is None:
         body["max_tokens"] = llama_backend.context_length or _DEFAULT_MAX_TOKENS_FLOOR
@@ -6324,16 +6379,16 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
     Note: the loaded model must support pooling, else llama-server returns an
     error (expected).
     """
-    body = await request.json()
-    # Embeddings is a model-bearing inference path too, so honor auto-switch.
-    await _maybe_auto_switch_model(body.get("model"), request, current_subject)
-
     llama_backend = get_llama_cpp_backend()
+    # Embeddings is a model-bearing inference path too, so honor auto-switch.
+    body = await _auto_switch_from_request_body(request, current_subject)
     if not llama_backend.is_loaded:
         raise HTTPException(
             status_code = 503,
             detail = "No GGUF model loaded. Load a GGUF model first.",
         )
+    if not isinstance(body, dict):
+        body = await request.json()  # re-raise the malformed-body error, post-503 (pre-feature behavior)
 
     target_url = f"{llama_backend.base_url}/v1/embeddings"
     prompt_text = _flatten_monitor_prompt(body.get("input", ""))

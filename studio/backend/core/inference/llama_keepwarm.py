@@ -23,6 +23,9 @@ logger = get_logger(__name__)
 _lock = threading.Lock()
 _inflight = 0
 _last_active = time.monotonic()
+# The id idle-unload last freed, so an alias/unknown request that would otherwise
+# 503 against an empty backend can reload it (set on unload, cleared on reload).
+_last_unloaded_model = None
 # Guards inflight bumps against the idle-check-then-unload race. One lock per
 # running loop: a module-level asyncio.Lock binds to one loop and breaks
 # multi-loop runners (e.g. pytest's per-test loops on pre-3.10).
@@ -72,11 +75,27 @@ def _is_idle(ttl_seconds: float) -> bool:
         return _inflight == 0 and (time.monotonic() - _last_active) >= ttl_seconds
 
 
+def inflight_count() -> int:
+    with _lock:
+        return _inflight
+
+
 def _note_activity() -> None:
     """Stamp activity, e.g. on a (re)load, so the model survives at least one TTL."""
     global _last_active
     with _lock:
         _last_active = time.monotonic()
+
+
+def get_last_unloaded_model():
+    with _lock:
+        return _last_unloaded_model
+
+
+def _set_last_unloaded(value) -> None:
+    global _last_unloaded_model
+    with _lock:
+        _last_unloaded_model = value
 
 
 class LlamaKeepWarmMiddleware:
@@ -89,14 +108,10 @@ class LlamaKeepWarmMiddleware:
         if scope.get("type") != "http" or not _is_inference_path(scope.get("path", "")):
             await self.app(scope, receive, send)
             return
-        # Track in-flight whenever auto-switch is on, not just when idle-unload is
-        # armed, so enabling idle mid-stream can't unload an in-flight request.
-        from utils.openai_auto_switch_settings import get_openai_auto_switch_enabled
-
-        if not get_openai_auto_switch_enabled():
-            await self.app(scope, receive, send)
-            return
-
+        # Always track in-flight on inference paths, even when the feature is off,
+        # so a stream that starts before idle-unload is enabled can't be unloaded
+        # mid-response if the operator turns it on during that stream. Counting is
+        # cheap and invisible to clients (the response is proxied unchanged).
         async with _unload_gate():
             _note_start()
         ended = {"done": False}
@@ -138,9 +153,12 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
                 seen_model = current
                 if current is not None:
                     _note_activity()
+                    _set_last_unloaded(None)  # a model is loaded; drop stale stash
             async with _unload_gate():
                 if backend.is_loaded and _is_idle(ttl):
+                    freed = backend.model_identifier
                     await asyncio.to_thread(backend.unload_model)
+                    _set_last_unloaded(freed)  # let an alias request reload it
                     logger.info("Idle auto-unload: freed GGUF after %ss idle", ttl)
                     seen_model = None
         except Exception as exc:

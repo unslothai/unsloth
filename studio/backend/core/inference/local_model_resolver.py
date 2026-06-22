@@ -52,21 +52,55 @@ def _local_gguf_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
 
 
 def _build_index() -> dict[str, _LocalGgufEntry]:
-    """Map normalized id/model_id/display_name -> local GGUF entry."""
+    """Map normalized id/model_id/display_name -> local GGUF entry.
+
+    Scans the same roots Studio's model picker lists (./models, the active plus
+    legacy/default HF caches, LM Studio dirs, and user scan folders) so a named
+    local model is never missed and silently served as the loaded one. Ollama's
+    scanner is skipped: it creates symlinks as a side effect and this runs on the
+    request path.
+    """
     # Lazy import: routes.models imports core.inference, so import at call time.
     from pathlib import Path
     from routes.models import (
         _scan_models_dir,
         _scan_hf_cache,
+        _scan_lmstudio_dir,
         _resolve_hf_cache_dir,
         _is_hidden_model,
     )
+    from utils.paths import legacy_hf_cache_dir, hf_default_cache_dir, lmstudio_model_dirs
 
     index: dict[str, _LocalGgufEntry] = {}
+    seen_hf: set[str] = set()
+
+    def _scan_hf_once(directory) -> list:
+        try:
+            d = Path(directory)
+            if not d.is_dir():
+                return []
+            rp = str(d.resolve())
+        except OSError:
+            return []
+        if rp in seen_hf:
+            return []
+        seen_hf.add(rp)
+        return _scan_hf_cache(directory)
+
     try:
-        found = _scan_models_dir(Path("./models").resolve()) + _scan_hf_cache(
-            _resolve_hf_cache_dir()
-        )
+        found = _scan_models_dir(Path("./models").resolve())
+        for hf_dir in (_resolve_hf_cache_dir(), legacy_hf_cache_dir(), hf_default_cache_dir()):
+            found += _scan_hf_once(hf_dir)
+        for lm_dir in lmstudio_model_dirs():
+            found += _scan_lmstudio_dir(lm_dir)
+        try:
+            from storage.studio_db import list_scan_folders
+
+            for folder in list_scan_folders():
+                fp = Path(folder["path"])
+                found += _scan_models_dir(fp, limit = 200) + _scan_hf_once(fp) + _scan_lmstudio_dir(fp)
+        except Exception:
+            pass
     except Exception:
         return index
     for info in found:
