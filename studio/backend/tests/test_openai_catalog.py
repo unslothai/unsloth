@@ -45,6 +45,7 @@ class _FakeUnsloth:
 def test_catalog_lists_loaded_and_available(monkeypatch):
     monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: _FakeLlama())
     monkeypatch.setattr(inf, "get_inference_backend", lambda: _FakeUnsloth())
+
     async def _fake_catalog():
         return [
             _Info("/data/models/Qwen3-Q4.gguf", "Qwen3-Q4"),  # same as loaded -> dedup
