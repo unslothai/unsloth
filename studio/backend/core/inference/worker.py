@@ -232,16 +232,10 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                 )
                 return
 
-        # SSM/Mamba hybrids (Nemotron-H/Nano, Falcon-H1, Granite-4.0-H, ...) lazily
-        # `import mamba_ssm` / `causal_conv1d` inside their modeling code during
-        # from_pretrained; without those kernels the load dies with "mamba-ssm is
-        # required by the Mamba model but cannot be imported". The training worker
-        # already auto-installs them before a fine-tune; mirror that here so the same
-        # model loads for chat. No-op + idempotent for non-SSM models.
-        #
-        # Skip entirely on MLX (Apple Silicon): these are CUDA/ROCm Torch kernels
-        # with no MLX use and no macOS prebuilt wheel, so the source build would
-        # just fail before the MLX backend ever loads the model.
+        # SSM/Mamba hybrids (Nemotron-H/Nano, Falcon-H1, Granite-4.0-H, ...) lazy-import
+        # mamba_ssm / causal_conv1d during from_pretrained; mirror the training worker and
+        # install them first so chat loads too. No-op for non-SSM models. Skip on MLX
+        # (Apple Silicon): no MLX use, no macOS wheel, so the source build would just fail.
         if getattr(backend, "device", None) != "mlx":
             try:
                 from utils.ssm_runtime import ensure_ssm_runtime
@@ -249,9 +243,8 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                 _ssm_status = lambda m: _send_response(
                     resp_queue, {"type": "status", "message": m}
                 )
-                # Check the requested id and, for a LoRA, its base model: an adapter
-                # named e.g. "me/my-lora" won't match the SSM heuristics, but its
-                # SSM base (Nemotron-H, ...) is what actually needs the kernels.
+                # For a LoRA, also check the base: the adapter id won't match the SSM
+                # heuristics but its base (Nemotron-H, ...) needs the kernels.
                 ssm_targets = [config["model_name"]]
                 if mc.is_lora and getattr(mc, "base_model", None):
                     ssm_targets.append(str(mc.base_model))

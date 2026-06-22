@@ -94,9 +94,7 @@ def model_wants_causal_conv1d(model_name: str) -> bool:
 
 
 def _is_importable(import_name: str) -> bool:
-    # Invalidate the import-system finder caches first so a kernel installed
-    # earlier in THIS process (wheel or source build) is visible -- without this
-    # the freshly written site-packages can still import as ModuleNotFoundError.
+    # Invalidate finder caches so a kernel installed earlier in this process is seen.
     importlib.invalidate_caches()
     try:
         __import__(import_name)
