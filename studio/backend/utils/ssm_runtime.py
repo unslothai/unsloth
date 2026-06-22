@@ -219,6 +219,9 @@ def _install_kernel(
         status_cb,
         f"Building {display_name} from source for this model (this can take several minutes)...",
     )
+    # We only reach here when not importable, which includes a wheel that installed but
+    # failed to import: reinstall so the source build replaces it instead of no-opping
+    # as "already satisfied". --no-cache avoids reusing stale partial HIP build artifacts.
     if shutil.which("uv"):
         cmd = [
             "uv",
@@ -228,8 +231,11 @@ def _install_kernel(
             sys.executable,
             "--no-build-isolation",
             "--no-deps",
-            spec,
+            "--reinstall",
         ]
+        if is_hip:
+            cmd.append("--no-cache")
+        cmd.append(spec)
     else:
         cmd = [
             sys.executable,
@@ -239,6 +245,7 @@ def _install_kernel(
             "--no-build-isolation",
             "--no-deps",
             "--no-cache-dir",
+            "--force-reinstall",
             spec,
         ]
 
@@ -279,17 +286,19 @@ def ensure_ssm_runtime(
 
     Installs ``causal_conv1d`` (and ``mamba_ssm`` for true SSM hybrids), wheel-first.
     A no-op for non-SSM models and idempotent when the kernels are already present.
-    Raises ``RuntimeError`` if a required kernel cannot be installed, so the caller
-    can surface a clear "couldn't prepare this model" error instead of a cryptic
-    ``import mamba_ssm`` failure mid-load.
+    Only a true SSM/mamba model's ``mamba_ssm`` requirement is fatal (raises
+    ``RuntimeError`` so the caller can surface a clear error instead of a cryptic
+    ``import mamba_ssm`` failure mid-load); ``causal_conv1d`` is a best-effort fast
+    path, since models that merely want it (e.g. Qwen3-Next, LFM2) fall back to torch.
     """
     wants_causal_conv1d = model_wants_causal_conv1d(model_name)
     is_ssm = model_is_ssm(model_name)
     if not (wants_causal_conv1d or is_ssm):
         return
 
-    # causal-conv1d first: SSM modeling files lazy-import it during from_pretrained,
-    # and mamba-ssm's fast path uses it.
+    # causal-conv1d first: SSM modeling files lazy-import it during from_pretrained, and
+    # mamba-ssm's fast path uses it. Best-effort (mirrors training): on a platform/ABI
+    # without a wheel or compiler the model still loads on its torch fallback.
     if wants_causal_conv1d and not _install_kernel(
         import_name = "causal_conv1d",
         display_name = "causal-conv1d",
@@ -300,9 +309,7 @@ def ensure_ssm_runtime(
         status_cb = status_cb,
         run = run,
     ):
-        raise RuntimeError(
-            "Could not install causal-conv1d, required by this model's Mamba layers."
-        )
+        logger.warning("causal-conv1d unavailable; continuing on the model's torch fallback")
 
     if is_ssm and not _install_kernel(
         import_name = "mamba_ssm",

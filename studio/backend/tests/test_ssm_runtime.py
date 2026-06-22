@@ -114,9 +114,26 @@ def test_causal_only_model_skips_mamba(monkeypatch):
 
 
 def test_failure_raises_runtime_error(monkeypatch):
+    # A true SSM model whose mamba-ssm cannot install is fatal (cryptic mid-load import
+    # otherwise). "Nemotron-3-Nano-30B-A3B" matches the SSM substrings.
     monkeypatch.setattr(ssm_runtime, "_install_kernel", lambda **k: False)
     with pytest.raises(RuntimeError):
         ssm_runtime.ensure_ssm_runtime("unsloth/Nemotron-3-Nano-30B-A3B")
+
+
+def test_causal_only_install_failure_is_not_fatal(monkeypatch):
+    # Qwen3-Next/LFM2 want causal-conv1d but fall back to torch; a failed install must
+    # not block the load (best-effort, mirrors training).
+    monkeypatch.setattr(ssm_runtime, "_install_kernel", lambda **k: False)
+    ssm_runtime.ensure_ssm_runtime("Qwen/Qwen3-Next-80B-A3B")  # no raise
+
+
+def test_ssm_causal_failure_nonfatal_when_mamba_ok(monkeypatch):
+    # causal-conv1d is best-effort even for a true SSM model; only mamba-ssm is fatal.
+    monkeypatch.setattr(
+        ssm_runtime, "_install_kernel", lambda *, import_name, **_: import_name == "mamba_ssm"
+    )
+    ssm_runtime.ensure_ssm_runtime("unsloth/NVIDIA-Nemotron-3-Nano-4B")  # no raise
 
 
 def test_install_kernel_idempotent_when_present(monkeypatch):
@@ -251,6 +268,52 @@ def test_hip_source_build_requires_hipcc(monkeypatch):
     )
     assert ok is False
     assert ran == []  # bailed before invoking pip
+
+
+def test_source_build_reinstalls_to_replace_broken_wheel(monkeypatch):
+    # Reached only when not importable (possibly a broken wheel at the pinned version);
+    # the source build must reinstall so it replaces it instead of no-opping.
+    states = iter([False, True])
+    monkeypatch.setattr(ssm_runtime, "_is_importable", lambda name: next(states))
+    monkeypatch.setattr(ssm_runtime, "probe_torch_wheel_env", lambda timeout = 30: {})
+    monkeypatch.setattr(ssm_runtime, "direct_wheel_url", lambda **k: None)
+    cmds = []
+    ssm_runtime._install_kernel(
+        import_name = "causal_conv1d",
+        display_name = "causal-conv1d",
+        pypi_name = "causal-conv1d",
+        package_version = "1.6.1",
+        release_tag = "v1.6.1.post4",
+        release_base_url = "x",
+        status_cb = None,
+        run = lambda cmd, **k: cmds.append(cmd) or _Result(returncode = 0),
+    )
+    assert "--reinstall" in cmds[0] or "--force-reinstall" in cmds[0]
+
+
+def test_hip_uv_source_build_uses_no_cache(monkeypatch):
+    # ROCm uv source build must skip the cache to avoid reusing stale partial HIP builds.
+    states = iter([False, True])
+    monkeypatch.setattr(ssm_runtime, "_is_importable", lambda name: next(states))
+    monkeypatch.setattr(
+        ssm_runtime, "probe_torch_wheel_env", lambda timeout = 30: {"hip_version": "6.2"}
+    )
+    monkeypatch.setattr(ssm_runtime, "direct_wheel_url", lambda **k: None)
+    monkeypatch.setattr(ssm_runtime.shutil, "which", lambda name: "/usr/bin/" + name)  # uv + hipcc
+    monkeypatch.setattr(ssm_runtime, "_hipcc_gcc_install_dir", lambda: None)
+    cmds = []
+    ssm_runtime._install_kernel(
+        import_name = "causal_conv1d",
+        display_name = "causal-conv1d",
+        pypi_name = "causal-conv1d",
+        package_version = "1.6.1",
+        release_tag = "v1.6.1.post4",
+        release_base_url = "x",
+        status_cb = None,
+        run = lambda cmd, **k: cmds.append(cmd) or _Result(returncode = 0),
+    )
+    assert cmds[0][0] == "uv"
+    assert "--no-cache" in cmds[0] and "--reinstall" in cmds[0]
 
 
 # ── inference worker wiring ───────────────────────────────────────────────────
