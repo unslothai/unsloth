@@ -85,8 +85,13 @@ def _config_has_auto_map(model_name: str, hf_token: Optional[str] = None) -> Opt
     """Whether any config (model/tokenizer/processor) declares an ``auto_map`` the load
     would execute. Reads raw JSON with ``hf_token``; returns None when a config is
     unreadable (transient/auth) so the caller treats it as "unknown" and scans, False
-    when the repo genuinely ships none. GGUF is False (llama.cpp never runs auto_map);
-    this is the single chokepoint for that rule, shared by validate / scan / worker.
+    when the repo genuinely ships none.
+
+    GGUF-inertness is the LOADER's property, decided upstream by the caller's ``is_gguf``
+    check, not here. Every path that reaches this helper (export, training, non-GGUF
+    inference) loads via ``from_pretrained``, which imports ``auto_map`` even for a
+    ``.gguf``-only repo, so a GGUF-classified repo id MUST still be scanned. Only a direct
+    ``.gguf`` FILE reference is inert (a genuine single-file llama.cpp load).
     """
     # A direct .gguf FILE loads via llama.cpp (auto_map inert). A bare repo id ending in
     # .gguf can still ship safetensors + auto_map, so it falls through to the scan.
@@ -96,11 +101,6 @@ def _config_has_auto_map(model_name: str, hf_token: Optional[str] = None) -> Opt
     if configs is None:
         return None
     if not any(bool((cfg or {}).get("auto_map")) for cfg in configs):
-        return False
-    # auto_map present but a GGUF repo -> inert. Checked only when auto_map exists, so
-    # normal models skip the extra listing.
-    if _is_gguf_repo(model_name, hf_token):
-        logger.debug("Ignoring auto_map for GGUF repo '%s' (llama.cpp never runs it).", model_name)
         return False
     return True
 
@@ -122,42 +122,6 @@ def _is_direct_gguf_file_ref(model_name: str) -> bool:
         pass
     # Remote: a file reference is repo_id ("org/name") + filename => >= 2 slashes.
     return name.count("/") >= 2
-
-
-# Weight formats transformers can load (and thus run auto_map for). A repo shipping any
-# of these is not GGUF-only -- the user could load it through transformers -- so consent
-# still applies even if it also ships a .gguf.
-_TRANSFORMERS_WEIGHT_SUFFIXES = (
-    ".safetensors",
-    ".bin",
-    ".pt",
-    ".pth",
-    ".h5",
-    ".msgpack",
-    ".onnx",
-    ".ckpt",
-)
-
-
-def _is_gguf_repo(model_name: str, hf_token: Optional[str] = None) -> bool:
-    """Whether a remote repo loads only through llama.cpp (GGUF weights and NO
-    transformers-loadable weights), making its config inert. A repo that also ships
-    transformers weights is NOT GGUF (auto_map could run, so still gate). A listing
-    failure is treated as "not known-GGUF" (fall through to scan).
-    """
-    try:
-        from utils.paths import is_local_path
-
-        if is_local_path(model_name):
-            return False
-        from huggingface_hub import list_repo_files
-
-        files = [f.lower() for f in list_repo_files(model_name, token = hf_token)]
-        has_gguf = any(f.endswith(".gguf") for f in files)
-        has_transformers_weights = any(f.endswith(_TRANSFORMERS_WEIGHT_SUFFIXES) for f in files)
-        return has_gguf and not has_transformers_weights
-    except Exception:
-        return False
 
 
 def _load_remote_code_configs(model_name: str, hf_token: Optional[str] = None) -> Optional[list]:
@@ -300,8 +264,7 @@ def evaluate_remote_code_consent_for_targets(
         )
 
     if not combined:
-        # auto_map declared but no executable .py (e.g. a GGUF repo's vestigial
-        # auto_map) -> nothing to run -> allow.
+        # auto_map declared but no executable .py (e.g. GGUF repo) -> nothing to scan -> allow.
         return RemoteCodeDecision(
             primary,
             False,
