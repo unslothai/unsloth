@@ -115,9 +115,11 @@ _config_json_cache: dict[tuple[str, str | None], dict | None] = {}
 _config_needs_510_cache: dict[tuple[str, str | None], bool] = {}
 _config_needs_550_cache: dict[tuple[str, str | None], bool] = {}
 
-# AutoConfig-probe tier resolution, keyed on (model_name, commit-sha) and the model's sha.
-_probe_tier_cache: dict[tuple[str, str | None], str] = {}
-_probe_sha_cache: dict[str, str | None] = {}
+# AutoConfig-probe tier resolution, keyed on model_name for the lifetime of this process
+# (a model's required tier is a property of its architecture; cleared on restart). Keyed by
+# id only, NOT a Hub commit sha, so the probe never imports huggingface_hub into a worker
+# before the sidecar venv is activated (which would defeat the sidecar's pinned hub).
+_probe_tier_cache: dict[str, str] = {}
 
 # Versions
 TRANSFORMERS_510_VERSION = "5.10.2"
@@ -139,16 +141,20 @@ _VENV_T5_510_DIR = str(_studio_root() / ".venv_t5_510")
 _VENV_T5_DIR = _VENV_T5_550_DIR
 
 
-def activate_transformers_for_subprocess(model_name: str) -> None:
+def activate_transformers_for_subprocess(model_name: str, hf_token: str | None = None) -> None:
     """Activate the correct transformers version in a subprocess worker.
 
     Call BEFORE any ML imports. Resolves LoRA adapters to their base model,
     determines the required tier, prepends the appropriate ``.venv_t5_*`` dir to
     ``sys.path``, and propagates it via ``PYTHONPATH`` for child processes
     (e.g. GGUF converter). Used by training, inference, and export workers.
+
+    ``hf_token`` is forwarded to tier detection so a gated/private model whose only 5.x
+    signal lives in an authenticated ``config.json``/``tokenizer_config.json`` is routed to
+    the right sidecar instead of falling through to the default tier.
     """
     resolved = _resolve_base_model(model_name)
-    tier = get_transformers_tier(resolved)
+    tier = get_transformers_tier(resolved, hf_token)
 
     if tier == "510":
         if not _ensure_venv_t5_510_exists():
@@ -532,56 +538,6 @@ def _probe_tier_venvs():
     }
 
 
-def _local_dir_signature(path: Path) -> str | None:
-    """Cheap content signature for a local model dir (config/tokenizer size+mtime)."""
-    import hashlib
-
-    parts = []
-    for name in ("config.json", "tokenizer_config.json"):
-        try:
-            st = (path / name).stat()
-            parts.append(f"{name}:{st.st_size}:{st.st_mtime_ns}")
-        except OSError:
-            continue
-    return hashlib.sha256("|".join(parts).encode()).hexdigest()[:16] if parts else None
-
-
-def _resolve_commit_sha(model_name: str, hf_token: str | None) -> str | None:
-    """Identity for the tier cache: a local dir signature or the HF commit sha. None when
-    unavailable (offline/transient). Runs in the default env before any sidecar is on
-    sys.path, so importing huggingface_hub is safe.
-
-    Only the immutable remote commit sha is memoized. A local dir signature is mutable
-    (the same checkpoint path can be overwritten in a long-running process), so it is
-    recomputed every call -- otherwise the tier cache would keep selecting the old tier
-    after the directory's config changed. A None (transient Hub failure) is never
-    memoized either, so it is retried instead of pinning the cache under an unknown sha.
-    """
-    # On Windows, Path.exists() can raise OSError for a remote repo id with characters that
-    # are invalid in a local path; treat that as "not a local dir".
-    p = Path(model_name)
-    try:
-        is_local = p.exists()
-    except OSError as exc:
-        logger.debug("Could not check local path for '%s': %s", model_name, exc)
-        is_local = False
-    if is_local:
-        return _local_dir_signature(p)  # mutable: never memoized
-
-    if model_name in _probe_sha_cache:
-        return _probe_sha_cache[model_name]
-    sha: str | None = None
-    if not _env_offline():
-        try:
-            from huggingface_hub import HfApi
-            sha = HfApi().model_info(model_name, token = hf_token).sha
-        except Exception as exc:
-            logger.debug("Could not resolve commit sha for '%s': %s", model_name, exc)
-    if sha is not None:
-        _probe_sha_cache[model_name] = sha
-    return sha
-
-
 def _probe_autoconfig(target_dir: str, model_name: str, hf_token: str | None) -> bool | None:
     """Parse config.json with the built-in parser inside *target_dir*'s sidecar.
     True = parses, False = parse/version failure (escalate), None = transient
@@ -625,29 +581,32 @@ def _probe_tier(model_name: str, hf_token: str | None, reason: str) -> str:
     Escalates 530 -> 550 -> 510 and returns the first that parses. The probe can only
     improve on the legacy '530' guess, never raises, and never escalates on uncertainty:
 
-    * First parse success wins and is cached by (model, sha).
+    * First parse success wins (and is cached, unless a lower tier was skipped).
     * Transient probe failure (auth/network/offline) -> '530' uncached (retried next call).
-    * Sidecar missing/uninstallable, so a tier was skipped -> '530' uncached (the
-      environment may complete later; do not pin a guess).
+    * Sidecar missing/uninstallable, so a tier was skipped -> result is NOT cached (the
+      environment may complete later and a skipped lower tier could be the real answer).
     * Every tier was actually probed and none parsed -> the built-in parser cannot handle
       this model at any shipped tier (a remote-code / custom model_type that loads via its
       own code with trust_remote_code=True). Keep the legacy '530' route -- do NOT jump to
-      510, which would change the behavior of models that worked on the 5.3 stack. This is
-      deterministic for the revision, so it is cached.
+      510, which would change the behavior of models that worked on the 5.3 stack.
 
-    A tier is only ever cached under a known commit sha; if the sha is unresolvable the
-    result is returned uncached so a later revision change is not masked.
+    The result is cached per model_name for the lifetime of this process (cleared on
+    restart). A model's required tier is a property of its architecture, so this avoids
+    re-spawning probe subprocesses for the same id; it deliberately does NOT resolve a Hub
+    commit sha -- doing so would import huggingface_hub into the worker BEFORE the sidecar
+    is prepended to sys.path (this runs from activate_transformers_for_subprocess, which
+    does not purge modules), pinning the default-env hub over the sidecar's pinned version.
     """
     if os.environ.get("UNSLOTH_DISABLE_TIER_PROBE", "").lower() in ("1", "true", "yes"):
         return "530"
-    sha = _resolve_commit_sha(model_name, hf_token)
-    key = (model_name, sha)
-    if sha is not None and key in _probe_tier_cache:
-        return _probe_tier_cache[key]
+    if model_name in _probe_tier_cache:
+        return _probe_tier_cache[model_name]
 
-    def _cache(tier: str) -> str:
-        if sha is not None:
-            _probe_tier_cache[key] = tier
+    def _cache(tier: str, *, skipped: bool) -> str:
+        # Do not pin a result that depended on a skipped lower tier: once that sidecar is
+        # available the lowest valid tier may differ, so re-probe next call.
+        if not skipped:
+            _probe_tier_cache[model_name] = tier
         return tier
 
     venvs = _probe_tier_venvs()
@@ -671,7 +630,7 @@ def _probe_tier(model_name: str, hf_token: str | None, reason: str) -> str:
                 model_name,
                 reason,
             )
-            return _cache(tier)
+            return _cache(tier, skipped = skipped_any)
         if ok is None:
             logger.info("Tier probe inconclusive for %s (%s); using 530", model_name, reason)
             return "530"  # transient: retry next load
@@ -686,7 +645,7 @@ def _probe_tier(model_name: str, hf_token: str | None, reason: str) -> str:
         model_name,
         reason,
     )
-    return _cache("530")
+    return _cache("530", skipped = False)
 
 
 def get_transformers_tier(model_name: str, hf_token: str | None = None) -> str:

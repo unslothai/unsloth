@@ -36,13 +36,13 @@ def _ensure_backend_on_path() -> None:
         sys.path.insert(0, _BACKEND_PATH)
 
 
-def _activate_transformers_version(model_name: str) -> None:
+def _activate_transformers_version(model_name: str, hf_token: str | None = None) -> None:
     """Activate the correct transformers version BEFORE any ML imports."""
     _ensure_backend_on_path()
 
     from utils.transformers_version import activate_transformers_for_subprocess
 
-    activate_transformers_for_subprocess(model_name)
+    activate_transformers_for_subprocess(model_name, hf_token)
 
 
 def _decode_image(image_base64: str):
@@ -594,7 +594,7 @@ def run_inference_process(*, cmd_queue: Any, resp_queue: Any, cancel_event, conf
         # Non-fatal: fall through with the installed version, but log the cause
         # instead of swallowing it (issue #6103).
         try:
-            _activate_transformers_version(model_name)
+            _activate_transformers_version(model_name, config.get("hf_token") or None)
         except Exception as exc:
             logger.warning(
                 "Failed to activate transformers version for '%s' (MLX inference); "
@@ -680,7 +680,7 @@ def run_inference_process(*, cmd_queue: Any, resp_queue: Any, cancel_event, conf
 
     # ── 1. Activate transformers version BEFORE any ML imports ──
     try:
-        _activate_transformers_version(model_name)
+        _activate_transformers_version(model_name, config.get("hf_token") or None)
     except Exception as exc:
         _send_response(
             resp_queue,

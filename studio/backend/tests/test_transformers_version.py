@@ -39,11 +39,8 @@ from utils.transformers_version import (
     _config_needs_510_cache,
     _config_needs_550_cache,
     _probe_tier_cache,
-    _probe_sha_cache,
     _probe_tier,
-    _resolve_commit_sha,
     _stderr_is_transient,
-    _local_dir_signature,
     needs_transformers_5,
     get_transformers_tier,
     activate_transformers_for_subprocess,
@@ -659,14 +656,8 @@ class TestProbeTier:
 
     def setup_method(self):
         _probe_tier_cache.clear()
-        _probe_sha_cache.clear()
 
-    def _patch_common(
-        self,
-        monkeypatch,
-        sha = "sha1",
-    ):
-        monkeypatch.setattr("utils.transformers_version._resolve_commit_sha", lambda m, t: sha)
+    def _patch_common(self, monkeypatch):
         for fn in (
             "_ensure_venv_t5_530_exists",
             "_ensure_venv_t5_550_exists",
@@ -713,19 +704,18 @@ class TestProbeTier:
     def test_nothing_parses_stays_530_and_caches(self, monkeypatch):
         # Every tier probed, none parsed with the built-in parser -> a remote-code / custom
         # model_type that loads via its own code; keep the legacy 530 route (never jump to
-        # 510). Conclusive for this revision, so it is cached.
+        # 510). Conclusive, so it is cached by model_name.
         self._patch_common(monkeypatch)
         monkeypatch.setattr(
             "utils.transformers_version.subprocess.run",
             lambda cmd, **k: _proc(1, "KeyError: '-'"),
         )
         assert _probe_tier("org/m", None, "x") == "530"
-        assert _probe_tier_cache[("org/m", "sha1")] == "530"
+        assert _probe_tier_cache["org/m"] == "530"
 
     def test_partial_sidecars_no_parse_is_530_uncached(self, monkeypatch):
         # 510 sidecar missing and 530/550 fail to parse -> environment is incomplete, so we
         # cannot conclude; return 530 uncached so it is retried once 510 is available.
-        monkeypatch.setattr("utils.transformers_version._resolve_commit_sha", lambda m, t: "sha1")
         monkeypatch.delenv("UNSLOTH_DISABLE_TIER_PROBE", raising = False)
         for fn in ("_ensure_venv_t5_530_exists", "_ensure_venv_t5_550_exists"):
             monkeypatch.setattr(f"utils.transformers_version.{fn}", lambda: True)
@@ -735,25 +725,18 @@ class TestProbeTier:
             lambda cmd, **k: _proc(1, "KeyError: '-'"),
         )
         assert _probe_tier("org/m", None, "x") == "530"
-        assert ("org/m", "sha1") not in _probe_tier_cache
+        assert "org/m" not in _probe_tier_cache
 
-    def test_success_not_cached_when_sha_unresolved(self, monkeypatch):
-        # codex #6: an unresolvable commit sha must not pin the tier cache under (model, None);
-        # the result is returned uncached so a later revision change is not masked.
-        monkeypatch.setattr("utils.transformers_version._resolve_commit_sha", lambda m, t: None)
+    def test_success_not_cached_when_lower_tier_skipped(self, monkeypatch):
+        # 530 sidecar unavailable but 550 parses: return 550 (best effort now) but do NOT
+        # cache it, since once 530 is installed it may be the lowest valid tier.
         monkeypatch.delenv("UNSLOTH_DISABLE_TIER_PROBE", raising = False)
-        for fn in (
-            "_ensure_venv_t5_530_exists",
-            "_ensure_venv_t5_550_exists",
-            "_ensure_venv_t5_510_exists",
-        ):
+        monkeypatch.setattr("utils.transformers_version._ensure_venv_t5_530_exists", lambda: False)
+        for fn in ("_ensure_venv_t5_550_exists", "_ensure_venv_t5_510_exists"):
             monkeypatch.setattr(f"utils.transformers_version.{fn}", lambda: True)
-        results = iter([_proc(1, "KeyError: '-'"), _proc(1, "KeyError: '-'"), _proc(0)])
-        monkeypatch.setattr(
-            "utils.transformers_version.subprocess.run", lambda cmd, **k: next(results)
-        )
-        assert _probe_tier("org/m", None, "x") == "510"
-        assert ("org/m", None) not in _probe_tier_cache
+        monkeypatch.setattr("utils.transformers_version.subprocess.run", lambda cmd, **k: _proc(0))
+        assert _probe_tier("org/m", None, "x") == "550"
+        assert "org/m" not in _probe_tier_cache  # skipped a lower tier -> not pinned
 
     def test_cache_hit_skips_subprocess(self, monkeypatch):
         self._patch_common(monkeypatch)
@@ -761,7 +744,7 @@ class TestProbeTier:
         assert _probe_tier("org/m", None, "x") == "530"
 
         def boom(cmd, **k):
-            raise AssertionError("should not re-probe a cached (model, sha)")
+            raise AssertionError("should not re-probe a cached model_name")
 
         monkeypatch.setattr("utils.transformers_version.subprocess.run", boom)
         assert _probe_tier("org/m", None, "x") == "530"
@@ -773,7 +756,7 @@ class TestProbeTier:
             lambda cmd, **k: _proc(1, "ConnectionError: Max retries exceeded"),
         )
         assert _probe_tier("org/m", None, "x") == "530"
-        assert ("org/m", "sha1") not in _probe_tier_cache  # retried next load
+        assert "org/m" not in _probe_tier_cache  # retried next load
 
     def test_timeout_is_530_and_uncached(self, monkeypatch):
         import subprocess as _sp
@@ -785,10 +768,9 @@ class TestProbeTier:
 
         monkeypatch.setattr("utils.transformers_version.subprocess.run", timeout)
         assert _probe_tier("org/m", None, "x") == "530"
-        assert ("org/m", "sha1") not in _probe_tier_cache
+        assert "org/m" not in _probe_tier_cache
 
     def test_all_venvs_missing_is_530_no_spawn(self, monkeypatch):
-        monkeypatch.setattr("utils.transformers_version._resolve_commit_sha", lambda m, t: "s")
         for fn in (
             "_ensure_venv_t5_530_exists",
             "_ensure_venv_t5_550_exists",
@@ -801,7 +783,17 @@ class TestProbeTier:
 
         monkeypatch.setattr("utils.transformers_version.subprocess.run", boom)
         assert _probe_tier("org/m", None, "x") == "530"
-        assert ("org/m", "s") not in _probe_tier_cache  # nothing probed -> uncached
+        assert "org/m" not in _probe_tier_cache  # nothing probed -> uncached
+
+    def test_probe_does_not_import_hub(self, monkeypatch):
+        # The probe must not pull huggingface_hub into the process: that would happen before
+        # the sidecar venv is on sys.path (activate only prepends, never purges), pinning the
+        # default-env hub over the sidecar's. So no commit-sha resolution in-process.
+        self._patch_common(monkeypatch)
+        monkeypatch.setattr("utils.transformers_version.subprocess.run", lambda cmd, **k: _proc(0))
+        sys.modules.pop("huggingface_hub", None)
+        _probe_tier("org/m", None, "x")
+        assert "huggingface_hub" not in sys.modules
 
     def test_disable_flag_skips_probe(self, monkeypatch):
         monkeypatch.setenv("UNSLOTH_DISABLE_TIER_PROBE", "1")
@@ -832,64 +824,6 @@ class TestProbeTier:
         assert _stderr_is_transient("KeyError: '-'") is False
         assert _stderr_is_transient("ValueError: bad pattern") is False
 
-    def test_local_dir_signature_changes_with_content(self, tmp_path):
-        cfg = tmp_path / "config.json"
-        cfg.write_text('{"model_type": "x"}')
-        first = _local_dir_signature(tmp_path)
-        assert first is not None
-        cfg.write_text('{"model_type": "x", "extra": 1}')
-        assert _local_dir_signature(tmp_path) != first
-        assert _local_dir_signature(tmp_path / "nope") is None
-
-    def test_resolve_commit_sha_does_not_memoize_none(self, monkeypatch):
-        # codex #6: a transient Hub failure must be retried, not pinned as None.
-        monkeypatch.setattr("utils.transformers_version._env_offline", lambda: False)
-        calls = {"n": 0}
-
-        class _Api:
-            def model_info(
-                self,
-                m,
-                token = None,
-            ):
-                calls["n"] += 1
-                raise RuntimeError("transient")
-
-        monkeypatch.setitem(sys.modules, "huggingface_hub", _types.ModuleType("huggingface_hub"))
-        sys.modules["huggingface_hub"].HfApi = _Api
-        assert _resolve_commit_sha("org/does-not-resolve", None) is None
-        assert "org/does-not-resolve" not in _probe_sha_cache
-        assert _resolve_commit_sha("org/does-not-resolve", None) is None
-        assert calls["n"] == 2  # retried, not served from a memoized None
-
-    def test_resolve_commit_sha_handles_oserror_on_exists(self, monkeypatch):
-        # gemini: Path.exists() can raise OSError on Windows for an invalid local path;
-        # treat as "not local" instead of crashing get_transformers_tier.
-        monkeypatch.setattr("utils.transformers_version._env_offline", lambda: True)
-        import utils.transformers_version as tv
-
-        class _BadPath:
-            def __init__(self, *a):
-                pass
-
-            def exists(self):
-                raise OSError("WinError 123: invalid path syntax")
-
-        monkeypatch.setattr(tv, "Path", _BadPath)
-        assert _resolve_commit_sha("org/weird::id", None) is None  # no raise
-
-    def test_local_signature_not_memoized(self, tmp_path, monkeypatch):
-        # codex: a local dir signature is mutable; it must be recomputed every call so an
-        # overwritten checkpoint is not pinned to the old tier. Only remote SHAs memoize.
-        monkeypatch.setattr("utils.transformers_version._env_offline", lambda: True)
-        cfg = tmp_path / "config.json"
-        cfg.write_text('{"model_type": "x"}')
-        first = _resolve_commit_sha(str(tmp_path), None)
-        assert first is not None
-        assert str(tmp_path) not in _probe_sha_cache  # local sig never memoized
-        cfg.write_text('{"model_type": "x", "extra": 1234567}')  # size changes
-        assert _resolve_commit_sha(str(tmp_path), None) != first  # recomputed, not stale
-
     def test_get_tier_threads_token_to_checks(self, monkeypatch):
         # A gated/private model: the token must reach the config/tokenizer checks (and the
         # probe), otherwise the authed-only signal is missed and it falls to default 4.x.
@@ -912,6 +846,20 @@ class TestProbeTier:
         )
         assert get_transformers_tier("org/gated-5x", "hf_abc") == "510"
         assert seen == {"510": "hf_abc", "550": "hf_abc", "tok": "hf_abc", "probe": "hf_abc"}
+
+    def test_activate_threads_token_to_tier(self, monkeypatch):
+        # activate_transformers_for_subprocess must forward hf_token to tier detection, or
+        # the gated-model checks above run unauthenticated and the fix is unreachable.
+        seen = {}
+        monkeypatch.setattr(
+            "utils.transformers_version._resolve_base_model", lambda m: m
+        )
+        monkeypatch.setattr(
+            "utils.transformers_version.get_transformers_tier",
+            lambda m, t = None: seen.update({"model": m, "token": t}) or "default",
+        )
+        activate_transformers_for_subprocess("org/gated", "hf_xyz")
+        assert seen == {"model": "org/gated", "token": "hf_xyz"}
 
 
 # ---------------------------------------------------------------------------
