@@ -1,4 +1,0 @@
-- User directed: `Place it on the PR as examples`
-- Decision implied: the examples should be posted directly on the pull request, rather than only kept locally or summarized in chat.
-- COMPLETED in this span: no tool actions or file edits occurred.
-- PENDING: add the examples to the PR, likely as a PR comment/review comment depending on existing workflow.

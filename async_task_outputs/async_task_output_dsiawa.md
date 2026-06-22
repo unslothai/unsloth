@@ -1,1 +1,0 @@
-- Said PR `#6392` (+`#6430`) fixes API model swapping gripes; caveats: opt-in, single-slot, not update bug, not shipped.

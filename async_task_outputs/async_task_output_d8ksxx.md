@@ -1,7 +1,0 @@
-- Decision: explained Studio `/v1` auto-switch behavior as opt-in because with toggle off `model` remains ignored for compatibility.
-- Decision: highlighted `model` now selects local GGUF and swaps loaded model, enabling OpenAI SDK/harness workflows.
-- Decision: called out caveats: single-slot unload/load causes thrash; unknown model falls through instead of 404; external providers separate.
-- Verified live against running Studio: `/v1/models` lists downloaded GGUFs; chat requests switched `SmolLM2-135M` ↔ `Qwen3-1.7B`; exact quant syntax works.
-- User-facing code shown with `OpenAI(base_url="http://127.0.0.1:8902/v1")`, `httpx.put("http://127.0.0.1:8902/api/settings/openai-auto-switch")`, `auto_unload_idle_seconds`.
-- Completed: practical SDK usage summary.
-- Pending: PR still not merged to main.

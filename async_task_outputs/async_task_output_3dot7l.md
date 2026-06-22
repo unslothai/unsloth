@@ -1,7 +1,0 @@
-- User asked: `So via the OpenAI Python API, what can we do now? Or what's changed?`
-- Decision/context: next response should explain current/recent OpenAI Python API capabilities/changes; because this is time-sensitive and OpenAI-product-specific, use the `openai-docs` skill and official OpenAI docs before answering.
-- Files edited: none.
-- Commands run: none.
-- Errors: none.
-- COMPLETED: captured the user’s latest question.
-- PENDING: answer the API capability/change question with verified current docs.
