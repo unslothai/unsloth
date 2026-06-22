@@ -3142,8 +3142,10 @@ if [ -t 1 ]; then
             # the shell to die parsing the now-truncated tail (`unexpected fi`).
             # Ignore Ctrl+C so this shell waits for studio's own graceful
             # shutdown instead of dying first and racing the prompt over its logs.
+            # Run studio in a subshell that resets INT to default, so the child
+            # does not inherit the ignore (which would swallow its own Ctrl+C).
             trap '' INT
-            "$VENV_DIR/bin/unsloth" studio -p 8888 </dev/null
+            (trap - INT; exec "$VENV_DIR/bin/unsloth" studio -p 8888 </dev/null)
             _LAUNCH_EXIT=$?
             if [ "$_LAUNCH_EXIT" -ne 0 ] && [ "$_MIGRATED" = true ]; then
                 echo ""

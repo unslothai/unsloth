@@ -1324,10 +1324,12 @@ if __name__ == "__main__":
 
     # Signal handler -- ensures subprocess cleanup on Ctrl+C.
     def _signal_handler(signum, frame):
-        # Restore defaults first so a second Ctrl+C / SIGTERM force-quits if the
-        # graceful shutdown below ever stalls.
+        # Restore defaults first so a second Ctrl+C / SIGTERM (or SIGBREAK on
+        # Windows) force-quits if the graceful shutdown below ever stalls.
         signal.signal(signal.SIGINT, signal.SIG_DFL)
         signal.signal(signal.SIGTERM, signal.SIG_DFL)
+        if hasattr(signal, "SIGBREAK"):
+            signal.signal(signal.SIGBREAK, signal.SIG_DFL)
         _graceful_shutdown(_server)
         _shutdown_event.set()
 
