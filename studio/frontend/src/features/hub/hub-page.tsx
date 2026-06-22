@@ -740,6 +740,23 @@ export function ModelsPage() {
     () => (isDiscoverTab ? [] : tokenizeQuery(deferredDebouncedQuery)),
     [isDiscoverTab, deferredDebouncedQuery],
   );
+  // Hide infra models (e.g. the RAG embedder bge-small-en-v1.5) from the On
+  // Device list like Discover, but reveal a row when a query matches it so the
+  // user can confirm it is already downloaded.
+  const isVisibleInventoryRow = useCallback(
+    (row: CachedInventoryRow | LocalInventoryRow) =>
+      // Local rows can have a null repoId and an id that is a hash rather than
+      // the file path/name, so also check path/title (the backend's
+      // _is_hidden_model checks the on-disk path for the same reason).
+      !isHiddenModelId(
+        row.id,
+        row.repoId,
+        row.kind !== "cache" ? row.path : undefined,
+        row.kind !== "cache" ? row.title : undefined,
+      ) ||
+      (inventoryTokens.length > 0 && inventoryRowMatches(row, inventoryTokens)),
+    [inventoryTokens],
+  );
   // Format filter is a deliberate scope narrowing, so hard-filter it out. The
   // text query instead drives dim-not-filter on On Device (see ModelsCatalog) so
   // selection survives typing; matching rows are partitioned to the top.
@@ -748,12 +765,22 @@ export function ModelsPage() {
       partitionByMatch(
         effectiveCachedRows.filter(
           (row) =>
+            // Hidden-model filtering is model-only; datasets bypass it (and the
+            // format filter) the way Discover does, so a dataset whose
+            // id/title/path happens to contain an infra needle is not dropped.
             isDatasetMode ||
-            matchesFormat(row.modelFormat, deferredFormatFilter),
+            (matchesFormat(row.modelFormat, deferredFormatFilter) &&
+              isVisibleInventoryRow(row)),
         ),
         inventoryTokens,
       ),
-    [effectiveCachedRows, isDatasetMode, deferredFormatFilter, inventoryTokens],
+    [
+      effectiveCachedRows,
+      isDatasetMode,
+      deferredFormatFilter,
+      inventoryTokens,
+      isVisibleInventoryRow,
+    ],
   );
 
   const filteredLocalRows = useMemo(
@@ -761,12 +788,42 @@ export function ModelsPage() {
       partitionByMatch(
         effectiveLocalRows.filter(
           (row) =>
+            // Hidden-model filtering is model-only; datasets bypass it (and the
+            // format filter) the way Discover does, so a dataset whose
+            // id/title/path happens to contain an infra needle is not dropped.
             isDatasetMode ||
-            matchesFormat(row.modelFormat, deferredFormatFilter),
+            (matchesFormat(row.modelFormat, deferredFormatFilter) &&
+              isVisibleInventoryRow(row)),
         ),
         inventoryTokens,
       ),
-    [effectiveLocalRows, isDatasetMode, deferredFormatFilter, inventoryTokens],
+    [
+      effectiveLocalRows,
+      isDatasetMode,
+      deferredFormatFilter,
+      inventoryTokens,
+      isVisibleInventoryRow,
+    ],
+  );
+
+  // Header tallies exclude infra/hidden models so the count matches the On
+  // Device list (a fresh install with only the bge embedder cached reads 0,
+  // not 1 over an empty list). Reuse isVisibleInventoryRow so a hidden row
+  // revealed by an active search is counted too, and datasets (never infra)
+  // keep their full count, mirroring the row filter above.
+  const visibleCachedCount = useMemo(
+    () =>
+      effectiveCachedRows.filter(
+        (row) => isDatasetMode || isVisibleInventoryRow(row),
+      ).length,
+    [effectiveCachedRows, isDatasetMode, isVisibleInventoryRow],
+  );
+  const visibleLocalCount = useMemo(
+    () =>
+      effectiveLocalRows.filter(
+        (row) => isDatasetMode || isVisibleInventoryRow(row),
+      ).length,
+    [effectiveLocalRows, isDatasetMode, isVisibleInventoryRow],
   );
 
   const filterResetSignature = useMemo(
@@ -1315,15 +1372,15 @@ export function ModelsPage() {
     return (
       <HubListHeader
         title="On device"
-        count={effectiveCachedRows.length + effectiveLocalRows.length}
+        count={visibleCachedCount + visibleLocalCount}
         view={allModelsView}
         onViewChange={setAllModelsView}
         actions={sortControl}
       />
     );
   }, [
-    effectiveCachedRows.length,
-    effectiveLocalRows.length,
+    visibleCachedCount,
+    visibleLocalCount,
     allModelsView,
     setAllModelsView,
     inventorySort,
@@ -1337,8 +1394,8 @@ export function ModelsPage() {
     <div className="hub-page flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden bg-background">
       <HubTopBar>
         <ModelsHeader
-          cachedCount={effectiveCachedRows.length}
-          localCount={effectiveLocalRows.length}
+          cachedCount={visibleCachedCount}
+          localCount={visibleLocalCount}
           isDataset={isDatasetMode}
           gpuLabel={gpuLabel}
           ramLabel={ramLabel}
