@@ -1658,7 +1658,16 @@ export function ChatPage({
       // the pick needs downloading, start it in the manager so it runs alongside
       // the load. Nothing to download (already on device) just waits.
       if (store.modelLoading) {
-        if (wantManagerDownload) {
+        // Both an uncached non-GGUF snapshot (wantManagerDownload) and an
+        // uncached remote GGUF quant download through the manager, so either can
+        // run in the background while another model loads. wantManagerDownload
+        // excludes GGUF by design, so the GGUF case is checked separately.
+        const wantBackgroundDownload =
+          wantManagerDownload ||
+          (selection.source === "hub" &&
+            hasGgufSource(selection) &&
+            !selection.isDownloaded);
+        if (wantBackgroundDownload) {
           void downloadManager.requestStart({
             kind: DOWNLOAD_KIND.MODEL,
             repoId: selection.id,
