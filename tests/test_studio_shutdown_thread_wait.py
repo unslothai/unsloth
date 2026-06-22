@@ -31,9 +31,7 @@ def _calls_name(tree: ast.AST, name: str) -> int:
     return sum(
         1
         for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == name
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == name
     )
 
 
@@ -73,9 +71,9 @@ def test_run_server_records_uvicorn_thread_for_terminal_shutdown_wait():
         for node in ast.walk(run_server)
     )
 
-    assert assigns_thread_global, (
-        "run_server must retain the uvicorn thread so terminal shutdown can join it"
-    )
+    assert (
+        assigns_thread_global
+    ), "run_server must retain the uvicorn thread so terminal shutdown can join it"
 
 
 def test_wait_for_server_shutdown_joins_uvicorn_thread():
@@ -89,22 +87,22 @@ def test_wait_for_server_shutdown_joins_uvicorn_thread():
         for node in ast.walk(wait_func)
     )
 
-    assert joins_thread, (
-        "_wait_for_server_shutdown must join the uvicorn thread before process exit"
-    )
+    assert (
+        joins_thread
+    ), "_wait_for_server_shutdown must join the uvicorn thread before process exit"
 
 
 def test_direct_backend_entrypoint_waits_before_returning_to_shell():
     tree = _parse(_RUN_PY)
 
-    assert _calls_name(tree, "_wait_for_server_shutdown") >= 2, (
-        "run.py must wait both from the signal path and after the main shutdown event loop"
-    )
+    assert (
+        _calls_name(tree, "_wait_for_server_shutdown") >= 2
+    ), "run.py must wait both from the signal path and after the main shutdown event loop"
 
 
 def test_cli_entrypoints_wait_before_returning_to_shell():
     tree = _parse(_STUDIO_CLI_PY)
 
-    assert _calls_shutdown_wait_getattr(tree) >= 4, (
-        "Studio CLI terminal paths must wait for the backend thread after requesting shutdown"
-    )
+    assert (
+        _calls_shutdown_wait_getattr(tree) >= 4
+    ), "Studio CLI terminal paths must wait for the backend thread after requesting shutdown"
