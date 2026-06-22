@@ -530,6 +530,7 @@ def _normalize_tied_weights_keys_for_save(save_fn):
     to the save keeps both the save and the live model correct. ``model`` is the first
     positional arg (bound-method ``self``) or the ``model=`` keyword.
     """
+
     @functools.wraps(save_fn)
     def wrapper(*args, **kwargs):
         model = kwargs.get("model")
@@ -542,6 +543,7 @@ def _normalize_tied_weights_keys_for_save(save_fn):
             return save_fn(*args, **kwargs)
         finally:
             _restore_tied_weights_keys(originals)
+
     return wrapper
 
 

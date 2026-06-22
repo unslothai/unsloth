@@ -104,7 +104,7 @@ def test_decorator_restores_on_exception():
 def test_decorator_finds_model_in_kwargs_and_positional():
     # unsloth_save_model / unsloth_generic_save pass model= as a keyword; the gguf path
     # binds it as the first positional (method ``self``). Both must be coerced.
-    for call in (lambda f, r: f(model=r), lambda f, r: f(r)):
+    for call in (lambda f, r: f(model = r), lambda f, r: f(r)):
         root, mixer = _build_tree()
         mixer._tied_weights_keys = ["w.weight"]
         captured = {}
