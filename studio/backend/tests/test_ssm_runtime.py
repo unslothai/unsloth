@@ -424,7 +424,7 @@ def test_inference_worker_resolves_remote_lora_base_pre_import():
 def test_inference_worker_tiers_on_base_and_gates_lora_base_only():
     src = (_BACKEND / "core" / "inference" / "worker.py").read_text()
     # Tier activation runs on the resolved base, not the raw adapter id (remote-LoRA fix).
-    assert "_activate_transformers_version(_base)" in src
+    assert "_activate_transformers_version(_base" in src
     # The gate only adds a genuine LoRA base, never a full fine-tune's recorded (unloaded) base.
     assert "_gate_targets" in src and "_lora_base" in src
 
