@@ -1220,8 +1220,8 @@ class FastBaseModel:
                 if _missing_torchvision_error(_processor_load_error):
                     raise ImportError(
                         f"Unsloth: Could not load the vision processor for `{tokenizer_name}` "
-                        "because torchvision is not installed. transformers >= 5.4 requires "
-                        "torchvision for vision (image/video) processors. Please install it, "
+                        "because torchvision is not installed. transformers requires torchvision "
+                        "for this model's vision (image/video) processors. Please install it, "
                         "e.g. `pip install torchvision`."
                     )
                 import sys
