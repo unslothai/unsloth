@@ -48,7 +48,9 @@ def test_compute_identity_proof_matches_manual_hmac():
     ).hexdigest()
     assert storage.compute_identity_proof(nonce, HOST, PORT) == expected
     # Bound to nonce, host and port: changing any one yields a different proof.
-    assert storage.compute_identity_proof(b"a-different-nonce-entirely-here!!", HOST, PORT) != expected
+    assert (
+        storage.compute_identity_proof(b"a-different-nonce-entirely-here!!", HOST, PORT) != expected
+    )
     assert storage.compute_identity_proof(nonce, "127.0.0.2", PORT) != expected
     assert storage.compute_identity_proof(nonce, HOST, PORT + 1) != expected
 

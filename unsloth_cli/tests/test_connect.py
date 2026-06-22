@@ -643,7 +643,9 @@ def test_verify_studio_identity_end_to_end(tmp_path, monkeypatch):
     monkeypatch.setattr(storage, "DB_PATH", tmp_path / "auth.db")
     monkeypatch.setattr(storage, "_identity_secret_cache", None)
 
-    good = lambda nonce, host, port: storage.compute_identity_proof(nonce, host, port)  # real secret
+    good = lambda nonce, host, port: storage.compute_identity_proof(
+        nonce, host, port
+    )  # real secret
     bad = lambda nonce, host, port: "00" * 32  # spoofer without the secret
     base_ok, stop_ok = _serve_identity(good)
     base_bad, stop_bad = _serve_identity(bad)
