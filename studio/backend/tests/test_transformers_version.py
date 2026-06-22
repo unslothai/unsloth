@@ -557,6 +557,76 @@ class TestConfigJsonHfCacheFallback:
         with patch("urllib.request.urlopen", return_value = _hf_response(fresh)):
             assert _load_config_json("org/model") == fresh
 
+    def test_auth_failure_does_not_serve_cache(self, tmp_path: Path, monkeypatch):
+        import urllib.error
+
+        # A repo whose config.json is in the hub cache from an earlier authorized session.
+        cfg = {"model_type": "nemotron_h", "hybrid_override_pattern": "M-M*-"}
+        self._seed_cache(tmp_path, "private/model", cfg)
+        monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
+        monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+        # 401/403/404 is a definitive "no access": an unauthenticated caller must not be
+        # handed the cached private metadata.
+        for code in (401, 403, 404):
+            _config_json_cache.clear()
+            err = urllib.error.HTTPError("url", code, "denied", {}, None)
+            with patch("urllib.request.urlopen", side_effect = err):
+                assert _load_config_json("private/model") is None
+
+    def test_server_error_still_falls_back_to_cache(self, tmp_path: Path, monkeypatch):
+        import urllib.error
+
+        cfg = {"model_type": "nemotron_h", "hybrid_override_pattern": "M-M*-"}
+        self._seed_cache(tmp_path, "org/model", cfg)
+        monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
+        monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+        # A 5xx is transient, not an access decision: keep serving the cache.
+        err = urllib.error.HTTPError("url", 503, "busy", {}, None)
+        with patch("urllib.request.urlopen", side_effect = err):
+            assert _load_config_json("org/model") == cfg
+
+
+class TestTierCheckTransientRetry:
+    """tier-needs checks must not memoize a transient fetch fallback."""
+
+    def setup_method(self):
+        _config_json_cache.clear()
+        _config_needs_510_cache.clear()
+        _config_needs_550_cache.clear()
+
+    @staticmethod
+    def _seed_cache(hub: Path, repo_id: str, cfg: dict, commit: str = "deadbeef"):
+        repo = hub / ("models--" + repo_id.replace("/", "--"))
+        snap = repo / "snapshots" / commit
+        snap.mkdir(parents = True)
+        (snap / "config.json").write_text(json.dumps(cfg))
+        (repo / "refs").mkdir(parents = True)
+        (repo / "refs" / "main").write_text(commit)
+
+    def test_transient_fallback_not_memoized_then_retries(self, tmp_path: Path, monkeypatch):
+        stale = {"model_type": "llama"}  # does not need 510
+        fresh = {"architectures": ["Gemma4UnifiedForConditionalGeneration"]}  # needs 510
+        self._seed_cache(tmp_path, "org/model", stale)
+        monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
+        monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+        # Network blip -> serve the cache, but do NOT pin the tier result.
+        with patch("urllib.request.urlopen", side_effect = OSError("boom")):
+            assert _check_config_needs_510("org/model") is False
+        assert "org/model" not in _config_needs_510_cache
+        # Connectivity returns: the next call re-fetches and sees the higher tier.
+        with patch("urllib.request.urlopen", return_value = _hf_response(fresh)):
+            assert _check_config_needs_510("org/model") is True
+        assert _config_needs_510_cache["org/model"] is True  # definitive read is memoized
+
+    def test_definitive_network_read_is_memoized(self, tmp_path: Path, monkeypatch):
+        fresh = {"architectures": ["Gemma4ForConditionalGeneration"]}  # needs 550
+        monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
+        monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+        with patch("urllib.request.urlopen", return_value = _hf_response(fresh)) as mock_url:
+            assert _check_config_needs_550("org/model") is True
+            assert _check_config_needs_550("org/model") is True
+            assert mock_url.call_count == 1  # second call served from the tier cache
+
 
 class TestHigherTier:
     def test_picks_stronger_tier(self):
