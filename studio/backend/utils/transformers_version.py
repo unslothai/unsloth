@@ -341,6 +341,13 @@ def _check_tokenizer_config_needs_v5(model_name: str) -> bool:
         return False
 
 
+def _safe_mtime(path: Path) -> float:
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
 def _config_json_from_hf_cache(model_name: str) -> dict | None:
     """Parsed ``config.json`` from the local HF hub cache, or None.
 
@@ -363,7 +370,11 @@ def _config_json_from_hf_cache(model_name: str) -> dict | None:
     try:
         if ref_main.is_file():
             candidates.append(repo_dir / "snapshots" / ref_main.read_text().strip() / "config.json")
-        candidates += sorted(repo_dir.glob("snapshots/*/config.json"))
+        # No refs/main (e.g. commit-pinned downloads): newest snapshot by mtime, not a stale
+        # lexicographically-first SHA, matching what the Hub cache would actually load.
+        candidates += sorted(
+            repo_dir.glob("snapshots/*/config.json"), key = _safe_mtime, reverse = True
+        )
         for cfg_path in candidates:
             if cfg_path.is_file():
                 with open(cfg_path) as f:
@@ -420,10 +431,9 @@ def _load_config_json(model_name: str, hf_token: str | None = None) -> dict | No
         return cfg
     except Exception as exc:
         logger.debug("Could not fetch config.json for '%s': %s", model_name, exc)
-        # Fall back to the hub cache if the fetch failed (rate limit, transient block).
-        cfg = _config_json_from_hf_cache(model_name)
-        _config_json_cache[cache_key] = cfg
-        return cfg
+        # Transient failure (rate limit, block): serve the hub cache but do NOT cache it,
+        # so a later call retries the network once connectivity returns.
+        return _config_json_from_hf_cache(model_name)
 
 
 def _config_matches_tier(cfg: dict, architectures: set[str], model_types: set[str]) -> bool:

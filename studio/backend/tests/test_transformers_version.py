@@ -529,6 +529,34 @@ class TestConfigJsonHfCacheFallback:
         assert _config_json_from_hf_cache(str(tmp_path)) is None
         assert _config_json_from_hf_cache("plainname") is None
 
+    def test_no_refs_main_picks_newest_snapshot(self, tmp_path: Path, monkeypatch):
+        # No refs/main (commit-pinned downloads): lexicographic order would pick the older
+        # SHA; selection must follow mtime so the newest snapshot wins.
+        repo = tmp_path / "models--org--model"
+        old = repo / "snapshots" / "0000old"
+        new = repo / "snapshots" / "ffffnew"
+        old.mkdir(parents = True)
+        new.mkdir(parents = True)
+        (old / "config.json").write_text(json.dumps({"model_type": "stale"}))
+        (new / "config.json").write_text(json.dumps({"model_type": "fresh"}))
+        os.utime(old / "config.json", (1000, 1000))
+        os.utime(new / "config.json", (2000, 2000))
+        monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
+        assert _config_json_from_hf_cache("org/model") == {"model_type": "fresh"}
+
+    def test_transient_failure_does_not_cache_fallback(self, tmp_path: Path, monkeypatch):
+        stale = {"model_type": "nemotron_h", "hybrid_override_pattern": "MMMM"}
+        fresh = {"model_type": "nemotron_h", "hybrid_override_pattern": "M-M*-"}
+        self._seed_cache(tmp_path, "org/model", stale)
+        monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
+        monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+        # Network fails -> serve the cached snapshot, but it must not be memoized.
+        with patch("urllib.request.urlopen", side_effect = OSError("boom")):
+            assert _load_config_json("org/model") == stale
+        # Connectivity returns: the next call must hit the network for the fresh config.
+        with patch("urllib.request.urlopen", return_value = _hf_response(fresh)):
+            assert _load_config_json("org/model") == fresh
+
 
 class TestHigherTier:
     def test_picks_stronger_tier(self):
