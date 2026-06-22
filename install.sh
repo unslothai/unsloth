@@ -1439,6 +1439,100 @@ elif [ "$OS" = "macos" ]; then
 fi
 tauri_diag_marker "$_TAURI_INITIAL_GPU_BRANCH" "none"
 
+# Strix Halo ROCm-on-WSL only targets Ubuntu 24.04. On a newer distro (e.g. 26.04)
+# with a 24.04 distro present, re-run the install there and stop; else fall through
+# to CPU + the `wsl --install` hint below (never auto-create a distro). Runs before
+# the STUDIO_HOME mkdir/venv so the origin distro is untouched.
+_maybe_reroute_strixhalo_to_2404() {
+    [ "${OS:-}" = "wsl" ] || return 0
+    [ "${SKIP_TORCH:-false}" = "false" ] || return 0
+    [ "${UNSLOTH_SKIP_ROCM_WSL_SETUP:-0}" = "1" ] && return 0
+    [ "${UNSLOTH_WSL_REROUTED:-0}" = "1" ] && return 0
+    [ -e /dev/dxg ] || return 0
+    grep -qiE 'Ryzen AI Max|Radeon 80[0-9]0S|Strix Halo' /proc/cpuinfo 2>/dev/null || return 0
+    # Already ROCm-on-WSL? leave a working GPU alone, whatever the version.
+    if [ -e /opt/rocm/lib/librocdxg.so ] || [ -e /opt/rocm/lib64/librocdxg.so ]; then
+        return 0
+    fi
+    _rr_ver=""
+    [ -r /etc/os-release ] && _rr_ver=$(. /etc/os-release 2>/dev/null; printf '%s' "${VERSION_ID:-}")
+    # The bootstrap (scripts/install_rocm_wsl_strixhalo.sh) dies on any VERSION_ID but
+    # 24.04 and pins the noble repo, so 24.04 is the sole GPU-supported target; leave a
+    # 24.04 user alone. (Working ROCm on other versions was caught by librocdxg above.)
+    case "$_rr_ver" in 24.04) return 0 ;; esac
+    # Distro is now unsupported. If we can't reroute to a 24.04 target, stay CPU-only
+    # AND skip the later origin-distro ROCm bootstrap (it ignores distro version, so it
+    # would otherwise install ROCm into 26.04 etc.).
+    command -v wsl.exe >/dev/null 2>&1 || { UNSLOTH_SKIP_ROCM_WSL_SETUP=1; return 0; }
+    # Route only to an installed Ubuntu-24.04 (bootstrap's only target). Match the whole
+    # line (one distro per line from wsl.exe -l -q), not a substring, so "Ubuntu-24.04-test"
+    # can't masquerade as it and then fail `wsl -d`.
+    # || true: no match is expected, not an error (script runs under set -e).
+    _rr_distros=$(wsl.exe -l -q 2>/dev/null | tr -d '\000\r')
+    _rr_target=$(printf '%s\n' "$_rr_distros" | grep -ixF "Ubuntu-24.04" | head -n1) || true
+    [ -n "$_rr_target" ] || {
+        substep "ROCm-on-WSL (GPU) needs Ubuntu 24.04; this distro is Ubuntu ${_rr_ver:-unknown}." "$C_WARN"
+        substep "No Ubuntu-24.04 WSL distro found; staying CPU-only. Install Ubuntu-24.04 and re-run there for GPU." "$C_WARN"
+        UNSLOTH_SKIP_ROCM_WSL_SETUP=1
+        return 0
+    }
+
+    echo ""
+    substep "ROCm-on-WSL (GPU) needs Ubuntu 24.04; this distro is Ubuntu ${_rr_ver:-unknown}." "$C_WARN"
+    substep "Found an existing $_rr_target distro -- continuing the GPU install there." "$C_OK"
+    # A --local checkout can't be replayed via curl|sh (the repo isn't in the target
+    # distro), so tell the user to re-run there rather than silently run a different install.
+    if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
+        substep "This is a --local install; re-run it from $_rr_target instead:" "$C_WARN"
+        substep "  wsl -d $_rr_target -- bash -lc 'cd <your checkout> && ./install.sh --local'" "$C_WARN"
+        substep "Continuing CPU-only in Ubuntu ${_rr_ver:-this distro} for now." "$C_WARN"
+        # Unsupported distro, can't reroute a --local checkout: skip the origin ROCm bootstrap.
+        UNSLOTH_SKIP_ROCM_WSL_SETUP=1
+        return 0
+    fi
+    # Forward the caller's options/env (custom package/python/home) so the rerouted
+    # install matches what was asked for, not a default install.
+    _rr_q() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
+    _rr_exports="set -o pipefail; export UNSLOTH_WSL_REROUTED=1"
+    [ "$_STUDIO_HOME_REDIRECT" = "env" ] && _rr_exports="$_rr_exports; export UNSLOTH_STUDIO_HOME=$(_rr_q "$STUDIO_HOME")"
+    # Forward explicit ROCm-bootstrap consent (e.g. Tauri) so the child auto-enables the
+    # GPU instead of falling back to the desktop-app prompt path.
+    [ "${UNSLOTH_ROCM_WSL_AUTO:-0}" = "1" ] && _rr_exports="$_rr_exports; export UNSLOTH_ROCM_WSL_AUTO=1"
+    _rr_args=""
+    [ "$PACKAGE_NAME" != "unsloth" ] && _rr_args="$_rr_args --package $(_rr_q "$PACKAGE_NAME")"
+    [ -n "$_USER_PYTHON" ] && _rr_args="$_rr_args --python $(_rr_q "$_USER_PYTHON")"
+    [ "$_VERBOSE" = true ] && _rr_args="$_rr_args --verbose"
+    [ "$TAURI_MODE" = true ] && _rr_args="$_rr_args --tauri"
+    if [ -n "${UNSLOTH_WSL_REROUTE_CMD:-}" ]; then
+        _rr_cmd="$UNSLOTH_WSL_REROUTE_CMD"               # user took full control
+    elif [ -n "$_rr_args" ]; then
+        _rr_cmd="curl -fsSL https://unsloth.ai/install.sh | sh -s --$_rr_args"
+    else
+        _rr_cmd="curl -fsSL https://unsloth.ai/install.sh | sh"
+    fi
+    # pipefail so a failed curl in `curl | sh` isn't masked by sh exiting 0 on empty
+    # input (which would wrongly report success and exit 0 the parent installer).
+    _rr_rc=0
+    wsl.exe -d "$_rr_target" -- bash -lc "$_rr_exports; $_rr_cmd" || _rr_rc=$?
+    if [ "$_rr_rc" -eq 0 ]; then
+        exit 0
+    fi
+    # In Tauri mode the child uses exit 2 ([TAURI:NEED_SUDO]) to ask the desktop app to
+    # elevate for the target distro; the child already printed the NEED_SUDO line, so
+    # propagate the code instead of masking it as a reroute failure and dropping to CPU.
+    if [ "$TAURI_MODE" = true ] && [ "$_rr_rc" -eq 2 ]; then
+        exit 2
+    fi
+    substep "Could not auto-continue in $_rr_target; run it yourself:" "$C_WARN"
+    substep "  wsl -d $_rr_target -- bash -lc 'curl -fsSL https://unsloth.ai/install.sh | sh'"
+    substep "Continuing CPU-only in Ubuntu ${_rr_ver:-this distro} for now." "$C_WARN"
+    # Reroute failed; don't let the later bootstrap install ROCm into this unsupported
+    # distro -- stay CPU-only.
+    UNSLOTH_SKIP_ROCM_WSL_SETUP=1
+    return 0
+}
+_maybe_reroute_strixhalo_to_2404 || true
+
 # ── Check system dependencies ──
 # cmake and git are needed by unsloth studio setup to build the GGUF inference
 # engine (llama.cpp). build-essential and libcurl-dev are also needed on Linux.
@@ -2460,6 +2554,9 @@ elif case "$TORCH_INDEX_URL" in */rocm*|*/gfx*) true ;; *) false ;; esac; then
     substep "ROCm: $_rocm_root"
     [ -n "$_gpu_rocm_ver" ] && substep "hipconfig: $_gpu_rocm_ver"
     [ -n "$_gpu_disp_mkt" ] && [ -n "$_gpu_disp_gfx" ] && substep "GPU: $_gpu_disp_mkt"
+elif [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; then
+    # Apple Silicon: PyTorch gets Metal (MPS) acceleration over unified memory, so not CPU-only.
+    step "gpu" "Apple Silicon (Metal, unified memory)"
 else
     step "gpu" "none (CPU-only)" "$C_WARN"
 fi
@@ -2524,7 +2621,7 @@ if [ "$_MIGRATED" = true ]; then
         # to prevent transitive torch resolution.
         run_install_cmd_retry "install unsloth (migrated no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "unsloth>=2026.6.8" "unsloth-zoo>=2026.6.6"
+            "unsloth>=2026.6.9" "unsloth-zoo>=2026.6.7"
         # Resolve pydantic WITH deps so pip pins pydantic-core to the
         # matching version (no-torch-runtime.txt below is --no-deps).
         # All transitive deps are torch-free.
@@ -2537,7 +2634,7 @@ if [ "$_MIGRATED" = true ]; then
     else
         run_install_cmd_retry "install unsloth (migrated)" uv pip install --python "$_VENV_PY" \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "unsloth>=2026.6.8" "unsloth-zoo>=2026.6.6"
+            "unsloth>=2026.6.9" "unsloth-zoo>=2026.6.7"
     fi
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         substep "overlaying local repo (editable)..."
@@ -2741,7 +2838,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
         run_install_cmd_retry "install unsloth (no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --upgrade-package unsloth --upgrade-package unsloth-zoo \
-            "unsloth>=2026.6.8" "unsloth-zoo>=2026.6.6"
+            "unsloth>=2026.6.9" "unsloth-zoo>=2026.6.7"
         # Same pydantic-with-deps trick as the migrated branch.
         run_install_cmd_retry "install pydantic (with deps for compatible core)" \
             uv pip install --python "$_VENV_PY" pydantic
@@ -2759,7 +2856,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         fi
     elif [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         run_install_cmd_retry "install unsloth (local)" uv pip install --python "$_VENV_PY" \
-            --upgrade-package unsloth "unsloth>=2026.6.8" "unsloth-zoo>=2026.6.6"
+            --upgrade-package unsloth "unsloth>=2026.6.9" "unsloth-zoo>=2026.6.7"
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
         substep "overlaying unsloth-zoo from git main..."
@@ -2791,7 +2888,7 @@ else
     tauri_log "STEP" "Installing Unsloth"
     substep "installing unsloth (this may take a few minutes)..."
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-        run_install_cmd_retry "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" "unsloth-zoo>=2026.6.6" "unsloth>=2026.6.8" --torch-backend=auto
+        run_install_cmd_retry "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" "unsloth-zoo>=2026.6.7" "unsloth>=2026.6.9" --torch-backend=auto
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
         substep "overlaying unsloth-zoo from git main..."
@@ -3029,10 +3126,11 @@ echo ""
 if [ -t 1 ]; then
     echo ""
     printf "  Start Unsloth Studio now? [Y/n] "
+    # No readable answer (closed/EOF tty) defaults to no; Enter is still yes.
     if [ -r /dev/tty ]; then
-        read -r _reply </dev/tty || _reply="y"
+        read -r _reply </dev/tty || _reply="n"
     else
-        _reply="y"
+        _reply="n"
     fi
     case "${_reply:-y}" in
         [Yy]*|"")
@@ -3040,8 +3138,12 @@ if [ -t 1 ]; then
             # Detach stdin from the `curl | sh` pipe: as a foreground server the
             # studio would otherwise drain the rest of this piped script, leaving
             # the shell to die parsing the now-truncated tail (`unexpected fi`).
-            "$VENV_DIR/bin/unsloth" studio -p 8888 </dev/null
-            _LAUNCH_EXIT=$?
+            # trap '' INT: wait for studio's shutdown instead of racing the prompt.
+            # Subshell resets INT so the child still gets Ctrl+C (no inherited ignore).
+            trap '' INT
+            # `|| ...`: capture the exit code without set -e aborting first.
+            _LAUNCH_EXIT=0
+            (trap - INT; exec "$VENV_DIR/bin/unsloth" studio -p 8888 </dev/null) || _LAUNCH_EXIT=$?
             if [ "$_LAUNCH_EXIT" -ne 0 ] && [ "$_MIGRATED" = true ]; then
                 echo ""
                 echo "⚠️  Unsloth Studio failed to start after migration."

@@ -1944,6 +1944,7 @@ export function createOpenAIStreamAdapter(
           externalModelLabel: externalSelection?.modelId ?? null,
           loadedIsMultimodal: runtime.loadedIsMultimodal,
           modelLoaded: !!params.checkpoint && !runtime.modelLoading,
+          loadError: runtime.lastModelLoadError,
         });
         if (imageGateReason) {
           toast.error(imageGateReason);

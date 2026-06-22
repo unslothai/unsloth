@@ -68,7 +68,7 @@ import {
   PowerIcon,
   PencilEdit02Icon,
   LayoutAlignLeftIcon,
-  Setting07Icon,
+  Settings02Icon,
   Sun03Icon,
   TestTube01Icon,
   ZapIcon,
@@ -108,7 +108,7 @@ import {
 } from "@/features/chat";
 import { useSettingsDialogStore } from "@/features/settings";
 import { useEffectiveProfile, UserAvatar } from "@/features/profile";
-import { usePlatformStore } from "@/config/env";
+import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { clearAuthTokens, logout } from "@/features/auth";
 import { TOUR_OPEN_EVENT } from "@/features/tour";
 import {
@@ -211,6 +211,7 @@ function NavItem({
   dataTour,
   className,
   spinner,
+  tooltip,
 }: {
   icon: typeof ZapIcon;
   label: string;
@@ -221,12 +222,15 @@ function NavItem({
   dataTour?: string;
   className?: string;
   spinner?: boolean;
+  // Overrides the hover tooltip (defaults to `label`). Used to explain why a
+  // disabled item (e.g. Train/Export on a chat-only host) is greyed out.
+  tooltip?: string;
 }) {
   return (
     <SidebarMenuItem className={className}>
       <div className="relative">
         <SidebarMenuButton
-          tooltip={label}
+          tooltip={tooltip ?? label}
           disabled={disabled}
           onClick={onClick}
           isActive={active}
@@ -267,6 +271,33 @@ export function AppSidebar() {
   };
 
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
+  const chatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);
+  // When Train/Export are greyed out (chat-only host), explain why on hover
+  // instead of disabling them silently. mlx_unavailable is the common macOS case
+  // after a reinstall/update dropped MLX and is recoverable via `unsloth studio update`.
+  const trainExportDisabledHint: string | undefined = !chatOnly
+    ? undefined
+    : chatOnlyReason === "mlx_unavailable"
+      ? "Training needs MLX. Run `unsloth studio update` to enable Train and Export."
+      : chatOnlyReason === "intel_mac"
+        ? "Training needs Apple Silicon or a GPU. Intel Macs are chat-only."
+        : chatOnlyReason === "no_gpu"
+          ? "Training needs an NVIDIA or AMD GPU."
+          : undefined;
+
+  // The backend MLX self-heal (utils/mlx_repair) can reinstall MLX in the
+  // background and flip chat_only false without a restart. The platform store
+  // cached the initial /api/health, so re-poll while we are chat-only for the
+  // recoverable mlx_unavailable case; the effect stops once Train/Export become
+  // available (chatOnly flips false and this effect's guard returns early).
+  useEffect(() => {
+    if (!chatOnly || chatOnlyReason !== "mlx_unavailable") return;
+    const id = window.setInterval(() => {
+      void fetchDeviceType({ force: true }).catch(() => undefined);
+    }, 15000);
+    return () => window.clearInterval(id);
+  }, [chatOnly, chatOnlyReason]);
+
   const [shutdownOpen, setShutdownOpen] = useState(false);
 
   const isChatRoute = pathname.startsWith("/chat");
@@ -1105,6 +1136,7 @@ export function AppSidebar() {
                   pathname === "/studio" || pathname.startsWith("/studio/")
                 }
                 disabled={chatOnly}
+                tooltip={trainExportDisabledHint}
                 spinner={trainingInProgress}
                 onClick={() => {
                   if (chatOnly) return;
@@ -1133,6 +1165,7 @@ export function AppSidebar() {
                     label={t("shell.navigation.train")}
                     active={pathname === "/studio" || pathname.startsWith("/studio/")}
                     disabled={chatOnly}
+                    tooltip={trainExportDisabledHint}
                     spinner={trainingInProgress}
                     onClick={() => {
                       if (chatOnly) return;
@@ -1154,6 +1187,7 @@ export function AppSidebar() {
                     label={t("shell.navigation.export")}
                     active={pathname === "/export" || pathname.startsWith("/export/")}
                     disabled={chatOnly}
+                    tooltip={trainExportDisabledHint}
                     spinner={exportInProgress}
                     onClick={() => {
                       if (chatOnly) return;
@@ -1321,7 +1355,7 @@ export function AppSidebar() {
         <div
           aria-hidden="true"
           className={cn(
-            "pointer-events-none absolute left-0 right-2 bottom-full h-10 bg-gradient-to-t from-[var(--sidebar)] to-transparent transition-opacity duration-200",
+            "pointer-events-none absolute left-0 right-2 bottom-full h-10 bg-gradient-to-t from-[var(--sidebar)] to-[rgb(from_var(--sidebar)_r_g_b/0)] transition-opacity duration-200",
             canScrollDown ? "opacity-100" : "opacity-0",
           )}
         />
@@ -1348,7 +1382,7 @@ export function AppSidebar() {
                   </div>
                   {/* settings cog (replaces the up/down chevron) */}
                   <HugeiconsIcon
-                    icon={Setting07Icon}
+                    icon={Settings02Icon}
                     strokeWidth={1.5}
                     className="ml-auto !size-[18px] text-muted-foreground group-data-[collapsible=icon]:hidden"
                   />
@@ -1364,7 +1398,7 @@ export function AppSidebar() {
                   <DropdownMenuItem
                     onSelect={() => useSettingsDialogStore.getState().openDialog()}
                   >
-                    <HugeiconsIcon icon={Setting07Icon} strokeWidth={1.75} className="size-icon" />
+                    <HugeiconsIcon icon={Settings02Icon} strokeWidth={1.75} className="size-icon" />
                     <span>{t("shell.navigation.settings")}</span>
                     <DropdownMenuShortcut>⌘,</DropdownMenuShortcut>
                   </DropdownMenuItem>
