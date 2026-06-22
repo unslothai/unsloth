@@ -267,7 +267,9 @@ def test_linux_blackwell_override_prefers_cuda13_for_datacenter(monkeypatch):
     # front -- the native Blackwell line -- exactly as it already does for an
     # RTX 50. The coverage filter alone can't decide this (both lines cover the
     # host SM), so only the corrected sm_100 floor flips the choice.
-    cuda12 = _linux_cuda_artifact("cuda12", ["86", "89", "90", "100", "120"], 86, 120, "cuda12-newer")
+    cuda12 = _linux_cuda_artifact(
+        "cuda12", ["86", "89", "90", "100", "120"], 86, 120, "cuda12-newer"
+    )
     cuda13 = _linux_cuda_artifact(
         "cuda13", ["86", "89", "90", "100", "103", "120"], 86, 120, "cuda13-newer"
     )
