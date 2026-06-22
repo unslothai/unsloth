@@ -534,7 +534,10 @@ def test_preflight_first_batch_returns_error_on_empty_stream():
     # If we successfully loaded the module, find the trainer class.
     trainer_cls = None
     for name, obj in vars(trainer_mod).items() if "trainer_mod" in dir() else []:
-        if hasattr(obj, "_preflight_first_batch"):
+        # Only real classes — when heavy deps are stubbed with MagicMock,
+        # hasattr() is always True on a mock, so guard on isinstance(obj, type)
+        # to avoid picking a mock instance (object.__new__ would then reject it).
+        if isinstance(obj, type) and hasattr(obj, "_preflight_first_batch"):
             trainer_cls = obj
             break
 
