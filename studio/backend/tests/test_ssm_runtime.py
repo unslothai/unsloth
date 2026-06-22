@@ -80,6 +80,40 @@ def test_non_ssm_models_not_detected(name):
     assert ssm_runtime.model_wants_causal_conv1d(name) is False
 
 
+# ── ssm_probe_identifier: match a real model id, never an arbitrary name ───────
+
+
+def test_probe_lora_uses_base_not_adapter_name():
+    # A plain-Llama LoRA whose adapter id contains an SSM substring is not SSM.
+    probe = ssm_runtime.ssm_probe_identifier("user/falcon-h1-lora", "meta-llama/Llama-3-8B")
+    assert probe == "meta-llama/Llama-3-8B"
+    assert ssm_runtime.model_is_ssm(probe) is False
+
+
+def test_probe_lora_on_ssm_base_detected():
+    probe = ssm_runtime.ssm_probe_identifier("user/my-adapter", "nvidia/Nemotron-H-8B")
+    assert ssm_runtime.model_is_ssm(probe) is True
+
+
+def test_probe_plain_hf_id_unchanged():
+    assert ssm_runtime.ssm_probe_identifier("nvidia/Nemotron-H-8B") == "nvidia/Nemotron-H-8B"
+
+
+def test_probe_local_path_uses_basename(tmp_path):
+    # Parent folders are arbitrary: a Llama checkpoint under a falcon-h1 dir is not SSM.
+    d = tmp_path / "falcon-h1-experiment" / "llama-checkpoint"
+    d.mkdir(parents = True)
+    probe = ssm_runtime.ssm_probe_identifier(str(d))
+    assert probe == "llama-checkpoint"
+    assert ssm_runtime.model_is_ssm(probe) is False
+
+
+def test_probe_local_ssm_checkpoint_basename_detected(tmp_path):
+    d = tmp_path / "runs" / "nemotron-h-finetune"
+    d.mkdir(parents = True)
+    assert ssm_runtime.model_is_ssm(ssm_runtime.ssm_probe_identifier(str(d))) is True
+
+
 # ── ensure_ssm_runtime behaviour ─────────────────────────────────────────────
 
 
@@ -393,6 +427,13 @@ def test_inference_worker_tiers_on_base_and_gates_lora_base_only():
     assert "_activate_transformers_version(_base)" in src
     # The gate only adds a genuine LoRA base, never a full fine-tune's recorded (unloaded) base.
     assert "_gate_targets" in src and "_lora_base" in src
+
+
+def test_inference_worker_probes_base_for_ssm_kernels():
+    # Both the pre-import path and _handle_load must derive SSM targets from a real model id
+    # via ssm_probe_identifier, not the raw adapter id / local checkpoint path.
+    src = (_BACKEND / "core" / "inference" / "worker.py").read_text()
+    assert src.count("ssm_probe_identifier(") >= 2
 
 
 def test_pre_import_gate_is_transformers_free():

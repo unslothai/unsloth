@@ -84,6 +84,26 @@ def model_wants_causal_conv1d(model_name: str) -> bool:
     return any(sub in name for sub in CAUSAL_CONV1D_MODEL_SUBSTRINGS)
 
 
+def ssm_probe_identifier(model_name: str, base: str | None = None) -> str:
+    """The identifier whose architecture decides the SSM kernels.
+
+    The substring match must run against a real model id, never an arbitrary name: a LoRA
+    adapter id and a local checkpoint's parent folders are unrelated to its architecture
+    (a plain Llama LoRA at ``user/falcon-h1-lora`` or ``/runs/falcon-h1/llama-ckpt`` is not
+    SSM). Prefer the resolved *base*; for a bare local checkpoint use its basename so parent
+    directories cannot false-match.
+    """
+    probe = base or model_name
+    if probe == model_name:
+        try:
+            from utils.paths import is_local_path
+            if is_local_path(model_name):
+                probe = os.path.basename((model_name or "").rstrip("/\\")) or model_name
+        except Exception:
+            pass
+    return probe
+
+
 def _is_importable(import_name: str) -> bool:
     # Invalidate finder caches so a kernel installed earlier in this process is seen.
     importlib.invalidate_caches()

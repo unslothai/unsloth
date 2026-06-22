@@ -161,6 +161,20 @@ class TestRemoteLoraBase:
         assert _remote_lora_base("/local/dir/adapter") is None
         assert _remote_lora_base("plainname") is None
 
+    def test_respects_hf_endpoint(self, monkeypatch):
+        # Enterprise mirror: the fetch must target HF_ENDPOINT, not hardcoded huggingface.co.
+        monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+        monkeypatch.setenv("HF_ENDPOINT", "https://hf.mirror.internal")
+        seen = {}
+
+        def fake_urlopen(req, timeout = 10):
+            seen["url"] = req.full_url
+            return self._resp({"base_model_name_or_path": "org/base"})
+
+        with patch("urllib.request.urlopen", side_effect = fake_urlopen):
+            assert _remote_lora_base("user/adapter") == "org/base"
+        assert seen["url"].startswith("https://hf.mirror.internal/user/adapter/raw/main/")
+
     @staticmethod
     def _seed_adapter_cache(
         hub: Path,

@@ -298,10 +298,12 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
         # Install SSM/Mamba kernels. Normally a no-op for the initial load (pre-installed in
         # run_inference_process before importing transformers); still needed for a LoRA's base
         # (resolved only now via mc) and later in-process loads. Skip on MLX (no macOS wheel).
+        # Probe the base, not the adapter id / local path (arbitrary names must not match).
         if getattr(backend, "device", None) != "mlx":
-            ssm_targets = [config["model_name"]]
-            if mc.is_lora and getattr(mc, "base_model", None):
-                ssm_targets.append(str(mc.base_model))
+            from utils.ssm_runtime import ssm_probe_identifier
+
+            _ssm_base = str(mc.base_model) if (mc.is_lora and getattr(mc, "base_model", None)) else None
+            ssm_targets = [ssm_probe_identifier(config["model_name"], _ssm_base)]
             if not _ensure_ssm_kernels(ssm_targets, resp_queue):
                 return
 
@@ -825,10 +827,11 @@ def run_inference_process(*, cmd_queue: Any, resp_queue: Any, cancel_event, conf
         compute_subdirs = False,  # stay transformers-free until the SSM kernels are installed
     ):
         return
-    # SSM install also covers a full fine-tune's base name (reveals the SSM architecture).
-    _ssm_targets = [model_name]
-    if _base and _base != model_name:
-        _ssm_targets.append(_base)
+    # Probe the resolved base for SSM kernels, not the adapter id / local checkpoint path
+    # (arbitrary names must not match the SSM substrings).
+    from utils.ssm_runtime import ssm_probe_identifier
+
+    _ssm_targets = [ssm_probe_identifier(model_name, _base)]
     if not _ensure_ssm_kernels(_ssm_targets, resp_queue):
         return
 

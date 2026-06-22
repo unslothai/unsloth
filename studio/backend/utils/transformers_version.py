@@ -343,7 +343,8 @@ def _remote_lora_base(model_name: str, hf_token: str | None = None) -> str | Non
     import urllib.error
     import urllib.request
 
-    url = f"https://huggingface.co/{model_name}/raw/main/adapter_config.json"
+    endpoint = (os.environ.get("HF_ENDPOINT") or "https://huggingface.co").rstrip("/")
+    url = f"{endpoint}/{model_name}/raw/main/adapter_config.json"
     headers = {"User-Agent": "unsloth-studio"}
     if hf_token:
         headers["Authorization"] = f"Bearer {hf_token}"
