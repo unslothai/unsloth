@@ -31,12 +31,8 @@ _scan: tuple[float, dict[str, _LocalGgufEntry]] = (0.0, {})
 
 
 def _local_gguf_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
-    """Build an entry only when real GGUF weights exist locally.
-
-    Excludes Transformers/safetensors models, and lists only the quants that
-    are on disk so auto-switch never asks /load to fetch a remote one. Recurses
-    snapshots and quant subdirs (e.g. ``snapshots/<sha>/BF16/model.gguf``).
-    """
+    """Build an entry only when GGUF quants are on disk (not Transformers/
+    safetensors), listing only on-disk quants so /load never fetches a remote one."""
     from pathlib import Path
     from utils.models.model_config import list_local_gguf_variants
 
@@ -77,9 +73,8 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
         loader_id = getattr(info, "id", None)
         if not loader_id:
             continue
-        # Skip what Studio hides from its own pickers (the llama.cpp validation
-        # probe, RAG embedding weights): not usable chat models, so never an
-        # auto-switch target.
+        # Skip what Studio hides from its pickers (validation probe, RAG embed
+        # weights): not chat models, so never an auto-switch target.
         if _is_hidden_model(loader_id, getattr(info, "path", None)):
             continue
         entry = _local_gguf_entry(loader_id, info)
@@ -107,11 +102,10 @@ def _index() -> dict[str, _LocalGgufEntry]:
 def resolve_local_gguf(requested: str) -> Optional[tuple[str, Optional[str]]]:
     """Return ``(loader_id, gguf_variant)`` for a downloaded local match, else None.
 
-    ``requested`` may be ``repo`` or ``repo:VARIANT``. An exact id match wins
-    first (so ids that themselves contain a colon, e.g. a Windows path, still
-    resolve); otherwise a trailing ``:VARIANT`` is split off the last colon. A
-    bare id resolves to a concrete local quant so /load never fetches a remote
-    one, and a requested variant resolves only when that quant is on disk.
+    ``requested`` is ``repo`` or ``repo:VARIANT``. An exact id match wins first
+    (so ids containing a colon still resolve); else the last ``:VARIANT`` is
+    split off and resolves only when that quant is on disk. A bare id picks a
+    concrete local quant so /load never fetches a remote one.
     """
     if not isinstance(requested, str) or not requested.strip():
         return None
@@ -142,9 +136,8 @@ def resolve_local_gguf(requested: str) -> Optional[tuple[str, Optional[str]]]:
 def list_switch_eligible_ids() -> list[str]:
     """Distinct loader ids for every downloaded GGUF auto-switch can serve.
 
-    Advertised in ``/v1/models`` so a client can discover what it can swap to,
-    mirroring llama-swap. Each is a name ``resolve_local_gguf`` accepts. (Hidden
-    helper/probe weights are already excluded from the index by ``_build_index``.)
+    Advertised in ``/v1/models`` so a client can discover what to swap to. Each
+    is a name ``resolve_local_gguf`` accepts.
     """
     try:
         return sorted({entry.loader_id for entry in _index().values()})

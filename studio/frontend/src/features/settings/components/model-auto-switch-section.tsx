@@ -45,8 +45,7 @@ export function ModelAutoSwitchSection() {
     };
   }, [t]);
 
-  // Parse the idle-seconds draft to a non-negative integer, or null when invalid.
-  // An empty/whitespace field is invalid rather than silently coerced to 0.
+  // Parse the idle-seconds draft to a non-negative integer; empty/invalid -> null.
   const parseIdleSeconds = (): number | null => {
     if (!draftIdleSeconds.trim()) {
       return null;
@@ -79,12 +78,9 @@ export function ModelAutoSwitchSection() {
     }
   };
 
-  // Idle auto-unload only makes sense with auto-switch: the model is freed when
-  // idle and reloaded on the next request, which needs the swap. So the two are
-  // tied. Turning the toggle off clears the idle timer (sends 0) while keeping
-  // the drafted seconds visible; the idle control is disabled until it is on.
-  // Turning it on commits the shown idle value, or the last-saved value when the
-  // draft is invalid (0 after a prior toggle-off), so it can never get stuck.
+  // Idle-unload is tied to auto-switch (the freed model reloads via the swap).
+  // Off sends 0 but keeps the drafted seconds visible; on commits the drafted
+  // value, falling back to the last saved one so it can never get stuck.
   const handleToggle = (enabled: boolean) => {
     if (!enabled) {
       void persist(false, 0, false);

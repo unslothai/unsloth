@@ -2065,8 +2065,7 @@ def get_llama_cpp_backend() -> LlamaCppBackend:
     return _llama_cpp_backend
 
 
-# Serializes opt-in auto-switch loads from the OpenAI-compatible endpoints so
-# two requests naming different models cannot race a swap.
+# Serializes opt-in auto-switch loads so two requests can't race a swap.
 _auto_switch_lock = asyncio.Lock()
 
 
@@ -2087,10 +2086,9 @@ async def _maybe_auto_switch_model(
 ) -> None:
     """Load a downloaded local GGUF named by an OpenAI request when auto-switch is on.
 
-    No-op unless the setting is enabled and ``requested_model`` resolves to a
-    downloaded local model different from the loaded one. Unknown names fall
-    through so drop-in OpenAI compatibility (any name serves the loaded model)
-    is preserved, and no remote download is triggered.
+    No-op unless enabled and ``requested_model`` resolves to a downloaded local
+    model different from the loaded one. Unknown names fall through (drop-in
+    compat) and no remote download is triggered.
     """
     from utils.openai_auto_switch_settings import (
         get_openai_auto_switch_enabled,
@@ -2120,8 +2118,7 @@ async def _maybe_auto_switch_model(
     async with _auto_switch_lock:
         if _already_serving():
             return
-        # Apply this model's saved launch flags (ctx, ngl, ...) so a swapped
-        # model is served the way the user configured it, not bare defaults.
+        # Apply this model's saved launch flags so the swap honors the user's config.
         override = get_model_override(target_id)
         load_kwargs = {"model_path": target_id, "gguf_variant": variant}
         if override.get("llama_extra_args") is not None:
@@ -6056,10 +6053,8 @@ def _openai_model_objects() -> list[dict]:
 
 
 async def _auto_switch_extra_model_objects(existing: list[dict]) -> list[dict]:
-    """Minimal model objects for switch-eligible downloaded GGUFs not already
-    listed. Empty unless auto-switch is on, so default ``/v1/models`` (just the
-    loaded model) is unchanged.
-    """
+    """Model objects for switch-eligible GGUFs not already listed. Empty unless
+    auto-switch is on, so default ``/v1/models`` (loaded model only) is unchanged."""
     from utils.openai_auto_switch_settings import get_openai_auto_switch_enabled
 
     if not get_openai_auto_switch_enabled():
@@ -7701,9 +7696,8 @@ async def openai_responses(
     messages = _normalise_responses_input(payload)
     if not messages:
         raise HTTPException(status_code = 400, detail = "No input provided.")
-    # Hook after input validation so a request that 400s never triggers a load.
-    # The streaming path switches here too; non-streaming re-checks via
-    # openai_chat_completions, which is idempotent once the model is loaded.
+    # After input validation so a 400 never triggers a load. Switches the
+    # streaming path; non-streaming re-checks via the idempotent chat handler.
     await _maybe_auto_switch_model(payload.model, request, current_subject)
 
     if payload.stream:

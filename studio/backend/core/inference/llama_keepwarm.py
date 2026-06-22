@@ -22,8 +22,7 @@ logger = get_logger(__name__)
 _lock = threading.Lock()
 _inflight = 0
 _last_active = time.monotonic()
-# Serializes a request's inflight bump against the idle check + unload so the
-# loop cannot unload in the gap between "looks idle" and the kill.
+# Guards inflight bumps against the idle-check-then-unload race.
 _unload_gate = asyncio.Lock()
 
 _INFERENCE_PREFIXES = ("/v1/", "/api/inference/")
@@ -78,9 +77,8 @@ class LlamaKeepWarmMiddleware:
         if scope.get("type") != "http" or not _is_inference_path(scope.get("path", "")):
             await self.app(scope, receive, send)
             return
-        # Track in-flight whenever auto-switch is on (not just when idle-unload is
-        # already armed): otherwise a stream that starts with the TTL at 0 is
-        # uncounted, and enabling idle mid-stream could unload it. Off -> passthrough.
+        # Track in-flight whenever auto-switch is on, not just when idle-unload is
+        # armed, so enabling idle mid-stream can't unload an in-flight request.
         from utils.openai_auto_switch_settings import get_openai_auto_switch_enabled
 
         if not get_openai_auto_switch_enabled():
@@ -121,16 +119,13 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
             from routes.inference import get_llama_cpp_backend
 
             backend = get_llama_cpp_backend()
-            # A newly loaded or swapped model counts as activity so it is never
-            # unloaded before its first request (loads bypass the inference
-            # middleware that stamps activity).
+            # A (re)loaded model counts as activity so it survives one TTL before
+            # its first request (loads bypass the activity-stamping middleware).
             current = backend.model_identifier if backend.is_loaded else None
             if current != seen_model:
                 seen_model = current
                 if current is not None:
                     _note_activity()
-            # Hold the gate across the idle check and the kill so a request
-            # cannot bump inflight in between.
             async with _unload_gate:
                 if backend.is_loaded and _is_idle(ttl):
                     await asyncio.to_thread(backend.unload_model)

@@ -853,8 +853,7 @@ app.add_middleware(
     upload_passthrough_max_bytes_getter = _get_upload_passthrough_request_max_bytes,
 )
 
-# Tracks in-flight inference requests for opt-in idle auto-unload; passes
-# straight through when the feature is off.
+# Tracks in-flight inference requests for idle auto-unload; off -> passthrough.
 from core.inference.llama_keepwarm import LlamaKeepWarmMiddleware  # noqa: E402
 
 app.add_middleware(LlamaKeepWarmMiddleware)
