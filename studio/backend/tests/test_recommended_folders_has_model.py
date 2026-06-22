@@ -20,6 +20,7 @@ Run:
 """
 
 import ast
+import json
 import os
 from pathlib import Path
 
@@ -44,7 +45,7 @@ def _load_has_downloaded_model():
     got = {n.name for n in body if isinstance(n, ast.FunctionDef)}
     assert got == wanted, f"helpers missing from source: {wanted - got}"
     module = ast.Module(body = body, type_ignores = [])
-    ns: dict = {"Path": Path, "os": os}
+    ns: dict = {"Path": Path, "os": os, "json": json}
     exec(compile(module, f"<extracted {_models_src}>", "exec"), ns)
     return ns["_dir_has_downloaded_model"]
 
@@ -84,10 +85,45 @@ def test_ollama_with_manifest_is_true(tmp_path):
     models = tmp_path / "ollama" / "models"
     manifest = models / "manifests" / "registry.ollama.ai" / "library" / "llama3"
     manifest.mkdir(parents = True)
-    (manifest / "latest").write_text("{}")
+    # A real manifest references its weights via an image.model layer; the
+    # referenced blob must exist on disk for the model to be loadable.
+    (manifest / "latest").write_text(
+        json.dumps(
+            {
+                "layers": [
+                    {
+                        "mediaType": "application/vnd.ollama.image.model",
+                        "digest": "sha256:abc",
+                    }
+                ]
+            }
+        )
+    )
     (models / "blobs").mkdir()
     (models / "blobs" / "sha256-abc").write_bytes(b"x")
     assert has_downloaded_model(models) is True
+
+
+def test_ollama_manifest_without_blob_is_false(tmp_path):
+    # A failed/pruned pull leaves the manifest behind but its model blob is
+    # gone: the chip must not lead to an empty picker.
+    models = tmp_path / "ollama" / "models"
+    manifest = models / "manifests" / "registry.ollama.ai" / "library" / "llama3"
+    manifest.mkdir(parents = True)
+    (manifest / "latest").write_text(
+        json.dumps(
+            {
+                "layers": [
+                    {
+                        "mediaType": "application/vnd.ollama.image.model",
+                        "digest": "sha256:missing",
+                    }
+                ]
+            }
+        )
+    )
+    (models / "blobs").mkdir()  # empty: the referenced blob never landed
+    assert has_downloaded_model(models) is False
 
 
 def test_non_model_files_is_false(tmp_path):

@@ -650,13 +650,19 @@ function GgufVariantExpander({
 
   const handleVariantClick = useCallback(
     (quant: string, downloaded?: boolean, sizeBytes?: number) => {
+      // Only seed the staged context for picks whose weights are already on
+      // disk. The staging effect short-circuits on a known contextLength
+      // (pendingHasContext) before starting the download, so attaching it to an
+      // undownloaded quant from a partially cached repo would skip the download
+      // entirely (and, with Load on selection, never load).
+      const isAvailable = isLocalPath || downloaded === true;
       onSelect(repoId, {
         source: sourceOverride ?? (isLocalPath ? "local" : "hub"),
         isLora: false,
         ggufVariant: quant,
         isDownloaded: isLocalPath ? true : downloaded,
         expectedBytes: sizeBytes,
-        contextLength: nativeContext,
+        contextLength: isAvailable ? nativeContext : undefined,
       });
     },
     [repoId, isLocalPath, onSelect, sourceOverride, nativeContext],
@@ -671,19 +677,24 @@ function GgufVariantExpander({
 
   const getGgufFit = useCallback(
     (sizeBytes: number): "fits" | "tight" | "oom" => {
-      if (!gpuGb || gpuGb <= 0) return "fits";
+      // No device budget at all (no GPU and no known system RAM): can't
+      // classify, so don't scare the user with OOM badges.
+      if (totalBudgetGb <= 0) return "fits";
       const gb = sizeBytes / 1024 ** 3;
       if (gb <= 0 || gb <= gpuBudgetGb) return "fits";
+      // No-GPU / unified-memory hosts (Mac) have only the RAM budget, so the
+      // tier collapses to fit-or-oom against system RAM rather than GPU+offload.
+      if (gpuBudgetGb <= 0) return gb <= totalBudgetGb ? "fits" : "oom";
       if (gb <= totalBudgetGb) return "tight";
       return "oom";
     },
-    [gpuGb, gpuBudgetGb, totalBudgetGb],
+    [gpuBudgetGb, totalBudgetGb],
   );
 
   // If the recommended variant is OOM, pick the largest fitting one;
   // if all are OOM, recommend the smallest.
   const effectiveRecommended = useMemo(() => {
-    if (!variants || !gpuGb || gpuGb <= 0) return defaultVariant;
+    if (!variants || totalBudgetGb <= 0) return defaultVariant;
     const defaultV = variants.find((v) => v.quant === defaultVariant);
     if (defaultV && getGgufFit(defaultV.size_bytes) !== "oom")
       return defaultVariant;
@@ -696,7 +707,7 @@ function GgufVariantExpander({
     // All OOM -- recommend smallest (most likely to partially run)
     const sorted = [...variants].sort((a, b) => a.size_bytes - b.size_bytes);
     return sorted[0].quant;
-  }, [variants, defaultVariant, gpuGb, getGgufFit]);
+  }, [variants, defaultVariant, totalBudgetGb, getGgufFit]);
 
   const sortedVariants = useMemo(() => {
     if (!variants) return variants;
@@ -2895,11 +2906,7 @@ export function HubModelPicker({
                               gpuGb={
                                 gpu.available ? gpu.memoryTotalGb : undefined
                               }
-                              systemRamGb={
-                                gpu.available
-                                  ? gpu.systemRamAvailableGb
-                                  : undefined
-                              }
+                              systemRamGb={gpu.systemRamAvailableGb || undefined}
                             />
                           )}
                         </div>
@@ -2986,11 +2993,7 @@ export function HubModelPicker({
                               gpuGb={
                                 gpu.available ? gpu.memoryTotalGb : undefined
                               }
-                              systemRamGb={
-                                gpu.available
-                                  ? gpu.systemRamAvailableGb
-                                  : undefined
-                              }
+                              systemRamGb={gpu.systemRamAvailableGb || undefined}
                             />
                           )}
                         </div>
@@ -3067,11 +3070,7 @@ export function HubModelPicker({
                               gpuGb={
                                 gpu.available ? gpu.memoryTotalGb : undefined
                               }
-                              systemRamGb={
-                                gpu.available
-                                  ? gpu.systemRamAvailableGb
-                                  : undefined
-                              }
+                              systemRamGb={gpu.systemRamAvailableGb || undefined}
                             />
                           )}
                         </div>
@@ -3150,11 +3149,7 @@ export function HubModelPicker({
                               gpuGb={
                                 gpu.available ? gpu.memoryTotalGb : undefined
                               }
-                              systemRamGb={
-                                gpu.available
-                                  ? gpu.systemRamAvailableGb
-                                  : undefined
-                              }
+                              systemRamGb={gpu.systemRamAvailableGb || undefined}
                               onDeleteVariant={async (quant) => {
                                 await deleteCachedModel(id, quant);
                                 refreshCachedLists();
@@ -3239,11 +3234,7 @@ export function HubModelPicker({
                             gpuGb={
                               gpu.available ? gpu.memoryTotalGb : undefined
                             }
-                            systemRamGb={
-                              gpu.available
-                                ? gpu.systemRamAvailableGb
-                                : undefined
-                            }
+                            systemRamGb={gpu.systemRamAvailableGb || undefined}
                             onDeleteVariant={async (quant) => {
                               await deleteCachedModel(id, quant);
                               refreshCachedLists();
@@ -3330,11 +3321,7 @@ export function HubModelPicker({
                               gpuGb={
                                 gpu.available ? gpu.memoryTotalGb : undefined
                               }
-                              systemRamGb={
-                                gpu.available
-                                  ? gpu.systemRamAvailableGb
-                                  : undefined
-                              }
+                              systemRamGb={gpu.systemRamAvailableGb || undefined}
                               onDeleteVariant={async (quant) => {
                                 await deleteCachedModel(id, quant);
                                 refreshCachedLists();

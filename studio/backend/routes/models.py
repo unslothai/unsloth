@@ -908,7 +908,12 @@ def _dir_has_downloaded_model(directory: Path, max_entries: int = 4000) -> bool:
     chip leads to is one the scanner would actually surface a model from.
     Bounded by *max_entries* so a huge tree can't stall the request.
     """
-    # Ollama layout: manifest files reference blobs that lack extensions.
+    # Ollama layout: each manifest is JSON referencing content-addressable
+    # blobs. A manifest file alone is not enough -- a failed or pruned pull
+    # leaves the manifest behind with its model blob missing, so we resolve the
+    # ``application/vnd.ollama.image.model`` layer to an on-disk blob before
+    # counting it, mirroring _scan_ollama_dir (which only surfaces a model once
+    # its blob resolves). Otherwise the chip leads to an empty picker.
     visited = 0
     manifests = directory / "manifests"
     blobs = directory / "blobs"
@@ -918,8 +923,18 @@ def _dir_has_downloaded_model(directory: Path, max_entries: int = 4000) -> bool:
                 visited += 1
                 if visited > max_entries:
                     break
-                if m.is_file():
-                    return True
+                if not m.is_file():
+                    continue
+                try:
+                    manifest = json.loads(m.read_text())
+                except (json.JSONDecodeError, OSError, ValueError):
+                    continue
+                for layer in manifest.get("layers") or []:
+                    if layer.get("mediaType") != "application/vnd.ollama.image.model":
+                        continue
+                    digest = layer.get("digest", "")
+                    if digest and (blobs / digest.replace(":", "-")).is_file():
+                        return True
     except OSError:
         pass
     # Generic weights: any GGUF/safetensors in a bounded BFS that skips hidden
