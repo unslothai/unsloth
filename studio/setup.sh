@@ -997,8 +997,8 @@ _HOST_MACHINE="$(uname -m 2>/dev/null || true)"
 # Pick the release repo install_llama_prebuilt.py plans against. Every host this
 # installer supports now pulls its llama.cpp prebuilt from the unslothai fork: it
 # ships the CUDA (Linux x64/arm64, Windows), ROCm (Linux/Windows) and macOS
-# bundles, plus the CPU (and Vulkan) bundles for Linux/Windows on both x86_64 and
-# arm64. ggml-org artifacts are no longer used by default.
+# bundles, plus the CPU bundles for Linux/Windows on both x86_64 and arm64.
+# ggml-org artifacts are no longer used by default.
 _HELPER_RELEASE_REPO="unslothai/llama.cpp"
 # UNSLOTH_ROCM_GFX_ARCH may be set on a host where no probe fired, so the override
 # nested in the AMD-detected branch above never ran and _setup_gfx is still empty.

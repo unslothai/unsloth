@@ -125,9 +125,9 @@ def env_int(
 # errors. Only use "master" temporarily when the latest release is missing
 # support for a new model architecture.
 DEFAULT_LLAMA_TAG = os.environ.get("UNSLOTH_LLAMA_TAG", "latest")
-# Default published repo for prebuilt release resolution. Linux uses
-# Unsloth prebuilts; setup.sh/setup.ps1 pass --published-repo explicitly
-# for macOS/Windows to override with ggml-org/llama.cpp when needed.
+# Default published repo for prebuilt release resolution. Every host plans
+# its prebuilt against the Unsloth fork; setup.sh/setup.ps1 pass it via
+# --published-repo. ggml-org is reachable only via an explicit override.
 DEFAULT_PUBLISHED_REPO = "unslothai/llama.cpp"
 DEFAULT_PUBLISHED_TAG = os.environ.get("UNSLOTH_LLAMA_RELEASE_TAG")
 DEFAULT_PUBLISHED_MANIFEST_ASSET = os.environ.get(
@@ -6801,8 +6801,8 @@ def parse_args() -> argparse.Namespace:
         const = "latest",
         help = (
             "Report whether an official prebuilt exists for this host without "
-            "downloading. Picks the host's published repo when --published-repo "
-            "is left at the default. Use --output-format json."
+            "downloading. Plans against --published-repo (defaults to the "
+            "fork). Use --output-format json."
         ),
     )
     parser.add_argument(
