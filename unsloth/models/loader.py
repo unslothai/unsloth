@@ -765,7 +765,12 @@ class FastLanguageModel(FastLlamaModel):
         _has_tok_files = (
             os.path.exists(os.path.join(old_model_name, "tokenizer.json"))
             or os.path.exists(os.path.join(old_model_name, "tokenizer.model"))
-            or os.path.exists(os.path.join(old_model_name, "vocab.json"))
+            # A BPE vocab.json is only loadable together with its merges.txt
+            # (GPT-2 / RoBERTa style); vocab.json alone is not self-sufficient.
+            or (
+                os.path.exists(os.path.join(old_model_name, "vocab.json"))
+                and os.path.exists(os.path.join(old_model_name, "merges.txt"))
+            )
             or os.path.exists(os.path.join(old_model_name, "vocab.txt"))
             or os.path.exists(os.path.join(old_model_name, "spiece.model"))
         )
@@ -1569,7 +1574,12 @@ class FastModel(FastBaseModel):
         _has_tok_files = (
             os.path.exists(os.path.join(old_model_name, "tokenizer.json"))
             or os.path.exists(os.path.join(old_model_name, "tokenizer.model"))
-            or os.path.exists(os.path.join(old_model_name, "vocab.json"))
+            # A BPE vocab.json is only loadable together with its merges.txt
+            # (GPT-2 / RoBERTa style); vocab.json alone is not self-sufficient.
+            or (
+                os.path.exists(os.path.join(old_model_name, "vocab.json"))
+                and os.path.exists(os.path.join(old_model_name, "merges.txt"))
+            )
             or os.path.exists(os.path.join(old_model_name, "vocab.txt"))
             or os.path.exists(os.path.join(old_model_name, "spiece.model"))
         )

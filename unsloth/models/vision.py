@@ -483,7 +483,6 @@ def _is_offline_related_error(exc):
         _net_types += [
             requests.exceptions.ConnectionError,
             requests.exceptions.Timeout,
-            requests.exceptions.HTTPError,
         ]
     except Exception:
         pass
@@ -492,17 +491,38 @@ def _is_offline_related_error(exc):
     # import is unavailable, which makes isinstance(..., ()) False and preserves
     # the original "every FileNotFoundError propagates" behaviour.
     _offline_fnf_types = ()
+    # HTTP errors are judged by status code, not type: only a transient 5xx is
+    # offline-ish (server briefly unreachable). A 401/403 (auth/gated) or 404
+    # (genuinely missing) is a real online response that must propagate instead of
+    # being masked by a forced local-cache retry that could serve stale files.
+    _http_types = ()
     try:
         from huggingface_hub.errors import (
             OfflineModeIsEnabled,
             HfHubHTTPError,
             LocalEntryNotFoundError,
         )
-        _net_types += [OfflineModeIsEnabled, HfHubHTTPError, LocalEntryNotFoundError]
+        _net_types += [OfflineModeIsEnabled, LocalEntryNotFoundError]
         _offline_fnf_types = (LocalEntryNotFoundError,)
+        _http_types += (HfHubHTTPError,)
+    except Exception:
+        pass
+    try:
+        import requests
+        _http_types += (requests.exceptions.HTTPError,)
     except Exception:
         pass
     _net_types = tuple(_net_types)
+
+    def _http_status(e):
+        resp = getattr(e, "response", None)
+        code = getattr(resp, "status_code", None)
+        if code is None:
+            code = getattr(e, "status_code", None)
+        try:
+            return int(code)
+        except (TypeError, ValueError):
+            return None
     _wording = (
         "couldn't connect",
         "could not connect",
@@ -533,7 +553,14 @@ def _is_offline_related_error(exc):
         is_fnf = isinstance(cur, FileNotFoundError) and not isinstance(cur, _offline_fnf_types)
         if isinstance(cur, _net_types) and not is_fnf:
             return True
-        if isinstance(cur, OSError) and not is_fnf:
+        # HTTP error: only a transient 5xx counts as offline; 4xx must propagate.
+        if isinstance(cur, _http_types):
+            code = _http_status(cur)
+            if code is not None and 500 <= code < 600:
+                return True
+        # Plain OSError wording fallback - never applied to HTTP errors (their
+        # status code already decided) so a 4xx message can't be misread.
+        elif isinstance(cur, OSError) and not is_fnf:
             if any(w in str(cur).lower() for w in _wording):
                 return True
         cur = cur.__cause__ or cur.__context__

@@ -958,7 +958,10 @@ def detect_audio_type(
             resolved_name = resolve_cached_repo_id_case(model_name)
     except Exception:
         resolved_name = model_name
-    cache_key = (resolved_name, _token_fingerprint(hf_token))
+    # Key on local_files_only too: a local-only probe only consults the on-disk
+    # cache, so its (possibly stale/partial) negative result must not be reused by
+    # a later online probe that would otherwise fetch the remote tokenizer config.
+    cache_key = (resolved_name, _token_fingerprint(hf_token), bool(local_files_only))
     if cache_key in _audio_detection_cache:
         return _audio_detection_cache[cache_key]
 
