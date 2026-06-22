@@ -210,6 +210,7 @@ def evaluate_remote_code_consent(
     trust_remote_code: bool,
     approved_fingerprint: Optional[str] = None,
     trusted_org: Optional[bool] = None,
+    subject: Optional[str] = None,
 ) -> RemoteCodeDecision:
     """Single-repo consent; thin wrapper over the for_targets form. ``trusted_org`` is
     accepted for backward compatibility but no longer changes the decision.
@@ -219,6 +220,7 @@ def evaluate_remote_code_consent(
         hf_token,
         trust_remote_code = trust_remote_code,
         approved_fingerprint = approved_fingerprint,
+        subject = subject,
     )
 
 
@@ -237,12 +239,27 @@ def _fingerprint_target_key(target: str) -> str:
     return target.lower()
 
 
+def _auto_approved_decision(model_name: str, stored) -> RemoteCodeDecision:
+    """A not-blocked decision built from a cached approval (no scan/download needed)."""
+    return RemoteCodeDecision(
+        model_name,
+        True,
+        False,
+        stored.fingerprint,
+        stored.max_severity,
+        "",
+        "approved by cache (sha match)",
+        approvable = True,
+    )
+
+
 def evaluate_remote_code_consent_for_targets(
     targets,
     hf_token: Optional[str] = None,
     *,
     trust_remote_code: bool,
     approved_fingerprint: Optional[str] = None,
+    subject: Optional[str] = None,
 ) -> RemoteCodeDecision:
     """Decide whether a ``trust_remote_code=True`` load may proceed, over every repo whose
     code the load would execute. A LoRA load runs adapter AND base code, so all targets
@@ -250,6 +267,10 @@ def evaluate_remote_code_consent_for_targets(
     -- one approval covers every repo, and a base-only fingerprint can't leave an
     adapter's own ``auto_map`` unreviewed. On ``blocked``, the caller surfaces
     ``response_payload()`` and retries with ``approved_fingerprint`` if the user accepts.
+
+    When ``subject`` is given, a prior approval by that user is honored: a commit-SHA match
+    auto-approves without re-downloading; otherwise the stored fingerprint seeds the
+    authoritative content check below, and a genuine approval is recorded for next time.
     """
     targets = [t for t in dict.fromkeys(targets) if t]
     primary = targets[0] if targets else ""
@@ -258,6 +279,25 @@ def evaluate_remote_code_consent_for_targets(
         return RemoteCodeDecision(
             primary, False, False, None, None, "", "trust_remote_code disabled"
         )
+
+    # Persistent per-user approval fast path. A SHA match means a byte-identical tree to
+    # the approved revision, so skip the scan/download entirely; otherwise (local/offline,
+    # or the SHA moved) seed the fingerprint so the content check still auto-approves an
+    # unchanged repo and re-prompts a changed one.
+    caller_approved_fingerprint = approved_fingerprint
+    if subject:
+        from utils.security import remote_code_approvals
+
+        _ak = remote_code_approvals.approval_target_key(targets)
+        _stored = remote_code_approvals.lookup(subject, _ak)
+        if _stored is not None:
+            _sha = remote_code_approvals.resolve_combined_sha(targets, hf_token)
+            if _sha is not None and _sha == _stored.commit_sha:
+                logger.info(
+                    "trust_remote_code approved from cache (sha match) for '%s'", primary
+                )
+                return _auto_approved_decision(primary, _stored)
+            approved_fingerprint = approved_fingerprint or _stored.fingerprint
 
     # Gather executable .py from every target that ships auto_map. A definitively
     # auto_map-free target contributes nothing; an unreadable config is scanned anyway.
@@ -343,6 +383,19 @@ def evaluate_remote_code_consent_for_targets(
             primary,
             sev,
             fingerprint[:12],
+        )
+
+    # Persist a genuine user approval (the caller supplied the matching fingerprint, not a
+    # cache seed) so the same unchanged repo is not re-prompted next session.
+    if approved and subject and caller_approved_fingerprint == fingerprint:
+        from utils.security import remote_code_approvals
+
+        remote_code_approvals.record(
+            subject,
+            remote_code_approvals.approval_target_key(targets),
+            commit_sha = remote_code_approvals.resolve_combined_sha(targets, hf_token),
+            fingerprint = fingerprint,
+            max_severity = sev,
         )
 
     return RemoteCodeDecision(

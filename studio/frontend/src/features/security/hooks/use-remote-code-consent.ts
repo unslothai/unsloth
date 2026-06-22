@@ -42,6 +42,7 @@ export async function confirmRemoteCodeIfNeeded({
       scanCreatedRepos: [],
       unsafeFiles: [],
       securityBlocked: false,
+      alreadyApproved: false,
     };
   }
 
@@ -50,6 +51,13 @@ export async function confirmRemoteCodeIfNeeded({
   // propagate the caller's requirement with an empty pin instead of sending false.
   if (!scan.requiresTrustRemoteCode && scan.unsafeFiles.length === 0) {
     if (requiresTrustRemoteCode) onApprove(null);
+    return true;
+  }
+
+  // This user already approved this exact code (same commit + fingerprint) and nothing
+  // unsafe was flagged: reuse the approval without re-prompting.
+  if (scan.alreadyApproved && scan.unsafeFiles.length === 0 && !scan.securityBlocked) {
+    onApprove(scan.fingerprint);
     return true;
   }
 

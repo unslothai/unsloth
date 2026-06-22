@@ -214,6 +214,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                 hf_token = hf_token,
                 trust_remote_code = True,
                 approved_fingerprint = config.get("approved_remote_code_fingerprint"),
+                subject = config.get("subject"),
             )
             if _rc.blocked:
                 _send_response(

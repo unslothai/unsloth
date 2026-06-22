@@ -2760,6 +2760,7 @@ async def load_model(
             trust_remote_code = request.trust_remote_code,
             approved_remote_code_fingerprint = request.approved_remote_code_fingerprint,
             gpu_ids = effective_gpu_ids,
+            subject = current_subject,
         )
 
         if not success:

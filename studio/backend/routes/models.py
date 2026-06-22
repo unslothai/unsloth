@@ -1652,9 +1652,17 @@ async def scan_model_remote_code(
             )
             for _ext in external_auto_map_repos(_target, hf_token):
                 _mark_scan_created(_ext)
-        decision = preflight_remote_code_consent_for_targets(security_targets, hf_token = hf_token)
+        decision = preflight_remote_code_consent_for_targets(
+            security_targets, hf_token = hf_token, subject = current_subject
+        )
         payload = decision.response_payload()
         payload["requires_trust_remote_code"] = decision.has_remote_code
+        # A prior approval by this user for the unchanged repo lets the dialog be skipped.
+        payload["already_approved"] = (
+            decision.has_remote_code
+            and not decision.blocked
+            and decision.reason in ("approved by cache (sha match)", "approved by fingerprint")
+        )
         # created_by_scan = primary flag (older clients); scan_created_repos drives cleanup.
         payload["created_by_scan"] = model_name in scan_created_repos
         payload["scan_created_repos"] = scan_created_repos

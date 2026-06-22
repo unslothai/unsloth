@@ -1508,6 +1508,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
             hf_token = hf_token,
             trust_remote_code = True,
             approved_fingerprint = config.get("approved_remote_code_fingerprint"),
+            subject = config.get("subject"),
         )
         if _rc.blocked:
             _send(
@@ -2245,6 +2246,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             hf_token = config.get("hf_token") or None,
             trust_remote_code = True,
             approved_fingerprint = config.get("approved_remote_code_fingerprint"),
+            subject = config.get("subject"),
         )
         if _rc.blocked:
             event_queue.put(
@@ -3263,6 +3265,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
                 hf_token = hf_token,
                 trust_remote_code = True,
                 approved_fingerprint = config.get("approved_remote_code_fingerprint"),
+                subject = config.get("subject"),
             )
             if _rc.blocked:
                 event_queue.put(
