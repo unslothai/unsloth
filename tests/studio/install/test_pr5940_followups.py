@@ -711,9 +711,9 @@ def test_install_sh_wsl_reroute_propagates_tauri_need_sudo_exit():
     i = text.find('wsl.exe -d "$_rr_target" -- bash -lc')
     assert i != -1, "WSL reroute command not found in install.sh"
     window = text[i : i + 500]
-    assert '[ "$_rr_rc" -eq 2 ]' in window and "exit 2" in window, (
-        "the reroute must propagate the child's tauri exit 2 (NEED_SUDO)"
-    )
+    assert (
+        '[ "$_rr_rc" -eq 2 ]' in window and "exit 2" in window
+    ), "the reroute must propagate the child's tauri exit 2 (NEED_SUDO)"
     assert '[ "$TAURI_MODE" = true ]' in window, (
         "exit-2 propagation must be gated on --tauri mode so the CLI path still falls "
         "back to CPU on a generic reroute failure"
