@@ -45,4 +45,5 @@ export interface RemoteCodeScan {
   securityBlocked: boolean; // blocked specifically by the malware gate
   // This user already approved this exact code (same commit + fingerprint): skip the dialog.
   alreadyApproved: boolean;
+  provider: string | null; // HF org for the "from <provider>" tag; null when unattributable
 }

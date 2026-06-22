@@ -40,6 +40,7 @@ interface RemoteCodeScanResponse {
   unsafe_files?: Array<{ path?: string; level?: string }>;
   security_blocked?: boolean;
   already_approved?: boolean;
+  provider?: string | null;
 }
 
 /** Scan a model's auto_map code for the consent dialog (backend reads config + repo
@@ -95,6 +96,7 @@ export async function getRemoteCodeScan(
     unsafeFiles,
     securityBlocked: Boolean(data.security_blocked),
     alreadyApproved: Boolean(data.already_approved),
+    provider: data.provider ?? null,
   };
 }
 

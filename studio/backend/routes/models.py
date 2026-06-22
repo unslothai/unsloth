@@ -1582,6 +1582,23 @@ async def get_model_config(
         )
 
 
+def _consent_provider(
+    model_name: str,
+    scanned_targets: List[str],
+    external_refs: Optional[List[str]] = None,
+) -> Optional[str]:
+    """HF org for the consent dialog's `from "<provider>"` tag, or None.
+
+    Returns the owner only for a single, non-local, canonical ``owner/repo`` id; a LoRA's
+    extra base, a local path, or an external ``auto_map`` ref yields None so the dialog
+    never misattributes scanned code.
+    """
+    if len(scanned_targets) != 1 or external_refs or is_local_path(model_name):
+        return None
+    parts = model_name.split("/")
+    return parts[0] if len(parts) == 2 and all(parts) else None
+
+
 @router.post("/remote-code-scan")
 async def scan_model_remote_code(
     model_name: str = Body(..., embed = True),
@@ -1645,12 +1662,14 @@ async def scan_model_remote_code(
             except Exception:
                 pass
 
+        external_refs: list = []
         for _target in security_targets:
             # Use the pre-base-resolution snapshot for the primary (see above).
             _mark_scan_created(
                 _target, preexisting = _primary_preexisting if _target == model_name else None
             )
             for _ext in external_auto_map_repos(_target, hf_token):
+                external_refs.append(_ext)
                 _mark_scan_created(_ext)
         decision = preflight_remote_code_consent_for_targets(
             security_targets, hf_token = hf_token, subject = current_subject
@@ -1667,6 +1686,8 @@ async def scan_model_remote_code(
         # created_by_scan = primary flag (older clients); scan_created_repos drives cleanup.
         payload["created_by_scan"] = model_name in scan_created_repos
         payload["scan_created_repos"] = scan_created_repos
+        # Provider tag decided here, where locality/scan scope/external refs are known.
+        payload["provider"] = _consent_provider(model_name, security_targets, external_refs)
 
         # Malware gate (metadata-only): surface HF-flagged unsafe files so the dialog can
         # hard-block. Orthogonal to remote code -- a poisoned pickle needs no auto_map.

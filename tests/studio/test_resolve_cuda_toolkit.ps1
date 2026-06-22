@@ -1,4 +1,6 @@
 #!/usr/bin/env pwsh
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 # Unit test for Resolve-CudaToolkit in studio/setup.ps1. No GPU required: the
 # detection helpers (nvidia-smi, nvcc, Find-Nvcc, ...) are stubbed so the real
 # function logic runs against spoofed Blackwell sm_120 driver/toolkit scenarios.
