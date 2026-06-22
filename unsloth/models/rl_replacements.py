@@ -1530,10 +1530,8 @@ def grpo_trainer_compute_loss(function_name, function):
         num_items_in_batch = inputs.get("num_items_in_batch", None)
         sampling_per_token_logps = inputs.get("sampling_per_token_logps", None)
         tool_mask = inputs.get("tool_mask", None)
-        # current_gradient_accumulation_steps is set by the training loop, so it is
-        # missing when evaluate() runs standalone (no prior train). Eval does not
-        # accumulate gradients, so fall back to 1 (dividing eval loss by the train
-        # accumulation steps would underreport eval_loss by that factor).
+        # Missing when evaluate() runs standalone; eval does not accumulate, so
+        # fall back to 1 to avoid underreporting eval_loss (#2464).
         current_gradient_accumulation_steps = getattr(
             self, "current_gradient_accumulation_steps", 1
         )
