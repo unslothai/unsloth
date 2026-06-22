@@ -596,6 +596,30 @@ def _patch_sft_trainer_auto_packing(trl_module):
             )
             print(message)
 
+        # get_peft_model installs a pre-train forward detector for plain LoRA/vision models,
+        # but only RL trainers run the reset via prepare_for_training_mode. Wire it into the
+        # SFT train() path too, else a grad-enabled probe before train() leaves the poisoned
+        # Dynamo cache in place and the detector hook installed on every training forward.
+        # (For UnslothSFTTrainer the later prepare_for_training_mode assignment supersedes this.)
+        if not getattr(self, "_unsloth_train_reset_wrapped", False):
+            try:
+                from unsloth.models._utils import _unsloth_reset_stray_compile_cache
+
+                _orig_train = self.train
+
+                @wraps(_orig_train)
+                def _train_with_reset(*train_args, **train_kwargs):
+                    try:
+                        _unsloth_reset_stray_compile_cache(self)
+                    except Exception:
+                        pass
+                    return _orig_train(*train_args, **train_kwargs)
+
+                self.train = _train_with_reset
+                self._unsloth_train_reset_wrapped = True
+            except Exception:
+                pass
+
     sft_trainer.__init__ = new_init
     sft_trainer._unsloth_auto_packing_wrapped = True
 

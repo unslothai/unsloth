@@ -31,6 +31,8 @@ export interface ModelSelectorChangeMeta {
   ggufVariant?: string;
   isDownloaded?: boolean;
   expectedBytes?: number;
+  /** Native GGUF context, threaded so a staged pick can seed the slider. */
+  contextLength?: number | null;
   /** Direct local .gguf file picked without a variant (custom folder / LM
    *  Studio). Marks it as a GGUF source for the deferred-load staging flow. */
   isGguf?: boolean;
