@@ -71,7 +71,13 @@ def _load() -> dict:
     try:
         with open(_store_path()) as f:
             data = json.load(f)
-        if isinstance(data, dict) and data.get("version") == _SCHEMA_VERSION:
+        # Validate the shape, not just the version: a hand-edited ``subjects`` that is not a
+        # dict (e.g. ``[]``) would otherwise crash lookup/record instead of failing safe.
+        if (
+            isinstance(data, dict)
+            and data.get("version") == _SCHEMA_VERSION
+            and isinstance(data.get("subjects"), dict)
+        ):
             return data
     except FileNotFoundError:
         pass
@@ -145,7 +151,8 @@ def lookup(subject: str, target_key: str) -> Optional[StoredApproval]:
     if not subject or cache_disabled():
         return None
     with _lock:
-        entry = _load().get("subjects", {}).get(subject, {}).get(target_key)
+        subj = _load().get("subjects", {}).get(subject, {})
+    entry = subj.get(target_key) if isinstance(subj, dict) else None
     if not isinstance(entry, dict) or not entry.get("fingerprint"):
         return None
     if entry.get("max_severity") == CRITICAL:
@@ -173,7 +180,11 @@ def record(
         return
     with _lock, _file_lock():
         data = _load()
-        data.setdefault("subjects", {}).setdefault(subject, {})[target_key] = {
+        subjects = data.setdefault("subjects", {})
+        subj = subjects.get(subject)
+        if not isinstance(subj, dict):  # tolerate a hand-edited non-dict entry
+            subj = subjects[subject] = {}
+        subj[target_key] = {
             "commit_sha": commit_sha,
             "fingerprint": fingerprint,
             "max_severity": max_severity,
@@ -189,7 +200,8 @@ def forget(subject: str, target_key: str) -> None:
         return
     with _lock, _file_lock():
         data = _load()
-        if data.get("subjects", {}).get(subject, {}).pop(target_key, None) is not None:
+        subj = data.get("subjects", {}).get(subject)
+        if isinstance(subj, dict) and subj.pop(target_key, None) is not None:
             _save(data)
 
 

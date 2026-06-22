@@ -150,6 +150,19 @@ def test_corrupt_store_is_ignored_then_rewritten():
     assert approvals.lookup("u", "k") is not None  # valid file rewritten
 
 
+def test_malformed_store_shape_fails_safe():
+    # Valid JSON + version but a non-dict shape (hand-edited) must fail safe (re-prompt),
+    # never crash lookup/record/forget.
+    store = approvals._store_path()
+    store.parent.mkdir(parents = True, exist_ok = True)
+    for bad in ('{"version": 1, "subjects": []}', '{"version": 1, "subjects": {"u": []}}'):
+        store.write_text(bad)
+        assert approvals.lookup("u", "k") is None  # no raise
+        approvals.forget("u", "k")  # no raise
+        approvals.record("u", "k", commit_sha = "s", fingerprint = "f", max_severity = "HIGH")
+        assert approvals.lookup("u", "k") is not None  # store healed
+
+
 # --- gate integration: the cache skips the prompt, never the scan ------------
 
 
