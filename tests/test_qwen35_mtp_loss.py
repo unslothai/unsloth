@@ -19,9 +19,7 @@ def _load_mtp_loss_helpers():
         "unwrap_mtp_output",
     }
     helpers = [
-        node
-        for node in tree.body
-        if isinstance(node, ast.FunctionDef) and node.name in names
+        node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in names
     ]
     module = ast.Module(body = helpers, type_ignores = [])
     ast.fix_missing_locations(module)

@@ -58,7 +58,9 @@ def mask_mtp_packed_sequence_boundaries(
     if isinstance(seq_lengths, torch.Tensor):
         lengths = seq_lengths.to(device = shift_labels.device, dtype = torch.int64).reshape(-1)
     else:
-        lengths = torch.tensor(seq_lengths, device = shift_labels.device, dtype = torch.int64).reshape(-1)
+        lengths = torch.tensor(seq_lengths, device = shift_labels.device, dtype = torch.int64).reshape(
+            -1
+        )
     if lengths.numel() == 0:
         return False
 
@@ -76,7 +78,11 @@ def mask_mtp_packed_sequence_boundaries(
     return changed
 
 
-def make_mtp_shift_labels(labels, offset, packed_seq_lengths = None):
+def make_mtp_shift_labels(
+    labels,
+    offset,
+    packed_seq_lengths = None,
+):
     shift_labels = torch.empty_like(labels)
     if offset < labels.shape[-1]:
         shift_labels[..., :-offset] = labels[..., offset:]
@@ -91,7 +97,11 @@ def make_mtp_shift_labels(labels, offset, packed_seq_lengths = None):
     return shift_labels
 
 
-def should_use_mtp_loss(model, use_mtp_loss = None, train_mtp = None):
+def should_use_mtp_loss(
+    model,
+    use_mtp_loss = None,
+    train_mtp = None,
+):
     if use_mtp_loss is None:
         use_mtp_loss = train_mtp
     if use_mtp_loss is None:
@@ -226,9 +236,8 @@ def patch_mtp_loss(model, loss_fn):
             return outputs
 
         outputs.loss = base_loss + mtp_loss.to(base_loss.device)
-        if (
-            original_output_hidden_states is not True
-            and not getattr(getattr(self, "config", None), "output_hidden_states", False)
+        if original_output_hidden_states is not True and not getattr(
+            getattr(self, "config", None), "output_hidden_states", False
         ):
             outputs.hidden_states = None
         return outputs
