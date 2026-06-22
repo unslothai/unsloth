@@ -1658,10 +1658,12 @@ async def scan_model_remote_code(
         payload = decision.response_payload()
         payload["requires_trust_remote_code"] = decision.has_remote_code
         # A prior approval by this user for the unchanged repo lets the dialog be skipped.
+        # The scan still ran (the cache only skips the prompt), so this reflects a real
+        # fingerprint match under the current scanner ruleset.
         payload["already_approved"] = (
             decision.has_remote_code
             and not decision.blocked
-            and decision.reason in ("approved by cache (sha match)", "approved by fingerprint")
+            and decision.reason == "approved by fingerprint"
         )
         # created_by_scan = primary flag (older clients); scan_created_repos drives cleanup.
         payload["created_by_scan"] = model_name in scan_created_repos

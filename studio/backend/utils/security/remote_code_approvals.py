@@ -4,21 +4,25 @@
 """Persistent, per-user trust_remote_code approval cache.
 
 The consent gate (``consent.py``) pins an approval to a content fingerprint (sha256 of
-every repo ``.py``). Without persistence the dialog reappears on every fresh load. This
-module remembers a user's explicit approval on disk and lets the gate skip the dialog on a
-later load of the SAME unchanged repo, while staying correct:
+every executable repo ``.py``, including external ``auto_map`` repos). Without persistence
+the dialog reappears on every fresh load. This module remembers a user's explicit approval
+on disk and lets the gate skip only the DIALOG on a later load of the SAME unchanged code,
+while keeping the scan authoritative:
 
+* the gate ALWAYS re-scans -- the cache never skips the scan, only the prompt -- so a
+  CRITICAL repo is hard-blocked every time and a hand-edited store cannot smuggle in an
+  auto-approval of malicious code;
 * keyed per subject -- one user's approval never auto-runs code for another;
-* validated by BOTH the commit SHA (cheap, avoids re-download when unchanged) AND the
-  content fingerprint (authoritative; a new/edited ``.py`` changes it). Either change
-  forces re-consent;
+* validated by the content fingerprint (authoritative; a new/edited ``.py`` in the model
+  OR any external ``auto_map`` repo changes it), gated additionally by the recorded
+  scanner-rules version (so reclassified bytes are re-shown) and, when resolvable, the
+  immutable commit SHA (so a moved repo re-prompts even if the user has the same approval);
 * CRITICAL is never stored or honored (guarded on write and read);
 * fail-safe: any store/SHA error degrades to "ask again", never to "auto-approve".
 """
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import threading
@@ -28,15 +32,15 @@ from typing import Optional
 
 from loggers import get_logger
 from utils.paths import storage_roots
-from utils.security.remote_code_scan import CRITICAL
+from utils.security.remote_code_scan import CRITICAL, SCAN_RULES_VERSION
 
 logger = get_logger(__name__)
 
 _SCHEMA_VERSION = 1
 _lock = threading.RLock()
 
-# Memoized SHA lookups, keyed (target, token-hash) so authed/unauthed reads stay separate.
-_sha_cache: dict[tuple[str, str], Optional[str]] = {}
+# Re-exported so the gate can compare a stored approval's ruleset to the live one.
+SCANNER_VERSION = SCAN_RULES_VERSION
 
 
 @dataclass
@@ -45,6 +49,7 @@ class StoredApproval:
     fingerprint: str
     max_severity: Optional[str]
     approved_at: str
+    scanner_version: int = 0
 
 
 def cache_disabled() -> bool:
@@ -53,11 +58,6 @@ def cache_disabled() -> bool:
 
 def _store_path():
     return storage_roots.studio_root() / "security" / "remote_code_approvals.json"
-
-
-def _token_key(hf_token: Optional[str]) -> str:
-    """Non-reversible discriminator; empty when no token, never the raw token."""
-    return hashlib.sha256(hf_token.encode("utf-8")).hexdigest()[:12] if hf_token else ""
 
 
 def _env_offline() -> bool:
@@ -112,7 +112,7 @@ def _save(data: dict) -> None:
 
 def lookup(subject: str, target_key: str) -> Optional[StoredApproval]:
     """The stored approval for (subject, target_key), or None. A CRITICAL entry (e.g. a
-    hand-edited store) is refused so it can never auto-approve."""
+    hand-edited store) is refused so it can never seed an approval."""
     if not subject or cache_disabled():
         return None
     with _lock:
@@ -126,6 +126,7 @@ def lookup(subject: str, target_key: str) -> Optional[StoredApproval]:
         fingerprint = entry["fingerprint"],
         max_severity = entry.get("max_severity"),
         approved_at = entry.get("approved_at", ""),
+        scanner_version = entry.get("scanner_version", 0),
     )
 
 
@@ -136,6 +137,7 @@ def record(
     commit_sha: Optional[str],
     fingerprint: str,
     max_severity: Optional[str],
+    scanner_version: int = SCANNER_VERSION,
 ) -> None:
     """Persist a user's explicit approval. CRITICAL is never stored."""
     if not subject or not fingerprint or cache_disabled() or max_severity == CRITICAL:
@@ -146,6 +148,7 @@ def record(
             "commit_sha": commit_sha,
             "fingerprint": fingerprint,
             "max_severity": max_severity,
+            "scanner_version": scanner_version,
             "approved_at": datetime.now(timezone.utc).isoformat(),
         }
         _save(data)
@@ -162,38 +165,39 @@ def forget(subject: str, target_key: str) -> None:
 
 
 def clear() -> None:
-    """Test helper: drop the on-disk store and the SHA memo."""
+    """Test helper: drop the on-disk store."""
     with _lock:
         try:
             _store_path().unlink(missing_ok = True)
         except OSError:
             pass
-        _sha_cache.clear()
 
 
 def resolve_commit_sha(target: str, hf_token: Optional[str] = None) -> Optional[str]:
-    """Immutable HF commit SHA for *target*, or None for a local path / offline / error.
-    None forces the gate onto the authoritative fingerprint check (never fail-open)."""
+    """Current HF commit SHA for *target*, or None for a local path / offline / error.
+
+    Resolved fresh on every call (no memoization): the default branch is mutable, so a
+    cached SHA would mask a repo that moved after approval and let stale code re-use the
+    consent. None falls back to the authoritative fingerprint check (never fail-open).
+    """
     from utils.paths import is_local_path
 
-    cache_key = (target, _token_key(hf_token))
-    if cache_key in _sha_cache:
-        return _sha_cache[cache_key]
-    sha: Optional[str] = None
     try:
-        if not is_local_path(target) and not _env_offline():
-            from huggingface_hub import HfApi
-            sha = HfApi().model_info(target, token = hf_token).sha
+        if is_local_path(target) or _env_offline():
+            return None
+        from huggingface_hub import HfApi
+
+        return HfApi().model_info(target, token = hf_token).sha
     except Exception as exc:
         logger.debug("Could not resolve commit sha for '%s': %s", target, exc)
-        sha = None
-    _sha_cache[cache_key] = sha
-    return sha
+        return None
 
 
 def resolve_combined_sha(targets, hf_token: Optional[str] = None) -> Optional[str]:
-    """Combined SHA for the load unit; None if ANY target's SHA is unresolvable (all or
-    nothing), so a partial result can never satisfy the SHA fast path."""
+    """Combined SHA over the load unit's primary targets; None if ANY is unresolvable (all
+    or nothing). This is a cheap secondary gate only -- the fingerprint (which also covers
+    external ``auto_map`` repos) remains the authoritative check, so a None here just
+    forces the gate onto the fingerprint rather than weakening it."""
     from utils.security.consent import _fingerprint_target_key
 
     parts = []

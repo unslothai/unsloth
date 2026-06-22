@@ -37,6 +37,12 @@ HIGH = "HIGH"
 MEDIUM = "MEDIUM"
 _SEVERITY_ORDER = {CRITICAL: 0, HIGH: 1, MEDIUM: 2}
 
+# Bump whenever the scan ruleset changes (new/edited patterns, severity reclassification).
+# A persisted trust_remote_code approval records the version it was scanned under, and the
+# consent cache ignores approvals from an older ruleset so the same bytes are re-scanned
+# (and re-shown) under the new rules instead of being silently auto-approved.
+SCAN_RULES_VERSION = 1
+
 # Configs that can carry an ``auto_map`` pointing at executable repo ``.py``.
 # ``trust_remote_code`` runs code from ANY of these, so scanner and gate must read the
 # same set (scanning only config.json/tokenizer would miss a custom-processor VLM).
