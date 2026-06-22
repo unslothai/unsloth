@@ -3126,10 +3126,13 @@ echo ""
 if [ -t 1 ]; then
     echo ""
     printf "  Start Unsloth Studio now? [Y/n] "
+    # Default to NOT starting when no answer can be read (closed/EOF tty) so a
+    # non-interactive caller is never trapped in a foreground server. A real
+    # Enter still counts as yes via ${_reply:-y} below.
     if [ -r /dev/tty ]; then
-        read -r _reply </dev/tty || _reply="y"
+        read -r _reply </dev/tty || _reply="n"
     else
-        _reply="y"
+        _reply="n"
     fi
     case "${_reply:-y}" in
         [Yy]*|"")
@@ -3137,6 +3140,9 @@ if [ -t 1 ]; then
             # Detach stdin from the `curl | sh` pipe: as a foreground server the
             # studio would otherwise drain the rest of this piped script, leaving
             # the shell to die parsing the now-truncated tail (`unexpected fi`).
+            # Ignore Ctrl+C so this shell waits for studio's own graceful
+            # shutdown instead of dying first and racing the prompt over its logs.
+            trap '' INT
             "$VENV_DIR/bin/unsloth" studio -p 8888 </dev/null
             _LAUNCH_EXIT=$?
             if [ "$_LAUNCH_EXIT" -ne 0 ] && [ "$_MIGRATED" = true ]; then
