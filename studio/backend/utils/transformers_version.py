@@ -325,15 +325,22 @@ def _remote_lora_base(model_name: str, hf_token: str | None = None) -> str | Non
     """``base_model_name_or_path`` from a remote adapter's ``adapter_config.json``, or None.
 
     Raw HTTP (no huggingface_hub / transformers import), so a remote LoRA's base is known
-    before any ML import. Offline (or on a fetch failure) it reads the local hub cache, since
-    a cached adapter is still loadable. Skipped for local/non-canonical ids; a non-adapter
-    repo simply 404s to None.
+    before any ML import. Offline (or on a transient failure) it reads the local hub cache,
+    since a cached adapter is still loadable; a definitive 404 returns None (the repo is not
+    a LoRA) rather than a stale cached base. Skipped for local/non-canonical ids.
     """
     if not _is_canonical_repo_id(model_name):
         return None
+    try:
+        from utils.paths import is_local_path
+        if is_local_path(model_name):
+            return None  # an existing relative path is a local checkpoint, not a Hub repo
+    except Exception:
+        pass
     if _env_offline():
         return _adapter_base_from_hf_cache(model_name)
 
+    import urllib.error
     import urllib.request
 
     url = f"https://huggingface.co/{model_name}/raw/main/adapter_config.json"
@@ -348,6 +355,11 @@ def _remote_lora_base(model_name: str, hf_token: str | None = None) -> str | Non
         if base:
             logger.info("Resolved remote LoRA adapter '%s' → base model '%s'", model_name, base)
         return base or None
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return None  # definitively not a LoRA; do not serve a stale cached base
+        logger.debug("adapter_config.json fetch failed for '%s': %s", model_name, exc)
+        return _adapter_base_from_hf_cache(model_name)
     except Exception as exc:
         logger.debug("No remote adapter_config.json for '%s': %s", model_name, exc)
         return _adapter_base_from_hf_cache(model_name)

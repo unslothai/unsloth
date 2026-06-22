@@ -395,6 +395,37 @@ def test_inference_worker_tiers_on_base_and_gates_lora_base_only():
     assert "_gate_targets" in src and "_lora_base" in src
 
 
+def test_pre_import_gate_is_transformers_free():
+    # The pre-import gate must not import transformers: security_load_subdirs pulls
+    # model_config -> transformers, which would snapshot SSM backend availability before the
+    # kernels install. With load_subdirs=() the malware + consent scans stay transformers-free.
+    import sys as _sys
+    from unittest.mock import patch
+    import utils.security.file_security as fs
+    import utils.security.consent as consent
+
+    for m in list(_sys.modules):
+        if m == "transformers" or m.startswith("transformers.") or m == "utils.models.model_config":
+            _sys.modules.pop(m, None)
+
+    with patch.object(fs, "_fetch_security_status", return_value = None):
+        fs.evaluate_file_security("nvidia/Nemotron-H-8B", load_subdirs = ())
+    with patch.object(consent, "_load_remote_code_configs", return_value = [{"model_type": "nemotron_h"}]):
+        from utils.security import evaluate_remote_code_consent_for_targets
+
+        evaluate_remote_code_consent_for_targets(["nvidia/Nemotron-H-8B"], trust_remote_code = True)
+
+    assert "transformers" not in _sys.modules
+    assert "utils.models.model_config" not in _sys.modules
+
+
+def test_pre_import_gate_skips_subdir_computation():
+    # The worker's pre-import preflight must call the gate with compute_subdirs=False so it
+    # never imports model_config/transformers before the SSM kernels are installed.
+    src = (_BACKEND / "core" / "inference" / "worker.py").read_text()
+    assert "compute_subdirs = False" in src
+
+
 def _call_linenos(tree, func_name, call_name):
     import ast
     for node in ast.walk(tree):

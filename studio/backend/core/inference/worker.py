@@ -200,22 +200,29 @@ def _run_security_gates(
     hf_token: str | None,
     approved_fingerprint: str | None,
     resp_queue: Any,
+    compute_subdirs: bool = True,
 ) -> bool:
     """Malware + (when trust_remote_code) remote-code consent gates over *targets*
-    (model + base). Metadata-only (no transformers import), so it can run before the SSM
-    kernel install and the ML import. Sends the matching 'loaded' failure and returns
-    False if blocked; True when every target is clear.
+    (model + base). Sends the matching 'loaded' failure and returns False if blocked; True
+    when every target is clear.
+
+    ``compute_subdirs=False`` keeps the gate transformers-free (``security_load_subdirs``
+    imports ``model_config`` -> ``transformers``, which would snapshot optional-backend
+    availability before the SSM kernels are installed): used for the pre-import preflight,
+    where ``_handle_load`` re-runs the authoritative gate with full subdir scoping.
     """
     targets = list(dict.fromkeys(t for t in targets if t))
 
     # A poisoned pickle deserializes during from_pretrained even with trust_remote_code
     # False, so check HF's security scan every load (for a LoRA, the base deserializes).
-    from utils.security import evaluate_file_security, security_load_subdirs
+    from utils.security import evaluate_file_security
+
+    if compute_subdirs:
+        from utils.security import security_load_subdirs
 
     for target in targets:
-        _fs = evaluate_file_security(
-            target, hf_token = hf_token, load_subdirs = security_load_subdirs(target, hf_token)
-        )
+        _subdirs = security_load_subdirs(target, hf_token) if compute_subdirs else ()
+        _fs = evaluate_file_security(target, hf_token = hf_token, load_subdirs = _subdirs)
         if _fs.blocked:
             _send_response(
                 resp_queue,
@@ -815,6 +822,7 @@ def run_inference_process(*, cmd_queue: Any, resp_queue: Any, cancel_event, conf
         hf_token = _hf_token,
         approved_fingerprint = config.get("approved_remote_code_fingerprint"),
         resp_queue = resp_queue,
+        compute_subdirs = False,  # stay transformers-free until the SSM kernels are installed
     ):
         return
     # SSM install also covers a full fine-tune's base name (reveals the SSM architecture).
