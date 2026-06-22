@@ -4,17 +4,18 @@
 import { useCallback, useSyncExternalStore } from "react";
 
 // Whether the sidebar VRAM/RAM monitor is shown. When off, the sidebar also
-// stops polling /api/system, so no nvidia-smi/SMI probes run. Default on.
+// stops polling /api/system, so no nvidia-smi/SMI probes run. Default off
+// (opt-in): users enable it from Settings > Appearance.
 const MONITOR_KEY = "hardware_monitor_enabled";
 
 function loadEnabled(): boolean {
-  if (typeof window === "undefined") return true;
+  if (typeof window === "undefined") return false;
   try {
     const raw = window.localStorage.getItem(MONITOR_KEY);
-    if (raw === null) return true;
+    if (raw === null) return false;
     return raw === "true";
   } catch {
-    return true;
+    return false;
   }
 }
 
@@ -51,7 +52,7 @@ export function useHardwareMonitor() {
   const enabled = useSyncExternalStore(
     subscribe,
     () => enabledValue,
-    () => true,
+    () => false,
   );
 
   const setEnabled = useCallback((value: boolean) => setEnabledGlobal(value), []);
