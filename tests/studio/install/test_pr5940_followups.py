@@ -493,6 +493,28 @@ def test_install_ps1_rocm_cpu_fallback_uses_retry():
     assert (
         "Invoke-InstallCommandRetry" in window
     ), "the ROCm->CPU fallback torch install must use Invoke-InstallCommandRetry"
+    # Must --force-reinstall: a failed ROCm install can leave an unpinned ROCm torch
+    # that still satisfies the CPU torch>= range, so without it uv keeps the ROCm
+    # build and only swaps companions -> mismatched venv the repair block won't fix.
+    assert "--force-reinstall" in window, (
+        "the ROCm->CPU fallback must --force-reinstall so a partial ROCm torch is "
+        "replaced by the CPU build"
+    )
+
+
+def test_setup_ps1_rocm_cpu_fallback_force_reinstalls():
+    # setup.ps1's CPU block is shared with the genuine CPU-only path, so it force-
+    # reinstalls only after an AMD ROCm fallback ($ROCmCpuFallback) -- evicting a
+    # partial ROCm torch without slowing the common CPU install.
+    text = _SETUP_PS1.read_text(encoding = "utf-8")
+    assert "$ROCmCpuFallback = $true" in text, (
+        "setup.ps1 must flag the AMD ROCm->CPU fallback so the CPU install can force-"
+        "reinstall a partial ROCm torch"
+    )
+    assert '$cpuForce = if ($ROCmCpuFallback) { @("--force-reinstall") }' in text, (
+        "setup.ps1's CPU install must force-reinstall only on the ROCm fallback path "
+        "(keeping the genuine CPU-only path fast)"
+    )
 
 
 def test_install_python_stack_gates_every_amd_smi_spawn():
@@ -642,7 +664,7 @@ def test_install_ps1_clears_rocm_index_after_cpu_fallback():
     text = _INSTALL_PS1.read_text(encoding = "utf-8")
     i = text.find("ROCm PyTorch install failed")
     assert i != -1, "ROCm->CPU fallback block not found in install.ps1"
-    window = text[i : i + 1300]
+    window = text[i : i + 1800]
     assert "$ROCmIndexUrl = $null" in window, (
         "install.ps1 must clear $ROCmIndexUrl after the CPU fallback so the repair "
         "block does not re-trigger the failed ROCm index and abort the install"
@@ -679,6 +701,23 @@ def test_install_sh_wsl_reroute_uses_pipefail():
     assert (
         "$_rr_exports" in line
     ), "install.sh WSL reroute `bash -lc` must run the pipefail exports prefix"
+
+
+def test_install_sh_wsl_reroute_propagates_tauri_need_sudo_exit():
+    # In --tauri mode the rerouted child uses exit 2 ([TAURI:NEED_SUDO]) to ask the
+    # desktop app to elevate for the target distro. The reroute must propagate that
+    # code instead of masking it as a generic failure and dropping to CPU here.
+    text = _INSTALL_SH.read_text(encoding = "utf-8")
+    i = text.find('wsl.exe -d "$_rr_target" -- bash -lc')
+    assert i != -1, "WSL reroute command not found in install.sh"
+    window = text[i : i + 500]
+    assert '[ "$_rr_rc" -eq 2 ]' in window and "exit 2" in window, (
+        "the reroute must propagate the child's tauri exit 2 (NEED_SUDO)"
+    )
+    assert '[ "$TAURI_MODE" = true ]' in window, (
+        "exit-2 propagation must be gated on --tauri mode so the CLI path still falls "
+        "back to CPU on a generic reroute failure"
+    )
 
 
 def test_uninstall_sh_preserves_shared_icon_for_surviving_shortcut():

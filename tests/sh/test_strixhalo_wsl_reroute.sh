@@ -103,7 +103,9 @@ run_func() {
         UNSLOTH_WSL_REROUTE_CMD='echo __ROUTED__' \
         "$@" \
         bash -c ". '$_func'; _maybe_reroute_strixhalo_to_2404; echo SKIP_ROCM=\$UNSLOTH_SKIP_ROCM_WSL_SETUP; echo __NOROUTE__" 2>&1
+    _rc=$?
     rm -f "$_func"
+    return "$_rc"
 }
 
 echo "=== test_strixhalo_wsl_reroute ==="
@@ -296,6 +298,24 @@ printf 'Ubuntu\nUbuntu-24.04-test\nUbuntu-24.04\n' > "$_d/distros"
 _out=$(run_func "$_d")
 assert_contains "exact + custom -> routes"                        "$_out" "__ROUTED__"
 assert_contains "exact + custom -> targets the exact 24.04"       "$_out" "-d Ubuntu-24.04 --"
+rm -rf "$_d"
+
+# 26) Tauri mode: a child exit 2 ([TAURI:NEED_SUDO]) must propagate so the desktop app
+#     drives elevation for the target distro, not get masked as a CPU fallback here.
+_d=$(make_fixture 1 strix 0 26.04 1)
+_rc=0
+_out=$(run_func "$_d" TAURI_MODE=true UNSLOTH_WSL_REROUTE_CMD='exit 2') || _rc=$?
+if [ "$_rc" = "2" ]; then echo "  PASS: tauri child exit 2 -> reroute propagates exit 2"; PASS=$((PASS+1)); else echo "  FAIL: tauri exit 2 not propagated (rc=$_rc)"; FAIL=$((FAIL+1)); fi
+assert_absent   "tauri exit 2 -> not a CPU fallback"              "$_out" "__NOROUTE__"
+rm -rf "$_d"
+
+# 27) Non-tauri mode: a child exit 2 is just a failure -> CPU fallback, not propagated.
+_d=$(make_fixture 1 strix 0 26.04 1)
+_rc=0
+_out=$(run_func "$_d" UNSLOTH_WSL_REROUTE_CMD='exit 2') || _rc=$?
+if [ "$_rc" = "0" ]; then echo "  PASS: non-tauri exit 2 -> not propagated"; PASS=$((PASS+1)); else echo "  FAIL: non-tauri exit 2 wrongly propagated (rc=$_rc)"; FAIL=$((FAIL+1)); fi
+assert_contains "non-tauri child fail -> CPU fallback"            "$_out" "__NOROUTE__"
+assert_contains "non-tauri child fail -> skip ROCm bootstrap"     "$_out" "SKIP_ROCM=1"
 rm -rf "$_d"
 
 echo ""

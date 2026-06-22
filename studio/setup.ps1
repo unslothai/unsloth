@@ -2421,6 +2421,7 @@ if (($HasROCm -or $ROCmGfxArch) -and $CuTag -eq "cpu") {
 
 $PyTorchWhlBase = if ($env:UNSLOTH_PYTORCH_MIRROR) { $env:UNSLOTH_PYTORCH_MIRROR.TrimEnd('/') } else { "https://download.pytorch.org/whl" }
 
+$ROCmCpuFallback = $false
 if ($ROCmIndexUrl) {
     substep "installing PyTorch (AMD ROCm, $ROCmGfxArch)..."
     if ($ROCmTorchSpec -ne "torch") {
@@ -2438,6 +2439,7 @@ if ($ROCmIndexUrl) {
         Write-Host "[WARN] AMD ROCm PyTorch install failed -- falling back to CPU" -ForegroundColor Yellow
         Write-Host $output -ForegroundColor Yellow
         $ROCmIndexUrl = $null
+        $ROCmCpuFallback = $true
     } else {
         # Tell install_python_stack.py to skip probe + suppress manual-install warning.
         $env:UNSLOTH_ROCM_TORCH_INSTALLED = "1"
@@ -2447,12 +2449,16 @@ if ($ROCmIndexUrl) {
 
 if (-not $ROCmIndexUrl -and $CuTag -eq "cpu") {
     substep "installing PyTorch (CPU-only)..."
+    # After an AMD ROCm fallback, force-reinstall so a partially-installed ROCm torch
+    # (which still satisfies the CPU torch>= range) is replaced by the CPU build. Skip
+    # the forced reinstall on a genuine CPU-only host so the common path stays fast.
+    $cpuForce = if ($ROCmCpuFallback) { @("--force-reinstall") } else { @() }
     if ($script:UnslothVerbose) {
-        Fast-Install torch torchvision torchaudio --index-url "$PyTorchWhlBase/cpu"
+        Fast-Install torch torchvision torchaudio @cpuForce --index-url "$PyTorchWhlBase/cpu"
         $torchInstallExit = $LASTEXITCODE
         $output = ""
     } else {
-        $output = Fast-Install torch torchvision torchaudio --index-url "$PyTorchWhlBase/cpu" | Out-String
+        $output = Fast-Install torch torchvision torchaudio @cpuForce --index-url "$PyTorchWhlBase/cpu" | Out-String
         $torchInstallExit = $LASTEXITCODE
     }
     if ($torchInstallExit -ne 0) {

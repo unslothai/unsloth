@@ -1512,8 +1512,16 @@ _maybe_reroute_strixhalo_to_2404() {
     fi
     # pipefail so a failed curl in `curl | sh` isn't masked by sh exiting 0 on empty
     # input (which would wrongly report success and exit 0 the parent installer).
-    if wsl.exe -d "$_rr_target" -- bash -lc "$_rr_exports; $_rr_cmd"; then
+    _rr_rc=0
+    wsl.exe -d "$_rr_target" -- bash -lc "$_rr_exports; $_rr_cmd" || _rr_rc=$?
+    if [ "$_rr_rc" -eq 0 ]; then
         exit 0
+    fi
+    # In Tauri mode the child uses exit 2 ([TAURI:NEED_SUDO]) to ask the desktop app to
+    # elevate for the target distro; the child already printed the NEED_SUDO line, so
+    # propagate the code instead of masking it as a reroute failure and dropping to CPU.
+    if [ "$TAURI_MODE" = true ] && [ "$_rr_rc" -eq 2 ]; then
+        exit 2
     fi
     substep "Could not auto-continue in $_rr_target; run it yourself:" "$C_WARN"
     substep "  wsl -d $_rr_target -- bash -lc 'curl -fsSL https://unsloth.ai/install.sh | sh'"
