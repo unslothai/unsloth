@@ -52,10 +52,7 @@ def test_bare_value_with_timestamps_after_comma_is_kept():
         "<|tool_call>call:remind{query:meet at 10:00, 11:00 tomorrow,priority:high}<tool_call|>"
     )
     assert len(calls) == 1, calls
-    assert _args(calls[0]) == {
-        "query": "meet at 10:00, 11:00 tomorrow",
-        "priority": "high",
-    }
+    assert _args(calls[0]) == {"query": "meet at 10:00, 11:00 tomorrow", "priority": "high"}
 
 
 def test_marker_inside_json_argument_is_not_a_second_call():
