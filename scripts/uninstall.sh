@@ -217,6 +217,9 @@ _remove_path "$HOME/.unsloth/studio"
 # when absent. A user-set UNSLOTH_LLAMA_CPP_PATH is intentionally kept.
 _remove_path "$HOME/.unsloth/llama.cpp"
 _remove_path "$HOME/.unsloth/.cache"
+# Isolated Node.js runtime (install_node_prebuilt.py), a sibling of studio in
+# default mode. No-op in env/custom mode (nested under the custom root) and absent.
+_remove_path "$HOME/.unsloth/node"
 # llama.cpp atomic-install staging root (install_llama_prebuilt.py .staging).
 # Normally pruned after activate, but an interrupted build can leave it behind;
 # removing it lets the rmdir below succeed. No-op in env/custom mode and absent.

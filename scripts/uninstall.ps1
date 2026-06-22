@@ -336,6 +336,9 @@ function Uninstall-UnslothStudio {
     $defaultUnslothHome = if ($env:USERPROFILE) { Join-Path $env:USERPROFILE ".unsloth" } else { $null }
     $defaultLlamaCpp = if ($defaultUnslothHome) { Join-Path $defaultUnslothHome "llama.cpp" } else { $null }
     $defaultCache = if ($defaultUnslothHome) { Join-Path $defaultUnslothHome ".cache" } else { $null }
+    # Isolated Node.js runtime (install_node_prebuilt.py), a sibling of studio in
+    # default mode. No-op in env/custom mode (nested under the custom root) and absent.
+    $defaultNode = if ($defaultUnslothHome) { Join-Path $defaultUnslothHome "node" } else { $null }
     # llama.cpp atomic-install staging root (install_llama_prebuilt.py .staging,
     # sibling of the install dir). Usually pruned after activate, but an interrupted
     # build can leave a "<name>.staging-XXXX" tree; removing it lets the empty-dir
@@ -359,7 +362,7 @@ function Uninstall-UnslothStudio {
     _StopStudioProcesses -KnownRoots $knownRoots
     # Also stop anything holding a handle on the exact paths we delete (llama-server,
     # the CLI shim, an mp-fork python with a venv DLL) so the dir delete isn't refused.
-    _StopProcessesLockingRoots -Roots (@($knownRoots) + @($defaultDataDir, $defaultLlamaCpp, $defaultCache))
+    _StopProcessesLockingRoots -Roots (@($knownRoots) + @($defaultDataDir, $defaultLlamaCpp, $defaultCache, $defaultNode))
 
     # ── Remove custom-root install trees ──
     _Step "Removing data and install directories..."
@@ -382,6 +385,9 @@ function Uninstall-UnslothStudio {
     # ~/.unsloth). No-op in env/custom mode and when absent.
     if ($defaultLlamaCpp) { _RemovePath $defaultLlamaCpp }
     if ($defaultCache) { _RemovePath $defaultCache }
+    # Isolated Node.js runtime (sibling of studio under ~/.unsloth). No-op in env/
+    # custom mode (nested under the custom root, removed with it) and when absent.
+    if ($defaultNode) { _RemovePath $defaultNode }
     if ($defaultStaging) { _RemovePath $defaultStaging }
     # llama.cpp install lock (serializes the shared build); a stray lock keeps
     # ~/.unsloth from being pruned below. No-op in env/custom mode and when absent.

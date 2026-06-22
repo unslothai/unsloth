@@ -752,6 +752,24 @@ def test_uninstall_sh_preserves_shared_icon_for_surviving_shortcut():
     )
 
 
+def test_uninstall_removes_managed_node_runtime():
+    # The isolated Node.js runtime (install_node_prebuilt.py) lives at ~/.unsloth/node
+    # in default mode, a sibling of studio -- deleting <studio> misses it, so both
+    # uninstallers must remove it explicitly (env/custom mode nests it under the
+    # custom root, removed with that root).
+    sh = (PACKAGE_ROOT / "scripts" / "uninstall.sh").read_text(encoding = "utf-8")
+    assert '_remove_path "$HOME/.unsloth/node"' in sh, (
+        "uninstall.sh must remove the default-mode ~/.unsloth/node runtime"
+    )
+    ps = (PACKAGE_ROOT / "scripts" / "uninstall.ps1").read_text(encoding = "utf-8")
+    assert '$defaultNode = if ($defaultUnslothHome) { Join-Path $defaultUnslothHome "node" }' in ps, (
+        "uninstall.ps1 must resolve the default-mode ~/.unsloth\\node runtime dir"
+    )
+    assert "_RemovePath $defaultNode" in ps, (
+        "uninstall.ps1 must remove the default-mode ~/.unsloth\\node runtime"
+    )
+
+
 def test_install_python_stack_windows_rocm_repair_pins_and_is_nonfatal():
     # The Windows AMD ROCm repair in _ensure_rocm_torch() must mirror the PS
     # installer: (1) pin torchvision/torchaudio for the arches the PS side pins so
