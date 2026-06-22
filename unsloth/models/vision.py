@@ -544,6 +544,10 @@ def _is_offline_related_error(exc):
         "connection refused",
         "we couldn't connect to",
         "proxyerror",
+        # Raw socket.gaierror DNS-failure wording across platforms (Linux / macOS)
+        "name or service not known",
+        "temporary failure in name resolution",
+        "nodename nor servname provided",
     )
     seen = set()
     cur = exc
