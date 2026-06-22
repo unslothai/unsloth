@@ -45,10 +45,9 @@ export async function confirmRemoteCodeIfNeeded({
     };
   }
 
-  // No custom code to review and nothing flagged unsafe: proceed without enabling
-  // trust_remote_code. trust_remote_code is never turned on here -- a model that
-  // genuinely needs it ships auto_map (the scan reports it) and takes the dialog path
-  // below, so the flag is only ever enabled by an explicit approval of scanned code.
+  // No custom code and nothing unsafe: proceed without enabling trust_remote_code.
+  // A model that needs it ships auto_map and takes the dialog path below, so the flag
+  // is only ever enabled by explicit approval of scanned code.
   if (!scan.requiresTrustRemoteCode && scan.unsafeFiles.length === 0) {
     return true;
   }

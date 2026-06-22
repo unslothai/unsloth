@@ -1225,9 +1225,8 @@ class TestScannerCoversAllExecutableCode:
         assert configs is None
 
     def test_gguf_repo_auto_map_is_scanned_for_non_file_load_paths(self, tmp_path):
-        # A GGUF-only repo id can still be passed to non-llama.cpp load paths (export uses
-        # transformers/Unsloth). Those paths can execute auto_map before failing on the
-        # weight shape, so only an explicit .gguf file reference is inert.
+        # A GGUF-only repo id still reaches non-llama.cpp paths (export), which run
+        # auto_map before failing on the weights; only a direct .gguf file is inert.
         def _dl(
             repo_id = None,
             filename = None,
@@ -1290,9 +1289,8 @@ class TestScannerCoversAllExecutableCode:
         assert d.fingerprint
 
     def test_transformers_style_repo_auto_map_is_scanned_and_blocked(self, tmp_path):
-        # The GGUF change must not weaken transformers-style loads: a non-GGUF repo
-        # (safetensors, or MLX-style .npz with no .safetensors/.gguf) that declares an
-        # auto_map is still scanned and blocked through the real consent gate.
+        # A non-GGUF repo (safetensors, or MLX .npz) with auto_map is still scanned and
+        # blocked through the real consent gate.
         def _dl(
             repo_id = None,
             filename = None,

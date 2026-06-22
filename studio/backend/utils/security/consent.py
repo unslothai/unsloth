@@ -87,16 +87,11 @@ def _config_has_auto_map(model_name: str, hf_token: Optional[str] = None) -> Opt
     unreadable (transient/auth) so the caller treats it as "unknown" and scans, False
     when the repo genuinely ships none.
 
-    GGUF-inertness is a property of the LOADER, not the repo, so it is NOT decided here.
-    A GGUF *selection* loads via llama.cpp, which never reads config.json/auto_map; that
-    case is short-circuited upstream by the caller's ``is_gguf`` check (e.g. the inference
-    route skips the remote-code preflight entirely for a GGUF load). Every path that
-    reaches this helper -- export, training, non-GGUF inference -- loads through
-    transformers/Unsloth ``from_pretrained``, which DOES import ``auto_map`` even for a
-    repo that only ships ``.gguf`` weights (the import runs before it fails on the missing
-    transformers weights), so a GGUF-classified repo id MUST still be scanned. Only a
-    direct ``.gguf`` FILE reference is inert, since that is a genuine single-file
-    llama.cpp load.
+    GGUF-inertness is the LOADER's property, decided upstream by the caller's ``is_gguf``
+    check, not here. Every path that reaches this helper (export, training, non-GGUF
+    inference) loads via ``from_pretrained``, which imports ``auto_map`` even for a
+    ``.gguf``-only repo, so a GGUF-classified repo id MUST still be scanned. Only a direct
+    ``.gguf`` FILE reference is inert (a genuine single-file llama.cpp load).
     """
     # A direct .gguf FILE loads via llama.cpp (auto_map inert). A bare repo id ending in
     # .gguf can still ship safetensors + auto_map, so it falls through to the scan.
