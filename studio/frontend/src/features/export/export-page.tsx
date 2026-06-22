@@ -93,11 +93,8 @@ function siblingGgufDirectory(sourcePath: string): string | null {
   const trimmed = sourcePath.trim().replace(/[\\/]+$/, "");
   if (!trimmed) return null;
   const slash = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
-  // Keep the lowercase ``_gguf`` token here: for a local-path source this is the
-  // exact intermediate dir the backend creates and then cleans up
-  // (core/export/export.py builds ``<checkpoint>_gguf``). Diverging to ``_GGUF``
-  // makes the backend treat the user's chosen dir as a separate location and
-  // relocate+delete the lowercase sibling, which can remove an existing export.
+  // Lowercase to match the backend's intermediate `<checkpoint>_gguf` dir
+  // (core/export/export.py); `_GGUF` would make it relocate+delete that sibling.
   if (slash < 0) return `${trimmed}_gguf`;
   const parent =
     slash === 0 || (slash === 2 && /^[A-Za-z]:/.test(trimmed))
