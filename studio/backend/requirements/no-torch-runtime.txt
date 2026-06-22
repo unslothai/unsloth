@@ -56,7 +56,7 @@ httpx
 httpcore
 certifi
 idna
-anyio>=3.0,<4.14.0  # 4.14+ breaks cancel scope on Py3.13 (#6483)
+anyio>=3.0,<4.14.0  # one consistent <4.14: 4.14's TaskHandle importers over a stale 4.13 _core/_tasks -> ImportError (#6483)
 sniffio
 h11
 
