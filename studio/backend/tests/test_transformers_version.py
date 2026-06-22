@@ -154,8 +154,7 @@ class TestRemoteLoraBase:
         cfg = {"base_model_name_or_path": "nvidia/NVIDIA-Nemotron-3-Nano-4B"}
         with patch("urllib.request.urlopen", return_value = self._resp(cfg)):
             assert (
-                _remote_lora_base("someuser/my-nemotron-lora")
-                == "nvidia/NVIDIA-Nemotron-3-Nano-4B"
+                _remote_lora_base("someuser/my-nemotron-lora") == "nvidia/NVIDIA-Nemotron-3-Nano-4B"
             )
 
     def test_local_or_noncanonical_returns_none(self):
