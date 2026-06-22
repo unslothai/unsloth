@@ -417,9 +417,14 @@ def _unsloth_reset_stray_compile_cache(self):
             markers.append(_m)
             if _m.get("seen"):
                 seen = True
+        # Follow the wrapper chain: Unsloth/HF (.model), PEFT (.base_model) and
+        # DDP / FSDP (.module). A pre-train probe can fire on the model below a
+        # DDP wrapper, so .module must be walked too or the marker is missed.
         _nxt = getattr(_curr, "model", None)
         if _nxt is None:
             _nxt = getattr(_curr, "base_model", None)
+        if _nxt is None:
+            _nxt = getattr(_curr, "module", None)
         _curr = _nxt
     if seen and os.environ.get("UNSLOTH_COMPILE_DISABLE", "0") != "1":
         try:
