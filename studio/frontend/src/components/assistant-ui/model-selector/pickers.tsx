@@ -1061,6 +1061,14 @@ function localModelIsGguf(m: LocalModelInfo): boolean {
   );
 }
 
+/** Whether a local model is an MLX build (name hint). MLX runs on Mac only, so
+ * callers gate visibility on the host being a Mac. */
+function localModelIsMlx(m: LocalModelInfo): boolean {
+  return (
+    isMlxId(m.id) || isMlxId(m.display_name) || isMlxId(m.model_id ?? "")
+  );
+}
+
 /** Whether a local model matches the format toggle (GGUF detected by name/path). */
 function localModelMatchesFormat(
   m: LocalModelInfo,
@@ -1140,7 +1148,10 @@ export function HubModelPicker({
     pinUnslothFirst: true,
     keepUnsupportedTags: true,
     accessToken,
-    enabled: online,
+    // Only the Recommended section renders Hub results (On Device / Connected
+    // use local data), so keep the Hub hooks idle on the other tabs to avoid
+    // needless requests/spinner and to preserve offline-local behavior.
+    enabled: online && section === "recommended",
   });
   const recommendedSearch = useHubModelSearch("", {
     ownerScope: "unsloth",
@@ -1149,7 +1160,7 @@ export function HubModelPicker({
     pinUnslothFirst: true,
     keepUnsupportedTags: true,
     accessToken,
-    enabled: online,
+    enabled: online && section === "recommended",
   });
 
   // Lowercased repo ids confirmed GGUF by the store or HF search.
@@ -1663,14 +1674,17 @@ export function HubModelPicker({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [lmStudioModels, downloadedSort, formatFilter, loadTimes, localQuery],
   );
-  // Local ./models entries. Chat-only Studio runs GGUF/MLX only, so raw
-  // checkpoints there are hidden (mirrors the cached non-GGUF rule).
+  // Local ./models entries. Chat-only Studio runs GGUF (any host) and MLX (Mac
+  // only), so raw checkpoints there are hidden (mirrors the cached non-GGUF
+  // rule). An MLX build a Mac user dropped in ./models stays selectable.
   const sortedLocalDir = useMemo(
     () =>
       sortLocalModels(
         localDirModels.filter(
           (m) =>
-            (!chatOnly || localModelIsGguf(m)) &&
+            (!chatOnly ||
+              localModelIsGguf(m) ||
+              (isMac && localModelIsMlx(m))) &&
             localModelMatchesFormat(m, formatFilter) &&
             matchesLocalQuery(m),
         ),
@@ -1682,6 +1696,7 @@ export function HubModelPicker({
       localDirModels,
       downloadedSort,
       formatFilter,
+      isMac,
       loadTimes,
       localQuery,
       chatOnly,

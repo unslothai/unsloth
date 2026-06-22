@@ -526,9 +526,13 @@ export function ChatSettingsPanel({
   })();
   const isLoadedGguf =
     useChatRuntimeStore((s) => s.activeGgufVariant) != null;
-  const isGguf = isLoadedGguf || pendingIsGguf;
-  // A staged pick is always a local GGUF, so show its Model section (and the
-  // Load button) even when the currently active model is external.
+  // While a pick is staged the sheet configures *that* model, so its GGUF-ness
+  // (not the currently loaded model's) decides whether the GGUF-only controls
+  // show. Otherwise a staged non-GGUF Hub repo would inherit the loaded GGUF's
+  // context/KV/speculative controls.
+  const isGguf = pendingSelection != null ? pendingIsGguf : isLoadedGguf;
+  // The Model section (and Load button) shows for any staged pick, even when the
+  // currently active model is external.
   const hasModelContent =
     pendingSelection != null ||
     (!isExternalModel && (isGguf || Boolean(params.checkpoint)));
