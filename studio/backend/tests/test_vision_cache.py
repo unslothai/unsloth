@@ -558,7 +558,7 @@ class TestAudioDetectionCacheTokenAware:
         mc._audio_detection_cache.clear()
         calls = []
 
-        def _fake(name, hf_token = None):
+        def _fake(name, hf_token = None, local_files_only = False):
             calls.append(hf_token)
             # Gated repo: only an authenticated probe can read the tokenizer.
             return ("bicodec", True) if hf_token else (None, True)
@@ -589,7 +589,7 @@ class TestAudioDetectionCacheTokenAware:
 
         transient_calls = []
 
-        def _transient(name, hf_token = None):
+        def _transient(name, hf_token = None, local_files_only = False):
             transient_calls.append(hf_token)
             return (None, False)  # network/5xx -- not cacheable
 
@@ -601,7 +601,7 @@ class TestAudioDetectionCacheTokenAware:
 
         definitive_calls = []
 
-        def _definitive(name, hf_token = None):
+        def _definitive(name, hf_token = None, local_files_only = False):
             definitive_calls.append(hf_token)
             return (None, True)  # read the config, no audio tokens
 
@@ -610,4 +610,35 @@ class TestAudioDetectionCacheTokenAware:
         assert mc.detect_audio_type("plain/text-model") is None
         # Probed once: the definitive None was cached.
         assert definitive_calls == [None]
+        mc._audio_detection_cache.clear()
+
+    def test_local_only_negative_does_not_poison_online(self, monkeypatch):
+        """An offline (local_files_only) probe only sees the on-disk cache, so its
+        negative result must not be reused by a later online probe that can fetch
+        the remote tokenizer config -- otherwise an audio model is routed through
+        the text loader until restart."""
+        import utils.models.model_config as mc
+
+        mc._audio_detection_cache.clear()
+        monkeypatch.setattr(mc, "is_local_path", lambda *_a, **_k: False)
+        monkeypatch.setattr(mc, "resolve_cached_repo_id_case", lambda n, *_a, **_k: n)
+
+        seen = []
+
+        def _probe(name, hf_token = None, local_files_only = False):
+            seen.append(local_files_only)
+            # Offline: nothing useful on disk -> definitive "not audio".
+            # Online: the remote config reveals an audio model.
+            return (None, True) if local_files_only else ("snac", True)
+
+        monkeypatch.setattr(mc, "_detect_audio_from_tokenizer", _probe)
+
+        # Offline probe caches None under a local-only key.
+        assert mc.detect_audio_type("some/audio-model", local_files_only = True) is None
+        # A later online probe must re-run (different key) and detect the audio model.
+        assert mc.detect_audio_type("some/audio-model", local_files_only = False) == "snac"
+        assert seen == [True, False]
+        # The online positive is then cached for subsequent online callers.
+        assert mc.detect_audio_type("some/audio-model", local_files_only = False) == "snac"
+        assert seen == [True, False]
         mc._audio_detection_cache.clear()

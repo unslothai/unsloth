@@ -914,9 +914,10 @@ def _is_vision_model_uncached(model_name: str, hf_token: Optional[str] = None) -
 
 VALID_AUDIO_TYPES = ("snac", "csm", "bicodec", "dac", "whisper", "audio_vlm")
 
-# Keyed by (normalized_name, token_fingerprint) like the vision cache, so an
-# unauthenticated miss (None) cannot poison a later authenticated lookup.
-_audio_detection_cache: Dict[Tuple[str, Optional[str]], Optional[str]] = {}
+# Keyed by (normalized_name, token_fingerprint, local_files_only) like the vision
+# cache, so an unauthenticated miss (None) cannot poison a later authenticated
+# lookup, and a local-only (offline) miss cannot poison a later online lookup.
+_audio_detection_cache: Dict[Tuple[str, Optional[str], bool], Optional[str]] = {}
 
 # Tokenizer token patterns → audio_type (all 6 types from tokenizer_config.json)
 _AUDIO_TOKEN_PATTERNS = {

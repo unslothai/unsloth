@@ -118,6 +118,37 @@ except Exception:
         yield
 
 
+@contextlib.contextmanager
+def _force_offline_probe_window():
+    """Force HF offline for the type-detection probe window.
+
+    _unsloth_force_hf_offline() flips the in-process huggingface_hub / transformers
+    offline flag, which covers transformers' own from_pretrained / is_offline_mode.
+    But two probe paths ignore that in-process flag:
+      * transformers_version._load_config_json / _check_tokenizer_config_needs_v5
+        gate their urllib fetches on the HF_HUB_OFFLINE / TRANSFORMERS_OFFLINE env
+        vars (read directly), not the module flag.
+      * is_vision_model may spawn a subprocess that inherits os.environ but not the
+        in-process flag.
+    So also set the env vars for the window (saved / restored) so both see offline
+    and neither blocks on a network timeout when offline was detected only by the
+    reachability probe (no env var set by the user).
+    """
+    _saved = {}
+    for _k in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"):
+        _saved[_k] = os.environ.get(_k)
+        os.environ[_k] = "1"
+    try:
+        with _unsloth_force_hf_offline():
+            yield
+    finally:
+        for _k, _v in _saved.items():
+            if _v is None:
+                os.environ.pop(_k, None)
+            else:
+                os.environ[_k] = _v
+
+
 def _is_wsl():
     """Detect if running under Windows Subsystem for Linux."""
     try:
@@ -267,7 +298,7 @@ class ExportBackend:
             # hit the local cache directly instead of waiting out connection
             # timeouts (detect_audio_type already reads the local cache first).
             _probe_ctx = (
-                _unsloth_force_hf_offline() if local_files_only else contextlib.nullcontext()
+                _force_offline_probe_window() if local_files_only else contextlib.nullcontext()
             )
             with _probe_ctx:
                 # detect_audio_type's remote fallback is a raw requests.get that

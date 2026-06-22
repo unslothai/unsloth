@@ -1457,14 +1457,20 @@ class FastBaseModel:
         tokenizer, _primary_err = _acquire_processor(
             local_files_only, force_offline = local_files_only
         )
-        if tokenizer is None and (local_files_only or _is_offline_related_error(_primary_err)):
+        # Only retry when the first attempt was an ONLINE one (local_files_only
+        # False) that failed with a genuinely network-related error. If offline
+        # was already requested, the first attempt was forced offline / local-only
+        # so an identical retry would just repeat the same failing work. And a
+        # permanent tokenizer error (bad config, unknown class) must never flip the
+        # process-wide offline flag for other concurrent loads in this process.
+        if (
+            tokenizer is None
+            and not local_files_only
+            and _is_offline_related_error(_primary_err)
+        ):
             # The kwarg alone was insufficient (transformers < 5) or the network is
             # down: retry against the local cache, forcing HF offline so
-            # AutoProcessor skips its /api/models lookup. We only flip the
-            # process-wide offline flag when offline was requested or the first
-            # failure was genuinely network related - a permanent tokenizer error
-            # (bad config, unknown class) must not toggle global offline mode for
-            # other concurrent loads in the same process.
+            # AutoProcessor skips its /api/models lookup.
             tokenizer, _primary_err = _acquire_processor(True, force_offline = True)
         if tokenizer is None and is_vlm:
             import sys
