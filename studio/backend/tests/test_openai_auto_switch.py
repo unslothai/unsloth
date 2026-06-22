@@ -383,6 +383,227 @@ def test_idle_loop_does_not_unload_while_request_inflight(monkeypatch):
     assert unloads == []
 
 
+# ── per-model launch overrides ──────────────────────────────────────
+
+
+def test_auto_switch_applies_model_override(monkeypatch):
+    # A configured model loads with its saved launch flags, not bare defaults.
+    backend = _FakeBackend(None)
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("unsloth/B-GGUF", "Q4_K_M"),
+        backend = backend,
+        recorder = rec,
+    )
+    monkeypatch.setattr(
+        settings,
+        "get_model_override",
+        lambda model_id: {"llama_extra_args": ["--n-gpu-layers", "20"], "max_seq_length": 4096},
+    )
+
+    _run_hook("unsloth/B-GGUF")
+    assert len(rec.calls) == 1
+    req = rec.calls[0]
+    assert req.model_path == "unsloth/B-GGUF"
+    assert req.gguf_variant == "Q4_K_M"
+    assert req.llama_extra_args == ["--n-gpu-layers", "20"]
+    assert req.max_seq_length == 4096
+
+
+def test_auto_switch_applies_partial_override(monkeypatch):
+    # Only llama_extra_args is configured: it is applied, max_seq_length stays default.
+    backend = _FakeBackend(None)
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("unsloth/B-GGUF", "Q4_K_M"),
+        backend = backend,
+        recorder = rec,
+    )
+    monkeypatch.setattr(
+        settings, "get_model_override", lambda model_id: {"llama_extra_args": ["--flash-attn"]}
+    )
+
+    _run_hook("unsloth/B-GGUF")
+    req = rec.calls[0]
+    assert req.llama_extra_args == ["--flash-attn"]
+    assert req.max_seq_length == 0  # untouched default
+
+
+def _mock_override_store(monkeypatch):
+    """Back the override read + atomic-merge write with an in-memory dict."""
+    import storage.studio_db as db
+
+    store = {}
+
+    def _merge_entry(key, entry_key, entry_value):
+        current = dict(store.get(key) or {})
+        if entry_value:
+            current[entry_key] = entry_value
+        else:
+            current.pop(entry_key, None)
+        store[key] = current
+        return current
+
+    monkeypatch.setattr(db, "upsert_app_setting_map_entry", _merge_entry)
+    monkeypatch.setattr(db, "get_app_setting", lambda k, default = None: store.get(k, default))
+    settings._cache.clear()
+    return store
+
+
+def test_model_override_roundtrip(monkeypatch):
+    _mock_override_store(monkeypatch)
+
+    settings.set_model_override(
+        "unsloth/B-GGUF", llama_extra_args = ["--n-gpu-layers", "20"], max_seq_length = 4096
+    )
+    assert settings.get_model_override("unsloth/B-GGUF") == {
+        "llama_extra_args": ["--n-gpu-layers", "20"],
+        "max_seq_length": 4096,
+    }
+    # An override with no fields removes the entry rather than storing an empty one.
+    settings.set_model_override("unsloth/B-GGUF", llama_extra_args = [], max_seq_length = None)
+    assert settings.get_model_override("unsloth/B-GGUF") == {}
+    assert settings.get_model_overrides() == {}
+
+
+def test_override_route_rejects_managed_flag_and_removes(monkeypatch):
+    import routes.settings as settings_route
+    from fastapi import HTTPException
+
+    _mock_override_store(monkeypatch)
+
+    # A managed/denylisted llama-server flag is rejected with 400, not 500.
+    bad = settings_route.ModelOverridePayload(
+        model_id = "unsloth/B-GGUF", llama_extra_args = ["--port", "1234"]
+    )
+    with pytest.raises(HTTPException) as excinfo:
+        settings_route.update_openai_auto_switch_override(bad, "tester")
+    assert excinfo.value.status_code == 400
+
+    # A valid override is stored, then an empty payload removes it through the route.
+    ok = settings_route.ModelOverridePayload(
+        model_id = "unsloth/B-GGUF", llama_extra_args = ["--flash-attn"], max_seq_length = 4096
+    )
+    resp = settings_route.update_openai_auto_switch_override(ok, "tester")
+    assert resp.overrides["unsloth/B-GGUF"]["max_seq_length"] == 4096
+    assert "llama_extra_args" in resp.overrides["unsloth/B-GGUF"]
+
+    empty = settings_route.ModelOverridePayload(model_id = "unsloth/B-GGUF")
+    resp2 = settings_route.update_openai_auto_switch_override(empty, "tester")
+    assert "unsloth/B-GGUF" not in resp2.overrides
+
+
+# ── /v1/models discovery ────────────────────────────────────────────
+
+
+def test_list_switch_eligible_ids(monkeypatch):
+    # Several index keys map to the same entry; the listing is the distinct,
+    # SORTED set of loader ids (insertion order B,A,C below differs from sorted).
+    eb = resolver._LocalGgufEntry("unsloth/B-GGUF", ("Q4_K_M",))
+    ea = resolver._LocalGgufEntry("unsloth/A-GGUF", ())
+    ec = resolver._LocalGgufEntry("unsloth/C-GGUF", ())
+    monkeypatch.setattr(
+        resolver,
+        "_build_index",
+        lambda: {"unsloth/b-gguf": eb, "b-gguf": eb, "unsloth/a-gguf": ea, "unsloth/c-gguf": ec},
+    )
+    resolver._scan = (0.0, {})
+    assert resolver.list_switch_eligible_ids() == [
+        "unsloth/A-GGUF",
+        "unsloth/B-GGUF",
+        "unsloth/C-GGUF",
+    ]
+
+
+def test_v1_models_lists_eligible_only_when_enabled(monkeypatch):
+    # Loaded model B (rich fields); eligible models A and B.
+    monkeypatch.setattr(
+        inference_route,
+        "_openai_model_objects",
+        lambda: [
+            {
+                "id": "unsloth/B-GGUF",
+                "object": "model",
+                "created": 1,
+                "owned_by": "local",
+                "context_length": 8192,
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        resolver, "list_switch_eligible_ids", lambda: ["unsloth/A-GGUF", "unsloth/B-GGUF"]
+    )
+
+    # Off: drop-in behavior unchanged — only the loaded model is listed.
+    monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: False)
+    data = asyncio.run(inference_route._all_openai_model_objects())
+    assert [m["id"] for m in data] == ["unsloth/B-GGUF"]
+
+    # On: loaded model first (keeps rich fields), then eligible extras with B
+    # deduped and listed minimally.
+    monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: True)
+    data = asyncio.run(inference_route._all_openai_model_objects())
+    assert [m["id"] for m in data] == ["unsloth/B-GGUF", "unsloth/A-GGUF"]
+    loaded = next(m for m in data if m["id"] == "unsloth/B-GGUF")
+    extra = next(m for m in data if m["id"] == "unsloth/A-GGUF")
+    assert loaded["context_length"] == 8192
+    assert "context_length" not in extra
+
+
+def test_v1_models_retrieve_eligible_only_when_enabled(monkeypatch):
+    from fastapi import HTTPException
+
+    monkeypatch.setattr(
+        inference_route,
+        "_openai_model_objects",
+        lambda: [{"id": "unsloth/B-GGUF", "object": "model", "created": 1, "owned_by": "local"}],
+    )
+    monkeypatch.setattr(
+        resolver, "list_switch_eligible_ids", lambda: ["unsloth/A-GGUF", "unsloth/B-GGUF"]
+    )
+
+    # Off: an eligible-but-unloaded id is not retrievable (unchanged drop-in behavior).
+    monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: False)
+    with pytest.raises(HTTPException) as off:
+        asyncio.run(inference_route.openai_retrieve_model("unsloth/A-GGUF", "tester"))
+    assert off.value.status_code == 404
+
+    # On: an eligible id returns a minimal object echoing the requested id...
+    monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: True)
+    obj = asyncio.run(inference_route.openai_retrieve_model("unsloth/A-GGUF", "tester"))
+    assert obj["id"] == "unsloth/A-GGUF" and obj["object"] == "model"
+    # ...but a truly unknown id still 404s.
+    with pytest.raises(HTTPException) as unknown:
+        asyncio.run(inference_route.openai_retrieve_model("totally/unknown", "tester"))
+    assert unknown.value.status_code == 404
+
+
+def test_v1_models_retrieve_is_case_insensitive(monkeypatch):
+    # The resolver lowercases its index, so a retrieve that differs only in case
+    # from a listed id must still hit (200), not 404. Guards the .lower() compare
+    # in openai_retrieve_model against a silent revert.
+    monkeypatch.setattr(
+        inference_route,
+        "_openai_model_objects",
+        lambda: [{"id": "unsloth/B-GGUF", "object": "model", "created": 1, "owned_by": "local"}],
+    )
+    monkeypatch.setattr(
+        resolver, "list_switch_eligible_ids", lambda: ["unsloth/A-GGUF", "unsloth/B-GGUF"]
+    )
+    monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: True)
+
+    # An eligible id retrieved with different casing still resolves.
+    obj = asyncio.run(inference_route.openai_retrieve_model("unsloth/a-gguf", "tester"))
+    assert obj["id"] == "unsloth/A-GGUF"
+    # The loaded model is also case-insensitively retrievable.
+    loaded = asyncio.run(inference_route.openai_retrieve_model("UNSLOTH/B-GGUF", "tester"))
+    assert loaded["id"] == "unsloth/B-GGUF"
+
+
 # ── hardening: hidden models, idle/enabled coupling, count_tokens keep-warm ──
 
 

@@ -40,6 +40,7 @@ import { LOCALE_STORAGE_KEY, useT } from "@/i18n";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { Eye, EyeOff } from "lucide-react";
+import { ModelAutoSwitchSection } from "../components/model-auto-switch-section";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import { StudioVersionSection } from "../components/studio-version-section";
@@ -397,6 +398,8 @@ export function GeneralTab() {
           </div>
         </SettingsRow>
       </SettingsSection>
+
+      <ModelAutoSwitchSection />
 
       <SettingsSection title={t("settings.general.notifications.sectionTitle")}>
         <SettingsRow
