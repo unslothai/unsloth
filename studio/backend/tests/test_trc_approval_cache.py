@@ -44,7 +44,11 @@ def _isolated_store(tmp_path, monkeypatch):
     yield
 
 
-def _patch_scan(monkeypatch, files, sha = "sha1"):
+def _patch_scan(
+    monkeypatch,
+    files,
+    sha = "sha1",
+):
     """Stub the gate's scanners and the SHA resolver; return a {'scans': n} counter."""
     state = {"scans": 0}
 
@@ -58,7 +62,12 @@ def _patch_scan(monkeypatch, files, sha = "sha1"):
     return state
 
 
-def _gate(targets, *, approved = None, subject = "user-a"):
+def _gate(
+    targets,
+    *,
+    approved = None,
+    subject = "user-a",
+):
     return evaluate_remote_code_consent_for_targets(
         targets if isinstance(targets, list) else [targets],
         None,
@@ -68,7 +77,13 @@ def _gate(targets, *, approved = None, subject = "user-a"):
     )
 
 
-def _approve(monkeypatch, target = "org/m", files = _HIGH, sha = "sha1", subject = "user-a"):
+def _approve(
+    monkeypatch,
+    target = "org/m",
+    files = _HIGH,
+    sha = "sha1",
+    subject = "user-a",
+):
     """Drive a genuine approval (scan -> user supplies the matching fingerprint -> record)."""
     st = _patch_scan(monkeypatch, files, sha = sha)
     fp = _gate(target, subject = subject).fingerprint  # blocked: no approval yet

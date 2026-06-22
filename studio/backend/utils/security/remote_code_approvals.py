@@ -181,12 +181,10 @@ def resolve_commit_sha(target: str, hf_token: Optional[str] = None) -> Optional[
     consent. None falls back to the authoritative fingerprint check (never fail-open).
     """
     from utils.paths import is_local_path
-
     try:
         if is_local_path(target) or _env_offline():
             return None
         from huggingface_hub import HfApi
-
         return HfApi().model_info(target, token = hf_token).sha
     except Exception as exc:
         logger.debug("Could not resolve commit sha for '%s': %s", target, exc)
