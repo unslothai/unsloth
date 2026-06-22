@@ -999,8 +999,7 @@ class TestLocalConfig530Tier:
         assert get_transformers_tier(str(d)) == "550"
 
     def test_stale_absolute_name_or_path_not_promoted(self, tmp_path: Path):
-        """A non-5.x checkpoint whose _name_or_path is a stale absolute path
-        containing a 5.x substring must not be name-matched into a sidecar."""
+        """A non-5.x checkpoint with a stale absolute _name_or_path isn't name-matched."""
         d = tmp_path / "my-llama-ckpt"
         d.mkdir()
         (d / "config.json").write_text(
@@ -1376,10 +1375,8 @@ class TestAdapterModelOnlyLoRA:
 
 
 class TestConfig530OverrideGuard:
-    """A checkpoint whose config.json correctly matches the 530 set must not be
-    promoted to 550 by an arbitrary 5.5-looking substring in a stale/renamed
-    local path saved in model_name/_name_or_path. Only a real Hub id (or the
-    current folder basename) may override the config tier."""
+    """A correct 530 config must not be flipped to 550 by a 5.5-looking substring in
+    a stale/renamed local path; only a real Hub id or the folder basename may override."""
 
     def test_stale_local_path_does_not_flip_530_to_550(self, tmp_path: Path):
         d = tmp_path / "my-qwen35-run"
@@ -1392,8 +1389,7 @@ class TestConfig530OverrideGuard:
                 }
             )
         )
-        # qwen3.6 in the stale path would name-match 550, but it is not a Hub id,
-        # so the correct 530 config wins.
+        # Stale path is not a Hub id, so the 530 config wins over its qwen3.6 substring.
         assert get_transformers_tier(str(d)) == "530"
 
     def test_current_basename_can_still_override_to_550(self, tmp_path: Path):
@@ -1414,8 +1410,7 @@ class TestConfig530OverrideGuard:
         assert get_transformers_tier(str(d)) == "550"
 
     def test_remote_qwen36_name_or_path_overrides_530(self):
-        """Slow path: a private/renamed Hub repo whose fetched config reuses the
-        qwen3_5 id but names Qwen3.6 in _name_or_path must select 550, not 530."""
+        """Slow path: a fetched qwen3_5 config naming Qwen3.6 in _name_or_path -> 550."""
         _config_needs_530_cache.clear()
         _config_json_cache.clear()
         with patch(
@@ -1452,15 +1447,13 @@ class TestLooksLikeHfId:
 
 
 class TestMalformedInputRobustness:
-    """Tier detection must never crash on malformed configs or pathological
-    model names; it fails open to the default tier."""
+    """Tier detection fails open to default instead of crashing on bad input."""
 
     def setup_method(self):
         _config_json_cache.clear()
         _config_needs_530_cache.clear()
 
     def test_non_string_model_type_does_not_crash(self):
-        # A list model_type is unhashable; the matcher must not raise.
         assert _config_needs_530({"model_type": ["qwen3_5"]}) is False
 
     def test_non_list_architectures_does_not_crash(self):
@@ -1478,8 +1471,7 @@ class TestMalformedInputRobustness:
             assert get_transformers_tier(str(d)) == "default"
 
     def test_pathological_long_name_does_not_crash(self):
-        # An over-long name component raises OSError from is_file(); tier
-        # detection must fail open instead of propagating it.
+        # An over-long name makes is_file() raise OSError; must fail open.
         assert get_transformers_tier("x" * 5000) == "default"
 
     def test_empty_name_returns_default(self):

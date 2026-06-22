@@ -1161,10 +1161,8 @@ def _load_config_for_gpu_estimate(model_name: str, hf_token: Optional[str] = Non
 
         return _to_ns(cfg)
     except Exception as e:
-        # A 5.x-only architecture (e.g. Qwen3.5 / model_type "qwen3_5") cannot be
-        # parsed by the default in-process transformers -- that is expected, the
-        # worker reloads the model under the matching transformers sidecar. Only
-        # warn loudly when no tier switch will rescue the load.
+        # A 5.x-only config can't be parsed by the default transformers; that is
+        # expected (the worker reloads under the sidecar), so only warn for default tier.
         tier = "default"
         try:
             from utils.transformers_version import get_transformers_tier
