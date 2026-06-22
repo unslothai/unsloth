@@ -2016,6 +2016,21 @@ exit 0
             return (Exit-InstallFailure "Windows-on-ARM + NVIDIA GPU needs the WSL2 GPU install, which the desktop app can't launch yet. Install from PowerShell instead:  irm https://unsloth.ai/install.ps1 | iex" 1)
         }
 
+        # --local installs the Windows checkout editably (uv pip install -e $RepoRoot) on the native
+        # path, but the WSL tunnel installs from PyPI / a git ref and never mounts $RepoRoot -- so a
+        # --local run here would silently install the published package inside WSL and report success.
+        # Reject it and point at the supported pre-merge mechanism (push the branch + UNSLOTH_INSTALL_REF).
+        if ($StudioLocalInstall) {
+            return (Exit-InstallFailure "--local can't be honored on Windows-on-ARM + NVIDIA: the GPU install runs inside WSL2 and installs from a published/git ref, not this Windows checkout. For pre-merge testing, push your branch and set UNSLOTH_INSTALL_REF, e.g.:  `$env:UNSLOTH_INSTALL_REF='<branch>'; irm https://unsloth.ai/install.ps1 | iex" 1)
+        }
+        # A custom Studio root (UNSLOTH_STUDIO_HOME / STUDIO_HOME) only applies to the native Windows
+        # layout; the WoA GPU install lives inside WSL at /root/.unsloth and the shim/verification paths
+        # are fixed there. Don't pretend to honor it -- warn so the user isn't misled into thinking Studio
+        # landed at their custom path (the uninstaller still cleans the WSL install regardless).
+        if ($envOverride) {
+            substep "note: $envOverrideVar='$envOverride' is not used for the Windows-on-ARM WSL install -- Studio installs inside WSL at /root/.unsloth." "Yellow"
+        }
+
         $wslReady = $false
         if (Get-Command wsl.exe -ErrorAction SilentlyContinue) {
             # Reset: a stale 0 would wrongly mark WSL ready if wsl.exe fails to start.
@@ -2084,6 +2099,13 @@ exit 0
         # Non-main ref: fetch + export THAT ref so the WSL venv gets the branch's setup.sh + patches
         # (else install.sh pulls PyPI unsloth). main == plain unsloth.ai/install.sh.
         $_instRef = Get-UnslothInstallRef
+        # The ref is spliced into the inner `bash -lc` twice (an `export` and a raw GitHub URL), so a
+        # hand-set UNSLOTH_INSTALL_REF containing shell metacharacters (`;`, `&`, `'`, spaces) would
+        # break/inject the command. git refs can't contain those anyway; enforce a strict allow-list
+        # (letters, digits, `.` `_` `/` `-`) and reject loudly rather than silently mangle the install.
+        if ($_instRef -ne 'main' -and ($_instRef -notmatch '^[A-Za-z0-9][A-Za-z0-9._/-]*$')) {
+            return (Exit-InstallFailure "UNSLOTH_INSTALL_REF='$_instRef' is not a valid git ref (allowed: letters, digits, '.', '_', '/', '-'). Set it to a real branch or tag name." 1)
+        }
         # UNSLOTH_WSL_LLAMA_DEFERRED=1: setup.sh skips its foreground CUDA llama.cpp build since we build it
         # in the background. apt stderr stays visible (only stdout -> /dev/null) so failures are diagnosable.
         # Forward UNSLOTH_NO_LLAMA_CUDA into WSL: it also skips the dispatch below, so unforwarded setup.sh
