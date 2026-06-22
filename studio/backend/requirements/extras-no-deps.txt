@@ -11,7 +11,6 @@ peft==0.18.1
 
 # TRL and related packages
 trl==0.23.1
-git+https://github.com/meta-pytorch/OpenEnv.git
 # executorch>=1.0.1               # 41.5 MB - no imports in unsloth/zoo/studio
 torch-c-dlpack-ext
 sentence_transformers==5.2.0

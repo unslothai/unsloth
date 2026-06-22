@@ -138,7 +138,6 @@ class TestFilterRequirements:
         req = self._write_req(
             tmp_path,
             """\
-            open_spiel
             triton_kernels
             torch-stoi
             timm
