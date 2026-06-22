@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import inspect
 import types
 import torch
 
@@ -28,13 +29,36 @@ def get_mtp_modules(model):
 
 
 def call_mtp_module(module, hidden_states, **kwargs):
+    forward_fn = getattr(module, "forward", module)
     try:
+        signature = inspect.signature(forward_fn)
+    except (TypeError, ValueError):
         return module(hidden_states, **kwargs)
-    except TypeError:
-        try:
-            return module(hidden_states = hidden_states, **kwargs)
-        except TypeError:
-            return module(hidden_states)
+
+    parameters = signature.parameters
+    has_kwargs = any(
+        parameter.kind == inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters.values()
+    )
+    filtered_kwargs = (
+        kwargs
+        if has_kwargs
+        else {key: value for key, value in kwargs.items() if key in parameters}
+    )
+    has_positional = any(
+        parameter.kind
+        in (
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        )
+        for parameter in parameters.values()
+    )
+
+    if has_positional:
+        return module(hidden_states, **filtered_kwargs)
+    if "hidden_states" in parameters:
+        return module(hidden_states = hidden_states, **filtered_kwargs)
+    return module(hidden_states, **filtered_kwargs)
 
 
 def unwrap_mtp_output(output):
@@ -42,6 +66,11 @@ def unwrap_mtp_output(output):
         return output.logits
     if hasattr(output, "last_hidden_state"):
         return output.last_hidden_state
+    if isinstance(output, dict):
+        if "logits" in output:
+            return output["logits"]
+        if "last_hidden_state" in output:
+            return output["last_hidden_state"]
     if isinstance(output, (tuple, list)):
         return output[0]
     return output
@@ -64,7 +93,7 @@ def mask_mtp_packed_sequence_boundaries(
     if lengths.numel() == 0:
         return False
 
-    flat = shift_labels.reshape(-1)
+    flat = shift_labels.view(-1)
     total_tokens = flat.shape[0]
     boundary_ends = torch.cumsum(lengths, dim = 0)
     changed = False
@@ -83,7 +112,7 @@ def make_mtp_shift_labels(
     offset,
     packed_seq_lengths = None,
 ):
-    shift_labels = torch.empty_like(labels)
+    shift_labels = torch.empty(labels.shape, dtype = labels.dtype, device = labels.device)
     if offset < labels.shape[-1]:
         shift_labels[..., :-offset] = labels[..., offset:]
         shift_labels[..., -offset:] = -100
@@ -172,7 +201,16 @@ def compute_mtp_loss(
         if mtp_logits_or_hidden.shape[-1] == vocab_size:
             mtp_logits = mtp_logits_or_hidden
         else:
-            mtp_logits = model.lm_head(mtp_logits_or_hidden.to(model.lm_head.weight.dtype))
+            lm_head = getattr(model, "lm_head", None)
+            if lm_head is None:
+                raise AttributeError("Unsloth: MTP hidden states require a model.lm_head module.")
+            lm_head_weight = getattr(lm_head, "weight", None)
+            if lm_head_weight is not None:
+                mtp_logits_or_hidden = mtp_logits_or_hidden.to(
+                    device = lm_head_weight.device,
+                    dtype = lm_head_weight.dtype,
+                )
+            mtp_logits = lm_head(mtp_logits_or_hidden)
 
         mtp_shift_labels = make_mtp_shift_labels(
             labels,

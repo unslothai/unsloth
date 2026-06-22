@@ -1,4 +1,5 @@
 import ast
+import inspect
 import types
 from pathlib import Path
 
@@ -32,6 +33,7 @@ def _load_mtp_loss_helpers():
         )
 
     namespace = {
+        "inspect": inspect,
         "torch": torch,
         "fast_cross_entropy_loss": fast_cross_entropy_loss,
     }
@@ -46,6 +48,15 @@ class _MTPHead(torch.nn.Module):
 
     def forward(self, hidden_states, **_kwargs):
         return self.proj(hidden_states)
+
+
+class _DictMTPHead(torch.nn.Module):
+    def __init__(self, hidden_size, vocab_size):
+        super().__init__()
+        self.proj = torch.nn.Linear(hidden_size, vocab_size, bias = False)
+
+    def forward(self, hidden_states):
+        return {"logits": self.proj(hidden_states)}
 
 
 def test_qwen35_mtp_loss_auto_enables_and_backprops():
@@ -116,3 +127,34 @@ def test_mtp_shift_labels_mask_packed_boundaries_for_offset():
     )
 
     assert shifted.tolist() == [[3, -100, -100, 6, -100, -100]]
+
+
+def test_mtp_shift_labels_are_contiguous_with_non_contiguous_labels():
+    helpers = _load_mtp_loss_helpers()
+    labels = torch.arange(12, dtype = torch.long).reshape(2, 6)[:, ::2]
+
+    shifted = helpers["make_mtp_shift_labels"](labels, 1)
+
+    assert not labels.is_contiguous()
+    assert shifted.is_contiguous()
+
+
+def test_mtp_loss_accepts_dict_outputs_and_filters_kwargs():
+    helpers = _load_mtp_loss_helpers()
+    hidden_size = 4
+    vocab_size = 7
+    model = torch.nn.Module()
+    model.config = types.SimpleNamespace(model_type = "qwen3_5_moe_text", vocab_size = vocab_size)
+    model.vocab_size = vocab_size
+    model.lm_head = torch.nn.Linear(hidden_size, vocab_size, bias = False)
+    model.mtp = torch.nn.ModuleList([_DictMTPHead(hidden_size, vocab_size)])
+
+    loss = helpers["compute_mtp_loss"](
+        model,
+        torch.randn(1, 4, hidden_size),
+        torch.tensor([[0, 1, 2, 3]], dtype = torch.long),
+        loss_fn = helpers["fast_cross_entropy_loss"],
+        unknown_kwarg = object(),
+    )
+
+    assert loss is not None
