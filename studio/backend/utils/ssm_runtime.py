@@ -87,11 +87,9 @@ def model_wants_causal_conv1d(model_name: str) -> bool:
 def ssm_probe_identifier(model_name: str, base: str | None = None) -> str:
     """The identifier whose architecture decides the SSM kernels.
 
-    The substring match must run against a real model id, never an arbitrary name: a LoRA
-    adapter id and a local checkpoint's parent folders are unrelated to its architecture
-    (a plain Llama LoRA at ``user/falcon-h1-lora`` or ``/runs/falcon-h1/llama-ckpt`` is not
-    SSM). Prefer the resolved *base*; for a bare local checkpoint use its basename so parent
-    directories cannot false-match.
+    The substring match needs a real model id: a LoRA adapter id or a local checkpoint's
+    parent folders are unrelated to its architecture (a Llama LoRA at ``user/falcon-h1-lora``
+    is not SSM). Prefer *base*; for a bare local checkpoint use its basename.
     """
     probe = base or model_name
     if probe == model_name:

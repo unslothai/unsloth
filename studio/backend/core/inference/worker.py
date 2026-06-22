@@ -295,10 +295,9 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
         ):
             return
 
-        # Install SSM/Mamba kernels. Normally a no-op for the initial load (pre-installed in
-        # run_inference_process before importing transformers); still needed for a LoRA's base
-        # (resolved only now via mc) and later in-process loads. Skip on MLX (no macOS wheel).
-        # Probe the base, not the adapter id / local path (arbitrary names must not match).
+        # Install SSM/Mamba kernels: a no-op for the initial load (pre-installed before import)
+        # but still needed for a LoRA's base (resolved only now via mc) and in-process loads.
+        # Skip on MLX (no macOS wheel). Probe the base, not the adapter id / local path.
         if getattr(backend, "device", None) != "mlx":
             from utils.ssm_runtime import ssm_probe_identifier
 
@@ -756,9 +755,8 @@ def run_inference_process(*, cmd_queue: Any, resp_queue: Any, cancel_event, conf
         return
 
     # ── Resolve the effective base once, before activation/gates/install (no ML import) ──
-    # A remote LoRA's base lives in the Hub adapter_config.json, surfaced otherwise only by
-    # ModelConfig in _handle_load after the import. _lora_base mirrors mc.is_lora/mc.base_model
-    # (set only for a genuine adapter) so the gate never scans a full fine-tune's unloaded base.
+    # A remote LoRA's base is in its Hub adapter_config.json (else surfaced only by ModelConfig
+    # after import). _lora_base is set only for a genuine adapter, never a full fine-tune's base.
     import json as _json
 
     _ensure_backend_on_path()
@@ -807,13 +805,11 @@ def run_inference_process(*, cmd_queue: Any, resp_queue: Any, cancel_event, conf
             )
 
     # ── 1c. Security gates, then SSM/Mamba kernels, BEFORE importing transformers ──
-    # transformers snapshots its optional-backend gates at import, so a hybrid model's
-    # kernels must be installed before the import below or the load still fails with
-    # "mamba-ssm is required". The SSM install is name-based and may source-build, so run the
-    # metadata-only gates first and refuse a blocked model before any native build. A no-op
-    # for non-SSM models; _handle_load re-runs the authoritative gates with the mc base.
-    # Gate only the model + a genuine LoRA base (matching _handle_load); a full fine-tune's
-    # recorded base is never loaded, so it must not be scanned/blocked here.
+    # transformers snapshots its optional-backend gates at import, so a hybrid model's kernels
+    # must be installed before the import below ("mamba-ssm is required" otherwise). The gates
+    # are metadata-only, so run them first and refuse a blocked model before any native build.
+    # Gate only the model + a genuine LoRA base (matching _handle_load), never a full fine-tune's
+    # unloaded base; _handle_load re-runs the authoritative gates with the mc base.
     _gate_targets = [model_name]
     if _lora_base:
         _gate_targets.append(_lora_base)
