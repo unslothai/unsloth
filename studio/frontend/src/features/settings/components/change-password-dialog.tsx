@@ -27,6 +27,8 @@ import { type FormEvent, useState } from "react";
 const MIN_PASSWORD_LENGTH = 8;
 const WRONG_CURRENT_PASSWORD_DETAIL = "Current password is incorrect";
 
+type T = ReturnType<typeof useT>;
+
 function stringField(payload: Record<string, unknown>, key: string): string {
   const value = payload[key];
   return typeof value === "string" ? value : "";
@@ -46,6 +48,43 @@ function changePasswordBody(
       ["new_password", nextPassword],
     ]),
   );
+}
+
+function hasStartedTooShortPassword(value: string): boolean {
+  return value.length > 0 && value.length < MIN_PASSWORD_LENGTH;
+}
+
+function hasReusablePassword(currentPassword: string, nextPassword: string) {
+  return (
+    currentPassword.length >= MIN_PASSWORD_LENGTH &&
+    nextPassword.length >= MIN_PASSWORD_LENGTH &&
+    currentPassword === nextPassword
+  );
+}
+
+function passwordValidationMessage(
+  t: T,
+  currentPassword: string,
+  nextPassword: string,
+  confirmPassword: string,
+): string {
+  if (currentPassword.length < MIN_PASSWORD_LENGTH) {
+    return t("settings.general.passwordDialog.currentTooShort", {
+      minLength: MIN_PASSWORD_LENGTH,
+    });
+  }
+  if (nextPassword.length < MIN_PASSWORD_LENGTH) {
+    return t("settings.general.passwordDialog.newTooShort", {
+      minLength: MIN_PASSWORD_LENGTH,
+    });
+  }
+  if (nextPassword !== confirmPassword) {
+    return t("settings.general.passwordDialog.mismatch");
+  }
+  if (currentPassword === nextPassword) {
+    return t("settings.general.passwordDialog.samePassword");
+  }
+  return "";
 }
 
 async function unauthorizedDetail(response: Response): Promise<string | null> {
@@ -119,17 +158,22 @@ export function ChangePasswordDialog() {
     setConfirm("");
   };
 
+  const currentTooShort = hasStartedTooShortPassword(current);
+  const nextTooShort = hasStartedTooShortPassword(next);
   const mismatch = confirm.length > 0 && next !== confirm;
-  const disabled =
-    submitting ||
-    current.length < MIN_PASSWORD_LENGTH ||
-    next.length < MIN_PASSWORD_LENGTH ||
-    next !== confirm ||
-    current === next;
+  const samePassword = hasReusablePassword(current, next);
+  const validationMessage = passwordValidationMessage(
+    t,
+    current,
+    next,
+    confirm,
+  );
+  const disabled = submitting || Boolean(validationMessage);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
-    if (disabled) {
+    if (validationMessage) {
+      toast.error(validationMessage);
       return;
     }
     setSubmitting(true);
@@ -161,6 +205,9 @@ export function ChangePasswordDialog() {
     <Dialog
       open={open}
       onOpenChange={(o) => {
+        if (submitting && !o) {
+          return;
+        }
         setOpen(o);
         if (!o) {
           reset();
@@ -172,7 +219,20 @@ export function ChangePasswordDialog() {
           {t("settings.general.passwordDialog.trigger")}
         </Button>
       </DialogTrigger>
-      <DialogContent className="sm:max-w-sm">
+      <DialogContent
+        className="sm:max-w-sm"
+        showCloseButton={!submitting}
+        onEscapeKeyDown={(event) => {
+          if (submitting) {
+            event.preventDefault();
+          }
+        }}
+        onInteractOutside={(event) => {
+          if (submitting) {
+            event.preventDefault();
+          }
+        }}
+      >
         <form onSubmit={submit}>
           <DialogHeader>
             <DialogTitle>
@@ -195,7 +255,16 @@ export function ChangePasswordDialog() {
                 autoComplete="current-password"
                 value={current}
                 onChange={(e) => setCurrent(e.target.value)}
+                minLength={MIN_PASSWORD_LENGTH}
+                disabled={submitting}
               />
+              {currentTooShort ? (
+                <p className="text-xs text-destructive" aria-live="polite">
+                  {t("settings.general.passwordDialog.currentTooShort", {
+                    minLength: MIN_PASSWORD_LENGTH,
+                  })}
+                </p>
+              ) : null}
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="cp-new">
@@ -207,7 +276,18 @@ export function ChangePasswordDialog() {
                 autoComplete="new-password"
                 value={next}
                 onChange={(e) => setNext(e.target.value)}
+                minLength={MIN_PASSWORD_LENGTH}
+                disabled={submitting}
               />
+              {nextTooShort || samePassword ? (
+                <p className="text-xs text-destructive" aria-live="polite">
+                  {nextTooShort
+                    ? t("settings.general.passwordDialog.newTooShort", {
+                        minLength: MIN_PASSWORD_LENGTH,
+                      })
+                    : t("settings.general.passwordDialog.samePassword")}
+                </p>
+              ) : null}
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="cp-confirm">
@@ -219,9 +299,11 @@ export function ChangePasswordDialog() {
                 autoComplete="new-password"
                 value={confirm}
                 onChange={(e) => setConfirm(e.target.value)}
+                minLength={MIN_PASSWORD_LENGTH}
+                disabled={submitting}
               />
               {mismatch ? (
-                <p className="text-xs text-destructive">
+                <p className="text-xs text-destructive" aria-live="polite">
                   {t("settings.general.passwordDialog.mismatch")}
                 </p>
               ) : null}

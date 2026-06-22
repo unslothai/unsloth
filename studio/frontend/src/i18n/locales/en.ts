@@ -115,7 +115,12 @@ export const en = {
         currentPassword: "Current password",
         newPassword: "New password",
         confirmPassword: "Confirm new password",
+        currentTooShort:
+          "Current password must be at least {minLength} characters.",
+        newTooShort: "New password must be at least {minLength} characters.",
         mismatch: "Passwords do not match.",
+        samePassword:
+          "New password must be different from your current password.",
         update: "Update password",
         updating: "Updating...",
         updated: "Password updated.",
