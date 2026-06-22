@@ -498,9 +498,6 @@ def _build_bypass_env(workdir: str) -> dict[str, str]:
     # the bypassed tool writes under the per-session sandbox dir on every OS.
     env["TEMP"] = workdir
     env["TMP"] = workdir
-    # Emit utf-8 stdout so the parent's utf-8 decode is correct (matches the
-    # sandboxed _build_safe_env); the host LANG is left untouched otherwise.
-    env["PYTHONIOENCODING"] = "utf-8"
     # Windows SDKs read creds under the profile dirs, not $HOME; repoint set
     # ones to the workdir (HOMEDRIVE/HOMEPATH are dropped above).
     for var in _BYPASS_ENV_WINDOWS_PROFILE_VARS:
@@ -2554,6 +2551,10 @@ def _python_exec(
             f.write(code)
 
         safe_env = _build_bypass_env(workdir) if disable_sandbox else _build_safe_env(workdir)
+        if disable_sandbox:
+            # Match the sandboxed Python path without changing bypass shell I/O.
+            safe_env = dict(safe_env)
+            safe_env["PYTHONIOENCODING"] = "utf-8"
         popen_kwargs = dict(
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,

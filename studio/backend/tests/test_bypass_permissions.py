@@ -135,6 +135,7 @@ def test_python_bypass_uses_bypass_preexec_and_bypass_env(captured_popen, monkey
     assert captured_popen["kwargs"]["preexec_fn"] is tools._bypass_preexec
     env = captured_popen["kwargs"]["env"]
     assert env.get("HOSTVAR") == "benign-xyz"
+    assert env.get("PYTHONIOENCODING") == "utf-8"
     assert "HF_TOKEN" not in env
 
 
@@ -154,6 +155,7 @@ def test_bash_blocklist_skipped_when_bypassed(captured_popen):
 def test_bash_bypass_uses_bypass_preexec(captured_popen):
     _bash_exec("echo hi", None, 5, "t", disable_sandbox = True)
     assert captured_popen["kwargs"]["preexec_fn"] is tools._bypass_preexec
+    assert "PYTHONIOENCODING" not in captured_popen["kwargs"]["env"]
 
 
 # ── real end-to-end python execution under bypass ───────────────────
