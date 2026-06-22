@@ -677,9 +677,42 @@ def _graceful_shutdown(server = None):
     logger.info("All subprocesses cleaned up")
 
 
+# Bound the wait for uvicorn's thread like _graceful_shutdown bounds its
+# subprocess waits (5s), so a stuck shutdown can never hang the terminal.
+_SERVER_SHUTDOWN_JOIN_TIMEOUT = 5.0
+
+
+def _flush_standard_streams() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except Exception:
+            pass
+
+
+def _wait_for_server_shutdown(timeout: Optional[float] = _SERVER_SHUTDOWN_JOIN_TIMEOUT) -> None:
+    """Wait for the uvicorn thread to emit its shutdown logs before returning.
+
+    Terminal entrypoints call this after requesting shutdown so the shell prompt
+    cannot return while the background server thread still owns stdout/stderr.
+    Skip the join when called from the server thread itself (a request handler).
+    """
+    import threading
+
+    thread = _server_thread
+    if thread is None or thread is threading.current_thread():
+        _flush_standard_streams()
+        return
+    thread.join(timeout = timeout)
+    if thread.is_alive():
+        logger.warning("Timed out waiting for uvicorn server thread to stop")
+    _flush_standard_streams()
+
+
 # The uvicorn server instance -- set by run_server(), used by callers
 # that tell the server to exit (e.g. signal handlers).
 _server = None
+_server_thread = None
 
 # Shutdown event -- wakes the main loop on signal.
 _shutdown_event = None
@@ -909,7 +942,7 @@ def run_server(
         Signal handlers are NOT registered here so embedders (e.g. Colab) keep
         their own interrupt semantics; standalone callers register them after.
     """
-    global _server, _shutdown_event
+    global _server, _server_thread, _shutdown_event
 
     # Reap every child if the parent dies abnormally (terminal close, Task
     # Manager kill, SIGKILL); must run before any child can spawn.
@@ -1102,6 +1135,7 @@ def run_server(
                 startup_failed.set()
 
     thread = Thread(target = _run, daemon = True)
+    _server_thread = thread
     thread.start()
 
     # Wait until uvicorn finishes lifespan startup and binds sockets, or until it
@@ -1290,6 +1324,10 @@ if __name__ == "__main__":
 
     # Signal handler -- ensures subprocess cleanup on Ctrl+C.
     def _signal_handler(signum, frame):
+        # Restore defaults first so a second Ctrl+C / SIGTERM force-quits if the
+        # graceful shutdown below ever stalls.
+        signal.signal(signal.SIGINT, signal.SIG_DFL)
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
         _graceful_shutdown(_server)
         _shutdown_event.set()
 
@@ -1305,3 +1343,5 @@ if __name__ == "__main__":
     # lets the interpreter process pending signals.
     while not _shutdown_event.is_set():
         _shutdown_event.wait(timeout = 1)
+    # Wait for uvicorn's thread to flush its shutdown logs before the prompt returns.
+    _wait_for_server_shutdown()

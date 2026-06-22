@@ -862,9 +862,11 @@ def studio_default(
         else:
             while True:
                 time.sleep(1)
+        getattr(run_mod, "_wait_for_server_shutdown", lambda: None)()
     except KeyboardInterrupt:
         run_mod._graceful_shutdown(run_mod._server)
         typer.echo("\nShutting down...")
+        getattr(run_mod, "_wait_for_server_shutdown", lambda: None)()
 
 
 # ── unsloth studio run ───────────────────────────────────────────────
@@ -1266,6 +1268,7 @@ def run(
             raise typer.Exit(1)
     except BaseException:
         _graceful_shutdown(_server)
+        getattr(run_mod, "_wait_for_server_shutdown", lambda: None)()
         raise
 
     loaded_model = result.get("model", model)
@@ -1369,9 +1372,11 @@ def run(
         else:
             while True:
                 time.sleep(1)
+        getattr(run_mod, "_wait_for_server_shutdown", lambda: None)()
     except KeyboardInterrupt:
         run_mod._graceful_shutdown(run_mod._server)
         typer.echo("\nShutting down...")
+        getattr(run_mod, "_wait_for_server_shutdown", lambda: None)()
 
 
 # ── unsloth studio stop ───────────────────────────────────────────────
