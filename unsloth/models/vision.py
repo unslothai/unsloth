@@ -471,8 +471,11 @@ def _is_offline_related_error(exc):
     network connection rather than a genuinely missing file.
 
     Used to decide whether retrying a load with local_files_only=True can recover
-    the files from the HF cache. A FileNotFoundError is deliberately never treated
-    as offline so real "file is missing" errors keep propagating.
+    the files from the HF cache. A plain FileNotFoundError is deliberately never
+    treated as offline so real "file is missing" errors keep propagating. The one
+    exception is huggingface_hub's LocalEntryNotFoundError, which subclasses
+    FileNotFoundError but specifically means "not cached and the Hub is
+    unreachable" - i.e. genuinely offline.
     """
     _net_types = [ConnectionError, TimeoutError]
     try:
@@ -484,6 +487,11 @@ def _is_offline_related_error(exc):
         ]
     except Exception:
         pass
+    # FileNotFoundError subclasses that ARE offline-related and so must NOT be
+    # swallowed by the generic FileNotFoundError exclusion below. Empty when the
+    # import is unavailable, which makes isinstance(..., ()) False and preserves
+    # the original "every FileNotFoundError propagates" behaviour.
+    _offline_fnf_types = ()
     try:
         from huggingface_hub.errors import (
             OfflineModeIsEnabled,
@@ -491,6 +499,7 @@ def _is_offline_related_error(exc):
             LocalEntryNotFoundError,
         )
         _net_types += [OfflineModeIsEnabled, HfHubHTTPError, LocalEntryNotFoundError]
+        _offline_fnf_types = (LocalEntryNotFoundError,)
     except Exception:
         pass
     _net_types = tuple(_net_types)
@@ -518,9 +527,13 @@ def _is_offline_related_error(exc):
     cur = exc
     while cur is not None and id(cur) not in seen:
         seen.add(id(cur))
-        if isinstance(cur, _net_types) and not isinstance(cur, FileNotFoundError):
+        # A plain FileNotFoundError is a genuine missing-file error and must keep
+        # propagating; LocalEntryNotFoundError is the documented exception (it
+        # subclasses FileNotFoundError but means offline + not cached).
+        is_fnf = isinstance(cur, FileNotFoundError) and not isinstance(cur, _offline_fnf_types)
+        if isinstance(cur, _net_types) and not is_fnf:
             return True
-        if isinstance(cur, OSError) and not isinstance(cur, FileNotFoundError):
+        if isinstance(cur, OSError) and not is_fnf:
             if any(w in str(cur).lower() for w in _wording):
                 return True
         cur = cur.__cause__ or cur.__context__
