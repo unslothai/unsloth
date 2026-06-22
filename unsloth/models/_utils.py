@@ -63,6 +63,7 @@ __all__ = [
     "unpatch_unsloth_smart_gradient_checkpointing",
     "apply_unsloth_gradient_checkpointing",
     "_unsloth_install_pretrain_detector",
+    "_unsloth_reset_stray_compile_cache",
     "patch_compiled_autograd",
     "process_vision_info",
     "unsloth_compile_transformers",
@@ -228,6 +229,68 @@ def _unsloth_install_pretrain_detector(model):
     except Exception:
         pass
     return model
+
+
+def _unsloth_reset_stray_compile_cache(self):
+    # A manual forward/backward under torch.compile BEFORE trainer.train() (e.g. a grad-norm
+    # probe) caches a forward + AOTAutograd backward graph in a one-off context; reusing it
+    # poisons training with NaN/zero gradients. If such a forward was seen and compile is on,
+    # drop the compiled-graph cache so training recompiles cleanly. No-op on the normal path.
+    # Module-level (not just inside the RL trainer template) so the SFT auto-packing wrapper and
+    # the plain-Trainer loop can import and run it too.
+    import os
+    model = getattr(self, "model", None)
+    if model is None:
+        return
+    # The detector hook can sit on any wrapper in the chain, and the probe may have run on a
+    # different one than self.model, so walk the chain: detect a "seen" marker anywhere and
+    # collect every marker to tear down below.
+    markers = []
+    seen = False
+    _curr = model
+    _visited = set()
+    while _curr is not None and id(_curr) not in _visited:
+        _visited.add(id(_curr))
+        _m = getattr(_curr, "_unsloth_pretrain_marker", None)
+        if isinstance(_m, dict):
+            markers.append(_m)
+            if _m.get("seen"):
+                seen = True
+        # Follow the wrapper chain: Unsloth/HF (.model), PEFT (.base_model), DDP/FSDP (.module).
+        _nxt = getattr(_curr, "model", None)
+        if _nxt is None:
+            _nxt = getattr(_curr, "base_model", None)
+        if _nxt is None:
+            _nxt = getattr(_curr, "module", None)
+        _curr = _nxt
+    if seen and os.environ.get("UNSLOTH_COMPILE_DISABLE", "0") != "1":
+        try:
+            import torch._dynamo as _dynamo
+            _dynamo.reset()
+        except Exception:
+            pass
+        try:
+            from unsloth_zoo.gradient_checkpointing import reset_unsloth_gradient_checkpointing_buffers
+            reset_unsloth_gradient_checkpointing_buffers()
+        except Exception:
+            pass
+        try:
+            model.zero_grad(set_to_none = True)
+        except Exception:
+            pass
+        import warnings
+        warnings.warn(
+            "Unsloth: detected a manual forward/backward run before trainer.train(); "
+            "reset the torch.compile graph cache it poisoned so training starts clean. "
+            "To avoid this, run any pre-train probe under `with torch.no_grad():`."
+        )
+    # Tear down every one-shot detector hook in the chain so none adds per-step cost.
+    for _m in markers:
+        hook = _m.pop("hook", None)
+        if hook is not None:
+            try: hook.remove()
+            except Exception: pass
+        _m["seen"] = False
 
 
 def apply_unsloth_gradient_checkpointing(use_gradient_checkpointing, max_seq_length, dtype):

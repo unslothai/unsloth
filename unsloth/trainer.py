@@ -603,7 +603,7 @@ def _patch_sft_trainer_auto_packing(trl_module):
         # (For UnslothSFTTrainer the later prepare_for_training_mode assignment supersedes this.)
         if not getattr(self, "_unsloth_train_reset_wrapped", False):
             try:
-                from unsloth.models.rl import _unsloth_reset_stray_compile_cache
+                from unsloth.models._utils import _unsloth_reset_stray_compile_cache
 
                 _orig_train = self.train
 

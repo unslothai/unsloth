@@ -2765,7 +2765,7 @@ class FastLlamaModel:
             "self.accelerator.free_memory()",
             "self.accelerator.free_memory()\n"
             "    try:\n"
-            "        from unsloth.models.rl import _unsloth_reset_stray_compile_cache as _unsloth_reset_cc\n"
+            "        from unsloth.models._utils import _unsloth_reset_stray_compile_cache as _unsloth_reset_cc\n"
             "        _unsloth_reset_cc(self)\n"
             "    except Exception: pass",
             1,
