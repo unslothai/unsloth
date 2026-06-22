@@ -467,7 +467,9 @@ def test_pre_import_gate_is_transformers_free():
             consent, "_load_remote_code_configs", return_value = [{"model_type": "nemotron_h"}]
         ):
             from utils.security import evaluate_remote_code_consent_for_targets
-            evaluate_remote_code_consent_for_targets(["nvidia/Nemotron-H-8B"], trust_remote_code = True)
+            evaluate_remote_code_consent_for_targets(
+                ["nvidia/Nemotron-H-8B"], trust_remote_code = True
+            )
 
         assert "transformers" not in _sys.modules
         assert "utils.models.model_config" not in _sys.modules
