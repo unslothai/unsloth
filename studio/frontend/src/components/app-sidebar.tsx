@@ -170,9 +170,7 @@ async function fetchSystemOnce(): Promise<SystemInfoResponse> {
   return systemFetchPromise;
 }
 
-/**
- * System information update every 3 seconds.
- */
+/** Polls /api/system every 3s while the monitor is enabled. */
 export function useSystemInfo(enabled: boolean): SystemInfoResponse {
   const [systemInfo, setSystemInfo] = useState<SystemInfoResponse>(cachedSystem ?? DEFAULT_SYSTEM);
 
@@ -185,8 +183,7 @@ export function useSystemInfo(enabled: boolean): SystemInfoResponse {
     let cancelled = false;
 
     const updateSystemInfo = () => {
-      // Reset only after the request settles so a probe slower than the interval
-      // is reused instead of stacking overlapping requests.
+      // Reset only after the request settles so a slow probe is reused, not stacked.
       fetchSystemOnce()
         .then((info) => !cancelled && setSystemInfo(info))
         .finally(() => {

@@ -667,12 +667,11 @@ def _rocm_windows_perf_counter_vram_gb() -> tuple[Optional[float], Optional[floa
 
 
 def get_gpu_utilization() -> list[Dict[str, Any]]:
-    """Return a live snapshot of device utilization information for ALL GPUs."""
+    """Live utilization snapshot for all visible GPUs."""
     device = get_device()
 
     if device == DeviceType.CUDA:
         parent_visible_spec = _get_parent_visible_gpu_spec()
-        # Changed to query multiple GPUs
         result = _smi_query(
             "get_visible_gpu_utilization",
             parent_visible_spec["numeric_ids"],
@@ -684,7 +683,6 @@ def get_gpu_utilization() -> list[Dict[str, Any]]:
             if IS_ROCM and numeric_ids is not None:
                 _reconcile_rocm_unified_memory(result, numeric_ids)
 
-            # Injecting base keys into all array objects
             for dev in devices:
                 dev["available"] = True
                 dev["backend"] = _backend_label(device)
@@ -736,7 +734,7 @@ def get_gpu_utilization() -> list[Dict[str, Any]]:
                     }
                 ]
 
-        # Last resort: torch mem_get_info (process-local) for ALL visible GPUs
+        # Last resort: torch mem_get_info (process-local) for all visible GPUs
         _visible_spec = _get_parent_visible_gpu_spec()
         _numeric_ids = _visible_spec.get("numeric_ids") or []
         if not _numeric_ids:

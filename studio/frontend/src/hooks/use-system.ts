@@ -80,10 +80,7 @@ async function fetchSystemOnce(): Promise<SystemInfoResponse> {
   return systemFetchPromise;
 }
 
-/**
- * Fetch full system info from /api/system. Cached at module level, so only one request
- * is made no matter how many components call this hook.
- */
+/** Fetch system info from /api/system; cached at module level so all callers share one request. */
 export function useSystemInfo(): SystemInfoResponse {
   const [systemInfo, setSystemInfo] = useState<SystemInfoResponse>(cachedSystem ?? DEFAULT_SYSTEM);
 

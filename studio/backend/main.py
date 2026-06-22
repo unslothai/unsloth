@@ -978,7 +978,6 @@ async def get_system_info(current_subject: str = Depends(get_current_subject)):
     from utils.hardware import get_device, get_backend_visible_gpu_info, get_visible_gpu_utilization
     from utils.hardware.hardware import _backend_label
 
-    # Logger used by the except blocks below
     logger = logging.getLogger(__name__)
 
     visibility_info = get_backend_visible_gpu_info()
@@ -1005,7 +1004,6 @@ async def get_system_info(current_subject: str = Depends(get_current_subject)):
         "devices": enriched_devices,
     }
 
-    # CPU | Memory| Disk
     memory = psutil.virtual_memory()
 
     try:
@@ -1032,8 +1030,7 @@ async def get_system_info(current_subject: str = Depends(get_current_subject)):
         logger.debug(f"Failed to get boot time: {e}")
         boot_time = None
 
-    # Read versions from metadata so a 3s system poll never imports heavy ML
-    # libraries (and never 500s on their import-time failures).
+    # Read versions from metadata so a 3s poll never imports heavy ML libs (or 500s on their import errors).
     from importlib.metadata import PackageNotFoundError, version as pkg_version
 
     ml_packages = {}
