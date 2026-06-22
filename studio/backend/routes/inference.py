@@ -2105,10 +2105,20 @@ async def _maybe_auto_switch_model(
         return
     target_id, variant = resolved
     backend = get_llama_cpp_backend()
-    if _auto_switch_target_loaded(backend, target_id, variant):
+    # A bare model id (no :VARIANT) is satisfied by any loaded quant of that
+    # repo, so it never reloads a different local quant that already serves it.
+    bare = ":" not in requested_model
+
+    def _already_serving() -> bool:
+        if bare:
+            loaded = backend.model_identifier if backend.is_loaded else None
+            return bool(loaded) and loaded.lower() == target_id.lower()
+        return _auto_switch_target_loaded(backend, target_id, variant)
+
+    if _already_serving():
         return
     async with _auto_switch_lock:
-        if _auto_switch_target_loaded(backend, target_id, variant):
+        if _already_serving():
             return
         # Apply this model's saved launch flags (ctx, ngl, ...) so a swapped
         # model is served the way the user configured it, not bare defaults.
@@ -7688,12 +7698,13 @@ async def openai_responses(
     internally, and returns a response matching the Responses API schema
     (output array, input_tokens/output_tokens, named SSE events for streaming).
     """
-    # Hook here so the streaming path switches too; non-streaming re-checks via
-    # openai_chat_completions, which is idempotent once the model is loaded.
-    await _maybe_auto_switch_model(payload.model, request, current_subject)
     messages = _normalise_responses_input(payload)
     if not messages:
         raise HTTPException(status_code = 400, detail = "No input provided.")
+    # Hook after input validation so a request that 400s never triggers a load.
+    # The streaming path switches here too; non-streaming re-checks via
+    # openai_chat_completions, which is idempotent once the model is loaded.
+    await _maybe_auto_switch_model(payload.model, request, current_subject)
 
     if payload.stream:
         monitor_id = None

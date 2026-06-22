@@ -78,10 +78,12 @@ class LlamaKeepWarmMiddleware:
         if scope.get("type") != "http" or not _is_inference_path(scope.get("path", "")):
             await self.app(scope, receive, send)
             return
-        # Track only while the feature is enabled; otherwise pass straight through.
-        from utils.openai_auto_switch_settings import get_auto_unload_idle_seconds
+        # Track in-flight whenever auto-switch is on (not just when idle-unload is
+        # already armed): otherwise a stream that starts with the TTL at 0 is
+        # uncounted, and enabling idle mid-stream could unload it. Off -> passthrough.
+        from utils.openai_auto_switch_settings import get_openai_auto_switch_enabled
 
-        if get_auto_unload_idle_seconds() <= 0:
+        if not get_openai_auto_switch_enabled():
             await self.app(scope, receive, send)
             return
 

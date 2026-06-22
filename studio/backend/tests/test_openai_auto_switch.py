@@ -657,3 +657,72 @@ def test_count_tokens_is_tracked_as_inference_path():
     assert _is_inference_path("/v1/messages/count_tokens") is True
     assert _is_inference_path("/api/inference/messages/count_tokens") is True
     assert _is_inference_path("/v1/messages") is True
+
+
+# ── review follow-ups: bare-id reuse, responses order, in-flight tracking ──
+
+
+def test_bare_id_tolerates_any_loaded_variant(monkeypatch):
+    # Repo already loaded as Q4_K_M; a BARE request for the same repo (resolver
+    # picks the largest local quant, Q8_0) must NOT reload a different quant.
+    backend = _FakeBackend("unsloth/B-GGUF", hf_variant = "Q4_K_M")
+    rec = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("unsloth/B-GGUF", "Q8_0"),
+        backend = backend,
+        recorder = rec,
+    )
+    _run_hook("unsloth/B-GGUF")  # bare, no :VARIANT
+    assert rec.calls == []
+    # An explicit :VARIANT request still honors the quant (reloads to Q8_0).
+    rec2 = _LoadRecorder(backend)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("unsloth/B-GGUF", "Q8_0"),
+        backend = backend,
+        recorder = rec2,
+    )
+    _run_hook("unsloth/B-GGUF:Q8_0")
+    assert len(rec2.calls) == 1
+
+
+def test_responses_hook_runs_after_input_validation():
+    # A request that 400s on empty input must not have triggered a model load,
+    # so the auto-switch hook must come after the input-validation guard.
+    import inspect
+
+    src = inspect.getsource(inference_route.openai_responses)
+    assert "No input provided" in src
+    assert src.index("No input provided") < src.index("_maybe_auto_switch_model")
+
+
+def test_keepwarm_tracks_inflight_when_enabled_even_if_idle_zero(monkeypatch):
+    # In-flight must be counted whenever auto-switch is on, even with idle TTL 0,
+    # so enabling idle mid-stream cannot unload an in-flight request.
+    from core.inference import llama_keepwarm as kw
+
+    monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: True)
+    kw._inflight = 0
+    seen = {}
+
+    async def app(scope, receive, send):
+        seen["inflight"] = kw._inflight
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"ok", "more_body": False})
+
+    async def drive():
+        async def receive():
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        async def send(_m):
+            pass
+
+        scope = {"type": "http", "path": "/v1/chat/completions", "method": "POST", "headers": []}
+        await kw.LlamaKeepWarmMiddleware(app)(scope, receive, send)
+
+    asyncio.run(drive())
+    assert seen["inflight"] == 1  # counted despite idle TTL being 0
+    assert kw._inflight == 0  # balanced after completion
