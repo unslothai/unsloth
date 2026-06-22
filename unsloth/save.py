@@ -490,17 +490,11 @@ def _qwen3_5_vlm_state_dict_for_save(state_dict):
 
 
 def _normalize_tied_weights_keys(model):
-    """Coerce a legacy list/tuple ``_tied_weights_keys`` into the dict form that
-    transformers 5.x expects, so ``save_pretrained`` does not crash mid-save.
+    """Coerce legacy list/tuple/set ``_tied_weights_keys`` to dict form.
 
-    transformers >= 5 ``save_pretrained`` calls ``_get_tied_weight_keys``, which does
-    ``module._tied_weights_keys.keys()``. A model that still declares the attribute as a
-    list -- e.g. NemotronH (``backbone.layers.N.mixer.*_proj``) -- raises
-    ``AttributeError: 'list' object has no attribute 'keys'`` part-way through the save.
-    Only the keys are read (as patterns to dedup tied tensors), so mapping each entry to
-    itself preserves behaviour while satisfying the ``.keys()`` access; older transformers
-    iterate the attribute directly, for which a dict yields the same keys. Idempotent
-    (dicts/None are left as-is) and best-effort -- a save must never fail over this.
+    transformers >= 5 ``save_pretrained`` reads ``_tied_weights_keys.keys()``; a model
+    still declaring it as a list (e.g. NemotronH) crashes mid-save. Only the keys are
+    read, so ``{k: k}`` preserves behaviour. Best-effort and idempotent.
     """
     try:
         modules = model.modules()
@@ -508,9 +502,7 @@ def _normalize_tied_weights_keys(model):
         return
     for module in modules:
         keys = getattr(module, "_tied_weights_keys", None)
-        # transformers only skips the attribute when it is ``None``; an empty
-        # list/tuple/set still reaches ``.keys()`` and crashes, so coerce every
-        # non-dict container (including the empty case) to a dict.
+        # Only None is skipped by transformers; an empty/non-dict container still hits .keys().
         if isinstance(keys, (list, tuple, set)):
             try:
                 module._tied_weights_keys = {k: k for k in keys}

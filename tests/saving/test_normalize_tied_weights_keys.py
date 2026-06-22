@@ -1,15 +1,8 @@
 """Unit tests for unsloth.save._normalize_tied_weights_keys.
 
-Regression for the NemotronH (model_type "nemotron_h") save / GGUF-export crash.
-transformers >= 5 ``save_pretrained`` reads ``module._tied_weights_keys.keys()``,
-which raises ``AttributeError: 'list' object has no attribute 'keys'`` for any module
-that still declares the legacy list form (NemotronH uses it on
-``backbone.layers.N.mixer.*_proj``). The helper coerces that list/tuple into the dict
-form transformers 5.x expects, mapping each key to itself so only-keys-are-read
-behaviour is preserved.
-
-These tests exercise the helper directly with a tiny ``torch.nn.Module`` tree, so they
-are version-independent: they do not download a model or run a full ``save_pretrained``.
+Regression for the NemotronH save / GGUF-export crash: transformers >= 5
+``save_pretrained`` reads ``_tied_weights_keys.keys()`` and raises on the legacy list
+form. Exercised directly on a tiny module tree (no model download).
 """
 
 import torch
@@ -18,7 +11,6 @@ from unsloth.save import _normalize_tied_weights_keys
 
 
 def _build_tree():
-    """root -> mixer, mirroring NemotronH's backbone.layers.N.mixer nesting."""
     root = torch.nn.Module()
     mixer = torch.nn.Module()
     root.add_module("mixer", mixer)
@@ -33,7 +25,6 @@ def test_list_tied_weights_keys_become_dict():
         "q_proj.weight": "q_proj.weight",
         "o_proj.weight": "o_proj.weight",
     }
-    # The dict must satisfy the transformers >= 5 ``.keys()`` access without raising.
     assert list(mixer._tied_weights_keys.keys()) == ["q_proj.weight", "o_proj.weight"]
 
 
@@ -49,8 +40,7 @@ def test_existing_dict_is_left_unchanged():
     original = {"a.weight": "b.weight"}
     mixer._tied_weights_keys = original
     _normalize_tied_weights_keys(root)
-    # A dict already satisfies ``.keys()``; it must be left untouched, not rebuilt.
-    assert mixer._tied_weights_keys is original
+    assert mixer._tied_weights_keys is original  # untouched, not rebuilt
 
 
 def test_set_keys_become_dict():
@@ -65,9 +55,7 @@ def test_none_is_left_unchanged_but_empty_becomes_dict():
     root._tied_weights_keys = None
     mixer._tied_weights_keys = []
     _normalize_tied_weights_keys(root)
-    # None means "no tied weights" to transformers and is left alone; an empty
-    # list still lacks ``.keys()`` (transformers only skips on None), so it must
-    # be coerced to an empty dict.
+    # transformers skips only None; an empty list still hits .keys().
     assert root._tied_weights_keys is None
     assert mixer._tied_weights_keys == {}
 
@@ -92,8 +80,7 @@ def test_idempotent():
 
 def test_modules_without_attribute_are_ignored():
     root, mixer = _build_tree()
-    # Neither module declares _tied_weights_keys.
-    _normalize_tied_weights_keys(root)  # must not raise
+    _normalize_tied_weights_keys(root)
     assert not hasattr(mixer, "_tied_weights_keys")
 
 
@@ -101,5 +88,4 @@ def test_model_without_modules_method_does_not_raise():
     class NoModules:
         pass
 
-    # Best-effort: a save must never fail over this, even on an odd object.
     _normalize_tied_weights_keys(NoModules())
