@@ -148,8 +148,7 @@ with sync_playwright() as p:
             )
             if status is not None and status >= 400:
                 raise AssertionError(
-                    f"change-password POST returned {status}; "
-                    f"see page_errors={page_errors[:1]!r}"
+                    f"change-password POST returned {status}; see page_errors={page_errors[:1]!r}"
                 )
             form_err = None
             break

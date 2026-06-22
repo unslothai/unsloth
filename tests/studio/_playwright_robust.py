@@ -441,9 +441,7 @@ def evaluate_fetch(
     for attempt in range(attempts):
         # robust_evaluate retries the evaluate when a navigation destroys the
         # execution context mid-call; the loop here retries transport failures.
-        result = robust_evaluate(
-            page, js, payload, retries = 2, backoff_ms = transport_backoff_ms
-        )
+        result = robust_evaluate(page, js, payload, retries = 2, backoff_ms = transport_backoff_ms)
         last = result
         try:
             status = int(result.get("status") or 0)
