@@ -180,6 +180,23 @@ def test_studio_default_not_secure_alias_forwards_no_secure(monkeypatch):
     assert "--no-secure" in argv and "--secure" not in argv, argv
 
 
+@pytest.mark.parametrize(
+    "argv_order,expected,unexpected",
+    [
+        # --not-secure tracks --no-secure: the last secure flag on argv wins,
+        # matching the backend BooleanOptionalAction.
+        (["--secure", "--not-secure"], "--no-secure", "--secure"),
+        (["--not-secure", "--secure"], "--secure", "--no-secure"),
+    ],
+)
+def test_run_not_secure_alias_respects_last_wins(monkeypatch, argv_order, expected, unexpected):
+    monkeypatch.setattr(sys, "argv", ["unsloth", "studio", "run", *argv_order])
+    captured = _invoke_run(monkeypatch, _BASE + argv_order)
+    assert len(captured) == 1, captured
+    argv = captured[0]
+    assert expected in argv and unexpected not in argv, argv
+
+
 # ── in-venv path forwards secure + forced host into run_server ────────
 
 

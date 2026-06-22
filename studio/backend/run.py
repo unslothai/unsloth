@@ -1228,7 +1228,7 @@ def _build_arg_parser():
         "--not-secure",
         dest = "secure",
         action = "store_false",
-        default = False,
+        default = argparse.SUPPRESS,
         help = argparse.SUPPRESS,
     )
     # Tri-state tool policy: no flag -> None (tools on, per-request honored);
