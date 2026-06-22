@@ -94,9 +94,7 @@ def test_inference_exposes_gguf_runtime_options():
     from unsloth_cli.commands.inference import inference
 
     tensor = _option(inference, "tensor_parallel")
-    assert "--tensor-parallel/--no-tensor-parallel" in (
-        getattr(tensor, "param_decls", None) or []
-    )
+    assert "--tensor-parallel/--no-tensor-parallel" in (getattr(tensor, "param_decls", None) or [])
 
     flash = _option(inference, "flash_attn")
     assert getattr(flash, "default", None) is None
@@ -120,9 +118,7 @@ def test_chat_command_is_registered_with_options():
     assert {"--verbose", "-v"} <= set(getattr(verbose, "param_decls", None) or [])
 
     tensor = _option(chatmod.chat, "tensor_parallel")
-    assert "--tensor-parallel/--no-tensor-parallel" in (
-        getattr(tensor, "param_decls", None) or []
-    )
+    assert "--tensor-parallel/--no-tensor-parallel" in (getattr(tensor, "param_decls", None) or [])
 
     flash = _option(chatmod.chat, "flash_attn")
     assert getattr(flash, "default", None) is None
@@ -369,7 +365,12 @@ def test_http_backend_load_forwards_gguf_runtime_options(monkeypatch):
         def close(self):
             pass
 
-    def fake_request(method, path, payload = None, timeout = None):
+    def fake_request(
+        method,
+        path,
+        payload = None,
+        timeout = None,
+    ):
         requests.append((method, path, payload, timeout))
         return _OK()
 

@@ -212,8 +212,7 @@ def resolve_model_config(model: str, *, hf_token: Optional[str]):
 
 
 def _llama_args_with_flash_attn(
-    llama_extra_args: Optional[List[str]],
-    flash_attn: Optional[bool],
+    llama_extra_args: Optional[List[str]], flash_attn: Optional[bool]
 ) -> Optional[List[str]]:
     args = list(llama_extra_args or [])
     if flash_attn is True:
