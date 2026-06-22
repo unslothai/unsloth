@@ -675,9 +675,18 @@ def _construct_vlm_processor_fallback(
 
             tok_config = None
             _local_cfg = os.path.join(tokenizer_name, "tokenizer_config.json")
-            if os.path.isdir(tokenizer_name) and os.path.exists(_local_cfg):
-                with open(_local_cfg, "r", encoding = "utf-8") as f:
-                    tok_config = _json.load(f)
+            if os.path.isdir(tokenizer_name):
+                # A local checkpoint dir: read the file directly. If it is absent,
+                # raise a clear FileNotFoundError instead of handing the local path
+                # to hf_hub_download, which would treat it as a repo id and raise a
+                # confusing HFValidationError / RepositoryNotFoundError.
+                if os.path.exists(_local_cfg):
+                    with open(_local_cfg, "r", encoding = "utf-8") as f:
+                        tok_config = _json.load(f)
+                else:
+                    raise FileNotFoundError(
+                        f"tokenizer_config.json not found in local directory: {tokenizer_name}"
+                    )
             else:
                 from huggingface_hub import hf_hub_download
                 config_path = hf_hub_download(
@@ -688,8 +697,6 @@ def _construct_vlm_processor_fallback(
                 )
                 with open(config_path, "r", encoding = "utf-8") as f:
                     tok_config = _json.load(f)
-            if tok_config is None:
-                raise FileNotFoundError("tokenizer_config.json not available")
             # Set model-specific special tokens and their IDs
             for key in (
                 "image_token",

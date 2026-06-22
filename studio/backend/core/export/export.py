@@ -11,6 +11,7 @@ from loggers import get_logger
 import os
 import shutil
 import contextlib
+import threading
 from pathlib import Path
 from typing import Optional, Tuple, List
 from unsloth import FastLanguageModel, FastVisionModel, _IS_MLX
@@ -118,6 +119,17 @@ except Exception:
         yield
 
 
+# Guards the os.environ flip below. A depth counter lets nested / concurrent
+# probe windows share one flip: only the first entrant saves the real original
+# values and only the last exit restores them, so overlapping windows can never
+# permanently poison HF_HUB_OFFLINE / TRANSFORMERS_OFFLINE or restore a stale
+# value. The lock is held only around the flip / restore, not the wrapped probe.
+_OFFLINE_ENV_KEYS = ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE")
+_probe_window_lock = threading.RLock()
+_probe_window_depth = 0
+_probe_window_saved = {}
+
+
 @contextlib.contextmanager
 def _force_offline_probe_window():
     """Force HF offline for the type-detection probe window.
@@ -132,21 +144,30 @@ def _force_offline_probe_window():
         in-process flag.
     So also set the env vars for the window (saved / restored) so both see offline
     and neither blocks on a network timeout when offline was detected only by the
-    reachability probe (no env var set by the user).
+    reachability probe (no env var set by the user). The env mutation is
+    lock-guarded with a depth counter so concurrent exports cannot corrupt the
+    process-wide env vars.
     """
-    _saved = {}
-    for _k in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"):
-        _saved[_k] = os.environ.get(_k)
-        os.environ[_k] = "1"
+    global _probe_window_depth, _probe_window_saved
+    with _probe_window_lock:
+        if _probe_window_depth == 0:
+            _probe_window_saved = {_k: os.environ.get(_k) for _k in _OFFLINE_ENV_KEYS}
+            for _k in _OFFLINE_ENV_KEYS:
+                os.environ[_k] = "1"
+        _probe_window_depth += 1
     try:
         with _unsloth_force_hf_offline():
             yield
     finally:
-        for _k, _v in _saved.items():
-            if _v is None:
-                os.environ.pop(_k, None)
-            else:
-                os.environ[_k] = _v
+        with _probe_window_lock:
+            _probe_window_depth -= 1
+            if _probe_window_depth == 0:
+                for _k, _v in _probe_window_saved.items():
+                    if _v is None:
+                        os.environ.pop(_k, None)
+                    else:
+                        os.environ[_k] = _v
+                _probe_window_saved = {}
 
 
 def _is_wsl():
