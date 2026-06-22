@@ -390,9 +390,20 @@ try:
     from unsloth_zoo.gradient_checkpointing import reset_unsloth_gradient_checkpointing_buffers
 except:
     def reset_unsloth_gradient_checkpointing_buffers(): pass
+# Canonical reset lives in unsloth.models._utils so the SFT auto-packing wrapper and the plain
+# Trainer loop can import the same helper; fall back to a no-op only if it can't be imported.
+try:
+    from unsloth.models._utils import _unsloth_reset_stray_compile_cache
+except Exception:
+    def _unsloth_reset_stray_compile_cache(self): pass
 def prepare_for_training_mode(f):
     @functools.wraps(f)
     def wrapper(self, *args, **kwargs):
+        # Drop any torch.compile graph cache poisoned by a stray pre-train forward.
+        try:
+            _unsloth_reset_stray_compile_cache(self)
+        except Exception:
+            pass
         # Finish the previous W&B run if this is a subsequent train() call.
         # We do this at the START of train() (not the end) so that
         # evaluate() / log() still work after train() completes.

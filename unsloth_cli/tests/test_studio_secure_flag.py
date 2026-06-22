@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for the `--secure/--not-secure` Studio flag: option registration,
+"""Tests for the `--secure/--no-secure` Studio flag: option registration,
 re-exec/run_server forwarding, the forced 127.0.0.1 bind, and rejection
 alongside --no-cloudflare or before a subcommand. Modeled on
 test_studio_cloudflare_flag.py."""
@@ -35,7 +35,7 @@ def test_run_exposes_secure_option_default_off():
 
     opt = inspect.signature(_studio().run).parameters["secure"].default
     decls = set(getattr(opt, "param_decls", []) or [])
-    assert "--secure/--not-secure" in decls
+    assert "--secure/--no-secure" in decls
     assert getattr(opt, "default", None) is False
 
 
@@ -44,7 +44,7 @@ def test_studio_default_exposes_secure_option_default_off():
 
     opt = inspect.signature(_studio().studio_default).parameters["secure"].default
     decls = set(getattr(opt, "param_decls", []) or [])
-    assert "--secure/--not-secure" in decls
+    assert "--secure/--no-secure" in decls
     assert getattr(opt, "default", None) is False
 
 
@@ -129,9 +129,9 @@ def _invoke_studio_default(monkeypatch, args):
 @pytest.mark.parametrize(
     "user_flag,expected,unexpected",
     [
-        (None, "--not-secure", "--secure"),  # default off
-        ("--secure", "--secure", "--not-secure"),
-        ("--not-secure", "--not-secure", "--secure"),
+        (None, "--no-secure", "--secure"),  # default off
+        ("--secure", "--secure", "--no-secure"),
+        ("--no-secure", "--no-secure", "--secure"),
     ],
 )
 def test_run_reexec_forwards_secure_polarity(monkeypatch, user_flag, expected, unexpected):

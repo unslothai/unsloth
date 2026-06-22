@@ -261,6 +261,7 @@ def _handle_load(backend, cmd: dict, resp_queue: Any) -> None:
             hf_token = cmd.get("hf_token"),
             trust_remote_code = True,
             approved_fingerprint = cmd.get("approved_remote_code_fingerprint"),
+            subject = cmd.get("subject"),
         )
         if _rc.blocked:
             _send_response(
@@ -505,6 +506,11 @@ def run_export_process(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None
         backend_path = str(Path(__file__).resolve().parent.parent.parent)
         if backend_path not in sys.path:
             sys.path.insert(0, backend_path)
+
+        # Recover from any namespace-package shadow before importing Unsloth.
+        from core.import_guards import ensure_real_packages
+
+        ensure_real_packages("unsloth_zoo", "unsloth")
 
         from core.export.export import ExportBackend
 

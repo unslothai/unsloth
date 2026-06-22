@@ -921,7 +921,7 @@ def run_server(
     # port is never public (even with -H 0.0.0.0), and reject the contradictory combo.
     if secure and not cloudflare:
         raise SystemExit(
-            "A secure Cloudflare link is not allowed, use --not-secure which provides a 0.0.0.0 link"
+            "A secure Cloudflare link is not allowed, use --no-secure which provides a 0.0.0.0 link"
         )
     if secure:
         host = "127.0.0.1"
@@ -1161,7 +1161,7 @@ def run_server(
     # silently fall back to a raw port.
     if secure and not _cloudflare_url:
         print(
-            "A secure Cloudflare link is not allowed, use --not-secure which provides a 0.0.0.0 link",
+            "A secure Cloudflare link is not allowed, use --no-secure which provides a 0.0.0.0 link",
             file = sys.stderr,
             flush = True,
         )
@@ -1218,7 +1218,7 @@ if __name__ == "__main__":
         action = argparse.BooleanOptionalAction,
         default = False,
         help = "Expose ONLY a Cloudflare HTTPS link: bind localhost and fail closed "
-        "if the tunnel can't start. Without it, --not-secure also serves the raw "
+        "if the tunnel can't start. Without it, --no-secure also serves the raw "
         "0.0.0.0 port, which is reachable from anywhere on the network",
     )
     # Tri-state tool policy: no flag -> None (tools on, per-request honored);
