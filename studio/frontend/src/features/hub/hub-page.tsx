@@ -740,6 +740,15 @@ export function ModelsPage() {
     () => (isDiscoverTab ? [] : tokenizeQuery(deferredDebouncedQuery)),
     [isDiscoverTab, deferredDebouncedQuery],
   );
+  // Hide infra models (e.g. the RAG embedder bge-small-en-v1.5) from the On
+  // Device list like Discover, but reveal a row when a query matches it so the
+  // user can confirm it is already downloaded.
+  const isVisibleInventoryRow = useCallback(
+    (row: CachedInventoryRow | LocalInventoryRow) =>
+      !isHiddenModelId(row.id, row.repoId) ||
+      (inventoryTokens.length > 0 && inventoryRowMatches(row, inventoryTokens)),
+    [inventoryTokens],
+  );
   // Format filter is a deliberate scope narrowing, so hard-filter it out. The
   // text query instead drives dim-not-filter on On Device (see ModelsCatalog) so
   // selection survives typing; matching rows are partitioned to the top.
@@ -748,12 +757,19 @@ export function ModelsPage() {
       partitionByMatch(
         effectiveCachedRows.filter(
           (row) =>
-            isDatasetMode ||
-            matchesFormat(row.modelFormat, deferredFormatFilter),
+            (isDatasetMode ||
+              matchesFormat(row.modelFormat, deferredFormatFilter)) &&
+            isVisibleInventoryRow(row),
         ),
         inventoryTokens,
       ),
-    [effectiveCachedRows, isDatasetMode, deferredFormatFilter, inventoryTokens],
+    [
+      effectiveCachedRows,
+      isDatasetMode,
+      deferredFormatFilter,
+      inventoryTokens,
+      isVisibleInventoryRow,
+    ],
   );
 
   const filteredLocalRows = useMemo(
@@ -761,12 +777,19 @@ export function ModelsPage() {
       partitionByMatch(
         effectiveLocalRows.filter(
           (row) =>
-            isDatasetMode ||
-            matchesFormat(row.modelFormat, deferredFormatFilter),
+            (isDatasetMode ||
+              matchesFormat(row.modelFormat, deferredFormatFilter)) &&
+            isVisibleInventoryRow(row),
         ),
         inventoryTokens,
       ),
-    [effectiveLocalRows, isDatasetMode, deferredFormatFilter, inventoryTokens],
+    [
+      effectiveLocalRows,
+      isDatasetMode,
+      deferredFormatFilter,
+      inventoryTokens,
+      isVisibleInventoryRow,
+    ],
   );
 
   const filterResetSignature = useMemo(
