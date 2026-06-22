@@ -20,8 +20,7 @@ export type Personalization = {
   version: number;
   profile: PersonalizationProfile;
   appearance: PersonalizationAppearance;
-  // True once a blob has been saved server-side; lets the client decide between
-  // hydrating from the server and migrating existing local settings up.
+  // Distinguishes server hydrate from first local migration.
   saved: boolean;
 };
 

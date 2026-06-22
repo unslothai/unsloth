@@ -16,8 +16,11 @@ import {
   useLocale,
   type Locale,
 } from "@/i18n";
-import { useEffect, useRef, useState } from "react";
-import { useUserProfileStore } from "../stores/user-profile-store";
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  PROFILE_TEXT_MAX_LENGTH,
+  useUserProfileStore,
+} from "../stores/user-profile-store";
 import type { AvatarShape } from "../stores/user-profile-store";
 
 const PUSH_DEBOUNCE_MS = 800;
@@ -30,6 +33,69 @@ type ProfileSnapshot = {
 };
 
 type PersonalizationWrite = Parameters<typeof savePersonalization>[0];
+type QueuedSave = {
+  data: PersonalizationWrite;
+  generation: number;
+  serialized: string;
+};
+type RefValue<T> = { current: T };
+
+function profileText(value: string): string {
+  return value.slice(0, PROFILE_TEXT_MAX_LENGTH);
+}
+
+function normalizeProfile(profile: ProfileSnapshot): ProfileSnapshot {
+  return {
+    ...profile,
+    displayName: profileText(profile.displayName),
+    nickname: profileText(profile.nickname),
+  };
+}
+
+function sameProfile(a: ProfileSnapshot, b: ProfileSnapshot): boolean {
+  return (
+    a.displayName === b.displayName &&
+    a.nickname === b.nickname &&
+    a.avatarDataUrl === b.avatarDataUrl &&
+    a.avatarShape === b.avatarShape
+  );
+}
+
+function drainQueuedSave(
+  saveInFlightRef: RefValue<boolean>,
+  queuedSaveRef: RefValue<QueuedSave | null>,
+  authGenerationRef: RefValue<number>,
+  lastSavedRef: RefValue<string>,
+): void {
+  if (saveInFlightRef.current) return;
+  const next = queuedSaveRef.current;
+  if (!next) return;
+  queuedSaveRef.current = null;
+  saveInFlightRef.current = true;
+  void savePersonalization(next.data)
+    .then(() => {
+      if (authGenerationRef.current === next.generation) {
+        lastSavedRef.current = next.serialized;
+      }
+    })
+    .catch(() => {
+      if (authGenerationRef.current === next.generation) {
+        lastSavedRef.current = "";
+      }
+    })
+    .finally(() => {
+      saveInFlightRef.current = false;
+      const queued = queuedSaveRef.current;
+      if (queued && authGenerationRef.current === queued.generation) {
+        drainQueuedSave(
+          saveInFlightRef,
+          queuedSaveRef,
+          authGenerationRef,
+          lastSavedRef,
+        );
+      }
+    });
+}
 
 function profileSnapshot(): ProfileSnapshot {
   const s = useUserProfileStore.getState();
@@ -48,7 +114,7 @@ function payload(
 ): PersonalizationWrite {
   return {
     version: 1,
-    profile,
+    profile: normalizeProfile(profile),
     appearance: { theme, language },
   };
 }
@@ -84,6 +150,17 @@ export function usePersonalizationSync(enabled: boolean): void {
   const latestThemeRef = useRef(theme);
   const latestLanguageRef = useRef(language);
   const lastSavedRef = useRef("");
+  const saveInFlightRef = useRef(false);
+  const queuedSaveRef = useRef<QueuedSave | null>(null);
+
+  const drainSaveQueue = useCallback(() => {
+    drainQueuedSave(
+      saveInFlightRef,
+      queuedSaveRef,
+      authGenerationRef,
+      lastSavedRef,
+    );
+  }, []);
 
   useEffect(() => {
     latestThemeRef.current = theme;
@@ -97,6 +174,7 @@ export function usePersonalizationSync(enabled: boolean): void {
     authGenerationRef.current += 1;
     const generation = authGenerationRef.current;
     lastSavedRef.current = "";
+    queuedSaveRef.current = null;
     if (!enabled) {
       return;
     }
@@ -123,14 +201,25 @@ export function usePersonalizationSync(enabled: boolean): void {
             payload(nextProfile, nextTheme, nextLanguage),
           );
         } else {
-          const nextProfile = profileSnapshot();
+          const rawProfile = profileSnapshot();
+          const nextProfile = normalizeProfile(rawProfile);
+          if (!sameProfile(rawProfile, nextProfile)) {
+            useUserProfileStore.setState(nextProfile);
+          }
           const nextTheme = latestThemeRef.current;
           const nextLanguage = getLocale();
           const nextPayload = payload(nextProfile, nextTheme, nextLanguage);
+          const nextSerialized = serialized(nextPayload);
           if (hasLocalSettings(nextProfile, nextTheme, nextLanguage)) {
-            await savePersonalization(nextPayload);
+            try {
+              await savePersonalization(nextPayload);
+              lastSavedRef.current = nextSerialized;
+            } catch {
+              lastSavedRef.current = "";
+            }
+          } else {
+            lastSavedRef.current = nextSerialized;
           }
-          lastSavedRef.current = serialized(nextPayload);
         }
         if (!cancelled && authGenerationRef.current === generation) {
           setHydratedGeneration(generation);
@@ -156,11 +245,12 @@ export function usePersonalizationSync(enabled: boolean): void {
     const currentSerialized = serialized(current);
     if (currentSerialized === lastSavedRef.current) return;
     const id = window.setTimeout(() => {
-      void savePersonalization(current)
-        .then(() => {
-          lastSavedRef.current = currentSerialized;
-        })
-        .catch(() => {});
+      queuedSaveRef.current = {
+        data: current,
+        generation: authGenerationRef.current,
+        serialized: currentSerialized,
+      };
+      drainSaveQueue();
     }, PUSH_DEBOUNCE_MS);
     return () => window.clearTimeout(id);
   }, [
@@ -172,5 +262,6 @@ export function usePersonalizationSync(enabled: boolean): void {
     avatarShape,
     theme,
     language,
+    drainSaveQueue,
   ]);
 }

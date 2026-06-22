@@ -5,6 +5,8 @@ import sys
 from pathlib import Path
 
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 _BACKEND = Path(__file__).resolve().parents[1]
@@ -12,6 +14,8 @@ if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
 import utils.personalization_settings as pers  # noqa: E402
+from auth.authentication import get_current_subject  # noqa: E402
+from routes import settings as settings_routes  # noqa: E402
 from routes.settings import PersonalizationPayload  # noqa: E402
 
 
@@ -105,3 +109,38 @@ def test_get_set_roundtrip(monkeypatch):
     pers.set_personalization(data)
     assert store[pers.PERSONALIZATION_SETTING_KEY]["profile"]["displayName"] == "Mike"
     assert pers.get_personalization()["appearance"]["theme"] == "dark"
+
+
+def test_personalization_route_roundtrip_real_shape(monkeypatch):
+    store: dict = {}
+    monkeypatch.setattr("storage.studio_db.get_app_setting", lambda k, d = None: store.get(k, d))
+    monkeypatch.setattr("storage.studio_db.upsert_app_settings", lambda d: store.update(d))
+
+    app = FastAPI()
+    app.dependency_overrides[get_current_subject] = lambda: "unsloth"
+    app.include_router(settings_routes.router, prefix = "/api/settings")
+    client = TestClient(app)
+
+    initial = client.get("/api/settings/personalization")
+    assert initial.status_code == 200
+    assert initial.json()["saved"] is False
+
+    payload = {
+        "version": 1,
+        "profile": {
+            "displayName": "Mike",
+            "nickname": "M",
+            "avatarDataUrl": "/Sloth%20emojis/large%20sloth%20yay.png",
+            "avatarShape": "rounded",
+        },
+        "appearance": {"theme": "dark", "language": "en"},
+    }
+    put = client.put("/api/settings/personalization", json = payload)
+    assert put.status_code == 200
+
+    saved = client.get("/api/settings/personalization")
+    assert saved.status_code == 200
+    body = saved.json()
+    assert body["saved"] is True
+    assert body["profile"] == payload["profile"]
+    assert body["appearance"] == payload["appearance"]

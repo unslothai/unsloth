@@ -1,17 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Server-side profile and appearance settings."""
-
 from __future__ import annotations
 
 PERSONALIZATION_SETTING_KEY = "personalization"
 PERSONALIZATION_VERSION = 1
-MAX_AVATAR_DATA_URL_BYTES = 512 * 1024  # 512 KB
+MAX_AVATAR_DATA_URL_BYTES = 512 * 1024
 
 
 def get_personalization() -> dict:
-    """Return the saved blob, or empty when absent."""
     from storage.studio_db import get_app_setting
 
     stored = get_app_setting(PERSONALIZATION_SETTING_KEY, None)
@@ -19,7 +16,6 @@ def get_personalization() -> dict:
 
 
 def set_personalization(data: dict) -> dict:
-    """Persist the validated blob."""
     from storage.studio_db import upsert_app_settings
 
     upsert_app_settings({PERSONALIZATION_SETTING_KEY: data})
