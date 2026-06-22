@@ -137,7 +137,7 @@ _VENV_T5_510_DIR = str(_studio_root() / ".venv_t5_510")
 # Backwards-compat alias
 _VENV_T5_DIR = _VENV_T5_550_DIR
 
-# Tier precedence (higher 5.x tiers run first); used to pick the stronger of two tiers.
+# Tier precedence: higher rank wins in _higher_tier.
 _TIER_RANK = {"default": 0, "530": 1, "550": 2, "510": 3}
 
 
@@ -156,10 +156,8 @@ def activate_transformers_for_subprocess(model_name: str) -> None:
     resolved = _resolve_base_model(model_name)
     tier = get_transformers_tier(resolved)
     if model_name != resolved and (Path(model_name) / "config.json").is_file():
-        # A local checkpoint carries its own config the (offline/private) base may not
-        # surface. Gate on a real local config.json so this reads metadata, not path-name
-        # substrings (a /runs/gemma-4-x/llama-lora adapter must not upgrade). Avoids
-        # KeyError: '-' for dense NemotronH without misrouting plain adapters.
+        # Gate on a real local config.json: a checkpoint carries config the base may not
+        # surface, but path names alone must not upgrade a plain adapter.
         tier = _higher_tier(tier, get_transformers_tier(model_name))
 
     if tier == "510":
@@ -344,10 +342,10 @@ def _check_tokenizer_config_needs_v5(model_name: str) -> bool:
 
 
 def _config_json_from_hf_cache(model_name: str) -> dict | None:
-    """Parsed ``config.json`` from the local HF hub cache, or None if not cached.
+    """Parsed ``config.json`` from the local HF hub cache, or None.
 
-    Resolves the cache path with stdlib only (no ``huggingface_hub`` import) so tier
-    detection never loads the default-env hub before a sidecar venv is activated.
+    Stdlib-only path resolution (no ``huggingface_hub`` import) so tier detection never
+    loads the default-env hub before a sidecar venv is activated.
     """
     # Only a canonical ``owner/repo`` Hub id maps to a cache dir; reject local paths.
     if not model_name or model_name.count("/") != 1 or model_name[0] in "/.~" or "\\" in model_name:
@@ -449,13 +447,11 @@ _NESTED_CONFIG_KEYS = ("llm_config", "text_config", "language_config", "thinker_
 
 
 def _nemotron_h_needs_mlp_support(cfg: dict) -> bool:
-    """True for a dense NemotronH config that uses MLP (``-``) layers.
+    """True for a dense NemotronH config using MLP (``-``) layers.
 
-    transformers only gained ``-`` -> ``mlp`` (pattern_mapping/valid_types/MIXER_TYPES)
-    in 5.10; 5.3/5.5 raise ``KeyError: '-'`` parsing the config. Detected from the raw
-    ``hybrid_override_pattern`` or an expanded ``layers_block_type``, recursing into a
-    nested language config (VL wrappers like NemotronH_Nano_VL_V2 hold the dense LM
-    under ``llm_config``/``text_config``).
+    transformers only gained ``-`` -> ``mlp`` in 5.10; 5.3/5.5 raise ``KeyError: '-'``.
+    Read from ``hybrid_override_pattern`` or ``layers_block_type``, recursing into nested
+    language configs (VL wrappers hold the dense LM under ``llm_config``/``text_config``).
     """
     if not isinstance(cfg, dict):
         return False
@@ -476,7 +472,6 @@ def _config_needs_510(cfg: dict) -> bool:
         _TRANSFORMERS_510_MODEL_TYPES,
     ):
         return True
-    # Dense NemotronH (e.g. NVIDIA-Nemotron-3-Nano-4B) needs 5.10 for MLP layers.
     return _nemotron_h_needs_mlp_support(cfg)
 
 
@@ -904,10 +899,8 @@ def ensure_transformers_version(model_name: str) -> None:
     resolved = _resolve_base_model(model_name)
     tier = get_transformers_tier(resolved)
     if model_name != resolved and (Path(model_name) / "config.json").is_file():
-        # A local checkpoint carries its own config the (offline/private) base may not
-        # surface. Gate on a real local config.json so this reads metadata, not path-name
-        # substrings (a /runs/gemma-4-x/llama-lora adapter must not upgrade). Avoids
-        # KeyError: '-' for dense NemotronH without misrouting plain adapters.
+        # Gate on a real local config.json: a checkpoint carries config the base may not
+        # surface, but path names alone must not upgrade a plain adapter.
         tier = _higher_tier(tier, get_transformers_tier(model_name))
 
     if tier == "510":

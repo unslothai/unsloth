@@ -880,8 +880,7 @@ class TestActivateLoggingClarity:
         ), f"early activation log does not clarify it is path-prepend only: {text!r}"
 
     def test_activate_prefers_local_checkpoint_tier_over_resolved_base(self, caplog, tmp_path):
-        # A dense NemotronH checkpoint (real local config.json) whose base resolves to an
-        # offline/private id: the base check yields default, but the local config wins.
+        # Base resolves to an offline/private id (default tier); the local config.json wins.
         (tmp_path / "config.json").write_text(json.dumps({"model_type": "llama"}))
         local = str(tmp_path)
         caplog.set_level(logging.INFO)
@@ -910,8 +909,7 @@ class TestActivateLoggingClarity:
         assert "5.10.2" in text, f"local checkpoint tier did not win: {text!r}"
 
     def test_activate_adapter_without_config_skips_path_name_recheck(self, caplog, tmp_path):
-        # Adapter dir whose PATH contains 'gemma-4' but has no config.json: the local
-        # re-check must not run (would upgrade a default base from the directory name).
+        # Adapter dir named 'gemma-4' but no config.json: the path-name re-check must not run.
         adapter = tmp_path / "gemma-4-experiment" / "llama-lora"
         adapter.mkdir(parents = True)
         local = str(adapter)
