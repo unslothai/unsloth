@@ -484,9 +484,18 @@ except Exception as exc:
 
 # stderr fragments meaning "couldn't fetch/auth", NOT "needs a newer parser".
 _PROBE_TRANSIENT_MARKERS = (
-    "ConnectionError", "HTTPError", "Timeout", "Max retries", "Temporary failure",
-    "GatedRepoError", "RepositoryNotFoundError", "LocalEntryNotFoundError",
-    "OfflineModeIsEnabled", "401", "403", "404",
+    "ConnectionError",
+    "HTTPError",
+    "Timeout",
+    "Max retries",
+    "Temporary failure",
+    "GatedRepoError",
+    "RepositoryNotFoundError",
+    "LocalEntryNotFoundError",
+    "OfflineModeIsEnabled",
+    "401",
+    "403",
+    "404",
 )
 
 
@@ -531,7 +540,6 @@ def _resolve_commit_sha(model_name: str, hf_token: str | None) -> str | None:
     elif not _env_offline():
         try:
             from huggingface_hub import HfApi
-
             sha = HfApi().model_info(model_name, token = hf_token).sha
         except Exception as exc:
             logger.debug("Could not resolve commit sha for '%s': %s", model_name, exc)

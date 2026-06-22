@@ -615,7 +615,6 @@ class TestGetTransformersTier:
 
 def _proc(returncode, stderr = ""):
     from types import SimpleNamespace
-
     return SimpleNamespace(returncode = returncode, stdout = "", stderr = stderr)
 
 
@@ -626,7 +625,11 @@ class TestProbeTier:
         _probe_tier_cache.clear()
         _probe_sha_cache.clear()
 
-    def _patch_common(self, monkeypatch, sha = "sha1"):
+    def _patch_common(
+        self,
+        monkeypatch,
+        sha = "sha1",
+    ):
         monkeypatch.setattr("utils.transformers_version._resolve_commit_sha", lambda m, t: sha)
         for fn in (
             "_ensure_venv_t5_530_exists",
@@ -638,7 +641,6 @@ class TestProbeTier:
 
     def _venv_dirs(self):
         import utils.transformers_version as tv
-
         return [tv._VENV_T5_530_DIR, tv._VENV_T5_550_DIR, tv._VENV_T5_510_DIR]
 
     def test_escalates_to_first_parsing_tier(self, monkeypatch):
@@ -738,18 +740,12 @@ class TestProbeTier:
 
     def test_get_tier_uses_probe_for_remote_tokenizer_signal(self, monkeypatch):
         # tokenizer says 5.x but no architecture/substring match -> probe (not a 530 guess).
-        monkeypatch.setattr(
-            "utils.transformers_version._check_config_needs_510", lambda m: False
-        )
-        monkeypatch.setattr(
-            "utils.transformers_version._check_config_needs_550", lambda m: False
-        )
+        monkeypatch.setattr("utils.transformers_version._check_config_needs_510", lambda m: False)
+        monkeypatch.setattr("utils.transformers_version._check_config_needs_550", lambda m: False)
         monkeypatch.setattr(
             "utils.transformers_version._check_tokenizer_config_needs_v5", lambda m: True
         )
-        monkeypatch.setattr(
-            "utils.transformers_version._probe_tier", lambda m, t, reason: "510"
-        )
+        monkeypatch.setattr("utils.transformers_version._probe_tier", lambda m, t, reason: "510")
         assert get_transformers_tier("org/unknown-5x-arch") == "510"
 
     def test_stderr_is_transient(self):
