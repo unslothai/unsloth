@@ -1,14 +1,21 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-from typing import Optional
+from typing import Literal, Optional
+from urllib.parse import unquote, urlsplit
 
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from auth.authentication import get_current_subject
 from loggers import get_logger
 from utils.utils import safe_error_detail, log_and_http_error
+from utils.personalization_settings import (
+    MAX_AVATAR_DATA_URL_BYTES,
+    PERSONALIZATION_VERSION,
+    get_personalization,
+    set_personalization,
+)
 from utils.upload_limits import (
     MAX_UPLOAD_LIMIT_MB,
     MIN_UPLOAD_LIMIT_MB,
@@ -202,3 +209,80 @@ def update_openai_auto_switch_override(
             log = logger,
         ) from exc
     return ModelOverridesResponse(overrides = get_model_overrides())
+
+
+def _is_bundled_avatar_url(value: str) -> bool:
+    parsed = urlsplit(value)
+    if parsed.scheme or parsed.netloc:
+        return False
+    path = unquote(parsed.path).lstrip("/")
+    if ".." in path.split("/"):
+        return False
+    marker = "Sloth emojis/"
+    if marker not in path:
+        return False
+    return path[path.index(marker) :].lower().endswith(".png")
+
+
+class PersonalizationProfile(BaseModel):
+    model_config = ConfigDict(extra = "ignore")
+
+    displayName: str = Field("", max_length = 200)
+    nickname: str = Field("", max_length = 200)
+    avatarDataUrl: Optional[str] = Field(None, max_length = MAX_AVATAR_DATA_URL_BYTES)
+    avatarShape: Literal["circle", "rounded"] = "circle"
+
+    @field_validator("avatarDataUrl")
+    @classmethod
+    def _validate_avatar(cls, value: Optional[str]) -> Optional[str]:
+        if not value:
+            return value
+        if not value.startswith("data:image/") and not _is_bundled_avatar_url(value):
+            raise ValueError("avatarDataUrl must be an image data URL or bundled avatar.")
+        return value
+
+
+class PersonalizationAppearance(BaseModel):
+    model_config = ConfigDict(extra = "ignore")
+
+    theme: Literal["light", "dark", "system"] = "system"
+    language: Optional[str] = Field(None, max_length = 20)
+
+
+class PersonalizationPayload(BaseModel):
+    model_config = ConfigDict(extra = "ignore")
+
+    version: int = PERSONALIZATION_VERSION
+    profile: PersonalizationProfile = Field(default_factory = PersonalizationProfile)
+    appearance: PersonalizationAppearance = Field(default_factory = PersonalizationAppearance)
+
+
+class PersonalizationResponse(PersonalizationPayload):
+    saved: bool = False
+
+
+@router.get("/personalization", response_model = PersonalizationResponse)
+def get_personalization_settings(
+    current_subject: str = Depends(get_current_subject),
+) -> PersonalizationResponse:
+    stored = get_personalization()
+    response = PersonalizationResponse.model_validate(stored or {})
+    response.saved = bool(stored)
+    return response
+
+
+@router.put("/personalization", response_model = PersonalizationPayload)
+def update_personalization_settings(
+    payload: PersonalizationPayload, current_subject: str = Depends(get_current_subject)
+) -> PersonalizationPayload:
+    try:
+        set_personalization(payload.model_dump())
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_error_detail(exc, fallback = "Invalid personalization settings."),
+            event = "settings.update_personalization_failed",
+            log = logger,
+        ) from exc
+    return payload

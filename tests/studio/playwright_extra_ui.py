@@ -23,6 +23,7 @@ from _playwright_robust import (  # noqa: E402
     install_wall_clock_watchdog,
     is_benign_page_error,
     recover_or_replace_page,
+    robust_evaluate,
     wait_for_health,
 )
 
@@ -147,8 +148,7 @@ with sync_playwright() as p:
             )
             if status is not None and status >= 400:
                 raise AssertionError(
-                    f"change-password POST returned {status}; "
-                    f"see page_errors={page_errors[:1]!r}"
+                    f"change-password POST returned {status}; see page_errors={page_errors[:1]!r}"
                 )
             form_err = None
             break
@@ -225,7 +225,7 @@ with sync_playwright() as p:
         raise last_err
     shoot("01-chat-loaded")
 
-    token = page.evaluate("() => localStorage.getItem('unsloth_auth_token')")
+    token = robust_evaluate(page, "() => localStorage.getItem('unsloth_auth_token')")
     if not token:
         fail("no access token after change-password")
         sys.exit(1)
