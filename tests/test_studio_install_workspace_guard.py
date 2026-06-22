@@ -792,7 +792,7 @@ def test_llama_cpp_search_roots_handles_studio_root_oserror():
     ), "_resolved_studio_root_and_is_legacy must catch (ImportError, OSError, ValueError) from studio_root()"
     # Both callers must route through the shared classifier so neither crashes.
     for caller in ("_find_llama_server_binary", "_kill_orphaned_servers"):
-        assert "_resolved_studio_root_and_is_legacy()" in _method_body(
+        assert "LlamaCppBackend._resolved_studio_root_and_is_legacy()" in _method_body(
             caller
         ), f"{caller} must resolve the install root via the shared classifier"
 

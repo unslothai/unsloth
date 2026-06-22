@@ -66,7 +66,7 @@ def test_kill_orphan_catches_oserror_from_studio_root():
     classifier, which swallows (ImportError, OSError, ValueError) on the probe."""
     src = LLAMA_CPP.read_text()
     # Cleanup delegates to the shared classifier rather than importing studio_root inline.
-    assert "_resolved_studio_root_and_is_legacy()" in _method_body(
+    assert "LlamaCppBackend._resolved_studio_root_and_is_legacy()" in _method_body(
         src, "_kill_orphaned_servers"
     ), "_kill_orphaned_servers must resolve the root via _resolved_studio_root_and_is_legacy()"
     # The shared classifier catches both the resolve() failure and the outer studio_root() probe.
@@ -87,9 +87,15 @@ def _exec_search_roots_block(
     controlled studio_root() and resolve(), without importing the heavy module."""
     src = LLAMA_CPP.read_text()
     # Shared root classifier (holds the defensive try/except for studio_root()).
-    # Cut at the next method's @staticmethod decorator so it isn't dragged in.
+    # End the slice at the next sibling def/decorator at the same indent rather
+    # than the literal "@staticmethod" string, so a future docstring mentioning a
+    # decorator can't truncate the helper mid-body and break exec().
     helper_start = src.index("def _resolved_studio_root_and_is_legacy")
-    helper_end = src.index("@staticmethod", helper_start)
+    indent = " " * (helper_start - src.rfind("\n", 0, helper_start) - 1)
+    nxt_def = src.find(f"\n{indent}def ", helper_start + 1)
+    nxt_dec = src.find(f"\n{indent}@", helper_start + 1)
+    sibling = [idx for idx in (nxt_def, nxt_dec) if idx != -1]
+    helper_end = min(sibling) if sibling else len(src)
     helper = textwrap.dedent(src[helper_start:helper_end])
     # search_roots derivation inside _find_llama_server_binary (delegates to the classifier).
     block_start = src.index('legacy_llama = Path.home() / ".unsloth" / "llama.cpp"')
