@@ -221,6 +221,54 @@ def test_is_importable_invalidates_caches(monkeypatch):
     assert calls  # caches invalidated before attempting the import
 
 
+@pytest.mark.parametrize(
+    "exc",
+    [
+        ImportError("no module"),
+        OSError("undefined symbol: cuLaunchKernel"),
+        RuntimeError("CUDA error: ABI mismatch"),
+    ],
+)
+def test_is_importable_treats_broken_kernel_as_not_importable(monkeypatch, exc):
+    # An ABI-incompatible native kernel raises OSError/RuntimeError, not ImportError; all of
+    # these must read as "not importable" so the caller reinstalls instead of hard-failing.
+    # _is_importable calls bare __import__(), which resolves via the module globals first, so
+    # patching only ssm_runtime.__import__ leaves real `import` statements untouched.
+    def _raise(name):
+        raise exc
+
+    monkeypatch.setattr(ssm_runtime, "__import__", _raise, raising = False)
+    monkeypatch.setattr(ssm_runtime.importlib, "invalidate_caches", lambda: None)
+    assert ssm_runtime._is_importable("causal_conv1d") is False
+
+
+def test_causal_conv1d_skipped_on_windows(monkeypatch):
+    # No prebuilt Windows wheel: a causal-conv1d-only model must NOT enter the source build
+    # (which can hang a chat load for minutes); it falls back to torch.
+    monkeypatch.setattr(ssm_runtime.sys, "platform", "win32")
+    installed = []
+    monkeypatch.setattr(
+        ssm_runtime,
+        "_install_kernel",
+        lambda *, import_name, **_: installed.append(import_name) or True,
+    )
+    ssm_runtime.ensure_ssm_runtime("Qwen/Qwen3-Next-80B-A3B")
+    assert installed == []  # never attempted to build causal-conv1d
+
+
+def test_ssm_model_on_windows_still_installs_mamba(monkeypatch):
+    # A true SSM hybrid still needs mamba-ssm on Windows; only causal-conv1d is skipped.
+    monkeypatch.setattr(ssm_runtime.sys, "platform", "win32")
+    installed = []
+    monkeypatch.setattr(
+        ssm_runtime,
+        "_install_kernel",
+        lambda *, import_name, **_: installed.append(import_name) or True,
+    )
+    ssm_runtime.ensure_ssm_runtime("unsloth/NVIDIA-Nemotron-3-Nano-4B")
+    assert installed == ["mamba_ssm"]  # causal-conv1d skipped, mamba-ssm still attempted
+
+
 def test_wheel_installed_but_not_importable_falls_back_to_source(monkeypatch):
     # top: not importable; after wheel: still not importable (ABI mismatch) -> source build;
     # after source build: importable.

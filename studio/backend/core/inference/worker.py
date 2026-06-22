@@ -160,6 +160,43 @@ def _resolve_lora_4bit(mc, load_in_4bit: bool) -> bool:
     return load_in_4bit
 
 
+def _ensure_ssm_kernels(targets: list, resp_queue: Any) -> bool:
+    """Install the SSM/Mamba kernels (causal_conv1d / mamba_ssm) the given model(s) lazy-
+    import during from_pretrained. No-op for non-SSM models and idempotent.
+
+    Returns True on success; on a fatal failure (a required mamba-ssm kernel) sends a
+    'loaded' failure response and returns False. Call this BEFORE transformers is imported:
+    transformers evaluates its optional-backend gates against the import state, so a kernel
+    installed after the import may not be picked up and the load still fails with
+    "mamba-ssm is required".
+    """
+    try:
+        from utils.ssm_runtime import ensure_ssm_runtime
+    except Exception as exc:
+        logger.debug("ssm_runtime unavailable (%s); skipping SSM kernel pre-install", exc)
+        return True
+
+    _ssm_status = lambda m: _send_response(resp_queue, {"type": "status", "message": m})
+    try:
+        for ssm_target in dict.fromkeys(t for t in targets if t):
+            ensure_ssm_runtime(ssm_target, status_cb = _ssm_status)
+        return True
+    except Exception as exc:
+        _send_response(
+            resp_queue,
+            {
+                "type": "loaded",
+                "success": False,
+                "message": (
+                    f"This model needs SSM kernel libraries (causal-conv1d / "
+                    f"mamba-ssm) that could not be installed: {exc}"
+                ),
+                "error_kind": "ssm_runtime_install_failed",
+            },
+        )
+        return False
+
+
 def _handle_load(backend, config: dict, resp_queue: Any) -> None:
     """Handle a load command: load a model into the backend."""
     try:
@@ -233,34 +270,16 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                 return
 
         # SSM/Mamba hybrids (Nemotron-H/Nano, Falcon-H1, Granite-4.0-H, ...) lazy-import
-        # mamba_ssm / causal_conv1d during from_pretrained; mirror the training worker and
-        # install them first so chat loads too. No-op for non-SSM models. Skip on MLX
-        # (Apple Silicon): no MLX use, no macOS wheel, so the source build would just fail.
+        # mamba_ssm / causal_conv1d during from_pretrained; install them so chat loads too.
+        # For the initial load this is normally a no-op (run_inference_process already
+        # pre-installed before importing transformers); it still runs here for a LoRA's base
+        # (resolved only now via mc) and for later in-process loads of a different model.
+        # Skip on MLX (Apple Silicon): no MLX use, no macOS wheel.
         if getattr(backend, "device", None) != "mlx":
-            try:
-                from utils.ssm_runtime import ensure_ssm_runtime
-
-                _ssm_status = lambda m: _send_response(resp_queue, {"type": "status", "message": m})
-                # For a LoRA, also check the base: the adapter id won't match the SSM
-                # heuristics but its base (Nemotron-H, ...) needs the kernels.
-                ssm_targets = [config["model_name"]]
-                if mc.is_lora and getattr(mc, "base_model", None):
-                    ssm_targets.append(str(mc.base_model))
-                for ssm_target in dict.fromkeys(ssm_targets):
-                    ensure_ssm_runtime(ssm_target, status_cb = _ssm_status)
-            except Exception as exc:
-                _send_response(
-                    resp_queue,
-                    {
-                        "type": "loaded",
-                        "success": False,
-                        "message": (
-                            f"This model needs SSM kernel libraries (causal-conv1d / "
-                            f"mamba-ssm) that could not be installed: {exc}"
-                        ),
-                        "error_kind": "ssm_runtime_install_failed",
-                    },
-                )
+            ssm_targets = [config["model_name"]]
+            if mc.is_lora and getattr(mc, "base_model", None):
+                ssm_targets.append(str(mc.base_model))
+            if not _ensure_ssm_kernels(ssm_targets, resp_queue):
                 return
 
         # Heartbeat keeps the orchestrator's inactivity deadline alive during slow
@@ -734,6 +753,24 @@ def run_inference_process(*, cmd_queue: Any, resp_queue: Any, cancel_event, conf
                 "Triton not found on Windows — torch.compile disabled. "
                 'Install for better performance: pip install "triton-windows<3.7"'
             )
+
+    # ── 1c. SSM/Mamba kernels BEFORE importing transformers ──
+    # Hybrid models (Nemotron-H/Nano, Falcon-H1, Granite-4.0-H, ...) lazy-import
+    # mamba_ssm / causal_conv1d during from_pretrained, and transformers evaluates its
+    # optional-backend gates against the import state. Installing after the import below can
+    # leave those gates unsatisfied and the load still fails with "mamba-ssm is required",
+    # so the initial model's kernels are installed here first. A no-op for non-SSM models;
+    # the LoRA base (resolved only after ModelConfig is built) and later in-process loads
+    # are handled in _handle_load.
+    _ensure_backend_on_path()
+    from utils.transformers_version import _resolve_base_model
+
+    _ssm_base = _resolve_base_model(model_name)
+    _ssm_targets = [model_name]
+    if _ssm_base and _ssm_base != model_name:
+        _ssm_targets.append(_ssm_base)
+    if not _ensure_ssm_kernels(_ssm_targets, resp_queue):
+        return
 
     # ── 2. Import ML libraries (fresh in this clean process) ──
     try:

@@ -102,7 +102,13 @@ def _is_importable(import_name: str) -> bool:
     try:
         __import__(import_name)
         return True
-    except ImportError:
+    except Exception as exc:
+        # A previously installed native kernel that is ABI-incompatible with the current
+        # torch/CUDA stack (e.g. after a torch upgrade) raises OSError/RuntimeError such as
+        # an undefined symbol, not ImportError. Treat ANY import failure as "not importable"
+        # so the caller reinstalls / source-builds instead of reporting a hard install
+        # failure for a kernel that is merely broken.
+        logger.debug("%s is not importable (%s: %s)", import_name, type(exc).__name__, exc)
         return False
 
 
@@ -295,6 +301,15 @@ def ensure_ssm_runtime(
     is_ssm = model_is_ssm(model_name)
     if not (wants_causal_conv1d or is_ssm):
         return
+
+    # causal-conv1d has no prebuilt Windows wheel; mirror the training worker and skip it on
+    # win32 instead of dropping a chat load into a multi-minute (untimed) source build for
+    # what is only an optional fast path -- the model still loads on its torch fallback.
+    if wants_causal_conv1d and sys.platform == "win32":
+        logger.info(
+            "Skipping causal-conv1d on Windows (no prebuilt wheel); using the torch fallback"
+        )
+        wants_causal_conv1d = False
 
     # causal-conv1d first: SSM modeling files lazy-import it during from_pretrained, and
     # mamba-ssm's fast path uses it. Best-effort (mirrors training): on a platform/ABI
