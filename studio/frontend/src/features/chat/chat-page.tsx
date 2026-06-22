@@ -1667,7 +1667,19 @@ export function ChatPage({
           (selection.source === "hub" &&
             hasGgufSource(selection) &&
             !selection.isDownloaded);
-        if (wantBackgroundDownload) {
+        // The model currently loading already downloads as part of its own load
+        // (the /load flow fetches before setting the checkpoint), so re-picking
+        // it must not kick off a second transfer against the same cache.
+        const isLoadingThisPick =
+          !!loadingModel &&
+          normalizeModelRef(loadingModel.id) ===
+            normalizeModelRef(selection.id) &&
+          (loadingModel.ggufVariant ?? null) === (selection.ggufVariant ?? null);
+        if (isLoadingThisPick) {
+          toast.info("This model is already loading", {
+            description: "It's downloading as part of the load in progress.",
+          });
+        } else if (wantBackgroundDownload) {
           // Only claim the download started once a job is actually created. A
           // transport conflict records state that is only resolvable from the
           // Hub download card, so point the user there instead of showing a
@@ -1712,7 +1724,7 @@ export function ChatPage({
         autoLoad: store.loadOnSelection,
       });
     },
-    [detachStaged, selectModel],
+    [detachStaged, selectModel, loadingModel],
   );
   const loadNativeModelIntent = useCallback(
     async (intent: NativeIntent, loadingDescription: string) => {

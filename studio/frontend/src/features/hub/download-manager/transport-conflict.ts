@@ -80,20 +80,35 @@ async function activeSiblingTransport(
   return null;
 }
 
-// Outcome of a start request so callers can tell whether a transfer actually
-// began before telling the user it did. "started" also covers an
-// already-active/pending download. "conflict" means a transport partial
-// conflict was recorded and must be resolved from the Hub download card;
-// "busy" means a sibling variant is downloading on another transport (its own
-// toast was already shown); "error" means the start threw.
+// Outcome of a start request so callers can tell whether a transfer for this
+// exact request is actually live before telling the user it began. "started"
+// means a running/cancelling job exists for this key (a fresh start or an
+// already-active one). "conflict" means a transport partial conflict was
+// recorded and must be resolved from the Hub download card; "busy" means the
+// repo is occupied by a sibling variant/snapshot/pending start that is not this
+// transfer; "error" means the start failed or was refused.
 export type DownloadStartOutcome = "started" | "conflict" | "busy" | "error";
+
+// A start can no-op without throwing: the backend can refuse it (startJob
+// finalizes "error"), startJob's peer guard can skip it, or
+// hasActiveOrPendingStart can trip on a snapshot/peer/pending that is not this
+// request. Derive the outcome from the actual job state of this exact key so
+// callers never claim a download began when it did not.
+function isJobActiveFor(req: DownloadRequest): boolean {
+  const job = getState().jobs[jobKeyOf(req.kind, req.repoId, req.variant)];
+  return Boolean(job && ACTIVE_STATES.has(job.state));
+}
 
 async function runWithPendingStartGuard(
   req: DownloadRequest,
   action: () => Promise<DownloadStartOutcome>,
 ): Promise<DownloadStartOutcome> {
   const startKey = pendingStartKey(req);
-  if (hasActiveOrPendingStart(req)) return "started";
+  // Already active or pending for the repo: only report "started" when this
+  // exact request is the live transfer; a peer/snapshot/pending start has not.
+  if (hasActiveOrPendingStart(req)) {
+    return isJobActiveFor(req) ? "started" : "busy";
+  }
   runtimeRegistry.pendingStartRepoKeys.add(startKey);
   try {
     return await action();
@@ -174,7 +189,7 @@ export async function requestStart(
             "Starting with HTTP so an existing partial is not discarded. Switch transport to retry with Xet.",
         });
         await startJob(req, { useXet: false });
-        return "started";
+        return isJobActiveFor(req) ? "started" : "error";
       }
       toast.warning("Couldn't verify existing partial download", {
         description:
@@ -182,7 +197,7 @@ export async function requestStart(
       });
     }
     await startJob(req, { useXet: mode === TRANSPORT.XET });
-    return "started";
+    return isJobActiveFor(req) ? "started" : "error";
   });
 }
 
