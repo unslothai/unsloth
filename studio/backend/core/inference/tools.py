@@ -498,6 +498,9 @@ def _build_bypass_env(workdir: str) -> dict[str, str]:
     # the bypassed tool writes under the per-session sandbox dir on every OS.
     env["TEMP"] = workdir
     env["TMP"] = workdir
+    # Emit utf-8 stdout so the parent's utf-8 decode is correct (matches the
+    # sandboxed _build_safe_env); the host LANG is left untouched otherwise.
+    env["PYTHONIOENCODING"] = "utf-8"
     # Windows SDKs read creds under the profile dirs, not $HOME; repoint set
     # ones to the workdir (HOMEDRIVE/HOMEPATH are dropped above).
     for var in _BYPASS_ENV_WINDOWS_PROFILE_VARS:
@@ -2545,7 +2548,9 @@ def _python_exec(
                         pass
     try:
         fd, tmp_path = tempfile.mkstemp(suffix = ".py", prefix = "studio_exec_", dir = workdir)
-        with os.fdopen(fd, "w") as f:
+        # utf-8 so non-ASCII in model-written code survives the OS default codec
+        # (Windows cp1252 would otherwise raise UnicodeEncodeError).
+        with os.fdopen(fd, "w", encoding = "utf-8") as f:
             f.write(code)
 
         safe_env = _build_bypass_env(workdir) if disable_sandbox else _build_safe_env(workdir)
@@ -2553,6 +2558,10 @@ def _python_exec(
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
             text = True,
+            # Decode child output as utf-8 (it emits utf-8 via PYTHONIOENCODING);
+            # replace so non-ASCII output never crashes the read on Windows.
+            encoding = "utf-8",
+            errors = "replace",
             cwd = workdir,
             env = safe_env,
         )
