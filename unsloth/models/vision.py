@@ -502,6 +502,7 @@ def _is_offline_related_error(exc):
             HfHubHTTPError,
             LocalEntryNotFoundError,
         )
+
         _net_types += [OfflineModeIsEnabled, LocalEntryNotFoundError]
         _offline_fnf_types = (LocalEntryNotFoundError,)
         _http_types += (HfHubHTTPError,)
@@ -523,6 +524,7 @@ def _is_offline_related_error(exc):
             return int(code)
         except (TypeError, ValueError):
             return None
+
     _wording = (
         "couldn't connect",
         "could not connect",
