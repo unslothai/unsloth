@@ -765,9 +765,12 @@ export function ModelsPage() {
       partitionByMatch(
         effectiveCachedRows.filter(
           (row) =>
-            (isDatasetMode ||
-              matchesFormat(row.modelFormat, deferredFormatFilter)) &&
-            isVisibleInventoryRow(row),
+            // Hidden-model filtering is model-only; datasets bypass it (and the
+            // format filter) the way Discover does, so a dataset whose
+            // id/title/path happens to contain an infra needle is not dropped.
+            isDatasetMode ||
+            (matchesFormat(row.modelFormat, deferredFormatFilter) &&
+              isVisibleInventoryRow(row)),
         ),
         inventoryTokens,
       ),
@@ -785,9 +788,12 @@ export function ModelsPage() {
       partitionByMatch(
         effectiveLocalRows.filter(
           (row) =>
-            (isDatasetMode ||
-              matchesFormat(row.modelFormat, deferredFormatFilter)) &&
-            isVisibleInventoryRow(row),
+            // Hidden-model filtering is model-only; datasets bypass it (and the
+            // format filter) the way Discover does, so a dataset whose
+            // id/title/path happens to contain an infra needle is not dropped.
+            isDatasetMode ||
+            (matchesFormat(row.modelFormat, deferredFormatFilter) &&
+              isVisibleInventoryRow(row)),
         ),
         inventoryTokens,
       ),
@@ -798,6 +804,27 @@ export function ModelsPage() {
       inventoryTokens,
       isVisibleInventoryRow,
     ],
+  );
+
+  // Header tallies exclude infra/hidden models so the count matches the On
+  // Device list (a fresh install with only the bge embedder cached reads 0,
+  // not 1 over an empty list). Datasets are never infra, so they keep their
+  // full count, mirroring the row filter above.
+  const visibleCachedCount = useMemo(
+    () =>
+      effectiveCachedRows.filter(
+        (row) => isDatasetMode || !isHiddenModelId(row.id, row.repoId),
+      ).length,
+    [effectiveCachedRows, isDatasetMode],
+  );
+  const visibleLocalCount = useMemo(
+    () =>
+      effectiveLocalRows.filter(
+        (row) =>
+          isDatasetMode ||
+          !isHiddenModelId(row.id, row.repoId, row.path, row.title),
+      ).length,
+    [effectiveLocalRows, isDatasetMode],
   );
 
   const filterResetSignature = useMemo(
@@ -1346,15 +1373,15 @@ export function ModelsPage() {
     return (
       <HubListHeader
         title="On device"
-        count={effectiveCachedRows.length + effectiveLocalRows.length}
+        count={visibleCachedCount + visibleLocalCount}
         view={allModelsView}
         onViewChange={setAllModelsView}
         actions={sortControl}
       />
     );
   }, [
-    effectiveCachedRows.length,
-    effectiveLocalRows.length,
+    visibleCachedCount,
+    visibleLocalCount,
     allModelsView,
     setAllModelsView,
     inventorySort,
@@ -1368,8 +1395,8 @@ export function ModelsPage() {
     <div className="hub-page flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden bg-background">
       <HubTopBar>
         <ModelsHeader
-          cachedCount={effectiveCachedRows.length}
-          localCount={effectiveLocalRows.length}
+          cachedCount={visibleCachedCount}
+          localCount={visibleLocalCount}
           isDataset={isDatasetMode}
           gpuLabel={gpuLabel}
           ramLabel={ramLabel}
