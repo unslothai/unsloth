@@ -5,6 +5,7 @@
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 
+import base64
 import ipaddress
 import os
 import shlex
@@ -212,6 +213,34 @@ def _clear_login_bucket(key: tuple[str, str]) -> None:
     with _LOGIN_BUCKETS_LOCK:
         _LOGIN_BUCKETS.pop(key, None)
         _LOGIN_IP_BUCKETS.pop(ip, None)
+
+
+# Sync def (not async): compute_identity_proof touches SQLite on the first call,
+# so FastAPI runs it in the threadpool rather than blocking the event loop.
+@router.get("/identity")
+def identity(nonce: str, request: Request) -> dict:
+    """Challenge-response proof this is the real local Studio: caller sends a nonce,
+    gets HMAC(install identity secret, nonce, connection address + port).
+    Unauthenticated and side-effect free; a process that can't read the same-user
+    secret can't forge a proof, and binding to the address/port the connection
+    landed on stops a squatter relaying a proof from the real Studio elsewhere."""
+    try:
+        raw = base64.urlsafe_b64decode(nonce)
+    except Exception:
+        raise HTTPException(
+            status_code = status.HTTP_400_BAD_REQUEST, detail = "nonce must be base64url"
+        )
+    if not 16 <= len(raw) <= 128:
+        raise HTTPException(
+            status_code = status.HTTP_400_BAD_REQUEST, detail = "nonce must decode to 16-128 bytes"
+        )
+    # The address + port the connection actually landed on, from the socket
+    # (request.scope is getsockname, so it is the real local address even when
+    # bound to 0.0.0.0), never the client-controlled Host header.
+    server = request.scope.get("server") or ("", 0)
+    host = server[0] or ""
+    port = server[1] if server[1] is not None else 0
+    return {"proof": storage.compute_identity_proof(raw, host, port)}
 
 
 @router.get("/status", response_model = AuthStatusResponse)
