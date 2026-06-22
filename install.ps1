@@ -2013,6 +2013,10 @@ exit 0
         # The Tauri desktop app launches its backend from a Windows venv (resolve_backend_binary), not
         # WSL, so a WSL-only install would start nothing -- send those users to the CLI installer.
         if ($TauriMode) {
+            # A prior native Studio venv was already rolled aside (Start-StudioVenvRollback,
+            # ~L1444) before we got here; restore it so rejecting this path doesn't orphan
+            # the user's working install. No-op when nothing was rolled aside.
+            Restore-StudioVenvRollback
             return (Exit-InstallFailure "Windows-on-ARM + NVIDIA GPU needs the WSL2 GPU install, which the desktop app can't launch yet. Install from PowerShell instead:  irm https://unsloth.ai/install.ps1 | iex" 1)
         }
 
@@ -2021,6 +2025,7 @@ exit 0
         # --local run here would silently install the published package inside WSL and report success.
         # Reject it and point at the supported pre-merge mechanism (push the branch + UNSLOTH_INSTALL_REF).
         if ($StudioLocalInstall) {
+            Restore-StudioVenvRollback   # see TauriMode note above: don't orphan a rolled-aside venv
             return (Exit-InstallFailure "--local can't be honored on Windows-on-ARM + NVIDIA: the GPU install runs inside WSL2 and installs from a published/git ref, not this Windows checkout. For pre-merge testing, push your branch and set UNSLOTH_INSTALL_REF, e.g.:  `$env:UNSLOTH_INSTALL_REF='<branch>'; irm https://unsloth.ai/install.ps1 | iex" 1)
         }
         # A custom Studio root (UNSLOTH_STUDIO_HOME / STUDIO_HOME) only applies to the native Windows
@@ -2104,6 +2109,7 @@ exit 0
         # break/inject the command. git refs can't contain those anyway; enforce a strict allow-list
         # (letters, digits, `.` `_` `/` `-`) and reject loudly rather than silently mangle the install.
         if ($_instRef -ne 'main' -and ($_instRef -notmatch '^[A-Za-z0-9][A-Za-z0-9._/-]*$')) {
+            Restore-StudioVenvRollback   # see TauriMode note above: don't orphan a rolled-aside venv
             return (Exit-InstallFailure "UNSLOTH_INSTALL_REF='$_instRef' is not a valid git ref (allowed: letters, digits, '.', '_', '/', '-'). Set it to a real branch or tag name." 1)
         }
         # UNSLOTH_WSL_LLAMA_DEFERRED=1: setup.sh skips its foreground CUDA llama.cpp build since we build it
