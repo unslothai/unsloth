@@ -133,9 +133,7 @@ def test_alias_experimental_trl_trainers_is_idempotent_and_noop_on_old_trl():
 
     from unsloth.models.rl import _alias_experimental_trl_trainers
 
-    before = {
-        x for x in dir(trl.trainer) if x.endswith("_trainer")
-    }
+    before = {x for x in dir(trl.trainer) if x.endswith("_trainer")}
     _alias_experimental_trl_trainers()
     _alias_experimental_trl_trainers()  # idempotent
     after = {x for x in dir(trl.trainer) if x.endswith("_trainer")}
