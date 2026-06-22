@@ -161,8 +161,7 @@ function FindingCard({ finding }: { finding: RemoteCodeFinding }) {
   );
 }
 
-/** Last path segment of the model id for display. The provider (HF org) is decided
- *  server-side (``scan.provider``), where locality and scan scope are known. */
+/** Last path segment of the model id, for display. */
 function modelDisplayName(modelName?: string): string {
   if (!modelName) return "This model";
   return modelName.split("/").pop() || modelName;

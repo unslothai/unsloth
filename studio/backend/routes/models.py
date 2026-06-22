@@ -1589,10 +1589,9 @@ def _consent_provider(
 ) -> Optional[str]:
     """HF org for the consent dialog's `from "<provider>"` tag, or None.
 
-    Returns the owner only for a single, non-local, canonical ``owner/repo`` Hub id.
-    A LoRA's extra base target (len > 1), a local/relative path, or an external
-    ``auto_map`` ref (e.g. ``owner/other--mod.Class``, whose executable code lives in a
-    different repo) yields None, so the dialog never misattributes the scanned code.
+    Returns the owner only for a single, non-local, canonical ``owner/repo`` id; a LoRA's
+    extra base, a local path, or an external ``auto_map`` ref yields None so the dialog
+    never misattributes scanned code.
     """
     if len(scanned_targets) != 1 or external_refs or is_local_path(model_name):
         return None
@@ -1678,8 +1677,7 @@ async def scan_model_remote_code(
         # created_by_scan = primary flag (older clients); scan_created_repos drives cleanup.
         payload["created_by_scan"] = model_name in scan_created_repos
         payload["scan_created_repos"] = scan_created_repos
-        # Provider (HF org) for the dialog's `from "<provider>"` tag, decided here where
-        # locality, scan scope, and external auto_map refs are known (see _consent_provider).
+        # Provider tag decided here, where locality/scan scope/external refs are known.
         payload["provider"] = _consent_provider(model_name, security_targets, external_refs)
 
         # Malware gate (metadata-only): surface HF-flagged unsafe files so the dialog can
