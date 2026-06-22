@@ -193,6 +193,73 @@ def _ensure_ssm_kernels(targets: list, resp_queue: Any) -> bool:
         return False
 
 
+def _run_security_gates(
+    targets: list,
+    *,
+    trust_remote_code: bool,
+    hf_token: str | None,
+    approved_fingerprint: str | None,
+    resp_queue: Any,
+) -> bool:
+    """Malware + (when trust_remote_code) remote-code consent gates over *targets*
+    (model + base). Metadata-only (no transformers import), so it can run before the SSM
+    kernel install and the ML import. Sends the matching 'loaded' failure and returns
+    False if blocked; True when every target is clear.
+    """
+    targets = list(dict.fromkeys(t for t in targets if t))
+
+    # A poisoned pickle deserializes during from_pretrained even with trust_remote_code
+    # False, so check HF's security scan every load (for a LoRA, the base deserializes).
+    from utils.security import evaluate_file_security, security_load_subdirs
+
+    for target in targets:
+        _fs = evaluate_file_security(
+            target, hf_token = hf_token, load_subdirs = security_load_subdirs(target, hf_token)
+        )
+        if _fs.blocked:
+            _send_response(
+                resp_queue,
+                {
+                    "type": "loaded",
+                    "success": False,
+                    "message": _fs.reason,
+                    "error_kind": "malware_blocked",
+                    "security": _fs.response_payload(),
+                },
+            )
+            return False
+
+    # Scan auto_map code before it runs; block CRITICAL/HIGH unless pinned-approved. Adapter
+    # and base are scanned as one unit, pinned by a single fingerprint.
+    if trust_remote_code:
+        from utils.security import evaluate_remote_code_consent_for_targets
+
+        _rc = evaluate_remote_code_consent_for_targets(
+            targets,
+            hf_token = hf_token,
+            trust_remote_code = True,
+            approved_fingerprint = approved_fingerprint,
+        )
+        if _rc.blocked:
+            _send_response(
+                resp_queue,
+                {
+                    "type": "loaded",
+                    "success": False,
+                    "message": (
+                        f"Model '{_rc.model_name}' ships custom code flagged as "
+                        f"{_rc.max_severity} by the security scan. Review "
+                        f"and approve it to proceed."
+                    ),
+                    "error_kind": "remote_code_blocked",
+                    "remote_code": _rc.response_payload(),
+                },
+            )
+            return False
+
+    return True
+
+
 def _handle_load(backend, config: dict, resp_queue: Any) -> None:
     """Handle a load command: load a model into the backend."""
     try:
@@ -208,62 +275,19 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                 "Auto-enabled trust_remote_code for Nemotron model: %s", config["model_name"]
             )
 
-        # Malware gate: a poisoned pickle deserializes during from_pretrained even
-        # with trust_remote_code False, so check HF's security scan (metadata-only)
-        # every load. For a LoRA, gate the base whose weights deserialize.
-        from utils.security import evaluate_file_security, security_load_subdirs
-
-        malware_targets = [config["model_name"]]
+        # Authoritative gates over the model + the LoRA base resolved via mc. Must run before
+        # the SSM install so a blocked model never triggers a native kernel build.
+        targets = [config["model_name"]]
         if mc.is_lora and getattr(mc, "base_model", None):
-            malware_targets.append(str(mc.base_model))
-        for target in dict.fromkeys(malware_targets):
-            _fs = evaluate_file_security(
-                target, hf_token = hf_token, load_subdirs = security_load_subdirs(target, hf_token)
-            )
-            if _fs.blocked:
-                _send_response(
-                    resp_queue,
-                    {
-                        "type": "loaded",
-                        "success": False,
-                        "message": _fs.reason,
-                        "error_kind": "malware_blocked",
-                        "security": _fs.response_payload(),
-                    },
-                )
-                return
-
-        # Consent gate: scan auto_map code before it runs; block CRITICAL/HIGH
-        # unless pinned-approved. For a LoRA, gate the base whose code runs.
-        if trust_remote_code:
-            from utils.security import evaluate_remote_code_consent_for_targets
-
-            consent_targets = [config["model_name"]]
-            if mc.is_lora and getattr(mc, "base_model", None):
-                consent_targets.append(str(mc.base_model))
-            # Scan adapter + base as one unit, pinned by a single fingerprint.
-            _rc = evaluate_remote_code_consent_for_targets(
-                consent_targets,
-                hf_token = hf_token,
-                trust_remote_code = True,
-                approved_fingerprint = config.get("approved_remote_code_fingerprint"),
-            )
-            if _rc.blocked:
-                _send_response(
-                    resp_queue,
-                    {
-                        "type": "loaded",
-                        "success": False,
-                        "message": (
-                            f"Model '{_rc.model_name}' ships custom code flagged as "
-                            f"{_rc.max_severity} by the security scan. Review "
-                            f"and approve it to proceed."
-                        ),
-                        "error_kind": "remote_code_blocked",
-                        "remote_code": _rc.response_payload(),
-                    },
-                )
-                return
+            targets.append(str(mc.base_model))
+        if not _run_security_gates(
+            targets,
+            trust_remote_code = trust_remote_code,
+            hf_token = hf_token,
+            approved_fingerprint = config.get("approved_remote_code_fingerprint"),
+            resp_queue = resp_queue,
+        ):
+            return
 
         # Install SSM/Mamba kernels. Normally a no-op for the initial load (pre-installed in
         # run_inference_process before importing transformers); still needed for a LoRA's base
@@ -747,18 +771,31 @@ def run_inference_process(*, cmd_queue: Any, resp_queue: Any, cancel_event, conf
                 'Install for better performance: pip install "triton-windows<3.7"'
             )
 
-    # ── 1c. SSM/Mamba kernels BEFORE importing transformers ──
+    # ── 1c. Security gates, then SSM/Mamba kernels, BEFORE importing transformers ──
     # transformers snapshots its optional-backend gates at import, so a hybrid model's
     # kernels must be installed before the import below or the load still fails with
-    # "mamba-ssm is required". A no-op for non-SSM models; the LoRA base and later in-process
-    # loads are handled in _handle_load.
+    # "mamba-ssm is required". The SSM install is name-based and may source-build, so run the
+    # metadata-only gates first and refuse a blocked model before any native build. A no-op
+    # for non-SSM models; _handle_load re-runs the authoritative gates with the mc base.
     _ensure_backend_on_path()
     from utils.transformers_version import _resolve_base_model
 
+    _hf_token = _clean_token(config.get("hf_token"))
     _ssm_base = _resolve_base_model(model_name)
     _ssm_targets = [model_name]
     if _ssm_base and _ssm_base != model_name:
         _ssm_targets.append(_ssm_base)
+    _trust_remote_code = config.get("trust_remote_code", False) or _needs_nemotron_trust(
+        model_name, hf_token = _hf_token
+    )
+    if not _run_security_gates(
+        _ssm_targets,
+        trust_remote_code = _trust_remote_code,
+        hf_token = _hf_token,
+        approved_fingerprint = config.get("approved_remote_code_fingerprint"),
+        resp_queue = resp_queue,
+    ):
+        return
     if not _ensure_ssm_kernels(_ssm_targets, resp_queue):
         return
 
