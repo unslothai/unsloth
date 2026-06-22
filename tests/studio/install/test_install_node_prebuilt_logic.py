@@ -59,7 +59,10 @@ def test_detect_host(monkeypatch, system, machine, exp_os, exp_arch, exp_ext):
     assert host.is_windows == (exp_os == "win")
 
 
-@pytest.mark.parametrize("system,machine", [("Plan9", "x86_64"), ("Linux", "sparc64")])
+@pytest.mark.parametrize(
+    "system,machine",
+    [("Plan9", "x86_64"), ("Linux", "sparc64"), ("Linux", "armv7l"), ("Linux", "armhf")],
+)
 def test_detect_host_unsupported(monkeypatch, system, machine):
     monkeypatch.setattr(M.platform, "system", lambda: system)
     monkeypatch.setattr(M.platform, "machine", lambda: machine)
@@ -402,3 +405,27 @@ def test_install_prebuilt_rejects_explicit_below_floor(tmp_path: Path, monkeypat
     monkeypatch.setattr(M, "download_bytes", boom)
     with pytest.raises(PrebuiltFallback):
         M.install_prebuilt(install_dir, channel = "20.18.0", min_major = 24, force = False)
+
+
+def test_install_prebuilt_keeps_existing_when_shasums_fetch_fails(tmp_path: Path, monkeypatch):
+    # index.json resolves a newer version, but the later SHASUMS fetch fails and a
+    # usable older isolated Node is on disk -> keep it instead of aborting.
+    install_dir = tmp_path / "node"
+    install_dir.mkdir()
+    M.write_metadata(install_dir, version = "24.9.0", asset = "x", sha256 = "y")
+    monkeypatch.setattr(M, "detect_host", lambda: _host("linux", "x64"))
+    monkeypatch.setattr(M, "fetch_json", lambda url: INDEX)  # newest LTS = 24.17.0
+    monkeypatch.setattr(M, "installed_node_version", lambda d, h: "24.9.0")
+    monkeypatch.setattr(M, "installed_npm_major", lambda d, h: 11)
+    monkeypatch.setattr(M, "download_bytes", _offline)  # SHASUMS fetch fails
+    rc = M.install_prebuilt(install_dir, channel = "lts", min_major = 24, force = False)
+    assert rc == M.EXIT_SUCCESS
+
+
+def test_install_prebuilt_reraises_shasums_failure_without_existing(tmp_path: Path, monkeypatch):
+    install_dir = tmp_path / "node"  # nothing usable on disk
+    monkeypatch.setattr(M, "detect_host", lambda: _host("linux", "x64"))
+    monkeypatch.setattr(M, "fetch_json", lambda url: INDEX)
+    monkeypatch.setattr(M, "download_bytes", _offline)
+    with pytest.raises(OSError):
+        M.install_prebuilt(install_dir, channel = "lts", min_major = 24, force = False)

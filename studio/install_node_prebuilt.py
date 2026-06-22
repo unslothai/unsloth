@@ -110,9 +110,9 @@ def detect_host() -> HostInfo:
         node_arch = "x64"
     elif machine in {"arm64", "aarch64"}:
         node_arch = "arm64"
-    elif machine in {"armv7l", "armv7", "armhf"}:
-        node_arch = "armv7l"
     else:
+        # 32-bit ARM (armv7l) is intentionally unsupported: Node 24 LTS ships no
+        # linux-armv7l build, so there is nothing at/above the floor to install.
         raise PrebuiltFallback(f"unsupported CPU architecture for Node prebuilt: {machine}")
 
     # .tar.gz (not .tar.xz) on Unix so the extractor needs no xz; .zip on Windows.
@@ -668,40 +668,48 @@ def install_prebuilt(install_dir: Path, *, channel: str, min_major: int, force: 
             log(f"existing Node install already matches v{version}; nothing to do")
             return EXIT_SUCCESS
 
-        shasums = download_bytes(node_shasums_url(version), timeout = 30).decode("utf-8")
-        expected_sha = expected_sha256_for(shasums, asset)
-        if not expected_sha:
-            raise PrebuiltFallback(f"no sha256 for {asset} in SHASUMS256.txt (v{version})")
-
-        staging_root = install_dir.parent / INSTALL_STAGING_ROOT_NAME
-        staging_root.mkdir(parents = True, exist_ok = True)
-        staging = Path(tempfile.mkdtemp(prefix = f"{install_dir.name}.staging-", dir = staging_root))
         try:
-            archive_path = staging / asset
-            log(f"downloading {node_download_url(version, asset)}")
-            download_file_verified(
-                node_download_url(version, asset),
-                archive_path,
-                expected_sha256 = expected_sha,
-                label = asset,
-            )
-            extract_dir = staging / "extracted"
-            extract_archive(archive_path, extract_dir)
+            shasums = download_bytes(node_shasums_url(version), timeout = 30).decode("utf-8")
+            expected_sha = expected_sha256_for(shasums, asset)
+            if not expected_sha:
+                raise PrebuiltFallback(f"no sha256 for {asset} in SHASUMS256.txt (v{version})")
 
-            roots = [p for p in extract_dir.iterdir() if p.is_dir()]
-            if len(roots) != 1:
-                raise PrebuiltFallback(f"unexpected archive layout: {[p.name for p in roots]}")
-            extracted_root = roots[0]
-
-            _ensure_npm_floor(extracted_root, host)
-            write_metadata(extracted_root, version = version, asset = asset, sha256 = expected_sha)
-            _swap_into_place(extracted_root, install_dir)
-        finally:
-            shutil.rmtree(staging, ignore_errors = True)
+            staging_root = install_dir.parent / INSTALL_STAGING_ROOT_NAME
+            staging_root.mkdir(parents = True, exist_ok = True)
+            staging = Path(tempfile.mkdtemp(prefix = f"{install_dir.name}.staging-", dir = staging_root))
             try:
-                staging_root.rmdir()
-            except OSError:
-                pass
+                archive_path = staging / asset
+                log(f"downloading {node_download_url(version, asset)}")
+                download_file_verified(
+                    node_download_url(version, asset),
+                    archive_path,
+                    expected_sha256 = expected_sha,
+                    label = asset,
+                )
+                extract_dir = staging / "extracted"
+                extract_archive(archive_path, extract_dir)
+
+                roots = [p for p in extract_dir.iterdir() if p.is_dir()]
+                if len(roots) != 1:
+                    raise PrebuiltFallback(f"unexpected archive layout: {[p.name for p in roots]}")
+                extracted_root = roots[0]
+
+                _ensure_npm_floor(extracted_root, host)
+                write_metadata(extracted_root, version = version, asset = asset, sha256 = expected_sha)
+                _swap_into_place(extracted_root, install_dir)
+            finally:
+                shutil.rmtree(staging, ignore_errors = True)
+                try:
+                    staging_root.rmdir()
+                except OSError:
+                    pass
+        except Exception as exc:  # noqa: BLE001
+            # A newer Node exists upstream but the shasums/archive fetch failed;
+            # keep an existing usable Node rather than aborting the update.
+            if not force and existing_install_usable(install_dir, host):
+                log(f"Node download failed ({exc}); keeping existing isolated Node")
+                return EXIT_SUCCESS
+            raise
 
     final_version = installed_node_version(install_dir, host)
     npm_major = installed_npm_major(install_dir, host)
