@@ -137,6 +137,13 @@ _VENV_T5_510_DIR = str(_studio_root() / ".venv_t5_510")
 # Backwards-compat alias
 _VENV_T5_DIR = _VENV_T5_550_DIR
 
+# Tier precedence (higher 5.x tiers run first); used to pick the stronger of two tiers.
+_TIER_RANK = {"default": 0, "530": 1, "550": 2, "510": 3}
+
+
+def _higher_tier(a: str, b: str) -> str:
+    return a if _TIER_RANK.get(a, 0) >= _TIER_RANK.get(b, 0) else b
+
 
 def activate_transformers_for_subprocess(model_name: str) -> None:
     """Activate the correct transformers version in a subprocess worker.
@@ -148,6 +155,10 @@ def activate_transformers_for_subprocess(model_name: str) -> None:
     """
     resolved = _resolve_base_model(model_name)
     tier = get_transformers_tier(resolved)
+    if model_name != resolved:
+        # Prefer the higher tier: a local checkpoint's own config may reveal a dense
+        # NemotronH the (offline/private) base does not. Avoids KeyError: '-'.
+        tier = _higher_tier(tier, get_transformers_tier(model_name))
 
     if tier == "510":
         if not _ensure_venv_t5_510_exists():
@@ -330,6 +341,20 @@ def _check_tokenizer_config_needs_v5(model_name: str) -> bool:
         return False
 
 
+def _config_json_from_hf_cache(model_name: str) -> dict | None:
+    """Parsed ``config.json`` from the local HF hub cache, or None if not cached."""
+    try:
+        from huggingface_hub import try_to_load_from_cache
+
+        path = try_to_load_from_cache(model_name, "config.json")
+        if isinstance(path, str) and path:
+            with open(path) as f:
+                return json.load(f)
+    except Exception as exc:
+        logger.debug("HF cache config.json lookup failed for '%s': %s", model_name, exc)
+    return None
+
+
 def _load_config_json(model_name: str, hf_token: str | None = None) -> dict | None:
     """Return parsed ``config.json`` for *model_name*, checking local files first.
 
@@ -355,6 +380,13 @@ def _load_config_json(model_name: str, hf_token: str | None = None) -> dict | No
             logger.debug("Could not read %s: %s", local_cfg, exc)
             _config_json_cache[cache_key] = None
             return None
+
+    # Already-downloaded repo: read config.json from the HF cache before any network,
+    # so offline/blocked fetches still tier correctly (e.g. a cached dense NemotronH).
+    cfg = _config_json_from_hf_cache(model_name)
+    if cfg is not None:
+        _config_json_cache[cache_key] = cfg
+        return cfg
 
     if _env_offline():
         _config_json_cache[cache_key] = None
@@ -395,22 +427,28 @@ def _config_needs_550(cfg: dict) -> bool:
     )
 
 
+_NESTED_CONFIG_KEYS = ("llm_config", "text_config", "language_config", "thinker_config")
+
+
 def _nemotron_h_needs_mlp_support(cfg: dict) -> bool:
     """True for a dense NemotronH config that uses MLP (``-``) layers.
 
     transformers only gained ``-`` -> ``mlp`` (pattern_mapping/valid_types/MIXER_TYPES)
     in 5.10; 5.3/5.5 raise ``KeyError: '-'`` parsing the config. Detected from the raw
-    ``hybrid_override_pattern`` or an expanded ``layers_block_type``.
+    ``hybrid_override_pattern`` or an expanded ``layers_block_type``, recursing into a
+    nested language config (VL wrappers like NemotronH_Nano_VL_V2 hold the dense LM
+    under ``llm_config``/``text_config``).
     """
-    if cfg.get("model_type") != "nemotron_h":
+    if not isinstance(cfg, dict):
         return False
-    pattern = cfg.get("hybrid_override_pattern")
-    if isinstance(pattern, str) and "-" in pattern:
-        return True
-    block_types = cfg.get("layers_block_type")
-    if isinstance(block_types, (list, tuple)) and "mlp" in block_types:
-        return True
-    return False
+    if cfg.get("model_type") == "nemotron_h":
+        pattern = cfg.get("hybrid_override_pattern")
+        if isinstance(pattern, str) and "-" in pattern:
+            return True
+        block_types = cfg.get("layers_block_type")
+        if isinstance(block_types, (list, tuple)) and "mlp" in block_types:
+            return True
+    return any(_nemotron_h_needs_mlp_support(cfg.get(key)) for key in _NESTED_CONFIG_KEYS)
 
 
 def _config_needs_510(cfg: dict) -> bool:
@@ -847,6 +885,10 @@ def ensure_transformers_version(model_name: str) -> None:
     # Resolve LoRA adapters to their base model for accurate detection.
     resolved = _resolve_base_model(model_name)
     tier = get_transformers_tier(resolved)
+    if model_name != resolved:
+        # Prefer the higher tier: a local checkpoint's own config may reveal a dense
+        # NemotronH the (offline/private) base does not. Avoids KeyError: '-'.
+        tier = _higher_tier(tier, get_transformers_tier(model_name))
 
     if tier == "510":
         target_version = TRANSFORMERS_510_VERSION

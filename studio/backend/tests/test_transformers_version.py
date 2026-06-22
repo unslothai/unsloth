@@ -36,6 +36,9 @@ from utils.transformers_version import (
     _check_config_needs_550,
     _config_needs_510,
     _nemotron_h_needs_mlp_support,
+    _config_json_from_hf_cache,
+    _load_config_json,
+    _higher_tier,
     _config_json_cache,
     _tokenizer_class_cache,
     _config_needs_510_cache,
@@ -426,6 +429,70 @@ class TestNemotronHNeedsMlpSupport:
         }
         assert _config_needs_510(cfg) is True
 
+    def test_nested_llm_config_with_dash(self):
+        # VL wrapper (e.g. NemotronH_Nano_VL_V2): dense LM is under llm_config.
+        cfg = {
+            "model_type": "NemotronH_Nano_VL_V2",
+            "llm_config": {"model_type": "nemotron_h", "hybrid_override_pattern": "M-M*-"},
+        }
+        assert _nemotron_h_needs_mlp_support(cfg) is True
+        assert _config_needs_510(cfg) is True
+
+    def test_nested_text_config_with_mlp(self):
+        cfg = {
+            "model_type": "wrapper",
+            "text_config": {"model_type": "nemotron_h", "layers_block_type": ["mamba", "mlp"]},
+        }
+        assert _nemotron_h_needs_mlp_support(cfg) is True
+
+    def test_nested_non_nemotron_returns_false(self):
+        cfg = {"model_type": "wrapper", "llm_config": {"model_type": "llama"}}
+        assert _nemotron_h_needs_mlp_support(cfg) is False
+
+    def test_non_dict_and_missing_nested_do_not_raise(self):
+        assert _nemotron_h_needs_mlp_support(None) is False
+        assert _nemotron_h_needs_mlp_support({"model_type": "wrapper", "llm_config": None}) is False
+
+
+class TestConfigJsonHfCacheFallback:
+    """_load_config_json reads the HF hub cache before any network (offline support)."""
+
+    def setup_method(self):
+        _config_json_cache.clear()
+
+    def test_cache_hit_skips_network(self, tmp_path: Path, monkeypatch):
+        cfg = {"model_type": "nemotron_h", "hybrid_override_pattern": "M-M*-"}
+        cached = tmp_path / "config.json"
+        cached.write_text(json.dumps(cfg))
+        monkeypatch.setenv("HF_HUB_OFFLINE", "1")  # cache is consulted even offline
+        with (
+            patch("huggingface_hub.try_to_load_from_cache", return_value = str(cached)),
+            patch("urllib.request.urlopen") as mock_url,
+        ):
+            assert _load_config_json("unsloth/NVIDIA-Nemotron-3-Nano-4B") == cfg
+            mock_url.assert_not_called()
+
+    def test_offline_uncached_returns_none(self, monkeypatch):
+        monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+        with (
+            patch("huggingface_hub.try_to_load_from_cache", return_value = None),
+            patch("urllib.request.urlopen") as mock_url,
+        ):
+            assert _load_config_json("private/unknown") is None
+            mock_url.assert_not_called()
+
+    def test_helper_returns_none_when_missing(self):
+        with patch("huggingface_hub.try_to_load_from_cache", return_value = None):
+            assert _config_json_from_hf_cache("x/y") is None
+
+
+class TestHigherTier:
+    def test_picks_stronger_tier(self):
+        assert _higher_tier("default", "510") == "510"
+        assert _higher_tier("530", "550") == "550"
+        assert _higher_tier("510", "default") == "510"
+        assert _higher_tier("default", "default") == "default"
+
 
 # ---------------------------------------------------------------------------
 # get_transformers_tier — tier detection
@@ -767,6 +834,34 @@ class TestActivateLoggingClarity:
         assert (
             "sys.path" in text or "path only" in text
         ), f"early activation log does not clarify it is path-prepend only: {text!r}"
+
+    def test_activate_prefers_local_checkpoint_tier_over_resolved_base(self, caplog):
+        # A dense NemotronH checkpoint whose base resolves to an offline/private id: the
+        # base tier check yields default, but the local config wins via _higher_tier.
+        caplog.set_level(logging.INFO)
+        snap = self._snapshot_env()
+        tiers = {"local/ckpt": "510", "private/base": "default"}
+        try:
+            with (
+                patch(
+                    "utils.transformers_version._resolve_base_model",
+                    return_value = "private/base",
+                ),
+                patch(
+                    "utils.transformers_version.get_transformers_tier",
+                    side_effect = lambda m: tiers[m],
+                ),
+                patch(
+                    "utils.transformers_version._ensure_venv_t5_510_exists",
+                    return_value = True,
+                ),
+            ):
+                activate_transformers_for_subprocess("local/ckpt")
+        finally:
+            self._restore_env(snap)
+
+        text = " ".join(r.getMessage() for r in caplog.records).lower()
+        assert "5.10.2" in text, f"local checkpoint tier did not win: {text!r}"
 
 
 # ---------------------------------------------------------------------------
