@@ -93,8 +93,8 @@ function siblingGgufDirectory(sourcePath: string): string | null {
   const trimmed = sourcePath.trim().replace(/[\\/]+$/, "");
   if (!trimmed) return null;
   const slash = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
-  // Lowercase to match the backend's intermediate `<checkpoint>_gguf` dir
-  // (core/export/export.py); `_GGUF` would make it relocate+delete that sibling.
+  // Lowercase `_gguf` matches the backend's intermediate dir (core/export/export.py);
+  // `_GGUF` would relocate+delete that sibling.
   if (slash < 0) return `${trimmed}_gguf`;
   const parent =
     slash === 0 || (slash === 2 && /^[A-Za-z]:/.test(trimmed))
