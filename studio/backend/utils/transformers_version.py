@@ -319,9 +319,8 @@ def _check_tokenizer_config_needs_v5(model_name: str, hf_token: str | None = Non
         except Exception as exc:
             logger.debug("Could not read %s: %s", local_tc, exc)
 
-    # A local checkpoint dir whose tokenizer_config.json is not (yet) present is not an HF
-    # id: don't fetch it from the Hub, and don't cache the miss, so a file written later in
-    # this same process (in-progress checkpoint) is read on the next call.
+    # Local checkpoint without the file yet: don't fetch it as a Hub id or cache the miss,
+    # so a file written later this process (in-progress checkpoint) is read next call.
     if local_path.is_dir():
         return False
 
@@ -383,9 +382,8 @@ def _load_config_json(model_name: str, hf_token: str | None = None) -> dict | No
             _config_json_cache[cache_key] = None
             return None
 
-    # A local checkpoint dir whose config.json is not (yet) present is not an HF id: don't
-    # fetch it from the Hub, and don't cache the miss, so a file written later in this same
-    # process (in-progress checkpoint) is read on the next call.
+    # Local checkpoint without the file yet: don't fetch it as a Hub id or cache the miss,
+    # so a file written later this process (in-progress checkpoint) is read next call.
     if Path(model_name).is_dir():
         return None
 
@@ -492,13 +490,9 @@ def _check_config_needs_510(model_name: str, hf_token: str | None = None) -> boo
 
 
 def _config_saved_by_transformers_5(cfg: dict | None) -> bool:
-    """True if ``config.json`` records a transformers >= 5 ``transformers_version``.
-
-    This field is the *saving* version, not the minimum to load, so it never decides the
-    tier on its own. It is only a cheap "worth probing" hint: a model saved by 5.x and
-    not matched by any fast path may carry a new architecture the default 4.57.x parser
-    cannot read. The probe (default-first) makes the authoritative call.
-    """
+    """True if ``config.json``'s ``transformers_version`` is >= 5. Only a cheap "worth
+    probing" hint (the saving version, not the minimum to load); the default-first probe
+    decides the actual tier."""
     if not isinstance(cfg, dict):
         return False
     ver = cfg.get("transformers_version")
@@ -511,10 +505,8 @@ def _config_saved_by_transformers_5(cfg: dict | None) -> bool:
 
 
 def _cached_config_json(model_name: str, hf_token: str | None) -> dict | None:
-    """Return an already-fetched config.json from the in-process cache, without a new
-    network round-trip. The tier checks above populate it in the real flow; a miss
-    (mocked checks, transient fetch, no config) just means "skip the version-field probe".
-    """
+    """Already-fetched config.json from the in-process cache (no new fetch); the tier checks
+    above populate it, and a miss just skips the version-field probe."""
     import hashlib
 
     tok = hashlib.sha256(hf_token.encode()).hexdigest()[:16] if hf_token else None
@@ -569,9 +561,8 @@ def _stderr_is_transient(err: str) -> bool:
 
 
 def _probe_tier_venvs():
-    """tier -> (target_dir, ensure_fn), built here so the later _ensure_* defs resolve.
-    The ``default`` entry has an empty target_dir (ambient 4.57.x, no sidecar) and is
-    always available; it is only probed when a caller passes ``include_default``."""
+    """tier -> (target_dir, ensure_fn), a function so the later _ensure_* defs resolve. The
+    ``default`` entry (empty target_dir = ambient 4.57.x) is only probed with include_default."""
     return {
         "default": ("", lambda: True),
         "530": (_VENV_T5_530_DIR, _ensure_venv_t5_530_exists),
@@ -643,31 +634,24 @@ def _probe_tier(
 ) -> str:
     """Lowest tier whose built-in parser loads the config; *floor* is the fail-safe.
 
-    Escalates through ``_PROBE_TIER_ORDER`` (optionally prefixed with the ambient
-    ``default`` tier when ``include_default`` is set) and returns the first that parses;
-    never raises, never escalates on uncertainty:
+    Escalates ``_PROBE_TIER_ORDER`` (prefixed with the ambient ``default`` tier when
+    ``include_default``), returning the first that parses; never raises or escalates on
+    uncertainty:
       - first success wins (cached unless a lower tier was skipped);
       - transient failure (auth/network/offline) -> *floor*, uncached;
       - a skipped/uninstallable sidecar -> uncached (a lower tier may yet be the answer);
-      - all tiers probed, none parse -> a remote-code/custom model_type that loads via its
-        own code; keep *floor* rather than jumping to a higher 5.x sidecar.
+      - all tiers probed, none parse -> remote-code/custom model_type; keep *floor*.
 
-    Callers that already know the model needs 5.x use ``floor='530'`` (never default).
-    Callers probing on a weak signal (config saved by transformers 5.x) use
-    ``include_default=True, floor='default'`` so a model that still parses on 4.57.x is
-    left on the stable default instead of being pushed onto a sidecar.
-
-    Cached per _probe_cache_key for the process lifetime (a model's tier follows its config).
-    No Hub commit sha is resolved: that would import huggingface_hub into the worker before
-    the sidecar is on sys.path (activation does not purge), pinning the default-env hub.
+    Known-5.x callers use ``floor='530'``; weak-signal callers (config saved by transformers
+    5.x) use ``include_default=True, floor='default'`` so a model that still parses on 4.57.x
+    stays on the default. Cached per _probe_cache_key (process lifetime). No Hub sha is
+    resolved: that would import huggingface_hub before the sidecar is on sys.path.
     """
     if os.environ.get("UNSLOTH_DISABLE_TIER_PROBE", "").lower() in ("1", "true", "yes"):
         return floor
     key = _probe_cache_key(model_name)
-    # The probe mode changes what a cached result means: the default-first path
-    # (floor='default') may legitimately return 'default', which is wrong to hand back to a
-    # tokenizer/known-5.x caller (floor='530', no default tier). Key those modes separately
-    # so a 'default' result never leaks across; the legacy 530 mode keeps the bare key.
+    # Key by probe mode: the default-first path can return 'default', which must not be
+    # reused for a tokenizer/known-5.x caller (floor='530'). Legacy 530 keeps the bare key.
     if include_default or floor != "530":
         key = f"{key}\0floor={floor}:def={int(include_default)}"
     if key in _probe_tier_cache:
@@ -735,18 +719,14 @@ def get_transformers_tier(
     ``"530"`` for models needing transformers 5.3.0 (e.g. Ministral-3, Qwen3 MoE),
     or ``"default"`` for everything else (4.57.x).
 
-    Strong signals (architecture/model_type, name substrings) are fast paths. When the
-    only signal is "needs some 5.x" (the tokenizer class), the exact tier is resolved by
-    probing AutoConfig in each sidecar instead of guessing the lowest one. A model whose
-    ``config.json`` was saved by transformers 5.x but matches no fast path is probed
-    default-first, so a new 5.x-only architecture is caught while 4.57.x-loadable models
-    stay on the default.
+    Strong signals (architecture/model_type, name substrings) are fast paths. When the only
+    signal is the 5.x tokenizer class, the exact tier is resolved by probing AutoConfig in
+    each sidecar; a config saved by transformers 5.x with no fast-path match is probed
+    default-first, catching a new 5.x-only arch while 4.57.x-loadable models stay on default.
 
-    ``probe=False`` skips every AutoConfig probe (the sidecar subprocesses) and is used by
-    the cheap :func:`needs_transformers_5` boolean so a parent/log-only caller never spawns
-    probes; it still classifies via the cheap signals (a config saved by transformers 5.x
-    returns ``"530"`` without probing). The real activation path keeps ``probe=True`` and
-    resolves the exact tier (which may be ``"default"`` if the model still parses on 4.57.x).
+    ``probe=False`` skips the sidecar subprocesses (used by the cheap
+    :func:`needs_transformers_5`); it still classifies via cheap signals (a 5.x-saved config
+    returns ``"530"``). ``probe=True`` (the activation path) resolves the exact tier.
 
     Higher 5.x tiers run first.
     """

@@ -1002,9 +1002,8 @@ class TestProbeGating:
         assert get_transformers_tier("org/llama") == "default"
 
     def test_needs_transformers_5_true_for_version_field_only(self, monkeypatch):
-        # A standard-tokenizer model whose only cheap signal is transformers_version>=5 must
-        # still be reported as 5.x (so the vision-routing fallback uses the 5.x subprocess),
-        # and it must do so WITHOUT spawning a probe.
+        # A 5.x-saved standard-tokenizer model must report as 5.x (for vision routing)
+        # without spawning a probe.
         monkeypatch.setattr(
             "utils.transformers_version._check_config_needs_510", lambda m, t = None: False
         )
@@ -1026,9 +1025,8 @@ class TestProbeGating:
         assert needs_transformers_5("org/new") is True
 
     def test_default_first_result_not_reused_for_tokenizer_path(self, monkeypatch, tmp_path):
-        # A local checkpoint probed via the version-field (default-first) path can cache
-        # "default". When tokenizer_config.json later marks it as a 5.x-only tokenizer, the
-        # tokenizer path (floor=530) must re-probe, not return the stale "default".
+        # A default-first probe can cache "default"; a later tokenizer/known-5.x call
+        # (floor=530) must re-probe, not reuse that "default".
         self._patch_venvs(monkeypatch)
         (tmp_path / "config.json").write_text(
             json.dumps({"model_type": "brandnew", "transformers_version": "5.0.0"})
