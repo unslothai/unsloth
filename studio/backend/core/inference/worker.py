@@ -161,14 +161,10 @@ def _resolve_lora_4bit(mc, load_in_4bit: bool) -> bool:
 
 
 def _ensure_ssm_kernels(targets: list, resp_queue: Any) -> bool:
-    """Install the SSM/Mamba kernels (causal_conv1d / mamba_ssm) the given model(s) lazy-
-    import during from_pretrained. No-op for non-SSM models and idempotent.
-
-    Returns True on success; on a fatal failure (a required mamba-ssm kernel) sends a
-    'loaded' failure response and returns False. Call this BEFORE transformers is imported:
-    transformers evaluates its optional-backend gates against the import state, so a kernel
-    installed after the import may not be picked up and the load still fails with
-    "mamba-ssm is required".
+    """Install the SSM kernels the given model(s) lazy-import in from_pretrained; no-op for
+    non-SSM models, idempotent. Returns True on success; on a fatal mamba-ssm failure sends a
+    'loaded' failure response and returns False. Call BEFORE importing transformers, which
+    snapshots its optional-backend gates at import (a later install may not be picked up).
     """
     try:
         from utils.ssm_runtime import ensure_ssm_runtime
@@ -269,12 +265,9 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                 )
                 return
 
-        # SSM/Mamba hybrids (Nemotron-H/Nano, Falcon-H1, Granite-4.0-H, ...) lazy-import
-        # mamba_ssm / causal_conv1d during from_pretrained; install them so chat loads too.
-        # For the initial load this is normally a no-op (run_inference_process already
-        # pre-installed before importing transformers); it still runs here for a LoRA's base
-        # (resolved only now via mc) and for later in-process loads of a different model.
-        # Skip on MLX (Apple Silicon): no MLX use, no macOS wheel.
+        # Install SSM/Mamba kernels. Normally a no-op for the initial load (pre-installed in
+        # run_inference_process before importing transformers); still needed for a LoRA's base
+        # (resolved only now via mc) and later in-process loads. Skip on MLX (no macOS wheel).
         if getattr(backend, "device", None) != "mlx":
             ssm_targets = [config["model_name"]]
             if mc.is_lora and getattr(mc, "base_model", None):
@@ -755,13 +748,10 @@ def run_inference_process(*, cmd_queue: Any, resp_queue: Any, cancel_event, conf
             )
 
     # ── 1c. SSM/Mamba kernels BEFORE importing transformers ──
-    # Hybrid models (Nemotron-H/Nano, Falcon-H1, Granite-4.0-H, ...) lazy-import
-    # mamba_ssm / causal_conv1d during from_pretrained, and transformers evaluates its
-    # optional-backend gates against the import state. Installing after the import below can
-    # leave those gates unsatisfied and the load still fails with "mamba-ssm is required",
-    # so the initial model's kernels are installed here first. A no-op for non-SSM models;
-    # the LoRA base (resolved only after ModelConfig is built) and later in-process loads
-    # are handled in _handle_load.
+    # transformers snapshots its optional-backend gates at import, so a hybrid model's
+    # kernels must be installed before the import below or the load still fails with
+    # "mamba-ssm is required". A no-op for non-SSM models; the LoRA base and later in-process
+    # loads are handled in _handle_load.
     _ensure_backend_on_path()
     from utils.transformers_version import _resolve_base_model
 

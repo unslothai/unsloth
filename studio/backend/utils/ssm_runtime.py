@@ -1,24 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Auto-install the SSM/Mamba runtime kernels a hybrid model needs before it loads.
+"""Auto-install the SSM/Mamba kernels a hybrid model needs before it loads.
 
-Mamba/SSM hybrids (Nemotron-H / Nemotron-3-Nano, Falcon-H1, Granite-4.0-H,
-GraniteMoEHybrid, ...) lazily ``import mamba_ssm`` (and ``causal_conv1d``) inside
-their ``modeling_*.py`` during ``from_pretrained``. When those packages are absent
-the load dies with::
-
-    mamba-ssm is required by the Mamba model but cannot be imported
-
-The training worker already guards against this: ``core/training/worker.py`` calls
-``_ensure_causal_conv1d_fast_path`` + ``_ensure_mamba_ssm`` (wheel-first) before a
-fine-tune. The inference worker had no equivalent, so loading the same model for
-chat failed even though training "auto-installs it". This module is the shared,
-callback-based implementation the inference load path calls so both surfaces behave
-the same.
-
-Detection and pinned versions mirror the training worker; ``tests/test_ssm_runtime.py``
-fails if the two copies drift.
+Mamba/SSM hybrids (Nemotron-H/Nano, Falcon-H1, Granite-4.0-H, GraniteMoEHybrid, ...)
+lazy-``import mamba_ssm`` / ``causal_conv1d`` in their ``modeling_*.py`` during
+``from_pretrained``; absent, the load dies with "mamba-ssm is required ... cannot be
+imported". The training worker installs them wheel-first before a fine-tune; this is the
+shared, callback-based version the inference load path calls so chat behaves the same.
+Detection/versions mirror the training worker (``tests/test_ssm_runtime.py`` guards drift).
 """
 
 from __future__ import annotations
@@ -44,8 +34,7 @@ logger = get_logger(__name__)
 
 StatusCb = Optional[Callable[[str], None]]
 
-# Pinned wheel versions/tags -- kept in lockstep with core/training/worker.py
-# (_CAUSAL_CONV1D_* / _MAMBA_SSM_*) by tests/test_ssm_runtime.py.
+# Pinned wheels, kept in lockstep with core/training/worker.py by tests/test_ssm_runtime.py.
 CAUSAL_CONV1D_PACKAGE_VERSION = "1.6.1"
 CAUSAL_CONV1D_RELEASE_TAG = "v1.6.1.post4"
 CAUSAL_CONV1D_RELEASE_BASE_URL = "https://github.com/Dao-AILab/causal-conv1d/releases/download"
@@ -53,9 +42,8 @@ MAMBA_SSM_PACKAGE_VERSION = "2.3.1"
 MAMBA_SSM_RELEASE_TAG = "v2.3.1"
 MAMBA_SSM_RELEASE_BASE_URL = "https://github.com/state-spaces/mamba/releases/download"
 
-# Substring matches on the lowercased model id. Mirror of the training worker's
-# _SSM_MODEL_SUBSTRINGS (needs mamba-ssm) and _model_wants_causal_conv1d (needs
-# causal-conv1d). mamba-ssm models are a subset of the causal-conv1d set.
+# Lowercased-id substring matches, mirroring the training worker. mamba-ssm models are a
+# subset of the causal-conv1d set.
 SSM_MODEL_SUBSTRINGS = (
     "nemotron_h",
     "nemotron-h",
@@ -103,11 +91,9 @@ def _is_importable(import_name: str) -> bool:
         __import__(import_name)
         return True
     except Exception as exc:
-        # A previously installed native kernel that is ABI-incompatible with the current
-        # torch/CUDA stack (e.g. after a torch upgrade) raises OSError/RuntimeError such as
-        # an undefined symbol, not ImportError. Treat ANY import failure as "not importable"
-        # so the caller reinstalls / source-builds instead of reporting a hard install
-        # failure for a kernel that is merely broken.
+        # An ABI-incompatible kernel (undefined symbol after a torch/CUDA upgrade) raises
+        # OSError/RuntimeError, not ImportError; treat any failure as "not importable" so the
+        # caller reinstalls/source-builds instead of hard-failing on a merely broken kernel.
         logger.debug("%s is not importable (%s: %s)", import_name, type(exc).__name__, exc)
         return False
 
@@ -123,10 +109,8 @@ def _emit(status_cb: StatusCb, message: str) -> None:
 
 
 def _hipcc_gcc_install_dir() -> Optional[str]:
-    """Highest ``/usr/lib/gcc/x86_64-linux-gnu/<N>`` with both the gcc runtime and the
-    C++ headers, for ROCm clang's ``--gcc-install-dir`` (Ubuntu 24.04 ships gcc-14
-    runtime without ``/usr/include/c++/14``). Mirrors core/training/worker.py.
-    """
+    """Highest gcc dir with both runtime and C++ headers, for ROCm clang's
+    ``--gcc-install-dir`` (Ubuntu 24.04 ships gcc-14 runtime without its headers)."""
     if not sys.platform.startswith("linux") or platform.machine().lower() != "x86_64":
         return None
     for ver in (14, 13, 12, 11):
@@ -164,13 +148,8 @@ def _install_kernel(
     status_cb: StatusCb,
     run: Callable[..., Any],
 ) -> bool:
-    """Install one kernel package, wheel-first then PyPI source build. Returns True iff
-    it is importable afterwards. Idempotent: a no-op when already installed.
-
-    Wheel-first uses the same ``utils.wheel_utils`` primitives as the training worker's
-    ``_install_package_wheel_first``. The source-build fallback is HIP-aware (mirrors the
-    training worker's clang ``--gcc-install-dir`` shim and longer timeout for ROCm).
-    """
+    """Install one kernel wheel-first, then a HIP-aware PyPI source build. Returns True iff
+    importable afterwards; idempotent (no-op when already installed)."""
     if _is_importable(import_name):
         logger.info("%s already installed", display_name)
         return True
@@ -193,7 +172,7 @@ def _install_kernel(
         ):
             if getattr(result, "returncode", 1) == 0:
                 # A wheel can install yet fail to import (CUDA/ABI mismatch); verify before
-                # trusting it, else fall through to a source build that matches the local ABI.
+                # trusting it, else source-build to match the local ABI.
                 if _is_importable(import_name):
                     logger.info("Installed prebuilt %s wheel", display_name)
                     return True
@@ -214,8 +193,7 @@ def _install_kernel(
             wheel_url,
         )
 
-    # Source build (slow, minutes). --no-build-isolation/--no-deps mirrors the training
-    # worker. ROCm has no prebuilt wheel and needs hipcc + a clang gcc-install-dir shim.
+    # Source build (slow). ROCm has no prebuilt wheel and needs hipcc + a gcc-install-dir shim.
     spec = f"{pypi_name}=={package_version}"
     is_hip = bool((env or {}).get("hip_version"))
     if is_hip and not shutil.which("hipcc"):
@@ -225,9 +203,8 @@ def _install_kernel(
         status_cb,
         f"Building {display_name} from source for this model (this can take several minutes)...",
     )
-    # We only reach here when not importable, which includes a wheel that installed but
-    # failed to import: reinstall so the source build replaces it instead of no-opping
-    # as "already satisfied". --no-cache avoids reusing stale partial HIP build artifacts.
+    # Reinstall so the source build replaces a broken wheel instead of no-opping as
+    # "already satisfied"; --no-cache avoids stale partial HIP build artifacts.
     if shutil.which("uv"):
         cmd = [
             "uv",
@@ -288,32 +265,25 @@ def ensure_ssm_runtime(
     status_cb: StatusCb = None,
     run: Callable[..., Any] = subprocess.run,
 ) -> None:
-    """Ensure the SSM kernel libraries *model_name* needs are importable before load.
-
-    Installs ``causal_conv1d`` (and ``mamba_ssm`` for true SSM hybrids), wheel-first.
-    A no-op for non-SSM models and idempotent when the kernels are already present.
-    Only a true SSM/mamba model's ``mamba_ssm`` requirement is fatal (raises
-    ``RuntimeError`` so the caller can surface a clear error instead of a cryptic
-    ``import mamba_ssm`` failure mid-load); ``causal_conv1d`` is a best-effort fast
-    path, since models that merely want it (e.g. Qwen3-Next, LFM2) fall back to torch.
+    """Install the SSM kernels *model_name* needs before load, wheel-first; a no-op for
+    non-SSM models and idempotent. Only a true SSM hybrid's ``mamba_ssm`` is fatal (raises
+    ``RuntimeError`` instead of a cryptic mid-load failure); ``causal_conv1d`` is best-effort
+    (Qwen3-Next/LFM2 fall back to torch).
     """
     wants_causal_conv1d = model_wants_causal_conv1d(model_name)
     is_ssm = model_is_ssm(model_name)
     if not (wants_causal_conv1d or is_ssm):
         return
 
-    # causal-conv1d has no prebuilt Windows wheel; mirror the training worker and skip it on
-    # win32 instead of dropping a chat load into a multi-minute (untimed) source build for
-    # what is only an optional fast path -- the model still loads on its torch fallback.
+    # No prebuilt Windows wheel: skip causal-conv1d on win32 (mirrors training) rather than
+    # dropping a chat load into a multi-minute source build for an optional fast path.
     if wants_causal_conv1d and sys.platform == "win32":
         logger.info(
             "Skipping causal-conv1d on Windows (no prebuilt wheel); using the torch fallback"
         )
         wants_causal_conv1d = False
 
-    # causal-conv1d first: SSM modeling files lazy-import it during from_pretrained, and
-    # mamba-ssm's fast path uses it. Best-effort (mirrors training): on a platform/ABI
-    # without a wheel or compiler the model still loads on its torch fallback.
+    # causal-conv1d first (SSM modeling files lazy-import it; mamba-ssm's fast path uses it).
     if wants_causal_conv1d and not _install_kernel(
         import_name = "causal_conv1d",
         display_name = "causal-conv1d",

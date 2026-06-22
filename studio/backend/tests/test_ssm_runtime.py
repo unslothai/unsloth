@@ -230,10 +230,9 @@ def test_is_importable_invalidates_caches(monkeypatch):
     ],
 )
 def test_is_importable_treats_broken_kernel_as_not_importable(monkeypatch, exc):
-    # An ABI-incompatible native kernel raises OSError/RuntimeError, not ImportError; all of
-    # these must read as "not importable" so the caller reinstalls instead of hard-failing.
-    # _is_importable calls bare __import__(), which resolves via the module globals first, so
-    # patching only ssm_runtime.__import__ leaves real `import` statements untouched.
+    # ABI-incompatible kernels raise OSError/RuntimeError, not ImportError; all must read as
+    # not-importable. _is_importable calls bare __import__(), so patching ssm_runtime.__import__
+    # (resolved via module globals) leaves real `import` statements untouched.
     def _raise(name):
         raise exc
 
