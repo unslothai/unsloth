@@ -676,7 +676,9 @@ def install_prebuilt(install_dir: Path, *, channel: str, min_major: int, force: 
 
             staging_root = install_dir.parent / INSTALL_STAGING_ROOT_NAME
             staging_root.mkdir(parents = True, exist_ok = True)
-            staging = Path(tempfile.mkdtemp(prefix = f"{install_dir.name}.staging-", dir = staging_root))
+            staging = Path(
+                tempfile.mkdtemp(prefix = f"{install_dir.name}.staging-", dir = staging_root)
+            )
             try:
                 archive_path = staging / asset
                 log(f"downloading {node_download_url(version, asset)}")
