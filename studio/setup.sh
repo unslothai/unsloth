@@ -1053,6 +1053,10 @@ LLAMA_CPP_DIR="$UNSLOTH_HOME/llama.cpp"
 LLAMA_SERVER_BIN="$LLAMA_CPP_DIR/build/bin/llama-server"
 _NEED_LLAMA_SOURCE_BUILD=false
 _LLAMA_CPP_DEGRADED=false
+# Deferred != degraded: on WSL2 aarch64+NVIDIA install.ps1 builds the CUDA server
+# in the background, so an absent server is success -- must not trip the arm64
+# CPU-prebuilt last-resort or exit 1.
+_LLAMA_CPP_DEFERRED=false
 _LLAMA_FORCE_COMPILE="${UNSLOTH_LLAMA_FORCE_COMPILE:-0}"
 _REQUESTED_LLAMA_TAG="${UNSLOTH_LLAMA_TAG:-${_DEFAULT_LLAMA_TAG}}"
 _HOST_SYSTEM="$(uname -s 2>/dev/null || true)"
@@ -1246,6 +1250,33 @@ if [ "$_NEED_LLAMA_SOURCE_BUILD" = true ] && \
         : > "$LLAMA_CPP_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
     fi
     _NEED_LLAMA_SOURCE_BUILD=false
+fi
+
+# ── WSL2 aarch64 + NVIDIA, no nvcc yet: defer to the background CUDA build ──
+# install.ps1 builds the CUDA llama-server in the background AND signals that by
+# exporting UNSLOTH_WSL_LLAMA_DEFERRED=1 into this install. ONLY defer when that
+# flag is set: a direct in-WSL `unsloth studio update` has no background builder,
+# so deferring there would report "CUDA build running in background" while nothing
+# builds -- hiding a no-server state. Without the flag we fall through to section 9
+# (a slow CPU server, still better than a phantom background build). With nvcc we
+# fall through too; opted out (UNSLOTH_NO_LLAMA_CUDA=1) the CPU build is the only server.
+if [ "$_NEED_LLAMA_SOURCE_BUILD" = true ] \
+        && [ "${UNSLOTH_WSL_LLAMA_DEFERRED:-0}" = "1" ] \
+        && [ "$_LLAMA_FORCE_COMPILE" != "1" ] \
+        && [ -z "$_LLAMA_PR" ] \
+        && [ "${UNSLOTH_NO_LLAMA_CUDA:-0}" != "1" ] \
+        && grep -qi microsoft /proc/version 2>/dev/null \
+        && { [ "$_HOST_MACHINE" = "aarch64" ] || [ "$_HOST_MACHINE" = "arm64" ]; } \
+        && command -v nvidia-smi >/dev/null 2>&1 \
+        && nvidia-smi -L 2>/dev/null | awk '/^GPU[[:space:]]+[0-9]+:/{found=1} END{exit !found}' \
+        && ! command -v nvcc >/dev/null 2>&1 \
+        && ! ls /usr/local/cuda*/bin/nvcc >/dev/null 2>&1; then
+    step "llama.cpp" "GGUF engine: CUDA build running in background (WSL aarch64 + NVIDIA)" "$C_WARN"
+    substep "skipping slow CPU build; the background CUDA llama.cpp will provide the server"
+    substep "(opt out / keep CPU build with UNSLOTH_NO_LLAMA_CUDA=1)"
+    # DEFERRED, not DEGRADED: DEGRADED triggers the CPU-prebuilt last resort + exit 1.
+    _NEED_LLAMA_SOURCE_BUILD=false
+    _LLAMA_CPP_DEFERRED=true
 fi
 
 # ── 8. WSL: pre-install GGUF build dependencies for fallback source builds ──
@@ -1519,6 +1550,24 @@ else
                     if [ "$_CUDA_TOOLKIT_ALLOWED" = true ]; then
                         CMAKE_ARGS="$CMAKE_ARGS -DGGML_CUDA=ON"
 
+                        # glibc >= 2.41 + CUDA < 13.3: rsqrt/rsqrtf header clash fails
+                        # every .cu -> CPU fallback; only fix is CUDA >= 13.3. Diagnostic
+                        # only (never changes flags or aborts), against the final _NVCC_VER
+                        # (after the driver-compat swap above).
+                        _GLIBC_VER="$(getconf GNU_LIBC_VERSION 2>/dev/null | awk '{print $2}')" || _GLIBC_VER=""
+                        if [ -n "$_GLIBC_VER" ]; then
+                            _GLIBC_MAJ="${_GLIBC_VER%%.*}"; _GLIBC_MIN="${_GLIBC_VER#*.}"; _GLIBC_MIN="${_GLIBC_MIN%%.*}"
+                            _CU_MAJ="${_NVCC_VER%%.*}";     _CU_MIN="${_NVCC_VER#*.}";     _CU_MIN="${_CU_MIN%%.*}"
+                            if { [ "${_GLIBC_MAJ:-0}" -gt 2 ] 2>/dev/null \
+                                 || { [ "${_GLIBC_MAJ:-0}" -eq 2 ] 2>/dev/null && [ "${_GLIBC_MIN:-0}" -ge 41 ] 2>/dev/null; }; } \
+                               && { [ "${_CU_MAJ:-0}" -lt 13 ] 2>/dev/null \
+                                    || { [ "${_CU_MAJ:-0}" -eq 13 ] 2>/dev/null && [ "${_CU_MIN:-0}" -lt 3 ] 2>/dev/null; }; }; then
+                                substep "CUDA toolkit ${_NVCC_VER} is incompatible with glibc ${_GLIBC_VER} (rsqrt/rsqrtf header clash)." "$C_ERR"
+                                substep "the GPU build will fail to compile and fall back to CPU -- install CUDA Toolkit >= 13.3:" "$C_WARN"
+                                substep "https://developer.nvidia.com/cuda-downloads  (setup.sh auto-selects the newest /usr/local/cuda-*)" "$C_WARN"
+                            fi
+                        fi
+
                         CUDA_ARCHS=""
                         if command -v nvidia-smi &>/dev/null; then
                             _raw_caps=$(_setup_run_smi nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null || true)
@@ -1638,6 +1687,30 @@ else
             substep "$_BUILD_DESC..."
 
             NCPU=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
+            # Thermal cap for the aarch64 + NVIDIA foreground CUDA build. A full
+            # -j(nproc) nvcc compile draws enough sustained power to trip a
+            # thermal shutdown on the lightly-cooled NVIDIA-ARM boxes this path
+            # targets (DGX Spark / GB10, N1X "RTX Spark" laptops) -- the same
+            # reason provision_llama_cuda.sh caps its background build. Mirror
+            # that cap here (this foreground build only runs when no prebuilt was
+            # available and a CUDA toolkit is already present): ~half the cores,
+            # also bounded by ~1.5 GB/nvcc job. Other platforms keep full
+            # -j(nproc); override on any host with UNSLOTH_LLAMA_BUILD_JOBS=N.
+            if { [ "$_HOST_MACHINE" = "aarch64" ] || [ "$_HOST_MACHINE" = "arm64" ]; } \
+                    && [ "${GPU_BACKEND:-}" = "cuda" ]; then
+                if [ -n "${UNSLOTH_LLAMA_BUILD_JOBS:-}" ] && [ "${UNSLOTH_LLAMA_BUILD_JOBS}" -ge 1 ] 2>/dev/null; then
+                    NCPU="$UNSLOTH_LLAMA_BUILD_JOBS"
+                else
+                    _cap_half=$(( (NCPU + 1) / 2 ))
+                    [ "$NCPU" -le 4 ] && _cap_half="$NCPU"   # tiny boxes: use all cores
+                    _cap_memkb="$(awk '/MemTotal/{print $2}' /proc/meminfo 2>/dev/null || echo 0)"
+                    _cap_memjobs=$(( _cap_memkb / 1572864 ))  # ~1.5 GB per nvcc job
+                    [ "$_cap_memjobs" -lt 1 ] && _cap_memjobs=1
+                    [ "$_cap_memjobs" -lt "$_cap_half" ] && _cap_half="$_cap_memjobs"
+                    NCPU="$_cap_half"
+                fi
+                substep "thermal-capped CUDA build: -j${NCPU} (override with UNSLOTH_LLAMA_BUILD_JOBS=N)"
+            fi
             CMAKE_GENERATOR_ARGS=""
             if command -v ninja &>/dev/null; then
                 CMAKE_GENERATOR_ARGS="-G Ninja"
@@ -1734,6 +1807,70 @@ else
 }
 fi  # end _SKIP_GGUF_BUILD check
 
+# ── aarch64 + NVIDIA (DGX Spark / GB10 / N1X "RTX Spark"): provision a CUDA
+#    llama.cpp when the source build above could not (no CUDA toolkit found) ──
+# No aarch64+CUDA prebuilt exists and a fresh Spark ships only driver + nvidia-smi,
+# so the build above fell back to CPU; mirror the Windows/WSL fix
+# (provision_llama_cuda.sh) for native Linux. Best-effort: provision always exits
+# 0, and on failure the prior CPU/degraded state stands.
+# CUDA detection covers both layouts: monolithic (libggml-cuda in ldd) and split
+# (dlopen-ed libggml-cuda.so* beside the binary, missed by ldd). Its presence is
+# the signal -- CPU-only builds ship no libggml-cuda.so.
+_have_cuda_llama_server() {
+    [ -x "$LLAMA_SERVER_BIN" ] || return 1
+    ldd "$LLAMA_SERVER_BIN" 2>/dev/null | grep -qi 'libggml-cuda' && return 0
+    for _so in "$(dirname "$LLAMA_SERVER_BIN")"/libggml-cuda.so*; do [ -e "$_so" ] && return 0; done
+    return 1
+}
+if [ "$_HOST_SYSTEM" = "Linux" ] \
+        && { [ "$_HOST_MACHINE" = "aarch64" ] || [ "$_HOST_MACHINE" = "arm64" ]; } \
+        && { ! grep -qi microsoft /proc/version 2>/dev/null || [ "${UNSLOTH_WSL_LLAMA_DEFERRED:-0}" != "1" ]; } \
+        && [ "${UNSLOTH_NO_LLAMA_CUDA:-0}" != "1" ] \
+        && [ "${_SKIP_GGUF_BUILD:-}" != true ] \
+        && command -v nvidia-smi >/dev/null 2>&1 \
+        && nvidia-smi -L 2>/dev/null | awk '/^GPU[[:space:]]+[0-9]+:/{found=1} END{exit !found}' \
+        && ! _have_cuda_llama_server; then
+    # Under WSL this runs ONLY for a DIRECT `install.sh` run: install.ps1 sets
+    # UNSLOTH_WSL_LLAMA_DEFERRED=1 and builds in the background; a direct run has
+    # no background builder, so provision here.
+    # Resolve provision_llama_cuda.sh: beside setup.sh, then local-dev repo, else
+    # fetch from GitHub (so `curl | sh` works on an older wheel without it).
+    _PROV_SH=""
+    if [ -f "$SCRIPT_DIR/scripts/provision_llama_cuda.sh" ]; then
+        _PROV_SH="$SCRIPT_DIR/scripts/provision_llama_cuda.sh"
+    elif [ "${STUDIO_LOCAL_INSTALL:-0}" = "1" ] && [ -f "$REPO_ROOT/studio/scripts/provision_llama_cuda.sh" ]; then
+        _PROV_SH="$REPO_ROOT/studio/scripts/provision_llama_cuda.sh"
+    else
+        _PROV_URL="https://raw.githubusercontent.com/unslothai/unsloth/main/studio/scripts/provision_llama_cuda.sh"
+        _PROV_TMP="$UNSLOTH_HOME/provision_llama_cuda.sh"
+        if curl -fsSL "$_PROV_URL" -o "$_PROV_TMP" 2>/dev/null && [ -s "$_PROV_TMP" ]; then
+            _PROV_SH="$_PROV_TMP"
+        fi
+    fi
+    if [ -n "$_PROV_SH" ]; then
+        step "llama.cpp" "aarch64 + NVIDIA: provisioning CUDA toolkit + building CUDA llama.cpp for GGUF inference..." "$C_WARN"
+        substep "(opt out with UNSLOTH_NO_LLAMA_CUDA=1; lower load with UNSLOTH_LLAMA_BUILD_JOBS=N)"
+        # UNSLOTH_LLAMA_CPP_PATH routes a custom STUDIO_HOME into $LLAMA_CPP_DIR.
+        UNSLOTH_LLAMA_CPP_PATH="$LLAMA_CPP_DIR" bash "$_PROV_SH" || true
+        if _have_cuda_llama_server; then
+            step "llama.cpp" "CUDA llama-server ready (aarch64 + NVIDIA)"
+            _LLAMA_CPP_DEGRADED=false
+            # Claim ownership of the fresh $LLAMA_CPP_DIR, else the next custom-STUDIO_HOME
+            # run's _assert_studio_owned_or_absent aborts on it.
+            if [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
+                : > "$LLAMA_CPP_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
+            fi
+        elif [ -f "$LLAMA_SERVER_BIN" ]; then
+            substep "CUDA build unavailable; keeping existing (CPU) llama-server" "$C_WARN"
+        else
+            substep "CUDA build unavailable and no llama-server present; see $LLAMA_CPP_DIR build output" "$C_WARN"
+            # No server at all: mark degraded so the arm64 CPU-prebuilt last resort
+            # and the failure exit fire instead of reporting a working install.
+            _LLAMA_CPP_DEGRADED=true
+        fi
+    fi
+fi
+
 # ── arm64 Linux GPU: CPU prebuilt as a last resort ──
 # arm64 Linux with a GPU has no CUDA prebuilt anywhere (the unslothai fork is
 # x64 only; ggml-org ships no Linux CUDA build), so it source-builds for the
@@ -1763,7 +1900,9 @@ fi
 if [ "$_LLAMA_ONLY" = "1" ]; then
     echo ""
     printf "  ${C_DIM}%s${C_RST}\n" "$RULE"
-    if [ "$_LLAMA_CPP_DEGRADED" = true ]; then
+    if [ "$_LLAMA_CPP_DEFERRED" = true ]; then
+        printf "  ${C_TITLE}%s${C_RST}\n" "llama.cpp update finished (GGUF engine: CUDA build running in background)"
+    elif [ "$_LLAMA_CPP_DEGRADED" = true ]; then
         printf "  ${C_WARN}%s${C_RST}\n" "llama.cpp update finished (limited: llama.cpp unavailable)"
     else
         printf "  ${C_TITLE}%s${C_RST}\n" "llama.cpp update finished"
@@ -1772,7 +1911,9 @@ if [ "$_LLAMA_ONLY" = "1" ]; then
 elif [ "$IS_COLAB" = true ]; then
     echo ""
     printf "  ${C_DIM}%s${C_RST}\n" "$RULE"
-    if [ "$_LLAMA_CPP_DEGRADED" = true ]; then
+    if [ "$_LLAMA_CPP_DEFERRED" = true ]; then
+        printf "  ${C_TITLE}%s${C_RST}\n" "Unsloth Studio Setup Complete (GGUF engine: CUDA build running in background)"
+    elif [ "$_LLAMA_CPP_DEGRADED" = true ]; then
         printf "  ${C_WARN}%s${C_RST}\n" "Unsloth Studio Setup Complete (limited: llama.cpp unavailable)"
     else
         printf "  ${C_TITLE}%s${C_RST}\n" "Unsloth Studio Setup Complete"
@@ -1782,7 +1923,9 @@ elif [ "$IS_COLAB" = true ]; then
     substep "start()"
 else
     printf "  ${C_DIM}%s${C_RST}\n" "$RULE"
-    if [ "$_LLAMA_CPP_DEGRADED" = true ]; then
+    if [ "$_LLAMA_CPP_DEFERRED" = true ]; then
+        printf "  ${C_TITLE}%s${C_RST}\n" "Unsloth Studio Installed (GGUF engine: CUDA build running in background)"
+    elif [ "$_LLAMA_CPP_DEGRADED" = true ]; then
         printf "  ${C_WARN}%s${C_RST}\n" "Unsloth Studio Installed (limited: llama.cpp unavailable)"
     else
         printf "  ${C_TITLE}%s${C_RST}\n" "Unsloth Studio Installed"
