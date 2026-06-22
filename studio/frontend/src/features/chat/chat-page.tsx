@@ -19,6 +19,10 @@ import { useSidebar } from "@/components/ui/sidebar";
 import { Tooltip, TooltipContent } from "@/components/ui/tooltip";
 import { useLatestRef } from "@/features/hub/hooks/use-latest-ref";
 import {
+  DOWNLOAD_KIND,
+  downloadManager,
+} from "@/features/hub/download-manager";
+import {
   type NativeIntent,
   NativeModelChip,
   NativeModelDropOverlay,
@@ -1093,6 +1097,11 @@ export function ChatPage({
   const abandonStaged = useCallback(() => {
     useChatRuntimeStore.getState().abandonStagedModel();
   }, []);
+  // Detach a staged pick on navigation without cancelling its download: the
+  // transfer keeps running in the manager and lands in cache, like Hub.
+  const detachStaged = useCallback(() => {
+    useChatRuntimeStore.getState().abandonStagedModel({ keepDownload: true });
+  }, []);
   // Tracks whether the chat page is still mounted, so a staged-load failure that
   // resolves after the user left chat doesn't resurrect the abandoned pick.
   const mountedRef = useRef(true);
@@ -1620,8 +1629,8 @@ export function ChatPage({
     const prev = prevChatContextRef.current;
     prevChatContextRef.current = chatContextKey;
     if (prev === null || prev === chatContextKey) return;
-    abandonStaged();
-  }, [chatContextKey, abandonStaged]);
+    detachStaged();
+  }, [chatContextKey, detachStaged]);
 
   const hasActiveModel = Boolean(inferenceParams.checkpoint);
   // Load immediately, or — when "Load on selection" is off — stage the pick so
@@ -1639,25 +1648,37 @@ export function ChatPage({
         (!hasGgufSource(selection) && !wantManagerDownload) ||
         (store.loadOnSelection && selection.isDownloaded)
       ) {
-        // Abandon any staged pick first so its edited knobs (e.g. a custom
-        // context length) don't leak into this immediate load -- resolveLoad
-        // reads customContextLength before checking the target is GGUF.
-        abandonStaged();
+        // Detach any staged pick first so its edited knobs don't leak into this
+        // immediate load. Detach (not abandon) keeps its download running.
+        detachStaged();
         await selectModel(selection);
         return;
       }
-      // Refuse staging while a load is in flight (it would be silently dropped);
-      // the immediate-load branch above is already guarded in selectModel.
+      // Loads can't queue behind each other, but a download is independent: if
+      // the pick needs downloading, start it in the manager so it runs alongside
+      // the load. Nothing to download (already on device) just waits.
       if (store.modelLoading) {
-        toast.info("Another model is already loading", {
-          description: "Wait for it to finish or cancel it first.",
-        });
+        if (wantManagerDownload) {
+          void downloadManager.requestStart({
+            kind: DOWNLOAD_KIND.MODEL,
+            repoId: selection.id,
+            variant: selection.ggufVariant ?? null,
+            expectedBytes: selection.expectedBytes ?? 0,
+          });
+          toast.info("Downloading in the background", {
+            description:
+              "It'll be ready to load once the current model finishes.",
+          });
+        } else {
+          toast.info("Another model is already loading", {
+            description: "Wait for it to finish or cancel it first.",
+          });
+        }
         return;
       }
-      // Tear down any existing staged pick first so its in-flight download is
-      // cancelled, not left running after we rebind to the new pick. With the
-      // toggle on, autoLoad downloads silently then loads; off stages for the sheet.
-      abandonStaged();
+      // Detach the prior staged pick (keeping its download) before rebinding, so
+      // a second pick downloads alongside the first instead of cancelling it.
+      detachStaged();
       store.stageModel({
         id: selection.id,
         isLora: selection.isLora,
@@ -1670,7 +1691,7 @@ export function ChatPage({
         autoLoad: store.loadOnSelection,
       });
     },
-    [abandonStaged, selectModel],
+    [detachStaged, selectModel],
   );
   const loadNativeModelIntent = useCallback(
     async (intent: NativeIntent, loadingDescription: string) => {
