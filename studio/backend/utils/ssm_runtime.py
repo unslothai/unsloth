@@ -24,9 +24,12 @@ fails if the two copies drift.
 from __future__ import annotations
 
 import importlib
+import os
+import platform
 import shutil
 import subprocess
 import sys
+import threading
 from typing import Any, Callable, Optional
 
 from loggers import get_logger
@@ -113,6 +116,37 @@ def _emit(status_cb: StatusCb, message: str) -> None:
         logger.debug("ssm_runtime status callback raised", exc_info = True)
 
 
+def _hipcc_gcc_install_dir() -> Optional[str]:
+    """Highest ``/usr/lib/gcc/x86_64-linux-gnu/<N>`` with both the gcc runtime and the
+    C++ headers, for ROCm clang's ``--gcc-install-dir`` (Ubuntu 24.04 ships gcc-14
+    runtime without ``/usr/include/c++/14``). Mirrors core/training/worker.py.
+    """
+    if not sys.platform.startswith("linux") or platform.machine().lower() != "x86_64":
+        return None
+    for ver in (14, 13, 12, 11):
+        if os.path.isdir(f"/usr/lib/gcc/x86_64-linux-gnu/{ver}/include") and os.path.isdir(
+            f"/usr/include/c++/{ver}"
+        ):
+            return f"/usr/lib/gcc/x86_64-linux-gnu/{ver}"
+    return None
+
+
+def _run_with_heartbeat(run, cmd, status_cb, display_name, **kwargs):
+    """Run *cmd* via *run*, emitting a status every 60s so the parent's inactivity
+    timeout isn't tripped by a long (e.g. ROCm) source build."""
+    done = threading.Event()
+
+    def _beat():
+        while not done.wait(60):
+            _emit(status_cb, f"Still building {display_name} (this can take several minutes)...")
+
+    threading.Thread(target = _beat, daemon = True).start()
+    try:
+        return run(cmd, **kwargs)
+    finally:
+        done.set()
+
+
 def _install_kernel(
     *,
     import_name: str,
@@ -124,14 +158,12 @@ def _install_kernel(
     status_cb: StatusCb,
     run: Callable[..., Any],
 ) -> bool:
-    """Install one kernel package, wheel-first then PyPI source build. Returns True
-    iff it is importable afterwards. Idempotent: a no-op when already installed.
+    """Install one kernel package, wheel-first then PyPI source build. Returns True iff
+    it is importable afterwards. Idempotent: a no-op when already installed.
 
-    The wheel-first path uses the same ``utils.wheel_utils`` primitives the training
-    worker's ``_install_package_wheel_first`` uses, so a CUDA/ROCm user gets the
-    identical prebuilt wheel. The source-build fallback is the standard
-    ``--no-build-isolation --no-deps`` install (no ROCm gcc shimming -- that lives in
-    the training worker for the fine-tune path).
+    Wheel-first uses the same ``utils.wheel_utils`` primitives as the training worker's
+    ``_install_package_wheel_first``. The source-build fallback is HIP-aware (mirrors the
+    training worker's clang ``--gcc-install-dir`` shim and longer timeout for ROCm).
     """
     if _is_importable(import_name):
         logger.info("%s already installed", display_name)
@@ -154,10 +186,15 @@ def _install_kernel(
             run = run,
         ):
             if getattr(result, "returncode", 1) == 0:
-                # Make the just-written wheel importable in this process.
-                importlib.invalidate_caches()
-                logger.info("Installed prebuilt %s wheel", display_name)
-                return True
+                # A wheel can install yet fail to import (CUDA/ABI mismatch); verify before
+                # trusting it, else fall through to a source build that matches the local ABI.
+                if _is_importable(import_name):
+                    logger.info("Installed prebuilt %s wheel", display_name)
+                    return True
+                logger.warning(
+                    "%s wheel installed but not importable; building from source", display_name
+                )
+                break
             logger.warning(
                 "%s could not install %s wheel:\n%s",
                 installer,
@@ -171,36 +208,38 @@ def _install_kernel(
             wheel_url,
         )
 
-    # Source build (slow, minutes). --no-build-isolation/--no-deps mirrors the
-    # training worker's non-HIP fallback.
+    # Source build (slow, minutes). --no-build-isolation/--no-deps mirrors the training
+    # worker. ROCm has no prebuilt wheel and needs hipcc + a clang gcc-install-dir shim.
     spec = f"{pypi_name}=={package_version}"
+    is_hip = bool((env or {}).get("hip_version"))
+    if is_hip and not shutil.which("hipcc"):
+        _emit(status_cb, f"{display_name}: hipcc not found; install the ROCm HIP SDK to build it.")
+        return False
     _emit(
         status_cb,
         f"Building {display_name} from source for this model (this can take several minutes)...",
     )
     if shutil.which("uv"):
-        cmd = [
-            "uv",
-            "pip",
-            "install",
-            "--python",
-            sys.executable,
-            "--no-build-isolation",
-            "--no-deps",
-            spec,
-        ]
+        cmd = ["uv", "pip", "install", "--python", sys.executable, "--no-build-isolation", "--no-deps", spec]
     else:
-        cmd = [
-            sys.executable,
-            "-m",
-            "pip",
-            "install",
-            "--no-build-isolation",
-            "--no-deps",
-            "--no-cache-dir",
-            spec,
-        ]
-    result = run(cmd, stdout = subprocess.PIPE, stderr = subprocess.STDOUT, text = True)
+        cmd = [sys.executable, "-m", "pip", "install", "--no-build-isolation", "--no-deps", "--no-cache-dir", spec]
+
+    run_kwargs: dict[str, Any] = {"stdout": subprocess.PIPE, "stderr": subprocess.STDOUT, "text": True}
+    if is_hip:
+        run_kwargs["timeout"] = 1800  # ROCm builds can take 10-30 min
+        existing = os.environ.get("HIPCC_COMPILE_FLAGS_APPEND", "")
+        if "--gcc-install-dir" not in existing:
+            gcc_dir = _hipcc_gcc_install_dir()
+            if gcc_dir:
+                _env = os.environ.copy()
+                _env["HIPCC_COMPILE_FLAGS_APPEND"] = f"{existing} --gcc-install-dir={gcc_dir}".strip()
+                run_kwargs["env"] = _env
+    try:
+        result = _run_with_heartbeat(run, cmd, status_cb, display_name, **run_kwargs)
+    except subprocess.TimeoutExpired:
+        logger.error("%s source build timed out", display_name)
+        _emit(status_cb, f"{display_name} source build timed out.")
+        return False
     if getattr(result, "returncode", 1) != 0:
         logger.warning("%s source install failed:\n%s", display_name, getattr(result, "stdout", ""))
     return _is_importable(import_name)

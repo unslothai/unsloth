@@ -138,7 +138,9 @@ def test_install_kernel_idempotent_when_present(monkeypatch):
 
 
 def test_install_kernel_uses_prebuilt_wheel(monkeypatch):
-    monkeypatch.setattr(ssm_runtime, "_is_importable", lambda name: False)
+    # not importable before install, importable after the wheel lands
+    states = iter([False, True])
+    monkeypatch.setattr(ssm_runtime, "_is_importable", lambda name: next(states))
     monkeypatch.setattr(ssm_runtime, "probe_torch_wheel_env", lambda timeout = 30: {"x": "y"})
     seen = {}
     monkeypatch.setattr(
@@ -202,18 +204,18 @@ def test_is_importable_invalidates_caches(monkeypatch):
     assert calls  # caches invalidated before attempting the import
 
 
-def test_wheel_install_invalidates_caches(monkeypatch):
-    monkeypatch.setattr(ssm_runtime, "_is_importable", lambda name: False)
+def test_wheel_installed_but_not_importable_falls_back_to_source(monkeypatch):
+    # top: not importable; after wheel: still not importable (ABI mismatch) -> source build;
+    # after source build: importable.
+    states = iter([False, False, True])
+    monkeypatch.setattr(ssm_runtime, "_is_importable", lambda name: next(states))
     monkeypatch.setattr(ssm_runtime, "probe_torch_wheel_env", lambda timeout = 30: {})
     monkeypatch.setattr(ssm_runtime, "direct_wheel_url", lambda **k: "https://x/w.whl")
     monkeypatch.setattr(ssm_runtime, "url_exists", lambda u: True)
     monkeypatch.setattr(
-        ssm_runtime,
-        "install_wheel",
-        lambda url, **k: [("uv", _Result(returncode = 0))],
+        ssm_runtime, "install_wheel", lambda url, **k: [("uv", _Result(returncode = 0))]
     )
-    calls = []
-    monkeypatch.setattr(ssm_runtime.importlib, "invalidate_caches", lambda: calls.append(1))
+    pip_cmds = []
     ok = ssm_runtime._install_kernel(
         import_name = "mamba_ssm",
         display_name = "mamba-ssm",
@@ -222,10 +224,31 @@ def test_wheel_install_invalidates_caches(monkeypatch):
         release_tag = "v2.3.1",
         release_base_url = "x",
         status_cb = None,
-        run = lambda *a, **k: _Result(),
+        run = lambda cmd, **k: pip_cmds.append(cmd) or _Result(returncode = 0),
     )
     assert ok is True
-    assert calls  # invalidated caches so the freshly written wheel imports
+    assert pip_cmds, "a non-importable wheel must fall back to a source build"
+
+
+def test_hip_source_build_requires_hipcc(monkeypatch):
+    # ROCm env (hip_version set) with no wheel and no hipcc must fail clearly, not build.
+    monkeypatch.setattr(ssm_runtime, "_is_importable", lambda name: False)
+    monkeypatch.setattr(ssm_runtime, "probe_torch_wheel_env", lambda timeout = 30: {"hip_version": "6.2"})
+    monkeypatch.setattr(ssm_runtime, "direct_wheel_url", lambda **k: None)
+    monkeypatch.setattr(ssm_runtime.shutil, "which", lambda name: None)  # no uv, no hipcc
+    ran = []
+    ok = ssm_runtime._install_kernel(
+        import_name = "causal_conv1d",
+        display_name = "causal-conv1d",
+        pypi_name = "causal-conv1d",
+        package_version = "1.6.1",
+        release_tag = "v1.6.1.post4",
+        release_base_url = "x",
+        status_cb = None,
+        run = lambda cmd, **k: ran.append(cmd) or _Result(returncode = 0),
+    )
+    assert ok is False
+    assert ran == []  # bailed before invoking pip
 
 
 # ── inference worker wiring ───────────────────────────────────────────────────
