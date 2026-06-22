@@ -233,7 +233,6 @@ def _run_security_gates(
     # and base are scanned as one unit, pinned by a single fingerprint.
     if trust_remote_code:
         from utils.security import evaluate_remote_code_consent_for_targets
-
         _rc = evaluate_remote_code_consent_for_targets(
             targets,
             hf_token = hf_token,

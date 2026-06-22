@@ -382,7 +382,6 @@ def test_inference_worker_skips_ssm_on_mlx_and_checks_lora_base():
 
 def _call_linenos(tree, func_name, call_name):
     import ast
-
     for node in ast.walk(tree):
         if isinstance(node, ast.FunctionDef) and node.name == func_name:
             return [
@@ -399,7 +398,6 @@ def test_security_gates_run_before_ssm_install():
     # The SSM install is name-based and can source-build native packages, so a malware /
     # blocked-code model must be refused first -- in both the pre-import path and _handle_load.
     import ast
-
     tree = ast.parse((_BACKEND / "core" / "inference" / "worker.py").read_text())
     for fn in ("run_inference_process", "_handle_load"):
         gates = _call_linenos(tree, fn, "_run_security_gates")
