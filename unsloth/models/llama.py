@@ -2460,7 +2460,7 @@ class FastLlamaModel:
             # Add to kwargs
             kwargs["rope_scaling"] = rope_scaling
 
-        from .loader_utils import check_and_disable_bitsandbytes_loading
+        from .loader_utils import check_and_disable_bitsandbytes_loading, sync_unsloth_model_name_bnb_flags
         from unsloth_zoo.utils import get_quant_type
 
         # Extract load_in_8bit from kwargs if provided
@@ -2470,6 +2470,9 @@ class FastLlamaModel:
         load_in_4bit, load_in_8bit, _ckpt_quant_method = check_and_disable_bitsandbytes_loading(
             model_config, load_in_4bit = load_in_4bit, load_in_8bit = load_in_8bit
         )
+        # Correct UNSLOTH_MODEL_NAME's bnb tokens now that the effective bnb state is known
+        # (the per-load env was built before remap/disable). gpt-oss only; no-op otherwise.
+        sync_unsloth_model_name_bnb_flags(load_in_4bit, load_in_8bit)
 
         bnb_config = None
         _ckpt_qcfg = getattr(model_config, "quantization_config", None)

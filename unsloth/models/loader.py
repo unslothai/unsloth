@@ -1252,26 +1252,14 @@ class FastModel(FastBaseModel):
         # here would, for the public default load_in_4bit=True, route e.g. a native MXFP4
         # gpt-oss (stock router.weight) onto the BnB router patch (router.linear.weight)
         # and break the load. Mirror that normalization from the model's own config.
+        # This is only an EARLY best-effort: for an adapter-only PEFT repo model_config is
+        # still None here, and the base may yet be remapped (get_model_name) to a different
+        # quant (e.g. an Unsloth `-bnb-4bit` build). The authoritative correction happens in
+        # the load path via sync_unsloth_model_name_bnb_flags(...) right after
+        # check_and_disable_bitsandbytes_loading, once the effective bnb state is known.
         try:
             from unsloth_zoo.utils import get_quant_type
-
-            # For an adapter-only PEFT repo, model_config is still None here (the base
-            # config is loaded later), so resolve the base checkpoint's config to detect
-            # a non-bnb-quantized base (e.g. a LoRA over gpt-oss MXFP4).
-            _quant_config = model_config
-            if _quant_config is None and peft_config is not None:
-                _base = getattr(peft_config, "base_model_name_or_path", None)
-                if _base:
-                    # No `revision` here: that is the adapter repo's revision, not the
-                    # base's. Honor `local_files_only` so offline loads still detect the
-                    # base quant method from cache.
-                    _quant_config = AutoConfig.from_pretrained(
-                        _base,
-                        token = token,
-                        trust_remote_code = trust_remote_code,
-                        local_files_only = local_files_only,
-                    )
-            _bnb_compatible_quant = get_quant_type(_quant_config) in (None, "bitsandbytes")
+            _bnb_compatible_quant = get_quant_type(model_config) in (None, "bitsandbytes")
         except Exception:
             _bnb_compatible_quant = True
         string = model_types_all

@@ -395,6 +395,32 @@ def check_and_disable_bitsandbytes_loading(
     return load_in_4bit, load_in_8bit, quant_method
 
 
+def sync_unsloth_model_name_bnb_flags(load_in_4bit, load_in_8bit):
+    """Make UNSLOTH_MODEL_NAME's `_load_in_4bit_` / `_load_in_8bit_` tokens match the
+    EFFECTIVE bitsandbytes load state, i.e. after `get_model_name` remapping and
+    `check_and_disable_bitsandbytes_loading` have run.
+
+    The per-load env built in `FastModel.from_pretrained` only sees the pre-remap config
+    (and for an adapter-only PEFT repo, `model_config` is still None there), so its bnb
+    tokens can be wrong once the base is resolved: a native MXFP4/GPTQ/AWQ base must NOT
+    carry `_load_in_4bit_`, while a base remapped to an Unsloth `-bnb-4bit` build must.
+    Only the gpt-oss patch reads these tokens (to choose BnB vs stock router/expert
+    classes), so this is gated to gpt-oss and is a strict no-op for every other model.
+    """
+    name = os.environ.get("UNSLOTH_MODEL_NAME", "")
+    if "gpt_oss" not in name.replace("-", "_"):
+        return
+    for flag, present in (
+        ("_load_in_4bit_", bool(load_in_4bit)),
+        ("_load_in_8bit_", bool(load_in_8bit)),
+    ):
+        if present and flag not in name:
+            name += flag
+        elif not present and flag in name:
+            name = name.replace(flag, "")
+    os.environ["UNSLOTH_MODEL_NAME"] = name
+
+
 def _get_fp8_mode_and_check_settings(
     load_in_fp8: Union[bool, str],
     fast_inference: bool,
