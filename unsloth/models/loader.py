@@ -835,21 +835,30 @@ class FastLanguageModel(FastLlamaModel):
         if load_in_4bit:
             # Fix up bitsandbytes config, but respect user-provided quantization_config
             if quantization_config is None:
-                compute_dtype = dtype_from_config(model.config)
-                quantization_config = {
-                    # Sometimes compute_dtype is not a string!!
-                    "bnb_4bit_compute_dtype": compute_dtype,
-                    "bnb_4bit_quant_type": "nf4",
-                    "bnb_4bit_use_double_quant": True,
-                    "llm_int8_enable_fp32_cpu_offload": False,
-                    "llm_int8_has_fp16_weight": False,
-                    "llm_int8_skip_modules": None,
-                    "llm_int8_threshold": 6.0,
-                    "load_in_4bit": True,
-                    "load_in_8bit": False,
-                    "quant_method": "bitsandbytes",
-                }
-                model.config.update({"quantization_config": quantization_config})
+                # `load_in_4bit` is the requested flag, not the effective one: a non-bnb
+                # checkpoint (MXFP4/gptq/awq) had bnb disabled by check_and_disable, so stamping a
+                # synthetic bnb config would corrupt its real one. Only stamp bnb/unquantized.
+                try:
+                    from unsloth_zoo.utils import get_quant_type
+                    _stamp_bnb = get_quant_type(model.config) in (None, "bitsandbytes")
+                except Exception:
+                    _stamp_bnb = True
+                if _stamp_bnb:
+                    compute_dtype = dtype_from_config(model.config)
+                    quantization_config = {
+                        # Sometimes compute_dtype is not a string!!
+                        "bnb_4bit_compute_dtype": compute_dtype,
+                        "bnb_4bit_quant_type": "nf4",
+                        "bnb_4bit_use_double_quant": True,
+                        "llm_int8_enable_fp32_cpu_offload": False,
+                        "llm_int8_has_fp16_weight": False,
+                        "llm_int8_skip_modules": None,
+                        "llm_int8_threshold": 6.0,
+                        "load_in_4bit": True,
+                        "load_in_8bit": False,
+                        "quant_method": "bitsandbytes",
+                    }
+                    model.config.update({"quantization_config": quantization_config})
             else:
                 if hasattr(quantization_config, "to_dict"):
                     model.config.update({"quantization_config": quantization_config.to_dict()})
@@ -1243,10 +1252,27 @@ class FastModel(FastBaseModel):
 
         # Save model types and loading method
         lowered_model_name = model_name.lower()
-        string = os.environ.get("UNSLOTH_MODEL_NAME", "") + model_types_all
-        if load_in_4bit:
+        # Build UNSLOTH_MODEL_NAME fresh from THIS load's model types + flags; do not prepend the
+        # inherited os.environ value (a stale "_load_in_4bit_" from an earlier load, e.g. across a
+        # save->reload subprocess, would push gpt-oss onto the BnB router patch when later loading
+        # a 16bit checkpoint -> "weights not initialized"). Only the type tokens and the load flags
+        # below are consumed downstream; the raw model name/path is excluded so a path containing a
+        # flag sentinel cannot be misread.
+        #
+        # Encode the EFFECTIVE bnb state: a non-bnb checkpoint (MXFP4/gptq/awq) has load_in_4bit
+        # disabled later by check_and_disable, so recording the requested flag here would route a
+        # native MXFP4 gpt-oss onto the BnB router patch. This is only an EARLY best-effort (an
+        # adapter-only PEFT repo has model_config=None here, and the base may be remapped); the
+        # authoritative correction is sync_unsloth_model_name_bnb_flags(...) after check_and_disable.
+        try:
+            from unsloth_zoo.utils import get_quant_type
+            _bnb_compatible_quant = get_quant_type(model_config) in (None, "bitsandbytes")
+        except Exception:
+            _bnb_compatible_quant = True
+        string = model_types_all
+        if load_in_4bit and _bnb_compatible_quant:
             string += "_load_in_4bit_"
-        if load_in_8bit:
+        if load_in_8bit and _bnb_compatible_quant:
             string += "_load_in_8bit_"
         if load_in_16bit:
             string += "_load_in_16bit_"
@@ -1677,21 +1703,30 @@ class FastModel(FastBaseModel):
         if load_in_4bit:
             # Fix up bitsandbytes config, but respect user-provided quantization_config
             if quantization_config is None:
-                compute_dtype = dtype_from_config(model.config)
-                quantization_config = {
-                    # Sometimes compute_dtype is not a string!!
-                    "bnb_4bit_compute_dtype": compute_dtype,
-                    "bnb_4bit_quant_type": "nf4",
-                    "bnb_4bit_use_double_quant": True,
-                    "llm_int8_enable_fp32_cpu_offload": False,
-                    "llm_int8_has_fp16_weight": False,
-                    "llm_int8_skip_modules": None,
-                    "llm_int8_threshold": 6.0,
-                    "load_in_4bit": True,
-                    "load_in_8bit": False,
-                    "quant_method": "bitsandbytes",
-                }
-                model.config.update({"quantization_config": quantization_config})
+                # `load_in_4bit` is the requested flag, not the effective one: a non-bnb
+                # checkpoint (MXFP4/gptq/awq) had bnb disabled by check_and_disable, so stamping a
+                # synthetic bnb config would corrupt its real one. Only stamp bnb/unquantized.
+                try:
+                    from unsloth_zoo.utils import get_quant_type
+                    _stamp_bnb = get_quant_type(model.config) in (None, "bitsandbytes")
+                except Exception:
+                    _stamp_bnb = True
+                if _stamp_bnb:
+                    compute_dtype = dtype_from_config(model.config)
+                    quantization_config = {
+                        # Sometimes compute_dtype is not a string!!
+                        "bnb_4bit_compute_dtype": compute_dtype,
+                        "bnb_4bit_quant_type": "nf4",
+                        "bnb_4bit_use_double_quant": True,
+                        "llm_int8_enable_fp32_cpu_offload": False,
+                        "llm_int8_has_fp16_weight": False,
+                        "llm_int8_skip_modules": None,
+                        "llm_int8_threshold": 6.0,
+                        "load_in_4bit": True,
+                        "load_in_8bit": False,
+                        "quant_method": "bitsandbytes",
+                    }
+                    model.config.update({"quantization_config": quantization_config})
             else:
                 if hasattr(quantization_config, "to_dict"):
                     model.config.update({"quantization_config": quantization_config.to_dict()})

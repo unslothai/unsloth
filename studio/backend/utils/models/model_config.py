@@ -2354,6 +2354,12 @@ def load_model_defaults(model_name: str) -> Dict[str, Any]:
     MODEL_NAME_MAPPING aliases, else falls back to default.yaml. Returns the
     parameter dict, or {} if none found.
     """
+    # No model selected yet (or a non-string id): nothing to load. Guard before
+    # the .lower() calls below so this doesn't raise and get logged as
+    # "Error loading model defaults for None: 'NoneType' object has no attribute
+    # 'lower'".
+    if not isinstance(model_name, str) or not model_name:
+        return {}
     try:
         script_dir = Path(__file__).parent.parent.parent
         defaults_dir = script_dir / "assets" / "configs" / "model_defaults"

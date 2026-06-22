@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 # Static analysis: installer scripts and README must not hard-code 0.0.0.0
 # in any user-visible default launch command. The dynamic-port launcher
 # templates and post-install hints should rely on the new loopback default.

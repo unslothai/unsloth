@@ -482,6 +482,9 @@ type ChatRuntimeStore = {
   autoTitle: boolean;
   hfToken: string;
   modelsError: string | null;
+  // Set only when a LOAD fails (not refresh/list/unload, which use modelsError);
+  // lets the attach gates flag a failed load vs "no model picked".
+  lastModelLoadError: string | null;
   activeGgufVariant: string | null;
   ggufContextLength: number | null;
   ggufMaxContextLength: number | null;
@@ -660,6 +663,7 @@ type ChatRuntimeStore = {
   setAutoTitle: (enabled: boolean) => void;
   setHfToken: (token: string) => void;
   setModelsError: (error: string | null) => void;
+  setLastModelLoadError: (error: string | null) => void;
   setCheckpoint: (modelId: string, ggufVariant?: string | null) => void;
   setActiveThreadId: (threadId: string | null) => void;
   setActiveProjectId: (projectId: string | null) => void;
@@ -964,6 +968,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   autoTitle: false,
   hfToken: loadString(HF_TOKEN_KEY, ""),
   modelsError: null,
+  lastModelLoadError: null,
   activeGgufVariant: null,
   ggufContextLength: null,
   ggufMaxContextLength: null,
@@ -1159,6 +1164,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     notifyHfTokenChanged(hfToken);
   },
   setModelsError: (modelsError) => set({ modelsError }),
+  setLastModelLoadError: (lastModelLoadError) => set({ lastModelLoadError }),
   setCheckpoint: (modelId, ggufVariant) =>
     set((state) => {
       // Persist external selections so they survive a refresh. Local ids are
