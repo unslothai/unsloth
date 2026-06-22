@@ -297,11 +297,16 @@ def _loopback_candidate_bases(base: str) -> list:
 
     port = parsed.port or (443 if parsed.scheme == "https" else 80)
     try:
-        ips = {ai[4][0] for ai in socket.getaddrinfo(parsed.hostname, port, type = socket.SOCK_STREAM)}
+        ips = {
+            ai[4][0] for ai in socket.getaddrinfo(parsed.hostname, port, type = socket.SOCK_STREAM)
+        }
     except Exception:
         return [base]
     ordered = sorted(ips, key = lambda ip: (ip != "127.0.0.1", ip))
-    bases = [f"{parsed.scheme}://" + (f"[{ip}]:{port}" if ":" in ip else f"{ip}:{port}") for ip in ordered]
+    bases = [
+        f"{parsed.scheme}://" + (f"[{ip}]:{port}" if ":" in ip else f"{ip}:{port}")
+        for ip in ordered
+    ]
     return bases or [base]
 
 
