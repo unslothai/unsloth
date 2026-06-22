@@ -1472,10 +1472,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   },
   setPendingSelection: (pendingSelection) => set({ pendingSelection }),
   stageModel: (selection) => {
-    // A model load (or a cancel's background unload) is in flight. Staging now
-    // would queue this pick behind the active load, and the post-load cleanup
-    // would then silently drop it -- so refuse. Callers that can surface UI
-    // feedback (chat-page's stageOrLoad) show a toast first.
+    // Refuse staging mid-load: post-load cleanup would silently drop the queued
+    // pick. stageOrLoad toasts first for callers that can.
     if (get().modelLoading) return;
     set((s) => {
       if (

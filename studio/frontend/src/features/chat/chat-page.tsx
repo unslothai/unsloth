@@ -1607,11 +1607,8 @@ export function ChatPage({
         await selectModel(selection);
         return;
       }
-      // A load (or a cancel's background unload) is in flight. Staging a new
-      // pick now would queue it behind the active load, and the post-load
-      // cleanup would then silently drop it, so refuse and ask the user to
-      // wait. (The immediate-load branch above is already guarded inside
-      // selectModel; store.stageModel below also no-ops while loading.)
+      // Refuse staging while a load is in flight (it would be silently dropped);
+      // the immediate-load branch above is already guarded in selectModel.
       if (store.modelLoading) {
         toast.info("Another model is already loading", {
           description: "Wait for it to finish or cancel it first.",

@@ -500,9 +500,7 @@ export function ChatSettingsPanel({
       ggufVariant: loadingModel.ggufVariant,
       nativePathToken: loadingModel.nativePathToken,
     });
-  // While the staged pick is loading, its load-time settings were already
-  // snapshotted at click time, so editing them now would be silently ignored
-  // and then overwritten by the load response. Lock them until the load settles.
+  // Load settings are snapshotted at click time; lock them while loading.
   const modelControlsDisabled = stagedLoading;
   const abandonStagedModel = useChatRuntimeStore((s) => s.abandonStagedModel);
   const resetModelSettingsToLoaded = useChatRuntimeStore(
@@ -1173,13 +1171,8 @@ export function ChatSettingsPanel({
                     <Button
                       type="button"
                       onClick={() => onLoadPendingModel?.()}
-                      // A DIFFERENT model is mid-load (loadingModel is set but
-                      // doesn't match this staged pick -- stagedLoading is false).
-                      // Disable rather than leave an enabled button that can't act:
-                      // selectModel refuses to start a second concurrent load while
-                      // one is in flight, so the click would only surface a "wait
-                      // or cancel first" toast. The stage stays put; retry once the
-                      // in-flight load settles.
+                      // Disabled while a different model is mid-load: selectModel
+                      // refuses a concurrent load, so the click could only toast.
                       disabled={stagedDownloading || loadingModel != null}
                       size="sm"
                       className="h-7 px-3 text-[12px] font-medium tracking-nav bg-primary/92 text-primary-foreground hover:bg-primary"
