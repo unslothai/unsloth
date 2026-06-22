@@ -531,6 +531,10 @@ async def lifespan(app: FastAPI):
     _idle_task = getattr(app.state, "idle_unload_task", None)
     if _idle_task is not None:
         _idle_task.cancel()
+        try:
+            await _idle_task
+        except asyncio.CancelledError:
+            pass
 
     from core.inference.llama_http import aclose as _close_llama_http
 

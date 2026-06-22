@@ -1707,6 +1707,9 @@ def upsert_app_setting_map_entry(
         )
         conn.commit()
         return current
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 

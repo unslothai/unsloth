@@ -22,9 +22,13 @@ logger = get_logger(__name__)
 
 _lock = threading.Lock()
 _inflight = 0
+# Requests blocked on the unload gate but not yet counted in _inflight: the idle
+# loop must not unload while one is waiting (it would unload out from under it).
+_pending = 0
 _last_active = time.monotonic()
-# The id idle-unload last freed, so an alias/unknown request that would otherwise
-# 503 against an empty backend can reload it (set on unload, cleared on reload).
+# The (id, quant) idle-unload last freed, so an alias/unknown request that would
+# otherwise 503 against an empty backend can reload it (set on unload, cleared on
+# reload). Storing the quant means the reload restores the exact freed variant.
 _last_unloaded_model = None
 # Guards inflight bumps against the idle-check-then-unload race. One lock per
 # running loop: a module-level asyncio.Lock binds to one loop and breaks
@@ -56,9 +60,22 @@ def _is_inference_path(path: str) -> bool:
     return path.startswith(_INFERENCE_PREFIXES) and path.endswith(_INFERENCE_SUFFIXES)
 
 
-def _note_start() -> None:
-    global _inflight, _last_active
+def _note_pending() -> None:
+    global _pending
     with _lock:
+        _pending += 1
+
+
+def _note_unpending() -> None:
+    global _pending
+    with _lock:
+        _pending = max(0, _pending - 1)
+
+
+def _note_start() -> None:
+    global _inflight, _pending, _last_active
+    with _lock:
+        _pending = max(0, _pending - 1)
         _inflight += 1
         _last_active = time.monotonic()
 
@@ -72,12 +89,7 @@ def _note_end() -> None:
 
 def _is_idle(ttl_seconds: float) -> bool:
     with _lock:
-        return _inflight == 0 and (time.monotonic() - _last_active) >= ttl_seconds
-
-
-def inflight_count() -> int:
-    with _lock:
-        return _inflight
+        return _inflight == 0 and _pending == 0 and (time.monotonic() - _last_active) >= ttl_seconds
 
 
 def _note_activity() -> None:
@@ -112,8 +124,17 @@ class LlamaKeepWarmMiddleware:
         # so a stream that starts before idle-unload is enabled can't be unloaded
         # mid-response if the operator turns it on during that stream. Counting is
         # cheap and invisible to clients (the response is proxied unchanged).
-        async with _unload_gate():
-            _note_start()
+        # Mark pending before the gate so the idle loop (which holds the gate while
+        # unloading) can't free the model while this request is waiting to start.
+        _note_pending()
+        started = False
+        try:
+            async with _unload_gate():
+                _note_start()
+                started = True
+        finally:
+            if not started:
+                _note_unpending()
         ended = {"done": False}
 
         async def send_wrapper(message):
@@ -156,7 +177,7 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
                     _set_last_unloaded(None)  # a model is loaded; drop stale stash
             async with _unload_gate():
                 if backend.is_loaded and _is_idle(ttl):
-                    freed = backend.model_identifier
+                    freed = (backend.model_identifier, getattr(backend, "hf_variant", None))
                     await asyncio.to_thread(backend.unload_model)
                     _set_last_unloaded(freed)  # let an alias request reload it
                     logger.info("Idle auto-unload: freed GGUF after %ss idle", ttl)

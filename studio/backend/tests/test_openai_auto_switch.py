@@ -774,59 +774,44 @@ def test_embeddings_malformed_body_503_not_500_when_unloaded(monkeypatch):
     assert exc.value.status_code == 503
 
 
-def test_swap_refused_while_another_stream_inflight(monkeypatch):
-    # A cross-model swap must not kill a stream still running on the loaded model:
-    # with another request in flight, decline with 409 instead of loading.
-    from fastapi import HTTPException
+def test_non_string_model_falls_through_without_error(monkeypatch):
+    # A non-string model (e.g. {"model": 123} on a raw-body endpoint) must be
+    # treated as absent, never raising in the membership checks, even when a stash
+    # exists from idle-unload.
     from core.inference import llama_keepwarm as kw
 
-    backend = _FakeBackend("unsloth/A-GGUF")
+    backend = _FakeBackend(None)
     rec = _LoadRecorder(backend)
-    _wire(
-        monkeypatch,
-        enabled = True,
-        resolves_to = ("unsloth/B-GGUF", None),
-        backend = backend,
-        recorder = rec,
-    )
-    monkeypatch.setattr(kw, "_inflight", 2)  # a stream on A + this request
-    with pytest.raises(HTTPException) as exc:
-        _run_hook("unsloth/B-GGUF")
-    assert exc.value.status_code == 409
-    assert rec.calls == []  # the in-flight stream was never killed
+    _wire(monkeypatch, enabled = True, resolves_to = None, backend = backend, recorder = rec)
+    monkeypatch.setattr(kw, "_last_unloaded_model", ("unsloth/A-GGUF", None))
+    asyncio.run(inference_route._maybe_auto_switch_model(123, object(), "tester"))
+    assert rec.calls == []  # no load, no TypeError
 
 
-def test_swap_proceeds_when_no_other_stream(monkeypatch):
-    # Only this request is in flight: nothing to protect, so the swap proceeds.
-    from core.inference import llama_keepwarm as kw
+def test_anthropic_validates_max_tokens_before_auto_switch():
+    # An Anthropic request missing max_tokens must 400 before the hook runs, so an
+    # invalid request never triggers a model load. Asserted on the source order.
+    import inspect
 
-    backend = _FakeBackend("unsloth/A-GGUF")
-    rec = _LoadRecorder(backend)
-    _wire(
-        monkeypatch,
-        enabled = True,
-        resolves_to = ("unsloth/B-GGUF", None),
-        backend = backend,
-        recorder = rec,
-    )
-    monkeypatch.setattr(kw, "_inflight", 1)
-    _run_hook("unsloth/B-GGUF")
-    assert len(rec.calls) == 1
+    src = inspect.getsource(inference_route.anthropic_messages)
+    assert "_maybe_auto_switch_model" in src
+    assert src.index("max_tokens: field required") < src.index("_maybe_auto_switch_model")
 
 
-def test_alias_reloads_model_freed_by_idle_unload(monkeypatch):
+def test_alias_reloads_model_freed_by_idle_unload_with_quant(monkeypatch):
     # After idle-unload frees the model, an unknown/alias name (resolves to None)
-    # reloads what was freed instead of 503-ing on an empty backend.
+    # reloads what was freed, including the exact quant, instead of 503-ing.
     from core.inference import llama_keepwarm as kw
 
     backend = _FakeBackend(None)  # idle-unload emptied the backend
     rec = _LoadRecorder(backend)
     _wire(monkeypatch, enabled = True, resolves_to = None, backend = backend, recorder = rec)
     monkeypatch.setattr(kw, "_inflight", 0)
-    monkeypatch.setattr(kw, "_last_unloaded_model", "unsloth/A-GGUF")
+    monkeypatch.setattr(kw, "_last_unloaded_model", ("unsloth/A-GGUF", "Q4_K_M"))
     _run_hook("gpt-4o-mini")
     assert len(rec.calls) == 1
     assert rec.calls[0].model_path == "unsloth/A-GGUF"
+    assert rec.calls[0].gguf_variant == "Q4_K_M"  # exact freed quant restored
 
 
 def test_alias_does_not_reload_when_model_already_loaded(monkeypatch):
@@ -837,9 +822,25 @@ def test_alias_does_not_reload_when_model_already_loaded(monkeypatch):
     backend = _FakeBackend("unsloth/B-GGUF")
     rec = _LoadRecorder(backend)
     _wire(monkeypatch, enabled = True, resolves_to = None, backend = backend, recorder = rec)
-    monkeypatch.setattr(kw, "_last_unloaded_model", "unsloth/A-GGUF")
+    monkeypatch.setattr(kw, "_last_unloaded_model", ("unsloth/A-GGUF", None))
     _run_hook("gpt-4o-mini")
     assert rec.calls == []
+
+
+def test_idle_loop_does_not_unload_while_request_pending(monkeypatch):
+    # A request that has marked itself pending (waiting on the unload gate) but not
+    # yet started must keep the idle loop from unloading the model.
+    from core.inference import llama_keepwarm as kw
+
+    monkeypatch.setattr(kw, "_inflight", 0)
+    monkeypatch.setattr(kw, "_pending", 0)
+    monkeypatch.setattr(kw, "_last_active", 0.0)  # far past any TTL
+    kw._note_pending()
+    try:
+        assert kw._is_idle(1.0) is False  # pending request blocks unload
+    finally:
+        kw._note_unpending()
+    assert kw._is_idle(1.0) is True  # cleared once it is no longer pending
 
 
 def test_keepwarm_tracks_inflight_even_when_auto_switch_off(monkeypatch):

@@ -18,6 +18,10 @@ import time
 from dataclasses import dataclass
 from typing import Optional
 
+from loggers import get_logger
+
+logger = get_logger(__name__)
+
 
 @dataclass(frozen = True)
 class _LocalGgufEntry:
@@ -75,12 +79,15 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
     seen_hf: set[str] = set()
 
     def _scan_hf_once(directory) -> list:
+        if directory is None:
+            return []
         try:
             d = Path(directory)
             if not d.is_dir():
                 return []
             rp = str(d.resolve())
-        except OSError:
+        except Exception as exc:  # a missing/None root must skip, never crash the index
+            logger.debug("auto-switch: skipping HF cache dir %r: %s", directory, exc)
             return []
         if rp in seen_hf:
             return []
