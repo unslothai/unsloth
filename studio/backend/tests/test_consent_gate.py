@@ -1225,8 +1225,8 @@ class TestScannerCoversAllExecutableCode:
         assert configs is None
 
     def test_gguf_repo_auto_map_is_scanned_for_non_file_load_paths(self, tmp_path):
-        # A GGUF-only repo id still reaches non-llama.cpp paths (export), which run
-        # auto_map before failing on the weights; only a direct .gguf file is inert.
+        # A GGUF-only repo id still hits export paths that run auto_map; only a direct
+        # .gguf file is inert.
         def _dl(
             repo_id = None,
             filename = None,
@@ -1252,8 +1252,7 @@ class TestScannerCoversAllExecutableCode:
             assert consent._config_has_auto_map("unsloth/Some-Model-GGUF") is True
 
     def test_gguf_only_repo_with_python_is_scanned_and_blocked(self, tmp_path):
-        # Regression: the GGUF-only repo short-circuit must not skip scanning auto_map
-        # Python for export/non-GGUF loaders that pass trust_remote_code=True.
+        # Regression: the GGUF-only short-circuit must not skip auto_map Python for export loaders.
         def _dl(
             repo_id = None,
             filename = None,
@@ -1289,8 +1288,7 @@ class TestScannerCoversAllExecutableCode:
         assert d.fingerprint
 
     def test_transformers_style_repo_auto_map_is_scanned_and_blocked(self, tmp_path):
-        # A non-GGUF repo (safetensors, or MLX .npz) with auto_map is still scanned and
-        # blocked through the real consent gate.
+        # A non-GGUF repo (safetensors/MLX) with auto_map is still scanned and blocked.
         def _dl(
             repo_id = None,
             filename = None,

@@ -264,8 +264,7 @@ def evaluate_remote_code_consent_for_targets(
         )
 
     if not combined:
-        # auto_map declared but no executable .py (e.g. a GGUF repo's vestigial
-        # auto_map) -> nothing to scan or run -> allow.
+        # auto_map declared but no executable .py (e.g. GGUF repo) -> nothing to scan -> allow.
         return RemoteCodeDecision(
             primary,
             False,

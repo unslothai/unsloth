@@ -34,8 +34,7 @@ def test_no_model_default_yaml_sets_trust_remote_code():
 
 
 def test_no_model_default_yaml_has_empty_or_none_section():
-    # Dropping a section's only key must not leave a bare `inference:` header: PyYAML
-    # reads that as None and the .get(...).get(...) loaders crash on it.
+    # A bare `inference:` header (no keys) parses to None and crashes the .get() loaders.
     offenders = []
     for f in _MODEL_DEFAULTS.rglob("*.yaml"):
         doc = yaml.safe_load(f.read_text())
@@ -52,8 +51,7 @@ def test_no_model_default_yaml_has_empty_or_none_section():
 
 
 def test_formerly_flagged_models_load_inference_config_without_crash():
-    # End-to-end: the models whose inference section was emptied by the TRC removal must
-    # still load their inference config (falling back to family/default params).
+    # Models whose inference section was emptied by the TRC removal must still load.
     from utils.inference import load_inference_config
     for model in (
         "tiiuae/Falcon-H1-0.5B-Instruct",
@@ -66,8 +64,7 @@ def test_formerly_flagged_models_load_inference_config_without_crash():
 
 
 def test_all_model_yamls_load_for_training_and_inference():
-    # Every YAML must load through both config paths (training + inference) with the
-    # exact .get() patterns the routes use; the file stem resolves to that file.
+    # Every YAML must load through both config paths (training + inference) as the routes do.
     from utils.inference import load_inference_config
     from utils.models.model_config import load_model_defaults
 
@@ -105,8 +102,7 @@ def test_base_templates_have_no_trust_remote_code():
 
 
 def test_loader_defaults_trust_remote_code_off_for_formerly_flagged_models():
-    # The 4 models that used to ship trust_remote_code: true. The loader must now report
-    # no default (auto_map models get the dialog; GLM-4.7-Flash loads natively TRC=False).
+    # The 4 models that used to ship trust_remote_code: true must now report no default.
     from utils.models.model_config import load_model_defaults
     for model in (
         "unsloth/GLM-4.7-Flash",
@@ -122,9 +118,8 @@ def test_loader_defaults_trust_remote_code_off_for_formerly_flagged_models():
 
 
 def test_formerly_flagged_auto_map_models_still_require_consent_dialog():
-    # Crux of the change: an auto_map model must STILL surface the dialog -- it is driven
-    # by the repo's auto_map, not the YAML flag. Exercises the real backend path
-    # (preflight_remote_code_consent_for_targets), mocking only the Hub json + .py fetch.
+    # Crux: an auto_map model must STILL surface the dialog (driven by auto_map, not the
+    # YAML flag). Real backend path, mocking only the Hub json + .py fetch.
     from unittest.mock import patch
     from utils.security import consent, preflight_remote_code_consent_for_targets
 
@@ -155,8 +150,7 @@ def test_formerly_flagged_auto_map_models_still_require_consent_dialog():
 
 
 def test_no_auto_map_model_takes_no_dialog():
-    # Flip side: GLM-4.7-Flash ships no auto_map -> no dialog, loads natively (TRC=False).
-    # Its old YAML flag was a no-op, so removing it is safe.
+    # Flip side: GLM-4.7-Flash ships no auto_map -> no dialog; its old YAML flag was a no-op.
     from unittest.mock import patch
     from utils.security import consent, preflight_remote_code_consent_for_targets
 
