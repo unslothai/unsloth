@@ -478,7 +478,9 @@ try:
     AutoConfig.from_pretrained(model_name, trust_remote_code=False)
     sys.exit(0)
 except Exception as exc:
-    sys.stderr.write(type(exc).__name__ + ": " + str(exc))
+    # stderr encoding may not be UTF-8 (e.g. cp1252 on Windows); write bytes so a
+    # non-ASCII error message cannot itself raise UnicodeEncodeError.
+    sys.stderr.buffer.write((type(exc).__name__ + ": " + str(exc)).encode("utf-8", "replace"))
     sys.exit(1)
 """
 
@@ -528,14 +530,23 @@ def _local_dir_signature(path: Path) -> str | None:
 
 def _resolve_commit_sha(model_name: str, hf_token: str | None) -> str | None:
     """Immutable identity for the tier cache: a local dir signature or the HF commit sha.
-    None when unavailable (offline/error); still memoized so we don't re-resolve. Runs in
-    the default env before any sidecar is on sys.path, so importing huggingface_hub is safe.
+    None when unavailable (offline/transient); a resolved value is memoized but a None is
+    NOT, so a transient Hub failure is retried on the next call instead of pinning the tier
+    cache under an unknown revision. Runs in the default env before any sidecar is on
+    sys.path, so importing huggingface_hub is safe.
     """
     if model_name in _probe_sha_cache:
         return _probe_sha_cache[model_name]
     sha: str | None = None
+    # On Windows, Path.exists() can raise OSError for a remote repo id with characters that
+    # are invalid in a local path; treat that as "not a local dir".
     p = Path(model_name)
-    if p.exists():
+    try:
+        is_local = p.exists()
+    except OSError as exc:
+        logger.debug("Could not check local path for '%s': %s", model_name, exc)
+        is_local = False
+    if is_local:
         sha = _local_dir_signature(p)
     elif not _env_offline():
         try:
@@ -543,7 +554,8 @@ def _resolve_commit_sha(model_name: str, hf_token: str | None) -> str | None:
             sha = HfApi().model_info(model_name, token = hf_token).sha
         except Exception as exc:
             logger.debug("Could not resolve commit sha for '%s': %s", model_name, exc)
-    _probe_sha_cache[model_name] = sha
+    if sha is not None:
+        _probe_sha_cache[model_name] = sha
     return sha
 
 
@@ -563,6 +575,7 @@ def _probe_autoconfig(target_dir: str, model_name: str, hf_token: str | None) ->
             [sys.executable, "-c", _PROBE_CONFIG_SCRIPT, target_dir, model_name],
             capture_output = True,
             text = True,
+            errors = "replace",
             timeout = _PROBE_TIMEOUT_SECS,
             env = env,
             **_windows_hidden_subprocess_kwargs(),
@@ -586,44 +599,70 @@ def _probe_autoconfig(target_dir: str, model_name: str, hf_token: str | None) ->
 def _probe_tier(model_name: str, hf_token: str | None, reason: str) -> str:
     """Lowest sidecar tier whose built-in parser loads the config; '530' fail-safe.
 
-    Escalates 530 -> 550 -> 510, returning the first that parses. A transient probe
-    failure (auth/network/offline) falls back to '530' uncached so it is retried. If
-    nothing parses but a sidecar was reachable, returns the highest tier we ship. Never
-    raises -- it can only improve on the legacy '530' guess. Cached by (model, sha).
+    Escalates 530 -> 550 -> 510 and returns the first that parses. The probe can only
+    improve on the legacy '530' guess, never raises, and never escalates on uncertainty:
+
+    * First parse success wins and is cached by (model, sha).
+    * Transient probe failure (auth/network/offline) -> '530' uncached (retried next call).
+    * Sidecar missing/uninstallable, so a tier was skipped -> '530' uncached (the
+      environment may complete later; do not pin a guess).
+    * Every tier was actually probed and none parsed -> the built-in parser cannot handle
+      this model at any shipped tier (a remote-code / custom model_type that loads via its
+      own code with trust_remote_code=True). Keep the legacy '530' route -- do NOT jump to
+      510, which would change the behavior of models that worked on the 5.3 stack. This is
+      deterministic for the revision, so it is cached.
+
+    A tier is only ever cached under a known commit sha; if the sha is unresolvable the
+    result is returned uncached so a later revision change is not masked.
     """
     if os.environ.get("UNSLOTH_DISABLE_TIER_PROBE", "").lower() in ("1", "true", "yes"):
         return "530"
-    key = (model_name, _resolve_commit_sha(model_name, hf_token))
-    if key in _probe_tier_cache:
+    sha = _resolve_commit_sha(model_name, hf_token)
+    key = (model_name, sha)
+    if sha is not None and key in _probe_tier_cache:
         return _probe_tier_cache[key]
 
+    def _cache(tier: str) -> str:
+        if sha is not None:
+            _probe_tier_cache[key] = tier
+        return tier
+
     venvs = _probe_tier_venvs()
-    probed_any = False
-    resolved = "530"
+    probed_count = 0
+    skipped_any = False
     for tier in _PROBE_TIER_ORDER:
         target_dir, ensure_fn = venvs[tier]
         try:
-            if not ensure_fn():
-                continue
+            available = ensure_fn()
         except Exception:
+            available = False
+        if not available:
+            skipped_any = True
             continue
-        probed_any = True
+        probed_count += 1
         ok = _probe_autoconfig(target_dir, model_name, hf_token)
         if ok is True:
-            resolved = tier
-            break
+            logger.info(
+                "Transformers tier %s selected for %s (AutoConfig probe; %s)",
+                tier, model_name, reason,
+            )
+            return _cache(tier)
         if ok is None:
             logger.info("Tier probe inconclusive for %s (%s); using 530", model_name, reason)
-            return "530"
-    else:
-        if probed_any:
-            resolved = "510"
+            return "530"  # transient: retry next load
 
+    # Nothing parsed. Only treat it as conclusive (and cache) when every tier was actually
+    # probed; a skipped sidecar means the environment is incomplete, so retry uncached.
+    if skipped_any or probed_count == 0:
+        logger.info(
+            "Tier probe incomplete for %s (%s); using 530 (uncached)", model_name, reason
+        )
+        return "530"
     logger.info(
-        "Transformers tier %s selected for %s (AutoConfig probe; %s)", resolved, model_name, reason
+        "Transformers tier 530 selected for %s (AutoConfig probe found no higher tier; %s)",
+        model_name, reason,
     )
-    _probe_tier_cache[key] = resolved
-    return resolved
+    return _cache("530")
 
 
 def get_transformers_tier(model_name: str, hf_token: str | None = None) -> str:
