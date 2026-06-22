@@ -136,6 +136,17 @@ export const ptBR = {
         maxUploadSizeDescription:
           "O padrão é {defaultSize} MB.",
       },
+      storage: {
+        sectionTitle: "Armazenamento",
+        modelsFolder: "Pasta de modelos",
+        modelsFolderDescription:
+          "Onde os modelos baixados são armazenados.",
+        openAction: "Abrir",
+        copyAction: "Copiar caminho",
+        copied: "Caminho copiado",
+        openError: "Não foi possível abrir a pasta",
+        copyError: "Não foi possível copiar o caminho",
+      },
       resetPreferences: {
         sectionTitle: "Zona de perigo",
         label: "Redefinir todas as preferências locais",
@@ -200,6 +211,9 @@ export const ptBR = {
     chat: {
       title: "Chat",
       description: "Gerencie o histórico de chat armazenado neste dispositivo.",
+      modelDisclaimer: "Mostrar aviso do modelo",
+      modelDisclaimerDescription:
+        'Mostra "LLMs podem cometer erros" abaixo da caixa de chat.',
       artifacts: {
         title: "Canvas",
         collapseHtmlBlocks: "Recolher blocos HTML",
