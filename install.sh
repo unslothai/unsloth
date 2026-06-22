@@ -3126,10 +3126,11 @@ echo ""
 if [ -t 1 ]; then
     echo ""
     printf "  Start Unsloth Studio now? [Y/n] "
+    # No readable answer (closed/EOF tty) defaults to no; Enter is still yes.
     if [ -r /dev/tty ]; then
-        read -r _reply </dev/tty || _reply="y"
+        read -r _reply </dev/tty || _reply="n"
     else
-        _reply="y"
+        _reply="n"
     fi
     case "${_reply:-y}" in
         [Yy]*|"")
@@ -3137,8 +3138,12 @@ if [ -t 1 ]; then
             # Detach stdin from the `curl | sh` pipe: as a foreground server the
             # studio would otherwise drain the rest of this piped script, leaving
             # the shell to die parsing the now-truncated tail (`unexpected fi`).
-            "$VENV_DIR/bin/unsloth" studio -p 8888 </dev/null
-            _LAUNCH_EXIT=$?
+            # trap '' INT: wait for studio's shutdown instead of racing the prompt.
+            # Subshell resets INT so the child still gets Ctrl+C (no inherited ignore).
+            trap '' INT
+            # `|| ...`: capture the exit code without set -e aborting first.
+            _LAUNCH_EXIT=0
+            (trap - INT; exec "$VENV_DIR/bin/unsloth" studio -p 8888 </dev/null) || _LAUNCH_EXIT=$?
             if [ "$_LAUNCH_EXIT" -ne 0 ] && [ "$_MIGRATED" = true ]; then
                 echo ""
                 echo "⚠️  Unsloth Studio failed to start after migration."
