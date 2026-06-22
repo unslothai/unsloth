@@ -154,6 +154,10 @@ class GgufVariantsResponse(BaseModel):
     default_variant: Optional[str] = Field(
         None, description = "Recommended default quantization variant"
     )
+    context_length: Optional[int] = Field(
+        None,
+        description = "Native max context from GGUF metadata; set once a variant is downloaded",
+    )
 
 
 class LocalModelInfo(BaseModel):
@@ -169,6 +173,11 @@ class LocalModelInfo(BaseModel):
     model_id: Optional[str] = Field(
         None,
         description = "HF repo id for cached models, e.g. org/model",
+    )
+    model_format: Optional[str] = Field(
+        None,
+        description = "Detected weights format ('gguf' when known). Lets the UI "
+        "classify scanned folders whose name lacks a -GGUF suffix.",
     )
     updated_at: Optional[float] = Field(
         None,

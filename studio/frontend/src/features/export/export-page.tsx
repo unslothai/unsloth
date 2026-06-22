@@ -26,6 +26,7 @@ import {
 } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import { Spinner } from "@/components/ui/spinner";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Tooltip,
   TooltipContent,
@@ -36,12 +37,9 @@ import {
   type LocalModelInfo,
   useTrainingConfigStore,
 } from "@/features/training";
+import { useHubModelSearch } from "@/features/hub/hooks/use-hub-model-search";
 import { confirmRemoteCodeIfNeeded } from "@/features/security";
-import {
-  useDebouncedValue,
-  useHfModelSearch,
-  useHfTokenValidation,
-} from "@/hooks";
+import { useDebouncedValue, useHfTokenValidation } from "@/hooks";
 import {
   AlertCircleIcon,
   ArrowDown01Icon,
@@ -76,6 +74,8 @@ import { exportTourSteps } from "./tour";
 
 const SEARCH_INPUT_REASONS = new Set(["input-change", "input-paste", "input-clear"]);
 
+type SourceTab = "local" | "checkpoint" | "hf";
+
 function buildRelativeSaveDirectory(
   exportMethod: ExportMethod | null,
   sourceBaseModelName: string,
@@ -84,7 +84,7 @@ function buildRelativeSaveDirectory(
 ): string {
   if (exportMethod === "gguf") {
     return `${(sourceBaseModelName.split("/").pop() ?? selectedModelIdx ?? "model")
-      .replace(/[^a-zA-Z0-9._-]/g, "-")}-gguf`;
+      .replace(/[^a-zA-Z0-9._-]/g, "-")}-GGUF`;
   }
   return `${selectedModelIdx ?? "model"}/${checkpoint}`;
 }
@@ -93,6 +93,8 @@ function siblingGgufDirectory(sourcePath: string): string | null {
   const trimmed = sourcePath.trim().replace(/[\\/]+$/, "");
   if (!trimmed) return null;
   const slash = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
+  // Lowercase `_gguf` matches the backend's intermediate dir (core/export/export.py);
+  // `_GGUF` would relocate+delete that sibling.
   if (slash < 0) return `${trimmed}_gguf`;
   const parent =
     slash === 0 || (slash === 2 && /^[A-Za-z]:/.test(trimmed))
@@ -280,9 +282,12 @@ export function ExportPage() {
     results: hfResults,
     isLoading: isLoadingHfModels,
     error: hfSearchError,
-  } = useHfModelSearch(debouncedModelQuery, {
+  } = useHubModelSearch(debouncedModelQuery, {
     accessToken: debouncedHfToken || undefined,
     excludeGguf: true,
+    // Curated unsloth listing by default, but a typed query searches the whole
+    // Hub (unsloth floated first) so non-unsloth base models stay selectable.
+    ownerScope: debouncedModelQuery.trim() ? "all" : "unsloth",
   });
   const { error: tokenValidationError, isChecking: isCheckingToken } =
     useHfTokenValidation(hfToken);
@@ -349,6 +354,8 @@ export function ExportPage() {
         : GUIDE_STEPS,
     [sourceMode],
   );
+  const sourceTab: SourceTab =
+    sourceMode === "checkpoint" ? "checkpoint" : modelSource;
 
   // Reset checkpoint when the selected model changes
   useEffect(() => {
@@ -366,18 +373,22 @@ export function ExportPage() {
     }
   }, [isAdapter, isQuantized, exportMethod]);
 
-  const handleSourceModeSwitch = useCallback(
-    (next: "checkpoint" | "model") => {
-      setSourceMode(next);
-      if (next === "model") {
-        setExportMethod("gguf");
-      }
-      setSelectedSourceModel(null);
-      setLocalModelInput("");
-      setModelInput("");
-    },
-    [],
-  );
+  const handleSourceTabChange = useCallback((next: string) => {
+    if (next === "checkpoint") {
+      setSourceMode("checkpoint");
+    } else if (next === "hf" || next === "local") {
+      setSourceMode("model");
+      setModelSource(next);
+      setExportMethod("gguf");
+    } else {
+      return;
+    }
+    setSelectedSourceModel(null);
+    setLocalModelInput("");
+    setModelInput("");
+    hfModelInputRef.current = "";
+    localModelInputRef.current = "";
+  }, []);
 
   useEffect(() => {
     setSelectedSourceModel(null);
@@ -674,10 +685,10 @@ export function ExportPage() {
             <>
               {/* Top row: Dropdowns + metadata | Guide */}
               <div className="grid grid-cols-1 gap-6 md:grid-cols-2 md:gap-8">
-                <div className="flex flex-col gap-2">
-                  <div className="flex items-end justify-between">
+                <div className="flex flex-col gap-3">
+                  <div className="flex flex-col gap-2">
                     <label className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-                      {sourceMode === "checkpoint" ? "Training Run" : "Model Source"}
+                      Source
                       <Tooltip>
                         <TooltipTrigger asChild={true}>
                           <button
@@ -691,30 +702,51 @@ export function ExportPage() {
                           </button>
                         </TooltipTrigger>
                         <TooltipContent>
-                          {sourceMode === "checkpoint"
-                            ? "Select the training run that produced the checkpoints you want to export."
-                            : "Select a Hugging Face model or local model path to export directly to GGUF."}
+                          Choose a local model, fine-tuned checkpoint, or
+                          Hugging Face model to export.
                         </TooltipContent>
                       </Tooltip>
                     </label>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        handleSourceModeSwitch(
-                          sourceMode === "checkpoint" ? "model" : "checkpoint",
-                        )
-                      }
-                      className="text-xs text-primary underline cursor-pointer leading-none"
+                    <Tabs
+                      value={sourceTab}
+                      onValueChange={handleSourceTabChange}
+                      className="w-full"
                     >
-                      {sourceMode === "checkpoint"
-                        ? "Use Hugging Face / Local Model"
-                        : "Use Training Checkpoints"}
-                    </button>
+                      <TabsList
+                        unstyled={true}
+                        className="hub-menu-trigger hub-tab-toggle relative inline-flex h-9 w-full items-center rounded-full"
+                      >
+                        <TabsTrigger
+                          value="local"
+                          indicatorClassName="hub-tab-toggle-pill rounded-full"
+                          className="h-9 rounded-full border-0 px-3 text-[12.5px] text-muted-foreground hover:text-foreground data-active:text-foreground data-[state=active]:text-foreground"
+                        >
+                          Local Model
+                        </TabsTrigger>
+                        <TabsTrigger
+                          value="checkpoint"
+                          indicatorClassName="hub-tab-toggle-pill rounded-full"
+                          className="h-9 rounded-full border-0 px-3 text-[12.5px] text-muted-foreground hover:text-foreground data-active:text-foreground data-[state=active]:text-foreground"
+                        >
+                          Fine-tuned
+                        </TabsTrigger>
+                        <TabsTrigger
+                          value="hf"
+                          indicatorClassName="hub-tab-toggle-pill rounded-full"
+                          className="h-9 rounded-full border-0 px-3 text-[12.5px] text-muted-foreground hover:text-foreground data-active:text-foreground data-[state=active]:text-foreground"
+                        >
+                          Hugging Face
+                        </TabsTrigger>
+                      </TabsList>
+                    </Tabs>
                   </div>
 
                   {sourceMode === "checkpoint" ? (
                     <div className="flex flex-col gap-2 overflow-visible">
                       <div data-tour="export-training-run" className="flex flex-col gap-2">
+                        <label className="text-xs font-medium text-muted-foreground">
+                          Training Run
+                        </label>
                         <Select
                           value={selectedModelIdx ?? ""}
                           onValueChange={setSelectedModelIdx}
@@ -828,23 +860,6 @@ export function ExportPage() {
                     </div>
                   ) : (
                     <div className="flex flex-col gap-2 overflow-visible">
-                      <div className="flex gap-2">
-                        <Button
-                          variant={modelSource === "hf" ? "dark" : "outline"}
-                          className="flex-1"
-                          onClick={() => setModelSource("hf")}
-                        >
-                          Hugging Face
-                        </Button>
-                        <Button
-                          variant={modelSource === "local" ? "dark" : "outline"}
-                          className="flex-1"
-                          onClick={() => setModelSource("local")}
-                        >
-                          Local Model
-                        </Button>
-                      </div>
-
                       {modelSource === "hf" ? (
                         <>
                           <div className="flex flex-col gap-2">
