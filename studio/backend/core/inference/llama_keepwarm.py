@@ -36,6 +36,7 @@ def _unload_gate() -> asyncio.Lock:
         gate = _unload_gates[loop] = asyncio.Lock()
     return gate
 
+
 _INFERENCE_PREFIXES = ("/v1/", "/api/inference/")
 _INFERENCE_SUFFIXES = (
     "/chat/completions",
