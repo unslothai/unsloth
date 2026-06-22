@@ -162,7 +162,12 @@ class TestRemoteLoraBase:
         assert _remote_lora_base("plainname") is None
 
     @staticmethod
-    def _seed_adapter_cache(hub: Path, repo_id: str, base: str, commit: str = "deadbeef"):
+    def _seed_adapter_cache(
+        hub: Path,
+        repo_id: str,
+        base: str,
+        commit: str = "deadbeef",
+    ):
         repo = hub / ("models--" + repo_id.replace("/", "--"))
         snap = repo / "snapshots" / commit
         snap.mkdir(parents = True)

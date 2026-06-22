@@ -758,9 +758,9 @@ def run_inference_process(*, cmd_queue: Any, resp_queue: Any, cancel_event, conf
     _local_adapter_cfg = Path(model_name) / "adapter_config.json"
     if _local_adapter_cfg.is_file():
         try:
-            _lora_base = _json.loads(_local_adapter_cfg.read_text()).get(
-                "base_model_name_or_path"
-            ) or None
+            _lora_base = (
+                _json.loads(_local_adapter_cfg.read_text()).get("base_model_name_or_path") or None
+            )
         except Exception:
             _lora_base = None
     if not _lora_base:
