@@ -31,6 +31,7 @@ sys.modules.setdefault("loggers", _loggers_stub)
 
 from utils.transformers_version import (
     _resolve_base_model,
+    _remote_lora_base,
     _check_tokenizer_config_needs_v5,
     _check_config_needs_510,
     _check_config_needs_550,
@@ -137,6 +138,123 @@ class TestResolveBaseModel:
         """Plain HuggingFace model IDs pass through unchanged."""
         result = _resolve_base_model("meta-llama/Llama-3-8B")
         assert result == "meta-llama/Llama-3-8B"
+
+
+class TestRemoteLoraBase:
+    """_remote_lora_base reads a remote adapter's base from its Hub adapter_config.json."""
+
+    @staticmethod
+    def _resp(cfg: dict):
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                return json.dumps(cfg).encode()
+
+        return _Resp()
+
+    def test_fetches_base_from_remote_adapter_config(self, monkeypatch):
+        monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+        cfg = {"base_model_name_or_path": "nvidia/NVIDIA-Nemotron-3-Nano-4B"}
+        with patch("urllib.request.urlopen", return_value = self._resp(cfg)):
+            assert (
+                _remote_lora_base("someuser/my-nemotron-lora") == "nvidia/NVIDIA-Nemotron-3-Nano-4B"
+            )
+
+    def test_local_or_noncanonical_returns_none(self):
+        assert _remote_lora_base("/local/dir/adapter") is None
+        assert _remote_lora_base("plainname") is None
+
+    def test_respects_hf_endpoint(self, monkeypatch):
+        # Enterprise mirror: the fetch must target HF_ENDPOINT, not hardcoded huggingface.co.
+        monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+        monkeypatch.setenv("HF_ENDPOINT", "https://hf.mirror.internal")
+        seen = {}
+
+        def fake_urlopen(req, timeout = 10):
+            seen["url"] = req.full_url
+            return self._resp({"base_model_name_or_path": "org/base"})
+
+        with patch("urllib.request.urlopen", side_effect = fake_urlopen):
+            assert _remote_lora_base("user/adapter") == "org/base"
+        assert seen["url"].startswith("https://hf.mirror.internal/user/adapter/raw/main/")
+
+    @staticmethod
+    def _seed_adapter_cache(
+        hub: Path,
+        repo_id: str,
+        base: str,
+        commit: str = "deadbeef",
+    ):
+        repo = hub / ("models--" + repo_id.replace("/", "--"))
+        snap = repo / "snapshots" / commit
+        snap.mkdir(parents = True)
+        (snap / "adapter_config.json").write_text(json.dumps({"base_model_name_or_path": base}))
+        (repo / "refs").mkdir(parents = True)
+        (repo / "refs" / "main").write_text(commit)
+
+    def test_offline_reads_base_from_hf_cache(self, tmp_path: Path, monkeypatch):
+        self._seed_adapter_cache(tmp_path, "user/cached-lora", "nvidia/Nemotron-H-8B")
+        monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
+        monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+        with patch("urllib.request.urlopen") as mock_url:
+            assert _remote_lora_base("user/cached-lora") == "nvidia/Nemotron-H-8B"
+            mock_url.assert_not_called()  # offline: cache only, no network
+
+    def test_fetch_failure_falls_back_to_cache(self, tmp_path: Path, monkeypatch):
+        self._seed_adapter_cache(tmp_path, "user/cached-lora", "nvidia/Nemotron-H-8B")
+        monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
+        monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+        with patch("urllib.request.urlopen", side_effect = OSError("boom")):
+            assert _remote_lora_base("user/cached-lora") == "nvidia/Nemotron-H-8B"
+
+    def test_offline_uncached_makes_no_request(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
+        monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+        with patch("urllib.request.urlopen") as mock_url:
+            assert _remote_lora_base("org/adapter") is None
+            mock_url.assert_not_called()
+
+    def test_non_adapter_repo_returns_none(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
+        monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+        with patch("urllib.request.urlopen", side_effect = OSError("boom")):
+            assert _remote_lora_base("org/not-an-adapter") is None
+
+    def test_existing_relative_path_not_treated_as_repo(self, monkeypatch):
+        # An existing one-slash relative path (e.g. outputs/run1) is a local checkpoint, not
+        # a Hub repo: no request, no risk of matching an unrelated remote/cached adapter.
+        import utils.paths as paths
+        monkeypatch.setattr(paths, "is_local_path", lambda p: True)
+        with patch("urllib.request.urlopen") as mock_url:
+            assert _remote_lora_base("outputs/run1") is None
+            mock_url.assert_not_called()
+
+    def test_404_returns_none_not_stale_cache(self, tmp_path: Path, monkeypatch):
+        import urllib.error
+
+        # The repo is now a full model (adapter_config.json 404s) but a stale LoRA snapshot is
+        # cached: a definitive 404 must return None, not the stale base.
+        self._seed_adapter_cache(tmp_path, "user/was-a-lora", "old/base")
+        monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
+        monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+        err = urllib.error.HTTPError("url", 404, "Not Found", {}, None)
+        with patch("urllib.request.urlopen", side_effect = err):
+            assert _remote_lora_base("user/was-a-lora") is None
+
+    def test_transient_http_error_falls_back_to_cache(self, tmp_path: Path, monkeypatch):
+        import urllib.error
+
+        self._seed_adapter_cache(tmp_path, "user/cached-lora", "nvidia/Nemotron-H-8B")
+        monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
+        monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+        err = urllib.error.HTTPError("url", 503, "Service Unavailable", {}, None)
+        with patch("urllib.request.urlopen", side_effect = err):
+            assert _remote_lora_base("user/cached-lora") == "nvidia/Nemotron-H-8B"
 
 
 # ---------------------------------------------------------------------------
