@@ -485,6 +485,7 @@ export function SharedComposer({
   const modelLoaded = useChatRuntimeStore(
     (s) => !!s.params.checkpoint && !s.modelLoading,
   );
+  const lastModelLoadError = useChatRuntimeStore((s) => s.lastModelLoadError);
   const loadedIsMultimodal = useChatRuntimeStore((s) => s.loadedIsMultimodal);
   const supportsReasoning = useChatRuntimeStore((s) => s.supportsReasoning);
   const reasoningAlwaysOn = useChatRuntimeStore((s) => s.reasoningAlwaysOn);
@@ -566,6 +567,7 @@ export function SharedComposer({
     externalModelLabel: externalSelection?.modelId ?? null,
     loadedIsMultimodal,
     modelLoaded,
+    loadError: lastModelLoadError,
   });
   const isCompareMode = Boolean(model1?.id || model2?.id);
   // Attach-time gate. Compare mode defers to send: the catalog can lag a

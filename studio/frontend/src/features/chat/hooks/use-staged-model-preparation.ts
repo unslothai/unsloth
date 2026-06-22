@@ -10,6 +10,7 @@ import { useLatestRef } from "@/features/hub/hooks/use-latest-ref";
 import { fetchGgufContextLength } from "../api/chat-api";
 import {
   isPendingGguf,
+  pendingSelectionMatches,
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
 import type { PendingModelSelection } from "../stores/chat-runtime-store";
@@ -75,15 +76,12 @@ export function useStagedModelPreparation(opts?: {
         nativePathToken,
       });
       // Apply only if the same model is still staged (the user may have switched
-      // picks or loaded/cancelled while the request was in flight). Native ids
-      // are display labels, not paths, so two files can share an id -- compare
-      // the path token too, or a stale response could land on the wrong pick.
+      // picks or loaded/cancelled while the request was in flight).
       const latest = useChatRuntimeStore.getState().pendingSelection;
       if (
-        latest?.id === id &&
-        (latest.ggufVariant ?? null) === (ggufVariant ?? null) &&
-        (latest.nativePathToken ?? null) === (nativePathToken ?? null) &&
-        contextLength != null
+        latest &&
+        contextLength != null &&
+        pendingSelectionMatches(latest, { id, ggufVariant, nativePathToken })
       ) {
         setPendingSelection({ ...latest, contextLength });
       }

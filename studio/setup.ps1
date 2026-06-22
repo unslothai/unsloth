@@ -5,9 +5,10 @@
 .SYNOPSIS
     Full environment setup for Unsloth Studio on Windows (bundled version).
 .DESCRIPTION
-    Always installs Node.js if needed. When running from pip install:
-    skips frontend build (already bundled). When running from git repo:
-    full setup including frontend build.
+    Uses an isolated, Unsloth-managed Node.js for the frontend build when the
+    system Node/npm do not meet requirements (never modifies the system Node).
+    When running from pip install: skips frontend build (already bundled). When
+    running from git repo: full setup including frontend build.
     Supports NVIDIA GPU (full training + inference) and CPU-only (GGUF chat mode).
 .NOTES
     Default output is minimal (step/substep), aligned with studio/setup.sh.
@@ -1491,71 +1492,92 @@ if ($HasROCm) {
 # ============================================
 # 1f. Node.js / npm (skip if pip-installed or Tauri -- only needed for frontend build)
 # ============================================
+# Frontend and OXC share this Node floor. The helper returns:
+# system | bundled | skip.
+function Get-NodeDecision {
+    param(
+        [string]$NodeVersion,    # `node -v` output, e.g. v22.17.1 (or empty)
+        [string]$NpmVersion,     # `npm -v`  output, e.g. 10.9.2  (or empty)
+        [string]$SkipInstall     # "1" => never auto-install
+    )
+    $node = ($NodeVersion -replace '^v', '').Trim()
+    $npm = "$NpmVersion".Trim()
+    if ($node -match '^\d+\.\d+' -and $npm -match '^\d+') {
+        $nodeMajor = [int]($node.Split('.')[0])
+        $nodeMinor = [int]($node.Split('.')[1])
+        $npmMajor = [int]($npm.Split('.')[0])
+        $nodeOk = ($nodeMajor -eq 20 -and $nodeMinor -ge 19) -or
+                  ($nodeMajor -eq 22 -and $nodeMinor -ge 12) -or
+                  ($nodeMajor -ge 23)
+        if ($nodeOk -and $npmMajor -ge 11) { return "system" }
+    }
+    if ($SkipInstall -eq "1") { return "skip" }
+    return "bundled"
+}
+
 $SkipFrontend = ($env:SKIP_STUDIO_FRONTEND -eq "1")
+$NodeOverride = $null
+$NodeParent = $null
+$NodeDir = $null
+$SysNodeVersion = ""
+$SysNpmVersion = ""
+$NodeSource = $null
+
+if (-not $IsPipInstall) {
+    # Put Node beside the Studio root. OXC can still need npm when the
+    # frontend build is skipped.
+    if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_STUDIO_HOME)) { $NodeOverride = $env:UNSLOTH_STUDIO_HOME.Trim() }
+    elseif (-not [string]::IsNullOrWhiteSpace($env:STUDIO_HOME)) { $NodeOverride = $env:STUDIO_HOME.Trim() }
+    if ($NodeOverride) {
+        if ($NodeOverride -eq "~") {
+            $NodeOverride = $env:USERPROFILE
+        } elseif ($NodeOverride -like "~/*" -or $NodeOverride -like "~\*") {
+            $NodeOverride = (Join-Path $env:USERPROFILE $NodeOverride.Substring(1).TrimStart('/', '\'))
+        }
+        if (-not (Test-Path -LiteralPath $NodeOverride -PathType Container)) {
+            Write-Host "ERROR: UNSLOTH_STUDIO_HOME/STUDIO_HOME=$NodeOverride does not exist." -ForegroundColor Red
+            Write-Host "       Run install.ps1 to create the install root before 'unsloth studio update'." -ForegroundColor Red
+            exit 1
+        }
+        $NodeParent = (Resolve-Path -LiteralPath $NodeOverride).Path
+        # An override pointing at the legacy default maps to the legacy sibling
+        # ~/.unsloth/node (what the runtime resolver and setup.sh use), not <root>/node.
+        $_legacyStudio = Join-Path $env:USERPROFILE ".unsloth\studio"
+        if (Test-Path -LiteralPath $_legacyStudio -PathType Container) {
+            $_legacyStudio = (Resolve-Path -LiteralPath $_legacyStudio).Path
+        }
+        if ($NodeParent -eq $_legacyStudio) {
+            $NodeParent = Join-Path $env:USERPROFILE ".unsloth"
+            $NodeOverride = $null
+        }
+    } else {
+        $NodeParent = Join-Path $env:USERPROFILE ".unsloth"
+    }
+    $NodeDir = Join-Path $NodeParent "node"
+
+    # Probe system node/npm without letting a missing/broken command abort setup.
+    # Under $ErrorActionPreference = "Stop" a bare `node -v` for an absent node
+    # throws a terminating error `2>$null` cannot swallow, and a present-but-broken
+    # shim throws too. Guard with Get-Command (node/npm independently) + try/catch;
+    # empty version => Get-NodeDecision returns "bundled".
+    $SysNodeVersion = try { if (Get-Command node -ErrorAction SilentlyContinue) { (node -v 2>$null) } else { "" } } catch { "" }
+    $SysNpmVersion = try { if (Get-Command npm -ErrorAction SilentlyContinue) { (npm -v 2>$null) } else { "" } } catch { "" }
+    $NodeSource = Get-NodeDecision -NodeVersion "$SysNodeVersion" -NpmVersion "$SysNpmVersion" -SkipInstall "$($env:UNSLOTH_SKIP_NODE_INSTALL)"
+}
+
 if ($IsPipInstall) {
     step "frontend" "bundled (pip install)"
 } elseif ($SkipFrontend) {
     step "frontend" "bundled (Tauri)"
 } else {
-    # setup.sh installs Node LTS (v22) via nvm. We enforce the same range here:
-    # Vite 8 requires Node ^20.19.0 || >=22.12.0, npm >= 11.
-    $NeedNode = $true
-    try {
-        $NodeVersion = (node -v 2>$null)
-        $NpmVersion = (npm -v 2>$null)
-        if ($NodeVersion -and $NpmVersion) {
-            $NodeParts = ($NodeVersion -replace 'v','').Split('.')
-            $NodeMajor = [int]$NodeParts[0]
-            $NodeMinor = [int]$NodeParts[1]
-            $NpmMajor = [int]$NpmVersion.Split('.')[0]
-
-            # Vite 8: ^20.19.0 || >=22.12.0
-            $NodeOk = ($NodeMajor -eq 20 -and $NodeMinor -ge 19) -or
-                      ($NodeMajor -eq 22 -and $NodeMinor -ge 12) -or
-                      ($NodeMajor -ge 23)
-            if ($NodeOk -and $NpmMajor -ge 11) {
-                substep "Node $NodeVersion and npm $NpmVersion already meet requirements."
-                $NeedNode = $false
-            } else {
-                substep "Node $NodeVersion / npm $NpmVersion too old." "Yellow"
-            }
-        }
-    } catch {
-        substep "Node/npm not found." "Yellow"
-    }
-
-    if ($NeedNode) {
-        substep "installing Node.js LTS via winget..."
-        try {
-            winget install OpenJS.NodeJS.LTS --source winget --accept-package-agreements --accept-source-agreements
-            Refresh-Environment
-        } catch {
-            Write-Host "[ERROR] Could not install Node.js automatically." -ForegroundColor Red
-            Write-Host "Please install Node.js >= 20 from https://nodejs.org/" -ForegroundColor Red
-            exit 1
-        }
-    }
-
-    step "node" "$(node -v) | npm $(npm -v)"
-
-    # ── bun (optional, faster package installs) ──
-    # Installed via npm — Node is already guaranteed above. Works on all platforms.
-    if (-not (Get-Command bun -ErrorAction SilentlyContinue)) {
-        substep "installing bun (faster frontend package installs)..."
-        $prevEAP_bun = $ErrorActionPreference
-        $ErrorActionPreference = "Continue"
-        # --allow-scripts=bun: npm >=11.16 gates install scripts and bun's
-        # postinstall fetches its binary; without it the install is a broken stub.
-        Invoke-SetupCommand { npm install -g bun --allow-scripts=bun } | Out-Null
-        $ErrorActionPreference = $prevEAP_bun
-        Refresh-Environment
-        if (Get-Command bun -ErrorAction SilentlyContinue) {
-            substep "bun installed ($(bun --version))"
-        } else {
-            substep "bun install skipped (npm will be used instead)"
-        }
+    # Stale npm used to trigger system Node changes. Keep this process-local
+    # and provision only when the build or OXC needs Node.
+    if ($NodeSource -eq "system") {
+        substep "Node $SysNodeVersion and npm $SysNpmVersion already meet requirements (system)."
+    } elseif ($NodeSource -eq "bundled") {
+        substep "Node='$SysNodeVersion' npm='$SysNpmVersion' unsuitable; will use an isolated Node (system left untouched)."
     } else {
-        substep "bun already installed ($(bun --version))"
+        substep "Node='$SysNodeVersion' npm='$SysNpmVersion' unsuitable and UNSLOTH_SKIP_NODE_INSTALL set; frontend build will be skipped." "Yellow"
     }
 }
 
@@ -1630,12 +1652,14 @@ function Add-PythonDirToProcessPath {
 }
 
 # Reuse the install.ps1 / venv interpreter before any system probe.
+$ValidatedSetupPython = $null
 if ($ReusedSetupPython) {
     $_reusedVer = Get-CompatiblePythonVersion $ReusedSetupPython
     if ($_reusedVer -and -not (Test-IsConda $ReusedSetupPython)) {
         $DetectedPyVer = $_reusedVer
         Add-PythonDirToProcessPath $ReusedSetupPython
         $PythonOk = $true
+        $ValidatedSetupPython = $ReusedSetupPython
     }
 }
 
@@ -1766,6 +1790,86 @@ if ($IsPipInstall) {
         substep "Frontend source changed since last build -- rebuilding..." "Yellow"
     }
 }
+
+# Provision Node when the frontend build OR the OXC runtime install needs it (the
+# OXC `npm install` runs whenever its dir exists, regardless of dist staleness);
+# never eagerly. System Node is used read-only; the isolated one is ours.
+$NeedNodeForSetup = (-not $IsPipInstall) -and ($NeedFrontendBuild -or (Test-Path $OxcValidatorDir))
+if ($NeedNodeForSetup) {
+    if ($NodeSource -eq "skip") {
+        if ($NeedFrontendBuild) {
+            step "frontend" "skipped (no suitable Node; system left untouched)" "Yellow"
+        }
+        $NeedFrontendBuild = $false
+        substep "found Node='$SysNodeVersion' npm='$SysNpmVersion'; Studio needs Node >=20.19/22.12/23 and npm >= 11" "Yellow"
+        substep "install a suitable Node + npm, or unset UNSLOTH_SKIP_NODE_INSTALL to let Unsloth manage an isolated Node" "Yellow"
+    } elseif ($NodeSource -eq "bundled") {
+        New-Item -ItemType Directory -Force -Path $NodeParent -ErrorAction SilentlyContinue | Out-Null
+        # Minimal ownership guard for a custom-home dir (the full Studio-owned
+        # helpers are defined later); never os.replace over a user-owned dir.
+        if ($NodeOverride -and (Test-Path -LiteralPath $NodeDir -PathType Container)) {
+            $nodeOwnedMarker = Join-Path $NodeDir ".unsloth-studio-owned"
+            $nodeMeta = Join-Path $NodeDir "UNSLOTH_NODE_PREBUILT_INFO.json"
+            if (-not (Test-Path -LiteralPath $nodeOwnedMarker) -and -not (Test-Path -LiteralPath $nodeMeta)) {
+                Write-Host "[ERROR] $NodeDir already exists and is not a Studio-owned Node install." -ForegroundColor Red
+                Write-Host "        Move it aside or choose an empty UNSLOTH_STUDIO_HOME before re-running." -ForegroundColor Yellow
+                exit 1
+            }
+        }
+        substep "installing isolated Node (system Node/npm left untouched)..."
+        # The main Python resolver runs later; bare `python` may be a Store stub or
+        # absent this early, so prefer the validated handed-off/venv Python.
+        $NodeInstallPython = if ($ValidatedSetupPython) { $ValidatedSetupPython } else { "python" }
+        $nodeOut = & $NodeInstallPython "$PSScriptRoot\install_node_prebuilt.py" --install-dir $NodeDir 2>&1 | Out-String
+        $nodeExit = $LASTEXITCODE
+        if ($nodeExit -eq 3) {
+            Write-Host $nodeOut -ForegroundColor DarkGray
+            step "node" "install blocked by another active Studio install" "Red"
+            exit 3
+        } elseif ($nodeExit -ne 0) {
+            Write-Host $nodeOut -ForegroundColor DarkGray
+            Write-Host "[ERROR] Could not install an isolated Node automatically." -ForegroundColor Red
+            Write-Host "        Install Node >= 20.19 (with npm >= 11) from https://nodejs.org/ and re-run, or check your network." -ForegroundColor Yellow
+            exit 1
+        }
+        if ($NodeOverride -and (Test-Path -LiteralPath $NodeDir -PathType Container)) {
+            New-Item -ItemType File -Force -Path (Join-Path $NodeDir ".unsloth-studio-owned") -ErrorAction SilentlyContinue | Out-Null
+        }
+        # Windows Node zip ships node.exe + npm.cmd at the root; prepend it (this
+        # process only) so node/npm/bun resolve here for the build.
+        $env:PATH = "$NodeDir;" + $env:PATH
+        # Keep npm and module resolution inside the isolated Node.
+        $env:NPM_CONFIG_PREFIX = $NodeDir
+        $env:npm_config_prefix = $NodeDir
+        Remove-Item Env:NODE_PATH -ErrorAction SilentlyContinue
+        step "node" "$(node -v) | npm $(npm -v) (isolated)"
+
+        # bun (optional, faster installs); npm -g stays in the isolated prefix.
+        if (-not (Get-Command bun -ErrorAction SilentlyContinue)) {
+            substep "installing bun (faster frontend package installs)..."
+            $prevEAP_bun = $ErrorActionPreference
+            $ErrorActionPreference = "Continue"
+            Invoke-SetupCommand { npm install -g bun --allow-scripts=bun } | Out-Null
+            $ErrorActionPreference = $prevEAP_bun
+            Refresh-Environment
+            # Refresh-Environment rebuilds PATH (Machine;User;current), demoting the
+            # isolated-Node prepend; re-prepend so it wins for the build and OXC step.
+            $env:PATH = "$NodeDir;" + $env:PATH
+            $env:NPM_CONFIG_PREFIX = $NodeDir
+            $env:npm_config_prefix = $NodeDir
+            Remove-Item Env:NODE_PATH -ErrorAction SilentlyContinue
+            if (Get-Command bun -ErrorAction SilentlyContinue) {
+                substep "bun installed ($(bun --version))"
+            } else {
+                substep "bun install skipped (npm will be used instead)"
+            }
+        }
+    } else {
+        # system Node already satisfies requirements; use it as-is. We do NOT
+        # install global packages (bun) here -- the build falls back to npm.
+        step "node" "$SysNodeVersion | npm $SysNpmVersion (system)"
+    }
+}
 if ($NeedFrontendBuild -and -not $IsPipInstall) {
     Write-Host ""
     substep "building frontend..."
@@ -1876,7 +1980,7 @@ if ($NeedFrontendBuild -and -not $IsPipInstall) {
     }
 }
 
-if (Test-Path $OxcValidatorDir) {
+if ((Test-Path $OxcValidatorDir) -and $NodeSource -ne "skip" -and (Get-Command npm -ErrorAction SilentlyContinue)) {
     substep "installing OXC validator runtime..."
     $prevEAP_oxc = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
@@ -1891,6 +1995,10 @@ if (Test-Path $OxcValidatorDir) {
     Pop-Location
     $ErrorActionPreference = $prevEAP_oxc
     step "oxc runtime" "installed"
+} elseif ((Test-Path $OxcValidatorDir) -and $NodeSource -ne "skip") {
+    # No npm on PATH (e.g. a pip install with no system Node and no isolated Node
+    # provisioned). Skip rather than abort; the runtime resolver degrades. Mirrors setup.sh.
+    substep "OXC validator runtime skipped (no npm found); code validation degrades until Node is available" "Yellow"
 }
 
 # ==========================================================================

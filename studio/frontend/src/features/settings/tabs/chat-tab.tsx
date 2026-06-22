@@ -207,6 +207,12 @@ export function ChatTab() {
   const setConfirmDeleteChats = useChatPreferencesStore(
     (state) => state.setConfirmDeleteChats,
   );
+  const showModelDisclaimer = useChatPreferencesStore(
+    (state) => state.showModelDisclaimer,
+  );
+  const setShowModelDisclaimer = useChatPreferencesStore(
+    (state) => state.setShowModelDisclaimer,
+  );
 
   useEffect(() => {
     void countAllChats().then(setCount);
@@ -397,6 +403,15 @@ export function ChatTab() {
             />
           </SettingsRow>
         ))}
+        <SettingsRow
+          label={t("settings.chat.modelDisclaimer")}
+          description={t("settings.chat.modelDisclaimerDescription")}
+        >
+          <Switch
+            checked={showModelDisclaimer}
+            onCheckedChange={setShowModelDisclaimer}
+          />
+        </SettingsRow>
       </SettingsSection>
 
       <SettingsSection title={t("settings.chat.artifacts.title")}>

@@ -114,6 +114,7 @@ class VisionImageAdapter implements AttachmentAdapter {
       externalModelLabel,
       loadedIsMultimodal: state.loadedIsMultimodal,
       modelLoaded,
+      loadError: state.lastModelLoadError,
     });
     if (unavailableReason) {
       toast.error(unavailableReason);
