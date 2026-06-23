@@ -190,13 +190,11 @@ class _DummyTrainer:
         ]
         for extra in optional_flags:
             try:
-                self.data_collator = DataCollatorForLanguageModeling(
-                    **collator_args, **extra
-                )
+                self.data_collator = DataCollatorForLanguageModeling(**collator_args, **extra)
                 break
             except TypeError:
                 continue
-        # Ensure attributes exist even if the constructor did not accept them
+        # Ensure attributes exist even if the constructor rejected the flags.
         if not hasattr(self.data_collator, "padding_free"):
             self.data_collator.padding_free = True
         if not hasattr(self.data_collator, "return_position_ids"):
@@ -223,7 +221,7 @@ def test_enable_sample_packing():
 
     enable_sample_packing(model, trainer)
 
-    # model hierarchy should now allow packed overlength inputs
+    # model hierarchy now allows packed overlength inputs
     assert getattr(model, "_unsloth_allow_packed_overlength") is True
     assert getattr(model.child, "_unsloth_allow_packed_overlength") is True
 
@@ -245,12 +243,9 @@ def test_enable_sample_packing():
     ]
     batch = collator.torch_call(examples)
 
-    # packed lengths are aggregated into a single tensor
+    # packed lengths aggregated into one tensor
     assert "packed_seq_lengths" in batch
-    assert torch.equal(
-        batch["packed_seq_lengths"],
-        torch.tensor([2, 1, 3], dtype = torch.int32),
-    )
+    assert torch.equal(batch["packed_seq_lengths"], torch.tensor([2, 1, 3], dtype = torch.int32))
 
     assert batch["input_ids"].shape == (1, 6)
     expected_positions = torch.tensor([0, 1, 0, 0, 1, 2], dtype = torch.long)
@@ -279,10 +274,7 @@ def test_enable_sample_packing_trl_collator(tmp_path):
     batch = trainer.data_collator.torch_call(examples)
 
     assert batch["input_ids"].shape == (1, 6)
-    assert torch.equal(
-        batch["packed_seq_lengths"],
-        torch.tensor([2, 1, 3], dtype = torch.int32),
-    )
+    assert torch.equal(batch["packed_seq_lengths"], torch.tensor([2, 1, 3], dtype = torch.int32))
 
     expected_positions = torch.tensor([0, 1, 0, 0, 1, 2], dtype = torch.long)
     assert torch.equal(batch["position_ids"].view(-1)[:6], expected_positions)
@@ -312,10 +304,7 @@ def test_enable_padding_free_metadata():
         {"input_ids": [3, 4]},
     ]
     batch = collator.torch_call(examples)
-    assert torch.equal(
-        batch["packed_seq_lengths"],
-        torch.tensor([3, 2], dtype = torch.int32),
-    )
+    assert torch.equal(batch["packed_seq_lengths"], torch.tensor([3, 2], dtype = torch.int32))
     assert trainer.args.remove_unused_columns is False
 
 
@@ -334,10 +323,7 @@ def test_packing_sdpa(tmp_path):
     assert "position_ids" in batch
     flat_positions = batch["position_ids"].reshape(-1)[:packed_tokens]
     expected_positions = torch.cat(
-        [
-            torch.arange(length, dtype = torch.long)
-            for length in batch["packed_seq_lengths"].tolist()
-        ]
+        [torch.arange(length, dtype = torch.long) for length in batch["packed_seq_lengths"].tolist()]
     )
     assert torch.equal(flat_positions.cpu(), expected_positions)
     inputs = _trim_batch_to_total_tokens(batch, packed_tokens)
@@ -352,7 +338,13 @@ def test_packing_sdpa(tmp_path):
     mask_calls = []
     captured_loss_labels = {}
 
-    def _capture_mask(seq_info, dtype, device, *, sliding_window = None):
+    def _capture_mask(
+        seq_info,
+        dtype,
+        device,
+        *,
+        sliding_window = None,
+    ):
         mask_calls.append(tuple(seq_info[0].tolist()))
         return original_mask(
             seq_info,
@@ -366,12 +358,8 @@ def test_packing_sdpa(tmp_path):
         return torch.zeros((), device = logits.device, dtype = logits.dtype)
 
     with ExitStack() as stack:
-        stack.enter_context(
-            patch.object(attention_dispatch_utils, "HAS_FLASH_ATTENTION", False)
-        )
-        stack.enter_context(
-            patch.object(attention_dispatch_utils, "HAS_XFORMERS", False)
-        )
+        stack.enter_context(patch.object(attention_dispatch_utils, "HAS_FLASH_ATTENTION", False))
+        stack.enter_context(patch.object(attention_dispatch_utils, "HAS_XFORMERS", False))
         stack.enter_context(
             patch.object(
                 attention_dispatch_utils,
@@ -394,10 +382,7 @@ def test_packing_sdpa(tmp_path):
     assert "labels" in captured_loss_labels
     flat_loss_labels = captured_loss_labels["labels"].reshape(-1)
     boundaries = (
-        torch.cumsum(
-            batch["packed_seq_lengths"].to(device = "cpu", dtype = torch.long), dim = 0
-        )
-        - 1
+        torch.cumsum(batch["packed_seq_lengths"].to(device = "cpu", dtype = torch.long), dim = 0) - 1
     )
     for idx in boundaries.tolist():
         assert flat_loss_labels[idx].item() == -100

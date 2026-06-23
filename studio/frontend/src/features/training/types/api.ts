@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import type { S3Config } from "@/types/training";
+
 export interface TrainingStartRequest {
   model_name: string;
   training_type: string;
@@ -10,14 +12,19 @@ export interface TrainingStartRequest {
   vision_image_size?: number | null;
   /** Allow loading models with custom code. Only enable for repos you trust. */
   trust_remote_code?: boolean;
+  /** sha256 fingerprint pinning user approval of this exact custom-code version. */
+  approved_remote_code_fingerprint?: string | null;
   hf_dataset: string | null;
   subset: string | null;
   train_split: string | null;
   eval_split: string | null;
+  dataset_streaming: boolean;
   dataset_slice_start: number | null;
   dataset_slice_end: number | null;
   local_datasets: string[];
   local_eval_datasets: string[];
+  /** S3 bucket configuration; only sent when the dataset source is "s3". */
+  s3_config?: S3Config | null;
   format_type: string;
   custom_format_mapping?: Record<string, unknown> | null;
   num_epochs: number;
@@ -33,6 +40,7 @@ export interface TrainingStartRequest {
   eval_steps: number;
   weight_decay: number;
   max_grad_norm: number;
+  max_grad_value?: number | null;
   random_seed: number;
   packing: boolean;
   optim: string;

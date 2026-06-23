@@ -28,12 +28,12 @@ export function buildArtifactSrcDoc(code: string): string {
   return `${code}\n${resizeScript}`;
 }
 
-// Preview iframes intentionally omit allow-downloads: generated artifacts can
+// Preview iframes intentionally omit allow-downloads: generated canvases can
 // offer their own UI, but downloads must go through Studio's explicit
 // copy/download controls outside the no-same-origin sandbox.
 export function ArtifactHtmlFrame({
   code,
-  title = "HTML artifact preview",
+  title = "HTML canvas preview",
   className,
   fill = false,
 }: {
@@ -60,9 +60,8 @@ export function ArtifactHtmlFrame({
     return apiUrl(`/api/inference/artifact-preview-frame?${query.toString()}`);
   }, [allowNetworkAccess, code]);
   const postArtifactHtml = useCallback(() => {
-    // The sandboxed frame intentionally has an opaque origin ("null").
-    // A wildcard target is required here;
-    // the payload is sent only to this iframe's contentWindow.
+    // Sandboxed frame has an opaque origin ("null"), so a wildcard target is
+    // required; the payload only reaches this iframe's contentWindow.
     iframeRef.current?.contentWindow?.postMessage(
       { type: "unsloth:artifact-html", html: artifactHtml },
       "*",

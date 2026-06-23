@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 # Unit tests for get_torch_index_url() from install.sh
 set -e
 
@@ -13,6 +15,10 @@ FAIL=0
 _FUNC_FILE=$(mktemp)
 _FAKE_SMI_DIR=$(mktemp -d)
 {
+    sed -n '/^_run_bounded()/,/^}/p' "$INSTALL_SH"
+    echo ""
+    sed -n '/^_cvd_hides_nvidia()/,/^}/p' "$INSTALL_SH"
+    echo ""
     sed -n '/^_has_amd_rocm_gpu()/,/^}/p' "$INSTALL_SH"
     echo ""
     sed -n '/^_has_usable_nvidia_gpu()/,/^}/p' "$INSTALL_SH"
@@ -107,7 +113,7 @@ MOCK
 # Build a minimal tools directory with symlinks to essential commands
 # (uname, grep, head, etc.) but WITHOUT nvidia-smi or amd-smi.
 _TOOLS_DIR=$(mktemp -d)
-for _cmd in uname grep sed head sh bash cat awk printf; do
+for _cmd in uname grep sed head sh bash cat awk printf tr; do
     _real=$(command -v "$_cmd" 2>/dev/null || true)
     [ -n "$_real" ] && ln -sf "$_real" "$_TOOLS_DIR/$_cmd"
 done
@@ -116,12 +122,19 @@ done
 # $1 = directory with mock nvidia-smi (prepended to PATH), or "none" for no-GPU test
 run_func() {
     _mock_dir="$1"
+    # Default: strip CUDA_VISIBLE_DEVICES so the host environment cannot leak
+    # in; a second argument sets it explicitly (hidden-GPU scenarios).
+    if [ "$#" -ge 2 ]; then
+        _cvd_setup="export CUDA_VISIBLE_DEVICES='$2'"
+    else
+        _cvd_setup="unset CUDA_VISIBLE_DEVICES"
+    fi
     if [ "$_mock_dir" = "none" ]; then
         # Minimal PATH with only basic tools, no nvidia-smi anywhere
-        PATH="$_TOOLS_DIR" bash -c ". '$_FUNC_FILE'; get_torch_index_url" 2>/dev/null
+        PATH="$_TOOLS_DIR" bash -c "$_cvd_setup; . '$_FUNC_FILE'; get_torch_index_url" 2>/dev/null
     else
         # Put mock nvidia-smi dir first, then basic tools
-        PATH="$_mock_dir:$_TOOLS_DIR" bash -c ". '$_FUNC_FILE'; get_torch_index_url" 2>/dev/null
+        PATH="$_mock_dir:$_TOOLS_DIR" bash -c "$_cvd_setup; . '$_FUNC_FILE'; get_torch_index_url" 2>/dev/null
     fi
 }
 
@@ -330,6 +343,40 @@ rm -rf "$_dir"
 _dir=$(make_mock_smi "13.7")
 _result=$(run_func "$_dir")
 assert_eq "CUDA Version 13.7 -> cu130" "https://download.pytorch.org/whl/cu130" "$_result"
+rm -rf "$_dir"
+
+# 34) CUDA_VISIBLE_DEVICES="" hides the NVIDIA GPU -> cpu (no AMD present)
+_dir=$(make_mock_smi "12.8")
+_result=$(run_func "$_dir" "")
+assert_eq "CVD='' hides NVIDIA -> cpu" "https://download.pytorch.org/whl/cpu" "$_result"
+rm -rf "$_dir"
+
+# 35) CUDA_VISIBLE_DEVICES=-1 hides the NVIDIA GPU -> cpu (no AMD present)
+_dir=$(make_mock_smi "12.8")
+_result=$(run_func "$_dir" "-1")
+assert_eq "CVD=-1 hides NVIDIA -> cpu" "https://download.pytorch.org/whl/cpu" "$_result"
+rm -rf "$_dir"
+
+# 36) Mixed AMD+NVIDIA host with NVIDIA hidden -> ROCm route is restored
+_cuda_dir=$(make_mock_smi "12.6")
+_amd_dir=$(make_mock_amd_smi "6.4")
+_combined_dir=$(mktemp -d)
+ln -sf "$_cuda_dir/nvidia-smi" "$_combined_dir/nvidia-smi"
+ln -sf "$_amd_dir/amd-smi" "$_combined_dir/amd-smi"
+_result=$(run_func "$_combined_dir" "-1")
+assert_eq "CUDA+ROCm with CVD=-1 -> rocm6.4" "https://download.pytorch.org/whl/rocm6.4" "$_result"
+rm -rf "$_cuda_dir" "$_amd_dir" "$_combined_dir"
+
+# 37) CUDA_VISIBLE_DEVICES=0 (a visible device) must NOT hide the GPU
+_dir=$(make_mock_smi "12.8")
+_result=$(run_func "$_dir" "0")
+assert_eq "CVD=0 keeps NVIDIA -> cu128" "https://download.pytorch.org/whl/cu128" "$_result"
+rm -rf "$_dir"
+
+# 38) Whitespace-padded "-1" still hides the GPU
+_dir=$(make_mock_smi "12.8")
+_result=$(run_func "$_dir" " -1 ")
+assert_eq "CVD=' -1 ' hides NVIDIA -> cpu" "https://download.pytorch.org/whl/cpu" "$_result"
 rm -rf "$_dir"
 
 rm -f "$_FUNC_FILE"

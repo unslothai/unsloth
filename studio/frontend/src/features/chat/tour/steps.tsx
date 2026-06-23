@@ -27,20 +27,21 @@ export function buildChatTourSteps({
       title: "Pick a model",
       body: (
         <>
-          This selects what’s loaded for inference. Hub = base models. Fine-tuned
-          = trained Studio outputs, including LoRA adapters and full finetunes.
+          Selects what’s loaded for inference. Recommended is Unsloth’s curated
+          base models; On Device is your downloads and fine-tuned outputs (LoRA
+          adapters and full finetunes).
         </>
       ),
     },
     {
       id: "model-tabs",
       target: "chat-model-selector-popover",
-      title: "Two tabs",
+      title: "Find a model",
       body: (
         <>
-          Hub: search Hugging Face models. Fine-tuned: local Studio outputs you’ve
-          trained or exported. If results look off, compare base vs fine-tuned
-          outputs to see what changed.
+          Search Unsloth’s models, or hit Search Hub for all of Hugging Face.
+          Switch Recommended and On Device, filter by format, and sort by
+          trending or recent. An OOM tag means it won’t fit in your VRAM.
         </>
       ),
       onEnter: openModelSelector,
@@ -59,11 +60,23 @@ export function buildChatTourSteps({
       onEnter: openSettings,
       onExit: closeSettings,
     },
+    {
+      id: "plus-menu",
+      target: "chat-plus-menu",
+      title: "The + menu",
+      body: (
+        <>
+          Everything else lives here: attach photos and files, reuse saved
+          prompts, toggle tools and MCP, start a side-by-side compare, and
+          export the chat.
+        </>
+      ),
+    },
   ];
 
   if (canCompare) {
-    // Compare now lives in the + menu, so there is no sidebar button to anchor
-    // to; the view step enters compare on its own and explains it.
+    // Compare lives in the + menu (no sidebar button to anchor to); this step
+    // enters compare on its own and explains it.
     steps.push({
       id: "compare-view",
       target: "chat-compare-view",

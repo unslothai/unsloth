@@ -10,7 +10,7 @@ export function ProfileTab() {
   return (
     <div className="flex flex-col gap-6">
       <header className="flex flex-col gap-1">
-        <h1 className="text-lg font-semibold font-heading">
+        <h1 className="text-xl font-semibold font-heading">
           {t("settings.profile.title")}
         </h1>
         <p className="text-xs text-muted-foreground">

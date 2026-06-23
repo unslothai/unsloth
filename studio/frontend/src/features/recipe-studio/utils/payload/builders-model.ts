@@ -8,11 +8,10 @@ export function buildModelProvider(
   config: ModelProviderConfig,
   errors: string[],
 ): Record<string, unknown> {
-  // Local providers do not use any of the advanced request overrides -
-  // the backend overrides endpoint/api_key/provider_type and strips the
-  // extra fields in _inject_local_providers. Skip parsing the hidden
-  // JSON inputs here so imported or hydrated recipes with stale extra
-  // headers/body cannot block the client-side validation step.
+  // Local providers ignore advanced request overrides: the backend overrides
+  // endpoint/api_key/provider_type and strips extras in _inject_local_providers.
+  // Skip parsing hidden JSON inputs so stale headers/body in imported recipes
+  // can't block client-side validation.
   if (config.is_local === true) {
     return {
       name: config.name,
@@ -28,6 +27,7 @@ export function buildModelProvider(
     };
   }
 
+  const providerType = config.provider_type.trim().toLowerCase() || "openai";
   const extraHeaders = parseJsonObject(
     config.extra_headers,
     `Provider ${config.name} extra_headers`,
@@ -42,7 +42,7 @@ export function buildModelProvider(
     name: config.name,
     endpoint: config.endpoint,
     // biome-ignore lint/style/useNamingConvention: api schema
-    provider_type: "openai",
+    provider_type: providerType,
     // biome-ignore lint/style/useNamingConvention: api schema
     api_key_env: config.api_key_env?.trim() || undefined,
     // biome-ignore lint/style/useNamingConvention: api schema

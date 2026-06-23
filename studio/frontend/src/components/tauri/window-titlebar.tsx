@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { SIDEBAR_WIDTH, SIDEBAR_WIDTH_ICON } from "@/components/ui/sidebar";
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
 import { isTauri } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
@@ -137,7 +138,7 @@ export function WindowTitlebar({
       const appWindow = await getAppWindow();
       setMaximized(await appWindow.isMaximized());
     } catch {
-      // If a window permission is not ready yet, keep the previous visual state.
+      // Window permission not ready yet: keep previous visual state.
     }
   }, [enabled]);
 
@@ -243,8 +244,11 @@ export function WindowTitlebar({
       >
         {showSidebarSurface && (
           <div
-            className="h-full shrink-0 border-r border-sidebar-border bg-sidebar"
-            style={{ width: pinned ? "16rem" : "3rem" }}
+            className={cn(
+              "h-full shrink-0 border-r border-sidebar-border dark:border-r-0",
+              pinned ? "bg-sidebar" : "bg-white dark:bg-background",
+            )}
+            style={{ width: pinned ? SIDEBAR_WIDTH : SIDEBAR_WIDTH_ICON }}
             onMouseDown={handleDragMouseDown}
             onDoubleClick={handleDragDoubleClick}
             aria-hidden="true"
