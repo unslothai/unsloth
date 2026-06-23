@@ -16,6 +16,7 @@ def _loaded_backend(*, load_mmproj: bool = True) -> LlamaCppBackend:
     backend._requested_n_ctx = 0
     backend._cache_type_kv = "q8_0"
     backend._requested_spec_mode = "auto"
+    backend._spec_fallback_reason = None
     backend._speculative_type = "draft-mtp"
     backend._spec_draft_n_max = 2
     backend._tensor_parallel = False
