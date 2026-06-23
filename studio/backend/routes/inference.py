@@ -5455,7 +5455,11 @@ async def openai_chat_completions(
                             usage = event.get("usage")
                             finish = event.get("finish_reason")
                         elif event.get("type") == "content":
-                            # Cumulative per turn, so the last one is the final answer.
+                            # Content is cumulative within a turn and resets
+                            # between turns, so the last event holds the final
+                            # turn's text. As in the safetensors drain, a visible
+                            # preamble emitted before a tool call (its own earlier
+                            # turn) isn't carried -- only the final turn is.
                             full_text = _strip_tool_xml_for_display(
                                 event.get("text", ""),
                                 auto_heal_tool_calls = _gguf_auto_heal_tool_calls,
