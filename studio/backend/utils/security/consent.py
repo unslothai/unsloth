@@ -85,8 +85,13 @@ def _config_has_auto_map(model_name: str, hf_token: Optional[str] = None) -> Opt
     """Whether any config (model/tokenizer/processor) declares an ``auto_map`` the load
     would execute. Reads raw JSON with ``hf_token``; returns None when a config is
     unreadable (transient/auth) so the caller treats it as "unknown" and scans, False
-    when the repo genuinely ships none. GGUF is False (llama.cpp never runs auto_map);
-    this is the single chokepoint for that rule, shared by validate / scan / worker.
+    when the repo genuinely ships none.
+
+    GGUF-inertness is the LOADER's property, decided upstream by the caller's ``is_gguf``
+    check, not here. Every path that reaches this helper (export, training, non-GGUF
+    inference) loads via ``from_pretrained``, which imports ``auto_map`` even for a
+    ``.gguf``-only repo, so a GGUF-classified repo id MUST still be scanned. Only a direct
+    ``.gguf`` FILE reference is inert (a genuine single-file llama.cpp load).
     """
     # A direct .gguf FILE loads via llama.cpp (auto_map inert). A bare repo id ending in
     # .gguf can still ship safetensors + auto_map, so it falls through to the scan.
@@ -96,11 +101,6 @@ def _config_has_auto_map(model_name: str, hf_token: Optional[str] = None) -> Opt
     if configs is None:
         return None
     if not any(bool((cfg or {}).get("auto_map")) for cfg in configs):
-        return False
-    # auto_map present but a GGUF repo -> inert. Checked only when auto_map exists, so
-    # normal models skip the extra listing.
-    if _is_gguf_repo(model_name, hf_token):
-        logger.debug("Ignoring auto_map for GGUF repo '%s' (llama.cpp never runs it).", model_name)
         return False
     return True
 
@@ -122,42 +122,6 @@ def _is_direct_gguf_file_ref(model_name: str) -> bool:
         pass
     # Remote: a file reference is repo_id ("org/name") + filename => >= 2 slashes.
     return name.count("/") >= 2
-
-
-# Weight formats transformers can load (and thus run auto_map for). A repo shipping any
-# of these is not GGUF-only -- the user could load it through transformers -- so consent
-# still applies even if it also ships a .gguf.
-_TRANSFORMERS_WEIGHT_SUFFIXES = (
-    ".safetensors",
-    ".bin",
-    ".pt",
-    ".pth",
-    ".h5",
-    ".msgpack",
-    ".onnx",
-    ".ckpt",
-)
-
-
-def _is_gguf_repo(model_name: str, hf_token: Optional[str] = None) -> bool:
-    """Whether a remote repo loads only through llama.cpp (GGUF weights and NO
-    transformers-loadable weights), making its config inert. A repo that also ships
-    transformers weights is NOT GGUF (auto_map could run, so still gate). A listing
-    failure is treated as "not known-GGUF" (fall through to scan).
-    """
-    try:
-        from utils.paths import is_local_path
-
-        if is_local_path(model_name):
-            return False
-        from huggingface_hub import list_repo_files
-
-        files = [f.lower() for f in list_repo_files(model_name, token = hf_token)]
-        has_gguf = any(f.endswith(".gguf") for f in files)
-        has_transformers_weights = any(f.endswith(_TRANSFORMERS_WEIGHT_SUFFIXES) for f in files)
-        return has_gguf and not has_transformers_weights
-    except Exception:
-        return False
 
 
 def _load_remote_code_configs(model_name: str, hf_token: Optional[str] = None) -> Optional[list]:
@@ -210,6 +174,7 @@ def evaluate_remote_code_consent(
     trust_remote_code: bool,
     approved_fingerprint: Optional[str] = None,
     trusted_org: Optional[bool] = None,
+    subject: Optional[str] = None,
 ) -> RemoteCodeDecision:
     """Single-repo consent; thin wrapper over the for_targets form. ``trusted_org`` is
     accepted for backward compatibility but no longer changes the decision.
@@ -219,6 +184,7 @@ def evaluate_remote_code_consent(
         hf_token,
         trust_remote_code = trust_remote_code,
         approved_fingerprint = approved_fingerprint,
+        subject = subject,
     )
 
 
@@ -243,6 +209,7 @@ def evaluate_remote_code_consent_for_targets(
     *,
     trust_remote_code: bool,
     approved_fingerprint: Optional[str] = None,
+    subject: Optional[str] = None,
 ) -> RemoteCodeDecision:
     """Decide whether a ``trust_remote_code=True`` load may proceed, over every repo whose
     code the load would execute. A LoRA load runs adapter AND base code, so all targets
@@ -250,6 +217,11 @@ def evaluate_remote_code_consent_for_targets(
     -- one approval covers every repo, and a base-only fingerprint can't leave an
     adapter's own ``auto_map`` unreviewed. On ``blocked``, the caller surfaces
     ``response_payload()`` and retries with ``approved_fingerprint`` if the user accepts.
+
+    When ``subject`` is given, a prior approval by that user can skip the DIALOG (never the
+    scan): the stored fingerprint seeds the authoritative content check below, so an
+    unchanged repo auto-approves while any change re-prompts. A genuine approval is
+    recorded for next time.
     """
     targets = [t for t in dict.fromkeys(targets) if t]
     primary = targets[0] if targets else ""
@@ -258,6 +230,22 @@ def evaluate_remote_code_consent_for_targets(
         return RemoteCodeDecision(
             primary, False, False, None, None, "", "trust_remote_code disabled"
         )
+
+    # Persistent per-user approval: seed the stored fingerprint so the authoritative scan
+    # below auto-approves an unchanged repo (skips only the prompt, never the scan). Gated so
+    # it cannot weaken the scan: the approval must match the current scanner ruleset, and a
+    # resolvable commit SHA must match the approved revision (a moved repo re-prompts; a None
+    # SHA relies on the fingerprint). The fingerprint and the CRITICAL block still apply.
+    caller_approved_fingerprint = approved_fingerprint
+    if subject:
+        from utils.security import remote_code_approvals
+
+        _ak = remote_code_approvals.approval_target_key(targets)
+        _stored = remote_code_approvals.lookup(subject, _ak)
+        if _stored is not None and _stored.scanner_version == remote_code_approvals.SCANNER_VERSION:
+            _sha = remote_code_approvals.resolve_combined_sha(targets, hf_token)
+            if _sha is None or _sha == _stored.commit_sha:
+                approved_fingerprint = approved_fingerprint or _stored.fingerprint
 
     # Gather executable .py from every target that ships auto_map. A definitively
     # auto_map-free target contributes nothing; an unreadable config is scanned anyway.
@@ -300,8 +288,7 @@ def evaluate_remote_code_consent_for_targets(
         )
 
     if not combined:
-        # auto_map declared but no executable .py (e.g. a GGUF repo's vestigial
-        # auto_map) -> nothing to run -> allow.
+        # auto_map declared but no executable .py (e.g. GGUF repo) -> nothing to scan -> allow.
         return RemoteCodeDecision(
             primary,
             False,
@@ -343,6 +330,20 @@ def evaluate_remote_code_consent_for_targets(
             primary,
             sev,
             fingerprint[:12],
+        )
+
+    # Persist a genuine user approval (caller supplied the matching fingerprint, not a cache
+    # seed) under the current scanner version, so the unchanged repo is not re-prompted until
+    # the code or the ruleset changes.
+    if approved and subject and caller_approved_fingerprint == fingerprint:
+        from utils.security import remote_code_approvals
+        remote_code_approvals.record(
+            subject,
+            remote_code_approvals.approval_target_key(targets),
+            commit_sha = remote_code_approvals.resolve_combined_sha(targets, hf_token),
+            fingerprint = fingerprint,
+            max_severity = sev,
+            scanner_version = remote_code_approvals.SCANNER_VERSION,
         )
 
     return RemoteCodeDecision(
