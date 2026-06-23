@@ -167,8 +167,9 @@ export function ExportPage() {
   const [modelName, setModelName] = useState("");
   const [privateRepo, setPrivateRepo] = useState(false);
 
-  // Custom GGUF shard size (e.g. "2GB"); blank keeps unsloth's default.
-  const [ggufShardSize, setGgufShardSize] = useState("");
+  // GGUF shard size string sent to the backend. "0" = single file (no split,
+  // the default); a size like "2GB" splits the base conversion into shards.
+  const [ggufShardSize, setGgufShardSize] = useState("0");
 
   // Export run state lives in the global runtime store so it keeps running and
   // streaming in the background, in parallel with training and inference.
