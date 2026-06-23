@@ -1534,12 +1534,14 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   setTensorParallel: (tensorParallel) => set({ tensorParallel }),
   resetModelSettingsToLoaded: () => set((s) => loadedBaselineSettings(s)),
   applyRememberedLoadSettings: (settings) =>
+    // Coalesce every field: a blob persisted by an older/newer build can omit
+    // keys, and a raw spread would push `undefined` into fields typed non-null.
     set({
-      customContextLength: settings.contextLength,
-      kvCacheDtype: settings.kvCacheDtype,
+      customContextLength: settings.contextLength ?? null,
+      kvCacheDtype: settings.kvCacheDtype ?? null,
       speculativeType: settings.speculativeType ?? "auto",
-      specDraftNMax: settings.specDraftNMax,
-      tensorParallel: settings.tensorParallel,
+      specDraftNMax: settings.specDraftNMax ?? null,
+      tensorParallel: settings.tensorParallel ?? false,
     }),
   setLoadOnSelection: (loadOnSelection) => {
     saveBool(CHAT_LOAD_ON_SELECTION_KEY, loadOnSelection);

@@ -1208,8 +1208,8 @@ export function ChatSettingsPanel({
                       type="button"
                       onClick={() => {
                         // Persist (or clear) this model's load knobs before loading.
-                        // Save the explicit context override only (null = auto), so
-                        // restoring never forces the native context into an OOM.
+                        // Context is stored as the override (null = auto), never the
+                        // resolved native value, so restoring can't force an OOM.
                         const pid = pendingSelection
                           ? rememberedLoadSettingsKey(pendingSelection)
                           : null;

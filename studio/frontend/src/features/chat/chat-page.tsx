@@ -1279,10 +1279,9 @@ export function ChatPage({
     selectModelRef.current = selectModel;
   }, [refresh, selectModel]);
   // Load a cached autoLoad pick once its download finishes. The sheet was never
-  // opened, so on a load failure just drop the orphaned staged knobs. The
-  // restore effect already seeded this pick's saved knobs when it was staged;
-  // keepSpeculative carries the restored speculative choice across the switch
-  // (only when a config was saved -- otherwise the standing preference wins).
+  // opened, so on a load failure just drop the orphaned staged knobs. The knobs
+  // were already seeded on stage, so keepSpeculative only when a config was
+  // saved -- otherwise the standing speculative preference should win.
   autoLoadStagedRef.current = (pending) => {
     const remembered = loadRememberedLoadSettings(
       rememberedLoadSettingsKey(pending),
@@ -1663,11 +1662,9 @@ export function ChatPage({
         // reads customContextLength before checking the target is GGUF. Detach
         // (not abandon) keeps its download running.
         detachStaged();
-        // Load-on-selection skips the sheet, so seed this GGUF pick's saved load
-        // knobs (context, KV cache, speculative, …) the way the sheet's restore
-        // effect would -- otherwise a remembered config is silently ignored.
-        // keepSpeculative honors the restored speculative choice across the
-        // switch, matching the staged Load button.
+        // Load-on-selection skips the sheet, so seed the saved knobs here the
+        // way the sheet's restore effect would; otherwise keepSpeculative would
+        // reset the remembered speculative choice on the switch.
         const remembered = hasGgufSource(selection)
           ? loadRememberedLoadSettings(rememberedLoadSettingsKey(selection))
           : null;
