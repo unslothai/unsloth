@@ -59,6 +59,7 @@ function mapToViewData(
     currentEpoch: metrics.final_epoch,
     currentNumTokens: metrics.final_num_tokens ?? null,
     outputDir: run.output_dir ?? null,
+    resumedLater: run.resumed_later ?? false,
     progressPercent:
       run.total_steps && run.final_step
         ? (run.final_step / run.total_steps) * 100
@@ -95,7 +96,7 @@ export function HistoricalTrainingView({
   const [detail, setDetail] = useState<TrainingRunDetailResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // Derive loading from detail/error -- no separate state needed
+  // Derive loading from detail/error; no separate state.
   const loading = detail === null && error === null;
 
   useEffect(() => {
@@ -114,7 +115,7 @@ export function HistoricalTrainingView({
       });
     return () => {
       controller.abort();
-      // Reset on runId change so loading derives correctly for the next fetch
+      // Reset on runId change so loading derives correctly for the next fetch.
       setDetail(null);
       setError(null);
     };

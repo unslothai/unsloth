@@ -122,18 +122,13 @@ class _Builder(ast.NodeVisitor):
 
     def __init__(self):
         self.module = Scope("module", "<module>", None)
-        self.uses: list[tuple[Scope, str, int]] = []  # (scope, name, lineno) hard loads
-        self.soft_uses: list[
-            tuple[Scope, str, int]
-        ] = []  # annotations: count as "used"
-        #                                                     but never as "unresolved"
-        #                                                     (forward refs / string annos)
+        self.uses: list[tuple[Scope, str, int]] = []  # hard loads
+        # annotations: count as "used" but never as "unresolved" (forward refs)
+        self.soft_uses: list[tuple[Scope, str, int]] = []
 
     def _visit_annotation(self, node, scope: Scope) -> None:
-        """Annotation context: with `from __future__ import annotations` these are
-        never evaluated (strings), and even otherwise they routinely contain forward
-        references. Record contained names as SOFT uses so an import used only in an
-        annotation still counts as used, but a forward-ref name is never 'unresolved'."""
+        """Record annotation names as SOFT uses: an import used only in an annotation
+        counts as used, but a forward-ref name is never 'unresolved'."""
         if node is None:
             return
         for n in ast.walk(node):
@@ -166,9 +161,7 @@ class _Builder(ast.NodeVisitor):
 
     def _visit_stmt(self, node: ast.AST, scope: Scope) -> None:
         if isinstance(node, (ast.Import, ast.ImportFrom)):
-            star = isinstance(node, ast.ImportFrom) and any(
-                a.name == "*" for a in node.names
-            )
+            star = isinstance(node, ast.ImportFrom) and any(a.name == "*" for a in node.names)
             if star:
                 scope.star_import = True
             for alias in node.names:
@@ -193,7 +186,7 @@ class _Builder(ast.NodeVisitor):
             child = Scope("function", f"{scope.qualname}.{node.name}", scope)
             self._bind_type_params(node, child)
             self._bind_args(node.args, child)
-            # arg + return annotations: soft uses (may be strings / forward refs)
+            # arg + return annotations: soft uses
             for a in self._all_args(node.args):
                 self._visit_annotation(a.annotation, child)
             self._visit_annotation(getattr(node, "returns", None), child)
@@ -356,12 +349,10 @@ class _Builder(ast.NodeVisitor):
             self._bind_args(node.args, child)
             self._visit_expr(node.body, child)
             return
-        if isinstance(
-            node, (ast.ListComp, ast.SetComp, ast.GeneratorExp, ast.DictComp)
-        ):
+        if isinstance(node, (ast.ListComp, ast.SetComp, ast.GeneratorExp, ast.DictComp)):
             child = Scope("comp", f"{scope.qualname}.<comp>", scope)
             for i, gen in enumerate(node.generators):
-                # first iterable is evaluated in the enclosing scope
+                # first iterable evaluates in the enclosing scope
                 self._visit_expr(gen.iter, scope if i == 0 else child)
                 self._bind_targets(child, gen.target)
                 for cond in gen.ifs:
@@ -400,9 +391,8 @@ def _any_star(scope: Scope) -> bool:
 
 
 def _resolve(scope: Scope, name: str):
-    """LEGB resolution. Returns (status, bindings) where status in
+    """LEGB resolution. Returns (status, bindings); status in
     {'local','import','other','builtin','star','unresolved'}."""
-    # global / nonlocal redirection
     start = scope
     if name in scope.globals:
         chain = [_module_of(scope)]
@@ -447,9 +437,7 @@ def _legb_chain(scope: Scope) -> list[Scope]:
     chain = [scope]
     p = scope.parent
     while p is not None:
-        if (
-            p.kind != "class" or p.parent is None
-        ):  # module-level class never happens; keep module
+        if p.kind != "class" or p.parent is None:  # skip class scopes, keep module
             if p.kind != "class":
                 chain.append(p)
         p = p.parent
@@ -463,7 +451,7 @@ def _analyze(src: str):
     tree = ast.parse(src)
     b = _Builder()
     b.run(tree)
-    # Per-scope: unresolved load names, and import targets it resolves to.
+    # Per-scope: unresolved load names + import targets it resolves to.
     unresolved: dict[str, set[str]] = {}
     targets_by_scope: dict[str, set[str]] = {}
     target_by_use: dict[tuple[str, str], set[str]] = {}
@@ -475,7 +463,7 @@ def _analyze(src: str):
             tids = {bd.target for bd in binds if bd.target}
             targets_by_scope.setdefault(scope.qualname, set()).update(tids)
             target_by_use.setdefault((scope.qualname, name), set()).update(tids)
-    # soft uses (annotations): only contribute to "used", never to "unresolved"
+    # soft uses (annotations): contribute to "used" only, never "unresolved"
     for scope, name, _ln in b.soft_uses:
         status, binds = _resolve(scope, name)
         if status == "import":
@@ -503,7 +491,7 @@ def _analyze(src: str):
                 x.kind not in ("import", "importfrom") for x in bs
             ):
                 ambiguous.setdefault(scope.qualname, set()).add(n)
-        # scope tree isn't stored; rebuild via uses is hard. We approximate with module only.
+        # scope tree isn't stored; approximate with module only.
 
     walk_scopes(module)
     return {
@@ -532,14 +520,9 @@ def compare(before_src: str, after_src: str, path: str) -> list[tuple[str, str]]
 
     Blocker signals (precise, no relocation false-positives):
       UNRESOLVED-NEW    - a load became undefined (dangling alias / removed import).
-      NEW-UNUSED-HOIST  - a module-level import added by THIS change is resolved by
-                          NO load. A correct hoist always wires its new import to a
-                          reference; if the alias was left un-normalized OR renamed
-                          to the wrong name, the hoisted import ends up unused. This
-                          single signal catches BOTH user-described failure modes and
-                          does NOT fire for code merely relocated to another file
-                          (that removes the import, it doesn't add an unused one).
-      TARGET-CHANGED    - the same (scope, name) load resolves to a different import
+      NEW-UNUSED-HOIST  - a module-level import added by this change is resolved by
+                          NO load (un-normalized alias or wrong rename target).
+      TARGET-CHANGED    - same (scope, name) load resolves to a different import
                           target before vs after (a same-name re-point).
     """
     a = _analyze(before_src)
@@ -574,14 +557,13 @@ def compare(before_src: str, after_src: str, path: str) -> list[tuple[str, str]]
                 )
             )
 
-    # 2. HOISTED-IMPORT-UNUSED  (the core botched-hoist / wrong-rename signal)
-    #    A module-level import in AFTER that NO load resolves to, and which was
-    #    either newly added by this change OR was actually used before. Excludes:
-    #      - relocation (the import is REMOVED, so it's not in after at all)
-    #      - stable pre-existing re-exports (unused before AND after, not newly added)
+    # 2. HOISTED-IMPORT-UNUSED  (core botched-hoist / wrong-rename signal)
+    #    A module-level import in AFTER that NO load resolves to, that was either
+    #    newly added by this change OR actually used before. Excludes relocation
+    #    (import removed) and stable pre-existing re-exports.
     for n, tids in b["module_import_targets"].items():
         if tids & after_used:
-            continue  # resolved by something -> fine
+            continue  # resolved -> fine
         newly_added = bool(tids - before_module_targets)
         was_used_before = bool(tids & before_used)
         if newly_added or was_used_before:
@@ -599,9 +581,16 @@ def compare(before_src: str, after_src: str, path: str) -> list[tuple[str, str]]
             )
 
     # 3. TARGET-CHANGED (same scope+name resolves to a different import target)
+    #    Only a *swap* is dangerous: a BEFORE target that is no longer reachable in
+    #    AFTER means a reference was silently re-pointed. A pure superset growth
+    #    (tbefore <= tafter) is the benign `import pkg.subA` + `import pkg.subB`
+    #    case: both statements bind the same top-level name `pkg` to the same
+    #    package object and only *add* submodule attributes (e.g. adding
+    #    `import urllib.error` next to `import urllib.request`). Nothing the name
+    #    resolved to before is lost, so no reference is re-pointed -- skip it.
     for key, tafter in b["target_by_use"].items():
         tbefore = a["target_by_use"].get(key)
-        if tbefore and tbefore != tafter:
+        if tbefore and tbefore != tafter and (tbefore - tafter):
             findings.append(
                 (
                     "BLOCKER",
@@ -624,13 +613,10 @@ def compare(before_src: str, after_src: str, path: str) -> list[tuple[str, str]]
     for scope, names in b["ambiguous"].items():
         new = names - a["ambiguous"].get(scope, set())
         for n in sorted(new):
-            findings.append(
-                ("WARN", f"{path}: AMBIGUOUS-BIND '{n}' import+non-import in {scope}")
-            )
+            findings.append(("WARN", f"{path}: AMBIGUOUS-BIND '{n}' import+non-import in {scope}"))
 
     # 6. TARGET-MISSING (informational): a scope stopped resolving to an import
-    #    target. Real bugs are already covered above; remaining cases are code
-    #    relocated to another file (e.g. a moved helper). Shown for transparency.
+    #    target. Real bugs are covered above; remaining cases are relocated code.
     for scope, tbefore in a["targets_by_scope"].items():
         tafter = b["targets_by_scope"].get(scope, set())
         for t in sorted(tbefore - tafter):
@@ -639,9 +625,7 @@ def compare(before_src: str, after_src: str, path: str) -> list[tuple[str, str]]
                 if t in added_module_targets
                 else "  [target not re-added here -> likely relocated/deleted]"
             )
-            findings.append(
-                ("INFO", f"{path}: TARGET-MISSING {t} in scope {scope}{relocated}")
-            )
+            findings.append(("INFO", f"{path}: TARGET-MISSING {t} in scope {scope}{relocated}"))
     return findings
 
 
@@ -650,49 +634,42 @@ def compare(before_src: str, after_src: str, path: str) -> list[tuple[str, str]]
 _SELF_TESTS = {
     "dangling_alias": (
         # before: inline aliased import, used as _b
-        "import os\n"
-        "def f():\n"
-        "    import glob as _b\n"
-        "    return _b.glob('*')\n",
+        "import os\ndef f():\n    import glob as _b\n    return _b.glob('*')\n",
         # after: hoisted to canonical, but reference NOT normalized -> _b dangles
-        "import os\n" "import glob\n" "def f():\n" "    return _b.glob('*')\n",
+        "import os\nimport glob\ndef f():\n    return _b.glob('*')\n",
         "BLOCKER",
     ),
     "rename_clash": (
         # before: _b is a deliberate alias; `b` already means something else
-        "import re as _b\n" "b = 123\n" "def f():\n" "    return _b.compile('x'), b\n",
+        "import re as _b\nb = 123\ndef f():\n    return _b.compile('x'), b\n",
         # after: someone normalized _b -> b ; now f().b is the int, re is lost
-        "import re\n" "b = 123\n" "def f():\n" "    return b.compile('x'), b\n",
+        "import re\nb = 123\ndef f():\n    return b.compile('x'), b\n",
         "BLOCKER",  # TARGET-MISSING from:.. or import:re in f
     ),
     "clean_rename": (
-        "def f():\n" "    import glob as _g\n" "    return _g.glob('*')\n",
-        "import glob\n" "def f():\n" "    return glob.glob('*')\n",
+        "def f():\n    import glob as _g\n    return _g.glob('*')\n",
+        "import glob\ndef f():\n    return glob.glob('*')\n",
         None,  # expect NO blocker
     ),
     "clean_dedup_redundant": (
-        "import sys\n" "def f():\n" "    import sys\n" "    return sys.argv\n",
-        "import sys\n" "def f():\n" "    return sys.argv\n",
+        "import sys\ndef f():\n    import sys\n    return sys.argv\n",
+        "import sys\ndef f():\n    return sys.argv\n",
         None,
     ),
     "from_import_dangling": (
         # from-import alias left un-normalized
-        "def f():\n"
-        "    from importlib.metadata import version as _v\n"
-        "    return _v('x')\n",
-        "from importlib.metadata import version\n" "def f():\n" "    return _v('x')\n",
+        "def f():\n    from importlib.metadata import version as _v\n    return _v('x')\n",
+        "from importlib.metadata import version\ndef f():\n    return _v('x')\n",
         "BLOCKER",
     ),
     "local_var_clash": (
-        # _b renamed to b, but b is a LOCAL variable in f -> import silently unused
-        "def f(b):\n" "    import re as _b\n" "    return _b.compile(b)\n",
-        "import re\n"
-        "def f(b):\n"
-        "    return b.compile(b)\n",  # 'b' is the param, not the module
+        # _b renamed to b, but b is a LOCAL var in f -> import silently unused
+        "def f(b):\n    import re as _b\n    return _b.compile(b)\n",
+        "import re\ndef f(b):\n    return b.compile(b)\n",  # 'b' is the param, not the module
         "BLOCKER",
     ),
     "substring_safe": (
-        # correct _copy->copy rename while a config_copy var exists: NO false positive
+        # correct _copy->copy rename while config_copy var exists: NO false positive
         "def f(config):\n"
         "    import copy as _copy\n"
         "    config_copy = _copy.deepcopy(config)\n"
@@ -705,11 +682,8 @@ _SELF_TESTS = {
     ),
     "attr_access_not_a_use": (
         # x._b is attribute access, not a use of name _b; removing import _b is fine
-        "import os\n"
-        "def f(x):\n"
-        "    import sys as _b\n"
-        "    return x._b + _b.argv[0]\n",
-        "import os\n" "import sys\n" "def f(x):\n" "    return x._b + sys.argv[0]\n",
+        "import os\ndef f(x):\n    import sys as _b\n    return x._b + _b.argv[0]\n",
+        "import os\nimport sys\ndef f(x):\n    return x._b + sys.argv[0]\n",
         None,
     ),
 }
@@ -750,10 +724,9 @@ def _pyflakes_undefined(path: str) -> set[str] | None:
 
 
 def audit_files(paths: list[str]) -> int:
-    """Single-version robustness audit. For every file: confirm the analyzer does
-    not crash, then cross-check its 'unresolved' names against pyflakes. Any name
-    the resolver flags that pyflakes does NOT call undefined is a tool FALSE
-    POSITIVE (a resolver gap to fix)."""
+    """Single-version robustness audit: confirm the analyzer doesn't crash, then
+    cross-check its 'unresolved' names against pyflakes. A name the resolver flags
+    that pyflakes accepts is a tool false positive."""
     n_files = n_err = n_fp = n_syntax = 0
     fp_detail: dict[str, set[str]] = {}
     err_detail: dict[str, str] = {}
@@ -797,9 +770,7 @@ def audit_files(paths: list[str]) -> int:
     ok = n_err == 0 and n_fp == 0
     print(
         "\nAUDIT:",
-        "ROBUST (no crashes, no false positives vs pyflakes)"
-        if ok
-        else "NEEDS WORK (see above)",
+        "ROBUST (no crashes, no false positives vs pyflakes)" if ok else "NEEDS WORK (see above)",
     )
     return 0 if ok else 1
 
@@ -835,18 +806,12 @@ def main() -> int:
         blockers = [f for f in findings if f[0] == "BLOCKER"]
         warns = [f for f in findings if f[0] == "WARN"]
         infos = [f for f in findings if f[0] == "INFO"]
-        status = (
-            "CLEAN"
-            if not blockers and not warns
-            else ("BLOCKERS" if blockers else "WARNINGS")
-        )
+        status = "CLEAN" if not blockers and not warns else ("BLOCKERS" if blockers else "WARNINGS")
         print(f"\n=== {path}: {status} ===")
         for sev, m in blockers + warns + infos:
             print(f"  [{sev}] {m}")
         any_blocker = any_blocker or bool(blockers)
-    print(
-        "\nOVERALL:", "FAIL (blockers found)" if any_blocker else "PASS (no blockers)"
-    )
+    print("\nOVERALL:", "FAIL (blockers found)" if any_blocker else "PASS (no blockers)")
     return 1 if any_blocker else 0
 
 

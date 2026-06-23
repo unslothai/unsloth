@@ -297,6 +297,7 @@ export function mergeBackendRecommendedInference({
 export function resolveLoadMaxSeqLength({
   modelId,
   ggufVariant,
+  isGguf,
   customContextLength,
   ggufContextLength,
   currentCheckpoint,
@@ -306,6 +307,7 @@ export function resolveLoadMaxSeqLength({
 }: {
   modelId: string;
   ggufVariant?: string | null;
+  isGguf?: boolean | null;
   customContextLength: number | null;
   ggufContextLength: number | null;
   currentCheckpoint: string;
@@ -314,7 +316,7 @@ export function resolveLoadMaxSeqLength({
   presetSource: ChatPresetSource;
 }): number {
   const isDirectGgufFile = modelId.toLowerCase().endsWith(".gguf");
-  const isGgufLoad = ggufVariant != null || isDirectGgufFile;
+  const isGgufLoad = isGguf === true || ggufVariant != null || isDirectGgufFile;
   const isReloadingCurrentGguf =
     isGgufLoad &&
     currentCheckpoint === modelId &&

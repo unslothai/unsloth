@@ -14,6 +14,7 @@ import { translate, useT } from "@/i18n";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { useCallback, useEffect, useState } from "react";
 import { fetchApiKeys, revokeApiKey, type ApiKey } from "../api/api-keys";
+import { ApiMonitorConsole } from "../components/api-monitor-console";
 import { ApiKeyRow } from "../components/api-key-row";
 import { CreateKeyForm } from "../components/create-key-form";
 import { KeyRevealCard } from "../components/key-reveal-card";
@@ -32,9 +33,8 @@ export function ApiKeysTab() {
     ? { duration: 0 }
     : { duration: 0.18, ease: [0.165, 0.84, 0.44, 1] as const };
 
-  // API helpers in ../api/api-keys.ts throw generic English Error messages
-  // ("Failed to load API access", etc.). Always use the translated message
-  // so zh-CN users do not see those English strings bleed through.
+  // ../api/api-keys.ts throws generic English errors; use the translated
+  // message so zh-CN users don't see English strings bleed through.
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -87,7 +87,7 @@ export function ApiKeysTab() {
   return (
     <div className="flex min-w-0 max-w-full flex-col gap-6">
       <header className="flex min-w-0 flex-col gap-1">
-        <h1 className="text-lg font-semibold font-heading">
+        <h1 className="text-xl font-semibold font-heading">
           {t("settings.apiKeys.title")}
         </h1>
         <p className="text-xs text-muted-foreground">
@@ -167,7 +167,9 @@ export function ApiKeysTab() {
         )}
       </section>
 
-      <UsageExamples />
+      <ApiMonitorConsole />
+
+      <UsageExamples apiKey={revealed} />
 
       <Dialog open={revokeTarget !== null} onOpenChange={(o) => !o && setRevokeTarget(null)}>
         <DialogContent className="max-w-md">

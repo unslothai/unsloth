@@ -8,7 +8,7 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
-import { ToolCallSpinner } from "@/components/assistant-ui/tool-call-spinner";
+import { Spinner } from "@/components/ui/spinner";
 import { useCollapseScrollLock } from "@/hooks/use-collapse-scroll-lock";
 import { cn } from "@/lib/utils";
 import {
@@ -17,11 +17,12 @@ import {
 } from "@assistant-ui/react";
 import {
   AlertCircleIcon,
-  CheckIcon,
   ChevronDownIcon,
   LoaderIcon,
   XCircleIcon,
 } from "lucide-react";
+import { Tick02Icon } from "@/lib/tick-icon";
+import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type CSSProperties,
   type ComponentProps,
@@ -95,9 +96,15 @@ function ToolFallbackRoot({
 
 type ToolStatus = ToolCallMessagePartStatus["type"];
 
+// The shared app tick is icon data, not a component; wrap it to slot into the
+// status map alongside the lucide icons.
+function CompleteTickIcon(props: Omit<ComponentProps<typeof HugeiconsIcon>, "icon">) {
+  return <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} {...props} />;
+}
+
 const statusIconMap: Record<ToolStatus, ElementType> = {
   running: LoaderIcon,
-  complete: CheckIcon,
+  complete: CompleteTickIcon,
   incomplete: XCircleIcon,
   "requires-action": AlertCircleIcon,
 };
@@ -142,7 +149,7 @@ function ToolFallbackTrigger({
       {...props}
     >
       {isRunning ? (
-        <ToolCallSpinner className="aui-tool-fallback-trigger-icon" />
+        <Spinner className="aui-tool-fallback-trigger-icon" />
       ) : ToolIcon ? (
         <ToolIcon
           data-slot="tool-fallback-trigger-icon"
@@ -325,6 +332,9 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
   result,
   status,
 }) => {
+  // Allow/Deny confirmation controls are rendered uniformly for every tool
+  // card (built-in and fallback) by the `withToolConfirmation` wrapper in
+  // thread.tsx, so this renderer stays purely presentational.
   const isCancelled =
     status?.type === "incomplete" && status.reason === "cancelled";
 

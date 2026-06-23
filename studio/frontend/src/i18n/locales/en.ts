@@ -23,6 +23,7 @@ export const en = {
     brand: "unsloth",
     product: "Unsloth Studio",
     accountMenu: "{name} account menu",
+    updateAvailable: "Update available",
     aria: {
       home: "Unsloth home",
       closeSidebar: "Close sidebar",
@@ -32,8 +33,10 @@ export const en = {
     },
     navigation: {
       newChat: "New Chat",
+      returnToChat: "Return to Chat",
       compare: "Compare",
       search: "Search",
+      hub: "Hub",
       train: "Train",
       recipes: "Recipes",
       export: "Export",
@@ -82,7 +85,7 @@ export const en = {
     title: "Settings",
     dialog: {
       title: "Settings",
-      description: "Manage your Unsloth Studio preferences.",
+      description: "Manage your Unsloth preferences.",
       closeAriaLabel: "Close settings",
     },
     tabs: {
@@ -92,49 +95,103 @@ export const en = {
       chat: "Chat",
       connections: "Connections",
       apiKeys: "API",
-      about: "Help",
+      about: "About",
     },
     general: {
       title: "General",
-      description: "Global preferences for Unsloth Studio.",
+      description: "Global preferences for Unsloth.",
       account: "Account",
       huggingFaceToken: "Hugging Face token",
       huggingFaceTokenDescription:
         "Used to load gated models and push artifacts.",
       hideToken: "Hide token",
       showToken: "Show token",
+      password: "Password",
+      passwordDescription: "Change the password for this Studio account.",
+      passwordDialog: {
+        trigger: "Change password",
+        title: "Change password",
+        description:
+          "Enter your current password and choose a new one (at least {minLength} characters).",
+        currentPassword: "Current password",
+        newPassword: "New password",
+        confirmPassword: "Confirm new password",
+        currentTooShort:
+          "Current password must be at least {minLength} characters.",
+        newTooShort: "New password must be at least {minLength} characters.",
+        mismatch: "Passwords do not match.",
+        samePassword:
+          "New password must be different from your current password.",
+        update: "Update password",
+        updating: "Updating...",
+        updated: "Password updated.",
+        updateFailed: "Password update failed.",
+      },
       chatDefaults: "Chat defaults",
       autoTitleNewChats: "Auto-title new chats",
       autoTitleNewChatsDescription:
         "Generate a short title from the first message.",
+      helperLlm: {
+        sectionTitle: "Helper LLM",
+        preloadOnStartup: "Pre-cache Helper LLM on startup",
+        preloadOnStartupDescription:
+          "Download the AI Assist helper model in the background on startup. Off by default; AI Assist can still fetch it on demand.",
+        disabledByEnv:
+          "Disabled by UNSLOTH_HELPER_MODEL_DISABLE in the backend environment.",
+        loadError: "Failed to load Helper LLM settings.",
+        saveError: "Failed to save Helper LLM settings.",
+      },
+      notifications: {
+        sectionTitle: "Notifications",
+        showLlamaUpdates: "llama.cpp update notifications",
+        showLlamaUpdatesDescription:
+          "Notify when a newer llama.cpp build is available to run new models. Turn off if you only train.",
+      },
       gettingStarted: "Getting started",
       startOnboarding: "Start onboarding",
       startOnboardingDescription:
-        "Open the setup wizard again without changing your account.",
+        "Reopen the setup wizard without changing your account.",
       startOnboardingAction: "Start onboarding",
       uploads: {
         sectionTitle: "Uploads",
         maxUploadSize: "Training dataset upload cap",
-        maxUploadSizeDescription:
-          "Applies to training dataset uploads. Default is {defaultSize} MB.",
+        maxUploadSizeDescription: "Default is {defaultSize} MB.",
+      },
+      storage: {
+        sectionTitle: "Storage",
+        modelsFolder: "Models folder",
+        modelsFolderDescription:
+          "Where downloaded models are stored.",
+        openAction: "Open",
+        copyAction: "Copy path",
+        copied: "Path copied",
+        openError: "Couldn't open the folder",
+        copyError: "Couldn't copy the path",
       },
       resetPreferences: {
         sectionTitle: "Danger zone",
         label: "Reset all local preferences",
         description:
-          "Clears local-only preferences. Chats, API access, and DB-backed settings are not affected.",
+          "Clears local-only preferences. Chats, API access, and DB-backed settings are kept.",
         action: "Reset preferences",
         confirmTitle: "Reset all local preferences?",
         confirmDescription:
-          "This clears local-only preferences, then reloads Studio. Chats, API access, and DB-backed settings are not affected.",
+          "Clears local-only preferences and reloads Unsloth. Chats, API access, and DB-backed settings are kept.",
         confirmAction: "Reset and reload",
       },
     },
     profile: {
       title: "Profile",
-      description: "Update how your profile appears in Studio.",
+      description: "How your profile appears in Unsloth.",
       changePicture: "Change profile picture",
       displayName: "Display name",
+      nickname: "What should Unsloth call you?",
+      nicknamePlaceholder: "Nickname",
+      nicknameSaved: "Preferred name saved",
+      avatarShape: "Profile picture shape",
+      avatarShapeCircle: "Circle",
+      avatarShapeRounded: "Rounded",
+      chooseSloth: "Or pick a sloth",
       nameSaved: "Profile name saved",
       namePersistErrorTitle: "Could not persist profile name",
       namePersistErrorDescription:
@@ -152,7 +209,7 @@ export const en = {
       theme: {
         title: "Theme",
         label: "Color scheme",
-        description: "Choose light, dark, or follow your system.",
+        description: "Light, dark, or follow your system.",
         system: "System",
         light: "Light",
         dark: "Dark",
@@ -160,7 +217,7 @@ export const en = {
       language: {
         title: "Language",
         label: "Display language",
-        description: "Choose the language used by Studio.",
+        description: "The language used by Unsloth.",
       },
       layout: {
         title: "Layout",
@@ -171,24 +228,42 @@ export const en = {
     },
     chat: {
       title: "Chat",
-      description: "Manage your chat history stored on this device.",
+      description: "Manage chat history stored on this device.",
+      modelDisclaimer: "Show model disclaimer",
+      modelDisclaimerDescription:
+        'Show "LLMs can make mistakes" under the chat box.',
       artifacts: {
-        title: "Artifacts",
+        title: "Canvas",
         collapseHtmlBlocks: "Collapse HTML blocks",
         collapseHtmlBlocksDescription:
-          "Artifacts mode collapses full HTML fallback automatically. Turn this on to also collapse full fenced HTML documents when Artifacts is off.",
-        allowNetworkAccess: "Allow artifact network access",
+          "Canvas mode collapses full HTML automatically. Turn this on to also collapse fenced HTML documents when Canvas is off.",
+        allowNetworkAccess: "Allow canvas network access",
         allowNetworkAccessDescription:
-          "Let artifact previews load scripts, styles, fonts, media, fetch, and WebSocket resources from HTTP(S) CDNs. Keep off for fully offline previews.",
+          "Let canvas previews load scripts, styles, fonts, media, and network resources from CDNs. Keep off for fully offline previews.",
       },
       data: "Data",
       exportHistory: "Export chat history",
-      exportHistoryDescription:
-        "Download all chats and messages as a JSON file.",
+      exportHistoryDescription: "Download all chats and messages as JSON.",
       exportAction: "Export",
       exportingAction: "Exporting...",
+      exportConversations: "Export Recents and Projects",
+      exportConversationsDescription:
+        "Download Recents or Recents plus project chats as Raw JSONL, CSV, or ShareGPT JSONL, combined or per chat.",
+      exportConversationsAction: "Export",
+      exportScopeRecents: "Recents",
+      exportScopeAll: "Recents + Projects",
+      exportCombinedSuffix: "(combined)",
+      exportPerChatSuffix: "(per chat)",
+      importChats: "Import chats",
+      importChatsDescription:
+        "Import a JSONL, NDJSON, or CSV export into Recents.",
+      importChatsAction: "Import",
+      importNoConversations: "No conversations found in file.",
+      importedOneChat: "Imported 1 conversation to Recents.",
+      importedChatCount: "Imported {count} conversations to Recents.",
+      importFailed: "Import failed.",
       clearHistory: "Clear chat history",
-      clearHistoryDescription: "Delete local chat history from this device.",
+      clearHistoryDescription: "Delete chat history from this device.",
       clearAction: "Clear",
       clearAllChats: "Clear all chats",
       clearAllChatsDescription: "Permanently delete every chat on this device.",
@@ -201,7 +276,7 @@ export const en = {
       clearOneChatTitle: "Clear 1 chat?",
       clearChatsTitle: "Clear {count} chats?",
       clearChatsConfirmDescription:
-        "This permanently deletes every chat and message stored on this device. This cannot be undone.",
+        "Permanently deletes every chat on this device. This cannot be undone.",
       clearingAction: "Clearing...",
       clearOneChatAction: "Clear 1 chat",
       clearChatCountAction: "Clear {count} chats",
@@ -224,12 +299,11 @@ export const en = {
     },
     connections: {
       title: "Connections",
-      description: "Manage providers and external service connections.",
+      description: "Manage providers and external connections.",
     },
     apiKeys: {
       title: "API",
-      description:
-        "Access Unsloth programmatically via the OpenAI-compatible API.",
+      description: "Access Unsloth via the OpenAI-compatible API.",
       readDocs: "Read the API docs",
       noAccess: "No API access yet.",
       newBadge: "New",
@@ -248,6 +322,16 @@ export const en = {
       copyNow: "Copy now - this won't be shown again.",
       usageExamples: "Usage examples",
       usageTools: "Tools",
+      exampleCurlTools: "curl + tools",
+      examplePythonTools: "Python + tools",
+      exampleCurlAdvanced: "curl + advanced",
+      examplePythonAdvanced: "Python + advanced",
+      osUnix: "Linux / macOS / WSL",
+      osWindows: "Windows",
+      secureHttps: "Secure HTTPS",
+      secureHttpsHint:
+        "The 0.0.0.0 port is still reachable globally. For full security, launch Unsloth Studio with --secure to expose only this HTTPS link.",
+      copyTunnelUrl: "Copy tunnel URL",
       copySnippet: "Copy snippet",
       copy: "Copy",
       copied: "Copied",
@@ -269,62 +353,75 @@ export const en = {
       revokeToken: "Revoke token",
       revokeTitle: 'Revoke access token "{name}"?',
       revokeDescription:
-        "Applications using this token will immediately lose access. This cannot be undone.",
+        "Apps using this token immediately lose access. This cannot be undone.",
       revokeAction: 'Revoke "{name}"',
       revoking: "Revoking...",
     },
     about: {
       title: "About",
-      description:
-        "Documentation, release notes, feedback, and Studio build info.",
-      studioVersion: "Studio Version",
+      description: "Docs, release notes, feedback, and build info.",
+      studioVersion: "Unsloth Version",
       packageVersion: "Package Version",
-      updates: "Updates",
+      llamaCppVersion: "llama.cpp Version",
+      hardware: "Hardware",
+      gpu: "GPU",
+      cuda: "CUDA",
+      rocm: "ROCm",
+      updates: "Update",
       help: "Help",
       documentation: "Documentation",
       releaseNotes: "Release notes",
       whatsNew: "What's new",
       feedback: "Feedback",
       reportIssue: "Report an issue",
+      license: {
+        sectionTitle: "License",
+        studioLabel: "Unsloth Studio",
+        studioLicense: "AGPL-3.0",
+        studioDescription: "Open source under the GNU AGPL v3.0.",
+        libraryLabel: "Unsloth Core",
+        libraryLicense: "Apache-2.0",
+        libraryDescription: "Licensed under Apache 2.0.",
+      },
       dangerZone: "Danger zone",
       shutDownStudio: "Shut down Unsloth Studio",
       shutDownStudioDescription:
-        "Stops the Studio server process and ends your session.",
+        "Stops the Unsloth server and ends your session.",
       shutDown: "Shut down",
       update: {
         title: "Update Unsloth Studio",
-        openPowerShell: "Open PowerShell and run:",
-        openTerminal: "Open Terminal and run:",
         commandText: "{label} text",
         copied: "Copied",
         copyCommand: "Copy command",
         commandCopied: "{label} copied",
         copyNamedCommand: "Copy {label}",
-        checkingInstall: "Checking how Studio was installed...",
+        checkingInstall: "Checking how Unsloth was installed...",
+        installIntro: "To install or update Unsloth:",
+        localUpdateHeading: "Local update",
+        installCommandUnix: "macOS/Linux install command",
+        installCommandWindows: "Windows install command",
         localInstallDetected:
-          "Source or local install detected. To avoid replacing it with PyPI, update from the checkout or source you originally installed from.",
+          "Local install detected. Update from your original checkout to avoid replacing it with PyPI.",
         pullThenUpdate:
-          "Pull latest changes from your Unsloth repo checkout, then update Studio locally:",
+          "Pull the latest changes, then run the local installer:",
         gitPullCommand: "git pull command",
-        localUpdateCommand: "local update command",
-        localInstallerFallback:
-          "If the Studio update command is unavailable, run the local installer from that checkout:",
         localInstallerCommand: "local installer command",
         sourceInstallDetected:
-          "This looks like a source or VCS package install. Reinstall from the original local path or Git URL you used.",
+          "Source or VCS package install detected. Reinstall from the original local path or Git URL.",
         repoCheckoutFallback:
-          "If you still have the Unsloth repo checkout, run the local installer from that checkout:",
-        restartAfterUpdate:
-          "Restart Studio after updating for changes to take effect.",
+          "If you still have the repo checkout, run the local installer from it:",
+        restartAfterUpdate: "Restart Unsloth after updating.",
+        desktopManaged:
+          "The desktop app keeps its bundled backend updated and will prompt when a new version is available.",
         unknownInstall:
-          "Studio could not detect how it was installed. Check how you installed Studio first, then choose the matching update path.",
-        curlOrPypi: "For curl or PyPI installs, run:",
-        updateCommand: "update command",
+          "Could not detect how Unsloth was installed. For installer or PyPI installs, use the commands above.",
         localCheckout:
-          "For local checkout installs, update from that checkout instead and use the local update command:",
-        fallbackInstruction:
-          "If that fails or unsloth studio update is unavailable, run:",
-        fallbackCommand: "fallback command",
+          "For local checkout installs, run the local installer from that checkout:",
+        docs: "Install docs:",
+        docsInstall: "Installation",
+        docsUpdating: "Updating",
+        docsMac: "Mac",
+        docsWindows: "Windows",
       },
     },
   },
@@ -464,6 +561,31 @@ export const en = {
       preview: "Preview dataset",
       split: "Split",
       subset: "Subset",
+      s3: {
+        title: "S3 Configuration",
+        description:
+          "Load .parquet, .json, .jsonl, or .csv datasets from Amazon S3",
+        bucket: "Bucket Name",
+        bucketPlaceholder: "my-training-data-bucket",
+        region: "AWS Region",
+        regionPlaceholder: "us-east-1",
+        prefix: "Path Prefix",
+        prefixPlaceholder: "datasets/whisper/",
+        prefixTooltip: "Optional path within the bucket to your dataset files",
+        accessKeyId: "Access Key ID",
+        accessKeyIdPlaceholder: "AKIAIOSFODNN7EXAMPLE",
+        secretAccessKey: "Secret Access Key",
+        secretAccessKeyPlaceholder: "Your AWS secret access key",
+        useIamRole: "Use IAM Role",
+        useIamRoleTooltip:
+          "Use IAM role credentials instead of access keys (recommended for EC2/SageMaker)",
+        testConnection: "Test Connection",
+        connectionSuccess: "Successfully connected to S3 bucket",
+        connectionFailed: "Failed to connect to S3 bucket",
+        comingSoon: "S3 integration coming soon",
+        comingSoonDescription:
+          "S3 dataset loading requires boto3. This feature is under development.",
+      },
     },
     params: {
       title: "Parameters",
@@ -685,6 +807,7 @@ export const en = {
     progress: {
       title: "Training Progress",
       liveMetrics: "Live training metrics",
+      exportGguf: "Export to GGUF",
       openConfig: "Open training config",
       configLabel: "Training Config",
       hyperparams: "Hyperparams",
@@ -744,6 +867,7 @@ export const en = {
       resumingTraining: "Resuming training...",
       startingTraining: "starting training...",
       dataset: "Dataset",
+      datasetStreaming: "Dataset: streaming (no full download)",
       modelWeights: "Model weights",
     },
     tour: {

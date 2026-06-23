@@ -6,6 +6,7 @@ import type {
   DatasetSource,
   GradientCheckpointing,
   ModelType,
+  S3Config,
   StepNumber,
   TrainingMethod,
 } from "@/types/training";
@@ -28,6 +29,7 @@ export interface TrainingConfigState {
   datasetSubset: string | null;
   datasetSplit: string | null;
   datasetEvalSplit: string | null;
+  datasetStreaming: boolean;
   datasetManualMapping: DatasetManualMapping;
   datasetSystemPrompt: string;
   datasetUserTemplate: string;
@@ -76,6 +78,7 @@ export interface TrainingConfigState {
   isDatasetImage: boolean | null;
   isDatasetAudio: boolean;
   trustRemoteCode: boolean;
+  approvedRemoteCodeFingerprint?: string | null;
   finetuneVisionLayers: boolean;
   finetuneLanguageLayers: boolean;
   finetuneAttentionModules: boolean;
@@ -83,6 +86,7 @@ export interface TrainingConfigState {
   targetModules: string[];
   maxPositionEmbeddings: number | null;
   visionImageSize: number | null;
+  s3Config: S3Config | null;
 }
 
 export interface TrainingConfigActions {
@@ -98,11 +102,13 @@ export interface TrainingConfigActions {
   setDatasetSource: (source: DatasetSource) => void;
   selectHfDataset: (dataset: string | null) => void;
   selectLocalDataset: (file: string | null) => void;
+  selectS3Source: () => void;
   setDatasetFormat: (format: DatasetFormat) => void;
   setDataset: (dataset: string | null) => void;
   setDatasetSubset: (subset: string | null) => void;
   setDatasetSplit: (split: string | null) => void;
   setDatasetEvalSplit: (split: string | null) => void;
+  setDatasetStreaming: (value: boolean) => void;
   setDatasetManualMapping: (mapping: DatasetManualMapping) => void;
   setDatasetAdvisorFields: (fields: {
     systemPrompt?: string;
@@ -147,6 +153,7 @@ export interface TrainingConfigActions {
   setFinetuneAttentionModules: (value: boolean) => void;
   setFinetuneMLPModules: (value: boolean) => void;
   setTargetModules: (value: string[]) => void;
+  setS3Config: (value: S3Config | null) => void;
   canProceed: () => boolean;
   reset: () => void;
   resetToModelDefaults: () => void;

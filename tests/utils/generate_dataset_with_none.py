@@ -1,28 +1,9 @@
-"""
-generate_dataset_with_none.py
-
-Generates a small synthetic dataset that intentionally contains None/empty
-turns so dataset_none_detect.py can be verified end-to-end.
-
-Produces three formats:
-  - chatml  (messages column, role/content turns)
-  - sharegpt (conversations column, from/value turns)
-  - alpaca  (instruction/output columns)
-
-Each format gets ~20 rows; roughly half have at least one bad turn.
-
-No heavy dependencies -- just `datasets`.
-"""
+"""Synthetic chatml/sharegpt/alpaca datasets with intentional None/empty turns for dataset_none_detect.py."""
 
 from datasets import Dataset
 
-# ---------------------------------------------------------------------------
-# ChatML (messages, role/content)
-# ---------------------------------------------------------------------------
-
-# NOTE: pyarrow requires uniform types in a column, so rows with messages=None
-# or messages="not a list" (P1 cases) live in a SEPARATE dataset (see
-# make_chatml_p1_dataset below) so pyarrow can infer the column type correctly.
+# ChatML (messages, role/content). pyarrow needs uniform column types, so
+# messages=None / non-list (P1) rows live in a SEPARATE dataset.
 
 _CHATML_ROWS = [
     # clean rows
@@ -87,7 +68,7 @@ _CHATML_ROWS = [
             {"role": "assistant", "content": "Shakespeare."},
         ]
     },
-    # bad rows — None/empty turn content (all messages values are lists so pyarrow is happy)
+    # bad rows: None/empty turn content (all values are lists, so pyarrow is happy)
     {
         "messages": [
             {"role": "user", "content": None},
@@ -130,15 +111,11 @@ _CHATML_ROWS = [
             {"role": "assistant", "content": "  \t  "},
         ]
     },  # tab whitespace
-    {
-        "messages": [None, {"role": "assistant", "content": "Reply"}]
-    },  # None turn element
+    {"messages": [None, {"role": "assistant", "content": "Reply"}]},  # None turn element
 ]
 
-# P1 test rows: messages is None or non-list.
-# Stored as a plain list of dicts rather than an HF Dataset because pyarrow
-# cannot mix list and non-list values in the same column.  The test runner
-# uses a lightweight mock to exercise find_none_chatml directly.
+# P1 rows: messages is None or non-list. Plain dicts (not an HF Dataset) since
+# pyarrow can't mix list/non-list in one column; the runner mocks find_none_chatml.
 _CHATML_P1_ROWS = [
     {"messages": None},  # whole column None
     {"messages": "not a list"},  # wrong type
@@ -146,13 +123,11 @@ _CHATML_P1_ROWS = [
 
 
 def make_chatml_p1_rows() -> list:
-    """Return the raw P1 rows (not an HF Dataset) for direct mock testing."""
+    """Raw P1 rows (not an HF Dataset) for direct mock testing."""
     return list(_CHATML_P1_ROWS)
 
 
-# ---------------------------------------------------------------------------
 # ShareGPT (conversations, from/value)
-# ---------------------------------------------------------------------------
 
 _SHAREGPT_ROWS = [
     # clean
@@ -209,9 +184,7 @@ _SHAREGPT_ROWS = [
     {"conversations": [None, {"from": "gpt", "value": "Hi"}]},
 ]
 
-# ---------------------------------------------------------------------------
 # Alpaca (instruction / output columns)
-# ---------------------------------------------------------------------------
 
 _ALPACA_ROWS = [
     # clean
@@ -255,9 +228,7 @@ def make_alpaca_dataset() -> Dataset:
 
 if __name__ == "__main__":
     print("Synthetic dataset sizes:")
-    print(
-        f"  chatml:   {len(_CHATML_ROWS)} rows (+ {len(_CHATML_P1_ROWS)} P1 mock rows)"
-    )
+    print(f"  chatml:   {len(_CHATML_ROWS)} rows (+ {len(_CHATML_P1_ROWS)} P1 mock rows)")
     print(f"  sharegpt: {len(_SHAREGPT_ROWS)} rows")
     print(f"  alpaca:   {len(_ALPACA_ROWS)} rows")
     print(
