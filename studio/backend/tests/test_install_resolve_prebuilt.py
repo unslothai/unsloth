@@ -309,3 +309,54 @@ def test_drop_blackwell_incapable_windows_cuda_applies_to_datacenter():
     )
     kept = ilp._drop_blackwell_incapable_windows_cuda(host, [cuda124, cuda13])
     assert [a.name for a in kept] == [cuda13.name]
+
+
+def test_blackwell_min_toolkit_is_sm_aware():
+    # Family floor is 12.8; sm_103/sm_121 (no native target before 12.9) lift it.
+    f = ilp._blackwell_min_toolkit_for_host
+    assert f(_gpu_linux_host(["10.0"])) == (12, 8)  # B200
+    assert f(_gpu_linux_host(["12.0"])) == (12, 8)  # RTX 50
+    assert f(_gpu_linux_host(["10.3"])) == (12, 9)  # B300
+    assert f(_gpu_linux_host(["12.1"])) == (12, 9)  # DGX Spark
+    assert f(_gpu_linux_host(["10.0", "10.3"])) == (12, 9)  # max across SMs wins
+
+
+def test_sm103_host_drops_cuda128_windows_build():
+    # B300 (sm_103) needs cuda-12.9: a legacy win-cuda-12.8 build must be dropped.
+    host = _host(
+        system = "Windows",
+        is_windows = True,
+        is_x86_64 = True,
+        has_physical_nvidia = True,
+        has_usable_nvidia = True,
+        compute_caps = ["10.3"],
+    )
+    cuda128 = ilp.AssetChoice(
+        repo = FORK,
+        tag = "b9739",
+        name = "llama-b9739-bin-win-cuda-12.8-x64.zip",
+        url = "https://x/128",
+        source_label = "published",
+        install_kind = "windows-cuda",
+    )
+    cuda129 = ilp.AssetChoice(
+        repo = FORK,
+        tag = "b9739",
+        name = "llama-b9739-bin-win-cuda-12.9-x64.zip",
+        url = "https://x/129",
+        source_label = "published",
+        install_kind = "windows-cuda",
+    )
+    kept = ilp._drop_blackwell_incapable_windows_cuda(host, [cuda128, cuda129])
+    assert [a.name for a in kept] == [cuda129.name]
+    # sm_100 stays on the 12.8 family floor and keeps the same 12.8 build.
+    b200 = _host(
+        system = "Windows",
+        is_windows = True,
+        is_x86_64 = True,
+        has_physical_nvidia = True,
+        has_usable_nvidia = True,
+        compute_caps = ["10.0"],
+    )
+    kept_b200 = ilp._drop_blackwell_incapable_windows_cuda(b200, [cuda128, cuda129])
+    assert [a.name for a in kept_b200] == [cuda128.name, cuda129.name]

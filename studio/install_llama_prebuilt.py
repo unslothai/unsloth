@@ -232,9 +232,13 @@ _MAX_PROBE_CUDA_MAJOR = 19
 
 # Blackwell floor is sm_100: data-center parts (B100/B200 sm_100, B300/GB300
 # sm_103) sit below consumer Blackwell (RTX 50 sm_120); the family needs toolkit
-# >= 12.8. (120 here wrongly excluded the sm_100/103 data-center hosts.)
+# >= 12.8, except sm_103/sm_121 which need 12.9. (120 here wrongly excluded the
+# sm_100/103 data-center hosts.)
 _BLACKWELL_MIN_SM = 100
 _BLACKWELL_MIN_TOOLKIT = (12, 8)
+# SMs that need a newer toolkit than the family floor (CUDA 12.9 added native
+# sm_103/sm_121 targets; 12.8 covers sm_100/101/120).
+_BLACKWELL_SM_MIN_TOOLKIT = {103: (12, 9), 121: (12, 9)}
 
 
 def _cuda_runtime_lines_for_major(major: int) -> list[str]:
@@ -3417,15 +3421,18 @@ def windows_cuda_attempts(
     return attempts
 
 
-def _windows_cuda_attempt_covers_blackwell(attempt: AssetChoice) -> bool:
+def _windows_cuda_attempt_covers_blackwell(
+    attempt: AssetChoice, min_toolkit: tuple[int, int] = _BLACKWELL_MIN_TOOLKIT
+) -> bool:
     """True if a windows-cuda attempt is Blackwell-capable (app bundles via
-    declared SMs; legacy upstream bundles via toolkit minor >= 12.8)."""
+    declared SMs; legacy upstream bundles via toolkit minor >= min_toolkit:
+    12.8 for the family, 12.9 for sm_103/sm_121)."""
     if attempt.install_kind != "windows-cuda":
         return False
     # Legacy bundle: the toolkit minor binds (12.4 cannot offload Blackwell).
     m = re.search(r"-bin-win-cuda-(\d+)\.(\d+)-x64\.zip$", attempt.name)
     if m is not None:
-        return (int(m.group(1)), int(m.group(2))) >= _BLACKWELL_MIN_TOOLKIT
+        return (int(m.group(1)), int(m.group(2))) >= min_toolkit
     # App-named bundles carry no minor and declare their SM coverage directly.
     return attempt.max_sm is not None and attempt.max_sm >= _BLACKWELL_MIN_SM
 
@@ -3433,6 +3440,15 @@ def _windows_cuda_attempt_covers_blackwell(attempt: AssetChoice) -> bool:
 def _host_is_blackwell(host: HostInfo) -> bool:
     caps = normalize_compute_caps(host.compute_caps)
     return bool(caps) and int(caps[-1]) >= _BLACKWELL_MIN_SM
+
+
+def _blackwell_min_toolkit_for_host(host: HostInfo) -> tuple[int, int]:
+    """Minimum CUDA toolkit this Blackwell host needs: 12.8 for the family,
+    12.9 if any of its SMs is sm_103/sm_121 (no native target before 12.9)."""
+    req = _BLACKWELL_MIN_TOOLKIT
+    for sm in normalize_compute_caps(host.compute_caps):
+        req = max(req, _BLACKWELL_SM_MIN_TOOLKIT.get(int(sm), _BLACKWELL_MIN_TOOLKIT))
+    return req
 
 
 def _drop_blackwell_incapable_windows_cuda(
@@ -3444,10 +3460,12 @@ def _drop_blackwell_incapable_windows_cuda(
     through so the host can still fall back to an honest CPU install."""
     if not _host_is_blackwell(host):
         return attempts
+    min_toolkit = _blackwell_min_toolkit_for_host(host)
     return [
         attempt
         for attempt in attempts
-        if attempt.install_kind != "windows-cuda" or _windows_cuda_attempt_covers_blackwell(attempt)
+        if attempt.install_kind != "windows-cuda"
+        or _windows_cuda_attempt_covers_blackwell(attempt, min_toolkit)
     ]
 
 
