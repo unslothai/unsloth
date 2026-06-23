@@ -5436,12 +5436,11 @@ async def openai_chat_completions(
                     },
                 )
 
-            # Non-streaming JSON: drain the same agentic generator and build one
-            # ChatCompletion, mirroring the safetensors tool path and the
-            # standard GGUF `else` branch. Without this, stream:false with tools
-            # enabled returned an SSE body -- breaking non-streaming clients and
-            # health checks. `unsloth studio run --model ...` forces tools on
-            # process-wide, so every plain request hit this path (#6570).
+            # Non-streaming JSON: drain the agentic generator into one
+            # ChatCompletion, like the standard GGUF `else` branch. stream:false
+            # with tools enabled used to return an SSE body, breaking
+            # non-streaming clients; `unsloth studio run --model` forces tools on
+            # process-wide, so plain requests reach this path (#6570).
             def _drain_gguf_tool_loop():
                 full_text = ""
                 usage = None
@@ -5474,7 +5473,9 @@ async def openai_chat_completions(
                         pass
 
             try:
-                full_text, _usage, _finish = await asyncio.to_thread(_drain_gguf_tool_loop)
+                full_text, completion_usage, completion_finish = await asyncio.to_thread(
+                    _drain_gguf_tool_loop
+                )
                 reasoning_text, visible_text = _extract_responses_reasoning(
                     full_text,
                     parse_think_markers = _responses_should_parse_think_markers(
@@ -5484,9 +5485,9 @@ async def openai_chat_completions(
                 message_kwargs = {"content": visible_text}
                 if reasoning_text:
                     message_kwargs["reasoning_content"] = reasoning_text
-                _u = _usage or {}
-                _pt = _u.get("prompt_tokens") or 0
-                _ct = _u.get("completion_tokens") or 0
+                _usage = completion_usage or {}
+                _prompt_tokens = _usage.get("prompt_tokens") or 0
+                _completion_tokens = _usage.get("completion_tokens") or 0
                 response = ChatCompletion(
                     id = completion_id,
                     created = created,
@@ -5494,22 +5495,26 @@ async def openai_chat_completions(
                     choices = [
                         CompletionChoice(
                             message = CompletionMessage(**message_kwargs),
-                            finish_reason = _clamp_finish_reason(_finish),
+                            finish_reason = _clamp_finish_reason(completion_finish),
                         )
                     ],
                     usage = CompletionUsage(
-                        prompt_tokens = _pt,
-                        completion_tokens = _ct,
-                        total_tokens = _pt + _ct,
+                        prompt_tokens = _prompt_tokens,
+                        completion_tokens = _completion_tokens,
+                        total_tokens = _prompt_tokens + _completion_tokens,
                         prompt_tokens_details = _prompt_tokens_details(
-                            _u.get("prompt_tokens_details")
+                            _usage.get("prompt_tokens_details")
                         ),
                     ),
                 )
                 api_monitor.set_reply(monitor_id, visible_text)
                 _monitor_usage(
                     monitor_id,
-                    {"prompt_tokens": _pt, "completion_tokens": _ct, "total_tokens": _pt + _ct},
+                    {
+                        "prompt_tokens": _prompt_tokens,
+                        "completion_tokens": _completion_tokens,
+                        "total_tokens": _prompt_tokens + _completion_tokens,
+                    },
                     _monitor_context_length(),
                 )
                 api_monitor.finish(
