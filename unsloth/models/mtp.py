@@ -244,7 +244,9 @@ def compute_mtp_loss(
             else:
                 lm_head = getattr(model, "lm_head", None)
                 if lm_head is None:
-                    raise AttributeError("Unsloth: MTP hidden states require a model.lm_head module.")
+                    raise AttributeError(
+                        "Unsloth: MTP hidden states require a model.lm_head module."
+                    )
                 lm_head_weight = getattr(lm_head, "weight", None)
                 if lm_head_weight is not None:
                     mtp_logits_or_hidden = mtp_logits_or_hidden.to(
@@ -284,7 +286,12 @@ def bind_forward_arguments(forward_fn, args, kwargs):
         return {}
 
 
-def get_forward_argument(bound_arguments, kwargs, name, default = None):
+def get_forward_argument(
+    bound_arguments,
+    kwargs,
+    name,
+    default = None,
+):
     if name in kwargs:
         return kwargs[name]
     return bound_arguments.get(name, default)
