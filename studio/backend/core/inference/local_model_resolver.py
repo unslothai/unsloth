@@ -44,7 +44,6 @@ def _resolve_load_dir(p):
     try:
         if (p / "snapshots").is_dir():
             from routes.models import _resolve_hf_cache_realpath
-
             real = _resolve_hf_cache_realpath(p)
             if real:
                 return Path(real)

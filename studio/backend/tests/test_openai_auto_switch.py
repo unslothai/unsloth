@@ -1006,7 +1006,13 @@ def test_auto_switch_refuses_when_another_inference_is_active(monkeypatch):
 
     backend = _FakeBackend("org/A-GGUF", hf_variant = "Q4_K_M")
     rec = _LoadRecorder(backend)
-    _wire(monkeypatch, enabled = True, resolves_to = ("/p/B", "Q8_0", "org/B-GGUF"), backend = backend, recorder = rec)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("/p/B", "Q8_0", "org/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
     monkeypatch.setattr(kw, "_inflight", 2)  # this request + another active one
     monkeypatch.setattr(kw, "_pending", 0)
     with pytest.raises(HTTPException) as exc:
@@ -1021,7 +1027,13 @@ def test_auto_switch_swaps_when_only_caller_is_active(monkeypatch):
 
     backend = _FakeBackend("org/A-GGUF")
     rec = _LoadRecorder(backend)
-    _wire(monkeypatch, enabled = True, resolves_to = ("/p/B", None, "org/B-GGUF"), backend = backend, recorder = rec)
+    _wire(
+        monkeypatch,
+        enabled = True,
+        resolves_to = ("/p/B", None, "org/B-GGUF"),
+        backend = backend,
+        recorder = rec,
+    )
     monkeypatch.setattr(kw, "_inflight", 1)
     monkeypatch.setattr(kw, "_pending", 0)
     _run_hook("org/B-GGUF")
