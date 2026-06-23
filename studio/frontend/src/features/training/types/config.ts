@@ -29,6 +29,7 @@ export interface TrainingConfigState {
   datasetSubset: string | null;
   datasetSplit: string | null;
   datasetEvalSplit: string | null;
+  datasetStreaming: boolean;
   datasetManualMapping: DatasetManualMapping;
   datasetSystemPrompt: string;
   datasetUserTemplate: string;
@@ -107,6 +108,7 @@ export interface TrainingConfigActions {
   setDatasetSubset: (subset: string | null) => void;
   setDatasetSplit: (split: string | null) => void;
   setDatasetEvalSplit: (split: string | null) => void;
+  setDatasetStreaming: (value: boolean) => void;
   setDatasetManualMapping: (mapping: DatasetManualMapping) => void;
   setDatasetAdvisorFields: (fields: {
     systemPrompt?: string;
