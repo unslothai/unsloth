@@ -88,6 +88,10 @@ export function useTrainingActions() {
           useTrainingConfigStore.setState({
             isDatasetImage: isImage,
             isDatasetAudio: isAudio,
+            // Streaming is unsupported for image/audio datasets; clear the flag
+            // so buildTrainingStartPayload never ships dataset_streaming=true
+            // for a modality the backend would reject with a 422.
+            ...(isImage || isAudio ? { datasetStreaming: false } : {}),
           });
         }
 

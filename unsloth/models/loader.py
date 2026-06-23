@@ -1388,7 +1388,11 @@ class FastModel(FastBaseModel):
             )
         elif "gpt_oss" in model_types_all:
             os.environ["UNSLOTH_DISABLE_STATIC_GENERATION"] = "1"
-            if not load_in_4bit:
+            # Use the EFFECTIVE bnb state, not the raw flag: a native MXFP4 checkpoint loaded
+            # with the default load_in_4bit=True (e.g. openai/gpt-oss-20b by exact name) has
+            # bnb disabled later by check_and_disable, so the raw flag would wrongly pick the
+            # BnB dtype path. Mirrors the _load_in_4bit_ token gate above.
+            if not (load_in_4bit and _bnb_compatible_quant):
                 # Only upcast MoE biases for MXFP4, not BnB
                 # Set norms to float32 since anyways they get upcasted to float32
                 os.environ["UNSLOTH_FORCE_CUSTOM_DTYPE"] = (

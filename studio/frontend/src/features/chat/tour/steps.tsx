@@ -38,9 +38,10 @@ export function buildChatTourSteps({
       title: "Two tabs",
       body: (
         <>
-          Hub: search Hugging Face models. Fine-tuned: local Unsloth outputs you’ve
-          trained or exported. If results look off, compare base vs fine-tuned
-          outputs to see what changed.
+          Hub: search Unsloth’s models here, or hit Search Hub to browse all of
+          Hugging Face. Fine-tuned: local Unsloth outputs you’ve trained or
+          exported. If results look off, compare base vs fine-tuned outputs to
+          see what changed.
         </>
       ),
       onEnter: openModelSelector,

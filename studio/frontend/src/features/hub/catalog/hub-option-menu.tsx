@@ -214,7 +214,9 @@ export function HubOptionMenu<T extends string>({
                 }}
                 onPointerEnter={() => activateIndex(index)}
                 className={cn(
-                  "relative flex w-full min-w-0 cursor-pointer select-none items-center rounded-[12px] py-2 pr-8 pl-3 text-left text-sm leading-snug outline-none transition-colors",
+                  // 14px menu radius minus the 4px padding, so the hover nests
+                  // cleanly into the dropdown's corners.
+                  "relative flex w-full min-w-0 cursor-pointer select-none items-center rounded-[10px] py-2 pr-8 pl-3 text-left text-sm leading-snug outline-none transition-colors",
                 )}
               >
                 <span className="flex min-w-0 flex-1 items-center gap-2.5 overflow-hidden whitespace-normal break-words">

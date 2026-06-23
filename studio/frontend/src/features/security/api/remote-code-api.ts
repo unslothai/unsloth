@@ -39,6 +39,7 @@ interface RemoteCodeScanResponse {
   scan_created_repos?: string[];
   unsafe_files?: Array<{ path?: string; level?: string }>;
   security_blocked?: boolean;
+  already_approved?: boolean;
   provider?: string | null;
 }
 
@@ -94,6 +95,7 @@ export async function getRemoteCodeScan(
       (data.created_by_scan ? [data.model_name ?? modelName] : []),
     unsafeFiles,
     securityBlocked: Boolean(data.security_blocked),
+    alreadyApproved: Boolean(data.already_approved),
     provider: data.provider ?? null,
   };
 }
