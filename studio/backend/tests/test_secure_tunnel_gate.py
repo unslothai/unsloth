@@ -31,12 +31,11 @@ from run import _cloudflare_tunnel_should_start as should_start  # noqa: E402
         # --no-cloudflare always wins.
         (False, "0.0.0.0", False, False, False, False),
         (False, "127.0.0.1", True, False, False, False),
-        # Non-secure api-only never tunnels (Tauri desktop loads on loopback).
+        # Non-secure api-only never tunnels (Tauri).
         (True, "0.0.0.0", False, True, False, False),
-        # --secure tunnels even api-only: a headless secure API server (no UI)
-        # is reachable only through the authenticated Cloudflare link.
+        # --secure tunnels even api-only (headless secure API server).
         (True, "127.0.0.1", True, True, False, True),
-        # Colab never tunnels (already reachable via its hosted proxy), even --secure.
+        # Colab never tunnels, even --secure.
         (True, "0.0.0.0", False, False, True, False),
         (True, "127.0.0.1", True, False, True, False),
         (True, "127.0.0.1", True, True, True, False),

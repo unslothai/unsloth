@@ -447,9 +447,7 @@ def test_in_venv_path_passes_parallel_to_run_server(monkeypatch, value):
     ), f"run_server got llama_parallel_slots={captured.get('llama_parallel_slots')!r}, expected {value}"
 
 
-# --api-only: serve the API with no web UI. Pairs with --secure so a headless
-# model server is reachable only through the authenticated Cloudflare link. The
-# re-exec and in-venv paths must both carry it, like --parallel above.
+# --api-only: serve API only (no UI). Both re-exec and in-venv paths must carry it.
 
 
 def test_api_only_option_is_registered():
