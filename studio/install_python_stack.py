@@ -1658,7 +1658,7 @@ def run(
 
 
 # Packages to skip on Windows (require special build steps)
-WINDOWS_SKIP_PACKAGES = {"open_spiel", "triton_kernels"}
+WINDOWS_SKIP_PACKAGES = {"triton_kernels"}
 
 # Packages to skip when torch is unavailable (Intel Mac GGUF-only mode).
 # These either *are* torch extensions or have unconditional
@@ -1675,7 +1675,6 @@ NO_TORCH_SKIP_PACKAGES = {
     "torchcodec",
     "torch-c-dlpack-ext",
     "openai-whisper",
-    "transformers-cfg",
     "librosa",
 }
 
