@@ -2200,7 +2200,7 @@ def _request_matches_loaded_settings(
 
 
 def _resolve_effective_llama_extra_args_for_load(
-    request: LoadRequest,
+    request: LoadRequest | ValidateModelRequest,
     llama_backend: LlamaCppBackend,
     model_identifier: str,
     config: ModelConfig,
@@ -2244,6 +2244,11 @@ def _resolve_effective_llama_extra_args_for_load(
     # Strip only groups whose first-class field was set by the caller, so an
     # inherited override cannot last-wins-shadow a fresh LoadRequest field.
     fields_set = getattr(request, "model_fields_set", set())
+    strip_split_mode = (
+        _should_strip_split_mode(request, llama_backend.extra_args)
+        if hasattr(request, "tensor_parallel")
+        else False
+    )
     stripped = strip_shadowing_flags(
         llama_backend.extra_args,
         strip_context = "max_seq_length" in fields_set,
@@ -2252,7 +2257,7 @@ def _resolve_effective_llama_extra_args_for_load(
         strip_template = (
             "chat_template_override" in fields_set or effective_chat_template_override is not None
         ),
-        strip_split_mode = _should_strip_split_mode(request, llama_backend.extra_args),
+        strip_split_mode = strip_split_mode,
     )
     try:
         inherited = validate_extra_args(stripped)
@@ -3166,6 +3171,14 @@ async def validate_model(
         except ValueError as exc:
             logger.warning("inference.validate_extra_args_failed: %s", exc)
             raise HTTPException(status_code = 400, detail = str(exc)) from exc
+        extra_llama_args = _resolve_effective_llama_extra_args_for_load(
+            request,
+            get_llama_cpp_backend(),
+            model_identifier,
+            config,
+            None,
+            None if request.llama_extra_args is None else extra_llama_args,
+        )
         # Off-loop: guard does sync nvidia-smi / HF work.
         await asyncio.to_thread(
             _guard_chat_load_against_training,

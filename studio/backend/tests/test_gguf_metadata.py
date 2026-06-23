@@ -332,6 +332,26 @@ def test_pairing_score_base_model_url_trailing_slash_normalised():
     assert pairing_score(weight, mmproj) == 100
 
 
+def test_pairing_score_base_model_url_scheme_and_git_normalised():
+    weight = {
+        "general.base_model.0.repo_url": "http://huggingface.co/Qwen/Qwen3.5-9B.git",
+    }
+    mmproj = {
+        "general.base_model.0.repo_url": "https://huggingface.co/Qwen/Qwen3.5-9B",
+    }
+    assert pairing_score(weight, mmproj) == 100
+
+
+def test_pairing_score_derivative_url_requires_basename_evidence():
+    weight = {
+        "general.base_model.0.repo_url": "https://huggingface.co/vendor/model-v2-GGUF",
+    }
+    mmproj = {
+        "general.base_model.0.repo_url": "https://huggingface.co/vendor/model",
+    }
+    assert pairing_score(weight, mmproj) == -1
+
+
 def test_pairing_score_basename_plus_org_fallback():
     weight = {
         "general.basename": "Nanonets-Ocr-S",

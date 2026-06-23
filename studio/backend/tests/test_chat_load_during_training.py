@@ -476,6 +476,8 @@ class TestValidateRefusesDuringTraining(unittest.TestCase):
         load_in_4bit = True,
         llama_extra_args = None,
         is_gguf = False,
+        gguf_variant = None,
+        llama_backend = None,
     ):
         from models.inference import ValidateModelRequest
 
@@ -484,16 +486,20 @@ class TestValidateRefusesDuringTraining(unittest.TestCase):
             load_in_4bit = load_in_4bit,
             max_seq_length = 4096,
             llama_extra_args = llama_extra_args,
+            gguf_variant = gguf_variant,
         )
         cfg = SimpleNamespace(
             identifier = "unsloth/Qwen3-1.7B",
             display_name = "Qwen3-1.7B",
             is_gguf = is_gguf,
+            gguf_variant = gguf_variant,
             is_lora = False,
             is_vision = False,
             path = None,
             base_model = None,
         )
+        if llama_backend is None:
+            llama_backend = SimpleNamespace(extra_args = None, extra_args_source = None)
         with (
             patch.object(
                 self.route,
@@ -502,6 +508,7 @@ class TestValidateRefusesDuringTraining(unittest.TestCase):
             ),
             patch.object(self.route.ModelConfig, "from_identifier", return_value = cfg),
             patch.object(self.route, "load_inference_config", return_value = {}),
+            patch.object(self.route, "get_llama_cpp_backend", return_value = llama_backend),
             _stub_guard_deps(training_active = training_active, decision = decision, captured = captured),
         ):
             return asyncio.run(self.route.validate_model(request, current_subject = "test-user"))
@@ -535,6 +542,24 @@ class TestValidateRefusesDuringTraining(unittest.TestCase):
                 captured = captured,
                 llama_extra_args = ["--no-mmproj"],
                 is_gguf = True,
+            )
+        self.assertEqual(captured[0]["required_override_gb"], 12.5)
+        self.assertFalse(estimate.call_args.kwargs["include_mmproj"])
+
+    def test_validate_inherits_same_model_llama_extra_args_for_guard(self):
+        captured = []
+        llama_backend = SimpleNamespace(
+            extra_args = ["--no-mmproj"],
+            extra_args_source = ("unsloth/Qwen3-1.7B", "Q4_K_M"),
+        )
+        with patch.object(self.route, "_estimate_gguf_required_gb", return_value = 12.5) as estimate:
+            self._validate(
+                training_active = True,
+                decision = (True, {}),
+                captured = captured,
+                is_gguf = True,
+                gguf_variant = "Q4_K_M",
+                llama_backend = llama_backend,
             )
         self.assertEqual(captured[0]["required_override_gb"], 12.5)
         self.assertFalse(estimate.call_args.kwargs["include_mmproj"])

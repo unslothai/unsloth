@@ -370,7 +370,7 @@ def is_mmproj_by_metadata(meta: Optional[Dict[str, str]]) -> Optional[bool]:
     return t.lower() == "mmproj"
 
 
-def _hf_repo_slug_from_url(url: str) -> Optional[str]:
+def _normalize_url(url: str) -> Optional[str]:
     value = (url or "").strip().rstrip("/")
     if not value:
         return None
@@ -381,12 +381,19 @@ def _hf_repo_slug_from_url(url: str) -> Optional[str]:
         if lower.startswith(scheme):
             value = value[len(scheme) :]
             break
+    return value.lower()
+
+
+def _hf_repo_slug_from_url(url: str) -> Optional[str]:
+    value = _normalize_url(url)
+    if not value:
+        return None
     parts = [p for p in value.split("/") if p]
     if parts and "." in parts[0]:
         parts = parts[1:]
     if len(parts) < 2:
         return None
-    return parts[1].lower()
+    return parts[1]
 
 
 def _slug_extends_base(derived: str, base: str) -> bool:
@@ -419,10 +426,12 @@ def pairing_score(
     w_base = weight_meta.get("general.basename")
     p_base = mmproj_meta.get("general.basename")
     if w_url and p_url:
-        if w_url.strip().rstrip("/") == p_url.strip().rstrip("/"):
+        if _normalize_url(w_url) == _normalize_url(p_url):
             return 100
         if _urls_look_like_base_and_derivative(w_url, p_url):
-            if w_base and p_base and w_base.lower() != p_base.lower():
+            if not (w_base and p_base):
+                return -1
+            if w_base.lower() != p_base.lower():
                 return -1
             return 90
         return -1
