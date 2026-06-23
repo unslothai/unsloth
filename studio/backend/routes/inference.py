@@ -815,17 +815,14 @@ class _SameTaskStreamingResponse(StreamingResponse):
         **kwargs,
     ) -> None:
         super().__init__(*args, **kwargs)
-        # Async callable invoked when the client disconnects before the body
-        # iterator is ever advanced. A generator that never started cannot run
-        # its own try/finally, so a stream that acquires resources before its
-        # first yield (the passthrough opens an upstream httpx stream eagerly)
-        # passes this to release them.
+        # Released when the client disconnects before the body iterator starts:
+        # its try/finally never runs, so a stream that opens resources before the
+        # first yield (the passthrough's upstream httpx stream) passes this.
         self._unstarted_cleanup = unstarted_cleanup
 
     async def __call__(self, scope, receive, send) -> None:
-        # Track whether the body iterator was ever advanced: send() only emits a
-        # body message after the generator yields its first chunk, so a failure
-        # before then means it never entered its try/finally.
+        # send() emits a body message only after the first chunk, so no body
+        # message means the generator never entered its try/finally.
         body_started = False
 
         async def _tracking_send(message) -> None:
@@ -836,15 +833,11 @@ class _SameTaskStreamingResponse(StreamingResponse):
 
         try:
             await self.stream_response(_tracking_send)
-        except OSError:
-            # Client disconnected mid-send.
+        except OSError:  # client disconnected mid-send
             if body_started:
-                # The generator produced at least one chunk and is suspended in
-                # its try/finally. Throw CancelledError into it (not aclose's
-                # GeneratorExit) so its `except asyncio.CancelledError` handler
-                # runs and finishes any api_monitor entry; GeneratorExit would
-                # skip it and only run `finally`. Fall back to aclose() without
-                # athrow.
+                # Generator is suspended in its try/finally: throw CancelledError
+                # (not aclose's GeneratorExit) so its handler finishes the
+                # api_monitor entry. Fall back to aclose() without athrow.
                 athrow = getattr(self.body_iterator, "athrow", None)
                 if athrow is not None:
                     try:
@@ -856,16 +849,12 @@ class _SameTaskStreamingResponse(StreamingResponse):
                     if aclose is not None:
                         await aclose()
             else:
-                # http.response.start failed before the body iterator advanced,
-                # so its try/finally never armed and aclose()/athrow() are no-ops
-                # on an unstarted generator. Release any resources acquired
-                # before the first yield via the explicit cleanup hook.
+                # Generator never started; aclose()/athrow() are no-ops on it, so
+                # release eager resources via the hook. getattr guards a response
+                # built through __new__ without __init__ (tests, pickling).
                 aclose = getattr(self.body_iterator, "aclose", None)
                 if aclose is not None:
                     await aclose()
-                # getattr (not self._unstarted_cleanup) so a response built via
-                # __new__ (some tests, pickling) without __init__ does not raise
-                # AttributeError here.
                 cleanup = getattr(self, "_unstarted_cleanup", None)
                 if cleanup is not None:
                     try:
@@ -878,12 +867,9 @@ class _SameTaskStreamingResponse(StreamingResponse):
 
 
 def _tracked_cancel_unstarted_cleanup(tracker):
-    """Build an ``unstarted_cleanup`` for a local stream that entered ``tracker``
-    (a ``_TrackedCancel``) before returning the response. The generator exits the
-    tracker in its ``finally``, but that never runs if the client disconnects
-    before the body iterator starts, leaking the cancel-registry entry. This
-    exits the tracker on that pre-start path only (mutually exclusive with the
-    generator's finally, so it never double-exits)."""
+    """unstarted_cleanup for a local stream that entered ``tracker`` before
+    returning: exits it on pre-start disconnect, when the generator's finally
+    (which normally does so) never runs. Mutually exclusive with that finally."""
 
     async def _cleanup() -> None:
         tracker.__exit__(None, None, None)
@@ -3478,12 +3464,10 @@ async def generate_stream(
             _DONE = object()
             while True:
                 if cancel_event.is_set():
-                    # The disconnect watcher set cancel_event between chunks.
-                    # Reset the backend here: closing the Python generator does
-                    # not signal a subprocess backend, so without this it keeps
-                    # decoding after the client is gone. The finally's reset is
-                    # guarded on cancel_event being unset, so it will not run
-                    # again for this path.
+                    # Watcher set cancel_event between chunks. Reset here:
+                    # closing the generator does not signal a subprocess backend,
+                    # so it would keep decoding. The finally's reset is guarded on
+                    # cancel_event being unset, so it will not double-run.
                     backend.reset_generation_state()
                     break
                 chunk = await asyncio.to_thread(next, gen, _DONE)
@@ -8547,11 +8531,9 @@ async def _anthropic_tool_stream(
         drop_until_tool_end = False
 
         gen = run_gen()
-        # Concurrent disconnect watcher: the loop only polls is_disconnected()
-        # between events, so a client disconnect during a long prefill or
-        # generation step would otherwise hold the decode slot until the next
-        # event or a failed send. The watcher sets cancel_event so the backend
-        # stops promptly.
+        # Watcher to cancel on disconnect: the in-loop poll only fires between
+        # events, so a disconnect during a long prefill/step would otherwise hold
+        # the decode slot until the next event or a failed send.
         disconnect_watcher = asyncio.create_task(
             _await_disconnect_then_cancel(request, cancel_event)
         )
@@ -8643,11 +8625,9 @@ async def _anthropic_plain_stream(
         captured_finish_reason = None
 
         gen = run_gen()
-        # Concurrent disconnect watcher: the loop only polls is_disconnected()
-        # between chunks, so a client disconnect during a long prefill or
-        # generation step would otherwise hold the decode slot until the next
-        # chunk or a failed send. The watcher sets cancel_event so the backend
-        # stops promptly.
+        # Watcher to cancel on disconnect: the in-loop poll only fires between
+        # chunks, so a disconnect during a long prefill/step would otherwise hold
+        # the decode slot until the next chunk or a failed send.
         disconnect_watcher = asyncio.create_task(
             _await_disconnect_then_cancel(request, cancel_event)
         )
@@ -9522,18 +9502,12 @@ async def _openai_passthrough_stream(
     ``delta.tool_calls``, and any client-requested trailing ``usage`` chunk so
     the client sees a standard OpenAI response.
 
-    Reasoning/tool-call extraction here is delegated to llama-server: this path
-    forwards to its ``/v1/chat/completions`` (Studio launches with ``--jinja``
-    and ``--reasoning-format auto``), which parses Gemma-native ``<think>`` into
-    ``reasoning_content`` and ``<|tool_call>`` into structured ``tool_calls``
-    server-side, so the relayed ``delta.content`` carries no raw markup. This is
-    deliberately NOT re-parsed with the local reasoning extractor / Gemma parser
-    (verified end to end on the current llama.cpp build), unlike Studio's own
-    ``/completion``-level generation paths, which must parse the raw text
-    themselves. The dependency is on llama.cpp's chat parser: if a future build
-    or chat template stops splitting ``<think>``/``<|tool_call>``, raw markup
-    would relay into ``content`` and this path would need the local extractor as
-    a safety net.
+    Reasoning/tool-call splitting is delegated to llama-server's
+    ``/v1/chat/completions`` (Studio runs ``--jinja --reasoning-format auto``),
+    so ``delta.content`` carries no raw ``<think>``/``<|tool_call>`` markup and
+    is deliberately not re-parsed locally (unlike the ``/completion`` paths). If
+    a future llama.cpp build stops splitting it, this path would need the local
+    extractor as a safety net.
     """
     target_url = f"{llama_backend.base_url}/v1/chat/completions"
     body = _build_openai_passthrough_body(
@@ -9720,11 +9694,9 @@ async def _openai_passthrough_stream(
                                 delta = choice.get("delta")
                                 if isinstance(delta, dict) and delta.get("tool_calls"):
                                     saw_tool_call_delta = True
-                        # Detect an upstream error chunk independently of API
-                        # monitoring: when monitor_id is None (skip_api_monitor),
-                        # _monitor_openai_sse_line returns before inspecting the
-                        # error, so without this the synthetic-finish guard would
-                        # emit a successful finish_reason after a failed stream.
+                        # Detect an error chunk independently of API monitoring
+                        # (skip_api_monitor returns early), else the synthetic
+                        # finish would fire after a failed stream.
                         if _monitor_openai_error_message(chunk_data):
                             saw_stream_error = True
                     monitor_event = _monitor_openai_sse_line(
@@ -9760,10 +9732,8 @@ async def _openai_passthrough_stream(
                         monitor_done = True
                         break
                 if not saw_done and not saw_stream_error and not cancel_event.is_set():
-                    # Synthesize a finish chunk only if one was not already
-                    # emitted (e.g. before a trailing usage-only chunk), but
-                    # always close with [DONE] whenever the upstream omitted it,
-                    # so the stream ends on the [DONE] sentinel either way.
+                    # Synthesize finish only if not already emitted (e.g. before
+                    # a trailing usage chunk), but always close with [DONE].
                     if not saw_finish_reason:
                         finish_line = _synthetic_finish_line()
                         _monitor_openai_sse_line(
@@ -9816,10 +9786,9 @@ async def _openai_passthrough_stream(
                 _tracker.__exit__(None, None, None)
 
         async def _unstarted_cleanup() -> None:
-            # Client disconnected before the body stream started, so _stream()'s
-            # finally never ran. Release the eagerly-opened upstream resp/client
-            # and the cancel-registry entry here; the watchers and line iterator
-            # are created inside _stream(), so there is nothing else to close.
+            # Disconnect before the stream started: _stream()'s finally never
+            # ran, so release the eager resp/client and cancel entry here (its
+            # watchers/line iterator are created inside _stream()).
             await _aclose_stream_resources(resp = resp, client = client)
             _tracker.__exit__(None, None, None)
 

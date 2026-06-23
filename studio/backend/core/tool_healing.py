@@ -10,19 +10,11 @@ orchestrator, structlog, httpx, or the rest of the studio backend.
 import json
 import re
 
-# Pre-compiled patterns for tool XML stripping. The hyphen in the name
-# char-class lets dashed MCP tool/parameter names (mcp__srv__list-issues,
-# issue-number) parse alongside the built-ins.
-#
-# The Gemma close marker is anchored to ``(?:<tool_call|>|\Z)`` (the safe form
-# routes/inference.py's _TOOL_XML_RE uses): the plain ``<\|tool_call>.*?<tool_call\|>``
-# this PR introduced backtracks from every open position on a run of unclosed
-# markers (quadratic, and strip_tool_markup_streaming re-scans the cumulative
-# buffer per token), whereas the ``\Z`` alternative lets the first open consume
-# to EOF in one linear pass. strip_tool_call_markup additionally strips Gemma
-# spans via the brace/quote-aware _strip_gemma_native_spans, so a literal close
-# marker inside a <|"|>-quoted argument cannot truncate the span and leak its
-# suffix; the regex below is the streaming-stripper fallback.
+# Tool XML stripping patterns. Hyphen in the name class matches dashed MCP names
+# (mcp__srv__list-issues). The Gemma marker is anchored to (?:<tool_call|>|\Z)
+# (like _TOOL_XML_RE) so an unclosed run strips linearly, not quadratically;
+# strip_tool_call_markup uses the quote-aware _strip_gemma_native_spans instead,
+# leaving this regex as the streaming fallback.
 _TC_GEMMA_CLOSED_PAT = re.compile(r"<\|tool_call>.*?(?:<tool_call\|>|\Z)", re.DOTALL)
 _TOOL_CLOSED_PATS = [
     re.compile(r"<tool_call>.*?</tool_call>", re.DOTALL),
@@ -47,12 +39,9 @@ _TC_PARAM_CLOSE_RE = re.compile(r"\s*</parameter>\s*$")
 _GEMMA_QUOTE = '<|"|>'
 _PARAM_CLOSE_TAG = "</parameter>"
 _FUNC_CLOSE_TAG = "</function>"
-# A bare (unquoted) Gemma value ends at `}` or at a comma that begins the next
-# `key:` pair. A comma NOT followed by a key token is part of the value (e.g.
-# `location:New York, NY`), so it must not terminate the value. The key token
-# must be identifier-shaped (start with a letter or underscore); a comma
-# followed by digits-then-colon is value text such as a timestamp or ratio
-# (`meet at 10:00, 11:00 tomorrow`), not a new key.
+# A bare Gemma value ends at `}` or a comma starting the next `key:` pair. The
+# key must be identifier-shaped, so a comma before digits-then-colon stays in
+# the value (`location:New York, NY`; `meet at 10:00, 11:00`).
 _GEMMA_NEXT_KEY_RE = re.compile(r"\s*[A-Za-z_][\w-]*\s*:")
 
 
@@ -149,14 +138,10 @@ def _split_top_level_commas(src: str) -> list:
 
 
 def _quote_gemma_array_elements(body: str) -> str:
-    """Normalise the elements of a Gemma array value so json.loads succeeds.
-
-    Gemma may emit ``labels:[bug,ui]`` without per-element quotes, or arrays of
-    objects (``items:[{path:a}]``) whose keys/values also lack quotes; left
-    as-is json.loads fails and the whole call is dropped. Bare string elements
-    are quoted, object and nested-array elements are normalised recursively, and
-    quoted strings (already normalised from ``<|"|>``), numbers, and JSON
-    literals are preserved."""
+    """Normalise a Gemma array value so json.loads succeeds: quote bare string
+    elements, recurse into object/nested-array elements, leave quoted strings,
+    numbers, and JSON literals as-is. Gemma emits these unquoted
+    (``labels:[bug,ui]``, ``items:[{path:a}]``) and the call would otherwise drop."""
     out: list[str] = []
     for element in _split_top_level_commas(body):
         stripped = element.strip()
@@ -164,11 +149,9 @@ def _quote_gemma_array_elements(body: str) -> str:
             out.append(element)
             continue
         if stripped[0] == "{":
-            # Object element: quote its keys/bare values like a top-level object.
             out.append(_quote_gemma_object_keys(stripped))
             continue
         if stripped[0] == "[":
-            # Nested array: normalise its elements too.
             inner_end = _balanced_bracket_end(stripped, 0)
             if inner_end == len(stripped) - 1:
                 out.append("[" + _quote_gemma_array_elements(stripped[1:inner_end]) + "]")
@@ -245,15 +228,13 @@ def _quote_gemma_object_keys(src: str) -> str:
             parts.append(src[i:colon_pos])
             parts.append(":")
             i = colon_pos + 1
-            # Gemma may emit bare string values ({unit:celsius}); quote them so
-            # json.loads succeeds. JSON scalars/objects/arrays/quoted stay as-is.
+            # Quote bare string values ({unit:celsius}); JSON scalars/objects/
+            # arrays/quoted strings stay as-is.
             ws = i
             while i < len(src) and src[i].isspace():
                 i += 1
             parts.append(src[ws:i])
             if i < len(src) and src[i] == "[":
-                # Array value: quote bare string elements (e.g. labels:[bug,ui])
-                # so json.loads succeeds instead of dropping the call.
                 arr_end = _balanced_bracket_end(src, i)
                 if arr_end < 0:
                     parts.append(src[i:])
@@ -263,9 +244,7 @@ def _quote_gemma_object_keys(src: str) -> str:
                     i = arr_end + 1
             elif i < len(src) and src[i] not in '"{':
                 v_start = i
-                # Consume the bare value up to `}` or a comma that starts the
-                # next key:value pair; a comma inside the value (e.g.
-                # `New York, NY`) does not terminate it.
+                # Bare value: up to `}` or a comma that starts the next key:pair.
                 while i < len(src):
                     if src[i] == "}":
                         break
@@ -320,19 +299,11 @@ def parse_tool_calls_from_text(
       <tool_call><function=web_search><parameter=query>...</parameter></function></tool_call>
     """
     tool_calls: list[dict] = []
-    # Collect JSON- and Gemma-format candidates with their byte spans, then
-    # accept them in document order. Both order and spans matter:
-    #   * tools execute in returned order, so a call appearing earlier in the
-    #     text must be emitted first even across the two formats;
-    #   * a tool-call marker INSIDE another call's argument string is data, not a
-    #     call, so a candidate starting within an already accepted span is
-    #     skipped (covers a JSON marker nested in a Gemma arg and a Gemma marker
-    #     nested in a JSON arg alike, regardless of which format is outer).
+    # Collect JSON- and Gemma-format candidates with byte spans, then accept in
+    # document order (tools run in returned order). A marker inside an open
+    # <function=...><parameter=> value is that parameter's data, so skip it.
     candidates = []  # (start, brace_end, kind, match)
     for m in _TC_JSON_START_RE.finditer(content):
-        # A marker that begins inside an open <function=...><parameter=...> value
-        # is that parameter's data, not its own call; skip it (same guard the
-        # XML-style parser below applies to nested <function= markers).
         if _inside_open_parameter(content, m.start()):
             continue
         end = _balanced_brace_end(content, m.end() - 1)
@@ -348,11 +319,9 @@ def parse_tool_calls_from_text(
 
     spans = [(s, e) for s, e, _kind, _m in candidates]
     for idx, (start, end, kind, m) in enumerate(candidates):
-        # Skip a candidate nested inside another candidate's brace span: it is
-        # the enclosing call's argument data, not its own call. Checked against
-        # every candidate span (not only the ones that parsed successfully), so a
-        # marker inside an outer call that later fails to normalize is still
-        # never promoted to its own executable tool call.
+        # Skip a candidate nested in another candidate's span: it is the outer
+        # call's argument data. Checked against every span (not just parsed
+        # ones), so a marker in an outer call that fails to parse is never run.
         if any(s <= start and end <= e for j, (s, e) in enumerate(spans) if j != idx):
             continue
         if not allow_incomplete:
@@ -455,12 +424,9 @@ def parse_tool_calls_from_text(
 
 def _strip_gemma_native_spans(text: str, *, final: bool) -> str:
     """Remove complete Gemma-native ``<|tool_call>call:NAME{...}<tool_call|>``
-    spans, brace- and quote-balanced so a literal ``<tool_call|>`` inside a
-    ``<|"|>``-quoted argument does not truncate the span and leak its suffix
-    (which the plain ``.*?`` regex does). A span without a balanced closing
-    ``}`` or a trailing close marker is incomplete: dropped to EOF when
-    ``final`` (the response is over), otherwise kept verbatim so a call that is
-    still streaming is not stripped mid-token.
+    spans, brace/quote-balanced so a literal ``<tool_call|>`` inside a
+    ``<|"|>``-quoted argument cannot truncate the span and leak its suffix. An
+    incomplete span is dropped to EOF when ``final``, else kept (still streaming).
     """
     out: list[str] = []
     cursor = 0
@@ -495,10 +461,7 @@ def strip_tool_call_markup(text: str, *, final: bool = False) -> str:
     When ``final`` is True, trailing incomplete tool-call blocks are removed
     too, and the result is stripped of surrounding whitespace.
     """
-    # Gemma-native spans are stripped brace/quote-aware first; the regex form is
-    # not quote-aware and would truncate a span at a close marker inside a quoted
-    # argument. Skip that regex below and let the remaining patterns handle the
-    # JSON/XML formats and any orphan close marker.
+    # Gemma spans first (quote-aware); skip the non-quote-aware Gemma regex below.
     text = _strip_gemma_native_spans(text, final = final)
     patterns = _TOOL_ALL_PATS if final else _TOOL_CLOSED_PATS
     for pat in patterns:
