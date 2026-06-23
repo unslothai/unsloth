@@ -24,9 +24,10 @@ from datetime import datetime, timezone
 from loggers import get_logger
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional, Tuple, Any
+from typing import Optional, Tuple, Any, TYPE_CHECKING
 
-import matplotlib.pyplot as plt
+if TYPE_CHECKING:
+    import matplotlib.pyplot as plt
 from utils.hardware import prepare_gpu_selection
 from utils.native_path_leases import (
     native_path_secret_removed_for_child_start,
@@ -35,6 +36,30 @@ from utils.native_path_leases import (
 from utils.paths import outputs_root
 
 logger = get_logger(__name__)
+
+_pyplot = None
+_pyplot_failed = False
+
+
+def _load_pyplot():
+    """Lazily import matplotlib.pyplot (headless Agg); return it, or None if
+    matplotlib is unavailable. Deferred so a blocked native wheel (e.g. Windows
+    Smart App Control) never breaks server startup, only loss plotting.
+    """
+    global _pyplot, _pyplot_failed
+    if _pyplot is not None or _pyplot_failed:
+        return _pyplot
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")  # headless backend
+        import matplotlib.pyplot as plt
+
+        _pyplot = plt
+    except Exception as e:
+        _pyplot_failed = True
+        logger.warning("matplotlib unavailable; loss plots disabled", error = str(e))
+    return _pyplot
 
 
 def _coerce_seed(value, default = 3407) -> int:
@@ -77,8 +102,12 @@ _HF_TMP_CHECKPOINT_RE = re.compile(r"^tmp-checkpoint-\d+$")
 
 
 def _sanitize_db_config(config: dict[str, Any]) -> dict[str, Any]:
+    # ``subject`` (the run owner's username / API-key id) is worker-only metadata; never
+    # persist it to config_json, which run-history GET returns to any authenticated user.
     db_config = {
-        k: v for k, v in config.items() if k not in {"hf_token", "wandb_token", "s3_config"}
+        k: v
+        for k, v in config.items()
+        if k not in {"hf_token", "wandb_token", "s3_config", "subject"}
     }
     s3_config = config.get("s3_config")
     if hasattr(s3_config, "model_dump"):
@@ -278,6 +307,7 @@ class TrainingBackend:
             "train_split": kwargs.get("train_split", "train"),
             "eval_split": kwargs.get("eval_split"),
             "eval_steps": kwargs.get("eval_steps", 0.00),
+            "dataset_streaming": kwargs.get("dataset_streaming", False),
             "dataset_slice_start": kwargs.get("dataset_slice_start"),
             "dataset_slice_end": kwargs.get("dataset_slice_end"),
             "custom_format_mapping": kwargs.get("custom_format_mapping"),
@@ -330,6 +360,7 @@ class TrainingBackend:
             "resume_from_checkpoint": kwargs.get("resume_from_checkpoint"),
             "trust_remote_code": kwargs.get("trust_remote_code", False),
             "approved_remote_code_fingerprint": kwargs.get("approved_remote_code_fingerprint"),
+            "subject": kwargs.get("subject"),
             "gpu_ids": kwargs.get("gpu_ids"),
             "s3_config": kwargs.get("s3_config"),
             # Flipped to True only by the HTTP-fallback respawn after a stall.
@@ -650,7 +681,7 @@ class TrainingBackend:
         plot = self._create_loss_plot(progress, theme)
         return (plot, progress)
 
-    def refresh_plot_for_theme(self, theme: str) -> Optional[plt.Figure]:
+    def refresh_plot_for_theme(self, theme: str) -> "Optional[plt.Figure]":
         """Refresh plot with new theme."""
         if theme and isinstance(theme, str) and theme in ["light", "dark"]:
             self.current_theme = theme
@@ -1085,8 +1116,14 @@ class TrainingBackend:
         self,
         progress: TrainingProgress,
         theme: str = "light",
-    ) -> plt.Figure:
-        """Create training loss plot with theme-aware styling."""
+    ) -> "Optional[plt.Figure]":
+        """Create training loss plot with theme-aware styling.
+
+        matplotlib is loaded lazily; returns None if it is unavailable.
+        """
+        plt = _load_pyplot()
+        if plt is None:
+            return None
         plt.close("all")
 
         LIGHT_STYLE = {

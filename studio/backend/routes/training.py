@@ -185,6 +185,68 @@ async def start_training(
                 )
             request.resume_from_checkpoint = resume_checkpoint
 
+        # Validate streaming-mode compatibility before any expensive work.
+        # Streaming is supported only for Hugging Face text datasets.
+        if request.dataset_streaming:
+            if not request.hf_dataset:
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "dataset_streaming requires hf_dataset; streaming is not supported for local datasets.",
+                )
+            if request.is_dataset_image or request.is_dataset_audio:
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "dataset_streaming is not supported for vision or audio datasets.",
+                )
+            if request.is_embedding:
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "dataset_streaming is not supported for embedding training; the embedding loader needs the full dataset.",
+                )
+            from utils.hardware import hardware as _hw
+
+            if _hw.DEVICE == _hw.DeviceType.MLX:
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "dataset_streaming is not yet supported on Apple Silicon (MLX); the MLX loader materializes the full dataset.",
+                )
+            if request.max_steps is None or request.max_steps <= 0:
+                raise HTTPException(
+                    status_code = 422,
+                    detail = "dataset_streaming requires max_steps > 0 because streaming datasets have no known length.",
+                )
+            if request.train_on_completions:
+                raise HTTPException(
+                    status_code = 422,
+                    detail = "dataset_streaming is not supported with train_on_completions yet.",
+                )
+            if request.eval_steps > 0:
+                train_split = request.train_split or "train"
+                if not request.eval_split or request.eval_split == train_split:
+                    raise HTTPException(
+                        status_code = 422,
+                        detail = "dataset_streaming with evaluation requires a separate eval_split.",
+                    )
+            # Streaming is HF-only: reject when the request also carries a local
+            # dataset path or an S3 config; those sources cannot be streamed via
+            # HF's streaming loader.
+            if request.local_datasets:
+                raise HTTPException(
+                    status_code = 400,
+                    detail = (
+                        "dataset_streaming is HF-only; remove local_datasets / S3 source. "
+                        "Streaming is not supported with local file paths."
+                    ),
+                )
+            if request.s3_config is not None:
+                raise HTTPException(
+                    status_code = 400,
+                    detail = (
+                        "dataset_streaming is HF-only; remove local_datasets / S3 source. "
+                        "Streaming is not supported with S3 datasets."
+                    ),
+                )
+
         # Convert request to backend kwargs.
         training_kwargs = {
             "model_name": request.model_name,
@@ -200,6 +262,7 @@ async def start_training(
             "format_type": request.format_type,
             "subset": request.subset,
             "train_split": request.train_split,
+            "dataset_streaming": request.dataset_streaming,
             "eval_split": request.eval_split,
             "eval_steps": request.eval_steps,
             "dataset_slice_start": request.dataset_slice_start,
@@ -250,6 +313,7 @@ async def start_training(
             "resume_from_checkpoint": request.resume_from_checkpoint,
             "trust_remote_code": request.trust_remote_code,
             "approved_remote_code_fingerprint": request.approved_remote_code_fingerprint,
+            "subject": current_subject,
             "gpu_ids": request.gpu_ids,
             "s3_config": request.s3_config.model_dump() if request.s3_config else None,
         }

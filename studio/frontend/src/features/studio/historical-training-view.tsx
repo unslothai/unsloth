@@ -59,6 +59,7 @@ function mapToViewData(
     currentEpoch: metrics.final_epoch,
     currentNumTokens: metrics.final_num_tokens ?? null,
     outputDir: run.output_dir ?? null,
+    resumedLater: run.resumed_later ?? false,
     progressPercent:
       run.total_steps && run.final_step
         ? (run.final_step / run.total_steps) * 100

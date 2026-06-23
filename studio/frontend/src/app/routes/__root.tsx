@@ -5,7 +5,10 @@ import { AppSidebar } from "@/components/app-sidebar";
 import { Navbar } from "@/components/navbar";
 import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
-import { SettingsDialog, useSettingsDialogStore } from "@/features/settings";
+import {
+  SettingsDialog,
+  useSettingsDialogStore,
+} from "@/features/settings";
 import {
   ChatPage,
   clearNewChatDraft,
@@ -15,6 +18,8 @@ import {
 import { RemoteCodeConsentDialog } from "@/features/security";
 import { useTrainingUnloadGuard } from "@/features/training";
 import { useExportRuntimeLifecycle } from "@/features/export";
+import { hasAuthToken } from "@/features/auth";
+import { usePersonalizationSync } from "@/features/profile";
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
 import { useT, type TranslationKey } from "@/i18n";
 import {
@@ -50,6 +55,11 @@ function RouteFallback() {
       {t("common.loading")}
     </div>
   );
+}
+
+function PersonalizationSyncMount() {
+  usePersonalizationSync(hasAuthToken());
+  return null;
 }
 
 const CHAT_ONLY_ALLOWED = new Set([
@@ -172,7 +182,9 @@ function RootLayout() {
         chatRuntime.setActiveThreadId(null);
         chatRuntime.setActiveProjectId(null);
         chatRuntime.setIncognito(false);
-        if (chatRuntime.pendingSelection) chatRuntime.abandonStagedModel();
+        // Detach the staging UI but keep any in-flight download running, like Hub.
+        if (chatRuntime.pendingSelection)
+          chatRuntime.abandonStagedModel({ keepDownload: true });
         void navigate({
           to: "/chat",
           search: { new: crypto.randomUUID() },
@@ -195,11 +207,15 @@ function RootLayout() {
     chatRuntime.setActiveProjectId(null);
     chatRuntime.setActiveThreadId(null);
     chatRuntime.setIncognito(false);
-    if (chatRuntime.pendingSelection) chatRuntime.abandonStagedModel();
+    // Leaving chat must not kill an in-flight download: detach the staging UI
+    // but keep the transfer running in the manager, like a Hub download.
+    if (chatRuntime.pendingSelection)
+      chatRuntime.abandonStagedModel({ keepDownload: true });
   }, [isChatRoute]);
 
   return (
     <AppProvider>
+      <PersonalizationSyncMount />
       <SettingsDialog />
       <RemoteCodeConsentDialog />
       {hideNavbar ? (
