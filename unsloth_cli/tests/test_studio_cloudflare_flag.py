@@ -251,7 +251,9 @@ def test_run_banner_cloudflare_notice_is_wildcard_guarded():
             return False
         return {getattr(item, "value", None) for item in comp.elts} == {"0.0.0.0", "::"}
 
-    guards = [node for node in ast.walk(tree) if isinstance(node, ast.If) and _is_wildcard_guard(node)]
+    guards = [
+        node for node in ast.walk(tree) if isinstance(node, ast.If) and _is_wildcard_guard(node)
+    ]
     assert guards
     guard = guards[-1]
     verify_calls = [
