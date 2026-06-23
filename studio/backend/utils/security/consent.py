@@ -174,6 +174,7 @@ def evaluate_remote_code_consent(
     trust_remote_code: bool,
     approved_fingerprint: Optional[str] = None,
     trusted_org: Optional[bool] = None,
+    subject: Optional[str] = None,
 ) -> RemoteCodeDecision:
     """Single-repo consent; thin wrapper over the for_targets form. ``trusted_org`` is
     accepted for backward compatibility but no longer changes the decision.
@@ -183,6 +184,7 @@ def evaluate_remote_code_consent(
         hf_token,
         trust_remote_code = trust_remote_code,
         approved_fingerprint = approved_fingerprint,
+        subject = subject,
     )
 
 
@@ -207,6 +209,7 @@ def evaluate_remote_code_consent_for_targets(
     *,
     trust_remote_code: bool,
     approved_fingerprint: Optional[str] = None,
+    subject: Optional[str] = None,
 ) -> RemoteCodeDecision:
     """Decide whether a ``trust_remote_code=True`` load may proceed, over every repo whose
     code the load would execute. A LoRA load runs adapter AND base code, so all targets
@@ -214,6 +217,11 @@ def evaluate_remote_code_consent_for_targets(
     -- one approval covers every repo, and a base-only fingerprint can't leave an
     adapter's own ``auto_map`` unreviewed. On ``blocked``, the caller surfaces
     ``response_payload()`` and retries with ``approved_fingerprint`` if the user accepts.
+
+    When ``subject`` is given, a prior approval by that user can skip the DIALOG (never the
+    scan): the stored fingerprint seeds the authoritative content check below, so an
+    unchanged repo auto-approves while any change re-prompts. A genuine approval is
+    recorded for next time.
     """
     targets = [t for t in dict.fromkeys(targets) if t]
     primary = targets[0] if targets else ""
@@ -222,6 +230,22 @@ def evaluate_remote_code_consent_for_targets(
         return RemoteCodeDecision(
             primary, False, False, None, None, "", "trust_remote_code disabled"
         )
+
+    # Persistent per-user approval: seed the stored fingerprint so the authoritative scan
+    # below auto-approves an unchanged repo (skips only the prompt, never the scan). Gated so
+    # it cannot weaken the scan: the approval must match the current scanner ruleset, and a
+    # resolvable commit SHA must match the approved revision (a moved repo re-prompts; a None
+    # SHA relies on the fingerprint). The fingerprint and the CRITICAL block still apply.
+    caller_approved_fingerprint = approved_fingerprint
+    if subject:
+        from utils.security import remote_code_approvals
+
+        _ak = remote_code_approvals.approval_target_key(targets)
+        _stored = remote_code_approvals.lookup(subject, _ak)
+        if _stored is not None and _stored.scanner_version == remote_code_approvals.SCANNER_VERSION:
+            _sha = remote_code_approvals.resolve_combined_sha(targets, hf_token)
+            if _sha is None or _sha == _stored.commit_sha:
+                approved_fingerprint = approved_fingerprint or _stored.fingerprint
 
     # Gather executable .py from every target that ships auto_map. A definitively
     # auto_map-free target contributes nothing; an unreadable config is scanned anyway.
@@ -306,6 +330,20 @@ def evaluate_remote_code_consent_for_targets(
             primary,
             sev,
             fingerprint[:12],
+        )
+
+    # Persist a genuine user approval (caller supplied the matching fingerprint, not a cache
+    # seed) under the current scanner version, so the unchanged repo is not re-prompted until
+    # the code or the ruleset changes.
+    if approved and subject and caller_approved_fingerprint == fingerprint:
+        from utils.security import remote_code_approvals
+        remote_code_approvals.record(
+            subject,
+            remote_code_approvals.approval_target_key(targets),
+            commit_sha = remote_code_approvals.resolve_combined_sha(targets, hf_token),
+            fingerprint = fingerprint,
+            max_severity = sev,
+            scanner_version = remote_code_approvals.SCANNER_VERSION,
         )
 
     return RemoteCodeDecision(

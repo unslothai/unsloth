@@ -107,7 +107,7 @@
     "globals": "^17.4.0",
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.55.0",
-    "vite": "^8.0.1"
+    "vite": "^8.0.16"
   },
   "allowScripts": {
     "@biomejs/biome@1.9.4": true,

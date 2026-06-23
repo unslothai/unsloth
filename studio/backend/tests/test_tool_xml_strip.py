@@ -125,6 +125,14 @@ def test_strips_orphan_closing_tag():
     # Mid-string </parameter> intentionally preserved (see preserve test).
 
 
+def test_strips_gemma_native_orphan_closing_tag():
+    cleaned = _TOOL_XML_RE.sub("", "Tool call drained.<tool_call|>Visible tail.")
+
+    assert "<tool_call|>" not in cleaned
+    assert "Tool call drained." in cleaned
+    assert "Visible tail." in cleaned
+
+
 # ── Tail-only </parameter> (PR #5735 follow-up) ───────────────────
 
 

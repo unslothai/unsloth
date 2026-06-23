@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import type { RememberedLoadSettings } from "@/components/assistant-ui/model-selector/remembered-load-settings";
 import { cancelStagedModelDownload } from "@/features/hub";
 import { toast } from "@/lib/toast";
 import { create } from "zustand";
@@ -770,6 +771,10 @@ type ChatRuntimeStore = {
    *  start each deferred-staging session clean so one staged pick's settings
    *  don't leak onto the next. */
   resetModelSettingsToLoaded: () => void;
+  /** Seed the editable load knobs from a model's remembered settings. Shared by
+   *  the settings sheet's restore effect and the "Load on selection" paths,
+   *  which skip the sheet but must still honor a saved config. */
+  applyRememberedLoadSettings: (settings: RememberedLoadSettings) => void;
   setTensorParallel: (value: boolean) => void;
   setLoadOnSelection: (value: boolean) => void;
   setExpandQuantizations: (value: boolean) => void;
@@ -778,9 +783,10 @@ type ChatRuntimeStore = {
   /** Stage a pick for a deferred load: revert knobs to the loaded baseline,
    *  record the selection, and open the settings sheet. */
   stageModel: (selection: PendingModelSelection) => void;
-  /** Abandon a staged pick without loading: revert the knobs to the loaded
-   *  baseline and clear the pending selection. */
-  abandonStagedModel: () => void;
+  /** Abandon a staged pick without loading: revert knobs to the loaded baseline
+   *  and clear the pending selection. Cancels its in-flight download too, unless
+   *  `keepDownload` is set (navigation keeps the transfer running, like Hub). */
+  abandonStagedModel: (opts?: { keepDownload?: boolean }) => void;
   setCustomContextLength: (v: number | null) => void;
   setChatTemplateOverride: (template: string | null) => void;
   setPendingAudio: (base64: string, name: string) => void;
@@ -1527,6 +1533,16 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   setSpecDraftNMax: (specDraftNMax) => set({ specDraftNMax }),
   setTensorParallel: (tensorParallel) => set({ tensorParallel }),
   resetModelSettingsToLoaded: () => set((s) => loadedBaselineSettings(s)),
+  applyRememberedLoadSettings: (settings) =>
+    // Coalesce every field: a blob persisted by an older/newer build can omit
+    // keys, and a raw spread would push `undefined` into fields typed non-null.
+    set({
+      customContextLength: settings.contextLength ?? null,
+      kvCacheDtype: settings.kvCacheDtype ?? null,
+      speculativeType: settings.speculativeType ?? "auto",
+      specDraftNMax: settings.specDraftNMax ?? null,
+      tensorParallel: settings.tensorParallel ?? false,
+    }),
   setLoadOnSelection: (loadOnSelection) => {
     saveBool(CHAT_LOAD_ON_SELECTION_KEY, loadOnSelection);
     set({ loadOnSelection });
@@ -1544,15 +1560,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     // Refuse staging mid-load: post-load cleanup would silently drop the queued
     // pick. stageOrLoad toasts first for callers that can.
     if (get().modelLoading) return;
+    // Rebinding to a new pick keeps the prior pick's download running so the
+    // user can queue multiple downloads at once (Hub-style).
     set((s) => {
-      if (
-        s.pendingSelection &&
-        (s.pendingSelection.id !== selection.id ||
-          (s.pendingSelection.ggufVariant ?? null) !==
-            (selection.ggufVariant ?? null))
-      ) {
-        cancelStagedModelDownload(s.pendingSelection);
-      }
       return {
         ...loadedBaselineSettings(s),
         pendingSelection: selection,
@@ -1566,14 +1576,13 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       };
     });
   },
-  abandonStagedModel: () => {
+  abandonStagedModel: (opts) => {
     const { pendingSelection } = get();
     if (!pendingSelection) return;
-    // Cancel the staged pick's in-flight download so it doesn't keep running
-    // after the staging UI is gone. Centralized here so every abandon path
-    // (sheet close, thread switch, route exit, new chat) cancels it, including
-    // root-level callers that have no access to the useRepoDownload hook.
-    cancelStagedModelDownload(pendingSelection);
+    // Cancel the staged pick's in-flight download (centralized for every abandon
+    // path: sheet close, thread switch, route exit, new chat). `keepDownload`
+    // opts out so navigation leaves the transfer running, like a Hub download.
+    if (!opts?.keepDownload) cancelStagedModelDownload(pendingSelection);
     set((s) => ({ ...loadedBaselineSettings(s), pendingSelection: null }));
   },
   setCustomContextLength: (customContextLength) => set({ customContextLength }),
