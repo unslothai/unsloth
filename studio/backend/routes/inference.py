@@ -5508,7 +5508,9 @@ async def openai_chat_completions(
                     {"prompt_tokens": _pt, "completion_tokens": _ct, "total_tokens": _pt + _ct},
                     _monitor_context_length(),
                 )
-                api_monitor.finish(monitor_id, "cancelled" if cancel_event.is_set() else "completed")
+                api_monitor.finish(
+                    monitor_id, "cancelled" if cancel_event.is_set() else "completed"
+                )
                 return _model_json_response(response)
             except Exception as e:
                 logger.error(f"Error during GGUF tool completion: {e}", exc_info = True)

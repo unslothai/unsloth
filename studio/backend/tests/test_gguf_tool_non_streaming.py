@@ -51,7 +51,9 @@ class _ToolGgufBackend:
 
 
 def _client(monkeypatch, backend = None):
-    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend or _ToolGgufBackend())
+    monkeypatch.setattr(
+        inference_route, "get_llama_cpp_backend", lambda: backend or _ToolGgufBackend()
+    )
     # Tools forced on -- the same effect as the CLI `run --model` tool policy.
     monkeypatch.setattr(inference_route, "_effective_enable_tools", lambda payload: True)
 
@@ -130,7 +132,11 @@ def test_non_streaming_missing_usage_defaults_to_zero(monkeypatch):
 def test_non_streaming_preserves_length_finish_reason(monkeypatch):
     events = [
         {"type": "content", "text": "truncated"},
-        {"type": "metadata", "usage": {"prompt_tokens": 3, "completion_tokens": 9}, "finish_reason": "length"},
+        {
+            "type": "metadata",
+            "usage": {"prompt_tokens": 3, "completion_tokens": 9},
+            "finish_reason": "length",
+        },
     ]
     response = _client(monkeypatch, _EventsBackend(events)).post(
         "/chat/completions", json = _payload(stream = False)
