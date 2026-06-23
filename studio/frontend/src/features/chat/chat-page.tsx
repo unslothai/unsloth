@@ -8,6 +8,10 @@ import {
   type ModelOption,
   ModelSelector,
 } from "@/components/assistant-ui/model-selector";
+import {
+  loadRememberedLoadSettings,
+  rememberedLoadSettingsKey,
+} from "@/components/assistant-ui/model-selector/remembered-load-settings";
 import { ProjectComposer, Thread } from "@/components/assistant-ui/thread";
 import { CopyableErrorChip } from "@/components/ui/copyable-error-chip";
 import {
@@ -1275,13 +1279,18 @@ export function ChatPage({
     selectModelRef.current = selectModel;
   }, [refresh, selectModel]);
   // Load a cached autoLoad pick once its download finishes. The sheet was never
-  // opened, so on a load failure just drop the orphaned staged knobs.
+  // opened, so on a load failure just drop the orphaned staged knobs. The knobs
+  // were already seeded on stage, so keepSpeculative only when a config was
+  // saved -- otherwise the standing speculative preference should win.
   autoLoadStagedRef.current = (pending) => {
+    const remembered = loadRememberedLoadSettings(
+      rememberedLoadSettingsKey(pending),
+    );
     void selectModel({
       ...pending,
       isDownloaded: true,
       forceReload: true,
-      keepSpeculative: false,
+      keepSpeculative: remembered != null,
       throwOnError: true,
     }).catch(() => {
       const store = useChatRuntimeStore.getState();
@@ -1648,10 +1657,21 @@ export function ChatPage({
         (!hasGgufSource(selection) && !wantManagerDownload) ||
         (store.loadOnSelection && selection.isDownloaded)
       ) {
-        // Detach any staged pick first so its edited knobs don't leak into this
-        // immediate load. Detach (not abandon) keeps its download running.
+        // Detach any staged pick first so its edited knobs (e.g. a custom
+        // context length) don't leak into this immediate load -- resolveLoad
+        // reads customContextLength before checking the target is GGUF. Detach
+        // (not abandon) keeps its download running.
         detachStaged();
-        await selectModel(selection);
+        // Load-on-selection skips the sheet, so seed the saved knobs here the
+        // way the sheet's restore effect would; the switch would otherwise reset
+        // the remembered speculative choice (keepSpeculative below prevents it).
+        const remembered = hasGgufSource(selection)
+          ? loadRememberedLoadSettings(rememberedLoadSettingsKey(selection))
+          : null;
+        if (remembered) store.applyRememberedLoadSettings(remembered);
+        await selectModel(
+          remembered ? { ...selection, keepSpeculative: true } : selection,
+        );
         return;
       }
       // Loads can't queue behind each other, but a download is independent: if
@@ -2506,7 +2526,6 @@ export function ChatPage({
                     onClick={() => setSettingsOpen(true)}
                     className="flex h-[34px] w-[34px] translate-x-[2px] cursor-pointer items-center justify-center rounded-full text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     aria-label="Open run settings"
-                    data-tour="chat-settings"
                   >
                     <HugeiconsIcon
                       icon={LayoutAlignRightIcon}
