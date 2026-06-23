@@ -573,6 +573,21 @@ _PAD_FALLBACK = (
 def orpo_trainer_processor_pad_token(function_name, function):
     if function_name != "__init__":
         return function
+    # Multimodal processors (e.g. Gemma3/Gemma4 Processor) expose pad_token /
+    # eos_token on `.tokenizer`, not on the processor itself. TRL 1.x CPO/ORPO
+    # __init__ defaults `processing_class.pad_token` from `.eos_token` before
+    # tokenizing, which AttributeErrors on such a processor. Route the default
+    # through the inner tokenizer. Older TRL lacks this block, so the sub is a
+    # no-op there and only the pad_token_id fallback below applies.
+    function = re.sub(
+        r"(?m)^([ \t]*)if processing_class\.pad_token is None:\n"
+        r"\1[ \t]+processing_class\.pad_token\s*=\s*processing_class\.eos_token\n",
+        r"\1_unsloth_proc_tok = getattr(processing_class, 'tokenizer', processing_class)\n"
+        r"\1if getattr(_unsloth_proc_tok, 'pad_token', None) is None:\n"
+        r"\1    _unsloth_proc_tok.pad_token = getattr(_unsloth_proc_tok, 'eos_token', None)\n",
+        function,
+        count = 1,
+    )
     if "processing_class.pad_token_id" not in function:
         return function
     return function.replace("processing_class.pad_token_id", _PAD_FALLBACK)

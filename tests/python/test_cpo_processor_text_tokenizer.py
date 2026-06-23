@@ -44,3 +44,56 @@ def test_cpo_registration_matches_orpo():
     shared = {"orpo_trainer_text_tokenizer", "orpo_trainer_processor_pad_token"}
     assert shared <= set(regs.get("orpo_trainer", []))
     assert shared <= set(regs.get("cpo_trainer", []))
+
+
+def _load_pad_rewriter():
+    """Exec orpo_trainer_processor_pad_token (+ _PAD_FALLBACK) without importing unsloth."""
+    tree = ast.parse(open(RL_PATH).read())
+    nodes = []
+    for n in tree.body:
+        if isinstance(n, ast.Assign) and any(
+            getattr(t, "id", None) == "_PAD_FALLBACK" for t in n.targets
+        ):
+            nodes.append(n)
+        elif isinstance(n, ast.FunctionDef) and n.name == "orpo_trainer_processor_pad_token":
+            nodes.append(n)
+    import re as _re
+
+    ns = {"re": _re}
+    exec(compile(ast.Module(body = nodes, type_ignores = []), RL_PATH, "exec"), ns)
+    return ns["orpo_trainer_processor_pad_token"]
+
+
+def test_pad_token_default_routed_through_inner_tokenizer():
+    # TRL 1.x CPO/ORPO __init__ defaults pad_token from eos_token before
+    # tokenizing; on a multimodal processor those live on `.tokenizer`. The
+    # rewrite must route both the default and pad_token_id through the inner
+    # tokenizer so a processor without bare pad_token does not AttributeError.
+    rewrite = _load_pad_rewriter()
+    init_src = (
+        "def __init__(self, model, args, processing_class):\n"
+        "    if processing_class.pad_token is None:\n"
+        "        processing_class.pad_token = processing_class.eos_token\n"
+        "    self.pad_token_id = processing_class.pad_token_id\n"
+    )
+    out = rewrite("__init__", init_src)
+    assert "if processing_class.pad_token is None:" not in out
+    assert "processing_class.pad_token = processing_class.eos_token" not in out
+    assert "_unsloth_proc_tok = getattr(processing_class, 'tokenizer', processing_class)" in out
+    # bare pad_token_id must be routed through the getattr fallback, not left raw
+    assert "= processing_class.pad_token_id\n" not in out
+    ast.parse(out)  # rewritten source still compiles
+
+
+def test_pad_rewrite_noop_without_bare_pad_block():
+    # Older TRL (the pinned <=0.24.0 range) has no bare pad_token block; the
+    # rewrite must only touch pad_token_id and leave everything else intact.
+    rewrite = _load_pad_rewriter()
+    init_src = (
+        "def __init__(self, model, args, processing_class):\n"
+        "    self.pad_token_id = processing_class.pad_token_id\n"
+    )
+    out = rewrite("__init__", init_src)
+    assert "_unsloth_proc_tok" not in out
+    assert "= processing_class.pad_token_id\n" not in out  # still routed via fallback
+    ast.parse(out)
