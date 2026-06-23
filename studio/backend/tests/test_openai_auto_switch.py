@@ -72,7 +72,7 @@ def test_flag_off_never_loads(monkeypatch):
     _wire(
         monkeypatch,
         enabled = False,
-        resolves_to = ("unsloth/B-GGUF", None),
+        resolves_to = ("unsloth/B-GGUF", None, "unsloth/B-GGUF"),
         backend = backend,
         recorder = rec,
     )
@@ -95,7 +95,7 @@ def test_already_loaded_does_not_reload(monkeypatch):
     _wire(
         monkeypatch,
         enabled = True,
-        resolves_to = ("unsloth/a-gguf", None),
+        resolves_to = ("unsloth/a-gguf", None, "unsloth/a-gguf"),
         backend = backend,
         recorder = rec,
     )
@@ -109,7 +109,7 @@ def test_known_unloaded_model_switches_once(monkeypatch):
     _wire(
         monkeypatch,
         enabled = True,
-        resolves_to = ("unsloth/B-GGUF", "Q4_K_M"),
+        resolves_to = ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF"),
         backend = backend,
         recorder = rec,
     )
@@ -128,7 +128,7 @@ def test_concurrent_same_target_loads_once(monkeypatch):
     _wire(
         monkeypatch,
         enabled = True,
-        resolves_to = ("unsloth/B-GGUF", None),
+        resolves_to = ("unsloth/B-GGUF", None, "unsloth/B-GGUF"),
         backend = backend,
         recorder = rec,
     )
@@ -151,7 +151,7 @@ def test_load_failure_propagates(monkeypatch):
     _wire(
         monkeypatch,
         enabled = True,
-        resolves_to = ("unsloth/B-GGUF", None),
+        resolves_to = ("unsloth/B-GGUF", None, "unsloth/B-GGUF"),
         backend = backend,
         recorder = rec,
     )
@@ -166,7 +166,7 @@ def test_same_repo_different_variant_switches(monkeypatch):
     _wire(
         monkeypatch,
         enabled = True,
-        resolves_to = ("unsloth/B-GGUF", "Q8_0"),
+        resolves_to = ("unsloth/B-GGUF", "Q8_0", "unsloth/B-GGUF"),
         backend = backend,
         recorder = rec,
     )
@@ -181,7 +181,7 @@ def test_same_repo_same_variant_does_not_reload(monkeypatch):
     _wire(
         monkeypatch,
         enabled = True,
-        resolves_to = ("unsloth/B-GGUF", "q4_k_m"),  # case-insensitive
+        resolves_to = ("unsloth/B-GGUF", "q4_k_m", "unsloth/B-GGUF"),  # case-insensitive
         backend = backend,
         recorder = rec,
     )
@@ -250,7 +250,8 @@ def test_local_gguf_entry_filters_non_gguf_and_recurses(tmp_path):
 
 
 def _entry(loader_id, *variants):
-    return resolver._LocalGgufEntry(loader_id, tuple(variants))
+    # load_path == loader_id for tests; production stores a concrete local path.
+    return resolver._LocalGgufEntry(loader_id, loader_id, tuple(variants))
 
 
 def test_resolver_matches_and_splits_variant(monkeypatch):
@@ -264,9 +265,14 @@ def test_resolver_matches_and_splits_variant(monkeypatch):
     assert resolver.resolve_local_gguf("unsloth/B-GGUF:ud-q5_k_xl") == (
         "unsloth/B-GGUF",
         "UD-Q5_K_XL",
+        "unsloth/B-GGUF",
     )
     # A bare id resolves to a concrete local quant, never a remote one.
-    assert resolver.resolve_local_gguf("unsloth/B-GGUF") == ("unsloth/B-GGUF", "UD-Q5_K_XL")
+    assert resolver.resolve_local_gguf("unsloth/B-GGUF") == (
+        "unsloth/B-GGUF",
+        "UD-Q5_K_XL",
+        "unsloth/B-GGUF",
+    )
     # A variant that is not on disk must not resolve (no remote download).
     assert resolver.resolve_local_gguf("unsloth/B-GGUF:Q8_0") is None
     assert resolver.resolve_local_gguf("totally/unknown") is None
@@ -299,7 +305,7 @@ def test_resolver_exact_id_with_colon_wins(monkeypatch):
     win = r"C:\models\foo.gguf"
     monkeypatch.setattr(resolver, "_build_index", lambda: {win.lower(): _entry(win)})
     resolver._scan = (0.0, {})
-    assert resolver.resolve_local_gguf(win) == (win, None)
+    assert resolver.resolve_local_gguf(win) == (win, None, win)
 
 
 # ── settings coercion ───────────────────────────────────────────────
@@ -393,7 +399,7 @@ def test_auto_switch_applies_model_override(monkeypatch):
     _wire(
         monkeypatch,
         enabled = True,
-        resolves_to = ("unsloth/B-GGUF", "Q4_K_M"),
+        resolves_to = ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF"),
         backend = backend,
         recorder = rec,
     )
@@ -419,7 +425,7 @@ def test_auto_switch_applies_partial_override(monkeypatch):
     _wire(
         monkeypatch,
         enabled = True,
-        resolves_to = ("unsloth/B-GGUF", "Q4_K_M"),
+        resolves_to = ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF"),
         backend = backend,
         recorder = rec,
     )
@@ -503,9 +509,9 @@ def test_override_route_rejects_managed_flag_and_removes(monkeypatch):
 def test_list_switch_eligible_ids(monkeypatch):
     # Several index keys map to the same entry; the listing is the distinct,
     # SORTED set of loader ids (insertion order B,A,C below differs from sorted).
-    eb = resolver._LocalGgufEntry("unsloth/B-GGUF", ("Q4_K_M",))
-    ea = resolver._LocalGgufEntry("unsloth/A-GGUF", ())
-    ec = resolver._LocalGgufEntry("unsloth/C-GGUF", ())
+    eb = resolver._LocalGgufEntry("unsloth/B-GGUF", "/p/B", ("Q4_K_M",))
+    ea = resolver._LocalGgufEntry("unsloth/A-GGUF", "/p/A", ())
+    ec = resolver._LocalGgufEntry("unsloth/C-GGUF", "/p/C", ())
     monkeypatch.setattr(
         resolver,
         "_build_index",
@@ -670,7 +676,7 @@ def test_bare_id_tolerates_any_loaded_variant(monkeypatch):
     _wire(
         monkeypatch,
         enabled = True,
-        resolves_to = ("unsloth/B-GGUF", "Q8_0"),
+        resolves_to = ("unsloth/B-GGUF", "Q8_0", "unsloth/B-GGUF"),
         backend = backend,
         recorder = rec,
     )
@@ -681,7 +687,7 @@ def test_bare_id_tolerates_any_loaded_variant(monkeypatch):
     _wire(
         monkeypatch,
         enabled = True,
-        resolves_to = ("unsloth/B-GGUF", "Q8_0"),
+        resolves_to = ("unsloth/B-GGUF", "Q8_0", "unsloth/B-GGUF"),
         backend = backend,
         recorder = rec2,
     )
@@ -987,3 +993,104 @@ def test_middleware_ignores_non_post(monkeypatch):
     asyncio.run(drive())
     assert seen["inflight"] == 0  # OPTIONS not counted
     assert kw._inflight == 0
+
+
+# ── review round 4: swap guard, idle variant identity, load-by-path, stash clear ──
+
+
+def test_auto_switch_refuses_when_another_inference_is_active(monkeypatch):
+    # A cross-model swap must 409 (not kill) while another inference request is in
+    # flight; the requesting call itself is excluded from the count.
+    from fastapi import HTTPException
+    from core.inference import llama_keepwarm as kw
+
+    backend = _FakeBackend("org/A-GGUF", hf_variant = "Q4_K_M")
+    rec = _LoadRecorder(backend)
+    _wire(monkeypatch, enabled = True, resolves_to = ("/p/B", "Q8_0", "org/B-GGUF"), backend = backend, recorder = rec)
+    monkeypatch.setattr(kw, "_inflight", 2)  # this request + another active one
+    monkeypatch.setattr(kw, "_pending", 0)
+    with pytest.raises(HTTPException) as exc:
+        _run_hook("org/B-GGUF:Q8_0")
+    assert exc.value.status_code == 409
+    assert rec.calls == []
+
+
+def test_auto_switch_swaps_when_only_caller_is_active(monkeypatch):
+    # Only the caller is in flight: nothing else to protect, so the swap proceeds.
+    from core.inference import llama_keepwarm as kw
+
+    backend = _FakeBackend("org/A-GGUF")
+    rec = _LoadRecorder(backend)
+    _wire(monkeypatch, enabled = True, resolves_to = ("/p/B", None, "org/B-GGUF"), backend = backend, recorder = rec)
+    monkeypatch.setattr(kw, "_inflight", 1)
+    monkeypatch.setattr(kw, "_pending", 0)
+    _run_hook("org/B-GGUF")
+    assert len(rec.calls) == 1
+    assert rec.calls[0].model_path == "/p/B"  # concrete local path, not the repo id
+
+
+def test_idle_loop_resets_timer_for_same_repo_different_variant(monkeypatch):
+    # Same repo, different quant counts as a fresh model: the idle timer resets, so
+    # the new variant is not unloaded before one TTL of its own.
+    import time
+    from core.inference import llama_keepwarm as kw
+
+    monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 0.05)
+    monkeypatch.setattr(kw, "_inflight", 0)
+    monkeypatch.setattr(kw, "_pending", 0)
+
+    unloads = []
+    backend = _FakeBackend("org/model-GGUF", hf_variant = "Q4_K_M")
+    backend.unload_model = lambda: unloads.append(1)
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+
+    async def _drive():
+        task = asyncio.create_task(kw.idle_unload_loop(poll_seconds = 0.01))
+        await asyncio.sleep(0.03)
+        assert unloads == []
+        kw._last_active = time.monotonic() - 60  # force idle
+        backend.hf_variant = "Q8_0"  # same id, new quant -> fresh identity
+        await asyncio.sleep(0.03)
+        assert unloads == []  # timer reset by the variant change, not unloaded
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    asyncio.run(_drive())
+
+
+def test_generate_stream_is_tracked_as_inference_path():
+    from core.inference.llama_keepwarm import _is_inference_path
+
+    assert _is_inference_path("/api/inference/generate/stream") is True
+    assert _is_inference_path("/api/inference/audio/generate") is True
+    assert _is_inference_path("/v1/responses") is True
+
+
+def test_successful_manual_load_clears_last_unloaded_stash():
+    from core.inference import llama_keepwarm as kw
+
+    kw._set_last_unloaded(("org/A-GGUF", "Q4_K_M"))
+    assert kw.get_last_unloaded_model() == ("org/A-GGUF", "Q4_K_M")
+    kw.note_model_loaded()
+    assert kw.get_last_unloaded_model() is None
+
+
+def test_hf_cache_entry_loads_from_local_snapshot_path(tmp_path):
+    # An HF-cache repo resolves to its on-disk snapshot dir, so /load takes the
+    # local branch (no repo-id download). loader_id stays the repo id.
+    from types import SimpleNamespace
+
+    repo = tmp_path / "models--org--Repo"
+    snap = repo / "snapshots" / "abc123"
+    snap.mkdir(parents = True)
+    (snap / "model-Q4_K_M.gguf").write_bytes(b"GGUF stub")
+
+    entry = resolver._local_gguf_entry("org/Repo", SimpleNamespace(id = "org/Repo", path = str(repo)))
+    assert entry is not None
+    assert entry.loader_id == "org/Repo"  # advertised id unchanged
+    assert "snapshots" in entry.load_path  # loads from the concrete snapshot dir
+    assert entry.load_path != "org/Repo"  # never the bare repo id
+    assert entry.variants  # quant detected on disk

@@ -56,6 +56,7 @@ _INFERENCE_SUFFIXES = (
     "/messages/count_tokens",  # counts via the loaded tokenizer; protect like /messages
     "/embeddings",
     "/responses",
+    "/generate/stream",  # Studio's own streaming route on the same llama-server
     "/audio/generate",  # direct GGUF TTS; can outlive the idle TTL
 )
 
@@ -101,6 +102,31 @@ def _note_activity() -> None:
     global _last_active
     with _lock:
         _last_active = time.monotonic()
+
+
+def has_other_inference_request(current_request_counted: bool = True) -> bool:
+    """True if switching/unloading the model now would interrupt another request.
+
+    OpenAI-compatible requests are counted by the middleware before route code
+    runs, so the caller (which is one such request) is excluded by default.
+    """
+    with _lock:
+        active = _inflight
+        if current_request_counted and active > 0:
+            active -= 1
+        return active > 0 or _pending > 0
+
+
+def inference_lifecycle_gate() -> asyncio.Lock:
+    """The gate a model swap holds so new inference can't start mid-load."""
+    return _unload_gate()
+
+
+def note_model_loaded() -> None:
+    """Record a successful GGUF load: stamp activity and drop any reload stash so
+    a manual load clears it synchronously, not only on the next idle poll."""
+    _note_activity()
+    _set_last_unloaded(None)
 
 
 def get_last_unloaded_model():
@@ -163,6 +189,12 @@ class LlamaKeepWarmMiddleware:
                 _note_end()
 
 
+def _loaded_identity(backend):
+    if not backend.is_loaded or not backend.model_identifier:
+        return None
+    return (backend.model_identifier, getattr(backend, "hf_variant", None))
+
+
 async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
     """Unload the loaded GGUF once idle past the configured TTL. Inert when off."""
     from utils.openai_auto_switch_settings import get_auto_unload_idle_seconds
@@ -177,9 +209,10 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
             from routes.inference import get_llama_cpp_backend
 
             backend = get_llama_cpp_backend()
-            # A (re)loaded model counts as activity so it survives one TTL before
-            # its first request (loads bypass the activity-stamping middleware).
-            current = backend.model_identifier if backend.is_loaded else None
+            # Track by (id, variant): a (re)loaded model -- including the same repo
+            # at a different quant -- counts as activity so it survives one TTL
+            # before its first request (loads bypass the activity middleware).
+            current = _loaded_identity(backend)
             if current != seen_model:
                 seen_model = current
                 if current is not None:
@@ -187,7 +220,7 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
                     _set_last_unloaded(None)  # a model is loaded; drop stale stash
             async with _unload_gate():
                 if backend.is_loaded and _is_idle(ttl):
-                    freed = (backend.model_identifier, getattr(backend, "hf_variant", None))
+                    freed = _loaded_identity(backend)
                     await asyncio.to_thread(backend.unload_model)
                     _set_last_unloaded(freed)  # let an alias request reload it
                     logger.info("Idle auto-unload: freed GGUF after %ss idle", ttl)

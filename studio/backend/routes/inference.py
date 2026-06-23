@@ -2275,7 +2275,11 @@ async def _maybe_auto_switch_model(
         get_model_override,
     )
     from core.inference.local_model_resolver import resolve_local_gguf
-    from core.inference.llama_keepwarm import get_last_unloaded_model
+    from core.inference.llama_keepwarm import (
+        get_last_unloaded_model,
+        has_other_inference_request,
+        inference_lifecycle_gate,
+    )
 
     # Treat a non-string model (e.g. {"model": 123} on a raw-body endpoint) as
     # absent so it falls through instead of raising in the membership checks below.
@@ -2294,8 +2298,12 @@ async def _maybe_auto_switch_model(
         last = get_last_unloaded_model()
         if not last or get_llama_cpp_backend().is_loaded:
             return
-        resolved = last
-    target_id, variant = resolved
+        target_id, variant = last
+        override_id = target_id
+    else:
+        # load_path is a concrete local path (never the bare repo id), so /load
+        # takes the local branch and cannot trigger a download.
+        target_id, variant, override_id = resolved
     backend = get_llama_cpp_backend()
     # A bare model id (no :VARIANT) is satisfied by any loaded quant of that
     # repo, so it never reloads a different local quant that already serves it.
@@ -2310,25 +2318,39 @@ async def _maybe_auto_switch_model(
     if _already_serving():
         return
     async with _auto_switch_lock():
-        if _already_serving():
-            return
-        # Single slot: the load unloads the current model first, so requesting a
-        # different model while one is mid-stream interrupts it. Concurrent
-        # different-model use is therefore serialized, like llama-swap's single
-        # slot; sequential switches (the common case) are unaffected.
-        # Apply this model's saved launch flags so the swap honors the user's config.
-        override = get_model_override(target_id)
-        load_kwargs = {"model_path": target_id, "gguf_variant": variant}
-        if override.get("llama_extra_args") is not None:
-            load_kwargs["llama_extra_args"] = override["llama_extra_args"]
-        if override.get("max_seq_length") is not None:
-            load_kwargs["max_seq_length"] = override["max_seq_length"]
-        # Reuse the load route so its dedup, tensor fallback, and threading apply.
-        await load_model(
-            LoadRequest(**load_kwargs),
-            fastapi_request,
-            current_subject = current_subject,
-        )
+        # Hold the keep-warm gate across the swap so no new inference can start on
+        # the model while it is being torn down and replaced.
+        async with inference_lifecycle_gate():
+            if _already_serving():
+                return
+            # Single slot: refuse to swap while another inference request is active
+            # rather than killing its response mid-flight (the caller is excluded).
+            # The client retries once that request finishes; concurrent same-model
+            # requests never reach here. See model_switch_busy in the PR notes for
+            # the residual concurrent/external-provider edge.
+            if backend.is_loaded and has_other_inference_request(current_request_counted = True):
+                raise HTTPException(
+                    status_code = 409,
+                    detail = openai_error_body(
+                        "Cannot switch models while another inference request is in progress.",
+                        status = 409,
+                        code = "model_switch_busy",
+                        param = "model",
+                    ),
+                )
+            # Apply this model's saved launch flags so the swap honors the user's config.
+            override = get_model_override(override_id)
+            load_kwargs = {"model_path": target_id, "gguf_variant": variant}
+            if override.get("llama_extra_args") is not None:
+                load_kwargs["llama_extra_args"] = override["llama_extra_args"]
+            if override.get("max_seq_length") is not None:
+                load_kwargs["max_seq_length"] = override["max_seq_length"]
+            # Reuse the load route so its dedup, tensor fallback, and threading apply.
+            await load_model(
+                LoadRequest(**load_kwargs),
+                fastapi_request,
+                current_subject = current_subject,
+            )
 
 
 async def _auto_switch_from_request_body(request: Request, current_subject: str):
@@ -2964,6 +2986,10 @@ async def load_model(
             logger.info(
                 f"Loaded GGUF model via llama-server: {model_log_label if native_grant_backed else config.identifier}"
             )
+            # Clear any idle-unload reload stash now, not only on the next poll.
+            from core.inference.llama_keepwarm import note_model_loaded
+
+            note_model_loaded()
 
             # Audio detection moved into load_model under _serial_load_lock (#5642).
             _gguf_audio = llama_backend._audio_type

@@ -25,7 +25,8 @@ logger = get_logger(__name__)
 
 @dataclass(frozen = True)
 class _LocalGgufEntry:
-    loader_id: str
+    loader_id: str  # advertised id (repo id / folder name), also the override key
+    load_path: str  # concrete on-disk dir/file passed to /load so it never downloads
     variants: tuple[str, ...]  # local quant labels; () for a standalone .gguf
 
 
@@ -34,9 +35,28 @@ _lock = threading.Lock()
 _scan: tuple[float, dict[str, _LocalGgufEntry]] = (0.0, {})
 
 
+def _resolve_load_dir(p):
+    """The concrete dir holding the GGUFs. For an HF cache repo (``models--*``
+    with ``snapshots/``) this is the latest snapshot dir, so /load takes the
+    local branch instead of the download-capable repo-id branch."""
+    from pathlib import Path
+
+    try:
+        if (p / "snapshots").is_dir():
+            from routes.models import _resolve_hf_cache_realpath
+
+            real = _resolve_hf_cache_realpath(p)
+            if real:
+                return Path(real)
+    except Exception:
+        pass
+    return p
+
+
 def _local_gguf_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
     """Build an entry only when GGUF quants are on disk (not Transformers/
-    safetensors), listing only on-disk quants so /load never fetches a remote one."""
+    safetensors), listing only on-disk quants. ``load_path`` is a concrete local
+    path so /load resolves the variant locally and never fetches a remote one."""
     from pathlib import Path
     from utils.models.model_config import list_local_gguf_variants
 
@@ -46,11 +66,12 @@ def _local_gguf_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
     p = Path(path)
     try:
         if p.is_file():
-            # A standalone .gguf loads by path; no quant sub-selection.
-            return _LocalGgufEntry(loader_id, ()) if p.suffix.lower() == ".gguf" else None
-        variants, _ = list_local_gguf_variants(path)
+            # A standalone .gguf loads by its own path; no quant sub-selection.
+            return _LocalGgufEntry(loader_id, str(p), ()) if p.suffix.lower() == ".gguf" else None
+        load_dir = _resolve_load_dir(p)
+        variants, _ = list_local_gguf_variants(str(load_dir))
         quants = tuple(v.quant for v in variants if getattr(v, "quant", None))
-        return _LocalGgufEntry(loader_id, quants) if quants else None
+        return _LocalGgufEntry(loader_id, str(load_dir), quants) if quants else None
     except Exception:
         return None
 
@@ -142,13 +163,14 @@ def _index() -> dict[str, _LocalGgufEntry]:
         return fresh
 
 
-def resolve_local_gguf(requested: str) -> Optional[tuple[str, Optional[str]]]:
-    """Return ``(loader_id, gguf_variant)`` for a downloaded local match, else None.
+def resolve_local_gguf(requested: str) -> Optional[tuple[str, Optional[str], str]]:
+    """Return ``(load_path, gguf_variant, loader_id)`` for a local match, else None.
 
+    ``load_path`` is the concrete on-disk path to hand /load (so it never fetches
+    a remote), ``loader_id`` is the advertised id used as the launch-override key.
     ``requested`` is ``repo`` or ``repo:VARIANT``. An exact id match wins first
-    (so ids containing a colon still resolve); else the last ``:VARIANT`` is
-    split off and resolves only when that quant is on disk. A bare id picks a
-    concrete local quant so /load never fetches a remote one.
+    (so ids containing a colon still resolve); else the last ``:VARIANT`` is split
+    off and resolves only when that quant is on disk.
     """
     if not isinstance(requested, str) or not requested.strip():
         return None
@@ -157,7 +179,8 @@ def resolve_local_gguf(requested: str) -> Optional[tuple[str, Optional[str]]]:
         index = _index()
         entry = index.get(requested.lower())
         if entry is not None:
-            return entry.loader_id, (entry.variants[0] if entry.variants else None)
+            variant = entry.variants[0] if entry.variants else None
+            return entry.load_path, variant, entry.loader_id
 
         base, sep, variant = requested.rpartition(":")
         if not sep:
@@ -168,7 +191,7 @@ def resolve_local_gguf(requested: str) -> Optional[tuple[str, Optional[str]]]:
         wanted = variant.strip().lower()
         for v in entry.variants:
             if v.lower() == wanted:
-                return entry.loader_id, v
+                return entry.load_path, v, entry.loader_id
         return None
     except Exception:
         # Best-effort: any resolver failure falls through to the loaded model,
