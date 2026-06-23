@@ -1,0 +1,78 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Single-GPU arbiter for Studio's two heavy GPU consumers.
+
+The chat backends (llama-server + the Unsloth subprocess) and the diffusion
+backend share one GPU. Before either takes the GPU it calls ``acquire_for(owner)``,
+which evicts the current *other* owner so two large models never sit in VRAM at
+once. The arbiter only sequences ownership; the actual freeing is delegated to
+each backend's existing teardown.
+
+Eviction runs under the arbiter lock, so an ownership transfer is atomic with
+respect to other acquires.
+"""
+
+from __future__ import annotations
+
+import threading
+from typing import Optional
+
+from loggers import get_logger
+
+logger = get_logger(__name__)
+
+CHAT = "chat"
+DIFFUSION = "diffusion"
+
+_lock = threading.Lock()
+_owner: Optional[str] = None
+
+
+def _evict_chat() -> None:
+    from core.inference import get_inference_backend
+    from routes.inference import get_llama_cpp_backend
+
+    llama = get_llama_cpp_backend()
+    if llama.is_loaded:
+        llama.unload_model()
+    orchestrator = get_inference_backend()
+    if orchestrator.active_model_name:
+        orchestrator.unload_model(orchestrator.active_model_name)
+    # Kill the subprocess too, not just the model: its base CUDA context holds
+    # VRAM the diffusion pipeline needs.
+    orchestrator._shutdown_subprocess(timeout = 5.0)
+
+
+def _evict_diffusion() -> None:
+    from core.inference.diffusion import get_diffusion_backend
+
+    get_diffusion_backend().unload()
+
+
+# Patchable in tests via monkeypatch.setitem.
+_EVICTORS = {CHAT: _evict_chat, DIFFUSION: _evict_diffusion}
+
+
+def acquire_for(owner: str) -> None:
+    """Make ``owner`` the sole GPU owner, evicting the other if it holds it."""
+    global _owner
+    if owner not in _EVICTORS:
+        raise ValueError(f"unknown GPU owner: {owner!r}")
+    with _lock:
+        if _owner is not None and _owner != owner:
+            logger.info("gpu_arbiter: evicting %s for %s", _owner, owner)
+            _EVICTORS[_owner]()
+        _owner = owner
+
+
+def release(owner: str) -> None:
+    """Drop ``owner``'s claim (no-op if it isn't the current owner)."""
+    global _owner
+    with _lock:
+        if _owner == owner:
+            _owner = None
+
+
+def current_owner() -> Optional[str]:
+    return _owner

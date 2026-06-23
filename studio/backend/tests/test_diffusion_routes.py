@@ -1,0 +1,156 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""FastAPI round-trip tests for the diffusion image routes.
+
+The diffusion backend is replaced with a lightweight fake, so these exercise the
+route wiring, validation (422), error mapping, and response shapes without torch,
+diffusers, weights, or a GPU.
+"""
+
+from __future__ import annotations
+
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+import core.inference.diffusion as diffusion_module
+import core.inference.gpu_arbiter as gpu_arbiter
+from auth.authentication import get_current_subject
+from routes.inference import studio_router
+
+
+class _FakeBackend:
+    def __init__(self) -> None:
+        self.loaded = False
+
+    @property
+    def is_loaded(self) -> bool:
+        return self.loaded
+
+    def begin_load(self, model_path, **kwargs):
+        # The real backend loads on a thread; the fake completes instantly.
+        self.loaded = True
+        return {
+            "loaded": True,
+            "loading": False,
+            "repo_id": model_path,
+            "family": "flux.2-klein",
+            "base_repo": kwargs.get("base_repo") or "base/repo",
+            "device": "cpu",
+            "dtype": "float32",
+            "cpu_offload": False,
+        }
+
+    def load_progress(self):
+        return {
+            "phase": "ready" if self.loaded else None,
+            "bytes_downloaded": 0,
+            "bytes_total": 0,
+            "fraction": 1.0 if self.loaded else 0.0,
+            "error": None,
+        }
+
+    def generate(self, *, seed = None, **kwargs):
+        if not self.loaded:
+            raise RuntimeError("No diffusion model is loaded.")
+        return {"image_b64": "QUJD", "mime": "image/png", "seed": seed if seed is not None else 4242}
+
+    def unload(self):
+        self.loaded = False
+        return _unloaded_status()
+
+    def status(self):
+        return {**_unloaded_status(), "loaded": self.loaded}
+
+
+def _unloaded_status():
+    return {
+        "loaded": False,
+        "loading": False,
+        "repo_id": None,
+        "family": None,
+        "base_repo": None,
+        "device": None,
+        "dtype": None,
+        "cpu_offload": False,
+    }
+
+
+@pytest.fixture
+def client(monkeypatch):
+    backend = _FakeBackend()
+    monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: backend)
+    # Isolate from the real GPU arbiter: reset ownership and stub the evictors so
+    # the load route's acquire_for() never touches live backend singletons.
+    monkeypatch.setattr(gpu_arbiter, "_owner", None)
+    monkeypatch.setitem(gpu_arbiter._EVICTORS, gpu_arbiter.CHAT, lambda: None)
+    monkeypatch.setitem(gpu_arbiter._EVICTORS, gpu_arbiter.DIFFUSION, lambda: None)
+
+    app = FastAPI()
+    app.include_router(studio_router, prefix = "/api/inference")
+    app.dependency_overrides[get_current_subject] = lambda: "test-user"
+    return TestClient(app)
+
+
+def test_load_generate_status_unload_roundtrip(client):
+    loaded = client.post("/api/inference/images/load", json = {
+        "model_path": "unsloth/FLUX.2-klein-4B-GGUF",
+        "gguf_filename": "model.gguf",
+        "base_repo": "base/repo",
+    })
+    assert loaded.status_code == 200
+    body = loaded.json()
+    assert body["loaded"] is True and body["family"] == "flux.2-klein"
+
+    assert client.get("/api/inference/images/status").json()["loaded"] is True
+
+    gen = client.post("/api/inference/images/generate", json = {"prompt": "a sloth", "seed": 7})
+    assert gen.status_code == 200
+    gbody = gen.json()
+    assert gbody["mime"] == "image/png" and gbody["seed"] == 7 and gbody["image_b64"]
+
+    unloaded = client.post("/api/inference/images/unload")
+    assert unloaded.status_code == 200 and unloaded.json()["loaded"] is False
+    assert client.get("/api/inference/images/status").json()["loaded"] is False
+
+
+def test_generate_rejects_non_multiple_of_8(client):
+    client.post("/api/inference/images/load", json = {"model_path": "x/flux.2-klein"})
+    resp = client.post("/api/inference/images/generate", json = {"prompt": "p", "width": 1001})
+    assert resp.status_code == 422
+
+
+def test_generate_without_load_returns_409(client):
+    resp = client.post("/api/inference/images/generate", json = {"prompt": "p"})
+    assert resp.status_code == 409
+
+
+def test_load_unknown_family_returns_400(client, monkeypatch):
+    def _raise(*a, **k):
+        raise ValueError("Could not infer a diffusion family for 'x/y'.")
+
+    backend = _FakeBackend()
+    backend.begin_load = _raise
+    monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: backend)
+    resp = client.post("/api/inference/images/load", json = {"model_path": "x/y"})
+    assert resp.status_code == 400
+    assert "family" in resp.json()["detail"]
+
+
+def test_load_progress_route(client):
+    # Before load: idle.
+    idle = client.get("/api/inference/images/load-progress")
+    assert idle.status_code == 200 and idle.json()["phase"] is None
+    # After load: the fake reports ready.
+    client.post("/api/inference/images/load", json = {"model_path": "x/flux.2-klein"})
+    ready = client.get("/api/inference/images/load-progress")
+    assert ready.json()["phase"] == "ready"
+
+
+def test_routes_require_auth():
+    # No dependency override: the auth dependency must reject the request.
+    app = FastAPI()
+    app.include_router(studio_router, prefix = "/api/inference")
+    unauth = TestClient(app)
+    assert unauth.get("/api/inference/images/status").status_code in (401, 403)

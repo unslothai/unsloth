@@ -905,6 +905,11 @@ from models.inference import (
     LoadRequest,
     UnloadRequest,
     GenerateRequest,
+    DiffusionLoadRequest,
+    DiffusionGenerateRequest,
+    DiffusionGenerateResponse,
+    DiffusionStatusResponse,
+    DiffusionLoadProgressResponse,
     LoadResponse,
     LoadProgressResponse,
     UnloadResponse,
@@ -2345,6 +2350,13 @@ async def load_model(
             model_identifier = model_identifier,
             user_override = request.chat_template_override,
         )
+
+        # Reclaim the GPU from the diffusion (Images) backend before any chat
+        # load path — including the already-loaded fast path below, so chat
+        # ownership is asserted without depending on chat/diffusion exclusivity
+        # holding. No-op when diffusion isn't loaded.
+        from core.inference.gpu_arbiter import acquire_for, CHAT
+        await asyncio.to_thread(acquire_for, CHAT)
 
         # ── Already-loaded check: skip reload if the exact model is active ──
         backend = get_inference_backend()
@@ -9424,3 +9436,96 @@ async def _openai_passthrough_non_streaming(
         # redundant parse + re-serialize round-trip.
         return Response(content = resp.content, media_type = "application/json")
     return JSONResponse(content = data)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Diffusion (local text-to-image)
+#
+# Studio-only routes (studio_router is not mounted under /v1). The diffusion
+# backend runs in-process and is synchronous, so the blocking load/generate/
+# unload calls are offloaded with asyncio.to_thread to keep the event loop free.
+# This is the single error boundary: backend methods raise, we map to HTTP here.
+# ──────────────────────────────────────────────────────────────────────────
+
+
+@studio_router.post("/images/load", response_model = DiffusionStatusResponse)
+async def load_diffusion_model(
+    request: DiffusionLoadRequest,
+    current_subject: str = Depends(get_current_subject),
+):
+    from core.inference.diffusion import get_diffusion_backend
+    from core.inference.gpu_arbiter import acquire_for, DIFFUSION
+    from utils.native_path_leases import redact_native_paths
+
+    backend = get_diffusion_backend()
+    try:
+        # Take the GPU from the chat backend, then kick the (slow) load onto a
+        # background thread and return at once — the client polls images/load-progress.
+        await asyncio.to_thread(acquire_for, DIFFUSION)
+        status_dict = await asyncio.to_thread(
+            backend.begin_load,
+            request.model_path,
+            gguf_filename = request.gguf_filename,
+            base_repo = request.base_repo,
+            family_override = request.family_override,
+            hf_token = request.hf_token,
+            cpu_offload = request.cpu_offload,
+        )
+        return DiffusionStatusResponse(**status_dict)
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = redact_native_paths(str(exc)))
+    except RuntimeError as exc:
+        # A load is already in progress.
+        raise HTTPException(status_code = 409, detail = str(exc))
+
+
+@studio_router.post("/images/generate", response_model = DiffusionGenerateResponse)
+async def generate_diffusion_image(
+    request: DiffusionGenerateRequest,
+    current_subject: str = Depends(get_current_subject),
+):
+    from core.inference.diffusion import get_diffusion_backend
+
+    backend = get_diffusion_backend()
+    try:
+        result = await asyncio.to_thread(
+            backend.generate,
+            prompt = request.prompt,
+            negative_prompt = request.negative_prompt,
+            width = request.width,
+            height = request.height,
+            steps = request.steps,
+            guidance = request.guidance,
+            seed = request.seed,
+        )
+        return DiffusionGenerateResponse(**result)
+    except RuntimeError as exc:
+        # No model loaded (or unloaded mid-flight) — a client-state problem.
+        raise HTTPException(status_code = 409, detail = str(exc))
+    except Exception as exc:
+        logger.error("diffusion.generate_failed: %s", exc)
+        raise HTTPException(status_code = 500, detail = "Image generation failed.")
+
+
+@studio_router.post("/images/unload", response_model = DiffusionStatusResponse)
+async def unload_diffusion_model(current_subject: str = Depends(get_current_subject)):
+    from core.inference.diffusion import get_diffusion_backend
+    from core.inference.gpu_arbiter import release, DIFFUSION
+
+    status_dict = await asyncio.to_thread(get_diffusion_backend().unload)
+    release(DIFFUSION)
+    return DiffusionStatusResponse(**status_dict)
+
+
+@studio_router.get("/images/status", response_model = DiffusionStatusResponse)
+async def diffusion_status(current_subject: str = Depends(get_current_subject)):
+    from core.inference.diffusion import get_diffusion_backend
+
+    return DiffusionStatusResponse(**get_diffusion_backend().status())
+
+
+@studio_router.get("/images/load-progress", response_model = DiffusionLoadProgressResponse)
+async def diffusion_load_progress(current_subject: str = Depends(get_current_subject)):
+    from core.inference.diffusion import get_diffusion_backend
+
+    return DiffusionLoadProgressResponse(**get_diffusion_backend().load_progress())

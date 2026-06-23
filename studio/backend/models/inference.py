@@ -1677,3 +1677,79 @@ class AnthropicMessagesResponse(BaseModel):
     stop_reason: Optional[str] = None
     stop_sequence: Optional[str] = None
     usage: AnthropicUsage = Field(default_factory = AnthropicUsage)
+
+
+# ── Diffusion (local text-to-image) ──
+
+
+class DiffusionLoadRequest(BaseModel):
+    """Request to load a local diffusion (text-to-image) checkpoint."""
+
+    model_path: str = Field(..., description = "Diffusion repo id or local path")
+    gguf_filename: Optional[str] = Field(
+        None, description = "Single-file GGUF inside model_path (omit for a full diffusers repo)"
+    )
+    base_repo: Optional[str] = Field(
+        None, description = "Companion diffusers repo for VAE/text-encoders (default: family base)"
+    )
+    family_override: Optional[str] = Field(
+        None, description = "Force a family when it can't be inferred from the repo id"
+    )
+    hf_token: Optional[str] = Field(None, description = "HuggingFace token for gated repos")
+    cpu_offload: bool = Field(False, description = "Enable model CPU offload to fit low-VRAM cards")
+
+
+class DiffusionGenerateRequest(BaseModel):
+    """Request to generate one image from the loaded diffusion model."""
+
+    prompt: str = Field(..., min_length = 1, description = "Text prompt")
+    negative_prompt: Optional[str] = Field(None, description = "What to avoid (if the model supports it)")
+    width: int = Field(1024, ge = 256, le = 2048, description = "Image width in pixels (multiple of 8)")
+    height: int = Field(1024, ge = 256, le = 2048, description = "Image height in pixels (multiple of 8)")
+    steps: int = Field(24, ge = 1, le = 100, description = "Number of denoising steps")
+    guidance: float = Field(3.5, ge = 0.0, le = 20.0, description = "Classifier-free guidance scale")
+    seed: Optional[int] = Field(
+        None, ge = 0, le = 2**64 - 1, description = "Seed for reproducibility (random if omitted)"
+    )
+
+    @field_validator("width", "height")
+    @classmethod
+    def _multiple_of_8(cls, value: int) -> int:
+        # VAEs downsample by 8; non-multiples crash deep in the pipeline, so
+        # reject them here for a clean 422 instead of a cryptic 500.
+        if value % 8 != 0:
+            raise ValueError("must be a multiple of 8")
+        return value
+
+
+class DiffusionGenerateResponse(BaseModel):
+    """A generated image plus the seed actually used."""
+
+    image_b64: str = Field(..., description = "Base64-encoded PNG")
+    mime: str = Field("image/png", description = "MIME type of image_b64")
+    seed: int = Field(..., description = "Seed used (echoes the request, or the random one chosen)")
+
+
+class DiffusionLoadProgressResponse(BaseModel):
+    """Download/finalize progress for an in-flight diffusion load."""
+
+    phase: Optional[Literal["downloading", "finalizing", "ready", "error"]] = Field(
+        None, description = "Load phase; null when idle"
+    )
+    bytes_downloaded: int = Field(0, description = "Bytes present in the HF cache so far")
+    bytes_total: int = Field(0, description = "Estimated total bytes to download (0 = unknown)")
+    fraction: float = Field(0.0, description = "bytes_downloaded / bytes_total, clamped to [0,1]")
+    error: Optional[str] = Field(None, description = "Failure message when phase is 'error'")
+
+
+class DiffusionStatusResponse(BaseModel):
+    """Current diffusion backend state."""
+
+    loaded: bool = Field(False, description = "Whether a diffusion model is loaded")
+    loading: bool = Field(False, description = "Whether a load is currently in progress")
+    repo_id: Optional[str] = Field(None, description = "Loaded repo id or local path")
+    family: Optional[str] = Field(None, description = "Detected diffusion family")
+    base_repo: Optional[str] = Field(None, description = "Companion diffusers base repo")
+    device: Optional[str] = Field(None, description = "Device the pipeline is on")
+    dtype: Optional[str] = Field(None, description = "Compute dtype")
+    cpu_offload: bool = Field(False, description = "Whether CPU offload is engaged")
