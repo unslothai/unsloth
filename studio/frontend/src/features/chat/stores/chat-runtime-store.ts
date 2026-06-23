@@ -36,7 +36,6 @@ export const CHAT_ALLOW_ARTIFACT_NETWORK_ACCESS_KEY =
   "unsloth_chat_allow_artifact_network_access";
 export const CHAT_MCP_ENABLED_KEY = "unsloth_chat_mcp_enabled";
 export const CHAT_CONFIRM_TOOL_CALLS_KEY = "unsloth_chat_confirm_tool_calls";
-export const CHAT_LOAD_ON_SELECTION_KEY = "unsloth_chat_load_on_selection";
 export const CHAT_EXPAND_QUANTIZATIONS_KEY =
   "unsloth_chat_expand_quantizations";
 export const CHAT_SHOW_ALL_QUANTIZATIONS_KEY =
@@ -446,8 +445,8 @@ export type PendingModelSelection = {
    *  Scoped here (not the shared `ggufContextLength`) so a staged model's
    *  metadata never pollutes the currently-loaded model's context display. */
   contextLength?: number | null;
-  /** "Load on selection" on + un-cached GGUF: download via the manager (global
-   *  indicator) without opening the sheet, then load once the download finishes. */
+  /** Un-cached GGUF: download via the manager (global indicator) without opening
+   *  the sheet, then load once the download finishes. */
   autoLoad?: boolean;
   /** Uncached non-GGUF HF repo: download the full snapshot via the manager
    *  (variant null) the same way GGUF picks download a variant. */
@@ -649,17 +648,11 @@ type ChatRuntimeStore = {
   tensorParallel: boolean;
   /** Backend-reported tensor-parallel state; null until first hydrated. */
   loadedTensorParallel: boolean | null;
-  /** Persisted: when false, picking a local model stages it as
-   *  `pendingSelection` (and opens settings) instead of loading immediately,
-   *  so load settings can be set before the single load. */
-  loadOnSelection: boolean;
   /** Persisted: expand every On Device GGUF repo's quantizations by default
    *  instead of waiting for a click. */
   expandQuantizations: boolean;
   /** Persisted: show non-downloaded quantizations too, not just downloaded. */
   showAllQuantizations: boolean;
-  /** A local model picked while `loadOnSelection` is off: staged, not loaded.
-   *  The settings sheet shows its load knobs and a Load button. */
   pendingSelection: PendingModelSelection | null;
   loadedIsMultimodal: boolean;
   /** Active model is a block-diffusion model (DiffusionGemma): drives the
@@ -767,7 +760,6 @@ type ChatRuntimeStore = {
    *  start each deferred-staging session clean so one staged pick's settings
    *  don't leak onto the next. */
   resetModelSettingsToLoaded: () => void;
-  setLoadOnSelection: (value: boolean) => void;
   setExpandQuantizations: (value: boolean) => void;
   setShowAllQuantizations: (value: boolean) => void;
   setPendingSelection: (selection: PendingModelSelection | null) => void;
@@ -1080,7 +1072,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   loadedSpecDraftNMax: null,
   tensorParallel: false,
   loadedTensorParallel: null,
-  loadOnSelection: loadBool(CHAT_LOAD_ON_SELECTION_KEY, true),
   expandQuantizations: loadBool(CHAT_EXPAND_QUANTIZATIONS_KEY, false),
   showAllQuantizations: loadBool(CHAT_SHOW_ALL_QUANTIZATIONS_KEY, true),
   pendingSelection: null,
@@ -1518,10 +1509,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       return { toolCallTimeout };
     }),
   resetModelSettingsToLoaded: () => set((s) => loadedBaselineSettings(s)),
-  setLoadOnSelection: (loadOnSelection) => {
-    saveBool(CHAT_LOAD_ON_SELECTION_KEY, loadOnSelection);
-    set({ loadOnSelection });
-  },
   setExpandQuantizations: (expandQuantizations) => {
     saveBool(CHAT_EXPAND_QUANTIZATIONS_KEY, expandQuantizations);
     set({ expandQuantizations });

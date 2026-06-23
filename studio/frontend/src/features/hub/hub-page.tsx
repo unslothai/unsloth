@@ -1075,31 +1075,10 @@ export function ModelsPage() {
     (opts: ModelLoadOptions, isDownloaded: boolean) => {
       if (!selectedModel) return;
       const runId = selectedModel.resource.runId;
-      // "Load on selection" off: stage GGUF picks instead of loading, so the
-      // chat page's staging flow can read the header and show the load options.
-      // Non-GGUF models have nothing to configure pre-load, so they load now.
-      if (
-        !useChatRuntimeStore.getState().loadOnSelection &&
-        (opts.ggufVariant != null || selectedModel.isGguf)
-      ) {
-        useChatRuntimeStore.getState().stageModel({
-          id: runId,
-          ggufVariant: opts.ggufVariant,
-          isGguf: selectedModel.isGguf,
-          isDownloaded,
-          expectedBytes: opts.expectedBytes,
-        });
-        openNewChat();
-        return;
-      }
       // Detach any leftover staged pick first so its edited knobs (e.g. a custom
       // context length) don't leak into this load -- mirrors the chat page's
       // detachStaged(); keepDownload keeps any staged download running.
       useChatRuntimeStore.getState().abandonStagedModel({ keepDownload: true });
-      // Load-on-selection skips the chat sheet, so seed this GGUF pick's saved
-      // load knobs here the way the sheet's restore effect would; otherwise the
-      // remembered config is silently ignored on the Hub run path. keepSpeculative
-      // then honors the restored speculative choice across the switch.
       const resolvedConfig =
         opts.ggufVariant != null || selectedModel.isGguf
           ? resolveInitialConfig(runId, opts.ggufVariant)

@@ -1645,9 +1645,6 @@ export function ChatPage({
   }, [chatContextKey, detachStaged]);
 
   const hasActiveModel = Boolean(inferenceParams.checkpoint);
-  // Load immediately, or — when "Load on selection" is off — stage the pick so
-  // its load options can be set first. Shared by the main selector, native
-  // drag-drop/picker, and the dropped-file chip (the Hub stages via the store).
   const stageOrLoad = useCallback(
     async (selection: SelectedModelInput) => {
       const store = useChatRuntimeStore.getState();
@@ -1656,10 +1653,9 @@ export function ChatPage({
       // else -- cached picks, local/native files, LoRA, external -- loads now.
       const wantManagerDownload =
         isDownloadableHubRepo(selection) && !selection.isDownloaded;
-      const loadNow = selection.config != null || store.loadOnSelection;
       if (
         (!hasGgufSource(selection) && !wantManagerDownload) ||
-        (loadNow && selection.isDownloaded)
+        selection.isDownloaded
       ) {
         // Detach any staged pick first so its edited knobs (e.g. a custom
         // context length) don't leak into this immediate load -- resolveLoad
@@ -1751,7 +1747,7 @@ export function ChatPage({
         nativePathToken: selection.nativePathToken,
         isGguf: selection.isGguf,
         isHubRepo: wantManagerDownload || undefined,
-        autoLoad: loadNow,
+        autoLoad: true,
       });
       let stagedConfig = selection.config ?? null;
       if (!stagedConfig && hasGgufSource(selection)) {
@@ -2025,10 +2021,6 @@ export function ChatPage({
           isGguf: meta?.isGguf,
           config: meta?.config,
         };
-        // "Load on selection" off: stage the model and open settings so its
-        // load knobs (tensor parallel, context length…) can be set, then it
-        // loads once via the sheet's Load button. The currently loaded model
-        // stays put until the user commits.
         await stageOrLoad(selection);
       })();
     },

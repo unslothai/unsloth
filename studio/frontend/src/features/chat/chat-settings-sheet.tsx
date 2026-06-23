@@ -448,7 +448,7 @@ interface ChatSettingsPanelProps {
     ggufVariant?: string | null;
     nativePathToken?: string | null;
   } | null;
-  /** Loads the staged `pendingSelection` (deferred "Load on selection" flow). */
+  /** Loads the staged `pendingSelection`. */
   onLoadPendingModel?: () => void;
   /** Download progress (0–1) for a staged GGUF being fetched, or null when idle. */
   stagedDownloadFraction?: number | null;
@@ -808,12 +808,16 @@ export function ChatSettingsPanel({
                 <AlertTitle className="text-[12px] font-medium">
                   {stagedLoading
                     ? `Loading ${stagedLabel}…`
-                    : `${stagedLabel} is staged, not loaded yet`}
+                    : stagedDownloading
+                      ? `Downloading ${stagedLabel}…`
+                      : `${stagedLabel} is staged, not loaded yet`}
                 </AlertTitle>
                 <AlertDescription className="text-[11.5px] leading-[1.45] text-muted-foreground">
                   {stagedLoading
                     ? "Applying your settings."
-                    : "Choose Load model to load it."}
+                    : stagedDownloading
+                      ? "It'll load automatically when the download finishes."
+                      : "Choose Load model to load it."}
                 </AlertDescription>
               </Alert>
             )}
