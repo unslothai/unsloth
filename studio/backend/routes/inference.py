@@ -863,14 +863,32 @@ class _SameTaskStreamingResponse(StreamingResponse):
                 aclose = getattr(self.body_iterator, "aclose", None)
                 if aclose is not None:
                     await aclose()
-                if self._unstarted_cleanup is not None:
+                # getattr (not self._unstarted_cleanup) so a response built via
+                # __new__ (some tests, pickling) without __init__ does not raise
+                # AttributeError here.
+                cleanup = getattr(self, "_unstarted_cleanup", None)
+                if cleanup is not None:
                     try:
-                        await self._unstarted_cleanup()
+                        await cleanup()
                     except Exception:
                         pass
             raise ClientDisconnect()
         if self.background is not None:
             await self.background()
+
+
+def _tracked_cancel_unstarted_cleanup(tracker):
+    """Build an ``unstarted_cleanup`` for a local stream that entered ``tracker``
+    (a ``_TrackedCancel``) before returning the response. The generator exits the
+    tracker in its ``finally``, but that never runs if the client disconnects
+    before the body iterator starts, leaking the cancel-registry entry. This
+    exits the tracker on that pre-start path only (mutually exclusive with the
+    generator's finally, so it never double-exits)."""
+
+    async def _cleanup() -> None:
+        tracker.__exit__(None, None, None)
+
+    return _cleanup
 
 
 async def _aclose_stream_resources(
@@ -4953,6 +4971,7 @@ async def openai_chat_completions(
 
                 return _SameTaskStreamingResponse(
                     audio_input_stream(),
+                    unstarted_cleanup = _tracked_cancel_unstarted_cleanup(_tracker),
                     media_type = "text/event-stream",
                     headers = {
                         "Cache-Control": "no-cache",
@@ -5427,6 +5446,7 @@ async def openai_chat_completions(
 
             return _SameTaskStreamingResponse(
                 gguf_tool_stream(),
+                unstarted_cleanup = _tracked_cancel_unstarted_cleanup(_tracker),
                 media_type = "text/event-stream",
                 headers = {
                     "Cache-Control": "no-cache",
@@ -5576,6 +5596,7 @@ async def openai_chat_completions(
 
             return _SameTaskStreamingResponse(
                 gguf_stream_chunks(),
+                unstarted_cleanup = _tracked_cancel_unstarted_cleanup(_tracker),
                 media_type = "text/event-stream",
                 headers = {
                     "Cache-Control": "no-cache",
@@ -5963,6 +5984,7 @@ async def openai_chat_completions(
         if payload.stream:
             return _SameTaskStreamingResponse(
                 sf_tool_stream(),
+                unstarted_cleanup = _tracked_cancel_unstarted_cleanup(_sf_tracker),
                 media_type = "text/event-stream",
                 headers = {
                     "Cache-Control": "no-cache",
@@ -6155,6 +6177,7 @@ async def openai_chat_completions(
 
         return _SameTaskStreamingResponse(
             stream_chunks(),
+            unstarted_cleanup = _tracked_cancel_unstarted_cleanup(_tracker),
             media_type = "text/event-stream",
             headers = {
                 "Cache-Control": "no-cache",
@@ -9498,6 +9521,19 @@ async def _openai_passthrough_stream(
     response ``id``, ``finish_reason`` (including ``"tool_calls"``),
     ``delta.tool_calls``, and any client-requested trailing ``usage`` chunk so
     the client sees a standard OpenAI response.
+
+    Reasoning/tool-call extraction here is delegated to llama-server: this path
+    forwards to its ``/v1/chat/completions`` (Studio launches with ``--jinja``
+    and ``--reasoning-format auto``), which parses Gemma-native ``<think>`` into
+    ``reasoning_content`` and ``<|tool_call>`` into structured ``tool_calls``
+    server-side, so the relayed ``delta.content`` carries no raw markup. This is
+    deliberately NOT re-parsed with the local reasoning extractor / Gemma parser
+    (verified end to end on the current llama.cpp build), unlike Studio's own
+    ``/completion``-level generation paths, which must parse the raw text
+    themselves. The dependency is on llama.cpp's chat parser: if a future build
+    or chat template stops splitting ``<think>``/``<|tool_call>``, raw markup
+    would relay into ``content`` and this path would need the local extractor as
+    a safety net.
     """
     target_url = f"{llama_backend.base_url}/v1/chat/completions"
     body = _build_openai_passthrough_body(
