@@ -690,9 +690,7 @@ def list_runs(limit: int = 50, offset: int = 0) -> dict:
         runs = []
         for row in rows:
             run = dict(row)
-            run["project_name"] = _extract_project_name_from_config_json(
-                run.get("config_json")
-            )
+            run["project_name"] = _extract_project_name_from_config_json(run.get("config_json"))
             sparkline = run.get("loss_sparkline")
             if sparkline:
                 try:

@@ -155,9 +155,7 @@ def test_scan_checkpoints_preserves_legacy_folder_name_fallback(tmp_path, monkey
     assert models[0][2]["base_model"] == "unsloth/Llama-3.2-3B-Instruct"
 
 
-def test_scan_checkpoints_prefers_exact_history_match_over_newer_suffix(
-    tmp_path, monkeypatch
-):
+def test_scan_checkpoints_prefers_exact_history_match_over_newer_suffix(tmp_path, monkeypatch):
     outputs_dir = _make_outputs_dir(tmp_path, monkeypatch)
     run_dir = outputs_dir / "unsloth_Test_1771227800"
     run_dir.mkdir()
