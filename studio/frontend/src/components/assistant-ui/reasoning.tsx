@@ -20,7 +20,8 @@ import {
 } from "@assistant-ui/react";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { type VariantProps, cva } from "class-variance-authority";
-import { ChevronDownIcon, CopyIcon, LightbulbIcon } from "lucide-react";
+import { ChevronDownIcon, CopyIcon } from "lucide-react";
+import { BulbIcon } from "@/lib/bulb-icon";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
@@ -128,7 +129,7 @@ function ReasoningTrigger({
       )}
       {...props}
     >
-      <LightbulbIcon className="aui-reasoning-trigger-icon size-4 shrink-0" />
+      <BulbIcon className="aui-reasoning-trigger-icon size-4 shrink-0" />
       <span
         data-slot="reasoning-trigger-label"
         className="aui-reasoning-trigger-label-wrapper relative inline-block leading-none"
@@ -393,7 +394,8 @@ const ReasoningGroupImpl: ReasoningGroupComponent = ({
         <ReasoningTrigger
           className="min-w-0 flex-1"
           active={isReasoningStreaming}
-          duration={duration || persistedDuration}
+          // Prefer server timing when available.
+          duration={persistedDuration || duration}
         />
         <div className="flex w-16 shrink-0 justify-end">
           {isOpen && !isReasoningStreaming && (

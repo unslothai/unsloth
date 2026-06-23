@@ -23,6 +23,7 @@ export const ptBR = {
     brand: "unsloth",
     product: "Unsloth Studio",
     accountMenu: "Menu de conta {name}",
+    updateAvailable: "Atualização disponível",
     aria: {
       home: "Início do Unsloth",
       closeSidebar: "Fechar barra lateral",

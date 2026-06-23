@@ -155,6 +155,31 @@ _nvcc_meets_llama_minimum() {
     echo "$_raw"
 }
 
+# Echo a ';'-separated CUDA arch list (e.g. "86;120"). Override ($2,
+# UNSLOTH_LLAMA_CUDA_ARCHS) wins verbatim; else parse+dedupe compute_cap text
+# ($1). Empty means "no arch detected", so the caller builds CPU instead of a
+# PTX-only binary that fails on an old driver (#5854).
+_resolve_cuda_archs() {
+    local _raw_caps=$1
+    local _arch_override=$2
+    if [ -n "$_arch_override" ]; then
+        printf '%s' "$_arch_override"
+        return 0
+    fi
+    local _archs="" _cap _arch
+    while IFS= read -r _cap; do
+        _cap=$(printf '%s' "$_cap" | tr -d '[:space:]')
+        if [[ "$_cap" =~ ^([0-9]+)\.([0-9]+)$ ]]; then
+            _arch="${BASH_REMATCH[1]}${BASH_REMATCH[2]}"
+            case ";$_archs;" in
+                *";$_arch;"*) ;;
+                *) _archs="${_archs:+$_archs;}$_arch" ;;
+            esac
+        fi
+    done <<< "$_raw_caps"
+    printf '%s' "$_archs"
+}
+
 # Run a GPU probe under a 10s timeout when `timeout` is available so a wedged
 # NVIDIA driver cannot hang setup; fall back to a bare call where it is not.
 _setup_run_smi() {
@@ -1517,35 +1542,38 @@ else
                     fi
 
                     if [ "$_CUDA_TOOLKIT_ALLOWED" = true ]; then
-                        CMAKE_ARGS="$CMAKE_ARGS -DGGML_CUDA=ON"
-
-                        CUDA_ARCHS=""
-                        if command -v nvidia-smi &>/dev/null; then
-                            _raw_caps=$(_setup_run_smi nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null || true)
-                            while IFS= read -r _cap; do
-                                _cap=$(echo "$_cap" | tr -d '[:space:]')
-                                if [[ "$_cap" =~ ^([0-9]+)\.([0-9]+)$ ]]; then
-                                    _arch="${BASH_REMATCH[1]}${BASH_REMATCH[2]}"
-                                    case ";$CUDA_ARCHS;" in
-                                        *";$_arch;"*) ;;
-                                        *) CUDA_ARCHS="${CUDA_ARCHS:+$CUDA_ARCHS;}$_arch" ;;
-                                    esac
-                                fi
-                            done <<< "$_raw_caps"
+                        # Resolve the arch list before committing to a CUDA build;
+                        # an empty list means CPU instead of a PTX-only binary (#5854).
+                        _raw_caps=""
+                        # Resolve nvidia-smi as _setup_has_usable_nvidia_gpu does
+                        # (PATH, then /usr/bin); `command -v` alone would miss an
+                        # off-PATH binary and wrongly drop a CUDA host to CPU.
+                        _smi_bin=""
+                        if command -v nvidia-smi >/dev/null 2>&1; then
+                            _smi_bin="nvidia-smi"
+                        elif [ -x "/usr/bin/nvidia-smi" ]; then
+                            _smi_bin="/usr/bin/nvidia-smi"
                         fi
+                        if [ -n "$_smi_bin" ]; then
+                            _raw_caps=$(_setup_run_smi "$_smi_bin" --query-gpu=compute_cap --format=csv,noheader 2>/dev/null || true)
+                        fi
+                        CUDA_ARCHS="$(_resolve_cuda_archs "$_raw_caps" "${UNSLOTH_LLAMA_CUDA_ARCHS:-}")"
 
                         if [ -n "$CUDA_ARCHS" ]; then
-                            CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_CUDA_ARCHITECTURES=${CUDA_ARCHS}"
+                            CMAKE_ARGS="$CMAKE_ARGS -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=${CUDA_ARCHS}"
+                            CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_CUDA_FLAGS=--threads=0"
                             _BUILD_DESC="building (CUDA, sm_${CUDA_ARCHS//;/+sm_})"
+
+                            # Allow a host gcc/clang newer than nvcc's whitelist (else a fresh
+                            # toolkit aborts with "unsupported GNU version"); via env to avoid word-splitting.
+                            export NVCC_PREPEND_FLAGS="${NVCC_PREPEND_FLAGS:+$NVCC_PREPEND_FLAGS }-allow-unsupported-compiler"
                         else
-                            _BUILD_DESC="building (CUDA)"
+                            # No detectable arch: build CPU (CMAKE_ARGS has no
+                            # -DGGML_CUDA=ON yet, so clearing GPU_BACKEND yields CPU).
+                            substep "could not detect a CUDA compute capability; building CPU llama.cpp instead of a PTX-only binary (set UNSLOTH_LLAMA_CUDA_ARCHS, e.g. \"120\", to force a CUDA build)." "$C_WARN"
+                            GPU_BACKEND=""
+                            _BUILD_DESC="building (CPU, CUDA arch undetectable)"
                         fi
-
-                        CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_CUDA_FLAGS=--threads=0"
-
-                        # Allow a host gcc/clang newer than nvcc's whitelist (else a fresh
-                        # toolkit aborts with "unsupported GNU version"); via env to avoid word-splitting.
-                        export NVCC_PREPEND_FLAGS="${NVCC_PREPEND_FLAGS:+$NVCC_PREPEND_FLAGS }-allow-unsupported-compiler"
                     fi
                 fi
             elif [ "$GPU_BACKEND" = "rocm" ]; then
@@ -1794,6 +1822,7 @@ else
         printf "  ${C_DIM}%-15s${C_OK}%s${C_RST}\n" "launch" "unsloth studio -p 8888"
     fi
     printf "  ${C_DIM}%-15s%s${C_RST}\n" "" "(add -H 0.0.0.0 to allow network / cloud access)"
+    printf "  ${C_DIM}%-15s%s${C_RST}\n" "" "(add --secure to allow HTTPS)"
 fi
 echo ""
 

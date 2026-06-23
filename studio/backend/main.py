@@ -855,24 +855,16 @@ async def _recipes_redirect(rest: str = ""):
     return _RedirectResponse(url = target, status_code = 308)
 
 
-_api_only = os.environ.get("UNSLOTH_API_ONLY") == "1"
-_cors_origins = ["*"]
-if _api_only:
-    _cors_origins = [
-        "tauri://localhost",  # Linux/macOS Tauri webview
-        "http://tauri.localhost",  # Windows Tauri webview
-        "http://localhost",  # dev fallback
-        "http://localhost:5173",  # Tauri dev/Vite
-        "http://127.0.0.1:5173",  # Tauri dev/Vite fallback
-    ]
-    _cors_origin_regex = None
-else:
-    _cors_origin_regex = None
+from utils.host_policy import cors_origins_for_mode  # noqa: E402
+
+_cors_origins = cors_origins_for_mode(
+    api_only = os.environ.get("UNSLOTH_API_ONLY") == "1",
+    secure = os.environ.get("UNSLOTH_SECURE") == "1",
+)
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins = _cors_origins,
-    allow_origin_regex = _cors_origin_regex,
     allow_credentials = True,
     allow_methods = ["*"],
     allow_headers = ["*"],
