@@ -431,6 +431,12 @@ export function GgufDownloadCard({
           ggufVariantsMatch(v.quant, selectedQuantOverride),
         )?.quant
       : null) ??
+    // For a cached repo, open on a quant that is already on disk so the card
+    // shows "On device" / "Run" instead of defaulting to the recommended quant
+    // with a multi-hundred-GB "Download". The dropdown still lists every quant
+    // so other quantizations remain one click away to download.
+    sortedVariants?.find((v) => v.downloaded)?.quant ??
+    sortedVariants?.find((v) => v.partial)?.quant ??
     sortedVariants?.[0]?.quant ??
     null;
 
