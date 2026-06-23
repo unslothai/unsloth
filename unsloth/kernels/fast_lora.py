@@ -114,9 +114,7 @@ class LoRA_MLP(torch.autograd.Function):
         if ctx.quantize_activations:
             e_q, e_s = quant_act(e)
             g_q, g_s = quant_act(g)
-            ctx.save_for_backward(
-                gateA, gateB, upA, upB, downA, downB, X, e_q, e_s, g_q, g_s
-            )
+            ctx.save_for_backward(gateA, gateB, upA, upB, downA, downB, X, e_q, e_s, g_q, g_s)
         else:
             ctx.save_for_backward(gateA, gateB, upA, upB, downA, downB, X, e, g)
         ctx.inplace = inplace
@@ -138,9 +136,7 @@ class LoRA_MLP(torch.autograd.Function):
             _backward_function,
         ) = ctx.custom_saved_tensors
         if ctx.quantize_activations:
-            gateA, gateB, upA, upB, downA, downB, X, e_q, e_s, g_q, g_s = (
-                ctx.saved_tensors
-            )
+            gateA, gateB, upA, upB, downA, downB, X, e_q, e_s, g_q, g_s = ctx.saved_tensors
             e = dequant_act(e_q, e_s)
             g = dequant_act(g_q, g_s)
         else:
