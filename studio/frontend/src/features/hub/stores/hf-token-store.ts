@@ -116,3 +116,20 @@ export const useHfTokenStore = create<HfTokenStore>((set) => {
 export function getHfToken(): string {
   return useHfTokenStore.getState().token;
 }
+
+/**
+ * Sanitize a stored token for use as a Hugging Face API credential.
+ *
+ * The Hugging Face JS client throws (`Your access token must start with
+ * 'hf_'`) when handed a non-empty token that isn't a well-formed HF token,
+ * rather than falling back to anonymous access. A single malformed value left
+ * in the token field (e.g. a placeholder someone typed) therefore takes down
+ * the entire Discover/Recommended feed, which otherwise works fine with no
+ * token at all. Treat anything that isn't an `hf_...` token as "no token" so
+ * those public-browsing flows degrade to anonymous access instead of erroring.
+ */
+export function hfApiToken(
+  token: string | undefined | null,
+): string | undefined {
+  return token && token.startsWith("hf_") ? token : undefined;
+}
