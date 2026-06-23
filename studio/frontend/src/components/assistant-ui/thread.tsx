@@ -1045,6 +1045,7 @@ export const Thread: FC<{
       </ThreadPrimitive.Root>
       {/* Document preview, opened by citation badges. */}
       <DocumentPreviewMount />
+      <ChatLiveRegion />
       </PageDragContext.Provider>
     </GeneratedImageOverlayProvider>
   );
@@ -3485,7 +3486,11 @@ const GeneratingIndicator: FC = () => {
   if (!show) {
     return null;
   }
-  return <span className="text-sm text-muted-foreground">Generating...</span>;
+  return (
+    <span role="status" aria-live="polite" className="text-sm text-muted-foreground">
+      Generating...
+    </span>
+  );
 };
 
 // Placeholder when stop fires before any visible content (e.g. mid-think).
@@ -3500,9 +3505,29 @@ const CancelledIndicator: FC = () => {
     return null;
   }
   return (
-    <span className="aui-cancelled-indicator text-sm italic text-muted-foreground">
+    <span
+      role="status"
+      aria-live="polite"
+      className="aui-cancelled-indicator text-sm italic text-muted-foreground"
+    >
       Cancelled.
     </span>
+  );
+};
+
+const ChatLiveRegion: FC = () => {
+  const [announcement, setAnnouncement] = useState("");
+  useAuiEvent("thread.runStart", () => setAnnouncement("Generating response..."));
+  useAuiEvent("thread.runEnd", () => setAnnouncement("Response complete."));
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      aria-atomic="true"
+      className="sr-only"
+    >
+      {announcement}
+    </div>
   );
 };
 
@@ -3624,10 +3649,12 @@ const AssistantMessage: FC = () => {
       <div className="aui-assistant-message-content wrap-break-word min-w-0 text-[#0d0d0d] dark:text-foreground leading-relaxed">
         {isEditing ? (
           <div className="flex flex-col gap-2 w-full">
-            <textarea 
+            <h6 className="sr-only">Response:</h6>
+            <textarea
               ref={textareaRef}
+              aria-label="Edit message"
               defaultValue={extractTaggedText(messageContent)}
-              className="w-full p-3 rounded-xl bg-muted border border-border text-foreground focus:ring-2 focus:ring-primary outline-none overflow-y-auto resize-none font-mono text-sm max-h-[70vh]" 
+              className="w-full p-3 rounded-xl bg-muted border border-border text-foreground focus:ring-2 focus:ring-primary outline-none overflow-y-auto resize-none font-mono text-sm max-h-[70vh]"
               autoFocus
               onInput={adjustHeight} 
               onKeyDown={(e) => {
@@ -3969,6 +3996,7 @@ const UserMessage: FC = () => {
       className="aui-user-message-root fade-in slide-in-from-bottom-1 mx-auto flex w-full max-w-(--thread-content-max-width) animate-in flex-col items-end gap-y-2 pt-6 pb-4 text-[15.5px] [font-weight:410] tracking-[0.01em] dark:tracking-[0.02em] duration-150"
       data-role="user"
     >
+      <h5 className="sr-only">You said:</h5>
       <UserMessageAttachments />
       <UserMessageAudio />
 

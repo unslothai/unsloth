@@ -1786,6 +1786,8 @@ export function ChatSettingsPanel({
   return (
     <aside
       data-tour="chat-settings"
+      aria-hidden={!open}
+      inert={!open || undefined}
       className={`relative z-50 shrink-0 h-full overflow-hidden bg-panel-surface text-panel-surface-fg font-heading ${open ? "w-[17rem] border-l border-sidebar-border" : "w-0"}`}
     >
       <div className="h-full w-full">{settingsContent}</div>

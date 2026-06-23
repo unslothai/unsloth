@@ -391,6 +391,7 @@ function ModelRow({
   downloaded,
   showVision,
   className,
+  ariaExpanded,
 }: {
   label: string;
   meta?: string | null;
@@ -411,6 +412,7 @@ function ModelRow({
   /** Show a Vision badge on the name (On Device, read from GGUF metadata). */
   showVision?: boolean;
   className?: string;
+  ariaExpanded?: boolean;
 }) {
   const exceeds = vramStatus === "exceeds";
   const showVramTooltip =
@@ -436,6 +438,7 @@ function ModelRow({
     <button
       type="button"
       {...optionProps}
+      aria-expanded={ariaExpanded}
       onKeyDown={(event) => {
         if (event.key === "ArrowDown" && onArrowDownIntoChildren?.()) {
           event.preventDefault();
@@ -2236,6 +2239,7 @@ export function HubModelPicker({
               selected={isSelected}
               optionProps={hubModelList.getOptionProps(optionKey, isSelected)}
               onClick={() => toggleGgufExpanded(c.repo_id)}
+              ariaExpanded={isGgufExpanded(c.repo_id)}
               onArrowDownIntoChildren={
                 isGgufExpanded(c.repo_id)
                   ? () => focusFirstChildOption(optionKey)
@@ -2900,6 +2904,7 @@ export function HubModelPicker({
                                 });
                               }
                             }}
+                            ariaExpanded={isGguf && !isGgufFile ? isGgufExpanded(m.id) : undefined}
                             onArrowDownIntoChildren={
                               isGgufExpanded(m.id)
                                 ? () => {
@@ -2987,6 +2992,7 @@ export function HubModelPicker({
                                 });
                               }
                             }}
+                            ariaExpanded={isGguf && !isGgufFile ? isGgufExpanded(m.id) : undefined}
                             onArrowDownIntoChildren={
                               !isGgufFile && isGgufExpanded(m.id)
                                 ? () => {
@@ -3068,6 +3074,7 @@ export function HubModelPicker({
                                 });
                               }
                             }}
+                            ariaExpanded={isGguf && !isGgufFile ? isGgufExpanded(m.id) : undefined}
                             onArrowDownIntoChildren={
                               !isGgufFile && isGgufExpanded(m.id)
                                 ? () => focusFirstChildOption(optionKey)
@@ -3149,6 +3156,7 @@ export function HubModelPicker({
                             gpuGb={
                               gpu.available ? gpu.memoryTotalGb : undefined
                             }
+                            ariaExpanded={isG ? expandedGguf === id : undefined}
                             onArrowDownIntoChildren={
                               expandedGguf === id
                                 ? () => focusFirstChildOption(optionKey)
@@ -3230,6 +3238,7 @@ export function HubModelPicker({
                           }
                           vramEst={isKnownGgufRepo(id) ? undefined : vram?.est}
                           gpuGb={gpu.available ? gpu.memoryTotalGb : undefined}
+                          ariaExpanded={isKnownGgufRepo(id) ? expandedGguf === id : undefined}
                           onArrowDownIntoChildren={
                             expandedGguf === id
                               ? () => {
@@ -3317,6 +3326,7 @@ export function HubModelPicker({
                             gpuGb={
                               gpu.available ? gpu.memoryTotalGb : undefined
                             }
+                            ariaExpanded={isSearchGguf ? expandedGguf === id : undefined}
                             onArrowDownIntoChildren={
                               expandedGguf === id
                                 ? () => {
@@ -3483,6 +3493,7 @@ function FineTunedRows({
                       </span>
                     </>
                   }
+                  ariaExpanded={(isLocalGgufDir || isExportedGguf) ? expandedGguf === adapter.id : undefined}
                   onArrowDownIntoChildren={
                     expandedGguf === adapter.id
                       ? () => {
