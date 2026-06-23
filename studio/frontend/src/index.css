@@ -43,7 +43,45 @@
 		inset-inline: 0;
 		bottom: 0;
 		height: 40px;
-		background: linear-gradient(to top, var(--sidebar), transparent);
+		/* Fade to sidebar colour at 0 alpha, not `transparent` (transparent
+		   black), which shows a grey midtone in Safari 27 Liquid Glass. */
+		background: linear-gradient(
+			to top,
+			var(--sidebar),
+			rgb(from var(--sidebar) r g b / 0)
+		);
+	}
+	/* Model picker list: once scrolled, the top edge fades so rows dissolve as
+	   they pass under the pinned search / tab bar. */
+	.model-list-scroll.is-scrolled {
+		-webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 14px);
+		mask-image: linear-gradient(to bottom, transparent 0, #000 14px);
+	}
+	/* Bottom edge fades while more rows sit below the fold. */
+	.model-list-scroll.is-bottom-faded {
+		-webkit-mask-image: linear-gradient(
+			to bottom,
+			#000 calc(100% - 16px),
+			transparent
+		);
+		mask-image: linear-gradient(to bottom, #000 calc(100% - 16px), transparent);
+	}
+	/* Both edges fade when scrolled with rows above and below. */
+	.model-list-scroll.is-scrolled.is-bottom-faded {
+		-webkit-mask-image: linear-gradient(
+			to bottom,
+			transparent 0,
+			#000 14px,
+			#000 calc(100% - 16px),
+			transparent
+		);
+		mask-image: linear-gradient(
+			to bottom,
+			transparent 0,
+			#000 14px,
+			#000 calc(100% - 16px),
+			transparent
+		);
 	}
 	/* RAG chip strip: sidebar-style bottom fade while more chips sit below
 	   the scroll fold (JS-toggled). */
@@ -952,12 +990,14 @@
 	/* Model selector: drop the inset edge ring, keep the soft drop shadow.
 	   Pin --radius to the light value so the corners match in both themes. */
 	.unsloth-model-selector-menu.menu-soft-surface {
-		--radius: 1.1rem;
+		--radius: 1.25rem;
 		box-shadow: 0 var(--menu-soft-offset-y) var(--menu-soft-blur)
 			var(--menu-soft-spread) var(--menu-soft-shadow);
 	}
 
 	.dark .unsloth-model-selector-menu.menu-soft-surface {
+		/* Match the left sidebar background. */
+		background-color: var(--sidebar);
 		box-shadow: none;
 	}
 
@@ -1642,6 +1682,11 @@
 		border-radius: 0 !important;
 		background: transparent !important;
 		padding: 0 !important;
+	}
+
+	.aui-thread-root [data-streamdown="code-block-body"] {
+		/* Keep overlay scrollbars below one-line code. */
+		padding-bottom: 0.625rem !important;
 	}
 
 	[data-streamdown="code-block"] {

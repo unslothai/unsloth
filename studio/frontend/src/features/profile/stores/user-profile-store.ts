@@ -5,13 +5,12 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
 export type AvatarShape = "circle" | "rounded";
+export const PROFILE_TEXT_MAX_LENGTH = 200;
 
 export interface UserProfileState {
   displayName: string;
-  // Preferred name used to address the user (greetings, etc.).
   nickname: string;
   avatarDataUrl: string | null;
-  // Avatar outline: full circle or rounded rectangle.
   avatarShape: AvatarShape;
   setDisplayName: (displayName: string) => void;
   setNickname: (nickname: string) => void;
