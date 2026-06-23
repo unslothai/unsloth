@@ -27,6 +27,7 @@ from hub.utils.gguf import (
     extract_quant_label,
     iter_hf_cache_snapshots,
     is_big_endian_gguf_path,
+    list_empty_gguf_variant_dirs,
     list_gguf_variants,
     list_gguf_variants_from_hf_cache,
     list_local_gguf_variants,
@@ -629,6 +630,21 @@ async def get_gguf_variants_response(
                         variant.quant,
                         _partial_transport_for_variant(repo_id, variant.quant),
                     )
+
+        # An interrupted split download can leave an empty ``<quant>/`` folder
+        # with no shards: not downloaded, not a tracked partial, so otherwise
+        # invisible and unremovable. Surface it as cleanable so the UI exposes a
+        # delete affordance (deletion removes the empty folder).
+        try:
+            empty_dir_quants = {q.lower() for q in list_empty_gguf_variant_dirs(repo_id)}
+        except Exception as e:
+            logger.warning(f"Failed to scan empty GGUF variant folders for {repo_id}: {e}")
+            empty_dir_quants = set()
+        if empty_dir_quants:
+            for variant in variants:
+                if variant.quant.lower() in empty_dir_quants and not _is_fully_downloaded(variant):
+                    partial_quants.add(variant.quant)
+                    partial_quant_transports.setdefault(variant.quant, None)
 
         def _variant_detail(v) -> GgufVariantDetail:
             is_partial = v.quant in partial_quants

@@ -276,6 +276,40 @@ def iter_hf_cache_snapshots(repo_id: str):
     yield from snapshots
 
 
+def list_empty_gguf_variant_dirs(repo_id: str) -> set[str]:
+    """Quant labels whose only on-disk presence is an EMPTY snapshot subfolder.
+
+    A cancelled or interrupted split download leaves the ``<quant>/`` directory
+    (e.g. ``UD-IQ1_S/``) behind with no shards. Such a folder is neither a
+    completed download nor a partial one (no ``.incomplete`` blobs, no manifest),
+    so it is otherwise invisible and cannot be removed from the UI. These labels
+    are surfaced as cleanable. A quant that has files in any snapshot is excluded
+    so a real download is never reported as an empty leftover.
+    """
+    empty: dict[str, str] = {}
+    nonempty: set[str] = set()
+    for snapshot in iter_hf_cache_snapshots(repo_id):
+        try:
+            entries = list(snapshot.iterdir())
+        except OSError:
+            continue
+        for sub in entries:
+            try:
+                if sub.is_symlink() or not sub.is_dir():
+                    continue
+                quant = extract_quant_token(sub.name)
+                if not quant:
+                    continue
+                has_child = any(True for _ in sub.iterdir())
+            except OSError:
+                continue
+            if has_child:
+                nonempty.add(quant.lower())
+            else:
+                empty.setdefault(quant.lower(), quant)
+    return {label for key, label in empty.items() if key not in nonempty}
+
+
 def list_gguf_variants_from_hf_cache(repo_id: str) -> Optional[tuple[list[GgufVariantInfo], bool]]:
     for snapshot in iter_hf_cache_snapshots(repo_id):
         variants, has_vision = list_local_gguf_variants(str(snapshot))

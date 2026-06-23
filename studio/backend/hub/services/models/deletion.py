@@ -15,7 +15,7 @@ from loggers import get_logger
 from hub.utils import download_manifest
 from hub.utils import download_registry
 from hub.utils import inventory_scan as hf_cache_scan
-from hub.utils.gguf import extract_quant_label
+from hub.utils.gguf import extract_quant_label, extract_quant_token
 from hub.utils.hf_cache_state import (
     INCOMPLETE_SUFFIX,
     purge_partial_repo,
@@ -104,6 +104,52 @@ def _has_remaining_main_gguf(target_repo) -> bool:
             _is_main_gguf_filename,
         )
     )
+
+
+def _remove_empty_variant_dirs(target_repos: list, variant: str) -> int:
+    """Remove snapshot subfolders for *variant* that are now empty.
+
+    HF lays out a split quant as one ``snapshots/<rev>/<quant>/`` directory, so
+    the folder name is the quant label. This reclaims both the folder left behind
+    by an interrupted/cancelled download (empty from the start) and the folder
+    emptied by unlinking this variant's shards above. Only genuinely empty
+    directories are removed, so a sibling quant's files are never touched.
+    """
+    variant_key = (extract_quant_token(variant) or variant).lower()
+    removed = 0
+    for target_repo in target_repos:
+        repo_path = getattr(target_repo, "repo_path", None)
+        if not repo_path:
+            continue
+        snapshots = Path(repo_path) / "snapshots"
+        if not snapshots.is_dir():
+            continue
+        try:
+            snap_dirs = [s for s in snapshots.iterdir() if s.is_dir() and not s.is_symlink()]
+        except OSError:
+            continue
+        for snap in snap_dirs:
+            try:
+                subs = list(snap.iterdir())
+            except OSError:
+                continue
+            for sub in subs:
+                try:
+                    if sub.is_symlink() or not sub.is_dir():
+                        continue
+                    folder_quant = extract_quant_token(sub.name)
+                    matches = (
+                        folder_quant is not None and folder_quant.lower() == variant_key
+                    ) or sub.name.lower() == variant.lower()
+                    if not matches:
+                        continue
+                    if any(True for _ in sub.iterdir()):
+                        continue
+                    sub.rmdir()
+                    removed += 1
+                except OSError:
+                    continue
+    return removed
 
 
 def _delete_gguf_variant_from_repos(
@@ -206,11 +252,15 @@ def _delete_gguf_variant_from_repos(
         )
 
     state_purged = download_manifest.purge_state("model", repo_id, variant)
+    # Reclaim the now-empty (or always-empty) quant subfolder so an interrupted
+    # download's leftover directory does not linger and 404 forever.
+    removed_dirs = _remove_empty_variant_dirs(target_repos, variant)
     if (
         removed_snapshots == 0
         and deleted_blobs == 0
         and incomplete_result.deleted == 0
         and not state_purged
+        and removed_dirs == 0
     ):
         raise HTTPException(
             status_code = 404,
