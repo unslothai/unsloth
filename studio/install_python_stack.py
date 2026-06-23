@@ -88,6 +88,17 @@ _ROCM_TORCH_PKG_SPECS: dict[str, tuple[str, str, str]] = {
         "torchaudio>=2.4,<2.11.0",
     ),
 }
+# Windows AMD per-arch companion pins for the repo.amd.com index, mirroring the
+# install.ps1 / setup.ps1 floor maps (gfx120X and Strix Halo/Point use the rocm7.2
+# torch 2.11 trio). Pinning the companions keeps AMD's per-arch index -- which
+# publishes each independently -- from resolving an ABI-mismatched one. Unlisted
+# arches have no published floor, so stay bare. Bump with the PS maps at 2.12.x.
+_WINDOWS_ROCM_TORCH_PKG_SPECS: dict[str, tuple[str, str, str]] = {
+    "gfx1201": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
+    "gfx1200": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
+    "gfx1151": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
+    "gfx1150": _ROCM_TORCH_PKG_SPECS["rocm7.2"],
+}
 _PYTORCH_WHL_BASE = (
     os.environ.get("UNSLOTH_PYTORCH_MIRROR") or "https://download.pytorch.org/whl"
 ).rstrip("/")
@@ -236,6 +247,39 @@ def _amd_smi_env() -> dict[str, str] | None:
     return {**os.environ, "__COMPAT_LAYER": "RunAsInvoker"}
 
 
+def _path_inside_venv(path: str) -> bool:
+    """True if ``path`` is inside the active venv (sys.prefix).
+
+    The venv hipInfo.exe (AMD wheel, put on PATH by the bnb fix) is NOT a HIP SDK
+    (_amd_smi_allowed)."""
+    try:
+        # realpath (not abspath): resolve symlinks/8.3 names so an aliased venv matches.
+        _root = os.path.normcase(os.path.realpath(sys.prefix))
+        # Guard a root-dir prefix (C:\ or /): commonpath would match every path on
+        # it. A venv is never at root, so treat that as outside.
+        if os.path.dirname(_root) == _root:
+            return False
+        return os.path.normcase(os.path.commonpath([os.path.realpath(path), _root])) == _root
+    except (ValueError, OSError):
+        # Different drive / unresolvable -> treat as outside the venv.
+        return False
+
+
+def _external_hipinfo_on_path() -> bool:
+    """True if a hipinfo OUTSIDE the venv is on PATH.
+
+    shutil.which returns only the first hit, so the venv hipInfo could shadow a
+    real HIP SDK's; scan every PATH entry and skip the venv copy."""
+    for _dir in os.environ.get("PATH", "").split(os.pathsep):
+        _dir = _dir.strip('"')  # PATH entries can be quoted on Windows
+        if not _dir:
+            continue
+        _candidate = os.path.join(_dir, "hipinfo.exe")
+        if os.path.isfile(_candidate) and not _path_inside_venv(_candidate):
+            return True
+    return False
+
+
 def _amd_smi_allowed() -> bool:
     """Whether it is safe to spawn amd-smi here.
 
@@ -250,11 +294,17 @@ def _amd_smi_allowed() -> bool:
         return True
     if flag in ("0", "false", "no", "off"):
         return False
-    if shutil.which("hipinfo"):
+    # A real HIP SDK lets amd-smi run un-elevated; hipinfo-on-PATH is the proxy.
+    # Ignore the venv hipInfo.exe (AMD wheel via bnb fix): not a HIP SDK, doesn't
+    # stop amd-smi's DiskPart UAC.
+    if _external_hipinfo_on_path():
         return True
     for _var in ("HIP_PATH", "HIP_PATH_57", "ROCM_PATH"):
         _root = os.environ.get(_var)
-        if _root and os.path.isfile(os.path.join(_root, "bin", "hipinfo.exe")):
+        if not _root:
+            continue
+        _candidate = os.path.join(_root, "bin", "hipinfo.exe")
+        if os.path.isfile(_candidate) and not _path_inside_venv(_candidate):
             return True
     return False
 
@@ -1097,16 +1147,32 @@ def _ensure_rocm_torch() -> None:
                 print(f"   No AMD Windows torch index for GPU arch {gfx_arch} -- skipping")
                 return
             print(f"   {gfx_arch} (Windows) -- installing torch from {index_url}")
-            pip_install(
+            # Pin companions for the arches install.ps1/setup.ps1 pin (gfx120X /
+            # Strix) so the per-arch index resolves an ABI-consistent trio; other
+            # arches stay bare (no published floor), matching the PowerShell side.
+            _torch_pkg, _vision_pkg, _audio_pkg = _WINDOWS_ROCM_TORCH_PKG_SPECS.get(
+                gfx_arch, ("torch", "torchvision", "torchaudio")
+            )
+            # Nonfatal: a transient AMD-index failure must not abort the whole
+            # install once the PowerShell side has fallen back to CPU torch.
+            # --force-reinstall resolves before uninstalling, so a failed index
+            # leaves the existing build intact; keep it and let the user retry.
+            if not pip_install_try(
                 f"ROCm torch (Windows, {gfx_arch})",
                 "--force-reinstall",
                 "--index-url",
                 index_url,
-                "torch",
-                "torchvision",
-                "torchaudio",
+                _torch_pkg,
+                _vision_pkg,
+                _audio_pkg,
                 constrain = False,
-            )
+            ):
+                print(
+                    f"   Warning: AMD Windows ROCm torch install failed for {gfx_arch}; "
+                    "keeping the existing torch build. Re-run 'unsloth studio update' "
+                    "later to retry ROCm."
+                )
+                return
         # ROCm torch is installed (or already was); flag it so later phases
         # do not overwrite it with the generic CPU torch wheel. BNB is a
         # separate dependency -- a BNB install failure must NOT roll back the

@@ -716,6 +716,7 @@ class InferenceOrchestrator:
         trust_remote_code: bool = False,
         approved_remote_code_fingerprint: Optional[str] = None,
         gpu_ids: Optional[list[int]] = None,
+        subject: Optional[str] = None,
     ) -> bool:
         """Load a model for inference.
 
@@ -739,6 +740,7 @@ class InferenceOrchestrator:
                 "gguf_variant": getattr(config, "gguf_variant", None),
                 "trust_remote_code": trust_remote_code,
                 "approved_remote_code_fingerprint": approved_remote_code_fingerprint,
+                "subject": subject,
                 "gpu_ids": gpu_ids,
             }
             resolved_gpu_ids, gpu_selection = prepare_gpu_selection(
