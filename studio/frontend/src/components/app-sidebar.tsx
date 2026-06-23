@@ -971,11 +971,9 @@ export function AppSidebar() {
         className={cn(
           "relative",
           showSidebarBrand
-            ? cn(
-                "pl-[17px] pr-3 pt-[14px] pb-[8px] group-data-[collapsible=icon]:px-0",
-                showCompactMacBrand &&
-                  "pl-4 pt-[calc(var(--studio-mac-titlebar-height,34px)+8px)] pb-2 group-data-[collapsible=icon]:pt-[calc(var(--studio-mac-titlebar-height,34px)+8px)]",
-              )
+            ? showCompactMacBrand
+              ? "h-[var(--studio-chat-header-height,48px)] pl-[calc(var(--studio-mac-traffic-light-inset,78px)+6px)] pr-2 pt-[var(--studio-chat-header-padding-top,9px)] pb-0 group-data-[collapsible=icon]:h-[calc(var(--studio-mac-titlebar-height,34px)+var(--studio-chat-control-height,33px)+8px)] group-data-[collapsible=icon]:px-0 group-data-[collapsible=icon]:pt-[calc(var(--studio-mac-titlebar-height,34px)+8px)]"
+              : "pl-[17px] pr-3 pt-[14px] pb-[8px] group-data-[collapsible=icon]:px-0"
             : "h-[var(--studio-custom-titlebar-height,34px)] shrink-0 p-0",
         )}
       >
@@ -991,6 +989,8 @@ export function AppSidebar() {
             <div
               className={cn(
                 "flex items-center justify-between gap-[8.5px] group-data-[collapsible=icon]:hidden",
+                showCompactMacBrand &&
+                  "h-[var(--studio-chat-control-height,33px)]",
                 showCompactMacBrand && "gap-2",
               )}
             >
@@ -1003,7 +1003,8 @@ export function AppSidebar() {
                 }}
                 className={cn(
                   "flex items-center gap-[6px] select-none",
-                  showCompactMacBrand && "gap-2",
+                  showCompactMacBrand &&
+                    "inline-flex size-[var(--studio-chat-control-height,33px)] items-center justify-center rounded-[10px] transition-colors hover:bg-nav-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                 )}
                 aria-label={t("shell.aria.home")}
               >
@@ -1021,24 +1022,16 @@ export function AppSidebar() {
                       : "h-[34px] w-[34px] rounded-full",
                   )}
                 />
-                <span
-                  className={cn(
-                    "font-heading font-semibold leading-none",
-                    showCompactMacBrand
-                      ? "text-[13.5px] tracking-[0.01em] text-nav-fg"
-                      : "text-[21px] tracking-[0em] text-black dark:text-white dark:tracking-[0.02em]",
-                  )}
-                >
-                  unsloth
-                </span>
-                <span
-                  className={cn(
-                    "nav-badge ml-0.5 inline-flex items-center justify-center rounded-full border border-nav-beta-border px-[5px] pt-[3px] pb-[2px] text-[8px] font-medium leading-none tracking-[0.04em] text-nav-fg-muted antialiased subpixel-antialiased shadow-[0_1px_2px_rgba(0,0,0,0.06)] dark:shadow-[0_1px_2px_rgba(0,0,0,0.35)]",
-                    showCompactMacBrand && "pt-[2px] pb-[1px] text-[7px]",
-                  )}
-                >
-                  {t("shell.beta")}
-                </span>
+                {!showCompactMacBrand && (
+                  <>
+                    <span className="font-heading text-[21px] font-semibold tracking-[0em] leading-none text-black dark:text-white dark:tracking-[0.02em]">
+                      unsloth
+                    </span>
+                    <span className="nav-badge ml-0.5 inline-flex items-center justify-center rounded-full border border-nav-beta-border px-[5px] pt-[3px] pb-[2px] text-[8px] font-medium leading-none tracking-[0.04em] text-nav-fg-muted antialiased subpixel-antialiased shadow-[0_1px_2px_rgba(0,0,0,0.06)] dark:shadow-[0_1px_2px_rgba(0,0,0,0.35)]">
+                      {t("shell.beta")}
+                    </span>
+                  </>
+                )}
               </Link>
               {!isMobile && (
                 <Tooltip>
