@@ -1786,7 +1786,7 @@ export function ChatSettingsPanel({
               </div>
               <p className="text-[11px] text-muted-foreground">
                 Use this for longer edits. Save writes back to the active
-                configuration only. Insert variables with {"{{ name }}"}.
+                configuration only. Insert variables with {"{{ env }}"}.
               </p>
             </div>
             {systemVariablesOpen ? (
@@ -1797,18 +1797,25 @@ export function ChatSettingsPanel({
                       Prompt variables
                     </div>
                     <p className="text-[11px] text-muted-foreground">
-                      Optional JSON values for simple prompt substitution.
+                      Define values as JSON below, then use each key in your
+                      prompt, like {"{{ env }}"}.
                     </p>
                   </div>
-                  <div className="flex flex-wrap gap-1">
-                    {["{{$date}}", "{{$time}}", "{{$now}}"].map((token) => (
-                      <span
-                        key={token}
-                        className="rounded-full bg-muted px-2 py-0.5 font-mono text-[10px] text-muted-foreground"
-                      >
-                        {token}
-                      </span>
-                    ))}
+                  <div className="flex flex-col items-end gap-1">
+                    <span className="text-[10px] text-muted-foreground">
+                      Built-in, fill in automatically
+                    </span>
+                    <div className="flex flex-wrap justify-end gap-1">
+                      {["{{$date}}", "{{$time}}", "{{$now}}"].map((token) => (
+                        <span
+                          key={token}
+                          title={`${token} is replaced automatically when you send`}
+                          className="rounded-full bg-muted px-2 py-0.5 font-mono text-[10px] text-muted-foreground"
+                        >
+                          {token}
+                        </span>
+                      ))}
+                    </div>
                   </div>
                 </div>
                 <Textarea
@@ -1833,7 +1840,8 @@ export function ChatSettingsPanel({
                   </p>
                 ) : (
                   <p className="px-1 text-[11px] text-muted-foreground">
-                    Unknown variables stay unchanged in the final prompt.
+                    Names you don&apos;t define are left unchanged, so a stray
+                    {" {{ typo }} "}stays visible in the prompt.
                   </p>
                 )}
               </div>
