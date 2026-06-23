@@ -60,12 +60,15 @@ _ONLY_BINARY_ARG = "--only-binary=:all:"
 # Allowlist of environment variables forwarded to the install subprocess. The
 # self-heal runs without confirmation on the default startup path, so it must not
 # hand resolver/build code the full Studio environment. Everything outside this
-# set is dropped, which excludes two dangerous classes by construction:
+# set is dropped, which excludes three dangerous classes by construction:
 #   * secrets (HF_TOKEN, AWS_*, WANDB_API_KEY, ...) that a malicious wheel/sdist
 #     build hook would otherwise read straight out of os.environ;
 #   * package-source redirects (UV_INDEX*, UV_DEFAULT_INDEX, UV_FIND_LINKS,
 #     PIP_INDEX_URL, ...) so a poisoned process env cannot silently repoint the
-#     install at an attacker-controlled index/find-links.
+#     install at an attacker-controlled index/find-links;
+#   * cache-dir redirects (UV_CACHE_DIR, XDG_CACHE_HOME) so a poisoned env cannot
+#     point uv at an attacker-staged cache (cache poisoning / symlink writes). uv
+#     falls back to its safe user-owned default cache, reused across runs anyway.
 # uv still honours on-disk config (uv.toml / pip.conf), so a corporate mirror
 # configured there keeps working; only process-env redirects are dropped. We set
 # UV_OVERRIDE ourselves in _mlx_install_env, so a poisoned one here is ignored.
@@ -94,9 +97,6 @@ _MLX_ENV_ALLOWLIST = frozenset(
         "SSL_CERT_DIR",
         "REQUESTS_CA_BUNDLE",
         "CURL_CA_BUNDLE",
-        # uv's download cache (a directory, not an index) so we reuse it, not redirect
-        "UV_CACHE_DIR",
-        "XDG_CACHE_HOME",
     }
 )
 _REPAIR_TIMEOUT_S = 900

@@ -153,6 +153,8 @@ def test_install_env_drops_secrets_and_source_redirects(monkeypatch):
     monkeypatch.setenv("UV_DEFAULT_INDEX", "file:///tmp/evil-index")
     monkeypatch.setenv("UV_INDEX_URL", "https://evil.example/simple")
     monkeypatch.setenv("PIP_INDEX_URL", "https://evil.example/simple")
+    monkeypatch.setenv("UV_CACHE_DIR", "/tmp/evil-cache")
+    monkeypatch.setenv("XDG_CACHE_HOME", "/tmp/evil-xdg-cache")
     monkeypatch.setenv("PATH", "/usr/bin:/bin")
     monkeypatch.setenv("HOME", "/home/studio")
 
@@ -161,8 +163,12 @@ def test_install_env_drops_secrets_and_source_redirects(monkeypatch):
     # Secrets never reach a (potentially malicious) build/install hook.
     for secret in ("HF_TOKEN", "AWS_SECRET_ACCESS_KEY", "WANDB_API_KEY"):
         assert secret not in env
-    # A poisoned process env cannot repoint the install at a hostile source.
-    for redirect in ("UV_FIND_LINKS", "UV_DEFAULT_INDEX", "UV_INDEX_URL", "PIP_INDEX_URL"):
+    # A poisoned process env cannot repoint the install at a hostile source or
+    # an attacker-staged cache (cache poisoning / symlink writes).
+    for redirect in (
+        "UV_FIND_LINKS", "UV_DEFAULT_INDEX", "UV_INDEX_URL", "PIP_INDEX_URL",
+        "UV_CACHE_DIR", "XDG_CACHE_HOME",
+    ):
         assert redirect not in env
     # What uv genuinely needs is still forwarded.
     assert env["PATH"] == "/usr/bin:/bin"
