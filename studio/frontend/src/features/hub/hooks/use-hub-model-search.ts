@@ -1,14 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { usePlatformStore } from "@/config/env";
 import type { PipelineType } from "@huggingface/hub";
 import { listModels } from "@huggingface/hub";
-import {
-  type CachedResult,
-  cachedModelInfo,
-  primeCacheFromListing,
-} from "../lib/hf-cache";
-import { fetchWithTimeout } from "../lib/network";
 import {
   startTransition,
   useCallback,
@@ -16,33 +11,44 @@ import {
   useMemo,
   useState,
 } from "react";
-import { pullBatch, useHubPaginatedSearch } from "./use-hub-paginated-search";
-import { usePlatformStore } from "@/config/env";
+import {
+  type CachedResult,
+  cachedModelInfo,
+  primeCacheFromListing,
+} from "../lib/hf-cache";
 import { EMBEDDING_TAGS, estimateSizeFromDtypes } from "../lib/hf-model-meta";
 import { detectBaseModel } from "../lib/model-capabilities";
 import { isGgufLike } from "../lib/model-identifiers";
+import { fetchWithTimeout } from "../lib/network";
 import {
-  classifyUnslothSupport,
-  excludedFormatTagsForDevice,
   type UnslothSupport,
   type UnslothSupportStatus,
+  classifyUnslothSupport,
+  excludedFormatTagsForDevice,
 } from "../lib/unsloth-support";
+import { pullBatch, useHubPaginatedSearch } from "./use-hub-paginated-search";
 
-const ALL_FIELDS: (
-  | "safetensors"
-  | "tags"
-  | "library_name"
-  | "config"
-  | "createdAt"
-  | "downloadsAllTime"
-)[] = [
+// "gguf" is not in the @huggingface/hub expandable-key type, but the listing
+// supports expand=gguf (see withGgufExpand) and listModels' pick() copies any
+// requested field through at runtime. Request it here so GGUF repos whose id
+// has no "<n>B" token (Kimi, MiniMax, GLM) still populate m.gguf.total for the
+// param chip / OOM badge. The cast bridges that single library type gap.
+const ALL_FIELDS = [
   "safetensors",
   "tags",
   "library_name",
   "config",
   "createdAt",
   "downloadsAllTime",
-];
+  "gguf",
+] as unknown as (
+  | "safetensors"
+  | "tags"
+  | "library_name"
+  | "config"
+  | "createdAt"
+  | "downloadsAllTime"
+)[];
 
 export { classifyUnslothSupport };
 export type { UnslothSupport, UnslothSupportStatus };
@@ -115,10 +121,28 @@ export interface HfModelResult {
 const DESC_ONLY_SORTS = new Set<HfSortKey>(["trendingScore"]);
 const HF_SEARCH_TIMEOUT_MS = 15_000;
 
+// The HF listModels lib doesn't whitelist gguf metadata, but the listing
+// supports it. Append expand=gguf so GGUF repos report a param count (used for
+// the size / OOM badge) even when the name has no "<n>B" token (Kimi, MiniMax,
+// GLM). Shared by every fetch path so the badge is consistent.
+function withGgufExpand(input: Parameters<typeof fetch>[0]): string {
+  const rawUrl =
+    typeof input === "string"
+      ? input
+      : input instanceof URL
+        ? input.toString()
+        : input.url;
+  const url = new URL(rawUrl);
+  if (!url.searchParams.getAll("expand").includes("gguf")) {
+    url.searchParams.append("expand", "gguf");
+  }
+  return url.toString();
+}
+
 function makeHfFetch(signal?: AbortSignal): typeof fetch {
   return (input, init) =>
     fetchWithTimeout(
-      input,
+      withGgufExpand(input),
       signal ? { ...init, signal } : init,
       HF_SEARCH_TIMEOUT_MS,
     );
@@ -149,7 +173,7 @@ function makeSortFetch(
     url.searchParams.set("direction", effectiveDir === "asc" ? "1" : "-1");
 
     return fetchWithTimeout(
-      url,
+      withGgufExpand(url),
       signal ? { ...init, signal } : init,
       HF_SEARCH_TIMEOUT_MS,
     );
@@ -450,7 +474,9 @@ function createChannelIterator(
     additionalFields: ALL_FIELDS,
     fetch: makeSortFetch(opts.sortBy, opts.sortDirection, opts.signal),
     sort: opts.sortBy,
-    ...(opts.accessToken ? { credentials: { accessToken: opts.accessToken } } : {}),
+    ...(opts.accessToken
+      ? { credentials: { accessToken: opts.accessToken } }
+      : {}),
   }) as AsyncGenerator<unknown>;
 }
 
@@ -564,7 +590,11 @@ export async function fetchChannelFirstPage(
       yield model;
     }
   }
-  const { items, done, scanned } = await pullBatch(primed(), mapModel, pageSize);
+  const { items, done, scanned } = await pullBatch(
+    primed(),
+    mapModel,
+    pageSize,
+  );
   return { results: items, scanned, done };
 }
 
