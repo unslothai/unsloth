@@ -203,6 +203,20 @@ def test_detect_safetensors_features_function_xml_format_keeps_tools_on():
     assert flags["supports_tools"] is True
 
 
+def test_detect_safetensors_features_gemma_native_tool_call_keeps_tools_on():
+    """Gemma 4 emits <|tool_call>call:name{...}<tool_call|>, which the shared
+    parser now reads, so the gate must not suppress tools for it."""
+    from routes.inference import _detect_safetensors_features
+
+    tpl_with_gemma_native = (
+        "{%- if tools -%}Tool call format: "
+        "<|tool_call>call:name{key:value}<tool_call|>{%- endif -%}"
+    )
+    backend = SimpleNamespace(active_model_name = "unsloth/gemma-4-12b-it")
+    flags = _detect_safetensors_features(backend, tpl_with_gemma_native)
+    assert flags["supports_tools"] is True
+
+
 # Qwen3.5 family pin: the live GGUF + safetensors templates both wrap tool
 # calls as ``<tool_call>\n<function=name>...``. Faithful slice so the
 # classifier never silently regresses for this family.

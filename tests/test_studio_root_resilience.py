@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import importlib.util
-import re
 import sys
 import textwrap
 from pathlib import Path
@@ -53,36 +52,55 @@ def test_studio_root_does_not_crash_on_permission_error(tmp_path, monkeypatch):
     assert result == Path.home() / ".unsloth" / "studio"
 
 
+def _method_body(src: str, name: str) -> str:
+    """Whole method body (def to next sibling def at the same indent)."""
+    start = src.index(f"def {name}")
+    indent = " " * (start - src.rfind("\n", 0, start) - 1)
+    nxt = src.find(f"\n{indent}def ", start + 1)
+    return src[start : nxt if nxt != -1 else len(src)]
+
+
 def test_kill_orphan_catches_oserror_from_studio_root():
-    """_kill_orphaned_servers must catch (ImportError, OSError, ValueError) on the studio_root() probe."""
+    """Cleanup must not crash when studio_root() raises. _kill_orphaned_servers
+    resolves the install root through the shared _resolved_studio_root_and_is_legacy()
+    classifier, which swallows (ImportError, OSError, ValueError) on the probe."""
     src = LLAMA_CPP.read_text()
-    fn_start = src.index("def _kill_orphaned_servers")
-    fn_body = src[fn_start : fn_start + 4000]
-    # The studio_root() probe imports as `_sr` and assigns `_resolved_sr = _sr()`.
-    probe_idx = fn_body.index("storage_roots import studio_root as _sr")
-    # The matching except is the next one after the inner resolve() block.
-    after = fn_body[probe_idx:]
-    # Skip the inner `except (OSError, ValueError):` that wraps resolve().
-    inner_idx = after.index("except (OSError, ValueError):")
-    after_inner = after[inner_idx + len("except (OSError, ValueError):") :]
-    outer_match = re.search(r"except\s*\(?[^)]*?\)?:", after_inner)
-    assert outer_match, "outer except for studio_root probe missing"
-    clause = outer_match.group(0)
-    assert (
-        "OSError" in clause and "ValueError" in clause
-    ), f"_kill_orphaned_servers studio_root probe catch too narrow: {clause!r}"
+    # Cleanup delegates to the shared classifier rather than importing studio_root inline.
+    assert "LlamaCppBackend._resolved_studio_root_and_is_legacy()" in _method_body(
+        src, "_kill_orphaned_servers"
+    ), "_kill_orphaned_servers must resolve the root via _resolved_studio_root_and_is_legacy()"
+    # The shared classifier catches both the resolve() failure and the outer studio_root() probe.
+    classifier = _method_body(src, "_resolved_studio_root_and_is_legacy")
+    assert "studio_root as _sr" in classifier, "classifier must probe studio_root()"
+    assert "except (OSError, ValueError):" in classifier, "inner resolve() probe must be guarded"
+    assert "except (ImportError, OSError, ValueError):" in classifier, (
+        "_resolved_studio_root_and_is_legacy must catch (ImportError, OSError, ValueError) "
+        "from studio_root()"
+    )
 
 
 def _exec_search_roots_block(
     home: Path, studio_root_value: Path, resolve_raises: bool
 ) -> list[Path]:
-    """Extract and run _find_llama_server_binary's env-mode search_roots block with controlled inputs."""
+    """Run _find_llama_server_binary's search_roots derivation -- plus the shared
+    _resolved_studio_root_and_is_legacy() classifier it delegates to -- with a
+    controlled studio_root() and resolve(), without importing the heavy module."""
     src = LLAMA_CPP.read_text()
+    # Shared root classifier (holds the defensive try/except for studio_root()).
+    # End the slice at the next sibling def/decorator at the same indent rather
+    # than the literal "@staticmethod" string, so a future docstring mentioning a
+    # decorator can't truncate the helper mid-body and break exec().
+    helper_start = src.index("def _resolved_studio_root_and_is_legacy")
+    indent = " " * (helper_start - src.rfind("\n", 0, helper_start) - 1)
+    nxt_def = src.find(f"\n{indent}def ", helper_start + 1)
+    nxt_dec = src.find(f"\n{indent}@", helper_start + 1)
+    sibling = [idx for idx in (nxt_def, nxt_dec) if idx != -1]
+    helper_end = min(sibling) if sibling else len(src)
+    helper = textwrap.dedent(src[helper_start:helper_end])
+    # search_roots derivation inside _find_llama_server_binary (delegates to the classifier).
     block_start = src.index('legacy_llama = Path.home() / ".unsloth" / "llama.cpp"')
-    block_end = src.index("_seen_roots: set[str]", block_start)
-    raw = src[block_start:block_end]
-    indent = " " * 8
-    block = textwrap.dedent(indent + raw)
+    block_end = src.index("for unsloth_home in search_roots:", block_start)
+    block = textwrap.dedent(" " * 8 + src[block_start:block_end])
     fake_module = type(sys)("fake_storage_roots")
     fake_module.studio_root = lambda: studio_root_value
     sys.modules["utils.paths.storage_roots"] = fake_module
@@ -99,7 +117,17 @@ def _exec_search_roots_block(
             mock.patch.object(Path, "resolve", _resolve),
         ):
             ns: dict = {"Path": Path}
-            exec(block, ns)  # noqa: S102
+            exec(helper, ns)  # noqa: S102  -- defines _resolved_studio_root_and_is_legacy
+            ns["LlamaCppBackend"] = type(
+                "LlamaCppBackend",
+                (),
+                {
+                    "_resolved_studio_root_and_is_legacy": staticmethod(
+                        ns["_resolved_studio_root_and_is_legacy"]
+                    )
+                },
+            )
+            exec(block, ns)  # noqa: S102  -- defines search_roots
         return ns["search_roots"]
     finally:
         sys.modules.pop("utils.paths.storage_roots", None)

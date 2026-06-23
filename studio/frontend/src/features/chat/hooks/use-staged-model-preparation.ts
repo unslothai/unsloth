@@ -3,15 +3,17 @@
 
 import { useCallback, useEffect } from "react";
 
-import { useLatestRef } from "@/features/hub/hooks/use-latest-ref";
 import { useRepoDownload } from "@/features/hub/download-manager/use-repo-download";
 import type { DownloadJob } from "@/features/hub/download-manager/use-repo-download";
+import { useLatestRef } from "@/features/hub/hooks/use-latest-ref";
 
 import { fetchGgufContextLength } from "../api/chat-api";
 import {
   isPendingGguf,
+  pendingSelectionMatches,
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
+import type { PendingModelSelection } from "../stores/chat-runtime-store";
 
 /**
  * Drives the deferred ("Load on selection" off) staging flow for a GGUF:
@@ -22,7 +24,10 @@ import {
  * the loaded model's `ggufContextLength`). Returns the live download job so the
  * sheet can render progress / cancel. Mount once on the chat page.
  */
-export function useStagedModelPreparation(): DownloadJob {
+export function useStagedModelPreparation(opts?: {
+  /** Load the cached file once an autoLoad pick's download completes. */
+  onAutoLoad?: (pending: PendingModelSelection) => void;
+}): DownloadJob {
   const pendingId = useChatRuntimeStore((s) => s.pendingSelection?.id ?? null);
   const pendingVariant = useChatRuntimeStore(
     (s) => s.pendingSelection?.ggufVariant ?? null,
@@ -34,6 +39,10 @@ export function useStagedModelPreparation(): DownloadJob {
   const pendingIsGguf = useChatRuntimeStore((s) =>
     isPendingGguf(s.pendingSelection),
   );
+  // Non-GGUF HF repos download a full snapshot (variant null) but have no header.
+  const pendingIsHubRepo = useChatRuntimeStore(
+    (s) => s.pendingSelection?.isHubRepo ?? false,
+  );
   const pendingDownloaded = useChatRuntimeStore(
     (s) => s.pendingSelection?.isDownloaded ?? false,
   );
@@ -41,6 +50,19 @@ export function useStagedModelPreparation(): DownloadJob {
     (s) => s.pendingSelection?.contextLength != null,
   );
   const setPendingSelection = useChatRuntimeStore((s) => s.setPendingSelection);
+  const onAutoLoadRef = useLatestRef(opts?.onAutoLoad);
+
+  // A failed or cancelled autoLoad download has no sheet to retry from, so drop
+  // the staged pick rather than leave it waiting on a load that won't come.
+  const handleAutoLoadAbort = useCallback((variant: string | null) => {
+    const latest = useChatRuntimeStore.getState().pendingSelection;
+    if (
+      latest?.autoLoad &&
+      (latest.ggufVariant ?? null) === (variant ?? null)
+    ) {
+      useChatRuntimeStore.getState().abandonStagedModel();
+    }
+  }, []);
 
   const fetchContextMetadata = useCallback(async () => {
     const current = useChatRuntimeStore.getState().pendingSelection;
@@ -54,15 +76,12 @@ export function useStagedModelPreparation(): DownloadJob {
         nativePathToken,
       });
       // Apply only if the same model is still staged (the user may have switched
-      // picks or loaded/cancelled while the request was in flight). Native ids
-      // are display labels, not paths, so two files can share an id -- compare
-      // the path token too, or a stale response could land on the wrong pick.
+      // picks or loaded/cancelled while the request was in flight).
       const latest = useChatRuntimeStore.getState().pendingSelection;
       if (
-        latest?.id === id &&
-        (latest.ggufVariant ?? null) === (ggufVariant ?? null) &&
-        (latest.nativePathToken ?? null) === (nativePathToken ?? null) &&
-        contextLength != null
+        latest &&
+        contextLength != null &&
+        pendingSelectionMatches(latest, { id, ggufVariant, nativePathToken })
       ) {
         setPendingSelection({ ...latest, contextLength });
       }
@@ -78,9 +97,21 @@ export function useStagedModelPreparation(): DownloadJob {
     // inert until something is staged.
     repoId: pendingId ?? "__staged_idle__",
     activeVariant: pendingVariant,
-    onComplete: () => {
+    onComplete: (variant) => {
+      // autoLoad picks load the cached file now; staged picks read the header so
+      // the sheet's context slider can show before a manual load.
+      const latest = useChatRuntimeStore.getState().pendingSelection;
+      if (
+        latest?.autoLoad &&
+        (latest.ggufVariant ?? null) === (variant ?? null)
+      ) {
+        onAutoLoadRef.current?.(latest);
+        return;
+      }
       void fetchContextMetadata();
     },
+    onError: handleAutoLoadAbort,
+    onCancelled: handleAutoLoadAbort,
   });
 
   // job.requestStartDownload's identity changes per render; hold it in a ref so
@@ -89,9 +120,18 @@ export function useStagedModelPreparation(): DownloadJob {
   const fetchMetadataRef = useLatestRef(fetchContextMetadata);
 
   useEffect(() => {
-    if (!pendingId || !pendingIsGguf || pendingHasContext) return;
+    // GGUF picks (header worth reading) and uncached non-GGUF hub repos (full
+    // snapshot, no header) both run here; everything else is loaded directly.
+    if (
+      !pendingId ||
+      (!pendingIsGguf && !pendingIsHubRepo) ||
+      pendingHasContext
+    ) {
+      return;
+    }
     // Native files and already-downloaded HF files are local: read the header
-    // now. Otherwise download first; onComplete then reads it.
+    // now. Otherwise download first (a GGUF variant, or a null-variant snapshot
+    // for a hub repo); onComplete then reads the header or auto-loads.
     if (pendingNativeToken || pendingDownloaded) {
       void fetchMetadataRef.current();
     } else {
@@ -104,6 +144,7 @@ export function useStagedModelPreparation(): DownloadJob {
     pendingVariant,
     pendingNativeToken,
     pendingIsGguf,
+    pendingIsHubRepo,
     pendingDownloaded,
     pendingHasContext,
     startDownloadRef,
