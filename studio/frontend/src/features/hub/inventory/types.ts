@@ -65,6 +65,8 @@ export interface LocalInventoryRow {
   title: string;
   source: LocalSource;
   sourceLabel: string;
+  modelId?: string | null;
+  displayName?: string;
   path: string;
   isGguf: boolean;
   modelFormat: ModelInventoryFormat;

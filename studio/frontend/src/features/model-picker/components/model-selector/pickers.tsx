@@ -15,10 +15,7 @@ import {
   addScanFolder,
   deleteCachedModel,
   deleteFineTunedModel,
-  listCachedGguf,
-  listCachedModels,
   listGgufVariants,
-  listLocalModels,
   listRecommendedFolders,
   listScanFolders,
   removeScanFolder,
@@ -28,6 +25,7 @@ import type {
   CachedModelRepo,
   LocalModelInfo,
 } from "@/features/chat/api/chat-api";
+import { useChatPickerInventory } from "@/features/model-picker/inventory/use-chat-picker-inventory";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import type { GgufVariantDetail } from "@/features/chat/types/api";
 import { DotTag } from "@/features/hub/catalog/dot-tag";
@@ -1338,25 +1336,36 @@ export function HubModelPicker({
     });
   }, []);
 
-  // Cached (downloaded) repos -- module-level cache avoids flashing an
-  // empty "Downloaded" section when the popover re-mounts.
-  const [cachedGguf, setCachedGguf] =
-    useState<CachedGgufRepo[]>(_cachedGgufCache);
-  const [cachedModels, setCachedModels] =
-    useState<CachedModelRepo[]>(_cachedModelsCache);
-  const alreadyCached =
-    _cachedGgufCache.length > 0 || _cachedModelsCache.length > 0;
-  const [cachedReady, setCachedReady] = useState(alreadyCached);
-
-  // LM Studio local models -- module-level cache, same pattern as above.
-  const [lmStudioModels, setLmStudioModels] =
-    useState<LocalModelInfo[]>(_lmStudioCache);
-  // Models found under the local models directory (./models), so they stay
-  // selectable on the On Device tab after leaving the Fine-tuned tab.
-  const [localDirModels, setLocalDirModels] =
-    useState<LocalModelInfo[]>(_localDirCache);
-  const [customFolderModels, setCustomFolderModels] =
-    useState<LocalModelInfo[]>(_customFolderCache);
+  const pickerInventory = useChatPickerInventory({ enabled: true });
+  const { cachedGguf, cachedModels, cachedReady } = pickerInventory;
+  const lmStudioModels = useMemo(
+    () =>
+      sortLmStudio(
+        pickerInventory.localModels.filter((m) => m.source === "lmstudio"),
+      ),
+    [pickerInventory.localModels],
+  );
+  const localDirModels = useMemo(
+    () => pickerInventory.localModels.filter((m) => m.source === "models_dir"),
+    [pickerInventory.localModels],
+  );
+  const customFolderModels = useMemo(
+    () => pickerInventory.localModels.filter((m) => m.source === "custom"),
+    [pickerInventory.localModels],
+  );
+  useEffect(() => {
+    _cachedGgufCache = cachedGguf;
+    _cachedModelsCache = cachedModels;
+    _lmStudioCache = lmStudioModels;
+    _localDirCache = localDirModels;
+    _customFolderCache = customFolderModels;
+  }, [
+    cachedGguf,
+    cachedModels,
+    lmStudioModels,
+    localDirModels,
+    customFolderModels,
+  ]);
 
   // Custom scan folders management
   const [scanFolders, setScanFolders] =
@@ -1369,22 +1378,8 @@ export function HubModelPicker({
   const [recommendedFolders, setRecommendedFolders] = useState<string[]>([]);
 
   const refreshLocalModelsList = useCallback(() => {
-    listLocalModels()
-      .then((res) => {
-        const lm = sortLmStudio(
-          res.models.filter((m) => m.source === "lmstudio"),
-        );
-        _lmStudioCache = lm;
-        setLmStudioModels(lm);
-        const ld = res.models.filter((m) => m.source === "models_dir");
-        _localDirCache = ld;
-        setLocalDirModels(ld);
-        const cf = res.models.filter((m) => m.source === "custom");
-        _customFolderCache = cf;
-        setCustomFolderModels(cf);
-      })
-      .catch(() => {});
-  }, []);
+    void pickerInventory.refreshInventory();
+  }, [pickerInventory.refreshInventory]);
 
   const refreshScanFolders = useCallback(() => {
     listScanFolders()
@@ -1463,52 +1458,15 @@ export function HubModelPicker({
   );
 
   const refreshCachedLists = useCallback(() => {
-    listCachedGguf()
-      .then((v) => {
-        _cachedGgufCache = v;
-        setCachedGguf(v);
-      })
-      .catch(() => {});
-    listCachedModels()
-      .then((v) => {
-        _cachedModelsCache = v;
-        setCachedModels(v);
-      })
-      .catch(() => {});
-    refreshLocalModelsList();
-  }, [refreshLocalModelsList]);
+    void pickerInventory.refreshInventory();
+  }, [pickerInventory.refreshInventory]);
 
   useEffect(() => {
-    // Always refresh LM Studio + custom folder models (not gated by alreadyCached).
-    refreshLocalModelsList();
     refreshScanFolders();
     listRecommendedFolders()
       .then(setRecommendedFolders)
       .catch(() => {});
-
-    // Always refetch cached GGUF/model lists. The module-level caches render
-    // instantly with stale data (no spinner flash), but newly downloaded
-    // repos need a fresh backend hit. cachedReady=alreadyCached initially,
-    // so the background refresh is invisible when we already had data.
-    let done = 0;
-    const check = () => {
-      if (++done >= 2) setCachedReady(true);
-    };
-    listCachedGguf()
-      .then((v) => {
-        _cachedGgufCache = v;
-        setCachedGguf(v);
-      })
-      .catch(() => {})
-      .finally(check);
-    listCachedModels()
-      .then((v) => {
-        _cachedModelsCache = v;
-        setCachedModels(v);
-      })
-      .catch(() => {})
-      .finally(check);
-  }, [refreshLocalModelsList, refreshScanFolders]);
+  }, [refreshScanFolders]);
 
   // Hide downloaded models from the recommended list. Case-insensitive
   // since the HF cache lowercases repo IDs.
