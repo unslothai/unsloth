@@ -77,6 +77,23 @@ def _tool_names(payload: dict) -> list[str]:
     ]
 
 
+def _patch_monotonic(monkeypatch, values: list[float]) -> None:
+    import core.inference.llama_cpp as llama_cpp_mod
+
+    it = iter(values)
+    last = values[-1]
+
+    def fake_monotonic() -> float:
+        nonlocal last
+        try:
+            last = next(it)
+        except StopIteration:
+            pass
+        return last
+
+    monkeypatch.setattr(llama_cpp_mod.time, "monotonic", fake_monotonic)
+
+
 def _structured_tool_call(tool_name: str, arguments: dict, call_id: str) -> list[str]:
     return [
         _sse(
@@ -198,6 +215,80 @@ def test_structured_tool_call_after_visible_preface_is_executed(monkeypatch):
     assert assistant_messages[-1]["content"] == "Here is the canvas.\n\n"
     assert assistant_messages[-1]["tool_calls"][0]["id"] == tool_call_id
     assert assistant_messages[-1]["tool_calls"][0]["function"]["name"] == "render_html"
+
+
+def test_buffered_reasoning_answer_emits_backend_summary(monkeypatch):
+    stream = [
+        _sse({"reasoning_content": "I am thinking."}),
+        _sse({"reasoning_content": " Still thinking."}),
+        _sse({"content": "Final answer."}),
+        _done(),
+    ]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [stream], payloads)
+    _patch_monotonic(monkeypatch, [100.0, 110.0, 172.0, 172.0])
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "answer"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 1,
+        )
+    )
+
+    summary_index = next(
+        i for i, event in enumerate(events) if event["type"] == "reasoning_summary"
+    )
+    content_index = next(i for i, event in enumerate(events) if event["type"] == "content")
+    assert summary_index < content_index
+    assert events[summary_index]["duration_ms"] == 62000
+    assert (
+        events[content_index]["text"]
+        == "<think>I am thinking. Still thinking.</think>Final answer."
+    )
+
+
+def test_consumed_tool_final_pass_emits_latest_reasoning_summary(monkeypatch):
+    tool_stream = [
+        _sse({"reasoning_content": "Need a render."}),
+        _sse(
+            {
+                "content": '<tool_call>{"name":"render_html","arguments":{"code":"<html>ok</html>"}}</tool_call>'
+            }
+        ),
+        _done(),
+    ]
+    final_stream = [
+        _sse({"reasoning_content": "Now synthesize."}),
+        _sse({"content": "Final from tool."}),
+        _done(),
+    ]
+    payloads: list[dict] = []
+    backend = _make_backend(monkeypatch, [tool_stream, final_stream], payloads)
+    _patch_monotonic(monkeypatch, [200.0, 201.0, 203.0, 300.0, 400.0, 405.0, 405.0])
+
+    def fake_execute_tool(name, arguments, **_kwargs):
+        return "Rendered HTML canvas: Done."
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "render then answer"}],
+            tools = [{"type": "function", "function": {"name": "render_html"}}],
+            max_tool_iterations = 1,
+        )
+    )
+
+    summaries = [event for event in events if event["type"] == "reasoning_summary"]
+    assert [event["duration_ms"] for event in summaries] == [2000, 5000]
+    final_summary_index = events.index(summaries[-1])
+    final_content_index = next(
+        i
+        for i, event in enumerate(events)
+        if event.get("type") == "content" and "Final from tool." in event.get("text", "")
+    )
+    assert final_summary_index < final_content_index
 
 
 def test_repeat_render_html_nudge_is_not_user_visible_error(monkeypatch):

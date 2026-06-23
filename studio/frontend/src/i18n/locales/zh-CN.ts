@@ -23,6 +23,7 @@ export const zhCN = {
   },
   shell: {
     accountMenu: "{name} 账号菜单",
+    updateAvailable: "有可用更新",
     aria: {
       home: "Unsloth 首页",
       closeSidebar: "关闭侧边栏",
