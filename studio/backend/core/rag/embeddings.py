@@ -50,14 +50,10 @@ _torchao_stub_done = False
 
 
 def _install_torchao_stub_once() -> None:
-    """Neutralize torchao before the first sentence-transformers import.
-
-    transformers.quantizers imports torchao, which loads torch's c10d
-    distributed backend at module level; the AMD Windows ROCm wheels omit it
-    (no RCCL), so the import aborts and silently drops the ST embedder to the
-    llama-server fallback. The training/export workers install this stub at
-    process start, but the embedder runs in the main backend process, which
-    otherwise never does. No-op off Windows ROCm. Runs once (under ``_lock``)."""
+    """Neutralize torchao before importing sentence-transformers. On Windows ROCm,
+    torchao (pulled in by transformers.quantizers) imports an absent c10d backend
+    and aborts, dropping the embedder to llama-server. Workers stub it too; the
+    embedder runs in the main process. No-op elsewhere; runs once under ``_lock``."""
     global _torchao_stub_done
     if _torchao_stub_done:
         return

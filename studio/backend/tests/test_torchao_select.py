@@ -72,10 +72,9 @@ def test_default_spec_matches_table(monkeypatch):
 
 
 def test_skips_torchao_on_windows_rocm():
-    """The overrides step must skip torchao on Windows ROCm. There is no working
-    torchao build there: it loads torch's c10d distributed backend at import,
-    which the AMD Windows wheels omit, so `import torchao` raises and takes
-    transformers.quantizers with it. Studio stubs torchao at runtime instead."""
+    """The overrides step must skip torchao on Windows ROCm: no working build exists
+    there (it imports an absent c10d backend and crashes transformers.quantizers),
+    so the installer skips it and relies on the runtime stub instead."""
     source = _INSTALL_SCRIPT.read_text(encoding = "utf-8")
     # Branches on the Windows-ROCm marker set by _ensure_rocm_torch ...
     assert "elif _rocm_windows_torch_installed:" in source

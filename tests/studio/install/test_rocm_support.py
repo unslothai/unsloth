@@ -2332,10 +2332,9 @@ class TestWorkerWindowsRocmPatches:
         assert "install_torchao_windows_rocm_stub()" in source
 
     def test_embedder_calls_shared_torchao_stub(self):
-        """rag/embeddings.py must install the stub before the first sentence-
-        transformers import. The embedder runs in the main backend process (not a
-        stubbed worker), so without this transformers -> torchao crashes on Windows
-        ROCm and the ST embedder silently drops to the llama-server fallback."""
+        """embeddings.py must install the stub before importing sentence-transformers:
+        it runs in the main process (not a stubbed worker), so otherwise transformers
+        -> torchao crashes on Windows ROCm and the embedder drops to llama-server."""
         source = _EMBEDDINGS_PATH.read_text(encoding = "utf-8")
         assert "install_torchao_windows_rocm_stub()" in source
 
